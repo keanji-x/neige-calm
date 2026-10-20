@@ -3246,26 +3246,6 @@ async fn insert_report_payload(boot: &Boot, id: &str, payload: Value) {
     .unwrap();
 }
 
-/// The id of the track's single live task block, straight from the stored report payload.
-async fn live_task_block(boot: &Boot) -> String {
-    let card = boot
-        .repo
-        .cards_by_track(boot.track_id.as_str())
-        .await
-        .unwrap()
-        .into_iter()
-        .find(|card| card.kind == "track-report")
-        .expect("report card");
-    let payload: TrackReportPayload = serde_json::from_value(card.payload).unwrap();
-    let block = payload
-        .blocks
-        .expect("blocks cache")
-        .into_iter()
-        .find(|block| block.kind == "task" && block.payload.get("tombstone").is_none())
-        .expect("one live task block");
-    block.id
-}
-
 /// Make the report hold `blocks` through the production writers: the prose by a whole write, which
 /// owns no task block (#2617), then the tasks by one commit — the stored task blocks are upserted in
 /// order, extra ones created and missing ones deleted by id.
@@ -3627,7 +3607,8 @@ async fn deterministic_root_location_failures_do_not_freeze_or_index() {
         };
         let pool = boot.repo.sqlite_db().unwrap();
         if case == "invalid-root-ref" {
-            // The public writer rejects malformed refs, so model an older/corrupt stored report and run the production rebuild projection.
+            // Both agent and user block writers reject malformed refs at schema validation,
+            // so model an older/corrupt stored report and run the production rebuild projection.
             let malformed = TrackReportPayload {
                 schema_version: TrackReportPayload::SCHEMA_VERSION,
                 doc_rev: 2,
@@ -3654,20 +3635,118 @@ async fn deterministic_root_location_failures_do_not_freeze_or_index() {
                 .await
                 .unwrap();
             tx.commit().await.unwrap();
-        } else if case == "absent" {
-            // A whole-document write may not make a live task declaration disappear; the sanctioned way is a delete op naming it.
-            let id = live_task_block(&boot).await;
-            support::report_writes::read_then_commit(
-                &boot.ctx,
-                &boot.registry,
-                planner_identity(&boot),
-                json!([{"op": "delete", "id": id}]),
-            )
-            .await
-            .expect("a delete op of the root task block");
-            edit_report_blocks(&boot, &broken).await;
         } else {
-            edit_report_blocks(&boot, &broken).await;
+            use axum::extract::{FromRef, State};
+            use calm_server::actor::Actor;
+            use calm_server::auth::Principal;
+            use calm_server::extract::{JsonBody, Path};
+            use calm_server::routes::track_report_blocks::{
+                CreateReportBlockBody, DeleteReportBlockBody, UpdateReportBlockBody, create_block,
+                delete_block, update_block,
+            };
+            use calm_server::state::RouteState;
+
+            // These edits deliberately invalidate the root. Use the human REST channel:
+            // agent writes refuse ready declarations with diagnostics such as duplicate_key.
+            let state = app_state_for_context_events(&boot);
+            let state = RouteState::from_ref(&state);
+            let principal = Principal {
+                user_id: LEGACY_OWNER_USER_ID.into(),
+                display_name: "owner".into(),
+                role: "owner".into(),
+                session_id: "test".into(),
+            };
+            let (_, report, _) =
+                resolve_report_for_track(boot.repo.as_ref(), boot.track_id.as_str())
+                    .await
+                    .unwrap();
+            let stored: TrackReportPayload = serde_json::from_value(report.payload).unwrap();
+            let root = stored
+                .blocks
+                .as_ref()
+                .unwrap()
+                .iter()
+                .find(|block| block.kind == "task")
+                .unwrap();
+            let path = Path((boot.track_id.to_string(), root.id.clone()));
+            match case {
+                "duplicate" => {
+                    let mut duplicate = valid_root.clone();
+                    duplicate["declared_by"] = json!("user");
+                    create_block(
+                        State(state),
+                        principal,
+                        Actor("user".into()),
+                        Path(boot.track_id.to_string()),
+                        JsonBody(CreateReportBlockBody {
+                            kind: "task".into(),
+                            markdown: None,
+                            payload: Some(duplicate),
+                            if_doc_rev: stored.doc_rev,
+                            position: None,
+                        }),
+                    )
+                    .await
+                    .expect("user creates duplicate root");
+                }
+                "tombstoned" => {
+                    let mut tombstone = broken[0].2.clone();
+                    tombstone["tombstoned_by"] = json!("user");
+                    update_block(
+                        State(state),
+                        principal,
+                        Actor("user".into()),
+                        path,
+                        JsonBody(UpdateReportBlockBody {
+                            kind: "task".into(),
+                            markdown: None,
+                            payload: Some(tombstone),
+                            if_block_rev: root.rev,
+                        }),
+                    )
+                    .await
+                    .expect("user tombstones root");
+                }
+                "absent" => {
+                    // The first user delete makes a tombstone; delete that too so this
+                    // remains the absent-root case rather than a second tombstone case.
+                    let tombstone = delete_block(
+                        State(state.clone()),
+                        principal.clone(),
+                        Actor("user".into()),
+                        Path((boot.track_id.to_string(), root.id.clone())),
+                        JsonBody(DeleteReportBlockBody {
+                            if_block_rev: root.rev,
+                        }),
+                    )
+                    .await
+                    .expect("user tombstones root before deletion")
+                    .0;
+                    delete_block(
+                        State(state),
+                        principal,
+                        Actor("user".into()),
+                        path,
+                        JsonBody(DeleteReportBlockBody {
+                            if_block_rev: tombstone.rev.unwrap(),
+                        }),
+                    )
+                    .await
+                    .expect("user deletes root tombstone");
+                    let monitor = TaskContextMonitor::new(
+                        boot.repo.clone(),
+                        boot.events.clone(),
+                        boot.write.clone(),
+                    );
+                    assert_eq!(
+                        monitor
+                            .resolve_task_closure(boot.track_id.as_str(), &key)
+                            .await,
+                        Err(ResolveError::RootAbsent),
+                    );
+                }
+                _ => unreachable!(),
+            }
         }
         scheduler.schedule_track(boot.track_id.clone()).await;
         assert!(event_rows(&boot, "task.context_frozen").await.is_empty());
