@@ -70,12 +70,17 @@ it('reveals group actions and accepts a direct click from a resting desktop poin
 
   await page.elementLocator(document.body).hover();
   const create = page.getByRole('button', { name: 'New area', exact: true }).element();
-  expect(getComputedStyle(create).opacity).toBe('0');
+  expect(getComputedStyle(create.parentElement!).opacity).toBe('0');
+  const sourceBox = create.parentElement!.getBoundingClientRect();
+  expect(create.getBoundingClientRect().toJSON()).toEqual(sourceBox.toJSON());
   const actionsAtRest = document.querySelectorAll<HTMLElement>('nav[aria-label="Workspace"] [role="group"] button:not([data-nc-role="row"])');
   expect(actionsAtRest.length).toBeGreaterThan(1);
   for (const action of actionsAtRest) {
     const target = action.getBoundingClientRect();
     expect(document.elementFromPoint(target.x + target.width / 2, target.y + target.height / 2)?.closest('button')).toBe(action);
+  }
+  for (const x of [sourceBox.left + 1, sourceBox.right - 1]) {
+    expect(document.elementFromPoint(x, sourceBox.top + sourceBox.height / 2)?.closest('button')).toBe(create);
   }
   await page.getByRole('button', { name: 'New area', exact: true }).click();
   expect(createArea).toHaveBeenCalledTimes(1);

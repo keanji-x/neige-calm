@@ -1,4 +1,3 @@
-import { presenceDepthFrame } from '../motion/depth.ts';
 // The conversation drawer. It overlays the panel column rather than squeezing the main column, and is deliberately not modal: no focus trap, no inert background. Escape closes it.
 
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, type ReactNode } from 'react';
@@ -9,16 +8,17 @@ import { MobileHeader } from '../mobile-header/public.tsx';
 import { useState } from '../state/public.ts';
 import { useCompactViewport } from '../viewport/public.ts';
 import styles from './drawer.module.css';
-import { useSpringPresence } from '../motion/presence.ts';
+import { useSurfacePresence } from '../motion/surface-presence.ts';
+import { readSurfaceFrame } from '../motion/geometry.ts';
 import type { PaneResizeGroup } from './resize-group.ts';
 import { ResizeEdge, type DrawerResize } from './resize-edge.tsx';
 
 export type { DrawerResize } from './resize-edge.tsx';
 
-/** The seam of the drawer `inside` is rendered in, or `null`; scoped through the card's parent so a second drawer's seam cannot be picked up. */
+/** Resolve the owning pair through its layout wrappers, never another card's seam. */
 export function drawerSeamAround(inside: Element | null): HTMLElement | null {
   const card = inside?.closest('[data-nc-drawer]');
-  return card?.parentElement?.querySelector<HTMLElement>('[data-nc-drawer-seam]') ?? null;
+  return card?.parentElement?.nextElementSibling?.querySelector<HTMLElement>('[data-nc-drawer-seam]') ?? null;
 }
 
 /** Focus `element` and read the result back — CSS-based prediction disagreed with the engine. `aria-hidden`/`inert` are checked by attribute first because `focus()` succeeds into them. */
@@ -59,6 +59,8 @@ export function Drawer({ open, title, mobileBackLabel, mobileHeader, closeLabel 
 }) {
   const compact = useCompactViewport();
   const panelRef = useRef<HTMLDivElement | null>(null);
+  const panelFrameRef = useRef<HTMLDivElement | null>(null);
+  const seamFrameRef = useRef<HTMLDivElement | null>(null);
   const titleId = useId();
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const seamRef = useRef<HTMLDivElement | null>(null);
@@ -114,7 +116,13 @@ export function Drawer({ open, title, mobileBackLabel, mobileHeader, closeLabel 
   // Compact pages disappear in this commit; no mobile transitionend is owed.
   if (compact && closing) setClosing(false);
 
-  useSpringPresence(panelRef, seamRef, open, open || closing, !compact, () => { setClosing(false); }, presenceDepthFrame);
+  useSurfacePresence({
+    parts: { kind: 'paired',
+      primary: { element: panelRef, readFrame: () => readSurfaceFrame(panelFrameRef.current) },
+      peer: { element: seamRef, readFrame: () => readSurfaceFrame(seamFrameRef.current) } },
+    geometry: { kind: 'edge-reveal', origin: { kind: 'paired-edge', edge: 'inline-end' } },
+    open, present: !compact && (open || closing), enabled: !compact, onExited: () => { setClosing(false); },
+  });
 
   // Keep the local escape-layer contract for unmigrated Dialog/file-viewer hosts;
   // native Astryx children still dismiss first through the shared layer stack.
@@ -162,13 +170,15 @@ export function Drawer({ open, title, mobileBackLabel, mobileHeader, closeLabel 
   /* `data-nc-drawer` is the marker `app/shell` hides the trailing PanelCard by; a CSS Module class cannot be named across modules. It stays on during the closing animation. */
   const card = (
     <>
+    <div ref={panelFrameRef} data-nc-drawer-frame="" hidden={!open && !closing}
+      className={`${styles.positioner} ${inline ? styles.embedded : ''}`}>
     <div
       id={id}
       hidden={!open && !closing}
-      inert={!open && !closing}
-      aria-hidden={(!open && !closing) || undefined}
+      inert={!open}
+      aria-hidden={!open || undefined}
       ref={panelRef}
-      className={`${styles.drawer} ${inline ? styles.embedded : ''} ${closing ? styles.drawerClosing : ''}`}
+      className={`${styles.drawer} ${closing ? styles.drawerClosing : ''}`}
       role={inline ? "region" : "complementary"}
       data-nc-drawer={open || closing ? '' : undefined}
       data-nc-drawer-open={open ? '' : undefined}
@@ -199,14 +209,19 @@ export function Drawer({ open, title, mobileBackLabel, mobileHeader, closeLabel 
       {frame.footer}
       {/* Last in the card so the first Tab off the container still lands on the header. Mounted only while open: the edge's lifetime is the drag's, so a close mid-drag ends it. */}
       {open && width !== undefined && !stacked && companion === undefined && parentResizeGroup === null
-        && <ResizeEdge resize={width} panelRef={panelRef} scrollRef={scrollRef} group={resizeGroup} />}
+        && <ResizeEdge resize={width} panelRef={panelFrameRef} scrollRef={scrollRef} group={resizeGroup} />}
+    </div>
     </div>
     {/* The seam is after the card in source order deliberately and is not marked `data-nc-drawer`: one drawer must present one marker for `app/shell`'s `:has()` rule. */}
+    <div ref={seamFrameRef} data-nc-drawer-frame="" className={styles.seamPositioner}>
     <div
       ref={seamRef}
+      inert={!open}
+      aria-hidden={!open || undefined}
       className={`${styles.seam} ${closing ? styles.seamClosing : ''}`}
       data-nc-drawer-seam=""
     />
+    </div>
     </>
   );
   if (companion === undefined && !stacked) return <LayerDepthProvider>{card}</LayerDepthProvider>;

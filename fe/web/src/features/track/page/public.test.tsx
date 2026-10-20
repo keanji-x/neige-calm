@@ -18,7 +18,7 @@ it('leaves Escape to a dialog above an open panel', async () => {
   const closePanel = vi.fn();
   const closeDialog = vi.fn();
   renderPage({ panel: 'cards', onClosePanel: closePanel });
-  render(<Dialog open title="Confirm action" onClose={closeDialog}><p>Review this action.</p></Dialog>);
+  render(<Dialog origin={{ kind: 'surface-center' }} open title="Confirm action" onClose={closeDialog}><p>Review this action.</p></Dialog>);
   await userEvent.keyboard('{Escape}');
   expect(closeDialog).toHaveBeenCalledOnce();
   expect(closePanel).not.toHaveBeenCalled();
@@ -829,7 +829,7 @@ describe('TrackPage card inventory', () => {
   });
 
   it('invokes onDeleteCard with the wire id of the row it sits on', async () => {
-    const onDeleteCard = vi.fn();
+    const onDeleteCard = vi.fn<NonNullable<TrackPageProps['onDeleteCard']>>();
     const onOpenCard = vi.fn();
     renderPage({
       cards: [card({ id: 'k1', title: 'Build log' }), card({ id: 'k2', title: 'Notes' })],
@@ -838,7 +838,10 @@ describe('TrackPage card inventory', () => {
     });
     await userEvent.click(screen.getByRole('button', { name: 'Actions for Notes' }));
     await userEvent.click(await screen.findByRole('menuitem', { name: 'Delete card Notes' }));
-    expect(onDeleteCard).toHaveBeenCalledWith('k2');
+    expect(onDeleteCard).toHaveBeenCalledWith('k2', expect.objectContaining({ kind: 'anchor' }));
+    const origin = onDeleteCard.mock.calls[0][1];
+    if (origin.kind !== 'anchor') throw new Error('Expected the owned context row source');
+    expect(origin.anchor.ref.current?.contains(screen.getByRole('button', { name: 'Actions for Notes' }))).toBe(true);
     expect(onDeleteCard).toHaveBeenCalledTimes(1);
     // The row button itself must not have fired: the delete is a sibling of it, so one gesture cannot do two things.
     expect(onOpenCard).not.toHaveBeenCalled();

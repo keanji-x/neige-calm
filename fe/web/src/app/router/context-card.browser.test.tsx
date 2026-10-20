@@ -65,7 +65,9 @@ it('keeps execution details and related entries in one card with single-line row
   expect(openCard).toHaveBeenCalledWith('worker');
   await userEvent.click(menu);
   await page.getByRole('menuitem', { name: 'Delete card Worker session', exact: true }).click();
-  expect(deleteCard).toHaveBeenCalledWith('worker');
+  expect(deleteCard).toHaveBeenCalledWith('worker', {
+    kind: 'anchor', anchor: { ref: { current: work } }, unavailable: 'surface-center',
+  });
   await page.getByRole('button', { name: 'Conversation Planner', exact: true }).click();
   expect(openChat).toHaveBeenCalledOnce();
   const related = [...root.querySelectorAll('details')].find(details => details.querySelector('summary')?.textContent === 'Related')!;

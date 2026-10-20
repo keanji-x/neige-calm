@@ -63,7 +63,25 @@ heading, accessible label and close/focus behavior are unchanged.
 `data-nc-drawer-open` follows the requested open state immediately. Hosts use the
 open marker to reveal covered content and start layout restoration, rather than
 waiting for the exit node to disappear. The shell owns its panel allocation;
-Drawer and its seam keep their existing shared presence spring.
+Drawer and its seam use Motion's paired-only `edge-reveal` map and one shared
+native spring clock, with per-part rebase/identity. The camera displacement is
+computed only in Motion; Drawer declares the inline-end edge and independent
+unanimated frames. Text, inputs and the footer keep a unit paint scale.
+
+Each paint sits in its own `data-nc-drawer-frame` layout wrapper. Width, insets and
+host header clearance belong to these wrappers, which never receive effects or
+pointer input. The panel paint owns clipping; its seam peer stays outside that
+clip. `drawerSeamAround()` resolves the owning pair, including inline/stacked
+cards; consumers must use this helper rather than follow internal DOM depth.
+Only paint nodes receive transform/opacity effects. Shell geometry selectors
+address frame markers; existing drawer/open/seam/resizable marker roles remain.
+
+In the open=false commit, retained panel and seam become inert and aria-hidden,
+leave Escape ownership and lose pointer/input permission. The same title/body/
+footer tree stays solely for exit paint. Actions, navigation, resource visibility,
+resize cleanup and accessible opener focus restoration happen immediately; only
+an already-inaccessible opener retains the existing retry after exit. Compact
+handoff immediately releases desktop paint without waiting for a hidden seam.
 
 ## Retained companion slots
 

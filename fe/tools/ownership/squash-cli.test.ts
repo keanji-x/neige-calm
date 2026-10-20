@@ -25,6 +25,8 @@ it.each(cases)('audits $label through both CLI entry points', ({
       filter: (source) => !['node_modules', 'dist', '.cache'].includes(source.split('/').at(-1)!),
     });
     git('init', '--initial-branch=main');
+    // Disposable repositories must not start maintenance that outlives their cleanup.
+    git('config', 'maintenance.auto', 'false');
     git('config', 'user.name', 'Ownership fixture');
     git('config', 'user.email', 'ownership@example.invalid');
     git('add', '.');

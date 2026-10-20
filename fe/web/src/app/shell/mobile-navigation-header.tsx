@@ -1,5 +1,6 @@
+import type { DialogOrigin } from '../../ui/dialog/public.tsx';
 import { floatingControlClassName } from '../../ui/floating-control/public.ts';
-import type { ReactNode } from 'react';
+import { useRef, type ReactNode } from 'react';
 import { MobileHeader } from '../../ui/mobile-header/public.tsx';
 import { List, ListItem } from '@astryxdesign/core/List';
 import { MobileListGroup } from '../../ui/mobile-list/public.tsx';
@@ -14,22 +15,24 @@ import styles from './mobile-navigation.module.css';
 export type MobileNavigationActions = Readonly<{
   onBack: () => void;
   onNewTrack: (areaId: string) => void;
-  onEditArea: (area: Area) => void;
+  onEditArea: (area: Area, origin: DialogOrigin) => void;
   onOpenSettings: () => void;
-  onCreateArea: () => void;
+  onCreateArea: (origin: DialogOrigin) => void;
 }>;
 
 /** Keep navigation in the title bar and workspace actions in one stable group. */
 export function MobileNavigationHeader({
   title, area, creationScope, backLabel, filters, showSettings = true, actionsPlacement = 'rows', onBack, onNewTrack, onEditArea, onOpenSettings, onCreateArea,
 }: Readonly<{ title: string; filters?: ReactNode; showSettings?: boolean; actionsPlacement?: 'rows' | 'header' | 'floating'; area: Area | undefined; creationScope: 'area' | 'track' | 'both'; backLabel: string }> & MobileNavigationActions) {
+  const headerRef = useRef<HTMLSpanElement | null>(null);
+  const rowRef = useRef<HTMLLIElement | null>(null);
   return <>
     <MobileHeader className={actionsPlacement !== 'rows' ? styles.navigationHeader : undefined} title={title} backLabel={backLabel} onBack={onBack}
-      actions={actionsPlacement === 'header' && area === undefined ? <IconButton label={creationScope === 'area' ? 'New area' : 'New track'} isDisabled={creationScope !== 'area'} icon={<Icon name="plus" />} variant="ghost" size="lg" className={`${styles.iconButton} ${floatingControlClassName}`} onClick={onCreateArea} /> : area === undefined ? undefined : <Menu wrapClassName={menuStyles.toolsMenuWrap} menuClassName={menuStyles.toolsMenu} itemClassName={menuStyles.menuItem}
+      actions={<span ref={headerRef} style={{ display: 'inline-flex' }}>{actionsPlacement === 'header' && area === undefined ? <IconButton label={creationScope === 'area' ? 'New area' : 'New track'} isDisabled={creationScope !== 'area'} icon={<Icon name="plus" />} variant="ghost" size="lg" className={`${styles.iconButton} ${floatingControlClassName}`} onClick={() => onCreateArea({ kind: 'anchor', anchor: { ref: headerRef }, unavailable: 'surface-center' })} /> : area === undefined ? undefined : <Menu wrapClassName={menuStyles.toolsMenuWrap} menuClassName={menuStyles.toolsMenu} itemClassName={menuStyles.menuItem}
         items={[...(actionsPlacement === 'header' ? [{ label: 'New track', onSelect: () => onNewTrack(area.id) }] : []), { label: area === undefined ? 'Edit area' : `Edit area ${area.name}`, disabled: area === undefined,
-          onSelect: () => { if (area !== undefined) onEditArea(area); } }]}
+          onSelect: () => { if (area !== undefined) onEditArea(area, { kind: 'anchor', anchor: { ref: headerRef }, unavailable: 'surface-center' }); } }]}
         trigger={(props) => <IconButton {...props} label="Area actions" icon={actionsPlacement !== 'header' ? <AstryxIcon icon="moreHorizontal" size="md" color="inherit" /> : <Icon name="plus" />}
-          variant="ghost" size="lg" className={`${styles.iconButton} ${floatingControlClassName}`} />} />} />
+          variant="ghost" size="lg" className={`${styles.iconButton} ${floatingControlClassName}`} />} />}</span>} />
     {filters}
     {actionsPlacement === 'rows' && <div className={styles.actionRows}><MobileListGroup label="Workspace actions">
       <List density="balanced" className={styles.actionList}>
@@ -39,8 +42,8 @@ export function MobileNavigationHeader({
         {creationScope !== 'area' && <ListItem label="New track" className={styles.actionRow}
           startContent={<Icon name="plus" />} isDisabled={area === undefined}
           onClick={() => { if (area !== undefined) onNewTrack(area.id); }} />}
-        {creationScope !== 'track' && <ListItem label="New area" className={styles.actionRow}
-          startContent={<Icon name="plus" />} onClick={onCreateArea} />}
+        {creationScope !== 'track' && <ListItem ref={rowRef} label="New area" className={styles.actionRow}
+          startContent={<Icon name="plus" />} onClick={() => onCreateArea({ kind: 'anchor', anchor: { ref: rowRef }, unavailable: 'surface-center' })} />}
       </List>
     </MobileListGroup></div>}
   </>;
@@ -50,7 +53,8 @@ export function MobileNavigationHeader({
 export function MobileNavigationCreateAction({ area, onCreateArea, onNewTrack, creationScope }: Readonly<{
   area: Area | undefined; creationScope: 'area' | 'track';
 }> & Pick<MobileNavigationActions, 'onCreateArea' | 'onNewTrack'>) {
-  return <button type="button" className={`${styles.floatingAction} ${floatingControlClassName}`}
+  const sourceRef = useRef<HTMLSpanElement | null>(null);
+  return <span ref={sourceRef} className={styles.floatingAction}><button type="button" className={floatingControlClassName}
     aria-label={creationScope === 'area' ? 'New area' : 'New track'} disabled={creationScope === 'track' && area === undefined}
-    onClick={() => { if (creationScope === 'area') onCreateArea(); else if (area !== undefined) onNewTrack(area.id); }}><Icon name="plus" /></button>;
+    onClick={() => { if (creationScope === 'area') onCreateArea({ kind: 'anchor', anchor: { ref: sourceRef }, unavailable: 'surface-center' }); else if (area !== undefined) onNewTrack(area.id); }}><Icon name="plus" /></button></span>;
 }

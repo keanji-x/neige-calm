@@ -876,7 +876,13 @@ function drawerPane() {
     configurable: true, get: () => 0, set: setPaneScroll,
   });
   document.body.append(outer);
-  outer.append(card, seam);
+  const panelFrame = document.createElement('div');
+  const seamFrame = document.createElement('div');
+  panelFrame.setAttribute('data-nc-drawer-frame', '');
+  seamFrame.setAttribute('data-nc-drawer-frame', '');
+  outer.append(panelFrame, seamFrame);
+  panelFrame.append(card);
+  seamFrame.append(seam);
   card.append(pane);
   return { outer, pane, seam, setOuterScroll, setPaneScroll };
 }

@@ -310,6 +310,8 @@
     line-height: 1;
     display: grid;
     place-items: center;
+    /* A percentage-sized source button must fill the slot, not an intrinsic grid column. */
+    grid-template-columns: minmax(0, 1fr);
     inline-size: var(--control-h);
     block-size: var(--control-h);
     border-radius: var(--radius-highlight);
@@ -733,8 +735,7 @@
     }
 
     .main [data-nc-drawer-stack],
-    .main [data-nc-drawer],
-    .main [data-nc-drawer-seam] {
+    .main [data-nc-drawer-frame] {
       inset-block: var(--workspace-header-inset);
     }
 
@@ -744,8 +745,7 @@
     }
 
     /* The shared host owns header clearance; its cards stay inside their cells. */
-    .main [data-nc-drawer-stack] [data-nc-drawer],
-    .main [data-nc-drawer-stack] [data-nc-drawer-seam] {
+    .main [data-nc-drawer-stack] [data-nc-drawer-frame] {
       inset-block: 0;
     }
 
@@ -760,5 +760,16 @@
       inline-size: var(--glyph);
       block-size: var(--glyph);
     }
+  }
+}
+
+@layer features {
+  .sourceButton {
+    display: grid;
+    place-items: center;
+    inline-size: 100%;
+    block-size: 100%;
+    border-radius: inherit;
+    color: inherit;
   }
 }

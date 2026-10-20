@@ -1,3 +1,4 @@
+import type { DialogOrigin } from '../../../ui/dialog/public.tsx';
 // The new-track page: one thing to say, with compact preferences in its footer. Presentational
 // plus local form state; the caller owns `POST /api/tracks`, `submitting`, `error` and
 // the template list, and puts the sentence on the create as `first_message`, verbatim.
@@ -147,7 +148,7 @@ export function NewTrackForm({
   };
   const [cwd, setCwd] = useState(initialDraft?.cwd ?? initialCwd ?? '');
   const [isolation, setIsolation] = useState<'worktree' | 'none'>(initialDraft?.isolation ?? 'worktree');
-  const [browsing, setBrowsing] = useState(false);
+  const [browsing, setBrowsing] = useState<DialogOrigin | null>(null);
   const composerHostRef = useRef<HTMLDivElement | null>(null);
   /* One array per trigger: `useTriggerMenu` drops an open menu when the list changes identity. */
   const triggers = useMemo(() => mentionTrigger === undefined ? undefined : [mentionTrigger], [mentionTrigger]);
@@ -307,13 +308,13 @@ export function NewTrackForm({
                 /* The `@` source delays its own requests; Astryx's delay would let its per-keystroke probe search fire. */
                 {...(triggers === undefined ? {} : { triggers, debounceMs: 0 })} />
             </div>}
-            footerActions={<ComposerPreferences browsing={browsing}
+            footerActions={<ComposerPreferences browsing={browsing !== null}
               isolation={{ hasFolder: cwd !== '', value: isolation, onChange: setIsolation, isDisabled: submitting || locked }}
               startingPoint={{ templates, templatesLoaded, recipes, value: effectiveSelection,
                 onChange: selectStartingPoint, onManageRecipes, placement: 'above', triggerId,
                 isDisabled: submitting || locked }}
               folder={{ buttonId: folderId, value: cwd, clearLabel: FOLDER_CLEAR_LABEL,
-                onBrowse: () => setBrowsing(true), onClear: () => { setCwd(''); setIsolation('worktree'); },
+                onBrowse: (origin) => setBrowsing(origin), onClear: () => { setCwd(''); setIsolation('worktree'); },
                 isDisabled: submitting || locked }}
             />}
             /* Model and Create stay together at the trailing edge. */
@@ -397,8 +398,9 @@ export function NewTrackForm({
       {/* The picker as a real modal: `Dialog` renders `null` while closed and owns the
                 focus trap, Escape and click-outside. */}
       <Dialog
-        open={browsing}
-        onClose={() => setBrowsing(false)}
+        origin={browsing ?? { kind: 'surface-center' }}
+        open={browsing !== null}
+        onClose={() => setBrowsing(null)}
         title="Choose a directory"
         wide
       >
@@ -406,8 +408,8 @@ export function NewTrackForm({
           listDirectory={listDirectory}
           initialPath={cwd === '' ? null : cwd}
           mode="directory"
-          onCancel={() => setBrowsing(false)}
-          onSelect={(path) => { setCwd(path); setBrowsing(false); }}
+          onCancel={() => setBrowsing(null)}
+          onSelect={(path) => { setCwd(path); setBrowsing(null); }}
         />
       </Dialog>
     </div>

@@ -1,3 +1,4 @@
+import type { DialogOrigin } from '../../ui/dialog/public.tsx';
 import { sidebarTrackGroups } from './sidebar-track-groups.ts';
 import { useMobileNavigationPresence } from './mobile-navigation-presence.ts';
 import { floatingControlClassName } from '../../ui/floating-control/public.ts';
@@ -126,7 +127,7 @@ export function useMobileHeaderTitleHost(): HTMLElement | null {
 }
 
 
-type AreaEditorTarget = Readonly<{ kind: 'create' }> | Readonly<{ kind: 'edit'; area: Area }>;
+type AreaEditorTarget = Readonly<{ kind: 'create'; origin: DialogOrigin }> | Readonly<{ kind: 'edit'; area: Area; origin: DialogOrigin }>;
 
 function randomAreaColor(): string {
   return AREA_PALETTE[Math.floor(Math.random() * AREA_PALETTE.length)] ?? AREA_PALETTE[0];
@@ -281,13 +282,13 @@ export function AppShell({
     clearReportPanel();
   };
 
-  const requestCreateArea = () => {
+  const requestCreateArea = (origin: DialogOrigin) => {
     setAreaEditorError(areaCreateRequest === null ? null : AREA_CREATE_TEXT.unknown);
-    setAreaEditorTarget({ kind: 'create' });
+    setAreaEditorTarget({ kind: 'create', origin });
   };
-  const requestEditArea = (area: Area) => {
+  const requestEditArea = (area: Area, origin: DialogOrigin) => {
     setAreaEditorError(null);
-    setAreaEditorTarget({ kind: 'edit', area });
+    setAreaEditorTarget({ kind: 'edit', area, origin });
   };
   const closeAreaEditor = () => {
     if (areaEditorPending) return;
@@ -512,7 +513,7 @@ export function AppShell({
         {/* Above the keyed route stage so settings panes survive tab changes and resizing. */}
         <SettingsOverlay transport={transport} unauthorized={unauthorized} />
       </main>
-      <Dialog
+      <Dialog origin={areaEditorTarget?.origin ?? { kind: 'surface-center' }}
         open={areaEditorTarget !== null}
         title={areaEditorTarget?.kind === 'edit' ? `Edit ${areaEditorTarget.area.name}` : 'New area'}
         onClose={closeAreaEditor}

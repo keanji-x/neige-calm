@@ -353,7 +353,7 @@ describe('the drawer against a real rendering engine', () => {
     expect(box.width / mainBox.width).toBeCloseTo(0.4, 2);
     expect(box.height).toBeGreaterThan(0);
     /* The card keeps an equal breathing margin on its three exposed edges. */
-    const laid = getComputedStyle(card);
+    const laid = getComputedStyle(card.closest('[data-nc-drawer-frame]')!);
     expect(laid.position).toBe('absolute');
     expect(Number.parseFloat(laid.insetBlockStart)).toBeGreaterThan(0);
     expect(laid.insetBlockEnd).toBe(laid.insetBlockStart);
@@ -520,7 +520,7 @@ describe('dragged conversation width', () => {
     await dragEdge(-200);
     expect(widthOf(drawer())).toBeCloseTo(before + 200, -1);
     expect(widthOf(probe)).toBeCloseTo(widthOf(drawer()), 0);
-    expect(getComputedStyle(drawer()).insetInlineEnd).toBe('24px');
+    expect(getComputedStyle(drawer().closest('[data-nc-drawer-frame]')!).insetInlineEnd).toBe('24px');
     expect(preferences.drawerWidth()! * REM).toBeCloseTo(widthOf(drawer()), 0);
     const dragged = widthOf(drawer());
 

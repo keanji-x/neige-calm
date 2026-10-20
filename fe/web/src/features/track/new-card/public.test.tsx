@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { CardAddMenuEntry } from '../../../systems/cards/public.js';
 import type { ListDirectory } from '../../../ui/directory-browser/public.tsx';
 import { Dialog } from '../../../ui/dialog/public.tsx';
-import { AddCardMenu, NewCardForm } from './public.tsx';
+import { AddCardMenu, NewCardForm, type AddCardMenuProps } from './public.tsx';
 
 afterEach(cleanup);
 
@@ -25,16 +25,23 @@ const listDirectory: ListDirectory = () => Promise.resolve({ path: '/', parent: 
 
 describe('AddCardMenu', () => {
   it('lists one item per registry row and reports the picked entry', async () => {
-    const onSelect = vi.fn();
+    const onSelect = vi.fn<AddCardMenuProps['onSelect']>();
     render(<AddCardMenu entries={[TERMINAL, CODEX]} onSelect={onSelect} />);
     await userEvent.click(screen.getByRole('button', { name: 'Add card' }));
     expect(screen.getAllByRole('menuitem').map((item) => item.textContent)).toEqual(['terminal', 'codex']);
     await userEvent.click(screen.getByRole('menuitem', { name: 'codex' }));
-    expect(onSelect).toHaveBeenCalledWith(CODEX, screen.getByRole('button', { name: 'Add card' }));
+    expect(onSelect).toHaveBeenCalledOnce();
+    const [entry, trigger, origin] = onSelect.mock.calls[0];
+    expect(entry).toBe(CODEX);
+    expect(trigger).toBe(screen.getByRole('button', { name: 'Add card' }));
+    expect(origin.kind).toBe('anchor');
+    if (origin.kind !== 'anchor') throw new Error('Expected explicit menu anchor');
+    expect(origin.anchor.ref.current).toBe(trigger?.parentElement);
+    expect(origin.unavailable).toBe('surface-center');
   });
 
   it('keeps the trigger and says so when no kind is available', async () => {
-    const onSelect = vi.fn();
+    const onSelect = vi.fn<AddCardMenuProps['onSelect']>();
     render(<AddCardMenu entries={[]} onSelect={onSelect} />);
     await userEvent.click(screen.getByRole('button', { name: 'Add card' }));
     const rows = screen.getAllByRole('menuitem');
@@ -69,7 +76,7 @@ describe('NewCardForm', () => {
   /* This form renders inside `app/router`'s add-card dialog, so the folder control must push into that dialog through `useDialogView` and never open a second one: a nested dialog fights the outer focus trap. */
   it('pushes the folder picker into the surrounding dialog, opening no second one', async () => {
     render(
-      <Dialog open onClose={vi.fn()} title="Add card">
+      <Dialog origin={{ kind: 'surface-center' }} open onClose={vi.fn()} title="Add card">
         <NewCardForm
           entry={CODEX}
           submitting={false}

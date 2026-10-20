@@ -39,6 +39,8 @@ function syntheticAudit(message: string, sourceMessage = trailer): Promise<reado
 beforeEach(() => {
   repository = mkdtempSync(join(tmpdir(), 'ownership-squash-'));
   git('init', '--initial-branch=main');
+  // Disposable repositories must not start maintenance that outlives their cleanup.
+  git('config', 'maintenance.auto', 'false');
   git('config', 'user.name', 'Ownership fixture');
   git('config', 'user.email', 'ownership@example.invalid');
   change('base', 'base');

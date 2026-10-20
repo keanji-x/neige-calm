@@ -13,7 +13,7 @@ afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 function DisabledTargetDialog() {
   const target = useRef<HTMLButtonElement | null>(null);
   return (
-    <Dialog open title="Test" onClose={vi.fn()} initialFocusRef={target}>
+    <Dialog origin={{ kind: 'surface-center' }} open title="Test" onClose={vi.fn()} initialFocusRef={target}>
       <button type="button" ref={target} disabled>Disabled target</button>
       <input aria-label="Task" />
     </Dialog>
@@ -24,7 +24,7 @@ function DisabledTargetDialog() {
 function InheritedDisabledDialog() {
   const target = useRef<HTMLInputElement | null>(null);
   return (
-    <Dialog open title="Test" hideClose onClose={vi.fn()} initialFocusRef={target}>
+    <Dialog origin={{ kind: 'surface-center' }} open title="Test" hideClose onClose={vi.fn()} initialFocusRef={target}>
       <fieldset disabled><input aria-label="Task" ref={target} /></fieldset>
     </Dialog>
   );
@@ -40,7 +40,7 @@ describe('Dialog behavior', () => {
   it('traps Tab from a portal owned outside the dialog React tree', () => {
     const host = document.createElement('div');
     render(<>
-      <Dialog open title="Settings" onClose={vi.fn()}>
+      <Dialog origin={{ kind: 'surface-center' }} open title="Settings" onClose={vi.fn()}>
         <div ref={(slot) => { slot?.appendChild(host); }} />
       </Dialog>
       {createPortal(<button type="button">Portal last</button>, host)}
@@ -55,7 +55,7 @@ describe('Dialog behavior', () => {
   });
 
   it('renders the close control with the shared stroked icon instead of a text glyph', () => {
-    render(<Dialog open title="Test" onClose={vi.fn()} />);
+    render(<Dialog origin={{ kind: 'surface-center' }} open title="Test" onClose={vi.fn()} />);
     const close = screen.getByRole('button', { name: 'Close' });
     expect(close.querySelector('svg')?.classList.contains('lucide-x')).toBe(true);
     expect(close.textContent).not.toContain('×');
@@ -67,7 +67,7 @@ describe('Dialog behavior', () => {
     const trigger = document.body.appendChild(document.createElement('button'));
     trigger.focus();
     const focus = vi.spyOn(trigger, 'focus');
-    const result = render(<Dialog open title="Test" onClose={vi.fn()}/>);
+    const result = render(<Dialog origin={{ kind: 'surface-center' }} open title="Test" onClose={vi.fn()}/>);
     trigger.remove();
     expect(() => result.unmount()).not.toThrow();
     expect(background.hasAttribute('inert')).toBe(true);
@@ -87,7 +87,7 @@ describe('Dialog behavior', () => {
 
   it('focuses the first focusable when the frame lands and focus is still outside', () => {
     const frames = heldFrames();
-    render(<Dialog open title="Test" onClose={vi.fn()}><input aria-label="Task" /></Dialog>);
+    render(<Dialog origin={{ kind: 'surface-center' }} open title="Test" onClose={vi.fn()}><input aria-label="Task" /></Dialog>);
 
     // Positive control for the guard below.
     frames.forEach((frame) => { frame(0); });
@@ -96,7 +96,7 @@ describe('Dialog behavior', () => {
 
   it('does not take focus away from a field the reader already clicked into', () => {
     const frames = heldFrames();
-    render(<Dialog open title="Test" onClose={vi.fn()}><input aria-label="Task" /></Dialog>);
+    render(<Dialog origin={{ kind: 'surface-center' }} open title="Test" onClose={vi.fn()}><input aria-label="Task" /></Dialog>);
     const field = screen.getByLabelText('Task');
     field.focus();
 
@@ -108,7 +108,7 @@ describe('Dialog behavior', () => {
   /* The panel is focusable (`tabIndex={-1}`), so a mousedown on chrome makes it the active element inside the opening frame. */
   it('does not treat the panel itself as a place the reader chose', () => {
     const frames = heldFrames();
-    render(<Dialog open title="Test" onClose={vi.fn()}><input aria-label="Task" /></Dialog>);
+    render(<Dialog origin={{ kind: 'surface-center' }} open title="Test" onClose={vi.fn()}><input aria-label="Task" /></Dialog>);
     screen.getByRole('dialog').focus();
     expect(document.activeElement).toBe(screen.getByRole('dialog'));
 
@@ -121,7 +121,7 @@ describe('Dialog behavior', () => {
   it('does not yield to focus stranded on content that has been hidden', () => {
     const frames = heldFrames();
     render(
-      <Dialog open title="Test" onClose={vi.fn()}>
+      <Dialog origin={{ kind: 'surface-center' }} open title="Test" onClose={vi.fn()}>
         <div data-testid="region"><button type="button">Stranded</button></div>
       </Dialog>,
     );
@@ -160,7 +160,7 @@ describe('Dialog behavior', () => {
   it('yields to a focused SVG anchor, which is an Element but not an HTMLElement', () => {
     const frames = heldFrames();
     render(
-      <Dialog open title="Test" onClose={vi.fn()}>
+      <Dialog origin={{ kind: 'surface-center' }} open title="Test" onClose={vi.fn()}>
         <svg><a href="#test" tabIndex={0} aria-label="Chart link"><text>Link</text></a></svg>
         <input aria-label="Task" />
       </Dialog>,
@@ -175,7 +175,7 @@ describe('Dialog behavior', () => {
   });
 
   it('re-queries focusables after dynamically inserting an item', () => {
-    render(<Dialog open title="Test" onClose={vi.fn()}><button>First</button></Dialog>);
+    render(<Dialog origin={{ kind: 'surface-center' }} open title="Test" onClose={vi.fn()}><button>First</button></Dialog>);
     const panel = screen.getByRole('dialog');
     const dynamic = panel.appendChild(document.createElement('button'));
     dynamic.textContent = 'Dynamic'; dynamic.focus();
@@ -186,7 +186,7 @@ describe('Dialog behavior', () => {
   it('keeps original children mounted while a child view is shown', () => {
     const unmounted = vi.fn(); let controller: DialogViewController | null = null;
     function StatefulChild() { useEffect(() => unmounted, []); return <Capture onController={(value) => { controller = value; }}/>; }
-    render(<Dialog open title="Parent" onClose={vi.fn()}><StatefulChild/></Dialog>);
+    render(<Dialog origin={{ kind: 'surface-center' }} open title="Parent" onClose={vi.fn()}><StatefulChild/></Dialog>);
     act(() => { controller!.pushView({ title: 'Child', body: <p>Child body</p> }); });
     expect(screen.getByRole('dialog', { name: 'Child' })).toBeTruthy();
     expect(screen.getByText('Original child')).toBeTruthy();
@@ -196,7 +196,7 @@ describe('Dialog behavior', () => {
   it('hands focus into a child view and restores the control that opened it', () => {
     let controller: DialogViewController | null = null;
     render(
-      <Dialog open title="Parent" onClose={vi.fn()}>
+      <Dialog origin={{ kind: 'surface-center' }} open title="Parent" onClose={vi.fn()}>
         <Capture onController={(value) => { controller = value; }} />
       </Dialog>,
     );
@@ -219,7 +219,7 @@ describe('Dialog behavior', () => {
   it('preserves every opener across a nested child-view focus stack', () => {
     let controller: DialogViewController | null = null;
     render(
-      <Dialog open title="Parent" onClose={vi.fn()}>
+      <Dialog origin={{ kind: 'surface-center' }} open title="Parent" onClose={vi.fn()}>
         <Capture onController={(value) => { controller = value; }} />
       </Dialog>,
     );
@@ -251,7 +251,7 @@ describe('Dialog behavior', () => {
   it('falls back inside the visible view when a popped child opener disappeared', () => {
     let controller: DialogViewController | null = null;
     render(
-      <Dialog open title="Parent" onClose={vi.fn()}>
+      <Dialog origin={{ kind: 'surface-center' }} open title="Parent" onClose={vi.fn()}>
         <Capture onController={(value) => { controller = value; }} />
       </Dialog>,
     );
@@ -279,7 +279,7 @@ describe('Dialog behavior', () => {
   it('falls back when a recorded opener becomes fieldset-disabled while the child is open', () => {
     let controller: DialogViewController | null = null;
     render(
-      <Dialog open title="Parent" onClose={vi.fn()}>
+      <Dialog origin={{ kind: 'surface-center' }} open title="Parent" onClose={vi.fn()}>
         <fieldset aria-label="Base controls">
           <button type="button">Open child</button>
         </fieldset>
@@ -303,7 +303,7 @@ describe('Dialog behavior', () => {
 
   it('uses a disposable LIFO child-view stack', () => {
     let controller: DialogViewController | null = null;
-    render(<Dialog open title="Parent" onClose={vi.fn()}><Capture onController={(value) => { controller = value; }}/></Dialog>);
+    render(<Dialog origin={{ kind: 'surface-center' }} open title="Parent" onClose={vi.fn()}><Capture onController={(value) => { controller = value; }}/></Dialog>);
     let disposeFirst!: () => void; let disposeSecond!: () => void;
     act(() => { disposeFirst = controller!.pushView({ title: 'First child', body: 'First body' }); });
     act(() => { disposeSecond = controller!.pushView({ title: 'Second child', body: 'Second body' }); });
@@ -316,7 +316,7 @@ describe('Dialog behavior', () => {
 
   it('allows an earlier child-view owner to dispose without popping the latest view', () => {
     let controller: DialogViewController | null = null;
-    render(<Dialog open title="Parent" onClose={vi.fn()}><Capture onController={(value) => { controller = value; }}/></Dialog>);
+    render(<Dialog origin={{ kind: 'surface-center' }} open title="Parent" onClose={vi.fn()}><Capture onController={(value) => { controller = value; }}/></Dialog>);
     let disposeFirst!: () => void; let disposeSecond!: () => void;
     act(() => { disposeFirst = controller!.pushView({ title: 'First child', body: 'First body' }); });
     act(() => { disposeSecond = controller!.pushView({ title: 'Second child', body: 'Second body' }); });
@@ -329,7 +329,7 @@ describe('Dialog behavior', () => {
 
   it('traps Tab on the close button when a child view has no focusable controls', () => {
     let controller: DialogViewController | null = null;
-    render(<Dialog open title="Parent" onClose={vi.fn()}><Capture onController={(value) => { controller = value; }}/></Dialog>);
+    render(<Dialog origin={{ kind: 'surface-center' }} open title="Parent" onClose={vi.fn()}><Capture onController={(value) => { controller = value; }}/></Dialog>);
     screen.getByRole('button', { name: 'Original child' }).focus();
     act(() => { controller!.pushView({ title: 'Child', body: <p>No controls</p> }); });
     const close = screen.getByRole('button', { name: 'Close' });
@@ -341,14 +341,14 @@ describe('Dialog behavior', () => {
 
   it('uses a child view JSX title as the dialog accessible name', () => {
     let controller: DialogViewController | null = null;
-    render(<Dialog open title="Parent" onClose={vi.fn()}><Capture onController={(value) => { controller = value; }}/></Dialog>);
+    render(<Dialog origin={{ kind: 'surface-center' }} open title="Parent" onClose={vi.fn()}><Capture onController={(value) => { controller = value; }}/></Dialog>);
     act(() => { controller!.pushView({ title: <><strong>Choose</strong> directory</>, body: 'Body' }); });
     expect(screen.getByRole('dialog', { name: 'Choose directory' })).toBeTruthy();
   });
 
   it('closes the current child view before closing the parent dialog', () => {
     const onClose = vi.fn(); let controller: DialogViewController | null = null;
-    render(<Dialog open title="Parent" onClose={onClose}><Capture onController={(value) => { controller = value; }}/></Dialog>);
+    render(<Dialog origin={{ kind: 'surface-center' }} open title="Parent" onClose={onClose}><Capture onController={(value) => { controller = value; }}/></Dialog>);
     act(() => { controller!.pushView({ title: 'Child', body: 'Child body' }); });
     fireEvent.click(screen.getByRole('button', { name: 'Close' }));
     expect(screen.getByRole('dialog', { name: 'Parent' })).toBeTruthy();
@@ -359,7 +359,7 @@ describe('Dialog behavior', () => {
 
   it('ignores an already-handled bubbling Escape', () => {
     const onClose = vi.fn();
-    render(<Dialog open title="Parent" onClose={onClose}><button onKeyDown={(event) => event.preventDefault()}>Nested control</button></Dialog>);
+    render(<Dialog origin={{ kind: 'surface-center' }} open title="Parent" onClose={onClose}><button onKeyDown={(event) => event.preventDefault()}>Nested control</button></Dialog>);
     fireEvent.keyDown(screen.getByRole('button', { name: 'Nested control' }), { key: 'Escape' });
     expect(onClose).not.toHaveBeenCalled();
   });
@@ -369,7 +369,7 @@ describe('Dialog behavior', () => {
     const pageTitle = document.body.appendChild(document.createElement('h1'));
     pageTitle.tabIndex = -1; pageTitle.dataset.ncPageTitle = '';
     opener.focus();
-    const result = render(<Dialog open title="Parent" onClose={vi.fn()} />);
+    const result = render(<Dialog origin={{ kind: 'surface-center' }} open title="Parent" onClose={vi.fn()} />);
     result.unmount();
     expect(document.activeElement).toBe(opener);
     opener.remove(); pageTitle.remove();
@@ -380,7 +380,7 @@ describe('Dialog behavior', () => {
     const pageTitle = document.body.appendChild(document.createElement('h1'));
     pageTitle.tabIndex = -1; pageTitle.dataset.ncPageTitle = '';
     opener.focus();
-    const result = render(<Dialog open title="Parent" onClose={vi.fn()} />);
+    const result = render(<Dialog origin={{ kind: 'surface-center' }} open title="Parent" onClose={vi.fn()} />);
     opener.remove();
     result.unmount();
     expect(document.activeElement).toBe(pageTitle);

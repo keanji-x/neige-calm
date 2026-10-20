@@ -11,7 +11,7 @@ afterEach(cleanup);
 it('renders both pills and both actions as one compact borderless row', async () => {
   await page.viewport(800, 600);
   render(
-    <Dialog open title="New area" onClose={vi.fn()}>
+    <Dialog origin={{ kind: 'surface-center' }} open title="New area" onClose={vi.fn()}>
       <AreaEditorForm
         initial={{ name: '', defaultTemplateId: null, defaultCwd: null }}
         submitting={false}
@@ -50,7 +50,7 @@ it('renders both pills and both actions as one compact borderless row', async ()
 it('wraps safely at phone width while keeping Cancel and Save together', async () => {
   await page.viewport(320, 640);
   render(
-    <Dialog open title="Edit area" onClose={vi.fn()}>
+    <Dialog origin={{ kind: 'surface-center' }} open title="Edit area" onClose={vi.fn()}>
       <AreaEditorForm
         initial={{
           name: 'Work',

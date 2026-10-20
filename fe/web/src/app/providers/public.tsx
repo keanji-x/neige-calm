@@ -102,7 +102,7 @@ export function ServerCompatGate({ children: routeContent, runtime, client, rend
 }
 
 export function RefreshRequiredOverlay({ server, reload }: { server: ServerVersionInfo; reload: () => void }) {
-  return <Dialog open title="Please refresh" onClose={reload} hideTitleRow>
+  return <Dialog origin={{ kind: 'surface-center' }} open title="Please refresh" onClose={reload} hideTitleRow>
     <section aria-label="Please refresh">
       <h1>Please refresh</h1><p>A new server requires compat v{server.minWebCompatVersion}; this browser provides compat v{WEB_COMPAT_VERSION}.</p>
       <button type="button" onClick={reload}>Refresh now</button>

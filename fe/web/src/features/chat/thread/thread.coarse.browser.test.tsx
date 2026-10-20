@@ -31,10 +31,10 @@ function railTurns(count: number): ConversationTurn[] {
   ]);
 }
 
-/** `--space-9` + `--space-11`, from `.drawer`'s `inset-block`: how much taller than its pane the host has to be for the seam to come out at exactly `paneHeight`. */
+/** `--space-9` + `--space-11`, from the layout frames' `inset-block`: how much taller than its pane the host has to be for the seam to come out at exactly `paneHeight`. */
 const DRAWER_BLOCK_INSETS = 20 + 28;
 
-/** The drawer as four boxes carrying `ui/drawer`'s own classes, so the rail is portalled into a real seam; a hand-rolled pane renders no rail at all. */
+/** The drawer with independent layout frames carrying `ui/drawer`'s own classes, so the rail is portalled into a real seam; a hand-rolled pane renders no rail at all. */
 function RailPane({ turns, paneHeight = 400 }: {
   turns: readonly ConversationTurn[];
   paneHeight?: number;
@@ -47,21 +47,25 @@ function RailPane({ turns, paneHeight = 400 }: {
         containerType: 'inline-size',
         blockSize: paneHeight + DRAWER_BLOCK_INSETS,
         inlineSize: 380,
-        ['--panel-span' as string]: '300px',
+        ['--conversation-span' as string]: '300px',
       }}
     >
-      <div className={drawerStyles.drawer} data-nc-drawer="" style={{ animation: 'none', transition: 'none' }}>
-        <div
-          className={drawerStyles.scroll}
-          data-nc-drawer-scroll=""
-          style={{ blockSize: paneHeight, flex: 'none' }}
-        >
-          <div className={drawerStyles.bodyInner} data-nc-rail-pane-inner="">
-            <ChatThread hasPendingMessages={false} canContinue={false} cards={{}} stalled={false} conversation={railConversation()} turns={turns} />
+      <div className={drawerStyles.positioner} data-nc-drawer-frame="">
+        <div className={drawerStyles.drawer} data-nc-drawer="" style={{ animation: 'none', transition: 'none' }}>
+          <div
+            className={drawerStyles.scroll}
+            data-nc-drawer-scroll=""
+            style={{ blockSize: paneHeight, flex: 'none' }}
+          >
+            <div className={drawerStyles.bodyInner} data-nc-rail-pane-inner="">
+              <ChatThread hasPendingMessages={false} canContinue={false} cards={{}} stalled={false} conversation={railConversation()} turns={turns} />
+            </div>
           </div>
         </div>
       </div>
-      <div className={drawerStyles.seam} data-nc-drawer-seam="" style={{ animation: 'none', transition: 'none' }} />
+      <div className={drawerStyles.seamPositioner} data-nc-drawer-frame="">
+        <div className={drawerStyles.seam} data-nc-drawer-seam="" style={{ animation: 'none', transition: 'none' }} />
+      </div>
     </div>
   );
 }

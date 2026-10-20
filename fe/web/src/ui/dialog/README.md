@@ -12,6 +12,10 @@ The panel alone owns `role="dialog"`, `aria-modal` and an accessible name from i
 
 Consumers locate it by dialog role and accessible name. DOM contract tests assert the rendered ARIA surface, retained child content, dynamic focus trapping, exact inert restoration, detached-trigger handling, nested Escape ownership, stack disposal, and the load-bearing inert-before-restore cleanup order so implementation-preserving refactors remain free.
 
-## Deliberately not done
+## Motion and source contract
 
-This slice freezes the props surface and behavioral contract, not visual styling. The class names rendered here are placeholders: their CSS Modules and global-class ownership belong to §13 sequence 8 (the styles layer, global-class manifest, and unlayered-exception manifest) and the implementation phase. The current rendering is therefore intentionally not visually finished—for example, Dialog does not yet provide fixed positioning, an overlay backdrop, or stacking—and that is not a defect in this slice.
+`origin` is required on Dialog and ConfirmDialog: `DialogOrigin` excludes paired edges from Motion's `LiftOrigin`. Callers declare a stable unpressed anchor ref with an explicit center fallback, or an explicit surface center for navigation/system intents without a public source. Confirm forwards it unchanged. The declaration's kind/ref locks for one open presentation; initial focus is independent. Motion alone tracks coordinates and freezes detached, hidden or replaced sources; a first unavailable source stays centered for that cycle.
+
+An unanimated CSS Module frame owns final width and height, while its single paint panel uses `useSurfacePresence` lift. Layout/viewport changes rebase through the existing Motion owner; child push/pop keeps the same mounted panel and does not acquire a second entrance. `present=open`: closing cancels effects and unmounts immediately, with no business or resource wait.
+
+Escape uses public Layer dismissal/depth, including IME and nested native layers. The legacy escape marker remains a lazy interoperability fence. Body inert cleanup still precedes focus restoration. Global registered chrome uses existing style tokens; the new local frame requires no manifest entry or caller registry. Ordinary callers edit only their intent/callback and tests, and incur one local stable box/ref, without idle timers.

@@ -65,8 +65,9 @@
   }
 
   .floatingAction { position: fixed; inset-inline-end: var(--space-4); inset-block-end: calc(var(--space-4) + env(safe-area-inset-bottom)); display: grid; place-items: center; inline-size: var(--control-h-touch); block-size: var(--control-h-touch); z-index: var(--z-sticky); cursor: pointer; }
+  .floatingAction > button { inline-size: 100%; block-size: 100%; display: grid; place-items: center; }
   .floatingAction svg { inline-size: var(--glyph-xl); block-size: var(--glyph-xl); }
-  .floatingAction:disabled { opacity: 0.5; cursor: default; }
+  .floatingAction:has(:disabled) { opacity: 0.5; cursor: default; }
 
   .navigationHeader { padding-block-end: 0; }
   .navigationHeader :is(h1, h2) { font-size: var(--font-step-3-size); font-weight: var(--weight-medium); line-height: var(--font-step-3-line); }

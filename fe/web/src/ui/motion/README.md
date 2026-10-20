@@ -16,7 +16,12 @@ The library trajectory is sampled once at 10ms rendering precision and played th
 
 `SizeMotion` measures an intrinsic flow root that contains margins/floats. Mode changes animate real height with no text scaling, unmount or focus movement. Ordinary typing/updates and initial mount are immediate; late intrinsic updates retarget while moving. Settlement restores automatic height. Reduced motion and unmount release clipping and effects. Only a declared mode change reads old geometry in React's pre-mutation snapshot and new geometry after the commit. This narrow class lifecycle is required for a real before/after capture; ordinary child updates do not synchronously measure or keep a height cache. ResizeObserver retargets only an active transition. See the [React snapshot contract](https://react.dev/reference/react/Component#getsnapshotbeforeupdate). Children must not derive their height as a percentage of the animated host. Keep floating/portalled overlays outside transient clipping.
 
-`useSpringPresence` gives a declared single surface or pair one progress trajectory; the owner supplies its geometric paint mapping. Dialog and the paired Drawer/seam use `presenceDepthFrame`: restrained depth and opacity, receding into the page on exit and returning to rest on entry. Dialog retains immediate dismissal. They keep live content and velocity through reversal. Drawer geometry places both local transform origins at the same physical card/seam edge midpoint (mirrored for RTL), including stacked cards. Only the current playback may finish dismissal. Compact pages/reduced motion settle directly. Native-child transition events do not own the spring lifecycle.
+`useSpringPresence` supplies scalar presence for mobile navigation and Tracks page
+transitions. Dialog and ConfirmDialog use `useSurfacePresence` single lift with a
+required explicit `origin` and `present=open`: dismissal cancels effects and
+unmounts immediately. Drawer uses `useSurfacePresence` with the paired-only
+`edge-reveal` geometry below. Compact pages/reduced motion settle directly;
+native-child transition events never own the spring lifecycle.
 
 ## Press feedback
 
@@ -63,8 +68,8 @@ reappearance reverses the same item, while reduced motion settles without waitin
 
 `geometry.ts` and `useSurfacePresence` supply typed single/paired lift parts with
 explicit final unanimated frames and stable anchor/center/paired-edge origins.
-Menu and HoverPreview consume this contract; the existing Dialog/Drawer adapters
-remain on `useSpringPresence` pending their own migration. Each part projects the
+Menu and HoverPreview consume lift; Dialog and ConfirmDialog consume single lift;
+Drawer consumes the paired-only edge reveal. Each part projects the
 same viewport source into its local fractional positive scale/translation frame.
 The shared progress and per-part fixed x/y compensation channels reuse
 `springTrajectory`, native
@@ -74,6 +79,18 @@ own old/new frame; primary compensation is never copied onto its peer. All parts
 retain one progress, playback identity and explicit native clock, with no second
 physics model. A newly declared peer joins the current shared progress/velocity
 with zero compensation because it has no earlier paint contribution.
+
+`edge-reveal` requires paired parts and a logical paired-edge origin. Its primary
+final frame defines center C and logical edge O (including RTL). Using the same
+camera scale s and sink, viewport displacement is D=(1-s)*(O-C)+(0,sink).
+Both parts have a unit linear matrix: each divides that shared viewport D by its
+own frame's positive scales. Body text and inputs never scale. Geometry owns one
+displacement/analytical-derivative map for both keyframes and per-part rebasing;
+old `liftKeyframe`/`rebaseLift` retain their existing lift contract. The snapshot
+includes the actual map and primary center as well as every frame, so same-node
+map changes cannot disappear in equality. Rebase preserves each local motion
+contribution and derivative, while ordinary layout displacement remains visible.
+No distance multiplier, extra clock, solver, polling or global observation is added.
 
 The layout owner declares a final frame from an unanimated positioner. Source
 snapshots freeze after detach/hidden/ref replacement until full exit; first missing

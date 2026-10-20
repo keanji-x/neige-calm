@@ -28,7 +28,7 @@ describe('DirectoryField integration', () => {
   });
 
   it('uses the owning Dialog child-view path without nesting a dialog', async () => {
-    render(<Dialog open title="Settings" onClose={vi.fn()}><DirectoryField value="/work" onChange={vi.fn()} listDirectory={listDirectory}/></Dialog>);
+    render(<Dialog origin={{ kind: 'surface-center' }} open title="Settings" onClose={vi.fn()}><DirectoryField value="/work" onChange={vi.fn()} listDirectory={listDirectory}/></Dialog>);
     fireEvent.click(screen.getByRole('button', { name: 'work' }));
     expect(await screen.findByRole('dialog', { name: 'Choose a directory' })).toBeTruthy();
     expect(screen.getAllByRole('dialog')).toHaveLength(1);

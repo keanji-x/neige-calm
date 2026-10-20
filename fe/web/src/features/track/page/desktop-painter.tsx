@@ -1,5 +1,7 @@
 import { EmptyState } from '../../../ui/empty-state/public.tsx';
 import { inventoryEmptyContent } from './empty-content.tsx';
+import { useRef } from 'react';
+import type { DialogOrigin } from '../../../ui/dialog/public.tsx';
 // The desktop track panel, painted from `core/view`'s panel view model.
 // A row or empty leaf is pending until its module says which module it lands in; a module leaf is finished.
 
@@ -41,7 +43,7 @@ export type DesktopPainterDeps = Readonly<{
   suppressEmpty?: boolean;
   onOpenCard?: (cardId: string) => void;
   onOpenTask?: (blockId: string) => void;
-  onDeleteCard?: (cardId: string) => void;
+  onDeleteCard?: (cardId: string, origin: DialogOrigin) => void;
   onSetWorkbench?: (cardId: string, inWorkbench: boolean) => void;
   /** The Cards module head's `+`, composed by `app/router`; travels as an opaque node. */
   cardsAction?: ReactNode;
@@ -138,7 +140,8 @@ function taskRow(row: PanelRow, deps: DesktopPainterDeps): ReactNode {
 }
 
 /** Shared contextual task/tool row; source and execution destinations stay distinct. */
-function contextRow(row: PanelRow, deps: DesktopPainterDeps): ReactNode {
+function ContextRow({ row, deps }: { row: PanelRow; deps: DesktopPainterDeps }) {
+  const sourceRef = useRef<HTMLLIElement | null>(null);
   const reveal = control(row, 'reveal-block');
   const open = control(row, 'open-card');
   const primary = reveal ?? open;
@@ -148,7 +151,7 @@ function contextRow(row: PanelRow, deps: DesktopPainterDeps): ReactNode {
   const statusLabel = progressStatusLabel(row);
   const attention = !isTask && (row.activity === 'attention' || row.activity === 'failed') ? activityLabelOf(row.activity) : null;
   const detail = [row.title, row.kind, row.status?.phrase, executionActivityLabelOf(row.activity)].filter(Boolean).join(' · ');
-  return <li key={row.id} title={detail} {...mark(MARKER.row, row.id)}>
+  return <li ref={sourceRef} key={row.id} title={detail} {...mark(MARKER.row, row.id)}>
     <ContextItem icon={icon} label={<span className={row.badges.some(badge => badge.struck) ? styles.taskWithdrawn : undefined}
         {...mark(MARKER.field, FIELD.title)}>{row.title}</span>}
       trailing={statusLabel === null && attention === null ? undefined : <ListText tone="secondary">
@@ -168,7 +171,7 @@ function contextRow(row: PanelRow, deps: DesktopPainterDeps): ReactNode {
         const text = action.label ?? (action.kind === 'open-card' ? 'View execution' : 'Remove tool');
         return <DropdownMenuItem key={action.kind} label={<span {...mark(MARKER.action, action.kind)} {...wording(target)}>{text}</span>}
           variant={action.kind === 'delete-card' ? 'destructive' : 'default'}
-          onClick={() => action.kind === 'delete-card' ? deps.onDeleteCard?.(target.id)
+          onClick={() => action.kind === 'delete-card' ? deps.onDeleteCard?.(target.id, { kind: 'anchor', anchor: { ref: sourceRef }, unavailable: 'surface-center' })
             : action.kind === 'set-workbench' ? deps.onSetWorkbench?.(target.id, action.inWorkbench)
             : deps.onOpenCard?.(target.id)} />;
       })} />
@@ -194,7 +197,7 @@ export function makeDesktopPainter(deps: DesktopPainterDeps): RowPainter<Desktop
       slot: 'row',
       needsAttention: key => inventoryNeedsAttention(row, key),
       group: (key) => panelRowGroup(row, key),
-      paint: (moduleKey) => moduleKey === 'tasks' ? taskRow(row, deps) : contextRow(row, deps),
+      paint: (moduleKey) => moduleKey === 'tasks' ? taskRow(row, deps) : <ContextRow key={row.id} row={row} deps={deps} />,
     }),
 
     empty: (text) => ({

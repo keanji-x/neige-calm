@@ -14,8 +14,8 @@ function FakeConsumer() {
   return <>
     <button {...roving.getItemProps(0)}>Focusable</button>
     <Menu items={[{ label: 'Create', onSelect: vi.fn() }]} trigger={(props: MenuTriggerProps) => <button {...props}>Open</button>}/>
-    <Dialog open title="Primitive consumer" onClose={vi.fn()}><button onClick={() => view?.pushView({ title: 'Child', body: 'Body' })}>Push</button></Dialog>
-    <ConfirmDialog open title="Confirm action" onConfirm={vi.fn()} onCancel={vi.fn()}/>
+    <Dialog origin={{ kind: 'surface-center' }} open title="Primitive consumer" onClose={vi.fn()}><button onClick={() => view?.pushView({ title: 'Child', body: 'Body' })}>Push</button></Dialog>
+    <ConfirmDialog origin={{ kind: 'surface-center' }} open title="Confirm action" onConfirm={vi.fn()} onCancel={vi.fn()}/>
     <DirectoryBrowser listDirectory={listDirectory} initialPath={null} onCancel={vi.fn()} onSelect={vi.fn()}/>
     <DirectoryField listDirectory={listDirectory} value="" onChange={vi.fn()}/>
   </>;

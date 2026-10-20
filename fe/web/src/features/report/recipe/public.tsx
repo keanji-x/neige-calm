@@ -6,7 +6,7 @@ import { EmptyState } from '../../../ui/empty-state/public.tsx';
 import { Banner } from '@astryxdesign/core/Banner';
 import { Button } from '@astryxdesign/core/Button';
 import { TextInput } from '@astryxdesign/core/TextInput';
-import { useId } from 'react';
+import { useId, useRef } from 'react';
 
 import { DELETE_FAILURES, DELETE_TEXT, writeFailureText } from '../../../../../core/domain/failure-class.ts';
 import type { TrackRecipe } from '../../../../../core/domain/track.ts';
@@ -161,6 +161,7 @@ export function RecipeEditor({ recipe, theme, onWrite, onDelete, onClose, onCrea
   /* The draft whose create is unconfirmed: Save stays off, and Try again resends it, whatever was typed since. */
   const [unconfirmed, setUnconfirmed] = useState<RecipeDraft | null>(null);
   /* Through the shared confirm/feedback primitive rather than `onDelete().then(onClose)`: a rejected delete has to be said. */
+  const deleteRef = useRef<HTMLSpanElement | null>(null);
   const deletion = useDeleteConfirm(async () => { await onDelete?.(); }, writeFailureText(DELETE_FAILURES, DELETE_TEXT), onClose);
 
   async function save(draft: RecipeDraft = { title, body, if_revision: current?.revision ?? null }): Promise<void> {
@@ -227,13 +228,13 @@ export function RecipeEditor({ recipe, theme, onWrite, onDelete, onClose, onCrea
               <>
                 <Button type="button" variant="primary" size="sm" label="Edit" onClick={() => setEditing(true)} />
                 {onDelete !== null && (
-                  <Button
+                  <span ref={deleteRef} style={{ display: 'inline-flex' }}><Button
                     type="button"
                     variant="secondary"
                     size="sm"
                     label="Delete"
-                    onClick={() => deletion.request(current?.id ?? '')}
-                  />
+                    onClick={() => deletion.request(current?.id ?? '', { kind: 'anchor', anchor: { ref: deleteRef }, unavailable: 'surface-center' })}
+                  /></span>
                 )}
                 <Button type="button" variant="ghost" size="sm" label="All recipes" onClick={onClose} />
               </>
@@ -284,7 +285,7 @@ export function RecipeEditor({ recipe, theme, onWrite, onDelete, onClose, onCrea
         )}
 
       {onDelete !== null && (
-        <ConfirmDialog
+        <ConfirmDialog origin={deletion.origin}
           open={deletion.open}
           title={DELETE_TITLE}
           description={DELETE_DESCRIPTION}

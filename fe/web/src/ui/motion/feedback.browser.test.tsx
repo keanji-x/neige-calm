@@ -11,7 +11,7 @@ import { readMotionTransition } from './transition.ts';
 afterEach(async () => { cleanup(); await commands.emulateReducedMotion(false); });
 it('shares feedback timing on actual confirmation controls and page header chrome', async () => {
   const cancel = vi.fn();
-  render(<><PageHeader title="Feedback" /><ConfirmDialog open title="Confirm feedback" onConfirm={() => {}} onCancel={cancel} /></>);
+  render(<><PageHeader title="Feedback" /><ConfirmDialog origin={{ kind: 'surface-center' }} open title="Confirm feedback" onConfirm={() => {}} onCancel={cancel} /></>);
   const button = screen.getByRole('button', { name: 'Cancel' });
   const feedback = readMotionTransition(button, 'feedback');
   const style = getComputedStyle(button);
@@ -26,7 +26,7 @@ it('shares feedback timing on actual confirmation controls and page header chrom
 it('keeps confirmation actions immediate under reduced motion', async () => {
   await commands.emulateReducedMotion(true);
   const cancel = vi.fn();
-  render(<ConfirmDialog open title="Reduced feedback" onConfirm={() => {}} onCancel={cancel} />);
+  render(<ConfirmDialog origin={{ kind: 'surface-center' }} open title="Reduced feedback" onConfirm={() => {}} onCancel={cancel} />);
   const button = screen.getByRole('button', { name: 'Cancel' });
   expect(parseFloat(getComputedStyle(button).transitionDuration)).toBeLessThan(.001);
   await userEvent.click(button);

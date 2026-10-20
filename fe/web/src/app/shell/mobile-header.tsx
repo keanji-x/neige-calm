@@ -1,3 +1,4 @@
+import type { DialogOrigin } from '../../ui/dialog/public.tsx';
 import { floatingControlClassName } from '../../ui/floating-control/public.ts';
 import { Icon } from '../../ui/icon/public.tsx';
 import { type RefCallback } from 'react';
@@ -16,7 +17,7 @@ export function MobileWorkspaceHeader({
   navigationOpen: boolean;
   onOpenNavigation: () => void;
   onSelectArea: (areaId: string) => void;
-  onCreateArea: () => void;
+  onCreateArea: (origin: DialogOrigin) => void;
   actionsHostRef: RefCallback<HTMLDivElement>;
   titleHostRef: RefCallback<HTMLDivElement>;
 }>) {

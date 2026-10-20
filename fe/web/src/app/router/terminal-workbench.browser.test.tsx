@@ -229,10 +229,12 @@ it.each([false, true])('resizes the independent terminal entry and preserves Cha
   await waitFor(() => expect(screen.queryByRole('complementary', { name: 'Main discussion' })).toBeNull());
   expect(width()).toBeCloseTo(resized, 0);
   expect(document.querySelectorAll('[role="separator"][aria-label="Resize conversation"]')).toHaveLength(1);
+  // Hide is an immediate action even while the inaccessible Chat paint exits.
   await page.getByRole('button', { name: 'Hide terminal' }).click();
   expect(screen.queryByRole('separator', { name: 'Resize conversation' })).toBeNull();
-  expect(document.querySelector('[data-nc-drawer-resizable]')).toBeNull();
   expect(sockets[0].readyState).toBe(1);
+  // The host marker belongs to retained paint; the last input edge is already gone.
+  await expect.poll(() => document.querySelector('[data-nc-drawer-resizable]')).toBeNull();
 });
 
 it.each(['light', 'dark'] as const)('shares the Chat header geometry and exposes deletion on hover and keyboard focus in %s', async theme => {

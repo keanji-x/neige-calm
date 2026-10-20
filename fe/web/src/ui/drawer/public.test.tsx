@@ -38,8 +38,11 @@ describe('Drawer', () => {
 
   it('stays mounted through the retraction after open goes false', () => {
     const { rerender } = open();
+    const panel = screen.getByRole('complementary');
     rerender(<Drawer open={false} title="t" onClose={vi.fn()}><p>body</p></Drawer>);
-    expect(screen.getByRole('complementary')).toBeTruthy();
+    expect(panel.isConnected).toBe(true);
+    expect(panel.hasAttribute('inert')).toBe(true);
+    expect(screen.queryByRole('complementary')).toBeNull();
   });
 
   /* The caller drops its selection the instant it asks for a close; a drawer that re-read its props on the way out would slide away blank. */
@@ -47,9 +50,10 @@ describe('Drawer', () => {
     const { rerender } = open({ title: 'Why the resolver drops a hop', children: <p>the transcript</p> });
     rerender(<Drawer open={false} title="" onClose={vi.fn()}>{null}</Drawer>);
     expect(screen.getByText('the transcript')).toBeTruthy();
-    /* The last frame's title is held on the container's accessible name, and `getByRole` only matches the retained name. */
-    expect(screen.getByRole('complementary', { name: 'Why the resolver drops a hop' })).toBeTruthy();
-    expect(screen.getByRole('heading', { name: 'Why the resolver drops a hop' })).toBeTruthy();
+    // Retained paint keeps its title, but it is no longer an accessible surface.
+    expect(screen.getByText('Why the resolver drops a hop')).toBeTruthy();
+    expect(screen.queryByRole('complementary')).toBeNull();
+    expect(screen.queryByRole('heading', { name: 'Why the resolver drops a hop' })).toBeNull();
   });
 
   /* The page header's delete X sits 58px above this control in the same column; an X on both would mean "put away" and "destroy" a flick apart. */
@@ -172,7 +176,7 @@ describe('Drawer', () => {
     function Layers() {
       const [dialogOpen, setDialogOpen] = useState(true);
       return <><Drawer open title="Drawer" onClose={onDrawerClose}>body</Drawer>
-        <Dialog open={dialogOpen} title="Confirm" onClose={() => setDialogOpen(false)} /></>;
+        <Dialog origin={{ kind: 'surface-center' }} open={dialogOpen} title="Confirm" onClose={() => setDialogOpen(false)} /></>;
     }
     render(<Layers />);
     fireEvent.keyDown(document, { key: 'Escape' });
@@ -182,7 +186,7 @@ describe('Drawer', () => {
 
   it('closes the drawer when it is above a dialog', () => {
     const onDrawerClose = vi.fn();
-    render(<Dialog open title="Confirm" onClose={vi.fn()} />);
+    render(<Dialog origin={{ kind: 'surface-center' }} open title="Confirm" onClose={vi.fn()} />);
     open({ title: 'Drawer', onClose: onDrawerClose });
     fireEvent.keyDown(document, { key: 'Escape' });
     expect(onDrawerClose).toHaveBeenCalledOnce();
@@ -221,8 +225,10 @@ describe('Drawer', () => {
 
   it('leaves the Escape layer stack while its closing frame retracts', () => {
     const view = open();
+    const panel = screen.getByRole('complementary');
     view.rerender(<Drawer open={false} title="t" onClose={vi.fn()}><p>body</p></Drawer>);
-    expect(screen.getByRole('complementary').hasAttribute('data-nc-escape-layer')).toBe(false);
+    expect(panel.hasAttribute('data-nc-escape-layer')).toBe(false);
+    expect(screen.queryByRole('complementary')).toBeNull();
   });
 
   it('falls back to the page title when the opener has been removed', () => {

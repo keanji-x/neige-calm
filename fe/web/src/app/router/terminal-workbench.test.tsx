@@ -322,12 +322,18 @@ it('keeps the Track conversation final frame during desktop close', async () => 
   setupWorkbench();
   fireEvent.click(await screen.findByRole('button', { name: /^New conversation$/u }));
   const drawer = await screen.findByRole('complementary', { name: 'Untitled' });
+  const heading = within(drawer).getByRole('heading', { name: 'Untitled' });
   expect(drawer.textContent).toContain('聊聊你想做什么');
   fireEvent.click(screen.getByRole('button', { name: /^Close conversation$/u }));
   expect(drawer.hasAttribute('data-nc-drawer')).toBe(true);
   expect(drawer.hidden).toBe(false);
   expect(drawer.textContent).toContain('聊聊你想做什么');
-  expect(within(drawer).getByRole('heading', { name: 'Untitled' })).toBeTruthy();
+  expect(drawer.contains(heading)).toBe(true);
+  expect(heading.textContent).toBe('Untitled');
+  expect(drawer.hasAttribute('inert')).toBe(true);
+  expect(drawer.getAttribute('aria-hidden')).toBe('true');
+  expect(screen.queryByRole('complementary', { name: 'Untitled' })).toBeNull();
+  expect(screen.queryByRole('heading', { name: 'Untitled' })).toBeNull();
 });
 
 

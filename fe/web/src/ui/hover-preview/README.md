@@ -39,6 +39,10 @@ participation immediately; inert/aria-hidden exit paint may remain until shared
 presence completes. The outer positioner also becomes inert immediately so its
 retained box cannot intercept a pointer intended for the underlying control.
 ArrowDown during retained exit schedules focus for the interactive open commit.
+Returning from a portal card to its own actual trigger is an internal pointer
+transfer, so it does not start the leave deadline. React's logical portal ancestry
+may suppress another trigger enter on that transfer. Leaving both surfaces keeps
+the existing leave/travel delays and admission guards.
 Nested previews use a primitive-owned typed interaction port across portals.
 Each child registers only at its nearest declared parent's stable trigger endpoint
 by its Neige-owned id; registration releases on unmount. Every parent close

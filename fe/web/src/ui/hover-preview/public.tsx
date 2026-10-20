@@ -477,7 +477,11 @@ export function HoverPreview({ title, trigger, children, getReadingSurface, getA
       <div ref={attachActual} className={styles.actual} style={{ height: Math.min(actualHeight, placement.maxHeight), clipPath: 'inset(50%)' }}>
       <div ref={attachCard} className={`${styles.card} ${placement.maxHeight < PREVIEW_MIN_HEIGHT ? styles.compact : ''}`} role="dialog" data-nc-preview-owner={`${id}-owner`}
       aria-label={`Preview: ${title}`} id={id} inert aria-hidden="true"
-      onPointerEnter={() => { if (intent.current === 'open') enter(); }} onPointerLeave={() => { if (admitted()) leave(); }}
+      onPointerEnter={() => { if (intent.current === 'open') enter(); }} onPointerLeave={event => {
+        // The portal is a logical child of the trigger span. Returning to that
+        // ancestor does not deliver another trigger enter to cancel a leave.
+        if (admitted() && !(event.relatedTarget instanceof Node && anchor.current?.contains(event.relatedTarget))) leave();
+      }}
       onFocus={() => { if (intent.current === 'open') enter(); }} onBlur={(event) => {
         if (!admitted()) return;
         if (event.relatedTarget instanceof Node && card.current?.contains(event.relatedTarget)) return;

@@ -1,4 +1,5 @@
 import { historicalConversationPage, conversationCardId, historicalConversationRun } from './conversation-read-data.ts';
+import { drawerSeamAround } from '../../ui/drawer/public.tsx';
 import { initialReceiptFor } from './initial-input-fixture.ts';
 import { prepareReportDocument } from '../../features/report/document/preparation.ts';
 import { WEB_COMPAT_VERSION } from '../providers/public.tsx';
@@ -173,7 +174,7 @@ it('runs /side through the production router and shows two independent desktop c
   await field.fill('Unsent main question');
   await side.getByRole('combobox', { name: 'Message' }).fill('Unsent side question');
   const sideElement = await side.findElement();
-  const seam = sideElement.parentElement!.querySelector<HTMLElement>('[data-nc-drawer-seam]')!;
+  const seam = drawerSeamAround(sideElement)!;
   expect(seam.getBoundingClientRect().left).toBeGreaterThanOrEqual(sideElement.getBoundingClientRect().right);
   const dot = seam.querySelector<HTMLButtonElement>('button')!;
   const dotBox = dot.getBoundingClientRect();

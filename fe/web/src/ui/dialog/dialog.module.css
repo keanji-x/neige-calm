@@ -1,0 +1,16 @@
+@layer ui {
+  .frame {
+    display: flex;
+    min-block-size: 0;
+    inline-size: min(var(--measure-form), calc(100vw - var(--space-6)));
+  }
+
+  .wide {
+    inline-size: min(var(--measure-page), calc(100vw - var(--space-6)));
+  }
+
+  .frame > .panel {
+    inline-size: 100%;
+    max-block-size: inherit;
+  }
+}

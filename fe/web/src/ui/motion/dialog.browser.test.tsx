@@ -12,7 +12,7 @@ function Scene() {
   const [open, setOpen] = useState(false);
   const input = useRef<HTMLInputElement>(null);
   return <><button type="button" onClick={() => setOpen(true)}>Open dialog</button>
-    <Dialog open={open} title="Motion dialog" initialFocusRef={input} onClose={() => setOpen(false)}>
+    <Dialog origin={{ kind: 'surface-center' }} open={open} title="Motion dialog" initialFocusRef={input} onClose={() => setOpen(false)}>
       <label>Task name<input ref={input} defaultValue="Draft a note" /></label>
       <button type="button" onClick={() => setOpen(false)}>Done</button>
     </Dialog></>;
@@ -30,9 +30,9 @@ it('uses restrained shared depth for text surfaces and preserves backdrop feedba
   expect(effect.getTiming().easing).toBe('linear');
   const frames = panel.getAnimations().flatMap(animation => (animation.effect as KeyframeEffect).getKeyframes());
   expect(frames.some(frame => frame.scale !== undefined)).toBe(false);
-  expect(frames.some(frame => String(frame.transform).includes('scale('))).toBe(true);
-  expect(frames[0].transform).toContain('translateY(0.56px)');
-  const backdrop = panel.parentElement!;
+  expect(frames.some(frame => new DOMMatrix(String(frame.transform)).a < 1)).toBe(true);
+  expect(new DOMMatrix(String(frames[0].transform)).a).toBeLessThan(1);
+  const backdrop = panel.parentElement!.parentElement!;
   expect(backdrop.getAnimations().length).toBeGreaterThan(0);
   expect(parseFloat(getComputedStyle(backdrop).animationDuration)).toBe(readMotionTransition(backdrop, 'feedback').duration);
 });

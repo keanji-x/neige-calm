@@ -1,5 +1,6 @@
 import { NO_ISOLATION_LABEL, NO_ISOLATION_EXPLANATION } from '../../../../../core/domain/workspace-isolation.ts';
 import { ExplanationBadge } from '../../../ui/explanation-badge/public.tsx';
+import type { DialogOrigin } from '../../../ui/dialog/public.tsx';
 import { ContextAction, ContextFrame, ContextGroup } from '../../../ui/panel-card/context.tsx';
 import { EmptyState } from '../../../ui/empty-state/public.tsx';
 import { TrackTitle } from '../title/public.tsx';
@@ -137,7 +138,7 @@ export type TrackPageProps = Readonly<{
   recentFiles?: ReactNode;
   onOpenCard?: (cardId: string) => void;
   /** Supplying this reveals a delete on every row the kernel says is deletable. The caller owns the confirm: the board offers the identical gesture on the card's own head. */
-  onDeleteCard?: (cardId: string) => void;
+  onDeleteCard?: (cardId: string, origin: DialogOrigin) => void;
   onSetWorkbench?: (cardId: string, inWorkbench: boolean) => void;
   /** Reveal a task's block in the document — the same landing the outline, a
    *  `neige://` link and a backlink all use. */
@@ -284,11 +285,12 @@ export function TrackPage({ mobileReportIntro, mobileChatComposer,
       { label: 'Close', isDisabled: closedPending, onClick: () => setTrackClosed('close') },
     ] : []),
   ];
-  const deleteTrackAction = { label: 'Delete track', onClick: () => deletion.request(track.id) };
+  const desktopSourceRef = useRef<HTMLSpanElement | null>(null);
+  const deleteTrackAction = (origin: DialogOrigin) => ({ label: 'Delete track', onClick: () => deletion.request(track.id, origin) });
   const trackMutationActions = [
     ...trackWorkActions,
     ...(offeredClosedAction !== null ? [{ type: 'divider' as const }] : []),
-    deleteTrackAction,
+    deleteTrackAction({ kind: 'anchor', anchor: { ref: desktopSourceRef }, unavailable: 'surface-center' }),
   ];
   /* The desktop panel goes through `core/view`: one derivation, one traversal, one painter. This file may not spell a projection marker; `desktop-projection.test.tsx` scans for that. */
   /* `activity` is the track itself: `Track` carries the overlay-derived
@@ -370,7 +372,7 @@ export function TrackPage({ mobileReportIntro, mobileChatComposer,
           ...trackWorkActions,
           ...(trackWorkActions.length > 0 ? [{ type: 'divider' as const }] : []),
           ...(canEditMobileTitle ? [{ label: 'Edit track', onClick: () => { requestAnimationFrame(() => mobileTitleEditRef.current?.()); } }] : []),
-          deleteTrackAction,
+          deleteTrackAction({ kind: 'anchor', anchor: { ref: mobileActionsRef }, unavailable: 'surface-center' }),
         ]}
       />
     </span>
@@ -414,7 +416,7 @@ export function TrackPage({ mobileReportIntro, mobileChatComposer,
                 onClick={onReply ?? onStartConversation}
               />
             )}
-            <span className={styles.trackActions}>
+            <span ref={desktopSourceRef} className={styles.trackActions}>
               <AstryxDropdownMenu
                 alignment="end"
                 button={{
@@ -431,7 +433,9 @@ export function TrackPage({ mobileReportIntro, mobileChatComposer,
                 onOpenChange={(isOpen) => {
                   setDesktopActionsOpen(isOpen);
                   if (!isOpen) {
-                    requestAnimationFrame(() => desktopActionsRef.current?.focus());
+                    requestAnimationFrame(() => {
+                      if (document.querySelector('[role="dialog"][aria-modal="true"]') === null) desktopActionsRef.current?.focus();
+                    });
                   }
                 }}
               />
@@ -698,7 +702,7 @@ export function TrackPage({ mobileReportIntro, mobileChatComposer,
         </aside>
       )}
 
-      <ConfirmDialog
+      <ConfirmDialog origin={deletion.origin}
         open={deletion.open}
         title={DELETE_TRACK_COPY.title}
         description={DELETE_TRACK_COPY.description}

@@ -6,7 +6,7 @@ import type { ReportTaskRow } from '../../../../../core/domain/report.ts';
 import { NEUTRAL_ACTIVITY, type CardWire } from '../../../../../core/domain/track.ts';
 import { deriveTrackPageView } from '../../../../../core/view/track-page.ts';
 import { PanelCard } from '../../../ui/panel-card/public.tsx';
-import { makeDesktopPainter, paintDesktopPanel } from './desktop-painter.tsx';
+import { makeDesktopPainter, paintDesktopPanel, type DesktopPainterDeps } from './desktop-painter.tsx';
 import { manualCard as card, openableCardsOf, renderPage } from './test-fixtures.tsx';
 
 afterEach(() => { cleanup(); document.body.replaceChildren(); });
@@ -176,7 +176,7 @@ it.each([false, true])('left-aligns type icons beside names with deletable=%s', 
   const view = deriveTrackPageView({ cards: [worker, card({ id: 'execution-worker', title: 'Execution', kind: 'codex' })],
     tasks: [{ ...task('work', 'running', 'codex'), workerCardId: 'execution-worker' }],
     activity: { cards: { worker: 'working', 'execution-worker': 'working' } }, openableCards: new Set(['worker', 'execution-worker']) });
-  const onDeleteCard = vi.fn();
+  const onDeleteCard = vi.fn<NonNullable<DesktopPainterDeps['onDeleteCard']>>();
   const onOpenCard = vi.fn();
   render(<div style={{ inlineSize: 300 }}><PanelCard>{paintDesktopPanel(makeDesktopPainter({ onDeleteCard, onOpenCard }), view.desktop)}</PanelCard></div>);
   for (const summary of document.querySelectorAll<HTMLElement>('[data-nc-module="work"] details:not([open]) > summary')) await userEvent.click(summary);
@@ -206,7 +206,10 @@ it.each([false, true])('left-aligns type icons beside names with deletable=%s', 
     expect(menu.getBoundingClientRect().right).toBeCloseTo(cardRow.getBoundingClientRect().right - 4, 0);
     await userEvent.click(menu);
     await page.getByRole('menuitem', { name: 'Delete card A longer worker title' }).click();
-    expect(onDeleteCard).toHaveBeenCalledWith('worker');
+    expect(onDeleteCard).toHaveBeenCalledWith('worker', expect.objectContaining({ kind: 'anchor' }));
+    const origin = onDeleteCard.mock.calls[0][1];
+    if (origin.kind !== 'anchor') throw new Error('Expected the owned context row source');
+    expect(origin.anchor.ref.current).toBe(cardRow);
     expect(onOpenCard).not.toHaveBeenCalled();
   }
 });

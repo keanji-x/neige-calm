@@ -21,6 +21,7 @@ const conversation: Conversation = Object.freeze({ provider: 'codex' as const, i
 function Preview() {
   const [open, setOpen] = useState(true);
   const [percent, setPercent] = useState(10);
+  const sourceRef = useRef<HTMLSpanElement | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
   const dialogInput = useRef<HTMLInputElement>(null);
   const [prompt, setPrompt] = useState(shortText);
@@ -47,7 +48,7 @@ function Preview() {
         <button onClick={() => sample(shortText)}>短消息</button>
         <button onClick={() => sample(longText)}>长消息</button>
         <button onClick={() => sample(longText.repeat(20))}>超长消息</button>
-        <button onClick={() => setDialogOpen(true)}>打开弹窗</button>
+        <span ref={sourceRef} style={{ display: 'inline-flex' }}><button onClick={() => setDialogOpen(true)}>打开弹窗</button></span>
         <button onClick={() => setOpen(!open)}>{open ? '收起对话' : '打开对话'}</button>
       </div>
     </div>
@@ -98,7 +99,7 @@ function Preview() {
       </div>
     </section>
     <CardMotionPreview />
-    <Dialog open={dialogOpen} title="创建任务" initialFocusRef={dialogInput} onClose={() => setDialogOpen(false)}>
+    <Dialog origin={{ kind: 'anchor', anchor: { ref: sourceRef }, unavailable: 'surface-center' }} open={dialogOpen} title="创建任务" initialFocusRef={dialogInput} onClose={() => setDialogOpen(false)}>
       <label>任务名称<input ref={dialogInput} defaultValue="整理今天的工作" /></label>
       <p>内容保持清晰，打开时轻柔接入，关闭后回到原来的位置。</p>
       <button data-nc-action="secondary" onClick={() => setDialogOpen(false)}>完成</button>

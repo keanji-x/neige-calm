@@ -1,4 +1,5 @@
 import { TodayReportEmpty } from '../../features/today/public.tsx';
+import type { DialogOrigin } from '../../ui/dialog/public.tsx';
 import { PendingQueue, QueueWriteNotice } from '../../features/chat/thread/pending-queue.tsx';
 import { useConversationLinks } from './conversation-links.tsx';
 import { useTerminalWorkbench, TerminalWorkbenchView, type TerminalWorkbench } from '../../features/track/workbench/public.tsx';
@@ -1244,7 +1245,7 @@ function TrackRouteBody({
     },
     { onArchive: conversationMutations.archive, terminal: { workbench, render: () => <TerminalWorkbenchView workbench={workbench} host={cardRuntime.host}
       items={workbench.ordinaryHost ? [] : gridItems.filter(item => workbench.cardIds.has(item.card.id))} visible={!compactViewport && workbench.open}
-      onRemove={cardDeletion.request} /> }, showTrack: false, reportComposer: { ready: plannerCard !== undefined || conversationsQuery.isSuccess, returnLabel: routePanel === 'conversations' ? 'Conversations' : 'Report' } },
+      onRemove={(id) => cardDeletion.request(id, { kind: 'surface-center' })} /> }, showTrack: false, reportComposer: { ready: plannerCard !== undefined || conversationsQuery.isSuccess, returnLabel: routePanel === 'conversations' ? 'Conversations' : 'Report' } },
   );
   useMobileConversationOwner({ track, conversations: rows, onArchive: conversationMutations.archive, onNew: chat.startConversation,
     selectedConversationId: chat.selectedConversationId, onClose: chat.close, onOpen: chat.openConversation, conversationOpen: chat.isOpen });
@@ -1322,7 +1323,7 @@ function TrackRouteBody({
     () => createTrackWorkspaceFilesPort(transport, unauthorized, track.id),
     [track.id, transport, unauthorized],
   );
-  const [cardDraft, setCardDraft] = useState<CardAddMenuEntry | null>(null);
+  const [cardDraft, setCardDraft] = useState<(CardAddMenuEntry & { origin: DialogOrigin }) | null>(null);
   const [creatingCard, setCreatingCard] = useState(false);
   /* A failed create has to be sayable with no dialog on screen: a fieldless kind
    * never opens one, so the message gets a route-level surface. */
@@ -1391,11 +1392,11 @@ function TrackRouteBody({
     : () => { runCardCreate(heldCardCreate.draft, heldCardCreate, true); };
 
   /* A kind with nothing to ask is created on the spot; one with fields opens the form. */
-  const pickCardKind = (entry: CardAddMenuEntry, trigger: HTMLButtonElement | null) => {
+  const pickCardKind = (entry: CardAddMenuEntry, trigger: HTMLButtonElement | null, origin: DialogOrigin) => {
     cardCreateFeedback.clear();
     if (!compactViewport && entry.type === 'terminal') { workbench.newSession(trigger); return; }
     if (entry.fields.length === 0) submitNewCard(entry, {});
-    else setCardDraft(entry);
+    else setCardDraft({ ...entry, origin });
   };
   const backlinksQuery = useQuery(trackBacklinksQueryOptions(transport, track.id, unauthorized));
   const backlinks = backlinksQuery.data;
@@ -1505,7 +1506,7 @@ function TrackRouteBody({
           items={workbench.ordinaryHost ? gridItems : gridItems.filter(item => !workbench.cardIds.has(item.card.id))}
           host={cardRuntime.host}
           activeCardId={requestedCardId}
-          onRemoveCard={cardDeletion.request}
+          onRemoveCard={(id) => cardDeletion.request(id, { kind: 'surface-center' })}
           onClose={knownCard ? closeBoard : undefined}
         />
         {requestedFilePath !== null && (
@@ -1601,7 +1602,7 @@ function TrackRouteBody({
     </TrackStage>
     {/* Keyed by kind: switching kinds is a different form, and a shared mount
         would carry the previous kind's typed values into it. */}
-    <Dialog
+    <Dialog origin={cardDraft?.origin ?? { kind: 'surface-center' }}
       open={cardDraft !== null}
       onClose={() => setCardDraft(null)}
       title={cardDraft === null ? '' : `New ${cardDraft.label} card`}
@@ -1621,7 +1622,7 @@ function TrackRouteBody({
         />
       )}
     </Dialog>
-    <ConfirmDialog
+    <ConfirmDialog origin={cardDeletion.origin}
       open={cardDeletion.open}
       title={DELETE_CARD_COPY.title}
       description={DELETE_CARD_COPY.description}

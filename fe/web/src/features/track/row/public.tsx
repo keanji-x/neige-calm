@@ -1,8 +1,9 @@
+import type { DialogOrigin } from '../../../ui/dialog/public.tsx';
 import { TrackTitle } from '../title/public.tsx';
 // The one track row, rendered by the sidebar rail and Today. It stays under `features/track` because it reads track predicates, which `ui/` may not.
 
 import { ListText } from '../../../ui/list-typography/public.tsx';
-import { useId } from 'react';
+import { useId, useRef } from 'react';
 import { activityLabelOf, activityNameBit } from '../../../../../core/domain/activity.ts';
 import {
   isClosed, trackActivityState, trackDisplayTitle, type Track,
@@ -29,7 +30,7 @@ export type TrackRowProps = Readonly<{
   /** Supplying this reveals a pin action. Sidebar actions appear on hover/focus or touch; other variants keep pinned actions visible. */
   onSetPinned?: (trackId: string, pinned: boolean) => void;
   /** Supplying this reveals a delete button. The caller owns the confirm. */
-  onDelete?: (trackId: string) => void;
+  onDelete?: (trackId: string, origin: DialogOrigin) => void;
   /** Hosts provide the same personal actions on every workspace surface. */
   actions?: Readonly<{
     areaPinned: boolean;
@@ -70,6 +71,7 @@ export function TrackRow(props: TrackRowProps) {
   const { track, variant = 'default', areaName, hourLabel, active = false, nowMs,
     onOpen, onSetPinned, onDelete, actions, unread = false } = props;
   const presentation = props.variant === 'rail' ? navigationRowPresentation(props.presentation) : undefined;
+  const removeRef = useRef<HTMLSpanElement | null>(null);
   const descriptionId = useId();
   const pinned = track.pinnedAt !== null;
   const title = trackDisplayTitle(track.title);
@@ -139,15 +141,15 @@ export function TrackRow(props: TrackRowProps) {
         <TrackActions track={track} {...actions} onDelete={onDelete} className={styles.menuButton} />
       </span>}
       {onDelete !== undefined && (
-        <button
+        <span ref={removeRef} className={`${styles.action} ${styles.remove} ${variant === 'rail' ? rowLayout('outer') : ''}`}><button
           type="button"
           data-nc-role="icon"
-          className={`${styles.action} ${styles.remove} ${variant === 'rail' ? rowLayout('outer') : ''}`}
+          className={styles.removeButton}
           aria-label={`Delete ${title}`}
-          onClick={() => onDelete(track.id)}
+          onClick={() => onDelete(track.id, { kind: 'anchor', anchor: { ref: removeRef }, unavailable: 'surface-center' })}
         >
           <Icon name="close" size="sm" />
-        </button>
+        </button></span>
       )}
     </div>
   );

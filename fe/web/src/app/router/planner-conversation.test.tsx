@@ -1429,7 +1429,7 @@ describe('planner conversation regressions', () => {
     });
   });
 
-  it('uses Escape to interrupt a working turn without closing the drawer', async () => {
+  it('uses Escape to interrupt once, then closes without repeating the pending request', async () => {
     let resolveInterrupt!: (response: ApiTransportResponse) => void;
     const pendingInterrupt = new Promise<ApiTransportResponse>((resolve) => { resolveInterrupt = resolve; });
     const { requests } = setup((request) => {
@@ -1441,19 +1441,34 @@ describe('planner conversation regressions', () => {
       }
       return request.path.endsWith('/planner/interrupt') ? pendingInterrupt : undefined;
     });
+    const opener = await screen.findByRole('button', { name: /Conversation Planner chat/ });
+    opener.focus();
     await openConversation();
     const drawer = screen.getByRole('complementary', { name: 'Planner chat' });
-    /* The phase query starts with the drawer, so the turn is only known to be
-       running a round trip later — and Escape does nothing until it is. */
-    await waitFor(() => expect(requests.some((request) => request.path.includes('/planner/run?contract=conversation_v1'))).toBe(true));
-    await waitFor(() => {
-      fireEvent.keyDown(drawer, { key: 'Escape' });
-      expect(requests.filter((request) => request.path.endsWith('/planner/interrupt'))).toHaveLength(1);
-    });
+    /* Wait for the committed working view, rather than retry a gesture while
+       the query is still loading (idle Escape legitimately closes the pane). */
+    await within(drawer).findByRole('button', { name: 'Stop' });
+    fireEvent.keyDown(drawer, { key: 'Escape' });
+    await waitFor(() => expect(requests.filter((request) => request.path.endsWith('/planner/interrupt'))).toHaveLength(1));
+    expect(screen.getByRole('complementary', { name: 'Planner chat' })).toBe(drawer);
+    const title = within(drawer).getByRole('heading', { name: 'Planner chat' });
+    const field = within(drawer).getByRole('combobox', { name: 'Message' });
     fireEvent.keyDown(drawer, { key: 'Escape' });
     expect(requests.filter((request) => request.path.endsWith('/planner/interrupt'))).toHaveLength(1);
-    expect(screen.getByRole('complementary', { name: 'Planner chat' })).toBeTruthy();
-    resolveInterrupt(ok({ card_id: CARD.id, worker_session_id: 'runtime', stopped: true }));
+    /* A pending stop yields Escape to the drawer owner. Its last tree remains
+       for paint, with interaction and accessibility revoked in this commit. */
+    expect(screen.queryByRole('complementary', { name: 'Planner chat' })).toBeNull();
+    expect(drawer.isConnected).toBe(true);
+    expect(drawer.hasAttribute('inert')).toBe(true);
+    expect(drawer.getAttribute('aria-hidden')).toBe('true');
+    expect(drawer.contains(title)).toBe(true);
+    expect(drawer.contains(field)).toBe(true);
+    expect(drawer.hasAttribute('data-nc-drawer-open')).toBe(false);
+    expect(document.activeElement).toBe(opener);
+    await act(() => {
+      resolveInterrupt(ok({ card_id: CARD.id, worker_session_id: 'runtime', stopped: true }));
+      return Promise.resolve();
+    });
   });
 
 });

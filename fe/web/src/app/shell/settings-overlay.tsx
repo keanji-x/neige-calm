@@ -125,7 +125,7 @@ export function SettingsOverlay({ transport, unauthorized }: SettingsOverlayProp
         backLabel={mobileIndex ? 'workspace' : 'Settings'} onBack={mobileIndex ? leaveSettings : backToIndex} />
       <div className={styles.content} ref={compact ? attachContent : undefined} />
     </section>
-    <Dialog open={!compact} onClose={leaveSettings} title="Settings" wide>
+    <Dialog origin={{ kind: 'surface-center' }} open={!compact} onClose={leaveSettings} title="Settings" wide>
       <div ref={!compact ? attachContent : undefined} />
     </Dialog>
     {createPortal(<div

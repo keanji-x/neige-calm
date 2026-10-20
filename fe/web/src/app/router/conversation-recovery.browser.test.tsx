@@ -23,6 +23,48 @@ async function open(draft = false) {
   await userEvent.type(field(), RECOVERY_TEXT);
   await page.getByRole('button', { name: 'Send', exact: true }).click();
 }
+// Observe the close commit before the browser driver can outlast its exit.
+// Holding that native effect lets the response settle during retained paint.
+async function closeDraft(retainExit: boolean) {
+  const panel = screen.getByRole('complementary', { name: 'Untitled' });
+  let exit: Animation | undefined;
+  const revoked = new Promise<void>((resolve, reject) => {
+    const observer = new MutationObserver(() => {
+      if (panel.hasAttribute('data-nc-drawer-open')) return;
+      observer.disconnect();
+      try {
+        expect(panel.hasAttribute('inert')).toBe(true);
+        expect(panel.getAttribute('aria-hidden')).toBe('true');
+        expect(panel.hasAttribute('data-nc-drawer-open')).toBe(false);
+        expect(panel.hasAttribute('data-nc-escape-layer')).toBe(false);
+        if (retainExit) {
+          [exit] = panel.getAnimations();
+          expect(exit).toBeDefined();
+          exit.pause();
+        }
+        resolve();
+      } catch (error) { reject(error instanceof Error ? error : new Error('Drawer close observation failed', { cause: error })); }
+    });
+    observer.observe(panel, { attributes: true, attributeFilter: ['inert', 'aria-hidden', 'data-nc-drawer-open'] });
+  });
+  await Promise.all([page.getByRole('button', { name: 'Close conversation', exact: true }).click(), revoked]);
+  expect(screen.queryByRole('complementary', { name: 'Untitled' })).toBeNull();
+  expect(screen.queryByRole('combobox', { name: 'Message' })).toBeNull();
+  expect(panel.contains(document.activeElement)).toBe(false);
+  return async () => {
+    expect(panel.isConnected).toBe(true);
+    expect(panel.hasAttribute('inert')).toBe(true);
+    expect(panel.getAttribute('aria-hidden')).toBe('true');
+    expect(screen.queryByRole('complementary', { name: 'Untitled' })).toBeNull();
+    expect(screen.queryByRole('combobox', { name: 'Message' })).toBeNull();
+    expect(panel.contains(document.activeElement)).toBe(false);
+    const finished = exit!.finished;
+    exit!.play();
+    await finished;
+    await waitFor(() => expect(panel.isConnected).toBe(false));
+    expect(document.querySelector('[data-nc-drawer]')).toBeNull();
+  };
+}
 afterEach(() => { cleanup(); onlineManager.setOnline(true); document.getElementById('root')?.remove(); });
 
 it('explains a successful send while its actual reconciliation reads are held', async () => {
@@ -104,19 +146,14 @@ it.each(['close', 'switch'] as const)('keeps a later view choice when draft reco
     view.allow(); view.pauseSend();
     await page.getByRole('button', { name: 'Try again', exact: true }).click();
     await waitFor(() => expect(view.postHeld()).toBe(1));
-    if (action === 'close') {
-      await page.getByRole('button', { name: 'Close conversation', exact: true }).click();
-      await expect.element(page.getByRole('complementary', { name: 'Untitled', exact: true })).not.toBeInTheDocument();
-    } else {
-      await page.getByRole('button', { name: 'Close conversation', exact: true }).click();
-      await expect.element(page.getByRole('complementary', { name: 'Untitled', exact: true })).not.toBeInTheDocument();
+    const releasePaint = await closeDraft(action === 'close');
+    if (action === 'switch') {
       await page.getByRole('button', { name: /Conversation Daily Planner conversation/ }).click();
       await expect.element(page.getByRole('complementary', { name: 'Daily Planner conversation', exact: true })).toBeVisible();
     }
     await act(async () => { view.release(); await Promise.resolve(); });
     await waitFor(() => expect(view.client.getQueryData<readonly { id: string }[]>(queryKeys.trackConversations('daily'))?.some(row => row.id === view.createdId())).toBe(true));
-    await act(async () => { await new Promise<void>(resolve => requestAnimationFrame(() => resolve())); });
-    if (action === 'close') expect(document.querySelector('[data-nc-drawer]')).toBeNull();
+    if (action === 'close') await releasePaint();
     else expect(screen.getByRole('complementary', { name: 'Daily Planner conversation' })).toBeDefined();
   } finally { cleanup(); view.release(); view.client.clear(); }
 });
@@ -262,17 +299,16 @@ it.each([
     const nextKey = view.requests.filter(request => request.method === 'POST').at(-1)?.headers?.['Idempotency-Key'];
     await waitFor(() => expect(nextKey !== undefined && draftKeys.has(nextKey)).toBe(true));
     const other = screen.getByRole('button', { name: 'Go to Today' });
+    let releasePaint: (() => Promise<void>) | undefined;
     if (destination === 'control') other.focus();
     else {
-      await page.getByRole('button', { name: 'Close conversation', exact: true }).click();
-      await expect.element(page.getByRole('complementary', { name: 'Untitled', exact: true })).not.toBeInTheDocument();
+      releasePaint = await closeDraft(destination === 'close');
       if (destination === 'switch') await page.getByRole('button', { name: /Conversation Daily Planner conversation/ }).click();
     }
     await act(async () => { view.release(); await Promise.resolve(); });
     await waitFor(() => expect(view.client.getQueryData<readonly { id: string }[]>(queryKeys.trackConversations('daily'))?.some(row => row.id === view.createdId())).toBe(true));
-    await act(async () => { await new Promise<void>(resolve => requestAnimationFrame(() => resolve())); });
     if (destination === 'control') { await waitFor(() => expect(field().getAttribute('contenteditable')).toBe('true')); expect(document.activeElement).toBe(other); }
-    else if (destination === 'close') expect(document.querySelector('[data-nc-drawer]')).toBeNull();
+    else if (destination === 'close') await releasePaint!();
     else expect(screen.getByRole('complementary', { name: 'Daily Planner conversation' })).toBeDefined();
   } finally { cleanup(); view.release(); view.client.clear(); }
 });

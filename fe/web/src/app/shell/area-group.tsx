@@ -1,3 +1,4 @@
+import type { DialogOrigin } from '../../ui/dialog/public.tsx';
 // Area-owned membership and actions, composed into the shared sidebar group.
 import { DropdownMenuItem } from '@astryxdesign/core/DropdownMenu';
 
@@ -23,8 +24,8 @@ export function AreaGroup({
   showClosed: boolean;
   onSetShowClosed: (showClosed: boolean) => void;
   disclosureRef: (element: HTMLButtonElement | null) => void;
-  onEdit: () => void;
-  onRequestDelete: (areaId: string) => void;
+  onEdit: (origin: DialogOrigin) => void;
+  onRequestDelete: (areaId: string, origin: DialogOrigin) => void;
   onNewTrack: (areaId: string) => void;
 }) {
   const preferences = useUiPreferences();
@@ -40,10 +41,10 @@ export function AreaGroup({
     onToggle={onToggle}
     disclosureRef={disclosureRef}
     management={management}
-    extraMenuItems={<>
-      <DropdownMenuItem label="Edit area" onClick={onEdit} />
+    extraMenuItems={(origin) => <>
+      <DropdownMenuItem label="Edit area" onClick={() => onEdit(origin)} />
       <DropdownMenuItem label={showClosed ? 'Hide closed' : 'Show closed'} onClick={() => onSetShowClosed(!showClosed)} />
-      <DropdownMenuItem label="Delete area" onClick={() => onRequestDelete(area.id)} />
+      <DropdownMenuItem label="Delete area" onClick={() => onRequestDelete(area.id, origin)} />
     </>}
     actions={
       <button type="button" data-nc-role="icon" className={`${styles.areaNew} ${rowLayout('outer')}`}

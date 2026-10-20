@@ -1,4 +1,5 @@
 import { EmptyState, type EmptyStateSchema } from '../../ui/empty-state/public.tsx';
+import type { DialogOrigin } from '../../ui/dialog/public.tsx';
 // Shared disclosure and Track list for every desktop sidebar group.
 import { useEffect, useRef, type ReactNode } from 'react';
 import { DropdownMenu, DropdownMenuItem, DropdownMenuDivider } from '@astryxdesign/core/DropdownMenu';
@@ -22,7 +23,7 @@ export type RowProps = Readonly<{
   onGo: (target: NavTarget) => void;
   nowMs?: number;
   onSetPinned: (trackId: string, pinned: boolean) => void;
-  onDelete: (trackId: string) => void;
+  onDelete: (trackId: string, origin: DialogOrigin) => void;
   trackActions?: (track: Track) => NonNullable<Parameters<typeof TrackRow>[0]['actions']>;
 }>;
 
@@ -42,7 +43,7 @@ type GroupProps = Readonly<{
   onToggle: (expanded: boolean) => void;
   level: 'section' | 'area';
   management: GroupManagement;
-  extraMenuItems?: ReactNode;
+  extraMenuItems?: (origin: DialogOrigin) => ReactNode;
   actions?: ReactNode;
   disclosureRef?: (element: HTMLButtonElement | null) => void;
 }>;
@@ -51,6 +52,7 @@ type GroupProps = Readonly<{
 export function SidebarGroup({ title, label, expanded, onToggle, level, management, extraMenuItems, actions, disclosureRef, children }: GroupProps & {
   children: ReactNode;
 }) {
+  const actionRef = useRef<HTMLSpanElement | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const presentation = navigationRowPresentation(level === 'section' ? { kind: 'caption', depth: 0 } : { kind: 'entry', depth: 0 });
   const disclosure = useCollapsible({ isCollapsible: { isOpen: expanded, onOpenChange: onToggle } });
@@ -71,7 +73,7 @@ export function SidebarGroup({ title, label, expanded, onToggle, level, manageme
   return <div role="group" aria-label={label} className={level === 'section' ? styles.section : styles.areaGroup}>
     <div className={`${styles.areaRowWrap} ${presentation.className}`}>
       {level === 'section' ? <ListText as="h2" tone={presentation.tone} className={styles.groupHeading}>{button}</ListText> : button}
-      <span className={`${styles.areaActions} ${rowLayout('inner')}`}>
+      <span ref={actionRef} className={`${styles.areaActions} ${rowLayout('inner')}`}>
         <DropdownMenu isMenuOpen={menuOpen} onOpenChange={setMenuOpen} placement="below" button={{
           label: management.menuLabel, icon: <Icon name="more" size="sm" />,
           isIconOnly: true, variant: 'ghost', size: 'sm', className: styles.areaActionsButton,
@@ -80,7 +82,7 @@ export function SidebarGroup({ title, label, expanded, onToggle, level, manageme
             <DropdownMenuItem label="Move up" isDisabled={!management.canMoveUp} onClick={() => management.onMove('up')} />
           <DropdownMenuItem label="Move down" isDisabled={!management.canMoveDown} onClick={() => management.onMove('down')} />
           <DropdownMenuItem label="Hide group" onClick={management.onHide} />
-          {extraMenuItems !== undefined && <><DropdownMenuDivider />{extraMenuItems}</>}
+          {extraMenuItems !== undefined && <><DropdownMenuDivider />{extraMenuItems({ kind: 'anchor', anchor: { ref: actionRef }, unavailable: 'surface-center' })}</>}
           </>}
         </DropdownMenu>
       </span>

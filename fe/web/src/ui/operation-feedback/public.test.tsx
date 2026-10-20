@@ -36,7 +36,7 @@ it('closes a delete the caller reads as done and runs its follow-up', async () =
   const onDone = vi.fn();
   function DeleteHarness() {
     const confirm = useDeleteConfirm(() => Promise.reject(new Error('gone')), () => null, onDone);
-    return <><button type="button" onClick={() => confirm.request('w1')}>Delete</button>
+    return <><button type="button" onClick={() => confirm.request('w1', { kind: 'surface-center' })}>Delete</button>
       {confirm.open && <button type="button" onClick={confirm.confirm}>Confirm</button>}<OperationFeedback feedback={confirm.feedback} /></>;
   }
   render(<DeleteHarness />);
@@ -52,7 +52,7 @@ it('ignores a successful delete that arrives after cancellation', async () => {
   const onDone = vi.fn();
   function DeleteHarness() {
     const confirm = useDeleteConfirm(() => new Promise<void>((done) => { resolve = done; }), () => 'failed', onDone);
-    return <><button type="button" onClick={() => confirm.request('w1')}>Delete</button>
+    return <><button type="button" onClick={() => confirm.request('w1', { kind: 'surface-center' })}>Delete</button>
       {confirm.open && <><button type="button" onClick={confirm.confirm}>Confirm</button><button type="button" onClick={confirm.cancel}>Cancel</button></>}</>;
   }
   render(<DeleteHarness />);
@@ -68,8 +68,8 @@ it('keeps a new delete target when the cancelled request settles', async () => {
   let resolve!: () => void;
   function DeleteHarness() {
     const confirm = useDeleteConfirm(() => new Promise<void>((done) => { resolve = done; }), () => 'failed');
-    return <><button type="button" onClick={() => confirm.request('w1')}>Delete first</button>
-      <button type="button" onClick={() => confirm.request('w2')}>Delete second</button>
+    return <><button type="button" onClick={() => confirm.request('w1', { kind: 'surface-center' })}>Delete first</button>
+      <button type="button" onClick={() => confirm.request('w2', { kind: 'surface-center' })}>Delete second</button>
       {confirm.open && <><span>{confirm.target}</span><button type="button" onClick={confirm.confirm}>Confirm</button>
         <button type="button" onClick={confirm.cancel}>Cancel</button></>}</>;
   }

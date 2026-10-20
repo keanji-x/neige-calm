@@ -19,7 +19,7 @@ describe('Dialog cleanup order regression', () => {
     const trigger = document.body.appendChild(document.createElement('button'));
     trigger.textContent = 'Open';
     trigger.focus();
-    const result = render(<Dialog open title="Test" onClose={vi.fn()}/>);
+    const result = render(<Dialog origin={{ kind: 'surface-center' }} open title="Test" onClose={vi.fn()}/>);
     expect(trigger.closest('[inert]')).not.toBeNull();
     result.unmount();
     expect(document.activeElement).toBe(trigger);

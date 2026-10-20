@@ -1,6 +1,6 @@
 @layer ui {
-  .drawer,
-  .seam,
+  .positioner,
+  .seamPositioner,
   .stack {
     inset-block: 20px 28px;
   }
@@ -93,12 +93,27 @@
      * composer well and user bubble use `--radius-chat` = 8. `features/chat`
      * reads both of these off this element.
      */
-    /* Shared physical projection point: the card/seam edge midpoint. */
-    transform-origin: 100% 50%;
     --nc-card-inset: var(--space-2);
     --nc-card-radius: var(--radius-lg);
     --radius-chat: calc(var(--nc-card-radius) - var(--nc-card-inset));
 
+    position: relative;
+    pointer-events: auto;
+    display: flex;
+    flex-direction: column;
+    inline-size: 100%;
+    block-size: 100%;
+    overflow: hidden;
+    border-radius: var(--nc-card-radius);
+    background: var(--surface-card);
+    box-shadow: 0 2px 12px color-mix(in oklab, var(--overlay-scrim) 35%, transparent);
+    opacity: 1;
+    translate: 0 0;
+    transition: none;
+  }
+
+  .positioner {
+    pointer-events: none;
     position: absolute;
     /* 20 top / 28 bottom. The 20 is bounded by the header band (20.3px of ink
        clearance), not chosen freely — see the note above. */
@@ -111,13 +126,6 @@
        what is left of a narrow main region: a card may not slide under the
        rail on the side the page cannot pad. */
     max-inline-size: calc(100% - var(--space-5) * 2);
-    overflow: hidden;
-    border-radius: var(--nc-card-radius);
-    background: var(--surface-card);
-    box-shadow: 0 2px 12px color-mix(in oklab, var(--overlay-scrim) 35%, transparent);
-    opacity: 1;
-    translate: 0 0;
-    transition: none;
   }
 
   /*
@@ -140,10 +148,8 @@
    * There is no `overflow` value that clips the corners and lets a child out,
    * and none of the alternatives (a second clipping context, `overflow:
    * clip` with a positive `overflow-clip-margin`) survives contact with a
-   * radius. So the seam is the card's sibling, which also makes the shared
-   * containing block automatic rather than asserted: whatever positioned
-   * ancestor `.drawer` resolves against, this resolves against the same one,
-   * because they have the same parent.
+   * radius. The two independent layout wrappers are siblings in the same
+   * containing block; each owns one paint node and only paint receives effects.
    *
    * **The geometry is the card's own, read off the same declarations.** The
    * card sits at `inset-inline-end: var(--space-5)` and is at most
@@ -175,8 +181,8 @@
    * geometry that is *not* `--surface-card`, which is why anything painted here
    * has to argue its contrast against `--bg`. `features/chat` does.
    */
-  .seam {
-    transform-origin: 0% 50%;
+  .seamPositioner {
+    pointer-events: none;
     position: absolute;
     /* The card's own block range, repeated from `.drawer` rather than derived,
        because a seam that is taller than the card can put ink off the end of
@@ -184,6 +190,11 @@
     inset-inline-end: 0;
     inline-size: var(--space-5);
     z-index: var(--z-overlay);
+  }
+
+  .seam {
+    inline-size: 100%;
+    block-size: 100%;
     /* Same transition, same duration, same easing, same source token as the
        card above — the two enter and leave as one object, and any change to
        one is a change to both. */
@@ -193,10 +204,6 @@
     pointer-events: none;
   }
 
-  /* Mirror the same physical origin with the owning logical geometry.
-     Embedded/stacked siblings share this edge and block range too. */
-  .drawer:dir(rtl) { transform-origin: 0% 50%; }
-  .seam:dir(rtl) { transform-origin: 100% 50%; }
 
   .seam > * {
     pointer-events: auto;
@@ -290,10 +297,9 @@
   }
 
   /* Card and seam share the UI-owned camera depth and spring. Closing only
-     changes opacity and hit testing here; no CSS travel may jump under a
+     changes hit testing here; no CSS travel may jump under a
      reversing native effect. The conversation retains its live exit content. */
   .drawerClosing {
-    opacity: 0;
 
     /* It is on its way out; it must not intercept a click meant for the page
        behind it. */
@@ -304,10 +310,6 @@
      the reader is concerned — see `.seam`. `pointer-events` is already off on
      the seam itself; what this has to add is the children's, which `.seam > *`
      turned back on and a box on its way out must not keep. */
-  .seamClosing {
-    opacity: 0;
-  }
-
   .seamClosing > * {
     pointer-events: none;
   }
@@ -382,16 +384,17 @@
   }
 
   .cell[hidden],
+  .positioner[hidden],
   .drawer[hidden],
   .stack[hidden] { display: none; }
 
-  .cell > .seam,
-  .embedded + .seam {
+  .cell > .seamPositioner,
+  .embedded + .seamPositioner {
     inset-block: 0;
     inset-inline-end: calc(var(--space-5) * -1);
   }
 
-  .cell > .drawer,
+  .cell > .positioner,
   .embedded {
     position: relative;
     inset: auto;
@@ -403,7 +406,7 @@
 
   /* One viewport geometry for a standalone drawer and the stable pane host. */
   @media (width < 60rem) {
-    .drawer,
+    .positioner,
     .stack {
       position: fixed;
       inset: 0 0 calc(var(--mobile-dock-h, 0px) + env(safe-area-inset-bottom));

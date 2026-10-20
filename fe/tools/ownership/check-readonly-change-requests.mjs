@@ -49,6 +49,8 @@ try {
   if (styleViolations.length) throw new Error(`style repository audit failed:\n${styleViolations.join('\n')}`);
   console.log('style manifests, CSS Module layers, and data-* attributes: valid');
   git('init', '--initial-branch=main');
+  // Disposable repositories must not start maintenance that outlives their cleanup.
+  git('config', 'maintenance.auto', 'false');
   git('config', 'user.email', 'ownership-check@example.invalid');
   git('config', 'user.name', 'Ownership Checker');
   writeFileSync(join(repository, 'frozen.txt'), 'before\n');

@@ -6,7 +6,7 @@ import { createPortal } from 'react-dom';
 import { DepthFeedback } from './depth-feedback.tsx';
 import { pressDepthFrame, presenceDepthFrame, TAP_VELOCITY } from './depth.ts';
 import { springTrajectory } from './spring.ts';
-import { Drawer } from '../drawer/public.tsx';
+import { Drawer, drawerSeamAround } from '../drawer/public.tsx';
 import { ConfirmDialog } from '../dialog/public.tsx';
 import '../../styles/entry.css';
 
@@ -136,7 +136,7 @@ it('cancels keyboard press on focus loss, reduced motion changes and unmount', a
 
 it('uses the same restrained depth direction for real confirmation portals with immediate actions', async () => {
   const cancel = vi.fn();
-  render(<><DepthFeedback /><ConfirmDialog open title="Depth confirm" onConfirm={() => {}} onCancel={cancel} /></>);
+  render(<><DepthFeedback /><ConfirmDialog origin={{ kind: 'surface-center' }} open title="Depth confirm" onConfirm={() => {}} onCancel={cancel} /></>);
   const dialog = screen.getByRole('dialog');
   expect(new DOMMatrix(frames(dialog.getAnimations()[0])[0].transform as string).a)
     .toBeCloseTo(new DOMMatrix(presenceDepthFrame(0).transform as string).a, 5);
@@ -146,12 +146,12 @@ it('uses the same restrained depth direction for real confirmation portals with 
 });
 
 
-it('keeps paired drawer depth continuous on exit without a CSS translate jump', async () => {
+it('keeps paired drawer motion continuous at unit scale on exit without a CSS translate jump', async () => {
   await page.viewport(1280, 720);
   const view = render(<div style={{ position: 'relative', height: 500, width: 700 }}>
     <Drawer open title="Depth drawer" onClose={() => {}}><p>Live text</p></Drawer></div>);
   const panel = screen.getByRole('complementary', { name: 'Depth drawer' });
-  const seam = panel.parentElement!.querySelector<HTMLElement>('[data-nc-drawer-seam]')!;
+  const seam = drawerSeamAround(panel)!;
   await Promise.all(panel.getAnimations().map(animation => animation.finished));
   view.rerender(<div style={{ position: 'relative', height: 500, width: 700 }}>
     <Drawer open={false} title="Depth drawer" onClose={() => {}}><p>Live text</p></Drawer></div>);
@@ -162,7 +162,8 @@ it('keeps paired drawer depth continuous on exit without a CSS translate jump', 
     const animation = element.getAnimations()[0];
     animation.pause(); animation.currentTime = 50;
     const matrix = new DOMMatrix(getComputedStyle(element).transform);
-    expect(matrix.a).toBeLessThan(1);
+    expect(matrix.a).toBe(1);
+    expect(matrix.d).toBe(1);
     expect(matrix.f).toBeGreaterThan(0);
   }
 });
@@ -222,7 +223,7 @@ it.each([['ltr', false], ['rtl', false], ['ltr', true], ['rtl', true]] as const)
     <Drawer open={open} stacked={stacked} title="Joined" onClose={() => {}}><p>Surface</p></Drawer></div>;
   const view = render(content(true));
   const panel = screen.getByRole('complementary', { name: 'Joined' });
-  const seam = panel.parentElement!.querySelector<HTMLElement>('[data-nc-drawer-seam]')!;
+  const seam = drawerSeamAround(panel)!;
   const check = (time: number) => {
     for (const element of [panel, seam]) {
       const animation = element.getAnimations()[0]; animation.pause(); animation.currentTime = time;

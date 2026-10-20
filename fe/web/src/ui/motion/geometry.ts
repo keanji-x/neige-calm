@@ -8,7 +8,11 @@ export type LiftOrigin =
   | Readonly<{ kind: 'anchor'; anchor: SurfaceSource; unavailable: 'surface-center' }>
   | Readonly<{ kind: 'surface-center' }>
   | Readonly<{ kind: 'paired-edge'; edge: 'inline-start' | 'inline-end' }>;
-export type SurfaceGeometry = Readonly<{ kind: 'lift'; origin: LiftOrigin }>;
+export type SurfaceGeometry =
+  | Readonly<{ kind: 'lift'; origin: LiftOrigin }>
+  | Readonly<{ kind: 'edge-reveal'; origin: Extract<LiftOrigin, { kind: 'paired-edge' }> }>;
+/** Snapshot of the actual paint map, including the primary camera reference. */
+export type SurfaceMap = Readonly<{ kind: 'lift' }> | Readonly<{ kind: 'edge-reveal'; center: Point }>;
 export type SurfaceFrame = Readonly<{
   document: Document;
   size: Readonly<{ width: number; height: number }>;
@@ -64,29 +68,43 @@ export function frameCenter(frame: SurfaceFrame): Point {
   return { x: a.x + a.scaleX * frame.size.width / 2, y: a.y + a.scaleY * frame.size.height / 2 };
 }
 
-export function liftKeyframe(frame: SurfaceFrame, origin: Point, state: LiftState): Keyframe {
+/** One displacement and analytical derivative for keyframes and rebase. */
+function displacement(frame: SurfaceFrame, origin: Point, map: SurfaceMap, progress: number) {
+  const { scale, sink, scaleDerivative, sinkDerivative } = liftProjection(progress);
+  const center = map.kind === 'lift' ? frame.viewportFromLocal : map.center;
+  return { scale: map.kind === 'lift' ? scale : 1,
+    x: (1 - scale) * (origin.x - center.x), y: (1 - scale) * (origin.y - center.y) + sink,
+    dx: -scaleDerivative * (origin.x - center.x), dy: -scaleDerivative * (origin.y - center.y) + sinkDerivative };
+}
+
+export function surfaceKeyframe(frame: SurfaceFrame, origin: Point, map: SurfaceMap, state: LiftState): Keyframe {
   const a = frame.viewportFromLocal;
-  const { scale, sink } = liftProjection(state.progress);
-  const x = ((1 - scale) * (origin.x - a.x) + state.x) / a.scaleX;
-  const y = ((1 - scale) * (origin.y - a.y) + sink + state.y) / a.scaleY;
-  return { transformOrigin: '0px 0px', transform: `matrix(${scale}, 0, 0, ${scale}, ${x}, ${y})`,
+  const d = displacement(frame, origin, map, state.progress);
+  const x = (d.x + state.x) / a.scaleX; const y = (d.y + state.y) / a.scaleY;
+  return { transformOrigin: '0px 0px', transform: `matrix(${d.scale}, 0, 0, ${d.scale}, ${x}, ${y})`,
     opacity: Math.max(0, Math.min(1, state.progress)) };
+}
+export function liftKeyframe(frame: SurfaceFrame, origin: Point, state: LiftState): Keyframe {
+  return surfaceKeyframe(frame, origin, { kind: 'lift' }, state);
 }
 
 /** Preserve only the motion contribution in local space, allowing normal layout/scroll to move. */
-export function rebaseLift(state: LiftSample, old: SurfaceFrame, oldOrigin: Point, next: SurfaceFrame, origin: Point): LiftSample {
-  const { scale, sink, scaleDerivative, sinkDerivative } = liftProjection(state.value.progress);
-  const ds = scaleDerivative * state.velocity.progress; const dy = sinkDerivative * state.velocity.progress;
-  const before = old.viewportFromLocal; const after = next.viewportFromLocal;
-  const axis = (key: 'x' | 'y', ratio: number, drop: number, speed: number) => ({
-    value: ratio * ((1 - scale) * (oldOrigin[key] - before[key]) + drop + state.value[key])
-      - ((1 - scale) * (origin[key] - after[key]) + drop),
-    velocity: ratio * (-ds * (oldOrigin[key] - before[key]) + speed + state.velocity[key])
-      - (-ds * (origin[key] - after[key]) + speed),
+export function rebaseSurface(state: LiftSample, old: SurfaceFrame, oldOrigin: Point, oldMap: SurfaceMap,
+  next: SurfaceFrame, origin: Point, map: SurfaceMap): LiftSample {
+  const before = displacement(old, oldOrigin, oldMap, state.value.progress);
+  const after = displacement(next, origin, map, state.value.progress);
+  const axis = (key: 'x' | 'y', derivative: 'dx' | 'dy', ratio: number) => ({
+    value: ratio * (before[key] + state.value[key]) - after[key],
+    velocity: ratio * (before[derivative] * state.velocity.progress + state.velocity[key])
+      - after[derivative] * state.velocity.progress,
   });
-  const x = axis('x', after.scaleX / before.scaleX, 0, 0); const y = axis('y', after.scaleY / before.scaleY, sink, dy);
+  const x = axis('x', 'dx', next.viewportFromLocal.scaleX / old.viewportFromLocal.scaleX);
+  const y = axis('y', 'dy', next.viewportFromLocal.scaleY / old.viewportFromLocal.scaleY);
   return { value: { progress: state.value.progress, x: x.value, y: y.value },
     velocity: { progress: state.velocity.progress, x: x.velocity, y: y.velocity } };
+}
+export function rebaseLift(state: LiftSample, old: SurfaceFrame, oldOrigin: Point, next: SurfaceFrame, origin: Point): LiftSample {
+  return rebaseSurface(state, old, oldOrigin, { kind: 'lift' }, next, origin, { kind: 'lift' });
 }
 
 export type BindingView = Readonly<{ lifetime: object; revision: number }> & (

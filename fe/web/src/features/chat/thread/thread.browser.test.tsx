@@ -497,7 +497,7 @@ ConversationTurn[] {
 /** The drawer's own block insets (`--space-9` + `--space-11`): how much taller than its pane the host has to be for the card to come out at exactly `paneHeight`. */
 const DRAWER_BLOCK_INSETS = 20 + 28;
 
-/** The drawer as a four-box fixture: host, card, pane and seam. Card and seam carry the real `drawerStyles` rules (the `.drawer` clip is what the portal exists for); the animation is off and the pane takes a fixed `blockSize`. */
+/** The drawer with independent layout frames around its card and seam paints. Card and seam carry the real `drawerStyles` rules (the `.drawer` clip is what the portal exists for); the animation is off and the pane takes a fixed `blockSize`. */
 function RailPane({ turns, paneHeight = 400, conversationSpan = 396 }: {
   turns: readonly TranscriptEntry[];
   paneHeight?: number;
@@ -514,18 +514,22 @@ function RailPane({ turns, paneHeight = 400, conversationSpan = 396 }: {
         ['--conversation-span' as string]: `${conversationSpan}px`,
       }}
     >
-      <div className={drawerStyles.drawer} data-nc-drawer="" style={{ animation: 'none', transition: 'none' }}>
-        <div
-          className={drawerStyles.scroll}
-          data-nc-drawer-scroll=""
-          style={{ blockSize: paneHeight, flex: 'none' }}
-        >
-          <div className={drawerStyles.bodyInner} data-nc-rail-pane-inner="">
-            <ChatThread hasPendingMessages={false} canContinue={false} cards={{}} stalled={false} conversation={railConversation()} turns={turns} />
+      <div className={drawerStyles.positioner} data-nc-drawer-frame="">
+        <div className={drawerStyles.drawer} data-nc-drawer="" style={{ animation: 'none', transition: 'none' }}>
+          <div
+            className={drawerStyles.scroll}
+            data-nc-drawer-scroll=""
+            style={{ blockSize: paneHeight, flex: 'none' }}
+          >
+            <div className={drawerStyles.bodyInner} data-nc-rail-pane-inner="">
+              <ChatThread hasPendingMessages={false} canContinue={false} cards={{}} stalled={false} conversation={railConversation()} turns={turns} />
+            </div>
           </div>
         </div>
       </div>
-      <div className={drawerStyles.seam} data-nc-drawer-seam="" style={{ animation: 'none', transition: 'none' }} />
+      <div className={drawerStyles.seamPositioner} data-nc-drawer-frame="">
+        <div className={drawerStyles.seam} data-nc-drawer-seam="" style={{ animation: 'none', transition: 'none' }} />
+      </div>
     </div></>
   );
 }
@@ -1623,6 +1627,9 @@ describe('the exchange rail, as the engine lays it out', () => {
     const host = document.createElement('div');
     host.style.cssText = 'position:relative;block-size:600px;inline-size:900px';
     document.body.append(host);
+    const opener = document.body.appendChild(document.createElement('button'));
+    opener.textContent = 'Open conversation';
+    opener.focus();
 
     function Harness({ open }: { open: boolean }) {
       return (
@@ -1650,9 +1657,24 @@ describe('the exchange rail, as the engine lays it out', () => {
     expect(target(seam)).toBe(1);
     await Promise.all(card.getAnimations().map(animation => animation.finished));
 
+    const title = screen.getByRole('heading', { name: 'Ship the rewrite' });
+    const thread = card.querySelector('[data-nc-thread]');
+    const firstDot = dots()[0];
     view.rerender(<Harness open={false} />);
     const leavingCard = host.querySelector<HTMLElement>('[data-nc-drawer]')!;
     const leavingSeam = host.querySelector<HTMLElement>('[data-nc-drawer-seam]')!;
+    expect(leavingCard).toBe(card);
+    expect(leavingSeam).toBe(seam);
+    expect(card.contains(title)).toBe(true);
+    expect(card.querySelector('[data-nc-thread]')).toBe(thread);
+    expect(seam.contains(firstDot)).toBe(true);
+    expect(screen.queryByRole('complementary', { name: 'Ship the rewrite' })).toBeNull();
+    expect(screen.queryByRole('group', { name: 'Jump to an exchange' })).toBeNull();
+    expect(card.hasAttribute('inert')).toBe(true);
+    expect(seam.hasAttribute('inert')).toBe(true);
+    expect(card.getAttribute('aria-hidden')).toBe('true');
+    expect(seam.getAttribute('aria-hidden')).toBe('true');
+    expect(document.activeElement).toBe(opener);
     expect(target(leavingSeam)).toBe(0);
     expect(timing(leavingSeam)).toEqual(timing(leavingCard));
 
@@ -1664,7 +1686,11 @@ describe('the exchange rail, as the engine lays it out', () => {
     expect(host.querySelector('[data-nc-drawer]')).toBeNull();
     expect(host.querySelector('[data-nc-drawer-seam]')).toBeNull();
     expect(dots()).toHaveLength(0);
+    expect(card.isConnected).toBe(false);
+    expect(seam.isConnected).toBe(false);
+    expect(document.activeElement).toBe(opener);
     host.remove();
+    opener.remove();
   });
 });
 

@@ -226,7 +226,7 @@ describe('edit area', () => {
     renderSidebar({ onRequestEditArea });
     await userEvent.click(screen.getByRole('button', { name: 'Area actions for Work' }));
     await userEvent.click(screen.getByRole('menuitem', { name: 'Edit area' }));
-    expect(onRequestEditArea).toHaveBeenCalledWith(area());
+    expect(onRequestEditArea).toHaveBeenCalledWith(area(), expect.objectContaining({ kind: 'anchor' }));
   });
 });
 

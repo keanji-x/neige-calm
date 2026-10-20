@@ -297,7 +297,7 @@ it('keeps shared progress when a declaration gains or releases a peer', () => {
 // Real React refs are cleared and reassigned within the same commit: the hook
 // must see element identity without requiring an intermediate null render.
 type KeyedPart = { id: string; x: number; y: number; sx: number; sy: number };
-function KeyedProbe({ items, ready = true, ...input }: Omit<SurfacePresenceInput, 'parts'> & { items: KeyedPart[]; ready?: boolean }) {
+function KeyedProbe({ items, ready = true, ...input }: Omit<Extract<SurfacePresenceInput, { geometry: { kind: 'lift' } }>, 'parts'> & { items: KeyedPart[]; ready?: boolean }) {
   const primary = useRef<HTMLDivElement>(null); const peer = useRef<HTMLDivElement>(null);
   const primaryLayout = useRef<HTMLDivElement>(null); const peerLayout = useRef<HTMLDivElement>(null);
   const a = { element: primary, readFrame: () => ready ? readSurfaceFrame(primaryLayout.current) : null };

@@ -1,4 +1,6 @@
+import type { DialogOrigin } from '../../../ui/dialog/public.tsx';
 import { useEffect, useLayoutEffect, useRef, type ComponentProps } from 'react';
+import { flushSync } from 'react-dom';
 import { Button } from '@astryxdesign/core/Button';
 import { Popover } from '@astryxdesign/core/Popover';
 import { Icon } from '../../../ui/icon/public.tsx';
@@ -9,7 +11,7 @@ import styles from './composer-preferences.module.css';
 
 type Props = Readonly<{
   startingPoint: ComponentProps<typeof StartingPointPill>;
-  folder: ComponentProps<typeof FolderPill>;
+  folder: Omit<ComponentProps<typeof FolderPill>, 'onBrowse'> & { onBrowse: (origin: DialogOrigin) => void };
   browsing: boolean;
   isolation: ComponentProps<typeof IsolationPill>;
 }>;
@@ -43,14 +45,28 @@ export function ComposerPreferences({ startingPoint, folder, browsing, isolation
     const closed = wasBrowsing.current && !browsing;
     wasBrowsing.current = browsing;
     if (!closed) return;
-    // A trusted click in the directory dialog can light-dismiss its parent
-    // popover. Dialog then has a hidden Folder opener; restore the visible
-    // context only if focus fell to the body, after its own cleanup completes.
+    // Selection can remeasure/refold the controls in this commit. Restore the
+    // resulting reachable control after Dialog cleanup, never its removed Folder.
+    // Dialog's passive cleanup has already restored its opener. This one-frame
+    // repair only owns the remaining refold transition, not a later focus choice.
+    // focus() emits trusted focus events too: input trust cannot classify those.
+    const release = () => {
+      cancelAnimationFrame(frame);
+      document.removeEventListener('pointerdown', yieldFocus, true);
+      document.removeEventListener('keydown', yieldFocus, true);
+      document.removeEventListener('focusin', yieldFocus, true);
+    };
+    const yieldFocus = (event: Event) => {
+      if (event.type === 'focusin' ? event.target === document.activeElement : event.isTrusted) release();
+    };
     const frame = requestAnimationFrame(() => {
-      if (document.activeElement !== document.body) return;
+      release();
       (moreRef.current ?? folderRef.current?.querySelector('button'))?.focus();
     });
-    return () => cancelAnimationFrame(frame);
+    document.addEventListener('pointerdown', yieldFocus, true);
+    document.addEventListener('keydown', yieldFocus, true);
+    document.addEventListener('focusin', yieldFocus, true);
+    return release;
   }, [browsing]);
 
   useLayoutEffect(() => {
@@ -104,7 +120,14 @@ export function ComposerPreferences({ startingPoint, folder, browsing, isolation
 
   const preferences = <div ref={itemsRef} className={styles.items}>
     <span ref={startingRef} className={styles.startingPoint}><StartingPointPill {...startingPoint} /></span>
-    <span ref={folderRef} className={styles.folder}><FolderPill {...folder} /></span>
+    <span ref={folderRef} className={styles.folder}><FolderPill {...folder} onBrowse={() => {
+      // A native top-layer popup must relinquish hits and its focus trap before
+      // the body-portal modal opens. Public controlled close also restores More.
+      // Its Folder source becomes unavailable here: Motion's declared first-unavailable
+      // policy centers this cycle; never cache a box or substitute a focus source.
+      if (open) flushSync(() => setOpen(false));
+      folder.onBrowse({ kind: 'anchor', anchor: { ref: folderRef }, unavailable: 'surface-center' });
+    }} /></span>
   </div>;
 
   return <div ref={hostRef} className={styles.host} data-nc-composer-preferences>

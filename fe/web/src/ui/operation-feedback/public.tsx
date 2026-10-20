@@ -1,4 +1,5 @@
 import { useEffect, useRef, type ReactNode } from 'react';
+import type { DialogOrigin } from '../dialog/public.tsx';
 import { Banner } from '@astryxdesign/core/Banner';
 
 import { useState } from '../state/public.ts';
@@ -57,32 +58,34 @@ export function useDeleteConfirm(
   read: FailureReading,
   onDone?: () => void,
 ) {
-  const [target, setTarget] = useState<string | null>(null);
+  const center: DialogOrigin = { kind: 'surface-center' };
+  const [intent, setIntent] = useState<Readonly<{ id: string; origin: DialogOrigin }> | null>(null);
   const [pending, setPending] = useState(false);
   const active = useRef<AbortController | null>(null);
   const feedback = useOperationFeedback();
   useEffect(() => () => { active.current?.abort(); }, []);
   return {
-    target,
-    open: target !== null,
+    target: intent?.id ?? null,
+    origin: intent?.origin ?? center,
+    open: intent !== null,
     pending,
     feedback,
-    request: (id: string) => { feedback.clear(); setTarget(id); },
+    request: (id: string, origin: DialogOrigin) => { feedback.clear(); setIntent({ id, origin }); },
     // Closing aborts the request and releases this target; no delete may outlive the dialog that owns its consequences.
-    cancel: () => { active.current?.abort(); active.current = null; setPending(false); setTarget(null); },
+    cancel: () => { active.current?.abort(); active.current = null; setPending(false); setIntent(null); },
     confirm: () => {
-      if (pending || target === null) return;
+      if (pending || intent === null) return;
       const controller = new AbortController();
       active.current = controller;
       setPending(true);
-      void feedback.run(Promise.resolve().then(() => perform(target, controller.signal)), read, () => controller.signal.aborted)
+      void feedback.run(Promise.resolve().then(() => perform(intent.id, controller.signal)), read, () => controller.signal.aborted)
         .then((deleted) => {
           if (active.current !== controller) return;
           if (deleted) onDone?.();
         })
         .finally(() => {
           if (active.current !== controller) return;
-          active.current = null; setPending(false); setTarget(null);
+          active.current = null; setPending(false); setIntent(null);
         });
     },
   };

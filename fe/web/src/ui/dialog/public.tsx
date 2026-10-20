@@ -1,14 +1,18 @@
-import { presenceDepthFrame } from '../motion/depth.ts';
+import { LayerDepthProvider, useLayerDismissal } from '@astryxdesign/core/Layer';
+import { readSurfaceFrame, type LiftOrigin } from '../motion/geometry.ts';
+import { useSurfacePresence } from '../motion/surface-presence.ts';
+import styles from './dialog.module.css';
 import { createContext, useCallback, useContext, useEffect, useId, useMemo, useRef, type KeyboardEventHandler, type ReactNode, type RefObject } from 'react';
 import { createPortal } from 'react-dom';
 import { Icon } from '../icon/public.tsx';
 import { useVisibleViewport } from '../viewport/public.ts';
 import { useState } from '../state/public.ts';
-import { useSpringPresence } from '../motion/presence.ts';
+export type DialogOrigin = Exclude<LiftOrigin, { kind: 'paired-edge' }>;
 
 export interface DialogChildView { title: ReactNode; body: ReactNode; onEscape?: () => void }
 export interface DialogViewController { pushView: (view: DialogChildView) => () => void; popView: () => void }
 export interface DialogProps {
+  origin: DialogOrigin;
   open: boolean; onClose: () => void; title?: string; hideTitleRow?: boolean; children?: ReactNode; wide?: boolean;
   /** Drop the `×` while keeping the title; `hideTitleRow` can only remove both. */
   hideClose?: boolean;
@@ -17,6 +21,7 @@ export interface DialogProps {
 /** `blocked` is real `disabled`; `busy` keeps the button focusable so the focus trap does not lose a member mid-flight. */
 export type ConfirmState = 'ready' | 'blocked' | 'busy';
 export interface ConfirmDialogProps {
+  origin: DialogOrigin;
   open: boolean; title: string; description?: ReactNode; confirmLabel?: string; cancelLabel?: string;
   onConfirm: () => void; onCancel: () => void; destructive?: boolean; confirmState?: ConfirmState;
   /** Second label node, so busy can swap text without changing width. */
@@ -42,7 +47,7 @@ function isVisibleWithin(element: HTMLElement, panel: HTMLElement): boolean {
   return true;
 }
 
-export function Dialog({ open, onClose, title, hideTitleRow, hideClose, children, wide, initialFocusRef }: DialogProps) {
+export function Dialog({ origin, open, onClose, title, hideTitleRow, hideClose, children, wide, initialFocusRef }: DialogProps) {
   const viewport = useVisibleViewport(open);
   const [views, setViews] = useState<readonly (DialogChildView & { id: number })[]>([]);
   const nextViewId = useRef(0);
@@ -51,7 +56,17 @@ export function Dialog({ open, onClose, title, hideTitleRow, hideClose, children
   const titleId = `${useId()}-title`;
   const panelRef = useRef<HTMLDivElement | null>(null);
   const previouslyFocusedRef = useRef<HTMLElement | null>(null);
-  useSpringPresence(panelRef, null, open, open, true, () => {}, presenceDepthFrame);
+  const frameRef = useRef<HTMLDivElement | null>(null);
+  // Lock only the declaration, never coordinates. Motion owns tracking/freeze.
+  const [presentation, setPresentation] = useState<DialogOrigin | null>(null);
+  if (open && presentation === null) setPresentation(origin.kind === 'anchor'
+    ? { kind: 'anchor', anchor: { ref: origin.anchor.ref }, unavailable: origin.unavailable }
+    : { kind: 'surface-center' });
+  if (!open && presentation !== null) setPresentation(null);
+  useSurfacePresence({ open, present: open, enabled: true, onExited: () => {},
+    parts: { kind: 'single', primary: { element: panelRef, readFrame: () => readSurfaceFrame(frameRef.current) } },
+    geometry: { kind: 'lift', origin: presentation ?? origin },
+  });
   const popView = useCallback(() => setViews((current) => current.slice(0, -1)), [setViews]);
   const pushView = useCallback((view: DialogChildView) => {
     const id = ++nextViewId.current;
@@ -104,20 +119,21 @@ export function Dialog({ open, onClose, title, hideTitleRow, hideClose, children
     });
     return () => cancelAnimationFrame(frame);
   }, [open, view?.id, views.length]);
+  useLayerDismissal({ isActive: open,
+    onDismiss: () => { if (view) { if (view.onEscape) view.onEscape(); else popView(); } else onClose(); },
+    getContainer: () => panelRef.current,
+    isPresent: () => {
+      const layers = [...document.querySelectorAll<HTMLElement>('[data-nc-escape-layer]')]
+        .filter(layer => layer.closest('[hidden]') === null);
+      return open && panelRef.current !== null && layers.at(-1) === panelRef.current;
+    },
+  });
   useEffect(() => {
     if (!open) return;
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape' || event.defaultPrevented) return;
-      const layers = document.querySelectorAll<HTMLElement>('[data-nc-escape-layer]');
-      if (layers.item(layers.length - 1) !== panelRef.current) return;
-      if (view) { if (view.onEscape) view.onEscape(); else popView(); }
-      else onClose();
-    };
     const overflow = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
-    document.addEventListener('keydown', onKeyDown);
-    return () => { document.removeEventListener('keydown', onKeyDown); document.body.style.overflow = overflow; };
-  }, [onClose, open, popView, view]);
+    return () => { document.body.style.overflow = overflow; };
+  }, [open]);
 
   // Capture before inert: browsers run unfocusing steps when inert is applied.
   useEffect(() => {
@@ -180,12 +196,14 @@ export function Dialog({ open, onClose, title, hideTitleRow, hideClose, children
       event.preventDefault(); (event.shiftKey ? last : first)?.focus();
     }
   };
-  return createPortal(<DialogViewContext.Provider value={controller}><div
+  return createPortal(<LayerDepthProvider><DialogViewContext.Provider value={controller}><div
     className={showingView || wide ? 'dialog-overlay dialog-overlay-wide' : 'dialog-overlay'} role="presentation"
     style={{ insetBlockStart: viewport.bottomEdge - viewport.height, insetBlockEnd: viewport.bottomInset }}
     onMouseDown={(event) => { if (!showingView && event.target === event.currentTarget) onClose(); }}>
+    <div ref={frameRef} className={`${styles.frame} ${showingView || wide ? styles.wide : ''}`}
+      style={{ maxBlockSize: `calc(${viewport.height}px - var(--space-6))` }}>
     {/* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- the dialog panel owns its required focus trap and click-through guard. */}
-    <div ref={panelRef} className={showingView || wide ? 'dialog-panel dialog-panel-wide' : 'dialog-panel'} data-nc-escape-layer=""
+    <div ref={panelRef} className={`${styles.panel} ${showingView || wide ? 'dialog-panel dialog-panel-wide' : 'dialog-panel'}`} data-nc-escape-layer=""
       style={{ maxBlockSize: `calc(${viewport.height}px - var(--space-6))` }}
       role="dialog" aria-modal="true" aria-label={typeof headerTitle === 'string' ? headerTitle : undefined}
       aria-labelledby={headerTitle && typeof headerTitle !== 'string' ? titleId : undefined}
@@ -199,10 +217,11 @@ export function Dialog({ open, onClose, title, hideTitleRow, hideClose, children
         <div className="dialog-body dialog-child-view" data-nc-dialog-child-view="">{view.body}</div>
       )}
     </div>
-  </div></DialogViewContext.Provider>, document.body);
+    </div>
+  </div></DialogViewContext.Provider></LayerDepthProvider>, document.body);
 }
 
-export function ConfirmDialog({ open, title, description, confirmLabel = 'Confirm', cancelLabel = 'Cancel', onConfirm, onCancel, destructive = true, confirmState = 'ready', confirmBusyLabel, initialFocusRef }: ConfirmDialogProps) {
+export function ConfirmDialog({ origin, open, title, description, confirmLabel = 'Confirm', cancelLabel = 'Cancel', onConfirm, onCancel, destructive = true, confirmState = 'ready', confirmBusyLabel, initialFocusRef }: ConfirmDialogProps) {
   const cancelRef = useRef<HTMLButtonElement | null>(null);
   const confirmRef = useRef<HTMLButtonElement | null>(null);
 
@@ -219,7 +238,7 @@ export function ConfirmDialog({ open, title, description, confirmLabel = 'Confir
       <span aria-hidden={!busy}>{confirmBusyLabel}</span>
     </span>
   );
-  return <Dialog open={open} title={title} onClose={onCancel} hideClose
+  return <Dialog origin={origin} open={open} title={title} onClose={onCancel} hideClose
     initialFocusRef={initialFocusRef ?? cancelRef}>
     {description}{busy && <p>Closing this dialog cancels the delete request.</p>}
     <div className="confirm-dialog-actions"><button ref={cancelRef} type="button" data-nc-action="secondary"

@@ -8,7 +8,7 @@ import { List, ListItem } from '@astryxdesign/core/List';
 import { useState } from '../../ui/state/public.ts';
 import { Icon } from '../../ui/icon/public.tsx';
 import { ListText } from '../../ui/list-typography/public.tsx';
-import { Dialog } from '../../ui/dialog/public.tsx';
+import { Dialog, type DialogOrigin } from '../../ui/dialog/public.tsx';
 import { calendarDate, calendarOccurrenceOn, type CalendarListedEntry, type CalendarEdit, type CalendarWindow } from '../../../../core/domain/calendar.ts';
 import { CalendarEditor, WeeklyEntryDetails } from './editor.tsx';
 import type { CalendarGridHandle } from './calendar-view.tsx';
@@ -39,9 +39,10 @@ export function CalendarTasks({ date, timezone, trackCountOn, month, day, enable
     );
     return () => { cancelled = true; };
   }, [setGrid]);
-  const [editing, setEditing] = useState<Readonly<{ entry: CalendarListedEntry | null; date: string }> | null>(null);
+  const createRef = useRef<HTMLSpanElement | null>(null);
+  const [editing, setEditing] = useState<Readonly<{ entry: CalendarListedEntry | null; date: string; origin: DialogOrigin }> | null>(null);
   const dateLabel = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', weekday: 'short', timeZone: 'UTC' }).format(new Date(`${date}T12:00:00Z`));
-  const open = (entry: CalendarListedEntry) => setEditing({ entry, date });
+  const open = (entry: CalendarListedEntry, origin: DialogOrigin) => setEditing({ entry, date, origin });
   const schedule = editing?.entry?.task.schedule;
   const weekly = schedule?.kind === 'weekly' ? schedule : null;
   return <>
@@ -61,22 +62,19 @@ export function CalendarTasks({ date, timezone, trackCountOn, month, day, enable
     <section className={styles.dayDetails} aria-label="Selected day tasks">
       <div className={styles.heading}>
         <div className={styles.dateHeading}><ListText as="h2" tone="group">{dateLabel}</ListText><ListText tone="secondary">{timezone}</ListText></div>
-        <Button label="New task" isIconOnly icon={<Icon name="plus" size="sm" />} className={styles.iconAction} size="sm" variant="ghost" isDisabled={!enabled || pending} onClick={() => setEditing({ entry: null, date })} />
+        <span ref={createRef} style={{ display: 'inline-flex' }}><Button label="New task" isIconOnly icon={<Icon name="plus" size="sm" />} className={styles.iconAction} size="sm" variant="ghost" isDisabled={!enabled || pending} onClick={() => setEditing({ entry: null, date, origin: { kind: 'anchor', anchor: { ref: createRef }, unavailable: 'surface-center' } })} /></span>
       </div>
       <div className={styles.taskScroll} role="region" aria-label="Task list">
       {enabled && (day.error ? <Banner status="error" title={day.error} endContent={<Button label="Retry" variant="ghost" onClick={onRetry} />} />
         : day.loading ? <p role="status" className={styles.empty}>Loading tasks…</p>
         : day.entries?.length === 0 ? <EmptyState variant="compact" icon={<Icon name="tasks" />} title="这一天没有安排任务" description="这一天的日程任务会显示在这里。" />
         : <List density="compact">
-            {day.entries?.toSorted((a, b) => compareSchedule(a, b, date, timezone)).map((entry) => <ListItem key={entry.id} className={styles.taskItem} label={<span className={styles.detailRow}>
-              <span aria-hidden="true" /><ListText tone="primary" className={styles.detailTitle}>{entry.task.title}</ListText>
-              <span className={styles.detailTime}>{scheduleLabel(entry, date, timezone)}</span>
-            </span>} onClick={() => open(entry)} />)}
+            {day.entries?.toSorted((a, b) => compareSchedule(a, b, date, timezone)).map((entry) => <CalendarEntryRow key={entry.id} entry={entry} date={date} timezone={timezone} onOpen={open} />)}
           </List>)}
       </div>
     </section>
     </section></PanelModule>
-    {editing !== null && <Dialog open onClose={() => { if (!pending) setEditing(null); }} title={weekly ? 'Weekly task' : editing.entry ? 'Edit task' : 'New task'}>
+    {editing !== null && <Dialog origin={editing.origin} open onClose={() => { if (!pending) setEditing(null); }} title={weekly ? 'Weekly task' : editing.entry ? 'Edit task' : 'New task'}>
       {weekly && editing.entry ? <WeeklyEntryDetails task={editing.entry.task} schedule={weekly} />
         : <CalendarEditor key={editing.entry ? `${editing.entry.id}:${editing.entry.version}` : 'new'} entry={editing.entry}
           date={editing.date} timezone={timezone} pending={pending} onClose={() => setEditing(null)} onSave={onSave} />}
@@ -103,4 +101,15 @@ function compareSchedule(a: CalendarListedEntry, b: CalendarListedEntry, date: s
   if (left === undefined) return right === undefined ? 0 : -1;
   if (right === undefined) return 1;
   return Date.parse(left) - Date.parse(right);
+}
+
+function CalendarEntryRow({ entry, date, timezone, onOpen }: {
+  entry: CalendarListedEntry; date: string; timezone: string;
+  onOpen: (entry: CalendarListedEntry, origin: DialogOrigin) => void;
+}) {
+  const ref = useRef<HTMLLIElement | null>(null);
+  return <ListItem ref={ref} className={styles.taskItem} label={<span className={styles.detailRow}>
+    <span aria-hidden="true" /><ListText tone="primary" className={styles.detailTitle}>{entry.task.title}</ListText>
+    <span className={styles.detailTime}>{scheduleLabel(entry, date, timezone)}</span>
+  </span>} onClick={() => onOpen(entry, { kind: 'anchor', anchor: { ref }, unavailable: 'surface-center' })} />;
 }

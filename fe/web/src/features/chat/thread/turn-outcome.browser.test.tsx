@@ -74,10 +74,12 @@ it('uses distinct semantic colors and the same weight for interrupted and failed
   expect(failed.fontWeight).toBe('400');
 });
 
+/* Shell's host clips entering paint without becoming a scrollport; the feature
+   fixture owns the same boundary, while Drawer owns its panel and seam frames. */
 it.each([320, 390, 1280])('places the paused runtime in the transcript without covering the composer (%ipx)', async (width) => {
   await page.viewport(width, 844);
   const reason = 'The stop request timed out before the model confirmed that this turn had stopped.';
-  const { container } = render(<div style={{ position: 'relative', height: '90dvh', containerType: 'inline-size' }}>
+  const { container } = render(<div style={{ position: 'relative', height: '90dvh', containerType: 'inline-size', overflow: 'clip' }}>
     <Drawer open title="Review" onClose={() => undefined}
       footer={<ChatComposer disabled onSend={() => undefined} />}>
       <ChatThread hasPendingMessages={false} canContinue={false} cards={{}} stalled stalledReason={reason} conversation={conversation()}
@@ -126,7 +128,7 @@ it.each([
 
 it.each([320, 390, 1280])('keeps stop feedback inside the transcript and clear of the composer (%ipx)', async (width) => {
   await page.viewport(width, 844);
-  const { container } = render(<div style={{ position: 'relative', height: '90dvh', containerType: 'inline-size' }}>
+  const { container } = render(<div style={{ position: 'relative', height: '90dvh', containerType: 'inline-size', overflow: 'clip' }}>
     <Drawer open title="Review" onClose={() => undefined} footer={<ChatComposer onSend={() => undefined} />}>
       <ChatThread hasPendingMessages={false} canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={[]}
         stopFeedback={{ kind: 'failed', message: 'The connection is unavailable. Your response may still be running.' }} />
@@ -161,7 +163,7 @@ it.each([320, 390, 1280])('keeps one current pause and hides historical interrup
   await page.viewport(width, 844);
   const interrupted = outcome('interrupted', 'Historical interruption.');
   const later = { id: 'later-reply', author: 'agent' as const, text: 'The conversation continued.', atMs: 2 };
-  const { container, rerender } = render(<div style={{ position: 'relative', height: '90dvh', containerType: 'inline-size' }}>
+  const { container, rerender } = render(<div style={{ position: 'relative', height: '90dvh', containerType: 'inline-size', overflow: 'clip' }}>
     <Drawer open title="Review" onClose={() => undefined} footer={<ChatComposer onSend={() => undefined} />}>
       <ChatThread hasPendingMessages={false} canContinue cards={{}} stalled={false} conversation={conversation()} turns={[interrupted, later]} />
     </Drawer>
@@ -170,7 +172,7 @@ it.each([320, 390, 1280])('keeps one current pause and hides historical interrup
   expect(screen.getByText('The conversation continued.')).toBeTruthy();
   expect(container.querySelector('[data-nc-turn-outcome]')).toBeNull();
   for (const status of ['interrupted', 'failed'] as const) {
-    rerender(<div style={{ position: 'relative', height: '90dvh', containerType: 'inline-size' }}>
+    rerender(<div style={{ position: 'relative', height: '90dvh', containerType: 'inline-size', overflow: 'clip' }}>
       <Drawer open title="Review" onClose={() => undefined} footer={<ChatComposer disabled onSend={() => undefined} />}>
         <ChatThread hasPendingMessages={false} canContinue={false} cards={{}} stalled stalledReason="The stop remains unconfirmed."
           conversation={conversation()} turns={[outcome(status, 'Previous outcome reason.')]} />
@@ -194,7 +196,7 @@ it.each([320, 390, 1280])('keeps one current pause and hides historical interrup
 it.each([390, 1280])('keeps stop failure evidence readable while execution status is unconfirmed (%ipx)', async (width) => {
   await page.viewport(width, 844);
   const reason = 'The stop request was refused.';
-  const { container } = render(<div style={{ position: 'relative', height: '90dvh', containerType: 'inline-size' }}>
+  const { container } = render(<div style={{ position: 'relative', height: '90dvh', containerType: 'inline-size', overflow: 'clip' }}>
     <Drawer open title="Review" onClose={() => undefined} footer={<ChatComposer onSend={() => undefined} />}>
       <ChatThread hasPendingMessages={false} canContinue={false} cards={{}} stalled={false} statusUnconfirmed conversation={conversation()}
         turns={[]} stopFeedback={{ kind: 'failed', message: reason }} />

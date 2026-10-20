@@ -1,7 +1,7 @@
 import {
   resolveLiveSlot, type LiveSlotResolution, type NativeComponent, type NativeLiveSlot, type NativeSnapshot, type NativeViewPayload,
 } from '../../../../../core/domain/report-view.ts';
-import { useId, useMemo, type ReactNode } from 'react';
+import { useId, useMemo, useRef, type ReactNode } from 'react';
 import type { ReportSourceLinkTarget } from '../../../../../core/domain/report-source.ts';
 import { BarChart, MeterChart, MetricGroup, DistributionChart, TimeSeriesChart, type PlotSelection } from '../../../ui/data-visualization/public.tsx';
 import { Dialog } from '../../../ui/dialog/public.tsx';
@@ -86,6 +86,7 @@ export function NativeReportView({ payload, resolveOverlay, onOpenSourceLink, li
   onOpenSourceLink?: (target: ReportSourceLinkTarget) => void;
   linkPreview?: ReportLinkPreviewResources;
 }) {
+  const expandRef = useRef<HTMLSpanElement | null>(null);
   const [expanded, setExpanded] = useState(false);
   const [inspection, setInspection] = useState<Inspection>(() => ({ plots: new Map(), distributions: new Map(), records: new Map(), snapshotOpen: false }));
   const resolutions = useMemo<Resolutions>(() => resolveOverlay === undefined ? null : new Map(payload.rows.flatMap(row => row.cells)
@@ -94,9 +95,9 @@ export function NativeReportView({ payload, resolveOverlay, onOpenSourceLink, li
   const title = payload.title === '' ? null : <h2>{payload.title}</h2>;
   return <div className={styles.root}>
     {title !== null && <header className={styles.header}>{title}</header>}
-    <Composition renderText={renderText} payload={payload} {...reading} action={<button type="button" className={styles.wideToggle}
-      aria-label={payload.title === '' ? '放大查看' : `放大查看 ${payload.title}`} title="放大查看" onClick={() => setExpanded(true)}><Icon name="fullscreen" size="sm" />放大查看</button>} />
-    <Dialog open={expanded} onClose={() => setExpanded(false)} title={payload.title === '' ? '视图' : payload.title} hideTitleRow wide>
+    <Composition renderText={renderText} payload={payload} {...reading} action={<span ref={expandRef} className={styles.expandSource}><button type="button" className={styles.wideToggle}
+      aria-label={payload.title === '' ? '放大查看' : `放大查看 ${payload.title}`} title="放大查看" onClick={() => setExpanded(true)}><Icon name="fullscreen" size="sm" />放大查看</button></span>} />
+    <Dialog origin={{ kind: 'anchor', anchor: { ref: expandRef }, unavailable: 'surface-center' }} open={expanded} onClose={() => setExpanded(false)} title={payload.title === '' ? '视图' : payload.title} hideTitleRow wide>
       <div className={styles.root}>
         <header className={styles.header}>{title}<button type="button" className={styles.expand}
           aria-label="Close" title="关闭视图" onClick={() => setExpanded(false)}><Icon name="close" size="sm" /></button></header>

@@ -1,3 +1,4 @@
+import type { DialogOrigin } from '../../ui/dialog/public.tsx';
 import type { SidebarTrackGroups } from './sidebar-track-groups.ts';
 import { trackEmptyContent } from './track-empty-content.tsx';
 import { EmptyState } from '../../ui/empty-state/public.tsx';
@@ -39,8 +40,8 @@ export type SidebarProps = Readonly<{
   trackGroups: SidebarTrackGroups;
   currentPath: string;
   onGo: (target: NavTarget) => void;
-  onRequestCreateArea: () => void;
-  onRequestEditArea: (area: Area) => void;
+  onRequestCreateArea: (origin: DialogOrigin) => void;
+  onRequestEditArea: (area: Area, origin: DialogOrigin) => void;
   onDeleteArea: (areaId: string, signal: AbortSignal) => void | Promise<void>;
   /** Goes to the new-track page for this area, through the shell. */
   onNewTrack: (areaId: string) => void;
@@ -82,6 +83,7 @@ export function Sidebar({
   readLoading = false, onRetryRead = () => undefined,
 }: SidebarProps) {
   const preferences = useUiPreferences();
+  const createRef = useRef<HTMLSpanElement | null>(null);
   const railRef = useRef<HTMLElement | null>(null);
   const areaDisclosureRefs = useRef(new Map<string, HTMLButtonElement>());
   const pendingAreaFocusRef = useRef<string | null>(null);
@@ -290,8 +292,8 @@ export function Sidebar({
             management={management(id, 'Group actions for Areas')}
             expanded={areasExpanded}
             onToggle={(value) => preferences.setSidebarGroupExpanded('areas', value)}
-            actions={<button type="button" data-nc-role="icon" className={`${styles.iconButton} ${rowLayout('chromeOuter')}`}
-              aria-label="New area" onClick={onRequestCreateArea}><Icon name="plus" /></button>}>
+            actions={<span ref={createRef} className={`${styles.iconButton} ${rowLayout('chromeOuter')}`}><button type="button" data-nc-role="icon" className={styles.sourceButton}
+              aria-label="New area" onClick={() => onRequestCreateArea({ kind: 'anchor', anchor: { ref: createRef }, unavailable: 'surface-center' })}><Icon name="plus" /></button></span>}>
             {readError === null && !readLoading && userAreas.length === 0 && (
               <div className={styles.emptyArea}>
                 <EmptyState variant="compact" icon={<Icon name="folder" />} title="还没有 Area" description="项目与 Track 会按 Area 归类。" />
@@ -316,7 +318,7 @@ export function Sidebar({
                       if (element === null) areaDisclosureRefs.current.delete(area.id);
                       else areaDisclosureRefs.current.set(area.id, element);
                     }}
-                    onEdit={() => onRequestEditArea(area)}
+                    onEdit={(origin) => onRequestEditArea(area, origin)}
                     onRequestDelete={areaConfirm.request}
                     onNewTrack={onNewTrack}
                     {...rowProps}
@@ -356,6 +358,7 @@ export function Sidebar({
       </div>
 
       <ConfirmDialog
+        origin={trackConfirm.origin}
         open={trackConfirm.open}
         title={DELETE_TRACK_COPY.title}
         description={DELETE_TRACK_COPY.description}
@@ -370,6 +373,7 @@ export function Sidebar({
       {/* Deleting an area cascades to every track inside it: the one operation that
                 earns a typed confirm. */}
       <ConfirmDialog
+        origin={areaConfirm.origin}
         open={areaConfirm.open}
         title={areaCopy.title}
         description={<TypedDeleteBody

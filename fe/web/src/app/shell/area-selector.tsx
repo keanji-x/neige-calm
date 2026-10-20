@@ -1,3 +1,5 @@
+import { useRef } from 'react';
+import type { DialogOrigin } from '../../ui/dialog/public.tsx';
 import { Button } from '@astryxdesign/core/Button';
 import { Icon } from '../../ui/icon/public.tsx';
 import { visibleAreas, type Area } from '../../../../core/domain/area.ts';
@@ -9,19 +11,20 @@ export function AreaSelector({ areas, activeArea, onSelectArea, onCreateArea }: 
   areas: readonly Area[];
   activeArea: Area | undefined;
   onSelectArea: (areaId: string) => void;
-  onCreateArea: () => void;
+  onCreateArea: (origin: DialogOrigin) => void;
 }>) {
+  const sourceRef = useRef<HTMLSpanElement | null>(null);
   const shown = visibleAreas(areas);
   const current = shown.find((area) => area.id === activeArea?.id);
   return <Menu wrapClassName={styles.area} menuClassName={styles.menu}
     itemClassName={styles.item} separatorClassName={styles.separator}
     items={[
       ...shown.map((area) => ({ label: area.name, current: area.id === current?.id, onSelect: () => onSelectArea(area.id) })),
-      { label: 'New area', separatorBefore: true, onSelect: onCreateArea },
+      { label: 'New area', separatorBefore: true, onSelect: () => onCreateArea({ kind: 'anchor', anchor: { ref: sourceRef }, unavailable: 'surface-center' }) },
     ]}
-    trigger={(props) => <Button {...props} label={current?.name ?? 'Choose area'}
+    trigger={(props) => <span ref={sourceRef} style={{ display: 'inline-flex' }}><Button {...props} label={current?.name ?? 'Choose area'}
       variant="ghost" size="lg" className={styles.button}
       aria-label={`Switch area, ${current?.name ?? 'Choose area'}`}
-      endContent={<Icon name="switch" />} />}
+      endContent={<Icon name="switch" />} /></span>}
   />;
 }

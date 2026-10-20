@@ -19,7 +19,8 @@
   .muted, .snapshot { font-size: var(--font-step-1-size); color: var(--text-3); }
   .footer { display: flex; justify-content: space-between; align-items: start; gap: var(--space-2); padding-block: var(--space-2); }
   .snapshot { min-inline-size: 0; }
-  .wideToggle { font: inherit; font-size: var(--font-step-1-size); display: inline-flex; flex: none; align-items: center; gap: var(--space-1); margin-inline-start: auto; border: 0; padding: var(--space-half) 0; background: transparent; color: var(--text-2); cursor: pointer; }
+  .expandSource { display: inline-flex; flex: none; margin-inline-start: auto; }
+  .wideToggle { font: inherit; font-size: var(--font-step-1-size); display: inline-flex; flex: none; align-items: center; gap: var(--space-1); border: 0; padding: var(--space-half) 0; background: transparent; color: var(--text-2); cursor: pointer; }
   .wideToggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   .snapshot p { margin-block: var(--space-1); }
   .disclosureToggle { font: inherit; display: flex; align-items: start; gap: var(--space-1); max-inline-size: 100%; border: 0; padding: var(--space-half) 0; background: transparent; color: inherit; text-align: start; cursor: pointer; }

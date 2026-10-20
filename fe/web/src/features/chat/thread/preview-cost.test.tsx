@@ -21,10 +21,17 @@ function message(id: string, author: 'you' | 'agent', text: string, atMs: number
 function mount(turns: readonly ConversationTurn[]) {
   const host = document.createElement('div');
   host.setAttribute('data-preview-test-host', '');
-  host.setAttribute('data-nc-drawer', '');
+  const panelFrame = document.createElement('div');
+  const seamFrame = document.createElement('div');
+  panelFrame.setAttribute('data-nc-drawer-frame', '');
+  seamFrame.setAttribute('data-nc-drawer-frame', '');
+  const card = document.createElement('div');
+  card.setAttribute('data-nc-drawer', '');
   const seam = document.createElement('div'); seam.setAttribute('data-nc-drawer-seam', '');
   const pane = document.createElement('div'); pane.setAttribute('data-nc-drawer-scroll', '');
-  host.append(pane, seam); document.body.append(host);
+  host.append(panelFrame, seamFrame);
+  panelFrame.append(card); card.append(pane); seamFrame.append(seam);
+  document.body.append(host);
   const view = (rows: readonly ConversationTurn[]) => <ChatThread hasPendingMessages={false} conversation={conversation} turns={rows}
     cards={{}} stalled={false} canContinue={false} />;
   const rendered = render(view(turns), { container: pane });

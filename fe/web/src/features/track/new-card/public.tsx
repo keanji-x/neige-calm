@@ -1,3 +1,4 @@
+import type { DialogOrigin } from '../../../ui/dialog/public.tsx';
 // The CARDS module's `+`: which kind, and then what that kind needs to know. Neither piece calls an API.
 // `DirectoryField` pushes its browser into the surrounding dialog, so this form is only ever hosted inside `ui/dialog`.
 
@@ -26,14 +27,15 @@ export type AddCardMenuProps = Readonly<{
   icon?: IconName;
   /** Fired with the picked entry and its actual trigger for focus return. The caller decides between "create now" and
    *  "collect its fields first" — this menu never creates anything. */
-  onSelect: (entry: CardAddMenuEntry, trigger: HTMLButtonElement | null) => void;
+  onSelect: (entry: CardAddMenuEntry, trigger: HTMLButtonElement | null, origin: DialogOrigin) => void;
 }>;
 
 /** The `+` in the module head, and the kinds behind it. An empty registry still renders the `+` with one disabled row: a build with no creatable kind is a defect, not a design choice. */
 export function AddCardMenu({ entries, onSelect, label = 'Add card', icon = 'plus' }: AddCardMenuProps) {
+  const sourceRef = useRef<HTMLSpanElement | null>(null);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   return (
-    <DropdownMenu
+    <span ref={sourceRef} style={{ display: 'inline-flex' }}><DropdownMenu
       placement="below"
       alignment="end"
       button={{
@@ -52,10 +54,10 @@ export function AddCardMenu({ entries, onSelect, label = 'Add card', icon = 'plu
           <DropdownMenuItem
             key={entry.type}
             label={entry.label}
-            onClick={() => onSelect(entry, triggerRef.current)}
+            onClick={() => onSelect(entry, triggerRef.current, { kind: 'anchor', anchor: { ref: sourceRef }, unavailable: 'surface-center' })}
           />
         ))}
-    </DropdownMenu>
+    </DropdownMenu></span>
   );
 }
 

@@ -36,7 +36,7 @@ describe('MobileTracks', () => {
     expect(screen.queryByRole('group', { name: 'Workspace actions' })).toBeNull();
     expect(screen.getByRole('button', { name: 'New track' }).closest('header')).toBeNull();
     await userEvent.click(edit);
-    expect(onEditArea).toHaveBeenCalledWith(area);
+    expect(onEditArea).toHaveBeenCalledWith(area, expect.objectContaining({ kind: 'anchor' }));
     await userEvent.click(screen.getByRole('button', { name: 'New track' }));
     expect(onNewTrack).toHaveBeenCalledWith('c1');
     const selected = screen.getByRole('button', { name: 'Responsive mobile UI' });

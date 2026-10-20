@@ -1,17 +1,20 @@
 import { useEffectEvent, useLayoutEffect, useRef } from 'react';
 import { playTrajectory, springTrajectory } from './spring.ts';
 import { createPlaybackTarget } from './target.ts';
-import { assertAxisAligned, frameCenter, liftKeyframe, rebaseLift, validateFrame,
-  type BindingView, type SurfaceBinding, type LiftSample, type Point, type SurfaceFrame, type SurfaceGeometry, type SurfaceParts } from './geometry.ts';
+import { assertAxisAligned, frameCenter, surfaceKeyframe, rebaseSurface, validateFrame,
+  type BindingView, type SurfaceBinding, type LiftSample, type Point, type SurfaceFrame, type SurfaceGeometry, type SurfaceMap, type SurfaceParts } from './geometry.ts';
 
 export type SurfacePresenceInput = Readonly<{
-  parts: SurfaceParts; geometry: SurfaceGeometry; open: boolean; present: boolean;
+  open: boolean; present: boolean;
   enabled: boolean; onExited: () => void;
   onVisualChange?: () => void;
   onMeasurementChange?: (view: BindingView) => void;
-}>;
+}> & (
+  | Readonly<{ parts: SurfaceParts; geometry: Extract<SurfaceGeometry, { kind: 'lift' }> }>
+  | Readonly<{ parts: Extract<SurfaceParts, { kind: 'paired' }>; geometry: Extract<SurfaceGeometry, { kind: 'edge-reveal' }> }>
+);
 type BoundPart = Readonly<{ element: HTMLElement; frame: SurfaceFrame }>;
-type Snapshot = Readonly<{ parts: readonly BoundPart[]; origin: Point }>;
+type Snapshot = Readonly<{ parts: readonly BoundPart[]; origin: Point; map: SurfaceMap }>;
 type Source = { element: HTMLElement | null; point: Point | null; frozen: boolean; center: boolean };
 
 // One shared progress and fixed x/y compensation per declared part, all on one clock.
@@ -24,7 +27,9 @@ type Binding = {
   playback: ReturnType<typeof createPlaybackTarget<SurfaceState>>;
 };
 function sameSnapshot(a: Snapshot, b: Snapshot) {
-  return a.parts.length === b.parts.length && a.parts.every((part, index) => {
+  return a.map.kind === b.map.kind
+    && (a.map.kind !== 'edge-reveal' || b.map.kind === 'edge-reveal' && a.map.center.x === b.map.center.x && a.map.center.y === b.map.center.y)
+    && a.parts.length === b.parts.length && a.parts.every((part, index) => {
     const next = b.parts[index]; const before = part.frame.viewportFromLocal; const after = next.frame.viewportFromLocal;
     return part.element === next.element && part.frame.document === next.frame.document
       && part.frame.size.width === next.frame.size.width && part.frame.size.height === next.frame.size.height
@@ -42,7 +47,7 @@ function transfer(from: SurfaceSample, old: Snapshot, next: Snapshot): SurfaceSa
       && !next.parts.some(current => current.element === slot.element) ? index : -1;
     if (previous < 0) return { value: { progress: from.value.progress, x: 0, y: 0 },
       velocity: { progress: from.velocity.progress, x: 0, y: 0 } };
-    return rebaseLift(partSample(from, previous), old.parts[previous].frame, old.origin, part.frame, next.origin);
+    return rebaseSurface(partSample(from, previous), old.parts[previous].frame, old.origin, old.map, part.frame, next.origin, next.map);
   });
   return { value: { progress: from.value.progress, offsets: samples.map(sample => ({ x: sample.value.x, y: sample.value.y })) },
     velocity: { progress: from.velocity.progress, offsets: samples.map(sample => ({ x: sample.velocity.x, y: sample.velocity.y })) } };
@@ -69,7 +74,7 @@ function playSurface(elements: readonly HTMLElement[], snapshot: Snapshot, from:
       return { value: { progress: progress.value, offsets: samples.map(({ x, y }) => ({ x: x.value, y: y.value })) },
         velocity: { progress: progress.velocity, offsets: samples.map(({ x, y }) => ({ x: x.velocity, y: y.velocity })) } };
     },
-  }, (state, index) => liftKeyframe(snapshot.parts[index].frame, snapshot.origin, { progress: state.progress, ...state.offsets[index] }), onVisualChange);
+  }, (state, index) => surfaceKeyframe(snapshot.parts[index].frame, snapshot.origin, snapshot.map, { progress: state.progress, ...state.offsets[index] }), onVisualChange);
 }
 
 /** Paint retention only: never owns selection, navigation, focus or business disposal. */
@@ -77,7 +82,7 @@ export function useSurfacePresence(input: SurfacePresenceInput): SurfaceBinding 
   const visualChange = useEffectEvent(() => { input.onVisualChange?.(); });
   const latestParts = useRef(input.parts);
   const measurementView = useRef<BindingView>({ kind: 'unavailable', lifetime: {}, revision: 0 });
-  const sameParts = (a: readonly BoundPart[], b: readonly BoundPart[]) => sameSnapshot({ parts: a, origin: { x: 0, y: 0 } }, { parts: b, origin: { x: 0, y: 0 } });
+  const sameParts = (a: readonly BoundPart[], b: readonly BoundPart[]) => sameSnapshot({ parts: a, origin: { x: 0, y: 0 }, map: { kind: 'lift' } }, { parts: b, origin: { x: 0, y: 0 }, map: { kind: 'lift' } });
   const notify = useEffectEvent((ready: boolean) => {
     const current = binding.current;
     const before = measurementView.current;
@@ -167,7 +172,8 @@ export function useSurfacePresence(input: SurfacePresenceInput): SurfaceBinding 
         }
         point = owned.point ?? frameCenter(frame);
       } else point = frameCenter(frame);
-      const next: Snapshot = { parts: surfaces.map((element, index) => ({ element, frame: finalFrames[index] })), origin: point };
+      const next: Snapshot = { parts: surfaces.map((element, index) => ({ element, frame: finalFrames[index] })), origin: point,
+        map: geometry.kind === 'edge-reveal' ? { kind: 'edge-reveal', center: frameCenter(frame) } : { kind: 'lift' } };
       const target = open ? 1 : 0;
       ready = true;
       const owned = binding.current;

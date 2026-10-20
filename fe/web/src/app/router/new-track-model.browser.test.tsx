@@ -218,14 +218,16 @@ it('dismisses the nested template picker before overflow and leaves directory se
     const cancelledDirectory = await screen.findByRole('dialog', { name: 'Choose a directory' });
     await user.click(within(cancelledDirectory).getByRole('button', { name: 'Cancel' }));
     await waitFor(() => { expect(screen.queryByRole('dialog', { name: 'Choose a directory' })).toBeNull(); });
-    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Folder: Neige workspace' }));
+    expect(screen.queryByRole('dialog', { name: 'Track options' })).toBeNull();
+    await waitFor(() => { expect(document.activeElement).toBe(more); });
+    await user.click(more);
     await user.click(screen.getByRole('button', { name: 'Folder: Neige workspace' }));
     const directory = await screen.findByRole('dialog', { name: 'Choose a directory' });
     await user.click(await within(directory).findByRole('button', { name: 'Select this directory' }));
     await waitFor(() => { expect(screen.queryByRole('dialog', { name: 'Choose a directory' })).toBeNull(); });
-    if (screen.queryByRole('dialog', { name: 'Track options' }) === null) {
-      await user.click(screen.getByRole('button', { name: 'Track options' }));
-    }
+    expect(screen.queryByRole('dialog', { name: 'Track options' })).toBeNull();
+    await waitFor(() => { expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Track options' })); });
+    await user.click(screen.getByRole('button', { name: 'Track options' }));
     expect(await screen.findByRole('button', { name: `Folder: ${cwd}` })).toBeTruthy();
     await user.keyboard('{Escape}');
     await waitFor(() => { expect(screen.queryByRole('dialog', { name: 'Track options' })).toBeNull(); });

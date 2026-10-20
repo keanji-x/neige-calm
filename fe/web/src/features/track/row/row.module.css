@@ -187,6 +187,8 @@
     inset-block-start: 50%;
     display: grid;
     place-items: center;
+    /* The retained source slot must give its child the complete hit area. */
+    grid-template-columns: minmax(0, 1fr);
     inline-size: var(--control-h-sm);
     block-size: var(--control-h-sm);
     padding: 0;
@@ -369,5 +371,15 @@
     .wrapper:hover .menuButton,
     .wrapper:focus-within .menuButton,
     .wrapper:has(.menuButton[aria-expanded='true']) .menuButton { transition: none; }
+  }
+}
+
+@layer features {
+  .removeButton {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    inline-size: 100%;
+    block-size: 100%;
   }
 }
