@@ -52,7 +52,8 @@ pub use calm_types::compatibility::REST_API_VERSION as API_VERSION;
 // #2640: 55 -> 56 requires Assistant archive metadata and read-only archived conversations.
 // #2671: 57 -> 58 requires negotiated canonical conversation pages and reference-only run reads.
 // 58 -> 59: a provider may be `grok`, which older bundles reject wherever they decode a provider.
-pub const WEB_COMPAT_VERSION: u32 = 59;
+// #2836: 59 -> 60 requires canonical held delivery and exact attempt identity.
+pub const WEB_COMPAT_VERSION: u32 = 60;
 
 /// Kernel compatibility values sourced from live constants.
 #[derive(Debug, Clone, Serialize)]

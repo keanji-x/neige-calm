@@ -10,9 +10,9 @@ pub(crate) use end_transition::{complete_once, execution_target_tx};
 mod tests;
 
 use calm_types::conversation::{
-    ConversationExecutionProvenance, InputAttempt, InputAttemptCheckpoint, InputAttemptId,
-    InputCorrelationFact, InputDeliveryFact, InputSubmissionId, LogicalTurnId,
-    NativeInputAcceptance, SubmissionDispatchProof,
+    ConversationExecutionProvenance, FrozenInputInvocation, InputAttempt, InputAttemptFact,
+    InputAttemptId, InputCorrelationFact, InputDeliveryFact, InputInvocation, InputSubmissionId,
+    LogicalTurnId, NativeInputAcceptance, SubmissionDispatchProof,
 };
 use calm_types::harness::HarnessPhaseTag;
 use calm_types::runtime::AgentProvider;
@@ -44,6 +44,7 @@ struct PreparedInputDispatch {
     card: String,
     worker: String,
     fence: RuntimeExecutionFence,
+    invocation: FrozenInputInvocation,
 }
 
 impl PreparedInputDispatch {
@@ -123,9 +124,18 @@ pub(crate) async fn initial(
         worker_session_id,
         submission_id,
         backend.provider(),
+        FrozenInputInvocation {
+            model: selection.model.clone(),
+            effort: selection.effort.clone(),
+            permission,
+        },
     )
     .await?;
     let items = std::mem::take(&mut prepared.items);
+    let selection = TurnModelSelection {
+        model: prepared.invocation.model.clone(),
+        effort: prepared.invocation.effort.clone(),
+    };
     let report = backend
         .dispatch_input(
             &prepared.logical_turn_id,
@@ -133,8 +143,8 @@ pub(crate) async fn initial(
             &prepared.thread_id,
             &prepared.proof,
             items,
-            selection,
-            permission,
+            &selection,
+            prepared.invocation.permission,
             &crate::harness::native_admission::NativePromptAdmission::new(
                 || prepared.source.check_current(),
                 || Box::pin(prepared.admit(repo)),
@@ -151,6 +161,7 @@ pub(crate) async fn initial(
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn prepare(
     repo: &dyn Repo,
     source: impl Into<InputSource>,
@@ -158,6 +169,7 @@ async fn prepare(
     worker_session_id: &str,
     submission_id: &InputSubmissionId,
     provider: AgentProvider,
+    invocation: FrozenInputInvocation,
 ) -> Result<PreparedInputDispatch> {
     let card_id = card_id.to_owned();
     let source = source.into();
@@ -248,7 +260,21 @@ async fn prepare(
                 local_turn_id: None,
                 rpc_request_id: None,
             };
-            begin_input_attempt_tx(tx, &mut carrier, attempt, correlation).await?;
+            begin_input_attempt_tx(tx, &mut carrier, attempt.clone(), correlation, invocation)
+                .await?;
+            let invocation = match &carrier
+                .checkpoint()
+                .attempt(&attempt.submission_id)
+                .ok_or_else(|| CalmError::Internal("committed crossing missing".into()))?
+                .invocation
+            {
+                InputInvocation::Recorded { configuration } => configuration.clone(),
+                InputInvocation::PriorInvocationNotRecorded => {
+                    return Err(CalmError::Conflict(
+                        "new crossing lacks its invocation".into(),
+                    ));
+                }
+            };
             Ok(PreparedInputDispatch {
                 logical_turn_id: identity.logical_turn_id,
                 proof,
@@ -258,6 +284,7 @@ async fn prepare(
                 card: card_id,
                 worker: worker_session_id,
                 fence: RuntimeExecutionFence::from_carrier(&carrier),
+                invocation,
             })
         })
     })
@@ -298,10 +325,7 @@ async fn settle(
     Ok(CommittedInputReport { report, consumed })
 }
 
-fn report_fact(
-    expected: &InputAttempt,
-    report: &InputAttemptReport,
-) -> Result<InputAttemptCheckpoint> {
+fn report_fact(expected: &InputAttempt, report: &InputAttemptReport) -> Result<InputAttemptFact> {
     let correlation = report.delivery().correlation();
     if report.attempt() != expected || correlation.client_id() != expected.submission_id.as_str() {
         return Err(CalmError::Conflict(
@@ -327,7 +351,7 @@ fn report_fact(
         },
         InputDelivery::Unknown(_) => InputDeliveryFact::Unknown,
     };
-    Ok(InputAttemptCheckpoint {
+    Ok(InputAttemptFact {
         attempt: expected.clone(),
         correlation: InputCorrelationFact {
             provider: correlation.provider().clone(),

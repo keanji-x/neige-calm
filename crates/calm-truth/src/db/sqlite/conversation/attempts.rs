@@ -4,7 +4,9 @@
 use super::carrier::save_input_carrier_tx;
 use super::{CurrentInputCarrier, submission_plan_tx};
 use crate::error::{CalmError, Result};
-use calm_types::conversation::{InputAttempt, InputAttemptCheckpoint, InputCorrelationFact};
+use calm_types::conversation::{
+    FrozenInputInvocation, InputAttempt, InputAttemptFact, InputCorrelationFact,
+};
 use sqlx::{Sqlite, Transaction};
 
 pub async fn begin_input_attempt_tx(
@@ -12,6 +14,7 @@ pub async fn begin_input_attempt_tx(
     carrier: &mut CurrentInputCarrier,
     attempt: InputAttempt,
     correlation: InputCorrelationFact,
+    invocation: FrozenInputInvocation,
 ) -> Result<()> {
     carrier.require_execution_current()?;
     let owns: bool = sqlx::query_scalar(
@@ -53,7 +56,7 @@ pub async fn begin_input_attempt_tx(
     }
     carrier
         .checkpoint
-        .begin_attempt(attempt, correlation)
+        .begin_attempt(attempt, correlation, invocation)
         .map_err(CalmError::Conflict)?;
     save_input_carrier_tx(tx, carrier).await
 }
@@ -61,7 +64,7 @@ pub async fn begin_input_attempt_tx(
 pub async fn record_input_attempt_fact_tx(
     tx: &mut Transaction<'_, Sqlite>,
     carrier: &mut CurrentInputCarrier,
-    report: InputAttemptCheckpoint,
+    report: InputAttemptFact,
 ) -> Result<()> {
     let owns: bool = sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM conversation_input_submissions WHERE id=?1 AND card_id=?2)",

@@ -141,51 +141,152 @@ pub enum ConversationDelivery {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema, TS)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
+pub enum ConversationActionAvailability {
+    Unavailable {
+        reason: ConversationActionUnavailableReason,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
+pub enum ConversationActionUnavailableReason {
+    NotImplementedYet,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema, TS)]
+#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
+pub struct ConversationResolutionActions {
+    pub keep: ConversationActionAvailability,
+    pub retry: ConversationActionAvailability,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema, TS)]
+#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
+pub struct ConversationInputTarget {
+    pub provider: crate::runtime::AgentProvider,
+    pub thread_id: String,
+    #[schema(required = true, nullable = true)]
+    pub native_session_id: Option<String>,
+    #[schema(required = true, nullable = true)]
+    pub local_turn_id: Option<String>,
+    #[schema(required = true, nullable = true)]
+    pub native_turn_id: Option<String>,
+    #[schema(required = true, nullable = true)]
+    pub rpc_request_id: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema, TS)]
+#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
+pub struct ConversationAttemptDelivery {
+    pub attempt_id: String,
+    /// Decimal text preserves the full persisted u64 CAS identity in browsers.
+    pub revision: String,
+    pub target: ConversationInputTarget,
+    pub delivery: ConversationDelivery,
+    pub invocation: crate::conversation::InputInvocation,
+    pub actions: ConversationResolutionActions,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema, TS)]
 #[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub struct ConversationSubmissionDelivery {
+    pub carrier_id: String,
+    pub logical_turn_id: String,
     pub submission_id: String,
+    /// Null explicitly means no crossing has been recorded for this submission.
     #[schema(required = true, nullable = true)]
-    pub attempt_id: Option<String>,
-    // Null means this submission has no recorded attempt, not proof of no dispatch.
-    #[schema(required = true, nullable = true)]
-    pub delivery: Option<ConversationDelivery>,
+    pub attempt: Option<ConversationAttemptDelivery>,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema, TS)]
 #[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub struct ConversationActiveInput {
-    pub logical_turn_id: String,
+    /// Execution and held submissions are independent facts.
+    #[schema(required = true, nullable = true)]
+    pub current_execution_id: Option<String>,
     pub submissions: Vec<ConversationSubmissionDelivery>,
 }
 impl ConversationActiveInput {
-    // A projection of current stored facts; never interprets retry/terminal permission.
+    /// One factual projection. The Truth reader supplies original immutable
+    /// logical-turn identities; neither current execution nor list order infers them.
     pub fn from_checkpoint(
         value: &crate::conversation::ConversationInputCheckpoint,
-    ) -> Option<Self> {
+        carrier_id: &str,
+        identities: &[(
+            crate::conversation::InputSubmissionId,
+            crate::conversation::LogicalTurnId,
+        )],
+    ) -> Result<Option<Self>, &'static str> {
         use crate::conversation::InputDeliveryFact;
-        value.active.as_ref().map(|active| Self {
-            logical_turn_id: active.logical_turn_id.as_str().into(),
-            submissions: active
-                .submission_ids
-                .iter()
-                .map(|submission| {
-                    let attempt = value.attempt(submission);
-                    ConversationSubmissionDelivery {
-                        submission_id: submission.as_str().into(),
-                        attempt_id: attempt.map(|a| a.attempt.attempt_id.as_str().into()),
-                        delivery: attempt.map(|a| match &a.delivery {
-                            InputDeliveryFact::CrossingUnknown => {
-                                ConversationDelivery::CrossingUnknown
-                            }
-                            InputDeliveryFact::Unknown => ConversationDelivery::Unknown,
-                            InputDeliveryFact::NotDispatched { .. } => {
-                                ConversationDelivery::NotDispatched
-                            }
-                            InputDeliveryFact::Accepted { .. } => ConversationDelivery::Accepted,
+        value.validate()?;
+        if carrier_id.is_empty() {
+            return Err("projection requires its exact carrier");
+        }
+        let submissions = value.referenced_submissions();
+        if submissions.is_empty() {
+            return Ok(None);
+        }
+        let submissions = submissions
+            .iter()
+            .map(|submission| {
+                let logical = identities
+                    .iter()
+                    .find(|(id, _)| id == submission)
+                    .ok_or("submission lacks its original logical turn identity")?;
+                Ok(ConversationSubmissionDelivery {
+                    carrier_id: carrier_id.into(),
+                    logical_turn_id: logical.1.as_str().into(),
+                    submission_id: submission.as_str().into(),
+                    attempt: value
+                        .attempt(submission)
+                        .map(|attempt| ConversationAttemptDelivery {
+                            attempt_id: attempt.attempt.attempt_id.as_str().into(),
+                            revision: attempt.revision.to_string(),
+                            target: ConversationInputTarget {
+                                provider: attempt.correlation.provider.clone(),
+                                thread_id: attempt.correlation.thread_id.clone(),
+                                native_session_id: attempt.correlation.native_session_id.clone(),
+                                local_turn_id: attempt.correlation.local_turn_id.clone(),
+                                native_turn_id: attempt.correlation.native_turn_id.clone(),
+                                rpc_request_id: attempt
+                                    .correlation
+                                    .rpc_request_id
+                                    .map(|id| id.to_string()),
+                            },
+                            delivery: match &attempt.delivery {
+                                InputDeliveryFact::CrossingUnknown => {
+                                    ConversationDelivery::CrossingUnknown
+                                }
+                                InputDeliveryFact::Unknown => ConversationDelivery::Unknown,
+                                InputDeliveryFact::NotDispatched { .. } => {
+                                    ConversationDelivery::NotDispatched
+                                }
+                                InputDeliveryFact::Accepted { .. } => {
+                                    ConversationDelivery::Accepted
+                                }
+                            },
+                            invocation: attempt.invocation.clone(),
+                            actions: ConversationResolutionActions {
+                                keep: ConversationActionAvailability::Unavailable {
+                                    reason: ConversationActionUnavailableReason::NotImplementedYet,
+                                },
+                                retry: ConversationActionAvailability::Unavailable {
+                                    reason: ConversationActionUnavailableReason::NotImplementedYet,
+                                },
+                            },
                         }),
-                    }
                 })
-                .collect(),
-        })
+            })
+            .collect::<Result<Vec<_>, &'static str>>()?;
+        Ok(Some(Self {
+            current_execution_id: value
+                .active
+                .as_ref()
+                .map(|active| active.logical_turn_id.as_str().into()),
+            submissions,
+        }))
     }
 }
 

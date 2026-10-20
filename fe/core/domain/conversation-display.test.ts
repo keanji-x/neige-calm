@@ -98,3 +98,27 @@ it('requires one tagged pending input list without losing Human revisions or Sys
   expect(conversationRunMetadataSchema.safeParse({...value,pending_inputs:[{...pending[0],revision:1}]}).success).toBe(false);
   expect(conversationRunMetadataSchema.safeParse({...value,pending_inputs:[{kind:'human',message_id:'message',queue_position:2,queued_at_ms:22}]}).success).toBe(false);
 });
+
+it('rejects missing CAS identity and unknown availability in canonical delivery',()=>{
+  const attempt={attempt_id:'attempt',revision:'7',delivery:'unknown',target:{provider:'codex',thread_id:'thread',native_session_id:null,
+    native_turn_id:null,local_turn_id:null,rpc_request_id:null},invocation:{kind:'prior_invocation_not_recorded'},
+    actions:{keep:{kind:'unavailable',reason:'not_implemented_yet'},retry:{kind:'unavailable',reason:'not_implemented_yet'}}};
+  const submission={carrier_id:'carrier',logical_turn_id:'logical',submission_id:'submission',attempt};
+  const run={input_contract:'canonical',runtime_state:'failed',history_replacement_supported:false,terminal_timeout:null,
+    pending_inputs:[],active_input:{current_execution_id:null,submissions:[submission]},native_turn_id:null};
+  expect(conversationRunMetadataSchema.safeParse(run).success).toBe(true);
+  const maximum={...run,active_input:{...run.active_input,submissions:[{...submission,attempt:{...attempt,revision:'18446744073709551615'}}]}};
+  expect(conversationRunMetadataSchema.parse(maximum).active_input?.submissions[0].attempt?.revision).toBe('18446744073709551615');
+  for(const revision of ['abc','18446744073709551616','-1','01',7]) {
+    expect(conversationRunMetadataSchema.safeParse({...run,active_input:{...run.active_input,submissions:[{...submission,attempt:{...attempt,revision}}]}}).success).toBe(false);
+  }
+  for(const field of ['attempt_id','revision','target','invocation','actions']) {
+    const broken={...attempt,[field]:undefined};
+    expect(conversationRunMetadataSchema.safeParse({...run,active_input:{...run.active_input,submissions:[{...submission,attempt:broken}]}}).success).toBe(false);
+  }
+  for(const field of ['carrier_id','logical_turn_id','submission_id']) {
+    expect(conversationRunMetadataSchema.safeParse({...run,active_input:{...run.active_input,submissions:[{...submission,[field]:undefined}]}}).success).toBe(false);
+  }
+  expect(conversationRunMetadataSchema.safeParse({...run,active_input:{...run.active_input,submissions:[{...submission,attempt:{...attempt,
+    actions:{...attempt.actions,keep:{kind:'available'}}}}]}}).success).toBe(false);
+});

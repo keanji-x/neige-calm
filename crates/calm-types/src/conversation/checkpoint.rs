@@ -7,6 +7,8 @@ use super::{
 use crate::runtime::AgentProvider;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
+use ts_rs::TS;
+use utoipa::ToSchema;
 
 pub const CONVERSATION_INPUT_CHECKPOINT_KEY: &str = "canonical_inputs";
 
@@ -44,9 +46,46 @@ pub enum InputDeliveryFact {
     },
 }
 
+/// Exact choices passed to the native invocation. Absent model/effort keys mean
+/// inherit the thread's value, not a reconstruction from later card settings.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema, TS)]
+#[serde(deny_unknown_fields)]
+#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
+pub struct FrozenInputInvocation {
+    #[schema(required = true, nullable = true)]
+    #[serde(deserialize_with = "Option::deserialize")]
+    pub model: Option<String>,
+    #[schema(required = true, nullable = true)]
+    #[serde(deserialize_with = "Option::deserialize")]
+    pub effort: Option<String>,
+    pub permission: crate::harness::PlannerPermissionMode,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema, TS)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
+pub enum InputInvocation {
+    Recorded {
+        configuration: FrozenInputInvocation,
+    },
+    PriorInvocationNotRecorded,
+}
+
+/// An adapter-owned observed fact. Revision and frozen invocation belong to the
+/// checkpoint owner and cannot be supplied or replaced by a native report.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InputAttemptFact {
+    pub attempt: InputAttempt,
+    pub correlation: InputCorrelationFact,
+    pub delivery: InputDeliveryFact,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct InputAttemptCheckpoint {
+    pub revision: u64,
+    pub invocation: InputInvocation,
     pub attempt: InputAttempt,
     pub correlation: InputCorrelationFact,
     pub delivery: InputDeliveryFact,
@@ -111,9 +150,14 @@ impl ConversationInputCheckpoint {
         &mut self,
         attempt: InputAttempt,
         correlation: InputCorrelationFact,
+        invocation: FrozenInputInvocation,
     ) -> Result<(), &'static str> {
         self.validate()?;
         let marker = InputAttemptCheckpoint {
+            revision: 0,
+            invocation: InputInvocation::Recorded {
+                configuration: invocation,
+            },
             attempt,
             correlation,
             delivery: InputDeliveryFact::CrossingUnknown,
@@ -143,10 +187,7 @@ impl ConversationInputCheckpoint {
 
     /// The execution owner calls this only after validating the private backend
     /// report, or an exact late native receipt through its existing ingress.
-    pub fn record_attempt_fact(
-        &mut self,
-        report: InputAttemptCheckpoint,
-    ) -> Result<(), &'static str> {
+    pub fn record_attempt_fact(&mut self, report: InputAttemptFact) -> Result<(), &'static str> {
         self.validate()?;
         report.validate()?;
         if matches!(report.delivery, InputDeliveryFact::CrossingUnknown) {
@@ -157,7 +198,10 @@ impl ConversationInputCheckpoint {
             .iter_mut()
             .find(|prior| prior.attempt.submission_id == report.attempt.submission_id)
             .ok_or("provider report has no durable crossing marker")?;
-        if prior == &report {
+        if prior.attempt == report.attempt
+            && prior.correlation == report.correlation
+            && prior.delivery == report.delivery
+        {
             return Ok(());
         }
         if prior.attempt != report.attempt
@@ -191,8 +235,37 @@ impl ConversationInputCheckpoint {
         {
             return Err("provider report crosses the checkpoint's native correlation");
         }
-        *prior = report;
+        let revision = prior
+            .revision
+            .checked_add(1)
+            .ok_or("input attempt revision exhausted")?;
+        prior.attempt = report.attempt;
+        prior.correlation = report.correlation;
+        prior.delivery = report.delivery;
+        prior.revision = revision;
         Ok(())
+    }
+
+    /// Display identities: current execution plus retained uncertain attempts,
+    /// once each. Ended positive receipts remain in storage, outside this view.
+    /// This order never chooses executable work.
+    pub fn referenced_submissions(&self) -> Vec<InputSubmissionId> {
+        let mut ids = self
+            .active
+            .as_ref()
+            .map(|active| active.submission_ids.clone())
+            .unwrap_or_default();
+        for attempt in &self.attempts {
+            match &attempt.delivery {
+                InputDeliveryFact::CrossingUnknown | InputDeliveryFact::Unknown => {
+                    if !ids.contains(&attempt.attempt.submission_id) {
+                        ids.push(attempt.attempt.submission_id.clone());
+                    }
+                }
+                InputDeliveryFact::NotDispatched { .. } | InputDeliveryFact::Accepted { .. } => {}
+            }
+        }
+        ids
     }
 
     pub fn attempt(&self, submission: &InputSubmissionId) -> Option<&InputAttemptCheckpoint> {
@@ -204,41 +277,54 @@ impl ConversationInputCheckpoint {
 
 impl InputAttemptCheckpoint {
     fn validate(&self) -> Result<(), &'static str> {
-        if self.correlation.thread_id.is_empty() {
-            return Err("dispatch correlation requires a thread identity");
+        validate_fact(&self.correlation, &self.delivery)
+    }
+}
+impl InputAttemptFact {
+    fn validate(&self) -> Result<(), &'static str> {
+        validate_fact(&self.correlation, &self.delivery)
+    }
+}
+fn validate_fact(
+    correlation: &InputCorrelationFact,
+    delivery: &InputDeliveryFact,
+) -> Result<(), &'static str> {
+    if correlation.thread_id.is_empty() {
+        return Err("dispatch correlation requires a thread identity");
+    }
+    for value in [
+        &correlation.native_session_id,
+        &correlation.local_turn_id,
+        &correlation.native_turn_id,
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if value.is_empty() {
+            return Err("native correlation cannot contain empty identities");
         }
-        for value in [
-            &self.correlation.native_session_id,
-            &self.correlation.local_turn_id,
-            &self.correlation.native_turn_id,
-        ]
-        .into_iter()
-        .flatten()
-        {
-            if value.is_empty() {
-                return Err("native correlation cannot contain empty identities");
-            }
+    }
+    match delivery {
+        InputDeliveryFact::NotDispatched { basis } if basis.is_empty() => {
+            Err("non-dispatch fact requires its adapter basis")
         }
-        match &self.delivery {
-            InputDeliveryFact::NotDispatched { basis } if basis.is_empty() => {
-                Err("non-dispatch fact requires its adapter basis")
+        InputDeliveryFact::Accepted { basis, evidence } => {
+            if basis.is_empty() {
+                return Err("accepted fact requires its adapter basis");
             }
-            InputDeliveryFact::Accepted { basis, evidence } => {
-                if basis.is_empty() {
-                    return Err("accepted fact requires its adapter basis");
+            match evidence {
+                NativeInputAcceptance::NativeTurn { native_turn_id }
+                    if native_turn_id.is_empty()
+                        || correlation.native_turn_id.as_ref() != Some(native_turn_id) =>
+                {
+                    Err("native turn receipt requires matching positive native correlation")
                 }
-                match evidence {
-                    NativeInputAcceptance::NativeTurn { native_turn_id }
-                        if native_turn_id.is_empty()
-                            || self.correlation.native_turn_id.as_ref() != Some(native_turn_id) =>
-                    {
-                        Err("native turn receipt requires matching positive native correlation")
-                    }
-                    _ => Ok(()),
-                }
+                NativeInputAcceptance::NativeTurn { .. } => Ok(()),
             }
-            _ => Ok(()),
         }
+        InputDeliveryFact::NotDispatched { .. }
+        | InputDeliveryFact::CrossingUnknown
+        | InputDeliveryFact::Unknown => Ok(()),
     }
 }
 

@@ -32,6 +32,7 @@ export type ConversationStore = Readonly<{
   pendingQueue: readonly PendingQueueEntry[];
   /** Canonical pending facts in queue order; bodies belong only to the display page, with no V1 CAS address. */
   pendingInputs: readonly ConversationPendingInput[];
+  activeInput: import('../../../../core/api/generated/wire.ts').ConversationActiveInput | null;
   pendingSends: readonly PendingQueueSend[];
   /** Versioned displayed carriers and intentional owner suppression; never suppresses an alive queue row. */
   queueDisplayAccounting: QueueDisplayAccounting;

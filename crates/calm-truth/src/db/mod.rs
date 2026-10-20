@@ -156,6 +156,7 @@ pub struct CurrentConversationRuntime {
 
 #[derive(Clone, Debug)]
 pub struct ConversationReadFrame {
+    pub active_input: Option<calm_types::conversation_display::ConversationActiveInput>,
     pub runtime: Option<CurrentConversationRuntime>,
     pub snapshot: Option<serde_json::Value>,
     pub has_presentations: bool,

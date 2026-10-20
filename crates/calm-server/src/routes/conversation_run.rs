@@ -142,7 +142,7 @@ pub(super) async fn read(
                     && Some(outcome.turn_id.as_str()) == header.last_turn_id.as_deref()
             })
             .and_then(|outcome| outcome.timeout());
-        let active_input = ConversationActiveInput::from_checkpoint(&snapshot.canonical_inputs);
+        let active_input = frame.active_input;
         let selection = crate::planner_model::CardModelSelection::from_payload(&card.payload)
             .unwrap_or_default();
         let unknown = snapshot
@@ -256,7 +256,7 @@ pub(super) async fn read(
         let same_runtime = match (runtime_fence.as_ref(), current.as_ref()) {
             (Some(before), Some(now)) => before.id == now.id && before.state == now.state,
             (None, None) => true,
-            _ => false,
+            (Some(_), None) | (None, Some(_)) => false,
         };
         let current_handle = current
             .as_ref()
@@ -264,7 +264,7 @@ pub(super) async fn read(
         let same_handle = match (handle_fence.as_ref(), current_handle.as_ref()) {
             (Some(before), Some(now)) => before.same_instance(now),
             (None, None) => true,
-            _ => false,
+            (Some(_), None) | (None, Some(_)) => false,
         };
         if !same_runtime || !same_handle {
             return Err(CalmError::Conflict(

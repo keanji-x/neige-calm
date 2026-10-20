@@ -13874,15 +13874,47 @@
           }
         }
       },
+      "ConversationActionAvailability": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "reason",
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "unavailable"
+                ]
+              },
+              "reason": {
+                "$ref": "#/components/schemas/ConversationActionUnavailableReason"
+              }
+            }
+          }
+        ]
+      },
+      "ConversationActionUnavailableReason": {
+        "type": "string",
+        "enum": [
+          "not_implemented_yet"
+        ]
+      },
       "ConversationActiveInput": {
         "type": "object",
         "required": [
-          "logical_turn_id",
+          "current_execution_id",
           "submissions"
         ],
         "properties": {
-          "logical_turn_id": {
-            "type": "string"
+          "current_execution_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Execution and held submissions are independent facts."
           },
           "submissions": {
             "type": "array",
@@ -13903,6 +13935,38 @@
           }
         },
         "additionalProperties": false
+      },
+      "ConversationAttemptDelivery": {
+        "type": "object",
+        "required": [
+          "attempt_id",
+          "revision",
+          "target",
+          "delivery",
+          "invocation",
+          "actions"
+        ],
+        "properties": {
+          "actions": {
+            "$ref": "#/components/schemas/ConversationResolutionActions"
+          },
+          "attempt_id": {
+            "type": "string"
+          },
+          "delivery": {
+            "$ref": "#/components/schemas/ConversationDelivery"
+          },
+          "invocation": {
+            "$ref": "#/components/schemas/InputInvocation"
+          },
+          "revision": {
+            "type": "string",
+            "description": "Decimal text preserves the full persisted u64 CAS identity in browsers."
+          },
+          "target": {
+            "$ref": "#/components/schemas/ConversationInputTarget"
+          }
+        }
       },
       "ConversationCursor": {
         "type": "object",
@@ -14364,6 +14428,49 @@
           "historical"
         ]
       },
+      "ConversationInputTarget": {
+        "type": "object",
+        "required": [
+          "provider",
+          "thread_id",
+          "native_session_id",
+          "local_turn_id",
+          "native_turn_id",
+          "rpc_request_id"
+        ],
+        "properties": {
+          "local_turn_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "native_session_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "native_turn_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "provider": {
+            "$ref": "#/components/schemas/AgentProvider"
+          },
+          "rpc_request_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "thread_id": {
+            "type": "string"
+          }
+        }
+      },
       "ConversationItemsReadResponse": {
         "oneOf": [
           {
@@ -14551,29 +14658,46 @@
           }
         }
       },
+      "ConversationResolutionActions": {
+        "type": "object",
+        "required": [
+          "keep",
+          "retry"
+        ],
+        "properties": {
+          "keep": {
+            "$ref": "#/components/schemas/ConversationActionAvailability"
+          },
+          "retry": {
+            "$ref": "#/components/schemas/ConversationActionAvailability"
+          }
+        }
+      },
       "ConversationSubmissionDelivery": {
         "type": "object",
         "required": [
+          "carrier_id",
+          "logical_turn_id",
           "submission_id",
-          "attempt_id",
-          "delivery"
+          "attempt"
         ],
         "properties": {
-          "attempt_id": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "delivery": {
+          "attempt": {
             "oneOf": [
               {
                 "type": "null"
               },
               {
-                "$ref": "#/components/schemas/ConversationDelivery"
+                "$ref": "#/components/schemas/ConversationAttemptDelivery",
+                "description": "Null explicitly means no crossing has been recorded for this submission."
               }
             ]
+          },
+          "carrier_id": {
+            "type": "string"
+          },
+          "logical_turn_id": {
+            "type": "string"
           },
           "submission_id": {
             "type": "string"
@@ -15180,6 +15304,33 @@
           "ancestor",
           "descendant"
         ]
+      },
+      "FrozenInputInvocation": {
+        "type": "object",
+        "description": "Exact choices passed to the native invocation. Absent model/effort keys mean\ninherit the thread's value, not a reconstruction from later card settings.",
+        "required": [
+          "model",
+          "effort",
+          "permission"
+        ],
+        "properties": {
+          "effort": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "permission": {
+            "$ref": "#/components/schemas/PlannerPermissionMode"
+          }
+        },
+        "additionalProperties": false
       },
       "GetPlannerRunResponse": {
         "type": "object",
@@ -15875,6 +16026,42 @@
           "shutting-down",
           "legacy-projection",
           "integrity"
+        ]
+      },
+      "InputInvocation": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "configuration",
+              "kind"
+            ],
+            "properties": {
+              "configuration": {
+                "$ref": "#/components/schemas/FrozenInputInvocation"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "recorded"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "prior_invocation_not_recorded"
+                ]
+              }
+            }
+          }
         ]
       },
       "InstallBody": {

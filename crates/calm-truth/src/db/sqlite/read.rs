@@ -88,7 +88,7 @@ impl RepoRead for SqlxRepo {
         &self,
         card_id: &str,
     ) -> Result<crate::db::ConversationReadFrame> {
-        super::conversation_read::current_frame(self.db.read_pool(), card_id).await
+        super::conversation_read::current_frame(&self.db, card_id).await
     }
     async fn conversation_presentation_page(
         &self,

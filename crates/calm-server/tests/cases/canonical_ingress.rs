@@ -148,7 +148,7 @@ impl Fixture {
             "acceptance cannot invent a native thread"
         );
         let snapshot: Value = serde_json::from_str(&snapshot).unwrap();
-        assert_eq!(snapshot["schema_version"], 2);
+        assert_eq!(snapshot["schema_version"], 3);
         assert!(snapshot.get("pending_queue").is_none());
         assert!(snapshot.get("issued_input_segments").is_none());
         (card, worker, snapshot)

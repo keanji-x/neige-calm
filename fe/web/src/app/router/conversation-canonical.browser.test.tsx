@@ -7,14 +7,14 @@ import { useConversationCommands, type ConversationRegistry } from '../conversat
 import { queryKeys } from '../providers/queries.ts';
 import type { ApiTransportResponse } from '../../../../core/api/types.ts';
 import { renderDailyFixture } from './daily-planner-fixture.tsx';
-import type { ConversationDisplayItem, ConversationPage, HarnessPhaseTag, WorkerSessionState, HarnessTimeoutEvidence, ConversationPendingInput } from '../../../../core/api/generated/wire.ts';
+import type { ConversationDisplayItem, ConversationPage, HarnessPhaseTag, WorkerSessionState, HarnessTimeoutEvidence, ConversationPendingInput, ConversationActiveInput } from '../../../../core/api/generated/wire.ts';
 
 const identity={userId:'jian',displayName:'Jian',role:'owner',sessionId:'fixture-jian'};
 const cursor=(position:number)=>({contract:'conversation_v1',source:'presentation',card_id:'daily-planner',position} as const);
 const human=(id:string,uid:string,name:string,position:number,text='Same saved words'):ConversationDisplayItem=>({cursor:cursor(position),source:{
   kind:'human',message_id:id,revision:1,author:{user_id:uid,display_name:name},text,attachments:[],created_at_ms:position,
 }});
-function fixture(items:ConversationDisplayItem[],run:Readonly<{state:WorkerSessionState;phase:HarnessPhaseTag;blockedReason:string|null;terminalTimeout:HarnessTimeoutEvidence|null;pendingInputs:readonly ConversationPendingInput[]}>,onSend?:()=>ConversationDisplayItem[]) {
+function fixture(items:ConversationDisplayItem[],run:Readonly<{state:WorkerSessionState;phase:HarnessPhaseTag;blockedReason:string|null;terminalTimeout:HarnessTimeoutEvidence|null;pendingInputs:readonly ConversationPendingInput[];activeInput?:ConversationActiveInput|null}>,onSend?:()=>ConversationDisplayItem[]) {
   let stored=items;
   return renderDailyFixture({identity,initial:'/track/daily?panel=conversations',reply:request=>{
     if(request.path.includes('/harness/items?contract=conversation_v1')) {
@@ -25,7 +25,7 @@ function fixture(items:ConversationDisplayItem[],run:Readonly<{state:WorkerSessi
       card_id:'daily-planner',worker_session_id:'original-retained',phase:run.phase,model:null,reasoning_effort:null,permission_mode:'never',
       blocked_reason:run.blockedReason,pending:[],pending_overflow:0,recovery: null, manual_compact_supported:false,
       attachments_supported:false,compact_outcome:null,context_usage_invalidated:false,running_turn:null,token_usage:null,
-      input_contract:'canonical',history_replacement_supported:false,terminal_timeout:run.terminalTimeout,runtime_state:run.state,pending_inputs:run.pendingInputs,active_input:null,native_turn_id:null,
+      input_contract:'canonical',history_replacement_supported:false,terminal_timeout:run.terminalTimeout,runtime_state:run.state,pending_inputs:run.pendingInputs,active_input:run.activeInput ?? null,native_turn_id:null,
     }};
     if(request.path.endsWith('/planner/input')){
       stored=onSend?.() ?? stored;
@@ -70,7 +70,7 @@ it.each([false,true])('keeps the two canonical pending refs separate from one AC
       compact_outcome:null,context_usage_invalidated:false,running_turn:{turn_id:'native-h1',elapsed_ms:1000},token_usage:null,
       input_contract:'canonical',history_replacement_supported:false,terminal_timeout:null,runtime_state:'running',
       pending_inputs:sent ? [s1Ref,h2Ref] : [s1Ref],native_turn_id:'native-h1',
-      active_input:{logical_turn_id:'logical-h1',submissions:[{submission_id:'submission-h1',attempt_id:'attempt-h1',delivery:'accepted'}]},
+      active_input:{current_execution_id:'logical-h1',submissions:[{carrier_id:'original-retained',logical_turn_id:'logical-h1',submission_id:'submission-h1',attempt:{attempt_id:'attempt-h1',revision:'1',delivery:'accepted',target:{provider:'codex',thread_id:'thread-h1',native_session_id:null,local_turn_id:null,native_turn_id:'native-h1',rpc_request_id:null},invocation:{kind:'prior_invocation_not_recorded'},actions:{keep:{kind:'unavailable',reason:'not_implemented_yet'},retry:{kind:'unavailable',reason:'not_implemented_yet'}}}}]},
     });
     if(request.method==='POST' && request.path.endsWith('/planner/input')){
       expect(request.body).toEqual({text});
@@ -240,4 +240,28 @@ it('shows a confirmed current timeout as feedback while Idle still accepts the n
   await page.getByRole('button',{name:'Send',exact:true}).click();
   await waitFor(()=>expect(f.requests.filter(request=>request.path.endsWith('/planner/input'))).toHaveLength(1));
   cleanup();f.client.clear();
+});
+
+it.each([1280,390])('shows canonical held delivery without another transcript row at width %s',async width=>{
+  await page.viewport(width,800);
+  const input:ConversationActiveInput={current_execution_id:null,submissions:[{
+    carrier_id:'original-retained',logical_turn_id:'logical',submission_id:'submission',attempt:{
+      attempt_id:'attempt',revision:'7',delivery:'unknown',target:{provider:'codex',thread_id:'thread',native_session_id:null,native_turn_id:null,local_turn_id:null,rpc_request_id:null},
+      invocation:width === 1280 ? {kind:'recorded',configuration:{model:'original-model',effort:'high',permission:'never'}} : {kind:'prior_invocation_not_recorded'},actions:{keep:{kind:'unavailable',reason:'not_implemented_yet'},retry:{kind:'unavailable',reason:'not_implemented_yet'}},
+    },
+  }]};
+  const run={state:'failed' as const,phase:'wedged' as const,blockedReason:'Execution is held.',terminalTimeout:null,pendingInputs:[],activeInput:input};
+  const f=fixture([human('held-message','jian','Jian',1,'One saved canonical input')],run);
+  await page.getByRole('button',{name:/Conversation Daily Planner conversation/}).click();
+  await expect.element(page.getByText('Delivery not confirmed',{exact:true})).toBeVisible();
+  if(width === 1280) await expect.element(page.getByText(/Original model: original-model; effort: high; permissions: never/)).toBeVisible();
+  expect(screen.getAllByText('One saved canonical input',{exact:true})).toHaveLength(1);
+  expect(screen.queryByRole('button',{name:/Keep as delivered|Retry input/})).toBeNull();
+  expect(f.requests.some(request=>request.path.includes('/harness/live'))).toBe(false);
+  await page.screenshot({path:`./__screenshots__/canonical-held-${width}.png`});
+  run.activeInput={current_execution_id:null,submissions:[]};
+  await f.client.invalidateQueries({queryKey:queryKeys.plannerRun('daily-planner')});
+  await waitFor(()=>expect(screen.queryByText('Delivery not confirmed',{exact:true})).toBeNull());
+  expect(screen.getAllByText('One saved canonical input',{exact:true})).toHaveLength(1);
+  f.client.clear();
 });

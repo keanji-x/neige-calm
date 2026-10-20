@@ -272,6 +272,27 @@ async fn cold_attempt_is_not_readmitted(outcome: NativeOutcome) {
         fixture.carrier(track).await.2.canonical_inputs,
         observed.canonical_inputs
     );
+    let run = super::presentation_read_feedback_tests::read_run(&app, &cookie, &card).await;
+    let delivery = &run["active_input"]["submissions"][0];
+    assert_eq!(delivery["carrier_id"], worker);
+    assert_eq!(delivery["logical_turn_id"], active.logical_turn_id.as_str());
+    assert_eq!(delivery["submission_id"], active.submission_ids[0].as_str());
+    assert_eq!(
+        delivery["attempt"]["attempt_id"],
+        observed.canonical_inputs.attempts[0]
+            .attempt
+            .attempt_id
+            .as_str()
+    );
+    assert_eq!(
+        delivery["attempt"]["revision"],
+        observed.canonical_inputs.attempts[0].revision.to_string()
+    );
+    assert_eq!(delivery["attempt"]["target"]["thread_id"], THREAD);
+    assert_eq!(
+        delivery["attempt"]["actions"]["keep"],
+        json!({"kind":"unavailable","reason":"not_implemented_yet"})
+    );
     let appended = post_and_settle_wake(
         &state,
         &app,

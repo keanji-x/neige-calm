@@ -94,7 +94,7 @@ async fn production_http_default_planner_accepts_real_user_report_edit_from_disp
     .await;
     let track = created["id"].as_str().unwrap();
     let (card, worker, initial) = fixture.carrier(track).await;
-    assert_eq!(serde_json::to_value(&initial).unwrap()["schema_version"], 2);
+    assert_eq!(serde_json::to_value(&initial).unwrap()["schema_version"], 3);
     let stored_card = fixture.repo.card_get(&card).await.unwrap().unwrap();
     let role = fixture.repo.card_role_get(&card).await.unwrap().unwrap();
     assert_eq!(role, crate::model::CardRole::Planner);

@@ -91,7 +91,7 @@ impl HarnessRuntimeSnapshot {
                     CalmError::Conflict("invalid historical harness snapshot".into())
                 })?,
             )),
-            Some(2) => {
+            Some(version) if version >= 2 => {
                 // The actual current frame/fence is loaded by run under SQL.
                 // Retaining this caller's older pending list would make it a
                 // second cache or reject a concurrent new accepted input.
@@ -100,7 +100,7 @@ impl HarnessRuntimeSnapshot {
                 })?;
                 RuntimeSnapshotKind::Canonical
             }
-            _ => {
+            Some(_) | None => {
                 return Err(CalmError::Conflict(
                     "unsupported persisted harness input contract".into(),
                 ));

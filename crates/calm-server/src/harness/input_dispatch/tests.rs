@@ -417,6 +417,11 @@ async fn plan_hydrates_exact_revision_and_frozen_author_without_saving_another_b
         &fx.runtime,
         &fx.submission,
         AgentProvider::Codex,
+        FrozenInputInvocation {
+            model: Some("frozen-model".into()),
+            effort: Some("high".into()),
+            permission: PlannerPermissionMode::Never,
+        },
     )
     .await
     .unwrap();
@@ -508,4 +513,41 @@ async fn sharing_before_a_fresh_crossing_holds_the_original_claim() {
     assert!(checkpoint.active.is_some());
     assert!(checkpoint.attempt(&fx.submission).is_none());
     assert_eq!(fx.daemon.turn_start_count_for_test(), 0);
+}
+
+#[tokio::test]
+async fn canonical_crossing_freezes_actual_invocation() {
+    let fx = Fixture::new().await;
+    let selection = TurnModelSelection {
+        model: Some("actual-model".into()),
+        effort: Some("high".into()),
+    };
+    initial(
+        fx.repo.as_ref(),
+        &fx.source,
+        &fx.card,
+        &fx.runtime,
+        &fx.submission,
+        &fx.backend,
+        &selection,
+        PlannerPermissionMode::Never,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        fx.daemon.started_turn_selections_for_test(),
+        vec![("thread".into(), selection.clone())]
+    );
+    let checkpoint = fx.checkpoint().await;
+    let stored = checkpoint.attempt(&fx.submission).unwrap();
+    assert_eq!(
+        stored.invocation,
+        InputInvocation::Recorded {
+            configuration: FrozenInputInvocation {
+                model: selection.model,
+                effort: selection.effort,
+                permission: PlannerPermissionMode::Never,
+            }
+        }
+    );
 }

@@ -1,10 +1,12 @@
 /** One typed read contract over the existing transcript resource. Display identities are not native turns. */
 import { z } from 'zod';
 import type { ApiOperation } from '../api/types.js';
-import { conversationCursorSchema, workerSessionStateSchema } from '../api/schemas.js';
+import { agentProviderSchema, conversationCursorSchema, workerSessionStateSchema } from '../api/schemas.js';
 import type { ConversationCursor, ConversationDisplayItem, ConversationPage, ConversationPendingInput, HarnessItem as TranscriptRow } from '../api/generated/wire.js';
+import { plannerPermissionModeSchema } from './planner-permission-mode.js';
 import { SYSTEM_PRESENTATION_LABELS, systemInputPresentationSchema, buildTranscript, retireFollowedThoughts, harnessTimeoutEvidenceSchema, harnessItemSchema as transcriptRowSchema, HARNESS_ITEMS_PAGE_LIMIT as TRANSCRIPT_PAGE_LIMIT, plannerRunOperation, type PlannerRun, type TranscriptEntry } from './conversation.js';
 
+const decimalU64 = z.string().regex(/^(0|[1-9]\d*)$/).pipe(z.string().refine(value => BigInt(value) <= 18446744073709551615n));
 const attachment = z.object({ id: z.string(), size: z.number(), url: z.string(), contentType:z.string() });
 const identity = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('human'), message_id: z.string() }).strict(),
@@ -82,9 +84,20 @@ export const conversationRunMetadataSchema = z.object({
     z.object({kind:z.literal('system'),observation_id:z.string(),
       queue_position:z.number().int().nonnegative(),queued_at_ms:z.number()}).strict(),
   ])),
-  active_input:z.object({ logical_turn_id:z.string(),submissions:z.array(z.object({
-    submission_id:z.string(),attempt_id:z.string().nullable(),
-    delivery:z.enum(['crossing_unknown','unknown','not_dispatched','accepted']).nullable(),
+  active_input:z.object({ current_execution_id:z.string().nullable(),submissions:z.array(z.object({
+    carrier_id:z.string().min(1),logical_turn_id:z.string().min(1),submission_id:z.string().min(1),
+    attempt:z.object({
+      attempt_id:z.string().min(1),revision:decimalU64,
+      target:z.object({provider:agentProviderSchema,thread_id:z.string().min(1),
+        native_session_id:z.string().nullable(),local_turn_id:z.string().nullable(),native_turn_id:z.string().nullable(),rpc_request_id:decimalU64.nullable()}).strict(),
+      delivery:z.enum(['crossing_unknown','unknown','not_dispatched','accepted']),
+      invocation:z.discriminatedUnion('kind',[
+        z.object({kind:z.literal('recorded'),configuration:z.object({model:z.string().nullable(),effort:z.string().nullable(),permission:plannerPermissionModeSchema}).strict()}).strict(),
+        z.object({kind:z.literal('prior_invocation_not_recorded')}).strict(),
+      ]),
+      actions:z.object({keep:z.object({kind:z.literal('unavailable'),reason:z.literal('not_implemented_yet')}).strict(),
+        retry:z.object({kind:z.literal('unavailable'),reason:z.literal('not_implemented_yet')}).strict()}).strict(),
+    }).strict().nullable(),
   }).strict()) }).strict().nullable(),
   native_turn_id:z.string().nullable(),
 }).refine(run=>run.input_contract !== 'canonical' || run.runtime_state !== null,

@@ -5,14 +5,18 @@ use calm_types::conversation_display::*;
 use sqlx::{FromRow, Row, SqlitePool};
 
 pub(super) async fn current_frame(
-    pool: &SqlitePool,
+    db: &super::SqliteDb,
     card: &str,
 ) -> Result<crate::db::ConversationReadFrame> {
+    // The snapshot and immutable identity/plan joins must share one observation.
+    // Use the existing writer admission owner so a parked read cannot hold a
+    // shared-cache R lock across a waiting writer (#930).
+    let mut tx = super::begin_immediate_tx(db).await?;
     let row = sqlx::query(
         "SELECT c.session_id, w.card_id AS runtime_card, w.state, w.handle_state_json,
                 EXISTS(SELECT 1 FROM conversation_presentations WHERE card_id=c.id) AS has_presentations
          FROM cards c LEFT JOIN worker_sessions w ON w.id=c.session_id WHERE c.id=?1",
-    ).bind(card).fetch_optional(pool).await?
+    ).bind(card).fetch_optional(&mut **tx).await?
         .ok_or_else(|| CalmError::NotFound(format!("card {card}")))?;
     let worker_session_id: Option<String> = row.try_get("session_id")?;
     if worker_session_id.is_some()
@@ -34,9 +38,45 @@ pub(super) async fn current_frame(
             })
         })
         .transpose()?;
+    let snapshot: Option<serde_json::Value> =
+        raw.as_deref().map(serde_json::from_str).transpose()?;
+    let active_input = match snapshot
+        .as_ref()
+        .filter(|value| value.get("canonical_inputs").is_some())
+    {
+        Some(value) => {
+            let frame: calm_types::harness::snapshot::CanonicalHarnessSnapshot =
+                serde_json::from_value(value.clone())?;
+            let carrier = runtime
+                .as_ref()
+                .ok_or(CalmError::Conflict("canonical frame lacks its carrier"))?;
+            let ids = frame.canonical_inputs.referenced_submissions();
+            let mut identities = Vec::with_capacity(ids.len());
+            for id in ids {
+                let identity = super::conversation::submission_identity_tx(&mut tx, &id).await?;
+                if identity.card_id != card {
+                    return Err(CalmError::Conflict(
+                        "submission belongs to another conversation",
+                    ));
+                }
+                // Decode and validate the original immutable plan through its sole owner.
+                super::conversation::submission_plan_tx(&mut tx, &id).await?;
+                identities.push((id, identity.logical_turn_id));
+            }
+            ConversationActiveInput::from_checkpoint(
+                &frame.canonical_inputs,
+                &carrier.id,
+                &identities,
+            )
+            .map_err(CalmError::Conflict)?
+        }
+        None => None,
+    };
+    tx.commit().await?;
     Ok(crate::db::ConversationReadFrame {
         runtime,
-        snapshot: raw.as_deref().map(serde_json::from_str).transpose()?,
+        snapshot,
+        active_input,
         has_presentations: row.try_get("has_presentations")?,
     })
 }

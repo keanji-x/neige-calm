@@ -1,7 +1,7 @@
 //! Display actual owning execution feedback; no reader acquires execution authority.
 use super::*;
 
-async fn read_run(app: &axum::Router, cookie: &str, card: &str) -> Value {
+pub(super) async fn read_run(app: &axum::Router, cookie: &str, card: &str) -> Value {
     let response = app
         .clone()
         .oneshot(
@@ -105,6 +105,7 @@ async fn canonical_run_reads_the_actual_live_source_refusal_for_the_original_una
     // A new verified login only reads. GET never supplies execution authority.
     let run = read_run(&app, &cookie, &card).await;
     assert_eq!(run["blocked_reason"], reason, "{run}");
+    assert!(run["active_input"]["submissions"][0]["attempt"].is_null());
     assert_eq!(fixture.carrier(track).await.2, before);
     handle.shutdown().await.unwrap();
     peer.close(None).await.unwrap();

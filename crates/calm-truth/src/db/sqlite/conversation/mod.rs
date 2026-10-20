@@ -116,6 +116,8 @@ fn decode_history_contract(
 #[cfg(test)]
 mod end_transition_tests;
 #[cfg(test)]
+mod held_projection_tests;
+#[cfg(test)]
 mod relationship_tests;
 #[cfg(test)]
 mod runtime_frame_tests;

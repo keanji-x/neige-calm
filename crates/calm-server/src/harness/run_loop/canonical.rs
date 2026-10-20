@@ -82,7 +82,8 @@ pub(super) struct CommittedFrame {
 #[derive(Clone, PartialEq)]
 pub(super) struct PublicFeedback {
     pending: Vec<(AcceptedInputRef, u64, i64)>,
-    active: Option<calm_types::conversation_display::ConversationActiveInput>,
+    active: Option<calm_types::conversation::ActiveInputSubmissions>,
+    attempts: Vec<calm_types::conversation::InputAttemptCheckpoint>,
     usage: Option<(i64, Option<i64>, Option<f64>, i64)>,
     blocked: Option<String>,
     native_turn: Option<String>,
@@ -97,9 +98,8 @@ impl PublicFeedback {
                 .iter()
                 .map(|p| (p.input_ref(), p.queue_position(), p.queued_at_ms()))
                 .collect(),
-            active: calm_types::conversation_display::ConversationActiveInput::from_checkpoint(
-                &frame.canonical_inputs,
-            ),
+            active: frame.canonical_inputs.active.clone(),
+            attempts: frame.canonical_inputs.attempts.clone(),
             usage: if h.context_usage_invalidated {
                 None
             } else {

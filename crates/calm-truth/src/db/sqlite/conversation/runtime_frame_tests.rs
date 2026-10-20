@@ -126,6 +126,11 @@ async fn runtime_frame_cas_rejects_changed_dispatch_attempt_without_a_phase_chan
             native_turn_id: None,
             rpc_request_id: None,
         },
+        FrozenInputInvocation {
+            model: None,
+            effort: None,
+            permission: calm_types::harness::PlannerPermissionMode::Never,
+        },
     )
     .await
     .unwrap();

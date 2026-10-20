@@ -317,6 +317,7 @@ export function useConversationStore(
     awaitingConversationUpdate: view.awaitingReconciliation && history.error === null && run.error === null,
     pendingQueue: presentation.queue,
     pendingInputs,
+    activeInput: run.data?.active_input ?? null,
     pendingSends: presentation.sending,
     queueDisplayAccounting,
     pendingQueueOverflow,

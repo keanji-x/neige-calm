@@ -109,6 +109,13 @@ fn writers_in_files(files: Vec<PathBuf>) -> BTreeSet<String> {
 /// `carried` (queue that did not come from the row; needs an argument beside the entry),
 /// `not-a-queue` (writes the column without touching `pending_queue`).
 const FROZEN_WRITERS: &[(&str, &str)] = &[
+    // Boot-only canonical conversion reads the exact row under BEGIN IMMEDIATE,
+    // preserves its pending references, and writes only against that same raw
+    // snapshot. No carried operation output or historical body queue is adopted.
+    (
+        "crates/calm-truth/src/db/sqlite/canonical_input_revision_migration.rs::migrate",
+        "row",
+    ),
     // Insert/refresh primitives write whatever their caller assembled; the Rust-level callers
     // contain no SQL literal and are invisible to the scan.
     (

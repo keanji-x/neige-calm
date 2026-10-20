@@ -117,6 +117,7 @@ const POST_0067_MIGRATION_NAMES: &[&str] = &[
     "0177_objective_host.sql",
     "0178_task_child_track_config.sql",
     "0179_track_capabilities.sql",
+    "0180_canonical_input_revision.sql",
 ];
 
 #[test]

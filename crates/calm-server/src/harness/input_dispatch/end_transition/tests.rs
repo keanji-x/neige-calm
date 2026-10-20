@@ -200,6 +200,11 @@ async fn end_never_upgrades_no_attempt_or_crossing_marker_into_a_settled_report(
         &fx.runtime,
         &fx.submission,
         fx.backend.provider(),
+        FrozenInputInvocation {
+            model: None,
+            effort: None,
+            permission: calm_types::harness::PlannerPermissionMode::Never,
+        },
     )
     .await
     .unwrap();

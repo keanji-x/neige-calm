@@ -231,7 +231,7 @@ async fn send_keyed(
             value
                 .get("schema_version")
                 .and_then(serde_json::Value::as_u64)
-                == Some(2)
+                .is_some_and(|version| version >= 2)
         })
     {
         return Err(CalmError::Conflict(

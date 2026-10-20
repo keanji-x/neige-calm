@@ -1,6 +1,7 @@
 //! SQLite-backed `Repo` implementation. Every entity write is a `_tx` free
 //! function so it can compose inside `write_with_event`'s transaction.
 
+mod canonical_input_revision_migration;
 mod subtrack_route_migration;
 pub mod terminal_presentation;
 
@@ -238,6 +239,7 @@ impl SqlxRepo {
             .await
             .map_err(|e| CalmError::Internal(format!("migrate: {e}")))?;
 
+        canonical_input_revision_migration::migrate(&db).await?;
         subtrack_route_migration::migrate(&db).await?;
         track_vcs::backfill_existing_tracks(&db).await?;
 

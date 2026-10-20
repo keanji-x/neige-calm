@@ -28,13 +28,23 @@ async fn original(repo: &SqlxRepo, card: &str, runtime: &str) -> InputAttempt {
         submission_id: initial.submission_id,
         attempt_id: InputAttemptId::parse(&crate::model::new_id()).unwrap(),
     };
-    begin_input_attempt_tx(&mut tx, &mut carrier, attempt.clone(), correlation())
-        .await
-        .unwrap();
+    begin_input_attempt_tx(
+        &mut tx,
+        &mut carrier,
+        attempt.clone(),
+        correlation(),
+        FrozenInputInvocation {
+            model: None,
+            effort: None,
+            permission: calm_types::harness::PlannerPermissionMode::Never,
+        },
+    )
+    .await
+    .unwrap();
     record_input_attempt_fact_tx(
         &mut tx,
         &mut carrier,
-        InputAttemptCheckpoint {
+        InputAttemptFact {
             attempt: attempt.clone(),
             correlation: correlation(),
             delivery: InputDeliveryFact::Unknown,
@@ -274,14 +284,24 @@ async fn canonical_claude_original_local_execution_needs_no_native_session() {
         local_turn_id: None,
         rpc_request_id: None,
     };
-    begin_input_attempt_tx(&mut tx, &mut carrier, attempt.clone(), correlation.clone())
-        .await
-        .unwrap();
+    begin_input_attempt_tx(
+        &mut tx,
+        &mut carrier,
+        attempt.clone(),
+        correlation.clone(),
+        FrozenInputInvocation {
+            model: None,
+            effort: None,
+            permission: calm_types::harness::PlannerPermissionMode::Never,
+        },
+    )
+    .await
+    .unwrap();
     correlation.local_turn_id = Some(local.clone());
     record_input_attempt_fact_tx(
         &mut tx,
         &mut carrier,
-        InputAttemptCheckpoint {
+        InputAttemptFact {
             attempt,
             correlation,
             delivery: InputDeliveryFact::Unknown,

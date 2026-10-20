@@ -276,7 +276,7 @@ async fn failed_current_run_preserves_active_and_pending_without_promoting_the_c
     );
     assert_eq!(run["pending_inputs"].as_array().unwrap().len(), 1);
     assert_eq!(
-        run["active_input"]["logical_turn_id"],
+        run["active_input"]["submissions"][0]["logical_turn_id"],
         claimed.logical_turn_id.as_str()
     );
     assert_eq!(

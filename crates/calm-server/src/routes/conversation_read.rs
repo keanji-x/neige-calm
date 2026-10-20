@@ -43,6 +43,7 @@ impl ReadScope {
 pub(crate) struct CurrentReadFrame {
     pub runtime: Option<calm_truth::db::CurrentConversationRuntime>,
     pub canonical: Option<CanonicalHarnessSnapshot>,
+    pub active_input: Option<calm_types::conversation_display::ConversationActiveInput>,
 }
 /// Declared persisted version selects the reader. Missing or malformed V2 never falls back.
 pub(crate) async fn current_frame(repo: &dyn RouteRepo, card: &str) -> Result<CurrentReadFrame> {
@@ -52,14 +53,14 @@ pub(crate) async fn current_frame(repo: &dyn RouteRepo, card: &str) -> Result<Cu
             .get("schema_version")
             .and_then(serde_json::Value::as_u64)
         {
-            Some(2) => Some(serde_json::from_value(value)?),
+            Some(version) if version >= 2 => Some(serde_json::from_value(value)?),
             Some(1) if !facts.has_presentations => {
                 crate::harness::HarnessSnapshot::parse_known(value).ok_or_else(|| {
                     CalmError::Conflict("unreadable historical conversation frame".into())
                 })?;
                 None
             }
-            _ => {
+            Some(_) | None => {
                 return Err(CalmError::Conflict(
                     "conversation requires a supported read contract".into(),
                 ));
@@ -80,5 +81,6 @@ pub(crate) async fn current_frame(repo: &dyn RouteRepo, card: &str) -> Result<Cu
     Ok(CurrentReadFrame {
         runtime: facts.runtime,
         canonical,
+        active_input: facts.active_input,
     })
 }

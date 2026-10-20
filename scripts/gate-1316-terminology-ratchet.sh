@@ -131,6 +131,13 @@
 # scan rule, excluded path, test inventory or additional CI pass is introduced.
 # Later SQL references use the existing occurrence baseline as before.
 
+# #2836 bounded persisted-contract exception: runtime_id/crates 1122 -> 1125
+# counts three references to the frozen origin_runtime_id column when migration
+# 0180 replaces 0175's creation scope trigger for canonical V3. Every other
+# scope predicate is retained verbatim; there is no new domain identifier,
+# excluded path, scan rule or inventory. A later trigger migration retains the
+# physical column name and updates this same counted baseline.
+
 set -uo pipefail
 
 cd "$(git rev-parse --show-toplevel)" || exit 1

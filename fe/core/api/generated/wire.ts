@@ -134,7 +134,21 @@ claude_version?: string, };
  */
 export type ClaudeInstalledVersion = { version: string | null, };
 
-export type ConversationActiveInput = { logical_turn_id: string, submissions: Array<ConversationSubmissionDelivery>, };
+export type ConversationActionAvailability = { "kind": "unavailable", reason: ConversationActionUnavailableReason, };
+
+export type ConversationActionUnavailableReason = "not_implemented_yet";
+
+export type ConversationActiveInput = { 
+/**
+ * Execution and held submissions are independent facts.
+ */
+current_execution_id: string | null, submissions: Array<ConversationSubmissionDelivery>, };
+
+export type ConversationAttemptDelivery = { attempt_id: string, 
+/**
+ * Decimal text preserves the full persisted u64 CAS identity in browsers.
+ */
+revision: string, target: ConversationInputTarget, delivery: ConversationDelivery, invocation: InputInvocation, actions: ConversationResolutionActions, };
 
 export type ConversationCursor = { contract: ConversationReadContract, card_id: string, source: ConversationCursorSource, position: number, };
 
@@ -168,6 +182,8 @@ export type ConversationInitialInputReceiptResult = { "kind": "known", receipt: 
 
 export type ConversationInputContract = "canonical" | "historical";
 
+export type ConversationInputTarget = { provider: AgentProvider, thread_id: string, native_session_id: string | null, local_turn_id: string | null, native_turn_id: string | null, rpc_request_id: string | null, };
+
 export type ConversationLiveReplies = { contract: ConversationReadContract, turn: ConversationLiveTurn | null, };
 
 export type ConversationLiveTurn = { thread_id: string, turn_id: string, items: Array<HarnessLiveReply>, };
@@ -178,7 +194,13 @@ export type ConversationPendingInput = { "kind": "human", message_id: string, re
 
 export type ConversationReadContract = "conversation_v1";
 
-export type ConversationSubmissionDelivery = { submission_id: string, attempt_id: string | null, delivery: ConversationDelivery | null, };
+export type ConversationResolutionActions = { keep: ConversationActionAvailability, retry: ConversationActionAvailability, };
+
+export type ConversationSubmissionDelivery = { carrier_id: string, logical_turn_id: string, submission_id: string, 
+/**
+ * Null explicitly means no crossing has been recorded for this submission.
+ */
+attempt: ConversationAttemptDelivery | null, };
 
 export type DailyTrackResolved = { date: string, time_zone: string, track_id: string, };
 
@@ -384,6 +406,12 @@ diagnostics?: ForgeCheckDiagnostics, } & ({ url: string, } | { id: string, });
  */
 export type ForgeMergeSubject = { pr_number: number, };
 
+/**
+ * Exact choices passed to the native invocation. Absent model/effort keys mean
+ * inherit the thread's value, not a reconstruction from later card settings.
+ */
+export type FrozenInputInvocation = { model: string | null, effort: string | null, permission: PlannerPermissionMode, };
+
 export type GitHubPreview = { kind: GitHubPreviewKind, number: number, title: string, state: GitHubPreviewState, author: string, labels: Array<string>, excerpt: string, changes: GitHubPullChanges | null, };
 
 export type GitHubPreviewKind = "issue" | "pull";
@@ -493,6 +521,8 @@ export type HarnessTimeoutRequest = { session_id: string, card_id: string, track
 export type InitialInputReceiptVersion = "initial-input-v1";
 
 export type InitialInputUnavailableReason = "legacy-operation" | "creation-incomplete" | "runtime-unavailable" | "runtime-changed" | "shutting-down" | "legacy-projection" | "integrity";
+
+export type InputInvocation = { "kind": "recorded", configuration: FrozenInputInvocation, } | { "kind": "prior_invocation_not_recorded" };
 
 /**
  * `POST /api/read-receipts/{kind}/{target_id}/read`: the activity instant the reader has seen.

@@ -1,9 +1,10 @@
-//! The declared V2 persisted frame. Both Truth and the server use this exact codec.
+//! The declared V3 persisted frame. Both Truth and the server use this exact codec.
 use super::budget::FrozenBudget;
 use super::{HARNESS_MODE, HarnessPhaseTag};
 use crate::conversation::ConversationInputCheckpoint;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+mod v2;
 mod values;
 pub use values::{
     CompactOutcome, CompactStatus, PersistedRewind, QueueEntryId, TokenUsage, TurnBase,
@@ -31,7 +32,7 @@ pub struct HarnessRuntimeHeader {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(try_from = "CanonicalFrameWire")]
+#[serde(try_from = "CanonicalFrameWire<ConversationInputCheckpoint>")]
 pub struct CanonicalHarnessSnapshot {
     schema_version: u32,
     mode: String,
@@ -41,22 +42,24 @@ pub struct CanonicalHarnessSnapshot {
 }
 
 #[derive(Deserialize)]
-struct CanonicalFrameWire {
+struct CanonicalFrameWire<C> {
     schema_version: u32,
     mode: String,
-    canonical_inputs: ConversationInputCheckpoint,
+    canonical_inputs: C,
     // The typed header rejects every unrecognized field. This avoids a second,
     // manually maintained inventory of runtime keys or retired body fields.
     #[serde(flatten)]
     header: serde_json::Map<String, Value>,
 }
 
-impl TryFrom<CanonicalFrameWire> for CanonicalHarnessSnapshot {
+impl TryFrom<CanonicalFrameWire<ConversationInputCheckpoint>> for CanonicalHarnessSnapshot {
     type Error = String;
 
-    fn try_from(wire: CanonicalFrameWire) -> Result<Self, Self::Error> {
-        if wire.schema_version != 2 || wire.mode != HARNESS_MODE {
-            return Err("canonical frame requires its declared V2 harness format".into());
+    fn try_from(
+        wire: CanonicalFrameWire<ConversationInputCheckpoint>,
+    ) -> Result<Self, Self::Error> {
+        if wire.schema_version != 3 || wire.mode != HARNESS_MODE {
+            return Err("canonical frame requires its declared V3 harness format".into());
         }
         wire.canonical_inputs.validate()?;
         let header = serde_json::from_value(Value::Object(wire.header))
@@ -101,10 +104,20 @@ impl HarnessRuntimeHeader {
 }
 
 impl CanonicalHarnessSnapshot {
+    /// Read adaptation for released immutable outputs and the boot-time migration.
+    /// Live carrier reads deliberately use Deserialize instead.
+    pub fn from_released(value: Value) -> Result<Self, String> {
+        match value.get("schema_version").and_then(Value::as_u64) {
+            Some(2) => v2::upgrade(value),
+            Some(3) => serde_json::from_value(value).map_err(|error| error.to_string()),
+            Some(_) | None => Err("unsupported canonical frame version".into()),
+        }
+    }
+
     /// A deliberate new dormant frame, never a fallback for malformed stored data.
     pub fn dormant(push_watermark: i64) -> Self {
         Self {
-            schema_version: 2,
+            schema_version: 3,
             mode: HARNESS_MODE.into(),
             header: HarnessRuntimeHeader::new(
                 HarnessPhaseTag::Idle,
@@ -125,7 +138,7 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn v2_frame_requires_declared_header_and_nested_value_shapes() {
+    fn v3_frame_requires_declared_header_and_nested_value_shapes() {
         let original = serde_json::to_value(CanonicalHarnessSnapshot::dormant(7)).unwrap();
         for field in ["turn_budget", "push_watermark", "context_usage_invalidated"] {
             let mut missing = original.clone();
@@ -148,7 +161,7 @@ mod tests {
     }
 
     #[test]
-    fn v2_frame_round_trip_keeps_typed_runtime_metadata() {
+    fn v3_frame_round_trip_keeps_typed_runtime_metadata() {
         let mut frame = CanonicalHarnessSnapshot::dormant(7);
         frame.header.turn_budget = FrozenBudget::Planner {
             budget: super::super::budget::PlannerTurnBudget::try_from(15).unwrap(),

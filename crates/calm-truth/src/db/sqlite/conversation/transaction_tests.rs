@@ -185,9 +185,19 @@ async fn canonical_initial_non_delivery_release_preserves_pending_and_newer_queu
     .await
     .unwrap();
     let dispatch = attempt(&initial.submission_id);
-    begin_input_attempt_tx(&mut tx, &mut carrier, dispatch.clone(), correlation())
-        .await
-        .unwrap();
+    begin_input_attempt_tx(
+        &mut tx,
+        &mut carrier,
+        dispatch.clone(),
+        correlation(),
+        FrozenInputInvocation {
+            model: None,
+            effort: None,
+            permission: calm_types::harness::PlannerPermissionMode::Never,
+        },
+    )
+    .await
+    .unwrap();
     tx.commit().await.unwrap();
 
     let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
@@ -211,7 +221,7 @@ async fn canonical_initial_non_delivery_release_preserves_pending_and_newer_queu
     record_input_attempt_fact_tx(
         &mut tx,
         &mut carrier,
-        InputAttemptCheckpoint {
+        InputAttemptFact {
             attempt: dispatch.clone(),
             correlation: correlation(),
             delivery: InputDeliveryFact::NotDispatched {
@@ -281,13 +291,23 @@ async fn canonical_reported_unknown_and_stale_attempts_cannot_release_or_requeue
     .await
     .unwrap();
     let original = attempt(&claimed.submission_id);
-    begin_input_attempt_tx(&mut tx, &mut carrier, original.clone(), correlation())
-        .await
-        .unwrap();
+    begin_input_attempt_tx(
+        &mut tx,
+        &mut carrier,
+        original.clone(),
+        correlation(),
+        FrozenInputInvocation {
+            model: None,
+            effort: None,
+            permission: calm_types::harness::PlannerPermissionMode::Never,
+        },
+    )
+    .await
+    .unwrap();
     record_input_attempt_fact_tx(
         &mut tx,
         &mut carrier,
-        InputAttemptCheckpoint {
+        InputAttemptFact {
             attempt: original.clone(),
             correlation: correlation(),
             delivery: InputDeliveryFact::Unknown,
@@ -297,16 +317,26 @@ async fn canonical_reported_unknown_and_stale_attempts_cannot_release_or_requeue
     .unwrap();
     let later = attempt(&claimed.submission_id);
     assert!(
-        begin_input_attempt_tx(&mut tx, &mut carrier, later.clone(), correlation())
-            .await
-            .is_err()
+        begin_input_attempt_tx(
+            &mut tx,
+            &mut carrier,
+            later.clone(),
+            correlation(),
+            FrozenInputInvocation {
+                model: None,
+                effort: None,
+                permission: calm_types::harness::PlannerPermissionMode::Never
+            }
+        )
+        .await
+        .is_err()
     );
     for attempt in [original.clone(), later] {
         assert!(
             record_input_attempt_fact_tx(
                 &mut tx,
                 &mut carrier,
-                InputAttemptCheckpoint {
+                InputAttemptFact {
                     attempt: attempt.clone(),
                     correlation: correlation(),
                     delivery: InputDeliveryFact::NotDispatched {
@@ -361,9 +391,19 @@ async fn canonical_release_requires_persisted_non_delivery_not_an_uncommitted_ca
     .await
     .unwrap();
     let dispatch = attempt(&claimed.submission_id);
-    begin_input_attempt_tx(&mut tx, &mut carrier, dispatch.clone(), correlation())
-        .await
-        .unwrap();
+    begin_input_attempt_tx(
+        &mut tx,
+        &mut carrier,
+        dispatch.clone(),
+        correlation(),
+        FrozenInputInvocation {
+            model: None,
+            effort: None,
+            permission: calm_types::harness::PlannerPermissionMode::Never,
+        },
+    )
+    .await
+    .unwrap();
     // Model a cache changed before/after a failed report write. No positive
     // provider fact has been recorded in the authoritative SQLite checkpoint.
     carrier.checkpoint.attempts[0].delivery = InputDeliveryFact::NotDispatched {

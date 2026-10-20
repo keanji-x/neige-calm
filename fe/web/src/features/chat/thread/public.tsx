@@ -22,6 +22,8 @@ import {
 } from '@astryxdesign/core/Chat';
 import { createStaticSource } from '@astryxdesign/core/Typeahead';
 import { Button } from '@astryxdesign/core/Button';
+import { Banner } from '@astryxdesign/core/Banner';
+import type { ConversationActiveInput, ConversationSubmissionDelivery } from '../../../../../core/api/generated/wire.ts';
 import { useIcon } from '@astryxdesign/core/Icon';
 import { VisuallyHidden } from '@astryxdesign/core/VisuallyHidden';
 
@@ -74,6 +76,7 @@ export type ChatThreadProps = Readonly<{
   turns: readonly TranscriptEntry[];
   /** Waiting inputs follow the current status without interleaving with its reply. */
   pendingMessages?: ReactNode;
+  activeInput?: ConversationActiveInput | null;
   /** Current pending inputs or their retained exit content; the mounted node alone does not declare presence. */
   hasPendingMessages: boolean;
   /** Current work confirmed by the run query while the activity overlay catches up. */
@@ -113,7 +116,7 @@ export type ChatThreadProps = Readonly<{
   renderLink?: ReplyLinkRenderer;
 }>;
 
-export const ChatThread = memo(function ChatThread({ conversation, turns, pendingMessages, hasPendingMessages, pending = false, sending = false, submissionRequest = 0, cards, stalled, stalledReason, recovery = null, statusUnconfirmed = false, statusLoading = false, stopFeedback = null, canContinue, copyText, regenerateMessage, editMessage, editing = null, replacement = null, runningAnchor = null, imageFiles = null, renderLink, readingView, historyPrefetch }: ChatThreadProps) {
+export const ChatThread = memo(function ChatThread({ conversation, turns, pendingMessages, activeInput = null, hasPendingMessages, pending = false, sending = false, submissionRequest = 0, cards, stalled, stalledReason, recovery = null, statusUnconfirmed = false, statusLoading = false, stopFeedback = null, canContinue, copyText, regenerateMessage, editMessage, editing = null, replacement = null, runningAnchor = null, imageFiles = null, renderLink, readingView, historyPrefetch }: ChatThreadProps) {
   const compactViewport = useCompactViewport();
   // Observe the browser timezone on render; keep formatters stable for memoized rows.
   const timeZone = new Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -123,6 +126,8 @@ export const ChatThread = memo(function ChatThread({ conversation, turns, pendin
   const compactClock = useMemo(() => compactViewport ? new Intl.DateTimeFormat('zh-CN', {
     hour: '2-digit', minute: '2-digit', hour12: false, timeZone,
   }) : null, [compactViewport, timeZone]);
+  const heldInputs = activeInput?.submissions.filter(submission => submission.attempt?.delivery === 'crossing_unknown'
+    || submission.attempt?.delivery === 'unknown') ?? [];
   const localReading = useThreadReadingView(conversation.id);
   const reading = readingView ?? localReading;
   /* Only run/activity evidence claims execution. A local outgoing message has its own sending feedback.
@@ -288,7 +293,7 @@ export const ChatThread = memo(function ChatThread({ conversation, turns, pendin
     );
   };
 
-  const empty = turns.length === 0 && noticeKind === null && !hasPendingMessages;
+  const empty = turns.length === 0 && noticeKind === null && !hasPendingMessages && heldInputs.length === 0;
 
   const scrollControls = <div className={styles.scrollDockContent} data-nc-chat-scroll-dock="">
     {scrollOverlay === null && <div className={styles.scrollBlur} aria-hidden="true" />}
@@ -323,7 +328,10 @@ export const ChatThread = memo(function ChatThread({ conversation, turns, pendin
         {/* The drawer's one accessible "in motion" fact: every indicator is decorative. It sits after the placeholder because the stylesheet spaces `.thread`'s children by adjacency (`.exchange + *`). */}
         {live && <VisuallyHidden>{activityLabelOf('working')}</VisuallyHidden>}
         {currentMeta}
-        <div key="pending-messages" className={styles.pendingMessages}>{pendingMessages}</div>
+        <div key="pending-messages" className={styles.pendingMessages}>
+          <HeldInputStatus held={heldInputs} />
+          {pendingMessages}
+        </div>
         <div ref={endRef} aria-hidden="true" />
       </div>
       {scrolledUp && (scrollOverlay !== null ? createPortal(scrollControls, scrollOverlay)
@@ -702,4 +710,16 @@ function clockTime(formatter: Intl.DateTimeFormat, atMs: number): string {
   const date = new Date(atMs);
   // Date#toLocaleTimeString previously displayed invalid gap dates rather than throwing.
   return Number.isNaN(date.getTime()) ? date.toString() : formatter.format(date);
+}
+
+/** Status only: canonical words already have their one transcript row. */
+function HeldInputStatus({ held }: Readonly<{ held: readonly ConversationSubmissionDelivery[] }>) {
+  if (held.length === 0) return null;
+  return <SizeMotion motionKey={held.map(submission => `${submission.submission_id}:${submission.attempt?.revision}`).join(',')}>
+    {held.map(submission => <div key={submission.submission_id} role="status" data-nc-held-input={submission.submission_id}>
+      <Banner status="warning" title="Delivery not confirmed" description={submission.attempt?.invocation.kind === 'prior_invocation_not_recorded'
+        ? 'This input may have reached the model. Its original model settings were not recorded. Resolution actions are not available yet.'
+        : `This input may have reached the model. Original model: ${submission.attempt?.invocation.configuration.model ?? 'inherited from the thread'}; effort: ${submission.attempt?.invocation.configuration.effort ?? 'inherited from the thread'}; permissions: ${submission.attempt?.invocation.configuration.permission}. Resolution actions are not available yet.`} />
+    </div>)}
+  </SizeMotion>;
 }
