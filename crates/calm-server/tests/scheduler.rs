@@ -3,6 +3,8 @@
 
 #[path = "scheduler/c2b.rs"]
 mod c2b;
+#[path = "scheduler/child_track_config.rs"]
+mod child_track_config;
 mod support;
 
 use calm_types::organization::LEGACY_OWNER_USER_ID;
@@ -476,6 +478,7 @@ fn plan_task(track_id: &TrackId, key: &str, kind: TaskKind, deps: &[&str]) -> Ta
         access: calm_server::model::TaskAccess::ReadWrite,
         start: calm_server::model::TaskStart::Checkout,
         result_contract: None,
+        child_track_json: None,
         created_at_ms: now,
         updated_at_ms: now,
         finished_at_ms: None,
@@ -489,9 +492,9 @@ async fn seed_task(boot: &Boot, task: Task) {
            (id,track_id,key,kind,goal,context_json,acceptance_criteria,cwd,
             depends_on_json,priority,gate_json,status,status_detail,worker_card_id,
             gate_result_json,gate_attempt,gate_pid,gate_pid_starttime,gate_pid_boot_id,
-            running_deadline_ms,spawn,created_at_ms,updated_at_ms,finished_at_ms,access)
+            running_deadline_ms,spawn,created_at_ms,updated_at_ms,finished_at_ms,access,child_track_json)
            VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,
-                  ?18,?19,?20,?21,?22,?23,?24,?25)"#,
+                  ?18,?19,?20,?21,?22,?23,?24,?25,?26)"#,
     )
     .bind(task.id)
     .bind(task.track_id)
@@ -518,6 +521,7 @@ async fn seed_task(boot: &Boot, task: Task) {
     .bind(task.updated_at_ms)
     .bind(task.finished_at_ms)
     .bind(task.access.as_str())
+    .bind(task.child_track_json)
     .execute(pool.writer_pool())
     .await
     .expect("seed task row");
@@ -569,6 +573,12 @@ async fn seed_projected_task_for(
         ("access".into(), json!(task.access)),
         ("ready".into(), json!(true)),
     ]);
+    if let Some(config) = &task.child_track_json {
+        payload.insert(
+            "child_track".into(),
+            serde_json::from_str(config).expect("child config JSON"),
+        );
+    }
     let instruction_field = if task.kind == TaskKind::Terminal {
         "command"
     } else {
@@ -8476,7 +8486,7 @@ async fn acceptance_13e_failed_and_stuck_at_both_operation_levels_close_once() {
         ("bootstrap", "failed", "child-track-bootstrap-failed"),
         ("bootstrap", "stuck", "child-track-bootstrap-stuck"),
     ] {
-        let boot = boot().await;
+        let (boot, _parent_repo) = child_track_config::boot_git_parent().await;
         let mut task = plan_task(
             &boot.track_id,
             &format!("{stage}-{phase}"),
@@ -8554,8 +8564,8 @@ async fn acceptance_13e_failed_and_stuck_at_both_operation_levels_close_once() {
         let row = boot.repo.task_get(&task_id).await.unwrap().unwrap();
         assert_eq!(row.status, TaskStatus::Failed, "{stage}/{phase}");
         assert_eq!(
-            row.status_detail.as_deref(),
-            Some(expected),
+            status_detail_class(row.status_detail.as_deref().unwrap_or_default()),
+            expected,
             "{stage}/{phase}"
         );
         if stage == "create" {
@@ -8915,8 +8925,8 @@ async fn acceptance_9_depth_exhaustion_fails_parent_without_in_track_fallback() 
     let row = boot.repo.task_get(&task_id).await.unwrap().unwrap();
     assert_eq!(row.status, TaskStatus::Failed);
     assert_eq!(
-        row.status_detail.as_deref(),
-        Some("sub-track-depth-exceeded")
+        status_detail_class(row.status_detail.as_deref().unwrap_or_default()),
+        "sub-track-depth-exceeded"
     );
     assert_eq!(operation_count(&boot, "codex-worker").await, 0);
 }

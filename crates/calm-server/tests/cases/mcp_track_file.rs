@@ -2482,6 +2482,7 @@ async fn seed_gated_task_in(
         access: calm_server::model::TaskAccess::ReadWrite,
         start: calm_server::model::TaskStart::Checkout,
         result_contract: None,
+        child_track_json: None,
         created_at_ms: now_ms(),
         updated_at_ms: now_ms(),
         finished_at_ms: None,

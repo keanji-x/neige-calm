@@ -12,7 +12,7 @@ use crate::validation::CODEX_PAYLOAD_SCHEMA_VERSION;
 use calm_types::track_report::TrackReportPayload;
 
 /// A closed initialization contract: an independent Track supplies its prepared Planner
-/// configuration; a subtrack must supply the delegated task seed and inherited provider.
+/// configuration; a subtrack supplies its seed and creation-time inherited configuration.
 /// Admission and completion remain with the respective owner before/after this transaction step.
 pub(crate) enum TrackInitialization {
     Independent {
@@ -21,6 +21,8 @@ pub(crate) enum TrackInitialization {
     Subtrack {
         seed: String,
         provider: AgentProvider,
+        permission: crate::planner_permission_mode::PlannerPermissionMode,
+        selection: crate::planner_model::CardModelSelection,
     },
 }
 
@@ -76,8 +78,20 @@ pub(crate) async fn initialize_track_tx(
 ) -> Result<PlannerReportStructure> {
     let planner_payload = match initialization {
         TrackInitialization::Independent { planner_payload } => planner_payload,
-        TrackInitialization::Subtrack { seed, provider } => {
-            planner_harness_card_payload(host, Some(seed), provider)
+        TrackInitialization::Subtrack {
+            seed,
+            provider,
+            permission,
+            selection,
+        } => {
+            let mut payload = planner_payload(
+                host,
+                Some(seed),
+                provider,
+                crate::planner_permission_mode::CreationSource::Inherited(permission),
+            );
+            selection.copy_to_payload(payload.as_object_mut().expect("planner payload"));
+            payload
         }
     };
     let planner = card_create_with_id_tx(
@@ -135,6 +149,20 @@ pub fn planner_harness_card_payload(
     goal: Option<String>,
     provider: AgentProvider,
 ) -> serde_json::Value {
+    planner_payload(
+        host,
+        goal,
+        provider,
+        crate::planner_permission_mode::CreationSource::Independent,
+    )
+}
+
+fn planner_payload(
+    host: &crate::acp_planner::config::AcpPlannerHost,
+    goal: Option<String>,
+    provider: AgentProvider,
+    source: crate::planner_permission_mode::CreationSource,
+) -> serde_json::Value {
     let mut card_payload = serde_json::Map::new();
     card_payload.insert(
         "schemaVersion".into(),
@@ -152,7 +180,7 @@ pub fn planner_harness_card_payload(
     if let Some(goal) = goal.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         card_payload.insert("prompt".into(), serde_json::Value::String(goal.to_string()));
     }
-    crate::planner_permission_mode::mint_at_creation(&mut card_payload, &provider, host);
+    crate::planner_permission_mode::mint_at_creation(&mut card_payload, source, &provider, host);
     serde_json::Value::Object(card_payload)
 }
 

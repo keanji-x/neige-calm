@@ -31,9 +31,13 @@ impl TrackBranch for ServerWorkspacePorts {
 
     fn prepare_branch(&self, repo_root: &Path, branch: &str) -> Result<String> {
         let base = track_worktree_base(repo_root)?;
-        let upstream = head_upstream(repo_root)?;
-        set_branch_upstream(repo_root, branch, upstream.as_ref())?;
+        self.bind_branch_upstream(repo_root, branch)?;
         Ok(base)
+    }
+
+    fn bind_branch_upstream(&self, repo_root: &Path, branch: &str) -> Result<()> {
+        let upstream = head_upstream(repo_root)?;
+        set_branch_upstream(repo_root, branch, upstream.as_ref())
     }
 }
 

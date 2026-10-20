@@ -2388,3 +2388,76 @@ async fn commit_whose_steps_leave_the_header_off_line_1_is_rejected_as_a_whole()
         canonical_line(&one_section_header())
     );
 }
+
+#[tokio::test]
+async fn child_track_config_mcp_rejects_placement_and_unknown_fields() {
+    let boot = boot().await;
+    read(&boot, json!({})).await;
+    let before = current_payload(&boot).await;
+    for (spawn, config, needle) in [
+        (
+            calm_types::task_recovery::TASK_IN_TRACK_ROUTE,
+            json!({"model":"sonnet"}),
+            "child_track",
+        ),
+        (
+            "sub-track",
+            json!({"permission_mode":"full"}),
+            "permission_mode",
+        ),
+        ("sub-track", json!({"typo":"oops"}), "typo"),
+        ("sub-track", json!(false), "child_track"),
+    ] {
+        let args = commit_args(json!([{"op":"upsert", "kind":"task", "payload":{
+            "key":"child", "kind":"codex", "goal":"delegate", "ready":true,
+            "declared_by":calm_types::report_blocks::tasks::PLANNER_DECLARATION_AUTHOR, "spawn":spawn, "child_track":config
+        }}]));
+        let err = call_tool(&boot, TOOL_REPORT_COMMIT, planner_identity(&boot), args)
+            .await
+            .expect_err("invalid child configuration must not be persisted");
+        assert!(err.message.contains(needle), "{err:?}");
+    }
+    assert_eq!(current_payload(&boot).await.doc_rev, before.doc_rev);
+}
+
+#[tokio::test]
+async fn child_track_config_mcp_declaration_reaches_claim_and_operation_payload() {
+    let boot = boot().await;
+    let config = json!({"provider":"claude", "model":"sonnet", "reasoning_effort":"high"});
+    read_then_commit(
+        &boot,
+        planner_identity(&boot),
+        json!([{
+            "op":"upsert", "kind":"task", "payload": {
+                "key":"configured-child", "kind":"codex", "goal":"delegate", "ready":true,
+                "declared_by":calm_types::report_blocks::tasks::PLANNER_DECLARATION_AUTHOR, "spawn":"sub-track", "child_track":config
+            }
+        }]),
+    )
+    .await
+    .unwrap();
+    let task_id = format!("{}:configured-child", boot.track_id);
+    let db = boot.repo.sqlite_db().unwrap();
+    let mut tx = calm_server::db::sqlite::begin_immediate_tx(&db)
+        .await
+        .unwrap();
+    assert_eq!(
+        calm_server::db::sqlite::task_claim_pending_tx(&mut tx, &task_id, 1, &[], false)
+            .await
+            .unwrap(),
+        1
+    );
+    let task = calm_server::db::sqlite::task_get_tx(&mut tx, &task_id)
+        .await
+        .unwrap()
+        .unwrap();
+    tx.commit().await.unwrap();
+    let payload = calm_server::scheduler::build_child_track_payload(&task).unwrap();
+    assert_eq!(payload["child_track"], config);
+    let typed: calm_server::operation::child_track_adapter::ChildTrackOperationPayload =
+        serde_json::from_value(payload).unwrap();
+    assert_eq!(
+        serde_json::to_value(typed.child_track.unwrap()).unwrap(),
+        config
+    );
+}

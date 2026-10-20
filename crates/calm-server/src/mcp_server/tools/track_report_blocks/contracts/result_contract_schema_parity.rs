@@ -165,15 +165,19 @@ fn declarations() -> Vec<(String, Value, bool)> {
     cases
 }
 
-#[test]
-fn published_task_schema_and_validator_agree_on_every_result_contract_declaration() {
-    let table = kinds_table();
-    let schema = &table["kinds"]
+fn task_schema(table: &Value) -> &Value {
+    &table["kinds"]
         .as_array()
         .expect("kinds array")
         .iter()
         .find(|kind| kind["kind"] == "task")
-        .expect("task kind table entry")["schema"];
+        .expect("task kind table entry")["schema"]
+}
+
+#[test]
+fn published_task_schema_and_validator_agree_on_every_result_contract_declaration() {
+    let table = kinds_table();
+    let schema = task_schema(&table);
     for (case, payload, allowed) in declarations() {
         assert_eq!(
             accepts(schema, &payload, schema),
@@ -185,6 +189,39 @@ fn published_task_schema_and_validator_agree_on_every_result_contract_declaratio
             allowed,
             "{case}: validator verdict {:?}, payload {payload}",
             validate_payload("task", &payload)
+        );
+    }
+}
+
+#[test]
+fn child_track_config_published_schema_matches_validation() {
+    let table = kinds_table();
+    let schema = task_schema(&table);
+    for (spawn, config, allowed) in [
+        (
+            "sub-track",
+            json!({"provider":"claude", "model":"sonnet", "reasoning_effort":"high"}),
+            true,
+        ),
+        ("sub-track", json!({}), true),
+        (TASK_IN_TRACK_ROUTE, json!({}), false),
+        ("sub-track", json!({"permission_mode":"full"}), false),
+        ("sub-track", json!({"other":"unknown"}), false),
+        ("sub-track", json!({"model":null}), false),
+        ("sub-track", json!({"provider":" \t\n"}), false),
+        ("sub-track", json!({"model":" \t\n"}), false),
+        ("sub-track", json!({"reasoning_effort":" \t\n"}), false),
+        ("sub-track", json!(null), false),
+        ("sub-track", json!(false), false),
+    ] {
+        let mut task = agent("codex");
+        task["spawn"] = json!(spawn);
+        task["child_track"] = config;
+        assert_eq!(accepts(schema, &task, schema), allowed, "schema: {task}");
+        assert_eq!(
+            validate_payload("task", &task).is_ok(),
+            allowed,
+            "validator: {task}"
         );
     }
 }

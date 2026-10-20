@@ -8,7 +8,7 @@ use crate::model::*;
 pub(super) const TASK_COLUMNS: &str = "id, track_id, key, kind, goal, context_json, acceptance_criteria, \
      cwd, depends_on_json, priority, gate_json, status, status_detail, worker_card_id, \
      gate_result_json, gate_attempt, gate_pid, gate_pid_starttime, gate_pid_boot_id, \
-     running_deadline_ms, context_stale_at_ms, declared_by, spawn, access, start, result_contract, \
+     running_deadline_ms, context_stale_at_ms, declared_by, spawn, access, start, result_contract, child_track_json, \
      created_at_ms, updated_at_ms, finished_at_ms";
 
 pub async fn tasks_by_track_tx(
@@ -41,7 +41,7 @@ pub async fn task_update_pending_tx(tx: &mut Transaction<'_, Sqlite>, t: &Task) 
     let res = sqlx::query(
         r#"UPDATE tasks
            SET kind = ?1, goal = ?2, context_json = ?3, acceptance_criteria = ?4, cwd = ?5,
-               depends_on_json = ?6, priority = ?7, gate_json = ?8, spawn = ?9, updated_at_ms = ?10
+               depends_on_json = ?6, priority = ?7, gate_json = ?8, spawn = ?9, updated_at_ms = ?10, child_track_json = ?12
            WHERE id = ?11 AND status = 'pending'"#,
     )
     .bind(t.kind)
@@ -55,6 +55,7 @@ pub async fn task_update_pending_tx(tx: &mut Transaction<'_, Sqlite>, t: &Task) 
     .bind(&t.spawn)
     .bind(t.updated_at_ms)
     .bind(&t.id)
+    .bind(&t.child_track_json)
     .execute(&mut **tx)
     .await?;
     if res.rows_affected() == 0 {

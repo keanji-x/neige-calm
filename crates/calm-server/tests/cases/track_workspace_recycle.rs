@@ -1506,6 +1506,7 @@ async fn support_child_track(b: &Boot, parent_track_id: &str) -> String {
         acceptance: Some("done".into()),
         context: json!({}),
         cwd: None,
+        child_track: None,
     })
     .unwrap();
     let operation = Operation {

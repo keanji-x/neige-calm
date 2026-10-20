@@ -16,6 +16,7 @@ pub trait TrackBranch: Clone + Send + Sync + 'static {
         F: Fn() -> A + Send + Sync,
         A: std::future::Future<Output = Result<(), Self::Error>> + Send;
     fn prepare_branch(&self, repo_root: &Path, branch: &str) -> Result<String, Self::Error>;
+    fn bind_branch_upstream(&self, repo_root: &Path, branch: &str) -> Result<(), Self::Error>;
 }
 
 /// Make the track's worktree if it has one and it is not there yet. The upstream is refreshed
@@ -59,6 +60,46 @@ where
     })
     .await
     .map_err(|error| WorkspaceError::Internal(format!("track worktree task failed: {error}")))?
+}
+
+/// Delegated creation uses the parent's already committed HEAD, frozen by the caller.
+/// It shares registration checks, metadata locking and idempotent branch recovery with
+/// ordinary creation, but never refreshes or reselects an upstream base on retry.
+pub async fn ensure_track_worktree_from_base<P: TrackBranch>(
+    track: &Track,
+    ports: P,
+    base: String,
+    observe: ObservePoint,
+) -> Result<(), P::Error> {
+    ensure_track_worktree(track, FrozenTrackBranch { base, ports }, observe).await
+}
+
+#[derive(Clone)]
+struct FrozenTrackBranch<P> {
+    base: String,
+    ports: P,
+}
+
+#[async_trait]
+impl<P: TrackBranch> TrackBranch for FrozenTrackBranch<P> {
+    type Error = P::Error;
+
+    async fn refresh_upstream<F, A>(&self, _: &Path, _: &F) -> Result<(), Self::Error>
+    where
+        F: Fn() -> A + Send + Sync,
+        A: std::future::Future<Output = Result<(), Self::Error>> + Send,
+    {
+        Ok(())
+    }
+
+    fn prepare_branch(&self, repo_root: &Path, branch: &str) -> Result<String, Self::Error> {
+        self.bind_branch_upstream(repo_root, branch)?;
+        Ok(self.base.clone())
+    }
+
+    fn bind_branch_upstream(&self, repo_root: &Path, branch: &str) -> Result<(), Self::Error> {
+        self.ports.bind_branch_upstream(repo_root, branch)
+    }
 }
 
 /// Discard the track worktree and its branch, a dirty worktree too.

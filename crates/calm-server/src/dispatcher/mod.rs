@@ -315,6 +315,14 @@ fn dispatcher_operation_runtime(
         crate::claude_planner::config::ClaudePlannerHost::unconfigured_scratch()
             .expect("a scratch Claude Planner host for the dispatcher's own runtime"),
     );
+    let child_selection = crate::planner_model::child_selection::ChildSelectionContext {
+        availability: Arc::default(),
+        claude: claude_planner.clone(),
+        acp: Arc::new(
+            crate::acp_planner::config::AcpPlannerHost::unconfigured_scratch().expect("ACP host"),
+        ),
+        codex: shared_codex_appserver.clone(),
+    };
     let planner_harness_start_adapter = Arc::new(PlannerHarnessStartAdapter::new(
         repo.clone(),
         shared_codex_appserver.clone(),
@@ -350,14 +358,17 @@ fn dispatcher_operation_runtime(
     ));
     let forge_action_adapter =
         Arc::new(crate::operation::forge_action_adapter::ForgeActionAdapter::new());
-    let child_track_adapter = Arc::new(ChildTrackAdapter::new(
-        std::sync::Arc::new(
-            crate::acp_planner::config::AcpPlannerHost::unconfigured_scratch().unwrap(),
-        ),
-        write.role_cache().clone(),
-        write.area_cache().clone(),
-        workspace_root.clone(),
-    ));
+    let child_track_adapter = Arc::new(
+        ChildTrackAdapter::new(
+            std::sync::Arc::new(
+                crate::acp_planner::config::AcpPlannerHost::unconfigured_scratch().unwrap(),
+            ),
+            write.role_cache().clone(),
+            write.area_cache().clone(),
+            workspace_root.clone(),
+        )
+        .with_selection_context(child_selection),
+    );
     let card_create_adapter = Arc::new(CardCreateAdapter::new(
         route_repo.clone(),
         write.role_cache().clone(),

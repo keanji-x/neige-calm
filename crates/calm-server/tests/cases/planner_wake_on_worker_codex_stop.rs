@@ -259,6 +259,7 @@ async fn seed_task(
         access: calm_server::model::TaskAccess::ReadWrite,
         start: calm_server::model::TaskStart::Checkout,
         result_contract: None,
+        child_track_json: None,
         created_at_ms: 1,
         updated_at_ms: 1,
         finished_at_ms: None,

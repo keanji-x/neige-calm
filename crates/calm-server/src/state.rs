@@ -442,6 +442,12 @@ fn build_operation_adapters(
     Vec<Arc<dyn ProviderAdapter>>,
     Arc<PlannerHarnessStartAdapter>,
 ) {
+    let child_selection = crate::planner_model::child_selection::ChildSelectionContext {
+        availability: Arc::default(),
+        claude: input.claude_planner.clone(),
+        acp: input.acp_planner.clone(),
+        codex: input.shared_codex_appserver.clone(),
+    };
     let hook_settings = Some(terminal_hook_settings(&input.codex));
     let terminal_adapter: Arc<dyn ProviderAdapter> =
         if let Some(spawn_hook) = input.terminal_spawn_hook.clone() {
@@ -554,12 +560,15 @@ fn build_operation_adapters(
     let task_verify_adapter: Arc<dyn ProviderAdapter> =
         Arc::new(TaskVerifyAdapter::new(input.gate_logs_dir));
     let forge_action_adapter: Arc<dyn ProviderAdapter> = Arc::new(ForgeActionAdapter::new());
-    let child_track_adapter: Arc<dyn ProviderAdapter> = Arc::new(ChildTrackAdapter::new(
-        input.acp_planner.clone(),
-        input.card_role_cache.clone(),
-        input.track_area_cache.clone(),
-        input.workspace_root.clone(),
-    ));
+    let child_track_adapter: Arc<dyn ProviderAdapter> = Arc::new(
+        ChildTrackAdapter::new(
+            input.acp_planner.clone(),
+            input.card_role_cache.clone(),
+            input.track_area_cache.clone(),
+            input.workspace_root.clone(),
+        )
+        .with_selection_context(child_selection),
+    );
     let card_create_adapter: Arc<dyn ProviderAdapter> = Arc::new(CardCreateAdapter::new(
         input.route_repo.clone(),
         input.card_role_cache.clone(),

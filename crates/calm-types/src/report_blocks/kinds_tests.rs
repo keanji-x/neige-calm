@@ -867,3 +867,13 @@ fn subtrack_route_accepts_canonical_and_refuses_released_write_spelling() {
     payload["spawn"] = serde_json::json!("sub-wave");
     assert!(super::validate_payload("task", &payload).is_err());
 }
+
+#[test]
+fn child_track_config_declaration_accepts_typed_overrides() {
+    let payload = serde_json::json!({
+        "key":"child", "kind":"codex", "goal":"delegate", "declared_by":crate::report_blocks::tasks::PLANNER_DECLARATION_AUTHOR,
+        "ready":true, "spawn":"sub-track",
+        "child_track":{"provider":"claude", "model":"sonnet", "reasoning_effort":"high"}
+    });
+    assert!(super::validate_payload(super::KIND_TASK, &payload).is_ok());
+}

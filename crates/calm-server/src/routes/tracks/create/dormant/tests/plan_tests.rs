@@ -36,7 +36,7 @@ async fn a_request_requiring_attached_or_template_preparation_cannot_fall_back_t
                 fx.source.clone(),
                 headers,
                 request,
-                crate::routes::planner_model::CatalogAdvice::default()
+                crate::planner_model::selection_advice::CatalogAdvice::default()
             )
             .await,
             Err(CalmError::BadRequest(_))
@@ -49,7 +49,7 @@ async fn a_request_requiring_attached_or_template_preparation_cannot_fall_back_t
 
 #[tokio::test]
 async fn original_selection_replays_despite_changed_catalog_advice() {
-    use crate::routes::planner_model::{CatalogAdvice, EffortAdjustment};
+    use crate::planner_model::selection_advice::{CatalogAdvice, EffortAdjustment};
     let fx = Fixture::new().await;
     let request = || {
         let mut request = fx.request(FIRST);
@@ -77,6 +77,7 @@ async fn original_selection_replays_despite_changed_catalog_advice() {
             to: Some("medium".into()),
         }),
         unknown_model: false,
+        catalog_unavailable: false,
     };
     let before = fx.counts().await;
     assert_replayed(

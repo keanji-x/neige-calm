@@ -35,7 +35,7 @@ pub(in crate::routes::tracks) async fn accept_dormant_human_track(
     source: HumanInputSource,
     headers: HeaderMap,
     request: CreateTrackRequest,
-    advice: crate::routes::planner_model::CatalogAdvice,
+    advice: crate::planner_model::selection_advice::CatalogAdvice,
 ) -> Result<HumanTrackCreationResult> {
     let model = request.model.clone();
     let effort = request.reasoning_effort.clone();

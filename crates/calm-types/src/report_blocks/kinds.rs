@@ -191,6 +191,7 @@ pub const TASK_FIELDS: &[&str] = &[
     "base",
     "start",
     "result_contract",
+    "child_track",
     "tombstone",
     "tombstoned_by",
 ];
@@ -336,6 +337,38 @@ fn validate_task(map: &Map<String, Value>, errors: &mut Vec<String>) {
         && !matches!(map.get("kind").and_then(Value::as_str), Some("codex"))
     {
         errors.push("spawn: \"sub-track\" requires kind \"codex\"".into());
+    }
+    if let Some(value) = map.get("child_track") {
+        if map.get("spawn").and_then(Value::as_str) != Some("sub-track") {
+            errors.push("child_track: requires spawn \"sub-track\"".into());
+        }
+        match serde_json::from_value::<super::tasks::ChildTrackConfig>(value.clone()) {
+            Ok(config) => {
+                if let Some(object) = value.as_object() {
+                    for (name, member) in object {
+                        if !member.is_string() {
+                            errors.push(format!("child_track.{name}: must be a string"));
+                        }
+                    }
+                }
+                for (name, value) in [
+                    ("provider", config.provider),
+                    ("model", config.model),
+                    ("reasoning_effort", config.reasoning_effort),
+                ] {
+                    if let Some(value) = value {
+                        if value.trim().is_empty() {
+                            errors.push(format!("child_track.{name}: must be non-empty"));
+                        }
+                        check_string_cap(&format!("child_track.{name}"), &value, errors);
+                    }
+                }
+                if !value.is_object() {
+                    errors.push("child_track: must be an object".into());
+                }
+            }
+            Err(error) => errors.push(format!("child_track: invalid shape: {error}")),
+        }
     }
     crate::task_execution::validate_task_access(map, errors);
     crate::task_execution::validate_reader_commits(map, errors);

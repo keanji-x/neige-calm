@@ -301,6 +301,7 @@ async fn replay_router_terminal_card_create_persists_without_supervisor() {
         access: calm_server::model::TaskAccess::ReadWrite,
         start: calm_server::model::TaskStart::Checkout,
         result_contract: None,
+        child_track_json: None,
         created_at_ms: now,
         updated_at_ms: now,
         finished_at_ms: None,

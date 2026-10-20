@@ -619,6 +619,7 @@ async fn dead_worker_never_reporting_reaper_converges() {
         access: calm_server::model::TaskAccess::ReadWrite,
         start: calm_server::model::TaskStart::Checkout,
         result_contract: None,
+        child_track_json: None,
         created_at_ms: now,
         updated_at_ms: now,
         finished_at_ms: None,

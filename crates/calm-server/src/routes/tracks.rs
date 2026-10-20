@@ -762,7 +762,7 @@ pub(crate) async fn create_track(
         // Catalog unavailability advises nothing; it is never an execution-readiness gate.
         // The acceptance owner applies this only to a fresh mint, after immutable replay.
         let advice = super::planner_model::catalog_advice(
-            super::planner_model::CatalogSource::Codex(&codex),
+            super::planner_model::CatalogSource::Codex(&codex.shared_codex_appserver),
             request.model.as_deref(),
             request.reasoning_effort.as_deref(),
         )
@@ -917,7 +917,7 @@ pub(crate) async fn create_track(
         None if request.planner_provider.protocol() == AgentProtocol::Acp => {
             super::planner_model::CatalogSource::Acp
         }
-        None => super::planner_model::CatalogSource::Codex(&codex),
+        None => super::planner_model::CatalogSource::Codex(&codex.shared_codex_appserver),
     };
     let advice =
         super::planner_model::catalog_advice(source, model.as_deref(), reasoning_effort.as_deref())

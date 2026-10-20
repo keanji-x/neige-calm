@@ -341,11 +341,23 @@ fn task_kind() -> Value {
                         { "required": ["ready"] }, { "required": ["released_by_user"] },
                         { "required": ["spawn"] }, { "required": ["access"] },
                         { "required": ["head"] }, { "required": ["base"] },
-                        { "required": ["start"] }, { "required": ["result_contract"] }
+                        { "required": ["start"] }, { "required": ["result_contract"] }, { "required": ["child_track"] }
                     ] }
                 }
             ],
+            "allOf": [{ "anyOf": [
+                { "not": { "required": ["child_track"] } },
+                { "required": ["spawn", "kind"], "properties": { "spawn": { "const": "sub-track" }, "kind": { "const": "codex" } } }
+            ] }],
             "properties": {
+                "child_track": {
+                    "type": "object", "additionalProperties": false,
+                    "properties": {
+                        "provider": { "type": "string", "minLength": 1, "pattern": "\\S", "maxLength": report_blocks::MAX_STRING_CHARS },
+                        "model": { "type": "string", "minLength": 1, "pattern": "\\S", "maxLength": report_blocks::MAX_STRING_CHARS },
+                        "reasoning_effort": { "type": "string", "minLength": 1, "pattern": "\\S", "maxLength": report_blocks::MAX_STRING_CHARS }
+                    }
+                },
                 "key": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$" },
                 "kind": { "type": "string", "enum": ["codex", "claude", "terminal"] },
                 "goal": {

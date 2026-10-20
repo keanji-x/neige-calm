@@ -13,7 +13,6 @@ use utoipa::ToSchema;
 
 use crate::actor::Actor;
 use crate::auth::Principal;
-use crate::claude_planner::models::ClaudeCatalog;
 use crate::db::sqlite::card_update_tx;
 use crate::db::write_with_event_typed;
 use crate::error::{CalmError, ErrorBody, Result};
@@ -24,12 +23,10 @@ use crate::model::CardPatch;
 use crate::operation::codex_adapter::card_payload_get_tx;
 use crate::planner_model::CardModelSelection;
 use crate::routes::cards::card_scope;
-use crate::routes::models::CODEX_READ_TIMEOUT;
 use crate::routes::planner_cards::card_runs_headless_harness;
 use crate::routes::track_report_blocks::require_rest_user_actor_for;
 use crate::state::{CodexShellState, RouteState, WorkerState};
 use calm_types::runtime::AgentProtocol;
-use provider::claude::discovery::ClaudeModel;
 
 const ACTOR_SUBJECT: &str = "planner model selection";
 const ACTOR_REDIRECT: &str = "Which model a person's conversation runs with is their own choice; agents have no write \
@@ -160,7 +157,7 @@ pub(crate) async fn set_planner_model(
         }
         AgentProtocol::Codex => {
             catalog_advice(
-                CatalogSource::Codex(&codex),
+                CatalogSource::Codex(&codex.shared_codex_appserver),
                 model.as_deref(),
                 reasoning_effort.as_deref(),
             )
@@ -251,238 +248,4 @@ pub(crate) async fn set_planner_model(
     ))
 }
 
-/// What the catalog says about a requested selection.
-#[derive(Debug, Default, PartialEq, Eq)]
-pub(super) struct CatalogAdvice {
-    /// `Some` when the requested effort is not one the chosen entry supports.
-    pub(super) adjustment: Option<EffortAdjustment>,
-    pub(super) unknown_model: bool,
-}
-
-impl CatalogAdvice {
-    pub(super) fn require_create_selection(
-        self,
-        model: Option<&str>,
-        reasoning_effort: Option<&str>,
-    ) -> Result<()> {
-        if let (Some(adjustment), Some(effort)) = (self.adjustment, reasoning_effort) {
-            let named = model.map_or_else(
-                || "the default model".to_string(),
-                |m| format!("model `{m}`"),
-            );
-            let default = match adjustment.to {
-                Some(d) => format!("its current catalog default is `{d}`"),
-                None if self.unknown_model => "the catalog does not list it".to_string(),
-                None => "it declares no default effort".to_string(),
-            };
-            return Err(CalmError::BadRequest(format!(
-                "track create: reasoning_effort `{effort}` is unsupported for {named}; {default}. \
-             Refresh the model list and choose a supported effort."
-            )));
-        }
-        Ok(())
-    }
-}
-
-/// Where an unsupported effort is moved: the entry's own default, `None` for a provider that
-/// declares none (every Claude entry), which drops the effort.
-#[derive(Debug, PartialEq, Eq)]
-pub(super) struct EffortAdjustment {
-    pub(super) to: Option<String>,
-}
-
-/// Where a write's catalog comes from; the advice itself is the same for both.
-pub(super) enum CatalogSource<'a> {
-    /// ACP choices are checked against the agent's fresh setup metadata at issuance.
-    Acp,
-    /// Codex's `model/list`, asked now. A catalog that cannot be read advises nothing: the
-    /// selection is stored unjudged (#293).
-    Codex(&'a CodexShellState),
-    /// The Claude CLI's list, as the ready availability check cached it (#1822).
-    Claude(&'a ClaudeCatalog),
-}
-
-/// One catalog entry as the advice judges it.
-struct AdviceEntry<'a> {
-    model: &'a str,
-    efforts: Vec<&'a str>,
-    default_effort: Option<&'a str>,
-}
-
-/// Ask `source`'s catalog about the requested pair. Every failure to ask Codex yields
-/// [`CatalogAdvice::default`] — no adjustment, not unknown.
-pub(super) async fn catalog_advice(
-    source: CatalogSource<'_>,
-    model: Option<&str>,
-    reasoning_effort: Option<&str>,
-) -> CatalogAdvice {
-    match source {
-        CatalogSource::Acp => CatalogAdvice::default(),
-        CatalogSource::Codex(codex) => {
-            // With no model chosen there is no catalog entry to judge against.
-            let Some(model) = model else {
-                return CatalogAdvice::default();
-            };
-            let deadline = tokio::time::Instant::now() + CODEX_READ_TIMEOUT;
-            let models = match codex.shared_codex_appserver.model_list(deadline).await {
-                Ok(models) => models,
-                Err(e) => {
-                    tracing::warn!(error = %e, "planner model selection: model/list unavailable");
-                    return CatalogAdvice::default();
-                }
-            };
-            let entries: Vec<AdviceEntry<'_>> = models
-                .iter()
-                .map(|m| AdviceEntry {
-                    model: &m.model,
-                    efforts: m
-                        .supported_reasoning_efforts
-                        .iter()
-                        .map(|o| o.reasoning_effort.as_str())
-                        .collect(),
-                    default_effort: Some(&m.default_reasoning_effort),
-                })
-                .collect();
-            advise(&entries, None, Some(model), reasoning_effort)
-        }
-        CatalogSource::Claude(catalog) => {
-            let entries: Vec<AdviceEntry<'_>> = catalog.models.iter().map(claude_entry).collect();
-            // A `null` model runs the CLI's `default` entry, so its effort is judged there.
-            let default = claude_entry(&catalog.default);
-            let advice = advise(&entries, Some(&default), model, reasoning_effort);
-            // The CLI does not judge an effort, and a model the list does not carry has no entry
-            // to judge it against: the effort is dropped. (Codex keeps it: codex judges it.)
-            if advice.unknown_model && reasoning_effort.is_some() {
-                CatalogAdvice {
-                    adjustment: Some(EffortAdjustment { to: None }),
-                    unknown_model: true,
-                }
-            } else {
-                advice
-            }
-        }
-    }
-}
-
-fn claude_entry(m: &ClaudeModel) -> AdviceEntry<'_> {
-    AdviceEntry {
-        model: &m.value,
-        efforts: m.effort_levels.iter().map(String::as_str).collect(),
-        default_effort: None,
-    }
-}
-
-/// The advice of `entries` (and `null_model`, the entry a `null` model runs where the provider
-/// lists one) about the pair: an unlisted model is unknown, an unsupported effort moves to the
-/// entry's default.
-fn advise(
-    entries: &[AdviceEntry<'_>],
-    null_model: Option<&AdviceEntry<'_>>,
-    model: Option<&str>,
-    reasoning_effort: Option<&str>,
-) -> CatalogAdvice {
-    let entry = match model {
-        None => match null_model {
-            Some(entry) => entry,
-            None => return CatalogAdvice::default(),
-        },
-        Some(model) => match entries.iter().find(|e| e.model == model) {
-            Some(entry) => entry,
-            None => {
-                return CatalogAdvice {
-                    adjustment: None,
-                    unknown_model: true,
-                };
-            }
-        },
-    };
-    let Some(requested) = reasoning_effort else {
-        return CatalogAdvice::default();
-    };
-    let supported = entry.efforts.contains(&requested);
-    CatalogAdvice {
-        adjustment: (!supported).then(|| EffortAdjustment {
-            to: entry.default_effort.map(str::to_string),
-        }),
-        unknown_model: false,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn entry<'a>(
-        model: &'a str,
-        efforts: &[&'a str],
-        default_effort: Option<&'a str>,
-    ) -> AdviceEntry<'a> {
-        AdviceEntry {
-            model,
-            efforts: efforts.to_vec(),
-            default_effort,
-        }
-    }
-
-    fn adjusted(to: Option<&str>) -> CatalogAdvice {
-        CatalogAdvice {
-            adjustment: Some(EffortAdjustment {
-                to: to.map(str::to_string),
-            }),
-            unknown_model: false,
-        }
-    }
-
-    #[test]
-    fn codex_entries_move_an_unsupported_effort_to_the_entry_default() {
-        let entries = [entry("gpt-5", &["low", "high"], Some("low"))];
-        assert_eq!(
-            advise(&entries, None, Some("gpt-5"), Some("high")),
-            CatalogAdvice::default()
-        );
-        assert_eq!(
-            advise(&entries, None, Some("gpt-5"), Some("max")),
-            adjusted(Some("low"))
-        );
-        assert_eq!(
-            advise(&entries, None, Some("gpt-6"), Some("max")),
-            CatalogAdvice {
-                adjustment: None,
-                unknown_model: true
-            }
-        );
-        // No entry is named for a null model on a provider without a default entry.
-        assert_eq!(
-            advise(&entries, None, None, Some("max")),
-            CatalogAdvice::default()
-        );
-    }
-
-    #[test]
-    fn claude_entries_drop_an_unsupported_effort_and_judge_a_null_model_on_the_default_entry() {
-        let entries = [
-            entry("claude-fable-5-1[1m]", &["low", "max"], None),
-            entry("haiku", &[], None),
-        ];
-        let default = entry("default", &["low", "high"], None);
-        let judge = |model, effort| advise(&entries, Some(&default), model, effort);
-        assert_eq!(
-            judge(Some("claude-fable-5-1[1m]"), Some("max")),
-            CatalogAdvice::default()
-        );
-        assert_eq!(
-            judge(Some("claude-fable-5-1[1m]"), Some("high")),
-            adjusted(None)
-        );
-        assert_eq!(judge(Some("haiku"), Some("low")), adjusted(None));
-        assert_eq!(judge(None, Some("high")), CatalogAdvice::default());
-        assert_eq!(judge(None, Some("max")), adjusted(None));
-        assert_eq!(
-            judge(Some("opus"), Some("low")),
-            CatalogAdvice {
-                adjustment: None,
-                unknown_model: true
-            }
-        );
-    }
-}
+pub(crate) use crate::planner_model::selection_advice::{CatalogSource, catalog_advice};

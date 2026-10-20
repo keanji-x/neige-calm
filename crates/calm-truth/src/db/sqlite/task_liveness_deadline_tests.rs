@@ -33,6 +33,7 @@ fn task(key: &str, status: TaskStatus) -> Task {
         access: crate::model::TaskAccess::ReadWrite,
         start: crate::model::TaskStart::Checkout,
         result_contract: None,
+        child_track_json: None,
         created_at_ms: now,
         updated_at_ms: now,
         finished_at_ms: None,

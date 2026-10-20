@@ -82,7 +82,7 @@ impl Fixture {
             self.source.clone(),
             headers,
             self.request(text),
-            crate::routes::planner_model::CatalogAdvice::default(),
+            crate::planner_model::selection_advice::CatalogAdvice::default(),
         )
         .await
     }
@@ -351,7 +351,7 @@ async fn replay_rechecks_current_session_source_and_membership() {
             alice,
             headers,
             fx.request(FIRST),
-            crate::routes::planner_model::CatalogAdvice::default()
+            crate::planner_model::selection_advice::CatalogAdvice::default()
         )
         .await,
         Err(CalmError::IdempotencyKeyReused(_))
@@ -491,14 +491,14 @@ async fn separate_database_owners_race_to_the_same_original_ack() {
             fx.source.clone(),
             headers.clone(),
             fx.request(FIRST),
-            crate::routes::planner_model::CatalogAdvice::default()
+            crate::planner_model::selection_advice::CatalogAdvice::default()
         ),
         accept_dormant_human_track(
             route_b,
             fx.source.clone(),
             headers,
             fx.request(FIRST),
-            crate::routes::planner_model::CatalogAdvice::default()
+            crate::planner_model::selection_advice::CatalogAdvice::default()
         ),
     );
     let (left, right) = (left.unwrap(), right.unwrap());
@@ -546,7 +546,7 @@ async fn a_shared_area_member_can_accept_content_without_an_execution_grant() {
         source.clone(),
         headers,
         fx.request(FIRST),
-        crate::routes::planner_model::CatalogAdvice::default(),
+        crate::planner_model::selection_advice::CatalogAdvice::default(),
     )
     .await
     .unwrap()
@@ -683,7 +683,7 @@ async fn original_create_shape_and_original_first_text_remain_separate_fingerpri
             fx.source.clone(),
             headers,
             request,
-            crate::routes::planner_model::CatalogAdvice::default()
+            crate::planner_model::selection_advice::CatalogAdvice::default()
         )
         .await,
         Err(CalmError::IdempotencyKeyReused(_))
@@ -715,7 +715,7 @@ async fn system_target_is_not_reclassified_as_human_creation() {
             fx.source.clone(),
             headers,
             request,
-            crate::routes::planner_model::CatalogAdvice::default()
+            crate::planner_model::selection_advice::CatalogAdvice::default()
         )
         .await,
         Err(CalmError::Forbidden(_))

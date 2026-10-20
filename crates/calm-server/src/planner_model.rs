@@ -92,6 +92,23 @@ impl CardModelSelection {
         })
     }
 
+    /// Copy an existing selection, preserving the parent's sticky-default history exactly.
+    pub(crate) fn copy_to_payload(&self, payload: &mut serde_json::Map<String, Value>) {
+        payload.insert(PAYLOAD_MODEL.into(), serde_json::json!(self.model));
+        payload.insert(
+            PAYLOAD_EFFORT.into(),
+            serde_json::json!(self.reasoning_effort),
+        );
+        payload.insert(
+            PAYLOAD_MODEL_EVER_SET.into(),
+            Value::Bool(self.model_ever_set),
+        );
+        payload.insert(
+            PAYLOAD_EFFORT_EVER_SET.into(),
+            Value::Bool(self.reasoning_effort_ever_set),
+        );
+    }
+
     /// Write a new selection into `payload`, in place. The `*_ever_set` markers only ever go up; both value keys are written unconditionally, including as JSON `null`, so "follow the default" is a stored fact rather than the absence of one.
     pub fn apply_to_payload(
         payload: &mut serde_json::Map<String, Value>,
@@ -450,3 +467,7 @@ mod tests {
         );
     }
 }
+
+pub(crate) mod selection_advice;
+
+pub(crate) mod child_selection;

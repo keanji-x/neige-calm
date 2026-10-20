@@ -26,7 +26,7 @@ async fn planner_card_of(b: &Boot, track_id: &str) -> String {
 }
 
 #[tokio::test]
-async fn every_planner_creation_path_mints_never() {
+async fn child_track_config_rest_new_track_starts_never() {
     let b = boot().await;
 
     let (status, launchpad) = ensure(b.app.clone()).await;

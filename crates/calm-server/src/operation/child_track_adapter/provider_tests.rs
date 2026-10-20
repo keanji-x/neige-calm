@@ -110,53 +110,565 @@ async fn a_parent_planner_without_a_provider_refuses_the_child() {
     );
 }
 
-/// Child creation resolves registration policy anew; the parent's stored mode is not inherited.
 #[tokio::test]
-async fn child_planner_permission_mode_uses_its_providers_registration() {
-    use crate::acp_planner::config::{AcpPlannerConfig, AcpPlannerHost};
-    let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
-    let parent = seed_parent(&repo, false).await;
-    sqlx::query(concat!(
-        "UPDATE cards SET payload=json_set(payload,'$.planner_provider','opencode',",
-        "'$.permission_mode','never') WHERE track_id=?1 AND role='planner'",
-    ))
-    .bind(&parent)
-    .execute(repo.pool())
+async fn child_track_config_inherits_permission_and_selection() {
+    for mode in ["ask", "full"] {
+        let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
+        let parent = seed_parent(&repo, false).await;
+        sqlx::query(
+            "UPDATE cards SET payload=json_set(payload, \
+             '$.permission_mode',?1,'$.model','parent-model','$.reasoning_effort','high') \
+             WHERE track_id=?2 AND role='planner'",
+        )
+        .bind(mode)
+        .bind(&parent)
+        .execute(repo.pool())
+        .await
+        .unwrap();
+        let task = seed_task(&repo, &parent, false).await;
+        let child = create_child_from_task(&repo, &parent, &task.id).await;
+        let stored: String =
+            sqlx::query_scalar("SELECT payload FROM cards WHERE track_id=?1 AND role='planner'")
+                .bind(&child)
+                .fetch_one(repo.pool())
+                .await
+                .unwrap();
+        let stored: Value = serde_json::from_str(&stored).unwrap();
+        assert_eq!(stored["permission_mode"], mode);
+        assert_eq!(stored["model"], "parent-model");
+        assert_eq!(stored["reasoning_effort"], "high");
+    }
+}
+
+#[tokio::test]
+async fn child_track_config_attached_child_has_own_worktree() {
+    use crate::operation::{OperationKey, OperationOutcome};
+    let repo = std::sync::Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
+    let dir = tempfile::tempdir().unwrap();
+    init_repo(dir.path());
+    git(
+        dir.path(),
+        &["remote", "add", "origin", dir.path().to_str().unwrap()],
+    );
+    git(
+        dir.path(),
+        &["update-ref", "refs/remotes/origin/main", "HEAD"],
+    );
+    git(dir.path(), &["branch", "--set-upstream-to=origin/main"]);
+    git(
+        dir.path(),
+        &[
+            "-c",
+            "user.name=test",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "parent ahead of upstream",
+        ],
+    );
+    let frozen_head = git(dir.path(), &["rev-parse", "HEAD"]);
+    let nested = dir.path().join("nested");
+    std::fs::create_dir(&nested).unwrap();
+    let parent = parent_with_plan(&repo, &nested, TrackWorkspacePlan::AttachedFromCwd)
+        .await
+        .id
+        .to_string();
+    let task = seed_task(&repo, &parent, false).await;
+    let input = serde_json::to_value(payload(&task)).unwrap();
+    let runtime = child_runtime(&repo, false).await;
+    let op = runtime
+        .submit(
+            CHILD_TRACK_KIND,
+            OperationKey {
+                operation_key: new_id(),
+                idempotency_key: Some(task.id),
+                payload_hash: crate::routes::idempotency_key::stable_payload_hash(&input).unwrap(),
+            },
+            input,
+        )
+        .await
+        .unwrap();
+    let outcome = runtime.wait(&op).await.unwrap();
+    let OperationOutcome::Succeeded { result } = outcome.outcome else {
+        panic!("{outcome:?}")
+    };
+    let child = result["child_track_id"].as_str().unwrap();
+    let worktree: Option<String> =
+        sqlx::query_scalar("SELECT workspace_worktree_path FROM tracks WHERE id=?1")
+            .bind(child)
+            .fetch_one(repo.pool())
+            .await
+            .unwrap();
+    let worktree = worktree.expect("attached child needs its own worktree");
+    assert_eq!(
+        std::path::Path::new(&worktree),
+        workspace::worktree::track_worktree_path_for(dir.path(), child)
+    );
+    assert_eq!(result["cwd"], worktree);
+    assert_eq!(
+        git(
+            std::path::Path::new(&worktree),
+            &["rev-parse", "--abbrev-ref", "@{upstream}"]
+        ),
+        "origin/main"
+    );
+    assert_eq!(
+        git(std::path::Path::new(&worktree), &["rev-parse", "HEAD"]),
+        frozen_head
+    );
+    assert_ne!(frozen_head, git(dir.path(), &["rev-parse", "origin/main"]));
+
+    assert_eq!(
+        git(std::path::Path::new(&worktree), &["rev-parse", "HEAD"]),
+        git(dir.path(), &["rev-parse", "HEAD"])
+    );
+}
+
+fn git(path: &std::path::Path, args: &[&str]) -> String {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(path)
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{args:?}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout).unwrap().trim().to_owned()
+}
+
+fn init_repo(path: &std::path::Path) {
+    git(path, &["init", "-b", "main"]);
+    git(
+        path,
+        &[
+            "-c",
+            "user.name=test",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "initial",
+        ],
+    );
+}
+
+async fn parent_with_plan(
+    repo: &SqlxRepo,
+    cwd: &std::path::Path,
+    plan: TrackWorkspacePlan,
+) -> crate::model::Track {
+    let mut tx = repo.pool().begin().await.unwrap();
+    let area = crate::db::sqlite::area_create_tx(
+        &mut tx,
+        calm_types::organization::LEGACY_OWNER_USER_ID,
+        crate::model::NewArea {
+            name: "parent".into(),
+            color: "#000".into(),
+            sort: None,
+        },
+    )
     .await
     .unwrap();
-    let task = seed_task(&repo, &parent, false).await;
-    let root = tempfile::tempdir().unwrap();
-    let path = root.path().join("acp.json");
-    std::fs::write(&path, json!({"agents":[{"provider":"opencode","command":"/unused/opencode","args":[],"env":{},"min_agent_version":"1.0.0","default_permission_mode":"full"}]}).to_string()).unwrap();
-    let host = AcpPlannerHost::new(
-        Some(AcpPlannerConfig::read(&path).unwrap()),
-        root.path(),
-        root.path().join("shim"),
-        root.path().join("sock"),
+    let parent = track_create_tx(
+        &mut tx,
+        NewTrack {
+            area_id: area.id,
+            title: "parent".into(),
+            sort: None,
+            cwd: cwd.to_str().unwrap().into(),
+            template_id: None,
+            plugin_scope: None,
+            template_input: None,
+            attach_folder: false,
+            theme: RequestTheme::default_dark(),
+        },
+        None,
+        &plan,
+        None,
+        repo.track_area_cache(),
     )
+    .await
     .unwrap();
+    tx.commit().await.unwrap();
+    ensure_planner_card(repo, parent.id.as_str()).await;
+    parent
+}
+
+/// Only inject a filesystem obstacle at the declared destination. Every lifecycle method
+/// delegates to the real child adapter, including the actual worktree creation and recovery.
+struct BlockChildWorktree(ChildTrackAdapter);
+
+#[async_trait]
+impl ProviderAdapter for BlockChildWorktree {
+    fn kind(&self) -> &'static str {
+        self.0.kind()
+    }
+    fn phases(&self) -> &'static [PhaseTag] {
+        self.0.phases()
+    }
+    async fn validate(&self, input: &Value) -> Result<()> {
+        self.0.validate(input).await
+    }
+    async fn preparation_track(&self, input: &Value, ctx: &SpawnCtx) -> Result<Option<String>> {
+        self.0.preparation_track(input, ctx).await
+    }
+    async fn prepare_external(
+        &self,
+        input: &Value,
+        op: &Operation,
+        ctx: &SpawnCtx,
+    ) -> Result<Option<Box<dyn crate::operation::PreparedTx>>> {
+        self.0.prepare_external(input, op, ctx).await
+    }
+    async fn prepare_tx<'tx>(
+        &self,
+        tx: &mut Tx<'tx>,
+        input: &Value,
+        op: &Operation,
+    ) -> Result<TxOutput> {
+        self.0.prepare_tx(tx, input, op).await
+    }
+    fn app_server_interact_kind(
+        &self,
+        output: &TxOutput,
+        op: &Operation,
+    ) -> Result<crate::operation::AppServerInteractKind> {
+        self.0.app_server_interact_kind(output, op)
+    }
+    async fn app_server_interact(
+        &self,
+        output: &mut TxOutput,
+        op: &Operation,
+        ctx: &SpawnCtx,
+    ) -> Result<AppServerInteractOutcome> {
+        let track: crate::model::Track =
+            serde_json::from_value(output.data["workspace_track"].clone()).unwrap();
+        if let Some(path) = track.workspace.worktree {
+            let path = std::path::Path::new(&path);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, "blocks git worktree add").unwrap();
+        }
+        self.0.app_server_interact(output, op, ctx).await
+    }
+    async fn spawn_side_effect(
+        &self,
+        output: &TxOutput,
+        op: &Operation,
+        ctx: &SpawnCtx,
+    ) -> Result<SpawnOutcome> {
+        self.0.spawn_side_effect(output, op, ctx).await
+    }
+    async fn plan_compensation(
+        &self,
+        phase: PhaseTag,
+        reason: &str,
+        output: &TxOutput,
+        op: &Operation,
+    ) -> Result<CompensationStateVersioned> {
+        self.0.plan_compensation(phase, reason, output, op).await
+    }
+    async fn compensate_step(
+        &self,
+        step: &crate::operation::CompensationStep,
+        output: &TxOutput,
+        op: &Operation,
+        ctx: &SpawnCtx,
+    ) -> Result<()> {
+        self.0.compensate_step(step, output, op, ctx).await
+    }
+}
+
+async fn child_runtime(
+    repo: &std::sync::Arc<SqlxRepo>,
+    block_worktree: bool,
+) -> crate::operation::OperationRuntime {
+    use crate::operation::{OperationCompletionBus, OperationRuntime, SqlxOperationRepo};
+    use std::sync::Arc;
+    let operations = Arc::new(SqlxOperationRepo::new(repo.db().clone()));
     let adapter = ChildTrackAdapter::new(
-        std::sync::Arc::new(host),
+        std::sync::Arc::new(
+            crate::acp_planner::config::AcpPlannerHost::unconfigured_scratch().unwrap(),
+        ),
         repo.card_role_cache().clone(),
         repo.track_area_cache().clone(),
         test_workspace_root(),
     );
-    let input = serde_json::to_value(payload(&task)).unwrap();
-    let mut tx = repo.pool().begin().await.unwrap();
-    let output = adapter
-        .prepare_tx(&mut tx, &input, &operation(input.clone()))
-        .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    let child = output.data["child_track_id"].as_str().unwrap();
-    let payload: String =
+    let adapter = adapter.with_selection_context(selection_context(repo).await);
+    let adapter: Arc<dyn ProviderAdapter> = if block_worktree {
+        Arc::new(BlockChildWorktree(adapter))
+    } else {
+        Arc::new(adapter)
+    };
+    let route_repo: Arc<dyn crate::db::RouteRepo> = repo.clone();
+    let events = crate::event::EventBus::new();
+    let completion = OperationCompletionBus::new();
+    let renderer =
+        crate::terminal_renderer::TerminalRendererRegistry::new_with_repo(route_repo.clone());
+    OperationRuntime::new_unchecked(
+        operations.clone(),
+        vec![adapter],
+        events.clone(),
+        completion.clone(),
+        SpawnCtx::new(
+            route_repo,
+            operations,
+            Arc::new(crate::state::DaemonClient::new_stub()),
+            renderer,
+            events,
+            completion,
+        ),
+    )
+}
+
+async fn stored_planner(repo: &SqlxRepo, child: &str) -> Value {
+    let raw: String =
         sqlx::query_scalar("SELECT payload FROM cards WHERE track_id=?1 AND role='planner'")
             .bind(child)
             .fetch_one(repo.pool())
             .await
             .unwrap();
-    assert_eq!(
-        serde_json::from_str::<Value>(&payload).unwrap()["permission_mode"],
-        "full"
-    );
+    serde_json::from_str(&raw).unwrap()
 }
+
+#[tokio::test]
+async fn child_track_config_retry_keeps_frozen_parent_head_and_selection() {
+    use crate::operation::{OperationKey, OperationOutcome, OperationReceipt};
+    for (parent_worktree, declared) in [(false, false), (true, false), (true, true)] {
+        let repo = std::sync::Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
+        let dir = tempfile::tempdir().unwrap();
+        init_repo(dir.path());
+        let plan = if parent_worktree {
+            TrackWorkspacePlan::AttachedWithTrackWorktree(dir.path().to_path_buf())
+        } else {
+            TrackWorkspacePlan::AttachedFromCwd
+        };
+        let parent = parent_with_plan(&repo, dir.path(), plan).await;
+        if parent_worktree {
+            workspace_runtime::track_worktree::ensure_track_worktree(
+                &parent,
+                crate::workspace_service::ports::ServerWorkspacePorts,
+                crate::workspace_service::ports::observe,
+            )
+            .await
+            .unwrap();
+            git(
+                std::path::Path::new(parent.workspace.agent_cwd()),
+                &[
+                    "-c",
+                    "user.name=test",
+                    "-c",
+                    "user.email=test@example.com",
+                    "commit",
+                    "--allow-empty",
+                    "-m",
+                    "parent-only",
+                ],
+            );
+        }
+        let parent_cwd = std::path::PathBuf::from(parent.workspace.agent_cwd());
+        let frozen_head = git(&parent_cwd, &["rev-parse", "HEAD"]);
+        let parent = parent.id.to_string();
+        sqlx::query(
+            "UPDATE cards SET payload=json_set(payload, \
+            '$.permission_mode','full','$.planner_provider','claude','$.model',null, \
+            '$.model_ever_set',json('true'),'$.reasoning_effort','high', \
+            '$.reasoning_effort_ever_set',json('true')) WHERE track_id=?1 AND role='planner'",
+        )
+        .bind(&parent)
+        .execute(repo.pool())
+        .await
+        .unwrap();
+        let mut expected = stored_planner(&repo, &parent).await;
+        if declared {
+            expected["model"] = json!("sonnet");
+            expected["reasoning_effort"] = json!("low");
+        }
+        let task = seed_task(&repo, &parent, false).await;
+        let mut input = serde_json::to_value(payload(&task)).unwrap();
+        if declared {
+            input["child_track"] = json!({"model":"sonnet", "reasoning_effort":"low"});
+        }
+        let key = OperationKey {
+            operation_key: new_id(),
+            idempotency_key: Some(task.id.clone()),
+            payload_hash: crate::routes::idempotency_key::stable_payload_hash(&input).unwrap(),
+        };
+        let runtime = child_runtime(&repo, true).await;
+        let op = runtime
+            .submit(CHILD_TRACK_KIND, key.clone(), input.clone())
+            .await
+            .unwrap();
+        let OperationReceipt::AwaitingRetry {
+            output, attempt, ..
+        } = runtime.observe_operation(&op).await.unwrap()
+        else {
+            panic!("worktree failure must retain a retryable child")
+        };
+        let child = output.data["child_track_id"].as_str().unwrap().to_owned();
+        assert_eq!(output.data["parent_head"], frozen_head);
+        assert!(output.data["workspace_error"].is_string());
+        let worktree = output.data["cwd"].as_str().unwrap().to_owned();
+        assert_ne!(worktree, parent_cwd.to_str().unwrap());
+        // Change every parent choice, and its committed HEAD, while the child waits.
+        sqlx::query(
+            "UPDATE cards SET payload=json_set(payload,'$.permission_mode','never', \
+            '$.planner_provider','codex','$.model','changed','$.reasoning_effort','low', \
+            '$.model_ever_set',json('false'),'$.reasoning_effort_ever_set',json('false')) \
+            WHERE track_id=?1 AND role='planner'",
+        )
+        .bind(&parent)
+        .execute(repo.pool())
+        .await
+        .unwrap();
+        git(
+            &parent_cwd,
+            &[
+                "-c",
+                "user.name=test",
+                "-c",
+                "user.email=test@example.com",
+                "commit",
+                "--allow-empty",
+                "-m",
+                "later-parent",
+            ],
+        );
+        std::fs::remove_file(&worktree).unwrap();
+        drop(runtime);
+        let runtime = child_runtime(&repo, false).await;
+        runtime
+            .retry_interaction(CHILD_TRACK_KIND, &key, attempt)
+            .await
+            .unwrap();
+        let result = runtime.wait(&op).await.unwrap();
+        let OperationOutcome::Succeeded { result } = result.outcome else {
+            panic!("{result:?}")
+        };
+        assert_eq!(result["child_track_id"], child);
+        assert_eq!(result["cwd"], worktree);
+        assert_eq!(
+            git(std::path::Path::new(&worktree), &["rev-parse", "HEAD"]),
+            frozen_head
+        );
+        let stored = stored_planner(&repo, &child).await;
+        for field in [
+            "permission_mode",
+            "planner_provider",
+            "model",
+            "reasoning_effort",
+            "model_ever_set",
+            "reasoning_effort_ever_set",
+        ] {
+            assert_eq!(stored[field], expected[field], "{field}");
+        }
+        assert_eq!(
+            runtime.submit(CHILD_TRACK_KIND, key, input).await.unwrap(),
+            op
+        );
+        let children: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM tracks WHERE parent_track_id=?1")
+                .bind(&parent)
+                .fetch_one(repo.pool())
+                .await
+                .unwrap();
+        assert_eq!(children, 1);
+        // The actual worker lease preparation reads the child's stored workspace and task.
+        let worker = seed_task(&repo, &child, false).await;
+        let mut tx = repo.pool().begin().await.unwrap();
+        let plan = crate::operation::workspace_lease::worker::prepare_worker_lease_tx(
+            &mut tx,
+            &child,
+            &worker.id,
+            &test_workspace_root(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(plan.path.to_str().unwrap(), worktree);
+        tx.rollback().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn child_track_config_managed_parent_retains_own_managed_workspace() {
+    use crate::operation::{OperationKey, OperationOutcome};
+    let repo = std::sync::Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
+    let parent = parent_with_plan(
+        &repo,
+        std::path::Path::new(""),
+        TrackWorkspacePlan::ManagedUnder(test_workspace_root()),
+    )
+    .await;
+    let parent_path = parent.workspace.path;
+    let parent = parent.id.to_string();
+    let task = seed_task(&repo, &parent, false).await;
+    let input = serde_json::to_value(payload(&task)).unwrap();
+    let runtime = child_runtime(&repo, false).await;
+    let op = runtime
+        .submit(
+            CHILD_TRACK_KIND,
+            OperationKey {
+                operation_key: new_id(),
+                idempotency_key: Some(task.id),
+                payload_hash: crate::routes::idempotency_key::stable_payload_hash(&input).unwrap(),
+            },
+            input,
+        )
+        .await
+        .unwrap();
+    let outcome = runtime.wait(&op).await.unwrap();
+    let OperationOutcome::Succeeded { result } = outcome.outcome else {
+        panic!("{outcome:?}")
+    };
+    let child = result["child_track_id"].as_str().unwrap();
+    let (kind, path, worktree, frozen): (String, String, Option<String>, Option<i64>) = sqlx::query_as(
+        "SELECT workspace_kind,workspace_path,workspace_worktree_path,workspace_frozen_at FROM tracks WHERE id=?1")
+        .bind(child).fetch_one(repo.pool()).await.unwrap();
+    assert_eq!(kind, "managed");
+    assert!(worktree.is_none());
+    assert!(frozen.is_some());
+    assert_eq!(result["cwd"], path);
+    assert_ne!(path, parent_path);
+    git(std::path::Path::new(&path), &["rev-parse", "HEAD"]);
+}
+
+async fn selection_context(
+    repo: &std::sync::Arc<SqlxRepo>,
+) -> crate::planner_model::child_selection::ChildSelectionContext {
+    use std::sync::Arc;
+    let availability = Arc::new(crate::agent_providers::ProviderAvailabilityCache::default());
+    let model = provider::claude::discovery::ClaudeModel {
+        value: "sonnet".into(),
+        resolved_model: "sonnet".into(),
+        display_name: "Sonnet".into(),
+        description: String::new(),
+        effort_levels: vec!["low".into(), "high".into()],
+    };
+    let parent_model = provider::claude::discovery::ClaudeModel {
+        value: "parent-model".into(),
+        ..model.clone()
+    };
+    availability
+        .seed_claude_catalog(crate::claude_planner::models::ClaudeCatalog {
+            default: model.clone(),
+            models: vec![model, parent_model],
+            fetched_at_ms: now_ms(),
+        })
+        .await;
+    crate::planner_model::child_selection::ChildSelectionContext {
+        availability,
+        claude: Arc::new(
+            crate::claude_planner::config::ClaudePlannerHost::unconfigured_scratch().unwrap(),
+        ),
+        acp: Arc::new(crate::acp_planner::config::AcpPlannerHost::unconfigured_scratch().unwrap()),
+        codex: crate::shared_codex_appserver::SharedCodexAppServer::new_stub(repo.clone()),
+    }
+}
+
+#[cfg(test)]
+mod selection_tests;

@@ -98,3 +98,6 @@ pub struct ModelsResponse {
     /// was), or `null` when it was not fetched.
     pub fetched_at_ms: Option<i64>,
 }
+
+/// Bounded provider catalog metadata read, shared by selection and HTTP projections.
+pub const CODEX_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(8);

@@ -1669,10 +1669,10 @@ async fn project_tasks_from_verdicts_tx(
                    id,track_id,key,kind,goal,context_json,acceptance_criteria,cwd,
                    depends_on_json,priority,gate_json,status,declared_by,spawn,
                    decl_ready,decl_released_by_user,created_at_ms,updated_at_ms,access,head,base,
-                   start,result_contract
+                   start,result_contract,child_track_json
                ) VALUES(
                    ?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,'pending',?12,?13,
-                   ?14,?15,?16,?16,?17,?18,?19,?20,?21
+                   ?14,?15,?16,?16,?17,?18,?19,?20,?21,?22
                )
                ON CONFLICT(id) DO UPDATE SET
                    kind=excluded.kind,
@@ -1690,6 +1690,7 @@ async fn project_tasks_from_verdicts_tx(
                    base=excluded.base,
                    start=excluded.start,
                    result_contract=excluded.result_contract,
+                   child_track_json=excluded.child_track_json,
                    decl_ready=excluded.decl_ready,
                    decl_released_by_user=excluded.decl_released_by_user,
                    updated_at_ms=excluded.updated_at_ms
@@ -1710,6 +1711,7 @@ async fn project_tasks_from_verdicts_tx(
                      OR tasks.base IS NOT excluded.base
                      OR tasks.start IS NOT excluded.start
                      OR tasks.result_contract IS NOT excluded.result_contract
+                     OR tasks.child_track_json IS NOT excluded.child_track_json
                      OR tasks.decl_ready IS NOT excluded.decl_ready
                      OR tasks.decl_released_by_user IS NOT excluded.decl_released_by_user
                  )"#,
@@ -1735,6 +1737,13 @@ async fn project_tasks_from_verdicts_tx(
         .bind(&declaration.base)
         .bind(declaration.start.as_str())
         .bind(&declaration.result_contract)
+        .bind(
+            declaration
+                .child_track
+                .as_ref()
+                .map(serde_json::to_string)
+                .transpose()?,
+        )
         .execute(&mut **tx)
         .await?;
         if result.rows_affected() != 0 {
@@ -2465,6 +2474,41 @@ mod tests {
                 ("pending".into(), start.unwrap_or("checkout").to_string())
             );
         }
+    }
+
+    #[tokio::test]
+    async fn child_track_config_projection_and_claim_freeze_declaration() {
+        let (repo, track) = setup().await;
+        let block = |model: &str| {
+            task_block(
+                0,
+                json!({
+                    "key":"child", "kind":"codex", "goal":"delegate", "spawn":"sub-track",
+                    "ready":true, "declared_by":PLANNER_DECLARATION_AUTHOR, "child_track":{"model":model,"reasoning_effort":"high"}
+                }),
+            )
+        };
+        project_blocks(&repo, &track, &[block("first")]).await;
+        project_blocks(&repo, &track, &[block("claimed")]).await;
+        let id = format!("{track}:child");
+        let mut tx = repo.pool().begin().await.unwrap();
+        assert_eq!(
+            crate::db::sqlite::task_claim_pending_tx(&mut tx, &id, 1, &[], false)
+                .await
+                .unwrap(),
+            1
+        );
+        tx.commit().await.unwrap();
+        project_blocks(&repo, &track, &[block("later")]).await;
+        let task = crate::db::sqlite::task_get_tx(&mut repo.pool().begin().await.unwrap(), &id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(task.child_track_json.as_deref().unwrap())
+                .unwrap(),
+            json!({"model":"claimed", "reasoning_effort":"high"})
+        );
     }
 
     /// #2599: while a task is pending, its `result_contract` follows its block, as `start` does,

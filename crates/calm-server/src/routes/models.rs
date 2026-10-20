@@ -8,7 +8,6 @@ use crate::harness::profile::HarnessProfileExt;
 use crate::planner_model::catalog::{
     CatalogModel, DefaultSource, ModelDefaults, ModelSource, ModelsResponse, ReasoningEffortOption,
 };
-use std::time::Duration;
 
 use axum::extract::State;
 use axum::{Router, routing::get};
@@ -24,7 +23,7 @@ use calm_types::runtime::AgentProtocol;
 /// Budget for the whole request, not each codex read. Passed down into
 /// `request_until` rather than wrapped in `tokio::time::timeout`: cancelling from
 /// outside leaks the pending-map entry.
-pub const CODEX_READ_TIMEOUT: Duration = Duration::from_secs(8);
+pub use crate::planner_model::catalog::CODEX_READ_TIMEOUT;
 
 impl From<CodexModel> for CatalogModel {
     fn from(m: CodexModel) -> Self {

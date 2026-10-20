@@ -254,6 +254,7 @@ fn planner_payload(host: &crate::acp_planner::config::AcpPlannerHost) -> serde_j
     ]);
     crate::planner_permission_mode::mint_at_creation(
         &mut payload,
+        crate::planner_permission_mode::CreationSource::Independent,
         &crate::session_projection_repo::AgentProvider::Codex,
         host,
     );

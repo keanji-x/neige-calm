@@ -847,6 +847,7 @@ pub(crate) async fn create_child_track(b: &Boot, parent_track_id: &str) -> Strin
         acceptance: Some("done".into()),
         context: serde_json::json!({}),
         cwd: None,
+        child_track: None,
     })
     .unwrap();
     let operation = Operation {

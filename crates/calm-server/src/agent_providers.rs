@@ -207,6 +207,18 @@ impl Default for ProviderAvailabilityCache {
 }
 
 impl ProviderAvailabilityCache {
+    #[cfg(test)]
+    pub(crate) async fn seed_claude_catalog(
+        &self,
+        catalog: crate::claude_planner::models::ClaudeCatalog,
+    ) {
+        self.claude
+            .get(Freshness::Cached, |_| async {
+                ClaudeReadiness::Ready(std::sync::Arc::new(catalog))
+            })
+            .await;
+    }
+
     /// `provider`'s availability: the cached answer when `freshness` allows and it is younger
     /// than [`TTL`], else a new check against the backends passed in.
     pub async fn get(

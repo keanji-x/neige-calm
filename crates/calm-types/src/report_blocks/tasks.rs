@@ -110,6 +110,7 @@ pub enum TaskDiagnosticOnAgentWrite {
 pub fn task_diagnostic_on_agent_write(code: &str) -> TaskDiagnosticOnAgentWrite {
     use TaskDiagnosticOnAgentWrite::{Refuse, Show};
     match code {
+        // child_track shape/placement/unknown-field errors use invalid_declaration.
         "invalid_declaration"
         | "duplicate_key"
         | "dependency_cycle"
@@ -211,6 +212,18 @@ pub struct GateStepInput {
     pub cmd: String,
 }
 
+/// Explicit child planner choices; approval remains inherited. Only sub-track tasks accept this.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ChildTrackConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
+}
+
 /// Required declaration provenance. Pure validation inputs have no report root and must never be
 /// accepted by DB projection.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -240,6 +253,7 @@ pub struct TaskDeclaration {
     pub released_by_user: bool,
     /// Claim-frozen execution route. Missing and explicit null normalize to `in-wave` before projection.
     pub spawn: String,
+    pub child_track: Option<ChildTrackConfig>,
     /// #1917: missing and explicit null normalize to `read_write` before projection.
     pub access: TaskAccess,
     /// #1933: the commits a read-only task declares; missing and explicit null = undeclared.
@@ -983,6 +997,9 @@ pub fn project_task_declarations(
                 .and_then(Value::as_str)
                 .and_then(|start| TaskStart::try_from(start.to_string()).ok())
                 .unwrap_or(TaskStart::Checkout),
+            child_track: payload
+                .get("child_track")
+                .and_then(|value| serde_json::from_value(value.clone()).ok()),
             result_contract: payload
                 .get("result_contract")
                 .and_then(Value::as_str)
@@ -1203,6 +1220,7 @@ mod tests {
             base: None,
             start: TaskStart::Checkout,
             result_contract: None,
+            child_track: None,
             tombstoned_by: None,
             ready: true,
             tombstone: false,

@@ -209,6 +209,11 @@ pub fn build_child_track_payload(task: &Task) -> Result<Value> {
         acceptance: task.acceptance_criteria.clone(),
         context: serde_json::from_str(&task.context_json).unwrap_or(Value::Null),
         cwd: task.cwd.clone(),
+        child_track: task
+            .child_track_json
+            .as_deref()
+            .map(serde_json::from_str)
+            .transpose()?,
     })?)
 }
 
@@ -1169,17 +1174,29 @@ impl Scheduler {
             return Ok(());
         };
         let payload = build_child_track_payload(task)?;
+        let key = OperationKey {
+            operation_key: new_id(),
+            idempotency_key: Some(task.id.clone()),
+            payload_hash: stable_payload_hash(&payload)?,
+        };
         let op_id = runtime
-            .submit(
-                CHILD_TRACK_KIND,
-                OperationKey {
-                    operation_key: new_id(),
-                    idempotency_key: Some(task.id.clone()),
-                    payload_hash: stable_payload_hash(&payload)?,
-                },
-                payload,
-            )
+            .submit(CHILD_TRACK_KIND, key.clone(), payload)
             .await?;
+        if let crate::operation::OperationReceipt::AwaitingRetry { attempt, .. } =
+            runtime.observe_operation(&op_id).await?
+        {
+            // This scheduler pass owns the retry intent. The existing child's persisted
+            // tx_output supplies its configuration and base; never create another child.
+            runtime
+                .retry_interaction(CHILD_TRACK_KIND, &key, attempt)
+                .await?;
+            if matches!(
+                runtime.observe_operation(&op_id).await?,
+                crate::operation::OperationReceipt::AwaitingRetry { .. }
+            ) {
+                return Ok(());
+            }
+        }
         let child_result = runtime.wait(&op_id).await?;
         let result = match child_result.outcome {
             OperationOutcome::Succeeded { result }
@@ -1312,7 +1329,7 @@ impl Scheduler {
             track: track.id.clone(),
             area: track.area_id.clone(),
         };
-        let code = code.to_string();
+        let status_detail = status_detail_with_reason(code, detail);
         let reason = format!("{code}: {detail}");
         let result = write_with_actor_events_typed::<(), _>(
             self.repo.as_ref(),
@@ -1336,7 +1353,7 @@ impl Scheduler {
                         &task_id,
                         track_id.as_str(),
                         TaskReporter::Kernel,
-                        &code,
+                        &status_detail,
                         now_ms(),
                     )
                     .await?;

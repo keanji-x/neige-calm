@@ -402,6 +402,7 @@ async fn sqlx_repo_open_accepts_nonterminal_block_row_at_0073_without_data_loss(
         "start",
         "running_started_at_ms",
         "result_contract",
+        "child_track_json",
     ];
     // `access` (0130), `head` and `base` (0131), `start` (0138), `running_started_at_ms` (0159)
     // and `result_contract` (0162) postdate this upgrade; every other column is carried over.
@@ -416,6 +417,7 @@ async fn sqlx_repo_open_accepts_nonterminal_block_row_at_0073_without_data_loss(
                 "start",
                 "running_started_at_ms",
                 "result_contract",
+                "child_track_json",
             ]
             .contains(column)
         })

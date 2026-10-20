@@ -7,7 +7,6 @@ use crate::db::sqlite::{
 };
 use crate::error::{CalmError, Result};
 use crate::event::{BroadcastEnvelope, Event, EventScope, SYNC_EVENT_VERSION};
-use crate::harness::profile::track_planner_provider;
 use crate::ids::{ActorId, CardId};
 use crate::model::{NewTrack, RequestTheme, TrackWorkspace, TrackWorkspaceKind, new_id, now_ms};
 use crate::track_creation::{TrackInitialization, initialize_track_tx};
@@ -17,6 +16,9 @@ use super::{
     AppServerInteractOutcome, CompensationStateVersioned, Operation, PhaseTag, ProviderAdapter,
     SpawnCtx, SpawnHandle, SpawnOutcome, Tx, TxOutput, refuse_if_context_stale,
 };
+
+mod configuration;
+use configuration::{FrozenParent, PreparedChild, ensure_child_workspace};
 
 pub const CHILD_TRACK_KIND: &str = "child-track";
 
@@ -30,6 +32,8 @@ use calm_truth::db::sqlite::{
 const CHILD_TRACK_PHASES: &[PhaseTag] = &[
     PhaseTag::Pending,
     PhaseTag::TxCommitted,
+    PhaseTag::AppServerInteract,
+    PhaseTag::AwaitingRetry,
     PhaseTag::SpawnStarted,
     PhaseTag::SpawnSucceeded,
     PhaseTag::Succeeded,
@@ -43,6 +47,8 @@ pub struct ChildTrackOperationPayload {
     pub acceptance: Option<String>,
     pub context: Value,
     pub cwd: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub child_track: Option<calm_types::report_blocks::tasks::ChildTrackConfig>,
 }
 
 /// Stable first observation for the child planner; all four fields come from the post-claim task row, never a report reader.
@@ -64,6 +70,7 @@ pub struct ChildTrackAdapter {
     track_area_cache: crate::track_area_cache::TrackAreaCache,
     /// The managed workspace root; the child's own workspace is derived under it and materialized in `prepare_tx`.
     workspace_root: std::path::PathBuf,
+    selection_context: Option<crate::planner_model::child_selection::ChildSelectionContext>,
 }
 
 impl ChildTrackAdapter {
@@ -78,89 +85,24 @@ impl ChildTrackAdapter {
             card_role_cache,
             track_area_cache,
             workspace_root,
+            selection_context: None,
         }
     }
-}
-
-/// Managed parent → the child allocates its own managed workspace (two rows must never share a managed directory, recycling is by directory).
-/// Attached parent → the child inherits the same attached path. Frozen on both branches: the harness bootstraps on this path immediately.
-fn child_workspace_plan(
-    parent: &TrackWorkspace,
-    workspace_root: &std::path::Path,
-) -> Result<TrackWorkspacePlan> {
-    Ok(match parent.kind {
-        TrackWorkspaceKind::Managed => {
-            TrackWorkspacePlan::ManagedFrozenUnder(workspace_root.to_path_buf())
-        }
-        // `AttachedInheritedPath::new` refuses a path inside the managed root; unreachable from here, checked anyway because the check belongs to the type.
-        TrackWorkspaceKind::Attached => TrackWorkspacePlan::InheritAttachedFrozen(
-            AttachedInheritedPath::new(parent.path.clone(), workspace_root)?,
-        ),
-    })
-}
-
-async fn root_and_depth(tx: &mut Tx<'_>, parent_track_id: &str) -> Result<(String, i64)> {
-    let rows: Vec<(String, i64)> = sqlx::query_as(TRACK_ROOT_DEPTH_SQL)
-        .bind(parent_track_id)
-        .bind(MAX_TRACK_TREE_DEPTH + 1)
-        .fetch_all(&mut **tx)
-        .await?;
-    match rows.as_slice() {
-        [(root, depth)] => Ok((root.clone(), *depth)),
-        [] => {
-            let parent_exists: bool =
-                sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM tracks WHERE id=?1)")
-                    .bind(parent_track_id)
-                    .fetch_one(&mut **tx)
-                    .await?;
-            if !parent_exists {
-                return Err(CalmError::NotFound(format!("track {parent_track_id}")));
-            }
-            let path: Vec<(String, i64)> = sqlx::query_as(TRACK_BOUNDED_PATH_SQL)
-                .bind(parent_track_id)
-                .bind(MAX_TRACK_TREE_DEPTH + 1)
-                .fetch_all(&mut **tx)
-                .await?;
-            let mut seen = std::collections::BTreeSet::new();
-            let cycle = path.iter().any(|(id, _)| !seen.insert(id));
-            Err(CalmError::Conflict(if cycle {
-                "sub-track-tree-cycle".into()
-            } else {
-                "sub-track-depth-exceeded".into()
-            }))
-        }
-        _ => Err(CalmError::Conflict("sub-track-tree-ambiguous-root".into())),
-    }
-}
-
-#[async_trait]
-impl ProviderAdapter for ChildTrackAdapter {
-    fn kind(&self) -> &'static str {
-        CHILD_TRACK_KIND
+    pub(crate) fn with_selection_context(
+        mut self,
+        context: crate::planner_model::child_selection::ChildSelectionContext,
+    ) -> Self {
+        self.selection_context = Some(context);
+        self
     }
 
-    fn phases(&self) -> &'static [PhaseTag] {
-        CHILD_TRACK_PHASES
-    }
-
-    async fn validate(&self, input: &Value) -> Result<()> {
-        let payload: ChildTrackOperationPayload = serde_json::from_value(input.clone())?;
-        if payload.task_id.trim().is_empty() || payload.parent_track_id.trim().is_empty() {
-            return Err(CalmError::BadRequest(
-                "child-track requires task_id and parent_track_id".into(),
-            ));
-        }
-        Ok(())
-    }
-
-    async fn prepare_tx<'tx>(
+    async fn create_tx(
         &self,
-        tx: &mut Tx<'tx>,
+        tx: &mut Tx<'_>,
         input: &Value,
-        _op: &Operation,
+        frozen: Option<FrozenParent>,
     ) -> Result<TxOutput> {
         let payload: ChildTrackOperationPayload = serde_json::from_value(input.clone())?;
-
         // Deliberately the first DB action: a materialized frozen context may not create a child skeleton.
         refuse_if_context_stale(tx, Some(&payload.task_id)).await?;
 
@@ -188,41 +130,27 @@ impl ProviderAdapter for ChildTrackAdapter {
             )));
         }
 
-        // The parent's WORKSPACE KIND decides the child's plan; the parent's path is read only on the attached branch.
-        let parent: Option<(String, Option<String>, String, String)> = sqlx::query_as(
-            "SELECT area_id, plugin_scope, workspace_kind, workspace_path FROM tracks WHERE id=?1",
-        )
-        .bind(&payload.parent_track_id)
-        .fetch_optional(&mut **tx)
-        .await?;
-        let (area_id, parent_plugin_scope, parent_workspace_kind, parent_workspace_path) =
-            parent.ok_or_else(|| {
-                CalmError::Conflict(format!(
-                    "parent track {} is missing",
-                    payload.parent_track_id
-                ))
-            })?;
-        let parent_workspace = TrackWorkspace {
-            kind: TrackWorkspaceKind::try_from(parent_workspace_kind)
-                .map_err(CalmError::Internal)?,
-            path: parent_workspace_path,
-            // Not read by `child_workspace_plan`; the child's own stamp is set by the plan, not copied.
-            frozen_at: None,
-            worktree: None,
+        let frozen = match frozen {
+            Some(frozen) => frozen,
+            None if payload.child_track.is_some() => {
+                return Err(CalmError::Internal(
+                    "child_track requires external preparation".into(),
+                ));
+            }
+            None => FrozenParent::read(tx, &payload.parent_track_id).await?,
         };
-        let plan = child_workspace_plan(&parent_workspace, &self.workspace_root)?;
-        let planner_provider = track_planner_provider(&mut **tx, &payload.parent_track_id).await?;
+        let plan = child_workspace_plan(&frozen.track.workspace, &self.workspace_root)?;
         let seed = render_child_seed(&payload);
         let child = track_create_tx(
             tx,
             NewTrack {
-                area_id: area_id.into(),
+                area_id: frozen.track.area_id.clone(),
                 title: payload.goal.clone(),
                 sort: None,
-                // Ignored by both plans; empty rather than the parent's path so no plan can pick up an inherited path through a dead field.
-                cwd: String::new(),
+                // Attached keeps the repository root; agent_cwd selects the child worktree.
+                cwd: frozen.track.workspace.path.clone(),
                 template_id: None,
-                plugin_scope: parent_plugin_scope,
+                plugin_scope: frozen.track.plugin_scope.clone(),
                 template_input: None,
                 attach_folder: false,
                 theme: RequestTheme::default_dark(),
@@ -256,7 +184,9 @@ impl ProviderAdapter for ChildTrackAdapter {
             (&planner_card_id, &report_card_id),
             TrackInitialization::Subtrack {
                 seed: seed.clone(),
-                provider: planner_provider,
+                provider: frozen.provider,
+                permission: frozen.permission,
+                selection: frozen.selection,
             },
             &self.card_role_cache,
             &self.acp_planner,
@@ -321,21 +251,191 @@ impl ProviderAdapter for ChildTrackAdapter {
             "planner_card_id": CardId::from(planner_card_id),
             "report_card_id": CardId::from(report_card_id),
             "seed": seed,
-            "cwd": child.workspace.path,
+            "cwd": child.workspace.agent_cwd(),
+            "workspace_track": child,
+            "parent_head": frozen.head,
         });
         let mut output = TxOutput::new("track", Some(child.id.to_string()), result.clone());
         output.data = result;
         output.post_commit_events = envelopes;
         Ok(output)
     }
+}
+
+/// Managed parent → the child allocates its own managed workspace (two rows must never share a managed directory, recycling is by directory).
+/// Attached parent → the child owns a track worktree in the same repository. Both plans freeze at creation.
+fn child_workspace_plan(
+    parent: &TrackWorkspace,
+    workspace_root: &std::path::Path,
+) -> Result<TrackWorkspacePlan> {
+    Ok(match parent.kind {
+        TrackWorkspaceKind::Managed => {
+            TrackWorkspacePlan::ManagedFrozenUnder(workspace_root.to_path_buf())
+        }
+        // `AttachedInheritedPath::new` refuses a path inside the managed root; unreachable from here, checked anyway because the check belongs to the type.
+        TrackWorkspaceKind::Attached => {
+            let path = AttachedInheritedPath::new(parent.path.clone(), workspace_root)?;
+            TrackWorkspacePlan::AttachedWithTrackWorktree(path.as_str().into())
+        }
+    })
+}
+
+async fn root_and_depth(tx: &mut Tx<'_>, parent_track_id: &str) -> Result<(String, i64)> {
+    let rows: Vec<(String, i64)> = sqlx::query_as(TRACK_ROOT_DEPTH_SQL)
+        .bind(parent_track_id)
+        .bind(MAX_TRACK_TREE_DEPTH + 1)
+        .fetch_all(&mut **tx)
+        .await?;
+    match rows.as_slice() {
+        [(root, depth)] => Ok((root.clone(), *depth)),
+        [] => {
+            let parent_exists: bool =
+                sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM tracks WHERE id=?1)")
+                    .bind(parent_track_id)
+                    .fetch_one(&mut **tx)
+                    .await?;
+            if !parent_exists {
+                return Err(CalmError::NotFound(format!("track {parent_track_id}")));
+            }
+            let path: Vec<(String, i64)> = sqlx::query_as(TRACK_BOUNDED_PATH_SQL)
+                .bind(parent_track_id)
+                .bind(MAX_TRACK_TREE_DEPTH + 1)
+                .fetch_all(&mut **tx)
+                .await?;
+            let mut seen = std::collections::BTreeSet::new();
+            let cycle = path.iter().any(|(id, _)| !seen.insert(id));
+            Err(CalmError::Conflict(if cycle {
+                "sub-track-tree-cycle".into()
+            } else {
+                "sub-track-depth-exceeded".into()
+            }))
+        }
+        _ => Err(CalmError::Conflict("sub-track-tree-ambiguous-root".into())),
+    }
+}
+
+#[async_trait]
+impl ProviderAdapter for ChildTrackAdapter {
+    fn kind(&self) -> &'static str {
+        CHILD_TRACK_KIND
+    }
+
+    fn phases(&self) -> &'static [PhaseTag] {
+        CHILD_TRACK_PHASES
+    }
+
+    async fn validate(&self, input: &Value) -> Result<()> {
+        let payload: ChildTrackOperationPayload = serde_json::from_value(input.clone())?;
+        if payload.task_id.trim().is_empty() || payload.parent_track_id.trim().is_empty() {
+            return Err(CalmError::BadRequest(
+                "child-track requires task_id and parent_track_id".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    async fn preparation_track(&self, input: &Value, _: &SpawnCtx) -> Result<Option<String>> {
+        let payload: ChildTrackOperationPayload = serde_json::from_value(input.clone())?;
+        Ok(Some(payload.parent_track_id))
+    }
+
+    async fn prepare_external(
+        &self,
+        input: &Value,
+        _op: &Operation,
+        ctx: &SpawnCtx,
+    ) -> Result<Option<Box<dyn super::PreparedTx>>> {
+        let payload: ChildTrackOperationPayload = serde_json::from_value(input.clone())?;
+        let db = ctx.operation_repo.sqlite_db();
+        let mut snapshot = crate::db::sqlite::begin_immediate_tx(&db).await?;
+        let mut frozen = FrozenParent::read(&mut snapshot, &payload.parent_track_id).await?;
+        snapshot.commit().await?;
+        if let Some(declared) = &payload.child_track {
+            crate::planner_model::child_selection::merge(
+                &mut frozen.selection,
+                &mut frozen.provider,
+                declared,
+            )?;
+            let context = self.selection_context.as_ref().ok_or_else(|| {
+                CalmError::Internal("child_track creation requires selection context".into())
+            })?;
+            context
+                .validate(
+                    &frozen.provider,
+                    &frozen.selection,
+                    declared,
+                    frozen.track.workspace.agent_cwd(),
+                )
+                .await?;
+        }
+        if frozen.track.workspace.kind == TrackWorkspaceKind::Attached {
+            let cwd = frozen.track.workspace.agent_cwd().to_owned();
+            let repository = frozen.track.workspace.path.clone();
+            let (head, repo_root) = tokio::task::spawn_blocking(move || -> Result<_> {
+                let head = workspace::base::resolve_head_base(std::path::Path::new(&cwd))?;
+                let repo_root = workspace_runtime::selection::git_repo_root_for_track_cwd(
+                    "(child)",
+                    &repository,
+                )?;
+                Ok((head, repo_root))
+            })
+            .await
+            .map_err(|e| CalmError::Internal(e.to_string()))??;
+            frozen.head = Some(head);
+            frozen.track.workspace.path =
+                workspace::base::utf8_path(&repo_root, "child repository root")?.to_owned();
+        }
+        Ok(Some(Box::new(PreparedChild {
+            adapter: self.clone(),
+            input: input.clone(),
+            frozen,
+        })))
+    }
+
+    async fn prepare_tx<'tx>(
+        &self,
+        tx: &mut Tx<'tx>,
+        input: &Value,
+        _op: &Operation,
+    ) -> Result<TxOutput> {
+        self.create_tx(tx, input, None).await
+    }
+
+    fn app_server_interact_kind(
+        &self,
+        _: &TxOutput,
+        _: &Operation,
+    ) -> Result<super::AppServerInteractKind> {
+        Ok(super::AppServerInteractKind::RegisterPending { entry_id: None })
+    }
 
     async fn app_server_interact(
         &self,
-        _output: &mut TxOutput,
+        output: &mut TxOutput,
         _op: &Operation,
-        _ctx: &SpawnCtx,
+        ctx: &SpawnCtx,
     ) -> Result<AppServerInteractOutcome> {
-        Ok(AppServerInteractOutcome::NotApplicable)
+        let child_id = output.data["child_track_id"]
+            .as_str()
+            .ok_or_else(|| CalmError::Internal("child output missing child_track_id".into()))?;
+        let _guard = crate::per_card_lock::lock_key(&ctx.track_delete_locks, child_id).await;
+        if ctx.repo.track_get(child_id).await?.is_none() {
+            return Err(CalmError::NotFound(format!("child track {child_id}")));
+        }
+        match ensure_child_workspace(output).await {
+            Ok(()) => {
+                output
+                    .data
+                    .as_object_mut()
+                    .expect("child output")
+                    .remove("workspace_error");
+                Ok(AppServerInteractOutcome::NotApplicable)
+            }
+            Err(error) => {
+                output.data["workspace_error"] = json!(error.to_string());
+                Ok(AppServerInteractOutcome::AwaitingRetry)
+            }
+        }
     }
 
     async fn spawn_side_effect(
@@ -520,6 +620,7 @@ mod tests {
             access: crate::model::TaskAccess::ReadWrite,
             start: crate::model::TaskStart::Checkout,
             result_contract: None,
+            child_track_json: None,
             created_at_ms: now,
             updated_at_ms: now,
             finished_at_ms: None,
@@ -653,6 +754,7 @@ mod tests {
             acceptance: Some("done".into()),
             context: json!({}),
             cwd: None,
+            child_track: None,
         })
         .unwrap();
         let adapter = ChildTrackAdapter::new(
@@ -680,6 +782,7 @@ mod tests {
             acceptance: task.acceptance_criteria.clone(),
             context: serde_json::from_str(&task.context_json).unwrap(),
             cwd: task.cwd.clone(),
+            child_track: None,
         }
     }
 
@@ -956,7 +1059,7 @@ mod tests {
                 root.path(),
             )
             .unwrap(),
-            TrackWorkspacePlan::InheritAttachedFrozen(_)
+            TrackWorkspacePlan::AttachedWithTrackWorktree(_)
         ));
         assert!(matches!(
             child_workspace_plan(
@@ -976,7 +1079,7 @@ mod tests {
     /// POSITIVE case: sharing an attached directory is legal and pre-existing in production; a sub-track spawned to work on
     /// the parent's code must see it. The user's directory is NOT touched.
     #[tokio::test]
-    async fn child_of_an_attached_parent_shares_the_parents_path() {
+    async fn child_of_an_attached_parent_plans_its_own_worktree() {
         let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
         let user_repo = tempfile::TempDir::new().unwrap();
         let user_path = user_repo.path().to_string_lossy().into_owned();
@@ -1047,8 +1150,12 @@ mod tests {
             "a sub-track of an attached track must see the parent's checkout"
         );
         assert!(frozen_at.is_some(), "child workspaces freeze at creation");
-        assert_eq!(output.data["cwd"], user_path);
-        assert_eq!(output.result["cwd"], user_path);
+        let child_worktree = workspace::worktree::track_worktree_path_for(
+            std::path::Path::new(&user_path),
+            &child_id,
+        );
+        assert_eq!(output.data["cwd"], child_worktree.to_str().unwrap());
+        assert_eq!(output.result["cwd"], child_worktree.to_str().unwrap());
 
         // Attached means the server never creates, `git init`s, marks or writes anything here.
         assert_eq!(
@@ -1153,8 +1260,13 @@ mod tests {
             );
         }
         let child_id = output.data["child_track_id"].as_str().unwrap();
-        // This parent is ATTACHED (`/parent-cwd`, a directory the user owns), so the child inherits that path and stays attached.
-        let expected_child_workspace = "/parent-cwd".to_string();
+        // Attached children own a worktree under the same repository.
+        let expected_child_workspace = workspace::worktree::track_worktree_path_for(
+            std::path::Path::new("/parent-cwd"),
+            child_id,
+        )
+        .to_string_lossy()
+        .into_owned();
         assert_eq!(output.data["cwd"], expected_child_workspace);
         assert_eq!(
             sqlx::query_scalar::<_, String>("SELECT workspace_kind FROM tracks WHERE id=?1")
@@ -1184,8 +1296,8 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(
-            inherited.0, expected_child_workspace,
-            "an attached parent's path IS inherited (design D7, S4 amendment)"
+            inherited.0, "/parent-cwd",
+            "workspace_path retains the source repository; agent_cwd uses the child worktree"
         );
         assert_eq!(inherited.1, None, "template_id must not inherit");
         assert_eq!(
@@ -1619,6 +1731,7 @@ mod tests {
             acceptance: Some("no child committed".into()),
             context: json!({}),
             cwd: None,
+            child_track: None,
         })
         .unwrap();
         let adapter = ChildTrackAdapter::new(

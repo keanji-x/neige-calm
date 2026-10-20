@@ -387,6 +387,7 @@ pub struct Task {
     /// #2599: the declared worker result contract, frozen with the row like `start`; `None` is an
     /// untyped result.
     pub result_contract: Option<String>,
+    pub child_track_json: Option<String>,
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
     pub finished_at_ms: Option<i64>,

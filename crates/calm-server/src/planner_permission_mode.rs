@@ -1,7 +1,7 @@
-//! A Planner card's permission mode (#2348): which cards carry one, the value every Planner card is
-//! created with, and how a stored value is read. The harness reads it when it issues a turn
+//! A Planner card's permission mode (#2348): its creation sources and stored value.
+//! The harness reads it when it issues a turn
 //! (`harness::run_loop::turn_permission`) and the provider adapter turns it into its own settings.
-//! The only writer of a stored value is `PUT /api/cards/{id}/planner/permission-mode`.
+//! After creation, the only writer of a stored value is `PUT /api/cards/{id}/planner/permission-mode`.
 
 use serde_json::{Map, Value};
 
@@ -13,18 +13,28 @@ use crate::model::{Card, CardRole};
 use crate::session_projection_repo::AgentProvider;
 use crate::validation::PLANNER_PERMISSION_MODE_PAYLOAD_KEY;
 
-/// Stamp a new Planner's mode from its provider's registration, or `never` without a
-/// declaration. All Planner creation paths use this owner; stored cards are never re-stamped.
+/// Independent tracks use their provider registration default. Delegation explicitly copies the
+/// parent's creation-time mode, including ask/full; later parent edits do not propagate.
+pub(crate) enum CreationSource {
+    Independent,
+    Inherited(PlannerPermissionMode),
+}
+
+/// Stamp the admitted creation source exactly once, without a temporary default.
 pub(crate) fn mint_at_creation(
     payload: &mut Map<String, Value>,
+    source: CreationSource,
     provider: &AgentProvider,
     host: &AcpPlannerHost,
 ) {
-    let mode = host
-        .configured(provider)
-        .ok()
-        .and_then(|registration| registration.default_permission_mode)
-        .unwrap_or(PlannerPermissionMode::Never);
+    let mode = match source {
+        CreationSource::Independent => host
+            .configured(provider)
+            .ok()
+            .and_then(|registration| registration.default_permission_mode)
+            .unwrap_or(PlannerPermissionMode::Never),
+        CreationSource::Inherited(mode) => mode,
+    };
     payload.insert(
         PLANNER_PERMISSION_MODE_PAYLOAD_KEY.to_owned(),
         serde_json::json!(mode),
@@ -134,6 +144,7 @@ mod tests {
         payload.insert("permission_mode".into(), json!("ask"));
         mint_at_creation(
             &mut payload,
+            CreationSource::Independent,
             &AgentProvider::Codex,
             &AcpPlannerHost::unconfigured_scratch().unwrap(),
         );
