@@ -7,7 +7,7 @@ use calm_types::worker::{
     DeathVerdict, ExitEvidence, ExitInterpretation, Liveness, SessionMode, WorkerSession,
 };
 
-/// Handle produced by a successful spawn or resume.
+/// Handle produced by a successful spawn.
 #[derive(Clone, Debug)]
 pub enum SpawnHandle {
     Terminal {
@@ -94,7 +94,7 @@ impl TuiInput {
     }
 }
 
-/// Owns a worker session after spawn: liveness, exit interpretation, and resume.
+/// Owns a worker session after spawn: liveness and exit interpretation.
 ///
 /// Probes and interpretation run outside the write lock; only the final CAS transition commits under it.
 #[async_trait]
@@ -121,31 +121,13 @@ pub trait WorkerProvider: Send + Sync {
         ctx: &SpawnCtx,
     ) -> Result<ExitInterpretation, CoreError>;
 
-    /// Re-attach a resumable session ruled `ResumeEligible`; the default errors and ephemeral providers never override it.
-    async fn resume(
-        &self,
-        _session: &WorkerSession,
-        _ctx: &SpawnCtx,
-    ) -> Result<SpawnHandle, CoreError> {
-        Err(CoreError::Internal(format!(
-            "{} not resumable",
-            self.kind()
-        )))
-    }
-
     /// Confirm durable death outside the write lock. Only `Dead` authorizes reap.
     async fn confirm_durable_death(
         &self,
         _thread_id: &str,
         _now_ms: TimestampMs,
-        _daemon_connected_at_ms: TimestampMs,
         _rebuild_grace_ms: i64,
     ) -> DeathVerdict {
         DeathVerdict::Unknown
-    }
-
-    /// Wall-clock ms of the provider daemon's latest successful connection.
-    fn daemon_connected_at_ms(&self) -> Option<TimestampMs> {
-        None
     }
 }

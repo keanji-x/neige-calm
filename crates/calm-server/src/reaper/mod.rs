@@ -221,9 +221,8 @@ impl Reaper {
                             }
                             continue;
                         };
-                        let connected = provider.daemon_connected_at_ms().unwrap_or(0);
                         let verdict = provider
-                            .confirm_durable_death(thread_id, now, connected, self.rebuild_grace_ms)
+                            .confirm_durable_death(thread_id, now, self.rebuild_grace_ms)
                             .await;
                         match verdict {
                             // Positively dead — fall through to the converge path shared with ephemeral.

@@ -185,7 +185,7 @@ pub enum ExitInterpretation {
     Failed { reason: String },
     /// The session is dead but its card/projection must be kept for forensics.
     PreserveCard,
-    /// `SessionMode::Resumable` and the thread is still alive — eligible for `WorkerProvider::resume`.
+    /// `SessionMode::Resumable` and the thread is still alive — eligible for reattachment.
     ResumeEligible,
 }
 

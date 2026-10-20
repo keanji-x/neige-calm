@@ -133,15 +133,10 @@ impl WorkerProvider for FakeProvider {
         &self,
         _thread_id: &str,
         _now_ms: TimestampMs,
-        _daemon_connected_at_ms: TimestampMs,
         _rebuild_grace_ms: i64,
     ) -> DeathVerdict {
         self.death_verdict_calls.fetch_add(1, Ordering::SeqCst);
         self.death_verdict.unwrap_or(DeathVerdict::Unknown)
-    }
-
-    fn daemon_connected_at_ms(&self) -> Option<TimestampMs> {
-        None
     }
 }
 
@@ -365,10 +360,6 @@ pub async fn fake_provider_contract() {
             Ok(ExitInterpretation::Failed { .. })
         ),
         "signal exit must fail"
-    );
-    assert!(
-        provider.resume(&session, &ctx).await.is_err(),
-        "default resume must error for fake"
     );
 }
 

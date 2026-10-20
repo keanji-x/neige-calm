@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use calm_exec::{BoundKeys, MessageReady, SpawnCtx, SpawnHandle, TuiInput, WorkerProvider};
+use calm_exec::{BoundKeys, MessageReady, SpawnCtx, TuiInput, WorkerProvider};
 use calm_types::error::CoreError;
 use calm_types::runtime::TimestampMs;
 use calm_types::worker::{
@@ -138,14 +138,14 @@ impl WorkerProvider for CodexProvider {
         Ok(codex_interpret_exit(evidence))
     }
 
-    /// The codex worker death-arbiter. Dormant: nothing calls this outside tests yet.
+    /// The codex worker death-arbiter, consulted by `reaper::Reaper::sweep_all` for resumable sessions.
     async fn confirm_durable_death(
         &self,
         thread_id: &str,
         now_ms: TimestampMs,
-        daemon_connected_at_ms: TimestampMs,
         rebuild_grace_ms: i64,
     ) -> DeathVerdict {
+        let daemon_connected_at_ms = self.daemon.daemon_connected_at_ms();
         // S1: daemon down — brain gone, no turn can run, nothing resumes.
         if !self.daemon.is_running() {
             return DeathVerdict::Dead;
@@ -157,26 +157,6 @@ impl WorkerProvider for CodexProvider {
         // S2: live, past-grace daemon — pull facts and apply the table.
         let facts = self.daemon.read_liveness_facts(thread_id).await;
         verdict_from_facts(facts)
-    }
-
-    fn daemon_connected_at_ms(&self) -> Option<TimestampMs> {
-        Some(self.daemon.daemon_connected_at_ms())
-    }
-
-    async fn resume(
-        &self,
-        session: &WorkerSession,
-        _ctx: &SpawnCtx,
-    ) -> Result<SpawnHandle, CoreError> {
-        let thread_id = session
-            .thread_id
-            .as_deref()
-            .ok_or_else(|| CoreError::Internal("codex resume requires session.thread_id".into()))?;
-        let command_line = resume_command(thread_id, &self.daemon.remote_uri());
-        tracing::debug!(command_line, "codex resume command prepared");
-        Err(CoreError::Internal(
-            "codex resume spawn wiring lands with the reaper (#679 PR8)".into(),
-        ))
     }
 }
 
@@ -236,28 +216,6 @@ pub(crate) fn verdict_from_facts(facts: Option<CodexLivenessFacts>) -> DeathVerd
         // No turns at all — no positive signal → conservative no-reap.
         None => DeathVerdict::Unknown,
     }
-}
-
-pub fn resume_command(thread_id: &str, remote_uri: &str) -> String {
-    format!(
-        "codex resume {} --remote {}",
-        shell_single_quote(thread_id),
-        shell_single_quote(remote_uri)
-    )
-}
-
-fn shell_single_quote(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() + 2);
-    out.push('\'');
-    for ch in s.chars() {
-        if ch == '\'' {
-            out.push_str("'\\''");
-        } else {
-            out.push(ch);
-        }
-    }
-    out.push('\'');
-    out
 }
 
 #[cfg(test)]
@@ -327,7 +285,7 @@ mod tests {
     /// Helper: now well past grace so S2 is reached (when daemon up).
     async fn verdict(running: bool, facts: Option<CodexLivenessFacts>) -> DeathVerdict {
         provider_with(running, facts)
-            .confirm_durable_death("t-1", 1_000_000, 0, GRACE)
+            .confirm_durable_death("t-1", 1_000_000, GRACE)
             .await
     }
 
@@ -343,7 +301,7 @@ mod tests {
     #[tokio::test]
     async fn arbiter_within_rebuild_grace_is_unknown() {
         let v = provider_with(true, Some(facts(ThreadStatusLite::Idle, Some(None))))
-            .confirm_durable_death("t-1", GRACE - 1, 0, GRACE)
+            .confirm_durable_death("t-1", GRACE - 1, GRACE)
             .await;
         assert_eq!(v, DeathVerdict::Unknown);
     }
@@ -352,7 +310,7 @@ mod tests {
     async fn arbiter_grace_boundary_equal_is_not_within_grace() {
         // now - connected == grace is NOT within grace; the died-mid-turn fact proves S2 was reached.
         let v = provider_with(true, Some(facts(ThreadStatusLite::Idle, Some(None))))
-            .confirm_durable_death("t-1", GRACE, 0, GRACE)
+            .confirm_durable_death("t-1", GRACE, GRACE)
             .await;
         assert_eq!(v, DeathVerdict::Dead);
     }
@@ -558,22 +516,6 @@ mod tests {
             ExitInterpretation::Failed {
                 reason: "codex worker exited with code 2".into()
             }
-        );
-    }
-
-    #[test]
-    fn resume_command_quotes_safe_inputs_like_existing_adapter() {
-        assert_eq!(
-            resume_command("t-1", "ws://x"),
-            "codex resume 't-1' --remote 'ws://x'"
-        );
-    }
-
-    #[test]
-    fn resume_command_quotes_embedded_single_quotes() {
-        assert_eq!(
-            resume_command("t'1", "unix:///tmp/codex'sock"),
-            "codex resume 't'\\''1' --remote 'unix:///tmp/codex'\\''sock'"
         );
     }
 

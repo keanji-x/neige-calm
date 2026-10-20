@@ -552,24 +552,6 @@ pub async fn provider_conformance<P: WorkerProvider>(p: P) {
     } else {
         assert_failed(signal, p.kind());
     }
-
-    let resume = p.resume(&session, &ctx).await;
-    match expected_mode {
-        SessionMode::Ephemeral => {
-            let err = resume.expect_err("ephemeral provider resume must error");
-            assert!(
-                err.to_string().contains("not resumable"),
-                "unexpected ephemeral resume error: {err}"
-            );
-        }
-        SessionMode::Resumable => {
-            let err = resume.expect_err("codex resume is a PR8 seam in this PR");
-            assert!(
-                err.to_string().contains("#679 PR8"),
-                "unexpected codex resume seam error: {err}"
-            );
-        }
-    }
 }
 
 pub async fn provider_conformance_fake() {
