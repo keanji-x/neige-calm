@@ -13,6 +13,7 @@ use control::ControlError;
 mod metadata_reads;
 mod native_turns;
 mod prompt_attempt;
+mod revert;
 mod thread_mint;
 pub(crate) use native_turns::{CodexHarnessBinding, NativeInput, NativeSteer};
 use native_turns::{NativeTurns, SourceRetirement};
@@ -1332,67 +1333,6 @@ impl SharedCodexAppServer {
         .into_steer_delivery()
     }
 
-    /// `thread/revert` before the turn that follows a rewind (#1923). Refused on a sealed thread
-    /// like `turn/start`; the active-turn cache loses only an entry naming the reverted turn.
-    pub async fn thread_revert(
-        &self,
-        thread_id: &str,
-        before_turn_id: &str,
-    ) -> std::result::Result<(), control::StartError> {
-        self.require_authentication()?;
-        if self.thread_seals.is_sealed(thread_id) {
-            return Err(control::StartError::Host(CalmError::Conflict(format!(
-                "thread {thread_id} is sealed because its track is being deleted"
-            ))));
-        }
-        #[cfg(feature = "fixtures")]
-        let fake_answer: Option<provider::codex::error::Result<serde_json::Value>> =
-            self.fake.as_ref().map(|fake| {
-                fake.reverted_threads
-                    .lock()
-                    .expect("fake shared codex reverted threads mutex poisoned")
-                    .push((
-                        thread_id.to_string(),
-                        before_turn_id.to_string(),
-                        fake.next_turn.load(Ordering::SeqCst).saturating_sub(1),
-                    ));
-                if fake.revert_turn_not_found.load(Ordering::SeqCst) {
-                    Err(provider::codex::error::Error::Refused(format!(
-                        "thread/revert failed: turn not found: {before_turn_id} (code -32600)"
-                    )))
-                } else {
-                    Ok(fake
-                        .revert_result
-                        .lock()
-                        .expect("fake revert result")
-                        .clone()
-                        .unwrap_or_else(|| serde_json::json!({ "thread": { "id": thread_id } })))
-                }
-            });
-        #[cfg(not(feature = "fixtures"))]
-        let fake_answer: Option<provider::codex::error::Result<serde_json::Value>> = None;
-        match fake_answer {
-            Some(answer) => {
-                serde_json::from_value::<provider::codex::ThreadRevertResult>(answer?)
-                    .map_err(|error| control::StartError::Host(error.into()))?
-                    .confirm_thread(thread_id)?;
-            }
-            None => {
-                let client = self.authenticated_client().await?;
-                client.thread_revert(thread_id, before_turn_id).await?;
-                self.native_turns.retire_from_source(
-                    &Arc::downgrade(&client),
-                    thread_id,
-                    before_turn_id,
-                );
-                return Ok(());
-            }
-        }
-        self.native_turns
-            .retire_if(thread_id, |_, active| active == before_turn_id);
-        Ok(())
-    }
-
     pub async fn thread_compact_delivery(&self, thread_id: &str) -> CompactDelivery<ControlError> {
         if let Err(error) = self.require_authentication() {
             return CompactDelivery::NotWritten { error };
@@ -1421,12 +1361,8 @@ impl SharedCodexAppServer {
             CompactDelivery::NotWritten { error } => CompactDelivery::NotWritten {
                 error: error.into(),
             },
-            CompactDelivery::Unknown {
-                error,
-                result_received,
-            } => CompactDelivery::Unknown {
+            CompactDelivery::Unknown { error } => CompactDelivery::Unknown {
                 error: error.into(),
-                result_received,
             },
         }
     }

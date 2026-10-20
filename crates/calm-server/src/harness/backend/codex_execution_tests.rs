@@ -713,3 +713,22 @@ async fn sealed_pending_cleanup_preserves_original_ack_and_already_observed_end(
     assert!(report.outcome().is_err());
     fx.assert_original_end("sealed").await;
 }
+
+#[tokio::test]
+async fn h2_remote_start_error_holds_input_but_cleans_unstarted_native_slot() {
+    for code in [-32600, -32602, -32099] {
+        let fx = Fixture::new().await;
+        let (_client, mut peer) = connect(&fx.daemon).await;
+        let task = fx.start();
+        let call = request(&mut peer).await;
+        send(&mut peer, json!({"id":call["id"],"error":{"code":code,"message":"opaque","data":{"detail":true}}})).await;
+        let report = task.await.unwrap();
+        assert!(matches!(report.delivery(), InputDelivery::Unknown(_)));
+        assert!(report.outcome().is_err());
+        assert_eq!(fx.daemon.active_turn_id_for_thread(&fx.owner.thread), None);
+        // Holding application input must not occupy a factually unstarted native slot.
+        fx.accepted(&mut peer, "corrected").await;
+    }
+}
+
+mod h2_delivery;

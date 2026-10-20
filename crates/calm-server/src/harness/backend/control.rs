@@ -6,195 +6,37 @@ pub(super) fn steer_delivery(
     delivery: provider::codex::delivery::SteerDelivery<ControlError>,
 ) -> SteerOutcome<CalmError> {
     use provider::codex::delivery::SteerDelivery;
-    // C0 projects even invalid decoded identities to the historical Taken decision.
-    let result = match delivery {
-        SteerDelivery::NativeAck { turn } => Ok(turn),
-        SteerDelivery::Unknown {
-            response_turn: Some(turn),
-            ..
-        } => Ok(turn),
-        SteerDelivery::NotWritten { error }
-        | SteerDelivery::Unknown {
-            error,
-            response_turn: None,
-        } => Err(error),
-    };
-    steer_outcome(result)
+    match delivery {
+        SteerDelivery::NativeAck { turn } => SteerOutcome::Taken {
+            turn: TurnIdentity::Native(turn),
+        },
+        // Historical host decisions still use diagnostics; invalid receipts never become Taken.
+        SteerDelivery::NotWritten { error } | SteerDelivery::Unknown { error } => match error {
+            ControlError::Refused(error) => SteerOutcome::NotTaken { error },
+            ControlError::Unanswered(error) => SteerOutcome::Unknown {
+                error,
+                evidence: SubmissionEvidence::Unobserved,
+            },
+        },
+    }
 }
 
 pub(super) fn compact_delivery(
     delivery: provider::codex::delivery::CompactDelivery<ControlError>,
 ) -> CompactSubmission<CalmError> {
     use provider::codex::delivery::CompactDelivery;
-    let result = match delivery {
-        CompactDelivery::NativeAck
-        | CompactDelivery::Unknown {
-            result_received: true,
-            ..
-        } => Ok(()),
-        CompactDelivery::NotWritten { error }
-        | CompactDelivery::Unknown {
-            error,
-            result_received: false,
-        } => Err(error),
-    };
-    codex_compact_submission(result)
-}
-
-pub(super) fn steer_outcome(
-    result: std::result::Result<TurnId, ControlError>,
-) -> SteerOutcome<CalmError> {
-    match result {
-        Ok(turn) => SteerOutcome::Taken {
-            turn: TurnIdentity::Native(turn),
-        },
-        Err(ControlError::Refused(error)) => SteerOutcome::NotTaken { error },
-        Err(ControlError::Unanswered(error)) => SteerOutcome::Unknown {
-            error,
-            evidence: SubmissionEvidence::Unobserved,
-        },
-    }
-}
-
-pub(super) fn codex_compact_submission(
-    result: std::result::Result<(), ControlError>,
-) -> CompactSubmission<CalmError> {
-    match result {
-        Ok(()) => CompactSubmission::Submitted {
+    match delivery {
+        CompactDelivery::NativeAck => CompactSubmission::Submitted {
             basis: SubmissionBasis::NativeAck,
         },
-        Err(ControlError::Refused(error)) => CompactSubmission::NotSubmitted {
-            error,
-            reason: CompactNotSubmitted::NativeRefusal,
+        CompactDelivery::NotWritten { error } => CompactSubmission::NotSubmitted {
+            error: error.into(),
+            reason: CompactNotSubmitted::PreparationFailed,
         },
-        Err(ControlError::Unanswered(error)) => CompactSubmission::Unconfirmed {
-            error,
+        CompactDelivery::Unknown { error } => CompactSubmission::Unconfirmed {
+            error: error.into(),
             evidence: SubmissionEvidence::Unobserved,
         },
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn m1_mapping_codex_steer_keeps_refusal_and_unanswered_distinct() {
-        let cases = [
-            (Ok("native-turn".into()), "taken", "native-turn".into()),
-            (
-                Err(ControlError::Refused(CalmError::CodexRefused(
-                    "native refusal".into(),
-                ))),
-                "refused",
-                "native refusal".into(),
-            ),
-            (
-                Err(ControlError::Unanswered(CalmError::CodexAppServer(
-                    "unanswered".into(),
-                ))),
-                "unknown",
-                CalmError::CodexAppServer("unanswered".into()).to_string(),
-            ),
-            (
-                Err(ControlError::Unanswered(CalmError::Conflict(
-                    "sealed".into(),
-                ))),
-                "unknown",
-                CalmError::Conflict("sealed".into()).to_string(),
-            ),
-        ];
-        for (input, expected, reader) in cases {
-            let diagnostic = input.as_ref().err().map(|e| match e {
-                ControlError::Refused(e) | ControlError::Unanswered(e) => {
-                    (std::mem::discriminant(e), e.to_string())
-                }
-            });
-            let (actual, error) = match steer_outcome(input) {
-                SteerOutcome::Taken {
-                    turn: TurnIdentity::Native(turn),
-                } => {
-                    assert_eq!(turn, reader);
-                    ("taken", None)
-                }
-                SteerOutcome::NotTaken { error } => ("refused", Some(error)),
-                SteerOutcome::Unknown { error, evidence } => {
-                    assert_eq!(evidence, SubmissionEvidence::Unobserved);
-                    ("unknown", Some(error))
-                }
-                other => panic!("wrong mapping: {other:?}"),
-            };
-            assert_eq!(actual, expected);
-            if let Some(error) = error {
-                assert_eq!(
-                    if expected == "refused" {
-                        error.reason()
-                    } else {
-                        error.to_string()
-                    },
-                    reader
-                );
-                assert_eq!(
-                    Some((std::mem::discriminant(&error), error.to_string())),
-                    diagnostic
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn m1_mapping_codex_compact_preserves_coarse_uncertainty() {
-        let cases = [
-            (Ok(()), None),
-            (
-                Err(ControlError::Refused(CalmError::CodexRefused(
-                    "refusal".into(),
-                ))),
-                Some(CompactNotSubmitted::NativeRefusal),
-            ),
-            (
-                Err(ControlError::Unanswered(CalmError::Conflict(
-                    "sealed before RPC".into(),
-                ))),
-                None,
-            ),
-            (
-                Err(ControlError::Unanswered(CalmError::CodexAppServer(
-                    "timeout".into(),
-                ))),
-                None,
-            ),
-        ];
-        for (input, reason) in cases {
-            let original = input.as_ref().err().map(|e| match e {
-                ControlError::Refused(e) | ControlError::Unanswered(e) => {
-                    (std::mem::discriminant(e), e.to_string())
-                }
-            });
-            let error = match codex_compact_submission(input) {
-                CompactSubmission::Submitted { basis } => {
-                    assert_eq!(basis, SubmissionBasis::NativeAck);
-                    assert!(original.is_none());
-                    continue;
-                }
-                CompactSubmission::NotSubmitted {
-                    error,
-                    reason: actual,
-                } => {
-                    assert_eq!(Some(actual), reason);
-                    error
-                }
-                CompactSubmission::Unconfirmed { error, evidence } => {
-                    assert!(reason.is_none());
-                    assert_eq!(evidence, SubmissionEvidence::Unobserved);
-                    error
-                }
-            };
-            assert_eq!(
-                Some((std::mem::discriminant(&error), error.to_string())),
-                original
-            );
-        }
     }
 }
 
@@ -210,20 +52,18 @@ mod h2_tests {
         ControlError::Refused(CalmError::CodexRefused("remote error".into()))
     }
 
+    fn sealed() -> ControlError {
+        ControlError::Unanswered(CalmError::Conflict("sealed before RPC".into()))
+    }
+
     #[test]
     fn h2_steer_delivery_preserves_taken_not_taken_unknown_host_policy() {
-        for turn in ["", "different-turn"] {
-            assert!(
-                matches!(steer_delivery(SteerDelivery::Unknown { error: unanswered(), response_turn: Some(turn.into()) }), SteerOutcome::Taken { turn: TurnIdentity::Native(actual) } if actual == turn)
-            );
-        }
         for input in [
             SteerDelivery::NotWritten {
                 error: unanswered(),
             },
             SteerDelivery::Unknown {
                 error: unanswered(),
-                response_turn: None,
             },
         ] {
             assert!(matches!(
@@ -235,10 +75,7 @@ mod h2_tests {
             ));
         }
         assert!(matches!(
-            steer_delivery(SteerDelivery::Unknown {
-                error: remote(),
-                response_turn: None
-            }),
+            steer_delivery(SteerDelivery::Unknown { error: remote() }),
             SteerOutcome::NotTaken { .. }
         ));
         assert!(
@@ -247,47 +84,72 @@ mod h2_tests {
     }
 
     #[test]
-    fn h2_compact_delivery_preserves_not_submitted_unconfirmed_host_policy() {
-        for input in [
-            CompactDelivery::NotWritten {
-                error: unanswered(),
-            },
-            CompactDelivery::Unknown {
-                error: unanswered(),
-                result_received: false,
-            },
-        ] {
+    fn h2_compact_delivery_uses_only_ack_and_crossing_facts() {
+        assert!(matches!(
+            compact_delivery(CompactDelivery::NativeAck),
+            CompactSubmission::Submitted {
+                basis: SubmissionBasis::NativeAck
+            }
+        ));
+        for make_error in [unanswered, remote, sealed] {
             assert!(matches!(
-                compact_delivery(input),
+                compact_delivery(CompactDelivery::NotWritten {
+                    error: make_error()
+                }),
+                CompactSubmission::NotSubmitted {
+                    reason: CompactNotSubmitted::PreparationFailed,
+                    ..
+                }
+            ));
+            assert!(matches!(
+                compact_delivery(CompactDelivery::Unknown {
+                    error: make_error()
+                }),
                 CompactSubmission::Unconfirmed {
                     evidence: SubmissionEvidence::Unobserved,
                     ..
                 }
             ));
         }
-        assert!(matches!(
-            compact_delivery(CompactDelivery::Unknown {
-                error: remote(),
-                result_received: false
-            }),
-            CompactSubmission::NotSubmitted {
-                reason: CompactNotSubmitted::NativeRefusal,
-                ..
+    }
+
+    #[test]
+    fn h2_control_delivery_keeps_original_diagnostics() {
+        for make_error in [unanswered, remote, sealed] {
+            for written in [false, true] {
+                let error = make_error();
+                let original = match &error {
+                    ControlError::Refused(error) | ControlError::Unanswered(error) => {
+                        (std::mem::discriminant(error), error.to_string())
+                    }
+                };
+                let error = match compact_delivery(if written {
+                    CompactDelivery::Unknown { error }
+                } else {
+                    CompactDelivery::NotWritten { error }
+                }) {
+                    CompactSubmission::NotSubmitted { error, .. }
+                    | CompactSubmission::Unconfirmed { error, .. } => error,
+                    CompactSubmission::Submitted { .. } => panic!("error became compact Ack"),
+                };
+                assert_eq!(
+                    (std::mem::discriminant(&error), error.to_string()),
+                    original
+                );
+                let error = make_error();
+                let error = match steer_delivery(if written {
+                    SteerDelivery::Unknown { error }
+                } else {
+                    SteerDelivery::NotWritten { error }
+                }) {
+                    SteerOutcome::NotTaken { error } | SteerOutcome::Unknown { error, .. } => error,
+                    SteerOutcome::Taken { .. } => panic!("error became steer Ack"),
+                };
+                assert_eq!(
+                    (std::mem::discriminant(&error), error.to_string()),
+                    original
+                );
             }
-        ));
-        for input in [
-            CompactDelivery::NativeAck,
-            CompactDelivery::Unknown {
-                error: unanswered(),
-                result_received: true,
-            },
-        ] {
-            assert!(matches!(
-                compact_delivery(input),
-                CompactSubmission::Submitted {
-                    basis: SubmissionBasis::NativeAck
-                }
-            ));
         }
     }
 }

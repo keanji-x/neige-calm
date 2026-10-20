@@ -104,10 +104,6 @@ fn codex_report(
                     },
                 ))
             }
-            CodexPromptDelivery::Refused => InputDelivery::NotDispatched(NonDispatchEvidence::new(
-                correlation,
-                NonDispatchBasis::RemoteRefusal,
-            )),
             CodexPromptDelivery::Unknown => InputDelivery::Unknown(correlation),
             CodexPromptDelivery::Accepted { turn_id } => InputDelivery::Accepted(
                 NativeAcceptanceReceipt::codex(correlation, turn_id.clone(), basis),

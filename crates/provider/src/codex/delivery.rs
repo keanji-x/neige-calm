@@ -17,29 +17,23 @@ pub enum StartDelivery<E> {
 }
 #[derive(Debug)]
 pub enum SteerDelivery<E> {
-    NativeAck {
-        turn: String,
-    },
-    NotWritten {
-        error: E,
-    },
-    Unknown {
-        error: E,
-        /// A decoded but invalid ID is retained for the C0 compatibility projection.
-        response_turn: Option<String>,
-    },
+    NativeAck { turn: String },
+    NotWritten { error: E },
+    Unknown { error: E },
 }
 #[derive(Debug)]
 pub enum CompactDelivery<E> {
     NativeAck,
-    NotWritten {
-        error: E,
-    },
-    Unknown {
-        error: E,
-        /// An RPC result was received, but was not a valid compact acknowledgement object.
-        result_received: bool,
-    },
+    NotWritten { error: E },
+    Unknown { error: E },
+}
+
+/// Receipt for the requested thread's durable history cut, separate from host retry policy.
+#[derive(Debug)]
+pub enum RevertDelivery<E> {
+    NativeAck,
+    NotWritten { error: E },
+    Unknown { error: E },
 }
 
 impl StartDelivery<RpcAttemptFailure> {
@@ -57,10 +51,7 @@ impl SteerDelivery<RpcAttemptFailure> {
     pub(super) fn failed(error: RpcAttemptFailure) -> Self {
         match error.crossing {
             RequestCrossing::BeforeSend => Self::NotWritten { error },
-            RequestCrossing::AfterSend => Self::Unknown {
-                error,
-                response_turn: None,
-            },
+            RequestCrossing::AfterSend => Self::Unknown { error },
         }
     }
 }
@@ -68,10 +59,7 @@ impl CompactDelivery<RpcAttemptFailure> {
     pub(super) fn failed(error: RpcAttemptFailure) -> Self {
         match error.crossing {
             RequestCrossing::BeforeSend => Self::NotWritten { error },
-            RequestCrossing::AfterSend => Self::Unknown {
-                error,
-                result_received: false,
-            },
+            RequestCrossing::AfterSend => Self::Unknown { error },
         }
     }
 }
@@ -177,14 +165,45 @@ impl CodexAppServer {
                     turn: result.turn_id,
                 }
             }
-            Ok(result) => SteerDelivery::Unknown {
+            Ok(_) => SteerDelivery::Unknown {
                 error: RpcAttemptFailure::invalid_result(
                     "turn/steer",
                     "turn/steer returned absent, empty or mismatched turnId",
                 ),
-                response_turn: Some(result.turn_id),
             },
             Err(error) => SteerDelivery::failed(error),
+        }
+    }
+
+    /// The pinned binary uses `thread/revert`, not the vendored `thread/rollback`.
+    /// Only a matching, nonempty native thread receipt acknowledges the cut.
+    pub async fn thread_revert_delivery(
+        &self,
+        thread_id: &str,
+        before_turn_id: &str,
+    ) -> RevertDelivery<RpcAttemptFailure> {
+        match self
+            .request_attempt::<super::ThreadRevertResult>(
+                "thread/revert",
+                json!({ "threadId": thread_id, "beforeTurnId": before_turn_id }),
+            )
+            .await
+        {
+            Ok(result) => match result.confirm_thread(thread_id) {
+                Ok(()) => RevertDelivery::NativeAck,
+                Err(error) => RevertDelivery::Unknown {
+                    error: RpcAttemptFailure::local(
+                        "thread/revert",
+                        None,
+                        RequestCrossing::AfterSend,
+                        error,
+                    ),
+                },
+            },
+            Err(error) => match error.crossing() {
+                RequestCrossing::BeforeSend => RevertDelivery::NotWritten { error },
+                RequestCrossing::AfterSend => RevertDelivery::Unknown { error },
+            },
         }
     }
 
@@ -200,7 +219,6 @@ impl CodexAppServer {
                     "thread/compact/start",
                     "thread/compact/start returned a non-object result",
                 ),
-                result_received: true,
             },
             Err(error) => CompactDelivery::failed(error),
         }

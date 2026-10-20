@@ -82,9 +82,7 @@ impl PlannerBackend {
             )
             .await;
         let delivery = match native.delivery() {
-            CodexPromptDelivery::NotDispatched | CodexPromptDelivery::Refused => {
-                ControlDelivery::NotDispatched
-            }
+            CodexPromptDelivery::NotDispatched => ControlDelivery::NotDispatched,
             CodexPromptDelivery::Unknown => ControlDelivery::Unknown,
             CodexPromptDelivery::Accepted { turn_id } => ControlDelivery::Accepted {
                 native_turn_id: turn_id.clone(),

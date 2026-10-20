@@ -313,7 +313,6 @@ fn report_fact(
             basis: match evidence.basis() {
                 NonDispatchBasis::LocalPreflight => "local_preflight",
                 NonDispatchBasis::TransportBeforeSend => "transport_before_send",
-                NonDispatchBasis::RemoteRefusal => "remote_refusal",
             }
             .into(),
         },

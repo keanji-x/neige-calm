@@ -334,7 +334,7 @@ async fn production_http_cold_login_preserves_accepted_active_without_resending(
 }
 
 #[tokio::test]
-async fn canonical_remote_refusal_releases_claim_and_native_slot() {
+async fn h2_canonical_remote_error_holds_claim_but_releases_unstarted_native_slot() {
     let fixture = Fixture::new().await;
     let (state, app, cookie) = fixture.application().await;
     let area = post(
@@ -376,16 +376,19 @@ async fn canonical_remote_refusal_releases_claim_and_native_slot() {
     })
     .await
     .expect("the native response must settle the original crossing");
-    assert!(matches!(&frame.canonical_inputs.attempts[0].delivery,
-        InputDeliveryFact::NotDispatched { basis } if basis == "remote_refusal"));
-    assert!(frame.canonical_inputs.active.is_none());
-    assert_eq!(frame.canonical_inputs.pending.len(), 1);
+    // Correlation proves an error response, not rollback of input acceptance (#2843, P1).
+    assert!(matches!(
+        &frame.canonical_inputs.attempts[0].delivery,
+        InputDeliveryFact::Unknown
+    ));
+    assert!(frame.canonical_inputs.active.is_some());
+    assert!(frame.canonical_inputs.pending.is_empty());
     let starting = state.shared_codex_appserver.clone();
     let mut retry = tokio::spawn(async move {
         starting
             .turn_start(
                 THREAD,
-                vec![provider::InputItem::text(FIRST_BODY)],
+                vec![provider::InputItem::text("native-slot-probe")],
                 &provider::TurnModelSelection {
                     model: Some("corrected-model".into()),
                     effort: None,
@@ -399,7 +402,7 @@ async fn canonical_remote_refusal_releases_claim_and_native_slot() {
     });
     let call = tokio::select! {
         call = request(&mut peer) => call,
-        result = &mut retry => panic!("released canonical slot blocked retry: {result:?}"),
+        result = &mut retry => panic!("unstarted native slot was not cleaned: {result:?}"),
     };
     assert_eq!(call["method"], "turn/start");
     assert_eq!(call["params"]["model"], "corrected-model");

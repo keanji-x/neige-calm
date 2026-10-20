@@ -56,7 +56,7 @@ async fn initial(backend: &PlannerBackend, proof: &SubmissionDispatchProof) -> I
 }
 
 #[tokio::test]
-async fn local_seal_and_remote_refusal_prove_nondelivery() {
+async fn h2_local_seal_proves_nondelivery_but_remote_error_is_unknown() {
     let (backend, daemon) = backend().await;
     let proof = proof();
     daemon.thread_seals().seal_for_deletion("thread");
@@ -67,7 +67,7 @@ async fn local_seal_and_remote_refusal_prove_nondelivery() {
     daemon.thread_seals().unseal_after_rollback("thread");
     daemon.reject_turn_start_for_test();
     let report = initial(&backend, &proof).await;
-    assert!(matches!(report.delivery(), InputDelivery::NotDispatched(_)));
+    assert!(matches!(report.delivery(), InputDelivery::Unknown(_)));
     assert!(matches!(
         report.outcome(),
         Err(TurnStartFailure::Refused { .. })

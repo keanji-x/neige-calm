@@ -72,16 +72,24 @@ pub(super) async fn revert_codex_thread(
     thread_id: &str,
     before_turn_id: &str,
 ) -> std::result::Result<Option<TurnStartOutcome<CalmError, StartDiagnostic>>, TurnStartFailure> {
-    revert_result(daemon.thread_revert(thread_id, before_turn_id).await)
+    revert_delivery(
+        daemon
+            .thread_revert_delivery(thread_id, before_turn_id)
+            .await,
+    )
 }
 
-fn revert_result(
-    result: std::result::Result<(), StartError>,
+fn revert_delivery(
+    delivery: provider::codex::delivery::RevertDelivery<StartError>,
 ) -> std::result::Result<Option<TurnStartOutcome<CalmError, StartDiagnostic>>, TurnStartFailure> {
-    Ok(match result {
-        Err(StartError::Host(error)) => return Err(error.into()),
-        Ok(()) => None,
-        Err(StartError::Refused(error) | StartError::RecoveryRequired(error)) => {
+    use provider::codex::delivery::RevertDelivery;
+    let error = match delivery {
+        RevertDelivery::NativeAck => return Ok(None),
+        RevertDelivery::NotWritten { error } | RevertDelivery::Unknown { error } => error,
+    };
+    Ok(match error {
+        StartError::Host(error) => return Err(error.into()),
+        StartError::Refused(error) | StartError::RecoveryRequired(error) => {
             Some(TurnStartOutcome::Rejected {
                 error: StartDiagnostic {
                     error,
@@ -92,7 +100,7 @@ fn revert_result(
                 },
             })
         }
-        Err(StartError::Unanswered(error)) => Some(TurnStartOutcome::Failed { error }),
+        StartError::Unanswered(error) => Some(TurnStartOutcome::Failed { error }),
     })
 }
 

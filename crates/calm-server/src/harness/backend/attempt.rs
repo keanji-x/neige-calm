@@ -73,8 +73,6 @@ impl AttemptCorrelation {
 pub(crate) enum NonDispatchBasis {
     LocalPreflight,
     TransportBeforeSend,
-    /// The RPC crossed the socket, but the correlated peer refused the input.
-    RemoteRefusal,
 }
 
 #[derive(Clone, Debug, Serialize)]

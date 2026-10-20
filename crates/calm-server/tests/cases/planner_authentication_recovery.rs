@@ -173,12 +173,12 @@ async fn authentication_hold_refuses_steer_without_taking_or_revising_the_entry(
     );
     assert_eq!(boot.daemon.started_turns_for_test().len(), 1);
     // Explicit edit/compact entrypoints share the native request fence.
-    assert!(
+    assert!(matches!(
         boot.daemon
-            .thread_revert(SEED_THREAD_ID, "first-turn")
-            .await
-            .is_err()
-    );
+            .thread_revert_delivery(SEED_THREAD_ID, "first-turn")
+            .await,
+        provider::codex::delivery::RevertDelivery::NotWritten { .. }
+    ));
     assert!(matches!(
         boot.daemon.thread_compact_delivery(SEED_THREAD_ID).await,
         CompactDelivery::NotWritten { .. }

@@ -74,12 +74,8 @@ impl<'a> NativePromptAdmission<'a> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum CodexPromptDelivery {
     NotDispatched,
-    /// A correlated remote refusal proves the input was not accepted.
-    Refused,
     Unknown,
-    Accepted {
-        turn_id: String,
-    },
+    Accepted { turn_id: String },
 }
 
 /// Constructed only at this native boundary; diagnostics are deliberately not serializable.
@@ -144,28 +140,15 @@ impl CodexPromptReport {
             response_turn: None,
             thread_id: thread.into(),
             client_id: client.map(str::to_owned),
+            // A correlated after-send error does not guarantee atomic non-acceptance.
             delivery: match error.crossing() {
                 RequestCrossing::BeforeSend => CodexPromptDelivery::NotDispatched,
-                RequestCrossing::AfterSend if error.remote_error().is_some() => {
-                    CodexPromptDelivery::Refused
-                }
                 RequestCrossing::AfterSend => CodexPromptDelivery::Unknown,
             },
             outcome: Err(match refusal {
                 Some(refusal) => CodexPromptFailure::Admission(refusal, error),
                 None => CodexPromptFailure::Rpc(error),
             }),
-        }
-    }
-
-    #[cfg(feature = "fixtures")]
-    fn refused(thread: &str, client: Option<&str>, failure: CodexPromptFailure) -> Self {
-        Self {
-            response_turn: None,
-            thread_id: thread.into(),
-            client_id: client.map(str::to_owned),
-            delivery: CodexPromptDelivery::Refused,
-            outcome: Err(failure),
         }
     }
 
@@ -198,7 +181,12 @@ impl CodexPromptReport {
             Err(CodexPromptFailure::Rpc(error) | CodexPromptFailure::Admission(_, error)) => {
                 Some(error)
             }
-            _ => None,
+            Ok(_)
+            | Err(
+                CodexPromptFailure::Local(_)
+                | CodexPromptFailure::Start(_)
+                | CodexPromptFailure::Control(_),
+            ) => None,
         }
     }
     pub(crate) fn into_start_outcome(self) -> std::result::Result<TurnId, control::StartError> {
@@ -221,14 +209,13 @@ impl CodexPromptReport {
             CodexPromptDelivery::NotDispatched => StartDelivery::NotWritten {
                 error: self.into_start_outcome().expect_err("not dispatched"),
             },
-            CodexPromptDelivery::Refused | CodexPromptDelivery::Unknown => StartDelivery::Unknown {
+            CodexPromptDelivery::Unknown => StartDelivery::Unknown {
                 error: self.into_start_outcome().expect_err("unacknowledged start"),
                 response_turn,
             },
         }
     }
     pub(crate) fn into_steer_delivery(self) -> SteerDelivery<ControlError> {
-        let response_turn = self.response_turn;
         let outcome = self.outcome.map_err(|failure| match failure {
             CodexPromptFailure::Local(error) | CodexPromptFailure::Admission(error, _) => {
                 ControlError::Unanswered(error)
@@ -242,9 +229,8 @@ impl CodexPromptReport {
             CodexPromptDelivery::NotDispatched => SteerDelivery::NotWritten {
                 error: outcome.expect_err("not dispatched"),
             },
-            CodexPromptDelivery::Refused | CodexPromptDelivery::Unknown => SteerDelivery::Unknown {
+            CodexPromptDelivery::Unknown => SteerDelivery::Unknown {
                 error: outcome.expect_err("unacknowledged steer"),
-                response_turn,
             },
         }
     }
@@ -301,7 +287,7 @@ impl SharedCodexAppServer {
                 return CodexPromptReport::failure(thread_id, client_id, error, false);
             }
             if fake.reject_turn_start.load(Ordering::SeqCst) {
-                return CodexPromptReport::refused(
+                return CodexPromptReport::source_failure(
                     thread_id,
                     client_id,
                     CodexPromptFailure::Start(control::StartError::Refused(
@@ -309,6 +295,7 @@ impl SharedCodexAppServer {
                             "turn/start failed: unknown model (code -32602)".into(),
                         ),
                     )),
+                    true,
                 );
             }
             if fake.fail_turn_start.load(Ordering::SeqCst) {
@@ -400,20 +387,17 @@ impl SharedCodexAppServer {
             .await;
         let response_turn = match &delivery {
             StartDelivery::Unknown { response_turn, .. } => response_turn.clone(),
-            _ => None,
+            StartDelivery::NativeAck { .. } | StartDelivery::NotWritten { .. } => None,
         };
         let turn_id = match delivery {
-            StartDelivery::NativeAck {
-                turn,
-                cleanup: None,
-            } => turn,
-            StartDelivery::NativeAck {
-                cleanup: Some(_), ..
-            } => unreachable!("provider start has no host cleanup"),
+            StartDelivery::NativeAck { turn, .. } => turn,
             StartDelivery::NotWritten { error } | StartDelivery::Unknown { error, .. } => {
-                let unstarted = (error.crossing() == RequestCrossing::BeforeSend
-                    || error.remote_error().is_some())
-                    && self.native_turns.not_started(&client, thread_id, &ticket);
+                if error.crossing() == RequestCrossing::BeforeSend || error.remote_error().is_some()
+                {
+                    // Native slot cleanup is independent of application input ownership.
+                    // A conflicting turn notification keeps its candidate interruptible.
+                    self.native_turns.not_started(&client, thread_id, &ticket);
+                }
                 let mut report = CodexPromptReport::rpc_failure(
                     thread_id,
                     client_id,
@@ -421,10 +405,6 @@ impl SharedCodexAppServer {
                     gate.take_refusal(),
                 );
                 report.response_turn = response_turn;
-                if report.delivery == CodexPromptDelivery::Refused && !unstarted {
-                    // A real turn notification conflicts with the error response.
-                    report.delivery = CodexPromptDelivery::Unknown;
-                }
                 return report;
             }
         };
@@ -514,12 +494,13 @@ impl SharedCodexAppServer {
                 .expect("fake shared codex reject-steer mutex poisoned")
                 .clone()
             {
-                return CodexPromptReport::refused(
+                return CodexPromptReport::source_failure(
                     thread_id,
                     client_id,
                     CodexPromptFailure::Control(ControlError::Refused(CalmError::CodexRefused(
                         message,
                     ))),
+                    true,
                 );
             }
             if fake.fail_turn_steer.load(Ordering::SeqCst) {
@@ -531,14 +512,15 @@ impl SharedCodexAppServer {
                 );
             }
             return match self.active_turn_id_for_thread(thread_id) {
-                None => CodexPromptReport::refused(
+                None => CodexPromptReport::source_failure(
                     thread_id,
                     client_id,
                     CodexPromptFailure::Control(ControlError::Refused(CalmError::CodexRefused(
                         "turn/steer failed: no active turn to steer (code -32600)".into(),
                     ))),
+                    true,
                 ),
-                Some(active) if active != expected_turn_id => CodexPromptReport::refused(
+                Some(active) if active != expected_turn_id => CodexPromptReport::source_failure(
                     thread_id,
                     client_id,
                     CodexPromptFailure::Control(ControlError::Refused(CalmError::CodexRefused(
@@ -546,6 +528,7 @@ impl SharedCodexAppServer {
                             "turn/steer failed: expected active turn id `{expected_turn_id}` but found `{active}` (code -32600)"
                         ),
                     ))),
+                    true,
                 ),
                 Some(active) => {
                     CodexPromptReport::accepted(thread_id, client_id, active.clone(), Ok(active))
@@ -579,26 +562,11 @@ impl SharedCodexAppServer {
             .await;
         self.native_turns.finish_steer(&client, thread_id, &ticket);
         match result {
-            SteerDelivery::NotWritten { error }
-            | SteerDelivery::Unknown {
-                error,
-                response_turn: None,
-            } => CodexPromptReport::rpc_failure(thread_id, client_id, error, gate.take_refusal()),
+            SteerDelivery::NotWritten { error } | SteerDelivery::Unknown { error } => {
+                CodexPromptReport::rpc_failure(thread_id, client_id, error, gate.take_refusal())
+            }
             SteerDelivery::NativeAck { turn } => {
                 CodexPromptReport::accepted(thread_id, client_id, turn.clone(), Ok(turn))
-            }
-            SteerDelivery::Unknown {
-                error,
-                response_turn,
-            } => {
-                let mut report = CodexPromptReport::rpc_failure(
-                    thread_id,
-                    client_id,
-                    error,
-                    gate.take_refusal(),
-                );
-                report.response_turn = response_turn;
-                report
             }
         }
     }

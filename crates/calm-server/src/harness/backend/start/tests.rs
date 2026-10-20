@@ -77,16 +77,26 @@ fn m1_mapping_start_facts_keep_exact_error_reader_and_host_policy() {
 }
 
 #[test]
-fn m1_mapping_revert_facts_keep_diagnostic_and_policy() {
-    assert!(revert_result(Ok(())).unwrap().is_none());
-    for refused in [false, true] {
+fn h2_revert_facts_keep_diagnostic_and_non_ack_host_policy() {
+    use provider::codex::delivery::RevertDelivery;
+    assert!(
+        revert_delivery(RevertDelivery::NativeAck)
+            .unwrap()
+            .is_none()
+    );
+    for (written, refused) in [(false, false), (false, true), (true, false), (true, true)] {
         let error = CalmError::CodexAppServer("exact diagnostic".into());
         let original = error.to_string();
-        let result = revert_result(Err(if refused {
+        let error = if refused {
             StartError::Refused(error)
         } else {
             StartError::Unanswered(error)
-        }))
+        };
+        let result = revert_delivery(if written {
+            RevertDelivery::Unknown { error }
+        } else {
+            RevertDelivery::NotWritten { error }
+        })
         .unwrap()
         .unwrap();
         match result {

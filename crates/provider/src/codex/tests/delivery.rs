@@ -134,29 +134,14 @@ async fn h2_steer_delivery_classifies_wire_and_invalid_identity_facts() {
         match (shape, outcome) {
             (Reply::Ack, SteerDelivery::NativeAck { turn }) => assert_eq!(turn, "turn"),
             (
-                Reply::Empty,
-                SteerDelivery::Unknown {
-                    response_turn: Some(turn),
-                    ..
-                },
-            ) => assert!(turn.is_empty()),
-            (
-                Reply::Mismatch,
-                SteerDelivery::Unknown {
-                    response_turn: Some(turn),
-                    ..
-                },
-            ) => assert_eq!(turn, "other"),
-            (
-                Reply::Invalid
+                Reply::Empty
+                | Reply::Mismatch
+                | Reply::Invalid
                 | Reply::Remote
                 | Reply::MalformedError
                 | Reply::Close
                 | Reply::Timeout,
-                SteerDelivery::Unknown {
-                    error,
-                    response_turn: None,
-                },
+                SteerDelivery::Unknown { error },
             ) => assert_eq!(
                 error.crossing(),
                 crate::codex::request_attempt::RequestCrossing::AfterSend
@@ -192,19 +177,10 @@ async fn h2_compact_delivery_classifies_wire_facts() {
         let outcome = client.compact_delivery("thread").await;
         match (shape, outcome) {
             (Reply::Ack, CompactDelivery::NativeAck) => {}
-            (
-                Reply::Invalid,
-                CompactDelivery::Unknown {
-                    result_received: true,
-                    ..
-                },
-            ) => {}
+            (Reply::Invalid, CompactDelivery::Unknown { .. }) => {}
             (
                 Reply::Remote | Reply::MalformedError | Reply::Close | Reply::Timeout,
-                CompactDelivery::Unknown {
-                    error,
-                    result_received: false,
-                },
+                CompactDelivery::Unknown { error },
             ) => assert_eq!(
                 error.crossing(),
                 crate::codex::request_attempt::RequestCrossing::AfterSend

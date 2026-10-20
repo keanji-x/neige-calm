@@ -208,7 +208,7 @@ async fn m1_mapping_compact_host_admission_keeps_phase_and_never_calls_native() 
 }
 
 #[tokio::test]
-async fn m1_mapping_codex_live_interrupt_and_sealed_compact_boundaries() {
+async fn h2_codex_live_interrupt_and_sealed_compact_boundaries() {
     let f = Fixture::new().await;
     assert!(matches!(
         f.daemon
@@ -236,14 +236,14 @@ async fn m1_mapping_codex_live_interrupt_and_sealed_compact_boundaries() {
             other => panic!("wrong mapping: {other:?}"),
         }
     }
-    // The existing coarse classifier includes this local pre-RPC conflict. It must still wedge.
+    // The seal is proof of no native write; compact must remain retryable after preparation fails.
     f.daemon
         .thread_seals()
         .seal_for_deletion("thread-commit-wake");
     assert!(
         matches!(IssueTurnHandle::from_reconciliation(&f.harness.inner).await.compact_start(CompactRequest {
         selection: provider::TurnModelSelection::inherit(),
-    }).await.unwrap(), CompactSubmission::Unconfirmed { error: CalmError::Conflict(message), evidence: SubmissionEvidence::Unobserved } if message == "the conversation is being deleted")
+    }).await.unwrap(), CompactSubmission::NotSubmitted { error: CalmError::Conflict(message), reason: provider::control::CompactNotSubmitted::PreparationFailed } if message == "the conversation is being deleted")
     );
 }
 

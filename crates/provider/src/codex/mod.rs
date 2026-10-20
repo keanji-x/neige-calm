@@ -562,19 +562,6 @@ impl CodexAppServer {
         Ok(())
     }
 
-    /// `thread/revert {threadId, beforeTurnId}` — replace the thread's durable history with the
-    /// prefix before `before_turn_id`. Local file changes are not reverted. The vendored protocol
-    /// calls this `thread/rollback`, which the pinned binary rejects. The successful
-    /// `{thread, …Cursor}` result must report this exact thread before the cut is confirmed.
-    pub async fn thread_revert(&self, thread_id: &str, before_turn_id: &str) -> Result<()> {
-        self.request::<ThreadRevertResult>(
-            "thread/revert",
-            json!({ "threadId": thread_id, "beforeTurnId": before_turn_id }),
-        )
-        .await?
-        .confirm_thread(thread_id)
-    }
-
     /// `config/mcpServer/reload` — no params, answers `{}`. Codex 0.159.2 re-reads `config.toml` and
     /// restarts, for every loaded thread, each MCP server whose resolved entry changed; an unchanged
     /// entry is a no-op, so a caller that wants a re-list must change the entry first (#2014).
