@@ -30,11 +30,11 @@ impl SpawnFailure {
     }
 }
 pub(super) fn start_result(
-    result: Result<String, SpawnFailure>,
+    result: Result<uuid::Uuid, SpawnFailure>,
 ) -> Result<TurnStartOutcome<CalmError, StartDiagnostic>, TurnStartFailure> {
     match result {
         Ok(turn) => Ok(TurnStartOutcome::Started {
-            turn: TurnIdentity::Local(CorrelationKey(turn)),
+            turn: TurnIdentity::Local(CorrelationKey(turn.to_string())),
         }),
         Err(SpawnFailure::BeforeWrite(BeforeWriteFailure::Host(failure))) => Err(failure),
         Err(SpawnFailure::BeforeWrite(BeforeWriteFailure::Failed(error))) => {
@@ -69,9 +69,10 @@ mod tests {
                 matches!(result, TurnStartOutcome::Failed { error: CalmError::Conflict(message) } if message == "original diagnostic")
             );
         }
-        let result = start_result(Ok("local-turn".into())).unwrap();
+        let turn = uuid::Uuid::new_v4();
+        let result = start_result(Ok(turn)).unwrap();
         assert!(
-            matches!(result, TurnStartOutcome::Started { turn: TurnIdentity::Local(key) } if key.0 == "local-turn")
+            matches!(result, TurnStartOutcome::Started { turn: TurnIdentity::Local(key) } if key.0 == turn.to_string())
         );
         assert!(
             matches!(start_result(Err(TurnStartFailure::Transient(error()).into())), Err(TurnStartFailure::Transient(CalmError::Conflict(message))) if message == "original diagnostic")

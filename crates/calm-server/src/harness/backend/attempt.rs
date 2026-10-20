@@ -6,6 +6,21 @@ use super::TurnStartFailure;
 use crate::session_projection_repo::AgentProvider;
 use crate::shared_codex_appserver::TurnId;
 
+/// Transport observations keep native receipts distinct from a Neige process invocation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum ExecutionIdentity {
+    Native(TurnId),
+    Local(uuid::Uuid),
+}
+impl ExecutionIdentity {
+    pub(crate) fn turn_id(&self) -> String {
+        match self {
+            Self::Native(turn) => turn.clone(),
+            Self::Local(turn) => turn.to_string(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct AttemptCorrelation {
     attempt: InputAttempt,
@@ -34,6 +49,11 @@ impl AttemptCorrelation {
 
     pub(super) fn with_turn(mut self, turn: String) -> Self {
         self.native_turn_id = Some(turn);
+        self
+    }
+
+    pub(super) fn with_local_turn(mut self, turn: uuid::Uuid) -> Self {
+        self.local_turn_id = Some(turn.to_string());
         self
     }
 
@@ -152,7 +172,7 @@ impl InputDelivery {
 
 pub(crate) struct InputAttemptReport {
     pub(super) delivery: InputDelivery,
-    pub(super) outcome: Result<TurnId, TurnStartFailure>,
+    pub(super) outcome: Result<ExecutionIdentity, TurnStartFailure>,
 }
 
 impl InputAttemptReport {
@@ -162,7 +182,7 @@ impl InputAttemptReport {
     pub(crate) fn delivery(&self) -> &InputDelivery {
         &self.delivery
     }
-    pub(crate) fn outcome(&self) -> &Result<TurnId, TurnStartFailure> {
+    pub(crate) fn outcome(&self) -> &Result<ExecutionIdentity, TurnStartFailure> {
         &self.outcome
     }
 }

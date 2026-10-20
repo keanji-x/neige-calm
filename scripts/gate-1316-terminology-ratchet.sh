@@ -123,6 +123,12 @@
 # independent title references: crates 323 + 311 - 300 = 334, FE 144 + 136 - 135 = 145.
 # No additional exception, scan exclusion, pattern or growing inventory is added.
 
+# #2836 Claude canonical slice 2 bounded exception: crates 334 -> 336 adds two
+# test-only references to the frozen transcript table: the actual outcome-write
+# failure trigger and the no-historical-user-projection assertion. No domain name,
+# scan rule, excluded path, test inventory or additional CI pass is introduced.
+# Later SQL references use the existing occurrence baseline as before.
+
 set -uo pipefail
 
 cd "$(git rev-parse --show-toplevel)" || exit 1

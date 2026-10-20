@@ -560,7 +560,10 @@ impl NativeTurns {
         let ExecutionEndScope::NativeTurn {
             thread_id,
             native_turn_id,
-        } = &target.scope;
+        } = &target.scope
+        else {
+            return None;
+        };
         let state = self.lock();
         let eligible = state
             .source
@@ -595,7 +598,12 @@ impl NativeTurns {
         let ExecutionEndScope::NativeTurn {
             thread_id,
             native_turn_id,
-        } = &target.scope;
+        } = &target.scope
+        else {
+            return Err(CalmError::Conflict(
+                "Codex control requires a native turn".into(),
+            ));
+        };
         let state = self.lock();
         let current = state
             .slots

@@ -215,3 +215,102 @@ async fn original_end_keeps_independent_runtime_transitions_for_their_own_owners
         tx.commit().await.unwrap();
     }
 }
+
+#[tokio::test]
+async fn canonical_claude_original_local_execution_needs_no_native_session() {
+    let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
+    let (_, card) = super::tests::fixture_card_for_provider(&repo, AgentProvider::Claude).await;
+    let runtime = crate::model::new_id();
+    let thread = uuid::Uuid::new_v4().to_string();
+    let local = uuid::Uuid::new_v4().to_string();
+    let mut frame = calm_types::harness::snapshot::CanonicalHarnessSnapshot::dormant(0);
+    frame.header.last_thread_id = Some(thread.clone());
+    let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
+    super::super::session_start_runtime_tx(
+        &mut tx,
+        crate::session_projection_repo::WorkerSessionInit::shared_planner(
+            runtime.clone(),
+            card.clone(),
+            AgentProvider::Claude,
+            calm_types::worker::WorkerSessionState::Idle,
+            Some(thread.clone()),
+            serde_json::to_value(frame).unwrap(),
+            0,
+        ),
+    )
+    .await
+    .unwrap();
+    let mut carrier = current_input_carrier_tx(&mut tx, &card, &runtime)
+        .await
+        .unwrap();
+    let accepted = accept_pending_human_tx(
+        &mut tx,
+        &mut carrier,
+        LEGACY_OWNER_USER_ID,
+        body("local initial"),
+    )
+    .await
+    .unwrap();
+    let AcceptedInputRef::Human { message } = accepted.input_ref else {
+        panic!("human")
+    };
+    let provenance = ConversationExecutionProvenance::LegacySingleUserDeployment {
+        deployment_owner_user_id: LEGACY_OWNER_USER_ID.into(),
+        provider: AgentProvider::Claude,
+        profile: calm_types::harness::HarnessProfile::Planner,
+    };
+    let initial = claim_initial_submission_tx(&mut tx, &mut carrier, plan(message), &provenance)
+        .await
+        .unwrap();
+    let attempt = InputAttempt {
+        submission_id: initial.submission_id,
+        attempt_id: InputAttemptId::parse(&crate::model::new_id()).unwrap(),
+    };
+    let mut correlation = InputCorrelationFact {
+        provider: AgentProvider::Claude,
+        thread_id: thread,
+        native_session_id: None,
+        native_turn_id: None,
+        local_turn_id: None,
+        rpc_request_id: None,
+    };
+    begin_input_attempt_tx(&mut tx, &mut carrier, attempt.clone(), correlation.clone())
+        .await
+        .unwrap();
+    correlation.local_turn_id = Some(local.clone());
+    record_input_attempt_fact_tx(
+        &mut tx,
+        &mut carrier,
+        InputAttemptCheckpoint {
+            attempt,
+            correlation,
+            delivery: InputDeliveryFact::Unknown,
+        },
+    )
+    .await
+    .unwrap();
+    let fence = RuntimeExecutionFence::from_carrier(&carrier);
+    let mut header = fence.header().clone();
+    header["phase"] = json!("issuing_turn");
+    persist_runtime_frame_tx(&mut tx, &card, &runtime, &fence, header)
+        .await
+        .unwrap();
+    let carrier = current_input_carrier_tx(&mut tx, &card, &runtime)
+        .await
+        .unwrap();
+    let original = original_input_execution_tx(&mut tx, &carrier)
+        .await
+        .unwrap()
+        .expect("local execution before init");
+    assert_eq!(original.identity.execution, provenance);
+    assert_eq!(original.turn_id(), Some(local.as_str()));
+    assert!(original.correlation.native_session_id.is_none());
+    let fence = RuntimeExecutionFence::from_carrier(&carrier);
+    assert!(
+        complete_input_execution_tx(&mut tx, &card, &runtime, &fence, &original)
+            .await
+            .unwrap()
+            .is_some()
+    );
+    tx.commit().await.unwrap();
+}

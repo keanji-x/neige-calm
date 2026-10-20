@@ -141,11 +141,24 @@ impl OriginalInputExecution {
             correlation.native_session_id.as_deref(),
             correlation.local_turn_id.as_deref(),
         ) {
-            (Some(turn), _, None) if !turn.is_empty() => Some(turn),
-            (None, Some(session), Some(turn)) if !session.is_empty() && !turn.is_empty() => {
+            (Some(turn), _, None)
+                if !turn.is_empty()
+                    && correlation.provider.protocol()
+                        == calm_types::runtime::AgentProtocol::Codex =>
+            {
                 Some(turn)
             }
-            _ => None,
+            (None, session, Some(turn))
+                if correlation.provider.protocol()
+                    == calm_types::runtime::AgentProtocol::Claude
+                    && !turn.is_empty()
+                    && session.is_none_or(|session| !session.is_empty()) =>
+            {
+                Some(turn)
+            }
+            (Some(_), Some(_) | None, Some(_))
+            | (Some(_), Some(_) | None, None)
+            | (None, Some(_) | None, Some(_) | None) => None,
         }
     }
 
@@ -157,8 +170,9 @@ impl OriginalInputExecution {
             && original.local_turn_id == other.local_turn_id
             && match (&original.native_session_id, &other.native_session_id) {
                 (Some(a), Some(b)) => a == b,
-                (None, None) => original.native_turn_id.is_some(),
-                (None, Some(_)) | (Some(_), None) => original.native_turn_id.is_some(),
+                (None, None) => true,
+                // A later native init may refine the exact local invocation.
+                (None, Some(session)) | (Some(session), None) => !session.is_empty(),
             }
     }
 }

@@ -566,12 +566,41 @@ async fn dispatch_initial(
         // proof and must not spin the scheduler at its tick frequency.
         *inner.issuance_retry_after.lock().await = Some(Instant::now() + TRANSIENT_RETRY_DELAY);
     }
+    // A local write has no native receipt. Only the actual installed driver,
+    // associated with the committed original target, proves it can be tracked.
+    let local_target = match committed.report.outcome() {
+        Ok(identity @ crate::harness::backend::ExecutionIdentity::Local(_)) => {
+            let card = inner.card_id.to_string();
+            let runtime = inner.worker_session_id.clone();
+            let provider = inner.backend.provider();
+            let target = write_in_tx_typed(inner.repo.as_ref(), move |tx| {
+                Box::pin(async move {
+                    crate::harness::input_dispatch::execution_target_tx(
+                        tx, &card, &runtime, &provider,
+                    )
+                    .await
+                })
+            })
+            .await?;
+            match target {
+                Some(target)
+                    if target.scope.thread_and_turn().1 == identity.turn_id()
+                        && inner.backend.owns_local_execution(&target).await =>
+                {
+                    Some(target)
+                }
+                Some(_) | None => None,
+            }
+        }
+        Ok(crate::harness::backend::ExecutionIdentity::Native(_)) | Err(_) => None,
+    };
     // Read the exact committed checkpoint, not Result::Ok/Err or an event's
     // apparent status. Unknown with no known execution remains Issuing.
     let attempt = committed.report.attempt().clone();
     let logical_turn_id = logical_turn_id.clone();
     let card = inner.card_id.to_string();
     let runtime = inner.worker_session_id.clone();
+    let provider = inner.backend.provider();
     let next = write_in_tx_typed(inner.repo.as_ref(), move |tx| {
         Box::pin(async move {
             let carrier = current_input_fact_carrier_tx(tx, &card, &runtime).await?;
@@ -608,11 +637,34 @@ async fn dispatch_initial(
             if next.header.phase != HarnessPhaseTag::IssuingTurn {
                 return frame(&carrier);
             }
+            let local_running = match &local_target {
+                Some(target) => {
+                    crate::harness::input_dispatch::execution_target_tx(
+                        tx, &card, &runtime, &provider,
+                    )
+                    .await?
+                    .as_ref()
+                        == Some(target)
+                }
+                None => false,
+            };
             match &report.delivery {
                 InputDeliveryFact::NotDispatched { .. }
                     if next.canonical_inputs.active.is_none() =>
                 {
                     next.header.phase = HarnessPhaseTag::Idle;
+                }
+                InputDeliveryFact::Unknown
+                    if local_running
+                        && local_target.as_ref().is_some_and(|target| {
+                            target.logical_turn_id == logical_turn_id
+                                && target.proof.attempt() == &attempt
+                        })
+                        && next.header.last_thread_id.as_deref()
+                            == Some(report.correlation.thread_id.as_str()) =>
+                {
+                    next.header.phase = HarnessPhaseTag::TurnRunning;
+                    next.header.last_turn_id = report.correlation.local_turn_id.clone();
                 }
                 InputDeliveryFact::Accepted { .. }
                     if next.canonical_inputs.active.as_ref().is_some_and(|active| {
@@ -626,7 +678,10 @@ async fn dispatch_initial(
                         next.header.last_turn_id = Some(turn.clone());
                     }
                 }
-                _ => return frame(&carrier),
+                InputDeliveryFact::CrossingUnknown
+                | InputDeliveryFact::Unknown
+                | InputDeliveryFact::NotDispatched { .. }
+                | InputDeliveryFact::Accepted { .. } => return frame(&carrier),
             }
             let persisted = persist_runtime_frame_tx(
                 tx,
@@ -639,12 +694,12 @@ async fn dispatch_initial(
             crate::db::sqlite::session_set_harness_observation_runtime_tx(
                 tx,
                 &runtime,
-                match next.header.phase {
-                    HarnessPhaseTag::TurnRunning => calm_types::worker::WorkerSessionState::Running,
-                    HarnessPhaseTag::IssuingTurn => {
-                        calm_types::worker::WorkerSessionState::TurnPending
-                    }
-                    _ => calm_types::worker::WorkerSessionState::Idle,
+                if next.header.phase == HarnessPhaseTag::TurnRunning {
+                    calm_types::worker::WorkerSessionState::Running
+                } else if next.header.phase == HarnessPhaseTag::IssuingTurn {
+                    calm_types::worker::WorkerSessionState::TurnPending
+                } else {
+                    calm_types::worker::WorkerSessionState::Idle
                 },
                 next.header.last_thread_id.as_deref(),
                 if next.header.phase == HarnessPhaseTag::TurnRunning {

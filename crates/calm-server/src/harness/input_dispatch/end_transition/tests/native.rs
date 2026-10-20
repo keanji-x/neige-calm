@@ -49,7 +49,7 @@ pub(super) async fn accepted_initial(
         report.report.delivery(),
         InputDelivery::Accepted(_)
     ));
-    assert_eq!(report.report.outcome().as_ref().unwrap(), turn);
+    assert_eq!(report.report.outcome().as_ref().unwrap().turn_id(), turn);
 
     // This is the same factual runtime/header writer the FSM consumes. Its
     // actual turn comes from the committed report, not a synthetic END setter.
@@ -80,7 +80,9 @@ pub(super) async fn accepted_initial(
 }
 
 pub(super) async fn actual_end(fx: &Fixture, peer: &mut Peer, sampled: &Sample, turn: &str) {
-    let ExecutionEndScope::NativeTurn { thread_id, .. } = &sampled.target.scope;
+    let ExecutionEndScope::NativeTurn { thread_id, .. } = &sampled.target.scope else {
+        panic!("native fixture")
+    };
     notify_thread(
         &fx.daemon,
         peer,

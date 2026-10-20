@@ -31,6 +31,31 @@ impl ClaudePlannerSession {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn start_canonical(
+        &self,
+        thread: &str,
+        items: Vec<provider::InputItem>,
+        client_id: &str,
+        selection: &provider::TurnModelSelection,
+        permission: PlannerPermissionMode,
+        execution: crate::harness::backend::ExecutionInput,
+        admission: &crate::harness::native_admission::NativePromptAdmission<'_>,
+    ) -> Result<Uuid, SpawnFailure> {
+        self.start_spawn(
+            thread,
+            SpawnInput::Canonical {
+                items,
+                client_id,
+                execution,
+            },
+            selection,
+            permission,
+            admission,
+        )
+        .await
+    }
+
     /// Dry-run under the original issue lock, so no turn spawns beside the check.
     pub(crate) async fn prepare_edit(
         &self,
@@ -103,4 +128,20 @@ fn truncation(target: NativeEditTarget) -> Result<ResumeTruncation> {
             "an edit target names another provider".into(),
         )),
     }
+}
+
+/// Both invocation contracts encode input through the existing payload owner.
+pub(super) async fn user_line(
+    thread: Uuid,
+    client_id: &str,
+    items: &[provider::InputItem],
+) -> Result<UserLine, SpawnFailure> {
+    Ok(UserLine::new(
+        thread,
+        client_line_uuid(client_id)
+            .map_err(|error| SpawnFailure::failed(CalmError::BadRequest(error.to_string())))?,
+        user_line_content(items)
+            .await
+            .map_err(SpawnFailure::failed)?,
+    ))
 }

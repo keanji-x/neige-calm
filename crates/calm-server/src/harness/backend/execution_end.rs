@@ -40,10 +40,61 @@ pub(crate) struct ExecutionEndTarget {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum ExecutionEndScope {
+    LocalProcess {
+        thread_id: uuid::Uuid,
+        local_turn_id: uuid::Uuid,
+    },
     NativeTurn {
         thread_id: String,
         native_turn_id: String,
     },
+}
+
+impl ExecutionEndScope {
+    /// Decode the existing persisted facts once; malformed or mixed tuples hold.
+    pub(crate) fn from_correlation(
+        correlation: &calm_types::conversation::InputCorrelationFact,
+    ) -> Option<Self> {
+        use calm_types::runtime::AgentProtocol;
+        if correlation.thread_id.is_empty()
+            || correlation
+                .native_session_id
+                .as_ref()
+                .is_some_and(String::is_empty)
+        {
+            return None;
+        }
+        match (&correlation.native_turn_id, &correlation.local_turn_id) {
+            (Some(turn), None) => match correlation.provider.protocol() {
+                AgentProtocol::Codex => (!turn.is_empty()).then(|| Self::NativeTurn {
+                    thread_id: correlation.thread_id.clone(),
+                    native_turn_id: turn.clone(),
+                }),
+                AgentProtocol::Claude | AgentProtocol::Acp => None,
+            },
+            (None, Some(turn)) => match correlation.provider.protocol() {
+                AgentProtocol::Claude => Some(Self::LocalProcess {
+                    thread_id: uuid::Uuid::parse_str(&correlation.thread_id).ok()?,
+                    local_turn_id: uuid::Uuid::parse_str(turn).ok()?,
+                }),
+                AgentProtocol::Codex | AgentProtocol::Acp => None,
+            },
+            (Some(_), Some(_)) | (None, None) => None,
+        }
+    }
+
+    pub(crate) fn thread_and_turn(&self) -> (String, String) {
+        match self {
+            Self::NativeTurn {
+                thread_id,
+                native_turn_id,
+            } => (thread_id.clone(), native_turn_id.clone()),
+            Self::LocalProcess {
+                thread_id,
+                local_turn_id,
+            } => (thread_id.to_string(), local_turn_id.to_string()),
+        }
+    }
 }
 
 impl ExecutionEndTarget {
@@ -85,12 +136,20 @@ impl QualifiedExecutionEnd {
 }
 
 impl PlannerBackend {
+    pub(crate) async fn owns_local_execution(&self, target: &ExecutionEndTarget) -> bool {
+        match &self.0 {
+            Arm::Claude(session) => session.owns_local_execution(target).await,
+            Arm::Codex(..) | Arm::Acp(_) => false,
+        }
+    }
+
     pub(crate) async fn qualify_execution_end(
         &self,
         target: &ExecutionEndTarget,
     ) -> Result<Option<QualifiedExecutionEnd>> {
         let terminal = match &self.0 {
-            Arm::Claude(_) | Arm::Acp(_) => None,
+            Arm::Claude(session) => session.qualify_execution_end(target).await?.then_some(None),
+            Arm::Acp(_) => None,
             Arm::Codex(daemon, owner) => {
                 if owner.binding.matches(target) {
                     daemon.qualified_execution_terminal(target).map(Some)

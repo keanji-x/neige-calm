@@ -156,6 +156,9 @@ pub(crate) struct FinishedTurn {
 pub(crate) struct TestHooks {
     pub(crate) after_spawn: Option<Arc<dyn Fn() + Send + Sync>>,
     pub(crate) before_turn_completed: Option<SettlePause>,
+    pub(crate) user_flush_failure: Option<SettlePause>,
+    pub(crate) user_writer_wait: Option<SettlePause>,
+    pub(crate) dispatch_result: Option<SettlePause>,
     /// How many user lines `turn_start` has tried to write to a spawned CLI.
     pub(crate) user_line_writes: usize,
 }
@@ -180,6 +183,11 @@ pub(super) enum SpawnInput<'a> {
         /// A rewind's pending cut, applied by this spawn.
         truncation: Option<&'a ResumeTruncation>,
     },
+    Canonical {
+        items: Vec<InputItem>,
+        client_id: &'a str,
+        execution: crate::harness::backend::ExecutionInput,
+    },
     Compaction,
 }
 
@@ -193,6 +201,8 @@ pub(super) fn historical_admission()
     )
 }
 
+#[cfg(feature = "fixtures")]
+mod fixtures;
 mod invocation;
 mod start;
 pub(crate) use start::{BeforeWriteFailure, SpawnFailure};
@@ -290,9 +300,9 @@ impl ClaudePlannerSession {
         selection: &TurnModelSelection,
         mode: PlannerPermissionMode,
         admission: &crate::harness::native_admission::NativePromptAdmission<'_>,
-    ) -> Result<String, SpawnFailure> {
+    ) -> Result<Uuid, SpawnFailure> {
         let purpose = match &input {
-            SpawnInput::Turn { .. } => SpawnPurpose::Turn,
+            SpawnInput::Turn { .. } | SpawnInput::Canonical { .. } => SpawnPurpose::Turn,
             SpawnInput::Compaction => SpawnPurpose::Compaction,
         };
         let shared = &self.shared;
@@ -389,27 +399,28 @@ impl ClaudePlannerSession {
         };
         stop(&host.instance, &params.worker_session_id).await?;
 
-        let (line, client_id, items, truncation) = match input {
+        let (line, client_id, items, truncation, execution) = match input {
             SpawnInput::Turn {
                 items,
                 client_id,
                 truncation,
             } => {
-                let line = UserLine::new(
-                    thread_uuid,
-                    client_line_uuid(client_id)
-                        .map_err(|e| SpawnFailure::failed(CalmError::BadRequest(e.to_string())))?,
-                    user_line_content(&items)
-                        .await
-                        .map_err(SpawnFailure::failed)?,
-                );
-                (line, client_id.to_string(), items, truncation)
+                let line = invocation::user_line(thread_uuid, client_id, &items).await?;
+                (line, client_id.to_string(), items, truncation, None)
+            }
+            SpawnInput::Canonical {
+                items,
+                client_id,
+                execution,
+            } => {
+                let line = invocation::user_line(thread_uuid, client_id, &items).await?;
+                (line, client_id.to_string(), items, None, Some(execution))
             }
             // No client sent this line: its uuid is fresh, and nothing of it is stored.
             SpawnInput::Compaction => {
                 let uuid = Uuid::new_v4();
                 let line = UserLine::compact(thread_uuid, uuid);
-                (line, uuid.simple().to_string(), Vec::new(), None)
+                (line, uuid.simple().to_string(), Vec::new(), None, None)
             }
         };
         let line = serde_json::to_string(&line).map_err(|e| SpawnFailure::failed(e.into()))?;
@@ -493,11 +504,14 @@ impl ClaudePlannerSession {
                 .await
                 .into());
         };
+        let mut driver_slot = shared.driver.lock().await;
         let slot = Arc::new(TurnSlot::new(stdin, settle_after_stop));
         #[cfg(feature = "fixtures")]
         {
             shared.hooks.lock().expect("hooks").user_line_writes += 1;
         }
+        #[cfg(feature = "fixtures")]
+        fixtures::prepare_writer(shared, &slot).await;
         if let Err(error) = slot.write_line(&line, admission.gate()).await {
             use provider::claude::line_writer::LineWriteError;
             return Err(match error {
@@ -532,7 +546,6 @@ impl ClaudePlannerSession {
                 .events
                 .send(translator.turn_started(crate::model::now_ms()));
         }
-        let mut driver_slot = shared.driver.lock().await;
         let driver = tokio::spawn(drive(
             Arc::clone(shared),
             TurnRun {
@@ -549,8 +562,16 @@ impl ClaudePlannerSession {
                 approvals: Approvals::for_spawn(mode, held, &turn_id),
             },
         ));
-        *driver_slot = Some(execution_end::DriverSlot::new(driver));
-        Ok(turn_id)
+        *driver_slot = Some(execution_end::DriverSlot::new(
+            driver,
+            thread_uuid,
+            local_turn,
+            execution,
+        ));
+        drop(driver_slot);
+        #[cfg(feature = "fixtures")]
+        fixtures::after_install(shared).await;
+        Ok(local_turn)
     }
 
     /// Whether the worker-session row still carries an MCP hash.
@@ -629,7 +650,12 @@ impl ClaudePlannerSession {
             .filter(|active| active.thread_id == thread && active.turn_id == turn)
             .map(|active| Arc::clone(&active.slot));
         match slot {
-            Some(slot) => interrupt(&slot).await,
+            Some(slot) => match interrupt(&slot, historical_admission().gate()).await {
+                Ok(()) => provider::control::InterruptOutcome::LocalSignalDelivered,
+                Err((error, evidence)) => {
+                    provider::control::InterruptOutcome::Unconfirmed { error, evidence }
+                }
+            },
             None => provider::control::InterruptOutcome::NoTarget,
         }
     }
@@ -665,7 +691,10 @@ impl ClaudePlannerSession {
 
 /// The stop timer is armed before the interrupt line is written, so a CLI that stopped reading
 /// stdin cannot delay it.
-async fn interrupt(slot: &TurnSlot) -> provider::control::InterruptOutcome<CalmError> {
+async fn interrupt(
+    slot: &TurnSlot,
+    gate: &provider::send_boundary::PreSendGate<'_>,
+) -> std::result::Result<(), (CalmError, provider::control::SubmissionEvidence)> {
     slot.record(TerminalCause::Interrupted);
     slot.arm_stop(tokio::time::Instant::now() + STOP_TIMER);
     let request = provider::claude::protocol::ControlRequestOut::new(
@@ -674,29 +703,23 @@ async fn interrupt(slot: &TurnSlot) -> provider::control::InterruptOutcome<CalmE
     );
     use provider::control::SubmissionEvidence;
     let written = match serde_json::to_string(&request) {
-        Ok(line) => slot
-            .write_internal_line(&line, super::turn_slot::InternalLine::Interrupt)
-            .await
-            .map_err(|error| {
-                let evidence = match &error {
-                    provider::claude::line_writer::LineWriteError::BeforeWrite(_) => {
-                        SubmissionEvidence::NotWritten
-                    }
-                    provider::claude::line_writer::LineWriteError::CrossedWrite(_) => {
-                        SubmissionEvidence::WriteMayHaveReachedPeer
-                    }
-                };
-                (super::turn_slot::write_error(error), evidence)
-            }),
+        Ok(line) => slot.write_line(&line, gate).await.map_err(|error| {
+            let evidence = match &error {
+                provider::claude::line_writer::LineWriteError::BeforeWrite(_) => {
+                    SubmissionEvidence::NotWritten
+                }
+                provider::claude::line_writer::LineWriteError::CrossedWrite(_) => {
+                    SubmissionEvidence::WriteMayHaveReachedPeer
+                }
+            };
+            (super::turn_slot::write_error(error), evidence)
+        }),
         Err(error) => Err((error.into(), SubmissionEvidence::NotWritten)),
     };
-    match written {
-        Ok(()) => provider::control::InterruptOutcome::LocalSignalDelivered,
-        Err((error, evidence)) => {
-            tracing::warn!(%error, "claude planner: interrupt request not written; the stop timer ends the turn");
-            provider::control::InterruptOutcome::Unconfirmed { error, evidence }
-        }
+    if let Err((error, _evidence)) = &written {
+        tracing::warn!(%error, "claude planner: interrupt request not written; the stop timer ends the turn");
     }
+    written
 }
 
 fn sealed(thread: &str) -> CalmError {

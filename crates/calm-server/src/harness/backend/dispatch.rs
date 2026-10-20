@@ -54,14 +54,46 @@ impl PlannerBackend {
                     .await;
                 codex_report(correlation, native, NativeAcceptanceBasis::CodexTurnStart)
             }
-            Arm::Claude(_) | Arm::Acp(_) => not_dispatched(
+            Arm::Claude(session) => {
+                use crate::claude_planner::session::{BeforeWriteFailure, SpawnFailure};
+                match session
+                    .start_canonical(
+                        thread_id,
+                        items,
+                        attempt.submission_id.as_str(),
+                        selection,
+                        permission,
+                        ExecutionInput::canonical(logical_turn_id, proof),
+                        admission,
+                    )
+                    .await
+                {
+                    Ok(turn) => InputAttemptReport {
+                        delivery: InputDelivery::Unknown(correlation.with_local_turn(turn)),
+                        outcome: Ok(ExecutionIdentity::Local(turn)),
+                    },
+                    Err(SpawnFailure::BeforeWrite(failure)) => not_dispatched(
+                        correlation,
+                        NonDispatchBasis::TransportBeforeSend,
+                        match failure {
+                            BeforeWriteFailure::Host(failure) => failure,
+                            BeforeWriteFailure::Failed(error) => error.into(),
+                        },
+                    ),
+                    Err(SpawnFailure::CrossedWrite { error, local_turn }) => InputAttemptReport {
+                        delivery: InputDelivery::Unknown(correlation.with_local_turn(local_turn)),
+                        outcome: Err(error.into()),
+                    },
+                }
+            }
+            Arm::Acp(_) => not_dispatched(
                 correlation,
                 NonDispatchBasis::LocalPreflight,
                 TurnStartFailure::Refused {
                     error: CalmError::BadRequest(
-                        "canonical input execution is unsupported for Claude/ACP".into(),
+                        "canonical input execution is unsupported for ACP".into(),
                     ),
-                    reader: "Canonical input execution is unsupported for Claude/ACP".into(),
+                    reader: "Canonical input execution is unsupported for ACP".into(),
                 },
             ),
         }
@@ -115,8 +147,10 @@ fn codex_report(
         outcome: match start::codex_start_result(native.into_start_outcome()) {
             Ok(TurnStartOutcome::Started {
                 turn: TurnIdentity::Native(turn),
-            }) => Ok(turn),
-            Ok(TurnStartOutcome::Started { .. }) => {
+            }) => Ok(ExecutionIdentity::Native(turn)),
+            Ok(TurnStartOutcome::Started {
+                turn: TurnIdentity::Local(_),
+            }) => {
                 Err(CalmError::Conflict("Codex returned a non-native turn identity".into()).into())
             }
             Ok(TurnStartOutcome::Rejected { error }) => Err(TurnStartFailure::Refused {

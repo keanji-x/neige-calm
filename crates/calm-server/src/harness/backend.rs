@@ -44,7 +44,7 @@ mod acp_dispatch_tests;
 mod attempt;
 mod budget_control;
 #[cfg(all(test, feature = "fixtures"))]
-mod claude_dispatch_tests;
+pub(in crate::harness) mod claude_dispatch_tests;
 #[cfg(all(test, feature = "fixtures"))]
 mod codex_execution_tests;
 mod dispatch;
@@ -54,8 +54,8 @@ mod dispatch_fixture;
 mod dispatch_tests;
 mod execution_end;
 pub(crate) use attempt::{
-    AttemptCorrelation, InputAttemptReport, InputDelivery, NativeAcceptanceBasis,
-    NativeAcceptanceReceipt, NonDispatchBasis, NonDispatchEvidence,
+    AttemptCorrelation, ExecutionIdentity, InputAttemptReport, InputDelivery,
+    NativeAcceptanceBasis, NativeAcceptanceReceipt, NonDispatchBasis, NonDispatchEvidence,
 };
 pub(crate) use budget_control::{BudgetControlScope, ControlDelivery};
 pub(crate) use execution_end::{

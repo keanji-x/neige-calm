@@ -8,6 +8,7 @@ use calm_types::worker::{WorkerSessionId, WorkerSessionState};
 use serde_json::json;
 
 mod fixture;
+mod local;
 mod native;
 use fixture::{CONTEXT_BODY, Fixture, HUMAN_BODY, body};
 
@@ -113,7 +114,7 @@ async fn real_end_whole_header_cas_cannot_rollback_same_phase_budget_warning() {
 async fn real_end_and_idle_projection_rollback_together_without_a_publishable_result() {
     let fx = Fixture::new().await;
     let report = fx.dispatch().await;
-    let turn = report.report.outcome().as_ref().unwrap();
+    let turn = report.report.outcome().as_ref().unwrap().turn_id();
     let mut tx = begin_immediate_tx(fx.repo.db()).await.unwrap();
     let carrier = current_input_carrier_tx(&mut tx, &fx.card, &fx.runtime)
         .await
@@ -130,7 +131,7 @@ async fn real_end_and_idle_projection_rollback_together_without_a_publishable_re
         &fx.runtime,
         WorkerSessionState::Running,
         Some(carrier.snapshot()["last_thread_id"].as_str().unwrap()),
-        Some(turn),
+        Some(&turn),
     )
     .await
     .unwrap();

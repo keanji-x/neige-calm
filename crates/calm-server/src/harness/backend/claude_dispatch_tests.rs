@@ -1,3 +1,4 @@
+pub(in crate::harness) mod canonical;
 use super::*;
 use crate::claude_planner::config::{ClaudePlannerConfig, ClaudePlannerHost};
 use crate::claude_planner::session::ClaudePlannerSessionParams;
@@ -78,7 +79,7 @@ async fn fixture_full(
 }
 
 #[tokio::test]
-async fn canonical_input_is_unsupported_before_admission_or_native_effects() {
+async fn canonical_claude_local_write_is_unknown_and_running_without_native_id() {
     let (backend, session, _dir, thread) = fixture("exit").await;
     let proof = super::dispatch_tests::proof();
     let report = backend
@@ -94,19 +95,16 @@ async fn canonical_input_is_unsupported_before_admission_or_native_effects() {
             PlannerPermissionMode::Never,
             &crate::harness::native_admission::NativePromptAdmission::new(
                 || Ok(()),
-                || Box::pin(async { panic!("unsupported backend must not admit native effects") }),
+                || Box::pin(async { Ok(()) }),
             ),
         )
         .await;
-    assert!(matches!(report.delivery(), InputDelivery::NotDispatched(_)));
-    assert!(
-        report
-            .outcome()
-            .as_ref()
-            .unwrap_err()
-            .to_string()
-            .contains("unsupported")
-    );
-    assert_eq!(session.user_line_writes_for_test(), 0);
+    assert!(matches!(report.delivery(), InputDelivery::Unknown(_)));
+    assert!(report.outcome().is_ok());
+    let correlation = report.delivery().correlation();
+    assert!(correlation.native_turn_id().is_none());
+    assert!(correlation.native_session_id().is_none());
+    assert!(uuid::Uuid::parse_str(correlation.local_turn_id().unwrap()).is_ok());
+    assert_eq!(session.user_line_writes_for_test(), 1);
     session.shutdown().await.unwrap();
 }

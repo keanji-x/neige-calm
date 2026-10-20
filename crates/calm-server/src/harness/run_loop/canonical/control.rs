@@ -236,16 +236,13 @@ pub(in crate::harness::run_loop) async fn select_human_stop(
 }
 
 fn stop_request(inner: &Inner, target: &ExecutionEndTarget) -> Result<HarnessStopRequest> {
-    let crate::harness::backend::ExecutionEndScope::NativeTurn {
-        thread_id,
-        native_turn_id,
-    } = &target.scope;
+    let (thread_id, turn_id) = target.scope.thread_and_turn();
     Ok(HarnessStopRequest {
         session_id: inner.worker_session_id.clone(),
         card_id: inner.card_id.to_string(),
         track_id: inner.track_id.to_string(),
-        thread_id: thread_id.clone(),
-        turn_id: native_turn_id.clone(),
+        thread_id,
+        turn_id,
         requested_at_ms: crate::model::now_ms(),
     })
 }

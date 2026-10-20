@@ -48,17 +48,8 @@ async fn sample_tx(
     {
         return Ok(None);
     }
-    let correlation = &original.correlation;
-    let scope = match (
-        &correlation.native_turn_id,
-        &correlation.native_session_id,
-        &correlation.local_turn_id,
-    ) {
-        (Some(turn), _, None) => ExecutionEndScope::NativeTurn {
-            thread_id: correlation.thread_id.clone(),
-            native_turn_id: turn.clone(),
-        },
-        _ => return Ok(None),
+    let Some(scope) = ExecutionEndScope::from_correlation(&original.correlation) else {
+        return Ok(None);
     };
     Ok(Some(Sample {
         target: ExecutionEndTarget {
@@ -136,17 +127,14 @@ pub(crate) async fn complete_once(
     if let Some(terminal) = observed.terminal() {
         let mut terminal = terminal.clone();
         crate::harness::turn_outcome::canonical_diagnostic(&mut terminal);
-        let ExecutionEndScope::NativeTurn {
-            thread_id,
-            native_turn_id,
-        } = &sampled.target.scope;
+        let (thread_id, turn_id) = sampled.target.scope.thread_and_turn();
         crate::harness::turn_outcome::record(
             repo,
             &sampled.target.worker_session_id,
             &sampled.target.card_id,
             &sampled.target.track_id,
-            thread_id,
-            native_turn_id,
+            &thread_id,
+            &turn_id,
             &terminal,
             crate::harness::turn_outcome::Confirmation::ProviderTerminal,
         )

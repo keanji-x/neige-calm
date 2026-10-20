@@ -103,7 +103,8 @@ impl PlannerBackend {
             Arm::Codex(daemon, owner) if owner.binding.matches(target) => {
                 daemon.interrupt_execution(target, admission).await
             }
-            _ => Err(CalmError::Conflict(
+            Arm::Claude(session) => session.interrupt_execution(target, admission).await,
+            Arm::Codex(..) | Arm::Acp(_) => Err(CalmError::Conflict(
                 "control requires this backend's original native owner".into(),
             )),
         }

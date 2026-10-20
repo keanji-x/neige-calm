@@ -1,5 +1,5 @@
 use super::*;
-use provider::control::{InterruptOutcome, SubmissionEvidence};
+use provider::control::SubmissionEvidence;
 use std::process::Stdio;
 
 #[tokio::test]
@@ -15,14 +15,13 @@ async fn m1_mapping_claude_interrupt_arms_timer_even_when_local_write_fails() {
         if !alive {
             child.kill().await.unwrap();
         }
-        match interrupt(&slot).await {
-            InterruptOutcome::LocalSignalDelivered => assert!(alive),
-            InterruptOutcome::Unconfirmed { error, evidence } => {
+        match interrupt(&slot, historical_admission().gate()).await {
+            Ok(()) => assert!(alive),
+            Err((error, evidence)) => {
                 assert!(!alive);
                 assert!(matches!(error, CalmError::Io(_)));
                 assert_eq!(evidence, SubmissionEvidence::WriteMayHaveReachedPeer);
             }
-            other => panic!("wrong mapping: {other:?}"),
         }
         assert!(slot.stop_armed());
         assert!(matches!(slot.cause(), Some(TerminalCause::Interrupted)));

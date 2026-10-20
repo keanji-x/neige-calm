@@ -8,27 +8,63 @@ enum Completion {
 
 pub(super) struct DriverSlot {
     completion: Completion,
+    thread: Uuid,
+    turn: Uuid,
+    execution: Option<crate::harness::backend::ExecutionInput>,
 }
 
 impl DriverSlot {
-    pub(super) fn new(driver: tokio::task::JoinHandle<bool>) -> Self {
+    pub(super) fn new(
+        driver: tokio::task::JoinHandle<bool>,
+        thread: Uuid,
+        turn: Uuid,
+        execution: Option<crate::harness::backend::ExecutionInput>,
+    ) -> Self {
         Self {
             completion: Completion::Running(driver),
+            thread,
+            turn,
+            execution,
         }
     }
 
+    fn matches(&self, target: &crate::harness::backend::ExecutionEndTarget) -> bool {
+        use crate::harness::backend::ExecutionEndScope;
+        match &target.scope {
+            ExecutionEndScope::LocalProcess {
+                thread_id,
+                local_turn_id,
+            } => {
+                self.thread == *thread_id
+                    && self.turn == *local_turn_id
+                    && self
+                        .execution
+                        .as_ref()
+                        .is_some_and(|input| input.matches(target))
+            }
+            ExecutionEndScope::NativeTurn { .. } => false,
+        }
+    }
+
+    async fn qualified(&mut self) -> Result<bool> {
+        match &self.completion {
+            Completion::Running(driver) if !driver.is_finished() => return Ok(false),
+            Completion::Running(_) | Completion::Finished(_) => {}
+        }
+        self.finish().await
+    }
+
     async fn finish(&mut self) -> Result<bool> {
-        if let Completion::Running(driver) = &mut self.completion {
-            // Borrowed await retains task ownership if the caller is cancelled.
-            let qualified = driver.await.map_err(|_| ());
-            self.completion = Completion::Finished(qualified);
-        }
-        match self.completion {
-            Completion::Finished(Ok(qualified)) => Ok(qualified),
-            _ => Err(CalmError::Conflict(
-                "Claude driver did not finish normally".into(),
-            )),
-        }
+        let result = match &mut self.completion {
+            Completion::Running(driver) => {
+                // Borrowed await retains task ownership if the caller is cancelled.
+                let result = driver.await.map_err(|_| ());
+                self.completion = Completion::Finished(result);
+                result
+            }
+            Completion::Finished(result) => *result,
+        };
+        result.map_err(|()| CalmError::Conflict("Claude driver did not finish normally".into()))
     }
 }
 
@@ -40,6 +76,60 @@ pub(super) async fn join_driver(shared: &Shared) -> Result<()> {
 }
 
 impl ClaudePlannerSession {
+    pub(crate) async fn owns_local_execution(
+        &self,
+        target: &crate::harness::backend::ExecutionEndTarget,
+    ) -> bool {
+        let params = &self.shared.params;
+        target.matches_owner(&params.card_id, &params.track_id, &params.worker_session_id)
+            && self
+                .shared
+                .driver
+                .lock()
+                .await
+                .as_ref()
+                .is_some_and(|driver| driver.matches(target))
+    }
+
+    pub(crate) async fn qualify_execution_end(
+        &self,
+        target: &crate::harness::backend::ExecutionEndTarget,
+    ) -> Result<bool> {
+        let params = &self.shared.params;
+        if !target.matches_owner(&params.card_id, &params.track_id, &params.worker_session_id) {
+            return Ok(false);
+        }
+        let mut driver = self.shared.driver.lock().await;
+        match driver.as_mut() {
+            Some(driver) if driver.matches(target) => driver.qualified().await,
+            Some(_) | None => Ok(false),
+        }
+    }
+
+    pub(crate) async fn interrupt_execution(
+        &self,
+        target: &crate::harness::backend::ExecutionEndTarget,
+        admission: &crate::harness::native_admission::NativePromptAdmission<'_>,
+    ) -> Result<()> {
+        if !self.owns_local_execution(target).await {
+            return Err(CalmError::Conflict(
+                "control names another Claude execution".into(),
+            ));
+        }
+        let (thread, turn) = target.scope.thread_and_turn();
+        let slot = self
+            .shared
+            .state()
+            .active
+            .as_ref()
+            .filter(|active| active.thread_id == thread && active.turn_id == turn)
+            .map(|active| Arc::clone(&active.slot))
+            .ok_or_else(|| CalmError::Conflict("Claude execution already ended".into()))?;
+        super::interrupt(&slot, admission.gate())
+            .await
+            .map_err(|(error, _evidence)| admission.take_refusal().unwrap_or(error))
+    }
+
     /// Harness shutdown: refuse new turns, end the live one as `Interrupted`, and stop the marker
     /// whether or not a turn runs. The `stop` result is returned for strict callers. A session that
     /// was never installed (an install-race loser) minted and spawned nothing, so it signals nothing:

@@ -91,7 +91,7 @@ pub(crate) fn refused(reason: impl std::fmt::Display) -> CalmError {
 /// setup `stop` or credential mint that failed, a turn still running, a spawn that did not start)
 /// submitted nothing, so the harness goes back to its previous phase as after Codex's refusal.
 /// Once the line may have reached the CLI, the submission is unconfirmed and the harness wedges.
-fn submission_result(result: Result<String, SpawnFailure>) -> CompactSubmission<CalmError> {
+fn submission_result(result: Result<uuid::Uuid, SpawnFailure>) -> CompactSubmission<CalmError> {
     match result {
         Ok(_) => CompactSubmission::Submitted {
             basis: SubmissionBasis::LocalWrite,
@@ -134,7 +134,7 @@ mod tests {
     #[test]
     fn m1_mapping_compact_spawn_failure_keeps_write_evidence_and_error() {
         assert!(matches!(
-            submission_result(Ok("local-turn".into())),
+            submission_result(Ok(uuid::Uuid::new_v4())),
             CompactSubmission::Submitted {
                 basis: SubmissionBasis::LocalWrite
             }

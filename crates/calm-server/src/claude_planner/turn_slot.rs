@@ -5,6 +5,12 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use tokio::process::ChildStdin;
+#[cfg(feature = "fixtures")]
+mod fixtures;
+#[cfg(feature = "fixtures")]
+use fixtures::LineStdin;
+#[cfg(not(feature = "fixtures"))]
+type LineStdin = ChildStdin;
 use tokio::sync::watch;
 
 use crate::error::CalmError;
@@ -23,7 +29,7 @@ pub enum TerminalCause {
 /// The live turn's shared state.
 pub(crate) struct TurnSlot {
     cause: Mutex<Option<TerminalCause>>,
-    pub(crate) stdin: tokio::sync::Mutex<Option<ChildStdin>>,
+    pub(crate) stdin: tokio::sync::Mutex<Option<LineStdin>>,
     /// When the turn is stopped whatever the CLI does: armed by an interrupt (now + the stop
     /// timer) or a shutdown (now); the earliest arming wins.
     pub(crate) stop_at: watch::Sender<Option<tokio::time::Instant>>,
@@ -34,6 +40,8 @@ pub(crate) struct TurnSlot {
 
 impl TurnSlot {
     pub(super) fn new(stdin: ChildStdin, settle_after_stop: Duration) -> Self {
+        #[cfg(feature = "fixtures")]
+        let stdin = stdin.into();
         Self {
             cause: Mutex::new(None),
             stdin: tokio::sync::Mutex::new(Some(stdin)),
@@ -106,9 +114,7 @@ impl TurnSlot {
         kind: InternalLine,
     ) -> Result<(), LineWriteError> {
         let gate = match kind {
-            InternalLine::Interrupt | InternalLine::ControlReply => {
-                PreSendGate::new(|| Box::pin(async { Ok(()) }))
-            }
+            InternalLine::ControlReply => PreSendGate::new(|| Box::pin(async { Ok(()) })),
         };
         self.write_line(line, &gate).await
     }
@@ -116,7 +122,6 @@ impl TurnSlot {
 
 /// Internal protocol work cannot supply admission for a user invocation.
 pub(crate) enum InternalLine {
-    Interrupt,
     ControlReply,
 }
 

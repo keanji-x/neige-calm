@@ -17,6 +17,13 @@ pub(super) async fn fixture() -> (SqlxRepo, String, String) {
 }
 
 pub(super) async fn fixture_card(repo: &SqlxRepo) -> (String, String) {
+    fixture_card_for_provider(repo, calm_types::runtime::AgentProvider::Codex).await
+}
+
+pub(super) async fn fixture_card_for_provider(
+    repo: &SqlxRepo,
+    provider: calm_types::runtime::AgentProvider,
+) -> (String, String) {
     let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
     let area = area_create_tx(
         &mut tx,
@@ -56,7 +63,7 @@ pub(super) async fn fixture_card(repo: &SqlxRepo) -> (String, String) {
             track_id: track.id,
             kind: "codex".into(),
             sort: None,
-            payload: json!({"planner_provider":"codex"}),
+            payload: json!({"planner_provider":provider.wire_name()}),
             title: None,
         },
         CardRole::Planner,
