@@ -9,12 +9,18 @@ use objective::ids::{CheckId, EvaluationId, ObjectiveKey, Revision};
 use objective::ledger::Decision;
 use objective::standard::{Approval, standard_hash};
 
+mod lifecycle;
 mod refusal;
 mod replay;
+mod restart;
 mod schema;
 
 async fn fixture() -> SqlxRepo {
-    let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
+    fixture_at("sqlite::memory:").await
+}
+
+async fn fixture_at(url: &str) -> SqlxRepo {
+    let repo = SqlxRepo::open(url).await.unwrap();
     for sql in [
         "INSERT INTO areas(id,name,color,sort,created_at,updated_at) VALUES('a','a','',0,0,0)",
         "INSERT INTO tracks(id,area_id,title,sort,created_at,updated_at) VALUES('t','a','t',0,0,0),('other','a','other',1,0,0)",

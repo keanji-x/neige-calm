@@ -116,24 +116,34 @@ pub(super) async fn read_tx(
         {
             return Err(internal("event envelope mismatch"));
         }
-        let (session, id): (WorkerSessionId, String) =
-            serde_json::from_str(row.try_get("source_key")?).map_err(internal)?;
+        let source_key: &str = row.try_get("source_key")?;
         let source = match row.try_get::<&str, _>("source_kind")? {
-            "planner_call" => InputSource::Planner {
-                principal: Principal::Agent {
+            "intent_job" => InputSource::IntentJob {
+                intent: serde_json::from_str(source_key).map_err(internal)?,
+            },
+            "planner_call" => {
+                let (session, id): (WorkerSessionId, String) =
+                    serde_json::from_str(source_key).map_err(internal)?;
+                InputSource::Planner {
+                    principal: Principal::Agent {
+                        session_id: session,
+                        track_id: track.clone(),
+                        area_id: tx
+                            .read_track_area(track)
+                            .await?
+                            .ok_or_else(|| internal("missing track"))?,
+                    },
+                    request_id: PlannerRequestId::new(id),
+                }
+            }
+            "harness_turn" => {
+                let (session, id): (WorkerSessionId, String) =
+                    serde_json::from_str(source_key).map_err(internal)?;
+                InputSource::HarnessTurn {
                     session_id: session,
-                    track_id: track.clone(),
-                    area_id: tx
-                        .read_track_area(track)
-                        .await?
-                        .ok_or_else(|| internal("missing track"))?,
-                },
-                request_id: PlannerRequestId::new(id),
-            },
-            "harness_turn" => InputSource::HarnessTurn {
-                session_id: session,
-                turn_id: id,
-            },
+                    turn_id: id,
+                }
+            }
             _ => return Err(internal("unknown source kind")),
         };
         source.identity().map_err(internal)?;

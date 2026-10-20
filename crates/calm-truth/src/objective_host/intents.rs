@@ -29,6 +29,7 @@ pub struct StoredIntent {
     pub intent: Intent,
     pub effect: StoredEffect,
     pub created_at_ms: i64,
+    pub status: IntentStatus,
 }
 
 fn effect_key(intent: &Intent, effect: &StoredEffect, seq: LogSeq, ordinal: u32) -> Result<String> {
@@ -123,6 +124,7 @@ pub(super) async fn insert_tx(
             intent,
             effect,
             created_at_ms: at_ms,
+            status: IntentStatus::Pending,
         });
     }
     Ok(stored)

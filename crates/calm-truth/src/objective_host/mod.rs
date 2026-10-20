@@ -4,6 +4,7 @@
 //! source idempotency. Replay rebuilds state, never durable effects.
 mod authorize;
 mod intents;
+mod lifecycle;
 mod log;
 mod snapshot;
 
@@ -17,6 +18,10 @@ use crate::worker::{Principal, WorkerSessionId};
 use objective::{Event, Intent, State};
 
 pub use intents::{IntentId, StoredEffect, StoredIntent};
+pub use lifecycle::{
+    ExecutorSettlement, IntentSettlement, IntentStatus, intent_mark_dispatched_tx,
+    intent_settle_tx, unsettled_intents,
+};
 pub use log::LoggedEvent;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -35,6 +40,9 @@ impl PlannerRequestId {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "source", rename_all = "snake_case")]
 pub enum InputSource {
+    IntentJob {
+        intent: IntentId,
+    },
     Planner {
         principal: Principal,
         request_id: PlannerRequestId,
@@ -48,6 +56,9 @@ pub enum InputSource {
 impl InputSource {
     fn identity(&self) -> Result<(&'static str, String)> {
         let (kind, session, id) = match self {
+            Self::IntentJob { intent } => {
+                return Ok(("intent_job", serde_json::to_string(intent)?));
+            }
             Self::Planner {
                 principal: Principal::Agent { session_id, .. },
                 request_id,
@@ -103,14 +114,18 @@ impl CommittedReaction {
 
 pub async fn react(db: &SqliteDb, input: ObjectiveInput) -> Result<CommittedReaction> {
     let mut tx = begin_immediate_tx(db).await?;
+    let at_ms = now_ms()?;
+    let reaction = react_tx(&mut tx, &input, at_ms).await?;
+    tx.commit().await?;
+    Ok(CommittedReaction { reaction })
+}
+
+fn now_ms() -> Result<i64> {
     let at_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|e| TruthError::Internal(e.to_string()))?
         .as_millis();
-    let at_ms = i64::try_from(at_ms).map_err(|e| TruthError::Internal(e.to_string()))?;
-    let reaction = react_tx(&mut tx, &input, at_ms).await?;
-    tx.commit().await?;
-    Ok(CommittedReaction { reaction })
+    i64::try_from(at_ms).map_err(internal)
 }
 
 /// Caller owns BEGIN IMMEDIATE and must roll back on error, as for other tx APIs.
@@ -132,6 +147,7 @@ async fn apply_tx(
     if let Some(seq) = log::dedupe_tx(tx, &authorized).await? {
         return Ok(Reaction::Duplicate { seq });
     }
+    lifecycle::check_job_tx(tx, input).await?;
     let (previous, state) = snapshot::load_tx(tx, &input.track_id).await?;
     let (next, intents) = objective::react(&state, &input.event);
     let seq = LogSeq(
@@ -143,6 +159,7 @@ async fn apply_tx(
     log::append_tx(tx, &authorized, seq, at_ms).await?;
     snapshot::store_tx(tx, &input.track_id, previous, seq, &next).await?;
     let intents = intents::insert_tx(tx, &authorized, &state, seq, intents, at_ms).await?;
+    lifecycle::report_tx(tx, input, seq, at_ms).await?;
     Ok(Reaction::Appended { seq, intents })
 }
 

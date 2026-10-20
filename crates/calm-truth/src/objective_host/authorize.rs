@@ -16,6 +16,10 @@ pub(super) async fn authorize<'a>(
     input: &'a ObjectiveInput,
 ) -> Result<AuthorizedInput<'a>> {
     let principal = match (&input.event, &input.source) {
+        (Event::CheckFinished { .. }, InputSource::IntentJob { .. }) => {
+            input.source.identity()?;
+            return Ok(AuthorizedInput { input });
+        }
         (
             Event::DefinitionChanged { .. }
             | Event::Requested { .. }
