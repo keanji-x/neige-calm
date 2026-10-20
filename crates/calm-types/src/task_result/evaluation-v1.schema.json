@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "evaluation-v1",
+  "description": "One evaluator sample. The kernel validator additionally limits summary to 2048 UTF-8 bytes; JSON Schema maxLength counts code points, not bytes.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["summary", "judgements", "findings"],
+  "properties": {
+    "summary": { "type": "string", "minLength": 1, "pattern": "\\S", "description": "Non-blank; at most 2048 UTF-8 bytes." },
+    "judgements": { "type": "array", "items": { "$ref": "#/$defs/judgement" } },
+    "findings": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["blocking", "major", "minor"],
+      "properties": {
+        "blocking": { "$ref": "#/$defs/u32" },
+        "major": { "$ref": "#/$defs/u32" },
+        "minor": { "$ref": "#/$defs/u32" }
+      }
+    }
+  },
+  "$defs": {
+    "u32": { "type": "integer", "minimum": 0, "maximum": 4294967295 },
+    "judgement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["item", "trend", "evidence"],
+      "properties": {
+        "item": { "type": "string", "description": "Rubric item id." },
+        "trend": { "type": "string", "enum": ["better", "same", "worse"] },
+        "evidence": { "type": "array", "items": { "$ref": "#/$defs/evidence" } }
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "line"],
+      "properties": {
+        "path": { "type": "string" },
+        "line": { "type": "integer", "minimum": 1, "maximum": 4294967295 }
+      }
+    }
+  },
+  "examples": [
+    {
+      "summary": "The sample found clearer code with unchanged performance.",
+      "judgements": [
+        { "item": "clarity", "trend": "better", "evidence": [{ "path": "src/lib.rs", "line": 7 }] },
+        { "item": "performance", "trend": "same", "evidence": [] }
+      ],
+      "findings": { "blocking": 0, "major": 0, "minor": 1 }
+    },
+    {
+      "summary": "The sample found a regression in error handling.",
+      "judgements": [{ "item": "correctness", "trend": "worse", "evidence": [{ "path": "src/error.rs", "line": 1 }] }],
+      "findings": { "blocking": 1, "major": 2, "minor": 0 }
+    }
+  ]
+}

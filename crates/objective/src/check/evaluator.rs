@@ -40,13 +40,24 @@ fn one_sample() -> u32 {
 
 /// A source location an evaluator cites for a judgement.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Evidence {
     pub path: String,
+    #[serde(deserialize_with = "positive_line")]
     pub line: u32,
+}
+
+fn positive_line<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<u32, D::Error> {
+    let line = u32::deserialize(deserializer)?;
+    if line == 0 {
+        return Err(serde::de::Error::custom("line must be at least 1"));
+    }
+    Ok(line)
 }
 
 /// One rubric item judged against the baseline.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Judgement {
     pub item: String,
     pub trend: Trend,
@@ -54,6 +65,7 @@ pub struct Judgement {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Findings {
     pub blocking: u32,
     pub major: u32,
@@ -62,6 +74,7 @@ pub struct Findings {
 
 /// What one evaluator run returned.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct EvaluatorSample {
     pub judgements: Vec<Judgement>,
     pub findings: Findings,
@@ -334,5 +347,35 @@ mod tests {
         let parsed: EvaluatorParams =
             serde_json::from_str(r#"{"rubric":[],"aggregate":"majority"}"#).unwrap();
         assert_eq!(parsed.samples, 1);
+    }
+}
+
+#[cfg(test)]
+mod wire_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn evaluation_sample_wire_is_closed_and_lines_are_positive() {
+        let valid = json!({"judgements": [{"item": "clarity", "trend": "better",
+            "evidence": [{"path": "src/lib.rs", "line": 1}]}],
+            "findings": {"blocking": 0, "major": 0, "minor": 0}});
+        assert!(serde_json::from_value::<EvaluatorSample>(valid.clone()).is_ok());
+        for pointer in ["", "/judgements/0", "/judgements/0/evidence/0", "/findings"] {
+            let mut invalid = valid.clone();
+            invalid
+                .pointer_mut(pointer)
+                .unwrap()
+                .as_object_mut()
+                .unwrap()
+                .insert("extra".into(), json!(true));
+            assert!(
+                serde_json::from_value::<EvaluatorSample>(invalid).is_err(),
+                "{pointer}"
+            );
+        }
+        let mut invalid = valid;
+        invalid["judgements"][0]["evidence"][0]["line"] = json!(0);
+        assert!(serde_json::from_value::<EvaluatorSample>(invalid).is_err());
     }
 }

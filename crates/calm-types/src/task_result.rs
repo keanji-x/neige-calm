@@ -23,7 +23,7 @@ pub struct ResultContract {
 }
 
 /// Every contract a task may declare. A closed set owned by the kernel.
-pub static RESULT_CONTRACTS: &[ResultContract] = &[REVIEW_V1];
+pub static RESULT_CONTRACTS: &[ResultContract] = &[REVIEW_V1, EVALUATION_V1];
 
 /// The registered contract named `name`.
 pub fn result_contract(name: &str) -> Option<&'static ResultContract> {
@@ -98,6 +98,97 @@ const REVIEW_V1: ResultContract = ResultContract {
 fn review_v1_schema() -> Value {
     serde_json::from_str(include_str!("task_result/review-v1.schema.json"))
         .expect("review-v1.schema.json is valid JSON")
+}
+
+const EVALUATION_V1: ResultContract = ResultContract {
+    name: "evaluation-v1",
+    schema: evaluation_v1_schema,
+    shape_hint: include_str!("task_result/evaluation-v1.md").trim_ascii_end(),
+    validate: validate_evaluation_v1,
+    conclusion: evaluation_v1_conclusion,
+};
+
+fn evaluation_v1_schema() -> Value {
+    serde_json::from_str(include_str!("task_result/evaluation-v1.schema.json"))
+        .expect("evaluation-v1.schema.json is valid JSON")
+}
+
+/// Summary is kernel receipt vocabulary; the sample's wire semantics belong to objective.
+fn evaluation_sample(
+    map: &Map<String, Value>,
+) -> Result<objective::check::EvaluatorSample, String> {
+    let mut sample = map.clone();
+    sample.remove("summary");
+    let parsed = serde_path_to_error::deserialize(Value::Object(sample))
+        .map_err(|error| format!("{}: {}", error.path(), error.inner()))?;
+    // Serde structs also accept positional arrays. This contract requires JSON objects;
+    // objective remains authoritative for fields, trends, counts and source locations.
+    let object = |value: &Value, path: &str| {
+        value
+            .as_object()
+            .ok_or_else(|| format!("{path}: must be a JSON object"))
+            .map(|_| ())
+    };
+    object(&map["findings"], "findings")?;
+    for (index, judgement) in map["judgements"]
+        .as_array()
+        .expect("parsed judgements")
+        .iter()
+        .enumerate()
+    {
+        let path = format!("judgements[{index}]");
+        object(judgement, &path)?;
+        for (index, evidence) in judgement["evidence"]
+            .as_array()
+            .expect("parsed evidence")
+            .iter()
+            .enumerate()
+        {
+            object(evidence, &format!("{path}.evidence[{index}]"))?;
+        }
+    }
+    Ok(parsed)
+}
+
+fn validate_evaluation_v1(result: &Value) -> Result<(), Vec<String>> {
+    let Some(map) = result.as_object() else {
+        return Err(vec![format!(
+            "result: must be a JSON object, got {}",
+            json_type(result)
+        )]);
+    };
+    let mut errors = Vec::new();
+    text(map, "", "summary", MAX_SUMMARY_BYTES, true, &mut errors);
+    if let Err(error) = evaluation_sample(map) {
+        errors.push(error);
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors)
+    }
+}
+
+fn evaluation_v1_conclusion(result: &Value) -> String {
+    use objective::check::Trend;
+    let sample = evaluation_sample(result.as_object().expect("validated object"))
+        .expect("validated evaluator sample");
+    let count = |trend| {
+        sample
+            .judgements
+            .iter()
+            .filter(|j| j.trend == trend)
+            .count()
+    };
+    format!(
+        "evaluation: {} better / {} same / {} worse; findings {}/{}/{}",
+        count(Trend::Better),
+        count(Trend::Same),
+        count(Trend::Worse),
+        sample.findings.blocking,
+        sample.findings.major,
+        sample.findings.minor
+    )
 }
 
 const REVIEW_V1_FIELDS: &[&str] = &[

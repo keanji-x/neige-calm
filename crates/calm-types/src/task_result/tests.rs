@@ -186,3 +186,109 @@ fn every_result_contract_schema_example_passes_its_validator() {
     }
     assert!(result_contract("review-v2").is_none());
 }
+
+fn evaluation_result() -> Value {
+    json!({"summary": "One evaluator sample", "judgements": [
+        {"item": "clarity", "trend": "better", "evidence": [{"path": "src/lib.rs", "line": 1}]},
+        {"item": "speed", "trend": "same", "evidence": []},
+        {"item": "size", "trend": "worse", "evidence": []}
+    ], "findings": {"blocking": 1, "major": 2, "minor": 3}})
+}
+
+#[test]
+fn evaluation_result_contract_accepts_one_sample_and_counts_its_conclusion() {
+    let contract = result_contract("evaluation-v1").expect("evaluation-v1 is registered");
+    let mut result = evaluation_result();
+    assert_eq!(contract.check(&result), Ok(()));
+    assert_eq!(
+        contract.conclusion_of(&result).as_deref(),
+        Some("evaluation: 1 better / 1 same / 1 worse; findings 1/2/3")
+    );
+    result["judgements"] = json!([]);
+    result["summary"] = json!("é".repeat(1024));
+    result["findings"]["minor"] = json!(u32::MAX);
+    assert_eq!(contract.check(&result), Ok(()));
+    assert_eq!(
+        contract.conclusion_of(&result).as_deref(),
+        Some("evaluation: 0 better / 0 same / 0 worse; findings 1/2/4294967295")
+    );
+}
+
+#[test]
+fn evaluation_result_contract_refuses_malformed_fields() {
+    let contract = result_contract("evaluation-v1").expect("evaluation-v1 is registered");
+    for (pointer, value, field) in [
+        ("/extra", json!(true), "extra"),
+        ("/summary", json!(" \n"), "summary"),
+        ("/summary", json!("é".repeat(1025)), "summary"),
+        ("/judgements/0/extra", json!(true), "judgements[0]"),
+        (
+            "/judgements/0/trend",
+            json!("improved"),
+            "judgements[0].trend",
+        ),
+        ("/judgements/0/item", json!(4), "judgements[0].item"),
+        (
+            "/judgements/0/evidence/0/extra",
+            json!(true),
+            "judgements[0].evidence[0]",
+        ),
+        (
+            "/judgements/0/evidence/0/line",
+            json!(0),
+            "judgements[0].evidence[0].line",
+        ),
+        (
+            "/judgements/0/evidence/0/line",
+            json!(4294967296_u64),
+            "judgements[0].evidence[0].line",
+        ),
+        (
+            "/judgements/0/evidence/0/path",
+            json!(null),
+            "judgements[0].evidence[0].path",
+        ),
+        ("/findings", json!([0, 0, 0]), "findings"),
+        (
+            "/judgements/0",
+            json!(["clarity", "same", []]),
+            "judgements[0]",
+        ),
+        (
+            "/judgements/0/evidence/0",
+            json!(["src/lib.rs", 1]),
+            "judgements[0].evidence[0]",
+        ),
+        ("/findings/extra", json!(true), "findings"),
+        ("/findings/blocking", json!(-1), "findings.blocking"),
+        ("/findings/major", json!(1.5), "findings.major"),
+        ("/findings/minor", json!(4294967296_u64), "findings.minor"),
+    ] {
+        let mut result = evaluation_result();
+        let (parent, key) = pointer.rsplit_once('/').unwrap();
+        let parent = result.pointer_mut(parent).unwrap();
+        if let Some(array) = parent.as_array_mut() {
+            array[key.parse::<usize>().unwrap()] = value;
+        } else {
+            parent.as_object_mut().unwrap().insert(key.into(), value);
+        }
+        let errors = (contract.validate)(&result).expect_err(pointer);
+        assert!(
+            errors.iter().any(|e| e.contains(field)),
+            "{pointer}: {errors:?}"
+        );
+        assert_eq!(contract.conclusion_of(&result), None);
+        let refusal = contract.check(&result).unwrap_err();
+        assert!(refusal.contains("evaluation-v1"));
+        assert!(refusal.ends_with(contract.shape_hint));
+    }
+    for field in ["summary", "judgements", "findings"] {
+        let mut result = evaluation_result();
+        result.as_object_mut().unwrap().remove(field);
+        let errors = (contract.validate)(&result).unwrap_err();
+        assert!(errors.iter().any(|e| e.contains(field)), "{errors:?}");
+    }
+    for result in [json!(null), json!([]), json!("sample")] {
+        assert!(contract.check(&result).unwrap_err().contains("result:"));
+    }
+}

@@ -692,11 +692,13 @@ dependencies = [
 name = "calm-types"
 version = "0.1.0"
 dependencies = [
+ "objective",
  "proptest",
  "pulldown-cmark",
  "regex",
  "serde",
  "serde_json",
+ "serde_path_to_error",
  "sha2 0.10.9",
  "thiserror 1.0.69",
  "ts-rs",

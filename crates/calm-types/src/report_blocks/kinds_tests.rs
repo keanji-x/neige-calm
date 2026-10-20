@@ -672,15 +672,24 @@ fn task_result_contract_must_name_a_registered_contract() {
     for kind in ["codex", "claude"] {
         let mut payload = valid_task();
         payload["kind"] = json!(kind);
-        payload["result_contract"] = json!("review-v1");
-        assert_eq!(validate_payload(KIND_TASK, &payload), Ok(()));
+        for contract in crate::task_result::RESULT_CONTRACTS {
+            payload["result_contract"] = json!(contract.name);
+            assert_eq!(validate_payload(KIND_TASK, &payload), Ok(()));
+        }
     }
     for name in [json!("review-v9"), json!(""), json!(1), Value::Null] {
         let mut payload = valid_task();
         payload["result_contract"] = name.clone();
         assert_eq!(
             validate_payload(KIND_TASK, &payload).unwrap_err(),
-            "result_contract: must be one of \"review-v1\"",
+            format!(
+                "result_contract: must be one of {}",
+                crate::task_result::RESULT_CONTRACTS
+                    .iter()
+                    .map(|contract| format!("{:?}", contract.name))
+                    .collect::<Vec<_>>()
+                    .join(" | ")
+            ),
             "{name}"
         );
     }

@@ -16,6 +16,8 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+objective = { path = "../objective" }
+serde_path_to_error = "0.1"
 pulldown-cmark.workspace = true
 
 # Serde + JSON — wire shapes only, no IO.
