@@ -143,7 +143,11 @@ async fn check_input_and_target(
                 .take(refs.len())
                 .map(PendingInput::input_ref)
                 .collect::<Vec<_>>();
-            if refs.is_empty() || carrier.checkpoint().active.is_some() || refs != actual {
+            if refs.is_empty()
+                || (carrier.checkpoint().active.is_some()
+                    && !carrier.checkpoint().kept_execution_without_target())
+                || refs != actual
+            {
                 return Err(CalmError::Conflict(
                     "model read pending prefix changed".into(),
                 ));

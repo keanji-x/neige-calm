@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::body::Body;
-use axum::extract::ConnectInfo;
+use axum::extract::{ConnectInfo, FromRef};
 use axum::http::{Request, StatusCode, header};
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
@@ -49,6 +49,7 @@ mod dispatcher_inputs_tests;
 mod dispatcher_report_edit_tests;
 mod presentation_capability_tests;
 mod presentation_read_feedback_tests;
+mod resolution_tests;
 
 struct Fixture {
     repo: Arc<SqlxRepo>,
@@ -446,6 +447,10 @@ async fn original_input_flow(
     );
     assert_eq!(fixture.counts(&card).await, (1, 1, 1, 1, 1));
 
+    // A receipt replay schedules a real wake. Keep its card fence through
+    // teardown so removing the handle cannot look like a cold-recovery request.
+    let lifecycle_locks = crate::state::RouteState::from_ref(&state).planner_recovery_locks;
+    let _lifecycle = crate::per_card_lock::lock_card(&lifecycle_locks, &card).await;
     let harness = state
         .harness
         .remove(&worker)

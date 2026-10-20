@@ -65,6 +65,18 @@ pub(crate) struct RecoveryTarget {
     card_id: String,
 }
 impl RecoveryTarget {
+    pub(in crate::harness::backend) fn for_settlement(card: &str, thread: &str) -> Result<Self> {
+        if card.is_empty() || thread.is_empty() {
+            return Err(CalmError::Conflict(
+                "settlement requires an exact conversation".into(),
+            ));
+        }
+        Ok(Self {
+            card_id: card.into(),
+            thread_id: thread.into(),
+        })
+    }
+
     fn active(runtime: &WorkerSessionProjection) -> Result<Self> {
         Self::from_carrier(runtime, "conversation thread is missing")
     }

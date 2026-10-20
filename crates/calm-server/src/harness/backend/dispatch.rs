@@ -7,6 +7,7 @@ impl PlannerBackend {
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn dispatch_input<'a>(
         &self,
+        settlement_card: Option<&str>,
         logical_turn_id: &LogicalTurnId,
         attempt: &InputAttempt,
         thread_id: &str,
@@ -17,6 +18,25 @@ impl PlannerBackend {
         admission: &crate::harness::native_admission::NativePromptAdmission<'a>,
     ) -> InputAttemptReport {
         let correlation = AttemptCorrelation::new(attempt, self.provider(), thread_id);
+        if let Some(card) = settlement_card {
+            match self.settled_activity(card, thread_id, admission).await {
+                Ok(SettledActivity::Settled) => {}
+                Ok(SettledActivity::Held) => {
+                    return not_dispatched(
+                        correlation,
+                        NonDispatchBasis::LocalPreflight,
+                        CalmError::Conflict("kept original thread has not settled".into()).into(),
+                    );
+                }
+                Err(error) => {
+                    return not_dispatched(
+                        correlation,
+                        NonDispatchBasis::LocalPreflight,
+                        error.into(),
+                    );
+                }
+            }
+        }
         if proof.attempt() != attempt {
             return not_dispatched(
                 correlation,

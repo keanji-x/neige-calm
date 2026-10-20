@@ -117,6 +117,7 @@ async fn human_source_cannot_authorize_a_machine_observation() {
         .unwrap();
     let id = SystemObservationId::parse(&new_id()).unwrap();
     let checkpoint = ConversationInputCheckpoint {
+        receipts: vec![],
         next_queue_position: 1,
         pending: vec![PendingInput::System {
             observation_id: id.clone(),

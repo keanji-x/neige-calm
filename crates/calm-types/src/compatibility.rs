@@ -38,4 +38,5 @@
 // Revision 35 (#2671): negotiated canonical conversation pages and reference-only run reads.
 // Revision 36: managed ACP adds the Grok Build provider identity `grok`.
 // Revision 37 (#2836): canonical held delivery carries exact attempt identity and typed unavailable actions.
-pub const REST_API_VERSION: &str = "37";
+// Revision 38 (#2836): canonical Human Keep with immutable checkpoint receipts and enabled action availability.
+pub const REST_API_VERSION: &str = "38";

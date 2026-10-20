@@ -1094,3 +1094,26 @@ describe('input metadata mutation reconciliation', () => {
     },
   );
 });
+
+it.each([200,409])('Keep reconciles the run and history on status %s without caching its response as delivery', async status => {
+  const args = {carrier_id:'carrier',submission_id:'submission',attempt_id:'attempt',revision:'7'};
+  const requests:ApiRequest[]=[];
+  const transport:ApiTransportPort={send:request=>{
+    requests.push(request);
+    return Promise.resolve(status === 200 ? ok({...args,revision:'8',waiting_for_settlement:true})
+      : {status:409,statusText:'Conflict',body:{code:'conflict',message:'Revision changed'}});
+  }};
+  const client = new QueryClient();
+  const runKey=queryKeys.plannerRun('card'); const historyKey=transcriptQueryOptions(transport,'card',unauthorized).queryKey;
+  const before={unchanged:true}; client.setQueryData(runKey,before); client.setQueryData(historyKey,before);
+  const {result}=renderHook(()=>usePlannerMutations(transport,'card','track',unauthorized),{
+    wrapper:({children}:{children:ReactNode})=>createElement(QueryClientProvider,{client},children),
+  });
+  if(status === 200) await result.current.keep(args,'same-key');
+  else await expect(result.current.keep(args,'same-key')).rejects.toThrow();
+  expect(requests).toMatchObject([{method:'POST',path:'/api/cards/card/conversation/input/keep',headers:{'Idempotency-Key':'same-key'},body:args}]);
+  await waitFor(()=>expect(client.getQueryState(runKey)?.isInvalidated).toBe(true));
+  expect(client.getQueryState(historyKey)?.isInvalidated).toBe(true);
+  expect(client.getQueryData(runKey)).toBe(before);
+  client.clear();
+});

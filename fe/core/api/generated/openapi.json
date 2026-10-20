@@ -2136,6 +2136,134 @@
         }
       }
     },
+    "/api/cards/{id}/conversation/input/keep": {
+      "post": {
+        "tags": [
+          "cards"
+        ],
+        "operationId": "keep_conversation_input",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KeepConversationInputRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KeepConversationInputResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "`payload_too_large`: the body is over the request size limit.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "`unsupported_media_type`: the request does not say `Content-Type: application/json`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`invalid_body`: the JSON is not the body's shape (a field missing or of the wrong type).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/cards/{id}/harness/items": {
       "get": {
         "tags": [
@@ -13879,6 +14007,20 @@
           {
             "type": "object",
             "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "available"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
               "reason",
               "kind"
             ],
@@ -13899,7 +14041,9 @@
       "ConversationActionUnavailableReason": {
         "type": "string",
         "enum": [
-          "not_implemented_yet"
+          "not_implemented_yet",
+          "already_kept",
+          "not_held"
         ]
       },
       "ConversationActiveInput": {
@@ -13944,7 +14088,8 @@
           "target",
           "delivery",
           "invocation",
-          "actions"
+          "actions",
+          "resolution"
         ],
         "properties": {
           "actions": {
@@ -13958,6 +14103,16 @@
           },
           "invocation": {
             "$ref": "#/components/schemas/InputInvocation"
+          },
+          "resolution": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/KeepConversationInputResult"
+              }
+            ]
           },
           "revision": {
             "type": "string",
@@ -16177,6 +16332,59 @@
             "type": "string"
           }
         }
+      },
+      "KeepConversationInputRequest": {
+        "type": "object",
+        "required": [
+          "carrier_id",
+          "submission_id",
+          "attempt_id",
+          "revision"
+        ],
+        "properties": {
+          "attempt_id": {
+            "type": "string"
+          },
+          "carrier_id": {
+            "type": "string"
+          },
+          "revision": {
+            "type": "string",
+            "description": "Exact decimal revision from the run read, never a JavaScript number."
+          },
+          "submission_id": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "KeepConversationInputResult": {
+        "type": "object",
+        "required": [
+          "carrier_id",
+          "submission_id",
+          "attempt_id",
+          "revision",
+          "waiting_for_settlement"
+        ],
+        "properties": {
+          "attempt_id": {
+            "type": "string"
+          },
+          "carrier_id": {
+            "type": "string"
+          },
+          "revision": {
+            "type": "string"
+          },
+          "submission_id": {
+            "type": "string"
+          },
+          "waiting_for_settlement": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false
       },
       "ListdirResponse": {
         "type": "object",

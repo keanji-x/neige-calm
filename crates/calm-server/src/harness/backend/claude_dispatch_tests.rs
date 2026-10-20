@@ -110,6 +110,7 @@ async fn canonical_claude_local_write_is_unknown_and_running_without_native_id()
     let proof = super::dispatch_tests::proof();
     let report = backend
         .dispatch_input(
+            None,
             &super::dispatch_tests::logical_turn_id(),
             proof.attempt(),
             &thread,

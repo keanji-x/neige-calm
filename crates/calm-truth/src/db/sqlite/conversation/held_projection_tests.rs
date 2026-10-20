@@ -10,7 +10,7 @@ use calm_types::organization::LEGACY_OWNER_USER_ID;
 use calm_types::runtime::AgentProvider;
 use serde_json::{Value, json};
 
-async fn held(repo: &SqlxRepo) -> (String, String, InputAttempt) {
+pub(super) async fn held(repo: &SqlxRepo) -> (String, String, InputAttempt) {
     let (_, card) = fixture_card(repo).await;
     let worker = runtime(repo, &card).await;
     let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
@@ -130,6 +130,10 @@ async fn runtime_frame_cannot_erase_same_phase_attempt_revision() {
 
 fn released(mut frame: Value) -> Value {
     frame["schema_version"] = json!(2);
+    frame["canonical_inputs"]
+        .as_object_mut()
+        .unwrap()
+        .remove("receipts");
     for attempt in frame["canonical_inputs"]["attempts"]
         .as_array_mut()
         .unwrap()
@@ -229,7 +233,7 @@ async fn canonical_migration_open_converts_all_retained_states_and_preserves_evi
         migrations: std::borrow::Cow::Owned(
             crate::MIGRATOR
                 .iter()
-                .filter(|m| m.version < 177)
+                .filter(|m| m.version < 181)
                 .cloned()
                 .collect(),
         ),
@@ -261,7 +265,7 @@ async fn canonical_migration_refuses_malformed_and_future_atomically() {
         .unwrap();
     let (_, other) = fixture_card(&repo).await;
     let corrupt_worker = runtime(&repo, &other).await;
-    for version in [3, 4] {
+    for version in [3, 4, 5] {
         let mut corrupt = old.clone();
         corrupt["schema_version"] = json!(version);
         sqlx::query("UPDATE worker_sessions SET handle_state_json=?1 WHERE id=?2")

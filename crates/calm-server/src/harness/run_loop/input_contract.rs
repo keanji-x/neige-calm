@@ -25,6 +25,22 @@ pub(super) enum RuntimeInputs {
 }
 
 impl RuntimeInputs {
+    /// Advisory eligibility to seek the track fence; the canonical claim and
+    /// native admission still recheck the committed receipt and exact activity.
+    pub(super) async fn can_seek_issuance(&self, inner: &Inner) -> Result<bool> {
+        if inner.state.lock().await.can_issue_turn() {
+            return Ok(true);
+        }
+        match self {
+            Self::Historical(_) => Ok(false),
+            Self::Canonical(_) => Ok(super::canonical::read_current(inner)
+                .await?
+                .snapshot
+                .canonical_inputs
+                .kept_execution_without_target()),
+        }
+    }
+
     pub fn historical_queue(&self) -> Result<&Mutex<VecDeque<QueueEntry>>> {
         match self {
             Self::Historical(queue) => Ok(queue),

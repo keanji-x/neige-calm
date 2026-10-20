@@ -97,6 +97,10 @@ pub fn router() -> Router<AppState> {
             "/api/cards/{id}/planner/input",
             post(crate::routes::planner_input_send::send_planner_input),
         )
+        .route(
+            "/api/cards/{id}/conversation/input/keep",
+            post(crate::routes::conversation_input_resolution::keep_conversation_input),
+        )
         // Mounted here because this router owns `/api/cards/{id}/**`; a second router on the same prefix is how two mounts start disagreeing about a middleware.
         .route(
             "/api/cards/{id}/planner/input/{entry_id}",

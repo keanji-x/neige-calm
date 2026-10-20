@@ -22,7 +22,7 @@ mod tests {
     fn canonical_dormant_frame_round_trips_through_its_actual_typed_codec() {
         let frame = CanonicalHarnessSnapshot::dormant(73);
         let value = serde_json::to_value(&frame).unwrap();
-        assert_eq!(value["schema_version"], 3);
+        assert_eq!(value["schema_version"], 4);
         assert_eq!(value["phase"], "idle");
         assert_eq!(value["push_watermark"], 73);
         assert!(frame.header.last_thread_id.is_none());

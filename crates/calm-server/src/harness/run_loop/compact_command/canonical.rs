@@ -78,8 +78,12 @@ async fn write(
                         serde_json::from_value(carrier.snapshot().clone())?;
                     require_idle(&current)?;
                     require_binding(tx, &carrier, &provider, &track, &target.thread_id).await?;
-                    crate::conversation_inputs::authorize_human_resource_tx(tx, &source, &carrier)
-                        .await?;
+                    crate::conversation_inputs::authorize_human_resource_tx(
+                        tx,
+                        &source,
+                        carrier.card_id(),
+                    )
+                    .await?;
                     crate::conversation_archive::require_unarchived_tx(tx, &card).await?;
                 }
                 TransitionAdmission::Settlement => {}
@@ -114,7 +118,8 @@ async fn current_payload(
         Box::pin(async move {
             let carrier = current_input_carrier_tx(tx, &card, &worker).await?;
             require_binding(tx, &carrier, &provider, &target.track_id, &target.thread_id).await?;
-            crate::conversation_inputs::authorize_human_resource_tx(tx, &source, &carrier).await?;
+            crate::conversation_inputs::authorize_human_resource_tx(tx, &source, carrier.card_id())
+                .await?;
             crate::conversation_archive::require_unarchived_tx(tx, &card).await?;
             let frame: CanonicalHarnessSnapshot =
                 serde_json::from_value(carrier.snapshot().clone())?;

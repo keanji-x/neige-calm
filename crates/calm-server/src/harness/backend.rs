@@ -53,6 +53,7 @@ mod dispatch_fixture;
 #[cfg(all(test, feature = "fixtures"))]
 mod dispatch_tests;
 mod execution_end;
+mod settled_activity;
 pub(crate) use attempt::{
     AttemptCorrelation, ExecutionIdentity, InputAttemptReport, InputDelivery,
     NativeAcceptanceBasis, NativeAcceptanceReceipt, NonDispatchBasis, NonDispatchEvidence,
@@ -62,6 +63,7 @@ pub(crate) use execution_end::{
     ExecutionEndScope, ExecutionEndTarget, ExecutionInput, MaintenanceObservation,
     MaintenanceTarget, QualifiedExecutionEnd,
 };
+pub(crate) use settled_activity::SettledActivity;
 
 /// A provider's failure to start a turn, classified by the provider that raised it (#1981): the
 /// run loop paces its retry and tells the reader from this, never from the error's shape.

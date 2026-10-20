@@ -40,6 +40,7 @@ fn items() -> Vec<InputItem> {
 async fn initial(backend: &PlannerBackend, proof: &SubmissionDispatchProof) -> InputAttemptReport {
     backend
         .dispatch_input(
+            None,
             &logical_turn_id(),
             proof.attempt(),
             "thread",

@@ -1,4 +1,4 @@
-import type { AgentProvider } from '../../../../core/api/generated/wire.ts';
+import type { KeepConversationInputRequest, AgentProvider } from '../../../../core/api/generated/wire.ts';
 import type { SideConversation, PendingQueueEntry, PlannerQueueEditOutcome, ModelSelection, Conversation, CreatedConversation, TranscriptEntry } from '../../../../core/domain/conversation.ts';
 import type { SubmittedConversationInput } from '../../../../core/domain/conversation-initial-input.ts';
 import type { RetiredSend, SendOp, ConversationOutboxOp } from '../../../../core/domain/conversation-outbox.ts';
@@ -125,7 +125,11 @@ export type RememberedConversation = Readonly<{
   turns: readonly TranscriptEntry[];
 }>;
 
+export type KeepInputIntent = Readonly<{ key: string; args: Readonly<KeepConversationInputRequest>; status: 'sending' | 'unknown' }>;
+
 export type ConversationRegistry = Readonly<{
+  beginKeep: (card: string, args: KeepConversationInputRequest, key: string) => KeepInputIntent | null;
+  finishKeep: (card: string, key: string, status: 'unknown' | 'done') => void;
   turnsOf: (conversationId: string) => readonly TranscriptEntry[];
   /** Stored canonical source only. Never feed the display's outbox fold back into memory. */
   rememberedTurnsOf: (conversationId: string) => readonly TranscriptEntry[];

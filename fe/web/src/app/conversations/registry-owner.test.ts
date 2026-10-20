@@ -170,3 +170,19 @@ it('keeps queue acquisition after its microtask, notifies only busy changes and 
   await Promise.resolve(); releaseRestart(); await restart;
   expect(registry.restartOutOf(card)).toBe(false);
 });
+
+it('retains Keep key and immutable CAS through response loss, remount and card switch', () => {
+  const owner = createConversationOwner();
+  const registry = owner.commands;
+  const args = { carrier_id: 'carrier', submission_id: 'submission', attempt_id: 'attempt', revision: '1' };
+  const first = registry.beginKeep(card, args, 'key');
+  expect(first?.key).toBe('key');
+  expect(registry.beginKeep(card, args, 'new-key')).toBeNull();
+  registry.finishKeep(card, 'key', 'unknown');
+  registry.beginKeep('other-card', { ...args, carrier_id: 'other' }, 'other-key');
+  const retry = registry.beginKeep(card, { ...args, revision: '2' }, 'discarded-key');
+  expect(retry?.key).toBe('key');
+  expect(retry?.args).toEqual(args);
+  registry.finishKeep(card, 'key', 'done');
+  expect(registry.beginKeep(card, { ...args, revision: '2' }, 'fresh')?.key).toBe('fresh');
+});

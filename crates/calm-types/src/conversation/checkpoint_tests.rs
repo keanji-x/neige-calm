@@ -369,7 +369,7 @@ fn canonical_projection_no_host_paths_or_diagnostic_leakage_and_typed_actions() 
     assert_eq!(
         encoded["submissions"][0]["attempt"]["actions"],
         json!({
-            "keep":{"kind":"unavailable","reason":"not_implemented_yet"},
+            "keep":{"kind":"unavailable","reason":"not_held"},
             "retry":{"kind":"unavailable","reason":"not_implemented_yet"}
         })
     );

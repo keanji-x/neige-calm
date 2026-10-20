@@ -24,7 +24,8 @@ pub async fn release_submission_tx(
         .checkpoint
         .attempt(&attempt.submission_id)
         .ok_or_else(|| CalmError::Conflict("submission has no persisted execution evidence"))?;
-    if checkpoint.attempt != *attempt
+    if carrier.checkpoint.is_kept(attempt)
+        || checkpoint.attempt != *attempt
         || !matches!(checkpoint.delivery, InputDeliveryFact::NotDispatched { .. })
     {
         return Err(CalmError::Conflict(

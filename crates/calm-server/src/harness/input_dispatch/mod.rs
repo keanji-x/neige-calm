@@ -45,6 +45,7 @@ struct PreparedInputDispatch {
     worker: String,
     fence: RuntimeExecutionFence,
     invocation: FrozenInputInvocation,
+    require_settled: bool,
 }
 
 impl PreparedInputDispatch {
@@ -138,6 +139,7 @@ pub(crate) async fn initial(
     };
     let report = backend
         .dispatch_input(
+            prepared.require_settled.then_some(prepared.card.as_str()),
             &prepared.logical_turn_id,
             prepared.proof.attempt(),
             &prepared.thread_id,
@@ -276,6 +278,10 @@ async fn prepare(
                 }
             };
             Ok(PreparedInputDispatch {
+                require_settled: carrier
+                    .checkpoint()
+                    .requires_settled_activity(&thread_id)
+                    .map_err(|error| CalmError::Conflict(error.into()))?,
                 logical_turn_id: identity.logical_turn_id,
                 proof,
                 thread_id,
@@ -307,6 +313,7 @@ async fn settle(
             let mut carrier =
                 current_input_fact_carrier_tx(tx, &card_id, &worker_session_id).await?;
             record_input_attempt_fact_tx(tx, &mut carrier, fact.clone()).await?;
+            let may_release = may_release && !carrier.checkpoint().is_kept(&fact.attempt);
             if may_release {
                 release_submission_tx(tx, &mut carrier, &fact.attempt).await?;
             }

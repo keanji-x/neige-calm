@@ -125,7 +125,9 @@ async fn transition(inner: &Arc<Inner>, change: Change) -> Result<CommittedFrame
                     require_running(&carrier, &next, &target)?;
                     if let StopAdmission::Human(source) = admission {
                         crate::conversation_inputs::authorize_human_resource_tx(
-                            tx, &source, &carrier,
+                            tx,
+                            &source,
+                            carrier.card_id(),
                         )
                         .await?;
                     }
@@ -228,7 +230,8 @@ pub(in crate::harness::run_loop) async fn select_human_stop(
     write_in_tx_typed(inner.repo.as_ref(), move |tx| {
         Box::pin(async move {
             let carrier = current_input_fact_carrier_tx(tx, &card, &worker).await?;
-            crate::conversation_inputs::authorize_human_resource_tx(tx, &source, &carrier).await
+            crate::conversation_inputs::authorize_human_resource_tx(tx, &source, carrier.card_id())
+                .await
         })
     })
     .await?;

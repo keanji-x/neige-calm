@@ -23,6 +23,7 @@ pub(super) fn upgrade(value: Value) -> Result<CanonicalHarnessSnapshot, String> 
         next_queue_position: old.canonical_inputs.next_queue_position,
         pending: old.canonical_inputs.pending,
         active: old.canonical_inputs.active,
+        receipts: vec![],
         attempts: old
             .canonical_inputs
             .attempts
@@ -37,7 +38,7 @@ pub(super) fn upgrade(value: Value) -> Result<CanonicalHarnessSnapshot, String> 
             .collect(),
     };
     CanonicalHarnessSnapshot::try_from(CanonicalFrameWire {
-        schema_version: 3,
+        schema_version: 4,
         mode: old.mode,
         canonical_inputs: checkpoint,
         header: old.header,
@@ -52,6 +53,10 @@ mod tests {
     fn old() -> Value {
         let mut old = serde_json::to_value(CanonicalHarnessSnapshot::dormant(7)).unwrap();
         old["schema_version"] = json!(2);
+        old["canonical_inputs"]
+            .as_object_mut()
+            .unwrap()
+            .remove("receipts");
         old["canonical_inputs"]["attempts"] = json!([{
             "attempt":{"submission_id":"11111111111111111111111111111111","attempt_id":"22222222222222222222222222222222"},
             "correlation":{"provider":"codex","thread_id":"thread","native_session_id":null,"local_turn_id":null,"native_turn_id":null,"rpc_request_id":null},
@@ -76,7 +81,7 @@ mod tests {
             let converted =
                 serde_json::to_value(CanonicalHarnessSnapshot::from_released(old.clone()).unwrap())
                     .unwrap();
-            assert_eq!(converted["schema_version"], 3);
+            assert_eq!(converted["schema_version"], 4);
             assert_eq!(converted["canonical_inputs"]["attempts"][0]["revision"], 0);
             assert_eq!(
                 converted["canonical_inputs"]["attempts"][0]["invocation"],
@@ -84,6 +89,10 @@ mod tests {
             );
             let mut restored = converted;
             restored["schema_version"] = json!(2);
+            restored["canonical_inputs"]
+                .as_object_mut()
+                .unwrap()
+                .remove("receipts");
             let attempt = restored["canonical_inputs"]["attempts"][0]
                 .as_object_mut()
                 .unwrap();
@@ -110,7 +119,7 @@ mod tests {
             json!({"kind":"recorded","configuration":{"model":null,"permission":"never"}});
         assert!(serde_json::from_value::<CanonicalHarnessSnapshot>(recorded).is_err());
         let mut future = current;
-        future["schema_version"] = json!(4);
+        future["schema_version"] = json!(5);
         assert!(CanonicalHarnessSnapshot::from_released(future).is_err());
         for (field, value) in [
             ("schema_version", json!(1)),

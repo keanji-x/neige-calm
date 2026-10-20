@@ -243,6 +243,10 @@ pub(super) async fn second_turn(
             1
         );
     }
+    // The accepted tail can still be finishing its source observation. Fence
+    // the temporary handle removal against that real background wake.
+    let lifecycle_locks = crate::state::RouteState::from_ref(state).planner_recovery_locks;
+    let _lifecycle = crate::per_card_lock::lock_card(&lifecycle_locks, card).await;
     let handle = state
         .harness
         .remove(worker)

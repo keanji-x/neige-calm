@@ -7,6 +7,17 @@ import { plannerPermissionModeSchema } from './planner-permission-mode.js';
 import { SYSTEM_PRESENTATION_LABELS, systemInputPresentationSchema, buildTranscript, retireFollowedThoughts, harnessTimeoutEvidenceSchema, harnessItemSchema as transcriptRowSchema, HARNESS_ITEMS_PAGE_LIMIT as TRANSCRIPT_PAGE_LIMIT, plannerRunOperation, type PlannerRun, type TranscriptEntry } from './conversation.js';
 
 const decimalU64 = z.string().regex(/^(0|[1-9]\d*)$/).pipe(z.string().refine(value => BigInt(value) <= 18446744073709551615n));
+const keepResultSchema = z.object({ carrier_id:z.string(), submission_id:z.string(), attempt_id:z.string(),
+  revision:decimalU64, waiting_for_settlement:z.boolean() }).strict();
+
+export function keepConversationInputOperation(card: string, args: import('../api/generated/wire.js').KeepConversationInputRequest, key: string): ApiOperation<import('../api/generated/wire.js').KeepConversationInputResult> {
+  return { method:'POST', path:`/api/cards/${encodeURIComponent(card)}/conversation/input/keep`,
+    headers:{'Idempotency-Key':key}, body:args, responseSchema:keepResultSchema.refine(result =>
+      result.carrier_id === args.carrier_id && result.submission_id === args.submission_id
+      && result.attempt_id === args.attempt_id && result.revision === (BigInt(args.revision)+1n).toString(),
+    'Keep receipt does not match its original CAS request') };
+}
+
 const attachment = z.object({ id: z.string(), size: z.number(), url: z.string(), contentType:z.string() });
 const identity = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('human'), message_id: z.string() }).strict(),
@@ -95,7 +106,8 @@ export const conversationRunMetadataSchema = z.object({
         z.object({kind:z.literal('recorded'),configuration:z.object({model:z.string().nullable(),effort:z.string().nullable(),permission:plannerPermissionModeSchema}).strict()}).strict(),
         z.object({kind:z.literal('prior_invocation_not_recorded')}).strict(),
       ]),
-      actions:z.object({keep:z.object({kind:z.literal('unavailable'),reason:z.literal('not_implemented_yet')}).strict(),
+      resolution:keepResultSchema.nullable(),
+      actions:z.object({keep:z.discriminatedUnion('kind', [z.object({kind:z.literal('available')}).strict(), z.object({kind:z.literal('unavailable'),reason:z.enum(['already_kept','not_held'])}).strict()]),
         retry:z.object({kind:z.literal('unavailable'),reason:z.literal('not_implemented_yet')}).strict()}).strict(),
     }).strict().nullable(),
   }).strict()) }).strict().nullable(),

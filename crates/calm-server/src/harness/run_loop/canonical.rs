@@ -86,6 +86,7 @@ pub(super) struct PublicFeedback {
     pending: Vec<(AcceptedInputRef, u64, i64)>,
     active: Option<calm_types::conversation::ActiveInputSubmissions>,
     attempts: Vec<calm_types::conversation::InputAttemptCheckpoint>,
+    receipts: Vec<calm_types::conversation::HumanKeepReceipt>,
     usage: Option<(i64, Option<i64>, Option<f64>, i64)>,
     blocked: Option<String>,
     native_turn: Option<String>,
@@ -102,6 +103,7 @@ impl PublicFeedback {
                 .collect(),
             active: frame.canonical_inputs.active.clone(),
             attempts: frame.canonical_inputs.attempts.clone(),
+            receipts: frame.canonical_inputs.receipts.clone(),
             usage: if h.context_usage_invalidated {
                 None
             } else {
@@ -316,14 +318,14 @@ pub(super) async fn tick(inner: &Arc<Inner>) -> Result<()> {
     {
         return Ok(());
     }
-    if checkpoint.active.is_some() {
+    if checkpoint.active.is_some() && !checkpoint.kept_execution_without_target() {
         return resume_unattempted(inner, &current).await;
     }
     if checkpoint.pending.is_empty()
         || !matches!(
             header.phase,
             HarnessPhaseTag::Idle | HarnessPhaseTag::TurnCompleted
-        )
+        ) && !checkpoint.kept_execution_without_target()
     {
         return Ok(());
     }
@@ -370,11 +372,11 @@ pub(super) async fn tick(inner: &Arc<Inner>) -> Result<()> {
     {
         return Ok(());
     }
-    if checkpoint.active.is_some()
-        || !matches!(
+    if (checkpoint.active.is_some() && !checkpoint.kept_execution_without_target())
+        || (!matches!(
             header.phase,
             HarnessPhaseTag::Idle | HarnessPhaseTag::TurnCompleted
-        )
+        ) && !checkpoint.kept_execution_without_target())
     {
         return Ok(());
     }
@@ -438,6 +440,27 @@ pub(super) async fn tick(inner: &Arc<Inner>) -> Result<()> {
             return Ok(());
         }
     };
+    if checkpoint
+        .requires_settled_activity(header.last_thread_id.as_deref().expect("thread checked"))
+        .map_err(|error| CalmError::Conflict(error.into()))?
+    {
+        let admission = crate::harness::native_admission::NativePromptAdmission::new(
+            || read_admission.check_current(),
+            || Box::pin(read_admission.revalidate()),
+        );
+        match inner
+            .backend
+            .settled_activity(
+                inner.card_id.as_str(),
+                header.last_thread_id.as_deref().expect("thread checked"),
+                &admission,
+            )
+            .await
+        {
+            Ok(crate::harness::backend::SettledActivity::Settled) => {}
+            Ok(crate::harness::backend::SettledActivity::Held) | Err(_) => return Ok(()),
+        }
+    }
     let mut contexts = vec![];
     if let Some(budget) = budget {
         contexts.push(

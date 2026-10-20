@@ -7,6 +7,8 @@ mod ids;
 mod pending;
 mod proof;
 mod render;
+mod resolution;
+pub use resolution::*;
 
 pub use checkpoint::*;
 pub use ids::*;

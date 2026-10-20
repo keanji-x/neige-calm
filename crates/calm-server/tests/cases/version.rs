@@ -126,8 +126,8 @@ async fn get_version_returns_all_fields_with_expected_sources() {
     assert_eq!(v["apiVersion"].as_str().unwrap(), API_VERSION);
     assert_eq!(
         v["apiVersion"].as_str().unwrap(),
-        "37",
-        "Canonical held delivery and exact attempt identity are required"
+        "38",
+        "Canonical Human Keep and checkpoint receipts are required"
     );
     assert_eq!(
         v["syncEventVersion"].as_u64().unwrap(),
@@ -140,12 +140,12 @@ async fn get_version_returns_all_fields_with_expected_sources() {
         v["webCompatVersion"].as_u64().unwrap(),
         WEB_COMPAT_VERSION as u64,
     );
-    assert_eq!(v["webCompatVersion"].as_u64().unwrap(), 60);
+    assert_eq!(v["webCompatVersion"].as_u64().unwrap(), 61);
     assert_eq!(
         v["minWebCompatVersion"].as_u64().unwrap(),
         WEB_COMPAT_VERSION as u64,
     );
-    assert_eq!(v["minWebCompatVersion"].as_u64().unwrap(), 60);
+    assert_eq!(v["minWebCompatVersion"].as_u64().unwrap(), 61);
     assert_eq!(
         v["supervisorControlVersion"].as_u64().unwrap(),
         SUPERVISOR_CONTROL_VERSION as u64,

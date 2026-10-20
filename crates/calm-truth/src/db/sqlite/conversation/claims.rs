@@ -34,10 +34,12 @@ pub async fn claim_initial_submission_tx(
     provenance: &ConversationExecutionProvenance,
 ) -> Result<ClaimedSubmission> {
     carrier.require_execution_current()?;
-    if !matches!(
+    let kept = carrier.checkpoint.kept_execution_without_target();
+    if (!matches!(
         carrier.phase()?,
         HarnessPhaseTag::Idle | HarnessPhaseTag::TurnCompleted | HarnessPhaseTag::Resumed
-    ) || carrier.checkpoint.active.is_some()
+    ) && !(kept && carrier.phase()? == HarnessPhaseTag::IssuingTurn))
+        || (carrier.checkpoint.active.is_some() && !kept)
     {
         return Err(CalmError::Conflict(
             "conversation cannot claim another Initial submission now",

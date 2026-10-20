@@ -71,6 +71,7 @@ impl Fixture {
             let proof = super::dispatch_tests::proof();
             backend
                 .dispatch_input(
+                    None,
                     &super::dispatch_tests::logical_turn_id(),
                     proof.attempt(),
                     &thread,

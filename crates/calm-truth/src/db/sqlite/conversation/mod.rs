@@ -12,6 +12,8 @@ pub(super) mod messages;
 mod plans;
 pub(super) mod presentation;
 mod release;
+mod resolution;
+pub use resolution::keep_conversation_input_tx;
 mod runtime_frame;
 mod storage_contract;
 
@@ -125,3 +127,6 @@ mod runtime_frame_tests;
 mod tests;
 #[cfg(test)]
 mod transaction_tests;
+
+#[cfg(test)]
+mod resolution_tests;

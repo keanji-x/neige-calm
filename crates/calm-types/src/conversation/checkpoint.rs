@@ -102,6 +102,7 @@ pub struct ConversationInputCheckpoint {
     /// Lookup-only correlation facts. Ordering never chooses work to execute.
     /// At most the latest attempt of each immutable submission is retained.
     pub attempts: Vec<InputAttemptCheckpoint>,
+    pub receipts: Vec<super::HumanKeepReceipt>,
 }
 
 impl ConversationInputCheckpoint {
@@ -111,6 +112,7 @@ impl ConversationInputCheckpoint {
             pending: vec![],
             active: None,
             attempts: vec![],
+            receipts: vec![],
         }
     }
 
@@ -139,6 +141,37 @@ impl ConversationInputCheckpoint {
                 || !attempts.insert(&checkpoint.attempt.attempt_id)
             {
                 return Err("snapshot repeats an input submission or attempt identity");
+            }
+        }
+        let mut keys = HashSet::new();
+        let mut decisions = HashSet::new();
+        for receipt in &self.receipts {
+            if receipt.key.is_empty()
+                || receipt.principal.is_empty()
+                || receipt.fingerprint.len() != 64
+                || !keys.insert(&receipt.key)
+                || !decisions.insert(&receipt.result.attempt_id)
+                || receipt.request.carrier_id != receipt.result.carrier_id
+                || receipt.request.submission_id != receipt.result.submission_id
+                || receipt.request.attempt_id != receipt.result.attempt_id
+            {
+                return Err("invalid Human Keep receipt identity");
+            }
+            let prior = receipt
+                .request
+                .revision
+                .parse::<u64>()
+                .map_err(|_| "invalid Keep revision")?;
+            let next = prior.checked_add(1).ok_or("Keep revision overflow")?;
+            if prior.to_string() != receipt.request.revision
+                || next.to_string() != receipt.result.revision
+                || !self.attempts.iter().any(|a| {
+                    a.attempt.attempt_id.as_str() == receipt.result.attempt_id
+                        && a.attempt.submission_id.as_str() == receipt.result.submission_id
+                        && a.revision >= next
+                })
+            {
+                return Err("Human Keep receipt disagrees with its attempt");
             }
         }
         Ok(())
@@ -258,7 +291,9 @@ impl ConversationInputCheckpoint {
         for attempt in &self.attempts {
             match &attempt.delivery {
                 InputDeliveryFact::CrossingUnknown | InputDeliveryFact::Unknown => {
-                    if !ids.contains(&attempt.attempt.submission_id) {
+                    if !self.is_kept(&attempt.attempt)
+                        && !ids.contains(&attempt.attempt.submission_id)
+                    {
                         ids.push(attempt.attempt.submission_id.clone());
                     }
                 }
@@ -266,6 +301,43 @@ impl ConversationInputCheckpoint {
             }
         }
         ids
+    }
+
+    /// Only a receipt can retire an input blocker. An addressable original
+    /// execution instead remains bound until its qualified END.
+    pub fn requires_settled_activity(&self, current_thread: &str) -> Result<bool, &'static str> {
+        let mut required = false;
+        for attempt in &self.attempts {
+            if self.is_kept(&attempt.attempt)
+                && attempt.correlation.native_turn_id.is_none()
+                && attempt.correlation.local_turn_id.is_none()
+            {
+                if attempt.correlation.thread_id != current_thread {
+                    return Err("kept input requires settlement of its original exact thread");
+                }
+                required = true;
+            }
+        }
+        Ok(required)
+    }
+
+    pub fn kept_execution_without_target(&self) -> bool {
+        self.active.as_ref().is_some_and(|active| {
+            active.submission_ids.iter().all(|id| {
+                self.attempt(id).is_some_and(|attempt| {
+                    self.is_kept(&attempt.attempt)
+                        && attempt.correlation.native_turn_id.is_none()
+                        && attempt.correlation.local_turn_id.is_none()
+                })
+            })
+        })
+    }
+
+    pub fn is_kept(&self, attempt: &InputAttempt) -> bool {
+        self.receipts.iter().any(|receipt| {
+            receipt.result.submission_id == attempt.submission_id.as_str()
+                && receipt.result.attempt_id == attempt.attempt_id.as_str()
+        })
     }
 
     pub fn attempt(&self, submission: &InputSubmissionId) -> Option<&InputAttemptCheckpoint> {

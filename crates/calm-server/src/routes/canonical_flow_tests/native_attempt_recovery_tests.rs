@@ -289,10 +289,16 @@ async fn cold_attempt_is_not_readmitted(outcome: NativeOutcome) {
         observed.canonical_inputs.attempts[0].revision.to_string()
     );
     assert_eq!(delivery["attempt"]["target"]["thread_id"], THREAD);
+    let keep = match outcome {
+        NativeOutcome::Unknown => json!({"kind":"available"}),
+        NativeOutcome::Accepted => json!({"kind":"unavailable","reason":"not_held"}),
+    };
+    assert_eq!(delivery["attempt"]["actions"]["keep"], keep);
     assert_eq!(
-        delivery["attempt"]["actions"]["keep"],
+        delivery["attempt"]["actions"]["retry"],
         json!({"kind":"unavailable","reason":"not_implemented_yet"})
     );
+    assert!(delivery["attempt"].get("resolution").unwrap().is_null());
     let appended = post_and_settle_wake(
         &state,
         &app,

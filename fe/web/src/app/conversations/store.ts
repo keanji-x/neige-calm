@@ -1,3 +1,5 @@
+import { ApiError } from '../../../../core/domain/failure-class.ts';
+import { mintIdempotencyKey } from '../providers/idempotency-key.ts';
 import { useCurrentUser } from '../auth/current-user.tsx';
 import { buildConversationTranscript, nativeDisplayRows, orderedPendingInputs, removedHumanIds } from '../../../../core/domain/conversation-display.ts';
 import type { ConversationPendingInput } from '../../../../core/api/generated/wire.ts';
@@ -318,6 +320,21 @@ export function useConversationStore(
     pendingQueue: presentation.queue,
     pendingInputs,
     activeInput: run.data?.active_input ?? null,
+    keepInput: async submission => {
+      const attempt = submission.attempt;
+      if (attempt === null || attempt.actions.keep.kind !== 'available') return;
+      const intent = registry.beginKeep(cardId, { carrier_id:submission.carrier_id,
+        submission_id:submission.submission_id, attempt_id:attempt.attempt_id, revision:attempt.revision }, mintIdempotencyKey());
+      if (intent === null) return;
+      try {
+        await mutations.keep(intent.args, intent.key);
+        registry.finishKeep(cardId, intent.key, 'done');
+      } catch (error) {
+        const terminal = error instanceof ApiError && (error.failure.kind === 'unauthorized' || (error.failure.kind === 'http' && [400, 403, 404, 409, 422].includes(error.failure.status)));
+        registry.finishKeep(cardId, intent.key, terminal ? 'done' : 'unknown');
+        throw error;
+      }
+    },
     pendingSends: presentation.sending,
     queueDisplayAccounting,
     pendingQueueOverflow,

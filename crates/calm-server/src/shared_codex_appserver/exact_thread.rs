@@ -138,6 +138,32 @@ impl RecoveryThread<'_> {
     pub(crate) fn socket_path(&self) -> &std::path::Path {
         &self.daemon.kernel_mcp_socket_path
     }
+    /// An idle read retires only the unchanged unaddressed start slot. Native
+    /// source/ticket/candidate changes during the read continue to hold.
+    pub(crate) async fn read_settled(&self, admit: &NativePromptAdmission<'_>) -> Result<bool> {
+        #[cfg(feature = "fixtures")]
+        if self.daemon.fake.is_some() {
+            admit.check_fixture().await?;
+            return Ok(false);
+        }
+        let client = self.daemon.connected_client().await?;
+        let expected = self
+            .daemon
+            .native_turns
+            .settlement_fence(&client, self.thread_id)?;
+        let thread = admit
+            .finish(
+                client
+                    .thread_read_full_gated(self.thread_id, admit.gate())
+                    .await,
+            )?
+            .thread;
+        let state = RecoveryState::from_thread(&thread);
+        Ok(state.id.as_deref() == Some(self.thread_id)
+            && state.status.as_deref() == Some("idle")
+            && self.daemon.native_turns.settle_unaddressed_start(&expected))
+    }
+
     pub(crate) async fn read_active(
         &self,
         admit: &NativePromptAdmission<'_>,

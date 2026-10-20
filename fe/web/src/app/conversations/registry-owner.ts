@@ -5,7 +5,7 @@ import { beginSendOp, withConfirmedSends, type ConversationOutboxOp } from '../.
 import { EMPTY_COMPOSER, isSameComposer, tookEveryImage, withRefill, type ComposerContent } from '../../../../core/domain/conversation-composer.ts';
 import { NO_UPLOAD, type UploadState } from '../../features/planner/attachments.tsx';
 import { moveDraft, slotHolds, type ConversationRegistry, type ConversationEdit, type ConversationOpenRequest,
-  type DraftSlots, type EditNotice, type RememberedConversation } from './registry-model.ts';
+  type DraftSlots, type EditNotice, type KeepInputIntent, type RememberedConversation } from './registry-model.ts';
 
 export const NO_SENDS: readonly ConversationOutboxOp[] = Object.freeze([]);
 export const NO_ROWS: readonly string[] = Object.freeze([]);
@@ -27,6 +27,7 @@ export type ConversationSnapshot = Readonly<{
   notices: ById<EditNotice>;
   queueWrites: ById<number>;
   restarts: ById<true>;
+  keeps: ById<KeepInputIntent>;
 }>;
 
 function put<T>(map: ById<T>, id: string, value: T | undefined): ById<T> {
@@ -76,7 +77,7 @@ function withoutEdit(state: ConversationSnapshot, id: string): ConversationSnaps
 export function createConversationOwner() {
   let state: ConversationSnapshot = {
     entries: {}, conversations: NO_CONVERSATIONS, drafts: {}, openRequest: null, outboxes: {}, spentRows: {},
-    composers: {}, newComposers: {}, uploads: {}, edits: {}, notices: {}, queueWrites: {}, restarts: {},
+    composers: {}, newComposers: {}, uploads: {}, edits: {}, notices: {}, queueWrites: {}, restarts: {}, keeps: {},
   };
   let read = 0;
   const listeners = new Set<() => void>();
@@ -97,6 +98,22 @@ export function createConversationOwner() {
     commit({ ...state, entries, conversations });
   };
   const commands: ConversationRegistry = {
+    beginKeep: (id, args, key) => {
+      const slot = `${id}\u0000${args.attempt_id}`;
+      const previous = state.keeps[slot];
+      if (previous?.status === 'sending') return null;
+      const intent: KeepInputIntent = Object.freeze({ key: previous?.key ?? key,
+        args: previous?.args ?? Object.freeze({ ...args }), status: 'sending' });
+      commit({ ...state, keeps: put(state.keeps, slot, intent) });
+      return intent;
+    },
+    finishKeep: (id, key, status) => {
+      const slot = Object.keys(state.keeps).find(slot => slot.startsWith(`${id}\u0000`) && state.keeps[slot]?.key === key);
+      if (slot === undefined) return;
+      const intent = state.keeps[slot];
+      if (intent === undefined) return;
+      commit({ ...state, keeps: put(state.keeps, slot, status === 'done' ? undefined : { ...intent, status }) });
+    },
     rememberedTurnsOf: id => state.entries[id]?.turns ?? NO_TURNS,
     turnsOf: id => withConfirmedSends(state.entries[id]?.turns ?? NO_TURNS, state.outboxes[id] ?? NO_SENDS, state.spentRows[id] ?? NO_ROWS, id),
     remember: (conversation, turns) => { rememberEntry(conversation.id, conversation, turns); },

@@ -1,7 +1,7 @@
 import { retireAreaQueries } from './area-query-lifecycle.ts';
 import { queryKeys } from './query-keys.ts';
 export { queryKeys } from './query-keys.ts';
-import { conversationItemsOperation, conversationRunOperation } from '../../../../core/domain/conversation-display.ts';
+import { conversationItemsOperation, conversationRunOperation, keepConversationInputOperation } from '../../../../core/domain/conversation-display.ts';
 import { conversationLiveOperation } from '../../../../core/domain/conversation-live.ts';
 import type { ConversationCursor, ConversationLiveReplies, HarnessLiveReplies } from '../../../../core/api/generated/wire.ts';
 // Query and mutation wiring shared by app/router, app/shell and every feature slice. It lives under
@@ -221,6 +221,13 @@ export function usePlannerMutations(transport: ApiTransportPort, cardId: string,
     return refreshAfter(result);
   };
   return {
+    keep: (args: import('../../../../core/api/generated/wire.ts').KeepConversationInputRequest, key: string) =>
+      Promise.resolve().then(() => admitTransport(transport))
+        .then(admitted => runOperation(admitted, keepConversationInputOperation(cardId, args, key), unauthorized))
+        .then(result => refreshAfterInput(result, false), (error: unknown) => {
+          refreshAfterInput(undefined, false);
+          throw error;
+        }),
     /* `admitted` is the caller's: a keyed send is admitted at the press, and each retry is admitted again.
        `answered` runs when the 200 is in hand, before the refresh starts its reads. */
     send: (text: string, attachments: readonly string[], idempotencyKey: string, replacesTurn: string | null,

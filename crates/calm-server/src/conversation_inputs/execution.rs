@@ -9,9 +9,9 @@ use calm_types::conversation::MessageAuthor;
 pub(crate) async fn authorize_human_resource_tx(
     tx: &mut Transaction<'_, Sqlite>,
     source: &HumanInputSource,
-    carrier: &CurrentInputCarrier,
+    card_id: &str,
 ) -> Result<()> {
-    let area = conversation::conversation_area_tx(tx, carrier.card_id()).await?;
+    let area = conversation::conversation_area_tx(tx, card_id).await?;
     authorize_legacy_human_area_tx(tx, source, area.id.as_str()).await
 }
 

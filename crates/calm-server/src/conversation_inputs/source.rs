@@ -65,7 +65,7 @@ pub(crate) async fn authorize_resource_tx(
 ) -> Result<String> {
     match source {
         InputSource::Human(source) => {
-            authorize_human_resource_tx(tx, source, carrier).await?;
+            authorize_human_resource_tx(tx, source, carrier.card_id()).await?;
             Ok(source.current_principal()?.user_id)
         }
         InputSource::Dispatcher(source) => source.authorize_resource_tx(tx, carrier).await,

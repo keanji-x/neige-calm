@@ -152,6 +152,7 @@ pub(super) async fn read(
             .is_some_and(|active| {
                 snapshot.canonical_inputs.attempts.iter().any(|a| {
                     active.submission_ids.contains(&a.attempt.submission_id)
+                        && !snapshot.canonical_inputs.is_kept(&a.attempt)
                         && matches!(
                             a.delivery,
                             InputDeliveryFact::CrossingUnknown | InputDeliveryFact::Unknown
@@ -171,13 +172,15 @@ pub(super) async fn read(
                     at_ms: usage.at_ms,
                 })
         };
+        let kept_waiting = snapshot.canonical_inputs.kept_execution_without_target();
         let blocked_reason = header.wedged_reason.clone().or(issuance_block).or_else(|| {
             runtime.state.is_terminal().then(|| if runtime.state == calm_types::worker::WorkerSessionState::Failed {
                 "Execution is held after this session failed. Messages remain saved."
             } else {
                 "Execution is held because this session is no longer active. Messages remain saved."
             }.into())
-        }).or_else(|| unknown.then(||
+        }).or_else(|| kept_waiting.then(|| "Input kept as delivered. Further input waits for the original thread to settle.".into()))
+                .or_else(|| unknown.then(||
                 "Delivery could not be confirmed. This message is held to avoid sending it twice.".into()))
                 .or_else(|| (!pending_inputs.is_empty() && handle_fence.is_none())
                     .then(|| "Message saved. Execution has not started.".into()));

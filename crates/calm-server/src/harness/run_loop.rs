@@ -541,6 +541,15 @@ enum EnqueueOutcome {
 }
 
 impl PlannerHarness {
+    /// Refresh from committed Truth after a same-phase Human resolution.
+    pub(crate) async fn refresh_canonical_input(&self) -> Result<()> {
+        if self.inner.inputs.canonical().is_some() {
+            let frame = canonical::read_current(&self.inner).await?;
+            canonical::publish(&self.inner, frame).await;
+        }
+        Ok(())
+    }
+
     /// Supply only the live source of an already committed exact revision.
     /// Acceptance is owned by the conversation transaction, independently of wake.
     pub(crate) async fn observe_canonical_source(

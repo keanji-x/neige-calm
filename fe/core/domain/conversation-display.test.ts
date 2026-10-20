@@ -1,5 +1,5 @@
 import { describe,it,expect } from 'vitest';
-import { buildConversationTranscript, conversationPageSchema, conversationRunMetadataSchema, orderedPendingInputs, removedHumanIds } from './conversation-display.js';
+import { keepConversationInputOperation, buildConversationTranscript, conversationPageSchema, conversationRunMetadataSchema, orderedPendingInputs, removedHumanIds } from './conversation-display.js';
 import { outboxFactsWithRemovedInputs, matchSendOps, type SendOp } from './conversation-outbox.js';
 import type { ConversationDisplayItem, HarnessItem } from '../api/generated/wire.js';
 import { isConversationMessage, SYSTEM_PRESENTATION_LABELS } from './conversation.js';
@@ -102,7 +102,7 @@ it('requires one tagged pending input list without losing Human revisions or Sys
 it('rejects missing CAS identity and unknown availability in canonical delivery',()=>{
   const attempt={attempt_id:'attempt',revision:'7',delivery:'unknown',target:{provider:'codex',thread_id:'thread',native_session_id:null,
     native_turn_id:null,local_turn_id:null,rpc_request_id:null},invocation:{kind:'prior_invocation_not_recorded'},
-    actions:{keep:{kind:'unavailable',reason:'not_implemented_yet'},retry:{kind:'unavailable',reason:'not_implemented_yet'}}};
+    resolution:null,actions:{keep:{kind:'available'},retry:{kind:'unavailable',reason:'not_implemented_yet'}}};
   const submission={carrier_id:'carrier',logical_turn_id:'logical',submission_id:'submission',attempt};
   const run={input_contract:'canonical',runtime_state:'failed',history_replacement_supported:false,terminal_timeout:null,
     pending_inputs:[],active_input:{current_execution_id:null,submissions:[submission]},native_turn_id:null};
@@ -112,7 +112,7 @@ it('rejects missing CAS identity and unknown availability in canonical delivery'
   for(const revision of ['abc','18446744073709551616','-1','01',7]) {
     expect(conversationRunMetadataSchema.safeParse({...run,active_input:{...run.active_input,submissions:[{...submission,attempt:{...attempt,revision}}]}}).success).toBe(false);
   }
-  for(const field of ['attempt_id','revision','target','invocation','actions']) {
+  for(const field of ['attempt_id','revision','target','invocation','actions','resolution']) {
     const broken={...attempt,[field]:undefined};
     expect(conversationRunMetadataSchema.safeParse({...run,active_input:{...run.active_input,submissions:[{...submission,attempt:broken}]}}).success).toBe(false);
   }
@@ -120,5 +120,15 @@ it('rejects missing CAS identity and unknown availability in canonical delivery'
     expect(conversationRunMetadataSchema.safeParse({...run,active_input:{...run.active_input,submissions:[{...submission,[field]:undefined}]}}).success).toBe(false);
   }
   expect(conversationRunMetadataSchema.safeParse({...run,active_input:{...run.active_input,submissions:[{...submission,attempt:{...attempt,
-    actions:{...attempt.actions,keep:{kind:'available'}}}}]}}).success).toBe(false);
+    actions:{...attempt.actions,keep:{kind:'unavailable',reason:'not_implemented_yet'}}}}]}}).success).toBe(false);
+});
+
+it('Keep preserves its owned operation key and exact CAS arguments and refuses a crossed receipt', () => {
+  const args={carrier_id:'carrier',submission_id:'submission',attempt_id:'attempt',revision:'7'};
+  const operation=keepConversationInputOperation('card /',args,'owned-key');
+  expect(operation).toMatchObject({method:'POST',path:'/api/cards/card%20%2F/conversation/input/keep',headers:{'Idempotency-Key':'owned-key'},body:args});
+  const result={...args,revision:'8',waiting_for_settlement:true};
+  expect(operation.responseSchema.parse(result)).toEqual(result);
+  expect(operation.responseSchema.safeParse({...result,attempt_id:'different-attempt'}).success).toBe(false);
+  expect(operation.responseSchema.safeParse({...result,revision:'9'}).success).toBe(false);
 });

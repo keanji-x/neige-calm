@@ -3,6 +3,7 @@
 //! Canonical ingress checks this owner in its protected transaction. Key replay
 //! must check it before retrieving a stored result. Storage retains factual rules.
 mod execution;
+pub(crate) mod resolution;
 mod source;
 pub(crate) use source::{
     InputSource, SourceInputs, authorize_execution_tx, authorize_resource_tx, claim_initial_tx,

@@ -77,6 +77,7 @@ export type ChatThreadProps = Readonly<{
   /** Waiting inputs follow the current status without interleaving with its reply. */
   pendingMessages?: ReactNode;
   activeInput?: ConversationActiveInput | null;
+  keepInput?: (submission: ConversationSubmissionDelivery) => Promise<void>;
   /** Current pending inputs or their retained exit content; the mounted node alone does not declare presence. */
   hasPendingMessages: boolean;
   /** Current work confirmed by the run query while the activity overlay catches up. */
@@ -116,7 +117,7 @@ export type ChatThreadProps = Readonly<{
   renderLink?: ReplyLinkRenderer;
 }>;
 
-export const ChatThread = memo(function ChatThread({ conversation, turns, pendingMessages, activeInput = null, hasPendingMessages, pending = false, sending = false, submissionRequest = 0, cards, stalled, stalledReason, recovery = null, statusUnconfirmed = false, statusLoading = false, stopFeedback = null, canContinue, copyText, regenerateMessage, editMessage, editing = null, replacement = null, runningAnchor = null, imageFiles = null, renderLink, readingView, historyPrefetch }: ChatThreadProps) {
+export const ChatThread = memo(function ChatThread({ conversation, turns, pendingMessages, activeInput = null, keepInput, hasPendingMessages, pending = false, sending = false, submissionRequest = 0, cards, stalled, stalledReason, recovery = null, statusUnconfirmed = false, statusLoading = false, stopFeedback = null, canContinue, copyText, regenerateMessage, editMessage, editing = null, replacement = null, runningAnchor = null, imageFiles = null, renderLink, readingView, historyPrefetch }: ChatThreadProps) {
   const compactViewport = useCompactViewport();
   // Observe the browser timezone on render; keep formatters stable for memoized rows.
   const timeZone = new Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -329,7 +330,7 @@ export const ChatThread = memo(function ChatThread({ conversation, turns, pendin
         {live && <VisuallyHidden>{activityLabelOf('working')}</VisuallyHidden>}
         {currentMeta}
         <div key="pending-messages" className={styles.pendingMessages}>
-          <HeldInputStatus held={heldInputs} />
+          <HeldInputStatus held={heldInputs} keepInput={keepInput} />
           {pendingMessages}
         </div>
         <div ref={endRef} aria-hidden="true" />
@@ -713,13 +714,43 @@ function clockTime(formatter: Intl.DateTimeFormat, atMs: number): string {
 }
 
 /** Status only: canonical words already have their one transcript row. */
-function HeldInputStatus({ held }: Readonly<{ held: readonly ConversationSubmissionDelivery[] }>) {
+function HeldInputStatus({ held, keepInput }: Readonly<{ held: readonly ConversationSubmissionDelivery[]; keepInput?: (submission: ConversationSubmissionDelivery) => Promise<void> }>) {
   if (held.length === 0) return null;
   return <SizeMotion motionKey={held.map(submission => `${submission.submission_id}:${submission.attempt?.revision}`).join(',')}>
-    {held.map(submission => <div key={submission.submission_id} role="status" data-nc-held-input={submission.submission_id}>
-      <Banner status="warning" title="Delivery not confirmed" description={submission.attempt?.invocation.kind === 'prior_invocation_not_recorded'
-        ? 'This input may have reached the model. Its original model settings were not recorded. Resolution actions are not available yet.'
-        : `This input may have reached the model. Original model: ${submission.attempt?.invocation.configuration.model ?? 'inherited from the thread'}; effort: ${submission.attempt?.invocation.configuration.effort ?? 'inherited from the thread'}; permissions: ${submission.attempt?.invocation.configuration.permission}. Resolution actions are not available yet.`} />
-    </div>)}
+    {held.map(submission => <HeldInput key={submission.submission_id} submission={submission} keepInput={keepInput} />)}
   </SizeMotion>;
+}
+
+function HeldInput({ submission, keepInput }: Readonly<{ submission: ConversationSubmissionDelivery; keepInput?: (submission: ConversationSubmissionDelivery) => Promise<void> }>) {
+  const [sending, setSending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const resolution = submission.attempt?.resolution;
+  const status = useRef<HTMLDivElement>(null);
+  const restoreFocus = useRef(false);
+  useEffect(() => {
+    if (resolution && restoreFocus.current) {
+      const node = status.current;
+      if (node !== null && (document.activeElement === document.body || node.contains(document.activeElement))) node.focus();
+      restoreFocus.current = false;
+    }
+  }, [resolution]);
+  const invocation = submission.attempt?.invocation;
+  const original = invocation?.kind === 'recorded'
+    ? `Original model: ${invocation.configuration.model ?? 'inherited from the thread'}; effort: ${invocation.configuration.effort ?? 'inherited from the thread'}; permissions: ${invocation.configuration.permission}.`
+    : 'The original model settings were not recorded.';
+  const keep = async () => {
+    if (keepInput === undefined || sending) return;
+    restoreFocus.current = true;
+    setSending(true); setError(null);
+    try { await keepInput(submission); }
+    catch (failure) { setError(failure instanceof Error ? failure.message : 'Could not keep this input. Try again.'); }
+    finally { setSending(false); }
+  };
+  return <div ref={status} role="status" tabIndex={-1} data-nc-held-input={submission.submission_id}>
+    <Banner status={resolution ? 'info' : 'warning'} title={resolution ? 'Input kept as delivered' : 'Delivery not confirmed'}
+      description={resolution ? (resolution.waiting_for_settlement ? 'Further input waits for the original thread to settle.' : 'The original execution remains tracked until it ends.') : `This input may have reached the model. ${original} Keep treats it as delivered. Retry is not available yet.`} />
+    {submission.attempt?.actions.keep.kind === 'available' && keepInput !== undefined
+      ? <Button label={sending ? 'Keeping…' : 'Keep as delivered'} isDisabled={sending} onClick={() => { void keep(); }} /> : null}
+    {error === null ? null : <p role="alert">{error}</p>}
+  </div>;
 }

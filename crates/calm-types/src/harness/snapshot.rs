@@ -1,10 +1,11 @@
-//! The declared V3 persisted frame. Both Truth and the server use this exact codec.
+//! The declared V4 persisted frame. Both Truth and the server use this exact codec.
 use super::budget::FrozenBudget;
 use super::{HARNESS_MODE, HarnessPhaseTag};
 use crate::conversation::ConversationInputCheckpoint;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 mod v2;
+mod v3;
 mod values;
 pub use values::{
     CompactOutcome, CompactStatus, PersistedRewind, QueueEntryId, TokenUsage, TurnBase,
@@ -58,8 +59,8 @@ impl TryFrom<CanonicalFrameWire<ConversationInputCheckpoint>> for CanonicalHarne
     fn try_from(
         wire: CanonicalFrameWire<ConversationInputCheckpoint>,
     ) -> Result<Self, Self::Error> {
-        if wire.schema_version != 3 || wire.mode != HARNESS_MODE {
-            return Err("canonical frame requires its declared V3 harness format".into());
+        if wire.schema_version != 4 || wire.mode != HARNESS_MODE {
+            return Err("canonical frame requires its declared V4 harness format".into());
         }
         wire.canonical_inputs.validate()?;
         let header = serde_json::from_value(Value::Object(wire.header))
@@ -109,7 +110,8 @@ impl CanonicalHarnessSnapshot {
     pub fn from_released(value: Value) -> Result<Self, String> {
         match value.get("schema_version").and_then(Value::as_u64) {
             Some(2) => v2::upgrade(value),
-            Some(3) => serde_json::from_value(value).map_err(|error| error.to_string()),
+            Some(3) => v3::upgrade(value),
+            Some(4) => serde_json::from_value(value).map_err(|error| error.to_string()),
             Some(_) | None => Err("unsupported canonical frame version".into()),
         }
     }
@@ -117,7 +119,7 @@ impl CanonicalHarnessSnapshot {
     /// A deliberate new dormant frame, never a fallback for malformed stored data.
     pub fn dormant(push_watermark: i64) -> Self {
         Self {
-            schema_version: 3,
+            schema_version: 4,
             mode: HARNESS_MODE.into(),
             header: HarnessRuntimeHeader::new(
                 HarnessPhaseTag::Idle,

@@ -656,7 +656,7 @@ pub(super) async fn lock_track_for_issuance(inner: &Arc<Inner>) -> Result<TrackI
     if inner.shutting_down.load(Ordering::SeqCst) {
         return Ok(TrackIssuance::ShuttingDown);
     }
-    if !inner.state.lock().await.can_issue_turn() {
+    if !inner.inputs.can_seek_issuance(inner).await? {
         return Ok(TrackIssuance::Busy);
     }
     crate::conversation_archive::require_unarchived(inner.repo.as_ref(), inner.card_id.as_str())

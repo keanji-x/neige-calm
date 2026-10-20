@@ -24,6 +24,7 @@ pub mod codex;
 pub mod codex_cards;
 pub mod conversation_archive;
 pub mod conversation_initial_input;
+pub(crate) mod conversation_input_resolution;
 pub(crate) mod conversation_items;
 mod conversation_read;
 pub(crate) mod conversation_run;

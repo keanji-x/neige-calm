@@ -4,6 +4,7 @@
 //! core lock. Observers never acquire core while holding it. No native call,
 //! repository operation or asynchronous cleanup runs under either lock.
 use super::*;
+mod settlement;
 use crate::harness::backend::{ExecutionEndScope, ExecutionEndTarget, ExecutionInput};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -94,6 +95,16 @@ pub(super) struct ControlTicket {
 
 pub(super) struct SteerTicket {
     turn: String,
+}
+
+pub(super) struct SettlementFence {
+    source: Weak<CodexAppServer>,
+    thread: String,
+    pending: Option<Arc<StartTicket>>,
+    current: Option<String>,
+    candidate: Option<String>,
+    ambiguous: bool,
+    unresolved: bool,
 }
 
 pub(super) struct StartTicket {

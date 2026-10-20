@@ -134,9 +134,9 @@ claude_version?: string, };
  */
 export type ClaudeInstalledVersion = { version: string | null, };
 
-export type ConversationActionAvailability = { "kind": "unavailable", reason: ConversationActionUnavailableReason, };
+export type ConversationActionAvailability = { "kind": "available" } | { "kind": "unavailable", reason: ConversationActionUnavailableReason, };
 
-export type ConversationActionUnavailableReason = "not_implemented_yet";
+export type ConversationActionUnavailableReason = "not_implemented_yet" | "already_kept" | "not_held";
 
 export type ConversationActiveInput = { 
 /**
@@ -148,7 +148,7 @@ export type ConversationAttemptDelivery = { attempt_id: string,
 /**
  * Decimal text preserves the full persisted u64 CAS identity in browsers.
  */
-revision: string, target: ConversationInputTarget, delivery: ConversationDelivery, invocation: InputInvocation, actions: ConversationResolutionActions, };
+revision: string, target: ConversationInputTarget, delivery: ConversationDelivery, invocation: InputInvocation, actions: ConversationResolutionActions, resolution: KeepConversationInputResult | null, };
 
 export type ConversationCursor = { contract: ConversationReadContract, card_id: string, source: ConversationCursorSource, position: number, };
 
@@ -523,6 +523,14 @@ export type InitialInputReceiptVersion = "initial-input-v1";
 export type InitialInputUnavailableReason = "legacy-operation" | "creation-incomplete" | "runtime-unavailable" | "runtime-changed" | "shutting-down" | "legacy-projection" | "integrity";
 
 export type InputInvocation = { "kind": "recorded", configuration: FrozenInputInvocation, } | { "kind": "prior_invocation_not_recorded" };
+
+export type KeepConversationInputRequest = { carrier_id: string, submission_id: string, attempt_id: string, 
+/**
+ * Exact decimal revision from the run read, never a JavaScript number.
+ */
+revision: string, };
+
+export type KeepConversationInputResult = { carrier_id: string, submission_id: string, attempt_id: string, revision: string, waiting_for_settlement: boolean, };
 
 /**
  * `POST /api/read-receipts/{kind}/{target_id}/read`: the activity instant the reader has seen.

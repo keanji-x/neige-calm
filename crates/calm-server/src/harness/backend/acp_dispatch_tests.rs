@@ -82,6 +82,7 @@ async fn canonical_input_is_unsupported_before_admission_or_native_effects() {
     let proof = super::dispatch_tests::proof();
     let report = backend
         .dispatch_input(
+            None,
             &super::dispatch_tests::logical_turn_id(),
             proof.attempt(),
             &thread,
