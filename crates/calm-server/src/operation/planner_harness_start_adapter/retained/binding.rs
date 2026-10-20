@@ -1,6 +1,7 @@
 //! The local identity has no external effect: claim, runtime fence, attribution
 //! and the existing operation checkpoint commit together, or none of them do.
 use super::*;
+use crate::harness::snapshot::canonical_runtime_header_value;
 
 impl PlannerHarnessStartAdapter {
     pub(super) async fn retained_bind_local(
@@ -85,11 +86,7 @@ pub(super) async fn bind_identity_tx(
         conversation::current_input_carrier_tx(tx, &wire.card_id, &wire.worker_session_id).await?;
     let mut frame: CanonicalHarnessSnapshot = serde_json::from_value(current.snapshot().clone())?;
     frame.header.last_thread_id = Some(thread.to_owned());
-    let mut header = serde_json::to_value(frame)?;
-    header
-        .as_object_mut()
-        .expect("canonical frame")
-        .remove(calm_types::conversation::CONVERSATION_INPUT_CHECKPOINT_KEY);
+    let header = canonical_runtime_header_value(&frame)?;
     conversation::persist_runtime_frame_tx(
         tx,
         &wire.card_id,

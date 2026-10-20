@@ -1,5 +1,15 @@
-//! Server compatibility reexport; the sole codec is shared with Truth.
+//! Server compatibility reexport and runtime-header adapter; the sole codec is shared with Truth.
 pub(crate) use calm_types::harness::snapshot::CanonicalHarnessSnapshot;
+
+/// Keep the canonical wire metadata while leaving input facts with their owner.
+pub(crate) fn canonical_runtime_header_value(
+    snapshot: &CanonicalHarnessSnapshot,
+) -> serde_json::Result<serde_json::Value> {
+    let mut header: serde_json::Map<String, serde_json::Value> =
+        serde_json::from_value(serde_json::to_value(snapshot)?)?;
+    header.remove(calm_types::conversation::CONVERSATION_INPUT_CHECKPOINT_KEY);
+    Ok(serde_json::Value::Object(header))
+}
 
 #[cfg(test)]
 mod tests {

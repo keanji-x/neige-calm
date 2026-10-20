@@ -19,7 +19,7 @@ pub use calm_types::harness::{HARNESS_MODE, HARNESS_SNAPSHOT_SCHEMA_VERSION};
 
 mod canonical;
 mod runtime_header;
-pub(crate) use canonical::CanonicalHarnessSnapshot;
+pub(crate) use canonical::{CanonicalHarnessSnapshot, canonical_runtime_header_value};
 use runtime_header::{HarnessRuntimeHeader, HarnessRuntimeHeaderExt};
 
 /// The segments of the turn an older binary had in flight when it stopped. Read on load and

@@ -11,7 +11,9 @@ use crate::db::sqlite::conversation::{
 };
 use crate::harness::profile::input_carrier_binding_tx;
 use crate::harness::registry::CanonicalSourceIndex;
-use crate::harness::snapshot::CanonicalHarnessSnapshot;
+use crate::harness::snapshot::{
+    CanonicalHarnessSnapshot, canonical_runtime_header_value as header_value,
+};
 use crate::planner_permission_mode::PlannerPermissionMode;
 use calm_types::conversation::{
     AcceptedInputRef, InputDeliveryFact, PendingInput, SystemRenderContext,
@@ -67,15 +69,6 @@ fn checked_snapshot(value: Value) -> Result<CanonicalHarnessSnapshot> {
         }
     }
     Ok(snapshot)
-}
-
-fn header_value(snapshot: &CanonicalHarnessSnapshot) -> Result<Value> {
-    let mut value = serde_json::to_value(snapshot)?;
-    value
-        .as_object_mut()
-        .expect("declared canonical object")
-        .remove(calm_types::conversation::CONVERSATION_INPUT_CHECKPOINT_KEY);
-    Ok(value)
 }
 
 #[derive(Clone)]
