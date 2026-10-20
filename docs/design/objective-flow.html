@@ -110,7 +110,7 @@ const N = [
   ["ro", 990, 318, 170, 60, "exist", "只读任务", "evaluation-v1 结果契约", "已有只读任务（head 固定）；新增 evaluation-v1 结果契约，仿 review-v1。"],
 
   ["react", 470, 462, 230, 64, "core", "engine::react", "(状态, 事件) → (状态', 意图)", "objective::engine::react。纯函数、确定：同样的事件日志一定得到同样的状态。"],
-  ["definition", 30, 570, 150, 60, "core", "definition", "规格 · 角色 · 预算", "ObjectiveSpec · CheckSpec · Role(invariant/ratchet/goal) · Budget · StopRule · CompactPolicy"],
+  ["definition", 30, 570, 150, 60, "core", "definition", "规格 · 角色 · 预算", "ObjectiveDefinition · CheckDefinition · Role(invariant/ratchet/goal) · Budget · StopRule · CompactPolicy"],
   ["standard", 190, 570, 150, 60, "core", "standard", "指纹 · 批准", "standard_hash()：checks + constraints + stop + 细则文件内容。Approval 绑定指纹。"],
   ["check", 350, 570, 150, 60, "core", "check", "trait CheckKind", "扩展口：command · metric · evaluator · fact；以后：基准、视觉、安全。"],
   ["verdict", 510, 570, 150, 60, "core", "verdict", "keepable()", "可保留 = 不变量全过 + 无棘轮退步 +（循环型）至少一项改进。退步不能保留。"],
@@ -128,7 +128,7 @@ const NODE = Object.fromEntries(N.map(n => [n[0], { id:n[0], x:n[1], y:n[2], w:n
 // from, to, label, flows {flow: n}, bend, dashed
 const E = [
   ["pl","guard","写 objective 块",{S:1},0],
-  ["guard","host","SpecChanged",{S:2},-30],
+  ["guard","host","DefinitionChanged",{S:2},-30],
   ["host","react","Event",{S:3,E:3,C:3},-24],
   ["react","definition","校验",{S:4},20],
   ["react","standard","指纹 h1",{S:5},10],

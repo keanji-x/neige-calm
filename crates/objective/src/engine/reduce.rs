@@ -5,7 +5,7 @@ use std::collections::btree_map::Entry;
 
 use super::{Evaluation, Event, IgnoreReason, Notice, ObjectiveState, State, Status};
 use crate::check::SampleOutput;
-use crate::definition::ObjectiveSpec;
+use crate::definition::ObjectiveDefinition;
 use crate::ids::{CheckId, EvaluationId, ObjectiveKey, Revision};
 use crate::ledger::{Decision, LedgerEntry};
 use crate::standard::{Approval, standard_hash};
@@ -14,7 +14,7 @@ use crate::verdict::{Results, keepable};
 
 pub(super) fn apply(state: &mut State, event: &Event) -> Vec<Occurrence> {
     match event {
-        Event::SpecChanged { objective } => define(state, objective),
+        Event::DefinitionChanged { objective } => define(state, objective),
         Event::ApprovalGranted {
             objective,
             approval,
@@ -73,14 +73,14 @@ fn open<'a>(
     }
 }
 
-fn approval_required(objective: &ObjectiveSpec) -> Occurrence {
+fn approval_required(objective: &ObjectiveDefinition) -> Occurrence {
     Occurrence::Notice(Notice::ApprovalRequired {
         objective: objective.key.clone(),
         standard_hash: standard_hash(objective),
     })
 }
 
-fn define(state: &mut State, definition: &ObjectiveSpec) -> Vec<Occurrence> {
+fn define(state: &mut State, definition: &ObjectiveDefinition) -> Vec<Occurrence> {
     let key = definition.key.clone();
     let diagnostics = definition.validate();
     if !diagnostics.is_empty() {

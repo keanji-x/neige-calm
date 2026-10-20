@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::check::SampleOutput;
 use crate::command::CommandCall;
-use crate::definition::{BudgetLimit, ObjectiveSpec, Usage};
+use crate::definition::{BudgetLimit, ObjectiveDefinition, Usage};
 use crate::diagnostic::Diagnostic;
 use crate::ids::{CheckId, EvaluationId, ObjectiveKey, Revision};
 use crate::ledger::{Decision, SettleError};
@@ -17,8 +17,8 @@ use crate::verdict::VerdictKind;
 #[serde(rename_all = "snake_case", tag = "event")]
 pub enum Event {
     /// An objective was created or redefined.
-    SpecChanged {
-        objective: ObjectiveSpec,
+    DefinitionChanged {
+        objective: ObjectiveDefinition,
     },
     ApprovalGranted {
         objective: ObjectiveKey,

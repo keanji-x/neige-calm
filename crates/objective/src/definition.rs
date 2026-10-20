@@ -10,11 +10,11 @@ use crate::ids::{CheckId, ObjectiveKey};
 
 /// One objective: what to reach, how it is checked, and the soft limits of pursuing it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct ObjectiveSpec {
+pub struct ObjectiveDefinition {
     pub key: ObjectiveKey,
     pub title: String,
     pub mode: Mode,
-    pub checks: Vec<CheckSpec>,
+    pub checks: Vec<CheckDefinition>,
     pub constraints: Vec<String>,
     pub budget: Budget,
     pub compact: CompactPolicy,
@@ -43,7 +43,7 @@ pub enum Role {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct CheckSpec {
+pub struct CheckDefinition {
     pub id: CheckId,
     pub role: Role,
     pub config: CheckConfig,
@@ -111,8 +111,8 @@ pub enum CompactPolicy {
     None,
 }
 
-impl ObjectiveSpec {
-    pub fn check(&self, id: &CheckId) -> Option<&CheckSpec> {
+impl ObjectiveDefinition {
+    pub fn check(&self, id: &CheckId) -> Option<&CheckDefinition> {
         self.checks.iter().find(|c| &c.id == id)
     }
 
@@ -192,8 +192,8 @@ mod tests {
         Aggregate, CommandParams, Direction, EvaluatorParams, MetricParams, RubricItem,
     };
 
-    fn command(id: &str, role: Role) -> CheckSpec {
-        CheckSpec {
+    fn command(id: &str, role: Role) -> CheckDefinition {
+        CheckDefinition {
             id: CheckId::new(id),
             role,
             config: CheckConfig::Command(CommandParams {
@@ -202,8 +202,8 @@ mod tests {
         }
     }
 
-    fn objective(mode: Mode, checks: Vec<CheckSpec>) -> ObjectiveSpec {
-        ObjectiveSpec {
+    fn objective(mode: Mode, checks: Vec<CheckDefinition>) -> ObjectiveDefinition {
+        ObjectiveDefinition {
             key: ObjectiveKey::new("speed"),
             title: "Make it fast".into(),
             mode,
@@ -218,7 +218,7 @@ mod tests {
         }
     }
 
-    fn problems(objective: &ObjectiveSpec) -> Vec<(String, Problem)> {
+    fn problems(objective: &ObjectiveDefinition) -> Vec<(String, Problem)> {
         objective
             .validate()
             .into_iter()
@@ -232,7 +232,7 @@ mod tests {
         assert!(converge.validate().is_empty());
         let looping = objective(
             Mode::Loop { plateau: 3 },
-            vec![CheckSpec {
+            vec![CheckDefinition {
                 id: CheckId::new("latency"),
                 role: Role::Ratchet,
                 config: CheckConfig::Metric(MetricParams {
@@ -283,7 +283,7 @@ mod tests {
 
     #[test]
     fn reports_kind_problems_under_the_check_path() {
-        let zero_samples = CheckSpec {
+        let zero_samples = CheckDefinition {
             id: CheckId::new("review"),
             role: Role::Goal,
             config: CheckConfig::Evaluator(EvaluatorParams {

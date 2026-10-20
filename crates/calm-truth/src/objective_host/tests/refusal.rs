@@ -4,7 +4,7 @@ use super::*;
 async fn identical_planner_retry_is_duplicate() {
     let repo = fixture().await;
     let input = planner(
-        Event::SpecChanged {
+        Event::DefinitionChanged {
             objective: definition(),
         },
         "same",
@@ -33,7 +33,7 @@ async fn identical_planner_retry_is_duplicate() {
     assert!(matches!(
         react(
             repo.db(),
-            planner(Event::SpecChanged { objective: changed }, "same")
+            planner(Event::DefinitionChanged { objective: changed }, "same")
         )
         .await,
         Err(TruthError::Core(calm_types::error::CoreError::Conflict(_)))
@@ -45,7 +45,7 @@ async fn identical_planner_retry_is_duplicate() {
 async fn assistant_session_cannot_define() {
     let repo = fixture().await;
     let mut input = planner(
-        Event::SpecChanged {
+        Event::DefinitionChanged {
             objective: definition(),
         },
         "a",
@@ -77,7 +77,7 @@ async fn closed_authorization_matrix() {
                     } else {
                         matches!(
                             event,
-                            Event::SpecChanged { .. }
+                            Event::DefinitionChanged { .. }
                                 | Event::Requested { .. }
                                 | Event::Settled { .. }
                                 | Event::Closed { .. }
@@ -113,7 +113,7 @@ async fn closed_authorization_matrix() {
     }
     for principal in [Principal::Kernel, Principal::User] {
         let mut input = planner(
-            Event::SpecChanged {
+            Event::DefinitionChanged {
                 objective: definition(),
             },
             "non-agent",
@@ -223,7 +223,7 @@ async fn intent_insert_failure_rolls_back_every_write() {
         react(
             repo.db(),
             planner(
-                Event::SpecChanged {
+                Event::DefinitionChanged {
                     objective: definition()
                 },
                 "fail"
@@ -241,7 +241,7 @@ async fn effect_collision_rolls_back() {
     let repo = fixture().await;
     fixture_react(
         &repo,
-        Event::SpecChanged {
+        Event::DefinitionChanged {
             objective: definition(),
         },
         "define",
@@ -273,7 +273,7 @@ async fn log_is_append_only() {
     react(
         repo.db(),
         planner(
-            Event::SpecChanged {
+            Event::DefinitionChanged {
                 objective: definition(),
             },
             "first",

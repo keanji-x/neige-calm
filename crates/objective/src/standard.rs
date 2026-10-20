@@ -8,7 +8,7 @@ use std::fmt::Write as _;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::definition::{CheckSpec, Mode, ObjectiveSpec};
+use crate::definition::{CheckDefinition, Mode, ObjectiveDefinition};
 use crate::ids::ObjectiveKey;
 
 /// Version of the canonical form below; bump it when that form changes.
@@ -32,11 +32,11 @@ struct Canonical<'a> {
     version: u32,
     key: &'a ObjectiveKey,
     mode: &'a Mode,
-    checks: &'a [CheckSpec],
+    checks: &'a [CheckDefinition],
     constraints: &'a [String],
 }
 
-pub fn standard_hash(objective: &ObjectiveSpec) -> StandardHash {
+pub fn standard_hash(objective: &ObjectiveDefinition) -> StandardHash {
     let canonical = Canonical {
         version: CANONICAL_VERSION,
         key: &objective.key,
@@ -64,7 +64,7 @@ pub struct Approval {
 
 impl Approval {
     /// Valid only while the objective's standard still hashes to the approved hash.
-    pub fn is_valid_for(&self, objective: &ObjectiveSpec) -> bool {
+    pub fn is_valid_for(&self, objective: &ObjectiveDefinition) -> bool {
         self.standard_hash == standard_hash(objective)
     }
 }
@@ -76,12 +76,12 @@ mod tests {
     use crate::definition::{Budget, CompactPolicy, Role};
     use crate::ids::CheckId;
 
-    fn objective() -> ObjectiveSpec {
-        ObjectiveSpec {
+    fn objective() -> ObjectiveDefinition {
+        ObjectiveDefinition {
             key: ObjectiveKey::new("tests-green"),
             title: "Tests pass".into(),
             mode: Mode::Converge,
-            checks: vec![CheckSpec {
+            checks: vec![CheckDefinition {
                 id: CheckId::new("tests"),
                 role: Role::Goal,
                 config: CheckConfig::Command(CommandParams {
@@ -123,7 +123,7 @@ mod tests {
     #[test]
     fn every_standard_part_changes_the_hash() {
         let base = standard_hash(&objective());
-        let edits: Vec<fn(&mut ObjectiveSpec)> = vec![
+        let edits: Vec<fn(&mut ObjectiveDefinition)> = vec![
             |o| o.key = ObjectiveKey::new("other"),
             |o| o.mode = Mode::Loop { plateau: 2 },
             |o| o.checks[0].role = Role::Ratchet,

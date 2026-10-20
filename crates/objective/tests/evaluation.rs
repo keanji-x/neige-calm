@@ -6,7 +6,7 @@ mod common;
 
 use common::{command, exit_run, metric, objective, value_run};
 use objective::check::{CheckConfig, CommandParams, Direction, SampleOutput};
-use objective::definition::{Mode, ObjectiveSpec, Role};
+use objective::definition::{Mode, ObjectiveDefinition, Role};
 use objective::engine::{Evaluation, Event, IgnoreReason, Intent, Notice, State, react};
 use objective::ids::{CheckId, EvaluationId, Revision};
 use objective::ledger::Decision;
@@ -19,10 +19,10 @@ fn step(state: &mut State, event: Event) -> Vec<Intent> {
     intents
 }
 
-fn define_and_approve(state: &mut State, objective: &ObjectiveSpec) {
+fn define_and_approve(state: &mut State, objective: &ObjectiveDefinition) {
     step(
         state,
-        Event::SpecChanged {
+        Event::DefinitionChanged {
             objective: objective.clone(),
         },
     );
@@ -38,7 +38,7 @@ fn define_and_approve(state: &mut State, objective: &ObjectiveSpec) {
     );
 }
 
-fn request(state: &mut State, objective: &ObjectiveSpec, revision: &str) -> Vec<Intent> {
+fn request(state: &mut State, objective: &ObjectiveDefinition, revision: &str) -> Vec<Intent> {
     step(
         state,
         Event::Requested {
@@ -63,7 +63,7 @@ fn requested(intents: &[Intent]) -> EvaluationId {
 
 fn finish(
     state: &mut State,
-    objective: &ObjectiveSpec,
+    objective: &ObjectiveDefinition,
     evaluation: EvaluationId,
     check: &str,
     revision: &str,
@@ -84,7 +84,7 @@ fn finish(
 
 fn settle(
     state: &mut State,
-    objective: &ObjectiveSpec,
+    objective: &ObjectiveDefinition,
     evaluation: EvaluationId,
     decision: Decision,
 ) -> Vec<Intent> {
@@ -109,7 +109,7 @@ fn notices(intents: &[Intent]) -> Vec<Notice> {
         .collect()
 }
 
-fn with_command(objective: &ObjectiveSpec, check: usize, line: &str) -> ObjectiveSpec {
+fn with_command(objective: &ObjectiveDefinition, check: usize, line: &str) -> ObjectiveDefinition {
     let mut changed = objective.clone();
     changed.checks[check].config = CheckConfig::Command(CommandParams {
         command: line.into(),

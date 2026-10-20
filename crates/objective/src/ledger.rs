@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::definition::{Mode, ObjectiveSpec};
+use crate::definition::{Mode, ObjectiveDefinition};
 use crate::ids::Revision;
 use crate::verdict::{Results, Verdict, VerdictKind};
 
@@ -62,7 +62,11 @@ impl Ledger {
     /// nothing about the new check, so that check is judged on its own until a revision is kept
     /// under its new definition. A role change keeps the result: the role decides what a
     /// comparison means, not whether one is possible. Ledger entries keep their results.
-    pub fn retain_comparable(&mut self, previous: &ObjectiveSpec, next: &ObjectiveSpec) {
+    pub fn retain_comparable(
+        &mut self,
+        previous: &ObjectiveDefinition,
+        next: &ObjectiveDefinition,
+    ) {
         let Some(baseline) = &mut self.baseline else {
             return;
         };

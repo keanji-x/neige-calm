@@ -13,7 +13,7 @@ pub struct LoggedEvent {
 
 pub(super) fn kind(event: &Event) -> &'static str {
     match event {
-        Event::SpecChanged { .. } => "spec_changed",
+        Event::DefinitionChanged { .. } => "definition_changed",
         Event::ApprovalGranted { .. } => "approval_granted",
         Event::Requested { .. } => "requested",
         Event::CheckFinished { .. } => "check_finished",
@@ -26,7 +26,7 @@ pub(super) fn kind(event: &Event) -> &'static str {
 }
 fn objective_of(event: &Event) -> Option<&ObjectiveKey> {
     match event {
-        Event::SpecChanged { objective } => Some(&objective.key),
+        Event::DefinitionChanged { objective } => Some(&objective.key),
         Event::ApprovalGranted { objective, .. }
         | Event::Requested { objective, .. }
         | Event::CheckFinished { objective, .. }

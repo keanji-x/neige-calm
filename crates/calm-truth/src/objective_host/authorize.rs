@@ -17,7 +17,7 @@ pub(super) async fn authorize<'a>(
 ) -> Result<AuthorizedInput<'a>> {
     let principal = match (&input.event, &input.source) {
         (
-            Event::SpecChanged { .. }
+            Event::DefinitionChanged { .. }
             | Event::Requested { .. }
             | Event::Settled { .. }
             | Event::Closed { .. },
@@ -35,7 +35,7 @@ pub(super) async fn authorize<'a>(
                 .ok_or_else(|| TruthError::Forbidden("objective track missing".into()))?,
         },
         (
-            Event::SpecChanged { .. }
+            Event::DefinitionChanged { .. }
             | Event::Requested { .. }
             | Event::Settled { .. }
             | Event::Closed { .. }

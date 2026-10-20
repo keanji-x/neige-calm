@@ -17,7 +17,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 
 use crate::check::SampleOutput;
-use crate::definition::{BudgetLimit, ObjectiveSpec, Usage};
+use crate::definition::{BudgetLimit, ObjectiveDefinition, Usage};
 use crate::ids::{CheckId, EvaluationId, ObjectiveKey, Revision};
 use crate::ledger::Ledger;
 use crate::standard::Approval;
@@ -47,7 +47,7 @@ pub enum Status {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ObjectiveState {
-    pub definition: ObjectiveSpec,
+    pub definition: ObjectiveDefinition,
     /// The latest approval; it counts only while it matches the current standard.
     pub approval: Option<Approval>,
     pub ledger: Ledger,

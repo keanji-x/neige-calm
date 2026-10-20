@@ -2,7 +2,9 @@ use super::*;
 use crate::db::sqlite::{SqlxRepo, area_delete_tx, track_delete_tx};
 use crate::worker::Principal;
 use objective::check::{CheckConfig, CommandOutput, CommandParams, MetricOutput, SampleOutput};
-use objective::definition::{Budget, CheckSpec, CompactPolicy, Mode, ObjectiveSpec, Role, Usage};
+use objective::definition::{
+    Budget, CheckDefinition, CompactPolicy, Mode, ObjectiveDefinition, Role, Usage,
+};
 use objective::ids::{CheckId, EvaluationId, ObjectiveKey, Revision};
 use objective::ledger::Decision;
 use objective::standard::{Approval, standard_hash};
@@ -30,12 +32,12 @@ async fn fixture() -> SqlxRepo {
     repo
 }
 
-fn definition() -> ObjectiveSpec {
-    ObjectiveSpec {
+fn definition() -> ObjectiveDefinition {
+    ObjectiveDefinition {
         key: ObjectiveKey::new("build"),
         title: "Build".into(),
         mode: Mode::Loop { plateau: 2 },
-        checks: vec![CheckSpec {
+        checks: vec![CheckDefinition {
             id: CheckId::new("check"),
             role: Role::Ratchet,
             config: CheckConfig::Command(CommandParams {
@@ -100,7 +102,7 @@ async fn fixture_react(repo: &SqlxRepo, event: Event, id: &str) -> Reaction {
 }
 fn scenario() -> Vec<Event> {
     vec![
-        Event::SpecChanged {
+        Event::DefinitionChanged {
             objective: definition(),
         },
         Event::ApprovalGranted {
@@ -136,7 +138,7 @@ fn scenario() -> Vec<Event> {
             },
         },
         Event::HostIdle { queue_len: 0 },
-        Event::SpecChanged {
+        Event::DefinitionChanged {
             objective: definition(),
         },
         Event::Closed {

@@ -95,7 +95,7 @@ async fn snapshot_seq_tracks_log_tip() {
     react(
         repo.db(),
         planner(
-            Event::SpecChanged {
+            Event::DefinitionChanged {
                 objective: definition(),
             },
             "first",
@@ -141,7 +141,7 @@ async fn corrupt_log_row_fails_closed() {
     react(
         repo.db(),
         planner(
-            Event::SpecChanged {
+            Event::DefinitionChanged {
                 objective: definition(),
             },
             "first",
@@ -179,7 +179,7 @@ async fn snapshot_corruption_and_unknown_event_version_fail_closed() {
     react(
         repo.db(),
         planner(
-            Event::SpecChanged {
+            Event::DefinitionChanged {
                 objective: definition(),
             },
             "first",
@@ -220,7 +220,7 @@ async fn track_delete_cascades_both_paths() {
         react(
             repo.db(),
             planner(
-                Event::SpecChanged {
+                Event::DefinitionChanged {
                     objective: definition(),
                 },
                 "first",

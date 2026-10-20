@@ -3,7 +3,7 @@ CREATE TABLE objective_events (
     track_id TEXT NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
     seq INTEGER NOT NULL CHECK(typeof(seq)='integer' AND seq>=1),
     schema_version INTEGER NOT NULL CHECK(schema_version=1),
-    kind TEXT NOT NULL CHECK(kind IN('spec_changed','approval_granted','requested','check_finished','revision_delivered','settled','closed','host_idle','usage')),
+    kind TEXT NOT NULL CHECK(kind IN('definition_changed','approval_granted','requested','check_finished','revision_delivered','settled','closed','host_idle','usage')),
     objective_key TEXT,
     payload_json TEXT NOT NULL CHECK(json_valid(payload_json)),
     source_kind TEXT NOT NULL CHECK(source_kind IN('planner_call','intent_job','harness_turn')),
@@ -13,7 +13,7 @@ CREATE TABLE objective_events (
     UNIQUE(track_id,source_kind,source_key,kind),
     CHECK(kind IS json_extract(payload_json,'$.event')),
     CHECK(objective_key IS (CASE kind
-        WHEN 'spec_changed' THEN json_extract(payload_json,'$.objective.key')
+        WHEN 'definition_changed' THEN json_extract(payload_json,'$.objective.key')
         WHEN 'revision_delivered' THEN NULL WHEN 'host_idle' THEN NULL WHEN 'usage' THEN NULL
         ELSE json_extract(payload_json,'$.objective') END))
 );

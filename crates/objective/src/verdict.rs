@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::check::{CheckOutput, Comparison, Trend};
-use crate::definition::{CheckSpec, Mode, ObjectiveSpec, Role};
+use crate::definition::{CheckDefinition, Mode, ObjectiveDefinition, Role};
 use crate::ids::CheckId;
 
 /// One evaluation's results, by check.
@@ -96,7 +96,7 @@ impl Verdict {
     }
 }
 
-fn finding(check: &CheckSpec, baseline: &Results, candidate: &Results) -> Finding {
+fn finding(check: &CheckDefinition, baseline: &Results, candidate: &Results) -> Finding {
     let Some(candidate) = candidate.get(&check.id) else {
         return Finding::Missing;
     };
@@ -128,7 +128,11 @@ fn regresses(role: Role, finding: &Finding) -> bool {
 /// every invariant must pass and no ratchet may regress, else [`VerdictKind::Regression`];
 /// in converge mode, passing every goal check is [`VerdictKind::Done`]; in loop mode, a
 /// candidate that improves no check against a present baseline is [`VerdictKind::Discard`].
-pub fn keepable(objective: &ObjectiveSpec, baseline: &Results, candidate: &Results) -> Verdict {
+pub fn keepable(
+    objective: &ObjectiveDefinition,
+    baseline: &Results,
+    candidate: &Results,
+) -> Verdict {
     let reasons: Vec<CheckReason> = objective
         .checks
         .iter()
@@ -167,14 +171,14 @@ mod tests {
     use super::*;
     use crate::check::{CheckConfig, CommandOutput, CommandParams};
 
-    fn objective_with(roles: &[(&str, Role)], mode: Mode) -> ObjectiveSpec {
-        ObjectiveSpec {
+    fn objective_with(roles: &[(&str, Role)], mode: Mode) -> ObjectiveDefinition {
+        ObjectiveDefinition {
             key: crate::ids::ObjectiveKey::new("o"),
             title: "t".into(),
             mode,
             checks: roles
                 .iter()
-                .map(|(id, role)| CheckSpec {
+                .map(|(id, role)| CheckDefinition {
                     id: CheckId::new(*id),
                     role: *role,
                     config: CheckConfig::Command(CommandParams {

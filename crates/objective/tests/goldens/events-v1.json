@@ -8,7 +8,7 @@
     }
   },
   {
-    "event": "spec_changed",
+    "event": "definition_changed",
     "objective": {
       "budget": {
         "tokens": 50000,
@@ -69,7 +69,7 @@
     }
   },
   {
-    "event": "spec_changed",
+    "event": "definition_changed",
     "objective": {
       "budget": {
         "tokens": 50000,
@@ -526,7 +526,7 @@
     "queue_len": 0
   },
   {
-    "event": "spec_changed",
+    "event": "definition_changed",
     "objective": {
       "budget": {
         "tokens": 50000,

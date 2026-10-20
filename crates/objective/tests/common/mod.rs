@@ -7,12 +7,14 @@ use objective::check::{
     EvaluatorParams, EvaluatorSample, Evidence, Findings, Judgement, MetricOutput, MetricParams,
     RubricItem, SampleOutput, Trend,
 };
-use objective::definition::{Budget, CheckSpec, CompactPolicy, Mode, ObjectiveSpec, Role};
+use objective::definition::{
+    Budget, CheckDefinition, CompactPolicy, Mode, ObjectiveDefinition, Role,
+};
 use objective::ids::{CheckId, ObjectiveKey};
 use objective::verdict::Results;
 
-pub fn command(id: &str, role: Role) -> CheckSpec {
-    CheckSpec {
+pub fn command(id: &str, role: Role) -> CheckDefinition {
+    CheckDefinition {
         id: CheckId::new(id),
         role,
         config: CheckConfig::Command(CommandParams {
@@ -21,8 +23,8 @@ pub fn command(id: &str, role: Role) -> CheckSpec {
     }
 }
 
-pub fn metric(id: &str, role: Role, direction: Direction) -> CheckSpec {
-    CheckSpec {
+pub fn metric(id: &str, role: Role, direction: Direction) -> CheckDefinition {
+    CheckDefinition {
         id: CheckId::new(id),
         role,
         config: CheckConfig::Metric(MetricParams {
@@ -33,8 +35,8 @@ pub fn metric(id: &str, role: Role, direction: Direction) -> CheckSpec {
     }
 }
 
-pub fn evaluator(id: &str, role: Role, samples: u32) -> CheckSpec {
-    CheckSpec {
+pub fn evaluator(id: &str, role: Role, samples: u32) -> CheckDefinition {
+    CheckDefinition {
         id: CheckId::new(id),
         role,
         config: CheckConfig::Evaluator(EvaluatorParams {
@@ -48,8 +50,8 @@ pub fn evaluator(id: &str, role: Role, samples: u32) -> CheckSpec {
     }
 }
 
-pub fn objective(key: &str, mode: Mode, checks: Vec<CheckSpec>) -> ObjectiveSpec {
-    ObjectiveSpec {
+pub fn objective(key: &str, mode: Mode, checks: Vec<CheckDefinition>) -> ObjectiveDefinition {
+    ObjectiveDefinition {
         key: ObjectiveKey::new(key),
         title: format!("objective {key}"),
         mode,

@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::definition::{CheckSpec, Mode, ObjectiveSpec};
+use crate::definition::{CheckDefinition, Mode, ObjectiveDefinition};
 use crate::ids::{CheckId, ObjectiveKey, Revision};
 use crate::ledger::{Decision, Ledger};
 use crate::standard::{StandardHash, standard_hash};
@@ -155,7 +155,7 @@ pub struct ObjectiveBrief {
     pub mode: Mode,
     /// The standard's check definitions: id, role, kind and parameters, such as commands,
     /// metric directions and tolerances, rubrics and fact subjects.
-    pub checks: Vec<CheckSpec>,
+    pub checks: Vec<CheckDefinition>,
     pub constraints: Vec<String>,
     pub baseline: Option<Revision>,
     pub ledger: Vec<EntryBrief>,
@@ -164,7 +164,7 @@ pub struct ObjectiveBrief {
 }
 
 impl ObjectiveBrief {
-    pub fn new(objective: &ObjectiveSpec, ledger: &Ledger, latest: Option<&Verdict>) -> Self {
+    pub fn new(objective: &ObjectiveDefinition, ledger: &Ledger, latest: Option<&Verdict>) -> Self {
         Self {
             key: objective.key.clone(),
             title: objective.title.clone(),
@@ -270,11 +270,11 @@ mod tests {
 
     #[test]
     fn brief_carries_standard_ledger_and_open_blockers() {
-        let objective = ObjectiveSpec {
+        let objective = ObjectiveDefinition {
             key: ObjectiveKey::new("green"),
             title: "Tests pass".into(),
             mode: Mode::Converge,
-            checks: vec![CheckSpec {
+            checks: vec![CheckDefinition {
                 id: CheckId::new("tests"),
                 role: Role::Goal,
                 config: CheckConfig::Command(CommandParams {
@@ -315,12 +315,12 @@ mod tests {
 
     #[test]
     fn brief_carries_every_check_definition_but_no_outputs() {
-        let check = |id: &str, config| CheckSpec {
+        let check = |id: &str, config| CheckDefinition {
             id: CheckId::new(id),
             role: Role::Ratchet,
             config,
         };
-        let objective = ObjectiveSpec {
+        let objective = ObjectiveDefinition {
             key: ObjectiveKey::new("quality"),
             title: "Better code".into(),
             mode: Mode::Loop { plateau: 2 },
