@@ -787,7 +787,7 @@ describe('planner history pagination', () => {
   it('uses the returned contract cursor rather than a raw item row id', async () => {
     const cursor = { contract:'conversation_v1',card_id:'card',source:'presentation',position:7 } as const;
     const { transport, paths } = recordingTransport(request => ok({
-      contract:'conversation_v1',source:'presentation',items:[],next_cursor:request.path.includes('&cursor=') ? null : cursor,
+      contract:'conversation_v1',source:'presentation',conversation: 0, items:[],next_cursor:request.path.includes('&cursor=') ? null : cursor,
     }));
     const options = transcriptQueryOptions(transport, 'card', unauthorized);
     const page = await options.queryFn({ position: { kind: 'latest' } });

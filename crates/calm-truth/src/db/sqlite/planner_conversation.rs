@@ -58,72 +58,19 @@ impl SqlxRepo {
         method_predicate: &str,
         range: ItemRange,
     ) -> Result<Vec<HarnessItem>> {
-        const COLUMNS: &str = "id, worker_session_id, card_id, track_id, thread_id, turn_id, \
-                               item_uuid, item_type, method, params, input_segments, \
-                               created_at_ms";
-        let (comparison, order, cursor) = if descending {
-            ("<", "DESC", if after_id == 0 { i64::MAX } else { after_id })
-        } else {
-            (">", "ASC", after_id)
-        };
         let sql = format!(
-            "SELECT {COLUMNS} FROM harness_items \
-             WHERE card_id = ?1 AND id {comparison} ?2{method_predicate} \
-               AND id > ?4 AND (?5 IS NULL OR id <= ?5) \
-             ORDER BY id {order} LIMIT ?3"
+            "WITH selected AS (SELECT ?4 AS floor, ?5 AS ceiling) {}",
+            transcript_page_sql(descending, method_predicate)
         );
-        let mut rows = sqlx::query_as::<_, crate::db::rows::HarnessItemRow>(&sql)
+        let rows = sqlx::query_as::<_, crate::db::rows::HarnessItemRow>(&sql)
             .bind(card_id)
-            .bind(cursor)
+            .bind(page_cursor(after_id, descending))
             .bind(limit)
             .bind(range.floor)
             .bind(range.ceiling)
             .fetch_all(self.db.read_pool())
             .await?;
-        if descending {
-            rows.reverse();
-        }
-        rows.into_iter()
-            .map(HarnessItem::try_from)
-            .collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(|error| {
-                CalmError::Internal(format!("transcript input_segments decode: {error}"))
-            })
-    }
-
-    /// The range of conversation `ordinal`, or of the current one for `None`; `None` when the
-    /// card has no such conversation.
-    async fn planner_conversation_range(
-        &self,
-        card_id: &str,
-        ordinal: Option<i64>,
-    ) -> Result<Option<ItemRange>> {
-        let floors: Vec<(i64, i64)> = sqlx::query_as(
-            "SELECT ordinal, after_item_id FROM planner_conversation_starts \
-              WHERE card_id=?1 ORDER BY ordinal",
-        )
-        .bind(card_id)
-        .fetch_all(self.db.read_pool())
-        .await?;
-        let current = floors.last().map_or(0, |(ordinal, _)| *ordinal);
-        let ordinal = ordinal.unwrap_or(current);
-        if !(0..=current).contains(&ordinal) {
-            return Ok(None);
-        }
-        let floor_of = |k: i64| {
-            floors
-                .iter()
-                .find(|(ordinal, _)| *ordinal == k)
-                .map(|(_, after)| *after)
-        };
-        Ok(Some(ItemRange {
-            floor: if ordinal == 0 {
-                0
-            } else {
-                floor_of(ordinal).unwrap_or(0)
-            },
-            ceiling: floor_of(ordinal + 1),
-        }))
+        decode_page(rows, descending)
     }
 
     pub(super) async fn planner_conversation_transcript_page(
@@ -133,24 +80,44 @@ impl SqlxRepo {
         after_id: i64,
         limit: i64,
         descending: bool,
-    ) -> Result<Option<Vec<HarnessItem>>> {
-        let Some(range) = self
-            .planner_conversation_range(card_id, conversation)
-            .await?
-        else {
+    ) -> Result<Option<(i64, Vec<HarnessItem>)>> {
+        use sqlx::{FromRow, Row};
+        // Bounds, ordinal and rows share one statement snapshot, including an empty page.
+        // No deferred transaction parks holding shared-cache read locks (#930).
+        let order = if descending { "DESC" } else { "ASC" };
+        let sql = format!(
+            "WITH bounds AS ( \
+               SELECT 0 AS ordinal, 0 AS after_item_id \
+               UNION ALL SELECT ordinal, after_item_id FROM planner_conversation_starts WHERE card_id=?1), \
+             spans AS (SELECT ordinal, after_item_id AS floor, \
+               LEAD(after_item_id) OVER (ORDER BY ordinal) AS ceiling FROM bounds), \
+             selected AS (SELECT * FROM spans WHERE ordinal=COALESCE(?4,(SELECT MAX(ordinal) FROM spans))), \
+             page AS ({}) \
+             SELECT selected.ordinal AS conversation_ordinal, page.* \
+               FROM selected LEFT JOIN page ON 1=1 ORDER BY page.id {order}",
+            transcript_page_sql(descending, TRANSCRIPT_METHOD_PREDICATE)
+        );
+        let rows = sqlx::query(&sql)
+            .bind(card_id)
+            .bind(page_cursor(after_id, descending))
+            .bind(limit)
+            .bind(conversation)
+            .fetch_all(self.db.read_pool())
+            .await?;
+        #[cfg(feature = "fixtures")]
+        crate::test_seam::pause_point("planner_conversation_range_read", card_id).await;
+        let Some(first) = rows.first() else {
             return Ok(None);
         };
-        Ok(Some(
-            self.transcript_page(
-                card_id,
-                after_id,
-                limit,
-                descending,
-                TRANSCRIPT_METHOD_PREDICATE,
-                range,
-            )
-            .await?,
-        ))
+        let ordinal = first.try_get("conversation_ordinal")?;
+        let mut items = Vec::with_capacity(rows.len());
+        for row in rows {
+            // LEFT JOIN preserves the selected ordinal when the requested page has no row.
+            if row.try_get::<Option<i64>, _>("id")?.is_some() {
+                items.push(crate::db::rows::HarnessItemRow::from_row(&row)?);
+            }
+        }
+        Ok(Some((ordinal, decode_page(items, descending)?)))
     }
 
     pub(super) async fn planner_conversation_history(
@@ -189,4 +156,41 @@ impl SqlxRepo {
             )
             .collect())
     }
+}
+
+fn page_cursor(after_id: i64, descending: bool) -> i64 {
+    if descending && after_id == 0 {
+        i64::MAX
+    } else {
+        after_id
+    }
+}
+
+/// Both card-wide and bounded readers use the same transcript selection and ordering.
+fn transcript_page_sql(descending: bool, method_predicate: &str) -> String {
+    let (comparison, order) = if descending {
+        ("<", "DESC")
+    } else {
+        (">", "ASC")
+    };
+    format!(
+        "SELECT id, worker_session_id, card_id, track_id, thread_id, turn_id, \
+                item_uuid, item_type, method, params, input_segments, created_at_ms \
+           FROM harness_items JOIN selected ON id > floor AND (ceiling IS NULL OR id <= ceiling) \
+          WHERE card_id=?1 AND id {comparison} ?2{method_predicate} \
+          ORDER BY id {order} LIMIT ?3"
+    )
+}
+
+fn decode_page(
+    mut rows: Vec<crate::db::rows::HarnessItemRow>,
+    descending: bool,
+) -> Result<Vec<HarnessItem>> {
+    if descending {
+        rows.reverse();
+    }
+    rows.into_iter()
+        .map(HarnessItem::try_from)
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(|error| CalmError::Internal(format!("transcript input_segments decode: {error}")))
 }

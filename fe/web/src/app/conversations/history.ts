@@ -105,12 +105,15 @@ function compactWindows(windows: readonly ObservedWindow[]): ObservedWindow[] {
 export function latestHistory(previous: History | undefined, page: ConversationPage): History {
   const latest = observedWindow(page, { kind: 'latest' });
   const lower = latest.coverage.lower;
-  const retained = previous === undefined || lower.kind === 'start' || previous.latest.page.source !== page.source ? []
+  const retained = previous === undefined || lower.kind === 'start' || previous.latest.page.source !== page.source
+    || previous.latest.page.conversation !== page.conversation ? []
     : compactWindows([previous.latest, ...previous.retained].filter(old => old.rows[0] !== undefined && old.rows[0].cursor.position < lower.cursor.position));
   return { latest, retained };
 }
 
 function earlierHistory(previous: History, cursor: ConversationCursor, page: ConversationPage): History {
+  // The server can cut over during this read before any newest response observes it.
+  if (previous.latest.page.source !== page.source || previous.latest.page.conversation !== page.conversation) return previous;
   const windows = [previous.latest, ...previous.retained];
   const index = windows.findIndex(window => window.coverage.lower.kind === 'from' && window.coverage.lower.cursor.position === cursor.position);
   if (index < 0) return previous;

@@ -103,7 +103,7 @@ pub trait ServerRepoReadExt {
         after_id: i64,
         limit: i64,
         descending: bool,
-    ) -> Result<Option<Vec<HarnessItem>>>;
+    ) -> Result<Option<(i64, Vec<HarnessItem>)>>;
     async fn planner_conversations_earlier(
         &self,
         card_id: &str,
@@ -361,7 +361,7 @@ where
         after_id: i64,
         limit: i64,
         descending: bool,
-    ) -> Result<Option<Vec<HarnessItem>>> {
+    ) -> Result<Option<(i64, Vec<HarnessItem>)>> {
         calm_truth::db::RepoRead::planner_conversation_transcript(
             self,
             card_id,

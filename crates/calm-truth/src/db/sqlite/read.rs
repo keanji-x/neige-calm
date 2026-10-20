@@ -648,7 +648,7 @@ impl RepoRead for SqlxRepo {
         after_id: i64,
         limit: i64,
         descending: bool,
-    ) -> Result<Option<Vec<HarnessItem>>> {
+    ) -> Result<Option<(i64, Vec<HarnessItem>)>> {
         self.planner_conversation_transcript_page(
             card_id,
             conversation,

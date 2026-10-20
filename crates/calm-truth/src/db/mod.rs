@@ -323,7 +323,7 @@ pub trait RepoRead: Send + Sync + 'static {
         after_id: i64,
         limit: i64,
         descending: bool,
-    ) -> Result<Option<Vec<HarnessItem>>>;
+    ) -> Result<Option<(i64, Vec<HarnessItem>)>>;
 
     /// The card's earlier Planner conversations that hold transcript rows, oldest first.
     async fn planner_conversations_earlier(

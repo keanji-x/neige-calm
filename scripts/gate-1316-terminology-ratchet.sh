@@ -13,6 +13,10 @@
 # of the new repository read, and fixtures that now seed retired history as stored rows; no new
 # domain name. The final occurrence seeds a historical terminal-outcome read fixture after
 # the current-session fence began refusing that fixture's non-current writer; no scan rule changes.
+# #2774 read-boundary fix: harness_item/crates 348 -> 352 adds three references to existing
+# row/decoder types in the shared single-statement reader and one authoritative insert API
+# call in the concurrent-cutover regression. No new domain identifier or scan rule; later tests
+# need no inventory registration, and this same scan runs once per lint job.
 # #2774 FE: harness_item/fe 141 -> 142 is the one current-transcript query key a new Planner
 # conversation refreshes before it opens; the earlier conversation's read reuses the existing page.
 # Latest-only conversation refresh: harness_item/fe 136 -> 140 is the owner

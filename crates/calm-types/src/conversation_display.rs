@@ -98,6 +98,9 @@ pub struct ConversationDisplayItem {
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema, TS)]
 #[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub struct ConversationPage {
+    // Conversation ordinal read in the same snapshot as this page; canonical storage is 0.
+    #[schema(minimum = 0)]
+    pub conversation: i64,
     pub contract: ConversationReadContract,
     pub source: ConversationCursorSource,
     pub items: Vec<ConversationDisplayItem>,

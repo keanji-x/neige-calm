@@ -18,7 +18,7 @@ function fixture(items:ConversationDisplayItem[],run:Readonly<{state:WorkerSessi
   let stored=items;
   return renderDailyFixture({identity,initial:'/track/daily?panel=conversations',reply:request=>{
     if(request.path.includes('/harness/items?contract=conversation_v1')) {
-      const body:ConversationPage={contract:'conversation_v1',source:'presentation',items:stored,next_cursor:null};
+      const body:ConversationPage={contract:'conversation_v1',source:'presentation',conversation: 0, items:stored,next_cursor:null};
       return {status:200,statusText:'OK',body};
     }
     if(request.path.includes('/planner/run?contract=conversation_v1'))return {status:200,statusText:'OK',body:{
@@ -59,7 +59,7 @@ it.each([false,true])('keeps the two canonical pending refs separate from one AC
   const f=renderDailyFixture({identity,initial:'/track/daily?panel=conversations',routeProbe:<RegistryProbe/>,reply:async request=>{
     if(request.path.includes('/harness/items?contract=conversation_v1')){
       if(sent){heldReadStarted=true;await historyGate;}
-      const body:ConversationPage={contract:'conversation_v1',source:'presentation',items:sent ? [h1,s1,h2] : [h1,s1],next_cursor:null};
+      const body:ConversationPage={contract:'conversation_v1',source:'presentation',conversation: 0, items:sent ? [h1,s1,h2] : [h1,s1],next_cursor:null};
       return ok(body);
     }
     if(request.path.includes('/harness/live?contract=conversation_v1'))return ok({contract:'conversation_v1',

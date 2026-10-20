@@ -704,6 +704,14 @@ async fn planner_new_conversation_history_reads_by_conversation() {
     let (status, current) = items("").await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(current, json!([]), "the new conversation is blank");
+    let (status, page) = items("?contract=conversation_v1").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(page["conversation"], json!(1));
+    assert_eq!(page["items"], json!([]));
+    let (status, page) = items("?contract=conversation_v1&conversation=0").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(page["conversation"], json!(0));
+    assert_eq!(page["items"].as_array().map(Vec::len), Some(1));
     let (status, earlier) = items("?conversation=0").await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(earlier, before, "the old rows are read-only history");

@@ -279,7 +279,7 @@ async fn planner_new_conversation_floors_bound_every_conversation() {
             repo.planner_conversation_transcript(&card, conversation, 0, 100, false)
                 .await
                 .unwrap()
-                .map(|rows| rows.into_iter().map(|row| row.id).collect::<Vec<_>>())
+                .map(|(_, rows)| rows.into_iter().map(|row| row.id).collect::<Vec<_>>())
         }
     };
     assert_eq!(
@@ -292,6 +292,27 @@ async fn planner_new_conversation_floors_bound_every_conversation() {
     assert_eq!(page(Some(1)).await, Some(vec![]));
     assert_eq!(page(Some(3)).await, None, "no such conversation");
     assert_eq!(page(Some(-1)).await, None);
+    let newest = f.insert("old", &f.card, &f.track, "c").await.unwrap();
+    for (after, limit, descending, expected) in [
+        (0, 1, false, vec![current]),
+        (0, 1, true, vec![newest]),
+        (newest, 1, true, vec![current]),
+        (current, 1, false, vec![newest]),
+        (0, 0, true, vec![]),
+        (newest, 1, false, vec![]),
+    ] {
+        let (ordinal, rows) = f
+            .repo
+            .planner_conversation_transcript(&f.card, None, after, limit, descending)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(ordinal, 2, "empty pages also preserve their identity");
+        assert_eq!(
+            rows.into_iter().map(|row| row.id).collect::<Vec<_>>(),
+            expected
+        );
+    }
     let history = f.repo.planner_conversations_earlier(&f.card).await.unwrap();
     assert_eq!(
         history
@@ -307,7 +328,13 @@ async fn planner_new_conversation_floors_bound_every_conversation() {
         .planner_conversation_transcript(&f.other_card, None, 0, 100, false)
         .await
         .unwrap();
-    assert_eq!(other.map(|rows| rows.len()), Some(0));
+    assert_eq!(
+        other.map(|(ordinal, rows)| {
+            assert_eq!(ordinal, 0);
+            rows.len()
+        }),
+        Some(0)
+    );
     assert!(
         f.repo
             .planner_conversations_earlier(&f.other_card)
@@ -315,4 +342,81 @@ async fn planner_new_conversation_floors_bound_every_conversation() {
             .unwrap()
             .is_empty()
     );
+}
+
+#[cfg(feature = "fixtures")]
+#[tokio::test]
+async fn planner_new_conversation_transcript_reads_one_snapshot_during_cutover() {
+    use crate::test_seam::{PausePoint, install_pause_for_test};
+    use std::sync::Arc;
+    // A WAL-backed database allows a real cutover to commit while the read is paused.
+    let dir = tempfile::tempdir().unwrap();
+    let repo = Arc::new(
+        SqlxRepo::open(&format!(
+            "sqlite://{}?mode=rwc",
+            dir.path().join("snapshot.db").display()
+        ))
+        .await
+        .unwrap(),
+    );
+    let (card, track) = card(&repo).await;
+    start(&repo, &card, "snapshot-writer").await;
+    let insert = |client: &'static str| {
+        let repo = repo.clone();
+        let card = card.clone();
+        let track = track.clone();
+        async move {
+            repo.harness_item_insert(
+                "snapshot-writer",
+                &card,
+                &track,
+                "thread",
+                None,
+                Some(client),
+                Some("agentMessage"),
+                "item/completed",
+                "{}",
+                None,
+            )
+            .await
+            .unwrap()
+            .unwrap()
+        }
+    };
+    let mut expected = vec![insert("before").await];
+    for conversation in [None, Some(1)] {
+        let pause = PausePoint::default();
+        install_pause_for_test("planner_conversation_range_read", &card, pause.clone());
+        let reader = {
+            let repo = repo.clone();
+            let card = card.clone();
+            tokio::spawn(async move {
+                repo.planner_conversation_transcript(&card, conversation, 0, 100, false)
+                    .await
+                    .unwrap()
+                    .unwrap()
+            })
+        };
+        pause.entered.notified().await;
+        let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
+        planner_conversation_start_tx(&mut tx, &card, 10)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        let new = insert(if conversation.is_none() {
+            "after-first"
+        } else {
+            "after-second"
+        })
+        .await;
+        pause.release.notify_one();
+        let (ordinal, rows) = reader.await.unwrap();
+        assert_eq!(ordinal, conversation.unwrap_or(0));
+        assert_eq!(
+            rows.iter().map(|row| row.id).collect::<Vec<_>>(),
+            expected,
+            "a concurrent cutover cannot mix the old range with new rows"
+        );
+        expected = vec![new];
+    }
 }

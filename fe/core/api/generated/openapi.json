@@ -14592,6 +14592,7 @@
       "ConversationPage": {
         "type": "object",
         "required": [
+          "conversation",
           "contract",
           "source",
           "items",
@@ -14600,6 +14601,11 @@
         "properties": {
           "contract": {
             "$ref": "#/components/schemas/ConversationReadContract"
+          },
+          "conversation": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
           },
           "items": {
             "type": "array",

@@ -305,6 +305,7 @@ pub(super) async fn page_on_connection(
         items.reverse();
     }
     Ok(ConversationPage {
+        conversation: 0,
         contract: ConversationReadContract::ConversationV1,
         source: ConversationCursorSource::Presentation,
         items,

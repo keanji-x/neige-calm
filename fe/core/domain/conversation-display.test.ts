@@ -13,10 +13,16 @@ const op:SendOp = { key:'key',phase:'confirmed',queueRevision:null,fromComposer:
 }};
 
 describe('canonical conversation display',()=>{
+  it('requires an explicit nonnegative conversation identity even on empty pages', () => {
+    const page = { contract: 'conversation_v1', source: 'historical_raw', items: [], next_cursor: null };
+    expect(conversationPageSchema.safeParse(page).success).toBe(false);
+    expect(conversationPageSchema.safeParse({ ...page, conversation: -1 }).success).toBe(false);
+    expect(conversationPageSchema.safeParse({ ...page, conversation: 1 }).success).toBe(true);
+  });
   it('projects a frozen System source with its own identity, time and cursor without acknowledging Human input',()=>{
     const system:ConversationDisplayItem={cursor:cursor(3),source:{kind:'system',observation_id:'message-a',
       presentation:'system_report_edited',text:'same words',created_at_ms:123}};
-    expect(conversationPageSchema.safeParse({contract:'conversation_v1',source:'presentation',items:[system],next_cursor:null}).success).toBe(true);
+    expect(conversationPageSchema.safeParse({contract:'conversation_v1',source:'presentation',conversation: 0, items:[system],next_cursor:null}).success).toBe(true);
     const entries=buildConversationTranscript([system],'jian');
     // A single observation has no report-only batch fact to grant a quiet reply fold.
     expect(entries).toEqual([{id:'system:message-a',author:'system',label:'Report edited',text:'same words',atMs:123,
@@ -26,7 +32,7 @@ describe('canonical conversation display',()=>{
   });
   it('accepts only the owning non-Human System presentation and required frozen facts',()=>{
     const source={kind:'system',observation_id:'observation',presentation:'system',text:'System fact',created_at_ms:12};
-    const parse=(value:unknown)=>conversationPageSchema.safeParse({contract:'conversation_v1',source:'presentation',items:[{cursor:cursor(1),source:value}],next_cursor:null}).success;
+    const parse=(value:unknown)=>conversationPageSchema.safeParse({contract:'conversation_v1',source:'presentation',conversation: 0, items:[{cursor:cursor(1),source:value}],next_cursor:null}).success;
     for(const presentation of Object.keys(SYSTEM_PRESENTATION_LABELS))expect(parse({...source,presentation})).toBe(true);
     expect(parse({...source,presentation:'user'})).toBe(false);
     expect(parse({...source,presentation:'system_unknown'})).toBe(false);
@@ -72,7 +78,7 @@ describe('canonical conversation display',()=>{
   });
   it('requires the contract and typed tombstone instead of accepting an old raw array',()=>{
     expect(conversationPageSchema.safeParse([]).success).toBe(false);
-    expect(conversationPageSchema.safeParse({contract:'conversation_v1',source:'presentation',items:[{
+    expect(conversationPageSchema.safeParse({contract:'conversation_v1',source:'presentation',conversation: 0, items:[{
       cursor:cursor(1),source:{kind:'removed',source_identity:'message-a'},
     }],next_cursor:null}).success).toBe(false);
   });

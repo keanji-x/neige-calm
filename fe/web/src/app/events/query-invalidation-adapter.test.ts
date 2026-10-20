@@ -566,7 +566,7 @@ it('presentation event replaces an in-flight old empty conversation page before 
   applyEventEffects(client,[{type:'invalidate',keys:invalidationPlanFor(event).invalidate}]);
   await vi.waitFor(()=>expect(reads).toHaveLength(2));
   expect(reads[0].signal?.aborted).toBe(true);
-  const page={contract:'conversation_v1',source:'presentation',items:[{cursor,source:{kind:'human',message_id:'message',revision:1,
+  const page={contract:'conversation_v1',source:'presentation',conversation: 0, items:[{cursor,source:{kind:'human',message_id:'message',revision:1,
     author:{user_id:'jian',display_name:'Jian'},text:'already saved',attachments:[],created_at_ms:1}}],next_cursor:null};
   reads[1].finish({status:200,statusText:'OK',body:page});
   await vi.waitFor(()=>expect(observer.getCurrentResult().data).toEqual(page));

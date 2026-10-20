@@ -23,7 +23,7 @@ function rows(first: number, count = 60): Row[] {
   } } }));
 }
 function page(items: Row[]): ConversationPage {
-  return { contract: 'conversation_v1', source: 'historical_raw', items,
+  return { contract: 'conversation_v1', source: 'historical_raw', conversation: 0, items,
     next_cursor: items.length < 60 ? null : items[0].cursor };
 }
 const latestHistory = (previous: History | undefined, items: Row[]) => applyLatestPage(previous, page(items));
@@ -38,11 +38,12 @@ function setup() {
   const paths: string[] = [];
   let newest = rows(61);
   let earlier = rows(1);
+  let earlierConversation = 0;
   let held: ReturnType<typeof deferred<Row[]>> | null = null;
   const options = pageOptions({ send: async request => {
     paths.push(request.path);
     const body = !new URL(request.path, 'http://fixture').searchParams.has('cursor') ? newest : await (held?.promise ?? earlier);
-    return { status: 200, statusText: 'OK', body: page(body) };
+    return { status: 200, statusText: 'OK', body: { ...page(body), conversation: request.path.includes('&cursor=') ? earlierConversation : 0 } };
   } }, 'card', createUnauthorizedChannel({ enqueue: task => task() }));
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   let sequence = 0;
@@ -54,6 +55,7 @@ function setup() {
   const view = mount();
   return { ...view, mount, client, paths, key: options.queryKey,
     newest: (value: Row[]) => { newest = value; }, earlier: (value: Row[]) => { earlier = value; },
+    earlierConversation: (value: number) => { earlierConversation = value; },
     hold: () => { held = deferred<Row[]>(); return held; } };
 }
 afterEach(cleanup);
@@ -350,3 +352,30 @@ it.each(['rollover', 'equal', 'remount', 'reset', 'ABA'] as const)(
     current.unmount(); view.client.clear();
   },
 );
+
+
+it.each(['other tab', 'resume after sleep'])('isolates a nonempty full latest page after a conversation cutover in %s', () => {
+  const oldPage = { ...page(rows(1, 3)), conversation: 0 };
+  const currentPage = { ...page(rows(101)), conversation: 1 };
+  const previous = applyLatestPage(undefined, oldPage);
+  const current = applyLatestPage(previous, currentPage);
+  expect(historyRows(current).map(row => row.cursor.position)).toEqual(rows(101).map(row => row.cursor.position));
+  expect(current.retained).toEqual([]);
+  // Refreshing within the same conversation still preserves the reading window.
+  expect(historyRows(applyLatestPage(current, { ...page(rows(161)), conversation: 1 }))).toHaveLength(120);
+});
+
+
+it('rejects a page from a cutover during an earlier read, even before a latest refresh observes it', async () => {
+  const view = setup();
+  await waitFor(() => expect(view.result.current.history.isSuccess).toBe(true));
+  const previous = view.client.getQueryData<History>(view.key);
+  view.earlierConversation(1);
+  view.earlier([]);
+  act(() => { expect(view.result.current.history.loadEarlier()).toBe(true); });
+  await waitFor(() => expect(view.paths).toHaveLength(2));
+  await waitFor(() => expect(view.client.isMutating()).toBe(0));
+  expect(view.result.current.history.earlier.cursor).toBe(61);
+  expect(view.client.getQueryData<History>(view.key)).toEqual(previous);
+  view.unmount(); view.client.clear();
+});

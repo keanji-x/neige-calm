@@ -172,7 +172,7 @@ export type ConversationLiveReplies = { contract: ConversationReadContract, turn
 
 export type ConversationLiveTurn = { thread_id: string, turn_id: string, items: Array<HarnessLiveReply>, };
 
-export type ConversationPage = { contract: ConversationReadContract, source: ConversationCursorSource, items: Array<ConversationDisplayItem>, next_cursor: ConversationCursor | null, };
+export type ConversationPage = { conversation: number, contract: ConversationReadContract, source: ConversationCursorSource, items: Array<ConversationDisplayItem>, next_cursor: ConversationCursor | null, };
 
 export type ConversationPendingInput = { "kind": "human", message_id: string, revision: number, queue_position: number, queued_at_ms: number, } | { "kind": "system", observation_id: string, queue_position: number, queued_at_ms: number, };
 

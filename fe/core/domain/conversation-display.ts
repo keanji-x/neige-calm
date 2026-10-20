@@ -12,6 +12,7 @@ const identity = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('native'), thread_id: z.string(), item_id: z.string() }).strict(),
 ]);
 export const conversationPageSchema: z.ZodType<ConversationPage> = z.object({
+  conversation: z.number().int().nonnegative(),
   contract: z.literal('conversation_v1'), source: z.enum(['presentation', 'historical_raw']),
   items: z.array(z.object({ cursor: conversationCursorSchema, source: z.discriminatedUnion('kind', [
     z.object({ kind: z.literal('human'), message_id: z.string(), revision: z.number().int().positive(),

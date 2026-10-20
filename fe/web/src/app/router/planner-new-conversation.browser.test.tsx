@@ -1,4 +1,9 @@
 import '../../styles/entry.css';
+import { focusManager } from '@tanstack/react-query';
+import { historyRows, type History } from '../conversations/history.ts';
+import { invalidationPlanFor } from '../../../../core/events/invalidation-plan.ts';
+import { applyEventEffects } from '../events/query-invalidation-adapter.ts';
+import { wireEventSchema } from '../../../../core/api/schemas.ts';
 import { cleanup } from '@testing-library/react';
 import { afterEach, expect, it } from 'vitest';
 import { page, userEvent } from 'vitest/browser';
@@ -37,7 +42,7 @@ function plannerServer() {
     if (request.path.startsWith(`/api/cards/${PLANNER}/harness/items`)) {
       const conversation = new URL(request.path, 'http://fixture').searchParams.get('conversation');
       if (conversation === '0') return ok(historicalConversationPage(PLANNER, [reply(1, 'Earlier reply')], null));
-      return ok(historicalConversationPage(PLANNER, state.started ? [] : [reply(1, 'Current reply')], null));
+      return ok({ ...historicalConversationPage(PLANNER, state.started ? [] : [reply(1, 'Current reply')], null), conversation: state.started ? 1 : 0 });
     }
     return undefined;
   };
@@ -127,4 +132,31 @@ it.each([1400, 390])('starts a new Planner conversation and reads the earlier on
   expect(fixture.requests.some(request => request.path.includes('/harness/items') && request.path.endsWith('&conversation=0'))).toBe(true);
   expect(plannerRuns(fixture.requests)).toBe(runsBefore);
   expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(width);
+});
+
+
+it.each(['other tab', 'resume after sleep'] as const)('discards the old window when %s reads a full new conversation', async trigger => {
+  await page.viewport(1400, 900);
+  let conversation = 0;
+  const fresh = Array.from({ length: 60 }, (_, i) => reply(101 + i, `New conversation reply ${i}`));
+  const fixture = renderDailyFixture({ initial: '/track/daily?panel=conversations', reply: request => {
+    if (!request.path.startsWith(`/api/cards/${PLANNER}/harness/items`)) return undefined;
+    const result = historicalConversationPage(PLANNER, conversation === 0 ? [reply(1, 'Old conversation reply')] : fresh, null);
+    return ok({ ...result, conversation, next_cursor: conversation === 0 ? null : result.items[0].cursor });
+  } });
+  const key = ['harness-items', PLANNER, 'conversation_v1'];
+  await page.getByRole('button', { name: 'Conversation Daily Planner conversation', exact: true }).click();
+  await expect.element(page.getByText('Old conversation reply', { exact: true })).toBeVisible();
+  if (trigger === 'resume after sleep') focusManager.setFocused(false);
+  conversation = 1; // Another client cut over; this view never executes the POST mutation.
+  try {
+    if (trigger === 'other tab') {
+      const event = wireEventSchema.parse({ ev: 'card.updated', data: { id: PLANNER, track_id: 'daily', kind: 'codex', sort: 1, payload: { planner_harness: true }, created_at: 1, updated_at: 2 } });
+      applyEventEffects(fixture.client, [{ type: 'invalidate', keys: invalidationPlanFor(event).invalidate }]);
+    } else focusManager.setFocused(true); // No switch event arrived while asleep.
+    await expect.poll(() => fixture.client.getQueryData<History>(key)?.latest.page.conversation).toBe(1);
+    await expect.poll(() => historyRows(fixture.client.getQueryData<History>(key)).map(row => row.cursor.position)).toEqual(fresh.map(row => row.id));
+    await expect.element(page.getByText('Old conversation reply', { exact: true })).not.toBeInTheDocument();
+    await expect.element(page.getByText('New conversation reply 59', { exact: true })).toBeVisible();
+  } finally { focusManager.setFocused(undefined); fixture.client.clear(); }
 });

@@ -120,7 +120,7 @@ pub(crate) async fn get_harness_items(
         }
         Json(ConversationItemsReadResponse::Conversation(page)).into_response()
     } else {
-        let mut rows = s
+        let (conversation, mut rows) = s
             .repo
             .planner_conversation_transcript(&id, q.conversation, after, limit, descending)
             .await?
@@ -150,6 +150,7 @@ pub(crate) async fn get_harness_items(
                 ConversationPage {
                     contract: ConversationReadContract::ConversationV1,
                     source: mode,
+                    conversation,
                     items,
                     next_cursor,
                 },

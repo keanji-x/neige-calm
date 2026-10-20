@@ -8,7 +8,7 @@ export function conversationCardId(path:string):string {
   return decodeURIComponent(match[1]);
 }
 export function historicalConversationPage(card:string,rows:readonly unknown[],next:ConversationCursor|null):ConversationPage {
-  return {contract:'conversation_v1',source:'historical_raw',items:rows.map(value=>{
+  return {contract:'conversation_v1',source:'historical_raw',conversation: 0, items:rows.map(value=>{
     const item=transcriptRowSchema.parse(value);
     return {cursor:{contract:'conversation_v1',source:'historical_raw',card_id:card,position:item.id},
       source:{kind:'historical_raw',item}};
@@ -25,7 +25,7 @@ export function humanPresentation(card: string, position: number, messageId: str
     source: { kind: 'human', message_id: messageId, revision: 1, author, text, attachments: [], created_at_ms: createdAt } };
 }
 export function presentationPage(items: ConversationDisplayItem[]): ConversationPage {
-  return { contract: 'conversation_v1', source: 'presentation', items, next_cursor: null };
+  return { contract: 'conversation_v1', source: 'presentation', conversation: 0, items, next_cursor: null };
 }
 export function nativePresentation(card: string, row: unknown): ConversationDisplayItem {
   const item = transcriptRowSchema.parse(row);
