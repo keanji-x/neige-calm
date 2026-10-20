@@ -5,13 +5,10 @@ import { page } from 'vitest/browser';
 
 import type { WorkspaceFilePort } from '../../../../core/domain/fs.ts';
 import { ReportDocument } from '../../features/report/document/public.tsx';
-import { createCardHost } from '../../systems/cards/host.ts';
-import { createCardRegistry } from '../../systems/cards/registry.ts';
-import { registerAvailableBuiltinCards } from '../../systems/cards/builtins/register.ts';
-import { BoardHost } from '../../systems/cards/ui/board-host.tsx';
-import { Dialog } from '../dialog/public.tsx';
-import { Drawer } from '../drawer/public.tsx';
-import { PanelCard } from '../panel-card/public.tsx';
+import { createCardHost, createCardRegistry, registerAvailableBuiltinCards, BoardHost } from '../../systems/cards/public.ts';
+import { Dialog } from '../../ui/dialog/public.tsx';
+import { Drawer } from '../../ui/drawer/public.tsx';
+import { PanelCard } from '../../ui/panel-card/public.tsx';
 
 let previousTheme: string | null;
 beforeEach(async () => { previousTheme = document.documentElement.getAttribute('data-theme'); await page.viewport(1400, 900); });
