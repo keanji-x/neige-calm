@@ -125,10 +125,8 @@ impl ClaudePlannerSession {
         if Uuid::try_parse(thread).ok() != Some(driver.thread) {
             return Ok(false);
         }
-        match &driver.execution {
-            Association::Work(_) => {}
-            Association::Historical | Association::Maintenance(_) => return Ok(false),
-        }
+        // Association addresses END/maintenance, not process liveness. Every
+        // exact driver uses the same joined, successfully cleaned-up result.
         if !driver.qualified().await? || shared.state().active.is_some() {
             return Ok(false);
         }

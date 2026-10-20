@@ -137,6 +137,26 @@ async fn application(fx: &Fixture) -> (crate::state::AppState, axum::Router) {
 
 #[tokio::test]
 async fn canonical_claude_settled_keep_lost_report_dispatches_next_once() {
+    kept_sequence(Sequence::Normal).await;
+}
+
+#[tokio::test]
+async fn canonical_claude_settled_pre_spawn_failure_retries_once() {
+    kept_sequence(Sequence::PreparationFailure).await;
+}
+
+#[tokio::test]
+async fn canonical_claude_settled_keep_successor_compact_next_once() {
+    kept_sequence(Sequence::Compact).await;
+}
+
+enum Sequence {
+    Normal,
+    PreparationFailure,
+    Compact,
+}
+
+async fn kept_sequence(sequence: Sequence) {
     use axum::body::Body;
     use axum::http::{Request, StatusCode, header};
     use http_body_util::BodyExt;
@@ -235,6 +255,16 @@ async fn canonical_claude_settled_keep_lost_report_dispatches_next_once() {
     // End the exact local process through its existing signal owner. The lost
     // report has no addressable durable target, so construct no synthetic END.
     std::fs::write(fx.dir.path().join("scenario"), "exit").unwrap();
+    let instructions = fx.session.host().instructions_dir.clone();
+    let saved = instructions.with_extension("saved");
+    let cleanup_pause = crate::claude_planner::session::SettlePause {
+        entered: Arc::default(),
+        release: Arc::default(),
+    };
+    if matches!(sequence, Sequence::PreparationFailure) {
+        fx.session
+            .set_before_turn_completed_pause_for_test(cleanup_pause.clone());
+    }
     let turn = fx
         .session
         .active_turn_id_for_thread(&fx.owner.thread)
@@ -243,6 +273,33 @@ async fn canonical_claude_settled_keep_lost_report_dispatches_next_once() {
         fx.session.turn_interrupt(&fx.owner.thread, &turn).await,
         provider::control::InterruptOutcome::LocalSignalDelivered
     ));
+    if matches!(sequence, Sequence::PreparationFailure) {
+        tokio::time::timeout(Duration::from_secs(25), cleanup_pause.entered.notified())
+            .await
+            .unwrap();
+        std::fs::rename(&instructions, &saved).unwrap();
+        std::fs::write(&instructions, "block instructions creation").unwrap();
+        cleanup_pause.release.notify_one();
+        tokio::time::timeout(Duration::from_secs(30), async {
+            loop {
+                if fx.checkpoint().await.attempts.iter().any(|attempt| {
+                    matches!(attempt.delivery, InputDeliveryFact::NotDispatched { .. })
+                }) {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(fx.session.user_line_writes_for_test(), 1);
+        assert!(
+            settled(&fx).await,
+            "process-free failure preserves exact cleanup"
+        );
+        std::fs::remove_file(&instructions).unwrap();
+        std::fs::rename(&saved, &instructions).unwrap();
+    }
     tokio::time::timeout(Duration::from_secs(30), async {
         loop {
             if fx.session.user_line_writes_for_test() == 2 {
@@ -253,12 +310,83 @@ async fn canonical_claude_settled_keep_lost_report_dispatches_next_once() {
     })
     .await
     .expect("settled kept driver releases following canonical input");
+    if matches!(sequence, Sequence::PreparationFailure) {
+        cleanup_pause.release.notify_one();
+    }
     fx.phase("turn_completed").await;
     tokio::time::sleep(Duration::from_millis(2200)).await;
     assert_eq!(fx.session.user_line_writes_for_test(), 2);
-    assert_eq!(fx.checkpoint().await.attempts.len(), 2);
+    let expected_attempts = match sequence {
+        Sequence::Normal | Sequence::Compact => 2,
+        Sequence::PreparationFailure => 3,
+    };
+    assert_eq!(fx.checkpoint().await.attempts.len(), expected_attempts);
+    if matches!(sequence, Sequence::Compact) {
+        std::fs::write(fx.dir.path().join("scenario"), "compact").unwrap();
+        pause.release.notify_one();
+        tokio::time::timeout(
+            Duration::from_secs(15),
+            harness.compact_canonical(fx.source.clone()),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        fx.phase("turn_completed").await;
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while !settled(&fx).await {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("qualified maintenance must settle kept conversation");
+        std::fs::write(fx.dir.path().join("scenario"), "exit").unwrap();
+        pause.release.notify_one();
+        let mut tx = begin_immediate_tx(fx.owner.repo.db()).await.unwrap();
+        let mut carrier = current_input_carrier_tx(&mut tx, &fx.owner.card, &fx.owner.worker)
+            .await
+            .unwrap();
+        let accepted = crate::conversation_inputs::accept_human_tx(
+            &mut tx,
+            &fx.source.current_principal().unwrap(),
+            &mut carrier,
+            HumanPayload {
+                text: "after compact".into(),
+                bound_attachments: vec![],
+            },
+        )
+        .await
+        .unwrap();
+        let AcceptedInputRef::Human { message } = accepted.input_ref else {
+            panic!("human")
+        };
+        tx.commit().await.unwrap();
+        harness.refresh_canonical_input().await.unwrap();
+        harness
+            .observe_canonical_source(message, fx.source.clone())
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(15), async {
+            while fx.session.user_line_writes_for_test() != 4 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("next input after compact dispatches");
+        fx.phase("turn_completed").await;
+        tokio::time::sleep(Duration::from_millis(2200)).await;
+        assert_eq!(fx.session.user_line_writes_for_test(), 4);
+        assert_eq!(fx.checkpoint().await.attempts.len(), 3);
+    }
     let lines = std::fs::read_to_string(fx.dir.path().join("stdin")).unwrap();
-    assert_eq!(lines.lines().count(), 1, "stall consumed no original line");
+    assert_eq!(
+        lines.lines().count(),
+        if matches!(sequence, Sequence::Compact) {
+            3
+        } else {
+            1
+        },
+        "stall consumed no original line"
+    );
     assert!(lines.contains("following kept input"));
     harness.shutdown().await.unwrap();
     state.dispatcher.retire();
@@ -372,5 +500,62 @@ async fn canonical_claude_settled_failed_new_start_discards_prior_evidence() {
         !settled(&fx).await,
         "old cleanup cannot certify a newer failed start"
     );
+    fx.session.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn canonical_claude_settled_live_and_failed_compact_hold() {
+    for scenario in ["compact-no-boundary", "compact-boundary-failed", "compact"] {
+        let fx = Fixture::new("exit").await;
+        let harness = fx.start_loop().await;
+        fx.phase("turn_completed").await;
+        std::fs::write(fx.dir.path().join("scenario"), scenario).unwrap();
+        let pause = crate::claude_planner::session::SettlePause {
+            entered: Arc::default(),
+            release: Arc::default(),
+        };
+        fx.session
+            .set_before_turn_completed_pause_for_test(pause.clone());
+        if scenario == "compact" {
+            let worker = fx.owner.worker.clone();
+            fx.session.set_after_spawn_hook_for_test(Arc::new(move || {
+                crate::claude_planner::stop::fail_claude_planner_stop_for_test(&worker);
+            }));
+        }
+        harness.compact_canonical(fx.source.clone()).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(15), pause.entered.notified())
+            .await
+            .unwrap();
+        assert!(!settled(&fx).await, "live maintenance holds: {scenario}");
+        pause.release.notify_one();
+        fx.phase("wedged").await;
+        assert!(
+            !settled(&fx).await,
+            "unqualified maintenance holds: {scenario}"
+        );
+        crate::claude_planner::stop::clear_claude_planner_stop_failure_for_test(&fx.owner.worker);
+        harness.shutdown().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn canonical_claude_settled_historical_compact_cleanup_qualifies() {
+    let fx = Fixture::new("exit").await;
+    fx.dispatch().await.unwrap();
+    finished(&fx).await;
+    std::fs::write(fx.dir.path().join("scenario"), "compact").unwrap();
+    assert!(matches!(
+        fx.session
+            .compact_start(&fx.owner.thread, &TurnModelSelection::inherit())
+            .await,
+        provider::control::CompactSubmission::Submitted { .. }
+    ));
+    tokio::time::timeout(Duration::from_secs(15), async {
+        while !settled(&fx).await {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("historical association retains exact process cleanup");
     fx.session.shutdown().await.unwrap();
 }

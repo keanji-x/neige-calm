@@ -40,6 +40,7 @@ use provider::claude::translate::{ToolNames, TurnContext, TurnTranslator};
 use provider::events::PlannerEvent;
 
 mod execution_end;
+mod process;
 
 /// After an interrupt, the turn is stopped if the CLI has not ended it within this bound.
 pub const STOP_TIMER: Duration = Duration::from_secs(10);
@@ -396,10 +397,8 @@ impl ClaudePlannerSession {
             Some(token) if self.row_hash_present().await? => token,
             _ => self.mint_mcp_token().await?,
         };
-        // A new process attempt must not leave the previous driver's cleanup
-        // as evidence if this start fails before installing its own driver.
-        *shared.driver.lock().await = None;
-        stop(&host.instance, &params.worker_session_id).await?;
+        let mut driver_slot = shared.driver.lock().await;
+        process::stop_for_start(shared, &mut driver_slot).await?;
 
         let (line, client_id, items, truncation, execution) = match input {
             SpawnInput::Turn {
@@ -487,10 +486,16 @@ impl ClaudePlannerSession {
         let argv = match argv {
             Ok(argv) => argv,
             Err(error) => {
-                let failure = self.abort_before_ok(None, instructions, error).await;
-                return Err(SpawnFailure::failed(failure));
+                return Err(SpawnFailure::failed(process::abort_preparation(
+                    &mut driver_slot,
+                    instructions,
+                    error,
+                )));
             }
         };
+        // From this boundary a process may exist. Cancellation or uncertain
+        // cleanup must never expose the preceding driver's result.
+        let previous = driver_slot.take();
         let spawned = Command::new(&config.claude_binary)
             .args(argv)
             .env_clear()
@@ -509,10 +514,14 @@ impl ClaudePlannerSession {
                     "claude planner spawn of {} failed: {error}",
                     config.claude_binary.display()
                 ));
-                let failure = self.abort_before_ok(None, instructions, error).await;
+                let (failure, cleaned) = self.abort_before_ok(None, instructions, error).await;
+                if cleaned {
+                    *driver_slot = previous;
+                }
                 return Err(SpawnFailure::failed(failure));
             }
         };
+        drop(previous);
         #[cfg(feature = "fixtures")]
         {
             let hook = shared.hooks.lock().expect("hooks").after_spawn.clone();
@@ -524,6 +533,7 @@ impl ClaudePlannerSession {
             return Err(self
                 .abort_before_ok(Some(child), instructions, sealed(thread))
                 .await
+                .0
                 .into());
         }
         let (Some(stdin), Some(stdout), Some(stderr)) =
@@ -533,9 +543,9 @@ impl ClaudePlannerSession {
             return Err(self
                 .abort_before_ok(Some(child), instructions, error)
                 .await
+                .0
                 .into());
         };
-        let mut driver_slot = shared.driver.lock().await;
         let slot = Arc::new(TurnSlot::new(stdin, settle_after_stop));
         #[cfg(feature = "fixtures")]
         {
@@ -551,13 +561,18 @@ impl ClaudePlannerSession {
                         .take_refusal()
                         .unwrap_or(CalmError::Conflict(message));
                     SpawnFailure::failed(
-                        self.abort_before_ok(Some(child), instructions, error).await,
+                        self.abort_before_ok(Some(child), instructions, error)
+                            .await
+                            .0,
                     )
                 }
                 LineWriteError::CrossedWrite(error) => {
                     let error = super::turn_slot::write_error(LineWriteError::CrossedWrite(error));
                     SpawnFailure::CrossedWrite {
-                        error: self.abort_before_ok(Some(child), instructions, error).await,
+                        error: self
+                            .abort_before_ok(Some(child), instructions, error)
+                            .await
+                            .0,
                         local_turn,
                     }
                 }
@@ -640,30 +655,6 @@ impl ClaudePlannerSession {
         .await?;
         self.shared.state().mcp_token = Some(token.clone());
         Ok(token)
-    }
-
-    /// Stop the marker (which ends a spawned child and anything it started), reap the child, and
-    /// drop the instructions guard; the caller's error is what `turn_start` returns.
-    async fn abort_before_ok(
-        &self,
-        child: Option<Child>,
-        instructions: InstructionsFile,
-        error: CalmError,
-    ) -> CalmError {
-        let params = &self.shared.params;
-        if let Err(stop_error) = stop(&params.host.instance, &params.worker_session_id).await {
-            tracing::warn!(
-                worker_session_id = %params.worker_session_id,
-                error = %stop_error,
-                "claude planner: stop after a failed turn start did not confirm"
-            );
-        }
-        if let Some(mut child) = child {
-            let _ = child.start_kill();
-            let _ = tokio::time::timeout(Duration::from_secs(5), child.wait()).await;
-        }
-        drop(instructions);
-        error
     }
 
     /// Record `Interrupted`, ask the CLI to interrupt, and arm the stop timer; a turn that is not
