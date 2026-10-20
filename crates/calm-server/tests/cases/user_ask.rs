@@ -323,6 +323,31 @@ async fn activity_items(boot: &Boot) -> Vec<calm_server::track_activity::Activit
     }
 }
 
+/// Read the stored activity through the same detail route used on refresh.
+async fn detail_activity(boot: &Boot) -> calm_server::track_activity::ActivityPayload {
+    let response = boot
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/tracks/{}", boot.track_id))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let detail: Value = serde_json::from_slice(&body).unwrap();
+    let overlay = detail["overlays"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|o| o["plugin_id"] == "kernel" && o["kind"] == "activity")
+        .expect("the projector persisted activity");
+    serde_json::from_value(overlay["payload"].clone()).unwrap()
+}
+
 /// `(actor kind, event)` of every row of `kind` on the boot track.
 async fn rows(boot: &Boot, kind: &str) -> Vec<(String, Event)> {
     boot.repo
@@ -516,6 +541,13 @@ async fn the_answer_route_records_the_users_answer_and_closes_the_ask() {
     .expect("ask");
     let ask_id = result["ask_id"].as_i64().unwrap();
 
+    assert_eq!(activity_items(&boot).await.len(), 1);
+    let before = detail_activity(&boot).await;
+    assert_eq!(before.items.len(), 1, "refresh shows the open ask");
+    assert!(
+        matches!(&before.items[0], calm_server::track_activity::ActivityItem::Ask { ask_id: id, .. } if *id == ask_id)
+    );
+
     let (status, body) = answer(
         &boot,
         ask_id,
@@ -533,6 +565,19 @@ async fn the_answer_route_records_the_users_answer_and_closes_the_ask() {
     assert!(
         activity_items(&boot).await.is_empty(),
         "the answer closes the ask"
+    );
+    let after = detail_activity(&boot).await;
+    assert!(
+        after.items.is_empty(),
+        "refresh must remove the answered ask: {after:?}"
+    );
+    assert_eq!(
+        after.attention,
+        calm_server::track_activity::Attention::None
+    );
+    assert_eq!(
+        after.activity_at_ms, before.activity_at_ms,
+        "answer is not completion evidence"
     );
     assert!(track_is_open(&boot).await, "an answer changes nothing else");
 }

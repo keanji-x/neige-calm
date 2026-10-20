@@ -16,6 +16,12 @@ pub const E1_HARNESS_TURN_COMPLETED_SQL: &str = concat!(
     ") FROM cards c WHERE c.track_id = ?1"
 );
 
+/// E7 — a report rewrite by someone other than the user (`EditAuthor` is
+/// bare-lowercase on the wire). Shared with the query-plan regression.
+pub const E7_AGENT_REPORT_EDIT_SQL: &str = "SELECT MAX(at) FROM events \
+               WHERE scope_track = ?1 AND kind = 'track.report_edited' \
+                 AND json_extract(payload, '$.author') <> 'user'";
+
 /// N3 — the Planner card's newest `turn/completed` transcript row that is not `interrupted`
 /// (`?1` = the Planner card), one range of `idx_transcript_card_method_created_at`; a `const` so
 /// the plan test runs THIS text.
@@ -218,15 +224,10 @@ async fn max_ms(pool: &SqlitePool, sql: &str, track_id: &str) -> Result<Option<i
 pub(crate) async fn evidence(pool: &SqlitePool, track_id: &str) -> Result<Evidence> {
     // E2 — the Planner asked the user something.
     let e2 = "SELECT MAX(at) FROM events WHERE scope_track = ?1 AND kind = 'ask.requested'";
-    // E7 — a report rewrite by someone other than the user (`EditAuthor`
-    // is bare-lowercase on the wire).
-    let e7 = "SELECT MAX(at) FROM events \
-               WHERE scope_track = ?1 AND kind = 'track.report_edited' \
-                 AND json_extract(payload, '$.author') <> 'user'";
     Ok(Evidence {
         e1_harness_turn_completed: max_ms(pool, E1_HARNESS_TURN_COMPLETED_SQL, track_id).await?,
         e2_ask_requested: max_ms(pool, e2, track_id).await?,
-        e7_agent_report_edit: max_ms(pool, e7, track_id).await?,
+        e7_agent_report_edit: max_ms(pool, E7_AGENT_REPORT_EDIT_SQL, track_id).await?,
     })
 }
 

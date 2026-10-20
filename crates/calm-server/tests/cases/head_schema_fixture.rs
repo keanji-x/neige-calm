@@ -113,6 +113,7 @@ const POST_0067_MIGRATION_NAMES: &[&str] = &[
     "0173_terminal_presentation.sql",
     "0174_parked_artifacts_in_rust.sql",
     "0175_conversation_inputs.sql",
+    "0176_track_report_evidence_index.sql",
 ];
 
 #[test]

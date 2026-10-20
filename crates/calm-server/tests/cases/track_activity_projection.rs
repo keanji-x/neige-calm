@@ -1620,3 +1620,6 @@ async fn projector_loop_recomputes_on_task_dispatched() {
     assert_eq!(p.attention, Attention::None);
     loop_task.abort();
 }
+
+#[path = "track_activity_projection/report_evidence.rs"]
+mod report_evidence;
