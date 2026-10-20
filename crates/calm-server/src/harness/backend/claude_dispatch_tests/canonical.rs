@@ -431,11 +431,11 @@ async fn canonical_claude_flush_failure_holds_one_attempt_without_second_spawn()
         .unwrap();
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {
-            if let Ok(line) = tokio::fs::read_to_string(fx.dir.path().join("stdin")).await {
-                if line.ends_with('\n') {
-                    assert!(line.contains("canonical human"));
-                    break;
-                }
+            if let Ok(line) = tokio::fs::read_to_string(fx.dir.path().join("stdin")).await
+                && line.ends_with('\n')
+            {
+                assert!(line.contains("canonical human"));
+                break;
             }
             tokio::task::yield_now().await;
         }
