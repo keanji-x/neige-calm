@@ -75,6 +75,68 @@ pub(crate) async fn require_detail_publication(
     )
 }
 
+/// List scope comes only from the existing registered membership read. System
+/// interpretation stays in organization_access, as for every other human ingress.
+pub(crate) async fn list_areas(
+    repo: &dyn RouteRepo,
+    principal: &Principal,
+    area_id: Option<&str>,
+) -> Result<Vec<crate::model::Area>> {
+    if let Some(area_id) = area_id {
+        return Ok(vec![
+            crate::organization_access::require_area_access(
+                repo,
+                area_id,
+                principal,
+                AreaAccess::Collaborate,
+            )
+            .await?,
+        ]);
+    }
+    let mut areas = repo.areas_list_for_member(&principal.user_id).await?;
+    if principal.is_deployment_owner()
+        && let Some(area) = repo.area_get_system().await?
+    {
+        crate::organization_access::require_deployment_owner(principal)?;
+        areas.push(area);
+    }
+    Ok(areas)
+}
+
+/// Recheck the original range even when it returned no rows, then each returned
+/// Track's actual current parent. This is a finite publication, like detail reads.
+pub(crate) async fn require_list_publication(
+    repo: &dyn RouteRepo,
+    areas: &[crate::model::Area],
+    tracks: &[crate::model::Track],
+    principal: &Principal,
+) -> Result<()> {
+    #[cfg(feature = "fixtures")]
+    for area in areas {
+        after_assembly(&format!("list:{}", area.id)).await?;
+    }
+    repo.application_user_require_registered(&principal.user_id)
+        .await?;
+    for area in areas {
+        crate::organization_access::require_area_access(
+            repo,
+            area.id.as_str(),
+            principal,
+            AreaAccess::Collaborate,
+        )
+        .await?;
+    }
+    for track in tracks {
+        require_detail_publication(repo, track.id.as_str(), &track.area_id, principal).await?;
+    }
+    Ok(())
+}
+
+#[cfg(feature = "fixtures")]
+pub fn install_track_list_read_hook_for_test(area_id: &str, hook: TrackDetailReadHook) {
+    install_track_detail_read_hook_for_test(&format!("list:{area_id}"), hook);
+}
+
 #[cfg(feature = "fixtures")]
 mod fixtures {
     use super::*;

@@ -86,7 +86,10 @@ pub(crate) use add::RouteTrackCreator;
 
 #[cfg(feature = "fixtures")]
 #[doc(hidden)]
-pub use crate::track_access::{TrackDetailReadHook, install_track_detail_read_hook_for_test};
+pub use crate::track_access::{
+    TrackDetailReadHook, install_track_detail_read_hook_for_test,
+    install_track_list_read_hook_for_test,
+};
 
 /// Test seam that makes the cross-instance same-key mint race deterministic.
 pub type TrackCreateMintRendezvous = Option<std::sync::Arc<TrackCreateMintGate>>;
@@ -479,16 +482,23 @@ pub(crate) async fn cat_track_file(
     tag = "tracks",
     params(("area_id" = String, Path, description = "Area id")),
     responses(
-        (status = 200, description = "Tracks under area", body = Vec<TrackWire>),
+        (status = 200, description = "Tracks under the authenticated user's current member Area", body = Vec<TrackWire>),
+        (status = 403, description = "Registered Area member required; System requires deployment owner; scope changed during reading", body = ErrorBody),
+        (status = 404, description = "Area or returned Track no longer exists", body = ErrorBody),
         (status = 500, description = "Internal error", body = ErrorBody),
     ),
 )]
 pub(crate) async fn list_tracks_by_area(
     State(s): State<RouteState>,
     Path(area_id): Path<String>,
+    principal: Principal,
 ) -> Result<Json<Vec<calm_types::track_wire::TrackWire>>> {
+    let areas =
+        crate::track_access::list_areas(s.repo.as_ref(), &principal, Some(&area_id)).await?;
     let mut tracks = s.repo.tracks_by_area(&area_id).await?;
     tracks.retain(user_visible_track);
+    crate::track_access::require_list_publication(s.repo.as_ref(), &areas, &tracks, &principal)
+        .await?;
     Ok(Json(
         tracks
             .into_iter()
@@ -639,14 +649,17 @@ pub struct TracksWindowQuery {
     tag = "tracks",
     params(TracksWindowQuery),
     responses(
-        (status = 200, description = "Tracks overlapping the window, sorted by created_at", body = Vec<TrackWire>),
+        (status = 200, description = "Authorized member-Area tracks overlapping the window, sorted by created_at and id; deployment owner also sees System", body = Vec<TrackWire>),
         (status = 400, description = "Inverted window (since > until)", body = ErrorBody),
+        (status = 403, description = "Registered user required; specified Area needs membership (System: deployment owner); sampled scope changed", body = ErrorBody),
+        (status = 404, description = "Specified or sampled Area or returned Track no longer exists", body = ErrorBody),
         (status = 500, description = "Internal error", body = ErrorBody),
     ),
 )]
 pub(crate) async fn list_tracks_window(
     State(state): State<RouteState>,
     Query(q): Query<TracksWindowQuery>,
+    principal: Principal,
 ) -> Result<Json<Vec<calm_types::track_wire::TrackWire>>> {
     if let (Some(since), Some(until)) = (q.since, q.until)
         && since > until
@@ -655,11 +668,29 @@ pub(crate) async fn list_tracks_window(
             "window query: `since` ({since}) must be <= `until` ({until})"
         )));
     }
-    let mut tracks = state
-        .repo
-        .tracks_window(q.area_id.as_deref(), q.since, q.until)
-        .await?;
+    let areas =
+        crate::track_access::list_areas(state.repo.as_ref(), &principal, q.area_id.as_deref())
+            .await?;
+    // Reuse the owning Repo window predicate with a required Area filter:
+    // unauthorized private fields are never fetched or decoded. Internal
+    // tracks_window(None, ..) continues to mean the complete repository set.
+    let mut tracks = Vec::new();
+    for area in &areas {
+        tracks.extend(
+            state
+                .repo
+                .tracks_window(Some(area.id.as_str()), q.since, q.until)
+                .await?,
+        );
+    }
+    tracks.sort_by(|a, b| {
+        a.created_at
+            .cmp(&b.created_at)
+            .then(a.id.as_str().cmp(b.id.as_str()))
+    });
     tracks.retain(user_visible_track);
+    crate::track_access::require_list_publication(state.repo.as_ref(), &areas, &tracks, &principal)
+        .await?;
     Ok(Json(
         tracks
             .into_iter()

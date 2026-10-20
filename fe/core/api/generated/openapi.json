@@ -942,7 +942,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Tracks under area",
+            "description": "Tracks under the authenticated user's current member Area",
             "content": {
               "application/json": {
                 "schema": {
@@ -966,6 +966,26 @@
           },
           "401": {
             "description": "`unauthorized`: no valid session cookie.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Registered Area member required; System requires deployment owner; scope changed during reading",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Area or returned Track no longer exists",
             "content": {
               "application/json": {
                 "schema": {
@@ -9311,7 +9331,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Tracks overlapping the window, sorted by created_at",
+            "description": "Authorized member-Area tracks overlapping the window, sorted by created_at and id; deployment owner also sees System",
             "content": {
               "application/json": {
                 "schema": {
@@ -9335,6 +9355,26 @@
           },
           "401": {
             "description": "`unauthorized`: no valid session cookie.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Registered user required; specified Area needs membership (System: deployment owner); sampled scope changed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Specified or sampled Area or returned Track no longer exists",
             "content": {
               "application/json": {
                 "schema": {
