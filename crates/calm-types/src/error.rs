@@ -55,6 +55,3 @@ impl CoreError {
         }
     }
 }
-
-/// Result alias for the IO-free layers (calm-types itself, calm-exec).
-pub type CoreResult<T, E = CoreError> = std::result::Result<T, E>;

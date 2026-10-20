@@ -20,7 +20,7 @@ fn diff_names_added_removed_and_modified_blocks() {
     let before = "# Title\n\nintro\n\n## Thesis\n\nold claim\nshared line\n\n## Draft\n\nscrap\n";
     let after =
         "# Title\n\nintro\n\n## Thesis\n\nnew claim\nshared line\n\n## Risks\n\nfx exposure\n";
-    let out = render_report_diff(before, after);
+    let out = render_report_diff_with_refs(before, after, None);
     assert!(
         out.starts_with("Blocks: 1 added, 1 removed, 1 modified (1 unchanged)."),
         "{out}"
@@ -48,7 +48,7 @@ fn diff_names_added_removed_and_modified_blocks() {
 fn task_fence_names_ready_and_key_without_payload_text() {
     let before = format!("## Plan\n\n{}", task("build", false, "secret goal prose"));
     let after = format!("## Plan\n\n{}", task("build", true, "secret goal prose"));
-    let out = render_report_diff(&before, &after);
+    let out = render_report_diff_with_refs(&before, &after, None);
     assert!(
         out.contains("## modified: `task` block key = \"build\""),
         "{out}"
@@ -67,7 +67,7 @@ fn task_fence_names_ready_and_key_without_payload_text() {
 fn task_key_rename_is_one_modification() {
     let before = task("old-key", true, "g");
     let after = task("new-key", true, "g");
-    let out = render_report_diff(&before, &after);
+    let out = render_report_diff_with_refs(&before, &after, None);
     assert!(
         out.starts_with("Blocks: 0 added, 0 removed, 1 modified (0 unchanged)."),
         "{out}"
@@ -79,7 +79,7 @@ fn task_key_rename_is_one_modification() {
 fn data_fence_reports_kind_and_changed_keys_only() {
     let before = render_fence("table", &json!({"caption": "a", "rows": [[1, 2]]}));
     let after = render_fence("table", &json!({"caption": "b", "rows": [[1, 2]]}));
-    let out = render_report_diff(&before, &after);
+    let out = render_report_diff_with_refs(&before, &after, None);
     assert!(out.contains("## modified: `table` block\n"), "{out}");
     assert!(out.contains("\nfields changed: caption\n"), "{out}");
     assert!(!out.contains("rows"), "unchanged key named: {out}");
@@ -95,7 +95,7 @@ fn per_block_excerpt_is_capped_at_the_line_limit() {
     let before = "## Long\n\nx\n".to_string();
     let body: String = (0..100).map(|i| format!("line {i}\n")).collect();
     let after = format!("## Long\n\n{body}");
-    let out = render_report_diff(&before, &after);
+    let out = render_report_diff_with_refs(&before, &after, None);
     let excerpt: Vec<&str> = out
         .lines()
         .filter(|l| l.starts_with('+') || l.starts_with('-'))
@@ -119,7 +119,7 @@ fn total_rendering_is_capped_and_ends_with_the_marker() {
             "é".repeat(400)
         ));
     }
-    let out = render_report_diff(&before, &after);
+    let out = render_report_diff_with_refs(&before, &after, None);
     assert!(out.len() <= MAX_TOTAL_BYTES, "{} bytes", out.len());
     assert!(out.ends_with(&format!("{TRUNCATED_MARKER}\n")), "{out}");
     assert!(out.contains("## modified: `## Section 0`"), "{out}");
@@ -134,7 +134,7 @@ fn over_long_single_line_keeps_its_head_before_the_marker() {
     let before = "## Long\n\nx\n";
     let long = "y".repeat(3000);
     let after = format!("## Long\n\n{long}\n");
-    let out = render_report_diff(before, &after);
+    let out = render_report_diff_with_refs(before, &after, None);
     let added: Vec<&str> = out.lines().filter(|l| l.starts_with('+')).collect();
     assert_eq!(added.len(), 1, "{out}");
     let head = added[0];
@@ -153,14 +153,14 @@ fn over_long_single_line_keeps_its_head_before_the_marker() {
 
 #[test]
 fn empty_body_is_no_blocks() {
-    let out = render_report_diff("", "# A\n\nfirst words\n");
+    let out = render_report_diff_with_refs("", "# A\n\nfirst words\n", None);
     assert!(
         out.starts_with("Blocks: 1 added, 0 removed, 0 modified (0 unchanged)."),
         "{out}"
     );
     assert!(!out.contains("removed:"), "no phantom removal: {out}");
     assert!(out.contains("## added: `# A` (+3 lines)"), "{out}");
-    let cleared = render_report_diff("# A\n\nfirst words\n", "");
+    let cleared = render_report_diff_with_refs("# A\n\nfirst words\n", "", None);
     assert!(
         cleared.starts_with("Blocks: 0 added, 1 removed, 0 modified (0 unchanged)."),
         "{cleared}"
@@ -173,7 +173,7 @@ fn empty_body_is_no_blocks() {
 
 #[test]
 fn identical_bodies_say_so() {
-    let out = render_report_diff("# A\n\nsame\n", "# A\n\nsame\n");
+    let out = render_report_diff_with_refs("# A\n\nsame\n", "# A\n\nsame\n", None);
     assert_eq!(
         out,
         "No block-level changes (the body is byte-identical).\n"
@@ -184,7 +184,7 @@ fn identical_bodies_say_so() {
 fn duplicate_headings_pair_by_order() {
     let before = "## Note\n\nfirst\n\n## Note\n\nsecond\n";
     let after = "## Note\n\nfirst\n\n## Note\n\nsecond changed\n";
-    let out = render_report_diff(before, after);
+    let out = render_report_diff_with_refs(before, after, None);
     assert!(
         out.starts_with("Blocks: 0 added, 0 removed, 1 modified (1 unchanged)."),
         "{out}"
@@ -196,7 +196,7 @@ fn duplicate_headings_pair_by_order() {
 fn prose_replaced_by_fence_is_a_modification_plus_an_addition() {
     let before = "## Plan\n\nprose plan\n";
     let after = format!("## Plan\n\n{}", task("k", true, "hidden"));
-    let out = render_report_diff(before, &after);
+    let out = render_report_diff_with_refs(before, &after, None);
     assert!(
         out.starts_with("Blocks: 1 added, 0 removed, 1 modified (0 unchanged)."),
         "{out}"
@@ -299,7 +299,7 @@ fn refs_name_added_and_modified_blocks_by_id_and_rev() {
     assert!(out.contains("## removed: `## Draft` (-3 lines)"), "{out}");
     assert!(!out.contains("b_aaaa"), "unchanged block named: {out}");
     assert_eq!(
-        render_report_diff(before, after),
+        render_report_diff_with_refs(before, after, None),
         render_report_diff_with_refs(before, after, None),
         "no refs renders exactly the ref-less form"
     );
@@ -324,6 +324,6 @@ fn refs_of_the_wrong_length_are_ignored() {
     let refs = refs(&[("b_0001", 1)]);
     assert_eq!(
         render_report_diff_with_refs(before, after, Some(&refs)),
-        render_report_diff(before, after)
+        render_report_diff_with_refs(before, after, None)
     );
 }

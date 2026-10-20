@@ -151,10 +151,6 @@ impl CardKindRegistry {
         best.map(|(_, handler)| handler)
     }
 
-    pub fn claims_kind(&self, kind: &str) -> bool {
-        self.handler_for(kind).is_some()
-    }
-
     pub fn prepare_create_payload(
         &self,
         kind: &str,

@@ -168,7 +168,7 @@ pub enum NativeEditTarget {
         drops_turn: uuid::Uuid,
     },
 }
-/// A target whose preparation succeeded. This is ephemeral, not a storage codec.
+/// This is ephemeral, not a storage codec.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NativeEditPlan {
     pub target: NativeEditTarget,

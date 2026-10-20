@@ -199,7 +199,7 @@ Controller 是现有 backend 控制路径的门面。R1 不在 provider 增加�
 
 start、steer、compact、interrupt、宿主历史替换事务与后续 ApplyNativePlan 发轮的互斥规则从现有入口保持。R1 不扩大并发许可：目标 turn 必须仍匹配；历史准备、宿主事务提交与后续发轮各沿原入口校验；native completion 可以晚于取消决定到达，仍记录证据而不重新激活旧权限。
 
-工厂和宿主安装严格保持现有顺序：`PlannerBackend::open` 构造控制对象 → `PlannerHarness::run` → registry 的 `reservation.install/mark_installed` → 原有 snapshot/issuance 路径。Claude/ACP 保留安装前的 start_turn 拒绝守卫，安装后首次发轮内才按原路径 mint/spawn、new/load 和绑定。Codex 保留原 thread 准备位置及认证/seal 检查，不为统一接口新增 installed 门槛，也不强制全 backend 统一成 eager 或 lazy open。
+工厂和宿主安装严格保持现有顺序：`PlannerFactory::open` 构造控制对象 → `PlannerHarness::run` → registry 的 `reservation.install/mark_installed` → 原有 snapshot/issuance 路径。Claude/ACP 保留安装前的 start_turn 拒绝守卫，安装后首次发轮内才按原路径 mint/spawn、new/load 和绑定。Codex 保留原 thread 准备位置及认证/seal 检查，不为统一接口新增 installed 门槛，也不强制全 backend 统一成 eager 或 lazy open。
 
 ### 11.1 宿主私有准备范围
 

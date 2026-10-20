@@ -26,8 +26,6 @@ pub struct FakeProvider {
     // The verdict `confirm_durable_death` returns; `None` ⇒ trait default (`Unknown`).
     death_verdict: Option<DeathVerdict>,
     death_verdict_calls: AtomicUsize,
-    // The value `daemon_connected_at_ms` returns; `None` ⇒ trait default (the reaper treats it as 0).
-    daemon_connected_at_ms: Option<TimestampMs>,
 }
 
 impl Default for FakeProvider {
@@ -38,7 +36,6 @@ impl Default for FakeProvider {
             session_mode: SessionMode::Ephemeral,
             death_verdict: None,
             death_verdict_calls: AtomicUsize::default(),
-            daemon_connected_at_ms: None,
         }
     }
 }
@@ -67,12 +64,6 @@ impl FakeProvider {
     /// Script the [`DeathVerdict`] returned by `confirm_durable_death`; default defers to the trait default (`Unknown`).
     pub fn with_death_verdict(mut self, verdict: DeathVerdict) -> Self {
         self.death_verdict = Some(verdict);
-        self
-    }
-
-    /// Override the value `daemon_connected_at_ms` reports.
-    pub fn with_daemon_connected_at_ms(mut self, ms: TimestampMs) -> Self {
-        self.daemon_connected_at_ms = Some(ms);
         self
     }
 
@@ -150,7 +141,7 @@ impl WorkerProvider for FakeProvider {
     }
 
     fn daemon_connected_at_ms(&self) -> Option<TimestampMs> {
-        self.daemon_connected_at_ms
+        None
     }
 }
 

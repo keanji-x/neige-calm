@@ -65,11 +65,6 @@ pub fn align_block_refs(after: &str, blocks: &[ReportBlock]) -> Option<Vec<Repor
     )
 }
 
-/// Render the block-level diff from `before` to `after`, naming no block by id.
-pub fn render_report_diff(before: &str, after: &str) -> String {
-    render_report_diff_with_refs(before, after, None)
-}
-
 /// Render the block-level diff from `before` to `after`; with `refs` every added or modified block's
 /// line carries its id and rev.
 pub fn render_report_diff_with_refs(

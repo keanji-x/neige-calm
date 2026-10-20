@@ -8,8 +8,7 @@ use crate::plugin_host::template_input::{
     TEMPLATE_INPUT_MAX_BYTES, declares_key, reject_undeclared_keys, validate_instance,
 };
 use crate::plugin_host::{
-    Manifest, PluginRegistry, PluginRuntimeStatus, ResourceError, RpcError, effective_config,
-    read_ui_resource,
+    Manifest, PluginRegistry, ResourceError, RpcError, effective_config, read_ui_resource,
 };
 use crate::state::{AppState, CodexShellState, RouteState};
 use axum::{
@@ -1011,10 +1010,6 @@ fn kind_of(value: &Value) -> &'static str {
         Value::Object(_) => "an object",
     }
 }
-
-// Touch the PluginRuntimeStatus enum so its variants stay in the public surface.
-#[allow(dead_code)]
-const _RUNTIME_STATUS_LIVE: Option<PluginRuntimeStatus> = None;
 
 #[cfg(test)]
 mod rotate_error_mapping_tests {
