@@ -8107,17 +8107,12 @@ async fn acceptance_18_deleted_flip_rechecks_the_deletion_after_its_snapshot() {
     );
 }
 
-async fn boot_in_real_directory() -> (Boot, tempfile::TempDir, String) {
-    let dir = tempfile::TempDir::new().unwrap();
-    let path = dir.path().to_string_lossy().into_owned();
-    (boot_at_workspace(&path).await, dir, path)
-}
-
 /// A child workspace freezes at creation; a refused re-point preserves the resource binding
 /// and historical operation result, and re-driving the task reuses its original bootstrap.
 #[tokio::test]
 async fn frozen_child_refuses_repoint_and_reuses_its_bootstrap() {
-    let (boot, _attached_dir, attached_path) = boot_in_real_directory().await;
+    let (boot, attached_dir) = child_track_config::boot_git_parent().await;
+    let attached_path = attached_dir.path().to_str().unwrap();
     let mut task = plan_task(&boot.track_id, "repaired-bootstrap", TaskKind::Codex, &[]);
     task.spawn = "sub-track".into();
     task.status = TaskStatus::Dispatched;
@@ -8149,6 +8144,8 @@ async fn frozen_child_refuses_repoint_and_reuses_its_bootstrap() {
         .unwrap();
     let before_track = boot.repo.track_get(&child_id).await.unwrap().unwrap();
     assert_eq!(before_track.workspace.path, attached_path);
+    assert!(before_track.workspace.worktree.is_some());
+    assert_ne!(before_track.workspace.agent_cwd(), attached_path);
     assert!(before_track.workspace.frozen_at.is_some());
     let binding = |pool: sqlx::SqlitePool, id: String| async move {
         sqlx::query_as::<_, (String, i64, String, String, Option<String>, Option<i64>)>(
@@ -8234,7 +8231,8 @@ async fn frozen_child_refuses_repoint_and_reuses_its_bootstrap() {
 
 #[tokio::test]
 async fn acceptance_19_child_bootstrap_is_before_running_and_exactly_once_after_redrive() {
-    let (boot, _attached_dir, attached_path) = boot_in_real_directory().await;
+    let (boot, attached_dir) = child_track_config::boot_git_parent().await;
+    let attached_path = attached_dir.path().to_str().unwrap();
     let mut task = plan_task(&boot.track_id, "bootstrap", TaskKind::Codex, &[]);
     task.spawn = "sub-track".into();
     task.status = TaskStatus::Dispatched;
@@ -8277,10 +8275,11 @@ async fn acceptance_19_child_bootstrap_is_before_running_and_exactly_once_after_
         .await
         .unwrap();
     let child_result = runtime.wait(&child_op).await.unwrap();
-    assert!(matches!(
-        child_result.outcome,
-        OperationOutcome::Succeeded { .. }
-    ));
+    assert!(
+        matches!(child_result.outcome, OperationOutcome::Succeeded { .. }),
+        "child-track outcome: {:?}",
+        child_result.outcome
+    );
     assert_eq!(operation_count(&boot, "planner-harness-start").await, 0);
     assert_eq!(
         boot.repo.task_get(&task_id).await.unwrap().unwrap().status,
@@ -8337,11 +8336,8 @@ async fn acceptance_19_child_bootstrap_is_before_running_and_exactly_once_after_
     .await
     .unwrap();
     // The key carries a digest of the cwd the bootstrap was submitted with: stable for an unchanged path, moves when the path does.
-    let child_cwd: String = sqlx::query_scalar("SELECT workspace_path FROM tracks WHERE id=?1")
-        .bind(&child_id)
-        .fetch_one(boot.repo.sqlite_db().unwrap().read_pool())
-        .await
-        .unwrap();
+    let child = boot.repo.track_get(&child_id).await.unwrap().unwrap();
+    let child_cwd = child.workspace.agent_cwd().to_owned();
     let bootstrap_key = |cwd: &str| {
         let mut hasher = Sha256::new();
         hasher.update(cwd.as_bytes());
@@ -8351,14 +8347,16 @@ async fn acceptance_19_child_bootstrap_is_before_running_and_exactly_once_after_
         )
     };
     assert_eq!(idem, bootstrap_key(&child_cwd));
-    // This fixture's track is ATTACHED, so the child inherits its path verbatim rather than allocating one.
+    // Attached children keep the parent repository and bootstrap in their own track worktree.
+    assert_eq!(child.workspace.path, attached_path);
     assert_eq!(
-        child_cwd, attached_path,
-        "a child of an attached parent must inherit the parent's path"
+        child.workspace.worktree.as_deref(),
+        Some(child_cwd.as_str())
     );
+    assert_ne!(child_cwd, attached_path);
 
     // Crash while bootstrap is blocked after its prepare transaction; recover with a new runtime.
-    let crash_boot = self::boot().await;
+    let (crash_boot, _crash_parent_repo) = child_track_config::boot_git_parent().await;
     let mut crash_task = plan_task(
         &crash_boot.track_id,
         "bootstrap-crash",
@@ -8773,7 +8771,7 @@ async fn acceptance_3c_claim_success_uses_transaction_reread_spawn() {
 
 #[tokio::test]
 async fn acceptance_5b_stale_frozen_context_refuses_real_child_operation() {
-    let boot = boot().await;
+    let (boot, _parent_repo) = child_track_config::boot_git_parent().await;
     insert_report_payload(
         &boot,
         "stale-child-report",

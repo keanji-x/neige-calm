@@ -170,6 +170,7 @@ const TASK_PERSISTENT_COLUMNS: &[&str] = &[
     "start",
     "running_started_at_ms",
     "result_contract",
+    "child_track_json",
 ];
 
 const TRACK_PERSISTENT_COLUMNS: &[&str] = &[
