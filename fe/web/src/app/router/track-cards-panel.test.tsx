@@ -271,7 +271,7 @@ describe('track route CARDS panel', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Back to track' }));
     expect(window.location.search).toBe('');
     await waitFor(() => { expect(document.activeElement).toBe(opener); });
-    await userEvent.click(await screen.findByText('Related', { exact: true }));
+    await userEvent.click(await screen.findByRole('button', { name: 'Related' }));
     expect(document.querySelector('[data-nc-recent-files]')).not.toBeNull();
     await userEvent.click(screen.getByRole('button', { name: 'Open fe/web/src/app/router/public.tsx' }));
     await waitFor(() => {
