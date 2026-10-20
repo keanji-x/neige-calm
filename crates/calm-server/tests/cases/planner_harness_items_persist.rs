@@ -393,6 +393,7 @@ async fn issued_mixed_observation_segments_are_on_the_projection_row_and_survive
             .collect::<Vec<_>>(),
         vec![
             HarnessInputPresentation::SystemPlannerTurnBudget,
+            HarnessInputPresentation::SystemPlannerContextUsage,
             HarnessInputPresentation::SystemTaskCompleted,
             HarnessInputPresentation::User,
             HarnessInputPresentation::SystemTaskFailed,
@@ -406,7 +407,7 @@ async fn issued_mixed_observation_segments_are_on_the_projection_row_and_survive
         serde_json::to_value(
             issued_segments
                 .iter()
-                .skip(1)
+                .skip(2)
                 .map(|segment| &segment.origin)
                 .collect::<Vec<_>>()
         )
@@ -422,7 +423,7 @@ async fn issued_mixed_observation_segments_are_on_the_projection_row_and_survive
             .iter()
             .all(|segment| segment.attachments.is_empty())
     );
-    assert_eq!(issued_segments[2].text, "User says:\nwhat changed?");
+    assert_eq!(issued_segments[3].text, "User says:\nwhat changed?");
     assert_eq!(
         issued_text,
         issued_segments

@@ -105,13 +105,18 @@ async fn mixed_batch(with_timeout: bool) {
     .await;
     maybe_issue_turn(&fx.harness.inner).await.unwrap();
     let segments = fx.projected_segments().await;
-    assert_eq!(segments.len(), if with_timeout { 5 } else { 4 });
+    assert_eq!(segments.len(), if with_timeout { 6 } else { 5 });
     let budget_index = usize::from(with_timeout);
     assert_eq!(
         segments[budget_index].presentation,
         crate::model::HarnessInputPresentation::SystemPlannerTurnBudget
     );
     assert_eq!(segments[budget_index].origin, None);
+    assert_eq!(
+        segments[budget_index + 1].presentation,
+        crate::model::HarnessInputPresentation::SystemPlannerContextUsage
+    );
+    assert_eq!(segments[budget_index + 1].origin, None);
     if with_timeout {
         assert_eq!(
             segments[0].presentation,

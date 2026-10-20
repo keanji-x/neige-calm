@@ -78,8 +78,11 @@ pub(crate) fn plan(rows: &[TranscriptRow], turn_id: &str) -> Result<RewindPlan, 
         };
         if segments.iter().any(|segment| {
             segment.presentation != HarnessInputPresentation::User
-                && !(segment.presentation == HarnessInputPresentation::SystemPlannerTurnBudget
-                    && segment.origin.is_none()
+                && !(matches!(
+                    segment.presentation,
+                    HarnessInputPresentation::SystemPlannerTurnBudget
+                        | HarnessInputPresentation::SystemPlannerContextUsage
+                ) && segment.origin.is_none()
                     && segment.attachments.is_empty())
         }) {
             return Err(

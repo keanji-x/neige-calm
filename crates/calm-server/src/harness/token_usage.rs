@@ -78,6 +78,30 @@ impl TokenUsageExt for TokenUsage {
     }
 }
 
+/// Render only an honest occupancy reading. Invalidation wins over retained billing metadata.
+pub(crate) fn planner_context_input(usage: Option<&TokenUsage>, invalidated: bool) -> String {
+    let reason = if invalidated {
+        "reset by compaction"
+    } else if let Some(usage) = usage {
+        if let Some(percent) = usage.percent() {
+            return format!(
+                "[Trusted Planner context usage]\nContext window: {:.0}% used ({} of {} tokens) as of the latest response before this turn. Record important state in the Report before compacting; conversation text after compaction is not guaranteed to survive.",
+                percent.round(),
+                usage.used_tokens,
+                usage.context_window.expect("percent requires a window")
+            );
+        }
+        if usage.exceeds_window() {
+            "reading exceeds window"
+        } else {
+            "window unknown"
+        }
+    } else {
+        "no reading yet"
+    };
+    format!("[Trusted Planner context usage]\nContext usage is unknown ({reason}).")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

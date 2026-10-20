@@ -176,6 +176,7 @@ const harnessInputPresentationSchema: z.ZodType<HarnessInputPresentation> = z.en
   'system_task_failed',
   'system_mail',
   'system_planner_turn_budget',
+  'system_planner_context_usage',
 ]);
 
 /** The presentation owner supplies the closed set; System cannot acquire User presentation. */
@@ -918,6 +919,7 @@ Record<SystemInputPresentation, string>
   system_task_failed: 'Task failed',
   system_mail: 'Mail',
   system_planner_turn_budget: 'Planner turn budget',
+  system_planner_context_usage: 'Planner context usage',
 });
 
 /* Live data uses the camelCase spellings; snake_case is accepted as a precaution since the kernel
@@ -1016,7 +1018,7 @@ export function harnessItemToTurns(item: HarnessItem): readonly ConversationMess
     const atMs = typeof completedAtMs === 'number' && Number.isFinite(completedAtMs)
       ? completedAtMs : item.created_at_ms;
     /* Regenerable context is not a wakeup. At least one real report edit must remain. */
-    const observations = segments.filter((segment) => segment.presentation !== 'system_planner_turn_budget');
+    const observations = segments.filter((segment) => segment.presentation !== 'system_planner_turn_budget' && segment.presentation !== 'system_planner_context_usage');
     const quiet = observations.length > 0
       && observations.every((segment) => segment.presentation === 'system_report_edited');
     return segments.flatMap<ConversationMessage>((segment, index) => {
@@ -1068,8 +1070,9 @@ export function harnessItemToTurns(item: HarnessItem): readonly ConversationMess
 }
 
 /** The decoder's exact structured presentation label, never inferred from input text. */
-export function isPlannerBudgetContext(entry: TranscriptEntry): entry is ConversationSystemEntry {
-  return entry.author === 'system' && entry.label === SYSTEM_PRESENTATION_LABELS.system_planner_turn_budget;
+export function isPlannerTurnContext(entry: TranscriptEntry): entry is ConversationSystemEntry {
+  return entry.author === 'system' && (entry.label === SYSTEM_PRESENTATION_LABELS.system_planner_turn_budget
+    || entry.label === SYSTEM_PRESENTATION_LABELS.system_planner_context_usage);
 }
 
 /* What the agent did between two things it said: one line each, a verb and its target.

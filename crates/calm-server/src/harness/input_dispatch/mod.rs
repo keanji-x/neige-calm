@@ -340,3 +340,13 @@ fn report_fact(
         delivery,
     })
 }
+
+/// Exercise the production renderer from issuance tests after reloading the frozen plan.
+#[cfg(test)]
+pub(crate) async fn hydrate_for_test(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    card: &str,
+    plan: &calm_types::conversation::SubmissionRenderPlan,
+) -> Result<Vec<InputItem>> {
+    hydrate::hydrate(tx, card, plan).await
+}

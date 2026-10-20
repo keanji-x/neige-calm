@@ -130,6 +130,16 @@ pub fn initial_planner_budget() -> calm_server::model::HarnessInputSegment {
     }
 }
 
+/// Independent oracle for a Planner that has not received its first usage reading.
+pub fn initial_planner_context_usage() -> calm_server::model::HarnessInputSegment {
+    calm_server::model::HarnessInputSegment {
+        presentation: calm_server::model::HarnessInputPresentation::SystemPlannerContextUsage,
+        text: "[Trusted Planner context usage]\nContext usage is unknown (no reading yet).".into(),
+        attachments: vec![],
+        origin: None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

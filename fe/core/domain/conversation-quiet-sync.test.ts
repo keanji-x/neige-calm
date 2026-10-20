@@ -278,10 +278,10 @@ describe('foldQuietSyncs over persisted batches', () => {
   const budget = (): Segment => ({ presentation: 'system_planner_turn_budget', text: 'Frozen context', attachments: [] });
 
   it('folds regenerable budget and report edits together through the production transcript', () => {
-    const entries = buildTranscript([batch(1, [budget(), { ...edited(), origin: { observation: 'report_edited', event_id: 42, queue_entry: null } }]), action(2), reply(3, 'Re-read.')]);
-    expect(entries.slice(0, 2)).toMatchObject([{ quiet: true }, { quiet: true }]);
+    const entries = buildTranscript([batch(1, [budget(), { presentation: 'system_planner_context_usage', text: 'Frozen usage', attachments: [] }, { ...edited(), origin: { observation: 'report_edited', event_id: 42, queue_entry: null } }]), action(2), reply(3, 'Re-read.')]);
+    expect(entries.slice(0, 3)).toMatchObject([{ quiet: true }, { quiet: true }, { quiet: true }]);
     const blocks = foldQuietSyncs(entries);
-    expect(blocks.map(ids)).toEqual([['1:0', '1:1', 'activity-item-2', '3']]);
+    expect(blocks.map(ids)).toEqual([['1:0', '1:1', '1:2', 'activity-item-2', '3']]);
     expect(blocks[0]).toMatchObject({ kind: 'quiet-sync', author: 'user' });
   });
 

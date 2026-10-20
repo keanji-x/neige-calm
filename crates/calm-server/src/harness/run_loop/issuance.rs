@@ -331,11 +331,39 @@ pub(super) async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
         *slot = Some(key.clone());
         key
     };
+    // Keep the render text with the same durable attempt as the budget. A retry (including
+    // restart) must not resample a later reading or a later invalidation.
+    let context_usage =
+        if sampled_budget.is_some() {
+            let frozen = inner.turn_budget.lock().await;
+            if let budget::FrozenBudget::Planner {
+                start_attempt,
+                context_usage,
+                ..
+            } = &*frozen
+                && start_attempt == &client_id
+            {
+                Some(context_usage.clone().unwrap_or_else(|| {
+                    crate::harness::token_usage::planner_context_input(None, false)
+                }))
+            } else {
+                drop(frozen);
+                let invalidated = inner.context_usage_invalidation.lock().await.is_some();
+                let usage = inner.token_usage.lock().await;
+                Some(crate::harness::token_usage::planner_context_input(
+                    usage.as_ref(),
+                    invalidated,
+                ))
+            }
+        } else {
+            None
+        };
     *inner.turn_budget.lock().await = match sampled_budget {
         Some(budget) => budget::FrozenBudget::Planner {
             budget,
             start_attempt: client_id.clone(),
             warning_attempted: false,
+            context_usage: context_usage.clone(),
         },
         None => budget::FrozenBudget::NotApplicable,
     };
@@ -378,6 +406,9 @@ pub(super) async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
         let mut context = budget::segment(budget.initial_input());
         context.presentation = HarnessInputPresentation::SystemPlannerTurnBudget;
         segments.insert(0, context);
+        let mut usage = budget::segment(context_usage.expect("Planner context was sampled"));
+        usage.presentation = HarnessInputPresentation::SystemPlannerContextUsage;
+        segments.insert(1, usage);
     }
     if let Some(notice) = timeout_notice {
         segments.insert(0, notice);

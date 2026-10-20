@@ -78,6 +78,7 @@ async fn real_end_whole_header_cas_cannot_rollback_same_phase_budget_warning() {
                 "budget-owner".into(),
             ),
             warning_attempted: false,
+            context_usage: None,
         })
         .unwrap();
     persist_runtime_frame_tx(&mut tx, &fx.card, &fx.runtime, &expected, header)

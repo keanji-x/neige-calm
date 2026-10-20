@@ -100,6 +100,7 @@ pub(super) async fn warn(inner: &Arc<Inner>) -> crate::error::Result<()> {
             budget,
             start_attempt,
             warning_attempted,
+            ..
         } = &mut *frozen
         else {
             return Ok(());

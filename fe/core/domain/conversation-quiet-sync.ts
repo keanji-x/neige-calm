@@ -7,7 +7,7 @@
 import { REPORT_READ_TOOLS, REPORT_TOOL_PREFIX } from '../keys/mcp-tools.js';
 import {
   SYSTEM_PRESENTATION_LABELS, isUserConversationTurn,
-  isPlannerBudgetContext,
+  isPlannerTurnContext,
   type ConversationSystemEntry, type ConversationTurn, type ConversationTurnOutcome,
   type TranscriptEntry,
 } from './conversation.js';
@@ -100,14 +100,19 @@ export function foldQuietSyncs(entries: readonly TranscriptEntry[]): readonly Tr
   while (index < entries.length) {
     const entry = entries[index];
     if (entry === undefined) break;
-    const opening = isPlannerBudgetContext(entry) && entry.quiet === true
-      ? entries[index + 1] : entry;
+    let openingIndex = index;
+    while (true) {
+      const context = entries[openingIndex];
+      if (context === undefined || !isPlannerTurnContext(context) || context.quiet !== true) break;
+      openingIndex += 1;
+    }
+    const opening = entries[openingIndex];
     if (opening === undefined || !isReportEditedEntry(opening)) {
       blocks.push({ kind: 'entry', entry });
       index += 1;
       continue;
     }
-    const grouped: TranscriptEntry[] = opening === entry ? [entry] : [entry, opening];
+    const grouped: TranscriptEntry[] = entries.slice(index, openingIndex + 1);
     const lifted: TranscriptEntry[] = [];
     let next = index + grouped.length;
     while (next < entries.length) {

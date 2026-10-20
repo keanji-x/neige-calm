@@ -24,6 +24,15 @@ pub(super) fn initial_budget_segment() -> HarnessInputSegment {
     }
 }
 
+pub(super) fn initial_context_usage_segment() -> HarnessInputSegment {
+    HarnessInputSegment {
+        presentation: HarnessInputPresentation::SystemPlannerContextUsage,
+        text: "[Trusted Planner context usage]\nContext usage is unknown (no reading yet).".into(),
+        attachments: vec![],
+        origin: None,
+    }
+}
+
 pub(super) struct Fixture {
     pub(super) repo: Arc<SqlxRepo>,
     pub(super) harness: PlannerHarness,
@@ -397,15 +406,16 @@ async fn completed_commit_filter_keeps_failure_and_user_entries_in_order() {
     fx.issue().await;
     let stored = fx.stored().await;
     let actual = &fx.projected_segments().await;
-    assert_eq!(actual.len(), 3);
+    assert_eq!(actual.len(), 4);
     assert_eq!(actual[0], initial_budget_segment());
-    assert_eq!(actual[1].presentation, expected[0].presentation);
-    assert_eq!(actual[1].attachments, expected[0].attachments);
-    assert_eq!(actual[1].origin, expected[0].origin);
+    assert_eq!(actual[1], initial_context_usage_segment());
+    assert_eq!(actual[2].presentation, expected[0].presentation);
+    assert_eq!(actual[2].attachments, expected[0].attachments);
+    assert_eq!(actual[2].origin, expected[0].origin);
     // The failure can acquire verified detail metadata at delivery. Its base
     // receipt and its position before the unmodified user segment must survive.
-    assert!(actual[1].text.starts_with(&expected[0].text));
-    assert_eq!(actual[2], expected[1]);
+    assert!(actual[2].text.starts_with(&expected[0].text));
+    assert_eq!(actual[3], expected[1]);
     assert!(stored.pending_entries().is_empty());
     assert_eq!(stored.push_watermark, event_id);
     assert_eq!(fx.daemon.turn_start_count_for_test(), 1);
@@ -417,6 +427,7 @@ async fn commit_notifications_still_issue_for_an_open_track() {
     let (_, commit) = fx.commit().await;
     let mut expected =
         input_segments_for_entries(&fx.harness.inner.card_id, std::slice::from_ref(&commit));
+    expected.insert(0, initial_context_usage_segment());
     expected.insert(0, initial_budget_segment());
     fx.enqueue(vec![commit]).await;
     fx.issue().await;
@@ -517,6 +528,7 @@ async fn consuming_a_commit_does_not_bypass_remaining_soft_observation_debounce(
     fx.issue().await;
     assert_eq!(fx.daemon.turn_start_count_for_test(), 1);
     let mut expected = input_segments_for_entries(&fx.harness.inner.card_id, &[leased]);
+    expected.insert(0, initial_context_usage_segment());
     expected.insert(0, initial_budget_segment());
     assert_eq!(fx.projected_segments().await, expected);
     let sent = fx.daemon.started_turns_for_test();

@@ -393,6 +393,7 @@ describe('transcriptRowToMessages', () => {
     ['system_task_failed', 'Task failed', {}],
     ['system_mail', 'Mail', {}],
     ['system_planner_turn_budget', 'Planner turn budget', {}],
+    ['system_planner_context_usage', 'Planner context usage', {}],
     ['system', 'System update', {}],
   ] as const)('uses structured %s metadata for the system label', (inputPresentation, label, quiet) => {
     const text = 'wording may change without changing who authored this';

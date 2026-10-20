@@ -448,6 +448,16 @@ pub(super) async fn tick(inner: &Arc<Inner>) -> Result<()> {
             )
             .map_err(|error| CalmError::Conflict(error.into()))?,
         );
+        contexts.push(
+            SystemRenderContext::new(
+                HarnessInputPresentation::SystemPlannerContextUsage,
+                crate::harness::token_usage::planner_context_input(
+                    header.token_usage.as_ref(),
+                    header.context_usage_invalidated,
+                ),
+            )
+            .map_err(|error| CalmError::Conflict(error.into()))?,
+        );
     }
     let (claimed, claimed_frame) = write_in_tx_typed(inner.repo.as_ref(), {
         let source = source.clone();
@@ -474,6 +484,7 @@ pub(super) async fn tick(inner: &Arc<Inner>) -> Result<()> {
                             claimed.submission_id.as_str().into(),
                         ),
                         warning_attempted: false,
+                        context_usage: None,
                     },
                     None => budget::FrozenBudget::NotApplicable,
                 };

@@ -61,6 +61,10 @@ pub enum FrozenBudget {
         budget: PlannerTurnBudget,
         start_attempt: super::snapshot::QueueEntryId,
         warning_attempted: bool,
+        /// Historical issuance freezes this render text with the start attempt.
+        /// Canonical issuance stores it in its submission render plan instead.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        context_usage: Option<String>,
     },
 }
 
@@ -84,6 +88,7 @@ mod tests {
                         "attempt".into(),
                     ),
                     warning_attempted: true,
+                    context_usage: None,
                 },
                 json!({
                     "kind": "planner",

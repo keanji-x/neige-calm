@@ -970,7 +970,14 @@ async fn first_turn_with_last_seen_head_none_has_no_diff_block() {
     .await;
 
     let budget = crate::support::oracle::initial_planner_budget();
-    assert_eq!(text, format!("{}\nread the goal", budget.text));
+    assert_eq!(
+        text,
+        format!(
+            "{}\n{}\nread the goal",
+            budget.text,
+            crate::support::oracle::initial_planner_context_usage().text
+        )
+    );
     let rows = boot
         .repo
         .transcript_rows_of_thread(boot.planner_card_id.as_str(), &boot.thread_id)
@@ -982,6 +989,7 @@ async fn first_turn_with_last_seen_head_none_has_no_diff_block() {
         segments,
         json!([
             budget,
+            crate::support::oracle::initial_planner_context_usage(),
             {"presentation": "user", "text": "read the goal", "attachments": [],
              "origin": {"observation": "track_goal", "event_id": null, "queue_entry": null}}
         ])

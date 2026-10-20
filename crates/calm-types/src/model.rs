@@ -428,6 +428,8 @@ pub enum HarnessInputPresentation {
     /// Kernel-generated initial Planner budget, rebuilt on each replacement turn.
     /// Warnings and one-shot observations must retain their ordinary System presentation.
     SystemPlannerTurnBudget,
+    /// Kernel-generated context occupancy frozen with the initial Planner input.
+    SystemPlannerContextUsage,
 }
 
 /// One observation in the exact order and wording sent to `turn/start`.

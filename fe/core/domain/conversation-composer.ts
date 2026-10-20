@@ -1,5 +1,5 @@
 import type { PlannerAttachment } from '../api/generated/wire.js';
-import { isUserConversationTurn, isPlannerBudgetContext, MAX_ATTACHMENTS_PER_MESSAGE, type ConversationTurn, type TranscriptEntry } from './conversation.js';
+import { isUserConversationTurn, isPlannerTurnContext, MAX_ATTACHMENTS_PER_MESSAGE, type ConversationTurn, type TranscriptEntry } from './conversation.js';
 
 /** What one conversation's composer holds: its words and the images already uploaded for it. */
 export type ComposerContent = Readonly<{ text: string; attachments: readonly PlannerAttachment[] }>;
@@ -29,7 +29,7 @@ function editedTurnSpan(entries: readonly TranscriptEntry[], outcomeId: string):
   }
   if (start < 0) return null;
   // Replacement rebuilds the initial budget in the same input row. Preserve all other System events.
-  while (start > 0 && isPlannerBudgetContext(entries[start - 1])) start -= 1;
+  while (start > 0 && isPlannerTurnContext(entries[start - 1])) start -= 1;
   return { start, end };
 }
 

@@ -403,6 +403,7 @@ async fn drained_user_message_is_readable_before_the_echo_and_upgraded_by_it() {
         projection["input_segments"],
         json!([
             budget,
+            crate::support::oracle::initial_planner_context_usage(),
             {"presentation": "user", "text": "User says:\nhello from the queue", "attachments": [],
              "origin": {"observation": "user_message", "event_id": null, "queue_entry": {"id":entry_id,"rev":entry_rev}}}
         ])
@@ -414,8 +415,9 @@ async fn drained_user_message_is_readable_before_the_echo_and_upgraded_by_it() {
     assert_eq!(
         params["item"]["content"][0]["text"],
         format!(
-            "{}\nUser says:\nhello from the queue",
-            crate::support::oracle::initial_planner_budget().text
+            "{}\n{}\nUser says:\nhello from the queue",
+            crate::support::oracle::initial_planner_budget().text,
+            crate::support::oracle::initial_planner_context_usage().text
         )
     );
     let projection_db_id = projection["id"].as_i64().unwrap();
@@ -513,6 +515,7 @@ async fn projection_key_is_the_first_entry_with_an_id_and_segments_carry_every_e
         presentations,
         vec![
             serde_json::to_value(HarnessInputPresentation::SystemPlannerTurnBudget).unwrap(),
+            serde_json::to_value(HarnessInputPresentation::SystemPlannerContextUsage).unwrap(),
             serde_json::to_value(HarnessInputPresentation::SystemTaskCompleted).unwrap(),
             serde_json::to_value(HarnessInputPresentation::User).unwrap(),
         ]

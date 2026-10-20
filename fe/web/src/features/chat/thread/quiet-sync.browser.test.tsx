@@ -44,7 +44,12 @@ async function frame() {
 
 describe('the quiet-sync fold in a real engine', () => {
   it('is a control-height line that hides the turn until opened from the keyboard', async () => {
-    render(<ChatThread hasPendingMessages={false} canContinue={false} cards={{}} stalled={false} conversation={conversation} turns={[wake, read, reply, notify]} />);
+    const budget: ConversationSystemEntry = { id: 'budget', author: 'system', atMs: NOW, quiet: true,
+      label: SYSTEM_PRESENTATION_LABELS.system_planner_turn_budget, text: '[Trusted Planner turn budget]\nThis turn has a frozen budget.' };
+    const usage: ConversationSystemEntry = { id: 'usage', author: 'system', atMs: NOW, quiet: true,
+      label: SYSTEM_PRESENTATION_LABELS.system_planner_context_usage,
+      text: '[Trusted Planner context usage]\nContext usage is unknown (no reading yet).' };
+    render(<ChatThread hasPendingMessages={false} canContinue={false} cards={{}} stalled={false} conversation={conversation} turns={[budget, usage, wake, read, reply, notify]} />);
     await frame();
 
     const fold = document.querySelector<HTMLDetailsElement>('[data-nc-turn="quiet-sync"]')!;
@@ -64,6 +69,7 @@ describe('the quiet-sync fold in a real engine', () => {
     summary.focus();
     await userEvent.keyboard('{Enter}');
     expect(fold.open).toBe(true);
+    expect(fold.textContent).toContain(usage.text);
     expect(folded.checkVisibility()).toBe(true);
     expect(folded.getBoundingClientRect().height).toBeGreaterThan(0);
     const disclosure = summary.querySelector<HTMLElement>('[aria-hidden="true"]')!;

@@ -367,6 +367,10 @@ async fn planner_turn_budget_only_real_planner_role_and_profile() {
         .await;
         let input = format!("{:?}", boot.daemon.started_turns_for_test());
         assert!(!input.contains("turn budget"), "{role}: {input}");
+        assert!(
+            !input.contains("Trusted Planner context usage"),
+            "{role}: {input}"
+        );
         boot.harness
             .rewind_turn_clock_for_test(Duration::from_secs(61))
             .await;
@@ -401,6 +405,11 @@ async fn planner_turn_budget_claude_initial_warning_only() {
     let stdin = root.read_fake("stdin").unwrap();
     assert!(stdin.contains("1 minutes"), "{stdin}");
     assert!(stdin.contains("12 seconds"), "{stdin}");
+    assert!(stdin.contains("[Trusted Planner context usage]"), "{stdin}");
+    assert!(
+        stdin.contains("Context usage is unknown (no reading yet)."),
+        "{stdin}"
+    );
     stack.wait_phase(&session.id, "turn_running").await;
     let harness = stack.harness(&session.id);
     harness

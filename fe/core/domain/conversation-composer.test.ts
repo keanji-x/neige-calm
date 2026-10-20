@@ -115,6 +115,7 @@ it('removes the regenerable opening budget when replacing a user turn without re
     ended(2, 'turn-0'),
     said(3, 'turn-1', [
       { presentation: 'system_planner_turn_budget', text: 'Frozen context', attachments: [] },
+      { presentation: 'system_planner_context_usage', text: 'Frozen usage', attachments: [] },
       { presentation: 'user', text: 'User says:\nPrompt', attachments: [image('a.png')] },
     ]),
     row(4, 'turn-1', 'agentMessage', 'item/completed', { item: { text: 'Reply' } }),
@@ -122,7 +123,7 @@ it('removes the regenerable opening budget when replacing a user turn without re
   ]);
   const id = entries.at(-1)!.id;
   expect(editedTurnRefill(entries, id)).toEqual({ text: 'Prompt', attachments: [image('a.png')] });
-  expect([...editedTurnMessageIds(entries, id)]).toEqual(['3:1']);
+  expect([...editedTurnMessageIds(entries, id)]).toEqual(['3:2']);
   expect(withoutEditedTurn(entries, id)).toEqual(entries.slice(0, 2));
 });
 
