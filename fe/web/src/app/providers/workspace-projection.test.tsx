@@ -17,7 +17,7 @@ const track = (id: string, areaId = 'a'): Track => ({ ...NEUTRAL_ACTIVITY,
   createdAt: 1, updatedAt: 1 });
 
 function setup(areas: readonly Area[], rows: readonly Track[], overlays: readonly OverlayWire[]) {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity, structuralSharing: false } } });
+  const client = new QueryClient({ defaultOptions: { queries: { retryDelay: 0, retry: false, staleTime: Infinity, structuralSharing: false } } });
   client.setQueryData(queryKeys.areas(), areas);
   for (const owner of areas) client.setQueryData(queryKeys.tracksInArea(owner.id), rows.filter(row => row.areaId === owner.id));
   client.setQueryData(queryKeys.overlaysByKind('track'), overlays);
@@ -77,7 +77,7 @@ it('keeps data projections stable across shell renders and failed refetches, but
 });
 
 it('keeps a loaded Area usable while another read is pending and then fails', async () => {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+  const client = new QueryClient({ defaultOptions: { queries: { retryDelay: 0, retry: false, staleTime: Infinity } } });
   client.setQueryData(queryKeys.areas(), [area('a'), area('b')]);
   client.setQueryData(queryKeys.overlaysByKind('track'), []);
   let fail!: () => void;

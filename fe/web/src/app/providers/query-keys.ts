@@ -67,4 +67,3 @@ export const queryKeys = Object.freeze({
    */
   trackConversationsPrefix: () => ['track-conversations'] as const,
 });
-

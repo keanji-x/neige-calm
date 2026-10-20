@@ -428,7 +428,16 @@ export function tracksInAreaQueryOptions(transport: ApiTransportPort, areaId: st
     queryKey: queryKeys.tracksInArea(areaId),
     queryFn: async ({ signal }: { signal: AbortSignal }): Promise<Track[]> =>
       (await runOperation(transport, { ...tracksInAreaOperation(areaId), signal }, unauthorized)).map((wire) => toTrack(wire)),
-    retry: false,
+    // Preserve Query's browser default of three retries for transient reads. Only typed
+    // session/access/missing failures are terminal; runOperation still notifies on 401.
+    retry: (failureCount: number, error: unknown) => {
+      if (error instanceof ApiError) {
+        const failure = error.failure;
+        if (failure.kind === 'unauthorized'
+          || (failure.kind === 'http' && (failure.status === 403 || failure.status === 404))) return false;
+      }
+      return failureCount < 3;
+    },
   };
 }
 
