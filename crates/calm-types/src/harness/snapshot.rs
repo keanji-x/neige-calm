@@ -154,7 +154,7 @@ mod tests {
             budget: super::super::budget::PlannerTurnBudget::try_from(15).unwrap(),
             start_attempt: QueueEntryId::from_wire("original-attempt".into()),
             warning_attempted: true,
-            context_usage: None,
+            context_usage: crate::harness::budget::FrozenContextUsage::RenderPlan,
         };
         frame.header.pending_rewind = Some(PersistedRewind::CodexV2 {
             thread_id: "thread".into(),

@@ -459,6 +459,10 @@ async fn context_usage_canonical_freezes_context_at_claim() {
     );
     let frozen = fx.frame().await;
     let wire = serde_json::to_string(&frozen).unwrap();
+    assert_eq!(
+        serde_json::to_value(&frozen).unwrap()["turn_budget"]["context_usage"],
+        json!({"kind":"render_plan"})
+    );
     // Render data belongs to the submission, while the runtime snapshot stays body-free.
     let submission = &frozen
         .canonical_inputs
@@ -553,6 +557,18 @@ async fn context_usage_canonical_freezes_context_at_claim() {
 async fn context_usage_canonical_known_and_invalidated_readings() {
     for (used_tokens, context_window, invalidated, expected) in [
         (
+            -1,
+            Some(258400),
+            false,
+            "Context usage is unknown (invalid reading).",
+        ),
+        (
+            i64::MIN,
+            Some(258400),
+            false,
+            "Context usage is unknown (invalid reading).",
+        ),
+        (
             142000,
             Some(272000),
             false,
@@ -597,7 +613,11 @@ async fn context_usage_canonical_known_and_invalidated_readings() {
         assert_eq!(call["method"], "turn/start");
         let input = call["params"]["input"][0]["text"].as_str().unwrap();
         assert!(input.contains(expected), "{input}");
-        if invalidated || context_window.is_none() || used_tokens > context_window.unwrap() {
+        if invalidated
+            || used_tokens < 0
+            || context_window.is_none()
+            || used_tokens > context_window.unwrap()
+        {
             assert!(!input.contains("% used"), "{input}");
         }
         send(

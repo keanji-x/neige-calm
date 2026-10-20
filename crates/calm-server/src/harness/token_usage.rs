@@ -83,15 +83,16 @@ pub(crate) fn planner_context_input(usage: Option<&TokenUsage>, invalidated: boo
     let reason = if invalidated {
         "reset by compaction"
     } else if let Some(usage) = usage {
-        if let Some(percent) = usage.percent() {
+        if usage.used_tokens < 0 {
+            "invalid reading"
+        } else if let Some(percent) = usage.percent() {
             return format!(
                 "[Trusted Planner context usage]\nContext window: {:.0}% used ({} of {} tokens) as of the latest response before this turn. Record important state in the Report before compacting; conversation text after compaction is not guaranteed to survive.",
                 percent.round(),
                 usage.used_tokens,
                 usage.context_window.expect("percent requires a window")
             );
-        }
-        if usage.exceeds_window() {
+        } else if usage.exceeds_window() {
             "reading exceeds window"
         } else {
             "window unknown"
@@ -99,6 +100,14 @@ pub(crate) fn planner_context_input(usage: Option<&TokenUsage>, invalidated: boo
     } else {
         "no reading yet"
     };
+    planner_context_unknown(reason)
+}
+
+pub(crate) fn planner_context_not_recorded() -> String {
+    planner_context_unknown("not recorded for this turn")
+}
+
+fn planner_context_unknown(reason: &str) -> String {
     format!("[Trusted Planner context usage]\nContext usage is unknown ({reason}).")
 }
 

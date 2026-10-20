@@ -484,7 +484,7 @@ pub(super) async fn tick(inner: &Arc<Inner>) -> Result<()> {
                             claimed.submission_id.as_str().into(),
                         ),
                         warning_attempted: false,
-                        context_usage: None,
+                        context_usage: calm_types::harness::budget::FrozenContextUsage::RenderPlan,
                     },
                     None => budget::FrozenBudget::NotApplicable,
                 };

@@ -62,6 +62,62 @@ async fn context_usage_historical_uses_percent_policy_and_freezes_failed_attempt
 }
 
 #[tokio::test]
+async fn context_usage_historical_legacy_missing_is_not_a_reading() {
+    let fx = Fixture::new().await;
+    *fx.harness.inner.token_usage.lock().await = Some(TokenUsage {
+        used_tokens: 142000,
+        total_tokens: 9999999,
+        context_window: Some(272000),
+        at_ms: 1,
+    });
+    fx.enqueue(vec![QueueEntry::user_message("hello".into(), None, vec![])])
+        .await;
+    fx.daemon.fail_turn_start_for_test();
+    fx.issue().await;
+    let snapshot = fx.harness.snapshot().await.unwrap();
+    let mut wire = serde_json::to_value(&snapshot).unwrap();
+    assert!(wire.to_string().contains("Context window: 50% used"));
+    wire["turn_budget"]
+        .as_object_mut()
+        .unwrap()
+        .remove("context_usage");
+    let mut restored = HarnessSnapshot::from_value_strict(wire);
+    restored.token_usage = None; // A later reading cannot rewrite the issued attempt.
+    let inner = &fx.harness.inner;
+    let (recovered, _receiver) = PlannerHarness::run_unstarted_for_test(
+        PlannerHarnessParams {
+            track_delete_locks: Default::default(),
+            worker_session_id: inner.worker_session_id.clone(),
+            track_id: inner.track_id.clone(),
+            card_id: inner.card_id.clone(),
+            thread_id: restored.last_thread_id.clone(),
+            repo: fx.repo.clone(),
+            events: inner.events.clone(),
+            card_role_cache: inner.card_role_cache.clone(),
+            track_area_cache: inner.track_area_cache.clone(),
+            backend: inner.backend.clone(),
+            registry: crate::harness::HarnessRegistry::new(),
+            config: inner.config,
+            snapshot: restored.try_into().unwrap(),
+        },
+        8,
+    );
+    fx.daemon.clear_turn_start_failure_for_test();
+    maybe_issue_turn(&recovered.inner).await.unwrap();
+    assert_eq!(
+        fx.projected_segments().await[1].text,
+        "[Trusted Planner context usage]\nContext usage is unknown (not recorded for this turn)."
+    );
+    assert!(matches!(
+        recovered.snapshot().await.unwrap().turn_budget,
+        budget::FrozenBudget::Planner {
+            context_usage: calm_types::harness::budget::FrozenContextUsage::LegacyNotRecorded,
+            ..
+        }
+    ));
+}
+
+#[tokio::test]
 async fn context_usage_worker_has_no_trusted_usage() {
     let fx = Fixture::for_role(crate::model::CardRole::Worker).await;
     fx.enqueue(vec![QueueEntry::user_message("hello".into(), None, vec![])])
@@ -73,6 +129,8 @@ async fn context_usage_worker_has_no_trusted_usage() {
 #[tokio::test]
 async fn context_usage_historical_unknown_never_renders_a_number() {
     for (used_tokens, context_window, invalidated, reason) in [
+        (-1, Some(258400), false, "invalid reading"),
+        (i64::MIN, Some(258400), false, "invalid reading"),
         (142000, Some(272000), true, "reset by compaction"),
         (142000, None, false, "window unknown"),
         (1, Some(12000), false, "window unknown"),
@@ -96,4 +154,46 @@ async fn context_usage_historical_unknown_never_renders_a_number() {
             format!("[Trusted Planner context usage]\nContext usage is unknown ({reason}).")
         );
     }
+}
+
+#[tokio::test]
+async fn context_usage_historical_refuses_render_plan_ownership_without_projection_id() {
+    use calm_types::harness::budget::FrozenContextUsage;
+    let fx = Fixture::new().await;
+    fx.enqueue(vec![QueueEntry::user_message("hello".into(), None, vec![])])
+        .await;
+    fx.daemon.fail_turn_start_for_test();
+    fx.issue().await;
+    {
+        let mut frozen = fx.harness.inner.turn_budget.lock().await;
+        let budget::FrozenBudget::Planner { context_usage, .. } = &mut *frozen else {
+            panic!("issued planner budget")
+        };
+        *context_usage = FrozenContextUsage::RenderPlan;
+    }
+    *fx.harness.inner.projection_client_id.lock().await = None;
+    fx.daemon.clear_turn_start_failure_for_test();
+    *fx.harness.inner.issuance_retry_after.lock().await = None;
+    fx.issue().await;
+    assert_eq!(
+        fx.harness.inner.issuance_block.lock().await.as_deref(),
+        Some("Cannot retry this turn: its context usage belongs to a canonical render plan.")
+    );
+    assert_eq!(
+        fx.harness
+            .inner
+            .historical_queue()
+            .unwrap()
+            .lock()
+            .await
+            .len(),
+        1
+    );
+    assert!(matches!(
+        *fx.harness.inner.turn_budget.lock().await,
+        budget::FrozenBudget::Planner {
+            context_usage: FrozenContextUsage::RenderPlan,
+            ..
+        }
+    ));
 }

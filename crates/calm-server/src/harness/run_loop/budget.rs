@@ -31,6 +31,22 @@ pub(super) async fn sample(
         .and_then(|role| HarnessProfile::from_shape(&card.kind, role, &card.payload))
         == Some(HarnessProfile::Planner);
     if is_planner {
+        // Ownership is a mode contract, independent of the optional retry projection id.
+        if inner.inputs.canonical().is_none()
+            && matches!(
+                &*inner.turn_budget.lock().await,
+                FrozenBudget::Planner {
+                    context_usage: calm_types::harness::budget::FrozenContextUsage::RenderPlan,
+                    ..
+                }
+            )
+        {
+            return Err(super::IssuanceRefusal::rejected(
+                "historical context usage belongs to a canonical render plan".into(),
+                "Cannot retry this turn: its context usage belongs to a canonical render plan."
+                    .into(),
+            ));
+        }
         // An interrupted start attempt replays under its frozen budget and stable projection id.
         if let Some(id) = inner.projection_client_id.lock().await.as_ref()
             && let FrozenBudget::Planner {

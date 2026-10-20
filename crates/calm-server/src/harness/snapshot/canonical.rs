@@ -78,7 +78,7 @@ mod tests {
             budget: PlannerTurnBudget::try_from(15).unwrap(),
             start_attempt: QueueEntryId::from_wire("original-budget-attempt".into()),
             warning_attempted: true,
-            context_usage: None,
+            context_usage: calm_types::harness::budget::FrozenContextUsage::RenderPlan,
         };
         original.token_usage = Some(TokenUsage {
             used_tokens: 123,
