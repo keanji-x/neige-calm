@@ -1,7 +1,33 @@
 //! Ordinary issuance under the harness's existing claim and issuance lock.
 use super::*;
 use crate::harness::backend::StartDiagnostic;
+use calm_types::harness::budget::FrozenContextUsage;
 use provider::control::{TurnEdit, TurnRequest, TurnStartOutcome};
+
+/// Only a new attempt samples context usage. A reused projection id keeps the fact
+/// frozen for that exact attempt, or records that pre-feature state has no fact.
+async fn frozen_context_usage(
+    inner: &Inner,
+    reused: bool,
+    client_id: &QueueEntryId,
+) -> FrozenContextUsage {
+    if reused {
+        return match &*inner.turn_budget.lock().await {
+            budget::FrozenBudget::Planner {
+                start_attempt,
+                context_usage,
+                ..
+            } if start_attempt == client_id => context_usage.clone(),
+            _ => FrozenContextUsage::LegacyNotRecorded,
+        };
+    }
+    let invalidated = inner.context_usage_invalidation.lock().await.is_some();
+    let usage = inner.token_usage.lock().await;
+    FrozenContextUsage::Text(crate::harness::token_usage::planner_context_input(
+        usage.as_ref(),
+        invalidated,
+    ))
+}
 
 pub(super) async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
     input_commit::resume(inner).await?;
@@ -315,7 +341,7 @@ pub(super) async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
     *inner.legacy_issued_input_segments.lock().await = None;
     // The key shared by the projection row and `turn/start`'s `clientUserMessageId`, decided HERE
     // so the snapshot written next carries it and a restart re-drains the batch under the SAME key.
-    let client_id = {
+    let (client_id, reused) = {
         let from_queue = inner
             .historical_queue()?
             .lock()
@@ -324,33 +350,16 @@ pub(super) async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
             .find_map(QueueEntry::id)
             .cloned();
         let mut slot = inner.projection_client_id.lock().await;
+        let reused = slot.is_some();
         let key = slot
             .clone()
             .or(from_queue)
             .unwrap_or_else(crate::harness::queue::mint_entry_id);
         *slot = Some(key.clone());
-        key
+        (key, reused)
     };
-    // Keep the render text with the same durable attempt as the budget. A retry (including
-    // restart) must not resample a later reading or a later invalidation.
     let context_usage = if sampled_budget.is_some() {
-        let frozen = inner.turn_budget.lock().await;
-        if let budget::FrozenBudget::Planner {
-            start_attempt,
-            context_usage,
-            ..
-        } = &*frozen
-            && start_attempt == &client_id
-        {
-            Some(context_usage.clone())
-        } else {
-            drop(frozen);
-            let invalidated = inner.context_usage_invalidation.lock().await.is_some();
-            let usage = inner.token_usage.lock().await;
-            Some(calm_types::harness::budget::FrozenContextUsage::Text(
-                crate::harness::token_usage::planner_context_input(usage.as_ref(), invalidated),
-            ))
-        }
+        Some(frozen_context_usage(inner, reused, &client_id).await)
     } else {
         None
     };
