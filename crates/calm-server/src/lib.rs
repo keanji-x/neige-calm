@@ -594,7 +594,6 @@ pub mod operation;
 pub(crate) mod organization_access;
 pub mod pending_codex_threads;
 pub mod per_card_lock;
-pub mod planner_appserver;
 pub mod planner_attachments;
 pub mod planner_card;
 pub mod planner_model;

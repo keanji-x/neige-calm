@@ -25,14 +25,14 @@ export interface XtermScrollTerminal extends XtermWheelState {
   scrollLines(amount: number): void;
 }
 
-export function shouldPassThroughToXterm(term: XtermWheelState): boolean {
+function shouldPassThroughToXterm(term: XtermWheelState): boolean {
   return (
     term.modes?.mouseTrackingMode !== undefined &&
     term.modes.mouseTrackingMode !== 'none'
   ) || term.buffer?.active?.type === 'alternate';
 }
 
-export function deltaYToLines(deltaY: number, deltaMode: number): number {
+function deltaYToLines(deltaY: number, deltaMode: number): number {
   if (deltaY === 0) return 0;
   if (deltaMode === WheelEvent.DOM_DELTA_LINE) {
     return Math.sign(deltaY) * Math.max(1, Math.round(Math.abs(deltaY)));

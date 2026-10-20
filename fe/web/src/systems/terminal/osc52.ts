@@ -3,10 +3,10 @@ import { writeClipboardText } from '../../ui/operation-feedback/clipboard.ts';
 // OSC 52 clipboard writes from PTY apps. Query (`Pd = ?`) is refused so a
 // child cannot read the system clipboard just by printing an escape.
 
-export const OSC52_MAX_DECODED_BYTES = 1024 * 1024;
+const OSC52_MAX_DECODED_BYTES = 1024 * 1024;
 // 3 bytes → 4 base64 chars; reject before `atob` so a 10MB OSC frame
 // does not allocate a decoded buffer we then throw away.
-export const OSC52_MAX_ENCODED_CHARS =
+const OSC52_MAX_ENCODED_CHARS =
   Math.ceil((OSC52_MAX_DECODED_BYTES * 4) / 3) + 4;
 
 export type Osc52Action =
@@ -14,7 +14,7 @@ export type Osc52Action =
   | { kind: 'clear' }
   | { kind: 'ignore' };
 
-export function parseOsc52Payload(data: string): Osc52Action {
+function parseOsc52Payload(data: string): Osc52Action {
   const sep = data.indexOf(';');
   if (sep < 0) return { kind: 'ignore' };
   const selection = data.slice(0, sep);

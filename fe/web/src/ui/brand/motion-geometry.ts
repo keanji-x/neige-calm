@@ -25,7 +25,7 @@ export function foldCenter(points: readonly Point[]): Point {
 }
 
 /** One chevron separates into three folds; both legs retain their lineage across the handoff. */
-export function executionFold(index: number, amount: number): readonly Point[] {
+function executionFold(index: number, amount: number): readonly Point[] {
   const lerp = (a: number, b: number) => a + (b - a) * amount;
   const snow = snowFold(index);
   const corner: Point = [lerp(172, snow[1][0]), lerp(192, snow[1][1])];

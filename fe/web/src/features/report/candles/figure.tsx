@@ -13,7 +13,7 @@ export const VIEW_W = 740;
 export const PRICE_H = 208;
 const VOLUME_H = 40;
 const GAP_H = 8;
-export const VIEW_H = PRICE_H + GAP_H + VOLUME_H;
+const VIEW_H = PRICE_H + GAP_H + VOLUME_H;
 export const PAD_X = 4;
 
 export function movingAverage(closes: readonly number[], window: number): (number | null)[] {
@@ -31,7 +31,7 @@ export function formatPrice(value: number): string {
   return value.toFixed(2);
 }
 
-export function formatVolume(value: number): string {
+function formatVolume(value: number): string {
   if (value >= 1e8) return `${(value / 1e8).toFixed(2)}亿`;
   if (value >= 1e4) return `${(value / 1e4).toFixed(0)}万`;
   return String(Math.round(value));

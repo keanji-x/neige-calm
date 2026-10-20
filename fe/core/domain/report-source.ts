@@ -10,7 +10,7 @@ import type { ApiFailure, ApiOperation } from '../api/types.js';
 import type { SourceProvenance, TrackSourceDetail } from '../api/generated/wire.js';
 import { parse, sanitizeAstPolicy, type SafeInline } from '../markdown/public.js';
 
-export const SOURCE_LINK_PREFIX = 'neige://source/';
+const SOURCE_LINK_PREFIX = 'neige://source/';
 
 /** `src_` + 8 lowercase hex — what the kernel mints, and nothing looser. */
 const SOURCE_ID_PATTERN = /^src_[0-9a-f]{8}$/;
@@ -18,7 +18,7 @@ const SOURCE_ID_PATTERN = /^src_[0-9a-f]{8}$/;
 /** `q` + a positive decimal without leading zeros — the kernel's anchor ids. */
 const QUOTE_ID_PATTERN = /^q[1-9][0-9]*$/;
 
-export const SOURCE_PROVENANCES = Object.freeze(['full_text', 'summary', 'web_page', 'manual'] as const);
+const SOURCE_PROVENANCES = Object.freeze(['full_text', 'summary', 'web_page', 'manual'] as const);
 
 /**
  * A destination under the prefix is always a citation (so a dangling one stays visible), but only a
@@ -86,7 +86,7 @@ function inlineLabel(nodes: readonly SafeInline[]): string {
   }).join('');
 }
 
-export const sourceQuoteSchema = z.object({
+const sourceQuoteSchema = z.object({
   id: z.string(),
   text: z.string(),
   start: z.number().int().nonnegative(),

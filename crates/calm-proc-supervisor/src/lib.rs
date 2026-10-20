@@ -8,7 +8,7 @@ pub mod execution;
 use calm_session::control::{
     AttachRequest, Attached, CleanupRequest, ControlErrorKind, ControlMsg, ControlReply,
     EnsureProcRequest, IoMode, ProbeRequest, ProcSignal, ResizePtyRequest, SignalRequest,
-    SpawnFailedDisposition, WriteStdinRequest,
+    WriteStdinRequest,
 };
 use calm_session::{FrameError, read_frame, write_frame};
 use portable_pty::{CommandBuilder, MasterPty, PtySize as PtPtySize, native_pty_system};
@@ -488,15 +488,6 @@ impl Default for ProcRegistry {
     }
 }
 
-pub async fn serve_control_socket(
-    control_sock: PathBuf,
-    registry: ProcRegistry,
-    shutdown: oneshot::Receiver<()>,
-) -> anyhow::Result<()> {
-    let listener = bind_control_listener(&control_sock)?;
-    serve_with_listener(listener, control_sock, registry, shutdown).await
-}
-
 /// Binds synchronously so the test fixture's start can return with the socket already reachable (no listen-race window).
 pub fn bind_control_listener(control_sock: &Path) -> anyhow::Result<UnixListener> {
     if let Some(parent) = control_sock.parent() {
@@ -755,36 +746,6 @@ async fn handle_connection(mut stream: UnixStream, registry: ProcRegistry) -> an
         }
     }
     Ok(())
-}
-
-/// Single-shot variant of the two-phase connection path (try_spawn + await_ready_phase), for tests.
-#[doc(hidden)]
-pub async fn ensure_proc_impl(
-    registry: ProcRegistry,
-    request: EnsureProcRequest,
-) -> Result<u32, EnsureProcFailure> {
-    let gate = registry
-        .legacy_gate(&request.proc_id)
-        .map_err(|error| EnsureProcFailure {
-            disposition: SpawnFailedDisposition::NoChildCreated,
-            error: error.to_string(),
-            child_already_reaped: false,
-        })?;
-    let _guard = gate.lock().await;
-    if let Some(executor) = &registry.executor {
-        executor
-            .reserve_legacy(&request.proc_id)
-            .map_err(|error| EnsureProcFailure {
-                disposition: SpawnFailedDisposition::NoChildCreated,
-                error: error.to_string(),
-                child_already_reaped: false,
-            })?;
-    }
-    if let Some(pid) = existing_live_pid(&registry, &request.proc_id).await {
-        return Ok(pid);
-    }
-    let spawned = try_spawn(registry, request).await?;
-    await_ready_phase(spawned).await
 }
 
 async fn lookup_proc(

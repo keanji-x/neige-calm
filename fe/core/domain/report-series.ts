@@ -10,7 +10,7 @@ import type { ApiFailure, ApiOperation } from '../api/types.js';
 export const SERIES_DETAILS = Object.freeze(['full', 'summary'] as const);
 export type SeriesDetail = (typeof SERIES_DETAILS)[number];
 
-export const SERIES_VIEWS = Object.freeze(['line', 'normalized', 'bar', 'candles'] as const);
+const SERIES_VIEWS = Object.freeze(['line', 'normalized', 'bar', 'candles'] as const);
 export type SeriesView = (typeof SERIES_VIEWS)[number];
 
 /** `[YYYY-MM-DD, value]` — the summary's first and last points. */
@@ -20,11 +20,11 @@ const dateValueSchema = z.tuple([z.string(), z.number()]);
  * A point row: `[ts_ms, value]`, or `[ts_ms, open, high, low, close, volume]` for `candles`.
  * `ts_ms` is UTC midnight.
  */
-export const seriesPointSchema = z.array(z.number()).min(2);
+const seriesPointSchema = z.array(z.number()).min(2);
 export type SeriesPoint = z.infer<typeof seriesPointSchema>;
 
 /** One asset that resolved; the numbers are the stored summary, and `points` arrive only on a `full` read. */
-export const okSeriesEntrySchema = z.object({
+const okSeriesEntrySchema = z.object({
   asset: z.string(),
   status: z.literal('ok'),
   currency: z.string().nullish(),
@@ -41,13 +41,13 @@ export const okSeriesEntrySchema = z.object({
 });
 
 /** An asset the source could not answer for (`unknown_asset`, `unavailable`). */
-export const failedSeriesEntrySchema = z.object({
+const failedSeriesEntrySchema = z.object({
   asset: z.string(),
   status: z.string().refine((status) => status !== 'ok', { message: 'an ok entry carries its numbers' }),
   reason: z.string().nullish(),
 });
 
-export const seriesEntrySchema = z.union([okSeriesEntrySchema, failedSeriesEntrySchema]);
+const seriesEntrySchema = z.union([okSeriesEntrySchema, failedSeriesEntrySchema]);
 export type OkSeriesEntry = z.infer<typeof okSeriesEntrySchema>;
 export type FailedSeriesEntry = z.infer<typeof failedSeriesEntrySchema>;
 export type SeriesEntry = z.infer<typeof seriesEntrySchema>;

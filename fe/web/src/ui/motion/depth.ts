@@ -6,12 +6,12 @@ const SINK_PER_DEPTH = 0.07;
 // An initial press carries an inward impulse, without jumping position or delaying click.
 export const TAP_VELOCITY = 16;
 
-export function depthProjection(depth: number) {
+function depthProjection(depth: number) {
   return { scale: CAMERA / (CAMERA + depth), sink: depth * SINK_PER_DEPTH,
     scaleDerivative: -CAMERA / (CAMERA + depth) ** 2, sinkDerivative: SINK_PER_DEPTH };
 }
 
-export function depthFrame(depth: number): Keyframe {
+function depthFrame(depth: number): Keyframe {
   const { scale, sink } = depthProjection(depth);
   return { transform: `translateY(${sink}px) scale(${scale})` };
 }

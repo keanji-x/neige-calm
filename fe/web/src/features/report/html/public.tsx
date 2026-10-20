@@ -18,7 +18,7 @@ import styles from './html.module.css';
 const DEFAULT_HEIGHT = 480;
 
 /** Scripts only. Adding `allow-same-origin` would hand the page this origin's cookies and API. */
-export const HTML_FRAME_SANDBOX = 'allow-scripts';
+const HTML_FRAME_SANDBOX = 'allow-scripts';
 
 /**
  * The frame itself, shared by the block and the file viewer. The mobile app's document policy

@@ -34,17 +34,6 @@ pub fn validate_attachment_list(ids: &[AttachmentId]) -> Result<()> {
     Ok(())
 }
 
-/// Make every named attachment permanent and report where its bytes now live. Idempotent: an already-bound id is returned unchanged.
-/// Holds the card's turn for the whole batch: the upload measures the card's budget under the same lock, and a bind moving bytes between the counted directories mid-measurement would invalidate it.
-pub async fn bind_attachments(
-    root: &Path,
-    card_id: &CardId,
-    ids: &[AttachmentId],
-    locks: &PerCardLocks,
-) -> Result<Vec<BoundAttachment>> {
-    bind_attachments_admitted(root, card_id, ids, locks, || async { Ok(()) }).await
-}
-
 pub(crate) async fn bind_attachments_admitted<F, A>(
     root: &Path,
     card_id: &CardId,

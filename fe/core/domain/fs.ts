@@ -6,7 +6,7 @@ import { z } from 'zod';
 import type { ApiOperation } from '../api/types.js';
 import type { FailureTable } from './failure-class.js';
 
-export const directoryEntryWireSchema = z.object({
+const directoryEntryWireSchema = z.object({
   name: z.string(),
   is_dir: z.boolean(),
 });
@@ -32,7 +32,7 @@ export function listDirectoryOperation(path?: string): ApiOperation<DirectoryLis
 }
 
 /** `GET /api/fs/readfile`. Text only: the kernel answers 400 for a binary or non-UTF-8 file. */
-export const readFileWireSchema = z.object({
+const readFileWireSchema = z.object({
   path: z.string(),
   size: z.number(),
   text: z.string(),
@@ -77,14 +77,14 @@ export type WorkspaceFilePort = Readonly<{
 }>;
 
 /** `status` is the kernel's word: modified / added / deleted / untracked / renamed. */
-export const gitChangedFileWireSchema = z.object({
+const gitChangedFileWireSchema = z.object({
   path: z.string(),
   status: z.string(),
   old_path: z.string().optional(),
 });
 export type GitChangedFileWire = z.infer<typeof gitChangedFileWireSchema>;
 
-export const gitStatusWireSchema = z.object({
+const gitStatusWireSchema = z.object({
   repo_root: z.string(),
   files: z.array(gitChangedFileWireSchema),
 });
@@ -102,7 +102,7 @@ export function gitStatusOperation(path: string): ApiOperation<GitStatusWire> {
  * Both sides of one changed file, as text. `head_text` is null for a file not in HEAD and
  * `working_text` null for a deleted one.
  */
-export const gitDiffWireSchema = z.object({
+const gitDiffWireSchema = z.object({
   path: z.string(),
   status: z.string(),
   head_text: z.string().nullable(),

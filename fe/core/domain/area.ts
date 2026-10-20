@@ -223,15 +223,3 @@ export function folderConflictMessage(conflict: FolderConflict, areaName: string
       return `That exact folder is already claimed by ${owner} (${conflict.conflict_path}).`;
   }
 }
-
-/** The eight identity slots. An area's colour is a slot, never a free hex. */
-export const AREA_SLOT_COUNT = 8;
-
-/** An area's identity dot is a stable hash of its id, mod 8, not the kernel's `color` field. */
-export function areaSlotVar(areaId: string): string {
-  let hash = 0;
-  for (let index = 0; index < areaId.length; index += 1) {
-    hash = (hash * 31 + areaId.charCodeAt(index)) | 0;
-  }
-  return `--area-${(Math.abs(hash) % AREA_SLOT_COUNT) + 1}`;
-}

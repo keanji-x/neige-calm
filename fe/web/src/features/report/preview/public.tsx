@@ -33,7 +33,7 @@ export type { PreviewViewportStore } from './viewport.ts';
 const DEFAULT_HEIGHT = 360;
 
 /** The frame's sandbox: scripts and same-origin are safe together only because the frame is another origin. */
-export const PREVIEW_SANDBOX = 'allow-scripts allow-same-origin allow-forms allow-popups allow-modals';
+const PREVIEW_SANDBOX = 'allow-scripts allow-same-origin allow-forms allow-popups allow-modals';
 
 type PageLocation = Readonly<{ protocol: string; hostname: string }>;
 

@@ -4,8 +4,8 @@ import type { ApiOperation } from '../api/types.js';
 import { casAttempts, readWriteFailure, type FailureTable, type Landed, type WriteFailure, type WriteText } from './failure-class.js';
 
 export const CALENDAR_PLUGIN_ID = 'calendar';
-export const CALENDAR_WEEKDAYS = Object.freeze(['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'] as const);
-export const calendarScheduleSchema = z.discriminatedUnion('kind', [
+const CALENDAR_WEEKDAYS = Object.freeze(['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'] as const);
+const calendarScheduleSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('all_day'), date: z.string() }),
   z.object({ kind: z.literal('timed'), start: z.string(), end: z.string(), timezone: z.string() }),
   z.object({
@@ -14,7 +14,7 @@ export const calendarScheduleSchema = z.discriminatedUnion('kind', [
   }),
 ]);
 export const calendarDraftSchema = z.object({ title: z.string(), description: z.string(), schedule: calendarScheduleSchema });
-export const calendarEntrySchema = z.object({
+const calendarEntrySchema = z.object({
   id: z.string(), task: calendarDraftSchema, version: z.number(), cancelled: z.boolean(),
   source_track_id: z.string().nullable(), created_by: z.string(), created_at: z.number(), updated_at: z.number(),
 });

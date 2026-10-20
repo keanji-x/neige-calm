@@ -13,7 +13,7 @@ export const PREVIEW_PRESETS: readonly PreviewPreset[] = Object.freeze([
   Object.freeze({ id: 'mobile', label: 'Mobile', size: Object.freeze({ width: 390, height: 844 }) }),
 ] as const);
 
-export const DEFAULT_PRESET: PreviewPresetId = 'desktop';
+const DEFAULT_PRESET: PreviewPresetId = 'desktop';
 
 export function presetSize(id: PreviewPresetId): ViewportSize {
   return (PREVIEW_PRESETS.find((preset) => preset.id === id) ?? PREVIEW_PRESETS[0]).size;
