@@ -982,7 +982,7 @@ impl SharedCodexAppServer {
         let _start_guard = self.kernel_thread_start_serial.lock().await;
         #[cfg(feature = "fixtures")]
         if let Some(fake) = self.fake.as_ref() {
-            admission.check_fixture().await?;
+            admission.check_local().await?;
             fake.started_thread_params
                 .lock()
                 .expect("fake shared codex thread params mutex poisoned")
@@ -1056,7 +1056,7 @@ impl SharedCodexAppServer {
     ) -> std::result::Result<MintedThread, ThreadMintFailure> {
         #[cfg(feature = "fixtures")]
         if let Some(fake) = self.fake.as_ref() {
-            admission.check_fixture().await?;
+            admission.check_local().await?;
             if fake.fail_next_thread_start.swap(false, Ordering::SeqCst) {
                 return Err(CalmError::CodexAppServer("forced thread/start failure".into()).into());
             }

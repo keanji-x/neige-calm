@@ -214,7 +214,7 @@ impl SharedCodexAppServer {
         }
         #[cfg(feature = "fixtures")]
         if let Some(fake) = self.fake.as_ref() {
-            if let Err(error) = admission.check_fixture().await {
+            if let Err(error) = admission.check_local().await {
                 return CodexPromptReport::failure(thread_id, client_id, error, false);
             }
             if fake.reject_turn_start.load(Ordering::SeqCst) {
@@ -398,7 +398,7 @@ impl SharedCodexAppServer {
         }
         #[cfg(feature = "fixtures")]
         if let Some(fake) = self.fake.as_ref() {
-            if let Err(error) = admission.check_fixture().await {
+            if let Err(error) = admission.check_local().await {
                 return CodexPromptReport::failure(thread_id, client_id, error, false);
             }
             fake.steered_turns

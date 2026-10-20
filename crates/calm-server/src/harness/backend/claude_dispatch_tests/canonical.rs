@@ -3,6 +3,7 @@ mod compact;
 mod control;
 mod loop_fixture;
 mod recovery;
+mod settled;
 use super::*;
 use crate::auth::{AuthConfig, AuthState, SessionAuthority, SessionIdentity};
 use crate::db::sqlite::begin_immediate_tx;

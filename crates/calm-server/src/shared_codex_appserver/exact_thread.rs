@@ -61,7 +61,7 @@ impl SharedCodexAppServer {
     ) -> Result<Value> {
         #[cfg(feature = "fixtures")]
         if self.fake.is_some() {
-            admit.check_fixture().await?;
+            admit.check_local().await?;
             let status = if self.active_turn_id_for_thread(thread_id).is_some() {
                 "active"
             } else {
@@ -84,7 +84,7 @@ impl SharedCodexAppServer {
     ) -> Result<Value> {
         #[cfg(feature = "fixtures")]
         if let Some(fake) = self.fake.as_ref() {
-            admit.check_fixture().await?;
+            admit.check_local().await?;
             if fake.fail_thread_resume.load(Ordering::SeqCst) {
                 return Err(CalmError::CodexAppServer(
                     "forced thread/resume failure".into(),
@@ -143,7 +143,7 @@ impl RecoveryThread<'_> {
     pub(crate) async fn read_settled(&self, admit: &NativePromptAdmission<'_>) -> Result<bool> {
         #[cfg(feature = "fixtures")]
         if self.daemon.fake.is_some() {
-            admit.check_fixture().await?;
+            admit.check_local().await?;
             return Ok(false);
         }
         let client = self.daemon.connected_client().await?;
@@ -170,7 +170,7 @@ impl RecoveryThread<'_> {
     ) -> Result<RecoveryState> {
         #[cfg(feature = "fixtures")]
         if self.daemon.fake.is_some() && !self.daemon.thread_cache.contains_key(self.thread_id) {
-            admit.check_fixture().await?;
+            admit.check_local().await?;
             return Ok(RecoveryState::from_thread(
                 &json!({"id":self.thread_id,"status":{"type":"notLoaded"}}),
             ));

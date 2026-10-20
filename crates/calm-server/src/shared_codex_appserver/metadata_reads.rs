@@ -32,7 +32,7 @@ impl SharedCodexAppServer {
         if let Some(fake) = self.fake.as_ref()
             && fake.reject_model_list.load(Ordering::SeqCst)
         {
-            admission.check_fixture().await?;
+            admission.check_local().await?;
             return Err(CalmError::CodexRefused(
                 "model/list failed: catalog unavailable for this account (code -32603)".into(),
             ));
@@ -111,7 +111,7 @@ impl SharedCodexAppServer {
     ) -> Result<CodexConfig> {
         #[cfg(feature = "fixtures")]
         if let Some(fake) = self.fake.as_ref() {
-            admission.check_fixture().await?;
+            admission.check_local().await?;
             fake.config_read_cwds
                 .lock()
                 .expect("fake shared codex config-read cwds mutex poisoned")

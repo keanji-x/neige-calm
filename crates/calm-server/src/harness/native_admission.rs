@@ -6,8 +6,7 @@ use std::sync::Arc;
 /// Retain the caller's error in its owning layer; the provider sees only refusal.
 pub(crate) struct NativePromptAdmission<'a> {
     gate: provider::send_boundary::PreSendGate<'a>,
-    #[cfg(feature = "fixtures")]
-    fixture: Arc<dyn Fn() -> BoxFuture<'a, Result<()>> + Send + Sync + 'a>,
+    check: Arc<dyn Fn() -> BoxFuture<'a, Result<()>> + Send + Sync + 'a>,
     refusal: Arc<std::sync::Mutex<Option<CalmError>>>,
 }
 
@@ -27,8 +26,7 @@ impl<'a> NativePromptAdmission<'a> {
                 live_issuer()
             }) as BoxFuture<'a, Result<()>>
         });
-        #[cfg(feature = "fixtures")]
-        let fixture = admission.clone();
+        let check = admission.clone();
         let refusal = Arc::new(std::sync::Mutex::new(None));
         let captured = refusal.clone();
         let gate = provider::send_boundary::PreSendGate::new(move || {
@@ -46,16 +44,14 @@ impl<'a> NativePromptAdmission<'a> {
         Self {
             gate,
             refusal,
-            #[cfg(feature = "fixtures")]
-            fixture,
+            check,
         }
     }
 
-    // The fixture branch performs only local simulated effects. Native code
-    // has no callable admission API; its only consumer is a provider gate.
-    #[cfg(feature = "fixtures")]
-    pub(crate) async fn check_fixture(&self) -> Result<()> {
-        (self.fixture)().await
+    /// Local observations run the same admission under their lifecycle owner.
+    /// Native sends continue to consume only the opaque provider gate.
+    pub(crate) async fn check_local(&self) -> Result<()> {
+        (self.check)().await
     }
 
     pub(crate) fn gate(&self) -> &provider::send_boundary::PreSendGate<'a> {

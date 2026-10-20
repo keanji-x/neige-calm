@@ -396,6 +396,9 @@ impl ClaudePlannerSession {
             Some(token) if self.row_hash_present().await? => token,
             _ => self.mint_mcp_token().await?,
         };
+        // A new process attempt must not leave the previous driver's cleanup
+        // as evidence if this start fails before installing its own driver.
+        *shared.driver.lock().await = None;
         stop(&host.instance, &params.worker_session_id).await?;
 
         let (line, client_id, items, truncation, execution) = match input {

@@ -82,6 +82,60 @@ pub(super) async fn join_driver(shared: &Shared) -> Result<()> {
 }
 
 impl ClaudePlannerSession {
+    /// The issuance owner excludes even a start that has not installed its
+    /// driver yet. Only the retained exact driver can certify cleanup; opening
+    /// a session, an absent native id, or a missing slot cannot do so.
+    pub(crate) async fn read_settled(
+        &self,
+        card: &str,
+        thread: &str,
+        admission: &crate::harness::native_admission::NativePromptAdmission<'_>,
+    ) -> Result<bool> {
+        let shared = &self.shared;
+        let params = &shared.params;
+        let _issue = shared.issue.lock().await;
+        if card != params.card_id
+            || shared.installed.get().is_none()
+            || shared.state().shutting_down
+            || params.seals.is_sealed(thread)
+        {
+            return Ok(false);
+        }
+        let Some(live) = params
+            .repo
+            .session_get(&WorkerSessionId(params.worker_session_id.clone()))
+            .await?
+        else {
+            return Ok(false);
+        };
+        if live.card_id.as_ref().map(|id| id.as_str()) != Some(card)
+            || live.track_id.as_str() != params.track_id
+            || live.thread_id.as_deref() != Some(thread)
+            || live.provider != calm_types::worker::WorkerProviderKind::Claude
+            || crate::harness::profile::live_binding(params.repo.as_ref(), &live)
+                .await?
+                .is_none()
+        {
+            return Ok(false);
+        }
+        let mut slot = shared.driver.lock().await;
+        let Some(driver) = slot.as_mut() else {
+            return Ok(false);
+        };
+        if Uuid::try_parse(thread).ok() != Some(driver.thread) {
+            return Ok(false);
+        }
+        match &driver.execution {
+            Association::Work(_) => {}
+            Association::Historical | Association::Maintenance(_) => return Ok(false),
+        }
+        if !driver.qualified().await? || shared.state().active.is_some() {
+            return Ok(false);
+        }
+        admission.check_local().await?;
+        Ok(true)
+    }
+
     pub(in crate::claude_planner) fn owns_maintenance_target(
         &self,
         target: &crate::harness::backend::MaintenanceTarget,
