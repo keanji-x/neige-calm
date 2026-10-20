@@ -298,11 +298,6 @@ fn refs_name_added_and_modified_blocks_by_id_and_rev() {
     );
     assert!(out.contains("## removed: `## Draft` (-3 lines)"), "{out}");
     assert!(!out.contains("b_aaaa"), "unchanged block named: {out}");
-    assert_eq!(
-        render_report_diff_with_refs(before, after, None),
-        render_report_diff_with_refs(before, after, None),
-        "no refs renders exactly the ref-less form"
-    );
 }
 
 #[test]
