@@ -69,6 +69,7 @@ impl NamedSource {
                     }
                     TrackInit::Template {
                         key: admission.key(),
+                        capabilities: admission.template.capabilities(),
                         binding: admission.binding.map(Box::new),
                     }
                 }
@@ -104,7 +105,7 @@ impl CreationSource {
     /// so they cannot name different sources.
     fn stamp(&self, p: &mut NewTrack) {
         let (template_id, plugin_scope) = match &self.init {
-            TrackInit::Template { key, binding } => (
+            TrackInit::Template { key, binding, .. } => (
                 Some((*key).to_string()),
                 binding.as_ref().map(|manifest| manifest.id.clone()),
             ),
@@ -233,3 +234,6 @@ pub(super) async fn prepare(
         conflict,
     })
 }
+
+#[cfg(test)]
+mod capability_tests;

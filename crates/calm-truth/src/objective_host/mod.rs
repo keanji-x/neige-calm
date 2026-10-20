@@ -3,6 +3,7 @@
 //! The engine owns semantics; this module owns authorization, atomic storage and
 //! source idempotency. Replay rebuilds state, never durable effects.
 mod authorize;
+pub mod capability;
 mod intents;
 mod lifecycle;
 mod log;

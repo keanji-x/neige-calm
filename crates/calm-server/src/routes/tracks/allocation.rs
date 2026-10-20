@@ -145,6 +145,22 @@ pub(super) async fn allocate_track_structure_tx(
         crate::managed_track::bind_tx(tx, identity, track_id.as_str()).await?;
     }
 
+    if let TrackInit::Template { capabilities, .. } = &init {
+        if !capabilities.is_empty()
+            && managed_identity.as_ref().is_some_and(|identity| {
+                matches!(
+                    identity.tool_policy,
+                    crate::managed_track::ToolPolicy::Reports
+                )
+            })
+        {
+            return Err(CalmError::Internal(
+                "reports-only managed Track cannot declare capabilities".into(),
+            ));
+        }
+        calm_truth::db::sqlite::track_capabilities::stamp_tx(tx, &track_id, capabilities).await?;
+    }
+
     if admin {
         track = crate::area_admin::set_tx(tx, &track, true).await?;
     }

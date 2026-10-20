@@ -74,6 +74,7 @@ mod task_liveness;
 mod task_projection;
 mod task_regate;
 mod track;
+pub mod track_capabilities;
 mod track_occupancy;
 #[cfg(test)]
 mod track_occupancy_tests;

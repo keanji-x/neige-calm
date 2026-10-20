@@ -1,6 +1,7 @@
 //! The front matter of a template file: a TOML block between two `+++` lines, then the report body,
 //! returned byte for byte. An id matches `^[a-z0-9][a-z0-9-]*$`, so a file can never spell the `site/` prefix.
 
+use calm_types::track_capability::TrackCapability;
 use serde::Deserialize;
 
 /// Identity and optional author-owned display text declared by a template.
@@ -15,6 +16,7 @@ pub struct FrontMatter {
     pub description: Option<String>,
     pub instructions: Option<String>,
     pub user_creatable: bool,
+    pub capabilities: Vec<TrackCapability>,
 }
 
 /// `deny_unknown_fields`: a typo'd key is a broken file, not a file with one fewer fact.
@@ -27,6 +29,8 @@ struct RawFrontMatter {
     instructions: Option<String>,
     #[serde(default = "default_user_creatable")]
     user_creatable: bool,
+    #[serde(default)]
+    capabilities: Vec<TrackCapability>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -40,11 +44,17 @@ pub enum FrontMatterError {
     Toml(String),
     /// `id` is not `^[a-z0-9][a-z0-9-]*$`.
     BadId(String),
+    DuplicateCapability(TrackCapability),
 }
 
 impl std::fmt::Display for FrontMatterError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::DuplicateCapability(capability) => write!(
+                f,
+                "template front matter: duplicate capability `{}`",
+                capability.as_db_str()
+            ),
             Self::MissingOpen => {
                 write!(f, "template file must open with a `+++` front matter line")
             }
@@ -93,6 +103,11 @@ pub fn parse(text: &str) -> Result<(FrontMatter, &str), FrontMatterError> {
     if !is_valid_id(&raw.id) {
         return Err(FrontMatterError::BadId(raw.id));
     }
+    for (index, capability) in raw.capabilities.iter().enumerate() {
+        if raw.capabilities[..index].contains(capability) {
+            return Err(FrontMatterError::DuplicateCapability(*capability));
+        }
+    }
     Ok((
         FrontMatter {
             id: raw.id,
@@ -100,6 +115,7 @@ pub fn parse(text: &str) -> Result<(FrontMatter, &str), FrontMatterError> {
             description: raw.description,
             instructions: raw.instructions,
             user_creatable: raw.user_creatable,
+            capabilities: raw.capabilities,
         },
         body,
     ))
@@ -119,6 +135,25 @@ fn is_valid_id(id: &str) -> bool {
 mod tests {
     use super::*;
 
+    #[test]
+    fn capability_front_matter_accepts_known_and_refuses_unknown_or_duplicate() {
+        let text =
+            |caps: &str| format!("+++\nid = \"x\"\ntitle = \"X\"\ncapabilities = {caps}\n+++\n");
+        assert_eq!(
+            parse(&text("[\"objectives\"]")).unwrap().0.capabilities,
+            [TrackCapability::Objectives]
+        );
+        assert!(parse(&text("[\"unknown\"]")).is_err());
+        assert_eq!(
+            parse(&text("[\"objectives\", \"objectives\"]")),
+            Err(FrontMatterError::DuplicateCapability(
+                TrackCapability::Objectives
+            ))
+        );
+        assert!(parse(&text("[]")).unwrap().0.capabilities.is_empty());
+        assert!(parse(WELL_FORMED).unwrap().0.capabilities.is_empty());
+    }
+
     const WELL_FORMED: &str = "+++\nid = \"small-change\"\ntitle = \"Small change\"\n+++\n\
 <!-- neige:contract {} -->\n\n# Plan\n\n```neige-block task\n{}\n```\n\n";
 
@@ -133,6 +168,7 @@ mod tests {
                 description: None,
                 instructions: None,
                 user_creatable: true,
+                capabilities: vec![],
             }
         );
         // Byte-exact: the returned slice is the input's own bytes (pointer identity), not a copy.

@@ -295,3 +295,111 @@ async fn log_is_append_only() {
     );
     assert_eq!(counts(&repo).await, (1, 1, 1));
 }
+
+#[tokio::test]
+async fn capability_absent_track_refuses_every_source() {
+    // A real Planner and valid identities ensure the refusal comes from capability first.
+    let repo = fixture().await;
+    sqlx::query("INSERT INTO tracks(id,area_id,title,sort,created_at,updated_at) VALUES('bare','a','bare',2,0,0)")
+        .execute(repo.pool()).await.unwrap();
+    sqlx::query("UPDATE cards SET track_id='bare' WHERE id='p'")
+        .execute(repo.pool())
+        .await
+        .unwrap();
+    sqlx::query("UPDATE worker_sessions SET track_id='bare' WHERE id='p'")
+        .execute(repo.pool())
+        .await
+        .unwrap();
+    sqlx::query("UPDATE tracks SET root_session_id='p' WHERE id='bare'")
+        .execute(repo.pool())
+        .await
+        .unwrap();
+    let mut events = scenario();
+    events.push(Event::RevisionDelivered {
+        revision: Revision::new("r1"),
+    });
+    for (i, event) in events.into_iter().enumerate() {
+        for source in [
+            InputSource::Planner {
+                principal: Principal::Agent {
+                    session_id: "p".into(),
+                    track_id: "bare".into(),
+                    area_id: "a".into(),
+                },
+                request_id: PlannerRequestId::new(format!("{i}")),
+            },
+            InputSource::HarnessTurn {
+                session_id: "p".into(),
+                turn_id: format!("{i}"),
+            },
+            InputSource::IntentJob {
+                intent: IntentId {
+                    track_id: "bare".into(),
+                    seq: LogSeq(1),
+                    ordinal: 0,
+                },
+            },
+        ] {
+            let result = react(
+                repo.db(),
+                ObjectiveInput {
+                    track_id: "bare".into(),
+                    event: event.clone(),
+                    source,
+                },
+            )
+            .await;
+            assert!(
+                matches!(result, Err(TruthError::Forbidden(ref message)) if message == "objectives capability is not declared for this track"),
+                "{event:?}: {result:?}"
+            );
+            assert_eq!(counts(&repo).await, (0, 0, 0));
+        }
+    }
+}
+
+#[tokio::test]
+async fn capability_schema_is_closed_immutable_and_cascades() {
+    let repo = fixture_with_capability("sqlite::memory:", false).await;
+    // Existing tracks have no backfill.
+    let n: i64 = sqlx::query_scalar("SELECT count(*) FROM track_capabilities")
+        .fetch_one(repo.pool())
+        .await
+        .unwrap();
+    assert_eq!(n, 0);
+    sqlx::query("INSERT INTO track_capabilities VALUES('t','objectives')")
+        .execute(repo.pool())
+        .await
+        .unwrap();
+    for sql in [
+        "INSERT INTO track_capabilities VALUES('other','unknown')",
+        "INSERT INTO track_capabilities VALUES('missing','objectives')",
+        "UPDATE track_capabilities SET capability='objectives' WHERE track_id='t'",
+        "UPDATE track_capabilities SET track_id='other' WHERE track_id='t'",
+        "DELETE FROM track_capabilities WHERE track_id='t'",
+        "SELECT rowid FROM track_capabilities",
+    ] {
+        assert!(
+            sqlx::query(sql).execute(repo.pool()).await.is_err(),
+            "{sql}"
+        );
+    }
+    // REPLACE must not bypass immutability, even with recursive triggers off.
+    for verb in ["INSERT", "INSERT OR REPLACE", "INSERT OR IGNORE"] {
+        let sql = format!("{verb} INTO track_capabilities VALUES('t','objectives')");
+        assert!(
+            sqlx::query(&sql).execute(repo.pool()).await.is_err(),
+            "{sql}"
+        );
+    }
+    let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
+    track_delete_tx(&mut tx, "t", repo.track_area_cache())
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let n: i64 = sqlx::query_scalar("SELECT count(*) FROM track_capabilities")
+        .fetch_one(repo.pool())
+        .await
+        .unwrap();
+    assert_eq!(n, 0);
+}

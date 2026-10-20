@@ -15,6 +15,7 @@ pub(super) async fn authorize<'a>(
     tx: &mut Transaction<'_, Sqlite>,
     input: &'a ObjectiveInput,
 ) -> Result<AuthorizedInput<'a>> {
+    capability::require_tx(tx, &input.track_id).await?;
     let principal = match (&input.event, &input.source) {
         (Event::CheckFinished { .. }, InputSource::IntentJob { .. }) => {
             input.source.identity()?;

@@ -45,6 +45,7 @@ pub struct Template {
     description: Option<&'static str>,
     instructions: Option<&'static str>,
     user_creatable: bool,
+    capabilities: &'static [calm_types::track_capability::TrackCapability],
     /// The report body exactly as the file has it after the closing `+++`
     /// line: `Template::recipe` hands it out uncompiled and unmodified.
     body: &'static str,
@@ -68,6 +69,10 @@ impl Template {
 
     pub fn user_creatable(&self) -> bool {
         self.user_creatable
+    }
+
+    pub fn capabilities(&self) -> &'static [calm_types::track_capability::TrackCapability] {
+        self.capabilities
     }
 
     pub fn instructions(&self) -> Option<&'static str> {
@@ -197,6 +202,7 @@ impl TemplateRoster {
                 description: front.description.map(|value| &*String::leak(value)),
                 instructions: front.instructions.map(|value| &*String::leak(value)),
                 user_creatable: front.user_creatable,
+                capabilities: Box::leak(front.capabilities.into_boxed_slice()),
                 body,
             });
         }
@@ -234,6 +240,7 @@ impl TemplateRoster {
                     description: template.description,
                     instructions: template.instructions,
                     user_creatable: template.user_creatable,
+                    capabilities: template.capabilities,
                     body: template.body,
                 })
                 .collect(),
@@ -309,6 +316,7 @@ impl TemplateRoster {
             description: front.description.map(|value| &*String::leak(value)),
             instructions: front.instructions.map(|value| &*String::leak(value)),
             user_creatable: front.user_creatable,
+            capabilities: Box::leak(front.capabilities.into_boxed_slice()),
             body,
         };
         let compiled = crate::routes::tracks::compile_template(&template)
@@ -375,6 +383,16 @@ mod tests {
     use calm_types::report_contract::check_document;
     use calm_types::track_report::{research_header, work_brief_header};
     use std::collections::BTreeSet;
+
+    #[test]
+    fn capability_builtin_templates_remain_disabled_including_roster_copies() {
+        let roster = TemplateRoster::builtin();
+        for roster in [roster, &roster.copy_of_entries()] {
+            for template in roster.entries() {
+                assert!(template.capabilities().is_empty(), "{}", template.key());
+            }
+        }
+    }
 
     /// Plan templates with a shared working-method contract; other entries use their own briefs.
     const PLAN_TEMPLATES: [&str; 3] = [DEV, SMALL_CHANGE, INVESTIGATION];

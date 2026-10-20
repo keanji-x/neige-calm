@@ -39,6 +39,7 @@ pub mod runtime_paths;
 pub mod tailnet;
 pub mod task_recovery;
 pub mod task_result;
+pub mod track_capability;
 pub mod track_fs_dto;
 pub mod track_report;
 pub mod verify_target;

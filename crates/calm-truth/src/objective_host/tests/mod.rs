@@ -20,6 +20,10 @@ async fn fixture() -> SqlxRepo {
 }
 
 async fn fixture_at(url: &str) -> SqlxRepo {
+    fixture_with_capability(url, true).await
+}
+
+async fn fixture_with_capability(url: &str, enabled: bool) -> SqlxRepo {
     let repo = SqlxRepo::open(url).await.unwrap();
     for sql in [
         "INSERT INTO areas(id,name,color,sort,created_at,updated_at) VALUES('a','a','',0,0,0)",
@@ -35,6 +39,19 @@ async fn fixture_at(url: &str) -> SqlxRepo {
         "UPDATE tracks SET root_session_id=CASE id WHEN 't' THEN 'p' ELSE 'foreign' END",
     ] {
         sqlx::query(sql).execute(repo.pool()).await.unwrap();
+    }
+    if enabled {
+        let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
+        for track in ["t", "other"] {
+            crate::db::sqlite::track_capabilities::stamp_tx(
+                &mut tx,
+                &track.into(),
+                &[calm_types::track_capability::TrackCapability::Objectives],
+            )
+            .await
+            .unwrap();
+        }
+        tx.commit().await.unwrap();
     }
     repo
 }
