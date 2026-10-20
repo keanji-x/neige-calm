@@ -203,12 +203,28 @@ export function AppShell({
   const activeArea = areas.find((area) => area.id === activeAreaId) ?? areas[0];
   const mobileNavigationRef = useRef<HTMLDivElement | null>(null);
   const finishMobileClose = useCallback(() => setMobileSection(null), []);
-  const { close: closeMobileSection, cancel: cancelMobileExit } = useMobileNavigationPresence(mobileNavigationRef, finishMobileClose, narrowRail && mobileNavOpen);
+  const { close: closeMobileSection, cancel: cancelMobileExit, interactive: workspaceInteractive } = useMobileNavigationPresence(mobileNavigationRef, finishMobileClose, narrowRail && mobileNavOpen);
   const railCollapsed = manualRailCollapsed ?? narrowRail;
 
-  useEffect(() => {
-    if (!mobileNavOpen) return;
-    mobileNavigationRef.current?.focus({ preventScroll: true });
+  const mobileFocusScope = useRef<Readonly<{ path: string; host: HTMLElement | null; opener: HTMLElement | null }> | null>(null);
+  useLayoutEffect(() => {
+    if (!workspaceInteractive) {
+      const scope = mobileFocusScope.current;
+      mobileFocusScope.current = null;
+      // DOM permissions have committed before focus returns. A new route or a
+      // newer focus owner wins; paint completion never restores focus.
+      if (scope !== null && narrowRail && scope.path === currentPath
+        && (document.activeElement === document.body || scope.host?.contains(document.activeElement))) {
+        const opener = scope.opener;
+        if (opener?.isConnected && opener.closest('[inert], [hidden], [aria-hidden="true"], :disabled, [aria-disabled="true"]') === null
+          && opener.getClientRects().length > 0) opener.focus({ preventScroll: true });
+      }
+      return;
+    }
+    if (mobileFocusScope.current === null) {
+      mobileFocusScope.current = { path: currentPath, host: mobileNavigationRef.current, opener: mobileOpenerRef.current };
+      mobileNavigationRef.current?.focus({ preventScroll: true });
+    }
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape' && !event.defaultPrevented) {
         const layers = document.querySelectorAll<HTMLElement>('[data-nc-escape-layer]');
@@ -234,21 +250,18 @@ export function AppShell({
     document.addEventListener('keydown', onKeyDown);
     return () => {
       document.removeEventListener('keydown', onKeyDown);
-      const opener = mobileOpenerRef.current?.isConnected ? mobileOpenerRef.current
-        : document.querySelector<HTMLElement>('[data-nc-workspace-header] button');
-      opener?.focus({ preventScroll: true });
     };
-  }, [closeMobileSection, mobileNavOpen]);
+  }, [closeMobileSection, workspaceInteractive, narrowRail, currentPath]);
 
   useEffect(() => {
     if (!narrowRail && mobileNavOpen) setMobileSection(null);
   }, [mobileNavOpen, narrowRail]);
-  useEffect(() => {
-    if (mobileSectionKind !== undefined) {
+  useLayoutEffect(() => {
+    if (workspaceInteractive && mobileSectionKind !== undefined) {
       const activeBack = mobileNavigationRef.current?.querySelector<HTMLElement>('[data-nc-workspace-page]:not([aria-hidden="true"]) header button');
       (activeBack ?? mobileNavigationRef.current)?.focus({ preventScroll: true });
     }
-  }, [mobileSectionKind]);
+  }, [mobileSectionKind, workspaceInteractive]);
 
   // Both track mutations need the area id to invalidate the right list, and the
   // rail only knows track ids; the workspace read already has the mapping.
@@ -365,7 +378,7 @@ export function AppShell({
       {narrowRail && !settingsOpen && !mobileOverlayRoute && <MobileWorkspaceHeader
         areas={areas}
         activeArea={activeArea}
-        navigationOpen={mobileNavOpen || historyOpen}
+        navigationOpen={workspaceInteractive || historyOpen}
         onBack={newTrackBack === null || routeAreaId === undefined ? undefined : () => {
           newTrackBack();
           openMobileSection({ kind: 'tracks', areaId: routeAreaId });
@@ -378,7 +391,7 @@ export function AppShell({
       />}
       {narrowRail && !settingsOpen && !mobileOverlayRoute && <button type="button"
         className={`${styles.workspaceOpener} ${floatingControlClassName}`} aria-label="Open workspace"
-        hidden={mobileNavOpen || historyOpen || conversationScope?.conversationOpen === true}
+        hidden={workspaceInteractive || historyOpen || conversationScope?.conversationOpen === true}
         style={{ bottom: `calc(${visibleViewport.bottomInset}px + var(--space-4) + env(safe-area-inset-bottom))` }}
         onClick={() => openMobileSection({ kind: 'areas', areaId: activeArea?.id })}><Icon name="folder" /></button>}
       <EdgeSwipe enabled={narrowRail && !settingsOpen && !mobileOverlayRoute && !mobileNavOpen && !historyOpen} onSwipe={() => setHistoryOpen(true)} />
@@ -398,11 +411,12 @@ export function AppShell({
         ref={mobileNavigationRef}
         id="mobile-workspace-navigation"
         className={`${styles.navigation} ${mobileNavOpen ? styles.navigationOpen : ''}`}
-        role={narrowRail ? 'dialog' : undefined}
-        aria-modal={narrowRail ? true : undefined}
+        role={workspaceInteractive ? 'dialog' : undefined}
+        aria-modal={workspaceInteractive ? true : undefined}
         aria-label={narrowRail ? mobileNavigationLabel : undefined}
-        aria-hidden={narrowRail && !mobileNavOpen ? true : undefined}
-        data-nc-escape-layer={narrowRail && mobileNavOpen ? '' : undefined}
+        inert={narrowRail && !workspaceInteractive}
+        aria-hidden={narrowRail && !workspaceInteractive ? true : undefined}
+        data-nc-escape-layer={workspaceInteractive ? '' : undefined}
         tabIndex={narrowRail ? -1 : undefined}
       >
         <div className={styles.navigationPanel}>
@@ -496,7 +510,7 @@ export function AppShell({
           <OperationFeedback feedback={pinFeedback} />
         </div>
       </div>
-      <main ref={drawerWidth.mainRef} className={styles.main} style={drawerWidth.style} inert={narrowRail && mobileNavOpen} aria-hidden={narrowRail && mobileNavOpen ? true : undefined}>
+      <main ref={drawerWidth.mainRef} className={styles.main} style={drawerWidth.style} inert={workspaceInteractive} aria-hidden={workspaceInteractive ? true : undefined}>
         {/* One flex item. Routes compose ErrorBox + page + Drawer as siblings;
             `:first-child` on `.main` would flex the banner, not the page. */}
         <div key={currentPath} className={styles.stage} hidden={narrowRail && settingsOpen}>

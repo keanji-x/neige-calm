@@ -1,120 +1,21 @@
-import { prepareReportDocument } from '../../features/report/document/preparation.ts';
+import '../../styles/entry.css';
+import { AREA, setup } from './mobile-browser-fixture.tsx';
 import { withFontRoleProbe, fontRoleSnapshot } from '../../../../tools/styles/font-role-fixture.ts';
 /*
  * The mobile presentation, rendered on the real `AppShell` over a memory history;
  * this is the file that measures painted boxes.
  */
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { RouterProvider, createMemoryHistory } from '@tanstack/react-router';
-import { cleanup, render } from '@testing-library/react';
-import { page, userEvent } from 'vitest/browser';
+import { cleanup } from '@testing-library/react';
+import { commands, page, userEvent } from 'vitest/browser';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import '../../styles/entry.css';
 
-import type { ApiRequest, ApiTransportPort, ApiTransportResponse } from '../../../../core/api/types.ts';
-import { createUnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
-import { ThemeProvider } from '../theme/public.tsx';
-import { createAppRouter } from '../router/public.tsx';
-import { createReadReceiptsKernel, type ReadReceiptsKernel } from '../providers/read-receipts-fixture.tsx';
-import { bootTestCardRuntime } from '../router/test-card-runtime.ts';
-import { DepthFeedback } from '../../ui/motion/depth-feedback.tsx';
+import { createReadReceiptsKernel } from '../providers/read-receipts-fixture.tsx';
 
-afterEach(cleanup);
+afterEach(async () => { cleanup(); vi.restoreAllMocks(); await commands.emulateReducedMotion(false); });
 
 const settlePaint = () => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
 
-const AREA = { id: 'c1', name: 'Product', color: '#5B8DEF', sort: 1, kind: 'user', created_at: 1, updated_at: 1 };
-const OTHER_AREA = { id: 'c2', name: 'Frontend', color: '#8B7FE8', sort: 2, kind: 'user', created_at: 1, updated_at: 1 };
-const TRACK = { workspace: { isolation: 'none' as const, kind: 'attached' as const, path: '/tmp', frozen_at: null },
-  id: 'w1', area_id: 'c1', title: 'Responsive mobile UI', sort: 1, cwd: '/tmp',
-  pinned_at: 30, closed_at: null, created_at: 1, updated_at: 2,
-};
-const OTHER_TRACK = { workspace: { isolation: 'none' as const, kind: 'attached' as const, path: '/tmp', frozen_at: null },
-  id: 'w2', area_id: 'c1', title: 'Remote access', sort: 2, cwd: '/tmp',
-  pinned_at: null, closed_at: null, created_at: 1, updated_at: 2,
-};
-
-/* The document the phone is meant to read. Prose carries the headings the
-   Outline is built from; the task block is what the TASKS panel lists. */
-const REPORT_CARD = {
-  id: 'card-report', track_id: 'w1', kind: 'track-report', title: 'Report', sort: 0, deletable: false,
-  created_at: 1, updated_at: 2,
-  payload: {
-    schemaVersion: 3, docRev: 1,
-    summary: 'Report stays at the root on a phone.',
-    body: 'Mobile workspace direction',
-    blocks: [
-      {
-        id: 'b-intro', kind: 'prose', rev: 1,
-        payload: {
-          markdown: '## Mobile workspace direction\n\nReport stays at the root. Navigation, cards and conversations arrive as focused pages instead of squeezing the document.\n',
-        },
-      },
-      {
-        id: 'b-task-layout', kind: 'task', rev: 1,
-        payload: { key: 'mobile-layout', kind: 'codex', declared_by: 'spec', ready: true, goal: 'Validate the right-push interaction on a 390 × 844 viewport.' },
-      },
-      {
-        id: 'b-why', kind: 'prose', rev: 1,
-        payload: {
-          markdown: '## Why this shape\n\nThe phone gets one clear reading surface. Secondary work remains one gesture away and always has an explicit route back to Report.\n',
-        },
-      },
-      {
-        id: 'b-task-touch', kind: 'task', rev: 1,
-        payload: { key: 'touch-targets', kind: 'codex', declared_by: 'spec', ready: false, goal: 'Every control clears 44px.' },
-      },
-    ],
-  },
-};
-const TERMINAL_CARD = {
-  id: 'card-terminal', track_id: 'w1', kind: 'terminal', title: 'Implementation terminal', sort: 1,
-  payload: { terminal_presentation: { source: 'manual', in_workbench: true }, }, deletable: true, created_at: 1, updated_at: 2,
-};
-const REVIEW_CARD = {
-  id: 'card-review', track_id: 'w1', kind: 'codex', title: 'Design review', sort: 2,
-  payload: { planner_harness: true }, deletable: false, created_at: 1, updated_at: 2,
-};
-
-const ok = (body: unknown): ApiTransportResponse => ({ status: 200, statusText: 'OK', body });
-
-function setup(path: string, areaName = AREA.name, onRequest: (request: ApiRequest) => void = () => undefined, receipts?: ReadReceiptsKernel) {
-  const transport: ApiTransportPort = {
-    async send(request) {
-      onRequest(request);
-      const receipt = await receipts?.reply(request);
-      if (receipt !== undefined) return receipt;
-      if (request.path.endsWith('/planner/run')) return Promise.resolve(ok({ card_id: 'card-review', worker_session_id: 'runtime', phase: 'idle', model: null, reasoning_effort: null, permission_mode: 'never', blocked_reason: null, manual_compact_supported: true, recovery: null, compact_outcome: null, context_usage_invalidated: false, running_turn: null }));
-      if (request.path === '/api/settings') return Promise.resolve(ok({ settings: {} }));
-      if (request.path === '/api/areas') return Promise.resolve(ok([{ ...AREA, name: areaName }, OTHER_AREA]));
-      if (request.path === '/api/areas/c1/tracks') return Promise.resolve(ok([TRACK, OTHER_TRACK]));
-      if (request.path === '/api/areas/c2/tracks') return Promise.resolve(ok([]));
-      if (request.path === '/api/tracks/w1') {
-        return Promise.resolve(ok({
-          track: TRACK, can_reopen: false, can_admin: false, can_close: true,
-          cards: [REPORT_CARD, TERMINAL_CARD, REVIEW_CARD], overlays: [],
-        }));
-      }
-      if (request.path === '/api/tracks/w1/report') return Promise.resolve(ok({ taskDiagnostics: [] }));
-      return Promise.resolve(ok([]));
-    },
-  };
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const router = createAppRouter({ prepareReport: prepareReportDocument,
-    transport,
-    unauthorized: createUnauthorizedChannel({ enqueue: (task) => task() }),
-    client,
-    cards: bootTestCardRuntime(),
-    onSignOut: vi.fn(),
-  });
-  router.update({ history: createMemoryHistory({ initialEntries: [path] }) });
-  render(<QueryClientProvider client={client}><ThemeProvider storage={{ getItem: () => null, setItem: () => undefined }}>
-    <DepthFeedback />
-    <RouterProvider router={router} />
-  </ThemeProvider></QueryClientProvider>);
-  return router;
-}
 
 async function openTrackNavigation(): Promise<void> {
   await page.getByRole('button', { name: 'Open workspace' }).click();
@@ -709,4 +610,178 @@ it('keeps every mobile Track action label readable within the viewport', async (
     expect(text.left).toBeGreaterThanOrEqual(bounds.left);
     expect(text.right).toBeLessThanOrEqual(bounds.right);
   }
+});
+
+// Native playback controls here prove races, never natural screenshots.
+function holdWorkspaceExit(host: HTMLElement) {
+  const animate = host.animate.bind(host);
+  const exits: Animation[] = [];
+  vi.spyOn(host, 'animate').mockImplementation((frames, options) => {
+    const animation = animate(frames, options);
+    queueMicrotask(() => { animation.pause(); animation.currentTime = 0; });
+    exits.push(animation);
+    return animation;
+  });
+  return () => {
+    expect(exits).toHaveLength(1);
+    const exit = exits[0];
+    expect((exit.effect as KeyframeEffect).target).toBe(host);
+    expect(host.getAnimations()).toContain(exit);
+    expect(exit.playState).toBe('paused');
+    return exit;
+  };
+}
+
+function expectPaintOnly(host: HTMLElement) {
+  expect(host.isConnected).toBe(true);
+  expect(getComputedStyle(host).visibility).toBe('visible');
+  expect(host.inert).toBe(true);
+  expect(host.getAttribute('aria-hidden')).toBe('true');
+  for (const attribute of ['aria-modal', 'role', 'data-nc-escape-layer']) expect(host.hasAttribute(attribute)).toBe(false);
+  expect(document.querySelector('main')?.hasAttribute('inert')).toBe(false);
+  expect(document.querySelector('[data-nc-workspace-header]')?.hasAttribute('inert')).toBe(false);
+}
+
+describe('workspace exit interaction lifetime', () => {
+  it.each([320, 390])('revokes Back permissions before exit paint settles at %ipx', async width => {
+    await page.viewport(width, 844);
+    setup('/track/w1');
+    const opener = await page.getByRole('button', { name: 'Open workspace' }).findElement();
+    await page.elementLocator(opener).click();
+    const host = await page.getByRole('dialog', { name: 'Tracks and settings' }).findElement() as HTMLElement;
+    await Promise.all(host.getAnimations().map(animation => animation.finished));
+    const held = holdWorkspaceExit(host);
+    await page.getByRole('button', { name: 'Back to workspace' }).click();
+    const exit = held();
+    expectPaintOnly(host);
+    expect(document.activeElement).toBe(opener);
+    const box = opener.getBoundingClientRect();
+    expect(document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2)?.closest('button')).toBe(opener);
+    let prevented: boolean | undefined;
+    const observe = (event: KeyboardEvent) => { if (event.key === 'Tab') prevented = event.defaultPrevented; };
+    window.addEventListener('keydown', observe);
+    try { await userEvent.keyboard('{Tab}'); } finally { window.removeEventListener('keydown', observe); }
+    expect(prevented).toBe(false);
+    expect(host.contains(document.activeElement)).toBe(false);
+    await page.getByRole('button', { name: 'Open conversation history' }).click();
+    const history = await page.getByRole('dialog', { name: '历史对话' }).findElement();
+    exit.finish();
+    await expect.poll(() => getComputedStyle(host).visibility).toBe('hidden');
+    expect((history as HTMLDialogElement).open).toBe(true);
+    expect(document.querySelector('[data-nc-workspace-header]')?.hasAttribute('inert')).toBe(true);
+    await userEvent.keyboard('{Escape}');
+    await expect.poll(() => (history as HTMLDialogElement).open).toBe(false);
+  });
+
+  it('gives a nested native menu Escape priority and preserves a rapid reopened presentation', async () => {
+    await page.viewport(390, 844);
+    setup('/track/w1');
+    await openTrackNavigation();
+    const host = await page.getByRole('dialog', { name: 'Tracks and settings' }).findElement() as HTMLElement;
+    await Promise.all(host.getAnimations().map(animation => animation.finished));
+    await page.getByRole('button', { name: 'Area actions', exact: true }).click();
+    await page.getByRole('menuitem', { name: 'Edit area Product' }).findElement();
+    await userEvent.keyboard('{Escape}');
+    expect(host.inert).toBe(false);
+    expect(host.getAttribute('aria-modal')).toBe('true');
+    const held = holdWorkspaceExit(host);
+    await userEvent.keyboard('{Escape}');
+    const exit = held();
+    expectPaintOnly(host);
+    vi.restoreAllMocks();
+    await page.getByRole('button', { name: 'Open workspace' }).click();
+    expect(exit.playState).toBe('idle');
+    exit.finish();
+    await settlePaint();
+    expect(page.getByRole('dialog', { name: 'Tracks and settings' }).element()).toBe(host);
+    expect(host.inert).toBe(false);
+    expect(host.contains(document.activeElement)).toBe(true);
+  });
+
+  it('releases selection immediately and never steals newer route or editor focus on finish', async () => {
+    await page.viewport(390, 844);
+    const router = setup('/track/w1');
+    await openTrackNavigation();
+    const host = await page.getByRole('dialog', { name: 'Tracks and settings' }).findElement() as HTMLElement;
+    await Promise.all(host.getAnimations().map(animation => animation.finished));
+    const held = holdWorkspaceExit(host);
+    await page.getByRole('button', { name: 'New track', exact: true }).click();
+    const exit = held();
+    expectPaintOnly(host);
+    await expect.poll(() => router.state.location.pathname).toBe('/area/c1/new');
+    const editor = await page.getByRole('combobox', { name: 'What this track should do', exact: true }).findElement();
+    (editor as HTMLElement).focus();
+    expect(document.activeElement).toBe(editor);
+    exit.finish();
+    await expect.poll(() => getComputedStyle(host).visibility).toBe('hidden');
+    expect(document.activeElement).toBe(editor);
+    expect(router.history.location.state.__TSR_index).toBe(1);
+  });
+
+  it('revokes compact scope and cancels its old animation when switching to desktop', async () => {
+    await page.viewport(390, 844);
+    setup('/track/w1');
+    await openTrackNavigation();
+    const host = await page.getByRole('dialog', { name: 'Tracks and settings' }).findElement() as HTMLElement;
+    await Promise.all(host.getAnimations().map(animation => animation.finished));
+    const held = holdWorkspaceExit(host);
+    await userEvent.keyboard('{Escape}');
+    const exit = held();
+    await page.viewport(1400, 900);
+    await expect.element(page.getByRole('navigation', { name: 'Workspace', exact: true })).toBeVisible();
+    expect(host.inert).toBe(false);
+    expect(host.hasAttribute('data-nc-escape-layer')).toBe(false);
+    expect(host.getAnimations()).toHaveLength(0);
+    expect(exit.playState).toBe('idle');
+    await page.viewport(390, 844);
+    vi.restoreAllMocks();
+    await page.getByRole('button', { name: 'Open workspace' }).click();
+    exit.finish();
+    await settlePaint();
+    expect(host.inert).toBe(false);
+    expect(host.getAttribute('aria-modal')).toBe('true');
+  });
+
+  it('settles reduced motion without waiting for a native completion', async () => {
+    await commands.emulateReducedMotion(true);
+    await page.viewport(320, 844);
+    setup('/track/w1');
+    const opener = await page.getByRole('button', { name: 'Open workspace' }).findElement();
+    await page.elementLocator(opener).click();
+    const host = await page.getByRole('dialog', { name: 'Tracks and settings' }).findElement() as HTMLElement;
+    expect(host.getAnimations()).toHaveLength(0);
+    await userEvent.keyboard('{Escape}');
+    expect(host.inert).toBe(true);
+    expect(host.hasAttribute('data-nc-escape-layer')).toBe(false);
+    expect(document.querySelector('main')?.hasAttribute('inert')).toBe(false);
+    expect(document.activeElement).toBe(opener);
+    expect(host.getAnimations()).toHaveLength(0);
+    expect(getComputedStyle(host).visibility).toBe('hidden');
+  });
+});
+
+
+it('returns to the latest report opener and releases Track selection before paint finishes', async () => {
+  await page.viewport(390, 844);
+  const router = setup('/track/w1');
+  await page.getByRole('button', { name: 'Open workspace' }).click();
+  await page.getByRole('button', { name: 'Back to workspace' }).click();
+  const selector = await page.getByRole('button', { name: /^Switch track,/ }).findElement();
+  await page.elementLocator(selector).click();
+  const host = await page.getByRole('dialog', { name: 'Tracks and settings' }).findElement() as HTMLElement;
+  await Promise.all(host.getAnimations().map(animation => animation.finished));
+  await userEvent.keyboard('{Escape}');
+  expect(document.activeElement).toBe(selector);
+  await page.elementLocator(selector).click();
+  await Promise.all(host.getAnimations().map(animation => animation.finished));
+  const held = holdWorkspaceExit(host);
+  await page.getByRole('button', { name: 'Responsive mobile UI', exact: true }).click();
+  const exit = held();
+  expectPaintOnly(host);
+  expect(router.state.location.pathname).toBe('/track/w1');
+  const newer = await page.getByRole('button', { name: 'Open conversation history' }).findElement();
+  (newer as HTMLElement).focus();
+  exit.finish();
+  await expect.poll(() => getComputedStyle(host).visibility).toBe('hidden');
+  expect(document.activeElement).toBe(newer);
 });
