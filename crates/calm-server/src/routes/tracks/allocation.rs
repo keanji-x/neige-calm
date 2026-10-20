@@ -7,6 +7,7 @@ use std::sync::{Arc, OnceLock};
 
 /// The route-state owners the allocation reads inside the transaction.
 pub(super) struct TrackAllocationOwners {
+    pub(super) acp_planner: Arc<crate::acp_planner::config::AcpPlannerHost>,
     pub(super) write: WriteContext,
     pub(super) templates: &'static TemplateRoster,
     pub(super) teardown_targets: workspace_runtime::sweep::TeardownTargets,
@@ -58,6 +59,7 @@ pub(super) async fn allocate_track_structure_tx(
         }
     }
     let TrackAllocationOwners {
+        acp_planner,
         write: write_for_tx,
         templates,
         teardown_targets,
@@ -224,7 +226,8 @@ pub(super) async fn allocate_track_structure_tx(
         }
     };
 
-    let mut planner_payload = planner_card_payload(None, planner_provider, init_snapshot.as_ref())?;
+    let mut planner_payload =
+        planner_card_payload(&acp_planner, None, planner_provider, init_snapshot.as_ref())?;
     if model.is_some() || reasoning_effort.is_some() {
         crate::planner_model::CardModelSelection::apply_to_payload(
             planner_payload
@@ -240,6 +243,7 @@ pub(super) async fn allocate_track_structure_tx(
         (&planner_card_id_for_tx, &report_card_id_for_tx),
         TrackInitialization::Independent { planner_payload },
         write_for_tx.role_cache(),
+        &acp_planner,
     )
     .await?;
 

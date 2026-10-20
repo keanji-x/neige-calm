@@ -72,11 +72,12 @@ pub(crate) async fn initialize_track_tx(
     ids: (&str, &str),
     initialization: TrackInitialization,
     role_cache: &CardRoleCache,
+    host: &crate::acp_planner::config::AcpPlannerHost,
 ) -> Result<PlannerReportStructure> {
     let planner_payload = match initialization {
         TrackInitialization::Independent { planner_payload } => planner_payload,
         TrackInitialization::Subtrack { seed, provider } => {
-            planner_harness_card_payload(Some(seed), provider)
+            planner_harness_card_payload(host, Some(seed), provider)
         }
     };
     let planner = card_create_with_id_tx(
@@ -130,6 +131,7 @@ pub(crate) async fn initialize_track_tx(
 /// The payload production writes on a planner-harness card. `pub` so integration
 /// fixtures can mint the production shape instead of a partial literal.
 pub fn planner_harness_card_payload(
+    host: &crate::acp_planner::config::AcpPlannerHost,
     goal: Option<String>,
     provider: AgentProvider,
 ) -> serde_json::Value {
@@ -150,7 +152,7 @@ pub fn planner_harness_card_payload(
     if let Some(goal) = goal.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         card_payload.insert("prompt".into(), serde_json::Value::String(goal.to_string()));
     }
-    crate::planner_permission_mode::mint_at_creation(&mut card_payload);
+    crate::planner_permission_mode::mint_at_creation(&mut card_payload, &provider, host);
     serde_json::Value::Object(card_payload)
 }
 

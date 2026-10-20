@@ -43,6 +43,7 @@ async fn fixture_full() -> (
                         dir.path().to_string_lossy().into_owned(),
                     )]
                     .into(),
+                    default_permission_mode: None,
                     min_agent_version: semver::Version::new(1, 0, 0),
                 }],
             }),

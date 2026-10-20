@@ -86,6 +86,15 @@ Pass `--acp-planner-config /absolute/path/acp-planner.json`:
 }
 ```
 
+An ACP registration may optionally declare `"default_permission_mode": "never"`, `"ask"`,
+or `"full"`. The field uses the same strict string parser as `PlannerPermissionMode`;
+invalid values (including explicit `null`) are refused when reading the file. Omission
+means `never`. The shared Planner creation owner resolves the selected provider's registration
+for ordinary Tracks (including `neige_track_add`), Human dormant creations, scheduler child
+Tracks, and Today/daily planners. Other providers still start at `never`; Assistant turns always use
+`never`. This creation policy does not change existing cards or native-session digests.
+After creation, only `PUT /api/cards/{id}/planner/permission-mode` changes the stored mode.
+
 Use an operator-owned private profile and authenticate through the native CLI outside Neige. All launch fields are required and unknown keys are refused. The child inherits no ambient environment. Kernel PATH and marker/credential keys cannot be overridden by registration.
 
 The argument vector is the registration's `args`, then the provider profile's ACP entry with the
@@ -170,7 +179,7 @@ its turn ends. A turn whose outcome is unknown also logs the error that made it 
 
 A conversation bound to a native session is claimed under a digest of what that session depends
 on: the provider, `command`, `args`, `env` and the working directory. Changing one of them makes
-the conversation refuse to resume until it is reset explicitly. `min_agent_version` is admission
+the conversation refuse to resume until it is reset explicitly. `default_permission_mode` is creation policy and is excluded from the digest. `min_agent_version` is admission
 policy checked on every launch and is not part of the digest, so raising it resets nothing. A new
 registration field is placed in or out of the digest explicitly where the digest is built.
 

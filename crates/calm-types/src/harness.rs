@@ -203,8 +203,8 @@ pub struct HarnessLiveReply {
 }
 
 /// What a Planner card's provider may do outside its sandbox (#2348, #2441): nothing, what the
-/// person allows when asked, or anything, with no sandbox at all. Stored on the card as the server-owned payload key `permission_mode`; every Planner
-/// card is created `never`, and only `PUT /api/cards/{id}/planner/permission-mode` changes it.
+/// person allows when asked, or anything, with no sandbox at all. Stored on the card as the server-owned payload key `permission_mode`; new Planner
+/// cards use their ACP registration’s declared default, or `never` without one. Only `PUT /api/cards/{id}/planner/permission-mode` changes it.
 // Only the bare strings `"never"`, `"ask"` and `"full"` deserialize: serde's derived enum also
 // accepts the object form `{"ask": null}`, which would read a corrupt stored value as permission.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema, TS)]

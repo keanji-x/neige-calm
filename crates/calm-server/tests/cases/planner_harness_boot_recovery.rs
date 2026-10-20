@@ -104,6 +104,7 @@ async fn seed_planner_card_row(repo: &SqlxRepo, track_id: &TrackId) -> calm_serv
             kind: "codex".into(),
             sort: None,
             payload: calm_server::track_creation::planner_harness_card_payload(
+                &calm_server::acp_planner::config::AcpPlannerHost::unconfigured_scratch().unwrap(),
                 None,
                 calm_server::session_projection_repo::AgentProvider::Codex,
             ),

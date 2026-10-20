@@ -13,6 +13,8 @@ mod acp_planner_checkpoint;
 mod acp_planner_cli;
 #[path = "cases/acp_planner_lifecycle.rs"]
 mod acp_planner_lifecycle;
+#[path = "cases/acp_planner_permission_creation.rs"]
+mod acp_planner_permission_creation;
 #[path = "cases/acp_planner_prompt_error.rs"]
 mod acp_planner_prompt_error;
 #[path = "cases/acp_planner_start.rs"]
@@ -54,11 +56,24 @@ async fn boot_with(root: &Root, env: Value, min_agent_version: &str) -> Stack {
 }
 /// Boot with the fixture registered as `provider`.
 async fn boot_as(root: &Root, provider: &str, env: Value, min_agent_version: &str) -> Stack {
+    boot_as_with_creation_mode(root, provider, env, min_agent_version, None).await
+}
+async fn boot_as_with_creation_mode(
+    root: &Root,
+    provider: &str,
+    env: Value,
+    min_agent_version: &str,
+    mode: Option<&str>,
+) -> Stack {
     std::fs::write(root.path().join("scenario"), "reply").unwrap();
     let config_path = root.path().join("acp.json");
     let mut env = env;
     env["ACP_FIXTURE_ROOT"] = json!(root.path());
-    std::fs::write(&config_path,json!({"agents":[{"provider":provider,"command":"/usr/bin/python3","args":["-u",PEER],"env":env,"min_agent_version":min_agent_version}]}).to_string()).unwrap();
+    let mut agent = json!({"provider":provider,"command":"/usr/bin/python3","args":["-u",PEER],"env":env,"min_agent_version":min_agent_version});
+    if let Some(mode) = mode {
+        agent["default_permission_mode"] = json!(mode);
+    }
+    std::fs::write(&config_path, json!({"agents":[agent]}).to_string()).unwrap();
     let mut config = root.config(false);
     config.acp_planner_config = Some(config_path);
     // Use this build's production shim, never a host installation found on PATH.

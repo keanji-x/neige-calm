@@ -139,6 +139,7 @@ async fn boot_at_workspace(cwd: &str) -> Boot {
             sort: None,
             // The production Planner card shape: a child track inherits its backend.
             payload: calm_server::track_creation::planner_harness_card_payload(
+                &calm_server::acp_planner::config::AcpPlannerHost::unconfigured_scratch().unwrap(),
                 None,
                 calm_server::session_projection_repo::AgentProvider::Codex,
             ),
@@ -2683,6 +2684,9 @@ async fn every_registered_task_adapter_refuses_material_context() {
     mark_context_stale(&boot, &child_task_id).await;
     cases.push((
         Arc::new(ChildTrackAdapter::new(
+            std::sync::Arc::new(
+                calm_server::acp_planner::config::AcpPlannerHost::unconfigured_scratch().unwrap(),
+            ),
             boot.card_role_cache.clone(),
             boot.track_area_cache.clone(),
             child_track_workspace_root(),
@@ -8111,6 +8115,9 @@ async fn frozen_child_refuses_repoint_and_reuses_its_bootstrap() {
     seed_task(&boot, task).await;
     let minted = Arc::new(AtomicUsize::new(0));
     let child_adapter = Arc::new(ChildTrackAdapter::new(
+        std::sync::Arc::new(
+            calm_server::acp_planner::config::AcpPlannerHost::unconfigured_scratch().unwrap(),
+        ),
         boot.card_role_cache.clone(),
         boot.track_area_cache.clone(),
         child_track_workspace_root(),
@@ -8226,6 +8233,9 @@ async fn acceptance_19_child_bootstrap_is_before_running_and_exactly_once_after_
     seed_task(&boot, task).await;
     let minted = Arc::new(AtomicUsize::new(0));
     let child_adapter = Arc::new(ChildTrackAdapter::new(
+        std::sync::Arc::new(
+            calm_server::acp_planner::config::AcpPlannerHost::unconfigured_scratch().unwrap(),
+        ),
         boot.card_role_cache.clone(),
         boot.track_area_cache.clone(),
         child_track_workspace_root(),
@@ -8360,6 +8370,10 @@ async fn acceptance_19_child_bootstrap_is_before_running_and_exactly_once_after_
         &crash_boot,
         vec![
             Arc::new(ChildTrackAdapter::new(
+                std::sync::Arc::new(
+                    calm_server::acp_planner::config::AcpPlannerHost::unconfigured_scratch()
+                        .unwrap(),
+                ),
                 crash_boot.card_role_cache.clone(),
                 crash_boot.track_area_cache.clone(),
                 child_track_workspace_root(),
@@ -8403,6 +8417,10 @@ async fn acceptance_19_child_bootstrap_is_before_running_and_exactly_once_after_
         &crash_boot,
         vec![
             Arc::new(ChildTrackAdapter::new(
+                std::sync::Arc::new(
+                    calm_server::acp_planner::config::AcpPlannerHost::unconfigured_scratch()
+                        .unwrap(),
+                ),
                 crash_boot.card_role_cache.clone(),
                 crash_boot.track_area_cache.clone(),
                 child_track_workspace_root(),
@@ -8473,6 +8491,9 @@ async fn acceptance_13e_failed_and_stuck_at_both_operation_levels_close_once() {
         seed_projected_task(&boot, task).await;
         let minted = Arc::new(AtomicUsize::new(0));
         let child_adapter = Arc::new(ChildTrackAdapter::new(
+            std::sync::Arc::new(
+                calm_server::acp_planner::config::AcpPlannerHost::unconfigured_scratch().unwrap(),
+            ),
             boot.card_role_cache.clone(),
             boot.track_area_cache.clone(),
             child_track_workspace_root(),
@@ -8587,6 +8608,9 @@ async fn acceptance_3b_claim_frozen_spawn_routes_recovery_without_report_reread(
     let minted = Arc::new(AtomicUsize::new(0));
     let adapters = vec![
         Arc::new(ChildTrackAdapter::new(
+            std::sync::Arc::new(
+                calm_server::acp_planner::config::AcpPlannerHost::unconfigured_scratch().unwrap(),
+            ),
             boot.card_role_cache.clone(),
             boot.track_area_cache.clone(),
             child_track_workspace_root(),
@@ -8663,6 +8687,9 @@ async fn acceptance_3a_claim_frozen_spawn_routes_live_after_post_claim_report_ed
     seed_task(&boot, task).await;
     let adapters = vec![
         Arc::new(ChildTrackAdapter::new(
+            std::sync::Arc::new(
+                calm_server::acp_planner::config::AcpPlannerHost::unconfigured_scratch().unwrap(),
+            ),
             boot.card_role_cache.clone(),
             boot.track_area_cache.clone(),
             child_track_workspace_root(),
@@ -8707,6 +8734,9 @@ async fn acceptance_3c_claim_success_uses_transaction_reread_spawn() {
     let permit = semaphore.clone().acquire_owned().await.unwrap();
     let adapters = vec![
         Arc::new(ChildTrackAdapter::new(
+            std::sync::Arc::new(
+                calm_server::acp_planner::config::AcpPlannerHost::unconfigured_scratch().unwrap(),
+            ),
             boot.card_role_cache.clone(),
             boot.track_area_cache.clone(),
             child_track_workspace_root(),
@@ -8781,6 +8811,9 @@ async fn acceptance_5b_stale_frozen_context_refuses_real_child_operation() {
     );
 
     let child_adapter = Arc::new(ChildTrackAdapter::new(
+        std::sync::Arc::new(
+            calm_server::acp_planner::config::AcpPlannerHost::unconfigured_scratch().unwrap(),
+        ),
         boot.card_role_cache.clone(),
         boot.track_area_cache.clone(),
         child_track_workspace_root(),
@@ -8870,6 +8903,9 @@ async fn acceptance_9_depth_exhaustion_fails_parent_without_in_track_fallback() 
     sqlx::query("UPDATE operations SET phase='failed',last_error='sub-track-depth-exceeded',phase_detail_json='{}' WHERE id=?1")
         .bind(op_id).execute(boot.repo.sqlite_db().unwrap().writer_pool()).await.unwrap();
     let child_adapter = Arc::new(ChildTrackAdapter::new(
+        std::sync::Arc::new(
+            calm_server::acp_planner::config::AcpPlannerHost::unconfigured_scratch().unwrap(),
+        ),
         boot.card_role_cache.clone(),
         boot.track_area_cache.clone(),
         child_track_workspace_root(),

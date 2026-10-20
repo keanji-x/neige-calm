@@ -31,6 +31,7 @@ pub(super) async fn ensure_planner_card(repo: &SqlxRepo, track_id: &str) {
             kind: "codex".into(),
             sort: None,
             payload: planner_harness_card_payload(
+                &crate::acp_planner::config::AcpPlannerHost::unconfigured_scratch().unwrap(),
                 None,
                 crate::session_projection_repo::AgentProvider::Codex,
             ),
@@ -91,6 +92,9 @@ async fn a_parent_planner_without_a_provider_refuses_the_child() {
     let task = seed_task(&repo, &parent, false).await;
     let input = serde_json::to_value(payload(&task)).unwrap();
     let adapter = ChildTrackAdapter::new(
+        std::sync::Arc::new(
+            crate::acp_planner::config::AcpPlannerHost::unconfigured_scratch().unwrap(),
+        ),
         repo.card_role_cache().clone(),
         repo.track_area_cache().clone(),
         test_workspace_root(),
@@ -103,5 +107,56 @@ async fn a_parent_planner_without_a_provider_refuses_the_child() {
     assert!(
         matches!(&error, CalmError::Conflict(message) if message.contains("planner_provider")),
         "{error:?}"
+    );
+}
+
+/// Child creation resolves registration policy anew; the parent's stored mode is not inherited.
+#[tokio::test]
+async fn child_planner_permission_mode_uses_its_providers_registration() {
+    use crate::acp_planner::config::{AcpPlannerConfig, AcpPlannerHost};
+    let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
+    let parent = seed_parent(&repo, false).await;
+    sqlx::query(concat!(
+        "UPDATE cards SET payload=json_set(payload,'$.planner_provider','opencode',",
+        "'$.permission_mode','never') WHERE track_id=?1 AND role='planner'",
+    ))
+    .bind(&parent)
+    .execute(repo.pool())
+    .await
+    .unwrap();
+    let task = seed_task(&repo, &parent, false).await;
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("acp.json");
+    std::fs::write(&path, json!({"agents":[{"provider":"opencode","command":"/unused/opencode","args":[],"env":{},"min_agent_version":"1.0.0","default_permission_mode":"full"}]}).to_string()).unwrap();
+    let host = AcpPlannerHost::new(
+        Some(AcpPlannerConfig::read(&path).unwrap()),
+        root.path(),
+        root.path().join("shim"),
+        root.path().join("sock"),
+    )
+    .unwrap();
+    let adapter = ChildTrackAdapter::new(
+        std::sync::Arc::new(host),
+        repo.card_role_cache().clone(),
+        repo.track_area_cache().clone(),
+        test_workspace_root(),
+    );
+    let input = serde_json::to_value(payload(&task)).unwrap();
+    let mut tx = repo.pool().begin().await.unwrap();
+    let output = adapter
+        .prepare_tx(&mut tx, &input, &operation(input.clone()))
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let child = output.data["child_track_id"].as_str().unwrap();
+    let payload: String =
+        sqlx::query_scalar("SELECT payload FROM cards WHERE track_id=?1 AND role='planner'")
+            .bind(child)
+            .fetch_one(repo.pool())
+            .await
+            .unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(&payload).unwrap()["permission_mode"],
+        "full"
     );
 }

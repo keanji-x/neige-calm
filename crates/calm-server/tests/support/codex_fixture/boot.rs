@@ -172,6 +172,7 @@ pub async fn boot_forge_e2e_fixture(
         (PlanSource::RealPlannerTurn, None) => (
             "codex".to_string(),
             calm_server::track_creation::planner_harness_card_payload(
+                &calm_server::acp_planner::config::AcpPlannerHost::unconfigured_scratch().unwrap(),
                 fixture.goal.clone(),
                 AgentProvider::Codex,
             ),

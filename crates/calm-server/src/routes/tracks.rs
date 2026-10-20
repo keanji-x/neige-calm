@@ -1329,6 +1329,7 @@ async fn create_track_structure(
     let teardown_targets = s.teardown_targets.clone();
     let admission_root = s.workspace_root.clone();
     let templates = s.templates;
+    let acp_planner = s.acp_planner.clone();
     let planner_card_id = new_id();
     let report_card_id = new_id();
     let actor_id_for_tx = actor;
@@ -1349,6 +1350,7 @@ async fn create_track_structure(
                     options,
                     (planner_card_id_for_tx, report_card_id_for_tx),
                     allocation::TrackAllocationOwners {
+                        acp_planner,
                         write: write_for_tx,
                         templates,
                         teardown_targets,
@@ -1758,11 +1760,12 @@ fn prepare_fork_report(
 /// The Planner card payload a create mints: [`planner_harness_card_payload`] plus the compiled
 /// template's creation-time `template_context`, when the create instantiates one.
 fn planner_card_payload(
+    host: &crate::acp_planner::config::AcpPlannerHost,
     goal: Option<String>,
     provider: AgentProvider,
     snapshot: Option<&InitialReportSnapshot>,
 ) -> Result<serde_json::Value> {
-    let mut payload = planner_harness_card_payload(goal, provider);
+    let mut payload = planner_harness_card_payload(host, goal, provider);
     if let Some(context) = snapshot.and_then(|snapshot| snapshot.template_context.as_ref()) {
         payload[crate::validation::PLANNER_TEMPLATE_CONTEXT_PAYLOAD_KEY] =
             serde_json::to_value(context)?;
@@ -1780,7 +1783,12 @@ pub fn template_planner_card_payload_for_test(
     template_id: &str,
 ) -> Result<serde_json::Value> {
     let snapshot = prepare_template_report(TemplateRoster::builtin(), template_id)?;
-    planner_card_payload(goal, provider, Some(&snapshot))
+    planner_card_payload(
+        &crate::acp_planner::config::AcpPlannerHost::unconfigured_scratch()?,
+        goal,
+        provider,
+        Some(&snapshot),
+    )
 }
 
 /// Test seam for the one timing predicate: fires after the fence transaction has

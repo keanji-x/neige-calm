@@ -562,8 +562,8 @@ url: string, };
 
 /**
  * What a Planner card's provider may do outside its sandbox (#2348, #2441): nothing, what the
- * person allows when asked, or anything, with no sandbox at all. Stored on the card as the server-owned payload key `permission_mode`; every Planner
- * card is created `never`, and only `PUT /api/cards/{id}/planner/permission-mode` changes it.
+ * person allows when asked, or anything, with no sandbox at all. Stored on the card as the server-owned payload key `permission_mode`; new Planner
+ * cards use their ACP registration’s declared default, or `never` without one. Only `PUT /api/cards/{id}/planner/permission-mode` changes it.
  */
 export type PlannerPermissionMode = "never" | "ask" | "full";
 

@@ -351,6 +351,9 @@ fn dispatcher_operation_runtime(
     let forge_action_adapter =
         Arc::new(crate::operation::forge_action_adapter::ForgeActionAdapter::new());
     let child_track_adapter = Arc::new(ChildTrackAdapter::new(
+        std::sync::Arc::new(
+            crate::acp_planner::config::AcpPlannerHost::unconfigured_scratch().unwrap(),
+        ),
         write.role_cache().clone(),
         write.area_cache().clone(),
         workspace_root.clone(),

@@ -46,6 +46,7 @@ pub(in crate::routes::tracks) async fn accept_dormant_human_track(
     let area_id = plan.area_id().to_owned();
     let write = s.write.clone();
     let templates = s.templates;
+    let acp_planner = s.acp_planner.clone();
     let teardown_targets = s.teardown_targets.clone();
     let admission_root = s.workspace_root.clone();
     // Like keyed Area creation, the event owner rolls a read-only replay back.
@@ -111,7 +112,7 @@ pub(in crate::routes::tracks) async fn accept_dormant_human_track(
                     p,
                     options,
                     (planner.clone(), report.clone()),
-                    super::super::allocation::TrackAllocationOwners { write, templates, teardown_targets, admission_root },
+                    super::super::allocation::TrackAllocationOwners { acp_planner, write, templates, teardown_targets, admission_root },
                     Arc::new(OnceLock::new()),
                 )
                 .await?;

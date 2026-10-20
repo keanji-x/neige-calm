@@ -59,6 +59,7 @@ pub fn render_child_seed(payload: &ChildTrackOperationPayload) -> String {
 
 #[derive(Clone)]
 pub struct ChildTrackAdapter {
+    acp_planner: std::sync::Arc<crate::acp_planner::config::AcpPlannerHost>,
     card_role_cache: crate::card_role_cache::CardRoleCache,
     track_area_cache: crate::track_area_cache::TrackAreaCache,
     /// The managed workspace root; the child's own workspace is derived under it and materialized in `prepare_tx`.
@@ -67,11 +68,13 @@ pub struct ChildTrackAdapter {
 
 impl ChildTrackAdapter {
     pub fn new(
+        acp_planner: std::sync::Arc<crate::acp_planner::config::AcpPlannerHost>,
         card_role_cache: crate::card_role_cache::CardRoleCache,
         track_area_cache: crate::track_area_cache::TrackAreaCache,
         workspace_root: std::path::PathBuf,
     ) -> Self {
         Self {
+            acp_planner,
             card_role_cache,
             track_area_cache,
             workspace_root,
@@ -256,6 +259,7 @@ impl ProviderAdapter for ChildTrackAdapter {
                 provider: planner_provider,
             },
             &self.card_role_cache,
+            &self.acp_planner,
         )
         .await?;
 
@@ -652,6 +656,9 @@ mod tests {
         })
         .unwrap();
         let adapter = ChildTrackAdapter::new(
+            std::sync::Arc::new(
+                crate::acp_planner::config::AcpPlannerHost::unconfigured_scratch().unwrap(),
+            ),
             repo.card_role_cache().clone(),
             repo.track_area_cache().clone(),
             test_workspace_root(),
@@ -729,6 +736,9 @@ mod tests {
         let task = seed_task(&repo, parent.id.as_str(), false).await;
         let input = serde_json::to_value(payload(&task)).unwrap();
         let adapter = ChildTrackAdapter::new(
+            std::sync::Arc::new(
+                crate::acp_planner::config::AcpPlannerHost::unconfigured_scratch().unwrap(),
+            ),
             repo.card_role_cache().clone(),
             repo.track_area_cache().clone(),
             workspace_root.clone(),
@@ -852,6 +862,9 @@ mod tests {
         let task = seed_task(&repo, parent.id.as_str(), false).await;
         let input = serde_json::to_value(payload(&task)).unwrap();
         let adapter = ChildTrackAdapter::new(
+            std::sync::Arc::new(
+                crate::acp_planner::config::AcpPlannerHost::unconfigured_scratch().unwrap(),
+            ),
             repo.card_role_cache().clone(),
             repo.track_area_cache().clone(),
             workspace_root.clone(),
@@ -1006,6 +1019,9 @@ mod tests {
         let task = seed_task(&repo, parent.id.as_str(), false).await;
         let input = serde_json::to_value(payload(&task)).unwrap();
         let adapter = ChildTrackAdapter::new(
+            std::sync::Arc::new(
+                crate::acp_planner::config::AcpPlannerHost::unconfigured_scratch().unwrap(),
+            ),
             repo.card_role_cache().clone(),
             repo.track_area_cache().clone(),
             test_workspace_root(),
@@ -1094,6 +1110,9 @@ mod tests {
         .unwrap();
         let input = serde_json::to_value(payload(&task)).unwrap();
         let adapter = ChildTrackAdapter::new(
+            std::sync::Arc::new(
+                crate::acp_planner::config::AcpPlannerHost::unconfigured_scratch().unwrap(),
+            ),
             repo.card_role_cache().clone(),
             repo.track_area_cache().clone(),
             test_workspace_root(),
@@ -1211,6 +1230,9 @@ mod tests {
             let task = seed_task(&repo, &direct_parent, false).await;
             let input = serde_json::to_value(payload(&task)).unwrap();
             let adapter = ChildTrackAdapter::new(
+                std::sync::Arc::new(
+                    crate::acp_planner::config::AcpPlannerHost::unconfigured_scratch().unwrap(),
+                ),
                 repo.card_role_cache().clone(),
                 repo.track_area_cache().clone(),
                 test_workspace_root(),
@@ -1245,6 +1267,9 @@ mod tests {
         let task = seed_task(&repo, &direct_parent, false).await;
         let input = serde_json::to_value(payload(&task)).unwrap();
         let adapter = ChildTrackAdapter::new(
+            std::sync::Arc::new(
+                crate::acp_planner::config::AcpPlannerHost::unconfigured_scratch().unwrap(),
+            ),
             repo.card_role_cache().clone(),
             repo.track_area_cache().clone(),
             test_workspace_root(),
@@ -1280,6 +1305,9 @@ mod tests {
         let task = seed_task(&repo, &parent, false).await;
         let input = serde_json::to_value(payload(&task)).unwrap();
         let adapter = ChildTrackAdapter::new(
+            std::sync::Arc::new(
+                crate::acp_planner::config::AcpPlannerHost::unconfigured_scratch().unwrap(),
+            ),
             repo.card_role_cache().clone(),
             repo.track_area_cache().clone(),
             test_workspace_root(),
@@ -1314,6 +1342,9 @@ mod tests {
             let task = seed_task(&repo, &a, false).await;
             let input = serde_json::to_value(payload(&task)).unwrap();
             let adapter = ChildTrackAdapter::new(
+                std::sync::Arc::new(
+                    crate::acp_planner::config::AcpPlannerHost::unconfigured_scratch().unwrap(),
+                ),
                 repo.card_role_cache().clone(),
                 repo.track_area_cache().clone(),
                 test_workspace_root(),
@@ -1363,6 +1394,9 @@ mod tests {
         let _other = seed_task_with_key(&repo, &parent, "other-live-task", false).await;
         let input = serde_json::to_value(payload(&task)).unwrap();
         let adapter = ChildTrackAdapter::new(
+            std::sync::Arc::new(
+                crate::acp_planner::config::AcpPlannerHost::unconfigured_scratch().unwrap(),
+            ),
             repo.card_role_cache().clone(),
             repo.track_area_cache().clone(),
             test_workspace_root(),
@@ -1434,6 +1468,9 @@ mod tests {
         let first = seed_task_with_key(&repo, &parent, "first-child", false).await;
         let input = serde_json::to_value(payload(&first)).unwrap();
         let adapter = ChildTrackAdapter::new(
+            std::sync::Arc::new(
+                crate::acp_planner::config::AcpPlannerHost::unconfigured_scratch().unwrap(),
+            ),
             repo.card_role_cache().clone(),
             repo.track_area_cache().clone(),
             test_workspace_root(),
@@ -1585,6 +1622,9 @@ mod tests {
         })
         .unwrap();
         let adapter = ChildTrackAdapter::new(
+            std::sync::Arc::new(
+                crate::acp_planner::config::AcpPlannerHost::unconfigured_scratch().unwrap(),
+            ),
             repo.card_role_cache().clone(),
             repo.track_area_cache().clone(),
             test_workspace_root(),
@@ -1670,6 +1710,9 @@ mod tests {
         let task = seed_task(&repo, &parent, true).await;
         let input = serde_json::to_value(payload(&task)).unwrap();
         let adapter = ChildTrackAdapter::new(
+            std::sync::Arc::new(
+                crate::acp_planner::config::AcpPlannerHost::unconfigured_scratch().unwrap(),
+            ),
             repo.card_role_cache().clone(),
             repo.track_area_cache().clone(),
             test_workspace_root(),

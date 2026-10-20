@@ -615,6 +615,10 @@ async fn historical_resource_binding_cannot_be_adopted_as_first_human_acceptance
                     options,
                     (crate::model::new_id(), crate::model::new_id()),
                     super::super::super::allocation::TrackAllocationOwners {
+                        acp_planner: std::sync::Arc::new(
+                            crate::acp_planner::config::AcpPlannerHost::unconfigured_scratch()
+                                .unwrap(),
+                        ),
                         write,
                         templates,
                         teardown_targets,

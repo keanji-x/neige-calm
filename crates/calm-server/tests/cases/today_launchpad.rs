@@ -872,6 +872,9 @@ pub(crate) async fn create_child_track(b: &Boot, parent_track_id: &str) -> Strin
         parked_deadline_ms: None,
     };
     let adapter = ChildTrackAdapter::new(
+        std::sync::Arc::new(
+            calm_server::acp_planner::config::AcpPlannerHost::unconfigured_scratch().unwrap(),
+        ),
         b.repo.card_role_cache().clone(),
         b.repo.track_area_cache().clone(),
         b.workspace_root.clone(),

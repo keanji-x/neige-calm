@@ -1,5 +1,5 @@
-//! #2348: every production path that creates a Planner card mints `permission_mode: "never"`, and a
-//! create cannot ask for another mode.
+//! #2348: without a registration declaration, Planner creation paths mint `permission_mode: "never"`.
+//! A create request cannot supply another mode.
 
 use axum::http::StatusCode;
 use serde_json::{Value, json};

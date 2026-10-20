@@ -86,6 +86,7 @@ impl GiveBack {
                 kind: "codex".into(),
                 sort: None,
                 payload: crate::track_creation::planner_harness_card_payload(
+                    &crate::acp_planner::config::AcpPlannerHost::unconfigured_scratch().unwrap(),
                     None,
                     AgentProvider::Codex,
                 ),

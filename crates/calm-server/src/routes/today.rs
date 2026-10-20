@@ -237,7 +237,7 @@ fn launchpad_workspace(workspace_root: &Path, area_id: &str, track_id: &str) -> 
 }
 
 /// The launchpad's Planner is kernel-minted and runs on Codex.
-fn planner_payload() -> serde_json::Value {
+fn planner_payload(host: &crate::acp_planner::config::AcpPlannerHost) -> serde_json::Value {
     let mut payload = serde_json::Map::from_iter([
         (
             "schemaVersion".to_owned(),
@@ -252,7 +252,11 @@ fn planner_payload() -> serde_json::Value {
             serde_json::json!("codex"),
         ),
     ]);
-    crate::planner_permission_mode::mint_at_creation(&mut payload);
+    crate::planner_permission_mode::mint_at_creation(
+        &mut payload,
+        &crate::session_projection_repo::AgentProvider::Codex,
+        host,
+    );
     serde_json::Value::Object(payload)
 }
 
@@ -326,7 +330,7 @@ async fn today_launchpad_ensure_tx(
                 tx,
                 card.id.as_str(),
                 CardPatch {
-                    payload: Some(planner_payload()),
+                    payload: Some(planner_payload(&s.acp_planner)),
                     ..Default::default()
                 },
             )
@@ -343,7 +347,7 @@ async fn today_launchpad_ensure_tx(
                 track_id: track.id.clone(),
                 kind: "codex".into(),
                 sort: None,
-                payload: planner_payload(),
+                payload: planner_payload(&s.acp_planner),
             },
             CardRole::Planner,
             false,

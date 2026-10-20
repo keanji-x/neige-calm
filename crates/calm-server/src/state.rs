@@ -547,7 +547,7 @@ fn build_operation_adapters(
             input.shared_codex_appserver,
             input.repo,
             input.claude_planner,
-            input.acp_planner,
+            input.acp_planner.clone(),
         ));
     let task_gate_run_adapter: Arc<dyn ProviderAdapter> =
         Arc::new(TaskGateRunAdapter::new(input.gate_logs_dir.clone()));
@@ -555,6 +555,7 @@ fn build_operation_adapters(
         Arc::new(TaskVerifyAdapter::new(input.gate_logs_dir));
     let forge_action_adapter: Arc<dyn ProviderAdapter> = Arc::new(ForgeActionAdapter::new());
     let child_track_adapter: Arc<dyn ProviderAdapter> = Arc::new(ChildTrackAdapter::new(
+        input.acp_planner.clone(),
         input.card_role_cache.clone(),
         input.track_area_cache.clone(),
         input.workspace_root.clone(),

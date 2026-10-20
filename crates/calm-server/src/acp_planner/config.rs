@@ -1,6 +1,7 @@
 use super::profile::AcpAgentProfile;
 use crate::error::{CalmError, Result};
 use crate::planner_process::MarkerInstance;
+use calm_types::harness::PlannerPermissionMode;
 use calm_types::runtime::{AgentProtocol, AgentProvider};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -25,6 +26,16 @@ pub struct AcpAgentConfig {
     /// The lowest agent version a launch accepts; the agent's profile says where it reports it.
     #[serde(deserialize_with = "semver_text")]
     pub min_agent_version: semver::Version,
+    /// Permission policy for newly created Planner cards; omission keeps `never`.
+    #[serde(default, deserialize_with = "declared_permission_mode")]
+    pub default_permission_mode: Option<PlannerPermissionMode>,
+}
+
+// A present value must be a mode string: explicit null is invalid too.
+fn declared_permission_mode<'de, D: serde::Deserializer<'de>>(
+    input: D,
+) -> Result<Option<PlannerPermissionMode>, D::Error> {
+    PlannerPermissionMode::deserialize(input).map(Some)
 }
 
 /// A semver version from its text.
@@ -58,6 +69,7 @@ impl AcpAgentConfig {
             args,
             env,
             min_agent_version: _,
+            default_permission_mode: _, // Creation policy never changes native-session identity.
         } = self;
         let key = NativeSessionKey {
             provider,
@@ -358,6 +370,40 @@ mod tests {
     }
 
     #[test]
+    fn creation_permission_mode_is_optional_and_strict() {
+        assert_eq!(
+            read(opencode()).unwrap().agents[0].default_permission_mode,
+            None
+        );
+        for mode in ["never", "ask", "full"] {
+            let mut agent = opencode();
+            agent["default_permission_mode"] = json!(mode);
+            assert_eq!(
+                serde_json::to_value(
+                    read(agent).unwrap().agents[0]
+                        .default_permission_mode
+                        .unwrap()
+                )
+                .unwrap(),
+                json!(mode)
+            );
+        }
+        for invalid in [
+            json!("Full"),
+            json!("unknown"),
+            json!(null),
+            json!(true),
+            json!(1),
+            json!({"full":null}),
+            json!([]),
+        ] {
+            let mut agent = opencode();
+            agent["default_permission_mode"] = invalid.clone();
+            assert!(read(agent).is_err(), "{invalid}");
+        }
+    }
+
+    #[test]
     fn a_registration_reads_its_minimum_version_as_semver() {
         let config = read(opencode()).unwrap();
         assert_eq!(
@@ -489,6 +535,15 @@ mod tests {
                 .unwrap()
         };
         let base = digest(opencode(), "/work");
+        for mode in ["never", "ask", "full"] {
+            let mut agent = opencode();
+            agent["default_permission_mode"] = json!(mode);
+            assert_eq!(
+                digest(agent, "/work"),
+                base,
+                "default_permission_mode={mode}"
+            );
+        }
         let mut raised = opencode();
         raised["min_agent_version"] = json!("1.19.0");
         assert_eq!(digest(raised, "/work"), base, "min_agent_version");

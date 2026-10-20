@@ -109,11 +109,14 @@ impl Fixture {
                 (&planner, &new_id()),
                 crate::track_creation::TrackInitialization::Independent {
                     planner_payload: crate::track_creation::planner_harness_card_payload(
+                        &crate::acp_planner::config::AcpPlannerHost::unconfigured_scratch()
+                            .unwrap(),
                         None,
                         AgentProvider::Codex,
                     ),
                 },
                 repo.card_role_cache(),
+                &crate::acp_planner::config::AcpPlannerHost::unconfigured_scratch().unwrap(),
             )
             .await
             .unwrap();

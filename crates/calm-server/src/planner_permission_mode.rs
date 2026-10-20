@@ -7,20 +7,27 @@ use serde_json::{Map, Value};
 
 pub use calm_types::harness::PlannerPermissionMode;
 
+use crate::acp_planner::config::AcpPlannerHost;
 use crate::harness::profile::{HarnessProfile, PlannerBinding};
 use crate::model::{Card, CardRole};
+use crate::session_projection_repo::AgentProvider;
 use crate::validation::PLANNER_PERMISSION_MODE_PAYLOAD_KEY;
 
-/// The mode every Planner card is created with, whoever creates it and whatever it asked for: a
-/// Planner starts with no more permission than a person has given it.
-pub const PLANNER_PERMISSION_MODE_AT_CREATION: PlannerPermissionMode = PlannerPermissionMode::Never;
-
-/// Stamp the creation mode into a new Planner card's payload, replacing anything already there.
-/// Every Planner-card creation path builds its payload through this.
-pub(crate) fn mint_at_creation(payload: &mut Map<String, Value>) {
+/// Stamp a new Planner's mode from its provider's registration, or `never` without a
+/// declaration. All Planner creation paths use this owner; stored cards are never re-stamped.
+pub(crate) fn mint_at_creation(
+    payload: &mut Map<String, Value>,
+    provider: &AgentProvider,
+    host: &AcpPlannerHost,
+) {
+    let mode = host
+        .configured(provider)
+        .ok()
+        .and_then(|registration| registration.default_permission_mode)
+        .unwrap_or(PlannerPermissionMode::Never);
     payload.insert(
         PLANNER_PERMISSION_MODE_PAYLOAD_KEY.to_owned(),
-        serde_json::json!(PLANNER_PERMISSION_MODE_AT_CREATION),
+        serde_json::json!(mode),
     );
 }
 
@@ -125,17 +132,49 @@ mod tests {
     fn creation_overwrites_whatever_the_payload_already_said() {
         let mut payload = Map::new();
         payload.insert("permission_mode".into(), json!("ask"));
-        mint_at_creation(&mut payload);
+        mint_at_creation(
+            &mut payload,
+            &AgentProvider::Codex,
+            &AcpPlannerHost::unconfigured_scratch().unwrap(),
+        );
         assert_eq!(payload["permission_mode"], json!("never"));
     }
 
     #[test]
     fn the_shared_planner_payload_mints_never_for_every_provider() {
         use crate::session_projection_repo::AgentProvider;
-        for provider in [AgentProvider::Codex, AgentProvider::Claude] {
-            let payload =
-                crate::track_creation::planner_harness_card_payload(Some("goal".into()), provider);
+        for provider in AgentProvider::ALL {
+            let payload = crate::track_creation::planner_harness_card_payload(
+                &crate::acp_planner::config::AcpPlannerHost::unconfigured_scratch().unwrap(),
+                Some("goal".into()),
+                provider,
+            );
             assert_eq!(payload["permission_mode"], json!("never"), "{payload}");
+        }
+    }
+
+    #[test]
+    fn the_shared_payload_resolves_only_the_selected_registration() {
+        use crate::acp_planner::config::AcpPlannerConfig;
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("acp.json");
+        std::fs::write(&path, json!({"agents":[{"provider":"opencode","command":"/unused/opencode","args":[],"env":{},"min_agent_version":"1.0.0","default_permission_mode":"full"}]}).to_string()).unwrap();
+        let host = AcpPlannerHost::new(
+            Some(AcpPlannerConfig::read(&path).unwrap()),
+            root.path(),
+            root.path().join("shim"),
+            root.path().join("sock"),
+        )
+        .unwrap();
+        for provider in AgentProvider::ALL {
+            let expected = if provider == AgentProvider::OpenCode {
+                "full"
+            } else {
+                "never"
+            };
+            let payload =
+                crate::track_creation::planner_harness_card_payload(&host, None, provider);
+            assert_eq!(payload["permission_mode"], json!(expected));
         }
     }
 
