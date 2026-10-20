@@ -103,10 +103,6 @@ pub(crate) fn planner_context_input(usage: Option<&TokenUsage>, invalidated: boo
     planner_context_unknown(reason)
 }
 
-pub(crate) fn planner_context_not_recorded() -> String {
-    planner_context_unknown("not recorded for this turn")
-}
-
 fn planner_context_unknown(reason: &str) -> String {
     format!("[Trusted Planner context usage]\nContext usage is unknown ({reason}).")
 }

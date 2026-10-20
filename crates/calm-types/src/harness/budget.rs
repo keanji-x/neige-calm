@@ -50,7 +50,8 @@ impl PlannerTurnBudget {
     }
 }
 
-/// Ownership of the immutable context fact for an issued Planner turn.
+/// A context-usage segment is frozen at first composition and replayed unchanged.
+/// Pre-feature turns retain the absence of that segment.
 /// Present values use only the tagged enum wire form.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(
@@ -60,10 +61,12 @@ impl PlannerTurnBudget {
     deny_unknown_fields
 )]
 pub enum FrozenContextUsage {
+    /// Historical issuance owns the composed segment text.
     Text(String),
+    /// Canonical issuance replays the immutable render plan exactly as stored.
     RenderPlan,
     /// Planner budgets persisted before this feature omitted `context_usage`.
-    /// Never resample or repair their missing context fact.
+    /// A matching attempt is delivered without a context-usage segment.
     LegacyNotRecorded,
 }
 

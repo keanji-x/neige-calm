@@ -4,6 +4,8 @@ use super::*;
 /// A claim without any crossing can resume only from a newly supplied live
 /// source for its exact frozen human revision. Crossing/Unknown/Accepted never
 /// flow through this path, even when no native turn is currently visible.
+/// Resume the immutable plan as composed, including pre-feature plans without
+/// a context-usage segment. Never add or resample context during replay.
 pub(super) async fn resume_unattempted(inner: &Arc<Inner>, current: &CommittedFrame) -> Result<()> {
     let checkpoint = &current.snapshot.canonical_inputs;
     let Some(active) = &checkpoint.active else {

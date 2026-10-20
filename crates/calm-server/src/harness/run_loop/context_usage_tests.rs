@@ -62,7 +62,7 @@ async fn context_usage_historical_uses_percent_policy_and_freezes_failed_attempt
 }
 
 #[tokio::test]
-async fn context_usage_historical_queue_id_does_not_reuse_context_fact() {
+async fn context_usage_historical_reuses_matching_budget_without_projection_slot() {
     let fx = Fixture::new().await;
     fx.enqueue(vec![QueueEntry::user_message("hello".into(), None, vec![])])
         .await;
@@ -75,8 +75,7 @@ async fn context_usage_historical_queue_id_does_not_reuse_context_fact() {
         .unwrap()
         .projection_client_id
         .unwrap();
-    // Queue entries already have ids at enqueue. With no projection slot, even
-    // a matching old budget cannot make that queue id a reused context fact.
+    // A matching attempt reuses both frozen facts, just like the turn budget.
     *fx.harness.inner.projection_client_id.lock().await = None;
     *fx.harness.inner.token_usage.lock().await = Some(TokenUsage {
         used_tokens: 142000,
@@ -87,38 +86,38 @@ async fn context_usage_historical_queue_id_does_not_reuse_context_fact() {
     *fx.harness.inner.issuance_retry_after.lock().await = None;
     fx.daemon.clear_turn_start_failure_for_test();
     fx.issue().await;
-    assert_eq!(fx.projected_segments().await[1].text, KNOWN);
+    assert_eq!(fx.projected_segments().await[1].text, UNKNOWN);
     assert!(matches!(
         fx.harness.snapshot().await.unwrap().turn_budget,
         budget::FrozenBudget::Planner {
             start_attempt,
             context_usage: calm_types::harness::budget::FrozenContextUsage::Text(text),
             ..
-        } if start_attempt == attempt && text == KNOWN
+        } if start_attempt == attempt && text == UNKNOWN
     ));
 }
 
 #[tokio::test]
-async fn context_usage_historical_legacy_missing_is_not_a_reading() {
-    assert_restored_context_usage_not_recorded("missing_context_usage").await;
+async fn context_usage_historical_pre_feature_attempt_is_sent_unchanged() {
+    assert_restored_context_usage("missing_context_usage").await;
 }
 
 #[tokio::test]
-async fn context_usage_historical_missing_turn_budget_is_not_a_reading() {
-    assert_restored_context_usage_not_recorded("missing_turn_budget").await;
+async fn context_usage_historical_missing_turn_budget_samples() {
+    assert_restored_context_usage("missing_turn_budget").await;
 }
 
 #[tokio::test]
-async fn context_usage_historical_legacy_turn_budget_is_not_a_reading() {
-    assert_restored_context_usage_not_recorded("legacy").await;
+async fn context_usage_historical_legacy_turn_budget_samples() {
+    assert_restored_context_usage("legacy").await;
 }
 
 #[tokio::test]
-async fn context_usage_historical_other_attempt_is_not_a_reading() {
-    assert_restored_context_usage_not_recorded("other_attempt").await;
+async fn context_usage_historical_other_attempt_samples() {
+    assert_restored_context_usage("other_attempt").await;
 }
 
-async fn assert_restored_context_usage_not_recorded(shape: &str) {
+async fn assert_restored_context_usage(shape: &str) {
     let fx = Fixture::new().await;
     *fx.harness.inner.token_usage.lock().await = Some(TokenUsage {
         used_tokens: 142000,
@@ -173,10 +172,26 @@ async fn assert_restored_context_usage_not_recorded(shape: &str) {
     );
     fx.daemon.clear_turn_start_failure_for_test();
     maybe_issue_turn(&recovered.inner).await.unwrap();
-    assert_eq!(
-        fx.projected_segments().await[1].text,
-        "[Trusted Planner context usage]\nContext usage is unknown (not recorded for this turn)."
-    );
+    let segments = fx.projected_segments().await;
+    let expected_context = if shape == "missing_context_usage" {
+        assert_eq!(segments.len(), 2);
+        assert_eq!(
+            segments[0].presentation,
+            HarnessInputPresentation::SystemPlannerTurnBudget
+        );
+        assert_eq!(segments[1].text, "User says:\nhello");
+        assert!(
+            segments
+                .iter()
+                .all(|segment| !segment.text.contains("context usage")
+                    && !segment.text.contains("not recorded"))
+        );
+        calm_types::harness::budget::FrozenContextUsage::LegacyNotRecorded
+    } else {
+        assert_eq!(segments.len(), 3);
+        assert_eq!(segments[1].text, KNOWN);
+        calm_types::harness::budget::FrozenContextUsage::Text(KNOWN.into())
+    };
     let stored: String =
         sqlx::query_scalar("SELECT handle_state_json FROM worker_sessions WHERE id = ?")
             .bind(&recovered.inner.worker_session_id)
@@ -189,9 +204,9 @@ async fn assert_restored_context_usage_not_recorded(shape: &str) {
             snapshot.turn_budget,
             budget::FrozenBudget::Planner {
                 start_attempt,
-                context_usage: calm_types::harness::budget::FrozenContextUsage::LegacyNotRecorded,
+                context_usage,
                 ..
-            } if start_attempt == attempt
+            } if start_attempt == attempt && context_usage == expected_context
         ));
     }
 }

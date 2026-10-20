@@ -437,6 +437,123 @@ async fn real_loop_unknown_report_keeps_issuing_claim_without_rebuffer_or_redisp
 }
 
 #[tokio::test]
+async fn context_usage_canonical_pre_feature_claim_is_sent_unchanged() {
+    assert_resumed_context_usage(None).await;
+}
+
+#[tokio::test]
+async fn context_usage_canonical_resumed_claim_replays_identical_text() {
+    assert_resumed_context_usage(Some(
+        "[Trusted Planner context usage]\nContext window: 50% used (142000 of 272000 tokens) as of the latest response before this turn. Record important state in the Report before compacting; conversation text after compaction is not guaranteed to survive."
+    )).await;
+}
+
+async fn assert_resumed_context_usage(usage: Option<&str>) {
+    let fx = Fixture::new().await;
+    let (_client, mut peer) = connect(&fx.daemon).await;
+    let mut contexts = vec![
+        SystemRenderContext::new(
+            HarnessInputPresentation::SystemPlannerTurnBudget,
+            crate::planner_turn_budget::PlannerTurnBudget::default().initial_input(),
+        )
+        .unwrap(),
+    ];
+    if let Some(text) = usage {
+        contexts.push(
+            SystemRenderContext::new(
+                HarnessInputPresentation::SystemPlannerContextUsage,
+                text.into(),
+            )
+            .unwrap(),
+        );
+    }
+    // Persist a composed claim before the scheduler has a live source. Resume
+    // must hydrate this immutable plan without additions or a fresh reading.
+    let mut tx = begin_immediate_tx(fx.original.repo.db()).await.unwrap();
+    let mut carrier = current_input_carrier_tx(
+        &mut tx,
+        fx.harness.inner.card_id.as_str(),
+        &fx.harness.inner.worker_session_id,
+    )
+    .await
+    .unwrap();
+    let plan = human_plan_for_pending_prefix_tx(
+        &mut tx,
+        &carrier,
+        std::num::NonZeroU32::new(1).unwrap(),
+        contexts,
+    )
+    .await
+    .unwrap();
+    let expected = crate::harness::input_dispatch::hydrate_for_test(
+        &mut tx,
+        fx.harness.inner.card_id.as_str(),
+        &plan,
+    )
+    .await
+    .unwrap();
+    let claim =
+        crate::conversation_inputs::claim_initial_tx(&mut tx, &fx.source, &mut carrier, plan)
+            .await
+            .unwrap();
+    let mut snapshot: CanonicalHarnessSnapshot =
+        serde_json::from_value(carrier.snapshot().clone()).unwrap();
+    snapshot.header.turn_budget = budget::FrozenBudget::Planner {
+        budget: crate::planner_turn_budget::PlannerTurnBudget::default(),
+        start_attempt: QueueEntryId::from_wire(claim.submission_id.as_str().into()),
+        warning_attempted: false,
+        context_usage: calm_types::harness::budget::FrozenContextUsage::RenderPlan,
+    };
+    let mut header = header_value(&snapshot).unwrap();
+    if usage.is_none() {
+        header["turn_budget"]
+            .as_object_mut()
+            .unwrap()
+            .remove("context_usage");
+    }
+    persist_runtime_frame_tx(
+        &mut tx,
+        fx.harness.inner.card_id.as_str(),
+        &fx.harness.inner.worker_session_id,
+        &RuntimeExecutionFence::from_carrier(&carrier),
+        header,
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    fx.harness
+        .observe_canonical_source(fx.message.clone(), fx.source.clone())
+        .await
+        .unwrap();
+    let call = request(&mut peer).await;
+    assert_eq!(call["method"], "turn/start");
+    let [InputItem::Text { text: expected }] = expected.as_slice() else {
+        panic!("one text input")
+    };
+    assert_eq!(call["params"]["input"][0]["text"], *expected);
+    assert_eq!(call["params"]["input"].as_array().unwrap().len(), 1);
+    let input = call["params"]["input"].to_string();
+    assert_eq!(
+        input.matches("[Trusted Planner context usage]").count(),
+        usize::from(usage.is_some())
+    );
+    assert!(!input.contains("not recorded"));
+    let mut tx = begin_immediate_tx(fx.original.repo.db()).await.unwrap();
+    let stored = crate::db::sqlite::conversation::submission_plan_tx(&mut tx, &claim.submission_id)
+        .await
+        .unwrap();
+    assert_eq!(stored.plan, claim.plan);
+    tx.rollback().await.unwrap();
+    send(
+        &mut peer,
+        json!({"id":call["id"],"error":{"code":-32000,"message":"fixture rejected"}}),
+    )
+    .await;
+    peer.close(None).await.unwrap();
+    fx.harness.shutdown().await.unwrap();
+}
+
+#[tokio::test]
 async fn context_usage_canonical_freezes_context_at_claim() {
     let fx = Fixture::new().await;
     let (_client, mut peer) = connect(&fx.daemon).await;
@@ -448,6 +565,7 @@ async fn context_usage_canonical_freezes_context_at_claim() {
     assert_eq!(call["method"], "turn/start");
     let input = call["params"]["input"][0]["text"].as_str().unwrap();
     assert!(input.contains("[Trusted Planner turn budget]"));
+    assert_eq!(input.matches("[Trusted Planner context usage]").count(), 1);
     assert!(
         input.contains(
             "[Trusted Planner context usage]\nContext usage is unknown (no reading yet)."

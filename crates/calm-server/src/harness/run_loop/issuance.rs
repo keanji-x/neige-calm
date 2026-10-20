@@ -4,22 +4,18 @@ use crate::harness::backend::StartDiagnostic;
 use calm_types::harness::budget::FrozenContextUsage;
 use provider::control::{TurnEdit, TurnRequest, TurnStartOutcome};
 
-/// Only a new attempt samples context usage. A reused projection id keeps the fact
-/// frozen for that exact attempt, or records that pre-feature state has no fact.
-async fn frozen_context_usage(
-    inner: &Inner,
-    reused: bool,
-    client_id: &QueueEntryId,
-) -> FrozenContextUsage {
-    if reused {
-        return match &*inner.turn_budget.lock().await {
-            budget::FrozenBudget::Planner {
-                start_attempt,
-                context_usage,
-                ..
-            } if start_attempt == client_id => context_usage.clone(),
-            _ => FrozenContextUsage::LegacyNotRecorded,
-        };
+/// Reuse the frozen context fact under the turn budget's exact attempt rule.
+/// Otherwise compose and freeze a new segment; pre-feature matching attempts
+/// retain their absence of a segment rather than fabricating context text.
+async fn frozen_context_usage(inner: &Inner, client_id: &QueueEntryId) -> FrozenContextUsage {
+    if let budget::FrozenBudget::Planner {
+        start_attempt,
+        context_usage,
+        ..
+    } = &*inner.turn_budget.lock().await
+        && start_attempt == client_id
+    {
+        return context_usage.clone();
     }
     let invalidated = inner.context_usage_invalidation.lock().await.is_some();
     let usage = inner.token_usage.lock().await;
@@ -341,7 +337,7 @@ pub(super) async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
     *inner.legacy_issued_input_segments.lock().await = None;
     // The key shared by the projection row and `turn/start`'s `clientUserMessageId`, decided HERE
     // so the snapshot written next carries it and a restart re-drains the batch under the SAME key.
-    let (client_id, reused) = {
+    let client_id = {
         let from_queue = inner
             .historical_queue()?
             .lock()
@@ -350,16 +346,15 @@ pub(super) async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
             .find_map(QueueEntry::id)
             .cloned();
         let mut slot = inner.projection_client_id.lock().await;
-        let reused = slot.is_some();
         let key = slot
             .clone()
             .or(from_queue)
             .unwrap_or_else(crate::harness::queue::mint_entry_id);
         *slot = Some(key.clone());
-        (key, reused)
+        key
     };
     let context_usage = if sampled_budget.is_some() {
-        Some(frozen_context_usage(inner, reused, &client_id).await)
+        Some(frozen_context_usage(inner, &client_id).await)
     } else {
         None
     };
@@ -411,18 +406,17 @@ pub(super) async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
         let mut context = budget::segment(budget.initial_input());
         context.presentation = HarnessInputPresentation::SystemPlannerTurnBudget;
         segments.insert(0, context);
-        let mut usage =
-            budget::segment(match context_usage.expect("Planner context was sampled") {
-                calm_types::harness::budget::FrozenContextUsage::Text(text) => text,
-                calm_types::harness::budget::FrozenContextUsage::LegacyNotRecorded => {
-                    crate::harness::token_usage::planner_context_not_recorded()
-                }
-                calm_types::harness::budget::FrozenContextUsage::RenderPlan => {
-                    unreachable!("budget sampling refuses historical render-plan ownership")
-                }
-            });
-        usage.presentation = HarnessInputPresentation::SystemPlannerContextUsage;
-        segments.insert(1, usage);
+        match context_usage.expect("Planner context was sampled") {
+            FrozenContextUsage::Text(text) => {
+                let mut usage = budget::segment(text);
+                usage.presentation = HarnessInputPresentation::SystemPlannerContextUsage;
+                segments.insert(1, usage);
+            }
+            FrozenContextUsage::LegacyNotRecorded => {}
+            FrozenContextUsage::RenderPlan => {
+                unreachable!("budget sampling refuses historical render-plan ownership")
+            }
+        }
     }
     if let Some(notice) = timeout_notice {
         segments.insert(0, notice);
