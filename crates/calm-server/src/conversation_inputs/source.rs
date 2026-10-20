@@ -163,11 +163,8 @@ pub(crate) async fn source_inputs_tx(
             refs.push(pending.input_ref());
         }
     }
-    if refs.is_empty() {
-        return Err(CalmError::Forbidden(
-            "current source cannot resume this exact pending head".into(),
-        ));
-    }
+    // Resource admission can reopen read/control access even when this source
+    // grants no input. Only these exact refs reach the dispatch source registry.
     Ok(SourceInputs {
         refs,
         unattempted_initial,

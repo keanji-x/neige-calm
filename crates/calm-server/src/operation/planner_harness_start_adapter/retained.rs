@@ -5,6 +5,7 @@ use crate::conversation_inputs::InputSource;
 use crate::db::sqlite::conversation::{self, RuntimeExecutionFence};
 use crate::harness::snapshot::CanonicalHarnessSnapshot;
 
+mod binding;
 mod recovery;
 
 #[derive(Clone)]
@@ -49,6 +50,7 @@ impl RetainedPayload {
 
 pub(super) struct Target {
     track_id: String,
+    binding: crate::harness::profile::PlannerBinding,
     inputs: crate::conversation_inputs::SourceInputs,
     snapshot: CanonicalHarnessSnapshot,
     fence: RuntimeExecutionFence,
@@ -77,9 +79,7 @@ impl PlannerHarnessStartAdapter {
         crate::conversation_inputs::authorize_resource_tx(tx, source, &carrier).await?;
         let (binding, row) =
             crate::harness::profile::input_carrier_binding_tx(tx, &carrier).await?;
-        // This first spine consumes the actual existing Codex personal environment.
-        // Other provider/profile startup remains with its existing owner.
-        if binding.profile != HarnessProfile::Planner || binding.provider != AgentProvider::Codex {
+        if binding.profile != HarnessProfile::Planner {
             return Err(CalmError::Conflict(
                 "retained activation is unavailable for this provider/profile".into(),
             ));
@@ -94,6 +94,7 @@ impl PlannerHarnessStartAdapter {
         }
         Ok(Target {
             track_id: row.track_id.to_string(),
+            binding,
             inputs,
             snapshot,
             fence: RuntimeExecutionFence::from_carrier(&carrier),
@@ -178,7 +179,7 @@ impl PlannerHarnessStartAdapter {
                     &bound.claude_host,
                     &bound.acp_host,
                 )
-                .ready(&AgentProvider::Codex, ReadinessFor::StartOperation)
+                .ready(&target.binding.provider, ReadinessFor::StartOperation)
                 .await?;
                 let payload = serde_json::to_value(&wire)?;
                 let key = super::super::OperationKey {
@@ -269,7 +270,7 @@ impl PlannerHarnessStartAdapter {
             &self.claude_host,
             &self.acp_host,
         )
-        .ready(&AgentProvider::Codex, ReadinessFor::StartOperation)
+        .ready(&target.binding.provider, ReadinessFor::StartOperation)
         .await?;
         let (_, root) = self.retained_source()?;
         let track = self
@@ -284,15 +285,22 @@ impl PlannerHarnessStartAdapter {
             &target.track_id,
         )?;
         self.retained_target(wire).await?;
+        #[cfg(feature = "fixtures")]
+        crate::test_seams::pause_point("retained-workspace-ready", &wire.card_id).await;
+        match PlannerFactory::retained_identity(&target.binding.provider)? {
+            crate::harness::backend::factory::RetainedIdentityPreparation::LocalSession(thread) => {
+                return self
+                    .retained_bind_local(wire, output, op, &target.binding, thread)
+                    .await;
+            }
+            crate::harness::backend::factory::RetainedIdentityPreparation::NativeThread => {}
+        }
         let instructions = crate::harness::instructions::profile_instructions(
             self.repo.as_ref(),
             &self.plugin,
             &target.track_id,
             &wire.card_id,
-            &crate::harness::profile::PlannerBinding {
-                profile: HarnessProfile::Planner,
-                provider: AgentProvider::Codex,
-            },
+            &target.binding,
         )
         .await?;
         let socket_path = self.mcp_socket_path_for_thread()?;
@@ -355,7 +363,7 @@ impl PlannerHarnessStartAdapter {
             &target.track_id,
             track.workspace.agent_cwd().to_string(),
             Some(instructions),
-            HarnessProfile::Planner.mcp_role(),
+            target.binding.profile.mcp_role(),
             PathBuf::from(socket_path),
             raw,
             true,
@@ -404,6 +412,7 @@ impl PlannerHarnessStartAdapter {
         let previous_output = output.clone();
         output.data = json!({"activation":"native_known", "thread_id":thread});
         let repo = self.repo.clone();
+        let provider = target.binding.provider.clone();
         let wire = wire.clone();
         let op = op.clone();
         let thread_tx = thread.clone();
@@ -427,50 +436,8 @@ impl PlannerHarnessStartAdapter {
             &write,
             move |tx| {
                 Box::pin(async move {
-                    let current = conversation::current_input_carrier_tx(
-                        tx,
-                        &wire.card_id,
-                        &wire.worker_session_id,
-                    )
-                    .await?;
-                    let mut frame: CanonicalHarnessSnapshot =
-                        serde_json::from_value(current.snapshot().clone())?;
-                    frame.header.last_thread_id = Some(thread_tx.clone());
-                    let mut header = serde_json::to_value(frame)?;
-                    header
-                        .as_object_mut()
-                        .expect("canonical frame")
-                        .remove(calm_types::conversation::CONVERSATION_INPUT_CHECKPOINT_KEY);
-                    conversation::persist_runtime_frame_tx(
-                        tx,
-                        &wire.card_id,
-                        &wire.worker_session_id,
-                        &expected,
-                        header,
-                    )
-                    .await?;
-                    let owner: Option<String> =
-                        sqlx::query_scalar("SELECT spawn_op_id FROM worker_sessions WHERE id=?1")
-                            .bind(&wire.worker_session_id)
-                            .fetch_one(&mut **tx)
-                            .await?;
-                    if owner.as_deref() != Some(op.id.as_str()) {
-                        return Err(CalmError::Conflict(
-                            "retained activation owner changed".into(),
-                        ));
-                    }
-                    session_bind_attribution_tx(
-                        tx,
-                        &wire.worker_session_id,
-                        ThreadAttribution {
-                            worker_session_id: wire.worker_session_id.clone(),
-                            provider: AgentProvider::Codex,
-                            thread_id: Some(thread_tx.clone()),
-                            session_id: None,
-                            active_turn_id: None,
-                        },
-                    )
-                    .await?;
+                    binding::bind_identity_tx(tx, &wire, &op, &expected, provider, &thread_tx)
+                        .await?;
                     persist_card_mcp_token_hash(tx, &wire.card_id, &hashed).await?;
                     mirror_session_mcp_token(tx, &wire.worker_session_id, &hashed).await?;
                     let card = card_apply_harness_start_payload_tx(
@@ -581,10 +548,7 @@ impl PlannerHarnessStartAdapter {
             &self.planner_wiring(),
             self.repo.clone(),
             PlannerRow {
-                binding: crate::harness::profile::PlannerBinding {
-                    profile: HarnessProfile::Planner,
-                    provider: AgentProvider::Codex,
-                },
+                binding: target.binding.clone(),
                 worker_session_id: &wire.worker_session_id,
                 card_id: &wire.card_id,
                 track_id: &target.track_id,
@@ -616,6 +580,14 @@ impl PlannerHarnessStartAdapter {
             )?)?,
         })
         .await?;
+        let admitted = self
+            .retained_target(wire)
+            .await
+            .and_then(|_| self.retained_source()?.0.check_current());
+        if let Err(error) = admitted {
+            handle.shutdown().await?;
+            return Err(error);
+        }
         if !reservation.install(handle.clone()) {
             handle.shutdown().await?;
             return Err(CalmError::Conflict(

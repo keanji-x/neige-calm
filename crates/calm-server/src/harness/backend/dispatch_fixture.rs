@@ -13,11 +13,20 @@ pub(super) struct Owner {
     pub track: String,
     pub worker: String,
     pub thread: String,
+    pub db_url: String,
 }
 
 pub(super) async fn seed(cwd: &std::path::Path, provider: AgentProvider) -> Owner {
+    seed_with_url(cwd, provider, "sqlite::memory:").await
+}
+
+pub(super) async fn seed_with_url(
+    cwd: &std::path::Path,
+    provider: AgentProvider,
+    db_url: &str,
+) -> Owner {
     std::fs::create_dir_all(cwd.join("data")).unwrap();
-    let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
+    let repo = Arc::new(SqlxRepo::open(db_url).await.unwrap());
     let area = repo
         .area_create(
             calm_types::organization::LEGACY_OWNER_USER_ID,
@@ -73,6 +82,7 @@ pub(super) async fn seed(cwd: &std::path::Path, provider: AgentProvider) -> Owne
     .unwrap();
     tx.commit().await.unwrap();
     Owner {
+        db_url: db_url.to_owned(),
         repo,
         card: card.id.to_string(),
         track: track.id.to_string(),

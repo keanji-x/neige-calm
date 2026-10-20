@@ -1,6 +1,7 @@
 //! Real canonical transactions composed with the fake CLI at its process boundary.
 mod control;
 mod loop_fixture;
+mod recovery;
 use super::*;
 use crate::auth::{AuthConfig, AuthState, SessionAuthority, SessionIdentity};
 use crate::db::sqlite::begin_immediate_tx;
@@ -20,7 +21,14 @@ pub(in crate::harness) struct Fixture {
 }
 impl Fixture {
     pub(in crate::harness) async fn new(scenario: &str) -> Self {
-        let (backend, session, dir, owner, _held) = fixture_full(scenario).await;
+        Self::with_storage(scenario, FixtureStorage::Memory).await
+    }
+    async fn persistent(scenario: &str) -> Self {
+        Self::with_storage(scenario, FixtureStorage::Persistent).await
+    }
+    async fn with_storage(scenario: &str, storage: FixtureStorage) -> Self {
+        let (backend, session, dir, owner, _held) =
+            fixture_full_with_storage(scenario, storage).await;
         let auth = AuthState::new(AuthConfig {
             username: Some("Owner".into()),
             password: Some("fixture-password".into()),
@@ -502,8 +510,16 @@ async fn canonical_claude_reply_uses_one_canonical_presentation() {
     let fx = Fixture::new("exit").await;
     let harness = fx.start_loop().await;
     fx.phase("turn_completed").await;
-    let sources: Vec<(String, i64)> = sqlx::query_as("SELECT source_kind,count(*) FROM conversation_presentations WHERE card_id=?1 GROUP BY source_kind ORDER BY source_kind")
-        .bind(&fx.owner.card).fetch_all(fx.owner.repo.pool()).await.unwrap();
+    // END qualification and content observation have separate consumers. Wait
+    // for the actual projection, rather than treating phase as a content barrier.
+    let sources = tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            let sources: Vec<(String, i64)> = sqlx::query_as("SELECT source_kind,count(*) FROM conversation_presentations WHERE card_id=?1 GROUP BY source_kind ORDER BY source_kind")
+                .bind(&fx.owner.card).fetch_all(fx.owner.repo.pool()).await.unwrap();
+            if sources.iter().any(|(kind, _count)| kind == "native_item") { break sources; }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }).await.unwrap();
     assert_eq!(
         sources,
         vec![("human_message".into(), 1), ("native_item".into(), 1)]
@@ -566,16 +582,7 @@ async fn canonical_claude_failed_driver_cleanup_never_qualifies_end() {
                 }));
             }
             Failure::Outcome => {
-                let mut tx = begin_immediate_tx(fx.owner.repo.db()).await.unwrap();
-                sqlx::query(
-                    "CREATE TRIGGER fail_outcome BEFORE INSERT ON harness_items
-                 WHEN NEW.method='turn/completed'
-                 BEGIN SELECT RAISE(ABORT,'outcome failed'); END",
-                )
-                .execute(&mut **tx)
-                .await
-                .unwrap();
-                tx.commit().await.unwrap();
+                fail_terminal_outcome(fx.owner.repo.as_ref()).await;
             }
             Failure::Instructions => {
                 let instructions = fx.session.host().instructions_dir.clone();
@@ -673,6 +680,22 @@ async fn canonical_claude_resumed_session_keeps_local_identity_and_rejects_prior
     .await
     .expect("the second actual CLI spawn must resume the validated native session");
     let current = fx.target().await;
+    tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            if fx
+                .backend
+                .qualify_execution_end(&current)
+                .await
+                .unwrap()
+                .is_some()
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
     assert_ne!(current.scope, prior.scope);
     assert!(
         fx.backend
@@ -712,8 +735,23 @@ async fn canonical_claude_cancelled_local_start_holds_crossing_after_driver_inst
         cp.attempts[0].delivery,
         InputDeliveryFact::CrossingUnknown
     ));
-    assert!(fx.dispatch().await.is_err());
+    assert!(
+        tokio::time::timeout(Duration::from_secs(10), fx.dispatch())
+            .await
+            .expect("a committed marker must refuse before another provider wait")
+            .is_err()
+    );
     assert!(fx.complete().await.is_none());
     assert_eq!(fx.session.user_line_writes_for_test(), 1);
     fx.session.shutdown().await.unwrap();
+}
+
+async fn fail_terminal_outcome(repo: &crate::db::sqlite::SqlxRepo) {
+    sqlx::query(
+        "CREATE TRIGGER fail_outcome BEFORE INSERT ON harness_items
+        WHEN NEW.method='turn/completed' BEGIN SELECT RAISE(ABORT,'outcome failed'); END",
+    )
+    .execute(repo.pool())
+    .await
+    .unwrap();
 }

@@ -29,8 +29,24 @@ impl Fixture {
     }
 
     async fn with_native(fake: bool) -> Self {
+        Self::build(fake, AgentProvider::Codex, false).await
+    }
+
+    async fn with_provider(fake: bool, provider: AgentProvider) -> Self {
+        Self::build(fake, provider, true).await
+    }
+
+    async fn build(fake: bool, provider: AgentProvider, persistent: bool) -> Self {
         let dir = tempfile::tempdir().unwrap();
-        let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
+        let uri = if persistent {
+            format!(
+                "sqlite://{}?mode=rwc",
+                dir.path().join("canonical.sqlite").display()
+            )
+        } else {
+            "sqlite::memory:".into()
+        };
+        let repo = Arc::new(SqlxRepo::open(&uri).await.unwrap());
         let area = repo
             .area_create(
                 LEGACY_OWNER_USER_ID,
@@ -59,7 +75,7 @@ impl Fixture {
         let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
         let card=card_create_with_id_tx(&mut tx,new_id(),NewCard {
             track_id:track.id.clone(),kind:"codex".into(),title:None,sort:None,
-            payload:json!({"schemaVersion":1,"planner_harness":true,"planner_provider":"codex","permission_mode":"never"}),
+            payload:json!({"schemaVersion":1,"planner_harness":true,"planner_provider":provider,"permission_mode":"never"}),
         },CardRole::Planner,true,repo.card_role_cache()).await.unwrap().id;
         let worker = new_id();
         session_start_runtime_tx(
@@ -67,7 +83,7 @@ impl Fixture {
             WorkerSessionInit::shared_planner(
                 worker.clone(),
                 card.to_string(),
-                AgentProvider::Codex,
+                provider,
                 WorkerSessionState::Idle,
                 None,
                 serde_json::to_value(CanonicalHarnessSnapshot::dormant(0)).unwrap(),
@@ -774,3 +790,6 @@ async fn retained_native_refusal_preserves_original_unknown_without_private_erro
         assert!(frame.canonical_inputs.attempts.is_empty());
     }
 }
+
+#[cfg(feature = "fixtures")]
+mod claude_recovery;

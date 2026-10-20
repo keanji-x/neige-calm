@@ -23,6 +23,13 @@ pub(crate) enum ReadinessFor {
     RestoreOrSend,
 }
 
+/// Preparation at the existing retained operation checkpoint. A local identity
+/// is Neige-owned; it does not assert a native session or start a process.
+pub(crate) enum RetainedIdentityPreparation {
+    NativeThread,
+    LocalSession(uuid::Uuid),
+}
+
 pub(crate) struct PlannerFactory<'a> {
     daemon: Weak<SharedCodexAppServer>,
     claude: &'a Arc<ClaudePlannerHost>,
@@ -39,6 +46,29 @@ impl<'a> PlannerFactory<'a> {
             daemon,
             claude,
             acp,
+        }
+    }
+
+    pub(crate) fn retained_identity(
+        provider: &AgentProvider,
+    ) -> Result<RetainedIdentityPreparation> {
+        match provider.protocol() {
+            AgentProtocol::Codex => Ok(RetainedIdentityPreparation::NativeThread),
+            AgentProtocol::Claude => Ok(RetainedIdentityPreparation::LocalSession(
+                uuid::Uuid::new_v4(),
+            )),
+            AgentProtocol::Acp => Err(CalmError::Conflict(
+                "canonical ACP activation is unavailable".into(),
+            )),
+        }
+    }
+
+    /// Codex recovery must observe an idle native thread. Local recovery can
+    /// reopen control for a held checkpoint after exact predecessor quiescence.
+    pub(crate) fn canonical_recovery_requires_idle(provider: &AgentProvider) -> bool {
+        match provider.protocol() {
+            AgentProtocol::Codex | AgentProtocol::Acp => true,
+            AgentProtocol::Claude => false,
         }
     }
 

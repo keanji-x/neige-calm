@@ -16,8 +16,26 @@ async fn fixture(
     (backend, session, dir, owner.thread)
 }
 
+enum FixtureStorage {
+    Memory,
+    Persistent,
+}
+
 async fn fixture_full(
     scenario: &str,
+) -> (
+    PlannerBackend,
+    Arc<ClaudePlannerSession>,
+    tempfile::TempDir,
+    super::dispatch_fixture::Owner,
+    crate::harness::held_requests::HeldRequestReceiver,
+) {
+    fixture_full_with_storage(scenario, FixtureStorage::Memory).await
+}
+
+async fn fixture_full_with_storage(
+    scenario: &str,
+    storage: FixtureStorage,
 ) -> (
     PlannerBackend,
     Arc<ClaudePlannerSession>,
@@ -36,7 +54,15 @@ async fn fixture_full(
     )
     .unwrap();
     std::fs::write(dir.path().join("scenario"), scenario).unwrap();
-    let owner = super::dispatch_fixture::seed(dir.path(), AgentProvider::Claude).await;
+    let db_url: String = match storage {
+        FixtureStorage::Memory => "sqlite::memory:".into(),
+        FixtureStorage::Persistent => format!(
+            "sqlite://{}?mode=rwc",
+            dir.path().join("canonical.sqlite").display()
+        ),
+    };
+    let owner =
+        super::dispatch_fixture::seed_with_url(dir.path(), AgentProvider::Claude, &db_url).await;
     let host = Arc::new(
         ClaudePlannerHost::new(
             Some(ClaudePlannerConfig {

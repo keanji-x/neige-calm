@@ -114,13 +114,32 @@ impl PlannerFactory<'_> {
         runtime: &WorkerSessionProjection,
         admission: Arc<dyn ActiveRecoveryAdmission>,
     ) -> Result<()> {
-        self.resume_active_conversation_admitted(
-            repo,
-            runtime,
-            admission,
-            LoadedTurnPolicy::RequireIdle,
-        )
-        .await
+        let provider = runtime
+            .agent_provider
+            .as_ref()
+            .ok_or_else(|| CalmError::Conflict("canonical recovery provider is missing".into()))?;
+        match provider.protocol() {
+            calm_types::runtime::AgentProtocol::Codex => {
+                self.resume_active_conversation_admitted(
+                    repo,
+                    runtime,
+                    admission,
+                    LoadedTurnPolicy::RequireIdle,
+                )
+                .await
+            }
+            calm_types::runtime::AgentProtocol::Claude => {
+                let target = RecoveryTarget::active(runtime)?;
+                validate_active_recovery(repo, runtime, target.thread_id(), admission.clone())
+                    .await?;
+                crate::claude_planner::recovery::quiesce_canonical(self.claude, &runtime.id)
+                    .await?;
+                validate_active_recovery(repo, runtime, target.thread_id(), admission).await
+            }
+            calm_types::runtime::AgentProtocol::Acp => Err(CalmError::Conflict(
+                "canonical ACP recovery is unavailable".into(),
+            )),
+        }
     }
 
     async fn resume_active_conversation_admitted(
@@ -459,12 +478,15 @@ async fn validate_active_recovery_tx(
     if !current.as_ref().is_some_and(|row| {
         row.id == expected.id
             && crate::harness::effective_runtime_thread_id(row).as_deref() == Some(thread)
+            && row.session_id == expected.session_id
+            && row.agent_provider == expected.agent_provider
     }) {
         return Err(CalmError::Conflict(
             "conversation changed during resume".into(),
         ));
     }
-    admission.validate_tx(tx).await
+    admission.validate_tx(tx).await?;
+    admission.check_current()
 }
 
 async fn validate_active_recovery(
