@@ -50,6 +50,7 @@ async fn planner_advertised_result_route_reads_recorded_audit() {
     let events = boot.ctx.events.clone();
     let operations = Arc::new(SqlxOperationRepo::new(boot.repo.sqlite_db().unwrap()));
     let completion = OperationCompletionBus::new();
+    let execution = crate::support::execution::Fixture::new(boot.repo.sqlite_db().unwrap()).await;
     let spawn = SpawnCtx::new(
         boot.repo.clone(),
         operations.clone(),
@@ -57,7 +58,8 @@ async fn planner_advertised_result_route_reads_recorded_audit() {
         TerminalRendererRegistry::new(),
         events.clone(),
         completion.clone(),
-    );
+    )
+    .with_execution(execution.lifecycle.clone());
     let runtime = Arc::new(OperationRuntime::new_unchecked(
         operations,
         vec![Arc::new(TaskVerifyAdapter::new(dir.path().to_path_buf()))],
