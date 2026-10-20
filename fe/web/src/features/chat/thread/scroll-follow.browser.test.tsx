@@ -1,3 +1,4 @@
+import { CardFrame } from '../../../ui/card-frame/public.tsx';
 import { act, cleanup, render } from '@testing-library/react';
 import { commands, page, userEvent } from 'vitest/browser';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -22,13 +23,13 @@ const history: readonly TranscriptEntry[] = Array.from({ length: 8 }).flatMap((_
 const later: TranscriptEntry = { id: 'later', author: 'agent', text: words.repeat(4), atMs: 20000 };
 
 function Pane({ height = 400, turns = history, historyPrefetch }: { height?: number; turns?: readonly TranscriptEntry[]; historyPrefetch?: ChatThreadProps['historyPrefetch'] }) {
-  return <div className={drawerStyles.drawer} data-nc-drawer="" style={{ animation: 'none', position: 'relative', inlineSize: 396, blockSize: height + 48 }}>
+  return <CardFrame className={drawerStyles.drawer} data-nc-drawer="" style={{ animation: 'none', position: 'relative', inlineSize: 396, blockSize: height + 48 }}>
     <div className={drawerStyles.scroll} data-nc-drawer-scroll="" style={{ blockSize: height, flex: 'none' }}>
       <div className={drawerStyles.bodyInner}>
         <ChatThread historyPrefetch={historyPrefetch} hasPendingMessages={false} canContinue={false} cards={{}} stalled={false} conversation={conversation} turns={turns} />
       </div>
     </div>
-  </div>;
+  </CardFrame>;
 }
 const pane = () => document.querySelector<HTMLElement>('[data-nc-drawer-scroll]')!;
 const remaining = () => pane().scrollHeight - pane().scrollTop - pane().clientHeight;

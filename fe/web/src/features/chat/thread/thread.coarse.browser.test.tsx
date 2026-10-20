@@ -1,3 +1,4 @@
+import { CardFrame } from '../../../ui/card-frame/public.tsx';
 /* The exchange rail as a finger gets it, in a browser context of its own (`vitest.config.ts`): `pointer: coarse` is a
    media feature nothing in a page can set. A tablet, not a phone: a phone width paints no seam at all. */
 import { act, cleanup, render } from '@testing-library/react';
@@ -51,7 +52,7 @@ function RailPane({ turns, paneHeight = 400 }: {
       }}
     >
       <div className={drawerStyles.positioner} data-nc-drawer-frame="">
-        <div className={drawerStyles.drawer} data-nc-drawer="" style={{ animation: 'none', transition: 'none' }}>
+        <CardFrame className={drawerStyles.drawer} data-nc-drawer="" style={{ animation: 'none', transition: 'none' }}>
           <div
             className={drawerStyles.scroll}
             data-nc-drawer-scroll=""
@@ -61,7 +62,7 @@ function RailPane({ turns, paneHeight = 400 }: {
               <ChatThread hasPendingMessages={false} canContinue={false} cards={{}} stalled={false} conversation={railConversation()} turns={turns} />
             </div>
           </div>
-        </div>
+        </CardFrame>
       </div>
       <div className={drawerStyles.seamPositioner} data-nc-drawer-frame="">
         <div className={drawerStyles.seam} data-nc-drawer-seam="" style={{ animation: 'none', transition: 'none' }} />

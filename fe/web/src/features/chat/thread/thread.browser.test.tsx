@@ -1,3 +1,4 @@
+import { CardFrame } from '../../../ui/card-frame/public.tsx';
 import { ChatComposer as SdkComposer, ChatComposerInput as SdkComposerInput } from '@astryxdesign/core/Chat';
 import { withFontRoleProbe } from '../../../../../tools/styles/font-role-fixture.ts';
 /* The composer, the exchange rail and the reply's type, measured against a real rendering engine. */
@@ -497,7 +498,7 @@ ConversationTurn[] {
 /** The drawer's own block insets (`--space-9` + `--space-11`): how much taller than its pane the host has to be for the card to come out at exactly `paneHeight`. */
 const DRAWER_BLOCK_INSETS = 20 + 28;
 
-/** The drawer with independent layout frames around its card and seam paints. Card and seam carry the real `drawerStyles` rules (the `.drawer` clip is what the portal exists for); the animation is off and the pane takes a fixed `blockSize`. */
+/** The drawer with independent layout frames around its card and seam paints. Card and seam carry the production `CardFrame` and `drawerStyles` rules (the card clip is what the portal exists for); the animation is off and the pane takes a fixed `blockSize`. */
 function RailPane({ turns, paneHeight = 400, conversationSpan = 396 }: {
   turns: readonly TranscriptEntry[];
   paneHeight?: number;
@@ -515,7 +516,7 @@ function RailPane({ turns, paneHeight = 400, conversationSpan = 396 }: {
       }}
     >
       <div className={drawerStyles.positioner} data-nc-drawer-frame="">
-        <div className={drawerStyles.drawer} data-nc-drawer="" style={{ animation: 'none', transition: 'none' }}>
+        <CardFrame className={drawerStyles.drawer} data-nc-drawer="" style={{ animation: 'none', transition: 'none' }}>
           <div
             className={drawerStyles.scroll}
             data-nc-drawer-scroll=""
@@ -525,7 +526,7 @@ function RailPane({ turns, paneHeight = 400, conversationSpan = 396 }: {
               <ChatThread hasPendingMessages={false} canContinue={false} cards={{}} stalled={false} conversation={railConversation()} turns={turns} />
             </div>
           </div>
-        </div>
+        </CardFrame>
       </div>
       <div className={drawerStyles.seamPositioner} data-nc-drawer-frame="">
         <div className={drawerStyles.seam} data-nc-drawer-seam="" style={{ animation: 'none', transition: 'none' }} />
@@ -691,7 +692,7 @@ describe('the exchange rail, as the engine lays it out', () => {
     }
   });
 
-  /* `.drawer` is `overflow: hidden`; asserted through `checkVisibility()` because a clipped element still reports a rect. */
+  /* `CardFrame` is `overflow: hidden`; asserted through `checkVisibility()` because a clipped element still reports a rect. */
   it('paints the rail outside the card’s clip', async () => {
     await page.viewport(1400, 900);
     render(<RailPane turns={railTurns(8)} />);
