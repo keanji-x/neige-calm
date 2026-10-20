@@ -27,6 +27,9 @@ order defines priority: only earlier interactive slots participate. Ancestors
 precede descendants; retained reopen keeps its position, while unmount/remount
 appends a new position. Parents never consume descendant or later sibling slots.
 
+The paint card reuses `CardFrame`. The actual wrapper owns the transparent hover
+bridge and pointer travel handlers outside that rounded clipping boundary.
+
 The tree is slot → unanimated actual wrapper → one paint card → scroll viewport
 → intrinsic flow root. Fractional intrinsic size plus header and borders determines
 actual height, capped by the slot. Above content bottom-aligns in its slot; below

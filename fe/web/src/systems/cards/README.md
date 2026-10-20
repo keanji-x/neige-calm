@@ -2,7 +2,7 @@
 
 ## 用途
 
-`public.ts` 是 registry、kind resolver、host capability、资源生命周期**与内置卡片组合**的唯一公开入口。built-in 的集合、注册顺序与 kernel 解析适配器都归本模块所有，实现落在 `builtins/`（#1091）：卡片有独立资源生命周期，只有本模块能保证解析顺序与生命周期语义一致；页面布局仍属于 feature。已落地：terminal、codex、planner、claude、track-report。iframe、file-viewer、plugin-iframe 仍未注册，届时加入同一个 `builtins/` 组合，不另开注册路径。
+`public.ts` 是 registry、kind resolver、host capability、资源生命周期**与内置卡片组合**的唯一公开入口。built-in 的集合、注册顺序与 kernel 解析适配器都归本模块所有，实现落在 `builtins/`（#1091）：卡片有独立资源生命周期，只有本模块能保证解析顺序与生命周期语义一致；页面布局仍属于 feature。已落地：terminal、codex、planner、claude、track-report、file-viewer。iframe、plugin-iframe 仍未注册，届时加入同一个 `builtins/` 组合，不另开注册路径。
 
 ## 契约
 
@@ -27,6 +27,14 @@
 - 允许（并要求由本模块承载）：`builtins/` 下的 planner、track-report 无头 adapter 及后续真实 card adapter、card head、geometry/visibility observer、overlay，以及 `ui/board-host.tsx` 里的薄 React bridge。这些都是卡片系统自己的壳与观测面，放到 feature 会让资源生命周期和布局同时改写同一份状态。它们仍按 slice 落地，各自兑现 browser/jsdom 契约。
 - 仍不实现：slots 的 React hook、schema version、iframe/plugin 行为。
 - 不提供 barrel `index.ts` 或任何私有深导入承诺；`builtins/` 也不例外，其组合函数、`BUILTIN_CARD_ORDER`、`partitionTrackCards` 与 `isPlannerHarnessPayload` 全部经 `public.ts` re-export（`cards-public-entry-only` 禁止外部直引子路径）。消费者缺少能力时应对 `public.ts` 发 change request。
+
+## Shared visual frame
+
+Builtin Terminal, File and worker-card renderers use the UI-owned `CardFrame`.
+The same frame paints conversation, preview and modal cards. Renderers and hosts
+own content, geometry and lifecycle, without separate radius or shadow recipes.
+A composed dock has one outer frame and keeps its nested card flat; dragging
+changes stacking and geometry without drawing another shadow on the grid cell.
 
 ## Single-card dock
 

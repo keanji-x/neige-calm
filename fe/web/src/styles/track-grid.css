@@ -21,7 +21,6 @@
 
   .term {
     margin-bottom: var(--space-5);
-    background: var(--surface-terminal);
   }
 
   .term-body {
@@ -260,13 +259,6 @@
   .react-grid-item.react-draggable-dragging {
     z-index: var(--z-overlay);
     cursor: grabbing;
-    /* stylelint-disable-next-line declaration-property-value-disallowed-list */
-    box-shadow: 0 4px 14px rgba(20, 30, 55, 0.08), 0 22px 48px rgba(20, 30, 55, 0.12);
-  }
-
-  [data-theme="dark"] .react-grid-item.react-draggable-dragging {
-    /* stylelint-disable-next-line declaration-property-value-disallowed-list */
-    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4), 0 22px 48px rgba(0, 0, 0, 0.55);
   }
 
   .react-grid-item.resizing {

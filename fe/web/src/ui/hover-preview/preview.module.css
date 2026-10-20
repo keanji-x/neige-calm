@@ -3,7 +3,7 @@
 
   .positioner { position: fixed; z-index: var(--z-overlay); display: flex; flex-direction: column; pointer-events: none; }
 
-  .actual { inline-size: 100%; flex: none; pointer-events: auto; }
+  .actual { position: relative; isolation: isolate; inline-size: 100%; flex: none; pointer-events: auto; }
 
   /* Global reduced-motion duration must not turn layout/preparation into CSS transitions. */
   .positioner, .actual { transition-property: none; }
@@ -17,19 +17,12 @@
     flex-direction: column;
     inline-size: 100%;
     block-size: 100%;
-    overflow: visible;
-    border: 1px solid var(--hairline);
-    border-radius: var(--radius-md);
-    background: var(--surface-card);
-    box-shadow: var(--shadow-float);
     color: var(--text);
   }
 
-  .compact { overflow: hidden; }
-
   .header { flex: none; display: flex; align-items: center; gap: var(--space-1); padding: var(--space-2); border-block-end: 1px solid var(--hairline); }
   /* A transparent edge joins the link-to-card gap, even during slow movement. */
-  .card::before { content: ""; position: absolute; inset: calc(-1 * var(--space-3)); z-index: -1; }
+  .actual::before { content: ""; position: absolute; inset: calc(-1 * var(--space-3)); z-index: -1; }
   .title { flex: 1; min-inline-size: 0; padding: var(--space-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-2); }
   .body { min-block-size: 0; flex: 1; overflow: auto; overscroll-behavior: contain; }
   .intrinsic { display: flow-root; padding: var(--space-4); }

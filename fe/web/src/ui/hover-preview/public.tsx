@@ -8,8 +8,9 @@ import { useSurfacePresence } from '../motion/surface-presence.ts';
 import { readSurfaceFrame, type BindingView } from '../motion/geometry.ts';
 import { useState } from '../state/public.ts';
 import { restoreDrawerFocus } from '../drawer/restore-focus.ts';
-import { inPreviewBridge, placePreview, PREVIEW_GAP, PREVIEW_WIDTH, PREVIEW_MAX_HEIGHT, PREVIEW_MIN_HEIGHT, type Placement } from './placement.ts';
+import { inPreviewBridge, placePreview, PREVIEW_GAP, PREVIEW_WIDTH, PREVIEW_MAX_HEIGHT, type Placement } from './placement.ts';
 import styles from './preview.module.css';
+import { CardFrame } from '../card-frame/public.tsx';
 import { useInteractionScope } from './interaction-scope.ts';
 
 type Phase = 'closed' | 'waiting' | 'open';
@@ -474,14 +475,14 @@ export function HoverPreview({ title, trigger, children, getReadingSurface, getA
       onPointerDownCapture={event => { if (!admitted()) { event.preventDefault(); event.stopPropagation(); } }}
       onFocusCapture={event => { if (!admitted()) { event.stopPropagation(); (event.target as HTMLElement).blur(); } }}
       style={{ left: placement.x, top: placement.y, width: placement.width, height: placement.maxHeight, justifyContent: placement.side === 'above' ? 'flex-end' : 'flex-start' }}>
-      <div ref={attachActual} className={styles.actual} style={{ height: Math.min(actualHeight, placement.maxHeight), clipPath: 'inset(50%)' }}>
-      <div ref={attachCard} className={`${styles.card} ${placement.maxHeight < PREVIEW_MIN_HEIGHT ? styles.compact : ''}`} role="dialog" data-nc-preview-owner={`${id}-owner`}
-      aria-label={`Preview: ${title}`} id={id} inert aria-hidden="true"
+      <div ref={attachActual} className={styles.actual} style={{ height: Math.min(actualHeight, placement.maxHeight), clipPath: 'inset(50%)' }}
       onPointerEnter={() => { if (intent.current === 'open') enter(); }} onPointerLeave={event => {
         // The portal is a logical child of the trigger span. Returning to that
         // ancestor does not deliver another trigger enter to cancel a leave.
         if (admitted() && !(event.relatedTarget instanceof Node && anchor.current?.contains(event.relatedTarget))) leave();
-      }}
+      }}>
+      <CardFrame ref={attachCard} className={styles.card} role="dialog" data-nc-preview-owner={`${id}-owner`}
+      aria-label={`Preview: ${title}`} id={id} inert aria-hidden="true"
       onFocus={() => { if (intent.current === 'open') enter(); }} onBlur={(event) => {
         if (!admitted()) return;
         if (event.relatedTarget instanceof Node && card.current?.contains(event.relatedTarget)) return;
@@ -493,7 +494,7 @@ export function HoverPreview({ title, trigger, children, getReadingSurface, getA
       <div ref={body} className={styles.body} tabIndex={-1} role="region" aria-label={`Preview content: ${title}`}>
         <div ref={intrinsic} className={styles.intrinsic}>{typeof children === 'function' ? children(dismissForNavigation) : children}</div>
       </div>
-    </div></div></div>}</LayerDepthProvider>, { positioning: 'custom',
+    </CardFrame></div></div>}</LayerDepthProvider>, { positioning: 'custom',
       // Layer owns native presentation and safe hosting; the slot/actual/card
       // retain viewport placement, measurement and physical paint ownership.
       style: { position: 'fixed', inset: 0, width: 0, height: 0, margin: 0, padding: 0,

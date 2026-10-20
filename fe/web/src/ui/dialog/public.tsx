@@ -2,6 +2,7 @@ import { LayerDepthProvider, useLayerDismissal } from '@astryxdesign/core/Layer'
 import { readSurfaceFrame, type LiftOrigin } from '../motion/geometry.ts';
 import { useSurfacePresence } from '../motion/surface-presence.ts';
 import styles from './dialog.module.css';
+import { CardFrame } from '../card-frame/public.tsx';
 import { createContext, useCallback, useContext, useEffect, useId, useMemo, useRef, type KeyboardEventHandler, type ReactNode, type RefObject } from 'react';
 import { createPortal } from 'react-dom';
 import { Icon } from '../icon/public.tsx';
@@ -202,8 +203,7 @@ export function Dialog({ origin, open, onClose, title, hideTitleRow, hideClose, 
     onMouseDown={(event) => { if (!showingView && event.target === event.currentTarget) onClose(); }}>
     <div ref={frameRef} className={`${styles.frame} ${showingView || wide ? styles.wide : ''}`}
       style={{ maxBlockSize: `calc(${viewport.height}px - var(--space-6))` }}>
-    {/* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- the dialog panel owns its required focus trap and click-through guard. */}
-    <div ref={panelRef} className={`${styles.panel} ${showingView || wide ? 'dialog-panel dialog-panel-wide' : 'dialog-panel'}`} data-nc-escape-layer=""
+    <CardFrame ref={panelRef} className={`${styles.panel} ${showingView || wide ? 'dialog-panel dialog-panel-wide' : 'dialog-panel'}`} data-nc-escape-layer=""
       style={{ maxBlockSize: `calc(${viewport.height}px - var(--space-6))` }}
       role="dialog" aria-modal="true" aria-label={typeof headerTitle === 'string' ? headerTitle : undefined}
       aria-labelledby={headerTitle && typeof headerTitle !== 'string' ? titleId : undefined}
@@ -216,7 +216,7 @@ export function Dialog({ origin, open, onClose, title, hideTitleRow, hideClose, 
       {showingView && (
         <div className="dialog-body dialog-child-view" data-nc-dialog-child-view="">{view.body}</div>
       )}
-    </div>
+    </CardFrame>
     </div>
   </div></DialogViewContext.Provider></LayerDepthProvider>, document.body);
 }

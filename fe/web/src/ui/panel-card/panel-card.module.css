@@ -1,29 +1,10 @@
 @layer ui {
-  /*
-   * One card per page. `--surface-card` + `--radius-md`, and nothing else —
-   * see the note in public.tsx for why a panel-column card may draw a container
-   * at all, the note below for why that container is a surface step and not an
-   * outline, and §6.5 for why it may not carry a shadow.
-   *
-   * `overflow: hidden` so the first module's head and the last module's body
-   * are clipped by the radius instead of squaring off its corners; without it
-   * the head's own background paints over the top two.
-   */
+  /* CardFrame owns the shared shape, material and clipping. Context panels
+     request its flat mode; this owner adds only module layout. */
   .card {
     display: flex;
     flex-direction: column;
     min-inline-size: 0;
-
-    /* Colour and radius, no outline. Same reasoning as the rail: one boundary,
-       one channel. `--surface-card` sits 3.4 L from the ground in light and 6.9
-       in dark, both over §6.5's 3.0 threshold for a surface step to stand
-       alone. Light's 3.4 is the thinnest rung in the system — compress that
-       ladder any further and this rule stops holding and the card needs a
-       hairline; the ladder assertion in contrast-matrix.browser.test.ts fails
-       first. (The 3.8 this comment used to quote matched no shipped pair.) */
-    border-radius: var(--radius-md);
-    background: var(--surface-card);
-    overflow: hidden;
   }
 
   .fill { block-size: 100%; max-block-size: 100%; min-block-size: 0; }

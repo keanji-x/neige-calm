@@ -601,7 +601,8 @@ it('observes fractional intrinsic growth after clamp and shrink without moving i
   flow.style.height = '61.25px';
   await expect.poll(() => actual.getBoundingClientRect().height).toBeLessThan(frame.height);
   const header = card.children[0].getBoundingClientRect().height;
-  expect(actual.getBoundingClientRect().height).toBe(header + intrinsic.getBoundingClientRect().height + 2);
+  // The shared frame has no outer border; fractional content is not rounded.
+  expect(actual.getBoundingClientRect().height).toBe(header + intrinsic.getBoundingClientRect().height);
   expect(slot.getBoundingClientRect()).toEqual(reservation);
   const image = document.createElement('img');
   const loaded = new Promise<void>(resolve => { image.onload = () => resolve(); });

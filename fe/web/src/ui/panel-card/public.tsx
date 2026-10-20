@@ -3,11 +3,12 @@ import type { ReactElement, ReactNode } from 'react';
 
 import { Icon, type IconName } from '../icon/public.tsx';
 import styles from './panel-card.module.css';
+import { CardFrame } from '../card-frame/public.tsx';
 
 /* Each projection marker channel is its own opt-in prop: a rest-prop spread reaches only the outermost element, and unconditional marking would put module markers in trees whose view model has none. The attribute names are literals because `ui/**` may not import `core/view/panel.ts`. */
 
 export function PanelCard({ children, fill = false, className }: { children: ReactNode; fill?: boolean; className?: string }) {
-  return <div className={[styles.card, fill ? styles.fill : '', className].filter(Boolean).join(' ')}>{children}</div>;
+  return <CardFrame elevation="flat" className={[styles.card, fill ? styles.fill : '', className].filter(Boolean).join(' ')}>{children}</CardFrame>;
 }
 
 export function PanelModule({ title, icon, action, children, bare = false, revealActions = false, grow = false, className, moduleMarker, titleFieldMarker }: {

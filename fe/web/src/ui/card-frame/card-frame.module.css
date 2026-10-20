@@ -7,4 +7,5 @@
     /* Persistent cards share the current conversation material in both themes. */
     box-shadow: 0 2px 12px color-mix(in oklab, var(--overlay-scrim) 35%, transparent);
   }
+  .flat { box-shadow: none; }
 }

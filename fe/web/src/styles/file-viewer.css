@@ -3,23 +3,19 @@
  *
  * `@layer ui` and not `features`: this is a system's component, composed by a
  * card rather than by a route, so it must sort below anything a feature says
- * about the same box. The card's *chrome* — `.term`, `.card-head` and the
- * grid cell around them — stays where every other card's chrome is
- * (`styles/track-grid.css`), because that is what makes a file card the same
- * object on the board as a terminal.
+ * about the same box. CardFrame owns outer paint and rounded clipping for
+ * File and Terminal alike; styles/track-grid.css owns board/head layout.
  *
  * CodeMirror paints itself: its `.cm-*` rules are injected at runtime and are
  * not ours to layer. What is here is the frame around it.
  */
 @layer ui {
-  /* The card's own box, inside the shared `.term` chrome: the head is the grid
-     cell's drag handle and the viewer takes the rest, which only works if the
-     card is a column that lets its body shrink. */
+  /* The CardFrame root adds file layout: the head is the grid cell's drag
+     handle and the viewer takes the rest in a column that can shrink. */
   .fv-card {
     display: flex;
     flex-direction: column;
     min-block-size: 0;
-    overflow: hidden;
   }
 
   .fv-body {

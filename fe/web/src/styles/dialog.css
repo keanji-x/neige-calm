@@ -1,6 +1,6 @@
 /*
  * The frozen dialog primitive hard-codes its class names (ui/dialog/public.tsx),
- * so this is the only place their visual planner can live — and the only non-module
+ * so this owns their layout; CardFrame owns panel paint. It is the only non-module
  * CSS file in the `ui` layer (§2.7). Every class here is registered in
  * global-classes.yaml; the manifest is a closed list, so a tenth dialog class is
  * a planner change, not an implementation detail.
@@ -23,10 +23,6 @@
     inline-size: min(var(--measure-form), calc(100vw - var(--space-6)));
     max-block-size: calc(100dvh - var(--space-6));
     padding: var(--space-4);
-    border: 1px solid var(--hairline);
-    border-radius: var(--radius-lg);
-    background: var(--paper);
-    box-shadow: var(--shadow-float);
 
     /* Shared Motion owns panel entry; dismissal and focus remain synchronous. */
     transition: none;
