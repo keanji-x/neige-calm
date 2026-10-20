@@ -28,12 +28,10 @@ use crate::git_candidate::delivery::{
 };
 use crate::model::{Task, TaskKind};
 use crate::operation::forge_action_adapter::forge_base_env;
-use crate::operation::gate_process::{kill, wait_marked_group_stopped};
 use crate::operation::workspace_lease::facts::latest_workspace_lease_for_card_tx;
 use crate::operation::workspace_lease::{DeliveryPolicy, WorkspaceLease};
-use crate::operation::{OperationOutcome, SpawnArtifacts, Tx, TxOutput};
+use crate::operation::{OperationOutcome, Tx, TxOutput};
 use crate::plugin_host::child_process::{BoundedRunError, run_bounded};
-use crate::proc_identity::{group_members_with_env_marker, read_boot_id, sigkill_verified_members};
 
 /// `status_detail` of a verdict whose target check failed (the fourth value; isolated never
 /// produces it).
@@ -673,45 +671,12 @@ pub(super) async fn prepare_target(
     })
 }
 
-/// Stop the recorded gate group before the after-sample, on every completion path. `op_marker`
-/// (`gate_attempt_key(task_id, attempt)`) is the `NEIGE_GATE_OP` value the wrapper and every
-/// descendant carry; the sweep and the wait touch ONLY members that carry it. On the `!alive`
-/// recovery paths the wrapper's leader is dead, so its numeric pgid can be recycled by an unrelated
-/// process in the same OS boot (a dead pgid does not refuse a group-wide signal); a numeric-pgid
-/// sweep would SIGKILL that foreign group and wait it empty. Authenticating by the inherited environ
-/// marker instead means a foreign process is neither signalled nor waited for — it does not exist
-/// for this gate. The `kill` group signal stays authenticated by the (live) leader's own identity;
-/// a marker-carrying descendant that outlives the wrapper is what the sweep reaches. A live member
-/// whose environ cannot be read (`PR_SET_DUMPABLE=0` → EACCES) is cleanup-uncertain,
-/// NOT proven-foreign: the sweep never kills it (only proven members are killed) and the wait never
-/// counts the group stopped, so `stop_group` returns `Err` → `gate-infra`. An environ that reads
-/// empty (a descendant inside execve) is unreadable in the same sense. Only a member whose environ
-/// is readable, non-empty AND lacks the marker is proven foreign and skipped. `Err` = a marked or
-/// unreadable descendant is still alive after the wait: the caller must not sample, see [`finalize`].
-#[allow(dead_code, reason = "Native gate machinery is retained until C2b.3")]
-pub(crate) async fn stop_group(artifacts: &SpawnArtifacts, op_marker: &str) -> Result<()> {
-    kill(artifacts);
-    if read_boot_id().as_deref() == Some(artifacts.boot_id.as_str()) {
-        let members = group_members_with_env_marker(artifacts.pgid, "NEIGE_GATE_OP", op_marker);
-        let sweep = sigkill_verified_members(&members);
-        if !sweep.killed.is_empty() {
-            tracing::warn!(
-                pgid = artifacts.pgid,
-                killed = ?sweep.killed,
-                "gate group: descendants outlived the wrapper; swept before the after-sample"
-            );
-        }
-    }
-    wait_marked_group_stopped(artifacts, op_marker).await
-}
-
 /// The one exit of the three completion paths (live observer, boot reattach, dead process with
 /// an exit file): an `Unbound` freeze passes the verdict through (P7); a `Candidate` freeze is
 /// sampled again — `reasons` empty keeps the verdict, non-empty discards every step result as
 /// `gate-target-mismatch`, a sampling failure is `gate-infra` with `Unsampled { Finalize }` (P6).
-/// `stopped` is the caller's [`stop_group`] outcome: a group that did not stop — including one held
-/// live by a marked-but-unreadable-environ descendant (cleanup-uncertain, never killed) — is not
-/// sampled (fail-closed: `gate-infra`, `Unsampled { Finalize }` naming the cleanup error).
+/// `stopped` is the caller's execution settlement outcome; an unresolved execution is not sampled
+/// (`gate-infra`, `Unsampled { Finalize }` naming the cleanup error).
 pub(crate) async fn finalize(
     verdict: GateVerdict,
     frozen: &FrozenVerify,
@@ -1039,8 +1004,6 @@ mod tests {
     use super::*;
     use crate::model::now_ms;
     use serde_json::json;
-    #[cfg(target_os = "linux")]
-    use std::process::Stdio;
 
     fn sample_of(head: &str, dirty: &[&str], holds: bool) -> Sampled {
         Sampled {
@@ -1455,193 +1418,5 @@ mod tests {
             );
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
-    }
-
-    /// The recovery `stop_group` sweep authenticates group members by the inherited `NEIGE_GATE_OP`
-    /// marker, not the numeric pgid: a foreign process that recycled the dead wrapper's pgid is
-    /// neither killed nor waited for (the group counts as stopped), while a genuinely marked member
-    /// in the same pgid is killed. Mutating `stop_group` back to a numeric-pgid sweep
-    /// (`sigkill_verified_group_members(pgid)` + `wait_group_stopped`) kills the foreign process → red.
-    #[cfg(target_os = "linux")]
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn recovery_group_sweep_spares_a_foreign_pgid_member() {
-        use crate::proc_identity::read_proc_start_time;
-        use std::os::unix::process::CommandExt as _;
-
-        let marker = format!("w:spare#g1-{}-{}", std::process::id(), now_ms());
-        let boot_id = read_boot_id().expect("boot id");
-
-        // A foreign process that owns the recycled pgid: its OWN group leader, WITHOUT the marker.
-        let mut foreign = std::process::Command::new("sleep")
-            .arg("300")
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .process_group(0)
-            .spawn()
-            .expect("spawn foreign leader");
-        let foreign_pid = foreign.id() as i32;
-        let foreign_start = read_proc_start_time(foreign_pid).expect("foreign start_time");
-
-        // The recorded artifacts: the wrapper leader is long dead (a pid that does not resolve), so
-        // `kill` sends no group signal; the pgid is the one the foreign process now leads.
-        let dead_leader = SpawnArtifacts {
-            pid: 2_000_000_000,
-            pgid: foreign_pid,
-            start_time: foreign_start,
-            boot_id: boot_id.clone(),
-            log_path: None,
-            extra: serde_json::json!({}),
-        };
-        stop_group(&dead_leader, &marker)
-            .await
-            .expect("a foreign-owned pgid counts as stopped");
-        // Spared means still a LIVE process, not a killed-but-unreaped zombie: this test owns the
-        // foreign child, so a SIGKILL would leave it as a `Z` with its start_time intact, which
-        // `read_proc_start_time` cannot tell from alive. The state is what distinguishes them.
-        let foreign_state = std::fs::read_to_string(format!("/proc/{foreign_pid}/stat"))
-            .ok()
-            .and_then(|stat| crate::proc_identity::parse_proc_stat_fields(&stat))
-            .map(|f| f.state);
-        assert!(
-            matches!(foreign_state, Some('S') | Some('R') | Some('D')),
-            "the foreign process must be spared alive (it never carried this gate's marker), got state {foreign_state:?}"
-        );
-        assert_eq!(
-            read_proc_start_time(foreign_pid),
-            Some(foreign_start),
-            "the foreign process must still be present"
-        );
-
-        // A genuinely marked member in a pgid IS swept.
-        let mut marked = std::process::Command::new("sleep")
-            .arg("300")
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .env("NEIGE_GATE_OP", &marker)
-            .process_group(0)
-            .spawn()
-            .expect("spawn marked leader");
-        let marked_pid = marked.id() as i32;
-        let marked_start = read_proc_start_time(marked_pid).expect("marked start_time");
-        let marked_artifacts = SpawnArtifacts {
-            pid: 2_000_000_001,
-            pgid: marked_pid,
-            start_time: marked_start,
-            boot_id,
-            log_path: None,
-            extra: serde_json::json!({}),
-        };
-        stop_group(&marked_artifacts, &marker)
-            .await
-            .expect("the marked group stops");
-        let marked_dead = tokio::time::timeout(Duration::from_secs(5), async {
-            loop {
-                match read_proc_start_time(marked_pid) {
-                    Some(s) if s == marked_start => {}
-                    _ => break,
-                }
-                // A killed-but-unreaped child stays a zombie with its start_time; accept Z/X too.
-                if let Ok(stat) = std::fs::read_to_string(format!("/proc/{marked_pid}/stat"))
-                    && crate::proc_identity::parse_proc_stat_fields(&stat)
-                        .is_some_and(|f| f.state == 'Z' || f.state == 'X')
-                {
-                    break;
-                }
-                tokio::time::sleep(Duration::from_millis(20)).await;
-            }
-        })
-        .await
-        .is_ok();
-
-        // Cleanup regardless of assertions.
-        let _ = foreign.kill();
-        let _ = foreign.wait();
-        let _ = marked.kill();
-        let _ = marked.wait();
-        assert!(marked_dead, "the marked member must be swept");
-    }
-
-    /// A same-uid, LIVE descendant in the recorded pgid whose `/proc/<pid>/environ` is unreadable
-    /// (`PR_SET_DUMPABLE=0` → EACCES) is cleanup-uncertain, NOT proven-foreign: `proc_env_marker`
-    /// classifies it `Unreadable`, so `marked_group_stopped` fails closed (`Ok(false)` — the group
-    /// is held live and the caller reaches `gate-infra`), while the kill sweep never lists it
-    /// (`group_members_with_env_marker` excludes it — it is never SIGKILLed and stays alive).
-    /// Mutating `proc_env_marker` to fold `Unreadable` into `Foreign`, or `marked_group_stopped` to
-    /// block only on `Present`, makes the wait report the group stopped (`Ok(true)`) → red.
-    #[cfg(target_os = "linux")]
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn unreadable_member_blocks_group_stop_without_killing() {
-        use crate::operation::gate_process::marked_group_stopped;
-        use crate::proc_identity::{group_members_with_env_marker, read_proc_start_time};
-        use std::os::unix::process::CommandExt as _;
-
-        let marker = format!("w:hide#g1-{}-{}", std::process::id(), now_ms());
-        let boot_id = read_boot_id().expect("boot id");
-
-        // A same-uid, live descendant that carries the marker but hides its own environ: it makes
-        // itself non-dumpable (`PR_SET_DUMPABLE=0`, prctl option 4 value 0), so /proc/<pid>/environ
-        // becomes root-owned mode-0 and a same-uid reader gets EACCES. It leads its own new pgid
-        // (the recorded gate group). `python3` is available on this box (harness and reviewers use it).
-        let mut hidden = std::process::Command::new("python3")
-            .arg("-c")
-            .arg("import ctypes,time; ctypes.CDLL(None).prctl(4,0,0,0,0); time.sleep(30)")
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .env("NEIGE_GATE_OP", &marker)
-            .process_group(0)
-            .spawn()
-            .expect("spawn hidden-environ descendant");
-        let hidden_pid = hidden.id() as i32;
-
-        // Wait until prctl has run and the environ read genuinely fails with EACCES. Not "classified
-        // `Unreadable`": the empty read inside execve (#1805) is `Unreadable` too, before prctl.
-        let became_unreadable = tokio::time::timeout(Duration::from_secs(10), async {
-            loop {
-                let read = std::fs::read(format!("/proc/{hidden_pid}/environ"));
-                if read.err().and_then(|error| error.raw_os_error()) == Some(libc::EACCES) {
-                    break;
-                }
-                tokio::time::sleep(Duration::from_millis(20)).await;
-            }
-        })
-        .await
-        .is_ok();
-
-        // A dead fake leader (a pid that does not resolve): `kill` sends no group signal; the pgid
-        // is the one the hidden descendant now leads.
-        let artifacts = SpawnArtifacts {
-            pid: 2_000_000_002,
-            pgid: hidden_pid,
-            start_time: read_proc_start_time(hidden_pid).expect("hidden start_time"),
-            boot_id,
-            log_path: None,
-            extra: serde_json::json!({}),
-        };
-        let stopped = marked_group_stopped(&artifacts, &marker);
-        let member_pids: Vec<i32> =
-            group_members_with_env_marker(hidden_pid, "NEIGE_GATE_OP", &marker)
-                .into_iter()
-                .map(|m| m.pid)
-                .collect();
-
-        // Cleanup before asserting (the child otherwise sleeps 30 s).
-        let _ = hidden.kill();
-        let _ = hidden.wait();
-
-        assert!(
-            became_unreadable,
-            "the descendant's environ never became unreadable; prctl/setup did not take"
-        );
-        assert!(
-            matches!(stopped, Ok(false)),
-            "an unreadable live member must block the wait (cleanup-uncertain, fail closed), got {stopped:?}"
-        );
-        assert!(
-            !member_pids.contains(&hidden_pid),
-            "an unreadable member must NOT be listed for the kill sweep, got {member_pids:?}"
-        );
     }
 }

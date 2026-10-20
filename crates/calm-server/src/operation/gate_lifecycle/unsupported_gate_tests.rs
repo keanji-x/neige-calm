@@ -1,5 +1,6 @@
 //! macOS must refuse both gate adapters before creating even a held wrapper.
 use super::*;
+use serde_json::{Value, json};
 use std::sync::Arc;
 
 use crate::db::RouteRepo;
@@ -134,30 +135,6 @@ fn assert_pre_spawn_refusal<T>(result: Result<T>, dir: &Path, paths: &GatePaths)
     error.to_string()
 }
 
-#[tokio::test]
-async fn unsupported_gate_shared_entry_refuses_before_wrapper() {
-    let dir = private_dir();
-    let ctx = context().await;
-    let output_parent = dir.path().join("output-file");
-    std::fs::write(&output_parent, b"not a directory").unwrap();
-    assert!(dir.path().is_dir());
-    assert!(output_parent.is_file());
-    let paths = GatePaths::new(&output_parent, "direct");
-    assert_no_artifacts(dir.path(), &paths);
-    // With a valid cwd, the platform refusal must precede the script/log writes.
-    // If it is removed, the ordinary-file parent rejects the write before cmd.spawn.
-    let result = spawn_held_identified(
-        ctx.repo.as_ref(),
-        dir.path(),
-        &gate().steps,
-        &paths,
-        "direct",
-    )
-    .await;
-    assert_pre_spawn_refusal(result, dir.path(), &paths);
-    assert_eq!(std::fs::read(&output_parent).unwrap(), b"not a directory");
-}
-
 async fn verify_unbound(reason: Option<FrozenUnbound>) {
     let dir = private_dir();
     let (cwd, logs) = adapter_paths(dir.path());
@@ -183,8 +160,7 @@ async fn verify_unbound(reason: Option<FrozenUnbound>) {
     let op = operation(&output, "task-verify");
     let paths = GatePaths::new(&logs, "track:gate-g1");
     assert_no_artifacts(dir.path(), &paths);
-    // The real adapter reaches the platform refusal; without it, spawn_held's
-    // cwd.is_dir check rejects this still-existing file before writing or spawning.
+    // The real adapter reaches the platform refusal before execution admission.
     let result = adapter.spawn_side_effect(&output, &op, &ctx).await;
     let error = assert_pre_spawn_refusal(result, dir.path(), &paths);
     let plan = adapter
@@ -254,8 +230,7 @@ async fn unsupported_gate_task_gate_run_refuses_before_wrapper() {
     let op = operation(&output, "task-gate-run");
     let paths = GatePaths::new(&logs, "track:gate-r1");
     assert_no_artifacts(dir.path(), &paths);
-    // refs_digest's git spawn fails for this cwd and returns None; the adapter
-    // still reaches spawn_held_identified with the same safe preflight input.
+    // The adapter refuses this platform before execution admission.
     let result = adapter.spawn_side_effect(&output, &op, &ctx).await;
     let error = assert_pre_spawn_refusal(result, dir.path(), &paths);
     let result = finalize::terminal_result(

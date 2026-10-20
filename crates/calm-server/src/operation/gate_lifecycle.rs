@@ -1,7 +1,6 @@
-//! The gate lifecycle both gate kinds share (#2464): the declared gate, the files one held wrapper
-//! is written to and writes, its spawn with the identity triple read back, and the kills. The
-//! kernel gate (`task-verify`) and the worker-requested run (`task-gate-run`) each own their
-//! admission, release order and completion; nothing here decides a verdict.
+//! Shared gate declarations and wrapper file paths (#2464). The kernel gate (`task-verify`) and
+//! the worker-requested run (`task-gate-run`) own their admission, release order and completion;
+//! nothing here decides a verdict.
 
 #[cfg(all(test, target_os = "macos"))]
 mod unsupported_gate_tests;
@@ -10,12 +9,8 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
 
-use super::SpawnArtifacts;
-use super::gate_process::{GateEvidence, GateFiles, kill, spawn_held};
 use crate::error::{CalmError, Result};
-use crate::proc_identity::{read_boot_id, read_proc_start_time, signal_process_group};
 
 /// Mirror plan.rs; the adapters re-clamp defensively because the gate ran through `prepare_tx`
 /// freezing.
@@ -119,118 +114,5 @@ impl GatePaths {
             }
         }
         Ok(())
-    }
-
-    #[allow(dead_code, reason = "Native gate machinery is retained until C2b.3")]
-    fn files(&self) -> GateFiles<'_> {
-        GateFiles {
-            script: &self.script,
-            log: &self.log,
-            exit: &self.exit,
-            step: &self.step,
-        }
-    }
-}
-
-/// Spawn the held wrapper (`gate_process::spawn_held`) and read its identity triple back. The
-/// wrapper executes nothing until it is released; an identity that cannot be read kills its group.
-/// Platforms without gate descendant cleanup are rejected before creating a wrapper.
-#[allow(dead_code, reason = "Native gate machinery is retained until C2b.3")]
-pub(crate) async fn spawn_held_identified(
-    repo: &dyn crate::db::RouteRepo,
-    cwd: &Path,
-    steps: &[GateStep],
-    paths: &GatePaths,
-    op_marker: &str,
-) -> Result<(tokio::process::Child, SpawnArtifacts)> {
-    // Native leader identity is insufficient: stop_group also needs Linux /proc membership
-    // and environment-marker evidence to prove all descendants stopped before a verdict.
-    if !cfg!(target_os = "linux") {
-        return Err(CalmError::Internal(format!(
-            "gate-infra: gate execution unsupported on {}: descendant cleanup requires Linux /proc",
-            std::env::consts::OS
-        )));
-    }
-    let child = spawn_held(repo, cwd, steps, paths.files(), op_marker).await?;
-    let pid = child.id().map(|p| p as i32).ok_or_else(|| {
-        CalmError::Internal("gate wrapper exited before pid could be read".into())
-    })?;
-    let identity = read_proc_start_time(pid)
-        .ok_or_else(|| CalmError::Internal(format!("gate wrapper pid {pid}: starttime unreadable")))
-        .and_then(|start_time| {
-            read_boot_id()
-                .map(|boot_id| (start_time, boot_id))
-                .ok_or_else(|| CalmError::Internal("boot_id unreadable".into()))
-        });
-    let (start_time, boot_id) = match identity {
-        Ok(identity) => identity,
-        Err(error) => {
-            signal_process_group(pid, libc::SIGKILL);
-            return Err(error);
-        }
-    };
-    let artifacts = SpawnArtifacts {
-        pid,
-        pgid: pid,
-        start_time,
-        boot_id,
-        log_path: Some(paths.log.display().to_string()),
-        extra: json!({
-            "exit_path": paths.exit.display().to_string(),
-            "step_path": paths.step.display().to_string(),
-            "script_path": paths.script.display().to_string(),
-        }),
-    };
-    Ok((child, artifacts))
-}
-
-/// Kill the recorded gate group iff the identity triple still matches (verify-fail → skip; ESRCH
-/// swallowed).
-#[allow(dead_code, reason = "Native gate machinery is retained until C2b.3")]
-pub(crate) fn kill_recorded_group(pid: i64, start_time: i64, boot_id: &str, pgid: i64) {
-    let (Ok(pid), Ok(pgid)) = (i32::try_from(pid), i32::try_from(pgid)) else {
-        return;
-    };
-    let Ok(start_time) = u64::try_from(start_time) else {
-        return;
-    };
-    kill(&SpawnArtifacts {
-        pid,
-        pgid,
-        start_time,
-        boot_id: boot_id.to_string(),
-        log_path: None,
-        extra: Value::Null,
-    });
-}
-
-#[allow(dead_code, reason = "Native gate machinery is retained until C2b.3")]
-pub(crate) fn exit_path_from_artifacts(artifacts: &SpawnArtifacts) -> Option<PathBuf> {
-    artifacts
-        .extra
-        .get("exit_path")
-        .and_then(Value::as_str)
-        .map(PathBuf::from)
-}
-
-/// The evidence a recovery reads for recorded work: its log, its step file and the steps the
-/// wrapper ran.
-#[allow(dead_code, reason = "Native gate machinery is retained until C2b.3")]
-pub(crate) fn evidence_from_artifacts(
-    artifacts: &SpawnArtifacts,
-    steps: Vec<GateStep>,
-) -> GateEvidence {
-    GateEvidence {
-        log_path: artifacts
-            .log_path
-            .as_deref()
-            .map(PathBuf::from)
-            .unwrap_or_default(),
-        step_path: artifacts
-            .extra
-            .get("step_path")
-            .and_then(Value::as_str)
-            .map(PathBuf::from),
-        steps,
     }
 }
