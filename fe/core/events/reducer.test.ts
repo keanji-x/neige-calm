@@ -95,6 +95,7 @@ describe('event reducer behavior', () => {
     expect(result.state.cursor).toBe(7);
     expect(result.effects).toEqual([
       { type: 'persist-cursor', id: 7 },
+      { type: 'write-through', writes: [{ mode: 'area-deleted', areaId: 'c1' }] },
       { type: 'invalidate', keys: [['areas'], ['overlays', 'track'], ['track-report']] },
     ]);
   });
@@ -107,6 +108,7 @@ describe('event reducer behavior', () => {
       );
       expect(result.state.cursor).toBe(8);
       expect(result.effects).toEqual([
+        { type: 'write-through', writes: [{ mode: 'area-deleted', areaId: 'c1' }] },
         { type: 'invalidate', keys: [['areas'], ['overlays', 'track'], ['track-report']] },
       ]);
     }
@@ -115,6 +117,7 @@ describe('event reducer behavior', () => {
       readyFrame({ ev: 'area.deleted', data: { id: 'c1' }, _id: 0, eventVersion: 3 }),
     );
     expect(zeroFromColdStart.effects).toEqual([
+      { type: 'write-through', writes: [{ mode: 'area-deleted', areaId: 'c1' }] },
       { type: 'invalidate', keys: [['areas'], ['overlays', 'track'], ['track-report']] },
     ]);
   });

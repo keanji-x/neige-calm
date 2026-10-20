@@ -32,6 +32,13 @@ describe('invalidation plan behavior', () => {
     });
   });
 
+  it('carries confirmed Area deletion before dependent invalidations', () => {
+    expect(invalidationPlanFor({ ev: 'area.deleted', data: { id: 'c1' } })).toEqual({
+      invalidate: [['areas'], ['overlays', 'track'], ['track-report']], remove: [],
+      writeThrough: [{ mode: 'area-deleted', areaId: 'c1' }],
+    });
+  });
+
   it('write-through updates only an existing area before invalidating the list', () => {
     const value = event({ ev: 'area.updated', data: { id: 'c1', name: 'new' } });
     expect(invalidationPlanFor(value)).toEqual({

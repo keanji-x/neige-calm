@@ -4,15 +4,16 @@
 import { newestArea, toArea } from '../../../../core/domain/area.ts';
 import type { QueryKey } from '../../../../core/events/invalidation-plan.ts';
 import type { EventEffect } from '../../../../core/events/reducer.ts';
-import { queryKeys } from '../providers/queries.ts';
-import { cancelThenInvalidate, type QueryRefreshPort } from './query-refresh.ts';
+import { queryKeys } from '../providers/query-keys.ts';
+import { retireAreaQueries, type AreaQueryLifecyclePort } from '../providers/area-query-lifecycle.ts';
+import { cancelThenInvalidate } from './query-refresh.ts';
 
 /** The slice of `QueryClient` the adapter is allowed to use. */
-export interface QueryCachePort extends QueryRefreshPort {
+export interface QueryCachePort extends AreaQueryLifecyclePort {
+  invalidateQueries(filters?: { queryKey?: readonly unknown[] }): unknown;
   resetQueries(filters: { queryKey: readonly unknown[] }): unknown;
   removeQueries(filters: { queryKey: readonly unknown[] }): unknown;
   getQueryData<T>(queryKey: readonly unknown[]): T | undefined;
-  setQueryData<T>(queryKey: readonly unknown[], value: T): unknown;
   clear(): void;
 }
 
@@ -90,6 +91,10 @@ export function applyEventEffects(client: QueryCachePort, effects: readonly Even
     }
     if (effect.type === 'write-through') {
       for (const write of effect.writes) {
+        if (write.mode === 'area-deleted') {
+          retireAreaQueries(client, write.areaId);
+          continue;
+        }
         if (write.mode === 'reset-query') {
           const key = mapPlannedQueryKey(write.key);
           if (key !== null) void client.resetQueries({ queryKey: key });

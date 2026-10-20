@@ -6,7 +6,8 @@ export type EventOf<K extends EventKind> = Extract<WireEvent, { ev: K }>;
 export type QueryKey = readonly unknown[];
 
 export type CacheWrite = Readonly<{ key: QueryKey; mode: 'replace-existing-area'; value: Area }>
-  | Readonly<{ key: QueryKey; mode: 'reset-query' }>;
+  | Readonly<{ key: QueryKey; mode: 'reset-query' }>
+  | Readonly<{ mode: 'area-deleted'; areaId: string }>;
 export type InvalidationPlan = Readonly<{
   invalidate: readonly QueryKey[];
   remove: readonly QueryKey[];
@@ -139,7 +140,8 @@ function policies(): PolicyMap {
     [],
     [{ key: ['areas'], mode: 'replace-existing-area', value: event.data }],
   )),
-  'area.deleted': plan(() => result([['areas'], ['overlays', 'track'], ['track-report']])),
+  'area.deleted': plan((event) => result([['areas'], ['overlays', 'track'], ['track-report']], [],
+    [{ mode: 'area-deleted', areaId: event.data.id }])),
   /* The report key is deliberately broad: a root track's tree budget changes the admission
        diagnosis of its child tracks, but the event carries only the updated root id. */
   'track.updated': plan((event) => result([

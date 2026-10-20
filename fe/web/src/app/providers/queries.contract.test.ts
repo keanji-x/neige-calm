@@ -124,20 +124,20 @@ describe('writes never queue an offline submission, in either build', () => {
 describe('E2E-INV-SHELL-003 the system area never reaches the workspace surface', () => {
   it('filters a system area out of the list the shell renders', async () => {
     const { transport } = recordingTransport(() => ok([systemArea, userArea]));
-    const areas = await areaListQueryOptions(transport, unauthorized).queryFn();
+    const areas = await areaListQueryOptions(transport, unauthorized).queryFn({ signal: new AbortController().signal });
     expect(areas.map((area) => area.id)).toEqual(['c1']);
   });
 
   it('yields zero area rows for a fresh workspace that only has the system area', async () => {
     const { transport } = recordingTransport(() => ok([systemArea]));
-    expect(await areaListQueryOptions(transport, unauthorized).queryFn()).toEqual([]);
+    expect(await areaListQueryOptions(transport, unauthorized).queryFn({ signal: new AbortController().signal })).toEqual([]);
   });
 
   it('orders the surviving areas by sort so the rail is stable', async () => {
     const { transport } = recordingTransport(() => ok([
       { ...userArea, id: 'b', sort: 3 }, { ...userArea, id: 'a', sort: 1 },
     ]));
-    expect((await areaListQueryOptions(transport, unauthorized).queryFn()).map((area) => area.id)).toEqual(['a', 'b']);
+    expect((await areaListQueryOptions(transport, unauthorized).queryFn({ signal: new AbortController().signal })).map((area) => area.id)).toEqual(['a', 'b']);
   });
 });
 
@@ -163,7 +163,7 @@ describe('failure channel', () => {
   });
   it('rejects with ApiError carrying the normalized failure so Query can surface it', async () => {
     const { transport } = recordingTransport(() => ({ status: 500, statusText: 'Server Error', body: { code: 'boom', error: 'kaboom' } }));
-    await expect(areaListQueryOptions(transport, unauthorized).queryFn()).rejects.toBeInstanceOf(ApiError);
+    await expect(areaListQueryOptions(transport, unauthorized).queryFn({ signal: new AbortController().signal })).rejects.toBeInstanceOf(ApiError);
   });
 
   it('keeps neutral tracks readable while exporting an overlay failure', async () => {
@@ -185,15 +185,15 @@ describe('failure channel', () => {
 
   it('rejects when the payload does not match the schema instead of rendering junk', async () => {
     const { transport } = recordingTransport(() => ok([{ id: 'c1' }]));
-    await expect(areaListQueryOptions(transport, unauthorized).queryFn()).rejects.toBeInstanceOf(ApiError);
+    await expect(areaListQueryOptions(transport, unauthorized).queryFn({ signal: new AbortController().signal })).rejects.toBeInstanceOf(ApiError);
   });
 });
 
 describe('track list', () => {
   it('reads one area at a time so each area keeps its own cache entry', async () => {
     const { transport, paths } = recordingTransport(() => ok([]));
-    await tracksInAreaQueryOptions(transport, 'c1', unauthorized).queryFn();
-    await tracksInAreaQueryOptions(transport, 'c2', unauthorized).queryFn();
+    await tracksInAreaQueryOptions(transport, 'c1', unauthorized).queryFn({ signal: new AbortController().signal });
+    await tracksInAreaQueryOptions(transport, 'c2', unauthorized).queryFn({ signal: new AbortController().signal });
     expect(paths).toEqual(['/api/areas/c1/tracks', '/api/areas/c2/tracks']);
   });
 

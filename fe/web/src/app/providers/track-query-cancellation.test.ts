@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createUnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import {
-  plannerRunQueryOptions, trackBacklinksQueryOptions, trackConversationsQueryOptions,
+  areaListQueryOptions, tracksInAreaQueryOptions, plannerRunQueryOptions, trackBacklinksQueryOptions, trackConversationsQueryOptions,
   trackDetailQueryOptions, trackTaskVerdictsQueryOptions,
 } from './queries.ts';
 import { createFetchTransport } from './transport.ts';
@@ -11,7 +11,7 @@ import { createFetchTransport } from './transport.ts';
 afterEach(() => { vi.unstubAllGlobals(); });
 
 describe('track query HTTP cancellation', () => {
-  it.each(['detail', 'conversations', 'backlinks', 'tasks', 'planner'] as const)(
+  it.each(['areas', 'tracks', 'detail', 'conversations', 'backlinks', 'tasks', 'planner'] as const)(
     'aborts the obsolete %s HTTP request before starting its replacement', async (kind) => {
       const signals: AbortSignal[] = [];
       vi.stubGlobal('fetch', (_path: string, init: RequestInit) => {
@@ -24,7 +24,9 @@ describe('track query HTTP cancellation', () => {
       const transport = createFetchTransport();
       const unauthorized = createUnauthorizedChannel({ enqueue: (task) => task() });
       const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-      const options = kind === 'detail' ? trackDetailQueryOptions(transport, 't1', unauthorized)
+      const options = kind === 'areas' ? areaListQueryOptions(transport, unauthorized)
+        : kind === 'tracks' ? tracksInAreaQueryOptions(transport, 'a1', unauthorized)
+        : kind === 'detail' ? trackDetailQueryOptions(transport, 't1', unauthorized)
         : kind === 'conversations' ? trackConversationsQueryOptions(transport, 't1', unauthorized)
           : kind === 'backlinks' ? trackBacklinksQueryOptions(transport, 't1', unauthorized)
             : kind === 'tasks' ? trackTaskVerdictsQueryOptions(transport, 't1', unauthorized, null)
@@ -46,4 +48,22 @@ describe('track query HTTP cancellation', () => {
       }
     },
   );
+});
+
+// The workspace exposes an explicit Retry action; terminal authorization/missing reads never loop.
+describe('workspace list terminal HTTP failures', () => {
+  it.each([403, 404])('settles both list reads without retrying HTTP %s', async status => {
+    const fetch = vi.fn(() => Promise.resolve(new Response(JSON.stringify({ error: 'unavailable' }), { status })));
+    vi.stubGlobal('fetch', fetch);
+    const transport = createFetchTransport();
+    const unauthorized = createUnauthorizedChannel({ enqueue: task => task() });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: true } } });
+    try {
+      for (const options of [areaListQueryOptions(transport, unauthorized), tracksInAreaQueryOptions(transport, 'a1', unauthorized)]) {
+        await expect(client.fetchQuery<unknown>(options)).rejects.toThrow();
+        expect(client.getQueryState(options.queryKey)).toMatchObject({ status: 'error', fetchStatus: 'idle', fetchFailureCount: 1 });
+      }
+      expect(fetch).toHaveBeenCalledTimes(2);
+    } finally { client.clear(); }
+  });
 });

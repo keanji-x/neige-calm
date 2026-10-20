@@ -15,8 +15,10 @@ type Call = Readonly<{ op: 'reset' | 'invalidate' | 'remove' | 'set' | 'clear'; 
 
 function recordingClient(initialAreas?: readonly ReturnType<typeof import('../../../../core/domain/area.ts').toArea>[]) {
   const calls: Call[] = [];
+  const cache = new QueryClient().getQueryCache();
   let areas = initialAreas;
   const client: QueryCachePort = {
+    getQueryCache: () => cache,
     cancelQueries: () => Promise.resolve(),
     resetQueries: filters => { calls.push({ op: 'reset', queryKey: filters.queryKey }); },
     invalidateQueries: (filters?: { queryKey?: readonly unknown[] }) => {
