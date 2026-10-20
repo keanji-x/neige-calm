@@ -46,27 +46,22 @@ export function ContextGroup({ title, children, collapsible = false, open, onOpe
   secondaryAction?: ReactNode;
   actionVisibility?: 'intent' | 'always';
 }>) {
-  const hasControls = collapsible === 'controls' || action !== undefined || secondaryAction !== undefined;
-  const heading = <ListText as={collapsible && !hasControls ? 'span' : 'h2'} tone="secondary" emphasis="medium" className={styles.title}>
+  const heading = <ListText as="h2" tone="secondary" emphasis="medium" className={styles.title}>
     {title}{count === undefined ? null : ` · ${count}`}
   </ListText>;
   const actions = <span className={styles.actionRail}>
     {secondaryAction === undefined ? null : <span className={styles.action}>{secondaryAction}</span>}
     {action === undefined ? null : <span className={`${styles.action} ${actionVisibility === 'always' ? styles.alwaysAction : ''}`}>{action}</span>}
   </span>;
-  // Native summary is itself interactive and cannot contain independent action buttons.
-  if (collapsible && hasControls) return <ActionDisclosure title={title} heading={heading} actions={actions} open={open} onOpenChange={onOpenChange}>{children}</ActionDisclosure>;
-  return collapsible ? <details className={styles.group} aria-label={title} open={open} onToggle={event => onOpenChange?.(event.currentTarget.open)}>
-    <summary className={styles.head}>{heading}<span className={styles.endSlot}><Icon name="chevron-right" size="sm" /></span></summary>
-    {children}
-  </details> : <section className={styles.group} aria-label={title}>
+  if (collapsible) return <GroupDisclosure title={title} heading={heading} actions={actions} open={open} onOpenChange={onOpenChange}>{children}</GroupDisclosure>;
+  return <section className={styles.group} aria-label={title}>
     <div className={styles.head}>{heading}{actions}</div>
     {children}
   </section>;
 }
 
-/** Action-bearing groups use sibling controls and retain their body while folded. */
-function ActionDisclosure({ title, heading, actions, children, open, onOpenChange }: Readonly<{
+/** Collapsible groups use sibling controls and retain their body while folded. */
+function GroupDisclosure({ title, heading, actions, children, open, onOpenChange }: Readonly<{
   title: string;
   heading: ReactNode;
   actions: ReactNode;

@@ -179,7 +179,7 @@ it.each([false, true])('left-aligns type icons beside names with deletable=%s', 
   const onDeleteCard = vi.fn<NonNullable<DesktopPainterDeps['onDeleteCard']>>();
   const onOpenCard = vi.fn();
   render(<div style={{ inlineSize: 300 }}><PanelCard>{paintDesktopPanel(makeDesktopPainter({ onDeleteCard, onOpenCard }), view.desktop)}</PanelCard></div>);
-  for (const summary of document.querySelectorAll<HTMLElement>('[data-nc-module="work"] details:not([open]) > summary')) await userEvent.click(summary);
+  for (const summary of document.querySelectorAll<HTMLElement>('[data-nc-module="work"] button[aria-expanded="false"]')) await userEvent.click(summary);
   const cardRow = document.querySelector<HTMLElement>('[data-nc-row="tool:worker"]')!;
   const taskRow = document.querySelector<HTMLElement>('[data-nc-row="task:work"]')!;
   const cardKind = cardRow.querySelector<HTMLElement>('[data-nc-field="kind"]')!;
@@ -316,7 +316,7 @@ it('groups work and conversation entries in the real page without duplicating st
     cardsAction: <button type="button" onClick={newConversation}>New</button>,
   });
   const desktop = document.querySelector<HTMLElement>('[data-nc-desktop-panel]')!;
-  expect([...desktop.querySelectorAll('h2')].map(title => title.textContent)).toEqual(['Conversations', 'Progress', 'Workbench', 'Workbench']);
+  expect([...desktop.querySelectorAll('h2')].map(title => title.textContent)).toEqual(['Conversations', 'Progress', 'Progress', 'Workbench', 'Workbench']);
   const entries = desktop;
   const conversation = [...entries.querySelectorAll('button')].find(button => button.textContent === 'Planner conversation')!;
   await userEvent.click(conversation);

@@ -13,11 +13,11 @@ it('keeps execution folded and discloses current and completed tasks with their 
   const onOpenTask = vi.fn();
   const view = render(<TrackPage track={track()} tasks={[task('finished-a', 'done'), task('active-a', 'running'), task('finished-b', 'done')]}
     cards={[]} openableCards={new Set()} mobilePanelObscured={false} canReopenTrack={false} canCloseTrack={false} adminGrantedAt={null} onRenameTrack={vi.fn()} onReopenTrack={vi.fn()} onCloseTrack={vi.fn()} onDeleteTrack={vi.fn()} onTrackDeleted={vi.fn()} onOpenTask={onOpenTask} />);
-  const completed = view.container.querySelector<HTMLDetailsElement>('[data-nc-work-inventory] details')!;
-  expect(completed.open).toBe(false);
-  expect(completed.querySelector('summary')?.textContent).toBe('Progress');
-  fireEvent.click(completed.querySelector('summary')!);
-  expect(completed.open).toBe(true);
+  const completed = view.container.querySelector<HTMLElement>('[data-nc-work-inventory] section[aria-label="Progress"]')!;
+  expect(completed.querySelector('button[aria-expanded]')?.getAttribute('aria-expanded')).toBe('false');
+  expect(completed.querySelector('h2')?.textContent).toBe('Progress');
+  fireEvent.click(completed.querySelector('button[aria-expanded]')!);
+  expect(completed.querySelector('button[aria-expanded]')?.getAttribute('aria-expanded')).toBe('true');
   fireEvent.click(screen.getByRole('button', { name: 'finished-a' }));
   expect(onOpenTask).toHaveBeenCalledWith('finished-a');
 });
@@ -30,9 +30,9 @@ it('keeps failed executions folded while retaining explanations in the task desc
   ]} cards={[]} openableCards={new Set()} mobilePanelObscured={false}
     canReopenTrack={false} canCloseTrack={false} adminGrantedAt={null} onRenameTrack={vi.fn()}
     onReopenTrack={vi.fn()} onCloseTrack={vi.fn()} onDeleteTrack={vi.fn()} onTrackDeleted={vi.fn()} onOpenTask={onOpenTask} />);
-  const progress = view.container.querySelector<HTMLDetailsElement>('[data-nc-work-inventory] details')!;
-  expect(progress.open).toBe(false);
-  fireEvent.click(progress.querySelector('summary')!);
+  const progress = view.container.querySelector<HTMLElement>('[data-nc-work-inventory] section[aria-label="Progress"]')!;
+  expect(progress.querySelector('button[aria-expanded]')?.getAttribute('aria-expanded')).toBe('false');
+  fireEvent.click(progress.querySelector('button[aria-expanded]')!);
   expect(screen.getByRole('button', { name: 'verify-layout' }).getAttribute('aria-description')).toBe('failed — Gate exited with code 1');
   expect(screen.queryByText('Gate exited with code 1', { exact: true })).toBeNull();
   expect(screen.getByRole('button', { name: 'verify-layout' }).getAttribute('aria-description')).toContain('Gate exited with code 1');

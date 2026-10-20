@@ -74,11 +74,11 @@ it.each(['light', 'dark'])('uses the same named type hierarchy in both %s side p
   for (const node of primary) assertRole(node, '--type-content');
   const group = element(document.querySelector<HTMLElement>('[title="Work"]'));
   assertRole(group, '--type-content');
-  const inventoryGroup = element(document.querySelector<HTMLElement>('[data-nc-work-inventory] summary > span:first-child'));
+  const inventoryGroup = element(document.querySelector<HTMLElement>('[data-nc-work-inventory] h2'));
   assertRole(inventoryGroup, '--type-metadata');
   expect(typography(element(document.querySelector<HTMLElement>('[aria-label="Conversation Chat first"] > span > span')))).toEqual(typography(primary[0]));
   const workbenchTitle = element(document.querySelector<HTMLElement>('section[aria-label="Workbench"] h2'));
-  const progressTitle = element(document.querySelector<HTMLElement>('[data-nc-work-inventory] summary > span:first-child'));
+  const progressTitle = element(document.querySelector<HTMLElement>('[data-nc-work-inventory] h2'));
   expect(workbenchTitle.textContent).toBe('Workbench');
   expect(progressTitle.textContent).toBe('Progress');
   assertRole(workbenchTitle, '--type-metadata');
@@ -95,7 +95,7 @@ it('uses configured sidebar density and uses compact single-line contextual tool
     element(document.querySelector<HTMLElement>('[data-nc-module="cards"] [data-nc-row]')),
     element(document.querySelector<HTMLElement>('[data-nc-module="work"] [data-nc-row]')),
     element(document.querySelector<HTMLElement>('[aria-label="Conversation Chat first"]')),
-    element(document.querySelector<HTMLElement>('[data-nc-work-inventory] summary')),
+    element(document.querySelector<HTMLElement>('[data-nc-work-inventory] button[aria-expanded]')),
   ];
   for (const [index, row] of rows.entries()) expect(row.getBoundingClientRect().height).toBeCloseTo(index === 0 ? 32 : 28, 0);
   expect(area.getBoundingClientRect().height).toBeCloseTo(32, 0);

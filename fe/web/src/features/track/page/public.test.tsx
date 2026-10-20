@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, cleanup, render, screen, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -462,6 +462,7 @@ describe('TrackPage task inventory', () => {
 
   it('names only the states that are not the ordinary one', () => {
     renderPage({ tasks: [task('alpha', 'ready'), task('beta', 'not-ready'), task('gone', 'withdrawn')] });
+    fireEvent.click(screen.getByRole('button', { name: 'Progress' }));
     expect(screen.getByRole('button', { name: 'alpha' })).toBeTruthy();
     expect(screen.getByRole('button', { name: /beta.*Not ready/ })).toBeTruthy();
     expect(screen.getByRole('button', { name: /gone.*Withdrawn/ })).toBeTruthy();
@@ -470,6 +471,7 @@ describe('TrackPage task inventory', () => {
 
   it('names an unreadable task by its block id and says so', () => {
     renderPage({ tasks: [task('b_bf88', 'unreadable', 'b_bf88')] });
+    fireEvent.click(screen.getByRole('button', { name: 'Progress' }));
     const row = screen.getByRole('button', { name: /b_bf88.*Unreadable/ });
     expect(row).toBeTruthy();
     expect(screen.queryByText('Not ready')).toBeNull();
@@ -478,6 +480,7 @@ describe('TrackPage task inventory', () => {
   it('opens a task by its block id, not by its key', async () => {
     const onOpenTask = vi.fn();
     renderPage({ tasks: [task('alpha', 'ready', 'b-17')], onOpenTask });
+    fireEvent.click(screen.getByRole('button', { name: 'Progress' }));
     await userEvent.click(screen.getByRole('button', { name: 'alpha' }));
     expect(onOpenTask).toHaveBeenCalledWith('b-17');
   });
@@ -491,6 +494,7 @@ describe('TrackPage task inventory', () => {
         running('delta', 'failed', 'card-4'),
       ],
     });
+    fireEvent.click(screen.getByRole('button', { name: 'Progress' }));
     expect(screen.getByRole('button', { name: 'alpha' }).getAttribute('aria-description')).toBe('running');
     expect(screen.getByRole('button', { name: 'beta' }).getAttribute('aria-description')).toBe('pending');
     expect(screen.getByRole('button', { name: 'delta' }).getAttribute('aria-description')).toBe('failed');
@@ -520,7 +524,7 @@ describe('TrackPage task inventory', () => {
 
   it('includes canceled tasks in the compact status totals', () => {
     renderPage({ tasks: [running('stopped', 'canceled', null)] });
-    expect(screen.getByText('Progress', { selector: 'summary > span' }).closest('details')?.open).toBe(false);
+    expect(screen.getByRole('button', { name: 'Progress' }).getAttribute('aria-expanded')).toBe('false');
     expect(document.querySelector('[data-nc-row="task:b-stopped"] [data-nc-status]')?.textContent).toBe('canceled');
   });
 
@@ -533,6 +537,7 @@ describe('TrackPage task inventory', () => {
         running('delta', 'failed', 'card-4', 'codex', 'track 9a4c is not a git repository'),
       ],
     });
+    fireEvent.click(screen.getByRole('button', { name: 'Progress' }));
     const status = container.querySelector('[data-nc-row="task:b-delta"] [data-nc-task-status-text]');
     expect(status?.textContent).toBe('failed');
     expect(status?.getAttribute('title')).toBe('failed — track 9a4c is not a git repository');
@@ -567,6 +572,7 @@ describe('TrackPage task inventory', () => {
     const onOpenCard = vi.fn();
     const onOpenTask = vi.fn();
     renderPage({ tasks: [running('alpha', 'running', 'card-9', 'terminal')], onOpenCard, onOpenTask });
+    fireEvent.click(screen.getByRole('button', { name: 'Progress' }));
     await userEvent.click(screen.getByRole('button', { name: 'Actions for alpha' }));
     await userEvent.click(await screen.findByRole('menuitem', { name: 'View execution' }));
     expect(onOpenCard).toHaveBeenCalledWith('card-9');
@@ -577,6 +583,7 @@ describe('TrackPage task inventory', () => {
     const onOpenCard = vi.fn();
     const onOpenTask = vi.fn();
     renderPage({ tasks: [running('alpha', 'running', 'card-9', 'terminal')], onOpenCard, onOpenTask });
+    fireEvent.click(screen.getByRole('button', { name: 'Progress' }));
     await userEvent.click(screen.getByRole('button', { name: 'alpha' }));
     expect(onOpenTask).toHaveBeenCalledWith('b-alpha');
     expect(onOpenCard).not.toHaveBeenCalled();
@@ -586,6 +593,7 @@ describe('TrackPage task inventory', () => {
     const onOpenCard = vi.fn();
     const onOpenTask = vi.fn();
     renderPage({ tasks: [running('beta', 'running', null, 'codex')], onOpenCard, onOpenTask });
+    fireEvent.click(screen.getByRole('button', { name: 'Progress' }));
     expect(screen.queryByRole('button', { name: 'codex' })).toBeNull();
     const kind = screen.getByText('codex');
     expect(kind.tagName).toBe('SPAN');
@@ -595,6 +603,7 @@ describe('TrackPage task inventory', () => {
 
   it('offers no kind and no card control on a withdrawn row', () => {
     renderPage({ tasks: [task('gone', 'withdrawn')] });
+    fireEvent.click(screen.getByRole('button', { name: 'Progress' }));
     expect(screen.queryByText('codex')).toBeNull();
     expect(screen.queryByText('terminal')).toBeNull();
     expect(screen.getAllByRole('button', { name: /gone/ }).length).toBe(1);

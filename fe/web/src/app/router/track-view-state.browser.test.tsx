@@ -131,7 +131,7 @@ it('resumes independent report and grid positions through real sidebar navigatio
 it('keeps recent files as typed entries within Related', async () => {
   await page.viewport(1280, 900);
   renderPage({ recentFiles: <RecentFiles inline paths={['README.md']} onOpen={() => undefined} /> });
-  await page.getByText('Related', { exact: true }).click();
+  await page.getByRole('button', { name: 'Related', exact: true }).click();
   const entry = page.getByRole('button', { name: 'Open README.md', exact: true });
   await expect.element(entry).toBeVisible();
   expect(entry.element().textContent).toContain('Recent');
@@ -259,27 +259,27 @@ it('does not replay a served report hash when a same-Track panel destination cha
 it('remembers Progress expansion and collapse independently through sidebar navigation', async () => {
   await page.viewport(1440, 900);
   setup(prepareReportDocument, '/track/a', true);
-  const progress = () => document.querySelector<HTMLDetailsElement>('[data-nc-work-inventory] details')!;
-  const toggle = () => page.getByRole('group', { name: 'Progress', exact: true }).getByText('Progress', { exact: true });
+  const progress = () => document.querySelector<HTMLElement>('[data-nc-work-inventory] section[aria-label="Progress"]')!;
+  const toggle = () => page.getByRole('button', { name: 'Progress', exact: true });
   await expect.element(toggle()).toBeVisible();
-  expect(progress().open).toBe(false);
+  expect(progress().querySelector('button[aria-expanded]')?.getAttribute('aria-expanded')).toBe('false');
   await toggle().click();
-  expect(progress().open).toBe(true);
+  expect(progress().querySelector('button[aria-expanded]')?.getAttribute('aria-expanded')).toBe('true');
   await page.getByRole('button', { name: /^Track Track b\b/ }).click();
   await expect.element(toggle()).toBeVisible();
-  expect(progress().open).toBe(false);
+  expect(progress().querySelector('button[aria-expanded]')?.getAttribute('aria-expanded')).toBe('false');
   await page.getByRole('button', { name: /^Track Track a\b/ }).click();
   await expect.element(toggle()).toBeVisible();
-  expect(progress().open).toBe(true);
+  expect(progress().querySelector('button[aria-expanded]')?.getAttribute('aria-expanded')).toBe('true');
   await toggle().click();
-  expect(progress().open).toBe(false);
+  expect(progress().querySelector('button[aria-expanded]')?.getAttribute('aria-expanded')).toBe('false');
   await page.getByRole('button', { name: /^Track Track b\b/ }).click();
   await expect.element(toggle()).toBeVisible();
   await toggle().click();
   await page.getByRole('button', { name: /^Track Track a\b/ }).click();
   await expect.element(toggle()).toBeVisible();
-  expect(progress().open).toBe(false);
+  expect(progress().querySelector('button[aria-expanded]')?.getAttribute('aria-expanded')).toBe('false');
   await page.getByRole('button', { name: /^Track Track b\b/ }).click();
   await expect.element(toggle()).toBeVisible();
-  expect(progress().open).toBe(true);
+  expect(progress().querySelector('button[aria-expanded]')?.getAttribute('aria-expanded')).toBe('true');
 });

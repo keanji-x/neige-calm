@@ -1,4 +1,4 @@
-import { cleanup, render } from '@testing-library/react';
+import { cleanup, fireEvent, render } from '@testing-library/react';
 import { page as browserPage, userEvent } from 'vitest/browser';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -51,7 +51,7 @@ function renderTasks(
     </div>,
   );
   // These cases inspect row hit targets after the reader discloses their group.
-  for (const summary of document.querySelectorAll<HTMLElement>('[data-nc-work-inventory] details:not([open]) > summary')) summary.click();
+  for (const summary of document.querySelectorAll<HTMLElement>('[data-nc-work-inventory] button[aria-expanded="false"]')) fireEvent.click(summary);
   return document.querySelector<HTMLElement>('[data-nc-work-inventory] li')!;
 }
 

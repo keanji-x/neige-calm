@@ -49,7 +49,7 @@ it('keeps Referenced by readable without a decorative heading icon and retains i
   const heading = browserPage.getByText('Related', { exact: true });
   await expect.element(heading).toBeVisible();
   expect(heading.element().querySelector('svg')).toBeNull();
-  await heading.click();
+  await browserPage.getByRole('button', { name: 'Related', exact: true }).click();
   const link = browserPage.getByRole('link', { name: 'Source report', exact: true });
   await expect.element(link).toBeVisible();
   expect(link.element().getAttribute('href')).toBe('#source');
@@ -451,9 +451,9 @@ describe('the report-to-Planner entry', () => {
     const reason = 'Validation failed because the expected report snapshot is missing. '.repeat(4);
     renderPage({ tasks: [{ blockId: 'verify', key: 'verify', state: 'ready', declaration: null,
       status: 'failed', statusDetail: reason, kind: 'codex', workerCardId: null, pendingReason: null }] });
-    const group = document.querySelector<HTMLDetailsElement>('[data-nc-work-inventory] details')!;
-    expect(group.open).toBe(false);
-    await userEvent.click(group.querySelector('summary')!);
+    const group = document.querySelector<HTMLElement>('[data-nc-work-inventory] section[aria-label="Progress"]')!;
+    expect(group.querySelector('button[aria-expanded]')?.getAttribute('aria-expanded')).toBe('false');
+    await userEvent.click(group.querySelector('button[aria-expanded]')!);
     const reveal = group.querySelector<HTMLElement>('[data-nc-row-action="reveal-block"]')!;
     expect(reveal.getAttribute('aria-description')).toContain('Validation failed');
     const metadata = group.querySelector<HTMLElement>('[data-nc-inventory-metadata]')!;

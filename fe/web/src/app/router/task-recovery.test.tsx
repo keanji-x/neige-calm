@@ -128,7 +128,7 @@ it('refreshes collapsed current execution through task events without reopening 
   await act(() => { advance('running'); return Promise.resolve(); });
   await waitFor(() => expect(disclosure.querySelector('summary')!.textContent).toContain('Running'));
   expect(disclosure.open).toBe(false);
-  await userEvent.click(screen.getByText('Progress', { selector: 'summary > span' }));
+  await userEvent.click(screen.getByRole('button', { name: 'Progress' }));
   const progressTask = document.querySelector('[data-nc-module="work"] [data-nc-row="task:b-task"]')!;
   expect(progressTask.textContent).toContain('Running');
   await userEvent.click(screen.getByTitle('Open the worker card for b'));
