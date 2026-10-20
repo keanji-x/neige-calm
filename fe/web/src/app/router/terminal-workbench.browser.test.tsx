@@ -1,9 +1,9 @@
+import '../../styles/entry.css';
 import { act, cleanup, fireEvent, screen, waitFor } from '@testing-library/react';
 import { commands, page, userEvent } from 'vitest/browser';
 import { afterEach, beforeAll, expect, it, vi } from 'vitest';
 import { openTerminalCommand, setupWorkbench, terminalCard } from './terminal-workbench-fixture.tsx';
 import { workbenchSockets } from './terminal-workbench-socket-fixture.ts';
-import '../../styles/entry.css';
 
 beforeAll(async () => { await import('../../systems/terminal/xterm-view.tsx'); });
 afterEach(async () => { cleanup(); document.getElementById('root')?.remove(); vi.unstubAllGlobals(); delete document.documentElement.dataset.theme; await commands.emulateReducedMotion(false); });
@@ -385,3 +385,41 @@ it('retains the real temporary terminal through Workbench add and remove', async
   expect(sockets).toHaveLength(1);
   expect(sockets[0].readyState).toBe(1);
 });
+
+for (const theme of ['light', 'dark'] as const) {
+  it(`matches the /terminal outer frame to conversation chrome in ${theme} theme`, async () => {
+    await page.viewport(1512, 950);
+    setupWorkbench({ cards: [terminalCard('shell', { source: 'manual', in_workbench: true })] });
+    await page.getByRole('button', { name: 'Conversation Main discussion' }).click();
+    document.documentElement.dataset.theme = theme;
+    const main = page.getByRole('complementary', { name: 'Main discussion' });
+    const field = main.getByRole('combobox', { name: 'Message' });
+    await field.fill('/side'); await field.click(); await userEvent.keyboard('{Enter}');
+    const side = page.getByRole('region', { name: 'Side conversation · Codex' });
+    await expect.element(side).toBeVisible();
+    await field.fill('/terminal'); await field.click(); await userEvent.keyboard('{Enter}');
+    const outer = screen.getByRole('region', { name: 'Track workbench' });
+    await waitFor(() => expect(outer.querySelector('[data-nc-terminal-card]')).not.toBeNull());
+    const terminal = outer.querySelector('[data-nc-terminal-card]')!;
+    const expected = getComputedStyle(main.element());
+    const actual = getComputedStyle(outer);
+    expect(expected.boxShadow).not.toBe('none');
+    expect(actual.borderRadius).toBe(expected.borderRadius);
+    expect(actual.boxShadow).toBe(expected.boxShadow);
+    expect(actual.overflow).toBe('hidden');
+    await page.screenshot({ path: `../../../../test-results/terminal-command-frame-${theme}.png` });
+
+    await page.getByRole('button', { name: 'Discussion', exact: true }).click();
+    expect(screen.getByRole('region', { name: 'Track workbench' })).toBe(outer);
+    expect(getComputedStyle(outer).boxShadow).toBe('none');
+    expect(getComputedStyle(outer).overflow).toBe('visible');
+    expect(getComputedStyle(side.element()).boxShadow).toBe(expected.boxShadow);
+    const seam = side.element().parentElement!.nextElementSibling!;
+    expect(seam.querySelector('[data-nc-drawer-seam]')).not.toBeNull();
+    expect(outer.querySelector('[data-nc-terminal-card]')).toBe(terminal);
+    await page.getByRole('button', { name: 'Terminal', exact: true }).click();
+    expect(outer.querySelector('[data-nc-terminal-card]')).toBe(terminal);
+    expect(getComputedStyle(outer).boxShadow).toBe(expected.boxShadow);
+    expect(getComputedStyle(outer).overflow).toBe('hidden');
+  });
+}
