@@ -67,6 +67,9 @@ Drawer and its seam use Motion's paired-only `edge-reveal` map and one shared
 native spring clock, with per-part rebase/identity. The camera displacement is
 computed only in Motion; Drawer declares the inline-end edge and independent
 unanimated frames. Text, inputs and the footer keep a unit paint scale.
+The closing card and seam have a transparent resting state beneath their native
+exit effects, so releasing those effects cannot flash opaque paint before the
+owner's removal commit. Reopening restores the open resting state immediately.
 
 Each paint sits in its own `data-nc-drawer-frame` layout wrapper. Width, insets and
 host header clearance belong to these wrappers, which never receive effects or

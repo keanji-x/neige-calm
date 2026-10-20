@@ -292,9 +292,15 @@
       var(--space-3);
   }
 
-  /* Card and seam share the UI-owned camera depth and spring. Closing only
-     changes hit testing here; no CSS travel may jump under a
-     reversing native effect. The conversation retains its live exit content. */
+  /* Card and seam share the UI-owned camera depth and spring. Native exit
+     effects override this resting state until completion. Keep both parts
+     transparent after cancellation, before React removes the retained DOM;
+     no CSS travel may jump under a reversing native effect. */
+  .drawerClosing,
+  .seamClosing {
+    opacity: 0;
+  }
+
   .drawerClosing {
 
     /* It is on its way out; it must not intercept a click meant for the page

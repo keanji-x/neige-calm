@@ -1,5 +1,5 @@
 import { cleanup, render, screen } from '@testing-library/react';
-import { afterEach, expect, it } from 'vitest';
+import { afterEach, expect, it, vi } from 'vitest';
 import { commands, page } from 'vitest/browser';
 import '../../styles/entry.css';
 import { Drawer, drawerSeamAround } from './public.tsx';
@@ -86,4 +86,33 @@ it('ignores an entrance completion queued before a new exit owns the panel', asy
   expect(departing.isConnected).toBe(true);
   expect(Number(getComputedStyle(departing).opacity)).toBeGreaterThan(0);
   await expect.poll(() => departing.isConnected).toBe(false);
+});
+
+
+it('keeps the departing card and seam transparent when their native effects are released', async () => {
+  await page.viewport(1280, 720);
+  const view = render(<Scene open={true} />);
+  const departing = panel();
+  const seam = drawerSeamAround(departing)!;
+  await Promise.all([departing, seam].flatMap(node => node.getAnimations().map(animation => animation.finished)));
+  view.rerender(<Scene open={false} />);
+  const samples: { node: Element; opacity: string }[] = [];
+  const cancel = Reflect.get(Animation.prototype, 'cancel');
+  const cancellation = vi.spyOn(Animation.prototype, 'cancel').mockImplementation(function (this: Animation) {
+    const target = (this.effect as KeyframeEffect | null)?.target;
+    const finished = this.playState === 'finished';
+    cancel.call(this);
+    if (finished && (target === departing || target === seam)) {
+      // Observe the actual native-effect/React-commit gap without delaying disposal.
+      samples.push({ node: target, opacity: getComputedStyle(target).opacity });
+    }
+  });
+  try {
+    for (const node of [departing, seam]) for (const animation of node.getAnimations()) animation.finish();
+    await expect.poll(() => samples.map(sample => sample.node)).toEqual([departing, seam]);
+    expect(samples.map(sample => sample.opacity)).toEqual(['0', '0']);
+    await expect.poll(() => departing.isConnected).toBe(false);
+  } finally {
+    cancellation.mockRestore();
+  }
 });
