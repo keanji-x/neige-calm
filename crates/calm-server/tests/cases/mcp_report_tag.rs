@@ -70,7 +70,7 @@ async fn side(sqlx: &SqlxRepo, cache: &CardRoleCache, area: &calm_server::ids::A
         payload,
     };
     let planner = sqlx
-        .card_create(card("codex", json!({ "role": "planner" })))
+        .card_create(card("codex", crate::support::planner::payload()))
         .await
         .unwrap();
     let worker = sqlx

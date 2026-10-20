@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
-use calm_server::db::sqlite::{SqlxRepo, session_insert_tx};
+use calm_server::db::sqlite::{SqlxRepo, session_insert_tx, session_start_runtime_tx};
 use calm_server::error::CalmError;
 use calm_server::event::{Event, EventBus, EventScope};
 use calm_server::ids::{ActorId, AreaId, CardId, TrackId};
@@ -200,7 +200,11 @@ async fn seed_card(
             title: None,
             kind: "codex".into(),
             sort: None,
-            payload: json!({}),
+            payload: if role == CardRole::Planner {
+                json!({"planner_provider":"codex"})
+            } else {
+                json!({})
+            },
         })
         .await
         .unwrap();
@@ -223,6 +227,41 @@ async fn seed_worker_session(
     card_id: Option<CardId>,
     contract: WorkerContract,
 ) -> WorkerSessionId {
+    if let Some(card_id) = card_id.as_ref().filter(|_| state.is_active_authority()) {
+        let kind = match contract {
+            WorkerContract::Planner => {
+                calm_server::session_projection_repo::WorkerSessionKind::SharedPlanner
+            }
+            WorkerContract::Executor => {
+                calm_server::session_projection_repo::WorkerSessionKind::CodexCard
+            }
+            _ => panic!("unexpected vector contract"),
+        };
+        let init = calm_server::session_projection_repo::WorkerSessionInit {
+            id: session_id.into(),
+            card_id: card_id.to_string(),
+            kind,
+            agent_provider: Some(calm_server::session_projection_repo::AgentProvider::Codex),
+            status: state,
+            terminal_run_id: None,
+            thread_id: None,
+            session_id: None,
+            active_turn_id: None,
+            handle_state_json: None,
+            spawn_op_id: None,
+            now_ms: 1,
+        };
+        calm_server::db::write_in_tx_typed(repo, move |tx| {
+            Box::pin(async move {
+                session_start_runtime_tx(tx, init).await?;
+                Ok(())
+            })
+        })
+        .await
+        .unwrap();
+        return WorkerSessionId::from(session_id);
+    }
+    // Deliberately invalid or inactive rows are denial vectors, not live carriers.
     let session = WorkerSession {
         id: WorkerSessionId::from(session_id),
         track_id: track.clone(),

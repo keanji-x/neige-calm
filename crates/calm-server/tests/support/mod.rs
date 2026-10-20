@@ -68,3 +68,6 @@ pub mod worker_preparation;
 pub mod execution;
 #[allow(dead_code)]
 pub mod source_scan;
+
+#[allow(dead_code)]
+pub use mcp::planner;

@@ -69,9 +69,9 @@ async fn boot() -> Boot {
         .card_create(NewCard {
             track_id: track.id.clone(),
             title: None,
-            kind: "planner".into(),
+            kind: "codex".into(),
             sort: None,
-            payload: serde_json::Value::Null,
+            payload: crate::support::planner::payload(),
         })
         .await
         .unwrap();
@@ -125,11 +125,10 @@ async fn boot() -> Boot {
         CardRole::ReportCard,
         track.id.clone(),
     );
-    seed_runtime_session(
-        &sqlx_repo,
+    crate::support::planner::start_session(
+        repo.as_ref(),
         planner_card.id.as_str(),
         "planner-session",
-        "planner-thread",
     )
     .await;
     sqlx::query("UPDATE tracks SET root_session_id = 'planner-session' WHERE id = ?1")

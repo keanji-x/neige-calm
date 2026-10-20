@@ -46,7 +46,7 @@
     "actor": { "kind": "AiCodexSession", "id": "$CARDLESS_SESSION" },
     "event": { "ev": "task.completed", "data": { "idempotency_key": "vec-s-58", "result": null, "artifacts": [], "agent_message": null } },
     "scope": { "kind": "System" },
-    "expected": { "decision": "deny", "error_contains": "has no bound card" }
+    "expected": { "decision": "deny", "error_contains": "has no live worker_sessions row" }
   },
   {
     "description": "AiPlannerSession over a Worker-roled session is refused before ordinary card-scoped writes",

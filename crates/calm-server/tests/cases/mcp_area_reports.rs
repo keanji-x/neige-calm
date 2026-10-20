@@ -85,7 +85,7 @@ async fn new_card(sqlx: &SqlxRepo, track: &TrackId, kind: &str, payload: Value) 
 /// A track with a report card, a Planner (with the live session the write gate resolves) and a Worker.
 async fn side(sqlx: &SqlxRepo, cache: &CardRoleCache, area: &AreaId, title: &str) -> Side {
     let track = new_track(sqlx, area, title).await;
-    let planner = new_card(sqlx, &track, "codex", json!({ "role": "planner" })).await;
+    let planner = new_card(sqlx, &track, "codex", crate::support::planner::payload()).await;
     let worker = new_card(sqlx, &track, "codex", json!({ "task": "local" })).await;
     let report = new_card(
         sqlx,

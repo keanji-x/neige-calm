@@ -2,7 +2,9 @@
 use calm_proc_supervisor::test_support::InProcessProcSupervisor;
 use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
-use calm_server::db::sqlite::{SqlxRepo, card_with_codex_create_tx};
+use calm_server::db::sqlite::{
+    SqlxRepo, card_create_with_id_tx, card_mcp_token_set_tx, session_start_runtime_tx,
+};
 use calm_server::event::EventBus;
 use calm_server::mcp_server::{McpServer, build_default_registry};
 use calm_server::model::{CardRole, NewArea, NewTrack, new_id};
@@ -100,23 +102,53 @@ impl Harness {
         repo.seed_track_area_cache(&areas).await.unwrap();
         let mut tx = sql.pool().begin().await.unwrap();
         let (card_id, session_id) = (new_id(), new_id());
-        let (_, _, token) = card_with_codex_create_tx(
+        card_create_with_id_tx(
             &mut tx,
             card_id.clone(),
-            &session_id,
-            None,
-            track.id.clone(),
-            None,
-            None,
-            root.path().to_str().unwrap().into(),
-            json!({}),
-            None,
-            None,
-            None,
+            calm_server::model::NewCard {
+                track_id: track.id.clone(),
+                title: None,
+                kind: "codex".into(),
+                sort: None,
+                payload: json!({"planner_provider":"codex"}),
+            },
             CardRole::Planner,
             false,
             &roles,
-            calm_server::routes::theme::RequestTheme::default_dark(),
+        )
+        .await
+        .unwrap();
+        let token = calm_server::mcp_server::auth::CardMcpToken::generate();
+        card_mcp_token_set_tx(
+            &mut tx,
+            &card_id,
+            &calm_server::mcp_server::auth::hash_token(token.as_str()),
+        )
+        .await
+        .unwrap();
+        session_start_runtime_tx(
+            &mut tx,
+            calm_server::session_projection_repo::WorkerSessionInit::shared_planner(
+                session_id.clone(),
+                card_id.clone(),
+                calm_server::session_projection_repo::AgentProvider::Codex,
+                calm_server::session_projection_repo::WorkerSessionState::Starting,
+                None,
+                json!({}),
+                calm_server::model::now_ms(),
+            ),
+        )
+        .await
+        .unwrap();
+        calm_server::db::sqlite::terminal_create_tx(
+            &mut tx,
+            calm_server::model::NewTerminal {
+                card_id: card_id.clone().into(),
+                program: "codex".into(),
+                cwd: root.path().display().to_string(),
+                env: json!({}),
+                theme: calm_server::routes::theme::RequestTheme::default_dark(),
+            },
         )
         .await
         .unwrap();
@@ -211,7 +243,7 @@ impl Harness {
             supervisor,
             root,
             socket,
-            token: token.expect("planner MCP token"),
+            token: token.into_inner(),
             track: track.id.to_string(),
             session_id,
             area_id: area.id.to_string(),

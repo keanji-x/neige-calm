@@ -27,8 +27,8 @@ async fn track_state_projects_stored_access_into_tool_and_text() {
     assert_eq!(
         text,
         format!(
-            "track      {}\ntitle      initial\nclosed_at  -\nyou        {} planner\nreport     none\ntasks      reader pending read_only start=checkout\n           writer pending start=checkout\n",
-            boot.track_id, boot.planner_card_id
+            "track      {}\ntitle      initial\nclosed_at  -\nyou        {} planner\nreport     none\ntasks      reader pending read_only start=checkout\n           writer pending start=checkout\nsessions   {}  planner  codex  (you)\n",
+            boot.track_id, boot.planner_card_id, boot.planner_card_id
         )
     );
     let json_text = render(Render::Status, TOOL_TRACK_STATUS, true, &out).unwrap();

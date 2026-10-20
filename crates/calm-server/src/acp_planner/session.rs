@@ -506,9 +506,12 @@ async fn bind_native(params: &SessionParams, thread: &str, native: &str) -> Resu
     let provider = params.provider.clone();
     write_in_tx_typed(params.repo.as_ref(), move |tx| {
         Box::pin(async move {
-            let row = crate::db::sqlite::session_get_tx(tx, &WorkerSessionId(worker.clone()))
-                .await?
-                .ok_or_else(|| CalmError::NotFound("ACP owner".into()))?;
+            let row = calm_truth::decision_gate::WriteTx::read_worker_session(
+                tx,
+                &WorkerSessionId(worker.clone()),
+            )
+            .await?
+            .ok_or_else(|| CalmError::NotFound("ACP owner".into()))?;
             if !row.state.is_active_authority() || row.thread_id.as_deref() != Some(&thread) {
                 return Err(CalmError::Conflict("ACP native owner changed".into()));
             }
@@ -534,13 +537,15 @@ async fn mint_token(params: &SessionParams) -> Result<String> {
     let worker = params.worker_session_id.clone();
     write_in_tx_typed(params.repo.as_ref(), move |tx| {
         Box::pin(async move {
-            let owner: Option<String> =
-                sqlx::query_scalar("SELECT session_id FROM cards WHERE id=?1")
-                    .bind(&card)
-                    .fetch_optional(&mut **tx)
-                    .await?
-                    .flatten();
-            if owner.as_deref() != Some(&worker) {
+            let row = calm_truth::decision_gate::WriteTx::read_worker_session(
+                tx,
+                &WorkerSessionId(worker.clone()),
+            )
+            .await?
+            .ok_or_else(|| CalmError::Conflict("ACP credential carrier changed".into()))?;
+            if !row.state.is_active_authority()
+                || row.card_id.as_ref().map(|id| id.as_str()) != Some(card.as_str())
+            {
                 return Err(CalmError::Conflict("ACP credential carrier changed".into()));
             }
             crate::mcp_server::wiring::mint_and_persist_managed_planner_token(tx, &card, &worker)

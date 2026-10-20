@@ -1,5 +1,5 @@
 //! Registration of the Gitforge rerun tool; its forge action runs through the same kernel
-//! adapter as publish (`Services for AppContext`), so the approval gate holds without naming it.
+//! adapter as publish (`ForgeServices`), so the approval gate holds without naming it.
 use crate::mcp_server::registry::{ToolDescriptor, ToolRegistry};
 use plugin::builtin::gitforge::rerun;
 use std::sync::Arc;
@@ -13,9 +13,16 @@ pub fn register_into(registry: &mut ToolRegistry) {
         descriptor(),
         Arc::new(|ctx, identity, args| {
             Box::pin(async move {
-                rerun::call(ctx.as_ref(), &identity.card_id, args)
-                    .await
-                    .map(crate::mcp_server::result::ToolResult::structured)
+                rerun::call(
+                    &super::publish::ForgeServices {
+                        ctx: ctx.as_ref(),
+                        caller: &identity,
+                    },
+                    &identity.card_id,
+                    args,
+                )
+                .await
+                .map(crate::mcp_server::result::ToolResult::structured)
             })
         }),
     );

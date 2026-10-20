@@ -474,6 +474,17 @@ async fn validate_active_recovery_tx(
     thread: &str,
     admission: &dyn ActiveRecoveryAdmission,
 ) -> Result<()> {
+    let owner = calm_truth::decision_gate::WriteTx::read_worker_session(
+        tx,
+        &calm_types::worker::WorkerSessionId(expected.id.clone()),
+    )
+    .await?
+    .ok_or_else(|| CalmError::Conflict("conversation authority changed during resume".into()))?;
+    if !owner.state.is_active_authority() {
+        return Err(CalmError::Conflict(
+            "conversation authority retired during resume".into(),
+        ));
+    }
     let current = session_projection_active_for_card_tx(tx, &expected.card_id).await?;
     if !current.as_ref().is_some_and(|row| {
         row.id == expected.id

@@ -220,7 +220,7 @@ pub async fn planner(
             title: None,
             kind: "codex".into(),
             sort: None,
-            payload: json!({}),
+            payload: super::planner::payload(),
         })
         .await
         .unwrap();

@@ -12,10 +12,9 @@ use axum::http::{Request, StatusCode, header};
 use calm_server::auth::{self, AuthConfig, AuthState, SESSION_COOKIE};
 use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
-use calm_server::db::sqlite::{SqlxRepo, session_insert_tx, session_mark_track_root_tx};
-use calm_server::error::CalmError;
+use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::{EditAuthor, EventBus};
-use calm_server::ids::{ActorId, CardId, TrackId};
+use calm_server::ids::ActorId;
 use calm_server::mcp_server::registry::AppContext;
 use calm_server::mcp_server::tools::track_state::TOOL_TRACK_STATUS;
 use calm_server::mcp_server::{ToolCallIdentity, ToolRegistry};
@@ -27,10 +26,7 @@ use calm_server::session_projection_repo::AgentProvider;
 use calm_server::state::{AppState, CodexClient, DaemonClient};
 use calm_server::track_report::{TrackReportPayload, persist_report};
 use calm_types::report_blocks::render_fence;
-use calm_types::worker::{
-    LivenessTag, SessionMode, WorkerContract, WorkerProviderKind, WorkerSession, WorkerSessionId,
-    WorkerSessionState,
-};
+
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -1423,36 +1419,6 @@ async fn forked_user_tombstone_is_normalized_to_planner_and_stays_planner_editab
 
 const FORKED_PLANNER_SESSION_ID: &str = "forked-planner-session";
 
-fn planner_session(id: &str, track_id: TrackId, card_id: CardId) -> WorkerSession {
-    WorkerSession {
-        id: WorkerSessionId::from(id),
-        track_id,
-        provider: WorkerProviderKind::Codex,
-        mode: SessionMode::Resumable,
-        contract: WorkerContract::Planner,
-        parent_session_id: None,
-        requester_session_id: None,
-        state: WorkerSessionState::Starting,
-        mcp_token_hash: None,
-        thread_id: None,
-        agent_session_id: None,
-        active_turn_id: None,
-        terminal_run_id: None,
-        card_id: Some(card_id),
-        handle_state_json: None,
-        liveness: LivenessTag::Unknown,
-        liveness_probed_at_ms: None,
-        exit_code: None,
-        exit_interpretation: None,
-        spawn_op_id: None,
-        last_activity_ms: None,
-        last_thread_status: None,
-        created_at_ms: 1,
-        updated_at_ms: 1,
-        completed_at_ms: None,
-    }
-}
-
 /// An MCP tool channel bound to the forked track's own planner card.
 async fn planner_tool_channel(
     boot: &Boot,
@@ -1466,26 +1432,12 @@ async fn planner_tool_channel(
         .into_iter()
         .find(|card| card.kind == "codex")
         .expect("forked track has a planner card");
-    let session = planner_session(
+    crate::support::planner::start_session(
+        boot.repo.as_ref(),
+        planner_card.id.as_str(),
         FORKED_PLANNER_SESSION_ID,
-        TrackId::from(track_id.to_string()),
-        planner_card.id.clone(),
-    );
-    let root_session_id = session.id.clone();
-    let root_track_id = TrackId::from(track_id.to_string());
-    calm_server::db::write_in_tx_typed(boot.repo.as_ref(), move |tx| {
-        Box::pin(async move {
-            session_insert_tx(tx, session)
-                .await
-                .map_err(CalmError::from)?;
-            session_mark_track_root_tx(tx, &root_track_id, &root_session_id)
-                .await
-                .map_err(CalmError::from)?;
-            Ok(())
-        })
-    })
-    .await
-    .expect("seed the forked track's root planner session");
+    )
+    .await;
 
     let route_repo: Arc<dyn calm_server::db::RouteRepo> = boot.repo.clone();
     let ctx = Arc::new(AppContext {

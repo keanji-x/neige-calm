@@ -661,14 +661,14 @@ impl PrincipalFixture {
                 (
                     "session-assistant",
                     &assistant,
-                    WorkerContract::Executor,
+                    WorkerContract::Assistant,
                     &home_track,
                     WorkerSessionState::Running,
                 ),
                 (
                     "session-away-assistant",
                     &away_assistant,
-                    WorkerContract::Executor,
+                    WorkerContract::Assistant,
                     &away_track,
                     WorkerSessionState::Running,
                 ),
@@ -728,7 +728,13 @@ async fn seed_role_card(
             title: None,
             kind: "codex".into(),
             sort: None,
-            payload: json!({}),
+            payload: match role {
+                CardRole::Planner => json!({"planner_provider":"codex"}),
+                CardRole::Assistant => {
+                    json!({"harness_profile":"assistant","assistant_provider":"codex"})
+                }
+                CardRole::Worker | CardRole::ReportCard => json!({}),
+            },
         })
         .await
         .unwrap();
@@ -751,6 +757,15 @@ async fn seed_sessions(
         )
         .await
         .unwrap();
+        if state.is_active_authority() {
+            let linked = sqlx::query("UPDATE cards SET session_id=?1 WHERE id=?2")
+                .bind(id)
+                .bind(card.as_str())
+                .execute(&mut *tx)
+                .await
+                .unwrap();
+            assert_eq!(linked.rows_affected(), 1);
+        }
     }
     // `session-root` stays marked as the home track's root: root-ness alone must not be what any
     // vector's Allow rests on.

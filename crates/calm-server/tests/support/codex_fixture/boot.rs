@@ -28,7 +28,6 @@ use calm_server::terminal_renderer::TerminalRendererRegistry;
 use calm_server::track_area_cache::TrackAreaCache;
 use calm_server::track_report::TrackReportPayload;
 use clap::Parser;
-use serde_json::Value;
 use tokio::sync::OnceCell;
 
 use super::super::agent_diag::EvidenceTempDir;
@@ -168,7 +167,7 @@ pub async fn boot_forge_e2e_fixture(
     // production planner card shape: kind:"codex" with the `planner_harness_card_payload` object,
     // plus the template's working method when the track is bound to one.
     let (planner_kind, planner_payload) = match (fixture.plan_source, fixture.bound_issue) {
-        (PlanSource::Injected, _) => ("planner".to_string(), Value::Null),
+        (PlanSource::Injected, _) => ("codex".to_string(), crate::support::planner::payload()),
         (PlanSource::RealPlannerTurn, None) => (
             "codex".to_string(),
             calm_server::track_creation::planner_harness_card_payload(

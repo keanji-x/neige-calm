@@ -812,6 +812,7 @@ impl ForgeSubmit {
 
 pub(crate) async fn submit_forge_action(
     ctx: &Arc<AppContext>,
+    caller: &ToolCallIdentity,
     plugin_id: &str,
     track_id: String,
     card_id: String,
@@ -827,7 +828,7 @@ pub(crate) async fn submit_forge_action(
     submit_forge_action_with_key(
         &runtime,
         &ctx.gate_logs_dir,
-        Some(&ApprovalAsks::of(ctx)),
+        Some(&ApprovalAsks::of(ctx, caller)),
         plugin_id,
         track_id,
         card_id,
@@ -1003,6 +1004,7 @@ async fn dispatch_forge_action_result(
 
     let submitted = match submit_forge_action(
         ctx,
+        &identity,
         plugin_id,
         track_id.clone(),
         card_id,

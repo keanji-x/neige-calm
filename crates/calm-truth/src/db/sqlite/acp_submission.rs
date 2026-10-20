@@ -30,6 +30,26 @@ pub async fn acp_registration_claim(
     native_bound: bool,
 ) -> Result<()> {
     let mut tx = super::begin_immediate_tx(pool).await?;
+    use crate::decision_gate::{PrincipalDecisionGate, WriteTx};
+    let id = crate::worker::WorkerSessionId::from(worker);
+    let session = tx
+        .read_worker_session(&id)
+        .await?
+        .ok_or_else(|| CalmError::Conflict("ACP registration owner changed"))?;
+    let principal = crate::worker::Principal::Agent {
+        session_id: id,
+        track_id: session.track_id.clone(),
+        area_id: tx
+            .read_track_area(&session.track_id)
+            .await?
+            .ok_or_else(|| CalmError::Conflict("ACP registration track changed"))?,
+    };
+    if !PrincipalDecisionGate::new(principal)
+        .recorder_grant(&mut *tx, &session.track_id)
+        .await?
+    {
+        return Err(CalmError::Conflict("ACP registration owner changed"));
+    }
     let prior: Option<String> = sqlx::query_scalar(
         "SELECT registration_digest FROM acp_managed_sessions WHERE worker_session_id=?1",
     )

@@ -182,11 +182,10 @@ async fn boot_at_workspace(cwd: &str) -> Boot {
     )
     .await;
     card_role_cache.insert(worker_card.id.clone(), CardRole::Worker, track.id.clone());
-    seed_runtime_session(
-        &sqlx_repo,
+    crate::support::planner::start_session(
+        repo.as_ref(),
         planner_card.id.as_str(),
         "planner-session",
-        "planner-thread",
     )
     .await;
     sqlx::query("UPDATE tracks SET root_session_id = 'planner-session' WHERE id = ?1")

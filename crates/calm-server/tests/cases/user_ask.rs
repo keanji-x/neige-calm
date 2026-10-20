@@ -12,7 +12,7 @@ use axum::http::{Request, StatusCode};
 use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::RepoEventWrite;
 use calm_server::db::prelude::*;
-use calm_server::db::sqlite::{SqlxRepo, session_insert_tx, session_mark_track_root_tx};
+use calm_server::db::sqlite::{SqlxRepo, session_start_runtime_tx};
 use calm_server::error::CalmError;
 use calm_server::event::{AskAnswer, AskDelivery, AskQuestion, Event, EventBus};
 use calm_server::ids::{AreaId, CardId, TrackId};
@@ -23,10 +23,7 @@ use calm_server::model::{CardRole, NewArea, NewCard, NewTrack, TrackPatch};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::session_projection_repo::AgentProvider;
 use calm_server::state::{AppState, CodexClient, DaemonClient};
-use calm_types::worker::{
-    LivenessTag, SessionMode, WorkerContract, WorkerProviderKind, WorkerSession, WorkerSessionId,
-    WorkerSessionState,
-};
+use calm_types::worker::WorkerSessionState;
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tower::ServiceExt;
@@ -47,58 +44,37 @@ struct Boot {
     track_area_cache: calm_server::track_area_cache::TrackAreaCache,
 }
 
-fn planner_session(id: &str, track_id: TrackId, card_id: CardId) -> WorkerSession {
-    WorkerSession {
-        id: WorkerSessionId::from(id),
-        track_id,
-        provider: WorkerProviderKind::Codex,
-        mode: SessionMode::Resumable,
-        contract: WorkerContract::Planner,
-        parent_session_id: None,
-        requester_session_id: None,
-        state: WorkerSessionState::Starting,
-        mcp_token_hash: None,
-        thread_id: None,
-        agent_session_id: None,
-        active_turn_id: None,
-        terminal_run_id: None,
-        card_id: Some(card_id),
-        handle_state_json: None,
-        liveness: LivenessTag::Unknown,
-        liveness_probed_at_ms: None,
-        exit_code: None,
-        exit_interpretation: None,
-        spawn_op_id: None,
-        last_activity_ms: None,
-        last_thread_status: None,
-        created_at_ms: 1,
-        updated_at_ms: 1,
-        completed_at_ms: None,
-    }
-}
-
 async fn seed_track_root_session(
     repo: &dyn RepoEventWrite,
     track_id: &TrackId,
     card_id: &CardId,
     session_id: &str,
 ) {
-    let session = planner_session(session_id, track_id.clone(), card_id.clone());
-    let root_session_id = session.id.clone();
-    let track_id = track_id.clone();
+    assert_eq!(
+        repo.card_get(card_id.as_str())
+            .await
+            .unwrap()
+            .unwrap()
+            .track_id,
+        *track_id
+    );
+    let init = calm_server::session_projection_repo::WorkerSessionInit::shared_planner(
+        session_id.into(),
+        card_id.to_string(),
+        AgentProvider::Codex,
+        WorkerSessionState::Starting,
+        None,
+        json!({}),
+        1,
+    );
     calm_server::db::write_in_tx_typed(repo, move |tx| {
         Box::pin(async move {
-            session_insert_tx(tx, session)
-                .await
-                .map_err(CalmError::from)?;
-            session_mark_track_root_tx(tx, &track_id, &root_session_id)
-                .await
-                .map_err(CalmError::from)?;
+            session_start_runtime_tx(tx, init).await?;
             Ok(())
         })
     })
     .await
-    .expect("seed track root session");
+    .expect("start track root session");
 }
 
 async fn boot() -> Boot {

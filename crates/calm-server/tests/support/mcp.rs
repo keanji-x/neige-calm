@@ -1,3 +1,6 @@
+#[path = "planner.rs"]
+pub mod planner;
+
 use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -117,7 +120,18 @@ async fn boot_with_role_and_daemon_token(role: CardRole, daemon_token: Option<St
     let worker_session_id = calm_server::model::new_id();
 
     let mut tx = sqlx_repo.pool().begin().await.unwrap();
-    let mcp_token = if role == CardRole::Assistant {
+    let mcp_token = if role == CardRole::Planner {
+        Some(
+            planner::mint_tx(
+                &mut tx,
+                card_id.clone(),
+                &worker_session_id,
+                track.id.clone(),
+                &card_role_cache,
+            )
+            .await,
+        )
+    } else if role == CardRole::Assistant {
         calm_server::db::sqlite::card_create_with_id_tx(&mut tx, card_id.clone(), calm_server::model::NewCard {
             track_id: track.id.clone(), title: None, kind: "codex".into(), sort: None,
             payload: json!({"schemaVersion":1,"harness_profile":"assistant","assistant_provider":"codex"}),

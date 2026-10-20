@@ -12,8 +12,7 @@ use calm_server::auth::{self, AuthConfig, AuthState, SESSION_COOKIE};
 use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::RepoEventWrite;
 use calm_server::db::prelude::*;
-use calm_server::db::sqlite::{SqlxRepo, session_insert_tx, session_mark_track_root_tx};
-use calm_server::error::CalmError;
+use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::{BroadcastEnvelope, EventBus, SubscribeFilter, SubscribeScope};
 use calm_server::ids::{AreaId, CardId, TrackId};
 use calm_server::mcp_server::registry::AppContext;
@@ -26,10 +25,7 @@ use calm_server::routes;
 use calm_server::state::{AppState, CodexClient, DaemonClient};
 use calm_server::track_area_cache::TrackAreaCache;
 use calm_server::track_report::TrackReportPayload;
-use calm_types::worker::{
-    LivenessTag, SessionMode, WorkerContract, WorkerProviderKind, WorkerSession, WorkerSessionId,
-    WorkerSessionState,
-};
+
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
@@ -49,58 +45,21 @@ struct Boot {
     repo: Arc<dyn Repo>,
 }
 
-fn planner_session(id: &str, track_id: TrackId, card_id: CardId) -> WorkerSession {
-    WorkerSession {
-        id: WorkerSessionId::from(id),
-        track_id,
-        provider: WorkerProviderKind::Codex,
-        mode: SessionMode::Resumable,
-        contract: WorkerContract::Planner,
-        parent_session_id: None,
-        requester_session_id: None,
-        state: WorkerSessionState::Starting,
-        mcp_token_hash: None,
-        thread_id: None,
-        agent_session_id: None,
-        active_turn_id: None,
-        terminal_run_id: None,
-        card_id: Some(card_id),
-        handle_state_json: None,
-        liveness: LivenessTag::Unknown,
-        liveness_probed_at_ms: None,
-        exit_code: None,
-        exit_interpretation: None,
-        spawn_op_id: None,
-        last_activity_ms: None,
-        last_thread_status: None,
-        created_at_ms: 1,
-        updated_at_ms: 1,
-        completed_at_ms: None,
-    }
-}
-
 async fn seed_track_root_session(
     repo: &dyn RepoEventWrite,
     track_id: &TrackId,
     card_id: &CardId,
     session_id: &str,
 ) {
-    let session = planner_session(session_id, track_id.clone(), card_id.clone());
-    let root_session_id = session.id.clone();
-    let track_id = track_id.clone();
-    calm_server::db::write_in_tx_typed(repo, move |tx| {
-        Box::pin(async move {
-            session_insert_tx(tx, session)
-                .await
-                .map_err(CalmError::from)?;
-            session_mark_track_root_tx(tx, &track_id, &root_session_id)
-                .await
-                .map_err(CalmError::from)?;
-            Ok(())
-        })
-    })
-    .await
-    .expect("seed track root session");
+    assert_eq!(
+        repo.card_get(card_id.as_str())
+            .await
+            .unwrap()
+            .unwrap()
+            .track_id,
+        *track_id
+    );
+    crate::support::planner::start_session(repo, card_id.as_str(), session_id).await;
 }
 
 async fn boot() -> Boot {
@@ -141,7 +100,7 @@ async fn boot() -> Boot {
             title: None,
             kind: "codex".into(),
             sort: None,
-            payload: serde_json::json!({"planner_provider": "codex"}),
+            payload: crate::support::planner::payload(),
         })
         .await
         .unwrap();

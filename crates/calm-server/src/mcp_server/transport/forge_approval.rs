@@ -8,7 +8,7 @@ use crate::error::CalmError;
 use crate::event::EventBus;
 use crate::ids::{ActorId, CardId, TrackId};
 use crate::mcp_server::framing::{RpcError, calm_error};
-use crate::mcp_server::registry::AppContext;
+use crate::mcp_server::registry::{AppContext, ToolCallIdentity};
 use crate::mcp_server::transport::{ForgeSubmit, PluginForgePayload};
 use crate::operation::OperationRuntime;
 use crate::operation::forge_action_adapter::FORGE_ACTION_KIND;
@@ -20,14 +20,16 @@ pub(crate) struct ApprovalAsks<'a> {
     repo: &'a dyn RepoEventWrite,
     events: &'a EventBus,
     write: &'a WriteContext,
+    caller: ToolCallIdentity,
 }
 
 impl<'a> ApprovalAsks<'a> {
-    pub(crate) fn of(ctx: &'a AppContext) -> Self {
+    pub(crate) fn of(ctx: &'a AppContext, caller: &ToolCallIdentity) -> Self {
         Self {
             repo: ctx.repo.as_ref(),
             events: &ctx.events,
             write: &ctx.write,
+            caller: caller.clone(),
         }
     }
 }
@@ -110,11 +112,18 @@ async fn approval(
     if let Some(approval) = recorded {
         return Ok(approval);
     }
+    // Preserve the recorded card-level actor; only new ask admission uses the caller session.
     let actor = ActorId::AiPlanner(call.card.clone());
+    let caller = asks.caller.clone();
     let (_, ids) =
         write_with_actor_events_typed::<(), _>(asks.repo, None, asks.events, asks.write, {
             move |tx| {
                 Box::pin(async move {
+                    if !caller.session_is_active(tx, call.track.as_str()).await? {
+                        return Err(CalmError::Forbidden(
+                            "approval caller is no longer current".into(),
+                        ));
+                    }
                     match call.read_tx(tx).await? {
                         ForgeApprovalRead::Ask(scope, event) => {
                             Ok(((), vec![(actor, scope, *event)]))

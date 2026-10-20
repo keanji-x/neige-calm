@@ -164,7 +164,11 @@ impl Fx {
                 title: None,
                 kind: kind.into(),
                 sort: None,
-                payload: json!({}),
+                payload: if role == CardRole::Planner {
+                    json!({"planner_provider":"codex"})
+                } else {
+                    json!({})
+                },
             },
             role,
             true,

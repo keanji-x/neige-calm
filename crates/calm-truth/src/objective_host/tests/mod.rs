@@ -28,15 +28,6 @@ async fn fixture_with_capability(url: &str, enabled: bool) -> SqlxRepo {
     for sql in [
         "INSERT INTO areas(id,name,color,sort,created_at,updated_at) VALUES('a','a','',0,0,0)",
         "INSERT INTO tracks(id,area_id,title,sort,created_at,updated_at) VALUES('t','a','t',0,0,0),('other','a','other',1,0,0)",
-        "INSERT INTO cards(id,track_id,kind,role,sort,created_at,updated_at) VALUES('p','t','planner',
-        'planner',0,0,0),('a','t','codex','assistant',1,0,0),('w','t','codex','worker',2,0,0),('foreign',
-        'other','planner','planner',0,0,0)",
-        "INSERT INTO worker_sessions(id,track_id,provider,mode,contract,state,card_id,created_at_ms,
-        updated_at_ms) VALUES('p','t','codex','resumable','planner','idle','p',0,0),('a','t','codex',
-        'resumable','assistant','idle','a',0,0),('w','t','codex','ephemeral','executor','idle','w',0,0),
-        ('foreign','other','codex','resumable','planner','idle','foreign',0,0)",
-        "UPDATE cards SET session_id=id",
-        "UPDATE tracks SET root_session_id=CASE id WHEN 't' THEN 'p' ELSE 'foreign' END",
     ] {
         sqlx::query(sql).execute(repo.pool()).await.unwrap();
     }
@@ -53,6 +44,91 @@ async fn fixture_with_capability(url: &str, enabled: bool) -> SqlxRepo {
         }
         tx.commit().await.unwrap();
     }
+    let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
+    let cache = crate::card_role_cache::CardRoleCache::new();
+    for (id, track, role, payload) in [
+        (
+            "p",
+            "t",
+            crate::model::CardRole::Planner,
+            serde_json::json!({"planner_provider":"codex"}),
+        ),
+        (
+            "a",
+            "t",
+            crate::model::CardRole::Assistant,
+            serde_json::json!({"harness_profile":"assistant","assistant_provider":"codex"}),
+        ),
+        (
+            "w",
+            "t",
+            crate::model::CardRole::Worker,
+            serde_json::json!({}),
+        ),
+        (
+            "foreign",
+            "other",
+            crate::model::CardRole::Planner,
+            serde_json::json!({"planner_provider":"codex"}),
+        ),
+    ] {
+        crate::db::sqlite::card_create_with_id_tx(
+            &mut tx,
+            id.into(),
+            crate::model::NewCard {
+                track_id: track.into(),
+                title: None,
+                kind: "codex".into(),
+                sort: None,
+                payload,
+            },
+            role,
+            false,
+            &cache,
+        )
+        .await
+        .unwrap();
+        use crate::session_projection_repo::{AgentProvider, WorkerSessionInit, WorkerSessionKind};
+        use calm_types::worker::WorkerSessionState;
+        let init = match role {
+            crate::model::CardRole::Planner => WorkerSessionInit::shared_planner(
+                id.into(),
+                id.into(),
+                AgentProvider::Codex,
+                WorkerSessionState::Idle,
+                None,
+                serde_json::json!({}),
+                0,
+            ),
+            crate::model::CardRole::Assistant => WorkerSessionInit::managed_assistant(
+                id.into(),
+                id.into(),
+                AgentProvider::Codex,
+                WorkerSessionState::Idle,
+                None,
+                serde_json::json!({}),
+                0,
+            ),
+            _ => WorkerSessionInit {
+                id: id.into(),
+                card_id: id.into(),
+                kind: WorkerSessionKind::CodexCard,
+                agent_provider: None,
+                status: WorkerSessionState::Idle,
+                terminal_run_id: None,
+                thread_id: None,
+                session_id: None,
+                active_turn_id: None,
+                handle_state_json: None,
+                spawn_op_id: None,
+                now_ms: 0,
+            },
+        };
+        crate::db::sqlite::session_start_runtime_tx(&mut tx, init)
+            .await
+            .unwrap();
+    }
+    tx.commit().await.unwrap();
     repo
 }
 

@@ -124,3 +124,6 @@ mod opencode_history_handoff;
 
 #[path = "cases/opencode_history_host.rs"]
 mod opencode_history_host;
+
+#[path = "cases/retired_carrier_authority.rs"]
+mod retired_carrier_authority;

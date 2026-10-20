@@ -46,7 +46,7 @@ async fn planner(f: &Fx, name: &str, kind: WorkerSessionKind) -> Planner {
         .card(
             &track,
             &format!("card-planner-{name}"),
-            "planner",
+            "codex",
             CardRole::Planner,
         )
         .await;

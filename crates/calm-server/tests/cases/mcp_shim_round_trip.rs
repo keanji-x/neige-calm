@@ -12,12 +12,12 @@ use std::time::Duration;
 use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{
-    SqlxRepo, begin_immediate_tx, card_with_codex_create_tx, session_bind_attribution_tx,
+    SqlxRepo, begin_immediate_tx, session_bind_attribution_tx,
     session_projection_active_for_card_tx, session_start_runtime_tx,
 };
 use calm_server::event::EventBus;
 use calm_server::mcp_server::{McpServer, build_default_registry};
-use calm_server::model::{CardRole, NewArea, NewTrack, now_ms};
+use calm_server::model::{NewArea, NewTrack, now_ms};
 use calm_server::session_projection_repo::{
     AgentProvider, ThreadAttribution, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
 };
@@ -105,28 +105,15 @@ async fn boot() -> Boot {
     let card_id = calm_server::model::new_id();
 
     let mut tx = sqlx_repo.pool().begin().await.unwrap();
-    let (_card, _term, mcp_token) = card_with_codex_create_tx(
+    let raw_token = crate::support::planner::mint_tx(
         &mut tx,
         card_id.clone(),
         &calm_server::model::new_id(),
-        None,
         track.id.clone(),
-        None,
-        None,
-        "/workspace".into(),
-        json!({}),
-        None,
-        None,
-        None,
-        CardRole::Planner,
-        false,
         &card_role_cache,
-        calm_server::routes::theme::RequestTheme::default_dark(),
     )
-    .await
-    .expect("mint planner card");
+    .await;
     tx.commit().await.unwrap();
-    let raw_token = mcp_token.expect("Planner card must mint a token");
     let thread_id = format!("thread-{card_id}");
     seed_runtime_thread(&sqlx_repo, card_id.as_str(), thread_id.as_str()).await;
     // The verdict probe names a task attempt of this track.

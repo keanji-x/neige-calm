@@ -2,7 +2,7 @@
 use super::PLUGIN_ID as GIT_FORGE_PLUGIN_ID;
 use crate::mcp_server::{
     framing::RpcError,
-    registry::{AppContext, ToolDescriptor, ToolRegistry},
+    registry::{AppContext, ToolCallIdentity, ToolDescriptor, ToolRegistry},
     transport::{ApprovalAsks, ForgeSubmit, PluginForgePayload, submit_forge_action_with_key},
 };
 use crate::operation::workspace_lease::upstream::track_remote;
@@ -24,16 +24,22 @@ fn internal(e: impl std::fmt::Display) -> RpcError {
 fn refused(message: String) -> RpcError {
     RpcError::conflict(format!("refused: {message}"))
 }
+pub(super) struct ForgeServices<'a> {
+    pub(super) ctx: &'a AppContext,
+    pub(super) caller: &'a ToolCallIdentity,
+}
 #[async_trait]
-impl Services for AppContext {
+impl Services for ForgeServices<'_> {
     async fn destination(&self, card_id: &str) -> Result<(String, Destination), RpcError> {
         let card = self
+            .ctx
             .repo
             .card_get(card_id)
             .await
             .map_err(internal)?
             .ok_or_else(|| internal(format!("bound card {card_id} not found")))?;
         let track = self
+            .ctx
             .repo
             .track_get(card.track_id.as_str())
             .await
@@ -42,7 +48,7 @@ impl Services for AppContext {
         Ok((track.id.to_string(), destination(&track).await?))
     }
     async fn candidates(&self, track_id: &str) -> Result<Vec<Candidate>, RpcError> {
-        Ok(candidate_facts(self, track_id)
+        Ok(candidate_facts(self.ctx, track_id)
             .await?
             .into_iter()
             .map(|fact| Candidate {
@@ -55,12 +61,14 @@ impl Services for AppContext {
     }
     async fn planner_cwd(&self, card_id: &str) -> Result<(String, PathBuf), RpcError> {
         let card = self
+            .ctx
             .repo
             .card_get(card_id)
             .await
             .map_err(internal)?
             .ok_or_else(|| internal(format!("bound card {card_id} not found")))?;
         let track = self
+            .ctx
             .repo
             .track_get(card.track_id.as_str())
             .await
@@ -82,14 +90,15 @@ impl Services for AppContext {
         payload: PluginForgePayload,
     ) -> Result<ExecuteOutcome, RpcError> {
         let runtime = self
+            .ctx
             .operation_runtime
             .get()
             .cloned()
             .ok_or_else(|| internal("operation runtime not bound"))?;
         let submitted = match submit_forge_action_with_key(
             &runtime,
-            &self.gate_logs_dir,
-            Some(&ApprovalAsks::of(self)),
+            &self.ctx.gate_logs_dir,
+            Some(&ApprovalAsks::of(self.ctx, self.caller)),
             GIT_FORGE_PLUGIN_ID,
             track_id.to_string(),
             card_id.to_string(),
@@ -144,9 +153,16 @@ pub fn register_into(registry: &mut ToolRegistry) {
         dev_publish_descriptor(),
         Arc::new(|ctx, identity, args| {
             Box::pin(async move {
-                publish::call(ctx.as_ref(), &identity.card_id, args)
-                    .await
-                    .map(crate::mcp_server::result::ToolResult::structured)
+                publish::call(
+                    &ForgeServices {
+                        ctx: ctx.as_ref(),
+                        caller: &identity,
+                    },
+                    &identity.card_id,
+                    args,
+                )
+                .await
+                .map(crate::mcp_server::result::ToolResult::structured)
             })
         }),
     );

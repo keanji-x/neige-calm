@@ -27,6 +27,8 @@ pub trait WriteTx: sealed::Sealed + Send {
         track: &TrackId,
     ) -> Result<Option<WorkerSessionId>>;
 
+    /// Resolve a session for authority: active rows must match the current card
+    /// pointer, track and role/provider contract in this transaction.
     async fn read_worker_session(
         &mut self,
         id: &WorkerSessionId,
@@ -119,49 +121,9 @@ pub async fn enforce_role_resolving_session<T: WriteTx + ?Sized + Send>(
         ActorId::AiCodexSession(_) => ActorId::AiCodex(card_id),
         ActorId::AiClaudeSession(_) => ActorId::AiClaude(card_id),
         ActorId::AiManagedSession(_) => {
-            use calm_types::worker::{SessionMode, WorkerContract, WorkerProviderKind};
-            let live = tx.read_card_binding(&card_id).await.map_err(|_| {
-                RoleViolation::SessionResolutionError {
-                    session: session_id.clone(),
-                }
-            })?;
-            let role = tx.read_card_role(&card_id).await.map_err(|_| {
-                RoleViolation::SessionResolutionError {
-                    session: session_id.clone(),
-                }
-            })?;
-            let track = tx.read_card_track(&card_id).await.map_err(|_| {
-                RoleViolation::SessionResolutionError {
-                    session: session_id.clone(),
-                }
-            })?;
-            if session.provider == WorkerProviderKind::Terminal
-                || session.contract != WorkerContract::Assistant
-                || session.mode != SessionMode::Resumable
-                || role != Some(CardRole::Assistant)
-                || track.as_ref() != Some(&session.track_id)
-                || !live.is_some_and(|(kind, payload, current)| {
-                    kind == "codex"
-                        && current.as_deref() == Some(session_id.as_str())
-                        && payload
-                            .get("harness_profile")
-                            .and_then(serde_json::Value::as_str)
-                            == Some("assistant")
-                        && payload
-                            .get(crate::validation::ASSISTANT_PROVIDER_PAYLOAD_KEY)
-                            .and_then(|value| {
-                                serde_json::from_value::<calm_types::runtime::AgentProvider>(
-                                    value.clone(),
-                                )
-                                .ok()
-                            })
-                            .map(|provider| WorkerProviderKind::from(&provider))
-                            == Some(session.provider)
-                })
-            {
-                return Err(RoleViolation::SessionPlannerRoleMismatch {
+            if session.contract != calm_types::worker::WorkerContract::Assistant {
+                return Err(RoleViolation::SessionActorUnresolved {
                     session: session_id,
-                    card: card_id,
                 });
             }
             ActorId::AiManagedCard(card_id)
@@ -174,8 +136,8 @@ pub async fn enforce_role_resolving_session<T: WriteTx + ?Sized + Send>(
 
 /// Same policy as [`enforce_role_resolving_session`], with `card → {role, home
 /// track}` and `track → area` read live from the caller's write transaction.
-/// Hydrates two throwaway caches and calls the original; at most nine
-/// primary-key `SELECT`s per event inside the write lock.
+/// Hydrates two throwaway caches and resolves current session/card authority
+/// using primary-key reads inside the write lock.
 pub async fn enforce_role_resolving_session_from_tx<T: WriteTx + ?Sized + Send>(
     tx: &mut T,
     actor: &ActorId,
@@ -311,7 +273,55 @@ impl<'a> WriteTx for Transaction<'a, Sqlite> {
         &mut self,
         id: &WorkerSessionId,
     ) -> Result<Option<WorkerSessionRow>> {
-        crate::db::sqlite::session_get_tx(self, id).await
+        use calm_types::worker::{SessionMode, WorkerContract, WorkerProviderKind};
+        let Some(session) = crate::db::sqlite::session_get_tx(self, id).await? else {
+            return Ok(None);
+        };
+        // Inactive rows keep the existing liveness denial. Active authority must
+        // still belong to this exact card and its declared execution contract.
+        if !session.state.is_active_authority() {
+            return Ok(Some(session));
+        }
+        let Some(card) = session.card_id.as_ref() else {
+            return Ok(None);
+        };
+        let Some((kind, payload, current)) = self.read_card_binding(card).await? else {
+            return Ok(None);
+        };
+        if current.as_deref() != Some(id.as_str())
+            || self.read_card_track(card).await?.as_ref() != Some(&session.track_id)
+        {
+            return Ok(None);
+        }
+        let role = self.read_card_role(card).await?;
+        let provider_key = match (role, session.contract) {
+            (Some(CardRole::Planner), WorkerContract::Planner) => {
+                Some(crate::validation::PLANNER_PROVIDER_PAYLOAD_KEY)
+            }
+            (Some(CardRole::Assistant), WorkerContract::Assistant)
+                if payload
+                    .get("harness_profile")
+                    .and_then(serde_json::Value::as_str)
+                    == Some("assistant") =>
+            {
+                Some(crate::validation::ASSISTANT_PROVIDER_PAYLOAD_KEY)
+            }
+            (Some(CardRole::Worker), WorkerContract::Executor | WorkerContract::Validator) => None,
+            _ => return Ok(None),
+        };
+        if let Some(key) = provider_key {
+            let provider = payload.get(key).and_then(|value| {
+                serde_json::from_value::<calm_types::runtime::AgentProvider>(value.clone()).ok()
+            });
+            if kind != "codex"
+                || session.mode != SessionMode::Resumable
+                || session.provider == WorkerProviderKind::Terminal
+                || provider.as_ref().map(WorkerProviderKind::from) != Some(session.provider)
+            {
+                return Ok(None);
+            }
+        }
+        Ok(Some(session))
     }
 
     async fn read_card_role(&mut self, card: &CardId) -> Result<Option<CardRole>> {

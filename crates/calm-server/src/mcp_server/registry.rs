@@ -106,8 +106,16 @@ impl ToolCallIdentity {
         let Some(principal) = self.to_principal() else {
             return Ok(false);
         };
+        if !matches!(self.role, CardRole::Planner | CardRole::Assistant) {
+            return Ok(false);
+        }
         let decision = PrincipalDecisionGate::new(principal)
-            .decide_recorder(tx, &TrackId::from(track.to_string()))
+            .decide_card_write(
+                tx,
+                &TrackId::from(track.to_string()),
+                &CardId::from(self.card_id.clone()),
+                self.role,
+            )
             .await?;
         Ok(matches!(decision, GateDecision::Allow))
     }

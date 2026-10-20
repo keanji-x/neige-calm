@@ -505,20 +505,15 @@ mod tests {
     use super::*;
     use crate::card_role_cache::CardRoleCache;
     use crate::db::prelude::*;
-    use crate::db::sqlite::{
-        SqlxRepo, begin_immediate_tx, session_insert_tx, session_mark_track_root_tx,
-    };
+    use crate::db::sqlite::{SqlxRepo, begin_immediate_tx, session_start_runtime_tx};
     use crate::model::{CardRole, NewArea, NewCard, NewTrack};
     use crate::operation::workspace_lease::{
         acquire_workspace_lease_tx, prepare_worker_lease_as_tx,
     };
     use crate::recorder_shadow::divergence_count_for_test;
     use crate::track_area_cache::TrackAreaCache;
-    use calm_types::worker::{
-        LivenessTag, SessionMode, WorkerContract, WorkerProviderKind, WorkerSession,
-        WorkerSessionState,
-    };
-    use serde_json::Value;
+    use calm_types::worker::WorkerSessionState;
+    use serde_json::{Value, json};
     use std::path::Path;
     use std::process::Command;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -567,53 +562,32 @@ mod tests {
         }
     }
 
-    fn worker_session(id: &str, track_id: TrackId, card_id: CardId) -> WorkerSession {
-        WorkerSession {
-            id: WorkerSessionId::from(id),
-            track_id,
-            provider: WorkerProviderKind::Codex,
-            mode: SessionMode::Resumable,
-            contract: WorkerContract::Planner,
-            parent_session_id: None,
-            requester_session_id: None,
-            state: WorkerSessionState::Starting,
-            mcp_token_hash: None,
-            thread_id: None,
-            agent_session_id: None,
-            active_turn_id: None,
-            terminal_run_id: None,
-            card_id: Some(card_id),
-            handle_state_json: None,
-            liveness: LivenessTag::Unknown,
-            liveness_probed_at_ms: None,
-            exit_code: None,
-            exit_interpretation: None,
-            spawn_op_id: None,
-            last_activity_ms: None,
-            last_thread_status: None,
-            created_at_ms: 1,
-            updated_at_ms: 1,
-            completed_at_ms: None,
-        }
-    }
-
     async fn seed_track_root_session(
         repo: &SqlxRepo,
         track_id: &TrackId,
         card_id: &CardId,
         session_id: &WorkerSessionId,
     ) {
-        let root_session = worker_session(session_id.as_str(), track_id.clone(), card_id.clone());
-        let track_id = track_id.clone();
-        let session_id = session_id.clone();
+        let init = crate::session_projection_repo::WorkerSessionInit::shared_planner(
+            session_id.to_string(),
+            card_id.to_string(),
+            crate::session_projection_repo::AgentProvider::Codex,
+            WorkerSessionState::Starting,
+            None,
+            json!({}),
+            1,
+        );
+        assert_eq!(
+            repo.card_get(card_id.as_str())
+                .await
+                .unwrap()
+                .unwrap()
+                .track_id,
+            *track_id
+        );
         crate::db::write_in_tx_typed(repo, move |tx| {
             Box::pin(async move {
-                session_insert_tx(tx, root_session)
-                    .await
-                    .map_err(CalmError::from)?;
-                session_mark_track_root_tx(tx, &track_id, &session_id)
-                    .await
-                    .map_err(CalmError::from)?;
+                session_start_runtime_tx(tx, init).await?;
                 Ok(())
             })
         })
@@ -672,16 +646,23 @@ mod tests {
             .await
             .expect("create worker card");
         let session_id = WorkerSessionId::from("worker-session");
-        let session = worker_session(
-            session_id.as_str(),
-            track.id.clone(),
-            worker_card.id.clone(),
-        );
+        let init = crate::session_projection_repo::WorkerSessionInit {
+            id: session_id.to_string(),
+            card_id: worker_card.id.to_string(),
+            kind: crate::session_projection_repo::WorkerSessionKind::CodexCard,
+            agent_provider: None,
+            status: WorkerSessionState::Starting,
+            terminal_run_id: None,
+            thread_id: None,
+            session_id: None,
+            active_turn_id: None,
+            handle_state_json: None,
+            spawn_op_id: None,
+            now_ms: 1,
+        };
         crate::db::write_in_tx_typed(repo.as_ref(), move |tx| {
             Box::pin(async move {
-                session_insert_tx(tx, session)
-                    .await
-                    .map_err(CalmError::from)?;
+                session_start_runtime_tx(tx, init).await?;
                 Ok(())
             })
         })
@@ -813,7 +794,7 @@ mod tests {
                 title: None,
                 kind: "codex".into(),
                 sort: None,
-                payload: Value::Null,
+                payload: json!({"planner_provider":"codex"}),
             })
             .await
             .expect("create planner card");
@@ -958,7 +939,7 @@ mod tests {
                 title: None,
                 kind: "codex".into(),
                 sort: None,
-                payload: Value::Null,
+                payload: json!({"planner_provider":"codex"}),
             })
             .await
             .expect("create planner card");

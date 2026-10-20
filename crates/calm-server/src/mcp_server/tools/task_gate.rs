@@ -92,6 +92,8 @@ async fn task_gate(
     let admit_attempt = attempt_id.clone();
     let admitted = crate::db::write_in_tx_typed(ctx.repo.as_ref(), move |tx| {
         Box::pin(async move {
+            crate::decision_sink::admit_worker_write_tx(tx, &identity, &track_id.clone().into())
+                .await?;
             admit_run_tx(tx, &admit_attempt, &card_id, &track_id, commit_message).await
         })
     })

@@ -21,9 +21,7 @@ use calm_server::ids::{AreaId, CardId, TrackId};
 use calm_server::mcp_server::registry::AppContext;
 use calm_server::mcp_server::{McpServer, ToolCallIdentity, ToolRegistry, build_default_registry};
 use calm_server::model::{CardRole, NewArea, NewCard, NewTrack, now_ms};
-use calm_server::session_projection_repo::{
-    AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
-};
+use calm_server::session_projection_repo::{AgentProvider, WorkerSessionState};
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_server::state::{CodexClient, DaemonClient, WriteContext};
 use calm_server::terminal_renderer::TerminalRendererRegistry;
@@ -128,9 +126,9 @@ async fn boot() -> Boot {
         .card_create(NewCard {
             track_id: track.id.clone(),
             title: None,
-            kind: "planner".into(),
+            kind: "codex".into(),
             sort: None,
-            payload: Value::Null,
+            payload: crate::support::planner::payload(),
         })
         .await
         .unwrap();
@@ -242,20 +240,13 @@ async fn seed_planner_session(repo: &SqlxRepo, track_id: &str, planner_card_id: 
     let mut tx = repo.pool().begin().await.unwrap();
     session_start_runtime_tx(
         &mut tx,
-        WorkerSessionInit {
-            id: "planner-session".to_string(),
-            card_id: planner_card_id.to_string(),
-            kind: WorkerSessionKind::CodexCard,
-            agent_provider: Some(AgentProvider::Codex),
-            status: WorkerSessionState::Running,
-            terminal_run_id: None,
-            thread_id: Some("planner-thread".to_string()),
-            session_id: None,
-            active_turn_id: None,
-            handle_state_json: None,
-            spawn_op_id: None,
-            now_ms: now_ms(),
-        },
+        crate::support::planner::session_init(
+            "planner-session",
+            planner_card_id,
+            Some("planner-thread".into()),
+            WorkerSessionState::Running,
+            now_ms(),
+        ),
     )
     .await
     .unwrap();

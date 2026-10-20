@@ -82,7 +82,7 @@ impl Fixture {
             if role == CardRole::Assistant {
                 WorkerSessionKind::ManagedAssistant
             } else {
-                WorkerSessionKind::CodexCard
+                WorkerSessionKind::SharedPlanner
             },
             None,
         )
@@ -131,7 +131,7 @@ impl Fixture {
                 payload: if role == CardRole::Assistant {
                     json!({"harness_profile":"assistant","assistant_provider":"codex"})
                 } else {
-                    json!({})
+                    json!({"planner_provider":"codex"})
                 },
                 title: None,
             })

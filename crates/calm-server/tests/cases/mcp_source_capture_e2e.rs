@@ -116,26 +116,40 @@ async fn mint_card_with_thread(
     let card_id = calm_server::model::new_id();
     let worker_session_id = calm_server::model::new_id();
     let mut tx = sqlx_repo.pool().begin().await.expect("begin card tx");
-    let (_card, _term, mcp_token) = card_with_codex_create_tx(
-        &mut tx,
-        card_id.clone(),
-        &worker_session_id,
-        None,
-        track_id,
-        None,
-        None,
-        "/workspace".into(),
-        json!({}),
-        None,
-        None,
-        None,
-        role,
-        true,
-        card_role_cache,
-        calm_server::routes::theme::RequestTheme::default_dark(),
-    )
-    .await
-    .expect("mint card");
+    let mcp_token = if role == CardRole::Planner {
+        Some(
+            crate::support::planner::mint_tx(
+                &mut tx,
+                card_id.clone(),
+                &worker_session_id,
+                track_id,
+                card_role_cache,
+            )
+            .await,
+        )
+    } else {
+        let (_, _, token) = card_with_codex_create_tx(
+            &mut tx,
+            card_id.clone(),
+            &worker_session_id,
+            None,
+            track_id,
+            None,
+            None,
+            "/workspace".into(),
+            json!({}),
+            None,
+            None,
+            None,
+            role,
+            true,
+            card_role_cache,
+            calm_server::routes::theme::RequestTheme::default_dark(),
+        )
+        .await
+        .expect("mint card");
+        token
+    };
     let raw_token = match mcp_token {
         Some(token) => token,
         None => {

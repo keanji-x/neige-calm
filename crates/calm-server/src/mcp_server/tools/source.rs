@@ -132,9 +132,9 @@ async fn source_capture(
     // A key is "present" when it is in the object, whatever its value: `manual: null` next to `call` is still two branches at once.
     let has = |key: &str| obj.contains_key(key);
     match (has("call"), has("manual"), has("source_id")) {
-        (true, false, false) => capture_call(&ctx, &track_id, obj, tool).await,
-        (false, true, false) => capture_manual(&ctx, &track_id, obj, tool).await,
-        (false, false, true) => append_anchors(&ctx, &track_id, obj, tool).await,
+        (true, false, false) => capture_call(&ctx, &identity, &track_id, obj, tool).await,
+        (false, true, false) => capture_manual(&ctx, &identity, &track_id, obj, tool).await,
+        (false, false, true) => append_anchors(&ctx, &identity, &track_id, obj, tool).await,
         (false, false, false) => Err(RpcError::invalid_params(format!(
             "{tool}: one of `call`, `manual`, `source_id` is required"
         ))),
@@ -200,6 +200,7 @@ fn validate_published_at(text: &str, tool: &str) -> Result<(), RpcError> {
 
 async fn capture_call(
     ctx: &Arc<AppContext>,
+    identity: &ToolCallIdentity,
     track_id: &str,
     obj: &Map<String, Value>,
     tool: &str,
@@ -249,7 +250,7 @@ async fn capture_call(
         args_canon: ARGS_CANON_VERSION.to_string(),
         content_id: fields.content_id.clone(),
     };
-    let mut receipt = insert_source(ctx, track_id, fields, origin, body, tool).await?;
+    let mut receipt = insert_source(ctx, identity, track_id, fields, origin, body, tool).await?;
     receipt
         .as_object_mut()
         .expect("receipt is an object")
@@ -338,6 +339,7 @@ fn recorded_body(recorded: &Recorded, tool: &str) -> Result<String, RpcError> {
 
 async fn capture_manual(
     ctx: &Arc<AppContext>,
+    identity: &ToolCallIdentity,
     track_id: &str,
     obj: &Map<String, Value>,
     tool: &str,
@@ -374,12 +376,13 @@ async fn capture_manual(
         url,
         content_id: fields.content_id.clone(),
     };
-    insert_source(ctx, track_id, fields, origin, text, tool).await
+    insert_source(ctx, identity, track_id, fields, origin, text, tool).await
 }
 
 /// The shared tail of both capture branches: anchors, quota, id, row.
 async fn insert_source(
     ctx: &Arc<AppContext>,
+    identity: &ToolCallIdentity,
     track_id: &str,
     fields: NewSourceFields,
     origin: Origin,
@@ -402,9 +405,15 @@ async fn insert_source(
         captured_at,
         quotes,
     };
+    let identity = identity.clone();
     let track = track_id.to_string();
     let source_id = crate::db::write_in_tx_typed(ctx.repo.as_ref(), move |tx| {
         Box::pin(async move {
+            if !identity.session_is_active(tx, &track).await? {
+                return Err(CalmError::Forbidden(
+                    "source caller is no longer current".into(),
+                ));
+            }
             let (count, bytes) = store::count_and_bytes_tx(tx, &track).await?;
             if count >= MAX_SOURCES_PER_TRACK {
                 return Err(CalmError::Forbidden(format!(
@@ -460,6 +469,7 @@ async fn mint_unique_source_id_tx(
 
 async fn append_anchors(
     ctx: &Arc<AppContext>,
+    identity: &ToolCallIdentity,
     track_id: &str,
     obj: &Map<String, Value>,
     tool: &str,
@@ -483,10 +493,16 @@ async fn append_anchors(
             "{tool}: `quotes` must be a non-empty array with `source_id`"
         )));
     }
+    let identity = identity.clone();
     let track = track_id.to_string();
     let id = source_id.clone();
     let (provenance, mapping) = crate::db::write_in_tx_typed(ctx.repo.as_ref(), move |tx| {
         Box::pin(async move {
+            if !identity.session_is_active(tx, &track).await? {
+                return Err(CalmError::Forbidden(
+                    "source caller is no longer current".into(),
+                ));
+            }
             let row = store::get_tx(tx, &track, &id, Detail::Full)
                 .await?
                 .ok_or_else(|| {

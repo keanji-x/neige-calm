@@ -11,9 +11,7 @@ use calm_server::db::sqlite::{SqlxRepo, session_start_runtime_tx};
 use calm_server::event::EventBus;
 use calm_server::model::{NewPlugin, now_ms};
 use calm_server::plugin_host::{Manifest, PluginHost, PluginRegistry, PluginRuntimeStatus};
-use calm_server::session_projection_repo::{
-    AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
-};
+use calm_server::session_projection_repo::WorkerSessionState;
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_server::shared_codex_home::SharedCodexHome;
 use calm_server::state::WriteContext;
@@ -205,20 +203,13 @@ pub async fn seed_planner_session(repo: &SqlxRepo, track_id: &str, planner_card_
     let mut tx = repo.pool().begin().await.expect("begin planner session tx");
     session_start_runtime_tx(
         &mut tx,
-        WorkerSessionInit {
-            id: PLANNER_SESSION_ID.to_string(),
-            card_id: planner_card_id.to_string(),
-            kind: WorkerSessionKind::CodexCard,
-            agent_provider: Some(AgentProvider::Codex),
-            status: WorkerSessionState::Running,
-            terminal_run_id: None,
-            thread_id: Some("planner-thread".to_string()),
-            session_id: None,
-            active_turn_id: None,
-            handle_state_json: None,
-            spawn_op_id: None,
-            now_ms: now_ms(),
-        },
+        crate::support::planner::session_init(
+            PLANNER_SESSION_ID,
+            planner_card_id,
+            Some("planner-thread".into()),
+            WorkerSessionState::Running,
+            now_ms(),
+        ),
     )
     .await
     .expect("seed planner session");

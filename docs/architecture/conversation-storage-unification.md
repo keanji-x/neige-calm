@@ -249,10 +249,26 @@ can invoke it twice before committing; all writes roll back together.
   identity; existing shutdown only removes Dormant on a handle miss (`S/harness/registry.rs:181`).
   Live replies are separate (`S/harness/live_replies.rs:18`); native mapping/unsubscribe are
   separate (`S/shared_codex_appserver.rs:1268,1559`). No new cache manager.
-* SQL-current session/contract authorization protects every consequential MCP mutation and late
-  native pre-send, including calls admitted before commit (`S/mcp_server/handshake.rs:66`,
-  `transport.rs:1651`). Cold boot rejects retired rows and seeds committed roles. Fresh credentials
-  appear only on next authorized retained activation; receipts never contain raw tokens.
+* U1a class A: card/conversation-scoped SQL writes made on behalf of a worker session
+  (events, report/task/plan writes, asks, input/receipt writes, native pre-send and native
+  registration facts) resolve the calling worker as current inside the owning SQL transaction:
+  active session, card link and contract must agree. Refuse a retired worker even if handshake
+  or per-call admission preceded retirement (`S/mcp_server/handshake.rs:66`, `transport.rs:1651`).
+  Extend the existing transaction session resolution; admission alone is an early refusal.
+* Class B: deployment- or track-level operations carrying no per-worker data, or operations
+  outside an SQL transaction (including MCP maintenance VACUUM and pure external handler effects),
+  retain existing handshake/per-call admission. U1a changes none of these operations. U1b must
+  refuse rotation while the carrier has an active native turn **or an in-flight MCP tool call**,
+  using the existing owner of that state, including native issuance before active-turn publication.
+  An idle session is not proof: MCP admission allows idle sessions and ACP registration precedes
+  publication of its active turn (`T/session_row.rs:161`, `S/acp_planner/session.rs:261,412`).
+* Class C: work durably admitted before retirement (forge action payloads, recorded approvals/asks,
+  dev publish, task declarations and receipts) keeps exactly its existing attribution: card, Track,
+  KernelDispatcher and worker where present. Do not rewrite, backfill or re-attribute it, add a
+  worker field, or re-authorize its later execution against the current carrier. The card persists,
+  so its commits/plans/receipts keep their card attribution. U1a changes none of these semantics.
+* Cold boot rejects retired rows and seeds committed roles. Fresh credentials appear only on
+  next authorized retained activation; receipts never contain raw tokens.
 
 The caller acquires sorted card fences, then drive → Track lifecycle → resume locks as applicable
 (`S/planner_hibernation.rs:97,104`); no new inverse Track-first lock order. Hold dispatcher push admission

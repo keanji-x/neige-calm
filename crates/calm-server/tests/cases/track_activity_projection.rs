@@ -122,7 +122,7 @@ async fn sub_track_parent_running_with_idle_child_is_not_working() {
     let parent = f.track("parent").await;
     let child = f.track("child").await;
     let planner = f
-        .card(&child, "card-child-planner", "planner", CardRole::Planner)
+        .card(&child, "card-child-planner", "codex", CardRole::Planner)
         .await;
     let ws = f
         .session(
@@ -280,9 +280,7 @@ async fn interactive_card_failed_session_is_failed() {
 
 async fn harness_track(f: &Fx, state: WorkerSessionState) -> (String, String, String) {
     let t = f.track("plan").await;
-    let planner = f
-        .card(&t, "card-planner", "planner", CardRole::Planner)
-        .await;
+    let planner = f.card(&t, "card-planner", "codex", CardRole::Planner).await;
     let ws = f
         .session(
             &planner,
@@ -1207,9 +1205,7 @@ async fn activity_payload_passes_the_overlay_registry() {
     f.exit_session(&chat_ws, WorkerSessionState::Failed, 6_000)
         .await;
     // The Planner card: one `neige_user_ask` ask and a failed turn (planner down).
-    let planner = f
-        .card(&t, "card-planner", "planner", CardRole::Planner)
-        .await;
+    let planner = f.card(&t, "card-planner", "codex", CardRole::Planner).await;
     let planner_ws = f
         .session(
             &planner,

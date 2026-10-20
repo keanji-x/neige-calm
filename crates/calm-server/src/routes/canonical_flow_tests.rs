@@ -438,7 +438,19 @@ async fn original_input_flow(
         running.canonical_inputs.attempts
     );
     fixture.wait_for_stored_reply(&card).await;
+    // A replay ACK precedes its asynchronous wake. Settle that invocation
+    // before removing the harness, or it can race shutdown into cold recovery.
+    let replay_wake = crate::test_seams::PausePoint::default();
+    crate::test_seams::install_pause_for_test(
+        "canonical-human-wake-finished",
+        &card,
+        replay_wake.clone(),
+    );
     let replay = post(&app, &cookie, "/api/tracks", "first", create.clone()).await;
+    tokio::time::timeout(Duration::from_secs(5), replay_wake.entered.notified())
+        .await
+        .expect("the replay wake must finish before the original harness is removed");
+    replay_wake.release.notify_one();
     assert_eq!(replay["id"], created["id"]);
     assert_eq!(
         fixture.carrier(track).await.2.canonical_inputs,

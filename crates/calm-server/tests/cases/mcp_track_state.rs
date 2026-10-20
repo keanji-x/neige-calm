@@ -7,8 +7,7 @@ use std::sync::Arc;
 use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::RepoEventWrite;
 use calm_server::db::prelude::*;
-use calm_server::db::sqlite::{SqlxRepo, session_insert_tx, session_mark_track_root_tx};
-use calm_server::error::CalmError;
+use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::{Event, EventBus};
 use calm_server::ids::{ActorId, AreaId, CardId, TrackId};
 use calm_server::mcp_server::registry::AppContext;
@@ -21,10 +20,7 @@ use calm_server::plugin_host::mcp::RpcError;
 use calm_server::session_projection_repo::AgentProvider;
 use calm_types::event::TaskContextRef;
 use calm_types::task_recovery::{TASK_IN_TRACK_ROUTE, TaskAttemptOrigin, TaskRecoveryConstraint};
-use calm_types::worker::{
-    LivenessTag, SessionMode, WorkerContract, WorkerProviderKind, WorkerSession, WorkerSessionId,
-    WorkerSessionState,
-};
+
 use serde_json::{Value, json};
 
 const PLANNER_SESSION_ID: &str = "planner-session";
@@ -40,58 +36,21 @@ struct Boot {
     worker_card_id: CardId,
 }
 
-fn planner_session(id: &str, track_id: TrackId, card_id: CardId) -> WorkerSession {
-    WorkerSession {
-        id: WorkerSessionId::from(id),
-        track_id,
-        provider: WorkerProviderKind::Codex,
-        mode: SessionMode::Resumable,
-        contract: WorkerContract::Planner,
-        parent_session_id: None,
-        requester_session_id: None,
-        state: WorkerSessionState::Starting,
-        mcp_token_hash: None,
-        thread_id: None,
-        agent_session_id: None,
-        active_turn_id: None,
-        terminal_run_id: None,
-        card_id: Some(card_id),
-        handle_state_json: None,
-        liveness: LivenessTag::Unknown,
-        liveness_probed_at_ms: None,
-        exit_code: None,
-        exit_interpretation: None,
-        spawn_op_id: None,
-        last_activity_ms: None,
-        last_thread_status: None,
-        created_at_ms: 1,
-        updated_at_ms: 1,
-        completed_at_ms: None,
-    }
-}
-
 async fn seed_track_root_session(
     repo: &dyn RepoEventWrite,
     track_id: &TrackId,
     card_id: &CardId,
     session_id: &str,
 ) {
-    let session = planner_session(session_id, track_id.clone(), card_id.clone());
-    let root_session_id = session.id.clone();
-    let track_id = track_id.clone();
-    calm_server::db::write_in_tx_typed(repo, move |tx| {
-        Box::pin(async move {
-            session_insert_tx(tx, session)
-                .await
-                .map_err(CalmError::from)?;
-            session_mark_track_root_tx(tx, &track_id, &root_session_id)
-                .await
-                .map_err(CalmError::from)?;
-            Ok(())
-        })
-    })
-    .await
-    .expect("seed track root session");
+    assert_eq!(
+        repo.card_get(card_id.as_str())
+            .await
+            .unwrap()
+            .unwrap()
+            .track_id,
+        *track_id
+    );
+    crate::support::planner::start_session(repo, card_id.as_str(), session_id).await;
 }
 
 async fn boot() -> Boot {
@@ -129,9 +88,9 @@ async fn boot() -> Boot {
         .card_create(NewCard {
             track_id: track.id.clone(),
             title: None,
-            kind: "planner".into(),
+            kind: "codex".into(),
             sort: None,
-            payload: serde_json::Value::Null,
+            payload: crate::support::planner::payload(),
         })
         .await
         .unwrap();
@@ -283,7 +242,12 @@ async fn get_track_state_returns_track_and_cards_for_planner() {
     );
     let planner_runtime: Option<CardRuntimeView> =
         serde_json::from_value(planner["runtime"].clone()).expect("runtime field is typed");
-    assert!(planner_runtime.is_none(), "planner card has no runtime row");
+    let planner_runtime = planner_runtime.expect("production Planner has a current runtime");
+    assert_eq!(planner_runtime.worker_session_id, PLANNER_SESSION_ID);
+    assert_eq!(
+        planner_runtime.kind,
+        calm_server::session_projection_repo::WorkerSessionKind::SharedPlanner
+    );
 
     let worker = cards
         .iter()
