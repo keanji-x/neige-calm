@@ -264,3 +264,105 @@ async fn canonical_keep_logout_or_access_change_forbidden() {
     );
     fixture.shutdown_process(&state).await;
 }
+
+#[tokio::test]
+async fn canonical_keep_access_revoked_before_committed_replay_and_fresh_key() {
+    let fixture = Fixture::new().await;
+    let (state, app, cookie, auth) = fixture.application_with_auth(false).await;
+    let area = post(
+        &app,
+        &cookie,
+        "/api/areas",
+        "area",
+        json!({"name":"Revoked Keep authority", "color":"#123456"}),
+    )
+    .await;
+    let (_client, mut peer) = connect(&state.shared_codex_appserver).await;
+    let created = post(&app, &cookie, "/api/tracks", "create", json!({"area_id":area["id"],"title":"","planner_provider":"codex", "theme":{"fg":[255,255,255],"bg":[0,0,0]},"first_message":FIRST_BODY})).await;
+    let track = created["id"].as_str().unwrap();
+    let initial = super::native_attempt_recovery_tests::initial_request(&mut peer).await;
+    send(&mut peer, json!({"id":initial["id"],"result":{"turn":{}}})).await;
+    let (card, worker, held) = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let facts = fixture.carrier(track).await;
+            if matches!(
+                facts.2.canonical_inputs.attempts[0].delivery,
+                InputDeliveryFact::Unknown
+            ) {
+                break facts;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    let attempt = &held.canonical_inputs.attempts[0];
+    let args = json!({"carrier_id":worker,"submission_id":attempt.attempt.submission_id,"attempt_id":attempt.attempt.attempt_id,"revision":attempt.revision.to_string()});
+    let uri = format!("/api/cards/{card}/conversation/input/keep");
+    let (status, kept) = response(&app, &cookie, &uri, "keep", args.clone()).await;
+    assert_eq!(status, StatusCode::OK, "{kept}");
+    let (_, _, committed) = fixture.carrier(track).await;
+    assert_eq!(committed.canonical_inputs.receipts.len(), 1);
+    assert_eq!(
+        serde_json::to_value(&committed.canonical_inputs.receipts[0].result).unwrap(),
+        kept
+    );
+    assert_eq!(
+        committed.canonical_inputs.attempts[0].revision,
+        attempt.revision + 1
+    );
+
+    let token = cookie.split_once('=').unwrap().1;
+    let session = auth
+        .sessions
+        .get(token)
+        .expect("password session remains live");
+    let revoked = sqlx::query("DELETE FROM area_members WHERE area_id=?1 AND user_id=?2")
+        .bind(area["id"].as_str().unwrap())
+        .bind(&session.identity.user_id)
+        .execute(fixture.repo.pool())
+        .await
+        .unwrap();
+    assert_eq!(revoked.rows_affected(), 1);
+    // Include the complete persisted checkpoint (attempt revision and receipt)
+    // and event log: even a receipt replay must not append a refresh event.
+    let before: (String, i64) = sqlx::query_as(
+        "SELECT handle_state_json, (SELECT count(*) FROM events) FROM worker_sessions WHERE id=?1",
+    )
+    .bind(&worker)
+    .fetch_one(fixture.repo.pool())
+    .await
+    .unwrap();
+    let counts = fixture.counts(&card).await;
+    for key in ["keep", "fresh-keep"] {
+        assert!(auth.sessions.get(token).is_some(), "{key}: session revoked");
+        let (status, denied) = response(&app, &cookie, &uri, key, args.clone()).await;
+        assert!(
+            matches!(status, StatusCode::FORBIDDEN | StatusCode::NOT_FOUND),
+            "{key}: {status} {denied}"
+        );
+        assert_ne!(denied, kept, "{key}: disclosed the committed result");
+        for field in [
+            "carrier_id",
+            "submission_id",
+            "attempt_id",
+            "revision",
+            "waiting_for_settlement",
+        ] {
+            assert!(
+                denied.get(field).is_none(),
+                "{key}: disclosed {field}: {denied}"
+            );
+        }
+        let after: (String, i64) = sqlx::query_as(
+            "SELECT handle_state_json, (SELECT count(*) FROM events) FROM worker_sessions WHERE id=?1",
+        )
+        .bind(&worker)
+        .fetch_one(fixture.repo.pool())
+        .await
+        .unwrap();
+        assert_eq!(after, before, "{key}: wrote a checkpoint/revision or event");
+        assert_eq!(fixture.counts(&card).await, counts, "{key}: durable writes");
+    }
+    fixture.shutdown_process(&state).await;
+}
