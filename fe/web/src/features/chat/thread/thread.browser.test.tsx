@@ -1,4 +1,3 @@
-import { CardFrame } from '../../../ui/card-frame/public.tsx';
 import { ChatComposer as SdkComposer, ChatComposerInput as SdkComposerInput } from '@astryxdesign/core/Chat';
 import { withFontRoleProbe } from '../../../../../tools/styles/font-role-fixture.ts';
 /* The composer, the exchange rail and the reply's type, measured against a real rendering engine. */
@@ -8,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 /* The whole cascade before the component: `thread.module.css` declares `@layer features` of its own, and whichever registers first wins. */
 import '../../../styles/entry.css';
+import { CardFrame } from '../../../ui/card-frame/public.tsx';
 
 import { ChatComposer, ChatThread } from './public.tsx';
 import type {

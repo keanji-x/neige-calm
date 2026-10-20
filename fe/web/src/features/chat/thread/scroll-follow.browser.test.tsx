@@ -1,9 +1,9 @@
-import { CardFrame } from '../../../ui/card-frame/public.tsx';
 import { act, cleanup, render } from '@testing-library/react';
 import { commands, page, userEvent } from 'vitest/browser';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import '../../../styles/entry.css';
+import { CardFrame } from '../../../ui/card-frame/public.tsx';
 import { ChatThread, type ChatThreadProps } from './public.tsx';
 import type { Conversation, TranscriptEntry } from '../../../../../core/domain/conversation.ts';
 import { Drawer } from '../../../ui/drawer/public.tsx';

@@ -1,10 +1,10 @@
-import { CardFrame } from '../../../ui/card-frame/public.tsx';
 /* A reply as it streams (#1923 S2), as a finger gets it (`vitest.config.ts`: `pointer: coarse`, touch): the pane
    follows its growth only for a reader at the end, and a narrow pane takes a growing code block without overflowing. */
 import { cleanup, act, fireEvent, render, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import '../../../styles/entry.css';
+import { CardFrame } from '../../../ui/card-frame/public.tsx';
 
 import { ChatThread } from './public.tsx';
 import type { Conversation, ConversationTurn, TranscriptEntry } from '../../../../../core/domain/conversation.ts';

@@ -1,4 +1,3 @@
-import { CardFrame } from '../../../ui/card-frame/public.tsx';
 /* The exchange rail as a finger gets it, in a browser context of its own (`vitest.config.ts`): `pointer: coarse` is a
    media feature nothing in a page can set. A tablet, not a phone: a phone width paints no seam at all. */
 import { act, cleanup, render } from '@testing-library/react';
@@ -9,6 +8,7 @@ declare module 'vitest/browser' { interface BrowserCommands { tap(selector: stri
 
 /* The whole cascade before the component: a CSS Module imported first registers `@layer features` ahead of everything. */
 import '../../../styles/entry.css';
+import { CardFrame } from '../../../ui/card-frame/public.tsx';
 
 import { ChatThread } from './public.tsx';
 import type { Conversation, ConversationTurn } from '../../../../../core/domain/conversation.ts';
