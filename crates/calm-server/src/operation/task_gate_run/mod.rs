@@ -404,7 +404,8 @@ impl ProviderAdapter for TaskGateRunAdapter {
                 return Ok(ParkedRecovery::LeaveParked);
             }
         }
-        let settled = execution::settlement(ctx, &record).await?;
+        let settled =
+            crate::operation::owned_execution::settlement(ctx, &record.execution_id).await?;
         if settled.is_none() {
             let frozen = FrozenRun::from_output(super::required_output(op)?)?;
             let timed_out = op.parked_deadline_ms.is_some_and(|d| now_ms() > d)
@@ -412,7 +413,8 @@ impl ProviderAdapter for TaskGateRunAdapter {
             if timed_out && record.decision == Decision::Observing {
                 execution::stop(ctx, op, StopReason::Timeout).await?;
             } else {
-                execution::drain_exited(ctx, op, &record).await?;
+                crate::operation::owned_execution::drain_exited(ctx, op, &record.execution_id)
+                    .await?;
             }
             return Ok(ParkedRecovery::LeaveParked);
         }
@@ -445,9 +447,12 @@ impl ProviderAdapter for TaskGateRunAdapter {
         if let Some(hook) = &self.hooks.before_completion {
             hook().await;
         }
-        Ok(ParkedRecovery::Complete(super::ParkedOutcome::Succeeded {
-            result: serde_json::to_value(result)?,
-        }))
+        Ok(ParkedRecovery::Complete(Box::new((
+            super::ParkedOutcome::Succeeded {
+                result: serde_json::to_value(result)?,
+            },
+            None,
+        ))))
     }
 
     async fn complete_owned_parked_tx(

@@ -135,9 +135,12 @@ async fn boot_recovery_dead_default_fails_parked_dead() {
 #[tokio::test]
 async fn boot_recovery_live_complete_kills_group_and_succeeds() {
     let adapter = Arc::new(QueuedRecoveryAdapter::new(vec![ParkedRecovery::Complete(
-        ParkedOutcome::Succeeded {
-            result: json!({ "boot": "recovered" }),
-        },
+        Box::new((
+            ParkedOutcome::Succeeded {
+                result: json!({ "boot": "recovered" }),
+            },
+            None,
+        )),
     )]));
     let boot = TestBoot::new(vec![adapter]).await;
     let (mut child, artifacts) = spawn_sleep_child(5);
@@ -249,9 +252,12 @@ async fn boot_recovery_past_deadline_ignores_abandoned_parked_lease() {
 #[tokio::test]
 async fn sweep_deadline_uses_recoverable_verdict_instead_of_deadline_failure() {
     let adapter = Arc::new(QueuedRecoveryAdapter::new(vec![ParkedRecovery::Complete(
-        ParkedOutcome::Succeeded {
-            result: json!({ "recovered": true }),
-        },
+        Box::new((
+            ParkedOutcome::Succeeded {
+                result: json!({ "recovered": true }),
+            },
+            None,
+        )),
     )]));
     let boot = TestBoot::new(vec![adapter]).await;
     let op = boot
@@ -277,9 +283,12 @@ async fn sweep_deadline_uses_recoverable_verdict_instead_of_deadline_failure() {
 #[tokio::test]
 async fn sweep_pre_deadline_dead_probe_completes_verdict_and_fails_dead_work() {
     let adapter = Arc::new(QueuedRecoveryAdapter::new(vec![
-        ParkedRecovery::Complete(ParkedOutcome::Succeeded {
-            result: json!({ "first": "complete" }),
-        }),
+        ParkedRecovery::Complete(Box::new((
+            ParkedOutcome::Succeeded {
+                result: json!({ "first": "complete" }),
+            },
+            None,
+        ))),
         ParkedRecovery::Fail {
             reason: "dead before deadline".into(),
         },
@@ -331,9 +340,12 @@ async fn sweep_post_kill_recheck_can_recover_verdict() {
         ParkedRecovery::Fail {
             reason: "first pass fail".into(),
         },
-        ParkedRecovery::Complete(ParkedOutcome::Succeeded {
-            result: json!({ "post_kill": "verdict" }),
-        }),
+        ParkedRecovery::Complete(Box::new((
+            ParkedOutcome::Succeeded {
+                result: json!({ "post_kill": "verdict" }),
+            },
+            None,
+        ))),
     ]));
     let boot = TestBoot::new(vec![adapter]).await;
     let (mut child, artifacts) = spawn_sleep_child(5);

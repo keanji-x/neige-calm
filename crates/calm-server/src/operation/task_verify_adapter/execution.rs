@@ -71,7 +71,8 @@ impl TaskVerifyAdapter {
         }
         let record = execution::record(op)?;
         let frozen = FrozenVerify::from_output(super::super::required_output(op)?)?;
-        let settled = execution::settlement(ctx, &record).await?;
+        let settled =
+            crate::operation::owned_execution::settlement(ctx, &record.execution_id).await?;
         if settled.is_none() {
             if matches!(mode, RecoveryMode::Boot) {
                 if record.decision == Decision::Observing {
@@ -95,7 +96,8 @@ impl TaskVerifyAdapter {
             if record.decision == Decision::Observing && timeout {
                 execution::stop(ctx, op, StopReason::Timeout).await?;
             } else {
-                execution::drain_exited(ctx, op, &record).await?;
+                crate::operation::owned_execution::drain_exited(ctx, op, &record.execution_id)
+                    .await?;
             }
             return Ok(ParkedRecovery::LeaveParked);
         }
@@ -147,11 +149,12 @@ impl TaskVerifyAdapter {
         if let Some(hook) = &self.before_completion {
             hook().await;
         }
-        Ok(ParkedRecovery::Complete(
+        Ok(ParkedRecovery::Complete(Box::new((
             crate::operation::ParkedOutcome::Succeeded {
                 result: serde_json::to_value(result)?,
             },
-        ))
+            None,
+        ))))
     }
 
     async fn observe(self, ctx: SpawnCtx, id: String, mut restart: bool, mut retry_close: bool) {

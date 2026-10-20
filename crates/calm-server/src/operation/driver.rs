@@ -71,7 +71,7 @@ pub struct OperationRuntime {
 
 impl OperationRuntime {
     pub(crate) fn require_gate_execution(&self) -> Result<()> {
-        super::gate_execution::engine(&self.spawn_ctx).map(|_| ())
+        super::owned_execution::engine(&self.spawn_ctx).map(|_| ())
     }
     pub(crate) fn track_delete_locks(&self) -> &crate::per_card_lock::KeyedLocks {
         &self.spawn_ctx.track_delete_locks
@@ -1239,7 +1239,8 @@ impl OperationRuntime {
             )
             .await?
         {
-            ParkedRecovery::Complete(outcome) => {
+            ParkedRecovery::Complete(complete) => {
+                let (outcome, _) = *complete;
                 self.complete_parked_and_publish(&op.id, &outcome).await?;
             }
             // Dead work with NO recoverable outcome fails now; leaving it parked would later be misclassified as a deadline failure.
@@ -1303,7 +1304,8 @@ impl OperationRuntime {
             )
             .await?
         {
-            ParkedRecovery::Complete(outcome) => {
+            ParkedRecovery::Complete(complete) => {
+                let (outcome, _) = *complete;
                 kill_parked_group_if_alive(&artifacts, alive);
                 self.complete_parked_and_publish(&op.id, &outcome).await?;
             }
@@ -1378,7 +1380,8 @@ impl OperationRuntime {
                 )
                 .await?
             {
-                ParkedRecovery::Complete(outcome) => {
+                ParkedRecovery::Complete(complete) => {
+                    let (outcome, _) = *complete;
                     self.complete_parked_and_publish(&op.id, &outcome).await?;
                     return Ok(());
                 }
@@ -1581,7 +1584,8 @@ impl OperationRuntime {
                     ParkedRecovery::LeaveParked => {
                         self.repo.clear_parked_lease_for_boot(&op_id).await?;
                     }
-                    ParkedRecovery::Complete(outcome) => {
+                    ParkedRecovery::Complete(complete) => {
+                        let (outcome, _) = *complete;
                         kill_parked_group_if_alive(&artifacts, alive);
                         self.complete_parked_and_publish(&op_id, &outcome).await?;
                     }

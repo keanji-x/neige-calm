@@ -38,7 +38,7 @@ M1 W1–W4 已合入 #2866–#2871）。父合同为 [track-workspace.md](track-
 | 执行：`workspace_executions` 表、`Engine`、typed opt-in Terminal；`unsettled_executions` 接入 `require_safe_tx`、删除调用者 quiesce、clean 跳过 | `workspace-execution.md` §7、§11；`server/operation/terminal_disposal.rs:110-123` |
 | executor 的共享 registration 请求（`Attach` 作 Worktree registration、`Export/ExportAck`、`ObserveDirectories`、`ObserveTransferredDirectories`、`RetireRegistration`）在 calm-server 没有生产发送者；生产适配器 `session_executor` 只发 `Prepare(Private)` 及 Launch/Revoke/Inspect/Control/Watch/Retire | `crates/calm-session/src/control/execution.rs`、`crates/calm-proc-supervisor/src/execution/mod.rs:346-390`、`runtime/execution/session_executor.rs` |
 | executor 帧用 bincode（变体按序号编码）；journal 与 registration receipt 用 JSON 持久化；boot 时要求持久 receipt 的 `contract == EXECUTION_ENVELOPE_VERSION`（现为 4），journal 另有 `JOURNAL_VERSION`（4） | `crates/calm-session/src/lib.rs:281-286`、`crates/calm-session/src/control/execution.rs:29`、`crates/calm-proc-supervisor/src/execution/{mod.rs:250-257,directory.rs:14-22,journal.rs:14,236-246}` |
-| 锁：每卡 `planner_recovery_locks` → 全局 operation drive mutex（`OperationRuntime::lock_for_track_delete`；`drive()` 持有它；boot 的 `apply_recovery_item` 在 Recover 与 Compensate 取 claim 前也持有它，`driver.rs:1299-1302`、`:1326-1328`，早先基线不持有）→ 每 track `track_delete_locks`（绕过 OperationRuntime 的直接恢复/重连），不得反向。创建持目标 area 的 `area_delete_locks`，先于以上各锁；单 Track DELETE 不取 area 锁 | `server/state.rs:112-141`、`server/operation/driver.rs:75-78,400-408,444-446,1204-1214`、`server/harness/mod.rs:245`、`server/routes/planner_recovery.rs:47`、`server/routes/tracks.rs:722-727,3123-3126` |
+| 锁：每卡 `planner_recovery_locks` → 全局 operation drive mutex（`OperationRuntime::lock_for_track_delete`；`drive()` 持有它；boot 的 `apply_recovery_item` 在 Recover 与 Compensate 取 claim 前也持有它，`driver.rs:1474-1475`、`:1502-1503`，早先基线不持有）→ 每 track `track_delete_locks`（绕过 OperationRuntime 的直接恢复/重连），不得反向。创建持目标 area 的 `area_delete_locks`，先于以上各锁；单 Track DELETE 不取 area 锁 | `server/state.rs:112-141`、`server/operation/driver.rs:75-78,400-408,444-446,1204-1214`、`server/harness/mod.rs:245`、`server/routes/planner_recovery.rs:47`、`server/routes/tracks.rs:722-727,3123-3126` |
 | Planner turn issuance：既有 runtime 从 Idle/TurnCompleted 发下一 turn 只取自身的 `inner.issuance`，复查 archive、shutdown、live carrier 后转 Issuing、持久化 snapshot 再发送，不取 drive 或 track 锁；clean 的 SQL 只排除 `starting/running/turn_pending`，注释写明 idle Planner 不阻止 clean | `server/harness/run_loop.rs:3074,3287-3314,3351-3371,3533-3547`、`server/harness/state.rs:59-68`、`server/workspace_service/ports.rs:65-73` |
 | 删除的 post-commit 窗口：删除事务内捕获 `WorkspaceTrackSweep`（worktree 字符串），行删除提交后经若干 await 才在 `spawn_blocking` 中 `worktree remove --force` 并兜底删目录；Area 删除同样在提交与 `finalize_area_recycle` 之后 sweep | `server/workspace_service/sweep.rs:11-34`、`server/routes/tracks.rs:2939-2997`、`server/routes/areas.rs:643-716`、`runtime/sweep.rs:19-45`、`crates/workspace/src/teardown.rs:56-61,100` |
 | 幂等形状：`create_request_digest` 对后加的可选字段在省略时不写入载荷，以保留历史 binding 的 SHA（`admin` 的 false 与省略同形） | `server/routes/tracks/create.rs:427-465` |
@@ -122,9 +122,12 @@ D1–D3 的前提是三条更窄的事实：(a) **准入时排除**：每个新�
 | C2b.1 | worker gate run（`task-gate-run`）改为 Engine 消费者；同片引入两种 gate 共用的唯一构造点 `server/operation/gate_execution.rs`、必需记录 `gate_execution` v1、typed parked 关联与 typed 占用读者（设计见下） | 范围：Pipe intent 工厂（沿用现有环境白名单；consumer `gate` 注册显式 no-op projection）、记录 CAS（SQL 在 calm-truth）、owner-state 常量加入 `gate_execution`、owned 适配器 park 的 Rust 条件不再要求 `spawn_artifacts_json`（表约束由 C2b.0 迁移放行）、owned 的 Boot 恢复先于 deadline 分流、释放顺序、完成事务内复核 decision、Stop 型 timeout、gate 适配器声明 `gate_execution` 键（留存不变量由 C2b.0 的守卫执行）、boot 矩阵的 gate run 列（SpawnStarted 收窄为 infra）、`gate_ops` 的混合占用合同、`finalize_run` 改收结算 status、`ExecutionUnavailable` 拒绝、pre-C2b 原生 `task-gate-run` op 不推进（task verify 到 C2b.2 才适用）。测试世界接 C2b.0 移出的真实 executor support，`launch_kernel` 重启测试的 supervisor 留在测试进程、活过 kernel kill。删除：`task_gate_run/mod.rs:300-400,448-527` 的重驱 `stop_group`、`spawn_held_identified`/`record_spawn_artifacts`、原生 `recover_parked`、Observer 的 stdin 写入/`observe_verdict`/reap 及原生补偿分支。新测试 `c2b_gate_run_has_one_engine_construction`、`c2b_gate_run_refuses_unavailable_executor`、`c2b_release_authorizes_before_first_byte`、`c2b_refused_release_writes_no_byte`、`c2b_phase_writes_preserve_gate_record`、`c2b_typed_park_needs_no_spawn_artifacts`、`c2b_redrive_of_held_ends_infra_without_second_execution`、`c2b_boot_held_stops_without_token`、`c2b_boot_after_deadline_keeps_boot_origin`、`c2b_changed_decision_aborts_completion`、`c2b_timeout_retries_while_probe_holds_claim`、`c2b_stop_decision_survives_unavailable_and_restart`、`c2b_cancel_parked_leaves_typed_op_parked`、`c2b_typed_gate_op_occupies_until_settled`（新 run 准入、regate、reuse、delivery 各一断言）、`c2b_lost_close_ack_does_not_repeat_steps`、`c2b_leader_exit_drains_descendants_before_verdict`、`c2b_unknown_execution_never_completes_op`、`c2b_pre_c2b_native_op_is_never_advanced`、`c2b_park_write_failure_retains_owned_execution`、`c2b_recorded_op_never_enters_compensation`、`c2b_malformed_record_is_retained_with_backoff`、`c2b_owned_park_requires_decodable_record`。replay：mcp_integration_suite `task_gate_run::{a_gate_run_commits_new_files_before_its_steps_run, a_red_step_returns_its_name_and_tail, an_edit_during_the_run_discards_its_result, done_during_a_run_delivers_after_the_run, a_cancel_during_a_run_keeps_the_checkout_busy_until_it_ends, more::the_run_releases_its_wrapper_only_after_parked, restart::*, commit_message::done_before_checkpoint_release_accepts_the_admitted_input, reuse::an_unchanged_candidate_reuses_the_passing_run}`；kernel_process_suite `parked_operations::{recovery_mode_plumbing_distinguishes_boot_probe_and_past_deadline, boot_recovery_past_deadline_ignores_abandoned_parked_lease}`；lib `task_gate_run::tests::run_recovery_never_reads_the_exit_file`、`execution_boot::port_contract::*`、`repo_sqlite::claim_tests`、C2b.0 的两条 `operation::tests` 原生 artifacts 用例与 `terminal_adapter::tests::launch_cleanup_tests`（pin `terminal_launch` 保留）。`restart::a_restart_before_the_park_reruns_nothing`（R8a）保留名字，断言由“重驱后 Succeeded”改为“step 未执行、run 以 infra 结束”（见 boot 矩阵）。估算（增/删）：`gate_execution.rs` +215；calm-truth 记录 CAS 与结算读取 +45；`writes.rs` 常量与 `set_parked` 的键条件 +8/−1；`driver.rs` +30/−18；`gate_ops.rs` +30/−6；`task_gate_run/mod.rs` +110/−200；`finalize.rs` +20/−15；重启 support +35；22 个新测试 +380；R8a 等既有用例改写 +20/−15。合计约 +893/−255 ≈ 1150，超出约 800：每个生产消费者与其不变量测试保持原子（typed op 从第一次合入起就必须被准入、park、boot、完成与占用读者一致读取），可前置的行为不变整理（含留存守卫）已移入 C2b.0，PR 按上列文件组说明 | C2b.0 |
 | C2b.2 | task verification（`task-verify`）改为同一构造点的 Engine 消费者：释放移到 park 之后，Released 的 boot 只重试 CloseStdin 并重新挂 observer，after-sample 只认 Drained | 范围：observer 释放、`Exited` 后 Stop 收尾子孙、两个计时器（见下）、boot 矩阵的 task verify 列、新 attempt 前要求前一 attempt 的 gate execution 已结算（替代 kill prior）、恢复判决取 executor status 而非 exit file、`gate_ops` 对无记录的原生 op 改判 Unproven（此后不再产生原生 op），无记录的原生 `task-verify` op 自此不推进（boot 矩阵末行）；scheduler 测试世界接 C2b.1 的 executor support。删除：`task_verify_adapter/mod.rs` 的 `spawn_side_effect`（`:368-558`）中的 kill-prior（`:383-417`）、`spawn_held_identified`（`:423`）、`tasks.gate_pid*` 写入与 park 前释放（`:433-495`）、原生 observer/reap（`:511-558`），`recover_parked`（`:560-664`）的 PID 存活与 exit-file 恢复，补偿 `kill_gate_group`（`:720-741`）；verify 对 `target::stop_group`（`target.rs:691`）的调用改为结算事实，函数本身留给 C2b.3。列保留，读者改为 execution 事实。新测试 `c2b_verify_releases_only_after_park`、`c2b_boot_released_retries_only_close_then_reattaches`、`c2b_crash_before_token_is_infra_not_relaunch`、`c2b_timeout_probe_preserves_durable_decision`、`c2b_after_sample_requires_drained`、`c2b_new_attempt_requires_prior_execution_settled`、`c2b_recovered_verdict_uses_executor_status`、`c2b_settled_verify_after_deadline_keeps_status`、`c2b_native_terminal_gate_op_is_unproven`。replay：runtime_suite `scheduler::` 中 `green_gate_flips_verifying_to_done`、`red_gate_fails_with_failing_step_and_log_tail`、`gate_timeout_*`、`gate_spawn_kills_prior_recorded_group`、`forged_exit_file_and_group_kill_cannot_flip_gate_green`、`step_exit_ends_step_and_still_writes_exit_file`、`gate_step_env_is_minimal_and_evidence_paths_scrubbed`、`closed_track_still_drives_verifying_gate`、`stale_gate_before_first_attempt_fails_without_running_shell`、`parked_gate_dead_*`、`boot_reattach_live_gate_lands_verdict_after_exit`、`aborted_observer_leaves_gate_group_alive_and_reattach_lands_verdict`；mcp_integration_suite `gate_binding::{gate_result_discarded_when_tree_changed_during_steps, reattached_gate_result_discarded_when_tree_changed, recovered_gate_stops_the_group_before_sampling, live_reattached_gate_result_discarded_when_tree_changed, gated_candidate_happy_path_wakes_planner_once, legacy_lease_gate_runs_without_target_check, pre_upgrade_frozen_gate_boots_as_unbound}`、`task_regate::regate_reruns_gate_on_same_candidate`；lib `task_verify_adapter::verdict_tests::*`；加 C2b.1 的 `c2b_` 过滤器。改写 PID/exit-file 证据的用例保留名字与断言意图，`parked_gate_dead_with_exit_file_recovers_real_verdict` 与 `pre_upgrade_frozen_gate_boots_as_unbound` 改以 settlement status 为恢复证据（后者用新的 typed 记录构造，不得借此恢复真正无记录的 pre-C2b op）。估算（增/删）：`task_verify_adapter/mod.rs` +150/−290；`target.rs` +15/−20；`gate_execution.rs` 的 Released boot、重挂与授权计时 +60；`gate_ops.rs` +8/−10；`tasks.gate_pid` 读者 +20/−15；scheduler support +40；9 个新测试 +150；PID/exit-file 证据用例改写 +60/−90。合计约 +503/−425 ≈ 930，超出原因同 C2b.1：task verify 这一生产消费者与其不变量测试保持原子（同一 op 的 spawn、park、boot、恢复与占用读者必须同片切换） | C2b.1 |
 | C2b.3 | 删除已无调用者的共享原生 gate 机器（纯删除片） | `gate_process.rs:263-324` 的 `spawn_held`、`:328-426` 的 `GateWait`/`GateObservation`/WNOWAIT `observe_verdict`、`:429-541` 的 group/marker 存活、sweep 与 `kill`（`kill` 先做 caller sweep）及其测试模块 `:543-677`，`gate_lifecycle.rs:137` 的 `spawn_held_identified` 与直接调用它的 `gate_lifecycle/unsupported_gate_tests.rs` 用例（`:149`），`target.rs:691` 的 `stop_group`，以及 caller sweep 证明只服务它们的 `target.rs` kill 与 `proc_identity` marker helper；`marked_group_stopped` 的最后一个生产调用者 `gate_ops.rs:107` 已在 C2b.2 改判，故此片无行为变化。Forge/provider/terminal 仍在用的 helper、`verdict_from_exit_code`、wrapper 与 step/exit 文件保留。无新测试；replay `verdict_tests::*` 与 C2b.1/C2b.2 全部 `c2b_` 过滤器，caller sweep 证据写入 PR。估算约 −470（`gate_process.rs` 约 −410、`gate_lifecycle.rs` 约 −45、`target.rs`/`proc_identity` 约 −60，减去测试用例删除后的 import 调整），兼容改动不超过 60 行 | C2b.2 |
-| C3a / C3b | forge action / probe 改为 Engine 消费者，各对应一个现有 spawn 点（`server/operation/forge_action_adapter/mod.rs:1009`、`:1296`） | 同上；`cwd_lease` 冻结语义不变；不按工具名单注册 | C2a |
+| C3.0 | 行为不变的准备片：① 把 `server/operation/gate_execution.rs` 中与 owner 无关的机制抽到 `server/operation/owned_execution.rs`，calm-truth 的记录 SQL 按 owner 键参数化（清单见 C3 设计的“共享 helper”）；② `ParkedRecovery::Complete` 携带 owner 已算好的 `Option<OwnerEvent>`，由 `owned_parked::reconcile` 的完成事务 append、提交后发布（gate/verify 传 None）；③ forge 的测试世界（target forge_action_adapter 与 forge_suite）接 C2b.0 移出的真实 executor support，`forge_suite` 重启测试的 supervisor 留在测试进程、活过 kernel kill | 生产消费者：worker gate run 与 task verify 改用抽出的 helper 与新的 `Complete` 形状，gate 记录形状、CAS 语义与全部 `c2b_` 行为不变；forge 仍是原生，只换测试 support。删除 `truth/db/sqlite/gate_execution.rs` 中写死 `$.data.gate_execution` 的 `insert`/`compare_exchange`/`require_record`，由按键参数化的同名函数取代（键须在 `OWNER_STATE_KEYS`）。新测试 lib `owned_execution::tests::c3_keyed_record_cas_never_touches_another_key`、`owned_parked::tests::c3_complete_appends_owner_event_in_completion_tx`（测试适配器带 event：与完成同事务，回滚则无 event，提交后才发布）；replay mcp_integration_suite 与 runtime_suite 的 `c2b_` 过滤器、lib `task_gate_run::tests`、`task_verify_adapter::verdict_tests`、`repo_sqlite::claim_tests`、`owned_parked::tests`、`execution_boot::port_contract`，以及 forge_action_adapter 与 forge_suite 全部（断言不变）。规模（设计值）：抽取 +130/−120（移动按增删双计）、`Complete` 携带 event +30/−10 与测试 +35、support +80/−40，合计 +275/−170 ≈ 445；按 C3 设计的规模校准预计约 750–1150 | C2b.3（已合入） |
+| C3.2a | 已关闭 worktree 清理器消费 forge-owned 的占用检查，forge 声明 `preparation_track`：修复 main 上已有、与 Engine 无关的缺口（设计见 C3 设计的“清理栅栏”） | 生产消费者：10 分钟 clean 的 fence（`server/workspace_service/ports.rs:109-135`）与每个 `forge-action` 的 Pending 准备（`driver.rs:658-670`）。范围：fence 在既有锁下调用 `track_has_active_forge_action`（`server/operation/workspace_lease/mod.rs:73-110`），不在 `checkout_occupancy` 或 runtime 复制其 SQL；`ForgeActionAdapter::preparation_track` 返回 payload 的 `track_id`，复用 C1 的通用 Busy 重试，通用代码无 forge 特例。新测试 track_suite `track_delete_forge_fence::c3_closed_worktree_clean_refuses_active_forge_action`、`track_worktree::c1_fence::c3_forge_action_after_clean_check_waits_for_clean`（`c1-clean-fenced` 暂停后提交并驱动 forge action，clean 结束前无准入、无释放，之后照常完成）；replay track_suite `track_delete_forge_fence::` 与 `track_worktree::c1_fence::`、forge_action_adapter 全部。规模（设计值）：fence 与端口 +30、`preparation_track` +10、测试 +100，合计约 +140/−5 ≈ 145，预计约 250–380 | C1（已合入） |
+| C3.2b | 原生 forge action 的凭据改走释放 stdin 载荷，判决与 event 构造改为纯函数；Engine 之前、C3.2c 原样复用的两项（设计见 C3 设计的“构造与环境”） | 生产消费者：今天的原生 action（`spawn_side_effect`，`server/operation/forge_action_adapter/mod.rs:1271-1494`）。范围：① `render_forge_wrapper`（`:182-230`）首行 `exec >/dev/null 2>&1`，按固定键序 `IFS= read -r` 读取凭据载荷与终止标记，不符或 EOF 即 `exit 75`；kernel 侧载荷渲染与校验（换行、NUL、超长在写第一个字节之前拒绝，走今天的释放失败路径）；原生 observer 以载荷取代 `go\n` 写入 child stdin（`:1353-1362`），action 的 spawn 环境不再含 `FORGE_CREDENTIAL_ENV_KEYS`；probe 仍经 `apply_forge_subprocess_env`（`:336-351`）继承凭据，到 C3.2c 才随迁移改走载荷。② 把 `complete_forge_op_with_result`/`_from_live_result`/`_succeeded`（`:829-989`）中的判决、artifact 与 event 构造抽成返回 `(ParkedOutcome, Option<OwnerEvent>)` 的函数，原生路径仍以 `complete_parked_tx` 提交，判决不变。新测试 target forge_action_adapter `c3_credential_payload_round_trips_shell_values`（未设、空、空白、反斜杠、shell 元字符）、`c3_partial_credential_payload_never_runs_action`、`c3_refused_release_writes_no_byte`（换行、NUL、超长值）；`forge_action_recovery_probe_env_passes_auth_and_strips_forbidden`（`tests/forge_action_adapter.rs:2193`）中 action 的断言改为载荷送达、probe 的断言不变；replay forge_action_adapter 全部、lib `operation::forge_action_adapter::tests`、forge_suite、mcp_plugin_forge_action 全部。规模（设计值）：wrapper +25、载荷渲染与校验 +45、observer +15/−8、判决函数 +70/−60、新测试 +120、既有用例改写 +30/−30，合计 +305/−98 ≈ 400，预计约 700–1050 | 无 |
+| C3.2c | forge action 与它的两种 probe（verdict 与 output，今天的 `run_probe`，`mod.rs:999-1023`）一起改为 Engine 消费者：唯一构造点 `server/operation/forge_execution.rs`、必需记录 `forge_execution` v1，probe 是同一记录拥有的 execution，durable 排斥（设计见下） | 生产消费者：MCP plugin forge 工具经 `server/mcp_server/transport.rs:920` 提交的每个 `forge-action` op。范围：action 与 probe 共用的 Pipe intent 工厂（凭据只走 C3.2b 的 stdin 载荷）、键加入 `OWNER_STATE_KEYS`、consumer `forge` 的 no-op projection（`server/execution_boot.rs:18-28`）、`owns_parked_resource()` 返回该键、owned park、park 后释放、boot 矩阵（含 probe 行）、probe 的 create-if-absent 准入与释放、计时与 Stop、经 `owned_parked::reconcile` 完成（decision event 经 C3.0 的 `Complete`，与 action 及全部 probe 的 Retire 同事务）、`ExecutionUnavailable` 拒绝、pre-C3 原生 op 不推进且 forge-owned 占用检查保留其 Stuck 行。删除：`kill_artifacts_group`（`:299-303`）与重驱 kill-prior（`:1278-1280`）、原生 `Command`/`setsid`/`SpawnArtifacts`（`:1295-1333`）、observer 的 stdin 写入、释放失败直接判 infra 与 `child.wait`（`:1342-1488`）、原生 probe 与 dead 恢复漏斗 `run_probe`/`complete_from_probe`/`resolve_post_release_via_probe`/`resolve_dead_outcome`（`:999-1201`，`verdict_from_exit_code` `:991-997` 保留为 `.code` 映射）、原生 `recover_parked` 的 PID 存活轮询（`:1496-1589`）、补偿 `kill_forge_action_group` 的 kill（`:1591-1638`，改为拒绝）、直接写 `complete_parked_tx` 的 `complete_forge_op_failed` 与 C3.2b 判决函数的原生提交外壳（`:800-827`、`:933-989`）；`apply_forge_subprocess_env` 改为构造 intent 环境向量（同一白名单，无凭据键）。新测试、replay 与 mutation 见 C3 设计。规模（设计值）：构造点与记录（含 probe 子记录、准入、释放、计时）+315、adapter +260/−590、注册、键与原生 Stuck 检查 +20/−3、24+1 个新测试 +750、原生 PID/EOF/probe 用例改写 +280/−300，合计 +1625/−893 ≈ 2520，预计约 4300–6500。远超 800：一个生产消费者与其不变量测试必须同片切换（见 C3 设计的“切片与规模”），可前置的部分已移入 C3.0、C3.2a、C3.2b，其中约 −590 是删除后无调用者、clippy 不允许留下的原生代码 | C3.0、C3.2a、C3.2b |
 | C4 | Planner 本地 provider 进程（Claude session/rewind/readiness、ACP）与 worker 启动改为 Engine 消费者，每个 provider 的一个启动或恢复入口一片，沿最新 main 的 provider Factory 归属 | 同上；provider 外部协议仍由 provider 层拥有 | C2a |
-| C5 | 破坏性 effect 的正向静默：recycle、`remove_track_worktree`、sweep、area 补偿在 fence 下要求 `unsettled_executions(scope)` 为空，否则 Busy 并保留目录；已迁移类型的 Legacy 代理判断同片删除，未迁移类型的 Legacy 检查保留 | 删除路径保持“先 quiesce、后写者复查”的现有时序；scope 只在非重叠合同（含 O1）成立后才等于 owning track。验收：未结算执行时 Track/Area 删除返回 Conflict 且目录与 branch 保留 | C2a–C4、O1 |
+| C5 | 破坏性 effect 的正向静默：recycle、`remove_track_worktree`、sweep、area 补偿在 fence 下要求 `unsettled_executions(scope)` 为空，否则 Busy 并保留目录；已迁移类型的 Legacy 代理判断同片删除，未迁移类型的 Legacy 检查保留；forge action 与 probe 自 C3.2c 起是 execution、由该谓词覆盖，pre-C3 原生 forge 行（含 Stuck）没有 execution，其 forge-owned 检查保留 | 删除路径保持“先 quiesce、后写者复查”的现有时序；scope 只在非重叠合同（含 O1）成立后才等于 owning track。验收：未结算执行时 Track/Area 删除返回 Conflict 且目录与 branch 保留 | C2a–C4、O1 |
 | C6（可选） | 释放作业：删除事务内写入待回收的 worktree/refs 描述，提交后 sweep 消费，启动时补跑 | 修复“提交后崩溃 → worktree 与 branch 永久泄漏”；不改 7 天 trash 与回收顺序。未消费的作业行同片并入 `none` 准入的自有位置集合（§4.2 进行中的 teardown 目标），验收加“作业未消费时准入其目标 → 400”。若接受泄漏只记 follow-up，则不做，也不声称已有 crash-safe release | C5 |
 
 **C2a 范围决定。** 只读盘点未发现 C2b/C3/C4 之外独立的双向 track pipe 消费者。有界短 Git/CLI 读取
@@ -134,6 +137,8 @@ kernel 死亡后这些 deadline/析构与进程内 fence 不再生效；遗留�
 这里接受较窄的保证，不把短读迁入 Engine；C5 不得据执行集合为空声称已解决此跨崩溃静默缺口。
 迁移还需 Engine 当前没有的 stdout/stderr 分离与
 每次 sample 的归属，成本不值得；不为名义消费者而扩大本片。C2a 仅补齐后续迁移的 Pipe half-close。
+forge probe 不属于此类：它运行 plugin argv、继承凭据，今天只回收直接子进程，C3.2c 起与 action 一样是 Engine execution（见 C3 设计），
+在 C5 的谓词之内；此类不为 probe 留例外。
 升级到 envelope 9 必须重启 supervisor；严格拒绝 envelope 8，不回退 Legacy；持久 receipt 合同和 journal 版本保持 4。
 
 **C2b 设计决定。** 路径前缀：`server/`、`supervisor/`、`runtime/`、`truth/` 分别指 calm-server、calm-proc-supervisor、
@@ -334,6 +339,199 @@ workspace-runtime、calm-truth 的 `src/`（迁移为 `truth/migrations/`）。�
   所以先后顺序只决定是否 fork，不影响安全。(c) 接受，合并：记录与 typed park 的唯一消费者就是 cutover，typed park 只是上述三处改动。
   (d) 接受，共四片：行为不变的 C2b.0 之后三片。gate run 先行，因为它从不恢复判决，能先验证构造、释放、Stop 与 park；task verify 再加 Released 的重挂
   与 after-sample；最后一片是纯删除。mutation 验证只针对“授权先于首字节”、“boot Held 必 Stop”、timeout 围栏（含完成事务内复核）、typed 占用读者与 owned 留存守卫五条不变量。
+
+**C3 设计决定。** 路径前缀同 C2b。Planner 决定（C3 设计评审第六轮之后）：forge action 与它的 probe（verdict 与 output 两种用途，今天的
+`run_probe`，`server/operation/forge_action_adapter/mod.rs:999-1023`）都迁入 Engine，probe 是同一 `forge_execution` 记录拥有的 execution，
+不再给 probe 硬化一套原生生命周期。第四至六轮 adversarial 各在那套原生 probe 生命周期里找到一个新阻断（R4-B1 预约与续租的顺序、
+R5-B1 续租前被取消泄漏预约、R6-B1 tokio 的 spawn 在 OS spawn 之后仍可返回 Err，子进程逃出守卫）；按 AGENTS.md，三轮之后改方法、
+删机制：Engine 已拥有进程生命周期，forge 里的第二套是重复逻辑。由此从计划删去：进程内 probe 预约与其身份守卫、继任与过渡期回收任务、
+每次调用前的 claim 续租预算、probe 的 `kill_on_drop` 过渡期，以及 C3.1 片。顺序 C3.0 → C3.2a、C3.2b（两者互不依赖）→ C3.2c。等级 L2。
+已收敛的 action 设计（凭据 stdin 握手、boot 矩阵、占用、`preparation_track`、清理栅栏、完成与 Retire）不变，probe 只复用它们。
+
+- **两个 spawn 点的归类。** action 运行任意 plugin argv（`calm-types/src/forge_action.rs`），held wrapper 停泊数分钟（默认 300/900s，
+  `server/mcp_server/transport.rs:872`、`:1185-1192`），释放后跨 kernel 重启靠原生 PID 恢复继续（`forge_action_adapter/mod.rs:1509-1545`），
+  在冻结 `cwd_lease` 中运行（`:1288-1299`）：真实的 C5 占用，迁移。probe 是有界读（每次 60s，`:44`、`:1016`），但同样运行 plugin
+  argv、继承凭据（`apply_forge_subprocess_env`，`:336-351`），今天只对直接子进程 `kill_on_drop`（`:1009-1018`），没有 session、进程组或
+  子孙回收，超时后 shell 拉起的子孙可以在 kernel 存活时继续使用 worktree，不满足 C2a 例外的前提（deadline + process-group reap）。
+  C3.2c 起它也迁移：spawn、deadline 的 `Desired::Stop`、先 TERM 后 KILL（`supervisor/execution/shutdown.rs:7-38`）、helper 作为 subreaper
+  收养子孙并经 pidfd 转发信号（`supervisor/execution/scope_helper.rs:84`、`:259-292`）、以 ECHILD 证明的 Drained（`:176-178`）、结算与
+  Retire 都归 Engine。probe 行的 track 是 `FrozenForge.track_id`，在 `unsettled_executions` 内，C5 的谓词覆盖它，C2a 的短读例外不再含 forge probe。
+- **共享 helper（C3.0，只抽 owner 无关的部分）。** 抽出：`engine()` 可用性检查（`gate_execution.rs:52-58`）、`refresh_claim`
+  （`:275-285`，保留原 claim token）、`settlement` 读取（`:287-296`）、`drain_exited`（`:298-320`）、释放的发送段（等 Spawned receipt、
+  按 `accepted_bytes` 写 owner 传入的字节、`close_stdin`，`:212-260`）、`Release`/`Decision`/`StopReason` 三个枚举（serde 形状不变），以及
+  calm-truth 记录 SQL 按键参数化、比较整个记录对象（gate 记录只有四个字段，与今天逐字段比较等价）。留在 gate：`admit`
+  （GateFiles、`render_gate_wrapper`、`NEIGE_GATE_*`、consumer `gate`）、`release` 中的 `TaskLaunch::authorize_tx`（`:162-164`）、
+  gate 的 `Record`/`KEY`/`Projection`、授权计时与 `finalize_run`。不建泛型 owner 框架：每个 owner 自有 Record、构造点与判决。
+  同片的 `ParkedRecovery::Complete` 携带 `Option<OwnerEvent>`（这是 `ParkedRecovery` 唯一的通用改动，gate/verify 传 None）；
+  完成载荷整体装箱，`reconcile` 也返回装箱 future，避免 `Event` 放大每个调用方恢复 future 的栈占用。
+  `OwnerEvent { actor: ActorId, scope: EventScope, event: Event }` 全由 owner 算好，通用层不推断 actor 或 scope；
+  `owned_parked::reconcile` 在完成事务内用 `append_decision_event_in_tx`（correlation None）append，提交后发布。
+  forge 测试世界只换成真实 executor support，forge 本身仍是原生。
+- **构造与环境（凭据载荷 C3.2b，其余 C3.2c）。** `forge_execution.rs` 是 action 与两种 probe 唯一的 Pipe intent 构造点，三者只差 argv、
+  alias 与结果路径：program `/bin/sh`，args `-c` 加 `render_forge_wrapper(argv)`（`mod.rs:182-230`，握手与文件捕获），root 为
+  `canonicalize(cwd_lease)`（Private root 要求，同 gate），owner 为 op，track 取 `FrozenForge.track_id`；alias 为 `forge:<op_id>`、
+  `forge:<op_id>:verdict`、`forge:<op_id>:output`（`workspace_executions_current_alias` 唯一索引在 Retire 之前另外拒绝同 alias 的第二行，
+  `truth/migrations/0170_workspace_executions.sql:14-15`）。结果路径：action 用 `FrozenForge.result_path`；probe 用
+  `<result_path>.probe.<execution_id>`，wrapper 把 probe 的 stdout 与退出码写成它的 `.stdout`/`.code`（tmp+rename）。execution id 每次新生成，
+  probe 文件不可能是旧文件，不做删除，也就没有旧 claimant 的删除能与新 probe 竞争；action 只在首次准入前 `remove_stale_result_files`（`:1287`），
+  重驱不删。环境沿用 `apply_forge_subprocess_env`（`:336-351`）的同一白名单，改为 intent 的环境向量，`NEIGE_FORGE_RESULT_PATH` 照旧传入后 unset。
+  **凭据只走释放握手的 stdin，不落盘。** `ExecutionSpecification.environment` 写入不可变的
+  `workspace_executions.intent_json`（`0170:19-27`），supervisor journal 也持久化整个
+  `PrepareExecution`（`supervisor/execution/journal.rs:18-27`），所以 `FORGE_CREDENTIAL_ENV_KEYS`（`calm-types/src/forge_env.rs:3-10`）
+  不进 action 或 probe 的 intent、不建文件、C3 不扩展 `ExecutionSecrets`（它只有控制 token，且随行持久化）。源码核实：WriteStdin 字节经
+  `Engine::interact`（`runtime/execution/engine.rs:274-288`）、已认证的 Interactive capability 到 `supervisor/execution/controls.rs:175-178`，直接
+  `process.write`（`supervisor/execution/process.rs:60-77`）；journal 只记 request、phase 与撤销位，回复 `StdinProgress` 只带字节数，receipt 只有身份与
+  slot，均无字节；唯一的落盘面是 Pipe 输出日志（`supervisor/execution/output.rs:22-31`）。因此 wrapper 第一行就
+  `exec >/dev/null 2>&1`（早于读取载荷，保持今天的丢弃，`mod.rs:1301-1302`），从不 `set -x`、不回显。载荷在释放时从 kernel 进程环境
+  现取：按 `FORGE_CREDENTIAL_ENV_KEYS` 的固定顺序每键一行，`0`（未设）或 `1` 加原值，再以终止标记 `go` 结束；值含换行或 NUL、总长超过
+  应用层载荷上限（如 16 KiB，低于 `process.write` 单次请求的 1 MiB 上限；不依赖管道容量，续写靠 `accepted_bytes`）则在 Releasing 之前拒绝 → Stopping{ReleaseRefused}，一个字节都不写。
+  wrapper 用固定键名的 `IFS= read -r` 逐行读取并 `export`，不 eval；行数、前缀或标记不符或读到 EOF 就 `exit 75`，凭完整载荷加标记
+  之后才 exec argv。C3.2b 先在原生路径落地同一载荷与 wrapper（原生 observer 写 child stdin），C3.2c 只把写入换成 `Engine::interact`，
+  并让 probe 也走它。非凭据键与基础白名单照旧进 intent（同 gate）。Pipe 合并 stdout/stderr（`supervisor/execution/process.rs:177-184`），
+  输出日志按窗口上限保留（`output.rs:39` 夹在 1 KiB–4 MiB），所以应用输出不经 Pipe：action 与 probe 的 stdout 都由 wrapper 写 tmp 再 rename，
+  probe 的 stderr 仍丢弃（同今天的 `Stdio::null()`，`:1013`）；action 的 `.code`/`.stdout` 与 artifact 发布（`:736-798`）不变。文件是应用证据，
+  结算是物理寿命证据，不解析 Pipe 输出。action 的准入与记录插入同一写事务（`require_live_claim_tx`、`Engine::admit`、按键 insert），提交后
+  `drive`。缺 Engine 或 `!available()` → `CalmError::ExecutionUnavailable`，不建行、不 fork：action 无记录的 op 经补偿（无进程步）进入
+  Failed，不回退原生；probe 见下“probe 的释放与计时”。
+- **记录。** `operations.tx_output_json.data.forge_execution`，`version` 为 JSON 整数 1：`{execution_id, release: Held |
+  Releasing{authorized_at_ms} | Released{authorized_at_ms}, decision: Observing | Stopping{reason: Timeout | KernelRestarted |
+  ReleaseRefused}, verdict: Unprobed | Landed, probes: {verdict: Probe | null, output: Probe | null}}`，`Probe = {execution_id, release,
+  decision}` 复用同样的枚举（probe 不写 KernelRestarted）。键加入 `OWNER_STATE_KEYS`（`server/operation/repo_sqlite/writes.rs:18`）并由
+  `owns_parked_resource()` 返回，于是 C2b.0 的留存守卫、`set_parked` 的键条件（`writes.rs:142-160`）与 owned boot 分流
+  （`driver.rs:1192`、`:1213`、`:1276`）直接适用。`FrozenForge::from_output` 解整个 `data`（`mod.rs:107-111`）且忽略未知字段，冻结载荷不变。
+  写入都在原 claim 下、与 `require_live_claim_tx` 同一写事务 CAS 整个记录：① action 准入写 Held；② action Held→Releasing→Released；
+  ③ action Observing→Stopping 与 `Desired::Stop` 同事务；④ probe 准入：`probes.<kind>` 由 null 变为 `{新 execution_id, Held, Observing}`，
+  与该 probe 的 `Engine::admit` 同一事务（create-if-absent），output probe 的准入同事务把 `verdict` 由 Unprobed 改为 Landed；⑤ probe
+  Held→Releasing→Released；⑥ probe Observing→Stopping 与该 probe 的 `Desired::Stop` 同事务。没有把记录换绑到另一个 execution 的写入，
+  也没有删除 probe 的写入：每个 op 每种 probe 至多一个 execution。
+- **action 的释放顺序（同 C2b，只由 park 提交后的 observer 执行）。** ① durable Held→Releasing，先于首字节（forge 无 task 授权，只有 claim 与 CAS）；
+  ② 等 Spawned receipt，按 `accepted_bytes` 写完整凭据载荷与终止标记（单次存活发送内续写后缀）；③ `close_stdin` 确认后 Releasing→Released。上限沿用 `RELEASE_TIMEOUT` 60s
+  （`mod.rs:42`）；失败或超时写 Stopping{ReleaseRefused}，取代今天的直接 kill 并判 `gate-infra`（`:1363-1388`）。probe 的 ⑤ 用同一个
+  共享发送段，见下。
+- **probe 的排斥与所有权（C3.2c）。** 排斥就是 durable 记录，不是进程内表：
+  - 只有 ④ 能产生 probe 进程。`Engine::admit` 只在调用者的事务里插入行，`drive` 只接受提交之后才构造的 ticket
+    （`runtime/execution/engine.rs:43-60`，类型见 `mod.rs:166-182`），executor 只 Prepare/Launch 已提交的行；kernel 不再持有 probe 的 Child，
+    也就没有 R6-B1 那种“OS spawn 成功、调用方拿到 Err”的缝隙。④ 的事务先 `require_live_claim_tx`（`writes.rs:93-118`：phase、原 token、
+    租约未过期、未完成），再以整记录 CAS 要求 `probes.<kind>` 为 null。SQLite 单写者让它与竞争者取 claim 串行：竞争者 B（boot 无条件
+    替换，`server/operation/mod.rs:989-1011`；过期后的 sweep，`:963-986`）先提交 claim，A 的 ④ 因 token 已换而回滚，不留行、不 fork；
+    A 先提交，B 在 claim 之后读出的行（`fetch_claimed_parked`，`server/operation/repo_sqlite.rs:655`）已含 A 的 probe，B 只观察它。完成事务先验 claim（`owned_parked.rs:27`）
+    并复核整个记录，所以终结提交之后不会再有 ④，也不会有人在不知道某个 probe 的情况下终结 op。
+  - 后来的 claimant 观察已存在的 probe execution，从不准入第二个：未结算就按下面的计时与 drain 规则推进并 LeaveParked，已结算才读它的
+    文件判决。claimant 对记录里每个未结算的 execution 调用幂等的 `drive`；提交后崩溃由 boot 的 `Engine::recover`（`server/execution_boot.rs:29`）
+    重新排队。
+  - kernel 崩溃或被 kill 时，probe 属于 supervisor，继续运行并受 Desired 驱动，boot 重新观察同一行；这取代了旧设计中“kernel 崩溃丢失
+    进程内预约”的限制。同一 OS boot 内 supervisor 重启使未结算的 probe 成为 Unknown（`supervisor/execution/mod.rs:186-188`），
+    `next_step` 对它只 Wait（`runtime/execution/mod.rs:106-127`），op 不完成、检出 busy，接受为限制（同 action 与 C2b）。
+  - 不需要 claim 续租：一次 claim 内只做一次 durable 转换、一次完成，或一次有界的释放发送（不超过 `RELEASE_TIMEOUT`，与 action 释放同一
+    约束），不在 claim 内等待 probe 进程。claim 过期只让当前 claimant 的下一次写失败并退出，接手者从记录继续：probe 不重启，计时不重置
+    （以 durable 的 `authorized_at_ms` 为准），probe 自身的 60s 与 claim 租约（60s，`server/operation/mod.rs:77`，`claim_parked` 不续租）
+    不再有关系。
+- **probe 的释放与计时（C3.2c）。** probe 只在 action 已结算、op 为 Parked、判决需要它时准入（见判决）。⑤ 与 action 释放三段相同（durable
+  Held→Releasing 先于首字节，按 `accepted_bytes` 写凭据载荷与标记，`close_stdin` 确认后 Released）；与 action 一样只由 observer 在 parked claim
+  下发送（park 时挂上的 observer，或 boot 在 owned 分支重挂的 observer，同 gate，`task_gate_run/mod.rs:396-401`），sweep 与 boot 本身不写字节。
+  差别只有一处：probe 准入时 op 已 Parked，Held 只表示尚未授权，所以 boot 之后重挂的 observer 照常释放 Held 的 probe 一次，不写
+  KernelRestarted。Releasing 是未确认释放，永不重发载荷：发送失败、超过 60s，或 boot 时看到 Releasing，都写 ⑥ Stopping{ReleaseRefused}
+  加 Stop；稳态下其他 claimant 看到未结算的 Releasing 只按计时与 drain 规则推进。计时：`authorized_at_ms + PROBE_TIMEOUT`（60s，`mod.rs:44`），未结算、仍 Observing 且到期 → ⑥ Stopping{Timeout} 加
+  `Desired::Stop`，由 executor TERM 后 KILL 并收尾全部子孙；`Exited` 只经共享 `drain_exited` 请求 Stop，`Drained`/`NoChild` 才是结算。
+  准入或释放时 executor 不可用：不建行或不写字节，返回 Err，经 owned Parked 的错误留存写 `last_error`、以 lease 退避，可用后重试，不判
+  infra、不回退原生。probe 不重试：结算后没有判决证据（Stopping{r}、NoChild、未 Released、缺 `.code`）的 probe 判 `gate-infra`，同今天
+  probe 自身 Err 判 infra（`:1037-1044`）。这比今天窄：今天 kernel 重启后 probe 在新进程里从头再跑；迁移后已释放的 probe 在 supervisor
+  内继续、无需重跑，但 Releasing 时崩溃或主机重启会以 infra 结束。重试需要 attempt 计数与它自己的排斥，没有消费者要求，不做。
+- **Boot 矩阵**（`Engine::recover`（`execution_boot.rs:29`）之后逐 op；boot 只写 DB 与 drive，不等 executor）：
+  - SpawnStarted 无记录：准入未提交，重驱按 ① 准入。
+  - SpawnStarted 有记录（必为 Held）与 Parked 且 Held：typed park 同一 execution，不释放，Stopping{KernelRestarted} 加 Stop，结算后
+    Failed `gate-infra`，不跑 probe（token 从未写出）。`tests/forge_action_adapter.rs:2279` 的“重驱后跑一次”保留名字，断言改为零次执行、
+    infra；理由同 C2b 的 R8a：换绑需要 Retire、准入与换绑同事务，没有生产消费者。
+  - Parked 且 Releasing：载荷可能部分送达，永不重放（凭据也不再取第二次）；wrapper 缺标记就不会执行 action；Stopping{ReleaseRefused} 加 Stop，结算后按下面的判决（文件 → probe → infra）。
+  - Parked 且 Released：不重发载荷，只重试幂等 CloseStdin，重挂 observer，不 Stop，保留释放后的 action 跨重启继续并交付结果的合同
+    （`tests/forge_action_adapter.rs:2881`、`:2967`）。
+  - 已记 Stopping{r}：同一 execution，永不重启，结算后按 r。已结算：按判决；OS 重启的 NoChild 同此（已释放的 action 可能已落地）。
+  - 记录里有 probe（只可能在 action 已结算之后）：Held → 由重挂的 observer 照常释放；Releasing → ⑥ Stopping{ReleaseRefused} 加 Stop，结算后 infra；
+    Released → 不重发载荷，只重试幂等 CloseStdin，按 `authorized_at_ms` 的剩余时间继续计时；已记 Stopping 或已结算 → 按判决。
+    不准入第二个同种 probe。
+  - Unknown（同 OS boot 内 supervisor 重启，action 或 probe）：不 close、不完成，op 与检出 busy，限制同 C2b。executor 不可用：保留 Desired，op parked，新 action 被拒。
+  - pre-C3 原生 op（有 `spawn_artifacts_json`、无记录）：不读 PID、不发信号、不重启、不完成。`recover_owned_parked` 报“在旧 kernel 下
+    排空或手工停止 pgid N”，经 owned 错误留存写 `last_error`，op 保持 parked、phase 栅栏保持 busy；补偿步骤 `kill_forge_action_group`
+    改为拒绝 → Stuck（同 `task_gate_run/mod.rs:499-511`）。今天的 forge 占用检查只认 `RECOVERABLE_OPERATION_PHASES`（不含 Stuck，
+    `workspace_lease/mod.rs:63-71`），所以 C3.2c 在同一检查里加入“有 `spawn_artifacts_json`、无 `forge_execution` 记录”的未决原生行，
+    含 Stuck，track/area 删除照旧被拒，C3.2a 起的清理器也读到它；这些行没有 execution，C5 必须保留该 forge-owned 检查。升级前须排空
+    forge action，升级说明照写；已结算的历史行照常可读。
+- **清理栅栏（C3.2a；原生 Stuck 行随 C3.2c）。** 已关闭 worktree 清理器的 fence（`workspace_service/ports.rs:109-135`）今天只读 closed-idle 行、`checkout_occupancy`（无 forge 项，
+  `truth/db/sqlite/track_occupancy.rs:47-94`）与 `unsettled_executions`，随后 `clean_ignored`（`runtime/worktree_clean.rs:86-104`）；原生 forge op
+  没有 execution，所以活跃 forge op 挡不住 `git clean`。这是 main 上已有的缺口（自关闭不经
+  `mcp_server/tools/track_state.rs:386-395` 的 forge 预检）。C3.2a 让该 fence 在既有锁下同时调用 forge-owned 的
+  `track_has_active_forge_action`（`workspace_lease/mod.rs:73-110`，C3.2c 按上项扩展），不在 `checkout_occupancy` 或 runtime 复制其 SQL；已结算的历史终态行照旧不挡。
+  检查之后 fence 放下 drive、只持 track 跨 `git clean`（`ports.rs:112-135`），而 forge 不覆盖 `preparation_track`（默认 None，
+  `operation/mod.rs:767-772`），检查后提交的 forge op 会在 clean 期间准入、释放。所以 C3.2a 让 `ForgeActionAdapter::preparation_track`
+  返回 payload 的 `track_id`（即冻结后的 `FrozenForge.track_id`），复用 C1 的通用 Busy 重试（`driver.rs:658-670`、`retry_after_track`）：
+  Busy 则留 Pending、track 释放后重驱；track 排斥持到 TxCommitted 提交，此后该行在 forge 查询的 `RECOVERABLE_OPERATION_PHASES` 内对
+  clean 可见。锁序不变：drive → try-track，持 drive 时不 await track，clean I/O 期间只持 track；通用代码无 forge 特例。C3.2c 之后
+  action 与 probe 的 execution 另外经 `unsettled_executions` 挡住 clean。
+- **leader 退出与 Drained；timeout。** observer 经 `Engine::output` 看到 `Exited` 时只调用共享 `drain_exited` 请求 Stop 收尾子孙
+  （如 checks 等待脚本，`crates/plugin/src/builtin/gitforge/git_actions/checks.rs:196-230`），只有 `Drained`/`NoChild` 结算才允许判决；
+  probe 同此。action 的 timeout 只有一个计时器：`parked_deadline_ms`（提交时刻加 300/900s，`transport.rs:872`）。PastDeadline 或 observer
+  发现已过期、未结算且仍 Observing → Stopping{Timeout} 加 Stop。probe 的计时见上，独立于 `parked_deadline_ms`。
+- **结算后判决（只读 claim 快照里的记录与持久证据）。** action 或记录中任一 probe 未结算 → 一律 LeaveParked（必要时 `drain_exited`、
+  写 Timeout）。action 已结算：Held 或 Stopping{KernelRestarted} → `gate-infra`；结果文件可读（`read_result_file`，tmp+rename 后才出现）→
+  今天的 live-result 规则（`:875-931`，非零或提取失败仍交 probe）；Stopping{Timeout} 且无文件 → `action-timeout`，保留今天“过期仍活 →
+  kill → action-timeout、不 probe”（`:1544`），本片不改；其余无文件（signal、NoChild、ReleaseRefused）→ 有 probe 进入 probe 流程，无 probe
+  判 `gate-infra`，PastDeadline 时 `action-timeout`（`:1573`）。probe 流程（C3.2c 起，所有调用方——observer、pre/past-deadline sweep、boot、
+  dead-parked——都经同一个 forge-owned 的步进函数，每次 claim 推进一步）：verdict probe 未准入 → ④；已结算、Released 且 `Drained` →
+  读其 `.code` 经 `verdict_from_exit_code`（`:991-997`）：0 → Landed，1 → `action-not-landed`（原因文本同今天，`:1120-1123`），其他或缺失 →
+  `gate-infra`（`:1077-1080`）；其余结算 → `gate-infra`。Landed 且 event 需要从 JSON 重新提取字段（`:1047`）：无 output probe argv →
+  `gate-infra`（`:1048-1054`）；否则 ④ 准入 output probe 并同事务写 Landed；output probe 已结算且 `.code` 为 0 → 读 `.stdout` 交今天的
+  完成规则（artifact 与 event 构造，C3.2b 的判决函数），否则 `gate-infra`（`:1056-1068`）。Landed 且不需要 JSON → 以空 stdout 完成
+  （`:1070-1073`）。判决只来自已结算 probe 的文件；`verdict: Landed` 写入后，之后的 claimant 不再读 verdict probe 的文件。PastDeadline
+  不跳过已准入或需要的 probe（今天 dead 时不论 deadline 都跑 probe，`:1569`）。probe 按 plugin 合同是读，且每种至多一个 execution，不再重复读。
+- **完成与 post-commit drive。** forge 的 decision event 今天在 `complete_forge_op_succeeded` 的同一事务内 append（`:942-972`）。改为
+  经 C3.0 的 `ParkedRecovery::Complete` 携带 owner 已算好 actor、scope 与 event 的 `Option<OwnerEvent>`；
+  `complete_owned_parked_tx` 在 `owned_parked::reconcile` 的完成事务内按键复核整个记录（与快照不同 → Conflict、回滚、错误留存），
+  并对 action 与记录里的每个 probe execution 请求 `Desired::Retire`；`reconcile` 同事务用 `append_decision_event_in_tx`（correlation None）append event，提交后发布（`owned_parked.rs:31-40`），crash seam `forge-pre-fence-commit`
+  移到该事务提交之前。artifact 发布在事务前、幂等。每条终结路径（infra、not-landed、unknown、timeout、无 probe、AlreadyResolved）
+  都经同一 reconcile：提交后 `owned_parked_completed` drive 这些 execution（同 `task_gate_run/mod.rs:462-466`），observer 每轮看到终态
+  phase 也 drive；Retire 是同事务的 durable Desired，提交后崩溃由 boot 的 `Engine::recover` 重新排队。
+- **测试（C3.2c；C3.0、C3.2a、C3.2b 的测试见切片表）。** 新测试，target forge_action_adapter：`c3_action_has_one_engine_construction`（action 与两种
+  probe 都出自同一构造点）、`c3_action_refuses_unavailable_executor`、`c3_action_releases_only_after_park`、
+  `c3_credentials_never_enter_intent`（action 与两种 probe 的 `intent_json` 与 journal 都无凭据键）、`c3_phase_writes_preserve_forge_record`、
+  `c3_redrive_of_held_ends_infra_without_second_execution`、`c3_boot_held_stops_without_token`、`c3_boot_releasing_never_repeats_token`、
+  `c3_boot_released_retries_only_close_then_reattaches`、`c3_leader_exit_drains_descendants_before_verdict`、
+  `c3_timeout_stops_then_completes_after_settlement`、`c3_unknown_execution_never_completes_op`（action 与 probe 两个变体）、
+  `c3_completion_rechecks_record_and_retires_in_same_tx`（action 与已准入的 probe 都 Retire）、`c3_every_terminal_outcome_drives_retire`、
+  `c3_park_write_failure_retains_owned_execution`、`c3_pre_c3_native_forge_op_is_never_advanced`（含补偿 → Stuck 后 track 与 area 删除仍被拒）；
+  probe：`c3_probe_admission_is_durably_exclusive`（A 取 claim 后在 ④ 之前确定性暂停，boot 替换与过期 sweep 两个变体：A 的 ④ 回滚、零
+  fork，每种 probe 恰一个 execution 行；直接再 admit 同 alias 被唯一索引拒绝）、`c3_boot_steal_never_double_spawns_probe`（target forge_suite，用 C3.0 的 support：probe 运行中
+  kill kernel、supervisor 存活：重启后 boot 观察同一 execution_id，不准入第二个，按它的文件判决；Held 的 probe 重启后恰释放一次）、
+  `c3_probe_settlement_precedes_verdict`（probe leader 写好 `.code` 后退出、后台子孙仍在 worktree：Drained 之前不判决、不完成，`Exited` 只
+  触发 Stop drain）、`c3_probe_timeout_stops_through_engine`（probe 与子孙超过 60s：写 Stopping{Timeout} 与 `Desired::Stop`，executor 收尾
+  全部子孙后才判 `gate-infra`；等待期间 claim 过期不重置计时、不重启 probe）、`c3_no_completion_while_probe_unsettled`（probe 未结算时
+  past-deadline sweep、observer 与 boot 都不终结；完成快照之后记录多了 probe → 完成事务 Conflict、回滚）、
+  `c3_landed_verdict_persists_before_output_probe`（Landed 与 output probe 同事务；output probe 期间重启不重跑 verdict probe）、
+  `c3_boot_releasing_probe_is_refused_not_resent`、`c3_probe_waits_for_available_executor`（不建行、不判 infra，`last_error` 与 lease 退避，
+  可用后恰准入一次）；track_suite `track_delete_forge_fence::c3_closed_worktree_clean_refuses_unresolved_native_stuck_forge_row`。replay：
+  forge_action_adapter 全部（只验已删机制的用例，如 `forge_action_recovery_rejects_wrong_start_time`，随机制删除，清单写进 PR；原生 probe
+  结果用例如 `forge_action_probe_not_landed_fails_dead_parked_without_rerun`、`forge_action_probe_unknown_fails_dead_parked_without_rerun`、
+  `forge_action_crash_then_probe_reextracts_probe_typed_output_fields`、`forge_action_dead_past_deadline_uses_probe_and_no_probe_times_out`
+  保留名字与判决断言，证据改为 probe execution 与其文件）；forge_suite `forge_merge_crash_reboot::` 两条（EOF 与 PID 预言改为 typed 记录与
+  结算，保留“零或一次合并”断言）；forge_template_e2e `issue_comment_recovery::`；track_suite `track_delete_forge_fence::` 与
+  `track_worktree::c1_fence::`；mcp_plugin_forge_action 全部；lib `operation::forge_action_adapter::tests`（含
+  `landed_probe_completion_tx_error_leaves_operation_parked`）、`repo_sqlite::claim_tests`、`owned_parked::tests`、`execution_boot::port_contract`；
+  C3.0 的 `c2b_` 过滤器。mutation 只在实现 PR 内各做一次，每次先写出预测变红的测试名：park 前释放、boot Held 不 Stop、凭据进 intent
+  （action 或 probe）、wrapper 不校验终止标记（C3.2b）、占用检查漏掉原生 Stuck、清理器不读 forge 检查与 forge 不声明 `preparation_track`
+  （C3.2a）、probe 准入不在 live-claim 事务内或不要求 `probes.<kind>` 为 null（`c3_probe_admission_is_durably_exclusive`、
+  `c3_boot_steal_never_double_spawns_probe`）、`Exited` 即读 probe 文件（`c3_probe_settlement_precedes_verdict`）、probe 到期不写 Stop
+  （`c3_probe_timeout_stops_through_engine`）、存在未结算 probe 时仍允许完成（`c3_no_completion_while_probe_unsettled`）、output probe 准入
+  不同事务写 Landed（`c3_landed_verdict_persists_before_output_probe`）、完成事务不复核记录、省略 Retire drive。
+  永久成本：`OWNER_STATE_KEYS` 多一个键，`execution_boot.rs` 多一条 consumer 注册；每个需要 probe 的 op 至多多两行 execution，完成时 Retire；
+  `c3_` 测试随所在 suite 每个 CI workflow 各跑一次；不加调用者或测试清单。
+- **切片与规模。** 校准：C2b 四片的设计值与实际手写增删（`git show --numstat`，不计生成产物与 Markdown）分别为 C2b.0 510 → 1092、
+  C2b.1 1150 → 2572、C2b.2 930 → 2397、C2b.3 470 → 821，即 1.7–2.6×，切片表的“预计”按此区间给出。C3.2c 的设计值约 2520、预计
+  4300–6500，远超约 800 的口径；能保持行为或独立成立的部分已经前移（C3.0 的 helper、`Complete` 携带 event 与 support，C3.2a 的清理栅栏，
+  C3.2b 的凭据载荷与判决函数）。剩下的不能再切：① 先迁 action、probe 暂留原生：owned reconcile 下 probe 在 claim 内运行，单次 probe
+  可达 60s 而 claim 租约也是 60s、不续租，完成总因 claim 过期失败、下一个 claimant 重跑 probe，要么活锁，要么重新引入已删的续租预算；
+  ② 先迁 action、ambiguous 结果暂判 infra：在两次合入之间把今天由 probe 判定的 op 退化为 `gate-infra`，是可部署的回归；③ 先迁 probe：
+  probe 记录要求 forge 声明 owner-state 键，键一经声明，driver 就把全部 forge parked op 交给 owned 路径（`driver.rs:1192`），原生 action 的
+  PID 恢复要在 claim 下重写，即旧版 C3 设计明确不做的原生 claim 管线；④ 原生代码约 −590 行在切换后没有调用者，clippy 不允许留到下一片。
+  PR 按上列文件组说明。
 
 **C0 保留清单。** 删除边界按私有路径的依赖划定，不按类型整块删：`stage_private`（`execution/preparation.rs:198-201`）、
 唯一的 `release_private`（`execution/private.rs:8-37`）与 transfer 身份/nonce/root 资格检查（同文件 65-132）、
@@ -554,8 +752,9 @@ effect 本身只限于其根，是否对 worktree 根放宽为只拒绝“位于
    时每个破坏性入口都必须表态。
 2. **C0a–C0d 与 I1 并行**（D1/D6 被接受后）：按请求组的纯删除，缩小 executor 协议面；兼容规则在 C0a 落地。
 3. **C1** 关闭唯一已知的清理竞态，规模小，与其余切片无依赖。
-4. **O1**（接受后）在 C5 之前。**C2a → C2b/C3a/C3b/C4 → C5**：先让各种启动成为 executor 事实，再让破坏性 effect 依赖这些
-   事实；顺序反过来，C5 只能继续依赖 DB 代理事实。
+4. **O1**（接受后）在 C5 之前。**C2a → C2b/C3.0、C3.2a、C3.2b → C3.2c/C4 → C5**：先让长寿启动成为 executor 事实，再让破坏性 effect
+   依赖这些事实；顺序反过来，C5 只能继续依赖 DB 代理事实。forge probe 随 C3.2c 成为 execution，不再是例外；剩下一个例外不成为
+   executor 事实，C5 不得删除其占用检查：pre-C3 原生 forge 行（含 Stuck）由 forge-owned 检查覆盖。
 5. **C6 可选**，然后 **S3 → S2b**：view 需要 S3 的证据与 C5 的正向静默，作为第三个后端最后接入。
 
 ## 6. AGENTS.md 架构五点与永久成本
@@ -565,7 +764,7 @@ effect 本身只限于其根，是否对 worktree 根放宽为只拒绝“位于
   wire 字段，不推断领域政策；进程事实只来自 executor（C2–C5）。
 - **重复逻辑**：一个解码函数 `isolation()`、一个 wire 投影点、一个 lexical + canonical 重叠比较（子 track、`none` 与 O1 共用），
   没有并行的守卫列表；C1 复用既有两把锁；C2–C4 每接入一种启动就删除对应的 Legacy spawn 分支，C5 删除已迁移类型的 Legacy
-  占用代理；C0 删除无调用者的协议。
+  占用代理（不含上述 pre-C3 原生 forge 例外）；forge probe 迁入 Engine，删去原生 probe 生命周期，不另建一套；C0 删除无调用者的协议。
 - **硬编码假设**：`WorkspaceIsolation` 是本层有意闭合的集合，`view` 作为新变体加入；自有位置是 kernel 自己的两类目录
   （managed 根与 worktree 根），由配置与 DB 行给出，不按 provider、模板或路径字符串（如 `.claude`）推断所有权。
 - **外部合同事实**：Git 根只取 `rev-parse --show-toplevel`；`none` 只要求它成功；worktree 根取 DB 中 kernel 写入的
@@ -578,7 +777,7 @@ effect 本身只限于其根，是否对 worktree 根放宽为只拒绝“位于
   C1 是进程内围栏，不新增持久状态，每次 Planner turn issuance 多一次通常无争用的 track 锁；C0 每片 envelope +1，持久合同常量只在持久形状改变时变化；C6 若实施会新增一类
   operation kind。删除 D1–D3、D6 会显著减少 launch-admission 计划中的永久面。
 
-## 7. 评审处置（计划评审第一、二轮与 C2b 设计评审）
+## 7. 评审处置（计划评审第一、二轮，C2b 与 C3 设计评审）
 
 | 发现 | 处置 |
 |---|---|
@@ -597,7 +796,7 @@ effect 本身只限于其根，是否对 worktree 根放宽为只拒绝“位于
 | 第二轮 N1：canonical 检查只是一次观察 | 外部路径/链接在准入期间与之后的变化都明确不防御；缺失根按最近已存在祖先的物理位置比较，不把 canonicalize 失败当不重叠 |
 | 第二轮 N2：`none` 与自有位置不重叠不是全局不变量 | §3.1/§4.2 改写为准入时排除 + 后来创建 worktree 的已接受例外，owned/owned 由 O1 保障 |
 | 第二轮 N3：同宿主 Unknown 与 envelope 写者 | C0 夹具拆为同宿主重启保持 Unknown、boot 改变 → NoChild、已 durable settle 重放；列出 `EXECUTION_ENVELOPE_VERSION` 的全部持久写者与读者 |
-| 第二轮 N4：`apply_recovery_item` 不持 drive | §1 改正锁事实（第四轮 adversarial N1：HEAD 已在取 claim 前持 drive，`driver.rs:1299-1302`、`:1326-1328`，§1 改为现状）；C1 加 boot 恢复一行，围栏在 adapter 而非 drive mutex 上，Busy 可重试；不以计时器宽限作顺序保证 |
+| 第二轮 N4：`apply_recovery_item` 不持 drive | §1 改正锁事实（第四轮 adversarial N1：HEAD 已在取 claim 前持 drive，`driver.rs:1474-1475`、`:1502-1503`，§1 改为现状）；C1 加 boot 恢复一行，围栏在 adapter 而非 drive mutex 上，Busy 可重试；不以计时器宽限作顺序保证 |
 | C2b 设计评审 boundary B1 / adversarial B1：SpawnStarted 重驱的“Stop、结算、再准入”没有合法的记录与别名转换 | 收窄而非替换：有记录的 SpawnStarted 写 Stopping{KernelRestarted} 加 Stop，typed park 同一 execution，结算后判 infra；记录仍只有三种写入。唯一需要替换的是 R8a 测试，不是生产消费者；R8a 改断言 |
 | C2b 设计评审 boundary B2：`gate_ops` 读 `spawn_artifacts_json` 并调用 `marked_group_stopped`，不在任何切片里 | C2b.1 引入混合占用合同（有记录看 execution 结算），C2b.2 把无记录的原生 op 改判 Unproven，C2b.3 因此仍是纯删除；计入两片预算，`c2b_typed_gate_op_occupies_until_settled` 覆盖四个调用者 |
 | C2b 设计评审 adversarial B2：过期的 owned op 在 boot 时以 PastDeadline 进入，丢失 Boot | owned 适配器在 deadline 分流之前走 Boot 分支，`op` 带 deadline；原生顺序不变；回归 `c2b_boot_after_deadline_keeps_boot_origin` |
@@ -610,3 +809,4 @@ effect 本身只限于其根，是否对 worktree 根放宽为只拒绝“位于
 | 第四轮非阻塞：boundary N1 写者表缺 `write_phase_and_tx_output`；N2 永久成本；adversarial N1 锁基线 | 表加该行，保证写为现有生产调用路径并约束新调用者；区分一次性键参数迁移与日后 owner 注册，写明 CI 频率；§1 与第二轮 N4 改为现状 |
 | 第五轮 boundary B1：通用 CHECK 解析 `gate_execution` 的 version/execution_id，是 owner 私有政策，每个 owned 资源再加一支迁移；adversarial N1：boot 有两次立即尝试；N2：CHECK 只是浅判别 | 新迁移第一支去掉 artifacts 要求，只留 parked 时间事实与原 isolated 支；不选“或 `tx_output_json IS NOT NULL`”（parked 行必有 tx output，区分不了）；原生 artifacts 围栏留在 Rust（`writes.rs:104-117`、`driver.rs:796-815`），C2b.0 replay 两条既有用例；owned 键只要求键存在，记录有效性只归 `gate_execution.rs` 解码器，`c2b_owned_park_requires_decodable_record` 覆盖缺失与损坏；迁移测试改名 `parked_check_keeps_only_owner_neutral_facts`；写明并断言一次 boot 两次尝试；C2b.1 约 1150 |
 | C2b 设计评审非阻塞项：行号、同宿主 Unknown、计时语义、预算 | 改正 `gate_process.rs` 与 `task_*` 删除范围；明确同一 OS boot 内 Unknown 不可恢复、不承诺结算；区分授权计时与 parked 安全网，已结算 verify 过期后取 status；两片预算按文件重估，均超出约 800 并写明无安全切点 |
+| C3 设计评审第四至六轮 adversarial 阻断：R4-B1（probe 预约与 claim 续租的顺序允许旧 claimant 在终结后启动 probe）、R5-B1（续租前被取消泄漏进程内预约，op 永久 Parked）、R6-B1（tokio `Command::spawn` 在 OS spawn 之后仍可返回 Err，子进程逃出预约守卫） | 三轮阻断都来自给 probe 手写的原生生命周期，按 AGENTS.md 改方法、删机制：probe 改为同一 `forge_execution` 记录拥有的 Engine execution，以 live claim 下与 `Engine::admit` 同事务的 create-if-absent（④）作 durable 排斥，后来的 claimant 只观察已存在的 probe；spawn、计时 Stop、子孙收尾、结算与 Retire 归 Engine，判决只读已结算 probe 的文件，Landed 与 output probe 准入同事务。删去进程内预约与身份守卫、继任与回收任务、每次调用前的续租预算、probe 的 `kill_on_drop` 过渡期与 C3.1 片，C2a/C5 不再为 probe 留例外；接受同一 OS boot 内 supervisor 重启后的 Unknown 不完成，以及 probe 不重试（Releasing 时崩溃或主机重启判 infra）。C3.2 拆为 C3.2a（清理栅栏）、C3.2b（原生凭据载荷与判决函数）、C3.2c（切换），按 C2b 实测比重估各片；测试删去续租与预约用例，新增 durable 排斥、boot 抢占不重复 spawn、结算先于判决、经 Engine Stop 的 probe 超时等；切换仍远超 800，理由与被否定的切法写在“切片与规模” |

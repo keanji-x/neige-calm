@@ -31,7 +31,7 @@ use support::gh_shim::write_gh_shim;
 use support::git_helpers::{
     clone_for_track, configure_repo_identity, init_bare_origin, stage_git_change,
 };
-use support::kernel_proc::{launch_kernel, wait_exit_with_timeout};
+use support::kernel_proc::{launch_kernel_to_with_args, wait_exit_with_timeout};
 use support::mcp::send_tool_call_without_reply;
 use tempfile::TempDir;
 use tokio::time::{Instant, sleep};
@@ -87,6 +87,7 @@ async fn kernel_abort_pre_fence_commit_then_reboot_merges_exactly_once() {
     // ONE reader pool for the whole test, opened BEFORE boot#1: re-`open()` against a live kernel
     // would race the migration check with a live writer.
     let repo = Arc::new(SqlxRepo::open(&db_url).await.expect("open file db"));
+    let execution = support::execution::Fixture::new(repo.db().clone()).await;
     let seeded = seed_world(&repo, &track_cwd).await;
     seed_plugin_row(&repo, &tmp_path).await;
 
@@ -100,12 +101,25 @@ async fn kernel_abort_pre_fence_commit_then_reboot_merges_exactly_once() {
     let mut crash_env = base_env.clone();
     crash_env.push(("CALM_TEST_CRASH_AT", OsString::from(CRASH_POINT)));
 
-    let (pr_number, head_sha) =
-        prepare_pr(repo.clone(), &seeded.track_id, &tmp_path, &shim_dir).await;
+    let (pr_number, head_sha) = prepare_pr(
+        repo.clone(),
+        &seeded.track_id,
+        &tmp_path,
+        &shim_dir,
+        &execution.lifecycle,
+    )
+    .await;
     seed_caller_lease(&repo, &seeded).await;
 
     // boot#1: crash seam armed
-    let Some(mut boot1) = launch_kernel(&tmp_path, &db_path, "boot-1", &crash_env) else {
+    let Some(mut boot1) = launch_kernel_to_with_args(
+        &tmp_path,
+        &db_path,
+        "boot-1",
+        &crash_env,
+        None,
+        &execution.kernel_args(),
+    ) else {
         return; // sandbox denied loopback bind — CI-safe skip
     };
     assert_ne!(boot1.port, 4040);
@@ -174,7 +188,14 @@ async fn kernel_abort_pre_fence_commit_then_reboot_merges_exactly_once() {
     );
 
     // boot#2: same tempdir, seam unarmed. Recovery runs before the HTTP listener binds.
-    let Some(mut boot2) = launch_kernel(&tmp_path, &db_path, "boot-2", &base_env) else {
+    let Some(mut boot2) = launch_kernel_to_with_args(
+        &tmp_path,
+        &db_path,
+        "boot-2",
+        &base_env,
+        None,
+        &execution.kernel_args(),
+    ) else {
         return;
     };
     wait_for_operation_phase(repo.pool(), &op_id, "succeeded", ORACLE_TIMEOUT).await;
@@ -267,6 +288,7 @@ async fn kernel_abort_pre_go_token_then_reboot_never_runs_action() {
     install_git_forge_plugin_files(&tmp_path);
 
     let repo = Arc::new(SqlxRepo::open(&db_url).await.expect("open file db"));
+    let execution = support::execution::Fixture::new(repo.db().clone()).await;
     let seeded = seed_world(&repo, &track_cwd).await;
     seed_plugin_row(&repo, &tmp_path).await;
 
@@ -281,10 +303,23 @@ async fn kernel_abort_pre_go_token_then_reboot_never_runs_action() {
 
     // boot#1: pre-go crash seam armed. The seam is event-kind-qualified, so the setup
     // PR preparation finished in a separate runtime before either crash boot.
-    let (pr_number, _head_sha) =
-        prepare_pr(repo.clone(), &seeded.track_id, &tmp_path, &shim_dir).await;
+    let (pr_number, _head_sha) = prepare_pr(
+        repo.clone(),
+        &seeded.track_id,
+        &tmp_path,
+        &shim_dir,
+        &execution.lifecycle,
+    )
+    .await;
     seed_caller_lease(&repo, &seeded).await;
-    let Some(mut boot1) = launch_kernel(&tmp_path, &db_path, "e3-boot-1", &crash_env) else {
+    let Some(mut boot1) = launch_kernel_to_with_args(
+        &tmp_path,
+        &db_path,
+        "e3-boot-1",
+        &crash_env,
+        None,
+        &execution.kernel_args(),
+    ) else {
         return; // sandbox denied loopback bind — CI-safe skip
     };
     assert_ne!(boot1.port, 4040);
@@ -381,7 +416,14 @@ async fn kernel_abort_pre_go_token_then_reboot_never_runs_action() {
     );
 
     // boot#2: same tempdir, seam unarmed, shim PATH still present
-    let Some(mut boot2) = launch_kernel(&tmp_path, &db_path, "e3-boot-2", &base_env) else {
+    let Some(mut boot2) = launch_kernel_to_with_args(
+        &tmp_path,
+        &db_path,
+        "e3-boot-2",
+        &base_env,
+        None,
+        &execution.kernel_args(),
+    ) else {
         return;
     };
     wait_for_operation_phase(repo.pool(), &op_id, "failed", ORACLE_TIMEOUT).await;
@@ -453,7 +495,14 @@ async fn kernel_abort_pre_go_token_then_reboot_never_runs_action() {
     );
 }
 
-async fn prepare_pr(repo: Arc<SqlxRepo>, track: &str, tmp: &Path, shim: &Path) -> (u64, String) {
+async fn prepare_pr(
+    repo: Arc<SqlxRepo>,
+    track: &str,
+    tmp: &Path,
+    shim: &Path,
+    execution: &calm_server::execution_quiesce::ExecutionLifecycle,
+) -> (u64, String) {
+    let engine = Arc::new(execution.engine().unwrap().clone());
     let (track, tmp, shim) = (track.to_string(), tmp.to_path_buf(), shim.to_path_buf());
     tokio::task::spawn_blocking(move || {
         let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
@@ -490,6 +539,7 @@ async fn prepare_pr(repo: Arc<SqlxRepo>, track: &str, tmp: &Path, shim: &Path) -
             let ctx = support::done_delivery::context(repo.clone(), events.clone(), write.clone(), host_cell, op_cell.clone(), logs.clone());
             let wiring = support::done_delivery::wire(repo.clone(), host.clone(), events, write, cache, track_areas,
                 server, &tmp.join("prepare-workspaces"), &logs).await;
+            wiring.runtime.execution().bind(engine);
             op_cell.set(wiring.runtime.clone()).ok().unwrap();
             let started = support::done_delivery::start(&repo, &ctx, &registry, planner.clone(), "implement").await;
             configure_repo_identity(&started.cwd);

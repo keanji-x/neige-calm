@@ -1,3 +1,4 @@
+pub use owned_parked::OwnerEvent;
 #[cfg(test)]
 pub(crate) mod launch_cleanup_test_support;
 
@@ -23,6 +24,7 @@ pub(crate) mod gate_execution;
 pub(crate) mod gate_lifecycle;
 pub(crate) mod gate_ops;
 pub(crate) mod gate_process;
+pub(crate) mod owned_execution;
 pub mod planner_harness_interrupt_adapter;
 pub mod planner_harness_shutdown_adapter;
 pub mod planner_harness_start_adapter;
@@ -674,11 +676,15 @@ pub enum ParkedCompletion {
     AlreadyResolved { phase: PhaseTag },
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub enum ParkedRecovery {
     LeaveParked,
-    Complete(ParkedOutcome),
-    Fail { reason: String },
+    /// Owned recovery may supply an event; native adapters pass None.
+    /// Box the complete payload so Event does not enlarge every recovery future.
+    Complete(Box<(ParkedOutcome, Option<OwnerEvent>)>),
+    Fail {
+        reason: String,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

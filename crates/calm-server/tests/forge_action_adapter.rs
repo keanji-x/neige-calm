@@ -1,5 +1,7 @@
 #![cfg(unix)]
 
+mod support;
+
 use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::collections::BTreeMap;
 use std::ffi::OsString;
@@ -70,6 +72,7 @@ impl Drop for EnvVarGuard {
 
 struct TestBoot {
     _tmp: TempDir,
+    _execution: support::execution::Fixture,
     repo: Arc<SqlxRepo>,
     operation_repo: Arc<SqlxOperationRepo>,
     runtime: OperationRuntime,
@@ -111,6 +114,7 @@ impl TestBoot {
             .await
             .expect("create track");
 
+        let execution = support::execution::Fixture::new(repo.db().clone()).await;
         let operation_repo = Arc::new(SqlxOperationRepo::new(repo.db().clone()));
         let events = EventBus::new();
         let completion = OperationCompletionBus::new();
@@ -128,7 +132,8 @@ impl TestBoot {
                 terminal_renderer,
                 events.clone(),
                 completion.clone(),
-            ),
+            )
+            .with_execution(execution.lifecycle.clone()),
         );
         let route_repo: Arc<dyn RouteRepo> = repo.clone();
         let terminal_renderer = TerminalRendererRegistry::new_with_repo(route_repo.clone());
@@ -139,9 +144,11 @@ impl TestBoot {
             terminal_renderer,
             events,
             completion,
-        );
+        )
+        .with_execution(execution.lifecycle.clone());
         Self {
             _tmp: tmp,
+            _execution: execution,
             repo,
             operation_repo,
             runtime,

@@ -15,7 +15,7 @@ use crate::{
 };
 
 /// Independently owned fields preserved across generic output checkpoints.
-const OWNER_STATE_KEYS: &[&str] = &["terminal_launch", "gate_execution"];
+use calm_truth::db::sqlite::gate_execution::OWNER_STATE_KEYS;
 
 fn preserving_owner_sql(output: &str) -> String {
     OWNER_STATE_KEYS.iter().fold(output.to_owned(), |sql, key| {

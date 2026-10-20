@@ -5,63 +5,96 @@ use super::{
 };
 use crate::db::sqlite::begin_immediate_tx;
 use crate::error::{CalmError, Result};
+use crate::event::{BroadcastEnvelope, Event, EventScope, SYNC_EVENT_VERSION};
+use crate::ids::ActorId;
+
+/// The owner supplies every event fact; generic completion infers neither actor nor scope.
+#[derive(Clone, Debug)]
+pub struct OwnerEvent {
+    pub actor: ActorId,
+    pub scope: EventScope,
+    pub event: Event,
+}
 
 /// Both live observer and the existing boot/sweep loop use this one lease fence.
 /// The adapter must retain ownership until it has real stop/quiescence evidence.
-pub(crate) async fn reconcile(
-    adapter: &dyn ProviderAdapter,
-    op: &Operation,
+// Keep event storage out of callers' recovery futures, including native recovery branches.
+pub(crate) fn reconcile<'a>(
+    adapter: &'a dyn ProviderAdapter,
+    op: &'a Operation,
     mode: RecoveryMode,
-    ctx: &SpawnCtx,
-) -> Result<()> {
-    let owner = op
-        .lease_owner
-        .as_deref()
-        .ok_or_else(|| CalmError::Conflict("owned parked recovery has no lease".into()))?;
-    let outcome = adapter.recover_owned_parked(op, mode, ctx).await;
-    let pool = ctx.operation_repo.sqlite_db();
-    let result = async {
-        match outcome? {
-            ParkedRecovery::Complete(outcome) => {
-                let mut tx = begin_immediate_tx(&pool).await?;
-                super::repo_sqlite::require_live_claim_tx(&mut tx, op).await?;
-                let completion = complete_parked_tx(&mut tx, &op.id, &outcome).await?;
-                let events = if matches!(completion, ParkedCompletion::Completed(_)) {
-                    adapter.complete_owned_parked_tx(&mut tx, op).await?
-                } else {
-                    Vec::new()
-                };
-                tx.commit().await?;
-                for event in events {
-                    ctx.events.emit_envelope(event);
+    ctx: &'a SpawnCtx,
+) -> futures::future::BoxFuture<'a, Result<()>> {
+    Box::pin(async move {
+        let owner = op
+            .lease_owner
+            .as_deref()
+            .ok_or_else(|| CalmError::Conflict("owned parked recovery has no lease".into()))?;
+        let outcome = adapter.recover_owned_parked(op, mode, ctx).await;
+        let pool = ctx.operation_repo.sqlite_db();
+        let result = async {
+            match outcome? {
+                ParkedRecovery::Complete(complete) => {
+                    let (outcome, owner_event) = *complete;
+                    let mut tx = begin_immediate_tx(&pool).await?;
+                    super::repo_sqlite::require_live_claim_tx(&mut tx, op).await?;
+                    let completion = complete_parked_tx(&mut tx, &op.id, &outcome).await?;
+                    let mut events = if matches!(completion, ParkedCompletion::Completed(_)) {
+                        adapter.complete_owned_parked_tx(&mut tx, op).await?
+                    } else {
+                        Vec::new()
+                    };
+                    if matches!(completion, ParkedCompletion::Completed(_))
+                        && let Some(OwnerEvent {
+                            actor,
+                            scope,
+                            event,
+                        }) = owner_event
+                    {
+                        let id = crate::db::sqlite::append_decision_event_in_tx(
+                            &mut tx, &actor, &scope, None, &event,
+                        )
+                        .await?;
+                        events.push(BroadcastEnvelope {
+                            id,
+                            event_version: SYNC_EVENT_VERSION,
+                            actor,
+                            scope,
+                            event,
+                        });
+                    }
+                    tx.commit().await?;
+                    for event in events {
+                        ctx.events.emit_envelope(event);
+                    }
+                    if let ParkedCompletion::Completed(result) = completion {
+                        adapter.owned_parked_completed(op, ctx);
+                        ctx.completion.complete(result);
+                    }
+                    Ok(())
                 }
-                if let ParkedCompletion::Completed(result) = completion {
-                    adapter.owned_parked_completed(op, ctx);
-                    ctx.completion.complete(result);
-                }
-                Ok(())
+                ParkedRecovery::LeaveParked => Ok(()),
+                ParkedRecovery::Fail { reason } => Err(CalmError::Conflict(format!(
+                    "owned resource remains unresolved: {reason}"
+                ))),
             }
-            ParkedRecovery::LeaveParked => Ok(()),
-            ParkedRecovery::Fail { reason } => Err(CalmError::Conflict(format!(
-                "owned resource remains unresolved: {reason}"
-            ))),
         }
-    }
-    .await;
-    // A stale observer can neither complete nor alter a replacement's claim.
-    let sql = if result.is_err() {
-        "UPDATE operations SET last_error=?3,updated_at_ms=?4 WHERE id=?1 AND lease_owner=?2 AND phase='parked'"
-    } else {
-        "UPDATE operations SET lease_owner=NULL,lease_until_ms=NULL WHERE id=?1 AND lease_owner=?2 AND phase='parked'"
-    };
-    let mut query = sqlx::query(sql).bind(&op.id).bind(owner);
-    if let Err(error) = &result {
-        query = query
-            .bind(format!("owned execution retained: {error}"))
-            .bind(crate::model::now_ms());
-    }
-    query.execute(pool.writer_pool()).await?;
-    result
+        .await;
+        // A stale observer can neither complete nor alter a replacement's claim.
+        let sql = if result.is_err() {
+            "UPDATE operations SET last_error=?3,updated_at_ms=?4 WHERE id=?1 AND lease_owner=?2 AND phase='parked'"
+        } else {
+            "UPDATE operations SET lease_owner=NULL,lease_until_ms=NULL WHERE id=?1 AND lease_owner=?2 AND phase='parked'"
+        };
+        let mut query = sqlx::query(sql).bind(&op.id).bind(owner);
+        if let Err(error) = &result {
+            query = query
+                .bind(format!("owned execution retained: {error}"))
+                .bind(crate::model::now_ms());
+        }
+        query.execute(pool.writer_pool()).await?;
+        result
+    })
 }
 
 #[cfg(test)]

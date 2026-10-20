@@ -10,23 +10,7 @@ use workspace_runtime::execution::*;
 
 pub(crate) const KEY: &str = "gate_execution";
 pub(crate) const CONSUMER: &str = "gate";
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) enum Release {
-    Held,
-    Releasing { authorized_at_ms: i64 },
-    Released { authorized_at_ms: i64 },
-}
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) enum StopReason {
-    Timeout,
-    KernelRestarted,
-    ReleaseRefused,
-}
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) enum Decision {
-    Observing,
-    Stopping { reason: StopReason },
-}
+pub(crate) use super::owned_execution::{Decision, Release, StopReason, engine, refresh_claim};
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Record {
     version: u8,
@@ -49,13 +33,6 @@ pub(crate) fn record(op: &Operation) -> Result<Record> {
     }
     Ok(record)
 }
-pub(crate) fn engine(ctx: &SpawnCtx) -> Result<&crate::execution_boot::ExecutionEngine> {
-    ctx.execution
-        .engine()
-        .filter(|e| e.available())
-        .ok_or(CalmError::ExecutionUnavailable)
-}
-
 /// The only gate intent constructor. Files exist before the admission transaction.
 pub(crate) async fn admit(
     op: &Operation,
@@ -142,7 +119,7 @@ pub(crate) async fn admit(
     let mut tx = crate::db::sqlite::begin_immediate_tx(&pool).await?;
     super::repo_sqlite::require_live_claim_tx(&mut tx, op).await?;
     let ticket = engine.admit(&mut tx, intent).await.map_err(conflict)?;
-    sql::insert(&mut tx, &op.id, &serde_json::to_string(&record)?).await?;
+    sql::insert(&mut tx, &op.id, KEY, &serde_json::to_string(&record)?).await?;
     tx.commit().await?;
     engine.drive(ticket.committed());
     Ok(record)
@@ -165,6 +142,7 @@ pub(crate) async fn transition(
     sql::compare_exchange(
         &mut tx,
         &op.id,
+        KEY,
         &serde_json::to_string(old)?,
         &serde_json::to_string(new)?,
     )
@@ -208,53 +186,14 @@ pub(crate) async fn release(
         authorized_at_ms: now_ms(),
     };
     transition(ctx, op, &old, &new, Some(task)).await?;
-    let engine = engine(ctx)?;
     let send = async {
-        loop {
-            if let Ok(ExecutionReply::Observation {
-                receipt: Some(_),
-                state: ExecutionState::Spawned,
-                ..
-            }) = engine.output(&old.execution_id, None).await
-            {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-        }
-        let token = b"go\n";
-        let mut offset = 0;
-        while offset < token.len() {
-            match engine
-                .interact(
-                    &old.execution_id,
-                    ProcessAction::WriteStdin {
-                        bytes: token[offset..].to_vec(),
-                    },
-                )
-                .await
-                .map_err(conflict)?
-            {
-                ExecutionReply::StdinProgress { accepted_bytes }
-                    if accepted_bytes <= token.len() - offset =>
-                {
-                    offset += accepted_bytes
-                }
-                _ => return Err(conflict("gate release returned invalid progress")),
-            }
-            if offset < token.len() {
-                tokio::task::yield_now().await;
-            }
-        }
-        engine
-            .close_stdin(&old.execution_id)
-            .await
-            .map_err(conflict)?;
-        // Fault the initial response only after the real token and close reached the executor.
+        super::owned_execution::send_release(ctx, &old.execution_id, b"go\n").await?;
+        // Fault only after the real token and close reached the executor.
         #[cfg(any(test, feature = "fixtures"))]
         if let Some(response) = response {
             response().await?;
         }
-        Ok(())
+        Ok::<(), CalmError>(())
     };
     tokio::time::timeout(super::gate_lifecycle::RELEASE_TIMEOUT, send)
         .await
@@ -271,57 +210,10 @@ pub(crate) async fn release(
     transition(ctx, op, &new, &acked, None).await
 }
 
-/// Refresh owner state without acquiring authority from an unclaimed row read.
-pub(crate) async fn refresh_claim(ctx: &SpawnCtx, claimed: &Operation) -> Result<Operation> {
-    let latest = ctx
-        .operation_repo
-        .get_operation(&claimed.id)
-        .await?
-        .ok_or_else(|| conflict("gate op disappeared"))?;
-    if latest.lease_owner != claimed.lease_owner {
-        return Err(conflict("gate observer lost its original claim"));
-    }
-    Ok(latest)
-}
-
-pub(crate) async fn settlement(ctx: &SpawnCtx, record: &Record) -> Result<Option<Settlement>> {
-    let pool = ctx.operation_repo.sqlite_db();
-    let mut tx = crate::db::sqlite::begin_immediate_tx(&pool).await?;
-    let value = sql::settlement(&mut tx, record.execution_id.as_str()).await?;
-    tx.commit().await?;
-    value
-        .map(|s| serde_json::from_str(&s).map_err(Into::into))
-        .transpose()
-}
-
-/// Leader exit is not settlement: ask the executor to drain descendants before sampling.
-pub(crate) async fn drain_exited(ctx: &SpawnCtx, op: &Operation, record: &Record) -> Result<()> {
-    if let Some(engine) = ctx.execution.engine()
-        && matches!(
-            engine.output(&record.execution_id, None).await,
-            Ok(ExecutionReply::Observation {
-                state: ExecutionState::Exited { .. },
-                ..
-            })
-        )
-    {
-        let pool = ctx.operation_repo.sqlite_db();
-        let mut tx = crate::db::sqlite::begin_immediate_tx(&pool).await?;
-        super::repo_sqlite::require_live_claim_tx(&mut tx, op).await?;
-        let ticket = engine
-            .request(&mut tx, &record.execution_id, Desired::Stop)
-            .await
-            .map_err(conflict)?;
-        tx.commit().await?;
-        engine.drive(ticket.committed());
-    }
-    Ok(())
-}
-
 /// Completion rechecks the decision in the same transaction as phase write and Retire.
 pub(crate) async fn retire(tx: &mut Tx<'_>, op: &Operation) -> Result<()> {
     let snapshot = record(op)?;
-    sql::require_record(tx, &op.id, &serde_json::to_string(&snapshot)?).await?;
+    sql::require_record(tx, &op.id, KEY, &serde_json::to_string(&snapshot)?).await?;
     calm_truth::db::sqlite::workspace_execution::request(
         tx,
         snapshot.execution_id.as_str(),
