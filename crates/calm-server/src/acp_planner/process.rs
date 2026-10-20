@@ -1,5 +1,4 @@
-use super::config::{AcpAgentConfig, AcpPlannerHost, MARKER_KEY, Registration};
-use super::profile::PolicyCheck;
+use super::config::{AcpPlannerHost, MARKER_KEY, Registration};
 use crate::error::{CalmError, Result};
 use crate::planner_permission_mode::PlannerPermissionMode;
 use plugin::child_process::{GroupChild, set_process_group_leader, spawn_within};
@@ -49,11 +48,6 @@ impl Process {
     ) -> std::result::Result<Self, StartFailure> {
         let Registration { config, profile } = registration;
         crate::planner_process::stop(&host.instance, worker).await?;
-        if let Some(policy) = &profile.policy
-            && let Some(unmet) = policy_unmet(policy, config, cwd).await?
-        {
-            return Err(StartFailure::Failed(CalmError::Conflict(unmet)));
-        }
         let launch = match context {
             LaunchContext::Planner { permission, .. } => Some(profile.launch(permission)),
             LaunchContext::Readiness => None,
@@ -189,51 +183,6 @@ async fn open_log(path: &std::path::Path) -> std::io::Result<tokio::fs::File> {
     #[cfg(unix)]
     options.mode(0o600);
     options.open(path).await
-}
-
-/// Run the profile's policy command under the registration's environment in `cwd`: what does not
-/// hold, or `None` when its report meets the policy. No answer, a failed one, or one that is not
-/// JSON never meets it.
-async fn policy_unmet(
-    policy: &PolicyCheck,
-    config: &AcpAgentConfig,
-    cwd: &std::path::Path,
-) -> std::result::Result<Option<String>, StartFailure> {
-    use crate::claude_planner::readiness_command::{Input, run_with_input};
-    let args: Vec<&str> = config
-        .args
-        .iter()
-        .map(String::as_str)
-        .chain(policy.argv.iter().copied())
-        .collect();
-    let mut env: Vec<(String, std::ffi::OsString)> = config
-        .env
-        .iter()
-        .map(|(key, value)| (key.clone(), value.into()))
-        .collect();
-    env.push((
-        "PATH".into(),
-        crate::kernel_bin_path::kernel_led_path()
-            .map_err(CalmError::from)?
-            .path,
-    ));
-    let named = |detail: String| {
-        format!(
-            "{} `{}` {detail}",
-            config.provider.wire_name(),
-            policy.argv.join(" ")
-        )
-    };
-    let input = Input { stdin: b"", cwd };
-    let answer = run_with_input(&config.command, &args, input, &env, Duration::from_secs(10)).await;
-    Ok(match answer {
-        Err(failure) => Some(named(failure.to_string())),
-        Ok((status, _)) if !status.success() => Some(named(format!("exited with {status}"))),
-        Ok((_, stdout)) => match serde_json::from_slice::<Value>(&stdout) {
-            Ok(report) => (policy.unmet)(&report),
-            Err(error) => Some(named(format!("did not answer JSON ({error})"))),
-        },
-    })
 }
 
 /// `initialize`, then the profile's identity at the registered minimum version, then its

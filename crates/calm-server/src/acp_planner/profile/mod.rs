@@ -22,8 +22,6 @@ pub(crate) struct AcpAgentProfile {
     /// The reported `authMethods` id every launch authenticates with after `initialize`, before
     /// any session operation; `None` sends no `authenticate`.
     pub(crate) authentication: Option<&'static str>,
-    /// What one Planner turn's process adds under `never`.
-    pub(crate) never: ModeLaunch,
     /// What one Planner turn's process adds under `ask`.
     pub(crate) ask: ModeLaunch,
     /// What one Planner turn's process adds under `full`.
@@ -37,8 +35,6 @@ pub(crate) struct AcpAgentProfile {
     /// The agent ends its turn `cancelled` when a request it asked is declined, so the turn ends
     /// with the decline as its reason rather than as interrupted.
     pub(crate) decline_ends_turn: bool,
-    /// What the agent must report about its own configuration before every launch.
-    pub(crate) policy: Option<PolicyCheck>,
     /// Environment the registration may not set: credentials the agent would use in place of the
     /// sign-in it authenticates with.
     pub(crate) refused_env: &'static [&'static str],
@@ -69,17 +65,7 @@ pub(crate) struct ModeLaunch {
     pub(crate) agent_options: &'static [&'static str],
 }
 
-/// What the agent must report about its own configuration before Neige launches it, read from a
-/// command of its own CLI run under the registration's environment in the launch's directory. A
-/// launch, readiness included, is refused with what to change unless the report holds.
-pub(crate) struct PolicyCheck {
-    /// The command's arguments after the registration's `args`.
-    pub(crate) argv: &'static [&'static str],
-    /// What does not hold in the command's JSON answer, or `None` when everything does.
-    pub(crate) unmet: fn(&serde_json::Value) -> Option<String>,
-}
-
-/// A mode that adds nothing: the agent's own configuration stands.
+/// `never` adds nothing: the agent's own configuration stands.
 const NOTHING: ModeLaunch = ModeLaunch {
     env: &[],
     agent_options: &[],
@@ -98,7 +84,7 @@ impl AcpAgentProfile {
     /// What one Planner turn's process adds under `mode`.
     pub(crate) fn launch(&self, mode: PlannerPermissionMode) -> &ModeLaunch {
         match mode {
-            PlannerPermissionMode::Never => &self.never,
+            PlannerPermissionMode::Never => &NOTHING,
             PlannerPermissionMode::Ask => &self.ask,
             PlannerPermissionMode::Full => &self.full,
         }

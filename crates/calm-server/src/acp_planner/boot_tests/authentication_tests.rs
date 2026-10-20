@@ -244,8 +244,8 @@ async fn a_failed_authentication_revokes_the_turns_issued_context() {
 }
 
 /// argv is the registration's `args`, then the profile's entry with the turn mode's agent options
-/// inside it: Grok's is `agent <options> --no-leader stdio`, with `--always-approve` under `never`
-/// and `full`; OpenCode's is `acp` under every mode and outside a turn.
+/// inside it: Grok's is `agent <options> --no-leader stdio`, with `--always-approve` under `full`
+/// alone; OpenCode's is `acp` under every mode and outside a turn.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_profiles_entry_wraps_the_turns_agent_options_after_the_registered_args() {
     let planner = |permission| LaunchContext::Planner {
@@ -253,13 +253,6 @@ async fn the_profiles_entry_wraps_the_turns_agent_options_after_the_registered_a
         permission,
     };
     let grok_stdio = vec!["prefix", "agent", "--no-leader", "stdio"];
-    let grok_approving = vec![
-        "prefix",
-        "agent",
-        "--always-approve",
-        "--no-leader",
-        "stdio",
-    ];
     for (provider, context, argv) in [
         (
             AgentProvider::Grok,
@@ -269,7 +262,7 @@ async fn the_profiles_entry_wraps_the_turns_agent_options_after_the_registered_a
         (
             AgentProvider::Grok,
             planner(PlannerPermissionMode::Never),
-            grok_approving.clone(),
+            grok_stdio.clone(),
         ),
         (
             AgentProvider::Grok,
@@ -279,7 +272,13 @@ async fn the_profiles_entry_wraps_the_turns_agent_options_after_the_registered_a
         (
             AgentProvider::Grok,
             planner(PlannerPermissionMode::Full),
-            grok_approving,
+            vec![
+                "prefix",
+                "agent",
+                "--always-approve",
+                "--no-leader",
+                "stdio",
+            ],
         ),
         (
             AgentProvider::OpenCode,

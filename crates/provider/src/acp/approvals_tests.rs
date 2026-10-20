@@ -553,7 +553,7 @@ fn ends_turn() -> AgentAsks {
 
 /// A request the mode declined is why an agent that ends its turn on a decline ended it; an
 /// allowed own tool, a request after the fence, and an agent that does not end its turn so say
-/// nothing.
+/// nothing. Under `never` it also names the modes that would let the request through.
 #[tokio::test]
 async fn a_request_the_mode_declined_names_why_the_turn_ended() {
     let mut peer = peer_with(PlannerPermissionMode::Never, ends_turn());
@@ -562,12 +562,26 @@ async fn a_request_the_mode_declined_names_why_the_turn_ended() {
     peer.read().await;
     assert_eq!(peer.approvals.declined(), None, "an allowed own tool");
     peer.request(1, bash()).await;
+    assert_eq!(
+        peer.read().await,
+        answer(1, json!({"outcome": {"outcome": "cancelled"}}))
+    );
+    assert_eq!(
+        peer.approvals.declined().as_deref(),
+        Some(
+            "The agent ended the turn because Neige declined `echo one > one.txt` under the \
+             `never` permission mode. Switch the permission mode to `ask` to approve such a \
+             request, or to `full` to allow it."
+        )
+    );
+    let mut peer = peer_with(PlannerPermissionMode::Full, ends_turn());
+    peer.request(1, bash()).await;
     peer.read().await;
     assert_eq!(
         peer.approvals.declined().as_deref(),
         Some(
             "The agent ended the turn because Neige declined `echo one > one.txt` under the \
-             `never` permission mode."
+             `full` permission mode."
         )
     );
     let mut peer = peer_with(PlannerPermissionMode::Full, own_tools());

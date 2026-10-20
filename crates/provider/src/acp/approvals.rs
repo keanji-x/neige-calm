@@ -16,7 +16,8 @@
 //!
 //! A request the turn declines (answered `cancelled` by the mode, or a reject the person chose) is
 //! kept, so a turn the agent then ends `cancelled` on its own can say why ([`Approvals::declined`]),
-//! when the agent's profile says its agent ends a turn so.
+//! when the agent's profile says its agent ends a turn so; a decline under `never` also names the
+//! modes that would let the request through.
 //!
 //! The turn ends its requests by a fence: a cancel (`session/cancel` first), and the end of the
 //! turn's read whatever ended it ([`Approvals::close`]), each answer every request still pending
@@ -132,11 +133,12 @@ impl OwnTools {
     }
 }
 
-/// Why the last request of a turn was declined.
+/// Why the agent ended the turn, after the last request of the turn was declined.
 type Declined = Arc<std::sync::Mutex<Option<String>>>;
 
 fn decline(declined: &Declined, reason: String) {
-    *declined.lock().expect("ACP declined request") = Some(reason);
+    *declined.lock().expect("ACP declined request") =
+        Some(format!("The agent ended the turn because {reason}"));
 }
 
 /// What a person is told a request was about: its title, or its id without one.
@@ -155,6 +157,16 @@ fn mode_name(mode: PlannerPermissionMode) -> &'static str {
         PlannerPermissionMode::Never => "never",
         PlannerPermissionMode::Ask => "ask",
         PlannerPermissionMode::Full => "full",
+    }
+}
+
+/// What a person can change so that a request `mode` declined is not declined again.
+fn after_decline(mode: PlannerPermissionMode) -> &'static str {
+    match mode {
+        PlannerPermissionMode::Never => {
+            " Switch the permission mode to `ask` to approve such a request, or to `full` to allow it."
+        }
+        PlannerPermissionMode::Ask | PlannerPermissionMode::Full => "",
     }
 }
 
@@ -220,9 +232,10 @@ impl Approvals {
                     decline(
                         &self.declined,
                         format!(
-                            "Neige declined `{}` under the `{}` permission mode",
+                            "Neige declined `{}` under the `{}` permission mode.{}",
                             subject(request),
-                            mode_name(*mode)
+                            mode_name(*mode),
+                            after_decline(*mode)
                         ),
                     );
                 }
@@ -238,11 +251,7 @@ impl Approvals {
         if !self.agent.decline_ends_turn {
             return None;
         }
-        self.declined
-            .lock()
-            .expect("ACP declined request")
-            .as_ref()
-            .map(|reason| format!("The agent ended the turn because {reason}."))
+        self.declined.lock().expect("ACP declined request").clone()
     }
 
     /// Send `session/cancel` for the native session `native`, and answer what is still pending.
@@ -497,7 +506,7 @@ impl Pending {
             let result = match chosen {
                 Some((option_id, kind)) => {
                     if kind.starts_with("reject") {
-                        decline(&declined, format!("the person declined `{subject}`"));
+                        decline(&declined, format!("the person declined `{subject}`."));
                     }
                     permission::selected(option_id)
                 }

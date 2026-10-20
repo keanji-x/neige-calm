@@ -49,14 +49,6 @@ fn turn_argv(root: &Root) -> Vec<Value> {
         .map(|(argv, _)| argv)
         .collect()
 }
-/// The `GROK_SANDBOX` of every Planner launch.
-fn turn_sandbox(root: &Root) -> Vec<Value> {
-    lines(root, "environment.jsonl")
-        .into_iter()
-        .filter(|launch| launch["readiness"] == false && launch["catalog"] == false)
-        .map(|launch| launch["grok_sandbox"].clone())
-        .collect()
-}
 /// The key each session setup registered Neige's MCP server under.
 fn server_keys(root: &Root) -> Vec<String> {
     lines(root, "requests.jsonl")
@@ -188,47 +180,12 @@ async fn grok_runs_two_planner_turns_and_loads_the_same_native_session_after_res
         3,
         "{keys:?}"
     );
-    // Grok reports its policy before every launch, readiness and catalog included.
-    assert_eq!(
-        lines(&root, "inspect.jsonl").len(),
-        lines(&root, "environment.jsonl").len()
-    );
     stack.shutdown().await;
 }
 
-/// Grok whose own report does not enforce project MCP servers off is not ready, and says what to
-/// change.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn grok_is_unavailable_until_it_reports_project_mcp_servers_off() {
-    let root = Root::new("unused");
-    let mut env = grok();
-    env["ACP_FIXTURE_PROJECT_MCP"] = json!("on");
-    let stack = boot_as(&root, "grok", env, "1.0.62").await;
-    let (status, providers) = stack.send("GET", "/api/agent-providers", None).await;
-    assert_eq!(status, StatusCode::OK);
-    let grok = providers
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|p| p["provider"] == "grok")
-        .unwrap();
-    assert_ne!(grok["status"], "ready", "{grok}");
-    assert!(
-        grok.to_string()
-            .contains("enable_all_project_mcp_servers = false"),
-        "{grok}"
-    );
-    assert!(
-        lines(&root, "environment.jsonl").is_empty(),
-        "no agent process starts"
-    );
-    stack.shutdown().await;
-}
-
-/// Neige's MCP tools never stop a Grok turn. `never` runs Grok in its `workspace` sandbox with
-/// `--always-approve`, and `full` with `--always-approve` alone, so it calls them without asking;
-/// under `ask` it asks, and a call of a tool Neige's server lists the session, under this launch's
-/// key, is allowed once without asking the person.
+/// Neige's MCP tools never stop a Grok turn. `full` runs Grok with `--always-approve`, so it calls
+/// them without asking; under `never` and `ask` it asks, and a call of a tool Neige's server lists
+/// the session, under this launch's key, is allowed once without asking the person.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn grok_calls_neiges_mcp_tools_without_asking_under_every_mode() {
     let root = Root::new("unused");
@@ -254,8 +211,8 @@ async fn grok_calls_neiges_mcp_tools_without_asking_under_every_mode() {
     }
     assert_eq!(
         lines(&root, "permission-log.jsonl"),
-        [json!({"event":"reply","outcome":{"outcome":"selected","optionId":"allow-once"}})],
-        "only the `ask` turn asked"
+        vec![json!({"event":"reply","outcome":{"outcome":"selected","optionId":"allow-once"}}); 2],
+        "the `never` and `ask` turns asked"
     );
     while let Ok(note) = held.try_recv() {
         assert!(
@@ -277,14 +234,7 @@ async fn grok_calls_neiges_mcp_tools_without_asking_under_every_mode() {
     // The peer logs its argv after its own script path.
     let stdio = json!(["agent", "--no-leader", "stdio"]);
     let always_approve = json!(["agent", "--always-approve", "--no-leader", "stdio"]);
-    assert_eq!(
-        turn_argv(&root),
-        [always_approve.clone(), stdio, always_approve]
-    );
-    assert_eq!(
-        turn_sandbox(&root),
-        [json!("workspace"), Value::Null, Value::Null]
-    );
+    assert_eq!(turn_argv(&root), [stdio.clone(), stdio, always_approve]);
     let (status, report) = stack
         .send("GET", &format!("/api/tracks/{track}/report"), None)
         .await;
@@ -350,8 +300,9 @@ async fn grok_asks_the_person_for_an_unlisted_tool_and_a_reject_ends_the_turn_wi
     stack.shutdown().await;
 }
 
-/// A request Grok still sends under `never` is answered `cancelled`; Grok ends its turn, which fails
-/// naming the request and the mode rather than as interrupted.
+/// Under `never` a request for anything but Neige's own tools is answered `cancelled`; Grok ends its
+/// turn, which fails naming the request, the mode and the modes that would let it through, rather
+/// than as interrupted.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn grok_other_permission_requests_keep_the_never_answer_and_say_why_the_turn_ended() {
     let root = Root::new("unused");
@@ -363,7 +314,8 @@ async fn grok_other_permission_requests_keep_the_never_answer_and_say_why_the_tu
     assert_eq!(
         outcome["error"]["message"],
         "The agent ended the turn because Neige declined `Execute `echo one > one.txt`` under \
-         the `never` permission mode.",
+         the `never` permission mode. Switch the permission mode to `ask` to approve such a \
+         request, or to `full` to allow it.",
         "{outcome}"
     );
     assert_eq!(

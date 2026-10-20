@@ -11,8 +11,7 @@ Build 1.0.62 does (`use_tool` titled `<server>__<tool>`, kind `other`); allowed 
 tool and finishes, and an answer `cancelled` or rejected ends the turn `cancelled`, as Grok's does.
 Launched with `--always-approve`, it calls the tools without asking. `grok-mcp-unlisted` asks for a
 tool the server does not list a Planner, and `grok-shell` for a shell command; each ends its turn
-`cancelled` on any answer but an allow. Run as `inspect --json` it answers Grok's report and exits:
-project MCP servers enforced off, or not with ACP_FIXTURE_PROJECT_MCP `on`."""
+`cancelled` on any answer but an allow."""
 import json
 import os
 import pathlib
@@ -23,20 +22,12 @@ import time
 import hashlib
 
 root = pathlib.Path(os.environ['ACP_FIXTURE_ROOT'])
-if sys.argv[-2:] == ['inspect', '--json']:
-    with (root / 'inspect.jsonl').open('a') as output:
-        output.write(json.dumps({'cwd': os.getcwd(), 'grok_sandbox': os.environ.get('GROK_SANDBOX')}) + '\n')
-    enforced = [] if os.environ.get('ACP_FIXTURE_PROJECT_MCP') == 'on' else [
-        {'setting': 'projectMcpServers', 'enabled': False, 'source': '/grok-home/managed_config.toml'}]
-    print(json.dumps({'grokVersion': os.environ.get('ACP_FIXTURE_VERSION'), 'permissions': {'enforced': enforced}}))
-    sys.exit(0)
 with (root / 'environment.jsonl').open('a') as output:
     presence = {name: name in os.environ for name in [
         'NEIGE_MCP_DAEMON_TOKEN', 'NEIGE_MCP_TOKEN', 'NEIGE_MCP_SOCKET', 'ACP_AMBIENT_SENTINEL']}
     presence['catalog'] = os.environ['NEIGE_ACP_PLANNER'].endswith(':catalog')
     presence['readiness'] = os.environ['NEIGE_ACP_PLANNER'].endswith(':readiness')
     presence['opencode_permission'] = os.environ.get('OPENCODE_PERMISSION')
-    presence['grok_sandbox'] = os.environ.get('GROK_SANDBOX')
     output.write(json.dumps(presence) + '\n')
 with (root / 'argv.jsonl').open('a') as output:
     output.write(json.dumps(sys.argv[1:]) + '\n')

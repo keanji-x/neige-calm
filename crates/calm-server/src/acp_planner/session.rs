@@ -250,12 +250,14 @@ impl AcpPlannerSession {
             .registration(&params.provider)
             .map_err(|error| refused(&error.to_string()))?;
         let digest = registration.config.native_session_digest(&params.cwd)?;
-        // Neige's server under this launch's own key, and the tools it lists the session now.
+        // Neige's server under this launch's own key and, for an agent that asks before its
+        // tools, the tools it lists the session now.
         let server = registration.profile.mcp_server_key();
-        let asks = registration.profile.asks(
-            &server,
-            params.host.listed_tools(&params.worker_session_id).await?,
-        );
+        let tools = match registration.profile.mcp_tool_request {
+            Some(_) => params.host.listed_tools(&params.worker_session_id).await?,
+            None => Vec::new(),
+        };
+        let asks = registration.profile.asks(&server, tools);
         crate::db::sqlite::acp_registration_claim(
             &pool,
             &params.worker_session_id,

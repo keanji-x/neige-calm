@@ -138,32 +138,30 @@ only: a registration setting `XAI_API_KEY` or `GROK_CODE_XAI_API_KEY` is refused
 read.
 
 Grok also loads MCP servers a project defines (`.grok/config.toml`, `.mcp.json`,
-`.cursor/mcp.json`), and in a folder it does not trust a project server named like the one Neige
-supplies replaces it. Only Grok's managed policy drops them all, so the registration's Grok home
-must carry `managed_config.toml` with:
-
-```toml
-enable_all_project_mcp_servers = false
-```
-
-Before every launch, readiness included, Neige runs `grok inspect --json` under the
-registration's environment in the launch's directory, and launches only when Grok itself reports
-`{"setting":"projectMcpServers","enabled":false}` among `permissions.enforced`. Otherwise Grok is
-unavailable and the reason names this setting. The user's own MCP servers in the Grok home's
-`config.toml` stay loaded: they are the operator's choice.
+`.cursor/mcp.json`) and the operator's own in the Grok home's `config.toml`; Neige neither pins nor
+checks that set. None of them can take the key Neige's server is registered under, which is fresh
+for every launch (see [Permissions](#permissions)), so a request for one of their tools is never
+one of Neige's own: it is answered as the mode answers any request.
 
 Grok's `--allow`, `--deny` and `--permission-mode` belong to its TUI and headless mode; a stdio
 agent does not apply them (1.0.62 still asked before a call they allowed or denied). It does apply
-`--always-approve`, an agent option, and its sandbox profile, read from `GROK_SANDBOX` when the
-process starts (the global `--sandbox` flag is not an `agent` option). Under `never` a turn runs
-with `GROK_SANDBOX=workspace` and `--always-approve`: it never asks, and Landlock lets it write
-only under its directory, its Grok home and the temp directories, so a write elsewhere fails
-instead of ending the turn, as under Codex's `never`. Unlike Codex's sandbox, Grok's `workspace`
-profile keeps network access. Under `full` it runs with `--always-approve` and no sandbox; under
-`ask` with neither. A process loads a saved session under its own profile, so a change of mode
-holds from the next turn on. Grok's `_x.ai/*` notifications are ignored. Its
-`promptCapabilities.image` is false and its `sendNow` reruns the turn rather than joining it, so it
-declares neither images nor steer.
+`--always-approve`, an agent option. Each turn's process is launched under that turn's mode, so a
+change of mode holds from the next turn on.
+
+- Under `never` nothing is added. Grok asks before edits, shell commands that write and MCP tool
+  calls, and every request but one for Neige's own tools is answered `cancelled`. Grok then ends
+  the whole turn (see [Permissions](#permissions)), so a Grok Planner under `never` ends its turn at its first such shell
+  command (`neige …` included) or write, saying which request was declined. Switch the card's
+  permission mode to `ask` to approve each such request, or to `full` to allow them. A sandboxed
+  `never` that fails closed is follow-up #2942.
+- Under `ask` nothing is added: Grok's own default. A shell command Grok's own classifier reads as
+  read-only runs without asking and with no sandbox, unlike Codex's `ask`, which runs every command
+  in its sandbox.
+- Under `full` the process runs with `--always-approve`: no sandbox and no asks, the account's own
+  access, for every MCP server Grok loaded too.
+
+Grok's `_x.ai/*` notifications are ignored. Its `promptCapabilities.image` is false and its
+`sendNow` reruns the turn rather than joining it, so it declares neither images nor steer.
 
 Each agent process's stderr is kept in `<data-dir>/acp-agent-logs/<worker>.stderr.log`
 (owner-only, its first 256 KiB, overwritten by the worker's next launch). Neige writes nothing
@@ -229,10 +227,10 @@ is told the connection is lost. After the fence an answer writes `cancelled` or 
 session setup are always answered `cancelled`.
 
 An agent may also ask before calling a tool of Neige's own MCP server. Grok Build does under
-`ask`, with `use_tool`: kind `other`, titled with the tool's qualified name `<server>__<tool>`,
-which its `rawInput.tool_name` repeats. That server authorizes every call itself by the card's
-token, so under every mode such a request is answered with the agent's `allow_once` option without
-asking, until the turn's fence. The agent's profile declares how it asks (kind, separator and input
+`never` and `ask` (under `full` its `--always-approve` asks nothing), with `use_tool`: kind
+`other`, titled with the tool's qualified name `<server>__<tool>`, which its `rawInput.tool_name`
+repeats. That server authorizes every call itself by the card's token, so under every mode such a
+request is answered with the agent's `allow_once` option without asking, until the turn's fence. The agent's profile declares how it asks (kind, separator and input
 field). Each launch of such an agent then registers Neige's server under a key of its own,
 `neige-` and 12 random hex digits, never holding `_`, and only the exact qualified names of the
 tools that server lists the session match: the MCP layer resolves the listing as the session's own
@@ -244,8 +242,9 @@ server keeps the shared key `neige`, and its requests are answered as before.
 Grok ends its turn `cancelled` on any answer but an allow, `reject_once` included. Its profile says
 so, and a turn it ends that way after the turn declined one of its requests fails with the reason,
 such as ``The agent ended the turn because the person declined `…`.`` or ``… because Neige declined
-`…` under the `never` permission mode.``, rather than showing as interrupted. A stop the person
-sends still ends the turn interrupted.
+`…` under the `never` permission mode. Switch the permission mode to `ask` to approve such a
+request, or to `full` to allow it.``, rather than showing as interrupted. A stop the person sends
+still ends the turn interrupted.
 
 Under `ask` each turn's OpenCode process is launched with
 `OPENCODE_PERMISSION={"bash":"ask","edit":"ask","webfetch":"ask"}`, set explicitly by the launch
