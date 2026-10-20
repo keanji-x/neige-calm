@@ -2,10 +2,11 @@ import { historicalConversationPage, conversationCardId, historicalConversationR
 import '../../styles/entry.css';
 import { useLayoutEffect, useRef } from 'react';
 import { ConversationSurface } from './mobile-conversation-surface.tsx';
-import { cleanup, render, screen } from '@testing-library/react';
+import { act, cleanup, render, screen } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
 import { page, userEvent } from 'vitest/browser';
 import type { ApiTransportResponse } from '../../../../core/api/types.ts';
+import { useOpenMobileSection } from '../shell/public.tsx';
 import { renderDailyFixture } from './daily-planner-fixture.tsx';
 
 const ok = (body: unknown): ApiTransportResponse => ({ status: 200, statusText: 'OK', body });
@@ -267,6 +268,72 @@ it.each(['/track/project', '/area/project-area/new'])('returns from mobile track
   await expect.poll(() => router.state.location.pathname).toBe(initial === '/track/project' ? '/track/project' : '/');
   await expect.poll(() => document.activeElement?.getAttribute('aria-label')).toBe('Open conversation history');
   expect(requests.filter((request) => request.method !== 'GET')).toHaveLength(0);
+});
+
+
+function WorkspaceIntentProbe({ ready }: { ready: (open: ReturnType<typeof useOpenMobileSection>) => void }) {
+  const open = useOpenMobileSection();
+  useLayoutEffect(() => { ready(open); }, [open, ready]);
+  return null;
+}
+
+it('uses the latest workspace opener declaration while already interactive', async () => {
+  await page.viewport(390, 844);
+  let declare: ReturnType<typeof useOpenMobileSection> | undefined;
+  renderDailyFixture({ initial: '/track/project', routeProbe: <WorkspaceIntentProbe ready={open => { declare = open; }} /> });
+  await page.getByRole('button', { name: 'Open workspace', exact: true }).click();
+  // Another app-owned portalled surface may issue the public workspace command
+  // without first dismissing the current workspace presentation.
+  const opener = document.body.appendChild(document.createElement('button'));
+  opener.textContent = 'New workspace source';
+  try {
+    opener.focus();
+    expect(document.activeElement).toBe(opener);
+    expect(declare).toBeTypeOf('function');
+    act(() => { declare!({ kind: 'pages' }); });
+    await expect.element(page.getByRole('dialog', { name: 'Pages', exact: true })).toBeVisible();
+    await page.getByRole('button', { name: 'Back to workspace', exact: true }).click();
+    expect(document.activeElement).toBe(opener);
+    const host = document.querySelector<HTMLElement>('#mobile-workspace-navigation')!;
+    await Promise.all(host.getAnimations().map(animation => animation.finished));
+    expect(document.activeElement).toBe(opener);
+  } finally { opener.remove(); }
+});
+
+
+it.each(['return', 'new route'] as const)('keeps workspace return intent across a deferred Back commit: %s', async (next) => {
+  await page.viewport(390, 844);
+  const { router } = renderDailyFixture({ initial: '/track/project' });
+  await page.getByRole('button', { name: 'Switch track, Project evidence', exact: true }).click();
+  await page.getByRole('button', { name: 'New track', exact: true }).click();
+  const back = await page.getByRole('button', { name: 'Back to Tracks', exact: true }).findElement();
+  const commitBack = router.history.back.bind(router.history);
+  const requestBack = vi.spyOn(router.history, 'back').mockImplementation(() => {});
+  try {
+    await page.elementLocator(back).click();
+    expect(requestBack).toHaveBeenCalledExactlyOnceWith();
+    const host = await page.getByRole('dialog', { name: 'Tracks and settings', exact: true }).findElement() as HTMLElement;
+    expect(router.state.location.pathname).toBe('/area/project-area/new');
+    expect(back.isConnected).toBe(true);
+    expect(host.contains(document.activeElement)).toBe(true);
+    // Release the real history owner after workspace activation, without
+    // substituting a route implementation or weakening the original oracle.
+    commitBack();
+    await expect.poll(() => router.state.location.pathname).toBe('/track/project');
+    await expect.poll(() => back.isConnected).toBe(false);
+    if (next === 'new route') {
+      await router.navigate({ to: '/' });
+      await expect.poll(() => router.state.location.pathname).toBe('/');
+    }
+    await page.getByRole('button', { name: 'Back to Areas', exact: true }).click();
+    await page.getByRole('button', { name: 'Back to workspace', exact: true }).click();
+    expect(host.inert).toBe(true);
+    expect(document.querySelector('main')?.hasAttribute('inert')).toBe(false);
+    if (next === 'return') expect(document.activeElement?.getAttribute('aria-label')).toBe('Open conversation history');
+    else expect(document.activeElement?.getAttribute('aria-label')).not.toBe('Open conversation history');
+    await Promise.all(host.getAnimations().map(animation => animation.finished));
+    if (next === 'return') expect(document.activeElement?.getAttribute('aria-label')).toBe('Open conversation history');
+  } finally { requestBack.mockRestore(); }
 });
 
 

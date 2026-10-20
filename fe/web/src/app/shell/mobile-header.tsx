@@ -1,7 +1,7 @@
 import type { DialogOrigin } from '../../ui/dialog/public.tsx';
 import { floatingControlClassName } from '../../ui/floating-control/public.ts';
 import { Icon } from '../../ui/icon/public.tsx';
-import { type RefCallback } from 'react';
+import { type Ref, type RefCallback } from 'react';
 import type { Area } from '../../../../core/domain/area.ts';
 import { MobileHeader } from '../../ui/mobile-header/public.tsx';
 import { AreaSelector } from './area-selector.tsx';
@@ -9,9 +9,10 @@ import styles from './mobile-header.module.css';
 
 export function MobileWorkspaceHeader({
   areas, activeArea, navigationOpen, onOpenNavigation, onSelectArea, onCreateArea,
-  actionsHostRef, titleHostRef, onBack,
+  actionsHostRef, titleHostRef, onBack, historyTriggerRef,
 }: Readonly<{
   onBack?: () => void;
+  historyTriggerRef: Ref<HTMLButtonElement>;
   areas: readonly Area[];
   activeArea: Area | undefined;
   navigationOpen: boolean;
@@ -30,7 +31,7 @@ export function MobileWorkspaceHeader({
         </div>
       </div>}
       onBack={onBack} backLabel="Tracks"
-      leading={onBack === undefined ? <button type="button" className={`${styles.iconButton} ${floatingControlClassName}`} aria-label="Open conversation history"
+      leading={onBack === undefined ? <button ref={historyTriggerRef} type="button" className={`${styles.iconButton} ${floatingControlClassName}`} aria-label="Open conversation history"
         aria-expanded={navigationOpen} aria-controls="mobile-conversation-history" onClick={onOpenNavigation}>
         <Icon name="menu" />
       </button> : undefined}

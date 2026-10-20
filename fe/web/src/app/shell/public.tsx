@@ -195,7 +195,12 @@ export function AppShell({
   const mobileSectionKind = mobileSection?.kind;
   const [mobileHeaderActionsHost, setMobileHeaderActionsHost] = useState<HTMLDivElement | null>(null);
   const [mobileHeaderTitleHost, setMobileHeaderTitleHost] = useState<HTMLDivElement | null>(null);
-  const mobileOpenerRef = useRef<HTMLElement | null>(null);
+  const workspaceReturnRef = useRef<HTMLButtonElement | null>(null);
+  const [mobileReturnIntent, setMobileReturnIntent] = useState<
+    | Readonly<{ kind: 'opener'; path: string; element: HTMLElement | null }>
+    | Readonly<{ kind: 'workspace'; path: string }>
+    | null
+  >(null);
   const routeTrackId = routeParamFromPath(currentPath, '/track/');
   const routeAreaId = routeParamFromPath(currentPath, '/area/');
   const areas = visibleAreas(workspace.areas);
@@ -206,7 +211,7 @@ export function AppShell({
   const { close: closeMobileSection, cancel: cancelMobileExit, interactive: workspaceInteractive } = useMobileNavigationPresence(mobileNavigationRef, finishMobileClose, narrowRail && mobileNavOpen);
   const railCollapsed = manualRailCollapsed ?? narrowRail;
 
-  const mobileFocusScope = useRef<Readonly<{ path: string; host: HTMLElement | null; opener: HTMLElement | null }> | null>(null);
+  const mobileFocusScope = useRef<Readonly<{ path: string; host: HTMLElement | null; intent: typeof mobileReturnIntent }> | null>(null);
   useLayoutEffect(() => {
     if (!workspaceInteractive) {
       const scope = mobileFocusScope.current;
@@ -215,15 +220,23 @@ export function AppShell({
       // newer focus owner wins; paint completion never restores focus.
       if (scope !== null && narrowRail && scope.path === currentPath
         && (document.activeElement === document.body || scope.host?.contains(document.activeElement))) {
-        const opener = scope.opener;
+        const opener = scope.intent?.kind === 'workspace' ? workspaceReturnRef.current
+          : scope.intent?.element;
         if (opener?.isConnected && opener.closest('[inert], [hidden], [aria-hidden="true"], :disabled, [aria-disabled="true"]') === null
           && opener.getClientRects().length > 0) opener.focus({ preventScroll: true });
       }
       return;
     }
-    if (mobileFocusScope.current === null) {
-      mobileFocusScope.current = { path: currentPath, host: mobileNavigationRef.current, opener: mobileOpenerRef.current };
-      mobileNavigationRef.current?.focus({ preventScroll: true });
+    const scope = mobileFocusScope.current;
+    if (scope === null || scope.intent !== mobileReturnIntent) {
+      mobileFocusScope.current = { path: mobileReturnIntent?.path ?? currentPath, host: mobileNavigationRef.current, intent: mobileReturnIntent };
+      if (scope === null) mobileNavigationRef.current?.focus({ preventScroll: true });
+    }
+    // Back requests navigation and workspace together. Either may commit first;
+    // bind that return intent to its first destination, never later selections.
+    if (mobileReturnIntent?.kind === 'workspace' && mobileFocusScope.current?.path === mobileReturnIntent.path
+      && currentPath !== mobileReturnIntent.path) {
+      mobileFocusScope.current = { ...mobileFocusScope.current, path: currentPath };
     }
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape' && !event.defaultPrevented) {
@@ -251,7 +264,7 @@ export function AppShell({
     return () => {
       document.removeEventListener('keydown', onKeyDown);
     };
-  }, [closeMobileSection, workspaceInteractive, narrowRail, currentPath]);
+  }, [closeMobileSection, workspaceInteractive, narrowRail, currentPath, mobileReturnIntent]);
 
   useEffect(() => {
     if (!narrowRail && mobileNavOpen) setMobileSection(null);
@@ -283,10 +296,11 @@ export function AppShell({
   };
 
 
-  const openMobileSection: OpenMobileSection = (section) => {
+  const openMobileSection = (section: Parameters<OpenMobileSection>[0], returnFocus: 'opener' | 'workspace' = 'opener') => {
     cancelMobileExit();
     conversationScope?.onClose();
-    mobileOpenerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    setMobileReturnIntent(returnFocus === 'workspace' ? { kind: 'workspace', path: currentPath }
+      : { kind: 'opener', path: currentPath, element: document.activeElement instanceof HTMLElement ? document.activeElement : null });
     // Daily/system Tracks have no visible workspace entry. Their switch starts in the active user Area.
     if (section.kind === 'tracks' && section.returnTo === 'report') {
       const areaId = areas.find((area) => area.id === section.areaId)?.id ?? activeArea?.id;
@@ -379,9 +393,10 @@ export function AppShell({
         areas={areas}
         activeArea={activeArea}
         navigationOpen={workspaceInteractive || historyOpen}
+        historyTriggerRef={workspaceReturnRef}
         onBack={newTrackBack === null || routeAreaId === undefined ? undefined : () => {
           newTrackBack();
-          openMobileSection({ kind: 'tracks', areaId: routeAreaId });
+          openMobileSection({ kind: 'tracks', areaId: routeAreaId }, 'workspace');
         }}
         onOpenNavigation={() => setHistoryOpen(true)}
         onSelectArea={requestNewTrack}
