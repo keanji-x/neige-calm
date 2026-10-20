@@ -47,67 +47,89 @@ async fn regate_refused_while_a_gate_op_is_unfinished() {
     assert_eq!(current(&fx.boot, "stuck").await.status, TaskStatus::Failed);
 }
 
-/// A recovered gate whose cleanup failed: a descendant carrying `#g1`'s marker outlived its dead
-/// wrapper and hid its environ (`PR_SET_DUMPABLE=0`), so nothing can authenticate or kill it, and
-/// `#g1` is still a terminal op. The descendant leads its own group; `#g1`'s recorded pgid is
-/// pointed at it, the shape a recovery leaves when the wrapper died first.
+/// Even a terminal operation phase cannot authorize regate while its Engine scope is unsettled.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn regate_refused_while_a_previous_gate_process_survives() {
-    use std::os::unix::process::CommandExt as _;
+    use calm_server::operation::PhaseTag;
     let fx = fixture().await;
     fx.dispatcher.abort_event_listener_for_test();
-    let (task, _, _) = red(&fx, "survivor", gate_on(&outside(&fx, "green"), None)).await;
-    let mut hidden = std::process::Command::new("python3")
-        .arg("-c")
-        .arg("import ctypes,time; ctypes.CDLL(None).prctl(4,0,0,0,0); time.sleep(30)")
-        .env("NEIGE_GATE_OP", format!("{}#g1", task.id))
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .process_group(0)
-        .spawn()
-        .expect("spawn the hidden-environ descendant");
-    let hidden_pid = hidden.id();
-    let hidden_env = tokio::time::timeout(WAIT, async {
+    let green = outside(&fx, "green");
+    let release = outside(&fx, "release-survivor");
+    let (task, _, _) = red(&fx, "survivor", gate_on(&green, None)).await;
+    let previous_verdict = current(&fx.boot, "survivor").await.gate_result_json;
+    std::fs::write(&green, b"").unwrap();
+    sqlx::query("UPDATE tasks SET gate_json=?1 WHERE id=?2")
+        .bind(gate_on(&green, Some(&release))["gate"].to_string())
+        .bind(&task.id)
+        .execute(&fx.pool())
+        .await
+        .unwrap();
+    regate(&fx, &task.id).await.unwrap();
+    let events_before = regate_events(&fx).await.len();
+    let retry = current(&fx.boot, "survivor").await;
+    let scheduler = fx.scheduler();
+    let drive = tokio::spawn(async move { scheduler.drive_gate_for_test(retry).await });
+    let op = tokio::time::timeout(WAIT, async {
         loop {
-            let read = std::fs::read(format!("/proc/{hidden_pid}/environ"));
-            if read.err().and_then(|error| error.raw_os_error()) == Some(libc::EACCES) {
-                break;
+            if let Some(op) = fx
+                .runtime
+                .find_by_kind_and_idempotency(TASK_VERIFY_KIND, &format!("{}#g3", task.id))
+                .await
+                .unwrap()
+                && op.phase.tag() == PhaseTag::Parked
+                && op.tx_output.as_ref().unwrap().data["gate_execution"]["release"]
+                    .get("Released")
+                    .is_some()
+            {
+                break op;
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
     })
-    .await;
+    .await
+    .unwrap();
+    // Model a terminal op row with a still-running execution, as the occupancy reader must
+    // defend against. The real executor, rather than PID artifacts, supplies the missing proof.
+    sqlx::query("UPDATE operations SET phase='succeeded' WHERE id=?1")
+        .bind(&op.id)
+        .execute(&fx.pool())
+        .await
+        .unwrap();
     sqlx::query(
-        "UPDATE operations SET spawn_artifacts_json = json_set(spawn_artifacts_json, '$.pgid', ?1) \
-         WHERE kind = ?2 AND idempotency_key = ?3",
+        "UPDATE tasks SET status='failed',status_detail='gate-red',gate_result_json=?2 WHERE id=?1",
     )
-    .bind(i64::from(hidden_pid))
-    .bind(TASK_VERIFY_KIND)
-    .bind(format!("{}#g1", task.id))
+    .bind(&task.id)
+    .bind(previous_verdict)
     .execute(&fx.pool())
     .await
     .unwrap();
-
     let result = regate(&fx, &task.id).await;
-    let _ = hidden.kill();
-    let _ = hidden.wait();
-    assert!(
-        hidden_env.is_ok(),
-        "the descendant's environ never became unreadable"
-    );
+    std::fs::write(&release, b"").unwrap();
+    let id = serde_json::from_value(
+        op.tx_output.as_ref().unwrap().data["gate_execution"]["execution_id"].clone(),
+    )
+    .unwrap();
+    tokio::time::timeout(
+        WAIT,
+        fx.execution.lifecycle.engine().unwrap().wait_settled(&id),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    // The synthetic terminal row has no completion result for the scheduler to reconcile.
+    let _ = drive.await.unwrap();
     let err = result.expect_err("a surviving gate process refuses the re-run");
     assert_eq!(err.code, -32409, "{err:?}");
     assert!(
         err.message
-            .contains("the previous gate's processes (attempt 1) could not be proven stopped"),
+            .contains("the previous gate's processes (attempt 3) could not be proven stopped"),
         "{err:?}"
     );
     assert_eq!(
         current(&fx.boot, "survivor").await.status,
         TaskStatus::Failed
     );
-    assert!(regate_events(&fx).await.is_empty());
+    assert_eq!(regate_events(&fx).await.len(), events_before);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -258,7 +280,7 @@ async fn regate_refuses_rows_that_cannot_rerun() {
     fx.release_lease_by_hand(&worker.card_id).await;
 
     // A red gate whose context went stale.
-    let (stale, _, _) = red(&fx, "stale", gate_on(&outside(&fx, "never"), None)).await;
+    let (stale, _, _) = Box::pin(red(&fx, "stale", gate_on(&outside(&fx, "never"), None))).await;
     sqlx::query("UPDATE tasks SET context_stale_at_ms = 1 WHERE id = ?1")
         .bind(&stale.id)
         .execute(&fx.pool())
@@ -267,7 +289,8 @@ async fn regate_refuses_rows_that_cannot_rerun() {
     refused(&fx, &stale.id, -32409, "context went stale").await;
 
     // A red gate a later task delivered past.
-    let (passed_by, _, _) = red(&fx, "passed-by", gate_on(&outside(&fx, "never"), None)).await;
+    let (passed_by, _, _) =
+        Box::pin(red(&fx, "passed-by", gate_on(&outside(&fx, "never"), None))).await;
     let worker = fx.new_worker("later", AgentProvider::Codex).await;
     let lease = fx.kernel_lease(&worker.card_id).await;
     let later = fx

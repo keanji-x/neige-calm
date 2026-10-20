@@ -1994,6 +1994,11 @@ async fn gated_candidate_happy_path_wakes_planner_once() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn plan_list_reads_gate_verification() {
+    // Keep this multi-scenario integration future off the Tokio worker's stack.
+    Box::pin(plan_list_verification_states()).await;
+}
+
+async fn plan_list_verification_states() {
     let fx = fixture().await;
     fx.dispatcher.abort_event_listener_for_test();
     let verification = |entry: &Value| entry["candidate"]["verification"].clone();

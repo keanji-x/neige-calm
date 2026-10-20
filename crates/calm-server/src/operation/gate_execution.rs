@@ -67,6 +67,9 @@ pub(crate) async fn admit(
     marker: &str,
 ) -> Result<Record> {
     let engine = engine(ctx)?;
+    // Gate cwd permits a symlink (the target sampler verifies its provenance).
+    // Private execution roots require a directory opened with O_NOFOLLOW.
+    let root = tokio::fs::canonicalize(cwd).await?;
     let mut environment: Vec<(String, String)> = ["PATH", "HOME", "LANG", "LC_ALL", "TERM"]
         .into_iter()
         .filter_map(|key| std::env::var(key).ok().map(|v| (key.into(), v)))
@@ -102,7 +105,7 @@ pub(crate) async fn admit(
             owner: OperationRef(op.id.clone()),
             track: TrackId(track.into()),
             source: PrivateSource {
-                root: cwd.into(),
+                root,
                 cwd: workspace::identity::WorkspaceCwd::root(),
                 registration: ObjectRegistrationId::fresh()?,
                 nonce: TransferNonce::fresh()?,

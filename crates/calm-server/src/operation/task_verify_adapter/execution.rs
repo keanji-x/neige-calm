@@ -71,15 +71,7 @@ impl TaskVerifyAdapter {
         }
         let record = execution::record(op)?;
         let frozen = FrozenVerify::from_output(super::super::required_output(op)?)?;
-        let mut settled = execution::settlement(ctx, &record).await?;
-        if settled.is_none()
-            && let Some(engine) = ctx.execution.engine()
-            && let Ok(workspace_runtime::execution::ExecutionReply::Observation {
-                state: ExecutionState::Exited { status }, ..
-            }) = engine.output(&record.execution_id, None).await
-        {
-            settled = Some(Settlement::Journal(ExecutionState::Drained { status }));
-        }
+        let settled = execution::settlement(ctx, &record).await?;
         if settled.is_none() {
             if matches!(mode, RecoveryMode::Boot) {
                 if record.decision == Decision::Observing {
