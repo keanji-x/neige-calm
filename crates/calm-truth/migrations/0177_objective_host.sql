@@ -17,6 +17,12 @@ CREATE TABLE objective_events (
         WHEN 'revision_delivered' THEN NULL WHEN 'host_idle' THEN NULL WHEN 'usage' THEN NULL
         ELSE json_extract(payload_json,'$.objective') END))
 );
+-- BEFORE INSERT runs before REPLACE's implicit deletion, even with recursive
+-- triggers disabled. Protect every unique identity before FK cascades can run.
+CREATE TRIGGER objective_events_no_replace BEFORE INSERT ON objective_events
+WHEN EXISTS(SELECT 1 FROM objective_events WHERE track_id=NEW.track_id AND (
+    seq=NEW.seq OR (source_kind=NEW.source_kind AND source_key=NEW.source_key AND kind=NEW.kind)))
+BEGIN SELECT RAISE(ABORT,'objective events are append-only'); END;
 CREATE TRIGGER objective_events_no_update BEFORE UPDATE ON objective_events
 BEGIN SELECT RAISE(ABORT,'objective events are append-only'); END;
 -- FK actions run triggers even with recursive_triggers off. A deleted parent
@@ -32,6 +38,10 @@ CREATE TABLE objective_states (
     state_json TEXT NOT NULL CHECK(json_valid(state_json)),
     FOREIGN KEY(track_id,seq) REFERENCES objective_events(track_id,seq) ON DELETE CASCADE
 );
+-- Existing snapshots advance through CAS UPDATE, never replacement insertion.
+CREATE TRIGGER objective_states_no_replace BEFORE INSERT ON objective_states
+WHEN EXISTS(SELECT 1 FROM objective_states WHERE track_id=NEW.track_id)
+BEGIN SELECT RAISE(ABORT,'objective snapshot cannot be replaced'); END;
 CREATE TABLE objective_intents (
     track_id TEXT NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
     event_seq INTEGER NOT NULL,
@@ -51,10 +61,17 @@ CREATE TABLE objective_intents (
     UNIQUE(track_id,effect_key),
     CHECK((kind='run_check')=(standard_hash IS NOT NULL)),
     CHECK((kind='execute')=(target_session_id IS NOT NULL)),
-    CHECK((status='settled')=(settled_at_ms IS NOT NULL AND settlement_json IS NOT NULL)),
+    CHECK((status='settled')=(settled_at_ms IS NOT NULL)),
+    CHECK((status='settled')=(settlement_json IS NOT NULL)),
+    -- Settlement may happen directly from pending or after dispatch.
+    CHECK(status<>'pending' OR dispatched_at_ms IS NULL),
     CHECK(status<>'dispatched' OR dispatched_at_ms IS NOT NULL)
 );
 CREATE INDEX objective_intents_unsettled ON objective_intents(track_id,event_seq,ordinal) WHERE status<>'settled';
+CREATE TRIGGER objective_intents_no_replace BEFORE INSERT ON objective_intents
+WHEN EXISTS(SELECT 1 FROM objective_intents WHERE track_id=NEW.track_id AND (
+    (event_seq=NEW.event_seq AND ordinal=NEW.ordinal) OR effect_key=NEW.effect_key))
+BEGIN SELECT RAISE(ABORT,'objective intent cannot be replaced'); END;
 CREATE TRIGGER objective_intents_identity_immutable BEFORE UPDATE ON objective_intents
 WHEN NEW.track_id IS NOT OLD.track_id OR NEW.event_seq IS NOT OLD.event_seq
   OR NEW.ordinal IS NOT OLD.ordinal OR NEW.kind IS NOT OLD.kind

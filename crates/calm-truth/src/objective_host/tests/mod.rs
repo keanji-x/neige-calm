@@ -11,6 +11,7 @@ use objective::standard::{Approval, standard_hash};
 
 mod refusal;
 mod replay;
+mod schema;
 
 async fn fixture() -> SqlxRepo {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
