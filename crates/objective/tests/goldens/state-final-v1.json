@@ -1,0 +1,446 @@
+{
+  "compactions": 2,
+  "objectives": {
+    "docs": {
+      "approval": {
+        "approver": "user:owner",
+        "standard_hash": "sha256:69fd0d6e807e01fe79faca144cdf57cfae809f9c5b6a4ae2c7b5aa89b62ed6a4"
+      },
+      "budget_notified": [
+        "tokens"
+      ],
+      "definition": {
+        "budget": {
+          "tokens": 50000,
+          "turns": 10,
+          "wall_secs": 3600
+        },
+        "checks": [
+          {
+            "config": {
+              "kind": "command",
+              "params": {
+                "command": "run docs"
+              }
+            },
+            "id": "docs",
+            "role": "goal"
+          }
+        ],
+        "compact": "on_close",
+        "constraints": [
+          "keep the public API"
+        ],
+        "key": "docs",
+        "mode": "converge",
+        "title": "objective docs"
+      },
+      "evaluation": null,
+      "evaluations": 2,
+      "latest_verdict": {
+        "kind": "done",
+        "reasons": [
+          {
+            "check": "docs",
+            "finding": {
+              "comparison": {
+                "passed": true,
+                "trend": "better"
+              },
+              "finding": "compared"
+            },
+            "regresses": false,
+            "role": "goal"
+          }
+        ]
+      },
+      "ledger": {
+        "baseline": {
+          "results": {
+            "docs": {
+              "kind": "command",
+              "output": {
+                "exit_code": 0
+              }
+            }
+          },
+          "revision": "r3"
+        },
+        "entries": [
+          {
+            "decision": "keep",
+            "note": "baseline",
+            "results": {
+              "docs": {
+                "kind": "command",
+                "output": {
+                  "exit_code": 1
+                }
+              }
+            },
+            "revision": "r0"
+          },
+          {
+            "decision": "done",
+            "note": "documented",
+            "results": {
+              "docs": {
+                "kind": "command",
+                "output": {
+                  "exit_code": 0
+                }
+              }
+            },
+            "revision": "r3"
+          }
+        ],
+        "plateau": 0
+      },
+      "status": "closed",
+      "usage_at_start": {
+        "context_tokens": 0,
+        "elapsed_secs": 100,
+        "turns": 3
+      }
+    },
+    "speed": {
+      "approval": null,
+      "budget_notified": [
+        "tokens"
+      ],
+      "definition": {
+        "budget": {
+          "tokens": 50000,
+          "turns": 10,
+          "wall_secs": 3600
+        },
+        "checks": [
+          {
+            "config": {
+              "kind": "command",
+              "params": {
+                "command": "run build"
+              }
+            },
+            "id": "build",
+            "role": "invariant"
+          },
+          {
+            "config": {
+              "kind": "metric",
+              "params": {
+                "command": "measure latency",
+                "direction": "lower"
+              }
+            },
+            "id": "latency",
+            "role": "ratchet"
+          },
+          {
+            "config": {
+              "kind": "evaluator",
+              "params": {
+                "aggregate": "majority",
+                "rubric": [
+                  {
+                    "criterion": "the change reads clearly",
+                    "id": "clarity"
+                  }
+                ],
+                "samples": 2
+              }
+            },
+            "id": "review",
+            "role": "ratchet"
+          }
+        ],
+        "compact": "every_settle",
+        "constraints": [
+          "keep the public API",
+          "no unsafe code"
+        ],
+        "key": "speed",
+        "mode": {
+          "loop": {
+            "plateau": 2
+          }
+        },
+        "title": "objective speed"
+      },
+      "evaluation": null,
+      "evaluations": 3,
+      "latest_verdict": null,
+      "ledger": {
+        "baseline": {
+          "results": {
+            "build": {
+              "kind": "command",
+              "output": {
+                "exit_code": 0
+              }
+            },
+            "latency": {
+              "kind": "metric",
+              "output": {
+                "value": 100.0
+              }
+            },
+            "review": {
+              "kind": "evaluator",
+              "output": {
+                "samples": [
+                  {
+                    "findings": {
+                      "blocking": 0,
+                      "major": 1,
+                      "minor": 2
+                    },
+                    "judgements": [
+                      {
+                        "evidence": [
+                          {
+                            "line": 12,
+                            "path": "src/lib.rs"
+                          }
+                        ],
+                        "item": "clarity",
+                        "trend": "same"
+                      }
+                    ]
+                  },
+                  {
+                    "findings": {
+                      "blocking": 0,
+                      "major": 1,
+                      "minor": 2
+                    },
+                    "judgements": [
+                      {
+                        "evidence": [
+                          {
+                            "line": 12,
+                            "path": "src/lib.rs"
+                          }
+                        ],
+                        "item": "clarity",
+                        "trend": "same"
+                      }
+                    ]
+                  }
+                ]
+              }
+            }
+          },
+          "revision": "r0"
+        },
+        "entries": [
+          {
+            "decision": "keep",
+            "note": "baseline",
+            "results": {
+              "build": {
+                "kind": "command",
+                "output": {
+                  "exit_code": 0
+                }
+              },
+              "latency": {
+                "kind": "metric",
+                "output": {
+                  "value": 100.0
+                }
+              },
+              "review": {
+                "kind": "evaluator",
+                "output": {
+                  "samples": [
+                    {
+                      "findings": {
+                        "blocking": 0,
+                        "major": 1,
+                        "minor": 2
+                      },
+                      "judgements": [
+                        {
+                          "evidence": [
+                            {
+                              "line": 12,
+                              "path": "src/lib.rs"
+                            }
+                          ],
+                          "item": "clarity",
+                          "trend": "same"
+                        }
+                      ]
+                    },
+                    {
+                      "findings": {
+                        "blocking": 0,
+                        "major": 1,
+                        "minor": 2
+                      },
+                      "judgements": [
+                        {
+                          "evidence": [
+                            {
+                              "line": 12,
+                              "path": "src/lib.rs"
+                            }
+                          ],
+                          "item": "clarity",
+                          "trend": "same"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              }
+            },
+            "revision": "r0"
+          },
+          {
+            "decision": "discard",
+            "note": "slower",
+            "results": {
+              "build": {
+                "kind": "command",
+                "output": {
+                  "exit_code": 0
+                }
+              },
+              "latency": {
+                "kind": "metric",
+                "output": {
+                  "value": 120.0
+                }
+              },
+              "review": {
+                "kind": "evaluator",
+                "output": {
+                  "samples": [
+                    {
+                      "findings": {
+                        "blocking": 0,
+                        "major": 1,
+                        "minor": 2
+                      },
+                      "judgements": [
+                        {
+                          "evidence": [
+                            {
+                              "line": 12,
+                              "path": "src/lib.rs"
+                            }
+                          ],
+                          "item": "clarity",
+                          "trend": "same"
+                        }
+                      ]
+                    },
+                    {
+                      "findings": {
+                        "blocking": 0,
+                        "major": 1,
+                        "minor": 2
+                      },
+                      "judgements": [
+                        {
+                          "evidence": [
+                            {
+                              "line": 12,
+                              "path": "src/lib.rs"
+                            }
+                          ],
+                          "item": "clarity",
+                          "trend": "same"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              }
+            },
+            "revision": "r1"
+          },
+          {
+            "decision": "discard",
+            "note": "no gain",
+            "results": {
+              "build": {
+                "kind": "command",
+                "output": {
+                  "exit_code": 0
+                }
+              },
+              "latency": {
+                "kind": "metric",
+                "output": {
+                  "value": 100.0
+                }
+              },
+              "review": {
+                "kind": "evaluator",
+                "output": {
+                  "samples": [
+                    {
+                      "findings": {
+                        "blocking": 0,
+                        "major": 1,
+                        "minor": 2
+                      },
+                      "judgements": [
+                        {
+                          "evidence": [
+                            {
+                              "line": 12,
+                              "path": "src/lib.rs"
+                            }
+                          ],
+                          "item": "clarity",
+                          "trend": "same"
+                        }
+                      ]
+                    },
+                    {
+                      "findings": {
+                        "blocking": 0,
+                        "major": 1,
+                        "minor": 2
+                      },
+                      "judgements": [
+                        {
+                          "evidence": [
+                            {
+                              "line": 12,
+                              "path": "src/lib.rs"
+                            }
+                          ],
+                          "item": "clarity",
+                          "trend": "same"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              }
+            },
+            "revision": "r2"
+          }
+        ],
+        "plateau": 2
+      },
+      "status": "open",
+      "usage_at_start": {
+        "context_tokens": 0,
+        "elapsed_secs": 100,
+        "turns": 3
+      }
+    }
+  },
+  "pending_compact": false,
+  "usage": {
+    "context_tokens": 70000,
+    "elapsed_secs": 100,
+    "turns": 3
+  }
+}

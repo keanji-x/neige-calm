@@ -1,0 +1,595 @@
+[
+  {
+    "event": "usage",
+    "usage": {
+      "context_tokens": 0,
+      "elapsed_secs": 100,
+      "turns": 3
+    }
+  },
+  {
+    "event": "spec_changed",
+    "objective": {
+      "budget": {
+        "tokens": 50000,
+        "turns": 10,
+        "wall_secs": 3600
+      },
+      "checks": [
+        {
+          "config": {
+            "kind": "command",
+            "params": {
+              "command": "run build"
+            }
+          },
+          "id": "build",
+          "role": "invariant"
+        },
+        {
+          "config": {
+            "kind": "metric",
+            "params": {
+              "command": "measure latency",
+              "direction": "lower"
+            }
+          },
+          "id": "latency",
+          "role": "ratchet"
+        },
+        {
+          "config": {
+            "kind": "evaluator",
+            "params": {
+              "aggregate": "majority",
+              "rubric": [
+                {
+                  "criterion": "the change reads clearly",
+                  "id": "clarity"
+                }
+              ],
+              "samples": 2
+            }
+          },
+          "id": "review",
+          "role": "ratchet"
+        }
+      ],
+      "compact": "every_settle",
+      "constraints": [
+        "keep the public API"
+      ],
+      "key": "speed",
+      "mode": {
+        "loop": {
+          "plateau": 2
+        }
+      },
+      "title": "objective speed"
+    }
+  },
+  {
+    "event": "spec_changed",
+    "objective": {
+      "budget": {
+        "tokens": 50000,
+        "turns": 10,
+        "wall_secs": 3600
+      },
+      "checks": [
+        {
+          "config": {
+            "kind": "command",
+            "params": {
+              "command": "run docs"
+            }
+          },
+          "id": "docs",
+          "role": "goal"
+        }
+      ],
+      "compact": "on_close",
+      "constraints": [
+        "keep the public API"
+      ],
+      "key": "docs",
+      "mode": "converge",
+      "title": "objective docs"
+    }
+  },
+  {
+    "event": "requested",
+    "objective": "speed",
+    "revision": "r0"
+  },
+  {
+    "approval": {
+      "approver": "user:owner",
+      "standard_hash": "sha256:9f6703de14c00678169d73ec12d13b657025584a88df24ff047df19c57da1936"
+    },
+    "event": "approval_granted",
+    "objective": "speed"
+  },
+  {
+    "approval": {
+      "approver": "user:owner",
+      "standard_hash": "sha256:2a15e29a8be639cd00c82f19781f4ebc8654f9faee9b38152d9b41e2d592d822"
+    },
+    "event": "approval_granted",
+    "objective": "docs"
+  },
+  {
+    "approval": {
+      "approver": "user:owner",
+      "standard_hash": "sha256:69fd0d6e807e01fe79faca144cdf57cfae809f9c5b6a4ae2c7b5aa89b62ed6a4"
+    },
+    "event": "approval_granted",
+    "objective": "docs"
+  },
+  {
+    "event": "revision_delivered",
+    "revision": "r0"
+  },
+  {
+    "check": "build",
+    "evaluation": 0,
+    "event": "check_finished",
+    "objective": "speed",
+    "output": {
+      "kind": "command",
+      "output": {
+        "exit_code": 0
+      }
+    },
+    "revision": "r0",
+    "sample": 0
+  },
+  {
+    "check": "latency",
+    "evaluation": 0,
+    "event": "check_finished",
+    "objective": "speed",
+    "output": {
+      "kind": "metric",
+      "output": {
+        "value": 100.0
+      }
+    },
+    "revision": "r0",
+    "sample": 0
+  },
+  {
+    "check": "review",
+    "evaluation": 0,
+    "event": "check_finished",
+    "objective": "speed",
+    "output": {
+      "kind": "evaluator",
+      "output": {
+        "findings": {
+          "blocking": 0,
+          "major": 1,
+          "minor": 2
+        },
+        "judgements": [
+          {
+            "evidence": [
+              {
+                "line": 12,
+                "path": "src/lib.rs"
+              }
+            ],
+            "item": "clarity",
+            "trend": "same"
+          }
+        ]
+      }
+    },
+    "revision": "r0",
+    "sample": 0
+  },
+  {
+    "check": "review",
+    "evaluation": 0,
+    "event": "check_finished",
+    "objective": "speed",
+    "output": {
+      "kind": "evaluator",
+      "output": {
+        "findings": {
+          "blocking": 0,
+          "major": 1,
+          "minor": 2
+        },
+        "judgements": [
+          {
+            "evidence": [
+              {
+                "line": 12,
+                "path": "src/lib.rs"
+              }
+            ],
+            "item": "clarity",
+            "trend": "same"
+          }
+        ]
+      }
+    },
+    "revision": "r0",
+    "sample": 1
+  },
+  {
+    "check": "docs",
+    "evaluation": 0,
+    "event": "check_finished",
+    "objective": "docs",
+    "output": {
+      "kind": "command",
+      "output": {
+        "exit_code": 1
+      }
+    },
+    "revision": "r0",
+    "sample": 0
+  },
+  {
+    "check": "build",
+    "evaluation": 0,
+    "event": "check_finished",
+    "objective": "speed",
+    "output": {
+      "kind": "command",
+      "output": {
+        "exit_code": 0
+      }
+    },
+    "revision": "r9",
+    "sample": 0
+  },
+  {
+    "decision": "keep",
+    "evaluation": 0,
+    "event": "settled",
+    "note": "baseline",
+    "objective": "speed"
+  },
+  {
+    "decision": "keep",
+    "evaluation": 0,
+    "event": "settled",
+    "note": "baseline",
+    "objective": "docs"
+  },
+  {
+    "event": "host_idle",
+    "queue_len": 1
+  },
+  {
+    "event": "host_idle",
+    "queue_len": 0
+  },
+  {
+    "event": "requested",
+    "objective": "speed",
+    "revision": "r1"
+  },
+  {
+    "check": "build",
+    "evaluation": 1,
+    "event": "check_finished",
+    "objective": "speed",
+    "output": {
+      "kind": "command",
+      "output": {
+        "exit_code": 0
+      }
+    },
+    "revision": "r1",
+    "sample": 0
+  },
+  {
+    "check": "latency",
+    "evaluation": 1,
+    "event": "check_finished",
+    "objective": "speed",
+    "output": {
+      "kind": "metric",
+      "output": {
+        "value": 120.0
+      }
+    },
+    "revision": "r1",
+    "sample": 0
+  },
+  {
+    "check": "review",
+    "evaluation": 1,
+    "event": "check_finished",
+    "objective": "speed",
+    "output": {
+      "kind": "evaluator",
+      "output": {
+        "findings": {
+          "blocking": 0,
+          "major": 1,
+          "minor": 2
+        },
+        "judgements": [
+          {
+            "evidence": [
+              {
+                "line": 12,
+                "path": "src/lib.rs"
+              }
+            ],
+            "item": "clarity",
+            "trend": "same"
+          }
+        ]
+      }
+    },
+    "revision": "r1",
+    "sample": 0
+  },
+  {
+    "check": "review",
+    "evaluation": 1,
+    "event": "check_finished",
+    "objective": "speed",
+    "output": {
+      "kind": "evaluator",
+      "output": {
+        "findings": {
+          "blocking": 0,
+          "major": 1,
+          "minor": 2
+        },
+        "judgements": [
+          {
+            "evidence": [
+              {
+                "line": 12,
+                "path": "src/lib.rs"
+              }
+            ],
+            "item": "clarity",
+            "trend": "same"
+          }
+        ]
+      }
+    },
+    "revision": "r1",
+    "sample": 1
+  },
+  {
+    "decision": "keep",
+    "evaluation": 1,
+    "event": "settled",
+    "note": "slower",
+    "objective": "speed"
+  },
+  {
+    "decision": "discard",
+    "evaluation": 1,
+    "event": "settled",
+    "note": "slower",
+    "objective": "speed"
+  },
+  {
+    "event": "requested",
+    "objective": "speed",
+    "revision": "r2"
+  },
+  {
+    "check": "build",
+    "evaluation": 2,
+    "event": "check_finished",
+    "objective": "speed",
+    "output": {
+      "kind": "command",
+      "output": {
+        "exit_code": 0
+      }
+    },
+    "revision": "r2",
+    "sample": 0
+  },
+  {
+    "check": "latency",
+    "evaluation": 2,
+    "event": "check_finished",
+    "objective": "speed",
+    "output": {
+      "kind": "metric",
+      "output": {
+        "value": 100.0
+      }
+    },
+    "revision": "r2",
+    "sample": 0
+  },
+  {
+    "check": "review",
+    "evaluation": 2,
+    "event": "check_finished",
+    "objective": "speed",
+    "output": {
+      "kind": "evaluator",
+      "output": {
+        "findings": {
+          "blocking": 0,
+          "major": 1,
+          "minor": 2
+        },
+        "judgements": [
+          {
+            "evidence": [
+              {
+                "line": 12,
+                "path": "src/lib.rs"
+              }
+            ],
+            "item": "clarity",
+            "trend": "same"
+          }
+        ]
+      }
+    },
+    "revision": "r2",
+    "sample": 0
+  },
+  {
+    "check": "review",
+    "evaluation": 2,
+    "event": "check_finished",
+    "objective": "speed",
+    "output": {
+      "kind": "evaluator",
+      "output": {
+        "findings": {
+          "blocking": 0,
+          "major": 1,
+          "minor": 2
+        },
+        "judgements": [
+          {
+            "evidence": [
+              {
+                "line": 12,
+                "path": "src/lib.rs"
+              }
+            ],
+            "item": "clarity",
+            "trend": "same"
+          }
+        ]
+      }
+    },
+    "revision": "r2",
+    "sample": 1
+  },
+  {
+    "decision": "discard",
+    "evaluation": 2,
+    "event": "settled",
+    "note": "no gain",
+    "objective": "speed"
+  },
+  {
+    "event": "usage",
+    "usage": {
+      "context_tokens": 60000,
+      "elapsed_secs": 100,
+      "turns": 3
+    }
+  },
+  {
+    "event": "usage",
+    "usage": {
+      "context_tokens": 70000,
+      "elapsed_secs": 100,
+      "turns": 3
+    }
+  },
+  {
+    "event": "requested",
+    "objective": "docs",
+    "revision": "r3"
+  },
+  {
+    "check": "docs",
+    "evaluation": 1,
+    "event": "check_finished",
+    "objective": "docs",
+    "output": {
+      "kind": "command",
+      "output": {
+        "exit_code": 0
+      }
+    },
+    "revision": "r3",
+    "sample": 0
+  },
+  {
+    "decision": "done",
+    "evaluation": 1,
+    "event": "settled",
+    "note": "documented",
+    "objective": "docs"
+  },
+  {
+    "event": "closed",
+    "objective": "docs"
+  },
+  {
+    "event": "host_idle",
+    "queue_len": 0
+  },
+  {
+    "event": "spec_changed",
+    "objective": {
+      "budget": {
+        "tokens": 50000,
+        "turns": 10,
+        "wall_secs": 3600
+      },
+      "checks": [
+        {
+          "config": {
+            "kind": "command",
+            "params": {
+              "command": "run build"
+            }
+          },
+          "id": "build",
+          "role": "invariant"
+        },
+        {
+          "config": {
+            "kind": "metric",
+            "params": {
+              "command": "measure latency",
+              "direction": "lower"
+            }
+          },
+          "id": "latency",
+          "role": "ratchet"
+        },
+        {
+          "config": {
+            "kind": "evaluator",
+            "params": {
+              "aggregate": "majority",
+              "rubric": [
+                {
+                  "criterion": "the change reads clearly",
+                  "id": "clarity"
+                }
+              ],
+              "samples": 2
+            }
+          },
+          "id": "review",
+          "role": "ratchet"
+        }
+      ],
+      "compact": "every_settle",
+      "constraints": [
+        "keep the public API",
+        "no unsafe code"
+      ],
+      "key": "speed",
+      "mode": {
+        "loop": {
+          "plateau": 2
+        }
+      },
+      "title": "objective speed"
+    }
+  },
+  {
+    "event": "requested",
+    "objective": "speed",
+    "revision": "r4"
+  }
+]

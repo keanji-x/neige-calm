@@ -431,6 +431,15 @@ impl PrincipalDecisionGate {
             .await
     }
 
+    /// Planner authority only; Assistant recording rights do not grant objective control.
+    pub async fn decide_planner<T>(&self, tx: &mut T, track: &TrackId) -> Result<GateDecision>
+    where
+        T: WriteTx + ?Sized + Send,
+    {
+        self.decide_card_authority(tx, track, None, &[CardRole::Planner])
+            .await
+    }
+
     /// Re-prove a transported card identity for a write in the same transaction.
     pub async fn decide_card_write<T>(
         &self,

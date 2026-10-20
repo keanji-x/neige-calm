@@ -413,3 +413,47 @@ fn the_scenario_leaves_ledgers_and_statuses_consistent() {
     assert_eq!(state.compactions, 2);
     assert!(!state.pending_compact);
 }
+
+#[test]
+fn objective_host_serde_version_pins() {
+    assert_eq!(objective::engine::EVENT_VERSION, 1);
+    assert_eq!(objective::engine::STATE_VERSION, 1);
+    let events = scenario();
+    let steps = replay(State::default(), &events);
+    let running = steps
+        .iter()
+        .map(|(state, _)| state)
+        .find(|state| {
+            state.objectives.values().any(|o| {
+                matches!(
+                    o.evaluation,
+                    Some(objective::engine::Evaluation::Running { .. })
+                )
+            })
+        })
+        .unwrap();
+    let ready = steps
+        .iter()
+        .map(|(state, _)| state)
+        .find(|state| {
+            state.objectives.values().any(|o| {
+                matches!(
+                    o.evaluation,
+                    Some(objective::engine::Evaluation::Ready { .. })
+                )
+            })
+        })
+        .unwrap();
+    let actual = serde_json::json!({"events": events, "default":State::default(), "running":running, "ready":ready, "final":final_state(&steps)});
+    let events: serde_json::Value =
+        serde_json::from_str(include_str!("goldens/events-v1.json")).unwrap();
+    let active: serde_json::Value =
+        serde_json::from_str(include_str!("goldens/states-active-v1.json")).unwrap();
+    let final_state: serde_json::Value =
+        serde_json::from_str(include_str!("goldens/state-final-v1.json")).unwrap();
+    let expected = serde_json::json!({"events":events,"default":active["default"],"running":active["running"],"ready":active["ready"],"final":final_state});
+    assert_eq!(
+        actual, expected,
+        "persisted objective contracts changed; review version bumps"
+    );
+}

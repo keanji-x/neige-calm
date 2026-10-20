@@ -4,6 +4,11 @@
 //! [`crate::trigger::Occurrence`]s; the trigger rules then map those to intents. Nothing here
 //! performs IO or reads a clock.
 
+/// Persisted Event serde contract; bump when that shape changes.
+pub const EVENT_VERSION: u32 = 1;
+/// Persisted State/reaction contract; bump on shape or react semantics changes.
+pub const STATE_VERSION: u32 = 1;
+
 mod event;
 mod reduce;
 
