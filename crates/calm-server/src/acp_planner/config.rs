@@ -117,13 +117,14 @@ impl AcpPlannerConfig {
     fn validate(&self) -> Result<()> {
         let mut seen = std::collections::HashSet::new();
         for agent in &self.agents {
-            if agent.provider.protocol() != AgentProtocol::Acp
-                || !seen.insert(agent.provider.wire_name())
-            {
-                return Err(CalmError::BadRequest(
-                    "ACP registration names an unsupported or duplicate agent".into(),
-                ));
-            }
+            let profile = AcpAgentProfile::of(&agent.provider)
+                .filter(|_| agent.provider.protocol() == AgentProtocol::Acp)
+                .filter(|_| seen.insert(agent.provider.wire_name()))
+                .ok_or_else(|| {
+                    CalmError::BadRequest(
+                        "ACP registration names an unsupported or duplicate agent".into(),
+                    )
+                })?;
             if !agent.command.is_absolute() {
                 return Err(CalmError::BadRequest(
                     "ACP registration requires an absolute command".into(),
@@ -137,6 +138,17 @@ impl AcpPlannerConfig {
                 return Err(CalmError::BadRequest(
                     "ACP environment cannot override kernel credentials or process markers".into(),
                 ));
+            }
+            if let Some(key) = profile
+                .refused_env
+                .iter()
+                .find(|key| agent.env.contains_key(**key))
+            {
+                return Err(CalmError::BadRequest(format!(
+                    "ACP registration of {} cannot set `{key}`: it signs in with its own CLI, \
+                     never an API key",
+                    agent.provider.wire_name()
+                )));
             }
         }
         Ok(())
@@ -153,11 +165,15 @@ pub(super) struct Registration<'a> {
 #[derive(Debug)]
 pub struct AcpPlannerHost {
     config: Option<AcpPlannerConfig>,
-    /// [`AcpAgentProfile::of`]; a unit test substitutes a profile no provider registers yet.
-    profiles: fn(&AgentProvider) -> Option<&'static AcpAgentProfile>,
     pub instance: MarkerInstance,
     pub mcp_shim: PathBuf,
     pub mcp_socket: PathBuf,
+    /// What Neige's MCP server lists each session, for agents whose requests for its tools are
+    /// approved by name; without it no tool is approved by name, so a request is the mode's.
+    tool_names: Option<crate::mcp_server::transport::SessionToolNames>,
+    /// Where each agent process's stderr is kept, one bounded file per worker, overwritten by its
+    /// next launch.
+    pub(super) agent_logs: PathBuf,
     readiness: tokio::sync::Mutex<()>,
     pub(super) discovery: super::catalog::DiscoveryCache,
     catalogs: std::sync::Mutex<
@@ -177,16 +193,35 @@ impl AcpPlannerHost {
         }
         Ok(Self {
             config,
-            profiles: AcpAgentProfile::of,
             instance: MarkerInstance::for_data_dir(data_dir, MARKER_KEY)?,
             mcp_shim,
             mcp_socket,
+            tool_names: None,
+            agent_logs: data_dir.join("acp-agent-logs"),
             readiness: tokio::sync::Mutex::new(()),
             discovery: Default::default(),
             catalogs: std::sync::Mutex::new(std::collections::HashMap::new()),
             _scratch: None,
         })
     }
+    /// The host reading what Neige's MCP server lists each session from `tool_names`.
+    pub fn with_tool_names(
+        mut self,
+        tool_names: crate::mcp_server::transport::SessionToolNames,
+    ) -> Self {
+        self.tool_names = Some(tool_names);
+        self
+    }
+
+    /// The tool names Neige's MCP server lists the worker session `worker` now; none without a
+    /// source.
+    pub(super) async fn listed_tools(&self, worker: &str) -> Result<Vec<String>> {
+        match &self.tool_names {
+            Some(tool_names) => tool_names.listed(worker).await,
+            None => Ok(Vec::new()),
+        }
+    }
+
     pub fn unconfigured_scratch() -> Result<Self> {
         let scratch = tempfile::Builder::new().prefix("neige-acp-").tempdir()?;
         let mut host = Self::new(
@@ -218,18 +253,10 @@ impl AcpPlannerHost {
     /// The registration of `provider` with its profile.
     pub(super) fn registration(&self, provider: &AgentProvider) -> Result<Registration<'_>> {
         let config = self.configured(provider)?;
-        let profile = (self.profiles)(provider).ok_or_else(|| {
+        let profile = AcpAgentProfile::of(provider).ok_or_else(|| {
             CalmError::Internal(format!("{} has no ACP profile", provider.wire_name()))
         })?;
         Ok(Registration { config, profile })
-    }
-    #[cfg(test)]
-    pub(super) fn with_profiles(
-        mut self,
-        profiles: fn(&AgentProvider) -> Option<&'static AcpAgentProfile>,
-    ) -> Self {
-        self.profiles = profiles;
-        self
     }
 
     pub fn record_configuration(
@@ -411,6 +438,46 @@ mod tests {
         agent["min_agent_version"] = json!("latest");
         let message = read(agent).unwrap_err().to_string();
         assert!(message.contains("at line 1 column"), "{message}");
+    }
+
+    /// A registration may not hand Grok an xAI API key: Neige runs it on its signed-in
+    /// subscription only. Every other provider keeps its environment as registered.
+    #[test]
+    fn a_grok_registration_refuses_xai_api_keys() {
+        let grok = |env: serde_json::Value| {
+            json!({"provider":"grok","command":"/opt/grok/grok-1.0.62","args":[],"env":env,
+                "min_agent_version":"1.0.62"})
+        };
+        assert!(read(grok(json!({"GROK_HOME":"/var/lib/neige/grok"}))).is_ok());
+        for key in ["XAI_API_KEY", "GROK_CODE_XAI_API_KEY"] {
+            let message = read(grok(json!({ key: "xai-secret" })))
+                .unwrap_err()
+                .to_string();
+            assert!(
+                message.contains(&format!("cannot set `{key}`")) && !message.contains("xai-secret"),
+                "{message}"
+            );
+        }
+        let mut agent = opencode();
+        agent["env"] = json!({"XAI_API_KEY":"unrelated"});
+        assert!(read(agent).is_ok());
+    }
+
+    /// Only ACP providers register, each at most once.
+    #[test]
+    fn a_registration_names_each_acp_provider_at_most_once() {
+        let grok = json!({"provider":"grok","command":"/opt/grok","args":[],"env":{},
+            "min_agent_version":"1.0.62"});
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let write = |agents: serde_json::Value| {
+            std::fs::write(file.path(), json!({ "agents": agents }).to_string()).unwrap();
+            AcpPlannerConfig::read(file.path())
+        };
+        assert!(write(json!([opencode(), grok.clone()])).is_ok());
+        assert!(write(json!([grok.clone(), grok])).is_err());
+        let mut codex = opencode();
+        codex["provider"] = json!("codex");
+        assert!(write(json!([codex])).is_err());
     }
 
     /// The native session key covers the agent process and its directory, not admission policy.

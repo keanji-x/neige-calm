@@ -4,7 +4,15 @@ Its registration's env shapes `initialize`: ACP_FIXTURE_IDENTITY `agent_info` (d
 named OpenCode) or `meta` (no agentInfo; `_meta.agentVersion`, as Grok Build 1.0.62 reports),
 ACP_FIXTURE_VERSION (default 1.18.35), ACP_FIXTURE_AUTH_METHODS (comma-separated `authMethods`
 ids; default none), and ACP_FIXTURE_AUTHENTICATE `ok` (default), `error` or `silent` (never
-answers, as signed-out Grok Build 1.0.62)."""
+answers, as signed-out Grok Build 1.0.62). ACP_FIXTURE_VENDOR `xai` adds what Grok Build 1.0.62
+sends beside ACP: `_x.ai/*` notifications around setup and every turn, and its `initialize`
+`_meta` and capabilities (no image prompts). The `grok-mcp` scenario asks before an MCP tool as Grok
+Build 1.0.62 does (`use_tool` titled `<server>__<tool>`, kind `other`); allowed once, it calls the
+tool and finishes, and an answer `cancelled` or rejected ends the turn `cancelled`, as Grok's does.
+Launched with `--always-approve`, it calls the tools without asking. `grok-mcp-unlisted` asks for a
+tool the server does not list a Planner, and `grok-shell` for a shell command; each ends its turn
+`cancelled` on any answer but an allow. Run as `inspect --json` it answers Grok's report and exits:
+project MCP servers enforced off, or not with ACP_FIXTURE_PROJECT_MCP `on`."""
 import json
 import os
 import pathlib
@@ -15,16 +23,27 @@ import time
 import hashlib
 
 root = pathlib.Path(os.environ['ACP_FIXTURE_ROOT'])
+if sys.argv[-2:] == ['inspect', '--json']:
+    with (root / 'inspect.jsonl').open('a') as output:
+        output.write(json.dumps({'cwd': os.getcwd(), 'grok_sandbox': os.environ.get('GROK_SANDBOX')}) + '\n')
+    enforced = [] if os.environ.get('ACP_FIXTURE_PROJECT_MCP') == 'on' else [
+        {'setting': 'projectMcpServers', 'enabled': False, 'source': '/grok-home/managed_config.toml'}]
+    print(json.dumps({'grokVersion': os.environ.get('ACP_FIXTURE_VERSION'), 'permissions': {'enforced': enforced}}))
+    sys.exit(0)
 with (root / 'environment.jsonl').open('a') as output:
     presence = {name: name in os.environ for name in [
         'NEIGE_MCP_DAEMON_TOKEN', 'NEIGE_MCP_TOKEN', 'NEIGE_MCP_SOCKET', 'ACP_AMBIENT_SENTINEL']}
     presence['catalog'] = os.environ['NEIGE_ACP_PLANNER'].endswith(':catalog')
     presence['readiness'] = os.environ['NEIGE_ACP_PLANNER'].endswith(':readiness')
     presence['opencode_permission'] = os.environ.get('OPENCODE_PERMISSION')
+    presence['grok_sandbox'] = os.environ.get('GROK_SANDBOX')
     output.write(json.dumps(presence) + '\n')
 with (root / 'argv.jsonl').open('a') as output:
     output.write(json.dumps(sys.argv[1:]) + '\n')
 current, pending, permission, cancel_seen = None, None, None, False
+mcp_servers = []
+xai = os.environ.get('ACP_FIXTURE_VENDOR') == 'xai'
+always_approve = '--always-approve' in sys.argv
 model, effort = 'fixture/model-a', 'normal'
 
 def emit(value):
@@ -47,6 +66,69 @@ def config():
              {'value': 'fixture/model-a', 'name': 'Fixture A'}, {'value': 'fixture/model-b', 'name': 'Fixture B'}]}]},
         {'id': 'declared-effort-key', 'type': 'select', 'category': 'thought_level', 'currentValue': effort,
          'options': [{'value': 'normal', 'name': 'Normal'}, {'value': 'deep', 'name': 'Deep'}]}]}
+
+def vendor(method, params=None):
+    # Grok Build's own notifications; an ACP client ignores methods it does not know.
+    if xai:
+        emit({'jsonrpc': '2.0', 'method': '_x.ai/' + method, 'params': params or {'sessionId': current}})
+
+def call_tools(server, calls):
+    """Call `calls` in order on one connection to `server`'s stdio command, as the agent's MCP
+    client would; the replies in order."""
+    env = dict(os.environ)
+    env.update({entry['name']: entry['value'] for entry in server['env']})
+    child = subprocess.Popen([server['command'], *server['args']], stdin=subprocess.PIPE,
+                             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=env, text=True)
+    try:
+        child.stdin.write(json.dumps({'jsonrpc': '2.0', 'id': 1, 'method': 'initialize', 'params': {
+            'protocolVersion': '2024-11-05', 'capabilities': {}, 'clientInfo': {'name': 'fixture', 'version': '1'}}}) + '\n')
+        child.stdin.flush()
+        child.stdout.readline()
+        replies = []
+        for number, (name, arguments) in enumerate(calls, start=2):
+            child.stdin.write(json.dumps({'jsonrpc': '2.0', 'id': number, 'method': 'tools/call',
+                                          'params': {'name': name, 'arguments': arguments}}) + '\n')
+            child.stdin.flush()
+            replies.append(json.loads(child.stdout.readline()))
+        return replies
+    finally:
+        child.stdin.close()
+        child.wait(timeout=5)
+
+def ask_mcp_tool(request_id, tool='neige_report_commit'):
+    # The shape Grok Build 1.0.62 sends before `use_tool` calls a tool of a client-supplied server.
+    title = mcp_servers[0]['name'] + '__' + tool
+    emit({'jsonrpc': '2.0', 'id': request_id, 'method': 'session/request_permission', 'params': {
+        'sessionId': current,
+        'toolCall': {'toolCallId': 'call-grok-0', 'kind': 'other', 'title': title,
+                     'rawInput': {'variant': 'UseTool', 'tool_name': title, 'tool_input': {}},
+                     '_meta': {'x.ai/tool': {'version': 1, 'name': 'use_tool', 'kind': 'use_tool',
+                                             'namespace': 'grok_build', 'label': 'Use Tool', 'read_only': False}}},
+        'options': [{'optionId': 'always-allow', 'name': 'always allow', 'kind': 'allow_always'},
+                    {'optionId': 'allow-once', 'name': 'allow once', 'kind': 'allow_once'},
+                    {'optionId': 'reject-once', 'name': 'reject once', 'kind': 'reject_once'}]}})
+
+def ask_shell(request_id):
+    # The shape Grok Build 1.0.62 sends before `run_terminal_command` runs a command that writes.
+    command = 'echo one > one.txt'
+    emit({'jsonrpc': '2.0', 'id': request_id, 'method': 'session/request_permission', 'params': {
+        'sessionId': current,
+        'toolCall': {'toolCallId': 'call-grok-1', 'kind': 'execute', 'title': 'Execute `' + command + '`',
+                     'rawInput': {'variant': 'Bash', 'command': command, 'is_background': False},
+                     '_meta': {'x.ai/tool': {'version': 1, 'name': 'run_terminal_command', 'kind': 'execute',
+                                             'namespace': 'grok_build', 'label': 'Run Command', 'read_only': False}}},
+        'options': [{'optionId': 'always-allow', 'name': "Yes, and don't ask again for bash commands", 'kind': 'allow_always'},
+                    {'optionId': 'allow-once', 'name': 'Yes, proceed', 'kind': 'allow_once'},
+                    {'optionId': 'reject-once', 'name': 'No, and tell Grok what to do differently', 'kind': 'reject_once'}]}})
+
+def write_report(request):
+    replies = call_tools(mcp_servers[0], [
+        ('neige_report_read', {'with_markers': True}),
+        ('neige_report_commit', {'message': 'Grok prose', 'ops': [
+            {'op': 'upsert', 'kind': 'prose', 'markdown': '# Grok note\n\nWritten through use_tool.\n'}]})])
+    (root / 'grok-mcp-result.json').write_text(json.dumps(replies))
+    vendor('session/prompt_complete')
+    finish(request, 'tools answered')
 
 def update(value):
     emit({'jsonrpc': '2.0', 'method': 'session/update', 'params': {'sessionId': current, 'update': value}})
@@ -144,9 +226,14 @@ for line in sys.stdin:
         if (root / 'scenario').read_text().strip() != 'catalog_no_close':
             capabilities['sessionCapabilities'] = {'close': {}}
         version = 'wrong' if wrong else os.environ.get('ACP_FIXTURE_VERSION', '1.18.35')
+        if xai:
+            capabilities['promptCapabilities'] = {'image': False, 'audio': False, 'embeddedContext': True}
+            capabilities['_meta'] = {'x.ai/fs_notify': True}
         initialized = {'protocolVersion': 1, 'agentCapabilities': capabilities}
         if os.environ.get('ACP_FIXTURE_IDENTITY', 'agent_info') == 'meta':
             initialized['_meta'] = {'agentVersion': version}
+            if xai:
+                initialized['_meta'].update({'defaultAuthMethodId': 'cached_token', 'grokShell': True})
         else:
             initialized['agentInfo'] = {'name': 'OpenCode', 'version': version}
         methods = [m for m in os.environ.get('ACP_FIXTURE_AUTH_METHODS', '').split(',') if m]
@@ -171,6 +258,9 @@ for line in sys.stdin:
             continue
         current = 'native_' + uuid.uuid4().hex
         native_path().write_text(json.dumps({'inputs': [], 'cwd': params['cwd'], 'model': model, 'effort': effort}))
+        mcp_servers = params['mcpServers']
+        vendor('mcp/servers_updated')
+        vendor('session/setup')
         check_mcp(params['mcpServers'])
         if (root / 'scenario').read_text().strip() == 'closed-input':
             # Keep stdout/process alive but remove every reader before setup completes.
@@ -190,6 +280,8 @@ for line in sys.stdin:
         for text in state['inputs']:
             update({'sessionUpdate': 'user_message_chunk', 'content': {'type': 'text', 'text': text}})
             update({'sessionUpdate': 'agent_message_chunk', 'content': {'type': 'text', 'text': 'historic reply'}})
+        mcp_servers = params['mcpServers']
+        vendor('session/setup')
         check_mcp(params['mcpServers'])
         result(request, config())
     elif method == 'session/set_config_option':
@@ -216,7 +308,16 @@ for line in sys.stdin:
                 time.sleep(0.01)
         if scenario in ['lost', 'checkpoint']:
             os._exit(0)
-        if scenario == 'permission':
+        vendor('queue/changed')
+        if scenario == 'grok-mcp' and always_approve:
+            write_report(request)
+        elif scenario in ['grok-mcp', 'grok-mcp-unlisted', 'grok-shell']:
+            pending, permission, cancel_seen = request, 'grok-permission', False
+            if scenario == 'grok-shell':
+                ask_shell(permission)
+            else:
+                ask_mcp_tool(permission, 'neige_task_done' if scenario == 'grok-mcp-unlisted' else 'neige_report_commit')
+        elif scenario == 'permission':
             pending, permission = request, 'native-permission'
             emit({'jsonrpc': '2.0', 'id': permission, 'method': 'session/request_permission', 'params': {
                 'sessionId': current, 'toolCall': {'toolCallId': 'one', 'title': 'Fixture operation'},
@@ -246,6 +347,7 @@ for line in sys.stdin:
             update({'sessionUpdate': 'tool_call', 'toolCallId': '1', 'title': 'Fixture output', 'status': 'in_progress'})
             update({'sessionUpdate': 'tool_call_update', 'toolCallId': '1', 'status': 'completed',
                     'content': [{'type': 'content', 'content': {'type': 'text', 'text': 'native tool output'}}]})
+            vendor('session/prompt_complete')
             finish(request, 'reply: ' + texts[-1])
     elif method == 'session/cancel' and pending and permission is not None:
         # ACP: the client answers the pending permission request `cancelled` after the cancel.
@@ -254,6 +356,17 @@ for line in sys.stdin:
     elif method == 'session/cancel' and pending:
         finish(pending, 'cancelled', 'cancelled')
         pending = None
+    elif method is None and permission == 'grok-permission' and request.get('id') == permission:
+        outcome = request['result']['outcome']
+        permission_log({'event': 'reply', 'outcome': outcome})
+        if outcome == {'outcome': 'selected', 'optionId': 'allow-once'} and (root / 'scenario').read_text().strip() == 'grok-mcp':
+            write_report(pending)
+        elif outcome.get('optionId') in ['allow-once', 'always-allow']:
+            finish(pending, 'allowed')
+        else:
+            # Grok Build ends its turn on any answer but an allow.
+            finish(pending, 'declined', 'cancelled')
+        pending = permission = None
     elif method is None and permission == 'native-permission' and request.get('id') == permission:
         (root / 'permission-reply.json').write_text(json.dumps(request))
         assert request['result']['outcome'] == {'outcome': 'cancelled'}, 'permission policy is never'

@@ -126,8 +126,8 @@ async fn get_version_returns_all_fields_with_expected_sources() {
     assert_eq!(v["apiVersion"].as_str().unwrap(), API_VERSION);
     assert_eq!(
         v["apiVersion"].as_str().unwrap(),
-        "35",
-        "Negotiated canonical conversation contracts are required"
+        "36",
+        "managed ACP adds the Grok Build provider identity"
     );
     assert_eq!(
         v["syncEventVersion"].as_u64().unwrap(),
@@ -140,12 +140,12 @@ async fn get_version_returns_all_fields_with_expected_sources() {
         v["webCompatVersion"].as_u64().unwrap(),
         WEB_COMPAT_VERSION as u64,
     );
-    assert_eq!(v["webCompatVersion"].as_u64().unwrap(), 58);
+    assert_eq!(v["webCompatVersion"].as_u64().unwrap(), 59);
     assert_eq!(
         v["minWebCompatVersion"].as_u64().unwrap(),
         WEB_COMPAT_VERSION as u64,
     );
-    assert_eq!(v["minWebCompatVersion"].as_u64().unwrap(), 58);
+    assert_eq!(v["minWebCompatVersion"].as_u64().unwrap(), 59);
     assert_eq!(
         v["supervisorControlVersion"].as_u64().unwrap(),
         SUPERVISOR_CONTROL_VERSION as u64,

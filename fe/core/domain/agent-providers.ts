@@ -50,6 +50,7 @@ export const CREATE_REFUSED_WHEN_UNAVAILABLE: Readonly<Record<AgentProvider, boo
   codex: false,
   claude: true,
   opencode: true,
+  grok: true,
 });
 
 /**

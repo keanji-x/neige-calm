@@ -592,11 +592,7 @@ async fn shutdown_registered_harnesses_drains_registry_and_allows_reforce() {
 #[tokio::test]
 async fn assistant_provider_forced_phase_keeps_the_declared_provider_and_never_becomes_root() {
     use calm_server::session_projection_repo::{AgentProvider, WorkerSessionKind};
-    for provider in [
-        AgentProvider::Codex,
-        AgentProvider::Claude,
-        AgentProvider::OpenCode,
-    ] {
+    for provider in AgentProvider::ALL {
         let boot = boot().await;
         let (track, _) = create_track(&boot).await;
         let id = calm_server::model::new_id();

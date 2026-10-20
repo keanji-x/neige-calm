@@ -1,11 +1,10 @@
 //! Agent identity, minimum version, authentication and agent options through the production
-//! registration read, readiness, catalog and turn launch, against the spy peer. The profiles that
-//! authenticate or read `_meta` are this module's own: no registered provider declares one yet.
+//! registration read, readiness, catalog and turn launch, against the spy peer: Grok Build's
+//! profile authenticates and reads `_meta`, OpenCode's does neither.
 #![cfg(test)]
 use super::*;
 use crate::acp_planner::config::{AcpPlannerConfig, AcpPlannerHost};
 use crate::acp_planner::process::{LaunchContext, Process};
-use crate::acp_planner::profile::{AcpAgentProfile, AgentEntry, AgentIdentity, ModeLaunch};
 use crate::acp_planner::session::{AcpPlannerSession, SessionParams};
 use crate::agent_providers::{Freshness, ProviderAvailabilityCache, Verdict};
 use crate::planner_permission_mode::PlannerPermissionMode;
@@ -17,73 +16,38 @@ const PEER: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/tests/fixtures/acp_planner/agent.py"
 );
-type Profiles = fn(&AgentProvider) -> Option<&'static AcpAgentProfile>;
 
-/// Grok Build's entry shape: `agent <options> --no-leader stdio`.
-static AUTHENTICATING: AcpAgentProfile = AcpAgentProfile {
-    entry: AgentEntry {
-        before_options: &["agent"],
-        after_options: &["--no-leader", "stdio"],
-    },
-    identity: AgentIdentity::AgentInfo { name: "OpenCode" },
-    authentication: Some("cached_token"),
-    ask: ModeLaunch {
-        env: &[],
-        agent_options: &["--ask-first"],
-    },
-    full: ModeLaunch {
-        env: &[],
-        agent_options: &["--always-approve", "--quiet"],
-    },
-};
-static META_VERSION: AcpAgentProfile = AcpAgentProfile {
-    entry: AgentEntry {
-        before_options: &[],
-        after_options: &[],
-    },
-    identity: AgentIdentity::MetaAgentVersion,
-    authentication: None,
-    ask: ModeLaunch {
-        env: &[],
-        agent_options: &[],
-    },
-    full: ModeLaunch {
-        env: &[],
-        agent_options: &[],
-    },
-};
-fn authenticating(_: &AgentProvider) -> Option<&'static AcpAgentProfile> {
-    Some(&AUTHENTICATING)
-}
-fn meta_version(_: &AgentProvider) -> Option<&'static AcpAgentProfile> {
-    Some(&META_VERSION)
+/// Grok Build 1.0.62's `initialize`: no `agentInfo`, its version at `_meta.agentVersion`.
+fn grok(env: Value) -> Value {
+    let mut fixture = json!({"ACP_FIXTURE_IDENTITY":"meta","ACP_FIXTURE_VERSION":"1.0.62"});
+    fixture
+        .as_object_mut()
+        .unwrap()
+        .extend(env.as_object().unwrap().clone());
+    fixture
 }
 
-/// A host reading a real registration file for the spy peer, with `env` added to the peer's
-/// registered environment; `profiles` replaces the production profiles when given.
-fn host(root: &Path, env: Value, min: &str, profiles: Option<Profiles>) -> AcpPlannerHost {
+/// A host reading a real registration file that registers the spy peer as `provider`, with `env`
+/// added to the peer's registered environment.
+fn host(root: &Path, provider: &AgentProvider, env: Value, min: &str) -> AcpPlannerHost {
     std::fs::write(root.join("scenario"), "reply").unwrap();
     let mut env = env;
     env["ACP_FIXTURE_ROOT"] = json!(root);
     let path = root.join("acp.json");
     std::fs::write(
         &path,
-        json!({"agents":[{"provider":"opencode","command":"/usr/bin/python3",
+        json!({"agents":[{"provider":provider,"command":"/usr/bin/python3",
             "args":["-u",PEER,"prefix"],"env":env,"min_agent_version":min}]})
         .to_string(),
     )
     .unwrap();
-    let host = AcpPlannerHost::new(
+    AcpPlannerHost::new(
         Some(AcpPlannerConfig::read(&path).unwrap()),
         root,
         root.join("unused-shim"),
         root.join("mcp.sock"),
     )
-    .unwrap();
-    match profiles {
-        Some(profiles) => host.with_profiles(profiles),
-        None => host,
-    }
+    .unwrap()
 }
 
 fn lines(root: &Path, file: &str) -> Vec<Value> {
@@ -106,9 +70,9 @@ fn all_stopped(root: &Path) -> bool {
         .all(|frame| !Path::new(&format!("/proc/{}", frame["_pid"])).exists())
 }
 
-async fn verdict(host: &AcpPlannerHost) -> Verdict {
+async fn verdict(host: &AcpPlannerHost, provider: &AgentProvider) -> Verdict {
     ProviderAvailabilityCache::default()
-        .acp(&AgentProvider::OpenCode, Freshness::Recheck, host)
+        .acp(provider, Freshness::Recheck, host)
         .await
         .verdict
 }
@@ -118,12 +82,12 @@ async fn a_declared_method_authenticates_after_initialize_and_before_session_new
     let root = tempfile::tempdir().unwrap();
     let host = host(
         root.path(),
-        json!({"ACP_FIXTURE_AUTH_METHODS":"browser,cached_token"}),
-        "1.0.0",
-        Some(authenticating),
+        &AgentProvider::Grok,
+        grok(json!({"ACP_FIXTURE_AUTH_METHODS":"browser,cached_token"})),
+        "1.0.62",
     );
-    assert_eq!(verdict(&host).await, Verdict::Ready);
-    let catalog = host.discover_catalog(&AgentProvider::OpenCode, None).await;
+    assert_eq!(verdict(&host, &AgentProvider::Grok).await, Verdict::Ready);
+    let catalog = host.discover_catalog(&AgentProvider::Grok, None).await;
     assert!(!catalog.models.is_empty(), "{catalog:?}");
     assert_eq!(
         methods(root.path()),
@@ -151,11 +115,14 @@ async fn opencode_sends_no_authenticate_even_when_the_agent_offers_methods() {
     let root = tempfile::tempdir().unwrap();
     let host = host(
         root.path(),
+        &AgentProvider::OpenCode,
         json!({"ACP_FIXTURE_AUTH_METHODS":"opencode-login"}),
         "1.0.0",
-        None,
     );
-    assert_eq!(verdict(&host).await, Verdict::Ready);
+    assert_eq!(
+        verdict(&host, &AgentProvider::OpenCode).await,
+        Verdict::Ready
+    );
     host.discover_catalog(&AgentProvider::OpenCode, None).await;
     assert_eq!(
         methods(root.path()),
@@ -188,8 +155,8 @@ async fn an_unoffered_refused_or_unanswered_authentication_leaves_the_provider_u
         ),
     ] {
         let root = tempfile::tempdir().unwrap();
-        let host = host(root.path(), env, "1.0.0", Some(authenticating));
-        let Verdict::Unavailable(reason) = verdict(&host).await else {
+        let host = host(root.path(), &AgentProvider::Grok, grok(env), "1.0.62");
+        let Verdict::Unavailable(reason) = verdict(&host, &AgentProvider::Grok).await else {
             panic!("{cause}: the provider must read unavailable");
         };
         assert!(
@@ -206,7 +173,7 @@ async fn an_unoffered_refused_or_unanswered_authentication_leaves_the_provider_u
             "readiness holds no token"
         );
         if catalog {
-            let catalog = host.discover_catalog(&AgentProvider::OpenCode, None).await;
+            let catalog = host.discover_catalog(&AgentProvider::Grok, None).await;
             assert!(catalog.models.is_empty(), "{catalog:?}");
             assert!(!methods(root.path()).contains(&"session/new".to_owned()));
             assert!(all_stopped(root.path()), "{cause}");
@@ -220,16 +187,16 @@ async fn an_unoffered_refused_or_unanswered_authentication_leaves_the_provider_u
 async fn a_failed_authentication_revokes_the_turns_issued_context() {
     let root = tempfile::tempdir().unwrap();
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
-    let row = owner(&repo, root.path(), AgentProvider::OpenCode).await;
+    let row = owner(&repo, root.path(), AgentProvider::Grok).await;
     let host = Arc::new(host(
         root.path(),
-        json!({"ACP_FIXTURE_AUTH_METHODS":"cached_token","ACP_FIXTURE_AUTHENTICATE":"error"}),
-        "1.0.0",
-        Some(authenticating),
+        &AgentProvider::Grok,
+        grok(json!({"ACP_FIXTURE_AUTH_METHODS":"cached_token","ACP_FIXTURE_AUTHENTICATE":"error"})),
+        "1.0.62",
     ));
     let session = AcpPlannerSession::open(SessionParams {
         host,
-        provider: AgentProvider::OpenCode,
+        provider: AgentProvider::Grok,
         repo: repo.clone(),
         seals: Arc::new(crate::thread_seals::ThreadSeals::new()),
         worker_session_id: row.worker.clone(),
@@ -277,104 +244,117 @@ async fn a_failed_authentication_revokes_the_turns_issued_context() {
 }
 
 /// argv is the registration's `args`, then the profile's entry with the turn mode's agent options
-/// inside it. OpenCode's is `acp` under every mode and outside a turn.
+/// inside it: Grok's is `agent <options> --no-leader stdio`, with `--always-approve` under `never`
+/// and `full`; OpenCode's is `acp` under every mode and outside a turn.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_profiles_entry_wraps_the_turns_agent_options_after_the_registered_args() {
     let planner = |permission| LaunchContext::Planner {
         mcp_token: "card-context",
         permission,
     };
-    for (profiles, context, argv) in [
+    let grok_stdio = vec!["prefix", "agent", "--no-leader", "stdio"];
+    let grok_approving = vec![
+        "prefix",
+        "agent",
+        "--always-approve",
+        "--no-leader",
+        "stdio",
+    ];
+    for (provider, context, argv) in [
         (
-            Some(authenticating as Profiles),
+            AgentProvider::Grok,
             LaunchContext::Readiness,
-            vec!["prefix", "agent", "--no-leader", "stdio"],
+            grok_stdio.clone(),
         ),
         (
-            Some(authenticating),
+            AgentProvider::Grok,
             planner(PlannerPermissionMode::Never),
-            vec!["prefix", "agent", "--no-leader", "stdio"],
+            grok_approving.clone(),
         ),
         (
-            Some(authenticating),
+            AgentProvider::Grok,
             planner(PlannerPermissionMode::Ask),
-            vec!["prefix", "agent", "--ask-first", "--no-leader", "stdio"],
+            grok_stdio,
         ),
         (
-            Some(authenticating),
+            AgentProvider::Grok,
             planner(PlannerPermissionMode::Full),
-            vec![
-                "prefix",
-                "agent",
-                "--always-approve",
-                "--quiet",
-                "--no-leader",
-                "stdio",
-            ],
+            grok_approving,
         ),
-        (None, LaunchContext::Readiness, vec!["prefix", "acp"]),
         (
-            None,
+            AgentProvider::OpenCode,
+            LaunchContext::Readiness,
+            vec!["prefix", "acp"],
+        ),
+        (
+            AgentProvider::OpenCode,
             planner(PlannerPermissionMode::Never),
             vec!["prefix", "acp"],
         ),
         (
-            None,
+            AgentProvider::OpenCode,
             planner(PlannerPermissionMode::Ask),
             vec!["prefix", "acp"],
         ),
         (
-            None,
+            AgentProvider::OpenCode,
             planner(PlannerPermissionMode::Full),
             vec!["prefix", "acp"],
         ),
     ] {
         let root = tempfile::tempdir().unwrap();
-        let host = host(
-            root.path(),
-            json!({"ACP_FIXTURE_AUTH_METHODS":"cached_token"}),
-            "1.0.0",
-            profiles,
-        );
-        let registration = host.registration(&AgentProvider::OpenCode).unwrap();
+        let env = match provider {
+            AgentProvider::Grok => grok(json!({"ACP_FIXTURE_AUTH_METHODS":"cached_token"})),
+            _ => json!({}),
+        };
+        let host = host(root.path(), &provider, env, "1.0.0");
+        let registration = host.registration(&provider).unwrap();
         let process = Process::spawn(&host, registration, "options", root.path(), context)
             .await
             .unwrap();
         process.stop(&host, "options").await.unwrap();
-        assert_eq!(lines(root.path(), "argv.jsonl"), [json!(argv)]);
+        assert_eq!(
+            lines(root.path(), "argv.jsonl"),
+            [json!(argv)],
+            "{provider:?}"
+        );
     }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_reported_version_is_admitted_from_the_registered_minimum() {
-    for (env, min, profiles, admitted) in [
-        (json!({}), "1.18.35", None, true),
-        (json!({}), "1.18.34", None, true),
-        (json!({}), "1.18.36", None, false),
-        (json!({"ACP_FIXTURE_VERSION":"1.18"}), "1.0.0", None, false),
+    let grok_at = |version: &str| {
+        grok(json!({"ACP_FIXTURE_VERSION":version,"ACP_FIXTURE_AUTH_METHODS":"cached_token"}))
+    };
+    for (provider, env, min, admitted) in [
+        (AgentProvider::OpenCode, json!({}), "1.18.35", true),
+        (AgentProvider::OpenCode, json!({}), "1.18.34", true),
+        (AgentProvider::OpenCode, json!({}), "1.18.36", false),
         (
-            json!({"ACP_FIXTURE_IDENTITY":"meta","ACP_FIXTURE_VERSION":"1.0.62"}),
-            "1.0.62",
-            Some(meta_version as Profiles),
-            true,
-        ),
-        (
-            json!({"ACP_FIXTURE_IDENTITY":"meta","ACP_FIXTURE_VERSION":"1.0.61"}),
-            "1.0.62",
-            Some(meta_version as Profiles),
+            AgentProvider::OpenCode,
+            json!({"ACP_FIXTURE_VERSION":"1.18"}),
+            "1.0.0",
             false,
         ),
-        // OpenCode's profile reads only `agentInfo`.
+        (AgentProvider::Grok, grok_at("1.0.62"), "1.0.62", true),
+        (AgentProvider::Grok, grok_at("1.0.61"), "1.0.62", false),
+        // OpenCode's profile reads only `agentInfo`, Grok's only `_meta`.
         (
+            AgentProvider::OpenCode,
             json!({"ACP_FIXTURE_IDENTITY":"meta","ACP_FIXTURE_VERSION":"1.18.35"}),
             "1.0.0",
-            None,
+            false,
+        ),
+        (
+            AgentProvider::Grok,
+            json!({"ACP_FIXTURE_VERSION":"1.0.62","ACP_FIXTURE_AUTH_METHODS":"cached_token"}),
+            "1.0.0",
             false,
         ),
     ] {
         let root = tempfile::tempdir().unwrap();
-        let host = host(root.path(), env.clone(), min, profiles);
-        let ready = host.check_ready(&AgentProvider::OpenCode).await;
+        let host = host(root.path(), &provider, env.clone(), min);
+        let ready = host.check_ready(&provider).await;
         assert_eq!(ready.is_ok(), admitted, "{env} at minimum {min}: {ready:?}");
         if let Err(error) = ready {
             assert!(
@@ -384,7 +364,12 @@ async fn the_reported_version_is_admitted_from_the_registered_minimum() {
                 "{error}"
             );
         }
-        assert_eq!(methods(root.path()), ["initialize"]);
+        // Only an admitted Grok authenticates, after its identity.
+        let sent: &[&str] = match (&provider, admitted) {
+            (AgentProvider::Grok, true) => &["initialize", "authenticate"],
+            _ => &["initialize"],
+        };
+        assert_eq!(methods(root.path()), sent, "{env}");
         assert!(all_stopped(root.path()));
     }
 }

@@ -49,6 +49,10 @@ const PROVIDERS: Readonly<Record<AgentProvider, Readonly<{
     label: 'OpenCode', unavailable: 'OpenCode cannot run on this server right now', hiddenUntilKnown: true,
     switchNote: false,
   }),
+  grok: Object.freeze({
+    label: 'Grok', unavailable: 'Grok cannot run on this server right now', hiddenUntilKnown: true,
+    switchNote: false,
+  }),
 });
 
 /**

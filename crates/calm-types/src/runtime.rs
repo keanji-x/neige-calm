@@ -33,6 +33,9 @@ pub enum AgentProvider {
     Codex,
     #[serde(rename = "claude")]
     Claude,
+    /// Grok Build, xAI's agent CLI, served over ACP.
+    #[serde(rename = "grok")]
+    Grok,
 }
 
 /// The protocol a provider's managed backend speaks. An intentional closed set owned here: each
@@ -57,14 +60,14 @@ impl AgentProtocol {
 impl AgentProvider {
     /// Every provider. A new variant is added here too: the exhaustive matches below do not see
     /// this list, so a test checks it against the enum's derived schema.
-    pub const ALL: [Self; 3] = [Self::Codex, Self::Claude, Self::OpenCode];
+    pub const ALL: [Self; 4] = [Self::Codex, Self::Claude, Self::OpenCode, Self::Grok];
 
     /// The protocol this provider's managed backend speaks.
     pub fn protocol(&self) -> AgentProtocol {
         match self {
             Self::Codex => AgentProtocol::Codex,
             Self::Claude => AgentProtocol::Claude,
-            Self::OpenCode => AgentProtocol::Acp,
+            Self::OpenCode | Self::Grok => AgentProtocol::Acp,
         }
     }
 
@@ -74,6 +77,7 @@ impl AgentProvider {
             Self::Codex => "codex",
             Self::Claude => "claude",
             Self::OpenCode => "opencode",
+            Self::Grok => "grok",
         }
     }
 }
@@ -119,11 +123,10 @@ mod tests {
         assert_eq!(AgentProvider::Codex.protocol(), AgentProtocol::Codex);
         assert_eq!(AgentProvider::Claude.protocol(), AgentProtocol::Claude);
         assert_eq!(AgentProvider::OpenCode.protocol(), AgentProtocol::Acp);
-        assert!(
-            AgentProtocol::Acp
-                .providers()
-                .any(|p| p == AgentProvider::OpenCode)
-        );
+        assert_eq!(AgentProvider::Grok.protocol(), AgentProtocol::Acp);
+        for provider in [AgentProvider::OpenCode, AgentProvider::Grok] {
+            assert!(AgentProtocol::Acp.providers().any(|p| p == provider));
+        }
     }
 
     /// `ALL` is a hand-written list, so it is checked against the variant set the derived

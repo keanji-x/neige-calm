@@ -426,7 +426,7 @@ async fn wait_runtime_outcomes(stack: &Stack, worker: &str, count: usize) {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn assistant_provider_shutdown_replay_stops_native_orphans_without_a_registered_harness() {
-    use calm_types::runtime::AgentProvider;
+    use calm_types::runtime::{AgentProtocol, AgentProvider};
     use std::os::unix::process::CommandExt;
     for provider in [AgentProvider::Claude, AgentProvider::OpenCode] {
         let root = Root::new("exit");
@@ -458,16 +458,16 @@ async fn assistant_provider_shutdown_replay_stops_native_orphans_without_a_regis
             .await
             .unwrap();
         let wiring = stack.state.planner_wiring();
-        let (key, marker) = match provider {
-            AgentProvider::Claude => (
+        let (key, marker) = match provider.protocol() {
+            AgentProtocol::Claude => (
                 calm_server::claude_planner::stop::MARKER_KEY,
                 wiring.claude.instance.marker(&runtime.id),
             ),
-            AgentProvider::OpenCode => (
+            AgentProtocol::Acp => (
                 calm_server::acp_planner::config::MARKER_KEY,
                 wiring.acp.instance.marker(&runtime.id),
             ),
-            AgentProvider::Codex => unreachable!(),
+            AgentProtocol::Codex => unreachable!(),
         };
         let mut command = tokio::process::Command::new("/bin/sleep");
         command

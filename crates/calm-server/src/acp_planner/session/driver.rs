@@ -33,6 +33,12 @@ pub(super) async fn drive(
                     result=>result.map_err(wire_error)?,
                 };
                 let response:protocol::PromptResponse=protocol::decode(response).map_err(wire_error)?;
+                // A turn the agent ended itself after the turn declined one of its requests ends
+                // with that reason, not as one the person interrupted.
+                if matches!(response.stop_reason,protocol::StopReason::Cancelled) && stop_at.is_none()
+                    && let Some(reason)=approvals.declined() {
+                    return Ok(translator.fail(&reason,crate::model::now_ms()));
+                }
                 return Ok::<_,CalmError>(translator.finish(response.stop_reason,crate::model::now_ms()));
             },
             changed=cancelled.changed(),if stop_at.is_none()=>{
@@ -65,6 +71,15 @@ pub(super) async fn drive(
         tracing::error!(%error,"ACP credential revocation failed");
     }
     let stopped = process.stop(&params.host, &params.worker_session_id).await;
+    // What leaves the outcome unknown is kept here: the turn only says it is unknown.
+    if let Err(error) = &outcome {
+        tracing::warn!(%error, worker = %params.worker_session_id, turn = %receipt.turn_id,
+            "ACP turn ended without a known outcome");
+    }
+    if let Err(error) = &stopped {
+        tracing::warn!(%error, worker = %params.worker_session_id, turn = %receipt.turn_id,
+            "ACP agent process stop failed; the turn's outcome is unknown");
+    }
     let (mut events, known) = match outcome {
         Ok(events) if stopped.is_ok() && revoked.is_ok() => (events, true),
         _ => (

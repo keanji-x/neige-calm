@@ -27,6 +27,8 @@ pub struct ToolCall {
     pub title: Option<String>,
     pub kind: Option<String>,
     pub locations: Option<Vec<Location>>,
+    /// The tool's input as the agent reports it; its shape is the agent's own.
+    pub raw_input: Option<Value>,
 }
 
 /// A file the tool call reads or changes.
@@ -89,6 +91,10 @@ mod tests {
         );
         assert_eq!(request.tool_call.kind.as_deref(), Some("execute"));
         assert_eq!(request.tool_call.locations, Some(vec![]));
+        assert_eq!(
+            request.tool_call.raw_input,
+            Some(json!({"command": "echo one > one.txt"}))
+        );
         let ids: Vec<&str> = request
             .options
             .iter()
@@ -102,6 +108,7 @@ mod tests {
         .unwrap();
         assert_eq!(minimal.tool_call.title, None);
         assert_eq!(minimal.tool_call.locations, None);
+        assert_eq!(minimal.tool_call.raw_input, None);
     }
 
     #[test]

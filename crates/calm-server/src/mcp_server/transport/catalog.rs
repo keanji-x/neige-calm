@@ -45,6 +45,54 @@ pub(crate) async fn tool_descriptors_for_connection(
     Ok(descriptors)
 }
 
+/// What Neige's MCP server lists a card-bound session: the names its own connection's `tools/list`
+/// shows, for a client that must recognize Neige's tools by name (an ACP agent's permission
+/// requests). The listing is the one the session's connection resolves; nothing here grants a call.
+#[derive(Clone)]
+pub struct SessionToolNames {
+    ctx: Arc<AppContext>,
+    registry: Arc<ToolRegistry>,
+}
+
+impl std::fmt::Debug for SessionToolNames {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SessionToolNames").finish_non_exhaustive()
+    }
+}
+
+impl SessionToolNames {
+    /// Over the server's context and its tool registry.
+    pub fn new(ctx: Arc<AppContext>, registry: Arc<ToolRegistry>) -> Self {
+        Self { ctx, registry }
+    }
+
+    /// The names the active worker session `worker_session_id` is listed now; refused as its
+    /// connection would be when the session is not active or its card link drifted.
+    pub async fn listed(&self, worker_session_id: &str) -> crate::error::Result<Vec<String>> {
+        let refused = |error: RpcError| CalmError::Conflict(error.message);
+        let session = self
+            .ctx
+            .repo
+            .session_get_by_id(&WorkerSessionId::from(worker_session_id.to_owned()))
+            .await?
+            .ok_or_else(|| CalmError::NotFound("MCP session".into()))?;
+        let card = self
+            .ctx
+            .repo
+            .card_identity_get_by_session(worker_session_id)
+            .await?
+            .ok_or_else(|| CalmError::NotFound("MCP session card".into()))?;
+        let bound = crate::mcp_server::handshake::card_identity_of(&session, card);
+        let catalog = card_bound_catalog(&self.ctx, &self.registry, &bound)
+            .await
+            .map_err(refused)?;
+        Ok(catalog
+            .listed()
+            .map(|descriptor| descriptor.name.clone())
+            .collect())
+    }
+}
+
 /// One production, two views (#2289 D2): what a resolved caller may call, and the subset its
 /// `tools/list` shows. Both come from [`SessionCatalog::of`], so `listed` can never name a tool
 /// the catalog does not.

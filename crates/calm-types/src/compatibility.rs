@@ -36,4 +36,5 @@
 // Revision 33 (#2672): template lists require author descriptions and server-owned availability.
 // Revision 34 (#2640): Assistant conversation summaries require nullable archive metadata.
 // Revision 35 (#2671): negotiated canonical conversation pages and reference-only run reads.
-pub const REST_API_VERSION: &str = "35";
+// Revision 36: managed ACP adds the Grok Build provider identity `grok`.
+pub const REST_API_VERSION: &str = "36";

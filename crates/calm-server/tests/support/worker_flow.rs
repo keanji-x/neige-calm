@@ -254,11 +254,11 @@ pub fn worker_session(seed: &SeededRuntime) -> WorkerSession {
     WorkerSession {
         id: WorkerSessionId::from(seed.runtime.id.clone()),
         track_id: seed.card.track_id.clone(),
-        provider: match seed.runtime.agent_provider.as_ref() {
-            Some(AgentProvider::Claude) => WorkerProviderKind::Claude,
-            Some(AgentProvider::OpenCode) => WorkerProviderKind::OpenCode,
-            Some(AgentProvider::Codex) | None => WorkerProviderKind::Codex,
-        },
+        provider: seed
+            .runtime
+            .agent_provider
+            .as_ref()
+            .map_or(WorkerProviderKind::Codex, WorkerProviderKind::from),
         mode: SessionMode::Resumable,
         contract: WorkerContract::Executor,
         parent_session_id: None,

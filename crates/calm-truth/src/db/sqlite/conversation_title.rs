@@ -283,7 +283,7 @@ mod tests {
         };
         assert_eq!(title(&a), Some("Original first".into()));
         assert_eq!(title(&b), Some("Other card".into()));
-        for provider in ["codex", "claude", "opencode"] {
+        for provider in calm_types::runtime::AgentProvider::ALL.map(|p| p.wire_name()) {
             sqlx::query("UPDATE cards SET payload=?1 WHERE id=?2")
                 .bind(json!({"assistant_provider":provider}).to_string())
                 .bind(&b)

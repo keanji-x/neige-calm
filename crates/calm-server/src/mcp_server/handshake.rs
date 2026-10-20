@@ -2,12 +2,12 @@
 //! `params._meta["dev.neige/auth"].token` plus an active `worker_sessions` lookup is the
 //! connection credential; the kernel never sees the codex daemon's environment.
 
-use crate::db::RouteRepo;
+use crate::db::{RouteRepo, SessionCardIdentity};
 use crate::mcp_server::auth;
 use crate::mcp_server::framing::RpcError;
 use crate::mcp_server::registry::{CardIdentity, ConnectionIdentity};
 use crate::session_projection_repo::AgentProvider;
-use calm_types::worker::{Principal, WorkerProviderKind, WorkerSessionId};
+use calm_types::worker::{Principal, WorkerProviderKind, WorkerSession, WorkerSessionId};
 use serde_json::{Value, json};
 
 /// Custom JSON-RPC error code for "presented MCP token did not resolve to a known session";
@@ -105,14 +105,7 @@ pub async fn handle_initialize(
         track_id: session.track_id.clone(),
         area_id: card.area_id.clone(),
     };
-    let card_identity = CardIdentity {
-        card_id: card.card_id,
-        role: card.role,
-        provider: agent_provider_from_worker_provider(session.provider),
-        session_id: session.id.as_str().to_string(),
-        track_id: Some(session.track_id.as_str().to_string()),
-        area_id: card.area_id.as_str().to_string(),
-    };
+    let card_identity = card_identity_of(&session, card);
     debug_assert_eq!(card_identity.to_principal(), Some(principal));
     let connection_identity = ConnectionIdentity::CardBound(card_identity);
 
@@ -148,6 +141,18 @@ fn fence_unserved_neige_client(params: &Value) -> Result<(), RpcError> {
         OLD_NEIGE_CLIENT_CODE,
         lead.replace("{where}", &fix),
     ))
+}
+
+/// The identity a connection of the worker session `session`, linked to `card`, is bound to.
+pub(crate) fn card_identity_of(session: &WorkerSession, card: SessionCardIdentity) -> CardIdentity {
+    CardIdentity {
+        card_id: card.card_id,
+        role: card.role,
+        provider: agent_provider_from_worker_provider(session.provider),
+        session_id: session.id.as_str().to_string(),
+        track_id: Some(session.track_id.as_str().to_string()),
+        area_id: card.area_id.as_str().to_string(),
+    }
 }
 
 fn agent_provider_from_worker_provider(provider: WorkerProviderKind) -> AgentProvider {

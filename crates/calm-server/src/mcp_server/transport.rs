@@ -9,6 +9,7 @@ pub(crate) use forge_approval::ApprovalAsks;
 mod forge_payload;
 pub(crate) use forge_payload::{PluginForgePayload, forge_action_payload, semantic_payload_hash};
 mod catalog;
+pub use catalog::SessionToolNames;
 pub(crate) use catalog::{
     PluginOwner, SessionCatalog, card_bound_catalog, tool_descriptors_for_connection, tool_owner,
 };

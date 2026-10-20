@@ -24,6 +24,7 @@ use calm_server::test_seams::{
     PLANNER_FIRST_START, PLANNER_INPUT_REPLAY_MISSED, PausePoint, install_pause_for_test,
 };
 use calm_server::track_area_cache::TrackAreaCache;
+use calm_types::runtime::AgentProtocol;
 use chrono::{DateTime, Utc};
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
@@ -572,11 +573,7 @@ async fn ready_parity_start_operation_and_send_for_every_provider() {
     use calm_server::harness::profile::HarnessProfile;
     use calm_server::operation::OperationKey;
     use calm_server::operation::planner_harness_start_adapter::PlannerHarnessStartOperationPayload;
-    for provider in [
-        AgentProvider::Codex,
-        AgentProvider::Claude,
-        AgentProvider::OpenCode,
-    ] {
+    for provider in AgentProvider::ALL {
         let boot = boot(AppServer::Down).await;
         sqlx::query("UPDATE cards SET payload=json_set(payload, '$.planner_provider', json(?2)) WHERE id=?1")
             .bind(&boot.planner_card_id)
@@ -624,12 +621,12 @@ async fn ready_parity_start_operation_and_send_for_every_provider() {
             )
             .await
             .expect_err("unready operation must refuse before persistence");
-        let expected_status = match provider {
-            AgentProvider::Codex => {
+        let expected_status = match provider.protocol() {
+            AgentProtocol::Codex => {
                 assert!(matches!(error, CalmError::Internal(_)), "{error:?}");
                 StatusCode::SERVICE_UNAVAILABLE
             }
-            AgentProvider::Claude | AgentProvider::OpenCode => {
+            AgentProtocol::Claude | AgentProtocol::Acp => {
                 assert!(matches!(error, CalmError::Conflict(_)), "{error:?}");
                 StatusCode::CONFLICT
             }
@@ -661,11 +658,7 @@ async fn ready_parity_start_operation_and_send_for_every_provider() {
 
 #[tokio::test]
 async fn ready_dormancy_precedes_backend_unavailability_for_every_provider() {
-    for provider in [
-        AgentProvider::Codex,
-        AgentProvider::Claude,
-        AgentProvider::OpenCode,
-    ] {
+    for provider in AgentProvider::ALL {
         let boot = boot(AppServer::Down).await;
         sqlx::query("UPDATE cards SET payload=json_set(payload, '$.planner_provider', json(?2)) WHERE id=?1")
             .bind(&boot.planner_card_id).bind(serde_json::to_string(&provider).unwrap())

@@ -44,6 +44,9 @@ impl super::backend::PlannerBackend {
             AgentProvider::Codex => (true, true, true, true, ToolDiscovery::DeferredSearch),
             AgentProvider::Claude => (false, true, true, true, ToolDiscovery::DirectMcp),
             AgentProvider::OpenCode => (false, false, false, false, ToolDiscovery::SessionToolList),
+            // Grok Build's `_meta.sendNow` cancels the running turn and reruns it rather than
+            // joining it, and its `initialize` reports `promptCapabilities.image: false`.
+            AgentProvider::Grok => (false, false, false, false, ToolDiscovery::SessionToolList),
         };
         let catalog = provider.protocol();
         let (requires_ready_availability, requires_codex_daemon) = match catalog {

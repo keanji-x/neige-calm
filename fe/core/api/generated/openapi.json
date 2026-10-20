@@ -12791,7 +12791,8 @@
         "enum": [
           "opencode",
           "codex",
-          "claude"
+          "claude",
+          "grok"
         ]
       },
       "AnswerAskRequest": {

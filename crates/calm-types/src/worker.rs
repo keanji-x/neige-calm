@@ -209,6 +209,7 @@ pub enum WorkerProviderKind {
     OpenCode,
     Codex,
     Claude,
+    Grok,
     Terminal,
 }
 
@@ -219,6 +220,7 @@ impl WorkerProviderKind {
             WorkerProviderKind::Codex => "codex",
             WorkerProviderKind::Claude => "claude",
             WorkerProviderKind::OpenCode => "opencode",
+            WorkerProviderKind::Grok => "grok",
             WorkerProviderKind::Terminal => "terminal",
         }
     }
@@ -237,6 +239,7 @@ impl From<&crate::runtime::AgentProvider> for WorkerProviderKind {
             crate::runtime::AgentProvider::Codex => Self::Codex,
             crate::runtime::AgentProvider::Claude => Self::Claude,
             crate::runtime::AgentProvider::OpenCode => Self::OpenCode,
+            crate::runtime::AgentProvider::Grok => Self::Grok,
         }
     }
 }
@@ -248,6 +251,7 @@ impl TryFrom<WorkerProviderKind> for crate::runtime::AgentProvider {
             WorkerProviderKind::Codex => Ok(Self::Codex),
             WorkerProviderKind::Claude => Ok(Self::Claude),
             WorkerProviderKind::OpenCode => Ok(Self::OpenCode),
+            WorkerProviderKind::Grok => Ok(Self::Grok),
             WorkerProviderKind::Terminal => Err("terminal is not an agent provider"),
         }
     }
@@ -261,6 +265,7 @@ impl TryFrom<String> for WorkerProviderKind {
             "codex" => Ok(WorkerProviderKind::Codex),
             "claude" => Ok(WorkerProviderKind::Claude),
             "opencode" => Ok(WorkerProviderKind::OpenCode),
+            "grok" => Ok(WorkerProviderKind::Grok),
             "terminal" => Ok(WorkerProviderKind::Terminal),
             other => Err(format!("unknown worker_sessions.provider value `{other}`")),
         }
@@ -445,12 +450,12 @@ mod tests {
                 mode
             );
         }
-        for provider in [
-            WorkerProviderKind::Codex,
-            WorkerProviderKind::Claude,
-            WorkerProviderKind::OpenCode,
-            WorkerProviderKind::Terminal,
-        ] {
+        // Every agent provider's kind, and the terminal: the persisted string reads back as it.
+        for provider in crate::runtime::AgentProvider::ALL
+            .iter()
+            .map(WorkerProviderKind::from)
+            .chain([WorkerProviderKind::Terminal])
+        {
             assert_eq!(
                 WorkerProviderKind::try_from(provider.as_db_str().to_string()).unwrap(),
                 provider

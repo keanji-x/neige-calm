@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use calm_exec::WorkerProvider;
+use calm_types::runtime::AgentProtocol;
 use calm_types::worker::WorkerProviderKind;
 use provider::{ClaudeProvider, CodexDaemonProbe, CodexProvider, TerminalProvider};
 
@@ -33,14 +34,18 @@ impl WorkerProviderRegistry {
     ) -> Self {
         let supervisor_sock = supervisor_sock.into();
         let codex_daemon: Arc<dyn CodexDaemonProbe> = shared_codex_appserver;
-        Self::from_entries([
+        let harness = Arc::new(harness);
+        // Every ACP provider's conversations live in the managed Harness.
+        let acp = AgentProtocol::Acp.providers().map(|provider| {
             (
-                WorkerProviderKind::OpenCode,
+                WorkerProviderKind::from(&provider),
                 Arc::new(provider::worker::managed::ManagedProvider::new(
-                    "opencode",
-                    Arc::new(harness),
+                    provider.wire_name(),
+                    harness.clone(),
                 )) as Arc<dyn WorkerProvider>,
-            ),
+            )
+        });
+        Self::from_entries(acp.chain([
             (
                 WorkerProviderKind::Codex,
                 Arc::new(CodexProvider::new(supervisor_sock.clone(), codex_daemon))
@@ -54,7 +59,7 @@ impl WorkerProviderRegistry {
                 WorkerProviderKind::Terminal,
                 Arc::new(TerminalProvider::new(supervisor_sock)) as Arc<dyn WorkerProvider>,
             ),
-        ])
+        ]))
     }
 
     /// The registry for `daemon`'s proc supervisor: the one constructor the Dispatcher and the

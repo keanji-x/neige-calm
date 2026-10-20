@@ -202,3 +202,58 @@ async fn assistant_provider_init_without_a_provider_writes_nothing() {
     );
     tx.rollback().await.unwrap();
 }
+
+/// An ACP provider runs only as a managed Planner or Assistant that resumes, for every ACP
+/// provider and not only the one migration 0163 pins in the schema: the session insert refuses
+/// an executor or ephemeral row of one.
+#[tokio::test]
+async fn an_acp_provider_session_is_only_a_resumable_planner_or_assistant() {
+    use calm_types::runtime::AgentProtocol;
+    use calm_types::worker::{SessionMode, WorkerContract, WorkerSessionId};
+    let repo = fresh_repo().await;
+    let acp = AgentProvider::ALL
+        .into_iter()
+        .filter(|provider| provider.protocol() == AgentProtocol::Acp);
+    for provider in acp {
+        let label = format!("acp-{}", provider.wire_name());
+        let mut tx = repo.pool().begin().await.expect("begin");
+        let card_id =
+            create_card_in_tx(&repo, &mut tx, &label, "codex", json!({"schemaVersion":1})).await;
+        session_start_runtime_tx(
+            &mut tx,
+            WorkerSessionInit::shared_planner(
+                label.clone(),
+                card_id,
+                provider.clone(),
+                WorkerSessionState::Idle,
+                None,
+                json!({}),
+                1_000,
+            ),
+        )
+        .await
+        .expect("a managed Planner of an ACP provider starts");
+        let planner = session_get_tx(&mut tx, &WorkerSessionId(label.clone()))
+            .await
+            .expect("read")
+            .expect("row");
+        for (contract, mode, allowed) in [
+            (WorkerContract::Planner, SessionMode::Resumable, true),
+            (WorkerContract::Executor, SessionMode::Resumable, false),
+            (WorkerContract::Planner, SessionMode::Ephemeral, false),
+            (WorkerContract::Executor, SessionMode::Ephemeral, false),
+        ] {
+            let mut row = planner.clone();
+            row.id = WorkerSessionId(format!("{label}-{contract:?}-{mode:?}"));
+            row.state = WorkerSessionState::Superseded;
+            row.contract = contract;
+            row.mode = mode;
+            assert_eq!(
+                session_insert_tx(&mut tx, row).await.is_ok(),
+                allowed,
+                "{provider:?} {contract:?} {mode:?}"
+            );
+        }
+        tx.rollback().await.expect("rollback");
+    }
+}

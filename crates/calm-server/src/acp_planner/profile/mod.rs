@@ -8,8 +8,10 @@
 //! capabilities and execution registration, and the frontend's provider choices).
 use crate::planner_permission_mode::PlannerPermissionMode;
 use calm_types::runtime::AgentProvider;
+use provider::acp::approvals::{AgentAsks, McpToolRequest, OwnTools};
 use provider::acp::protocol::InitializeResponse;
 
+mod grok;
 mod opencode;
 
 pub(crate) struct AcpAgentProfile {
@@ -20,10 +22,26 @@ pub(crate) struct AcpAgentProfile {
     /// The reported `authMethods` id every launch authenticates with after `initialize`, before
     /// any session operation; `None` sends no `authenticate`.
     pub(crate) authentication: Option<&'static str>,
+    /// What one Planner turn's process adds under `never`.
+    pub(crate) never: ModeLaunch,
     /// What one Planner turn's process adds under `ask`.
     pub(crate) ask: ModeLaunch,
     /// What one Planner turn's process adds under `full`.
     pub(crate) full: ModeLaunch,
+    /// How the agent asks before calling an MCP tool, when it does: such a request for a tool
+    /// Neige's own server lists the session is approved under every mode, since that server
+    /// authorizes each call by the card's token. Each launch then registers that server under a
+    /// key of its own ([`Self::mcp_server_key`]), so no other server can take its name. `None`
+    /// answers it as the mode answers any request, and keeps the shared key.
+    pub(crate) mcp_tool_request: Option<McpToolRequest>,
+    /// The agent ends its turn `cancelled` when a request it asked is declined, so the turn ends
+    /// with the decline as its reason rather than as interrupted.
+    pub(crate) decline_ends_turn: bool,
+    /// What the agent must report about its own configuration before every launch.
+    pub(crate) policy: Option<PolicyCheck>,
+    /// Environment the registration may not set: credentials the agent would use in place of the
+    /// sign-in it authenticates with.
+    pub(crate) refused_env: &'static [&'static str],
 }
 
 /// The argv an agent CLI serves ACP under, after the registration's `args` (which only prefix
@@ -41,10 +59,6 @@ pub(crate) enum AgentIdentity {
     /// ACP's `agentInfo`, whose `name` must be this.
     AgentInfo { name: &'static str },
     /// No `agentInfo`, only a version: the string at `_meta.agentVersion` (Grok Build 1.0.62).
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "Grok Build's form; its provider registers it")
-    )]
     MetaAgentVersion,
 }
 
@@ -55,7 +69,17 @@ pub(crate) struct ModeLaunch {
     pub(crate) agent_options: &'static [&'static str],
 }
 
-/// `never` adds nothing: the agent's own configuration stands.
+/// What the agent must report about its own configuration before Neige launches it, read from a
+/// command of its own CLI run under the registration's environment in the launch's directory. A
+/// launch, readiness included, is refused with what to change unless the report holds.
+pub(crate) struct PolicyCheck {
+    /// The command's arguments after the registration's `args`.
+    pub(crate) argv: &'static [&'static str],
+    /// What does not hold in the command's JSON answer, or `None` when everything does.
+    pub(crate) unmet: fn(&serde_json::Value) -> Option<String>,
+}
+
+/// A mode that adds nothing: the agent's own configuration stands.
 const NOTHING: ModeLaunch = ModeLaunch {
     env: &[],
     agent_options: &[],
@@ -66,6 +90,7 @@ impl AcpAgentProfile {
     pub(crate) fn of(provider: &AgentProvider) -> Option<&'static Self> {
         match provider {
             AgentProvider::OpenCode => Some(&opencode::PROFILE),
+            AgentProvider::Grok => Some(&grok::PROFILE),
             AgentProvider::Codex | AgentProvider::Claude => None,
         }
     }
@@ -73,9 +98,35 @@ impl AcpAgentProfile {
     /// What one Planner turn's process adds under `mode`.
     pub(crate) fn launch(&self, mode: PlannerPermissionMode) -> &ModeLaunch {
         match mode {
-            PlannerPermissionMode::Never => &NOTHING,
+            PlannerPermissionMode::Never => &self.never,
             PlannerPermissionMode::Ask => &self.ask,
             PlannerPermissionMode::Full => &self.full,
+        }
+    }
+
+    /// The key one launch registers Neige's MCP server under: a fresh one for an agent whose
+    /// requests for MCP tools are approved by name, never holding `_`, so no server the agent
+    /// loads from elsewhere can know or share it; otherwise the shared key.
+    pub(crate) fn mcp_server_key(&self) -> String {
+        let key = crate::mcp_server::wiring::MCP_SERVER_KEY;
+        match self.mcp_tool_request {
+            Some(_) => format!("{key}-{}", &uuid::Uuid::new_v4().simple().to_string()[..12]),
+            None => key.to_owned(),
+        }
+    }
+
+    /// How this agent asks, for one turn whose launch registered Neige's server as `server`, which
+    /// lists the session `tools`.
+    pub(crate) fn asks<T: AsRef<str>>(
+        &self,
+        server: &str,
+        tools: impl IntoIterator<Item = T>,
+    ) -> AgentAsks {
+        AgentAsks {
+            own_tools: self
+                .mcp_tool_request
+                .and_then(|form| OwnTools::new(form, server, tools)),
+            decline_ends_turn: self.decline_ends_turn,
         }
     }
 

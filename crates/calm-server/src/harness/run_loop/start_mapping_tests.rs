@@ -395,11 +395,7 @@ async fn ready_factory_construction_and_open_leave_first_turn_work_lazy() {
     let factory = PlannerFactory::new(Arc::downgrade(&f.daemon), &wiring.claude, &wiring.acp);
     assert!(f.daemon.started_thread_params_for_test().is_empty());
     assert_eq!(f.daemon.turn_start_count_for_test(), 0);
-    for provider in [
-        AgentProvider::Codex,
-        AgentProvider::Claude,
-        AgentProvider::OpenCode,
-    ] {
+    for provider in AgentProvider::ALL {
         // The local hosts are deliberately unconfigured: open must not attempt readiness or
         // native first-turn setup, which would refuse. Installation/issuance own that work.
         let backend = factory

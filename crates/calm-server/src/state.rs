@@ -817,7 +817,12 @@ impl AppState {
         mcp_socket: PathBuf,
     ) -> Self {
         self.route.acp_planner = Arc::new(
-            AcpPlannerHost::new(Some(config), data_dir, mcp_shim, mcp_socket).expect("ACP host"),
+            AcpPlannerHost::new(Some(config), data_dir, mcp_shim, mcp_socket)
+                .expect("ACP host")
+                .with_tool_names(crate::mcp_server::transport::SessionToolNames::new(
+                    self.route.mcp_context.clone(),
+                    crate::mcp_server::build_default_registry(),
+                )),
         );
         self.route.provider_availability = Arc::default();
         self.rebuild_operation_runtime();
@@ -1372,15 +1377,22 @@ impl AppState {
             mcp_socket_path.clone(),
         )?);
         crate::claude_planner::lifecycle::boot(repo.as_ref(), &claude_planner).await?;
-        let acp_planner = Arc::new(AcpPlannerHost::new(
-            cfg.acp_planner_config
-                .as_deref()
-                .map(AcpPlannerConfig::read)
-                .transpose()?,
-            &cfg.data_dir_resolved(),
-            mcp_shim_bin.clone(),
-            mcp_socket_path.clone(),
-        )?);
+        let acp_planner = Arc::new(
+            AcpPlannerHost::new(
+                cfg.acp_planner_config
+                    .as_deref()
+                    .map(AcpPlannerConfig::read)
+                    .transpose()?,
+                &cfg.data_dir_resolved(),
+                mcp_shim_bin.clone(),
+                mcp_socket_path.clone(),
+            )?
+            // The listener's own context and registry: what an agent is told is what it is served.
+            .with_tool_names(crate::mcp_server::transport::SessionToolNames::new(
+                mcp_context.clone(),
+                mcp_registry.clone(),
+            )),
+        );
         crate::acp_planner::config::boot(repo.as_ref(), &acp_planner).await?;
         let mcp_server = crate::mcp_server::McpServer::spawn_with_context(
             mcp_context.clone(),

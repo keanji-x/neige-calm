@@ -51,7 +51,8 @@ pub use calm_types::compatibility::REST_API_VERSION as API_VERSION;
 // #2672 bumps 54 -> 55: template lists require author descriptions and authoritative availability.
 // #2640: 55 -> 56 requires Assistant archive metadata and read-only archived conversations.
 // #2671: 57 -> 58 requires negotiated canonical conversation pages and reference-only run reads.
-pub const WEB_COMPAT_VERSION: u32 = 58;
+// 58 -> 59: a provider may be `grok`, which older bundles reject wherever they decode a provider.
+pub const WEB_COMPAT_VERSION: u32 = 59;
 
 /// Kernel compatibility values sourced from live constants.
 #[derive(Debug, Clone, Serialize)]

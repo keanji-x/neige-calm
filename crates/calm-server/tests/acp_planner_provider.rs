@@ -1,4 +1,6 @@
 //! Managed ACP acceptance through the production boot, REST routes and Harness.
+#[path = "cases/acp_grok_provider.rs"]
+mod acp_grok_provider;
 #[path = "cases/acp_planner_approvals.rs"]
 mod acp_planner_approvals;
 #[path = "cases/acp_planner_authentication.rs"]
@@ -48,11 +50,15 @@ async fn boot(root: &Root) -> Stack {
 }
 /// Boot with `env` added to the fixture's registered environment and `min_agent_version`.
 async fn boot_with(root: &Root, env: Value, min_agent_version: &str) -> Stack {
+    boot_as(root, "opencode", env, min_agent_version).await
+}
+/// Boot with the fixture registered as `provider`.
+async fn boot_as(root: &Root, provider: &str, env: Value, min_agent_version: &str) -> Stack {
     std::fs::write(root.path().join("scenario"), "reply").unwrap();
     let config_path = root.path().join("acp.json");
     let mut env = env;
     env["ACP_FIXTURE_ROOT"] = json!(root.path());
-    std::fs::write(&config_path,json!({"agents":[{"provider":"opencode","command":"/usr/bin/python3","args":["-u",PEER],"env":env,"min_agent_version":min_agent_version}]}).to_string()).unwrap();
+    std::fs::write(&config_path,json!({"agents":[{"provider":provider,"command":"/usr/bin/python3","args":["-u",PEER],"env":env,"min_agent_version":min_agent_version}]}).to_string()).unwrap();
     let mut config = root.config(false);
     config.acp_planner_config = Some(config_path);
     // Use this build's production shim, never a host installation found on PATH.

@@ -182,11 +182,7 @@ async fn a_planner_row_on_a_card_that_is_not_a_planner_is_skipped() {
 
 #[tokio::test]
 async fn assistant_provider_recovery_requires_matching_live_card_provider() {
-    for provider in [
-        AgentProvider::Codex,
-        AgentProvider::Claude,
-        AgentProvider::OpenCode,
-    ] {
+    for provider in AgentProvider::ALL {
         let (_, installed) = recover_row(
             CardRole::Assistant,
             Some(provider.wire_name()),
@@ -195,7 +191,7 @@ async fn assistant_provider_recovery_requires_matching_live_card_provider() {
         )
         .await;
         assert!(installed, "{provider:?}");
-        for wrong in ["codex", "claude", "opencode"] {
+        for wrong in AgentProvider::ALL.map(|wrong| wrong.wire_name()) {
             if wrong == provider.wire_name() {
                 continue;
             }

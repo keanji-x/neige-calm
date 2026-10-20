@@ -22,12 +22,16 @@ struct Peer {
 }
 
 fn peer(mode: PlannerPermissionMode) -> Peer {
+    peer_with(mode, AgentAsks::default())
+}
+
+fn peer_with(mode: PlannerPermissionMode, asks: AgentAsks) -> Peer {
     let (client, agent) = tokio::io::duplex(64 * 1024);
     let (read, write) = tokio::io::split(client);
     let (agent_read, agent_write) = tokio::io::split(agent);
     let connection = Connection::new(read, write);
     let (sender, held) = mpsc::unbounded_channel();
-    let approvals = Approvals::for_turn(mode, &sender, "turn-1", &connection.client);
+    let approvals = Approvals::for_turn(mode, &sender, "turn-1", &connection.client, asks);
     Peer {
         connection,
         reader: BufReader::new(agent_read),
@@ -233,10 +237,14 @@ async fn an_answer_after_a_cut_short_cancel_is_cancelled() {
 #[tokio::test]
 async fn dropping_an_ask_turns_approvals_loses_its_connection() {
     let mut peer = peer(PlannerPermissionMode::Ask);
-    drop(std::mem::replace(
-        &mut peer.approvals,
-        Approvals::Refused(peer.connection.client.clone()),
-    ));
+    let replacement = Approvals::for_turn(
+        PlannerPermissionMode::Never,
+        &mpsc::unbounded_channel().0,
+        "turn-2",
+        &peer.connection.client,
+        AgentAsks::default(),
+    );
+    drop(std::mem::replace(&mut peer.approvals, replacement));
     match peer.next_held().await {
         HeldRequestMessage::ConnectionLost { connection } => {
             assert_eq!(connection, ConnectionId("turn-1".into()))
@@ -260,10 +268,14 @@ async fn a_never_or_full_turn_answers_cancelled_itself() {
         );
         peer.approvals.cancel("native").await.unwrap();
         assert_eq!(peer.read().await["method"], "session/cancel");
-        drop(std::mem::replace(
-            &mut peer.approvals,
-            Approvals::Refused(peer.connection.client.clone()),
-        ));
+        let replacement = Approvals::for_turn(
+            mode,
+            &mpsc::unbounded_channel().0,
+            "turn-2",
+            &peer.connection.client,
+            AgentAsks::default(),
+        );
+        drop(std::mem::replace(&mut peer.approvals, replacement));
         peer.wrote_nothing_more().await;
         assert!(peer.held.try_recv().is_err(), "{mode:?}");
     }
@@ -358,4 +370,234 @@ fn the_question_names_the_call_its_kind_and_its_files() {
         "{}",
         &long_edit.title[long_edit.title.len() - 60..]
     );
+}
+
+/// How Grok Build 1.0.62 asks before calling an MCP tool.
+const GROK: McpToolRequest = McpToolRequest {
+    kind: "other",
+    separator: "__",
+    raw_input_name: "tool_name",
+};
+
+/// The client's server as registered under the key `neige-k1`, listing two tools.
+fn own_tools() -> AgentAsks {
+    AgentAsks {
+        own_tools: OwnTools::new(
+            GROK,
+            "neige-k1",
+            ["neige_report_commit", "neige_report_read"],
+        ),
+        decline_ends_turn: false,
+    }
+}
+
+/// What Grok Build 1.0.62 sent before calling a tool of an MCP server the client registered:
+/// `use_tool` titled with the tool's qualified name, which its `rawInput.tool_name` repeats.
+fn grok_mcp_tool(title: &str, kind: &str) -> Value {
+    grok_use_tool(
+        title,
+        kind,
+        json!({"variant": "UseTool", "tool_name": title, "tool_input": {}}),
+    )
+}
+
+fn grok_use_tool(title: &str, kind: &str, raw_input: Value) -> Value {
+    json!({
+        "sessionId": "01a1",
+        "toolCall": {"toolCallId": "call-1", "kind": kind, "title": title, "rawInput": raw_input},
+        "options": [
+            {"optionId": "always-allow", "name": "always allow", "kind": "allow_always"},
+            {"optionId": "allow-once", "name": "allow once", "kind": "allow_once"},
+            {"optionId": "reject-once", "name": "reject once", "kind": "reject_once"}
+        ]
+    })
+}
+
+const MODES: [PlannerPermissionMode; 3] = [
+    PlannerPermissionMode::Never,
+    PlannerPermissionMode::Ask,
+    PlannerPermissionMode::Full,
+];
+
+/// Under every mode, a request for a listed tool of the client's own MCP server is answered with
+/// the agent's `allow_once` option, and nothing reaches the held-request channel.
+#[tokio::test]
+async fn an_own_server_tool_is_allowed_once_under_every_mode_without_asking() {
+    for mode in MODES {
+        for title in [
+            "neige-k1__neige_report_commit",
+            "neige-k1__neige_report_read",
+        ] {
+            let mut peer = peer_with(mode, own_tools());
+            peer.request(0, grok_mcp_tool(title, "other")).await;
+            assert_eq!(
+                peer.read().await,
+                answer(
+                    0,
+                    json!({"outcome": {"outcome": "selected", "optionId": "allow-once"}})
+                ),
+                "{mode:?} {title}"
+            );
+            peer.wrote_nothing_more().await;
+            assert!(peer.held.try_recv().is_err(), "{mode:?}");
+        }
+    }
+}
+
+/// Only the exact qualified name of a listed tool, in both the title and `rawInput.tool_name` of a
+/// request of the declared kind, is the server's. Another server whose key starts with the
+/// client's, the same tool under another server, an unlisted tool, and a title the input does not
+/// repeat are each answered as the mode answers any request: `cancelled` under `never` and `full`,
+/// put to the person under `ask`.
+#[tokio::test]
+async fn any_other_request_is_answered_as_the_mode_answers_it() {
+    let title = "neige-k1__neige_report_commit";
+    let use_tool = |name: &str| json!({"variant": "UseTool", "tool_name": name, "tool_input": {}});
+    let requests = [
+        // A server `neige-k1__evil` (Grok admits `_` in a server name) with a tool `run`.
+        grok_mcp_tool("neige-k1__evil__run", "other"),
+        // A server `neige-k1_` and its tool `_neige_report_commit`.
+        grok_mcp_tool("neige-k1___neige_report_commit", "other"),
+        // The same tool under the default key or another server.
+        grok_mcp_tool("neige__neige_report_commit", "other"),
+        grok_mcp_tool("neige-k2__neige_report_commit", "other"),
+        // A tool the server does not list.
+        grok_mcp_tool("neige-k1__neige_track_close", "other"),
+        grok_mcp_tool("neige-k1__", "other"),
+        grok_mcp_tool(title, "execute"),
+        // The title of a listed tool over another call's input, or none.
+        grok_use_tool(title, "other", use_tool("neige-k1__evil__run")),
+        grok_use_tool(title, "other", json!({"variant": "UseTool"})),
+        grok_use_tool(title, "other", Value::Null),
+        grok_mcp_tool("neige-k1__neige_report_commit && rm -rf /", "other"),
+        grok_mcp_tool("Execute `neige-k1__neige_report_commit`", "other"),
+    ];
+    for mode in MODES {
+        for request in &requests {
+            let mut peer = peer_with(mode, own_tools());
+            peer.request(4, request.clone()).await;
+            if mode == PlannerPermissionMode::Ask {
+                assert!(
+                    matches!(peer.next_held().await, HeldRequestMessage::Open { .. }),
+                    "{request}"
+                );
+            } else {
+                assert_eq!(
+                    peer.read().await,
+                    answer(4, json!({"outcome": {"outcome": "cancelled"}})),
+                    "{mode:?} {request}"
+                );
+            }
+        }
+        // No own tools: even the listed name is the mode's.
+        let mut peer = peer_with(mode, AgentAsks::default());
+        peer.request(5, grok_mcp_tool(title, "other")).await;
+        if mode == PlannerPermissionMode::Ask {
+            assert!(matches!(
+                peer.next_held().await,
+                HeldRequestMessage::Open { .. }
+            ));
+        } else {
+            assert_eq!(
+                peer.read().await,
+                answer(5, json!({"outcome": {"outcome": "cancelled"}}))
+            );
+        }
+    }
+}
+
+/// A server key holding the separator has no tools, and a tool name holding it is left out: either
+/// could be split at another place.
+#[test]
+fn an_ambiguous_server_or_tool_name_is_never_an_own_tool() {
+    assert!(OwnTools::new(GROK, "neige__k1", ["neige_report_commit"]).is_none());
+    assert!(OwnTools::new(GROK, "", ["neige_report_commit"]).is_none());
+    let tools = OwnTools::new(GROK, "neige-k1", ["evil__run", "", "neige_report_read"]).unwrap();
+    assert_eq!(
+        tools.qualified,
+        HashSet::from(["neige-k1__neige_report_read".to_owned()])
+    );
+}
+
+/// After the turn's fence (a cancel, or the end of its read) nothing is approved.
+#[tokio::test]
+async fn an_own_server_tool_is_not_allowed_after_the_fence() {
+    let title = "neige-k1__neige_report_commit";
+    for mode in [PlannerPermissionMode::Never, PlannerPermissionMode::Ask] {
+        let mut peer = peer_with(mode, own_tools());
+        peer.approvals.cancel("native").await.unwrap();
+        assert_eq!(peer.read().await["method"], "session/cancel");
+        peer.request(6, grok_mcp_tool(title, "other")).await;
+        assert_eq!(
+            peer.read().await,
+            answer(6, json!({"outcome": {"outcome": "cancelled"}})),
+            "{mode:?}"
+        );
+        let mut peer = peer_with(mode, own_tools());
+        peer.approvals.close().await;
+        peer.request(7, grok_mcp_tool(title, "other")).await;
+        assert_eq!(
+            peer.read().await,
+            answer(7, json!({"outcome": {"outcome": "cancelled"}})),
+            "{mode:?}"
+        );
+    }
+}
+
+fn ends_turn() -> AgentAsks {
+    AgentAsks {
+        decline_ends_turn: true,
+        ..own_tools()
+    }
+}
+
+/// A request the mode declined is why an agent that ends its turn on a decline ended it; an
+/// allowed own tool, a request after the fence, and an agent that does not end its turn so say
+/// nothing.
+#[tokio::test]
+async fn a_request_the_mode_declined_names_why_the_turn_ended() {
+    let mut peer = peer_with(PlannerPermissionMode::Never, ends_turn());
+    peer.request(0, grok_mcp_tool("neige-k1__neige_report_read", "other"))
+        .await;
+    peer.read().await;
+    assert_eq!(peer.approvals.declined(), None, "an allowed own tool");
+    peer.request(1, bash()).await;
+    peer.read().await;
+    assert_eq!(
+        peer.approvals.declined().as_deref(),
+        Some(
+            "The agent ended the turn because Neige declined `echo one > one.txt` under the \
+             `never` permission mode."
+        )
+    );
+    let mut peer = peer_with(PlannerPermissionMode::Full, own_tools());
+    peer.request(1, bash()).await;
+    peer.read().await;
+    assert_eq!(peer.approvals.declined(), None, "no profile declaration");
+    let mut peer = peer_with(PlannerPermissionMode::Never, ends_turn());
+    peer.approvals.close().await;
+    peer.request(1, bash()).await;
+    peer.read().await;
+    assert_eq!(peer.approvals.declined(), None, "after the fence");
+}
+
+/// Under `ask`, a reject the person chose is why the turn ended; an allow is not.
+#[tokio::test]
+async fn a_reject_the_person_chose_names_why_the_turn_ended() {
+    for (option, declined) in [
+        (0, None),
+        (
+            2,
+            Some("The agent ended the turn because the person declined `echo one > one.txt`."),
+        ),
+    ] {
+        let mut peer = peer_with(PlannerPermissionMode::Ask, ends_turn());
+        peer.request(0, bash()).await;
+        let HeldRequestMessage::Open { responder, .. } = peer.next_held().await else {
+            panic!("expected Open");
+        };
+        responder.respond(option);
+        peer.read().await;
+        assert_eq!(peer.approvals.declined().as_deref(), declined, "{option}");
+    }
 }

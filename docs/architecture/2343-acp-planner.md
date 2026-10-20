@@ -16,6 +16,7 @@ Review tier: **L2**. Process authority, durable session identity and submission 
 - The server owns process configuration/environment, spawn/stop, MCP credential issuance/revocation, thread seals, native binding and durable admission. The shared process primitive matches an exact backend marker and PID start time; Claude retains its existing marker key.
 - The existing Harness owns queueing, transcripts and conversation lifecycle. Server construction facts live in `harness::wiring`; historical Claude module paths are direct type re-exports, not parallel contracts.
 - OpenCode remains a closed, typed agent identity. This release permits it only for resumable Planner sessions. That boundary is enforced by the new database constraint; it is not an ACP protocol special case. MCP author identity remains the existing Planner session identity.
+- Every ACP provider (OpenCode, Grok Build) runs only as a resumable Planner or Assistant session. Migration 0163 pins this in the schema for `opencode` alone; the one `worker_sessions` insert (`session_insert_tx`) refuses any other identity of an ACP provider, so a later provider needs no migration for it.
 
 ## Admission and recovery
 
@@ -106,6 +107,69 @@ A file still naming `expected_agent_name` (now fixed by the profile) or `expecte
 (renamed `min_agent_version`) fails to parse, and the error adds that change and that `args` no
 longer holds the ACP subcommand; the two forms are never read together.
 
+### Grok Build
+
+Grok Build (`provider: "grok"`, tested with 1.0.62) serves ACP as `grok agent --no-leader stdio`;
+`--no-leader` starts the process's own agent rather than joining a shared leader. Its `initialize`
+reports no `agentInfo`, only `_meta.agentVersion`, and every launch authenticates with
+`cached_token`: the sign-in `grok login` stored under the registration's `GROK_HOME`. Point
+`command` at a versioned binary, not the `~/.grok/bin` link its updater rewrites, and turn the
+updater off:
+
+```json
+{
+  "agents": [{
+    "provider": "grok",
+    "command": "/opt/neige/grok/grok-1.0.62-linux-x86_64",
+    "args": [],
+    "env": {
+      "HOME": "/var/lib/neige/grok-home",
+      "GROK_HOME": "/var/lib/neige/grok-home/.grok",
+      "GROK_DISABLE_AUTOUPDATER": "1"
+    },
+    "min_agent_version": "1.0.62"
+  }]
+}
+```
+
+Sign in once with `GROK_HOME=/var/lib/neige/grok-home/.grok grok login --device-auth` (add the
+same proxy variables the registration declares, if any). Neige runs Grok on that subscription
+only: a registration setting `XAI_API_KEY` or `GROK_CODE_XAI_API_KEY` is refused when the file is
+read.
+
+Grok also loads MCP servers a project defines (`.grok/config.toml`, `.mcp.json`,
+`.cursor/mcp.json`), and in a folder it does not trust a project server named like the one Neige
+supplies replaces it. Only Grok's managed policy drops them all, so the registration's Grok home
+must carry `managed_config.toml` with:
+
+```toml
+enable_all_project_mcp_servers = false
+```
+
+Before every launch, readiness included, Neige runs `grok inspect --json` under the
+registration's environment in the launch's directory, and launches only when Grok itself reports
+`{"setting":"projectMcpServers","enabled":false}` among `permissions.enforced`. Otherwise Grok is
+unavailable and the reason names this setting. The user's own MCP servers in the Grok home's
+`config.toml` stay loaded: they are the operator's choice.
+
+Grok's `--allow`, `--deny` and `--permission-mode` belong to its TUI and headless mode; a stdio
+agent does not apply them (1.0.62 still asked before a call they allowed or denied). It does apply
+`--always-approve`, an agent option, and its sandbox profile, read from `GROK_SANDBOX` when the
+process starts (the global `--sandbox` flag is not an `agent` option). Under `never` a turn runs
+with `GROK_SANDBOX=workspace` and `--always-approve`: it never asks, and Landlock lets it write
+only under its directory, its Grok home and the temp directories, so a write elsewhere fails
+instead of ending the turn, as under Codex's `never`. Unlike Codex's sandbox, Grok's `workspace`
+profile keeps network access. Under `full` it runs with `--always-approve` and no sandbox; under
+`ask` with neither. A process loads a saved session under its own profile, so a change of mode
+holds from the next turn on. Grok's `_x.ai/*` notifications are ignored. Its
+`promptCapabilities.image` is false and its `sendNow` reruns the turn rather than joining it, so it
+declares neither images nor steer.
+
+Each agent process's stderr is kept in `<data-dir>/acp-agent-logs/<worker>.stderr.log`
+(owner-only, its first 256 KiB, overwritten by the worker's next launch). Neige writes nothing
+there; what Grok prints is its own diagnostics, and the card token the process held is revoked when
+its turn ends. A turn whose outcome is unknown also logs the error that made it so.
+
 A conversation bound to a native session is claimed under a digest of what that session depends
 on: the provider, `command`, `args`, `env` and the working directory. Changing one of them makes
 the conversation refuse to resume until it is reset explicitly. `min_agent_version` is admission
@@ -163,6 +227,25 @@ protocol error) answers every pending request `cancelled` before any teardown an
 is told the connection is lost. After the fence an answer writes `cancelled` or nothing: OpenCode
 1.18.35 still runs a command whose `selected` answer arrives after its turn ended. Requests during
 session setup are always answered `cancelled`.
+
+An agent may also ask before calling a tool of Neige's own MCP server. Grok Build does under
+`ask`, with `use_tool`: kind `other`, titled with the tool's qualified name `<server>__<tool>`,
+which its `rawInput.tool_name` repeats. That server authorizes every call itself by the card's
+token, so under every mode such a request is answered with the agent's `allow_once` option without
+asking, until the turn's fence. The agent's profile declares how it asks (kind, separator and input
+field). Each launch of such an agent then registers Neige's server under a key of its own,
+`neige-` and 12 random hex digits, never holding `_`, and only the exact qualified names of the
+tools that server lists the session match: the MCP layer resolves the listing as the session's own
+connection's `tools/list` does. A server whose key extends Neige's (`neige-…__evil`), the same
+tool under another server, and a tool the session is not listed are each answered as the mode
+answers any request. OpenCode, which does not ask before these tools, declares no form: its
+server keeps the shared key `neige`, and its requests are answered as before.
+
+Grok ends its turn `cancelled` on any answer but an allow, `reject_once` included. Its profile says
+so, and a turn it ends that way after the turn declined one of its requests fails with the reason,
+such as ``The agent ended the turn because the person declined `…`.`` or ``… because Neige declined
+`…` under the `never` permission mode.``, rather than showing as interrupted. A stop the person
+sends still ends the turn interrupted.
 
 Under `ask` each turn's OpenCode process is launched with
 `OPENCODE_PERMISSION={"bash":"ask","edit":"ask","webfetch":"ask"}`, set explicitly by the launch

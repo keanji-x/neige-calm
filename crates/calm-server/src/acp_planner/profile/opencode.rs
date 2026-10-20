@@ -1,7 +1,7 @@
 //! OpenCode's ACP agent profile. It serves ACP as `opencode acp`, reports ACP's standard `agentInfo` and authenticates nothing:
 //! the operator signs it in outside Neige. Its permission policy is OpenCode's own `permission`
 //! configuration, overridden through the environment, since ACP has no method for it.
-use super::{AcpAgentProfile, AgentEntry, AgentIdentity, ModeLaunch};
+use super::{AcpAgentProfile, AgentEntry, AgentIdentity, ModeLaunch, NOTHING};
 
 /// What OpenCode's own `permission` configuration is overridden with under `ask` (#2348): the
 /// tools that act without asking under its defaults ask instead. OpenCode 1.18.35 merges this
@@ -30,6 +30,7 @@ pub(super) const PROFILE: AcpAgentProfile = AcpAgentProfile {
     },
     identity: AgentIdentity::AgentInfo { name: "OpenCode" },
     authentication: None,
+    never: NOTHING,
     ask: ModeLaunch {
         env: &[ASK_PERMISSION],
         agent_options: &[],
@@ -38,6 +39,10 @@ pub(super) const PROFILE: AcpAgentProfile = AcpAgentProfile {
         env: &[FULL_PERMISSION],
         agent_options: &[],
     },
+    mcp_tool_request: None,
+    decline_ends_turn: false,
+    policy: None,
+    refused_env: &[],
 };
 
 #[cfg(test)]

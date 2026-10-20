@@ -250,11 +250,7 @@ async fn assistant_provider_persistence_managed_identity_never_inherits_token_or
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
     let (card_id, track_id) = card(&repo).await;
     let planner = "planner-card".to_owned();
-    for provider in [
-        AgentProvider::Codex,
-        AgentProvider::Claude,
-        AgentProvider::OpenCode,
-    ] {
+    for provider in AgentProvider::ALL {
         let mut tx = repo.pool().begin().await.unwrap();
         sqlx::query("UPDATE cards SET role='assistant',payload=?2 WHERE id=?1")
             .bind(&card_id).bind(json!({"schemaVersion":1,"harness_profile":"assistant","assistant_provider":provider}).to_string())
@@ -401,11 +397,7 @@ async fn assistant_provider_managed_actor_uses_live_binding_and_has_no_planner_a
     use crate::ids::ActorId;
     use crate::session_projection_repo::{AgentProvider, WorkerSessionInit};
     use calm_types::worker::WorkerSessionState;
-    for provider in [
-        AgentProvider::Codex,
-        AgentProvider::Claude,
-        AgentProvider::OpenCode,
-    ] {
+    for provider in AgentProvider::ALL {
         let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
         let (assistant, track) = card(&repo).await;
         let area: String = sqlx::query_scalar("SELECT area_id FROM tracks WHERE id=?1")
@@ -559,11 +551,7 @@ async fn assistant_provider_projection_preserves_shared_codex_without_mislabelin
     use crate::db::RepoRead;
     use crate::session_projection_repo::{AgentProvider, WorkerSessionInit, WorkerSessionState};
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
-    for provider in [
-        AgentProvider::Codex,
-        AgentProvider::Claude,
-        AgentProvider::OpenCode,
-    ] {
+    for provider in AgentProvider::ALL {
         let (_, track) = card(&repo).await;
         let id = format!("assistant-{}", provider.wire_name());
         let thread = format!("thread-{}", provider.wire_name());

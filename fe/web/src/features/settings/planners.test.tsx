@@ -82,6 +82,15 @@ describe('PlannersPane', () => {
     expect(screen.queryByRole('button', { name: 'Retry queued messages after server sign-in' })).toBeNull();
   });
 
+  it('names Grok and shows its sign-in advice when it is unavailable', () => {
+    const reason = 'grok did not authenticate (authenticate `cached_token`: timed out); sign it in with its own CLI under the environment its ACP registration declares, then retry';
+    pane({ providers: [
+      { availability: { provider: 'grok', status: 'unavailable', reason, authentication_notice: null, checked_at_ms: 1 }, capabilities: { requires_ready_availability: true } },
+    ] });
+    expect(within(row('Grok')).getByText(reason)).toBeTruthy();
+    expect(screen.queryByText(/A track can still be created/)).toBeNull();
+  });
+
   it('rechecks on request and says when a recheck failed', () => {
     const props = pane({ recheckError: 'network down' });
     fireEvent.click(screen.getByRole('button', { name: 'Recheck planners' }));

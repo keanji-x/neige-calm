@@ -3,7 +3,7 @@ import { Icon, type IconName } from '../../../ui/icon/public.tsx';
 
 /** The Track inventory owns this closed graphical vocabulary. Unknown kinds retain their exact name. */
 const KIND_ICONS: Readonly<Record<string, IconName>> = Object.freeze({
-  codex: 'codex', claude: 'claude', terminal: 'terminal', opencode: 'agent',
+  codex: 'codex', claude: 'claude', terminal: 'terminal', opencode: 'agent', grok: 'agent',
 });
 /** The same type vocabulary for entry icons and accessible worker controls. */
 export function InventoryIcon({ kind }: { kind: string }) {
