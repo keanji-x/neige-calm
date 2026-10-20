@@ -1515,6 +1515,7 @@ async fn start_planner_harness(
         // byte-identical payload JSON and `payload_hash`.
         first_message: None,
         create_request_sha256: None,
+        new_conversation: None,
         // Not a conversation create; nothing to brief.
         opening_briefing: None,
     };
@@ -2276,6 +2277,7 @@ async fn restart_planner_harness_at(s: &RouteState, actor: &Actor, track: &Track
         create_card: None,
         first_message: None,
         create_request_sha256: None,
+        new_conversation: None,
         // Not a conversation create; nothing to brief.
         opening_briefing: None,
     };

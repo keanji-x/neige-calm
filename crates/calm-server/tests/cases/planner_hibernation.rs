@@ -89,7 +89,8 @@ pub(super) async fn seed_conversation_history(
             None,
         )
         .await
-        .unwrap();
+        .unwrap()
+        .expect("the fixture session is current");
 }
 
 // Pin the prerequisite: recovery of an active row currently installs a harness and

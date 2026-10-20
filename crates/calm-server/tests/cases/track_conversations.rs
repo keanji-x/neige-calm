@@ -533,6 +533,7 @@ async fn a_planner_card_id_the_adapter_did_not_derive_is_refused() {
                 opening_briefing: None,
                 first_message: None,
                 create_request_sha256: None,
+                new_conversation: None,
             })
             .unwrap();
             state
@@ -754,7 +755,8 @@ async fn the_list_carries_the_last_non_interrupted_turn_completion() {
                     &params,
                 )
                 .await
-                .unwrap(),
+                .unwrap()
+                .expect("the fixture session is current"),
         );
     }
     let (completed, interrupted) = (outcome_ids[0], outcome_ids[1]);

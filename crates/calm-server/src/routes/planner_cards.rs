@@ -783,6 +783,7 @@ pub(crate) async fn start_harness_card(
         create_card: None,
         first_message: None,
         create_request_sha256: None,
+        new_conversation: None,
         // Not a conversation create; nothing to brief. `None` is skipped by serde.
         opening_briefing: None,
     };
@@ -824,7 +825,7 @@ pub(crate) async fn run_planner_card_operation(
 }
 
 /// The one mapping of a planner-card operation's outcome onto a `CalmError`.
-fn planner_card_operation_outcome(outcome: OperationOutcome) -> Result<()> {
+pub(crate) fn planner_card_operation_outcome(outcome: OperationOutcome) -> Result<()> {
     match outcome {
         OperationOutcome::Succeeded { .. } | OperationOutcome::SucceededViaCollision { .. } => {
             Ok(())

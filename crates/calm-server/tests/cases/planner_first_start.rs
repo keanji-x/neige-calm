@@ -58,12 +58,24 @@ pub(crate) async fn router(state: &AppState) -> axum::Router {
 pub(crate) async fn app_state(app_server: AppServer) -> (TempDir, Arc<SqlxRepo>, AppState) {
     let tmp = TempDir::new().unwrap();
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
+    let state = app_state_over(tmp.path(), &repo, app_server).await;
+    (tmp, repo, state)
+}
+
+/// A fresh process's state over `repo`'s data: empty registries, caches read from the rows.
+pub(crate) async fn app_state_over(
+    root: &std::path::Path,
+    repo: &Arc<SqlxRepo>,
+    app_server: AppServer,
+) -> AppState {
     let dyn_repo: Arc<dyn Repo> = repo.clone();
     let roles = CardRoleCache::new();
     let tracks = TrackAreaCache::new();
+    repo.seed_card_role_cache(&roles).await.unwrap();
+    repo.seed_track_area_cache(&tracks).await.unwrap();
     let events = EventBus::new();
     let daemon = Arc::new(DaemonClient {
-        data_dir: tmp.path().join("data"),
+        data_dir: root.join("data"),
         proc_supervisor_sock: None,
     });
     std::fs::create_dir_all(&daemon.data_dir).unwrap();
@@ -71,7 +83,7 @@ pub(crate) async fn app_state(app_server: AppServer) -> (TempDir, Arc<SqlxRepo>,
         Arc::new(PluginRegistry::empty()),
         dyn_repo.clone(),
         PathBuf::new(),
-        tmp.path().join("plugins"),
+        root.join("plugins"),
         Vec::new(),
         events.clone(),
         WriteContext::new(roles.clone(), tracks.clone()),
@@ -85,11 +97,11 @@ pub(crate) async fn app_state(app_server: AppServer) -> (TempDir, Arc<SqlxRepo>,
         Some(roles),
         Some(tracks),
     )
-    .with_workspace_root(tmp.path().join("workspaces"));
+    .with_workspace_root(root.join("workspaces"));
     if app_server == AppServer::Running {
-        state = with_running_app_server(state, &repo);
+        state = with_running_app_server(state, repo);
     }
-    (tmp, repo, state)
+    state
 }
 
 /// The production daily lifecycle creates today's Track: the Planner card exists and nothing has
@@ -619,6 +631,7 @@ async fn ready_parity_start_operation_and_send_for_every_provider() {
                     opening_briefing: None,
                     first_message: None,
                     create_request_sha256: None,
+                    new_conversation: None,
                 })
                 .unwrap(),
             )

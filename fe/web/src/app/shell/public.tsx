@@ -48,6 +48,7 @@ import { ProviderAuthenticationNotice } from './provider-authentication.tsx';
 import styles from './shell.module.css';
 import type { Conversation } from '../../../../core/domain/conversation.ts';
 import { MobileHistory } from './mobile-history.tsx';
+import type { PlannerNewConversation } from '../../features/chat/list/planner-conversation.tsx';
 import { EdgeSwipe } from '../../ui/edge-swipe/public.tsx';
 import { useMobileHistoryData } from './mobile-history-data.ts';
 
@@ -60,6 +61,7 @@ type Scope = Readonly<{
   onOpen: (conversation: Conversation) => void;
   conversationOpen: boolean;
   onArchive?: (cardId: string, archived: boolean) => Promise<void>;
+  newPlannerConversation?: PlannerNewConversation;
 }>;
 const ScopeContext = createContext<Readonly<{ current: Scope | null; register: (scope: Scope | null) => void }> | null>(null);
 
@@ -75,7 +77,7 @@ export function useMobileConversationScope() { return useContext(ScopeContext)?.
 /** The rendered route declares its owner; the shell never infers a daily/system Track from the URL. */
 export function useMobileConversationOwner(owner: Scope) {
   const register = useContext(ScopeContext)?.register;
-  const { track, conversations, selectedConversationId, conversationOpen } = owner;
+  const { track, conversations, selectedConversationId, conversationOpen, newPlannerConversation } = owner;
   const onNew = useCommittedCallback(track.id, owner.onNew);
   const onClose = useCommittedCallback(track.id, owner.onClose);
   const onOpen = useCommittedCallback(track.id, owner.onOpen);
@@ -83,8 +85,8 @@ export function useMobileConversationOwner(owner: Scope) {
   const canArchive = owner.onArchive !== undefined;
   const scope = useMemo<Scope>(() => ({
     track: { id: track.id, areaId: track.areaId, title: track.title }, conversations, selectedConversationId, conversationOpen,
-    onNew, onClose, onOpen, onArchive: canArchive ? onArchive : undefined,
-  }), [track.id, track.areaId, track.title, conversations, selectedConversationId, conversationOpen, onNew, onClose, onOpen, canArchive, onArchive]);
+    onNew, onClose, onOpen, onArchive: canArchive ? onArchive : undefined, newPlannerConversation,
+  }), [track.id, track.areaId, track.title, conversations, selectedConversationId, conversationOpen, onNew, onClose, onOpen, canArchive, onArchive, newPlannerConversation]);
   useLayoutEffect(() => {
     register?.(scope);
     return () => { register?.(null); };
@@ -386,7 +388,7 @@ export function AppShell({
         trackGroups={trackGroups} currentTrackId={conversationScope?.track.id}
         isUnread={isUnread} tracksLoading={readLoading || workspace.overlaysLoading} tracksError={readError ?? workspaceActivityErrorText(workspace)} onRetryTracks={retryRead}
         onOpenTrack={(trackId) => { conversationScope?.onClose(); go({ name: 'track', trackId }); }}
-        onArchive={conversationScope?.onArchive}
+        onArchive={conversationScope?.onArchive} newPlannerConversation={conversationScope?.newPlannerConversation}
         conversations={history.conversations} loading={history.loading} failed={history.failed} onRetry={history.retry}
         onNew={conversationScope?.onNew ?? null} now={nowMs ?? Date.now()}
         onSelect={(row) => conversationScope?.onOpen(row)}

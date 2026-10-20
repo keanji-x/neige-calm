@@ -160,18 +160,19 @@ async fn boot_with(plan: BootPlan) -> Boot {
             "_projection": true,
         });
         let segments = json!([{ "presentation": "user", "text": row.text, "attachments": [] }]);
-        repo.harness_item_insert(
-            "predecessor-session",
-            card.id.as_str(),
-            card.track_id.as_str(),
-            SEED_THREAD_ID,
-            None,
-            Some(row.client_id.as_str()),
-            Some("userMessage"),
-            "item/completed",
-            &params.to_string(),
-            Some(&segments.to_string()),
+        // A predecessor's projections, as the rows it left: it is no longer a writer.
+        sqlx::query(
+            "INSERT INTO harness_items (worker_session_id,card_id,track_id,thread_id,item_uuid,\
+             item_type,method,params,input_segments,created_at_ms) \
+             VALUES ('predecessor-session',?1,?2,?3,?4,'userMessage','item/completed',?5,?6,0)",
         )
+        .bind(card.id.as_str())
+        .bind(card.track_id.as_str())
+        .bind(SEED_THREAD_ID)
+        .bind(row.client_id.as_str())
+        .bind(params.to_string())
+        .bind(segments.to_string())
+        .execute(repo.pool())
         .await
         .unwrap();
     }
@@ -841,12 +842,15 @@ async fn an_echo_upgrades_the_projection_of_its_own_card_only() {
         card_ids.push(card.id.to_string());
     }
     let (card_a, card_b) = (card_ids[0].clone(), card_ids[1].clone());
+    for card in [&card_a, &card_b] {
+        crate::support::transcript_fixture::start(&repo, card, &format!("session-{card}")).await;
+    }
     let client_id = "shared-client-id";
     let mut row_ids = Vec::new();
     for card in [&card_a, &card_b] {
         let id = repo
             .harness_item_insert(
-                "session",
+                &format!("session-{card}"),
                 card,
                 track.id.as_str(),
                 SEED_THREAD_ID,
@@ -858,14 +862,17 @@ async fn an_echo_upgrades_the_projection_of_its_own_card_only() {
                 Some(r#"[{"presentation":"user","text":"shared words","attachments":[]}]"#),
             )
             .await
-            .unwrap();
+            .unwrap()
+            .expect("the fixture session is current");
         row_ids.push(id);
     }
     let (row_a, row_b) = (row_ids[0], row_ids[1]);
 
     let upgraded = repo
         .transcript_projection_upgrade(
+            &format!("session-{card_a}"),
             &card_a,
+            track.id.as_str(),
             client_id,
             Some("turn-a"),
             "codex-item-a",
@@ -897,16 +904,26 @@ async fn an_echo_upgrades_the_projection_of_its_own_card_only() {
     assert_eq!(b_rows[0].item_uuid.as_deref(), Some(client_id));
 
     assert_eq!(
-        repo.transcript_projection_delete(&card_a, client_id)
-            .await
-            .unwrap(),
+        repo.transcript_projection_delete(
+            &format!("session-{card_a}"),
+            &card_a,
+            track.id.as_str(),
+            client_id
+        )
+        .await
+        .unwrap(),
         0,
         "nothing left to delete on A"
     );
     assert_eq!(
-        repo.transcript_projection_delete(&card_b, client_id)
-            .await
-            .unwrap(),
+        repo.transcript_projection_delete(
+            &format!("session-{card_b}"),
+            &card_b,
+            track.id.as_str(),
+            client_id
+        )
+        .await
+        .unwrap(),
         1
     );
 }

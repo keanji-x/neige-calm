@@ -190,9 +190,31 @@ async fn canonical_run_reads_only_the_exact_current_terminal_timeout_and_still_s
             request: other.clone(),
             ended_at_ms: 2,
         };
-        fixture.repo.harness_turn_outcome_put(&other.session_id, &card, track_id, &other.thread_id, &other.turn_id,
-            &json!({"id":other.turn_id,"status":"interrupted","harness_interruption_reason":evidence}).to_string())
-            .await.unwrap();
+        let params = json!({"id":other.turn_id,"status":"interrupted","harness_interruption_reason":evidence}).to_string();
+        let written = fixture
+            .repo
+            .harness_turn_outcome_put(
+                &other.session_id,
+                &card,
+                track_id,
+                &other.thread_id,
+                &other.turn_id,
+                &params,
+            )
+            .await
+            .unwrap();
+        if changed == "session" {
+            // A session that is not the card's current one can no longer write an outcome
+            // (#2774), but a row an earlier session wrote before that fence still stands.
+            assert_eq!(written, None, "a non-current session writes no outcome");
+            sqlx::query("INSERT INTO harness_items(worker_session_id,card_id,track_id,thread_id,turn_id,method,params,created_at_ms) \
+                VALUES(?1,?2,?3,?4,?5,'turn/completed',?6,?7)")
+                .bind(&other.session_id).bind(&card).bind(track_id).bind(&other.thread_id).bind(&other.turn_id)
+                .bind(&params).bind(crate::model::now_ms())
+                .execute(fixture.repo.pool()).await.unwrap();
+        } else {
+            assert!(written.is_some(), "{changed}");
+        }
         assert_eq!(
             read_run(&app, &cookie, &card).await["terminal_timeout"],
             Value::Null,

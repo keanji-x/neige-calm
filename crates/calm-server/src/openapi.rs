@@ -157,6 +157,8 @@ use utoipa::{Modify, OpenApi, ToSchema};
         crate::routes::planner_cards::get_planner_run,
         crate::routes::planner_cards::reset_planner_card,
         crate::routes::planner_cards::restart_planner_card,
+        crate::routes::planner_conversations::start_planner_conversation,
+        crate::routes::planner_conversations::list_planner_conversations,
         // This list is hand-maintained: omitting a handler is not a compile error and not a drift failure — the endpoint simply never reaches either generated client.
         crate::routes::planner_input::edit_planner_input,
         crate::routes::planner_input::delete_planner_input,
@@ -341,6 +343,8 @@ use utoipa::{Modify, OpenApi, ToSchema};
         PlannerSteerConflictBody,
         HarnessPhaseTag,
         ResetPlannerCardResponse,
+        calm_types::planner_conversation::PlannerConversationStarted,
+        calm_types::planner_conversation::PlannerConversation,
         crate::track_report::TrackReportPayload,
         crate::routes::activity_dismissals::DismissActivityItemRequest,
         calm_types::read_receipts::ReadReceiptKind,

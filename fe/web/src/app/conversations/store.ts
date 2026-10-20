@@ -23,6 +23,7 @@ import { NO_TURNS } from './registry-owner.ts';
 import { useConversationStop } from './stop.ts';
 import { useConversationRestart } from './restart.ts';
 import { offersFreshSession } from '../../../../core/domain/conversation-restart.ts';
+import { PLANNER_HISTORY_KIND } from '../../../../core/domain/planner-conversation.ts';
 import { useLiveReplies } from './live-replies.ts';
 import { useConversationOutbox, useRunReads } from './outbox.ts';
 import type { ConversationRouteIntent, ConversationStore, PlannerConversationScope } from './contracts.ts';
@@ -256,7 +257,8 @@ export function useConversationStore(
     /* A `'rows'` route remembers every row it lists; `rememberOn` is compared against
          each row so another Track's row cannot write into this scope. */
     for (const row of serverRows) {
-      if (row.trackId !== rememberOn) continue;
+      /* An earlier Planner conversation is read-only history of a card the Planner row already remembers. */
+      if (row.trackId !== rememberOn || row.kind === PLANNER_HISTORY_KIND) continue;
       /* The open row belongs to the effect above; writing the plain row over it here
                would undo it on every render. */
       if (row.id === conversation?.id || ownedCardIds?.includes(row.id)) continue;

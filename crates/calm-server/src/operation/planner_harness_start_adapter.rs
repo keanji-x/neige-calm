@@ -4,9 +4,14 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 pub(crate) mod input_transfer;
+mod new_conversation;
+pub use new_conversation::NewConversation;
+pub(crate) use new_conversation::{busy, hold_open, refuse_user_entries, unconfirmed};
 
 const SUCCESSOR_SESSION_KEY: &str = "runtime_id";
 const PREDECESSOR_SESSION_KEY: &str = "old_runtime_id";
+/// The ordinal of the conversation a `new_conversation` start opened, in its committed output.
+pub(crate) const CONVERSATION_ORDINAL_KEY: &str = "conversation_ordinal";
 
 use async_trait::async_trait;
 use calm_types::conversation_receipt::{
@@ -310,6 +315,10 @@ pub struct PlannerHarnessStartOperationPayload {
     /// `skip_serializing_if` so callers that do not set it keep byte-identical payload hashes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub create_request_sha256: Option<String>,
+    /// #2774: `Some` makes this restart the cutover to a new, blank conversation on the same card.
+    /// `skip_serializing_if` keeps every other start's payload hash unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub new_conversation: Option<NewConversation>,
 }
 
 /// The user-supplied part of a lazily minted conversation card; everything the kernel owns (kind, role, `deletable`, the profile marker) is pinned by the adapter.
@@ -548,6 +557,7 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
         }
         let decoded = super::assistant_start_wire::StartInput::decode(input)?;
         let payload = decoded.payload;
+        new_conversation::validate(&payload)?;
         self.admit_historical(payload.planner_card_id.as_str())
             .await?;
         let track = self
@@ -856,6 +866,10 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
 
         let credential_predecessor =
             session_projection_active_for_card_tx(tx, card.id.as_str()).await?;
+        if let Some(expected) = payload.new_conversation.as_ref() {
+            self.require_new_conversation_tx(tx, &card, expected, credential_predecessor.as_ref())
+                .await?;
+        }
         let old_codex_credential = match credential_predecessor.as_ref() {
             Some(old) => {
                 capture_codex_assistant_credential_tx(tx, &old.id, &worker_session_id).await?
@@ -976,6 +990,9 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
             stranded_user_messages,
         )
         .await?;
+        if payload.new_conversation.is_some() {
+            new_conversation::refuse_harvested(&harvested.messages)?;
+        }
         // The first user message ships INSIDE this transaction, after the inherited queue, as `UserMessage` (hard-fires, cannot be evicted), never `TrackGoal`.
         // The briefing goes FIRST as `SystemContext` (no audit row). KNOWN: both sit on an unstarted runtime's queue, so a mint superseded before draining strands them.
         let mut seeded = false;
@@ -1036,6 +1053,7 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
 
         let mut old_worker_session_id = None;
         let mut old_runtime_status = None;
+        let mut conversation_ordinal = None;
         let runtime_init = starting_runtime_init(
             payload.profile,
             provider,
@@ -1081,6 +1099,18 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
                 .await?;
             }
             session_prepare_deferred_planner_tx(tx, &runtime_init).await?;
+            if payload.new_conversation.is_some() {
+                conversation_ordinal = Some(
+                    new_conversation::record_floor_tx(
+                        tx,
+                        &payload.actor,
+                        &card,
+                        now,
+                        &mut post_commit_events,
+                    )
+                    .await?,
+                );
+            }
         } else {
             if let Some(existing) = superseded_predecessor.as_ref() {
                 old_worker_session_id = Some(existing.id.clone());
@@ -1166,6 +1196,9 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
                 serde_json::to_value(old_runtime_status)?,
                 "planner harness",
             )?;
+        }
+        if let Some(ordinal) = conversation_ordinal {
+            output.set_output_data(CONVERSATION_ORDINAL_KEY, json!(ordinal), "planner harness")?;
         }
         Ok(output)
     }
@@ -1632,6 +1665,16 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
             )
             .await?;
         }
+        new_conversation::catch_up(
+            self.repo.clone(),
+            &payload,
+            &card_id,
+            &track_id,
+            &mut snapshot,
+        )
+        .await?;
+        #[cfg(feature = "fixtures")]
+        crate::test_seams::pause_point("conversation-start-caught-up", &card_id).await;
         self.admit_historical(&card_id).await?;
         let backend = factory
             .open(
@@ -1765,8 +1808,9 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
             "fail_runtime",
             json!({ "runtime_id": worker_session_id }),
         ));
-        if let Some(old_worker_session_id) =
-            output.output_optional_string("old_runtime_id", "planner harness")?
+        if new_conversation::restores_predecessor(&payload)
+            && let Some(old_worker_session_id) =
+                output.output_optional_string("old_runtime_id", "planner harness")?
         {
             let old_runtime_status =
                 output
@@ -1999,7 +2043,9 @@ pub mod claude_spawn_failure {
     }
 }
 
-/// Replace a snapshot's pending queue with the one persisted on the runtime's own row, leaving every other field alone.
+/// Replace a snapshot's pending queue with the one persisted on the runtime's own row, together
+/// with the watermark that row's queue was caught up to, leaving every other field alone: a queue
+/// that already holds an event must never be paired with an older watermark that replays it.
 fn adopt_queue_from_row(snapshot: &mut HarnessSnapshot, row_state: Option<Value>) {
     let Some(state) = row_state else {
         return;
@@ -2011,6 +2057,7 @@ fn adopt_queue_from_row(snapshot: &mut HarnessSnapshot, row_state: Option<Value>
     }
     let row = HarnessSnapshot::from_value_strict(state);
     snapshot.set_pending_entries(row.pending_entries());
+    snapshot.push_watermark = snapshot.push_watermark.max(row.push_watermark);
 }
 
 async fn overwrite_queue_from_the_runtimes_own_row(
@@ -2806,6 +2853,7 @@ mod tests {
             opening_briefing: None,
             first_message: None,
             create_request_sha256: None,
+            new_conversation: None,
         };
         let json = serde_json::to_value(&payload).expect("serialize");
         let object = json.as_object().expect("object");
@@ -2826,6 +2874,20 @@ mod tests {
             object.get("profile").and_then(serde_json::Value::as_str),
             Some("spec"),
             "the default profile must still serialize as `spec`: {json}"
+        );
+
+        assert!(
+            !object.contains_key("new_conversation"),
+            "an ordinary start's payload, and so its hash, carries no new-conversation field: {json}"
+        );
+        let mut cutover = payload.clone();
+        cutover.new_conversation = Some(NewConversation {
+            expected_session_id: "s1".into(),
+        });
+        assert_eq!(
+            serde_json::to_value(&cutover).expect("serialize")["new_conversation"],
+            serde_json::json!({"expected_session_id": "s1"}),
+            "the new-conversation field is frozen too"
         );
 
         // The alias spelling still reads back; derived from the real serialization so the case cannot drift.
@@ -3441,6 +3503,7 @@ mod tests {
             opening_briefing: None,
             first_message: None,
             create_request_sha256: None,
+            new_conversation: None,
         })
         .expect("payload serializes");
         adapter

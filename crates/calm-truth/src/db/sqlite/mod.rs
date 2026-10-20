@@ -37,6 +37,10 @@ mod events;
 mod infra;
 mod out_of_domain;
 mod overlay;
+mod planner_conversation;
+#[cfg(test)]
+mod planner_new_conversation_tests;
+pub use planner_conversation::planner_conversation_start_tx;
 mod planner_input_idempotency;
 #[cfg(test)]
 mod planner_input_idempotency_tests;

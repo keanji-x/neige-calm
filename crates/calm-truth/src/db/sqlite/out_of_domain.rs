@@ -3,7 +3,7 @@ use sqlx::Row;
 use sqlx::Sqlite;
 use sqlx::Transaction;
 
-use super::transcript_projection::insert_transcript_row;
+use super::transcript_projection::{CURRENT_SESSION_BINDING, insert_transcript_row};
 use super::{SqlxRepo, begin_immediate_tx};
 use crate::area_folder_claim::AreaFolderClaim;
 use crate::db::{
@@ -12,18 +12,24 @@ use crate::db::{
 use crate::error::{CalmError, Result};
 use crate::model::*;
 
-/// Retire a pending input's projection in the transaction that makes its queue durable.
+/// Retire a pending input's projection in the transaction that makes its queue durable. Rows stay
+/// card-scoped, because a successor may remove a predecessor's projection after a repoint, but
+/// only the card's current session may remove one.
 pub async fn transcript_projection_delete_tx(
     tx: &mut Transaction<'_, Sqlite>,
+    worker_session_id: &str,
     card_id: &str,
+    track_id: &str,
     client_id: &str,
 ) -> Result<u64> {
-    let done = sqlx::query(
-        r#"DELETE FROM harness_items
-               WHERE card_id = ?1 AND item_uuid = ?2 AND turn_id IS NULL
-                 AND method = 'item/completed'"#,
-    )
+    let done = sqlx::query(&format!(
+        "DELETE FROM harness_items WHERE card_id=?2 AND track_id=?3 \
+         AND item_uuid=?4 AND turn_id IS NULL AND method='item/completed' \
+         AND EXISTS ({CURRENT_SESSION_BINDING})"
+    ))
+    .bind(worker_session_id)
     .bind(card_id)
+    .bind(track_id)
     .bind(client_id)
     .execute(&mut **tx)
     .await?;
@@ -75,15 +81,20 @@ pub async fn harness_items_delete_by_card_tx(
 /// removes, as its plan read it. Returns how many rows went.
 pub async fn transcript_delete_thread_suffix_tx(
     tx: &mut Transaction<'_, Sqlite>,
+    worker_session_id: &str,
     card_id: &str,
+    track_id: &str,
     thread_id: &str,
     after_id: i64,
     through_id: i64,
 ) -> Result<i64> {
-    let done = sqlx::query(
-        "DELETE FROM harness_items WHERE card_id = ?1 AND thread_id = ?2 AND id > ?3 AND id <= ?4",
-    )
+    let done = sqlx::query(&format!(
+        "DELETE FROM harness_items WHERE card_id=?2 AND thread_id=?4 AND id>?5 AND id<=?6 \
+         AND EXISTS ({CURRENT_SESSION_BINDING})"
+    ))
+    .bind(worker_session_id)
     .bind(card_id)
+    .bind(track_id)
     .bind(thread_id)
     .bind(after_id)
     .bind(through_id)
@@ -472,7 +483,7 @@ impl RepoOutOfDomain for SqlxRepo {
         method: &str,
         params: &str,
         input_segments: Option<&str>,
-    ) -> Result<i64> {
+    ) -> Result<Option<i64>> {
         insert_transcript_row(
             self.db.writer_pool(),
             worker_session_id,
@@ -512,19 +523,30 @@ impl RepoOutOfDomain for SqlxRepo {
         thread_id: &str,
         turn_id: &str,
         params: &str,
-    ) -> Result<i64> {
+    ) -> Result<Option<i64>> {
         let mut tx = begin_immediate_tx(&self.db).await?;
         let existing:Option<i64>=sqlx::query_scalar(
             "SELECT id FROM harness_items WHERE worker_session_id=?1 AND card_id=?2 AND thread_id=?3 AND \
                 turn_id=?4 AND method='turn/completed' ORDER BY id DESC LIMIT 1"
         ).bind(worker_session_id).bind(card_id).bind(thread_id).bind(turn_id).fetch_optional(&mut **tx).await?;
-        let id=match existing {
-            Some(id)=>id,
-            None=>sqlx::query_scalar(
-                "INSERT INTO \
-                    harness_items(worker_session_id,card_id,track_id,thread_id,turn_id,method,params,created_at_ms) \
-                    VALUES(?1,?2,?3,?4,?5,'turn/completed',?6,?7) RETURNING id"
-            ).bind(worker_session_id).bind(card_id).bind(track_id).bind(thread_id).bind(turn_id).bind(params).bind(now_ms()).fetch_one(&mut **tx).await?,
+        let id = match existing {
+            Some(id) => Some(id),
+            None => {
+                insert_transcript_row(
+                    &mut **tx,
+                    worker_session_id,
+                    card_id,
+                    track_id,
+                    thread_id,
+                    Some(turn_id),
+                    None,
+                    None,
+                    "turn/completed",
+                    params,
+                    None,
+                )
+                .await?
+            }
         };
         tx.commit().await?;
         Ok(id)
@@ -548,9 +570,12 @@ impl RepoOutOfDomain for SqlxRepo {
         Ok(row.map(|row| row.get::<i64, _>("id")))
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn transcript_projection_upgrade(
         &self,
+        worker_session_id: &str,
         card_id: &str,
+        track_id: &str,
         client_id: &str,
         turn_id: Option<&str>,
         item_uuid: &str,
@@ -559,18 +584,16 @@ impl RepoOutOfDomain for SqlxRepo {
         let mut tx = begin_immediate_tx(&self.db).await?;
         // `LIMIT 1` is not available on UPDATE in the bundled sqlite build, so the
         // subquery chooses the row: the newest projection with this key.
-        let row = sqlx::query(
-            r#"UPDATE harness_items
-               SET turn_id = ?3, item_uuid = ?4, params = ?5
-               WHERE id = (
-                   SELECT id FROM harness_items
-                   WHERE card_id = ?1 AND item_uuid = ?2 AND turn_id IS NULL
-                     AND method = 'item/completed'
-                   ORDER BY id DESC LIMIT 1
-               )
-               RETURNING id"#,
-        )
+        let row = sqlx::query(&format!(
+            "UPDATE harness_items SET turn_id=?5, item_uuid=?6, params=?7 \
+             WHERE id=(SELECT id FROM harness_items \
+               WHERE card_id=?2 AND track_id=?3 \
+                 AND item_uuid=?4 AND turn_id IS NULL AND method='item/completed' \
+               ORDER BY id DESC LIMIT 1) AND EXISTS ({CURRENT_SESSION_BINDING}) RETURNING id"
+        ))
+        .bind(worker_session_id)
         .bind(card_id)
+        .bind(track_id)
         .bind(client_id)
         .bind(turn_id)
         .bind(item_uuid)
@@ -581,9 +604,22 @@ impl RepoOutOfDomain for SqlxRepo {
         Ok(row.map(|row| row.get::<i64, _>("id")))
     }
 
-    async fn transcript_projection_delete(&self, card_id: &str, client_id: &str) -> Result<u64> {
+    async fn transcript_projection_delete(
+        &self,
+        worker_session_id: &str,
+        card_id: &str,
+        track_id: &str,
+        client_id: &str,
+    ) -> Result<u64> {
         let mut tx = begin_immediate_tx(&self.db).await?;
-        let deleted = transcript_projection_delete_tx(&mut tx, card_id, client_id).await?;
+        let deleted = transcript_projection_delete_tx(
+            &mut tx,
+            worker_session_id,
+            card_id,
+            track_id,
+            client_id,
+        )
+        .await?;
         tx.commit().await?;
         Ok(deleted)
     }

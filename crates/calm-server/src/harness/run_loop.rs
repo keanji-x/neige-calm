@@ -2958,7 +2958,7 @@ async fn insert_item_row(
     params_json: &str,
     legacy_segments_json: Option<&str>,
 ) -> Result<i64> {
-    Ok(inner
+    let row = inner
         .repo
         .harness_item_insert(
             &inner.worker_session_id,
@@ -2972,7 +2972,19 @@ async fn insert_item_row(
             params_json,
             legacy_segments_json,
         )
-        .await?)
+        .await?;
+    current_session_row(inner, row)
+}
+
+/// A transcript write the current-session fence dropped: this runtime is no longer the card's
+/// session, so nothing it does after the write (an announcement, a turn) may follow it.
+fn current_session_row(inner: &Inner, row: Option<i64>) -> Result<i64> {
+    row.ok_or_else(|| {
+        CalmError::Conflict(format!(
+            "runtime {} is no longer the conversation's current session",
+            inner.worker_session_id
+        ))
+    })
 }
 
 async fn emit_presentation_changed(
@@ -3064,7 +3076,12 @@ async fn insert_projection_row(
 ) -> Result<i64> {
     let stale = inner
         .repo
-        .transcript_projection_delete(inner.card_id.as_str(), client_id)
+        .transcript_projection_delete(
+            &inner.worker_session_id,
+            inner.card_id.as_str(),
+            inner.track_id.as_str(),
+            client_id,
+        )
         .await?;
     if stale > 0 {
         tracing::debug!(
@@ -3108,7 +3125,7 @@ async fn insert_projection_row(
             Some(&input_segments),
         )
         .await?;
-    Ok(item_db_id)
+    current_session_row(inner, item_db_id)
 }
 
 /// Defensive cap on the track-vcs diff-block fetch; the diff block is never a correctness
@@ -3794,6 +3811,7 @@ async fn persist_retired_issuance_snapshot(inner: &Arc<Inner>) -> Result<bool> {
     let restored = inner.restored_projections.lock().await.clone();
     let retired = restored.clone();
     let card = inner.card_id.to_string();
+    let track = inner.track_id.to_string();
     let snapshot = snapshot_for(inner).await?;
     let worker_session_id = inner.worker_session_id.clone();
     let snapshot_value = serde_json::to_value(snapshot)?;
@@ -3808,7 +3826,8 @@ async fn persist_retired_issuance_snapshot(inner: &Arc<Inner>) -> Result<bool> {
             )
             .await?;
             if written {
-                retire_restored_projections(tx, &card, &restored).await?;
+                retire_restored_projections(tx, &worker_session_id, &card, &track, &restored)
+                    .await?;
             }
             Ok(written)
         })
@@ -3866,10 +3885,11 @@ async fn persist_turn_outcome(inner: &Arc<Inner>, turn_id: &str, turn: &Value) -
     )
     .await
     {
-        Ok(id) => {
+        Ok(Some(id)) => {
             clear_interruption_intent(inner, turn_id).await;
             Some(id)
         }
+        Ok(None) => None,
         Err(error) => {
             tracing::warn!(
                 worker_session_id = %inner.worker_session_id,
@@ -3896,6 +3916,7 @@ async fn persist_guarded_failed_system_error_snapshot(inner: &Arc<Inner>) -> Res
     let retired = restored.clone();
     let snapshot = serde_json::to_value(snapshot_for(inner).await?)?;
     let card = inner.card_id.to_string();
+    let track = inner.track_id.to_string();
     let id = inner.worker_session_id.clone();
     let written = write_in_tx_typed(inner.repo.as_ref(), move |tx| {
         Box::pin(async move {
@@ -3904,7 +3925,7 @@ async fn persist_guarded_failed_system_error_snapshot(inner: &Arc<Inner>) -> Res
             )
             .await?;
             if written {
-                retire_restored_projections(tx, &card, &restored).await?;
+                retire_restored_projections(tx, &id, &card, &track, &restored).await?;
             }
             Ok(written)
         })
@@ -3983,11 +4004,20 @@ impl DurableSendBinding {
 /// Shared by snapshot owners, inside their guarded write transaction.
 async fn retire_restored_projections(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    worker_session_id: &str,
     card: &str,
+    track: &str,
     restored: &[QueueEntryId],
 ) -> Result<()> {
     for id in restored {
-        crate::db::sqlite::transcript_projection_delete_tx(tx, card, id.as_str()).await?;
+        crate::db::sqlite::transcript_projection_delete_tx(
+            tx,
+            worker_session_id,
+            card,
+            track,
+            id.as_str(),
+        )
+        .await?;
     }
     Ok(())
 }
@@ -4055,6 +4085,8 @@ async fn persist_guarded_snapshot(
     let snapshot_value = serde_json::to_value(snapshot)?;
     let repo = Arc::clone(&inner.repo);
     let bound_card_id = inner.card_id.to_string();
+    let bound_track_id = inner.track_id.to_string();
+    let bound_session_id = inner.worker_session_id.clone();
 
     let written = write_in_tx_typed(repo.as_ref(), move |tx| {
         Box::pin(async move {
@@ -4068,7 +4100,14 @@ async fn persist_guarded_snapshot(
             )
             .await?;
             if written {
-                retire_restored_projections(tx, &bound_card_id, &restored).await?;
+                retire_restored_projections(
+                    tx,
+                    &bound_session_id,
+                    &bound_card_id,
+                    &bound_track_id,
+                    &restored,
+                )
+                .await?;
             }
             if written && let Some(send) = &send {
                 crate::db::sqlite::planner_input_bind_tx(

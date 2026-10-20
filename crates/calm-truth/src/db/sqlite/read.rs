@@ -25,51 +25,6 @@ struct TrackDetailRow {
     overlays_json: String,
 }
 
-/// Explicit allowlist of `harness_items` methods a transcript can render.
-/// Spliced, not bound: a fixed literal with no caller input.
-const TRANSCRIPT_METHOD_PREDICATE: &str =
-    " AND method IN ('item/started', 'item/completed', 'turn/completed')";
-
-impl SqlxRepo {
-    async fn harness_item_page(
-        &self,
-        card_id: &str,
-        after_id: i64,
-        limit: i64,
-        descending: bool,
-        method_predicate: &str,
-    ) -> Result<Vec<HarnessItem>> {
-        const COLUMNS: &str = "id, worker_session_id, card_id, track_id, thread_id, turn_id, \
-                               item_uuid, item_type, method, params, input_segments, \
-                               created_at_ms";
-        let (comparison, order, cursor) = if descending {
-            ("<", "DESC", if after_id == 0 { i64::MAX } else { after_id })
-        } else {
-            (">", "ASC", after_id)
-        };
-        let sql = format!(
-            "SELECT {COLUMNS} FROM harness_items \
-             WHERE card_id = ?1 AND id {comparison} ?2{method_predicate} \
-             ORDER BY id {order} LIMIT ?3"
-        );
-        let mut rows = sqlx::query_as::<_, crate::db::rows::HarnessItemRow>(&sql)
-            .bind(card_id)
-            .bind(cursor)
-            .bind(limit)
-            .fetch_all(self.db.read_pool())
-            .await?;
-        if descending {
-            rows.reverse();
-        }
-        rows.into_iter()
-            .map(HarnessItem::try_from)
-            .collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(|error| {
-                CalmError::Internal(format!("transcript input_segments decode: {error}"))
-            })
-    }
-}
-
 #[async_trait]
 impl RepoRead for SqlxRepo {
     async fn conversation_title_context(
@@ -657,8 +612,15 @@ impl RepoRead for SqlxRepo {
         limit: i64,
         descending: bool,
     ) -> Result<Vec<HarnessItem>> {
-        self.harness_item_page(card_id, after_id, limit, descending, "")
-            .await
+        self.transcript_page(
+            card_id,
+            after_id,
+            limit,
+            descending,
+            "",
+            super::planner_conversation::ItemRange::ALL,
+        )
+        .await
     }
 
     async fn harness_item_list_transcript_by_card(
@@ -668,14 +630,40 @@ impl RepoRead for SqlxRepo {
         limit: i64,
         descending: bool,
     ) -> Result<Vec<HarnessItem>> {
-        self.harness_item_page(
+        self.transcript_page(
             card_id,
             after_id,
             limit,
             descending,
-            TRANSCRIPT_METHOD_PREDICATE,
+            super::planner_conversation::TRANSCRIPT_METHOD_PREDICATE,
+            super::planner_conversation::ItemRange::ALL,
         )
         .await
+    }
+
+    async fn planner_conversation_transcript(
+        &self,
+        card_id: &str,
+        conversation: Option<i64>,
+        after_id: i64,
+        limit: i64,
+        descending: bool,
+    ) -> Result<Option<Vec<HarnessItem>>> {
+        self.planner_conversation_transcript_page(
+            card_id,
+            conversation,
+            after_id,
+            limit,
+            descending,
+        )
+        .await
+    }
+
+    async fn planner_conversations_earlier(
+        &self,
+        card_id: &str,
+    ) -> Result<Vec<calm_types::planner_conversation::PlannerConversation>> {
+        self.planner_conversation_history(card_id).await
     }
 
     async fn worker_flow_item_list_by_card(

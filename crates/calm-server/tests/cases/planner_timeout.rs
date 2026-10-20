@@ -280,7 +280,8 @@ async fn planner_timeout_queries_do_not_truncate_history_or_cross_identity() {
                 &json!({"id":id,"status":"failed"}).to_string(),
             )
             .await
-            .unwrap();
+            .unwrap()
+            .expect("the fixture session is current");
     }
     let pending = boot
         .repo
@@ -336,7 +337,8 @@ async fn planner_timeout_queries_do_not_truncate_history_or_cross_identity() {
             &json!({"id":turn,"status":"completed"}).to_string(),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .expect("the fixture session is current");
     assert_eq!(duplicate, row.id);
     assert_eq!(
         boot.repo
@@ -511,7 +513,8 @@ async fn planner_timeout_terminal_causality_survives_utc_rollback_and_ties() {
                     &json!({"id":"later","status":status}).to_string(),
                 )
                 .await
-                .unwrap();
+                .unwrap()
+                .expect("the fixture session is current");
             sqlx::query("UPDATE harness_items SET created_at_ms=?1 WHERE id=?2")
                 .bind(later_utc)
                 .bind(id)

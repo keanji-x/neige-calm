@@ -92,6 +92,8 @@ async fn boot() -> Boot {
     .await
     .unwrap();
     tx.commit().await.unwrap();
+    crate::support::transcript_fixture::start(&repo, planner_card.id.as_str(), "runtime-rest")
+        .await;
 
     let state = AppState::from_parts(
         repo.clone(),
@@ -175,7 +177,8 @@ async fn transcript_route_returns_rows_in_order_and_paginates() {
                 None,
             )
             .await
-            .unwrap();
+            .unwrap()
+            .expect("the fixture session is current");
         inserted.push(id);
     }
 
@@ -265,7 +268,7 @@ async fn transcript_route_returns_strict_structured_input_segments() {
     let row_id = boot
         .repo
         .harness_item_insert(
-            "runtime-presentation",
+            "runtime-rest",
             boot.planner_card.id.as_str(),
             boot.planner_card.track_id.as_str(),
             "thread-presentation",
@@ -284,7 +287,8 @@ async fn transcript_route_returns_strict_structured_input_segments() {
             Some(segments_json),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .expect("the fixture session is current");
 
     let error = sqlx::query("UPDATE harness_items SET input_segments = '{}' WHERE id = ?1")
         .bind(row_id)
@@ -344,7 +348,7 @@ async fn transcript_desc_cursor_uses_less_than_after_id() {
         let id = boot
             .repo
             .harness_item_insert(
-                "runtime-desc",
+                "runtime-rest",
                 boot.planner_card.id.as_str(),
                 boot.planner_card.track_id.as_str(),
                 "thread-desc",
@@ -356,7 +360,8 @@ async fn transcript_desc_cursor_uses_less_than_after_id() {
                 None,
             )
             .await
-            .unwrap();
+            .unwrap()
+            .expect("the fixture session is current");
         inserted.push(id);
     }
 
@@ -419,7 +424,7 @@ async fn transcript_route_preserves_mcp_tool_call_camelcase() {
     let started_id = boot
         .repo
         .harness_item_insert(
-            "runtime-mcp",
+            "runtime-rest",
             boot.planner_card.id.as_str(),
             boot.planner_card.track_id.as_str(),
             "thread-mcp",
@@ -440,11 +445,12 @@ async fn transcript_route_preserves_mcp_tool_call_camelcase() {
             None,
         )
         .await
-        .unwrap();
+        .unwrap()
+        .expect("the fixture session is current");
     let completed_id = boot
         .repo
         .harness_item_insert(
-            "runtime-mcp",
+            "runtime-rest",
             boot.planner_card.id.as_str(),
             boot.planner_card.track_id.as_str(),
             "thread-mcp",
@@ -466,7 +472,8 @@ async fn transcript_route_preserves_mcp_tool_call_camelcase() {
             None,
         )
         .await
-        .unwrap();
+        .unwrap()
+        .expect("the fixture session is current");
 
     let (status, body) = get(
         boot.app.clone(),
@@ -501,7 +508,7 @@ async fn transcript_route_page_budget_skips_plan_rows() {
         async |uuid: Option<String>, item_type: Option<&str>, method: &str, params: String| {
             boot.repo
                 .harness_item_insert(
-                    "runtime-budget",
+                    "runtime-rest",
                     boot.planner_card.id.as_str(),
                     boot.planner_card.track_id.as_str(),
                     "thread-budget",
@@ -514,6 +521,7 @@ async fn transcript_route_page_budget_skips_plan_rows() {
                 )
                 .await
                 .unwrap()
+                .expect("the fixture session is current")
         };
     for index in 1..=4 {
         plan_ids.push(
@@ -611,7 +619,7 @@ async fn transcript_route_returns_turn_outcome_rows() {
                         params: String| {
         boot.repo
             .harness_item_insert(
-                "runtime-outcome",
+                "runtime-rest",
                 boot.planner_card.id.as_str(),
                 boot.planner_card.track_id.as_str(),
                 "thread-outcome",
@@ -624,6 +632,7 @@ async fn transcript_route_returns_turn_outcome_rows() {
             )
             .await
             .unwrap()
+            .expect("the fixture session is current")
     };
     let item_id = insert(
         "turn-outcome-1",

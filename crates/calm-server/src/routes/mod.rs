@@ -37,6 +37,7 @@ pub mod models;
 pub mod overlays;
 pub mod planner_cards;
 pub mod planner_compact;
+pub mod planner_conversations;
 pub mod planner_input;
 pub mod planner_input_send;
 pub mod planner_model;
@@ -91,6 +92,7 @@ pub fn protected_router() -> Router<AppState> {
         .merge(track_recipes::router())
         .merge(track_templates::router())
         .merge(cards::router())
+        .merge(planner_conversations::router())
         .merge(crate::planner_attachments::routes::router())
         .merge(overlays::router())
         .merge(plugins::router())

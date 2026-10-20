@@ -314,6 +314,23 @@ pub trait RepoRead: Send + Sync + 'static {
         descending: bool,
     ) -> Result<Vec<HarnessItem>>;
 
+    /// [`Self::harness_item_list_transcript_by_card`] bounded to one Planner conversation
+    /// (#2774): `None` reads the current one. `Ok(None)` when the card has no such conversation.
+    async fn planner_conversation_transcript(
+        &self,
+        card_id: &str,
+        conversation: Option<i64>,
+        after_id: i64,
+        limit: i64,
+        descending: bool,
+    ) -> Result<Option<Vec<HarnessItem>>>;
+
+    /// The card's earlier Planner conversations that hold transcript rows, oldest first.
+    async fn planner_conversations_earlier(
+        &self,
+        card_id: &str,
+    ) -> Result<Vec<calm_types::planner_conversation::PlannerConversation>>;
+
     /// Page the `worker_flow_items` capture table for a card; same paging semantics as `harness_item_list_by_card` (rows always ascending regardless of direction).
     async fn worker_flow_item_list_by_card(
         &self,
@@ -600,7 +617,7 @@ pub trait RepoOutOfDomain: RepoRead {
         method: &str,
         params: &str,
         input_segments: Option<&str>,
-    ) -> Result<i64>;
+    ) -> Result<Option<i64>>;
 
     /// Atomically reconcile only receipt-owned item identities in their declared order.
     #[allow(clippy::too_many_arguments)]
@@ -631,21 +648,26 @@ pub trait RepoOutOfDomain: RepoRead {
         thread_id: &str,
         turn_id: &str,
         params: &str,
-    ) -> Result<i64>;
+    ) -> Result<Option<i64>>;
 
+    // Every session-owned transcript write above and below requires the calling session to be the
+    // card's current one (`CURRENT_SESSION_BINDING`): `None` or 0 when it is not.
     // A projection row is a transcript row the KERNEL wrote at queue drain: `method = 'item/completed'`,
     // `item_type = 'userMessage'`, `turn_id IS NULL`, `item_uuid` = the CLIENT id. Nothing codex sends can produce that shape.
-    // Keyed by `card_id`, never `worker_session_id`, because a successor runtime may upgrade the row after a repoint.
+    // Rows stay keyed by `card_id`, never `worker_session_id`, because a successor runtime may upgrade the row after a repoint.
 
     /// The `id` of the projection row for `client_id` on `card_id`, if one stands.
     async fn transcript_projection_id(&self, card_id: &str, client_id: &str)
     -> Result<Option<i64>>;
 
     /// Upgrade the projection row in place with codex's echo (turn, item id, verbatim `params`); `input_segments` is
-    /// untouched. `None` when no projection stands (the echo is then an ordinary insert).
+    /// untouched. `None` when the caller is not current or no projection stands (the echo is then an ordinary insert).
+    #[allow(clippy::too_many_arguments)]
     async fn transcript_projection_upgrade(
         &self,
+        worker_session_id: &str,
         card_id: &str,
+        track_id: &str,
         client_id: &str,
         turn_id: Option<&str>,
         item_uuid: &str,
@@ -653,7 +675,13 @@ pub trait RepoOutOfDomain: RepoRead {
     ) -> Result<Option<i64>>;
 
     /// Remove the projection row for `client_id` — its `turn/start` did not go out. Returns 0 or 1.
-    async fn transcript_projection_delete(&self, card_id: &str, client_id: &str) -> Result<u64>;
+    async fn transcript_projection_delete(
+        &self,
+        worker_session_id: &str,
+        card_id: &str,
+        track_id: &str,
+        client_id: &str,
+    ) -> Result<u64>;
 
     /// Compare and atomically commit one complete source record and its checkpoint.
     async fn worker_flow_capture_commit(

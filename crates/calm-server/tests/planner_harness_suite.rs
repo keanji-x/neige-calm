@@ -85,6 +85,16 @@ mod planner_hold_ask;
 mod planner_input_idempotency;
 #[path = "cases/planner_model_selection.rs"]
 mod planner_model_selection;
+#[path = "cases/planner_new_conversation.rs"]
+mod planner_new_conversation;
+#[path = "cases/planner_new_conversation_cutover.rs"]
+mod planner_new_conversation_cutover;
+#[path = "cases/planner_new_conversation_history_access.rs"]
+mod planner_new_conversation_history_access;
+#[path = "cases/planner_new_conversation_recovery.rs"]
+mod planner_new_conversation_recovery;
+#[path = "cases/planner_new_conversation_wakes.rs"]
+mod planner_new_conversation_wakes;
 #[path = "cases/planner_pending_queue.rs"]
 mod planner_pending_queue;
 #[path = "cases/planner_permission_mode.rs"]

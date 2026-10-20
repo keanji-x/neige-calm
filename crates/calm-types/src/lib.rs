@@ -25,6 +25,7 @@ pub mod model;
 pub mod observation;
 pub mod organization;
 pub mod planner_attachment;
+pub mod planner_conversation;
 pub mod plugin;
 pub mod proposal;
 pub mod read_receipts;

@@ -70,6 +70,16 @@ describe('invalidation plan contract', () => {
     expect(invalidationPlanFor(event).invalidate).toContainEqual(['planner-run', 'card-9']);
   });
 
+  it('refreshes a card\'s transcript and earlier conversations when the card changes (#2774)', () => {
+    const event = {
+      ev: 'card.updated',
+      data: { id: 'card-9', track_id: 'track-1' },
+    } as Extract<WireEvent, { ev: 'card.updated' }>;
+    const keys = invalidationPlanFor(event).invalidate;
+    expect(keys).toContainEqual(['harness-items', 'card-9']);
+    expect(keys).toContainEqual(['planner-conversations', 'card-9']);
+  });
+
   it('refreshes active task diagnostics when a budget or admission setting changes', () => {
     const event = { ev: 'track.updated', data: { id: 'track-7', area_id: 'area-1' } } as Extract<
       WireEvent,

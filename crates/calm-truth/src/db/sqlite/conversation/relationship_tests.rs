@@ -117,6 +117,35 @@ async fn canonical_turn_initial_relationship_checks_kind_with_deferred_child_fir
     }
 }
 
+/// Transcript writers accept only the card's current session (#2774), so the fixture's `runtime`
+/// becomes the card's current one first, as a live start makes it.
+async fn start_runtime(repo: &SqlxRepo, card: &str) {
+    use crate::session_projection_repo::{
+        AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
+    };
+    let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
+    super::super::session_start_runtime_tx(
+        &mut tx,
+        WorkerSessionInit {
+            id: "runtime".into(),
+            card_id: card.into(),
+            kind: WorkerSessionKind::SharedPlanner,
+            agent_provider: Some(AgentProvider::Codex),
+            status: WorkerSessionState::Idle,
+            terminal_run_id: None,
+            thread_id: Some("thread".into()),
+            session_id: None,
+            active_turn_id: None,
+            handle_state_json: None,
+            spawn_op_id: None,
+            now_ms: 1,
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+}
+
 async fn native_fixture() -> (SqlxRepo, String, String, i64) {
     let (repo, _, card) = fixture().await;
     let track: String = sqlx::query_scalar("SELECT track_id FROM cards WHERE id=?1")
@@ -124,6 +153,7 @@ async fn native_fixture() -> (SqlxRepo, String, String, i64) {
         .fetch_one(repo.pool())
         .await
         .unwrap();
+    start_runtime(&repo, &card).await;
     let row = repo
         .harness_item_insert(
             "runtime",
@@ -138,7 +168,8 @@ async fn native_fixture() -> (SqlxRepo, String, String, i64) {
             None,
         )
         .await
-        .unwrap();
+        .unwrap()
+        .expect("the runtime is the card's current session");
     (repo, card, track, row)
 }
 
@@ -260,6 +291,7 @@ async fn canonical_native_presentation_excludes_input_projection_and_its_native_
         .fetch_one(repo.pool())
         .await
         .unwrap();
+    start_runtime(&repo, &card).await;
     let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
     let human = insert_message_tx(
         &mut tx,
@@ -293,7 +325,8 @@ async fn canonical_native_presentation_excludes_input_projection_and_its_native_
             None,
         )
         .await
-        .unwrap();
+        .unwrap()
+        .expect("the runtime is the card's current session");
     let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
     assert!(
         allocate_presentation_tx(
@@ -308,7 +341,9 @@ async fn canonical_native_presentation_excludes_input_projection_and_its_native_
     tx.rollback().await.unwrap();
     assert_eq!(
         repo.transcript_projection_upgrade(
+            "runtime",
             &card,
+            &track,
             "submission-client",
             Some("native-turn"),
             "native-input",
@@ -378,7 +413,8 @@ async fn canonical_native_presentation_keeps_completed_item_when_started_arrives
             None,
         )
         .await
-        .unwrap();
+        .unwrap()
+        .expect("the runtime is the card's current session");
     let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
     assert_eq!(
         allocate_presentation_tx(
@@ -405,7 +441,8 @@ async fn canonical_native_presentation_keeps_completed_item_when_started_arrives
             None,
         )
         .await
-        .unwrap();
+        .unwrap()
+        .expect("the runtime is the card's current session");
     let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
     assert_eq!(
         allocate_presentation_tx(

@@ -402,7 +402,7 @@ impl PlannerFactory<'_> {
             .card_get(&runtime.card_id)
             .await?
             .ok_or_else(|| CalmError::NotFound("conversation disappeared".into()))?;
-        let id = crate::harness::turn_outcome::record(
+        let Some(id) = crate::harness::turn_outcome::record(
             repo,
             &runtime.id,
             &runtime.card_id,
@@ -412,7 +412,10 @@ impl PlannerFactory<'_> {
             turn,
             crate::harness::turn_outcome::Confirmation::ProviderTerminal,
         )
-        .await?;
+        .await?
+        else {
+            return Ok(None);
+        };
         Ok(Some((id, turn_id.to_owned())))
     }
 

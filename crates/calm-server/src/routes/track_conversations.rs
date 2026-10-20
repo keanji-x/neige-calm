@@ -247,6 +247,7 @@ pub(crate) async fn create_track_conversation_inner(
         first_message: Some(text),
         // This route mints no track, so it has no create request to hash.
         create_request_sha256: None,
+        new_conversation: None,
     };
     let wire = match body.provider {
         AssistantProviderRequest::LegacyCodex => None,

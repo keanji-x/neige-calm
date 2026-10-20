@@ -6,6 +6,11 @@ import { useState } from '../../../ui/state/public.ts';
 import { DropdownMenu, DropdownMenuItem } from '@astryxdesign/core/DropdownMenu';
 import { Icon } from '../../../ui/icon/public.tsx';
 import { ConversationGroups } from './groups.tsx';
+import {
+  PlannerConversationAction, PlannerNewConversationError, PlannerNewConversationItem, usePlannerNewConversation,
+  type PlannerNewConversation,
+} from './planner-conversation.tsx';
+import { PLANNER_HISTORY_KIND } from '../../../../../core/domain/planner-conversation.ts';
 import { activityLabelOf, type CardActivity } from '../../../../../core/domain/activity.ts';
 import { conversationName, CONVERSATION_KIND_LABEL, PLANNER_CONVERSATION_KIND, type Conversation } from '../../../../../core/domain/conversation.ts';
 import { deriveConversationList } from '../../../../../core/view/conversation-list.ts';
@@ -34,10 +39,13 @@ export type ChatListProps = Readonly<{
   local?: ChatListLocalEcho | null;
   onOpen: (conversation: Conversation) => void;
   onArchive?: (cardId: string, archived: boolean) => Promise<void>;
+  /** Offered on the Planner row's actions menu where the host can start a new conversation (#2774). */
+  newPlannerConversation?: PlannerNewConversation;
 }>;
 
 export function ChatList({
   conversations, cards, activeId = null, showTrack = true, onOpen, onArchive, unreadIds, awaitingInputIds, local = null, context = false,
+  newPlannerConversation,
 }: ChatListProps) {
   const descriptionPrefix = useId();
   if (conversations.length === 0) return context ? null : <EmptyState variant="compact" icon={<Icon name="chat" />} title="还没有对话" description="在这里发起的对话会显示在列表中。" />;
@@ -56,7 +64,8 @@ export function ChatList({
           const role = CONVERSATION_KIND_LABEL[conversation.kind];
           const contextDescription = [name === role ? null : role, description].filter(Boolean).join(' · ') || null;
           return <li key={conversation.id}>
-          <ContextConversationItem conversation={conversation} onArchive={onArchive} icon={conversation.kind === PLANNER_CONVERSATION_KIND ? 'tasks' : 'chat'} label={name}
+          <ContextConversationItem conversation={conversation} onArchive={onArchive} newPlannerConversation={newPlannerConversation}
+            working={activity === 'working'} icon={conversation.kind === PLANNER_CONVERSATION_KIND || conversation.kind === PLANNER_HISTORY_KIND ? 'tasks' : 'chat'} label={name}
             trailing={activity === 'quiet' ? undefined : <ContextIconSlot><ActivityIndicator state={activity} /></ContextIconSlot>} unread={unread} selected={active} buttonProps={{
             'aria-label': `Conversation ${name}${activity === 'working' ? ', working' : ''}`,
             'aria-current': active ? 'true' : undefined,
@@ -66,8 +75,9 @@ export function ChatList({
           }} metadata={contextDescription === null ? undefined : <span hidden id={descriptionId}>{contextDescription}</span>} />
         </li>;
         }
+        const plannerAction = newPlannerConversation !== undefined && conversation.kind === PLANNER_CONVERSATION_KIND;
         return (
-          <li key={conversation.id} className={`${styles.item} ${onArchive !== undefined && conversation.kind === 'track-assistant' ? styles.withActions : ''}`}>
+          <li key={conversation.id} className={`${styles.item} ${(onArchive !== undefined && conversation.kind === 'track-assistant') || plannerAction ? styles.withActions : ''}`}>
             <button
               type="button"
               data-nc-role="row"
@@ -89,6 +99,8 @@ export function ChatList({
             </button>
             {description !== null && <span hidden id={descriptionId}>{description}</span>}
             {onArchive !== undefined && conversation.kind === 'track-assistant' && <ConversationArchiveAction conversation={conversation} onArchive={onArchive} className={styles.actions} />}
+            {plannerAction && <PlannerConversationAction conversation={conversation} action={newPlannerConversation}
+              working={activity === 'working'} className={styles.actions} />}
             {activity !== 'quiet' && <span className={styles.statusSlot} aria-hidden="true">
               <ActivityIndicator state={activity} />
             </span>}
@@ -152,16 +164,22 @@ export function ArchivedConversationNotice({ conversation, onArchive }: Readonly
 }
 
 /** ContextItem owns the current row/menu/status geometry; this feature owns its action. */
-function ContextConversationItem({ conversation, onArchive, ...props }: React.ComponentProps<typeof ContextItem> & Readonly<{
+function ContextConversationItem({ conversation, onArchive, newPlannerConversation, working, ...props }: React.ComponentProps<typeof ContextItem> & Readonly<{
   conversation: Conversation;
   onArchive?: (cardId: string, archived: boolean) => Promise<void>;
+  newPlannerConversation?: PlannerNewConversation;
+  working: boolean;
 }>) {
   const { pending, error, change } = useArchiveAction(conversation, onArchive);
+  const planner = usePlannerNewConversation(conversation, newPlannerConversation, working);
   const canArchive = onArchive !== undefined && conversation.kind === 'track-assistant';
+  const canStartPlanner = newPlannerConversation !== undefined && conversation.kind === PLANNER_CONVERSATION_KIND;
   return <>
     <ContextItem {...props} menuLabel={`Actions for conversation: ${conversationName(conversation)}`}
       menu={canArchive ? <DropdownMenuItem label={conversation.archivedAt != null ? 'Restore conversation' : 'Archive conversation'}
-        isDisabled={pending} onClick={() => { void change(); }} /> : undefined} />
+        isDisabled={pending} onClick={() => { void change(); }} />
+        : canStartPlanner ? <PlannerNewConversationItem disabled={planner.disabled} onAsk={planner.ask} /> : undefined} />
     {error !== null && <p role="alert" className={styles.archiveError}>{error}</p>}
+    {canStartPlanner && <><PlannerNewConversationError error={planner.error} />{planner.dialog}</>}
   </>;
 }

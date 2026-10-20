@@ -138,6 +138,7 @@ pub(super) async fn transfer_before_issuance(fx: &Fixture) -> PlannerHarness {
         create_card: None,
         first_message: None,
         create_request_sha256: None,
+        new_conversation: None,
         opening_briefing: None,
     })
     .unwrap();

@@ -600,5 +600,46 @@ async fn conversation_reader_rejects_cross_card_cursor() {
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
 }
 
+/// #2774 over #2843: the accepted first message is pending on the canonical carrier, so a new
+/// conversation is refused before anything is quiesced and the carrier keeps it.
+#[tokio::test]
+async fn planner_new_conversation_refuses_a_canonical_pending_human_input_and_keeps_it() {
+    let fixture = Fixture::new().await;
+    let (app, cookie) = fixture.application().await;
+    let (status, track) = post(
+        &app,
+        &cookie,
+        "/api/tracks",
+        "new-conversation-first",
+        fixture.create_body(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{track}");
+    let (card, worker, before) = fixture.carrier(track["id"].as_str().unwrap()).await;
+    assert_eq!(before["canonical_inputs"]["pending"][0]["kind"], "human");
+    let uri = format!("/api/cards/{card}/planner/conversations");
+    let (status, body) = post(&app, &cookie, &uri, "new-conversation", json!({})).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["code"], "conflict", "{body}");
+    assert!(
+        body["error"]
+            .as_str()
+            .is_some_and(|message| message.contains("queued ones included")),
+        "{body}"
+    );
+    assert_eq!(
+        fixture.carrier(track["id"].as_str().unwrap()).await,
+        (card.clone(), worker, before),
+        "the carrier and its pending input are unchanged"
+    );
+    let floors: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM planner_conversation_starts WHERE card_id=?1")
+            .bind(&card)
+            .fetch_one(fixture.repo.pool())
+            .await
+            .unwrap();
+    assert_eq!(floors, 0, "no conversation floor was written");
+}
+
 #[path = "canonical_presentation.rs"]
 mod presentation;

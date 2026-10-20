@@ -1243,6 +1243,7 @@ impl Scheduler {
             create_card: None,
             first_message: None,
             create_request_sha256: None,
+            new_conversation: None,
             // Not a conversation create; nothing to brief.
             opening_briefing: None,
         };

@@ -561,6 +561,32 @@ contentType: string, size: number,
 url: string, };
 
 /**
+ * One earlier, read-only conversation that still has transcript rows.
+ */
+export type PlannerConversation = { ordinal: number, 
+/**
+ * When its floor was written; for conversation 0, its first transcript row.
+ */
+started_at_ms: number, 
+/**
+ * When the next conversation started.
+ */
+ended_at_ms: number, };
+
+/**
+ * The answer of `POST /api/cards/{id}/planner/conversations`, the same body on every replay of its key.
+ */
+export type PlannerConversationStarted = { card_id: CardId, 
+/**
+ * The ordinal of the conversation this request started, now the current one.
+ */
+conversation: number, 
+/**
+ * The provider thread of the new conversation's session.
+ */
+new_thread_id: string, };
+
+/**
  * What a Planner card's provider may do outside its sandbox (#2348, #2441): nothing, what the
  * person allows when asked, or anything, with no sandbox at all. Stored on the card as the server-owned payload key `permission_mode`; every Planner
  * card is created `never`, and only `PUT /api/cards/{id}/planner/permission-mode` changes it.

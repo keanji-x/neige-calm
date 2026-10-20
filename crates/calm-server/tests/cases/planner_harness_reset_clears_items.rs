@@ -154,21 +154,21 @@ async fn reset_planner_card_clears_persisted_harness_items() {
         })
         .to_string();
         seeded_params.push(params.clone());
-        boot.repo
-            .harness_item_insert(
-                "runtime-before-reset",
-                boot.planner_card.id.as_str(),
-                boot.planner_card.track_id.as_str(),
-                "thread-before-reset",
-                Some("turn-before-reset"),
-                Some(&item_uuid),
-                Some("agent_message"),
-                "item/completed",
-                &params,
-                None,
-            )
-            .await
-            .unwrap();
+        // History of a session that is gone, as its stored rows.
+        sqlx::query(
+            "INSERT INTO harness_items (worker_session_id,card_id,track_id,thread_id,turn_id,\
+             item_uuid,item_type,method,params,created_at_ms) VALUES ('runtime-before-reset',\
+             ?1,?2,'thread-before-reset','turn-before-reset',?3,'agent_message',\
+             'item/completed',?4,?5)",
+        )
+        .bind(boot.planner_card.id.as_str())
+        .bind(boot.planner_card.track_id.as_str())
+        .bind(&item_uuid)
+        .bind(&params)
+        .bind(calm_server::model::now_ms())
+        .execute(boot.repo.pool())
+        .await
+        .unwrap();
     }
     assert_eq!(
         boot.repo

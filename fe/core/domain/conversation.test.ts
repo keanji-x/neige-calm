@@ -286,7 +286,7 @@ describe('track conversations', () => {
 /* Every kind says who owns its `state`, and the table is total. */
 describe('CONVERSATION_STATE_SOURCE', () => {
   const KINDS: readonly ConversationKind[] = [
-    'terminal', 'codex', 'claude', 'shared-spec', 'track-assistant',
+    'terminal', 'codex', 'claude', 'shared-spec', 'track-assistant', 'planner-history',
   ];
 
   it('decides every kind, and only those', () => {

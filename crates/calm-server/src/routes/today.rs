@@ -557,6 +557,7 @@ pub(crate) async fn ensure_today_launchpad(
         create_card: None,
         first_message: None,
         create_request_sha256: None,
+        new_conversation: None,
         opening_briefing: None,
     };
     let start_mode = if bootstrap { "bootstrap" } else { "repoint" };

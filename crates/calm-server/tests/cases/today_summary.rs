@@ -928,7 +928,11 @@ async fn a_summary_conversation_with_a_thread_to_preserve_is_dormant_and_keeps_i
     let sentinel = b
         .repo
         .harness_item_insert(
-            "runtime-x",
+            &sqlx::query_scalar::<_, String>("SELECT session_id FROM cards WHERE id=?1")
+                .bind(&card_id)
+                .fetch_one(b.repo.pool())
+                .await
+                .unwrap(),
             &card_id,
             &launchpad,
             "thread-x",
@@ -940,7 +944,8 @@ async fn a_summary_conversation_with_a_thread_to_preserve_is_dormant_and_keeps_i
             None,
         )
         .await
-        .unwrap();
+        .unwrap()
+        .expect("the fixture session is current");
 
     // Dormancy: no session row in an active state, while the retired row keeps its thread.
     sqlx::query("UPDATE worker_sessions SET state = 'exited' WHERE card_id = ?1")

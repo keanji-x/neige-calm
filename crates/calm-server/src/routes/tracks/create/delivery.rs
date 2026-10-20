@@ -131,6 +131,7 @@ pub(super) async fn start_planner_harness_with_first_message(
         // Also carried in the operation payload for its local collision check; the durable
         // authority is the binding row. Other producers leave the field `None`.
         create_request_sha256: Some(create_request_sha256),
+        new_conversation: None,
         // Not a conversation create; nothing to brief.
         opening_briefing: None,
     };

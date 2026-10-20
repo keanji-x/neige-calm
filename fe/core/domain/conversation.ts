@@ -23,9 +23,12 @@ export type SideConversation = Readonly<{ source_card_id: string; context: strin
 
 export const PLANNER_CONVERSATION_KIND = 'shared-spec' as const;
 
-/** What kind of thing the conversation is; `'track-assistant'` is derived server-side from the card's own marker. */
+/**
+ * What kind of thing the conversation is; `'track-assistant'` is derived server-side from the card's own marker, and
+ * `'planner-history'` is an earlier, read-only conversation of a Planner card (#2774, `planner-conversation.ts`).
+ */
 export type ConversationKind =
-  | 'terminal' | 'codex' | 'claude' | 'shared-spec' | 'track-assistant';
+  | 'terminal' | 'codex' | 'claude' | 'shared-spec' | 'track-assistant' | 'planner-history';
 
 /** Mirrors `WorkerSessionState`. */
 export type ConversationState =
@@ -69,6 +72,7 @@ export const CONVERSATION_KIND_LABEL: Readonly<Record<ConversationKind, string>>
   claude: 'Claude',
   'shared-spec': 'Planner',
   'track-assistant': 'Assistant',
+  'planner-history': 'Planner',
 });
 
 /**
@@ -82,6 +86,7 @@ export const CONVERSATION_STATE_SOURCE: Readonly<Record<ConversationKind, 'serve
   claude: 'route',
   'shared-spec': 'route',
   'track-assistant': 'server',
+  'planner-history': 'route',
 });
 
 /** The one name a conversation shows, wherever it is shown. */

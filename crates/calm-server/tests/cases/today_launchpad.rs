@@ -245,7 +245,11 @@ async fn repeated_ensure_preserves_planner_transcript_and_ids_and_singleton() {
     assert_eq!(first_status, StatusCode::CREATED);
     b.repo
         .harness_item_insert(
-            "runtime",
+            &sqlx::query_scalar::<_, String>("SELECT session_id FROM cards WHERE id=?1")
+                .bind(first["planner_card_id"].as_str().unwrap())
+                .fetch_one(b.repo.pool())
+                .await
+                .unwrap(),
             first["planner_card_id"].as_str().unwrap(),
             first["track_id"].as_str().unwrap(),
             "thread",
@@ -257,7 +261,8 @@ async fn repeated_ensure_preserves_planner_transcript_and_ids_and_singleton() {
             None,
         )
         .await
-        .unwrap();
+        .unwrap()
+        .expect("the fixture session is current");
     let (second_status, second) = ensure(b.app.clone()).await;
     assert_eq!(second_status, StatusCode::OK, "body={second}");
     assert_eq!(second, first);
@@ -286,7 +291,11 @@ async fn legacy_today_adoption_resets_planner_transcript_and_preserves_terminal(
         .unwrap();
     b.repo
         .harness_item_insert(
-            "legacy-runtime",
+            &sqlx::query_scalar::<_, String>("SELECT session_id FROM cards WHERE id=?1")
+                .bind(original["planner_card_id"].as_str().unwrap())
+                .fetch_one(b.repo.pool())
+                .await
+                .unwrap(),
             original["planner_card_id"].as_str().unwrap(),
             original["track_id"].as_str().unwrap(),
             "legacy-thread",
@@ -298,7 +307,8 @@ async fn legacy_today_adoption_resets_planner_transcript_and_preserves_terminal(
             None,
         )
         .await
-        .unwrap();
+        .unwrap()
+        .expect("the fixture session is current");
     sqlx::query("UPDATE cards SET payload=?2 WHERE id=?1")
         .bind(original["planner_card_id"].as_str().unwrap())
         .bind(r#"{"schemaVersion":1,"harness":{"snapshotVersion":9,"pendingQueue":["legacy"]}}"#)

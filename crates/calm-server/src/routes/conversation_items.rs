@@ -31,6 +31,10 @@ pub struct HarnessItemsQuery {
     pub limit: Option<i64>,
     #[serde(default)]
     pub direction: HarnessItemsDirection,
+    /// A Planner conversation's ordinal (#2774): 0 is the first, and the current one is the
+    /// default. An earlier conversation is read-only history.
+    #[serde(default)]
+    pub conversation: Option<i64>,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -47,7 +51,7 @@ pub enum ConversationItemsReadResponse {
         (status=400,description="Invalid or mixed cursor",body=ErrorBody),
         (status=401,description="Verified session required",body=ErrorBody),
         (status=403,description="Current Area access refused",body=ErrorBody),
-        (status=404,description="Card not found",body=ErrorBody),
+        (status=404,description="Card or conversation not found",body=ErrorBody),
         (status=409,description="Read contract or canonical source unsupported",body=ErrorBody),
         (status=500,description="Invalid persisted data",body=ErrorBody)))]
 pub(crate) async fn get_harness_items(
@@ -100,7 +104,13 @@ pub(crate) async fn get_harness_items(
             ));
         }
     };
+    let conversation_missing =
+        || CalmError::NotFound(format!("conversation {:?} of card {id}", q.conversation));
     let response = if mode == ConversationCursorSource::Presentation {
+        // A new conversation needs historical storage, so a canonical card has only its first.
+        if q.conversation.is_some_and(|ordinal| ordinal != 0) {
+            return Err(conversation_missing());
+        }
         let mut page = s
             .repo
             .conversation_presentation_page(&id, after, limit, descending)
@@ -112,8 +122,9 @@ pub(crate) async fn get_harness_items(
     } else {
         let mut rows = s
             .repo
-            .harness_item_list_transcript_by_card(&id, after, limit, descending)
-            .await?;
+            .planner_conversation_transcript(&id, q.conversation, after, limit, descending)
+            .await?
+            .ok_or_else(conversation_missing)?;
         for item in &mut rows {
             item.params = crate::planner_attachments::redact_local_image_paths(&item.params);
         }

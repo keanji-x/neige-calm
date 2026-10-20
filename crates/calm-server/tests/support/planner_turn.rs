@@ -34,6 +34,7 @@ pub async fn boot_planner_harness_via_start_op(fx: &Fixture, goal: String) {
         opening_briefing: None,
         first_message: None,
         create_request_sha256: None,
+        new_conversation: None,
     };
     let payload = serde_json::to_value(&request).expect("planner-harness-start payload");
     let payload_hash = stable_payload_hash(&json!({ "request": &request }))

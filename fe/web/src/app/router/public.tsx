@@ -61,6 +61,9 @@ import {
   type CardCreatePort, type CardDraft, type KeyedCardBody,
 } from '../../features/track/new-card/create.ts';
 import { ArchivedConversationNotice, ChatList } from '../../features/chat/list/public.tsx';
+import { PlannerHistoryNotice } from '../../features/chat/list/planner-conversation.tsx';
+import { PLANNER_HISTORY_KIND } from '../../../../core/domain/planner-conversation.ts';
+import { usePlannerConversations, usePlannerHistoryThread, usePlannerNewConversationAction } from '../conversations/planner-conversations.ts';
 import { OutgoingMessage } from '../../features/chat/thread/outgoing-message.tsx';
 import {
   ChatFooterError, ChatFooterNotice, ChatFooterRemedy, ChatThread, ChatEmpty, type ComposerFocusHandle,
@@ -320,7 +323,7 @@ function ShellRoute({ transport, unauthorized, onSignOut }: { transport: ApiTran
 /** Two independent cards share the existing creation/recovery path and registry. */
 function useConversationPanel(
   transport: ApiTransportPort, unauthorized: UnauthorizedChannel, source: ConversationPanelSource,
-  options?: { onArchive?: (cardId: string, archived: boolean) => Promise<void>; terminal?: { workbench: TerminalWorkbench; render: () => ReactNode }; showTrack?: boolean; resizable?: boolean; reportComposer?: Readonly<{ ready: boolean; returnLabel: string }> },
+  options?: { onArchive?: (cardId: string, archived: boolean) => Promise<void>; startPlannerConversation?: (cardId: string) => Promise<void>; terminal?: { workbench: TerminalWorkbench; render: () => ReactNode }; showTrack?: boolean; resizable?: boolean; reportComposer?: Readonly<{ ready: boolean; returnLabel: string }> },
 ) {
   const registry = useConversationCommands();
   const compact = useCompactViewport();
@@ -328,7 +331,8 @@ function useConversationPanel(
   const mainTarget = useConversationPaneTarget(source.scopeId, source.rows);
   const parentId = mainTarget[0]?.kind === 'row' ? mainTarget[0].id : null;
   const lastMainRow = useRef<string | null>(null);
-  useEffect(() => { if (parentId !== null) lastMainRow.current = parentId; }, [parentId]);
+  // An earlier Planner conversation is read-only, so the phone's dock never returns to it.
+  useEffect(() => { if (parentId !== null && source.rows.find(row => row.id === parentId)?.kind !== PLANNER_HISTORY_KIND) lastMainRow.current = parentId; }, [parentId, source.rows]);
   const dockOwnerId = parentId ?? (compact && options?.reportComposer !== undefined
     ? source.rows.find((row) => row.id === lastMainRow.current)?.id ?? source.planner?.cardId ?? source.rows[0]?.id ?? null
     : null);
@@ -385,7 +389,7 @@ function useConversationPane(
   unauthorized: UnauthorizedChannel,
   source: ConversationPanelSource,
   target: ReturnType<typeof useConversationPaneTarget>,
-  options?: { onArchive?: (cardId: string, archived: boolean) => Promise<void>; onTerminal?: () => void; retainCompanion?: boolean; companionVisible?: boolean; reportComposer?: Readonly<{ ready: boolean; returnLabel: string; conversationId: string | null }>; showSideCommand?: boolean; stacked?: boolean; sideError?: string | null; ownedCardIds?: readonly string[]; showTrack?: boolean; resizable?: boolean; inline?: boolean; slotId?: string; enabled?: boolean; presented?: boolean;
+  options?: { onArchive?: (cardId: string, archived: boolean) => Promise<void>; startPlannerConversation?: (cardId: string) => Promise<void>; onTerminal?: () => void; retainCompanion?: boolean; companionVisible?: boolean; reportComposer?: Readonly<{ ready: boolean; returnLabel: string; conversationId: string | null }>; showSideCommand?: boolean; stacked?: boolean; sideError?: string | null; ownedCardIds?: readonly string[]; showTrack?: boolean; resizable?: boolean; inline?: boolean; slotId?: string; enabled?: boolean; presented?: boolean;
     companion?: (group: PaneResizeGroup) => React.ReactNode; onSide?: (source: Conversation, entries: readonly TranscriptEntry[], question: string) => void | boolean },
 ) {
   /* Existing conversation selection survives navigation; unfinished drafts
@@ -419,7 +423,8 @@ function useConversationPane(
     ? source.scopeOf(composerRowId)
     : null;
   // Shared cache with the Track route, also available for Today and side conversations.
-  const imageTrackId = scope?.id ?? null;
+  const imageTrackId = scope?.id
+    ?? source.rows.find(row => row.id === openRowId && row.kind === PLANNER_HISTORY_KIND)?.trackId ?? null;
   const imageTrack = useQuery({
     ...trackDetailQueryOptions(transport, imageTrackId ?? '', unauthorized),
     enabled: imageTrackId !== null && source.workspaceRoot === null,
@@ -438,6 +443,8 @@ function useConversationPane(
 
   const rows = source.rows;
   const store = useConversationStore(transport, unauthorized, scope, routeIntent);
+  /* An earlier Planner conversation (#2774) has no store scope: it reads its own transcript and nothing else. */
+  const plannerHistory = usePlannerHistoryThread(transport, unauthorized, rows.find(row => row.id === openRowId) ?? null);
   /* `@` and the Planner's questions only in the Planner's own row; the track the drawer is on ranks its blocks first. */
   const plannerRow = source.planner !== null && openRowId === source.planner.cardId ? source.planner : null;
   const mentionTrigger = useMentionTrigger(useMentionSearch(transport, unauthorized,
@@ -506,15 +513,17 @@ function useConversationPane(
   const chatLinks = useConversationLinks({ transport, unauthorized, conversationId: openRowId, trackId: imageTrackId,
     root: imageRoot, files: conversationFiles, onOpenLink: openChatLink, onOpenFile: openChatFile });
   const open = store.conversations.find((conversation) => conversation.id === openRowId) ?? null;
-  const openTurns = open === null ? [] : store.turns;
+  const openTurns = open === null ? [] : plannerHistory?.turns ?? store.turns;
+  const shownHistoryReady = plannerHistory?.ready ?? store.historyReady;
+  const shownHistoryError = plannerHistory === null ? store.historyError : plannerHistory.error;
   const hasPendingMessages = store.pendingQueue.length > 0 || store.pendingSends.length > 0 || store.pendingQueueOverflow > 0 || store.pendingInputs.length > 0;
   const threadAvailable = open !== null
-    && (store.historyReady || openTurns.length > 0 || hasPendingMessages || store.stalled || store.stopFeedback !== null);
+    && (shownHistoryReady || openTurns.length > 0 || hasPendingMessages || store.stalled || store.stopFeedback !== null);
   const threadPresented = useContentAdmission(open?.id ?? null, threadAvailable);
   const outgoingPreview = open === null || threadPresented ? undefined : openTurns.findLast((entry): entry is ConversationTurn & { author: 'you' | 'human' | 'unknown' } =>
     isUserConversationTurn(entry) && entry.text !== '' && (entry.attachments?.length ?? 0) === 0);
   const conversationBodyVisible = hasPendingMessages || (threadPresented ? openTurns.length > 0 : outgoingPreview !== undefined);
-  const threadStatusUnconfirmed = !store.runReady || store.runError !== null;
+  const threadStatusUnconfirmed = plannerHistory === null && (!store.runReady || store.runError !== null);
   const sideSourceReady = threadPresented && store.historyReady;
   /* While an Edit is held nothing else acts on the conversation; its replace, once sent, blocks as any send does. */
   const respondable = canContinue && edit.held === null;
@@ -576,9 +585,11 @@ function useConversationPane(
     if (open !== null && store.failedSend !== null && store.retrySend(store.failedSend.key)) focusComposer(open.id);
   });
   const threadReadingView = useThreadReadingView(composerId);
-  const historyPrefetch = useMemo(() => ({ active: panePresented, cursor: store.earlierCursor,
-    busy: store.historyLoading, failed: store.historyError !== null, load: store.loadEarlier }),
-  [panePresented, store.earlierCursor, store.historyLoading, store.historyError, store.loadEarlier]);
+  const historyPrefetch = useMemo(() => plannerHistory !== null ? { active: panePresented, cursor: plannerHistory.earlier.cursor,
+    busy: plannerHistory.loading, failed: plannerHistory.error !== null, load: plannerHistory.earlier.load }
+    : { active: panePresented, cursor: store.earlierCursor,
+      busy: store.historyLoading, failed: store.historyError !== null, load: store.loadEarlier },
+  [panePresented, plannerHistory, store.earlierCursor, store.historyLoading, store.historyError, store.loadEarlier]);
   const newConversation = useCommittedCallback(existingId, startAnother);
   const interrupt = useCommittedCallback(existingId, store.interrupt);
   const compact = useCommittedCallback(existingId, store.compact);
@@ -788,7 +799,10 @@ function useConversationPane(
                   ? current : { ...current, model, provider })}
                 isDisabled={creating || draft.submitted !== null || !supportsDraftModel || !managed.supportsAssistantProviders} />} />
           </>
-        ) : open === null ? undefined : archived ? (
+        ) : open === null ? undefined : plannerHistory !== null ? (
+          <>{plannerHistory.error !== null && <ErrorBox message={plannerHistory.error} pending={plannerHistory.loading}
+            actionLabel="Reload history" onRetry={plannerHistory.retry} />}<PlannerHistoryNotice key={open.id} /></>
+        ) : archived ? (
           <>{readError}<ArchivedConversationNotice key={open.id} conversation={open} onArchive={options?.onArchive} /></>
         ) : (
           <>
@@ -876,7 +890,7 @@ function useConversationPane(
           </>)}
         {open !== null && (
           <>
-            {!conversationBodyVisible && (!threadPresented || !store.historyReady) && store.historyError === null && (
+            {!conversationBodyVisible && (!threadPresented || !shownHistoryReady) && shownHistoryError === null && (
               <p role="status">Loading conversation…</p>
             )}
             {/* Keyed on the conversation: the drawer stays mounted across a switch, and
@@ -929,12 +943,13 @@ function useConversationPane(
   const unreadIds = useMemo(() => new Set(rows.filter(row => receipts.isUnread('conversation', row.id,
     row.lastTurnCompletedAt ?? null)).map(row => row.id)), [rows, receipts]);
   const pendingInputCardId = source.planner !== null && source.planner.asks.length > 0 ? source.planner.cardId : null;
+  const newPlannerConversation = usePlannerNewConversationAction(options?.startPlannerConversation, source.planner?.cardId ?? null, existingId, store);
   const listProps = useMemo(() => ({
     conversations: store.conversations, cards: source.cards, unreadIds, activeId: existingId,
     awaitingInputIds: new Set(pendingInputCardId === null ? [] : [pendingInputCardId]),
     local: existingId === null ? null : { id: existingId, working: store.working, stalled: store.stalled || store.executionHeld },
-    showTrack: options?.showTrack ?? true, onOpen: openConversation, onArchive: options?.onArchive,
-  }), [store.conversations, source.cards, unreadIds, pendingInputCardId, existingId, store.working, store.stalled, store.executionHeld, options?.showTrack, options?.onArchive, openConversation]);
+    showTrack: options?.showTrack ?? true, onOpen: openConversation, onArchive: options?.onArchive, newPlannerConversation,
+  }), [store.conversations, source.cards, unreadIds, pendingInputCardId, existingId, store.working, store.stalled, store.executionHeld, options?.showTrack, options?.onArchive, newPlannerConversation, openConversation]);
   const listNode = useMemo(() => <ChatList {...listProps} />, [listProps]);
   const contextList = useMemo(() => <ChatList {...listProps} context />, [listProps]);
 
@@ -967,6 +982,7 @@ function useConversationPane(
     list: listNode,
     contextList,
     openConversation,
+    newPlannerConversation,
     startConversation: start,
     drawer: renderDrawer(),
     drawerFor: renderDrawer,
@@ -1147,9 +1163,11 @@ function TrackRouteBody({
     () => assistantRows.map((row) => ({ ...row, trackTitle })),
     [assistantRows, trackTitle],
   );
+  const plannerConversations = usePlannerConversations({ transport, unauthorized, trackId: track.id, trackTitle,
+    planner: plannerRow === null ? null : { cardId: plannerRow.id, provider: plannerRow.provider } });
   const rows = useMemo<readonly Conversation[]>(
-    () => plannerRow === null ? placedRows : [plannerRow, ...placedRows],
-    [placedRows, plannerRow],
+    () => plannerRow === null ? placedRows : [plannerRow, ...placedRows, ...plannerConversations.rows],
+    [placedRows, plannerRow, plannerConversations.rows],
   );
   const openAsks = useMemo(() => openAsksOf(track.attentionItems), [track.attentionItems]);
   /* The runtime half of the TASKS panel, keyed `['track-report', trackId]`: the key
@@ -1226,7 +1244,8 @@ function TrackRouteBody({
         const row = rows.find(candidate => candidate.id === conversationId);
         /* `id: row.trackId`, never `track.id`: this is the line the `rememberOn`
          * comparison rests on, and written the other way it would be a tautology. */
-        return row === undefined ? null : {
+        /* An earlier Planner conversation is not a scope: nothing is sent to it and its run is not read. */
+        return row === undefined || row.kind === PLANNER_HISTORY_KIND ? null : {
           id: row.trackId,
           provider: row.provider,
           title: trackTitle, cardId: row.id, cardTitle: row.title,
@@ -1242,11 +1261,11 @@ function TrackRouteBody({
         role: plannerRole,
       },
     },
-    { onArchive: conversationMutations.archive, terminal: { workbench, render: () => <TerminalWorkbenchView workbench={workbench} host={cardRuntime.host}
+    { onArchive: conversationMutations.archive, startPlannerConversation: plannerConversations.start, terminal: { workbench, render: () => <TerminalWorkbenchView workbench={workbench} host={cardRuntime.host}
       items={workbench.ordinaryHost ? [] : gridItems.filter(item => workbench.cardIds.has(item.card.id))} visible={!compactViewport && workbench.open}
       onRemove={cardDeletion.request} /> }, showTrack: false, reportComposer: { ready: plannerCard !== undefined || conversationsQuery.isSuccess, returnLabel: routePanel === 'conversations' ? 'Conversations' : 'Report' } },
   );
-  useMobileConversationOwner({ track, conversations: rows, onArchive: conversationMutations.archive, onNew: chat.startConversation,
+  useMobileConversationOwner({ track, conversations: rows, onArchive: conversationMutations.archive, newPlannerConversation: chat.newPlannerConversation, onNew: chat.startConversation,
     selectedConversationId: chat.selectedConversationId, onClose: chat.close, onOpen: chat.openConversation, conversationOpen: chat.isOpen });
   /* The fallback clear: a request for a card this track has, while the list that
    * would open it could not be read. Not "the read failed", which would also

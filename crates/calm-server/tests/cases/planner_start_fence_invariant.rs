@@ -55,8 +55,9 @@ const ALLOWED: &[(&str, usize, usize, &str)] = &[
     (
         "src/operation/planner_start_fence.rs",
         0,
-        3,
-        "the fence: the only submit, and its read-only unfinished-start archive admission",
+        5,
+        "the fence: the only submit, its read-only unfinished-start archive admission, and the \
+         read-only keyed-start replay and stored-answer reads of a new Planner conversation",
     ),
 ];
 

@@ -81,6 +81,10 @@ pub async fn observe_native_item_tx(
         None,
     )
     .await?;
+    // The carrier is the card's current session, so the fence never drops this write.
+    let Some(row) = row else {
+        return Ok(None);
+    };
     let sequence = allocate_presentation_tx(
         tx,
         carrier.card_id(),

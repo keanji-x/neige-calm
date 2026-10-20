@@ -96,6 +96,18 @@ pub trait ServerRepoReadExt {
         limit: i64,
         descending: bool,
     ) -> Result<Vec<HarnessItem>>;
+    async fn planner_conversation_transcript(
+        &self,
+        card_id: &str,
+        conversation: Option<i64>,
+        after_id: i64,
+        limit: i64,
+        descending: bool,
+    ) -> Result<Option<Vec<HarnessItem>>>;
+    async fn planner_conversations_earlier(
+        &self,
+        card_id: &str,
+    ) -> Result<Vec<calm_types::planner_conversation::PlannerConversation>>;
     async fn overlays_for(&self, entity_kind: &str, entity_id: &str) -> Result<Vec<Overlay>>;
     async fn overlays_by_kind(&self, entity_kind: &str) -> Result<Vec<Overlay>>;
     async fn terminal_get(&self, id: &str) -> Result<Option<Terminal>>;
@@ -341,6 +353,33 @@ where
         )
         .await
         .map_err(Into::into)
+    }
+    async fn planner_conversation_transcript(
+        &self,
+        card_id: &str,
+        conversation: Option<i64>,
+        after_id: i64,
+        limit: i64,
+        descending: bool,
+    ) -> Result<Option<Vec<HarnessItem>>> {
+        calm_truth::db::RepoRead::planner_conversation_transcript(
+            self,
+            card_id,
+            conversation,
+            after_id,
+            limit,
+            descending,
+        )
+        .await
+        .map_err(Into::into)
+    }
+    async fn planner_conversations_earlier(
+        &self,
+        card_id: &str,
+    ) -> Result<Vec<calm_types::planner_conversation::PlannerConversation>> {
+        calm_truth::db::RepoRead::planner_conversations_earlier(self, card_id)
+            .await
+            .map_err(Into::into)
     }
     async fn overlays_for(&self, entity_kind: &str, entity_id: &str) -> Result<Vec<Overlay>> {
         calm_truth::db::RepoRead::overlays_for(self, entity_kind, entity_id)
@@ -794,7 +833,7 @@ pub trait ServerRepoOutOfDomainExt: ServerRepoReadExt {
         method: &str,
         params: &str,
         input_segments: Option<&str>,
-    ) -> Result<i64>;
+    ) -> Result<Option<i64>>;
     async fn transcript_rows_of_thread(
         &self,
         card_id: &str,
@@ -808,18 +847,27 @@ pub trait ServerRepoOutOfDomainExt: ServerRepoReadExt {
         thread_id: &str,
         turn_id: &str,
         params: &str,
-    ) -> Result<i64>;
+    ) -> Result<Option<i64>>;
     async fn transcript_projection_id(&self, card_id: &str, client_id: &str)
     -> Result<Option<i64>>;
+    #[allow(clippy::too_many_arguments)]
     async fn transcript_projection_upgrade(
         &self,
+        worker_session_id: &str,
         card_id: &str,
+        track_id: &str,
         client_id: &str,
         turn_id: Option<&str>,
         item_uuid: &str,
         params: &str,
     ) -> Result<Option<i64>>;
-    async fn transcript_projection_delete(&self, card_id: &str, client_id: &str) -> Result<u64>;
+    async fn transcript_projection_delete(
+        &self,
+        worker_session_id: &str,
+        card_id: &str,
+        track_id: &str,
+        client_id: &str,
+    ) -> Result<u64>;
     async fn plugin_install(&self, p: NewPlugin) -> Result<Plugin>;
     async fn plugin_update_enabled(&self, id: &str, enabled: bool) -> Result<Plugin>;
     async fn plugin_update_user_config(
@@ -934,7 +982,7 @@ where
         method: &str,
         params: &str,
         input_segments: Option<&str>,
-    ) -> Result<i64> {
+    ) -> Result<Option<i64>> {
         calm_truth::db::RepoOutOfDomain::harness_item_insert(
             self,
             worker_session_id,
@@ -968,7 +1016,7 @@ where
         thread_id: &str,
         turn_id: &str,
         params: &str,
-    ) -> Result<i64> {
+    ) -> Result<Option<i64>> {
         calm_truth::db::RepoOutOfDomain::harness_turn_outcome_put(
             self,
             worker_session_id,
@@ -990,24 +1038,46 @@ where
             .await
             .map_err(Into::into)
     }
+    #[allow(clippy::too_many_arguments)]
     async fn transcript_projection_upgrade(
         &self,
+        worker_session_id: &str,
         card_id: &str,
+        track_id: &str,
         client_id: &str,
         turn_id: Option<&str>,
         item_uuid: &str,
         params: &str,
     ) -> Result<Option<i64>> {
         calm_truth::db::RepoOutOfDomain::transcript_projection_upgrade(
-            self, card_id, client_id, turn_id, item_uuid, params,
+            self,
+            worker_session_id,
+            card_id,
+            track_id,
+            client_id,
+            turn_id,
+            item_uuid,
+            params,
         )
         .await
         .map_err(Into::into)
     }
-    async fn transcript_projection_delete(&self, card_id: &str, client_id: &str) -> Result<u64> {
-        calm_truth::db::RepoOutOfDomain::transcript_projection_delete(self, card_id, client_id)
-            .await
-            .map_err(Into::into)
+    async fn transcript_projection_delete(
+        &self,
+        worker_session_id: &str,
+        card_id: &str,
+        track_id: &str,
+        client_id: &str,
+    ) -> Result<u64> {
+        calm_truth::db::RepoOutOfDomain::transcript_projection_delete(
+            self,
+            worker_session_id,
+            card_id,
+            track_id,
+            client_id,
+        )
+        .await
+        .map_err(Into::into)
     }
     async fn plugin_install(&self, p: NewPlugin) -> Result<Plugin> {
         calm_truth::db::RepoOutOfDomain::plugin_install(self, p)

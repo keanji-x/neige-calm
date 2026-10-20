@@ -376,6 +376,8 @@ impl Logs {
 }
 
 const REFUSED: &str = "refused to ask the user a provider question";
+/// The run loop's refusal of a frame whose transcript write the current-session fence dropped.
+const NOT_CURRENT: &str = "is no longer the conversation's current session";
 
 #[tokio::test]
 async fn a_planner_native_question_becomes_one_open_ask() {
@@ -479,6 +481,7 @@ async fn the_entry_asks_once_per_item_inside_its_transaction() {
 /// conversation reports in between is not the card's to ask.
 #[tokio::test]
 async fn a_superseded_session_asks_nothing() {
+    let (logs, _guard) = Logs::capture();
     let rig = rig(Profile::Planner).await;
     let mut tx = begin_immediate_tx(rig.repo.db()).await.unwrap();
     session_prepare_deferred_planner_tx(
@@ -512,8 +515,18 @@ async fn a_superseded_session_asks_nothing() {
     assert_eq!(old.state, WorkerSessionState::Superseded);
 
     rig.emit("item/completed", captured_params());
-    rig.settle().await;
-    assert!(rig.item_added(ITEM_ID).await, "the reply is stored");
+    // The current-session fence drops every transcript write of a superseded session (#2774), so
+    // no sentinel row can mark the barrier; frames are handled in order, and each one is refused.
+    rig.emit(
+        "item/completed",
+        json!({ "threadId": THREAD, "turnId": "turn-sentinel",
+            "item": { "id": "sentinel", "type": "agentMessage", "text": "sentinel" } }),
+    );
+    wait_for("both frames to be refused", || async {
+        logs.text().matches(NOT_CURRENT).count() == 2
+    })
+    .await;
+    assert!(!rig.item_added(ITEM_ID).await, "the reply is not stored");
     let asks = rig.asks().await;
     assert!(asks.is_empty(), "{asks:?}");
     rig.harness.shutdown().await.unwrap();

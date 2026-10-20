@@ -122,7 +122,7 @@ it('uses Escape to close Planner before its Conversations page', async () => {
   await page.viewport(390, 844);
   const router = setup('/track/w1');
   await router.navigate({ to: '/track/w1', search: { panel: 'conversations' } });
-  await page.getByRole('button', { name: /Design review/ }).click();
+  await page.getByRole('button', { name: /^Conversation Design review/ }).click();
   await page.getByRole('button', { name: 'Close conversation', exact: true }).findElement();
   await page.elementLocator(document.querySelector('[data-nc-mobile-chat-panel]')!).getByRole('heading', { name: 'Responsive mobile UI', exact: true }).findElement();
   await userEvent.keyboard('{Escape}');
@@ -130,7 +130,7 @@ it('uses Escape to close Planner before its Conversations page', async () => {
   expect(router.state.location.search).toHaveProperty('panel', 'conversations');
   await expect.element(page.getByRole('heading', { name: 'Conversations', exact: true })).toBeVisible();
   await expect.poll(() => document.querySelector('[data-nc-mobile-chat-panel]')?.closest('dialog')?.open).toBe(false);
-  await expect.poll(() => document.activeElement).toBe(await page.getByRole('button', { name: /Design review/ }).findElement());
+  await expect.poll(() => document.activeElement).toBe(await page.getByRole('button', { name: /^Conversation Design review/ }).findElement());
   await userEvent.keyboard('{Escape}');
   await settlePaint();
   expect(router.state.location.search).not.toHaveProperty('panel');

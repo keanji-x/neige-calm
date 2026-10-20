@@ -154,7 +154,7 @@ pub(super) async fn context(
 mod tests {
     use super::super::session_conversation_tests::card;
     use super::*;
-    use crate::db::{RepoOutOfDomain, RepoRead};
+    use crate::db::RepoRead;
     use serde_json::json;
 
     pub(super) async fn insert(
@@ -164,18 +164,17 @@ mod tests {
         segments: Option<serde_json::Value>,
         text: &str,
     ) -> i64 {
-        repo.harness_item_insert(
-            "retired",
-            card,
-            track,
-            "thread",
-            None,
-            None,
-            Some("userMessage"),
-            "item/completed",
-            &json!({"item":{"content":[{"text":text}]}}).to_string(),
-            segments.map(|s| s.to_string()).as_deref(),
+        // History a retired session left: written as stored rows, since no session writes for it now.
+        sqlx::query_scalar(
+            "INSERT INTO harness_items (worker_session_id,card_id,track_id,thread_id,item_type,\
+             method,params,input_segments,created_at_ms) \
+             VALUES ('retired',?1,?2,'thread','userMessage','item/completed',?3,?4,0) RETURNING id",
         )
+        .bind(card)
+        .bind(track)
+        .bind(json!({"item":{"content":[{"text":text}]}}).to_string())
+        .bind(segments.map(|s| s.to_string()))
+        .fetch_one(repo.db().writer_pool())
         .await
         .unwrap()
     }
@@ -340,20 +339,14 @@ mod tests {
                 .any(|line| line.contains("SCAN candidate") || line.starts_with("SCAN h")),
             "{details:?}"
         );
-        let mut tx = repo.db().writer_pool().begin().await.unwrap();
-        assert_eq!(
-            super::super::transcript_delete_thread_suffix_tx(
-                &mut tx,
-                &a,
-                "thread",
-                first - 1,
-                first,
-            )
+        // The rewind's cut, as stored rows: no session of this card is current.
+        let cut = sqlx::query("DELETE FROM harness_items WHERE card_id=?1 AND id=?2")
+            .bind(&a)
+            .bind(first)
+            .execute(repo.db().writer_pool())
             .await
-            .unwrap(),
-            1
-        );
-        tx.commit().await.unwrap();
+            .unwrap();
+        assert_eq!(cut.rows_affected(), 1);
         let replaced = repo.conversation_title_context(&[a]).await.unwrap().sources;
         assert_eq!(
             replaced[0].input.as_ref().unwrap().title(),

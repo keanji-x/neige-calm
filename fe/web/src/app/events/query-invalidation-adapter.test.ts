@@ -44,6 +44,7 @@ describe('query invalidation adapter', () => {
     expect(mapPlannedQueryKey(['overlays', 'card'])).toEqual(queryKeys.overlaysByKind('card'));
     expect(mapPlannedQueryKey(['harness-items', 'card-1'])).toEqual(queryKeys.harnessItems('card-1'));
     expect(mapPlannedQueryKey(['planner-run', 'card-1'])).toEqual(queryKeys.plannerRun('card-1'));
+    expect(mapPlannedQueryKey(['planner-conversations', 'card-1'])).toEqual(queryKeys.plannerConversations('card-1'));
     expect(mapPlannedQueryKey(['track-report', 'w1'])).toEqual(queryKeys.trackReport('w1'));
     expect(mapPlannedQueryKey(['track-report'])).toEqual(queryKeys.trackReportPrefix());
     expect(mapPlannedQueryKey(['track-conversations'])).toEqual(queryKeys.trackConversationsPrefix());

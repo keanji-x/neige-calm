@@ -327,7 +327,8 @@ async fn the_transcript_route_does_not_carry_the_local_image_host_path() {
             None,
         )
         .await
-        .unwrap();
+        .unwrap()
+        .expect("the fixture session is current");
 
     let (status, items) = get(
         boot.app.clone(),

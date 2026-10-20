@@ -1,9 +1,10 @@
 import { ConversationGroups } from '../../features/chat/list/groups.tsx';
 import { ConversationArchiveAction } from '../../features/chat/list/public.tsx';
+import { PlannerConversationAction, type PlannerNewConversation } from '../../features/chat/list/planner-conversation.tsx';
 import { trackEmptyContent } from './track-empty-content.tsx';
 import { EmptyState } from '../../ui/empty-state/public.tsx';
 import { mobileFontClassName } from '../../ui/mobile-font/public.ts';
-import { useCallback, useRef } from 'react';
+import { useCallback, useMemo, useRef } from 'react';
 import { useState } from '../../ui/state/public.ts';
 import type { Track } from '../../../../core/domain/track.ts';
 import { MobileTrackList } from './mobile-track-list.tsx';
@@ -37,7 +38,7 @@ function groupName(at: number, now: number): string {
   return at >= today.getTime() ? '今天' : at >= yesterday.getTime() ? '昨天' : '更早';
 }
 
-export function MobileHistory({ open, onOpenChange, conversations, loading, failed, onRetry, onNew, onSelect, onArchive,
+export function MobileHistory({ open, onOpenChange, conversations, loading, failed, onRetry, onNew, onSelect, onArchive, newPlannerConversation,
   onOpenSettings, accountLabel, accountInitial, onSignOut, now, scopeLabel, selectedConversationId, trackGroups, currentTrackId, onOpenTrack, isUnread, tracksLoading, tracksError, onRetryTracks }: Readonly<{
   selectedConversationId: string | null;
   trackGroups: Pick<SidebarTrackGroups, 'pinned' | 'unread' | 'waiting'>;
@@ -56,6 +57,7 @@ export function MobileHistory({ open, onOpenChange, conversations, loading, fail
   onNew: (() => void) | null;
   onSelect: (conversation: Conversation) => void;
   onArchive?: (cardId: string, archived: boolean) => Promise<void>;
+  newPlannerConversation?: PlannerNewConversation;
   onOpenSettings: () => void;
   scopeLabel: string;
   accountLabel: string;
@@ -76,6 +78,11 @@ export function MobileHistory({ open, onOpenChange, conversations, loading, fail
     node?.addEventListener('close', didClose);
   }, [didClose]);
   const leave = (action: () => void) => { afterClose.current = action; onOpenChange(false); };
+  /* The confirmation cannot open over this modal drawer, so the drawer steps aside first and comes back to say a refusal. */
+  const plannerAction = useMemo(() => newPlannerConversation === undefined ? undefined : {
+    ...newPlannerConversation,
+    start: (cardId: string) => newPlannerConversation.start(cardId).catch((failure: unknown) => { onOpenChange(true); throw failure; }),
+  }, [newPlannerConversation, onOpenChange]);
   return <MobileNav id="mobile-conversation-history" ref={captureDialog} isOpen={open} onOpenChange={onOpenChange} side="start" width={320}
     label={view === 'current' ? '历史对话' : VIEW_LABELS[view]} header={<span className={styles.drawerHeading}>{view === 'current' ? '历史对话' : VIEW_LABELS[view]}</span>} className={`${styles.drawer} ${mobileFontClassName}`}
     >
@@ -117,6 +124,8 @@ export function MobileHistory({ open, onOpenChange, conversations, loading, fail
                 </button>
                 {onArchive !== undefined && row.kind === 'track-assistant' && <ConversationArchiveAction
                   conversation={row} onArchive={onArchive} className={styles.conversationActions} />}
+                {plannerAction !== undefined && row.kind === PLANNER_CONVERSATION_KIND && <PlannerConversationAction
+                  conversation={row} action={plannerAction} beforeAsk={leave} className={styles.conversationActions} />}
                 </div>)}
               </section>)}
             </>;

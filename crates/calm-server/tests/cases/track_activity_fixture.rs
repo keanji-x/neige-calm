@@ -653,6 +653,7 @@ impl Fx {
             .harness_turn_outcome_put(ws, card, track, "th-fixture", turn_id, &turn.to_string())
             .await
             .unwrap()
+            .expect("the fixture session is current")
     }
 
     /// One `item/*` transcript row through the item writer. Returns the row id.
@@ -682,6 +683,7 @@ impl Fx {
             )
             .await
             .unwrap()
+            .expect("the fixture session is current")
     }
 
     /// The Planner card `card` (session `ws`) asks one question per title through the shared entry

@@ -25,8 +25,9 @@ export const conversationPageSchema: z.ZodType<ConversationPage> = z.object({
   ]) }).strict()), next_cursor: conversationCursorSchema.nullable(),
 }).strict();
 
-export function conversationItemsOperation(card: string, cursor: ConversationCursor | null): ApiOperation<ConversationPage> {
-  return { method:'GET', path:`/api/cards/${encodeURIComponent(card)}/harness/items?contract=conversation_v1&direction=desc&limit=${TRANSCRIPT_PAGE_LIMIT}${cursor === null ? '' : `&cursor=${encodeURIComponent(JSON.stringify(cursor))}`}`,
+/** `conversation` reads an earlier Planner conversation by its ordinal (#2774); absent, the current one. */
+export function conversationItemsOperation(card: string, cursor: ConversationCursor | null, conversation?: number): ApiOperation<ConversationPage> {
+  return { method:'GET', path:`/api/cards/${encodeURIComponent(card)}/harness/items?contract=conversation_v1&direction=desc&limit=${TRANSCRIPT_PAGE_LIMIT}${cursor === null ? '' : `&cursor=${encodeURIComponent(JSON.stringify(cursor))}`}${conversation === undefined ? '' : `&conversation=${conversation}`}`,
     responseSchema:conversationPageSchema.refine(page => page.items.every(item => item.cursor.card_id === card
       && item.cursor.source === page.source && (page.source === 'historical_raw'
         ? item.source.kind === 'historical_raw' : item.source.kind !== 'historical_raw'))

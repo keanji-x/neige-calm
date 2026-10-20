@@ -289,6 +289,7 @@ async fn atomic_replace(f: Fixture) {
     let (schedule, ready, committed) = f.schedule().await;
     let writer = f.writer.clone();
     let card = f.card.clone();
+    let track = f.track.clone();
     let write = tokio::spawn(async move {
         tokio::task::spawn_blocking(move || ready.recv_timeout(Duration::from_secs(10)).unwrap())
             .await
@@ -297,9 +298,17 @@ async fn atomic_replace(f: Fixture) {
         let mut tx = super::super::begin_immediate_tx(writer.db()).await.unwrap();
         // Same transaction boundary as replace_command: cut transcript and persist pending.
         assert_eq!(
-            super::super::transcript_delete_thread_suffix_tx(&mut tx, &card, "thread", 0, old,)
-                .await
-                .unwrap(),
+            super::super::transcript_delete_thread_suffix_tx(
+                &mut tx,
+                "title-runtime",
+                &card,
+                &track,
+                "thread",
+                0,
+                old,
+            )
+            .await
+            .unwrap(),
             1
         );
         super::super::session_set_handle_state_tx(
@@ -361,6 +370,7 @@ async fn conversation_title_snapshot_candidate_batches_do_not_drift() {
     let (schedule, ready, committed) = f.schedule().await;
     let writer = f.writer.clone();
     let card = f.card.clone();
+    let track = f.track.clone();
     let write = tokio::spawn(async move {
         tokio::task::spawn_blocking(move || ready.recv_timeout(Duration::from_secs(10)).unwrap())
             .await
@@ -370,7 +380,9 @@ async fn conversation_title_snapshot_candidate_batches_do_not_drift() {
         assert_eq!(
             super::super::transcript_delete_thread_suffix_tx(
                 &mut tx,
+                "title-runtime",
                 &card,
+                &track,
                 "thread",
                 visible - 1,
                 visible,
@@ -485,7 +497,15 @@ async fn conversation_title_shared_cache_reverse_writer_first() {
     if began_before_read {
         tokio::time::timeout(
             Duration::from_secs(10),
-            super::super::transcript_delete_thread_suffix_tx(&mut tx, &f.card, "thread", 0, old),
+            super::super::transcript_delete_thread_suffix_tx(
+                &mut tx,
+                "title-runtime",
+                &f.card,
+                &f.track,
+                "thread",
+                0,
+                old,
+            ),
         )
         .await
         .expect("metadata must hold no table locks while waiting at BEGIN")

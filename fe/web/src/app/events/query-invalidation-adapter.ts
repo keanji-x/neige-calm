@@ -46,6 +46,7 @@ export function mapPlannedQueryKey(key: QueryKey): readonly unknown[] | null {
   if (head === 'overlays' && (first === 'track' || first === 'card')) return queryKeys.overlaysByKind(first);
   if (head === 'harness-items' && typeof first === 'string' && key.length === 2) return queryKeys.harnessItems(first);
   if (head === 'planner-run' && typeof first === 'string' && key.length === 2) return queryKeys.plannerRun(first);
+  if (head === 'planner-conversations' && typeof first === 'string' && key.length === 2) return queryKeys.plannerConversations(first);
   if (head === 'conversation-initial-input' && key.length === 1) return queryKeys.initialInputPrefix();
   if (head === 'conversation-initial-input' && typeof first === 'string' && key.length === 2) return queryKeys.initialInputTrack(first);
   if (head === 'conversation-initial-input' && typeof first === 'string' && typeof second === 'string' && key.length === 3) {

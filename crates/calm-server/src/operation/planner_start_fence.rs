@@ -16,7 +16,7 @@ use crate::db::RouteRepo;
 use crate::error::{CalmError, Result};
 use crate::ids::CardId;
 use crate::operation::planner_harness_start_adapter::PlannerHarnessStartOperationPayload;
-use crate::operation::{OperationKey, OperationResult, OperationRuntime};
+use crate::operation::{OperationId, OperationKey, OperationResult, OperationRuntime};
 use crate::per_card_lock::{PerCardLockGuard, PerCardLocks, lock_card};
 use crate::routes::conversations_shared::PLANNER_HARNESS_START;
 use crate::session_projection_repo::CardConversation;
@@ -126,6 +126,30 @@ impl CardStartFence {
         Ok(())
     }
 
+    /// The start a person's key already binds, read-only: answered before admission (and again
+    /// under the fence), so a replay never admits or quiesces the conversation it started.
+    pub(crate) async fn keyed_start(
+        operation_runtime: &OperationRuntime,
+        key: &OperationKey,
+    ) -> Result<Option<OperationId>> {
+        operation_runtime
+            .keyed_replay(PLANNER_HARNESS_START, key)
+            .await
+    }
+
+    /// The stored start a person's key binds, read-only, for the answer its committed output holds.
+    pub(crate) async fn stored_start(
+        operation_runtime: &OperationRuntime,
+        key: &OperationKey,
+    ) -> Result<Option<crate::operation::Operation>> {
+        let Some(idempotency_key) = key.idempotency_key.as_deref() else {
+            return Ok(None);
+        };
+        operation_runtime
+            .find_by_kind_and_idempotency(PLANNER_HARNESS_START, idempotency_key)
+            .await
+    }
+
     /// Submit one `planner-harness-start` for this fence's card and wait for its outcome. The
     /// caller maps the outcome; a payload naming another card is refused before anything is
     /// submitted.
@@ -140,6 +164,32 @@ impl CardStartFence {
             key,
         )
         .await
+    }
+
+    /// #2774: a person's new conversation, driven under that request's invocation so its cutover
+    /// transaction rechecks the person's access before its first write.
+    pub(crate) async fn start_new_conversation(
+        &self,
+        adapter: Arc<super::planner_harness_start_adapter::PlannerHarnessStartAdapter>,
+        requester: crate::auth::Principal,
+        payload: &PlannerHarnessStartOperationPayload,
+        key: OperationKey,
+    ) -> Result<OperationResult> {
+        if payload.planner_card_id != self.card_id {
+            return Err(CalmError::Internal(format!(
+                "a planner start for card {} was submitted under card {}'s start fence",
+                payload.planner_card_id, self.card_id
+            )));
+        }
+        let invocation = adapter.new_conversation_invocation(requester);
+        self.operation_runtime
+            .execute_with_adapter(
+                adapter,
+                Arc::new(invocation),
+                key,
+                serde_json::to_value(payload)?,
+            )
+            .await
     }
 
     pub(crate) async fn start_assistant(

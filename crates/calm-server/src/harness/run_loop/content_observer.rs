@@ -84,7 +84,9 @@ pub(super) async fn on_item(
                         inner
                             .repo
                             .transcript_projection_upgrade(
+                                &inner.worker_session_id,
                                 inner.card_id.as_str(),
+                                inner.track_id.as_str(),
                                 client_id,
                                 turn_id.as_deref(),
                                 codex_item_id,

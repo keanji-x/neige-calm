@@ -157,10 +157,10 @@ function policies(): PolicyMap {
     ['track', event.data.track_id], ['track-files', event.data.track_id],
     ['track-report'], ...conversationLists(event.data.track_id),
   ])),
-  /* `['planner-run', id]` is keyed by the CARD. Without it a second tab's model picker keeps
-       showing the previous model and sends under it; the mutation's own invalidation repairs only its tab. */
+  /* `['planner-run', id]` is keyed by the CARD. Without it a second tab's model picker keeps showing the previous model and
+       sends under it. A new Planner conversation (#2774) is announced only here: transcript and earlier-conversation list. */
   'card.updated': plan((event) => result([
-    ['track', event.data.track_id], ['track-files', event.data.track_id],
+    ['track', event.data.track_id], ['track-files', event.data.track_id], ['harness-items', event.data.id], ['planner-conversations', event.data.id],
     ['planner-run', event.data.id], ['conversation-initial-input', event.data.track_id, event.data.id],
     ...conversationLists(event.data.track_id),
   ])),

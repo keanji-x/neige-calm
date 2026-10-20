@@ -2191,6 +2191,19 @@
             "schema": {
               "$ref": "#/components/schemas/HarnessItemsDirection"
             }
+          },
+          {
+            "name": "conversation",
+            "in": "query",
+            "description": "A Planner conversation's ordinal (#2774): 0 is the first, and the current one is the\ndefault. An earlier conversation is read-only history.",
+            "required": false,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int64"
+            }
           }
         ],
         "responses": {
@@ -2235,7 +2248,7 @@
             }
           },
           "404": {
-            "description": "Card not found",
+            "description": "Card or conversation not found",
             "content": {
               "application/json": {
                 "schema": {
@@ -2665,6 +2678,198 @@
           },
           "503": {
             "description": "Harness command queue is full",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/cards/{id}/planner/conversations": {
+      "get": {
+        "tags": [
+          "cards"
+        ],
+        "operationId": "list_planner_conversations",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Planner card id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Earlier, read-only conversations that still hold transcript rows, oldest first",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/PlannerConversation"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`bad_request`: a path or query parameter does not parse.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthorized`: no valid session cookie.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Current Area access refused, or the card is not a Planner card",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Card not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "cards"
+        ],
+        "operationId": "start_planner_conversation",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Planner card id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "Required. A replay under the same key returns the first request's answer and starts nothing.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A new, blank conversation is current; the earlier one is read-only history",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlannerConversationStarted"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing, blank, non-ASCII or over-long `Idempotency-Key`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthorized`: no valid session cookie.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Only the person starts a new conversation; or the card is not a Planner, or is on an area chat Track",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Card or Track not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`conflict`: busy, unconfirmed, closed or changed, and nothing changed; `idempotency_key_reused`: another request's key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The start failed after the cutover; the new conversation stays current and restart recovers it",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The Planner is still settling; retry shortly",
             "content": {
               "application/json": {
                 "schema": {
@@ -13496,6 +13701,10 @@
           }
         }
       },
+      "CardId": {
+        "type": "string",
+        "description": "Card identifier."
+      },
       "CardPatch": {
         "type": "object",
         "properties": {
@@ -15638,6 +15847,14 @@
               }
             ]
           },
+          "conversation": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "A Planner conversation's ordinal (#2774): 0 is the first, and the current one is the\ndefault. An earlier conversation is read-only history."
+          },
           "cursor": {
             "type": [
               "string",
@@ -16846,6 +17063,54 @@
           "url": {
             "type": "string",
             "description": "Where to read the bytes; derived by [`attachment_url`]. The server's host path is NOT here and must not be."
+          }
+        }
+      },
+      "PlannerConversation": {
+        "type": "object",
+        "description": "One earlier, read-only conversation that still has transcript rows.",
+        "required": [
+          "ordinal",
+          "started_at_ms",
+          "ended_at_ms"
+        ],
+        "properties": {
+          "ended_at_ms": {
+            "type": "integer",
+            "format": "int64",
+            "description": "When the next conversation started."
+          },
+          "ordinal": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "started_at_ms": {
+            "type": "integer",
+            "format": "int64",
+            "description": "When its floor was written; for conversation 0, its first transcript row."
+          }
+        }
+      },
+      "PlannerConversationStarted": {
+        "type": "object",
+        "description": "The answer of `POST /api/cards/{id}/planner/conversations`, the same body on every replay of its key.",
+        "required": [
+          "card_id",
+          "conversation",
+          "new_thread_id"
+        ],
+        "properties": {
+          "card_id": {
+            "$ref": "#/components/schemas/CardId"
+          },
+          "conversation": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The ordinal of the conversation this request started, now the current one."
+          },
+          "new_thread_id": {
+            "type": "string",
+            "description": "The provider thread of the new conversation's session."
           }
         }
       },

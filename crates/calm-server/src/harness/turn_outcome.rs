@@ -26,6 +26,7 @@ pub(crate) fn canonical_diagnostic(turn: &mut Value) {
 }
 
 // Keep the full terminal identity and confirmation explicit at this authority boundary.
+/// `None` when `session_id` is no longer the card's current session: nothing is written.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn record(
     repo: &dyn Repo,
@@ -36,7 +37,7 @@ pub(crate) async fn record(
     turn_id: &str,
     turn: &Value,
     confirmation: Confirmation,
-) -> Result<i64> {
+) -> Result<Option<i64>> {
     let mut outcome = turn.clone();
     if let Some(object) = outcome.as_object_mut() {
         object.remove("items");

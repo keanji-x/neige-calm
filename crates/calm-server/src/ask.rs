@@ -424,6 +424,16 @@ async fn open_hold_asks<'e, E: sqlx::SqliteExecutor<'e>>(
     .await?)
 }
 
+/// Whether `session` holds an open `hold` ask on `track`: the provider is paused on a person's
+/// answer, so its conversation cannot be cut over (#2774). Read in the caller's executor.
+pub(crate) async fn has_open_hold_ask<'e, E: sqlx::SqliteExecutor<'e>>(
+    executor: E,
+    track: &TrackId,
+    session: &WorkerSessionId,
+) -> Result<bool> {
+    Ok(!open_hold_asks(executor, track, session).await?.is_empty())
+}
+
 /// Whether [`withdraw_hold_asks_tx`] has anything to withdraw: one autocommit read, so a sweep
 /// with nothing to close takes no write lock.
 pub(crate) async fn has_hold_asks_to_withdraw(

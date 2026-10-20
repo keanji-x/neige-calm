@@ -253,7 +253,9 @@ async fn commit(inner: &Arc<Inner>, commit: Commit) -> Result<()> {
                 }
                 let removed_item_count = crate::db::sqlite::transcript_delete_thread_suffix_tx(
                     tx,
+                    &worker_session_id,
                     card_id.as_str(),
+                    track_id.as_str(),
                     &thread_id,
                     boundary,
                     last_row,

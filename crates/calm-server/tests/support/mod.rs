@@ -50,6 +50,8 @@ pub mod track_file;
 #[allow(dead_code)]
 pub mod track_vcs_seed;
 #[allow(dead_code)]
+pub mod transcript_fixture;
+#[allow(dead_code)]
 pub mod worker_flow;
 
 #[allow(dead_code)]

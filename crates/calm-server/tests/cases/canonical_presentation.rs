@@ -71,7 +71,8 @@ async fn mixed_native_page_and_events_keep_presentation_cursor_separate_from_raw
             None,
         )
         .await
-        .unwrap();
+        .unwrap()
+        .expect("the worker is the card's current session");
     let mut tx = calm_server::db::sqlite::begin_immediate_tx(f.repo.db())
         .await
         .unwrap();

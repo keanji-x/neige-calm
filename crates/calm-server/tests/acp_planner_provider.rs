@@ -11,6 +11,8 @@ mod acp_planner_checkpoint;
 mod acp_planner_cli;
 #[path = "cases/acp_planner_lifecycle.rs"]
 mod acp_planner_lifecycle;
+#[path = "cases/acp_planner_new_conversation.rs"]
+mod acp_planner_new_conversation;
 #[path = "cases/acp_planner_prompt_error.rs"]
 mod acp_planner_prompt_error;
 #[path = "cases/acp_planner_start.rs"]

@@ -460,7 +460,7 @@ pub(crate) async fn spawn_recovered_harness_admitted(
     })
 }
 
-async fn replay_harness_events_since(
+pub(crate) async fn replay_harness_events_since(
     repo: Arc<dyn Repo>,
     card_id: &str,
     track_id: &TrackId,

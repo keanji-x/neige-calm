@@ -55,6 +55,7 @@ fn start_payload(
         opening_briefing: None,
         first_message: None,
         create_request_sha256: None,
+        new_conversation: None,
     })
     .expect("planner-harness-start payload serializes")
 }

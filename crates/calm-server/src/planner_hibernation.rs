@@ -124,16 +124,31 @@ async fn hibernate_one(
     // Closing input ends ownership. Provider cleanup is fallible and must never
     // leave an input-closed handle installed or hold the global drive mutex.
     drop(operations);
+    release_quiesced(
+        handle.as_ref(),
+        &runtime,
+        thread,
+        &state.shared_codex_appserver,
+    )
+    .await
+}
+
+/// Release what a quiesced owner held, once its input is closed, it has left the registry and
+/// the drive mutex is dropped. The Planner is then an ordinary sleeping one, which the shared
+/// wake path restores on the next send or observation.
+pub(crate) async fn release_quiesced(
+    handle: Option<&crate::harness::PlannerHarness>,
+    runtime: &crate::session_projection_repo::WorkerSessionProjection,
+    thread: Option<String>,
+    daemon: &crate::shared_codex_appserver::SharedCodexAppServer,
+) -> Result<()> {
     if let Some(handle) = handle {
         handle.release_hibernated_resources().await?;
     }
     if runtime.agent_provider == Some(crate::session_projection_repo::AgentProvider::Codex)
         && let Some(thread) = thread
     {
-        state
-            .shared_codex_appserver
-            .release_hibernating_thread(&thread)
-            .await;
+        daemon.release_hibernating_thread(&thread).await;
     }
     Ok(())
 }

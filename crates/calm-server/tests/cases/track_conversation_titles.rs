@@ -11,9 +11,14 @@ async fn conversation_title_planner_fresh_detail() {
             .fetch_one(b.repo.db().read_pool())
             .await
             .unwrap();
-    b.repo.harness_item_insert("title-runtime", &card, &track, "title-thread", None, None,
+    let session: String = sqlx::query_scalar("SELECT session_id FROM cards WHERE id=?1")
+        .bind(&card)
+        .fetch_one(b.repo.db().read_pool())
+        .await
+        .unwrap();
+    b.repo.harness_item_insert(&session, &card, &track, "title-thread", None, None,
         Some("userMessage"), "item/completed",
-        &json!({"item":{"content":[{"type":"text","text":"Original planner title\nsecond line"}]}}).to_string(), None).await.unwrap();
+        &json!({"item":{"content":[{"type":"text","text":"Original planner title\nsecond line"}]}}).to_string(), None).await.unwrap().expect("the fixture session is current");
     let (status, body) = b
         .request("GET", &format!("/api/tracks/{track}"), None, None)
         .await;
@@ -57,22 +62,21 @@ async fn planner(b: &Boot, track: &str) -> String {
         .unwrap()
 }
 
+/// Input a retired session left, as the stored row: no session writes for it now.
 async fn input(b: &Boot, track: &str, card: &str, segments: Option<Value>, text: &str) -> i64 {
-    b.repo
-        .harness_item_insert(
-            "retired-title-runtime",
-            card,
-            track,
-            "title-thread",
-            None,
-            None,
-            Some("userMessage"),
-            "item/completed",
-            &json!({"item":{"content":[{"text":text}]}}).to_string(),
-            segments.map(|s| s.to_string()).as_deref(),
-        )
-        .await
-        .unwrap()
+    sqlx::query_scalar(
+        "INSERT INTO harness_items (worker_session_id,card_id,track_id,thread_id,item_type,\
+         method,params,input_segments,created_at_ms) VALUES ('retired-title-runtime',?1,?2,\
+         'title-thread','userMessage','item/completed',?3,?4,?5) RETURNING id",
+    )
+    .bind(card)
+    .bind(track)
+    .bind(json!({"item":{"content":[{"text":text}]}}).to_string())
+    .bind(segments.map(|s| s.to_string()))
+    .bind(calm_server::model::now_ms())
+    .fetch_one(b.repo.db().writer_pool())
+    .await
+    .unwrap()
 }
 
 async fn detail_title(b: &Boot, track: &str, card: &str) -> Value {

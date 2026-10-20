@@ -159,6 +159,10 @@ export const queryKeys = Object.freeze({
   /** The running turn's streamed reply text (#1923). Polled while a reply may stream; no event reaches it. */
   harnessLive: (cardId: string) => ['harness-live', cardId] as const,
   plannerRun: (cardId: string) => ['planner-run', cardId] as const,
+  /** A Planner card's earlier conversations (#2774); `card.updated` announces a new one. */
+  plannerConversations: (cardId: string) => ['planner-conversations', cardId] as const,
+  /** One earlier conversation's transcript: read-only history, so no transcript event reaches it. */
+  plannerHistory: (cardId: string, ordinal: number) => ['planner-history', cardId, ordinal] as const,
   /**
    * `GET /api/models` for one scope: a card (its default resolves against that card's workspace) or a
    * provider about to be created on. Absent from the invalidation plan: nothing this kernel emits changes codex's catalog.
@@ -179,19 +183,25 @@ export const queryKeys = Object.freeze({
 
 export type TranscriptPosition = Readonly<{ kind: 'latest' } | { kind: 'before'; cursor: ConversationCursor }>;
 
-export function conversationHistoryQueryOptions(transport: ApiTransportPort, cardId: string, unauthorized: UnauthorizedChannel) {
-  return {
-    queryKey: [...queryKeys.harnessItems(cardId),'conversation_v1'],
-    queryFn: async ({ position, signal }: { position: TranscriptPosition; signal?: AbortSignal }) => {
-      const cursor = position.kind === 'latest' ? null : position.cursor;
-      const page = await runOperation(transport, { ...conversationItemsOperation(cardId, cursor), signal }, unauthorized);
-      if (cursor !== null && (page.items.some(item => item.cursor.position >= cursor.position)
-        || (page.next_cursor !== null && page.next_cursor.position >= cursor.position))) {
-        throw new Error('Conversation history did not advance to an earlier page.');
-      }
-      return page;
-    },
+function transcriptPage(transport: ApiTransportPort, cardId: string, unauthorized: UnauthorizedChannel, conversation?: number) {
+  return async ({ position, signal }: { position: TranscriptPosition; signal?: AbortSignal }) => {
+    const cursor = position.kind === 'latest' ? null : position.cursor;
+    const page = await runOperation(transport, { ...conversationItemsOperation(cardId, cursor, conversation), signal }, unauthorized);
+    if (cursor !== null && (page.items.some(item => item.cursor.position >= cursor.position)
+      || (page.next_cursor !== null && page.next_cursor.position >= cursor.position))) {
+      throw new Error('Conversation history did not advance to an earlier page.');
+    }
+    return page;
   };
+}
+
+export function conversationHistoryQueryOptions(transport: ApiTransportPort, cardId: string, unauthorized: UnauthorizedChannel) {
+  return { queryKey: [...queryKeys.harnessItems(cardId),'conversation_v1'], queryFn: transcriptPage(transport, cardId, unauthorized) };
+}
+
+/** An earlier Planner conversation's transcript (#2774), paged as the current one is. */
+export function plannerHistoryItemsQueryOptions(transport: ApiTransportPort, cardId: string, ordinal: number, unauthorized: UnauthorizedChannel) {
+  return { queryKey: [...queryKeys.plannerHistory(cardId, ordinal),'conversation_v1'], queryFn: transcriptPage(transport, cardId, unauthorized, ordinal) };
 }
 
 export function harnessLiveQueryOptions(transport: ApiTransportPort, cardId: string, unauthorized: UnauthorizedChannel, canonical:boolean) {

@@ -11,6 +11,8 @@ mod recovery;
 pub(super) enum StartInvocation {
     Registered,
     HistoricalHuman(crate::conversation_inputs::HistoricalHumanSource),
+    /// #2774: the person whose request a new conversation's cutover commits under.
+    NewConversation(crate::auth::Principal),
     Retained {
         source: InputSource,
         workspace_root: PathBuf,
@@ -62,9 +64,11 @@ impl PlannerHarnessStartAdapter {
                 source,
                 workspace_root,
             } => Ok((source, workspace_root)),
-            StartInvocation::Registered | StartInvocation::HistoricalHuman(_) => Err(
-                CalmError::Conflict("retained activation requires a current human request".into()),
-            ),
+            StartInvocation::Registered
+            | StartInvocation::HistoricalHuman(_)
+            | StartInvocation::NewConversation(_) => Err(CalmError::Conflict(
+                "retained activation requires a current human request".into(),
+            )),
         }
     }
 

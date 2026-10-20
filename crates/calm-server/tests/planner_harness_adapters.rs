@@ -282,6 +282,7 @@ fn legacy_start_payload_defaults_to_planner_profile() {
         opening_briefing: None,
         first_message: None,
         create_request_sha256: None,
+        new_conversation: None,
     })
     .unwrap();
     payload.as_object_mut().unwrap().remove("profile");
@@ -470,6 +471,7 @@ async fn start_planner(
         opening_briefing: None,
         first_message: None,
         create_request_sha256: None,
+        new_conversation: None,
     })
     .unwrap();
     let op_id = state
@@ -704,6 +706,7 @@ async fn codex_planner_thread_offers_no_dynamic_tools() {
         opening_briefing: None,
         first_message: None,
         create_request_sha256: None,
+        new_conversation: None,
     })
     .unwrap();
     let op = state
@@ -764,6 +767,7 @@ async fn fresh_thread_sends_per_card_mcp_config_and_rotates_hash() {
         opening_briefing: None,
         first_message: None,
         create_request_sha256: None,
+        new_conversation: None,
     })
     .unwrap();
     let first_op = state
@@ -818,6 +822,7 @@ async fn fresh_thread_sends_per_card_mcp_config_and_rotates_hash() {
         opening_briefing: None,
         first_message: None,
         create_request_sha256: None,
+        new_conversation: None,
     })
     .unwrap();
     let second_op = state
@@ -991,6 +996,7 @@ async fn plain_chat_thread_start_has_no_mcp_config() {
         opening_briefing: None,
         first_message: None,
         create_request_sha256: None,
+        new_conversation: None,
     })
     .unwrap();
     let op_id = state
@@ -1056,6 +1062,7 @@ async fn assistant_thread_start_carries_mcp_config_and_the_assistant_prompt() {
         opening_briefing: None,
         first_message: None,
         create_request_sha256: None,
+        new_conversation: None,
     })
     .unwrap();
     let op_id = state
@@ -1134,6 +1141,7 @@ async fn plain_chat_non_deferred_thread_start_uses_worker_role() {
         opening_briefing: None,
         first_message: None,
         create_request_sha256: None,
+        new_conversation: None,
     })
     .unwrap();
 
@@ -1222,6 +1230,7 @@ async fn failed_thread_start_keeps_existing_token_hash_and_runtime() {
         opening_briefing: None,
         first_message: None,
         create_request_sha256: None,
+        new_conversation: None,
     })
     .unwrap();
     let op_id = state
@@ -1371,6 +1380,7 @@ async fn force_new_thread_kills_old_pty_immediately() {
         opening_briefing: None,
         first_message: None,
         create_request_sha256: None,
+        new_conversation: None,
     })
     .unwrap();
     let op_id = state
@@ -1485,6 +1495,7 @@ async fn fresh_start_supersedes_existing_shared_planner_runtime() {
         opening_briefing: None,
         first_message: None,
         create_request_sha256: None,
+        new_conversation: None,
     })
     .unwrap();
     let op_id = state
@@ -1626,6 +1637,7 @@ async fn recovery_writeback_keeps_payload_keys_written_after_the_snapshot() {
         opening_briefing: None,
         first_message: None,
         create_request_sha256: None,
+        new_conversation: None,
     })
     .unwrap();
     let op_id = state
@@ -1804,6 +1816,7 @@ async fn start_adapter_mints_new_thread_when_runtime_lacks_thread_id() {
         opening_briefing: None,
         first_message: None,
         create_request_sha256: None,
+        new_conversation: None,
     })
     .unwrap();
     let op_id = state
@@ -1910,6 +1923,7 @@ fn lazy_mint_payload(track: &Track, card_id: &str, profile: HarnessProfile) -> V
         opening_briefing: None,
         first_message: None,
         create_request_sha256: None,
+        new_conversation: None,
     })
     .unwrap()
 }

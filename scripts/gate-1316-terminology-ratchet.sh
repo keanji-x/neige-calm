@@ -7,6 +7,14 @@
 # and one FE pagination import to main's 298/135 baseline, yielding 309/136.
 # Current #2858/#2859 composition: main's 300 crates occurrences plus the same
 # 11 title references yields 311; the FE composition remains 136.
+# #2774 bounded exception: harness_item/crates 334 -> 348 (on main after #2843) covers the frozen
+# `harness_items` table in the new conversation-floor migration and its bounded transcript page
+# and history reads, the current-session fence on its existing writers, the `HarnessItem` row type
+# of the new repository read, and fixtures that now seed retired history as stored rows; no new
+# domain name. The final occurrence seeds a historical terminal-outcome read fixture after
+# the current-session fence began refusing that fixture's non-current writer; no scan rule changes.
+# #2774 FE: harness_item/fe 141 -> 142 is the one current-transcript query key a new Planner
+# conversation refreshes before it opens; the earlier conversation's read reuses the existing page.
 # Latest-only conversation refresh: harness_item/fe 136 -> 140 is the owner
 # row type and page-limit imports, a real page-options caller and replacement test key.
 # The switch test reuses its fixed row fixture; no scan rule changes.
