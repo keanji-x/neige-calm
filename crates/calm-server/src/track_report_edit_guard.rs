@@ -9,6 +9,7 @@ use serde_json::{Value, json};
 
 use crate::error::CalmError;
 use crate::track_report::ReportDocOp;
+use crate::track_report::task_changes::{TaskBlockChange, task_block_changes};
 use crate::track_report_doc::ReportDoc;
 
 fn bad(message: impl Into<String>) -> CalmError {
@@ -85,49 +86,32 @@ pub(crate) fn normalize_report_op(
     })
 }
 
-/// An assistant's write must leave the task declarations exactly as it found them: task blocks keyed by id
-/// are the same set with the same content before and after (order and `rev` are not compared).
+/// An assistant's write must leave the task declarations exactly as it found them: no task block is
+/// added, changed or removed, tombstones included (order and `rev` are not compared).
 fn guard_assistant_leaves_task_blocks_alone(
     before: &[ReportBlock],
     after: &[ReportBlock],
 ) -> Result<(), CalmError> {
-    fn tasks_by_id(blocks: &[ReportBlock]) -> HashMap<&str, (&str, &Value)> {
-        blocks
-            .iter()
-            .filter(|block| is_task(block))
-            .map(|block| (block.id.as_str(), (block.kind.as_str(), &block.payload)))
-            .collect()
-    }
-
-    let before_tasks = tasks_by_id(before);
-    let after_tasks = tasks_by_id(after);
-
-    for (id, content) in &after_tasks {
-        match before_tasks.get(id) {
-            None => {
-                return Err(bad(format!(
-                    "an assistant may not create task block {id}; task declarations \
-                     are the planner's and the user's to write"
-                )));
-            }
-            Some(was) if was != content => {
-                return Err(bad(format!(
-                    "an assistant may not modify task block {id}; its declaration \
-                     must survive the write byte-for-byte"
-                )));
-            }
-            Some(_) => {}
-        }
-    }
-    for id in before_tasks.keys() {
-        if !after_tasks.contains_key(id) {
-            return Err(bad(format!(
-                "an assistant may not delete task block {id}; only the declaring \
-                 author may retire a task"
-            )));
-        }
-    }
-    Ok(())
+    let Some(change) = task_block_changes(before, after).into_iter().next() else {
+        return Ok(());
+    };
+    Err(bad(match change {
+        TaskBlockChange::Added(block) => format!(
+            "an assistant may not create task block {}; task declarations \
+             are the planner's and the user's to write",
+            block.id
+        ),
+        TaskBlockChange::Changed(block) => format!(
+            "an assistant may not modify task block {}; its declaration \
+             must survive the write byte-for-byte",
+            block.id
+        ),
+        TaskBlockChange::Removed(block) => format!(
+            "an assistant may not delete task block {}; only the declaring \
+             author may retire a task",
+            block.id
+        ),
+    }))
 }
 
 /// `deleted_by_id` are the blocks the op's delete steps named by id; naming one is the one way a

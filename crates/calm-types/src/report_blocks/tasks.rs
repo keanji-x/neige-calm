@@ -66,12 +66,6 @@ pub const TASK_DIAGNOSTIC_CODE_PATHS: &[(&str, &str)] = &[
     ("tree_root_unresolved", "key"),
 ];
 
-/// Admission diagnostics the declaration alone can fix. An agent report write that adds or
-/// changes a `ready: true` task block carrying one is refused rather than left unadmitted;
-/// runtime waits (capacity, dependencies, release) are not in this set.
-pub const TASK_DECLARATION_FIXABLE_ADMISSION_CODES: &[&str] =
-    &["gate_required", "gate_cwd_on_agent_task"];
-
 /// Whether a diagnostic requires Planner attention in a report read. This is domain policy,
 /// independent of optional UI recovery links and of scheduling/status projection.
 pub fn task_diagnostic_is_actionable(code: &str) -> bool {
@@ -96,6 +90,47 @@ pub fn task_diagnostic_is_actionable(code: &str) -> bool {
         | "planner_task_ceiling"
         | "tree_budget_exhausted"
         | "tree_root_unresolved" => true,
+        _ => panic!("unclassified task diagnostic code: {code}"),
+    }
+}
+
+/// What an agent (Planner or Assistant MCP) report write does when a not-yet-admitted
+/// `ready: true` task block it adds or changes carries a diagnostic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TaskDiagnosticOnAgentWrite {
+    /// The declaration and the track's settings alone cause it, so only editing the block fixes
+    /// it: the whole write is refused.
+    Refuse,
+    /// It depends on runtime state or on other declarations that may arrive later: the write is
+    /// kept and the block waits with the diagnostic.
+    Show,
+}
+
+/// Domain policy for [`TaskDiagnosticOnAgentWrite`], one arm per registered code.
+pub fn task_diagnostic_on_agent_write(code: &str) -> TaskDiagnosticOnAgentWrite {
+    use TaskDiagnosticOnAgentWrite::{Refuse, Show};
+    match code {
+        "invalid_declaration"
+        | "duplicate_key"
+        | "dependency_cycle"
+        | "tombstone_blocks_redeclaration"
+        | "gate_required"
+        | "gate_cwd_on_agent_task"
+        | "neige_execution_retired"
+        | "reference_needs_block"
+        | "reference_missing"
+        | "reference_cross_area" => Refuse,
+        // `reference_chain_too_large` comes from a claimed row's context closure, not the block.
+        "unknown_dependency"
+        | "declare_and_wait"
+        | "declaration_changed_in_flight"
+        | "task_key_completed"
+        | "context_stale_declaration"
+        | "context_stale_reference"
+        | "reference_chain_too_large"
+        | "planner_task_ceiling"
+        | "tree_budget_exhausted"
+        | "tree_root_unresolved" => Show,
         _ => panic!("unclassified task diagnostic code: {code}"),
     }
 }
@@ -633,9 +668,11 @@ pub fn unknown_deps(
         .collect()
 }
 
-/// Keys of declarations that `require_task_gates` refuses for lacking a gate. Terminal,
-/// read-only and `sub-track` tasks are exempt: a sub-track task's work is verified by its child
-/// track, and a gate it does declare still runs in the parent checkout after that track closes.
+/// Block ids of declarations that `require_task_gates` refuses for lacking a gate: a codex or
+/// claude task that runs in the track's checkout, is not read-only, and has neither a gate nor a
+/// `no_gate_reason`. Terminal and `sub-track` tasks are exempt; a sub-track task's work is
+/// verified by its child track. Block ids, not keys, so a duplicate key never lends one block's
+/// violation to another.
 pub fn gate_rule_violations(declarations: &[TaskDeclaration], require_gates: bool) -> Vec<String> {
     if !require_gates {
         return Vec::new();
@@ -644,20 +681,23 @@ pub fn gate_rule_violations(declarations: &[TaskDeclaration], require_gates: boo
         .iter()
         .filter(|declaration| !declaration.tombstone)
         .filter(|declaration| {
-            declaration.kind != "terminal"
+            matches!(declaration.kind.as_str(), "codex" | "claude")
+                && crate::task_execution::runs_in_track_checkout(
+                    &declaration.kind,
+                    &declaration.spawn,
+                )
+                && declaration.access != TaskAccess::ReadOnly
                 && declaration.gate.is_none()
                 && declaration.no_gate_reason.is_none()
-                && declaration.access != TaskAccess::ReadOnly
-                && declaration.spawn != crate::task_recovery::TASK_CHILD_TRACK_ROUTE
         })
-        .map(|declaration| declaration.key.clone())
+        .map(|declaration| declaration.block_id.clone())
         .collect()
 }
 
 /// #1727 S4 D3: a `codex` / `claude` declaration whose `gate` carries a `cwd` key is not
 /// admitted — its gate runs in the worker's lease worktree and a directory of its own would
 /// defeat the candidate check. The criterion is the key's presence, not its value (an empty
-/// string counts); terminal tasks keep `gate.cwd`. Returns the offending keys.
+/// string counts); terminal tasks keep `gate.cwd`. Returns the offending block ids.
 pub fn gate_cwd_violations(declarations: &[TaskDeclaration]) -> Vec<String> {
     declarations
         .iter()
@@ -669,7 +709,7 @@ pub fn gate_cwd_violations(declarations: &[TaskDeclaration]) -> Vec<String> {
                     .as_ref()
                     .is_some_and(|gate| gate.cwd.is_some())
         })
-        .map(|declaration| declaration.key.clone())
+        .map(|declaration| declaration.block_id.clone())
         .collect()
 }
 
@@ -1210,6 +1250,87 @@ mod tests {
             vec!["in-track"],
             "a sub-track task is verified by its child track; only the in-track task needs a gate"
         );
+    }
+
+    /// Block ids, not keys: with a duplicate key, only the block that breaks a gate rule is named.
+    #[test]
+    fn gate_admission_gate_violations_name_blocks_not_keys() {
+        let ungated = TaskDeclaration {
+            block_id: "ungated-block".into(),
+            ..declaration("shared", &[])
+        };
+        let gated = TaskDeclaration {
+            block_id: "gated-block".into(),
+            gate: Some(GateInput {
+                cwd: None,
+                timeout_secs: None,
+                steps: vec![GateStepInput {
+                    name: "check".into(),
+                    cmd: "true".into(),
+                }],
+            }),
+            ..declaration("shared", &[])
+        };
+        let with_cwd = TaskDeclaration {
+            block_id: "cwd-block".into(),
+            gate: Some(GateInput {
+                cwd: Some("/tmp".into()),
+                ..gated.gate.clone().unwrap()
+            }),
+            ..declaration("shared", &[])
+        };
+        let declarations = [ungated, gated, with_cwd];
+        assert_eq!(
+            gate_rule_violations(&declarations, true),
+            vec!["ungated-block"]
+        );
+        assert_eq!(gate_cwd_violations(&declarations), vec!["cwd-block"]);
+    }
+
+    /// Every registered code is classified for agent writes; refusals are the codes only the
+    /// declaration and the track's settings cause.
+    #[test]
+    fn gate_admission_agent_write_classification_covers_every_code() {
+        use TaskDiagnosticOnAgentWrite::{Refuse, Show};
+        let expected = [
+            ("invalid_declaration", Refuse),
+            ("duplicate_key", Refuse),
+            ("dependency_cycle", Refuse),
+            ("tombstone_blocks_redeclaration", Refuse),
+            ("unknown_dependency", Show),
+            ("gate_required", Refuse),
+            ("gate_cwd_on_agent_task", Refuse),
+            ("neige_execution_retired", Refuse),
+            ("reference_needs_block", Refuse),
+            ("reference_missing", Refuse),
+            ("reference_cross_area", Refuse),
+            ("declare_and_wait", Show),
+            ("declaration_changed_in_flight", Show),
+            ("task_key_completed", Show),
+            ("context_stale_declaration", Show),
+            ("context_stale_reference", Show),
+            ("reference_chain_too_large", Show),
+            ("planner_task_ceiling", Show),
+            ("tree_budget_exhausted", Show),
+            ("tree_root_unresolved", Show),
+        ];
+        assert_eq!(
+            expected.map(|(code, _)| code).as_slice(),
+            TASK_DIAGNOSTIC_CODES
+        );
+        for (code, on_agent_write) in expected {
+            assert_eq!(
+                task_diagnostic_on_agent_write(code),
+                on_agent_write,
+                "{code}"
+            );
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "unclassified task diagnostic code: not_a_code")]
+    fn gate_admission_agent_write_classification_panics_on_an_unclassified_code() {
+        task_diagnostic_on_agent_write("not_a_code");
     }
 
     /// #1727 S4 D3 (review round 1): `gate.cwd: null` is not a violation. `GateInput.cwd` is an

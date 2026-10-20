@@ -101,6 +101,16 @@ pub(super) async fn user_upsert(boot: &Boot, id: &str, rev: u64, payload: Value)
     .expect("user task update")
 }
 
+/// An agent write of `payload` with `ready: false`, then the user's release of it: how a test
+/// declares a ready task that an agent write would be refused for. Returns the block id.
+pub(super) async fn user_released(boot: &Boot, id: Option<&str>, mut payload: Value) -> String {
+    payload["ready"] = json!(false);
+    let (id, rev) = upsert(boot, id, payload.clone()).await;
+    payload["ready"] = json!(true);
+    user_upsert(boot, &id, rev, payload).await;
+    id
+}
+
 pub(super) fn principal() -> Principal {
     Principal {
         user_id: "owner".into(),
@@ -1586,9 +1596,9 @@ async fn four_db_diagnostics_delete_rows_and_are_visible_on_mcp_and_rest_reads()
     upsert(&boot, Some(&id), changed).await;
     assert_diagnosed_on_both_reads(&boot, "ceiling", "ceiling of 0").await;
 
-    // cross-area reference
+    // cross-area reference, written by the user: an agent write of it is refused
     let boot = new_boot().await;
-    let (id, _) = upsert(&boot, None, task("cross")).await;
+    let (id, rev) = upsert(&boot, None, task("cross")).await;
     let other_area = boot
         .repo
         .area_create(
@@ -1618,7 +1628,7 @@ async fn four_db_diagnostics_delete_rows_and_are_visible_on_mcp_and_rest_reads()
         .unwrap();
     let mut changed = task("cross");
     changed["refs"] = json!([format!("neige://wave/{}#b_dead", other_track.id)]);
-    upsert(&boot, Some(&id), changed).await;
+    user_upsert(&boot, &id, rev, changed).await;
     assert_diagnosed_on_both_reads(&boot, "cross", "cross-area").await;
 }
 
@@ -1638,9 +1648,10 @@ async fn rebuild_matches_incremental_bytes_after_adversarial_edit_sequence() {
     upsert(&boot, None, task("flight")).await;
     let (x, _) = upsert(&boot, None, task("x")).await;
     let (y, _) = upsert(&boot, None, task("y")).await;
+    // The duplicate and the cycle are user releases: an agent write of either is refused.
     let mut duplicate = task("x");
     duplicate["goal"] = json!("duplicate x");
-    let (duplicate_id, _) = upsert(&boot, None, duplicate).await;
+    let duplicate_id = user_released(&boot, None, duplicate).await;
     assert!(
         !keys(&boot).await.iter().any(|key| key == "x"),
         "duplicate deletes pending rows"
@@ -1657,7 +1668,7 @@ async fn rebuild_matches_incremental_bytes_after_adversarial_edit_sequence() {
     let mut cycle_y = task("y");
     cycle_y["depends_on"] = json!(["x"]);
     upsert(&boot, Some(&x), cycle_x).await;
-    upsert(&boot, Some(&y), cycle_y).await;
+    user_released(&boot, Some(&y), cycle_y).await;
     assert!(
         !keys(&boot).await.iter().any(|key| key == "x" || key == "y"),
         "cycle deletes rows"

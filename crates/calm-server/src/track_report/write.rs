@@ -462,50 +462,44 @@ async fn persist(
 enum TaskWriteAdmission {
     /// Write it; the declaration waits with its diagnostics. User edits and structural writes.
     Project,
-    /// Refuse the whole write when a `ready: true` task block it adds or changes carries a
-    /// diagnostic the declaration alone can fix. The agent-MCP funnel only.
+    /// Refuse the whole write when a `ready: true` task block it adds or changes, whose key has
+    /// not yet left `pending`, carries a diagnostic that
+    /// [`calm_types::report_blocks::tasks::task_diagnostic_on_agent_write`] refuses. The
+    /// agent-MCP funnel only.
     RefuseFixableDeclarations,
 }
 
 /// The [`TaskWriteAdmission::RefuseFixableDeclarations`] check over this write's projection
-/// verdicts. A block is touched when it is new or its payload differs from before the op; untouched
-/// blocks, `ready: false` blocks and runtime waits are left to the projection.
+/// verdicts. Untouched blocks, tombstones, `ready: false` blocks, keys whose row is already
+/// dispatched, in flight or terminal, and diagnostics classified as shown are left to the
+/// projection. Each refusal names the block whose own verdict carries the diagnostic.
 fn refuse_fixable_task_declarations(
     before: &[ReportBlock],
     after: &[ReportBlock],
     declarations: &[calm_types::report_blocks::tasks::TaskDeclaration],
     verdicts: &[crate::db::sqlite::BlockVerdict],
 ) -> Result<(), CalmError> {
-    use calm_types::report_blocks::KIND_TASK;
-    use calm_types::report_blocks::tasks::TASK_DECLARATION_FIXABLE_ADMISSION_CODES;
-    let before: std::collections::BTreeMap<&str, &serde_json::Value> = before
-        .iter()
-        .filter(|block| block.kind == KIND_TASK)
-        .map(|block| (block.id.as_str(), &block.payload))
-        .collect();
-    let touched_ready: std::collections::BTreeSet<&str> = after
-        .iter()
+    use super::task_changes::{TaskBlockChange, task_block_changes};
+    use calm_types::report_blocks::tasks::{
+        TaskDiagnosticOnAgentWrite, task_diagnostic_on_agent_write,
+    };
+    let refusals = task_block_changes(before, after)
+        .into_iter()
+        .filter_map(TaskBlockChange::authored_live)
         .filter(|block| {
-            block.kind == KIND_TASK && before.get(block.id.as_str()) != Some(&&block.payload)
-        })
-        .filter_map(|block| {
             declarations
                 .iter()
-                .any(|declaration| {
-                    declaration.block_id == block.id && declaration.ready && !declaration.tombstone
-                })
-                .then_some(block.id.as_str())
+                .any(|declaration| declaration.block_id == block.id && declaration.ready)
         })
-        .collect();
-    let refusals = verdicts
-        .iter()
-        .filter(|verdict| touched_ready.contains(verdict.block_id.as_str()))
+        .filter_map(|block| verdicts.iter().find(|verdict| verdict.block_id == block.id))
+        .filter(|verdict| verdict.frozen_status.is_none())
         .flat_map(|verdict| {
             verdict
                 .diagnostics
                 .iter()
                 .filter(|diagnostic| {
-                    TASK_DECLARATION_FIXABLE_ADMISSION_CODES.contains(&diagnostic.code.as_str())
+                    task_diagnostic_on_agent_write(&diagnostic.code)
+                        == TaskDiagnosticOnAgentWrite::Refuse
                 })
                 .map(|diagnostic| {
                     format!(

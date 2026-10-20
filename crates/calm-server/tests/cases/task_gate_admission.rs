@@ -1,11 +1,14 @@
-//! An agent (MCP) report write that adds or changes a `ready: true` task block carrying a
-//! declaration-fixable admission diagnostic (`gate_required`, `gate_cwd_on_agent_task`) is refused
-//! whole, in its own transaction. Withdrawn blocks, blocks the write does not touch, runtime
-//! waits and user edits are left to the projection.
+//! An agent (MCP) report write that adds or changes a `ready: true` task block whose key has not
+//! yet left `pending` is refused whole, in its own transaction, when that block carries a
+//! diagnostic `task_diagnostic_on_agent_write` refuses (`gate_required`, `duplicate_key`,
+//! `dependency_cycle`, ...). Withdrawn blocks, blocks the write does not touch, edits to started
+//! or finished tasks, runtime waits and user edits are left to the projection.
 
 #![cfg(unix)]
 
-use crate::mcp_track_report::{Boot, boot as new_boot, planner_identity, read_then_commit};
+use crate::mcp_track_report::{
+    Boot, boot as new_boot, planner_identity, read_then_commit, upsert_block,
+};
 use crate::task_projection_acceptance::{
     has_diagnostic_code, keys, read, task, task_verdict, upsert, user_upsert,
 };
@@ -117,5 +120,134 @@ async fn gate_admission_withdrawn_untouched_and_runtime_waiting_blocks_are_not_r
     assert_eq!(
         keys(&boot).await,
         vec!["first".to_string(), "waiter".to_string()]
+    );
+
+    // A `ready: false` block is not refused for a refusing code either.
+    let mut parked = task("first");
+    parked["ready"] = json!(false);
+    upsert(&boot, None, parked).await;
+    assert!(has_diagnostic_code(
+        &read(&boot).await,
+        "first",
+        "duplicate_key"
+    ));
+}
+
+/// An MCP `upsert` that the write refuses, with the -32602 message.
+async fn refused_upsert(boot: &Boot, op: Value) -> String {
+    let error = upsert_block(boot, planner_identity(boot), op)
+        .await
+        .expect_err("the agent write is refused");
+    assert_eq!(error.code, -32602, "{error:?}");
+    error.message
+}
+
+#[tokio::test]
+async fn gate_admission_mcp_write_creating_a_duplicate_key_or_cycle_is_refused_and_writes_nothing()
+{
+    let boot = new_boot().await;
+    upsert(&boot, None, task("taken")).await;
+    // A dependency declared later is shown, not refused.
+    let mut first = task("first");
+    first["depends_on"] = json!(["second"]);
+    upsert(&boot, None, first).await;
+    assert!(has_diagnostic_code(
+        &read(&boot).await,
+        "first",
+        "unknown_dependency"
+    ));
+    let before = committed_state(&boot).await;
+
+    let message = refused_upsert(&boot, json!({"kind": "task", "payload": task("taken")})).await;
+    for needle in ["`taken`", "duplicate_key", "ready: false"] {
+        assert!(message.contains(needle), "{needle}: {message}");
+    }
+    assert_eq!(committed_state(&boot).await, before, "nothing was written");
+
+    let mut second = task("second");
+    second["depends_on"] = json!(["first"]);
+    let message = refused_upsert(&boot, json!({"kind": "task", "payload": second})).await;
+    for needle in ["`second`", "dependency_cycle"] {
+        assert!(message.contains(needle), "{needle}: {message}");
+    }
+    assert_eq!(committed_state(&boot).await, before, "nothing was written");
+    // `first` waits on its dependency without a row.
+    assert_eq!(keys(&boot).await, vec!["taken".to_string()]);
+}
+
+#[tokio::test]
+async fn gate_admission_mcp_write_flipping_only_ready_to_true_is_checked() {
+    let boot = new_boot().await;
+    let mut draft = ungated("draft");
+    draft["ready"] = json!(false);
+    let (id, _) = upsert(&boot, None, draft.clone()).await;
+    let before = committed_state(&boot).await;
+
+    draft["ready"] = json!(true);
+    let message = refused_upsert(&boot, json!({"id": id, "kind": "task", "payload": draft})).await;
+    for needle in ["`draft`", "gate_required"] {
+        assert!(message.contains(needle), "{needle}: {message}");
+    }
+    assert_eq!(committed_state(&boot).await, before, "nothing was written");
+}
+
+/// A key whose row is dispatched, in flight or terminal is past admission: an agent edit to it is
+/// written, and the projection shows what the edit means for that row.
+#[tokio::test]
+async fn gate_admission_edits_to_started_or_finished_tasks_are_not_refused() {
+    let boot = new_boot().await;
+    for status in ["dispatched", "running", "verifying", "done", "failed"] {
+        let key = format!("started-{status}");
+        let (id, _) = upsert(&boot, None, task(&key)).await;
+        sqlx::query("UPDATE tasks SET status=?1 WHERE track_id=?2 AND key=?3")
+            .bind(status)
+            .bind(boot.track_id.as_str())
+            .bind(&key)
+            .execute(boot.repo.sqlite_db().unwrap().writer_pool())
+            .await
+            .unwrap();
+
+        upsert(&boot, Some(&id), ungated(&key)).await;
+        let snapshot = read(&boot).await;
+        assert!(
+            has_diagnostic_code(&snapshot, &key, "gate_required"),
+            "{status}: {snapshot}"
+        );
+        let row: String =
+            sqlx::query_scalar("SELECT status FROM tasks WHERE track_id=?1 AND key=?2")
+                .bind(boot.track_id.as_str())
+                .bind(&key)
+                .fetch_one(boot.repo.sqlite_db().unwrap().read_pool())
+                .await
+                .unwrap();
+        assert_eq!(row, status, "the edit leaves the row to the projection");
+    }
+}
+
+/// A refusal names only the block whose own verdict carries the diagnostic: a gated block that
+/// duplicates the key of an ungated one is refused for the duplicate, not for the other's gate.
+#[tokio::test]
+async fn gate_admission_refusal_names_only_the_block_carrying_the_diagnostic() {
+    let boot = new_boot().await;
+    let mut ungated_release = ungated("shared");
+    ungated_release["ready"] = json!(false);
+    let (id, rev) = upsert(&boot, None, ungated_release.clone()).await;
+    ungated_release["ready"] = json!(true);
+    user_upsert(&boot, &id, rev, ungated_release).await;
+    assert!(has_diagnostic_code(
+        &read(&boot).await,
+        "shared",
+        "gate_required"
+    ));
+
+    let message = refused_upsert(&boot, json!({"kind": "task", "payload": task("shared")})).await;
+    assert!(message.contains("duplicate_key"), "{message}");
+    assert!(
+        !message.contains("gate_required"),
+        "the new block has a gate; only the user's block lacks one: {message}"
+    );
+    assert!(
+        !message.contains(&id),
+        "the untouched block is not named: {message}"
     );
 }

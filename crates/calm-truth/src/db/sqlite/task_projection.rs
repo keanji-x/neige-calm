@@ -195,6 +195,12 @@ pub struct BlockVerdict {
     #[serde(skip)]
     #[schema(ignore)]
     pub withdrawal: Option<WithdrawalEdge>,
+    /// Status of the key's task row once it has left `pending` (dispatched, in flight or
+    /// terminal), from this projection's own snapshot; `None` while the key has no row or only a
+    /// pending one. Write-side evidence only, never on the wire.
+    #[serde(skip)]
+    #[schema(ignore)]
+    pub frozen_status: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -1062,7 +1068,7 @@ async fn evaluate_schedulability_with_tree_term_after_snapshot(
                 Some("edit_dependencies".into()),
             ));
         }
-        if gate_bad.contains(&declaration.key) {
+        if gate_bad.contains(&declaration.block_id) {
             diagnostics.push(Diagnostic::coded(
                 "gate_required",
                 "gate",
@@ -1072,7 +1078,7 @@ async fn evaluate_schedulability_with_tree_term_after_snapshot(
                 Some("add_gate_or_reason".into()),
             ));
         }
-        if gate_cwd_bad.contains(&declaration.key) {
+        if gate_cwd_bad.contains(&declaration.block_id) {
             diagnostics.push(Diagnostic::coded(
                 "gate_cwd_on_agent_task",
                 "gate",
@@ -1155,6 +1161,7 @@ async fn evaluate_schedulability_with_tree_term_after_snapshot(
             pending_reason: None,
             diagnostics,
             withdrawal: None,
+            frozen_status: None,
         });
     }
 
@@ -1185,6 +1192,7 @@ async fn evaluate_schedulability_with_tree_term_after_snapshot(
         else {
             continue;
         };
+        verdict.frozen_status = Some(status.clone());
         let expected_context = declaration_context_json(declaration)?;
         let row = frozen_by_key.get(&declaration.key).expect("frozen row");
         let changed = PROJECTION_DRIFT_TASK_FIELDS
@@ -1256,6 +1264,7 @@ async fn evaluate_schedulability_with_tree_term_after_snapshot(
                 child_track_deleted: None,
                 pending_reason: None,
                 withdrawal: None,
+                frozen_status: Some(row.status.clone()),
             });
         }
     }
@@ -1626,6 +1635,7 @@ async fn project_tasks_from_verdicts_tx(
                         child_track_deleted: None,
                         pending_reason: None,
                         withdrawal: None,
+                        frozen_status: Some(status.clone()),
                     });
                 }
             } else if task_delete_pending_tx(tx, id).await? != 0 {

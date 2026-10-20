@@ -1,12 +1,10 @@
 //! Early diagnostics for newly authored gate requirements; deliberately not shell validation or a
 //! security boundary — the verifier's empty environment remains authoritative.
 
-use std::collections::HashMap;
-
-use calm_types::report_blocks::KIND_TASK;
 use calm_types::track_report::ReportBlock;
 
 use crate::error::CalmError;
+use crate::track_report::task_changes::{TaskBlockChange, task_block_changes};
 
 mod shell;
 
@@ -14,17 +12,12 @@ pub(crate) fn check_changed_task_gates(
     before: &[ReportBlock],
     after: &[ReportBlock],
 ) -> Result<(), CalmError> {
-    let previous: HashMap<_, _> = before.iter().map(|block| (&block.id, block)).collect();
-    for block in after.iter().filter(|block| block.kind == KIND_TASK) {
-        // Preserve historical declarations byte-for-byte through prose edits,
-        // reordering and withdrawal. Re-check only authored task content.
-        if block.payload.get("tombstoned_by").is_some()
-            || previous
-                .get(&block.id)
-                .is_some_and(|old| old.kind == KIND_TASK && old.payload == block.payload)
-        {
-            continue;
-        }
+    // Preserve historical declarations byte-for-byte through prose edits, reordering and
+    // withdrawal. Re-check only authored task content.
+    for block in task_block_changes(before, after)
+        .into_iter()
+        .filter_map(TaskBlockChange::authored_live)
+    {
         let Some(steps) = block
             .payload
             .pointer("/gate/steps")

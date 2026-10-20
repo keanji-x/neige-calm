@@ -999,6 +999,7 @@ impl ReportEditTarget {
 #[cfg(test)]
 mod reset_tests;
 mod sections;
+pub(crate) mod task_changes;
 /// The writer and the complete set of ways to reach it. The mutating function is a private `fn`
 /// in there, so "which code can write a track report" is a question `rustc` answers.
 pub(crate) mod write;
