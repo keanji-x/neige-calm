@@ -131,6 +131,7 @@ pub enum PlanSource {
 }
 
 pub struct Fixture {
+    pub _execution: super::execution::Fixture,
     pub server: Arc<McpServer>,
     pub plugin_host: Arc<PluginHost>,
     pub repo: Arc<SqlxRepo>,

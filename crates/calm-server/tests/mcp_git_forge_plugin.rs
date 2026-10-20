@@ -54,6 +54,7 @@ const PR_CREATE_TOOL: &str = "plugin_gitforge_gh_pr_create";
 static FORGE_ENV_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
 
 struct Fixture {
+    _execution: support::execution::Fixture,
     _server: Arc<McpServer>,
     plugin_host: Arc<PluginHost>,
     repo: Arc<SqlxRepo>,
@@ -374,6 +375,7 @@ async fn boot_fixture() -> Fixture {
     let completion = OperationCompletionBus::new();
     let route_repo: Arc<dyn RouteRepo> = repo.clone();
     let terminal_renderer = TerminalRendererRegistry::new_with_repo(route_repo.clone());
+    let execution = support::execution::Fixture::new(sqlx_repo.db().clone()).await;
     let runtime = Arc::new(
         OperationRuntime::new(
             operation_repo.clone(),
@@ -387,7 +389,8 @@ async fn boot_fixture() -> Fixture {
                 terminal_renderer,
                 events.clone(),
                 completion,
-            ),
+            )
+            .with_execution(execution.lifecycle.clone()),
         )
         .await
         .expect("operation runtime"),
@@ -413,6 +416,7 @@ async fn boot_fixture() -> Fixture {
     .expect("spawn McpServer");
 
     Fixture {
+        _execution: execution,
         _server: server,
         plugin_host,
         repo: sqlx_repo,

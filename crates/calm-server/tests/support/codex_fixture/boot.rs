@@ -312,6 +312,7 @@ pub async fn boot_forge_e2e_fixture(
     let operation_repo = Arc::new(SqlxOperationRepo::new(sqlx_repo.db().clone()));
     let completion = OperationCompletionBus::new();
     let harness = HarnessRegistry::new();
+    let execution = super::super::execution::Fixture::new(sqlx_repo.db().clone()).await;
     let runtime = Arc::new(
         OperationRuntime::new(
             operation_repo.clone(),
@@ -349,7 +350,8 @@ pub async fn boot_forge_e2e_fixture(
                 events.clone(),
                 completion,
             )
-            .with_shared_codex_appserver(shared.clone()),
+            .with_shared_codex_appserver(shared.clone())
+            .with_execution(execution.lifecycle.clone()),
         )
         .await
         .expect("operation runtime"),
@@ -383,6 +385,7 @@ pub async fn boot_forge_e2e_fixture(
     calm_server::mcp_server::tools::register_default_tools(&mut registry);
 
     Ok(Fixture {
+        _execution: execution,
         server,
         plugin_host,
         repo: sqlx_repo,
