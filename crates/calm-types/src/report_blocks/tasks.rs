@@ -66,6 +66,12 @@ pub const TASK_DIAGNOSTIC_CODE_PATHS: &[(&str, &str)] = &[
     ("tree_root_unresolved", "key"),
 ];
 
+/// Admission diagnostics the declaration alone can fix. An agent report write that adds or
+/// changes a `ready: true` task block carrying one is refused rather than left unadmitted;
+/// runtime waits (capacity, dependencies, release) are not in this set.
+pub const TASK_DECLARATION_FIXABLE_ADMISSION_CODES: &[&str] =
+    &["gate_required", "gate_cwd_on_agent_task"];
+
 /// Whether a diagnostic requires Planner attention in a report read. This is domain policy,
 /// independent of optional UI recovery links and of scheduling/status projection.
 pub fn task_diagnostic_is_actionable(code: &str) -> bool {
@@ -627,6 +633,9 @@ pub fn unknown_deps(
         .collect()
 }
 
+/// Keys of declarations that `require_task_gates` refuses for lacking a gate. Terminal,
+/// read-only and `sub-track` tasks are exempt: a sub-track task's work is verified by its child
+/// track, and a gate it does declare still runs in the parent checkout after that track closes.
 pub fn gate_rule_violations(declarations: &[TaskDeclaration], require_gates: bool) -> Vec<String> {
     if !require_gates {
         return Vec::new();
@@ -639,6 +648,7 @@ pub fn gate_rule_violations(declarations: &[TaskDeclaration], require_gates: boo
                 && declaration.gate.is_none()
                 && declaration.no_gate_reason.is_none()
                 && declaration.access != TaskAccess::ReadOnly
+                && declaration.spawn != crate::task_recovery::TASK_CHILD_TRACK_ROUTE
         })
         .map(|declaration| declaration.key.clone())
         .collect()
@@ -1185,6 +1195,20 @@ mod tests {
         assert_eq!(
             find_cycle(&graph),
             Some(vec!["a".into(), "b".into(), "a".into()])
+        );
+    }
+
+    #[test]
+    fn gate_admission_sub_track_declaration_needs_no_gate() {
+        let child = TaskDeclaration {
+            spawn: crate::task_recovery::TASK_CHILD_TRACK_ROUTE.into(),
+            ..declaration("child", &[])
+        };
+        let in_track = declaration("in-track", &[]);
+        assert_eq!(
+            gate_rule_violations(&[child, in_track], true),
+            vec!["in-track"],
+            "a sub-track task is verified by its child track; only the in-track task needs a gate"
         );
     }
 

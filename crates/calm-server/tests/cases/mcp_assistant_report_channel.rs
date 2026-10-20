@@ -67,9 +67,15 @@ fn task_payload(declared_by: &str, key: &str) -> Value {
         "key": key,
         "kind": "codex",
         "goal": format!("{declared_by} wants {key}"),
+        "gate": check_gate(),
         "ready": true,
         "declared_by": declared_by,
     })
+}
+
+/// A gate an agent write must carry on a `ready: true` codex task under `require_task_gates`.
+fn check_gate() -> Value {
+    json!({"steps": [{"name": "check", "cmd": "true"}]})
 }
 
 fn task_fence(declared_by: &str, key: &str) -> String {
@@ -77,7 +83,7 @@ fn task_fence(declared_by: &str, key: &str) -> String {
 }
 
 /// A gate-clean task declaration: it carries a `no_gate_reason`, so its only remaining barrier
-/// to schedulability is the `ready` flag. `task_fence` has neither and is unschedulable regardless.
+/// to schedulability is the `ready` flag.
 fn gated_task_payload(key: &str, ready: bool) -> Value {
     json!({
         "key": key,
@@ -470,6 +476,7 @@ async fn an_assistant_may_not_modify_or_delete_an_existing_task_block() {
                 "key": "build",
                 "kind": "codex",
                 "goal": "rewritten by the assistant",
+                "gate": check_gate(),
                 "ready": true,
                 "declared_by": "spec"
             }
@@ -525,6 +532,7 @@ async fn the_planner_may_still_rewrite_its_own_task_block() {
                     "key": "build",
                     "kind": "codex",
                     "goal": "planner revises its own goal",
+                    "gate": check_gate(),
                     "ready": true,
                     "declared_by": "spec"
                 }

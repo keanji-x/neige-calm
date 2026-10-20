@@ -73,6 +73,7 @@ pub(crate) async fn rest_user_replace(
         None,
         None,
         None,
+        TaskWriteAdmission::Project,
     )
     .await?;
     Ok(updated)
@@ -98,6 +99,7 @@ pub(crate) async fn rest_user_reset(
         None,
         None,
         None,
+        TaskWriteAdmission::Project,
     )
     .await?;
     Ok(updated)
@@ -122,6 +124,7 @@ pub(crate) async fn rest_user_block_op(
         None,
         None,
         None,
+        TaskWriteAdmission::Project,
     )
     .await
     .map(|(card, trace)| (card, trace.block))
@@ -154,6 +157,7 @@ pub(crate) async fn agent_report_op(
         agent_message,
         knowledge,
         Some(recorder_shadow),
+        TaskWriteAdmission::RefuseFixableDeclarations,
     )
     .await
 }
@@ -228,6 +232,7 @@ pub async fn persist_report(
         agent_message,
         None,
         None,
+        TaskWriteAdmission::Project,
     )
     .await?;
     Ok(updated)
@@ -249,6 +254,7 @@ async fn persist(
     agent_message: Option<String>,
     knowledge: Option<crate::report_read_ledger::LastRead>,
     recorder_shadow: Option<Arc<dyn RecorderShadowProbe>>,
+    task_admission: TaskWriteAdmission,
 ) -> Result<(Card, ReportOpTrace), CalmError> {
     let ReportEditTarget {
         track,
@@ -402,6 +408,15 @@ async fn persist(
                 &block_diagnostics,
             )
             .await?;
+            //    Refused in this transaction, so a rejected agent write leaves no row or task behind.
+            if task_admission == TaskWriteAdmission::RefuseFixableDeclarations {
+                refuse_fixable_task_declarations(
+                    &before_blocks,
+                    blocks,
+                    &declarations,
+                    &task_projection.diagnostics,
+                )?;
+            }
             //    Then two events on the same card scope: `CardUpdated` first, so a subscriber sees the
             //    generic "row changed" signal before the structured edit-log entry.
             let report_edited = Event::TrackReportEdited {
@@ -440,6 +455,74 @@ async fn persist(
     })
     .await
     .map(|(updated, _ids)| updated)
+}
+
+/// What a report write does with a task declaration its projection does not admit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TaskWriteAdmission {
+    /// Write it; the declaration waits with its diagnostics. User edits and structural writes.
+    Project,
+    /// Refuse the whole write when a `ready: true` task block it adds or changes carries a
+    /// diagnostic the declaration alone can fix. The agent-MCP funnel only.
+    RefuseFixableDeclarations,
+}
+
+/// The [`TaskWriteAdmission::RefuseFixableDeclarations`] check over this write's projection
+/// verdicts. A block is touched when it is new or its payload differs from before the op; untouched
+/// blocks, `ready: false` blocks and runtime waits are left to the projection.
+fn refuse_fixable_task_declarations(
+    before: &[ReportBlock],
+    after: &[ReportBlock],
+    declarations: &[calm_types::report_blocks::tasks::TaskDeclaration],
+    verdicts: &[crate::db::sqlite::BlockVerdict],
+) -> Result<(), CalmError> {
+    use calm_types::report_blocks::KIND_TASK;
+    use calm_types::report_blocks::tasks::TASK_DECLARATION_FIXABLE_ADMISSION_CODES;
+    let before: std::collections::BTreeMap<&str, &serde_json::Value> = before
+        .iter()
+        .filter(|block| block.kind == KIND_TASK)
+        .map(|block| (block.id.as_str(), &block.payload))
+        .collect();
+    let touched_ready: std::collections::BTreeSet<&str> = after
+        .iter()
+        .filter(|block| {
+            block.kind == KIND_TASK && before.get(block.id.as_str()) != Some(&&block.payload)
+        })
+        .filter_map(|block| {
+            declarations
+                .iter()
+                .any(|declaration| {
+                    declaration.block_id == block.id && declaration.ready && !declaration.tombstone
+                })
+                .then_some(block.id.as_str())
+        })
+        .collect();
+    let refusals = verdicts
+        .iter()
+        .filter(|verdict| touched_ready.contains(verdict.block_id.as_str()))
+        .flat_map(|verdict| {
+            verdict
+                .diagnostics
+                .iter()
+                .filter(|diagnostic| {
+                    TASK_DECLARATION_FIXABLE_ADMISSION_CODES.contains(&diagnostic.code.as_str())
+                })
+                .map(|diagnostic| {
+                    format!(
+                        "task `{}` (block {}): {}: {}",
+                        verdict.key, verdict.block_id, diagnostic.code, diagnostic.message
+                    )
+                })
+        })
+        .collect::<Vec<_>>();
+    if refusals.is_empty() {
+        return Ok(());
+    }
+    Err(CalmError::BadRequest(format!(
+        "report write refused, nothing was written: {}. Fix the task declaration and write \
+         again, or write it with `ready: false` until it is ready",
+        refusals.join("; ")
+    )))
 }
 
 /// Write the report card's row (JSON cache + CRDT bytes) and then reproject the track's tasks.

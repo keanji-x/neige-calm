@@ -550,9 +550,9 @@ mod tests {
                 payload: json!({
                     "key": format!("{prefix}-{index}"),
                     "kind": "codex",
+                    "spawn": "sub-track",
                     "goal": format!("{prefix} goal {index}"),
                     "acceptance": "done",
-                    "no_gate_reason": "not needed",
                     "declared_by": "spec",
                     "ready": true
                 }),

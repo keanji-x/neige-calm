@@ -37,7 +37,7 @@ use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
-fn task(key: &str) -> Value {
+pub(super) fn task(key: &str) -> Value {
     json!({
         "key": key, "kind": "codex", "goal": format!("goal {key}"),
         "acceptance": format!("accept {key}"), "context": {"key": key},
@@ -47,7 +47,7 @@ fn task(key: &str) -> Value {
     })
 }
 
-async fn read(boot: &Boot) -> Value {
+pub(super) async fn read(boot: &Boot) -> Value {
     call_tool(boot, TOOL_REPORT_READ, planner_identity(boot), json!({}))
         .await
         .expect("neige_report_read")
@@ -65,7 +65,7 @@ async fn index(boot: &Boot) -> Value {
     .expect("neige_report_read index")
 }
 
-async fn upsert(boot: &Boot, id: Option<&str>, payload: Value) -> (String, u64) {
+pub(super) async fn upsert(boot: &Boot, id: Option<&str>, payload: Value) -> (String, u64) {
     let args = match id {
         Some(id) => json!({"id": id, "kind": "task", "payload": payload}),
         None => json!({"kind": "task", "payload": payload}),
@@ -252,7 +252,7 @@ async fn patch_policy(boot: &Boot, policy: &str) {
     assert_eq!(response.status(), axum::http::StatusCode::OK);
 }
 
-async fn keys(boot: &Boot) -> Vec<String> {
+pub(super) async fn keys(boot: &Boot) -> Vec<String> {
     sqlx::query_scalar("SELECT key FROM tasks WHERE track_id=?1 ORDER BY key")
         .bind(boot.track_id.as_str())
         .fetch_all(boot.repo.sqlite_db().unwrap().read_pool())
@@ -262,7 +262,7 @@ async fn keys(boot: &Boot) -> Vec<String> {
 
 /// The task verdicts of an MCP read (`task_diagnostics`, #2087 B3) or a REST read
 /// (`taskDiagnostics`): exactly one of the two spellings is present.
-fn verdicts(read: &Value) -> &Vec<Value> {
+pub(super) fn verdicts(read: &Value) -> &Vec<Value> {
     match (read.get("task_diagnostics"), read.get("taskDiagnostics")) {
         (Some(mcp), None) => mcp.as_array().expect("task_diagnostics array"),
         (None, Some(rest)) => rest.as_array().expect("taskDiagnostics array"),
@@ -291,7 +291,7 @@ fn diagnostic_contains(read: &Value, key: &str, needle: &str) -> bool {
     })
 }
 
-fn has_diagnostic_code(read: &Value, key: &str, code: &str) -> bool {
+pub(super) fn has_diagnostic_code(read: &Value, key: &str, code: &str) -> bool {
     verdicts(read).iter().any(|v| {
         v["key"] == key
             && v["diagnostics"]
@@ -302,7 +302,7 @@ fn has_diagnostic_code(read: &Value, key: &str, code: &str) -> bool {
     })
 }
 
-fn task_verdict<'a>(read: &'a Value, key: &str) -> &'a Value {
+pub(super) fn task_verdict<'a>(read: &'a Value, key: &str) -> &'a Value {
     verdicts(read)
         .iter()
         .find(|verdict| verdict["key"] == key)
@@ -571,6 +571,9 @@ async fn failed_dependency_reason_points_to_a_new_task() {
     }
 }
 
+/// Under `require_task_gates` an agent write of a `ready: true` codex/claude task with neither a
+/// gate nor a `no_gate_reason` is refused whole; the same declaration released by the user is
+/// written and waits with `gate_required`. `sub-track` tasks need no gate, and keep one they declare.
 #[tokio::test]
 async fn report_blocks_gate_admission_matrix_pins_diagnostics_and_projection() {
     for require_gates in [false, true] {
@@ -586,12 +589,14 @@ async fn report_blocks_gate_admission_matrix_pins_diagnostics_and_projection() {
             .await
             .expect("set gate policy");
 
+        let gate = || json!({"steps": [{"name": "check", "cmd": "true"}]});
         let mut cases = Vec::new();
         for kind in ["codex", "claude"] {
             cases.push((
                 format!("{kind}-gated"),
                 kind,
-                Some(json!({"steps": [{"name": "check", "cmd": "true"}]})),
+                None,
+                Some(gate()),
                 None,
                 true,
             ));
@@ -599,14 +604,45 @@ async fn report_blocks_gate_admission_matrix_pins_diagnostics_and_projection() {
                 format!("{kind}-reason"),
                 kind,
                 None,
+                None,
                 Some("verified externally"),
                 true,
             ));
-            cases.push((format!("{kind}-missing"), kind, None, None, !require_gates));
+            cases.push((
+                format!("{kind}-missing"),
+                kind,
+                None,
+                None,
+                None,
+                !require_gates,
+            ));
         }
-        cases.push(("terminal-missing".into(), "terminal", None, None, true));
+        cases.push((
+            "codex-sub-track-missing".into(),
+            "codex",
+            Some("sub-track"),
+            None,
+            None,
+            true,
+        ));
+        cases.push((
+            "codex-sub-track-gated".into(),
+            "codex",
+            Some("sub-track"),
+            Some(gate()),
+            None,
+            true,
+        ));
+        cases.push((
+            "terminal-missing".into(),
+            "terminal",
+            None,
+            None,
+            None,
+            true,
+        ));
 
-        for (key, kind, gate, no_gate_reason, should_project) in cases {
+        for (key, kind, spawn, gate, no_gate_reason, should_project) in cases {
             let mut payload = json!({
                 "key": key,
                 "kind": kind,
@@ -619,6 +655,9 @@ async fn report_blocks_gate_admission_matrix_pins_diagnostics_and_projection() {
                 "goal"
             };
             payload[instruction_field] = json!(format!("exercise {key}"));
+            if let Some(spawn) = spawn {
+                payload["spawn"] = json!(spawn);
+            }
             if let Some(gate) = gate {
                 payload["gate"] = gate;
             }
@@ -626,32 +665,81 @@ async fn report_blocks_gate_admission_matrix_pins_diagnostics_and_projection() {
                 payload["no_gate_reason"] = json!(reason);
             }
 
-            upsert(&boot, None, payload).await;
+            if should_project {
+                upsert(&boot, None, payload).await;
+            } else {
+                let doc_rev_before = read(&boot).await["doc_rev"].clone();
+                let error = upsert_block(
+                    &boot,
+                    planner_identity(&boot),
+                    json!({"kind": "task", "payload": payload.clone()}),
+                )
+                .await
+                .expect_err("an agent write of an ungated ready task is refused");
+                assert_eq!(error.code, -32602, "{key}: {error:?}");
+                for needle in [key.as_str(), "gate_required", "no_gate_reason"] {
+                    assert!(error.message.contains(needle), "{key}: {error:?}");
+                }
+                let after = read(&boot).await;
+                assert_eq!(after["doc_rev"], doc_rev_before, "{key}: nothing written");
+                assert!(
+                    !verdicts(&after).iter().any(|verdict| verdict["key"] == key),
+                    "{key}: the refused block is absent: {after}"
+                );
+                // The user's REST release is not refused: it is written and waits.
+                payload["ready"] = json!(false);
+                let (id, rev) = upsert(&boot, None, payload.clone()).await;
+                payload["ready"] = json!(true);
+                user_upsert(&boot, &id, rev, payload).await;
+            }
             let snapshot = read(&boot).await;
-            let row_exists = keys(&boot).await.iter().any(|candidate| candidate == &key);
+            let row_status: Option<String> =
+                sqlx::query_scalar("SELECT status FROM tasks WHERE track_id=?1 AND key=?2")
+                    .bind(boot.track_id.as_str())
+                    .bind(&key)
+                    .fetch_optional(boot.repo.sqlite_db().unwrap().read_pool())
+                    .await
+                    .unwrap();
             let gate_required = has_diagnostic_code(&snapshot, &key, "gate_required");
 
             assert_eq!(
-                row_exists, should_project,
+                row_status.as_deref(),
+                should_project.then_some("pending"),
                 "require_gates={require_gates}, kind={kind}, key={key}: projection"
+            );
+            assert_eq!(
+                task_verdict(&rest_read(&boot).await, &key)["schedulable"],
+                should_project,
+                "require_gates={require_gates}, kind={kind}, key={key}: schedulable"
             );
             assert_eq!(
                 gate_required, !should_project,
                 "require_gates={require_gates}, kind={kind}, key={key}: diagnostics"
             );
         }
+        let gated_child: Option<String> = sqlx::query_scalar(
+            "SELECT gate_json FROM tasks WHERE track_id=?1 AND key='codex-sub-track-gated'",
+        )
+        .bind(boot.track_id.as_str())
+        .fetch_one(boot.repo.sqlite_db().unwrap().read_pool())
+        .await
+        .unwrap();
+        assert!(
+            gated_child.is_some(),
+            "a sub-track task keeps the gate it declares"
+        );
     }
 }
 
 /// #1727 S4 D3 (oracle 1n, A13): a `codex` / `claude` declaration whose `gate` carries a `cwd`
-/// key is written (the report write is not rejected; `docRev` advances) but not admitted: the
-/// read surface reports `gate_cwd_on_agent_task` (path `gate`, action `remove_gate_cwd`), no
-/// `tasks` row exists and the pending reason is `notAdmitted`. The criterion is the key's
-/// presence, not its value: an empty `cwd` never reaches the projection because the existing
-/// payload validator (`validate_gate_shape`) refuses the whole write, and terminal tasks keep
-/// `gate.cwd`.
+/// key is not admitted. An agent write of it with `ready: true` is refused whole (-32602, nothing
+/// written); released by the user it is written but not admitted: the read surface reports
+/// `gate_cwd_on_agent_task` (path `gate`, action `remove_gate_cwd`), no `tasks` row exists and the
+/// pending reason is `notAdmitted`. The criterion is the key's presence, not its value: an empty
+/// `cwd` never reaches the projection because the existing payload validator
+/// (`validate_gate_shape`) refuses the whole write, and terminal tasks keep `gate.cwd`.
 #[tokio::test]
-async fn agent_task_gate_cwd_not_admitted_at_claim() {
+async fn gate_admission_agent_task_gate_cwd_refused_for_agents_and_not_admitted_for_users() {
     let boot = new_boot().await;
     let gate = |cwd: Value| json!({"cwd": cwd, "steps": [{"name": "check", "cmd": "true"}]});
     let doc_rev_before = read(&boot).await["doc_rev"].as_u64().unwrap();
@@ -659,10 +747,33 @@ async fn agent_task_gate_cwd_not_admitted_at_claim() {
     let mut refused = task("claude-gate-cwd");
     refused["kind"] = json!("claude");
     refused["gate"] = gate(json!("/tmp/x"));
-    upsert(&boot, None, refused).await;
     let mut codex = task("codex-gate-cwd");
     codex["gate"] = gate(json!("/tmp/y"));
-    upsert(&boot, None, codex).await;
+    for payload in [refused, codex] {
+        let key = payload["key"].as_str().unwrap().to_string();
+        let doc_rev_at_refusal = read(&boot).await["doc_rev"].as_u64().unwrap();
+        let error = upsert_block(
+            &boot,
+            planner_identity(&boot),
+            json!({"kind": "task", "payload": payload.clone()}),
+        )
+        .await
+        .expect_err("an agent write of a ready task with gate.cwd is refused");
+        assert_eq!(error.code, -32602, "{error:?}");
+        for needle in [key.as_str(), "gate_cwd_on_agent_task", "cd <subdir> && …"] {
+            assert!(error.message.contains(needle), "{error:?}");
+        }
+        assert_eq!(
+            read(&boot).await["doc_rev"].as_u64().unwrap(),
+            doc_rev_at_refusal,
+            "{key}: the refused write left the report unchanged"
+        );
+        // Declared withdrawn, then released by the user over REST: written, not admitted.
+        let mut withdrawn = payload.clone();
+        withdrawn["ready"] = json!(false);
+        let (id, rev) = upsert(&boot, None, withdrawn).await;
+        user_upsert(&boot, &id, rev, payload).await;
+    }
     let mut empty = task("codex-gate-empty-cwd");
     empty["gate"] = gate(json!(""));
     let empty_error = upsert_block(
@@ -689,7 +800,7 @@ async fn agent_task_gate_cwd_not_admitted_at_claim() {
     let snapshot = read(&boot).await;
     assert!(
         snapshot["doc_rev"].as_u64().unwrap() > doc_rev_before,
-        "the report write itself is accepted: {snapshot}"
+        "the user's release is written: {snapshot}"
     );
     for key in ["claude-gate-cwd", "codex-gate-cwd"] {
         let verdict = task_verdict(&snapshot, key);

@@ -67,6 +67,8 @@ mod report_series_resolver;
 mod report_write_characterization;
 #[path = "cases/rest_track_report_series.rs"]
 mod rest_track_report_series;
+#[path = "cases/task_gate_admission.rs"]
+mod task_gate_admission;
 #[path = "cases/task_gate_run.rs"]
 mod task_gate_run;
 #[path = "cases/task_projection_acceptance.rs"]
