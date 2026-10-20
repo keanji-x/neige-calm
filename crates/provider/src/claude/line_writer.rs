@@ -1,5 +1,7 @@
 //! Framed stdin writes and factual crossing evidence.
 use crate::send_boundary::PreSendGate;
+use std::pin::Pin;
+use std::task::{Context, Poll};
 use std::time::Duration;
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 use tokio::sync::Mutex;
@@ -23,6 +25,19 @@ pub async fn write_line<W: AsyncWrite + Unpin>(
     line: &str,
     gate: &PreSendGate<'_>,
 ) -> Result<(), LineWriteError> {
+    write_line_on_first_poll(stdin, line, gate, || {}).await
+}
+
+/// As `write_line`, with a synchronous crossing notification inside the first
+/// `AsyncWrite::poll_write`. Admission refusals never invoke it. The notification
+/// must not block or recursively access stdin; it cannot grant admission.
+/// This lets lifecycle owners bound an admitted control even if the write stalls.
+pub async fn write_line_on_first_poll<W: AsyncWrite + Unpin, F: FnOnce() + Unpin>(
+    stdin: &Mutex<Option<W>>,
+    line: &str,
+    gate: &PreSendGate<'_>,
+    on_first_poll: F,
+) -> Result<(), LineWriteError> {
     let framed = format!("{line}\n");
     let deadline = tokio::time::Instant::now() + ADMISSION_TIMEOUT;
     let mut guard = tokio::time::timeout_at(deadline, stdin.lock())
@@ -38,12 +53,16 @@ pub async fn write_line<W: AsyncWrite + Unpin>(
     // Construct the write future before admission. Its independent write budget starts
     // only when it is first polled, immediately after the final synchronous check.
     let write = async {
+        let mut crossing = FirstWritePoll {
+            writer: &mut writer,
+            notification: Some(on_first_poll),
+        };
         let result = tokio::time::timeout(WRITE_TIMEOUT, async {
-            writer
+            crossing
                 .write_all(framed.as_bytes())
                 .await
                 .map_err(|error| LineWriteError::CrossedWrite(LineIoError::Io(error)))?;
-            writer
+            crossing
                 .flush()
                 .await
                 .map_err(|error| LineWriteError::CrossedWrite(LineIoError::Io(error)))
@@ -70,6 +89,35 @@ pub async fn write_line<W: AsyncWrite + Unpin>(
         *guard = Some(writer);
     }
     result
+}
+
+/// The callback is part of the first write poll, never an intervening admission
+/// hook. In particular, there is no await/yield between admission and this poll.
+struct FirstWritePoll<W, F> {
+    writer: W,
+    notification: Option<F>,
+}
+
+impl<W: AsyncWrite + Unpin, F: FnOnce() + Unpin> AsyncWrite for FirstWritePoll<W, F> {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        bytes: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        let this = self.get_mut();
+        if let Some(notify) = this.notification.take() {
+            notify();
+        }
+        Pin::new(&mut this.writer).poll_write(cx, bytes)
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.get_mut().writer).poll_flush(cx)
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.get_mut().writer).poll_shutdown(cx)
+    }
 }
 
 /// I/O evidence after entering the writer, including a flush of a consumed line.

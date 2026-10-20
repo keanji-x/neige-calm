@@ -125,7 +125,7 @@ impl ClaudePlannerSession {
             .filter(|active| active.thread_id == thread && active.turn_id == turn)
             .map(|active| Arc::clone(&active.slot))
             .ok_or_else(|| CalmError::Conflict("Claude execution already ended".into()))?;
-        super::interrupt(&slot, admission.gate())
+        super::interrupt_after_admission(&slot, admission.gate())
             .await
             .map_err(|(error, _evidence)| admission.take_refusal().unwrap_or(error))
     }

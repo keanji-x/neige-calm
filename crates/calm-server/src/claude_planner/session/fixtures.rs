@@ -60,3 +60,21 @@ impl ClaudePlannerSession {
         self.shared.hooks.lock().expect("hooks").dispatch_result = Some(pause);
     }
 }
+
+#[cfg(test)]
+impl ClaudePlannerSession {
+    pub(crate) fn control_state_for_test(&self) -> (bool, bool) {
+        let state = self.shared.state();
+        let slot = &state.active.as_ref().expect("running execution").slot;
+        (slot.cause().is_some(), slot.stop_armed())
+    }
+
+    pub(crate) async fn block_control_flush_for_test(&self, pause: SettlePause) {
+        let slot = self.shared.state().active.as_ref().unwrap().slot.clone();
+        slot.stdin.lock().await.as_mut().unwrap().flush_failure = Some(Box::pin(async move {
+            pause.entered.notify_one();
+            pause.release.notified().await;
+            Err(std::io::Error::other("control flush failed"))
+        }));
+    }
+}

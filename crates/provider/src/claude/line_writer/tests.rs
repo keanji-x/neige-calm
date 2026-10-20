@@ -219,3 +219,36 @@ async fn claude_line_cancelled_admission_writes_nothing_and_write_budget_is_sepa
     );
     assert_eq!(*bytes.lock().unwrap(), b"u");
 }
+
+#[tokio::test]
+async fn canonical_claude_crossing_notification_is_admitted_once_under_stdin_lock() {
+    use std::sync::atomic::AtomicUsize;
+    let (stdin, bytes) = writer(Fault::Partial);
+    let notified = AtomicUsize::new(0);
+    let notify = || {
+        assert!(stdin.try_lock().is_err(), "real stdin mutex must be held");
+        assert!(
+            bytes.lock().unwrap().is_empty(),
+            "notification precedes bytes"
+        );
+        notified.fetch_add(1, Ordering::SeqCst);
+    };
+    let refuse = PreSendGate::new(|| Box::pin(async { Err(SendRefusal("refused".into())) }));
+    assert!(matches!(
+        write_line_on_first_poll(&stdin, "interrupt", &refuse, notify).await,
+        Err(LineWriteError::BeforeWrite(_))
+    ));
+    assert_eq!(notified.load(Ordering::SeqCst), 0);
+    // One partial write followed by Pending: repeated polls must not re-arm.
+    let gate = allow();
+    let mut write = Box::pin(write_line_on_first_poll(&stdin, "interrupt", &gate, notify));
+    assert!(futures_util::poll!(&mut write).is_pending());
+    assert_eq!(notified.load(Ordering::SeqCst), 1);
+    assert!(futures_util::poll!(&mut write).is_pending());
+    assert_eq!(notified.load(Ordering::SeqCst), 1);
+    drop(write);
+    assert!(
+        stdin.lock().await.is_none(),
+        "cancelled crossed write closes stdin"
+    );
+}

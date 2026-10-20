@@ -1,4 +1,5 @@
 //! Real canonical transactions composed with the fake CLI at its process boundary.
+mod control;
 mod loop_fixture;
 use super::*;
 use crate::auth::{AuthConfig, AuthState, SessionAuthority, SessionIdentity};

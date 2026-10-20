@@ -695,15 +695,35 @@ async fn interrupt(
     slot: &TurnSlot,
     gate: &provider::send_boundary::PreSendGate<'_>,
 ) -> std::result::Result<(), (CalmError, provider::control::SubmissionEvidence)> {
+    arm_interrupt(slot);
+    interrupt_after_admission(slot, gate).await
+}
+
+fn arm_interrupt(slot: &TurnSlot) {
     slot.record(TerminalCause::Interrupted);
     slot.arm_stop(tokio::time::Instant::now() + STOP_TIMER);
+}
+
+/// Canonical controls have no lifecycle effect until the actual writer crosses
+/// admission. Arming in its first poll also bounds a pending or failed write.
+async fn interrupt_after_admission(
+    slot: &TurnSlot,
+    gate: &provider::send_boundary::PreSendGate<'_>,
+) -> std::result::Result<(), (CalmError, provider::control::SubmissionEvidence)> {
     let request = provider::claude::protocol::ControlRequestOut::new(
         format!("interrupt-{}", Uuid::new_v4().simple()),
         provider::claude::protocol::ControlRequestKind::Interrupt,
     );
     use provider::control::SubmissionEvidence;
     let written = match serde_json::to_string(&request) {
-        Ok(line) => slot.write_line(&line, gate).await.map_err(|error| {
+        Ok(line) => provider::claude::line_writer::write_line_on_first_poll(
+            &slot.stdin,
+            &line,
+            gate,
+            || arm_interrupt(slot),
+        )
+        .await
+        .map_err(|error| {
             let evidence = match &error {
                 provider::claude::line_writer::LineWriteError::BeforeWrite(_) => {
                     SubmissionEvidence::NotWritten
@@ -717,7 +737,7 @@ async fn interrupt(
         Err(error) => Err((error.into(), SubmissionEvidence::NotWritten)),
     };
     if let Err((error, _evidence)) = &written {
-        tracing::warn!(%error, "claude planner: interrupt request not written; the stop timer ends the turn");
+        tracing::warn!(%error, stop_armed = slot.stop_armed(), "claude planner: interrupt request not written");
     }
     written
 }
