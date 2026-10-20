@@ -373,7 +373,7 @@ async fn a_conflicting_pr_returns_at_once() {
 
     let resp = cx.call(41, "b-1").await;
     let op_id = assert_receipt_or_settled(&resp);
-    let _child = parked_process_group_guard(&cx.fx.repo, &op_id).await;
+    let _child = forge_execution_id(&cx.fx.repo, &op_id).await;
     let event = cx.wait_for_event(Duration::from_secs(10)).await;
     assert_eq!(event.payload["conclusion"], "no_checks", "{event:?}");
 
@@ -396,7 +396,7 @@ async fn a_checks_wait_parks_until_ci_fails() {
 
     let resp = cx.call(43, "a-1").await;
     let op_id = assert_receipt(&resp);
-    let _child = parked_process_group_guard(&cx.fx.repo, &op_id).await;
+    let _child = forge_execution_id(&cx.fx.repo, &op_id).await;
     cx.assert_still_waiting(&op_id).await;
 
     let pending_again = cx.call(49, "a-1").await;
@@ -468,7 +468,7 @@ async fn a_moved_head_ends_the_wait() {
 
     let resp = cx.call(45, "h-1").await;
     let op_id = assert_receipt(&resp);
-    let _child = parked_process_group_guard(&cx.fx.repo, &op_id).await;
+    let _child = forge_execution_id(&cx.fx.repo, &op_id).await;
     cx.assert_still_waiting(&op_id).await;
 
     let moved = cx.commit_to_pr_branch();
@@ -497,11 +497,11 @@ async fn a_wait_past_its_deadline_wakes_with_the_current_state() {
 
     let resp = cx.call(47, "c-1").await;
     let op_id = assert_receipt(&resp);
-    let _child = parked_process_group_guard(&cx.fx.repo, &op_id).await;
+    let _child = forge_execution_id(&cx.fx.repo, &op_id).await;
     // Past the 1 s deadline, but only the sweep may end the wait.
     cx.assert_still_waiting(&op_id).await;
 
-    cx.fx._runtime.sweep_parked().await.expect("parked sweep");
+    cx.wait_for_sweep_completion(&op_id).await;
     assert_eq!(operation_phase(&cx.fx.repo, &op_id).await, "succeeded");
     let event = cx.wait_for_event(Duration::from_secs(5)).await;
     assert_eq!(event.payload["conclusion"], "pending", "{event:?}");
@@ -518,7 +518,7 @@ async fn a_failed_check_ends_the_wait_while_others_run() {
 
     let resp = cx.call(48, "f-1").await;
     let op_id = assert_receipt_or_settled(&resp);
-    let _child = parked_process_group_guard(&cx.fx.repo, &op_id).await;
+    let _child = forge_execution_id(&cx.fx.repo, &op_id).await;
     let event = cx.wait_for_event(Duration::from_secs(10)).await;
     assert_eq!(event.payload["conclusion"], "failure", "{event:?}");
 }
@@ -533,7 +533,7 @@ async fn a_successful_checks_wait_records_exact_head() {
     seed_shim_pr_checks(&cx.fx.origin_repo, cx.pr, &json!([success("lint")]));
     let resp = cx.call(50, "s-1").await;
     let op_id = assert_receipt_or_settled(&resp);
-    let _child = parked_process_group_guard(&cx.fx.repo, &op_id).await;
+    let _child = forge_execution_id(&cx.fx.repo, &op_id).await;
     let event = cx.wait_for_event(Duration::from_secs(10)).await;
     assert_eq!(event.payload["conclusion"], "success");
     assert_eq!(event.payload["snapshot"]["head_sha"], cx.head_sha());
@@ -654,6 +654,18 @@ impl ChecksFixture {
             .into_iter()
             .filter(|row| row.payload["pr_number"] == json!(self.pr))
             .collect()
+    }
+
+    // A due observer yields; one sweep applies Timeout, then observation owns progress.
+    async fn wait_for_sweep_completion(&self, op_id: &str) {
+        self.fx._runtime.sweep_parked().await.expect("parked sweep");
+        timeout(Duration::from_secs(30), async {
+            while operation_phase(&self.fx.repo, op_id).await == "parked" {
+                sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .expect("one sweep completes the parked wait within 30s");
     }
 
     async fn wait_for_event(&self, within: Duration) -> EventRow {

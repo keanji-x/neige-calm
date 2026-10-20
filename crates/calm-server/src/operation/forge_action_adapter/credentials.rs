@@ -8,7 +8,7 @@ use crate::error::{CalmError, Result};
 
 const MAX_PAYLOAD_BYTES: usize = 16 * 1024;
 
-fn render_payload(mut lookup: impl FnMut(&str) -> Option<OsString>) -> Result<Vec<u8>> {
+pub(crate) fn render_payload(mut lookup: impl FnMut(&str) -> Option<OsString>) -> Result<Vec<u8>> {
     let mut payload = Vec::new();
     for key in FORGE_CREDENTIAL_ENV_KEYS {
         match lookup(key) {

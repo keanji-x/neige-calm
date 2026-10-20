@@ -1,4 +1,7 @@
 use super::*;
+use crate::event::EventBus;
+use crate::operation::OperationCompletionBus;
+mod executor;
 use calm_types::forge_git::{FORGE_SHELL_PRELUDE, GIT_COMMIT_PROBE_SCRIPT};
 use std::process::Command;
 use std::sync::Arc;
@@ -7,8 +10,8 @@ use crate::db::prelude::*;
 use crate::db::sqlite::SqlxRepo;
 use crate::model::{NewArea, NewTrack, new_id, now_ms};
 use crate::operation::{
-    OperationKey, OperationOutcome, OperationRepo, OperationResult, OperationRuntime,
-    ProviderAdapter, SpawnCtx, SqlxOperationRepo,
+    OperationKey, OperationOutcome, OperationResult, OperationRuntime, ProviderAdapter, SpawnCtx,
+    SqlxOperationRepo,
 };
 use crate::state::DaemonClient;
 use crate::terminal_renderer::TerminalRendererRegistry;
@@ -181,60 +184,6 @@ async fn landed_probe_completion_tx_error_leaves_operation_parked() {
             )),
         },
     );
-    let operation_repo = SqlxOperationRepo::new(fx.repo.db().clone());
-    let op_id = operation_repo
-        .insert_operation(
-            FORGE_ACTION_KIND,
-            OperationKey {
-                operation_key: new_id(),
-                idempotency_key: Some(payload.idem_key.clone()),
-                payload_hash: "landed-probe-tx-error".into(),
-            },
-            serde_json::to_value(&payload).expect("payload json"),
-        )
-        .await
-        .expect("insert operation");
-    let frozen = FrozenForge {
-        track_id: payload.track_id,
-        area_id: "area-1".into(),
-        card_id: payload.card_id,
-        subject: payload.subject,
-        argv: payload.argv,
-        idem_key: payload.idem_key,
-        event_spec: payload.event_spec,
-        context: payload.context,
-        probe: payload.probe.clone(),
-        cwd_lease: payload.cwd_lease,
-        result_path: payload.result_path,
-        deadline_ms: payload.deadline_ms,
-    };
-    let mut output = TxOutput::new("track", Some(frozen.track_id.clone()), json!({}));
-    output.data = serde_json::to_value(&frozen).expect("frozen json");
-    let artifacts = SpawnArtifacts {
-        pid: 1,
-        pgid: 1,
-        start_time: 1,
-        boot_id: "boot-test".into(),
-        log_path: None,
-        extra: json!({}),
-    };
-    sqlx::query(
-        r#"UPDATE operations
-               SET tx_output_json = ?1,
-                   phase = 'parked',
-                   parked_at_ms = ?2,
-                   parked_deadline_ms = ?3,
-                   spawn_artifacts_json = ?4
-               WHERE id = ?5"#,
-    )
-    .bind(serde_json::to_string(&output).expect("tx output json"))
-    .bind(now_ms())
-    .bind(frozen.deadline_ms)
-    .bind(serde_json::to_string(&artifacts).expect("spawn artifacts json"))
-    .bind(&op_id)
-    .execute(fx.repo.pool())
-    .await
-    .expect("park operation");
     sqlx::query(
         r#"CREATE TRIGGER fail_forge_success_update
                BEFORE UPDATE OF phase ON operations
@@ -247,51 +196,26 @@ async fn landed_probe_completion_tx_error_leaves_operation_parked() {
     .await
     .expect("install trigger");
 
-    let result = resolve_post_release_via_probe(
-        fx.repo.db(),
-        &OperationCompletionBus::new(),
-        &EventBus::new(),
-        fx.repo.as_ref(),
-        &op_id,
-        &frozen,
-        "test ambiguous outcome",
-    )
-    .await;
-    assert!(
-        result.is_err(),
-        "landed probe completion tx failure should propagate"
-    );
-    let recover_repo = Arc::new(SqlxOperationRepo::new(fx.repo.db().clone()));
-    let route_repo: Arc<dyn RouteRepo> = fx.repo.clone();
-    let recover_events = EventBus::new();
-    let recover_completion = OperationCompletionBus::new();
-    let recover_ctx = SpawnCtx::new(
-        route_repo.clone(),
-        recover_repo.clone(),
-        Arc::new(DaemonClient::new_stub()),
-        TerminalRendererRegistry::new_with_repo(route_repo),
-        recover_events,
-        recover_completion,
-    );
-    let op = recover_repo
-        .get_operation(&op_id)
+    let op_id = submit_forge(&fx, payload, "landed-probe-tx-error")
         .await
-        .expect("get parked operation")
-        .expect("parked operation exists");
-    let recover_result = ForgeActionAdapter::new()
-        .recover_parked(
-            &op,
-            &artifacts,
-            false,
-            RecoveryMode::PastDeadline,
-            &recover_ctx,
-        )
-        .await;
-    assert!(
-        recover_result.is_err(),
-        "past-deadline landed probe completion tx failure should propagate"
-    );
-
+        .unwrap();
+    fx.runtime.drive().await.unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            let error: Option<String> =
+                sqlx::query_scalar("SELECT last_error FROM operations WHERE id=?1")
+                    .bind(&op_id)
+                    .fetch_one(fx.repo.pool())
+                    .await
+                    .unwrap();
+            if error.is_some_and(|e| e.contains("injected success tx failure")) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
     let phase: String = sqlx::query_scalar("SELECT phase FROM operations WHERE id = ?1")
         .bind(&op_id)
         .fetch_one(fx.repo.pool())
@@ -659,6 +583,7 @@ async fn forge_action_idempotency_retry_with_different_argv_collapses_to_one_ope
 }
 
 struct ForgeRuntimeFixture {
+    _execution: executor::Executor,
     repo: Arc<SqlxRepo>,
     runtime: Arc<OperationRuntime>,
     track_id: String,
@@ -705,6 +630,7 @@ async fn forge_runtime_fixture() -> ForgeRuntimeFixture {
     let completion = OperationCompletionBus::new();
     let route_repo: Arc<dyn RouteRepo> = sqlx_repo.clone();
     let terminal_renderer = TerminalRendererRegistry::new_with_repo(route_repo.clone());
+    let execution = executor::Executor::new(sqlx_repo.db().clone()).await;
     let runtime = Arc::new(
         OperationRuntime::new(
             operation_repo.clone(),
@@ -718,13 +644,15 @@ async fn forge_runtime_fixture() -> ForgeRuntimeFixture {
                 terminal_renderer,
                 events,
                 completion,
-            ),
+            )
+            .with_execution(execution.lifecycle.clone()),
         )
         .await
         .expect("operation runtime"),
     );
 
     ForgeRuntimeFixture {
+        _execution: execution,
         repo: sqlx_repo,
         runtime,
         track_id: track.id.to_string(),

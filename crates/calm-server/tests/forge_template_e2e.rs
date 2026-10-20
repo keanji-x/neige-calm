@@ -47,7 +47,7 @@ use calm_server::operation::forge_action_adapter::{
 };
 use calm_server::operation::{
     OperationCompletionBus, OperationKey, OperationOutcome, OperationResult, OperationRuntime,
-    ProviderAdapter, RecoveryItem, SpawnArtifacts, SpawnCtx, SqlxOperationRepo,
+    ProviderAdapter, RecoveryItem, SpawnCtx, SqlxOperationRepo,
 };
 use calm_server::plugin_host::{Manifest, PluginHost, PluginRegistry, PluginRuntimeStatus};
 use calm_server::session_projection_repo::{
@@ -91,6 +91,7 @@ const PLANNER_SESSION_ID: &str = "forge-template-planner-session";
 const TEMPLATE_ID: &str = "dev";
 
 struct Fixture {
+    _execution: support::execution::Fixture,
     _server: Arc<McpServer>,
     plugin_host: Arc<PluginHost>,
     repo: Arc<SqlxRepo>,
@@ -757,7 +758,7 @@ async fn git_forge_merge_crash_recovers_once_via_probe() {
     assert_eq!(shim_counter(&state.join("pr_merge_count")), 1);
     assert_eq!(workspace_lease_state(&fx.repo, &fx.lease_id).await, "held");
 
-    mark_parked_artifacts_dead(&fx.repo, &op_id).await;
+    settle_parked_execution_without_result(&fx, &op_id).await;
     mark_workspace_lease_stale_for_boot(&fx.repo, &fx.lease_id).await;
     let recovery = boot_recovery_runtime(&fx).await;
     let plan = recovery.recover_on_boot().await.expect("recover on boot");
@@ -793,7 +794,7 @@ async fn git_forge_merge_crash_recovers_once_via_probe() {
     );
 
     block.release();
-    wait_for_result_code_file(&result_path).await;
+    assert_result_files_absent(&result_path);
     assert_event_count_stays(&fx.repo, "forge.pr.merged", 1).await;
     assert_eq!(shim_counter(&state.join("pr_merge_count")), 1);
 
@@ -916,14 +917,14 @@ async fn git_forge_never_ran_parked_merge_recovers_not_landed_via_probe() {
         .await
         .expect("submit parked merge");
     wait_for_operation_phase(&fx.repo, &op_id, "parked").await;
-    let _sleep_guard = parked_process_group_guard(&fx.repo, &op_id).await;
+    let _sleep_guard = forge_execution_id(&fx.repo, &op_id).await;
     assert_result_files_absent(&result_path);
     assert!(
         !pr_is_merged(&state, pr_number),
         "parked never-ran merge must leave PR open"
     );
 
-    mark_parked_artifacts_dead(&fx.repo, &op_id).await;
+    settle_parked_execution_without_result(&fx, &op_id).await;
     mark_workspace_lease_stale_for_boot(&fx.repo, &fx.lease_id).await;
     let recovery = boot_recovery_runtime(&fx).await;
     let plan = recovery.recover_on_boot().await.expect("recover on boot");
@@ -991,7 +992,7 @@ async fn git_forge_issue_close_crash_recovers_once_via_verdict_probe() {
     let result_path = operation_result_path(&fx.repo, &op_id).await;
     assert_result_files_absent(&result_path);
 
-    mark_parked_artifacts_dead(&fx.repo, &op_id).await;
+    settle_parked_execution_without_result(&fx, &op_id).await;
     mark_workspace_lease_stale_for_boot(&fx.repo, &fx.lease_id).await;
     let recovery = boot_recovery_runtime(&fx).await;
     let plan = recovery.recover_on_boot().await.expect("recover on boot");
@@ -1018,7 +1019,7 @@ async fn git_forge_issue_close_crash_recovers_once_via_verdict_probe() {
     assert_eq!(shim_counter(&state.join("issue_close_count")), 1);
 
     block.release();
-    wait_for_result_code_file(&result_path).await;
+    assert_result_files_absent(&result_path);
     assert_event_count_stays(&fx.repo, "forge.issue.closed", 1).await;
     assert_eq!(shim_counter(&state.join("issue_close_count")), 1);
 
@@ -1349,6 +1350,7 @@ async fn boot_fixture_with_delivery(delivery: bool) -> Fixture {
             .await
             .expect("open in-memory sqlite"),
     );
+    let execution = support::execution::Fixture::new(sqlx_repo.db().clone()).await;
     let repo: Arc<dyn Repo> = sqlx_repo.clone();
     let card_role_cache = CardRoleCache::new();
     let track_area_cache = calm_server::track_area_cache::TrackAreaCache::new();
@@ -1474,6 +1476,10 @@ async fn boot_fixture_with_delivery(delivery: bool) -> Fixture {
         &tmp.path().join("gate-logs"),
     )
     .await;
+    wiring
+        .runtime
+        .execution()
+        .bind(Arc::new(execution.lifecycle.engine().unwrap().clone()));
     assert!(operation_runtime_cell.set(wiring.runtime.clone()).is_ok());
     let runtime = wiring.runtime.clone();
     let planner = ToolCallIdentity {
@@ -1525,6 +1531,7 @@ async fn boot_fixture_with_delivery(delivery: bool) -> Fixture {
     configure_repo_identity(&caller.lease_abs);
 
     Fixture {
+        _execution: execution,
         _server: server,
         plugin_host,
         repo: sqlx_repo,
@@ -2258,7 +2265,8 @@ async fn boot_recovery_runtime(fx: &Fixture) -> Arc<OperationRuntime> {
                 terminal_renderer,
                 fx.events.clone(),
                 completion,
-            ),
+            )
+            .with_execution(fx._execution.lifecycle.clone()),
         )
         .await
         .expect("boot recovery operation runtime"),
@@ -2316,31 +2324,17 @@ async fn operation_result_path(repo: &SqlxRepo, op_id: &str) -> PathBuf {
     )
 }
 
-async fn parked_process_group_guard(repo: &SqlxRepo, op_id: &str) -> ProcessGroupGuard {
-    let raw: String =
-        sqlx::query_scalar("SELECT spawn_artifacts_json FROM operations WHERE id = ?1")
-            .bind(op_id)
-            .fetch_one(repo.pool())
-            .await
-            .expect("operation spawn_artifacts_json");
-    let artifacts: SpawnArtifacts = serde_json::from_str(&raw).expect("spawn artifacts json");
-    ProcessGroupGuard {
-        pgid: artifacts.pgid,
-    }
-}
-
-struct ProcessGroupGuard {
-    pgid: i32,
-}
-
-impl Drop for ProcessGroupGuard {
-    fn drop(&mut self) {
-        if self.pgid > 0 {
-            unsafe {
-                libc::kill(-self.pgid, libc::SIGKILL);
-            }
-        }
-    }
+async fn forge_execution_id(
+    repo: &SqlxRepo,
+    op_id: &str,
+) -> workspace_runtime::execution::ExecutionId {
+    let raw: String = sqlx::query_scalar("SELECT tx_output_json FROM operations WHERE id=?")
+        .bind(op_id)
+        .fetch_one(repo.pool())
+        .await
+        .unwrap();
+    let output: Value = serde_json::from_str(&raw).unwrap();
+    serde_json::from_value(output["data"]["forge_execution"]["execution_id"].clone()).unwrap()
 }
 
 fn assert_result_files_absent(result_path: &Path) {
@@ -2358,53 +2352,64 @@ fn assert_result_files_absent(result_path: &Path) {
     );
 }
 
-async fn wait_for_result_code_file(result_path: &Path) {
-    let code = path_with_suffix(result_path, ".code");
-    let deadline = Instant::now() + Duration::from_secs(5);
-    loop {
-        if code.exists() {
-            return;
-        }
-        if Instant::now() > deadline {
-            panic!(
-                "timed out waiting for released forge result code file {}",
-                code.display()
-            );
-        }
-        sleep(Duration::from_millis(25)).await;
-    }
-}
-
 fn path_with_suffix(path: &Path, suffix: &str) -> PathBuf {
     let mut raw = path.as_os_str().to_os_string();
     raw.push(suffix);
     PathBuf::from(raw)
 }
 
-async fn mark_parked_artifacts_dead(repo: &SqlxRepo, op_id: &str) {
-    let artifacts = SpawnArtifacts {
-        pid: -424_242,
-        pgid: -424_242,
-        start_time: 0,
-        boot_id: "dead-boot-for-e2e".into(),
-        log_path: None,
-        extra: json!({ "source": "forge_template_e2e_crash" }),
-    };
-    sqlx::query(
-        r#"UPDATE operations
-           SET spawn_artifacts_json = ?1,
-               lease_owner = NULL,
-               lease_until_ms = NULL,
-               updated_at_ms = ?2
-           WHERE id = ?3
-             AND phase = 'parked'"#,
-    )
-    .bind(serde_json::to_string(&artifacts).expect("spawn artifacts json"))
-    .bind(now_ms())
-    .bind(op_id)
-    .execute(repo.pool())
+async fn settle_parked_execution_without_result(fx: &Fixture, op_id: &str) {
+    use workspace_runtime::execution::Desired;
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let released: bool = sqlx::query_scalar(
+                "SELECT json_type(tx_output_json, '$.data.forge_execution.release.Released') \
+                IS NOT NULL FROM operations WHERE id=?",
+            )
+            .bind(op_id)
+            .fetch_one(fx.repo.pool())
+            .await
+            .unwrap();
+            if released {
+                break;
+            }
+            sleep(Duration::from_millis(20)).await;
+        }
+    })
     .await
-    .expect("mark parked artifacts dead");
+    .expect("release acknowledgement precedes the crash seam");
+    // Freeze the old observer just as losing its kernel/claim would. Boot steals this lease.
+    sqlx::query(
+        "UPDATE operations SET lease_owner=?2,lease_until_ms=?3 WHERE id=?1 AND phase='parked'",
+    )
+    .bind(op_id)
+    .bind(new_id())
+    .bind(now_ms() + 60_000)
+    .execute(fx.repo.pool())
+    .await
+    .unwrap();
+    let id = forge_execution_id(&fx.repo, op_id).await;
+    let engine = fx._execution.lifecycle.engine().unwrap();
+    let mut tx = fx.repo.pool().begin().await.unwrap();
+    let ticket = engine.request(&mut tx, &id, Desired::Stop).await.unwrap();
+    tx.commit().await.unwrap();
+    engine.drive(ticket.committed());
+    // Stop/drain is asynchronous; the Engine's per-call quiesce deadline can
+    // expire before settlement under load. Keep waiting for that same execution.
+    tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            match engine.wait_settled(&id).await {
+                Err(workspace_runtime::execution::DriveError::Timeout) => continue,
+                result => break result.unwrap(),
+            }
+        }
+    })
+    .await
+    .expect("the stopped execution settles before recovery");
+    let path = operation_result_path(&fx.repo, op_id).await;
+    for suffix in ["", ".code", ".stdout"] {
+        let _ = std::fs::remove_file(path_with_suffix(&path, suffix));
+    }
 }
 
 async fn mark_workspace_lease_stale_for_boot(repo: &SqlxRepo, lease_id: &str) {

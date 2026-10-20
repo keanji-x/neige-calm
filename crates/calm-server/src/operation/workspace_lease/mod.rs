@@ -99,14 +99,17 @@ pub(crate) async fn any_track_has_active_forge_action(
         for track_id in track_ids {
             separated.push_bind(*track_id);
         }
-        separated.push_unseparated(") AND phase IN (");
+        separated.push_unseparated(") AND (phase IN (");
     }
     {
         let mut separated = query.separated(", ");
         for phase in RECOVERABLE_OPERATION_PHASES {
             separated.push_bind(phase.as_str());
         }
-        separated.push_unseparated("))");
+        separated.push_unseparated(
+            ") OR (phase = 'stuck' AND spawn_artifacts_json IS NOT NULL \
+            AND json_type(tx_output_json, '$.data.forge_execution') IS NULL)))",
+        );
     }
 
     let exists = query.build_query_scalar().fetch_one(pool).await?;

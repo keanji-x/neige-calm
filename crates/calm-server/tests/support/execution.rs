@@ -41,6 +41,17 @@ pub struct Fixture {
 }
 impl Drop for Fixture {
     fn drop(&mut self) {
+        // The supervisor's existing executor shutdown owns TERM/KILL and descendant reap.
+        unsafe {
+            libc::kill(self.server.id() as i32, libc::SIGTERM);
+        }
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while std::time::Instant::now() < deadline {
+            if self.server.try_wait().ok().flatten().is_some() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
         let _ = self.server.kill();
         let _ = self.server.wait();
     }

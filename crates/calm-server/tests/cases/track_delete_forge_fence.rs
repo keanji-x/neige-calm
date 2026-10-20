@@ -236,8 +236,7 @@ async fn delete_area_conflicts_when_child_track_has_active_forge_action() {
     assert_eq!(status, StatusCode::CONFLICT);
 }
 
-#[tokio::test]
-async fn c3_closed_worktree_clean_refuses_active_forge_action() {
+async fn assert_closed_worktree_clean_refuses_forge(native_stuck: bool) {
     use crate::support::git_helpers::run_git;
     use calm_server::test_seams::clean_closed_worktrees_with_history_for_test as clean;
     use std::collections::HashSet;
@@ -272,6 +271,47 @@ async fn c3_closed_worktree_clean_refuses_active_forge_action() {
         .await
         .unwrap();
     let op = insert_spawn_started_forge_action(&boot, &track, "clean-active-op").await;
+    if native_stuck {
+        // Seed the released native checkpoint, then exercise real compensation refusal.
+        set_operation_phase(&boot, &op, "pending").await;
+        let operations = SqlxOperationRepo::new(db.clone());
+        let claimed = operations
+            .claim_operation_for_recovery(&op)
+            .await
+            .unwrap()
+            .unwrap();
+        operations
+            .prepare_tx_and_advance(
+                &claimed,
+                &calm_server::operation::forge_action_adapter::ForgeActionAdapter::new(),
+                None,
+            )
+            .await
+            .unwrap()
+            .committed()
+            .unwrap();
+        sqlx::query("UPDATE operations SET phase='spawn_started',spawn_artifacts_json=?2,lease_owner=NULL,lease_until_ms=NULL WHERE id=?1")
+            .bind(&op).bind(json!({"pid":1,"pgid":1,"start_time":1,"boot_id":"old-boot","log_path":null,"extra":{}}).to_string()).execute(pool).await.unwrap();
+        let _ = boot.state.operation_runtime.drive().await;
+        let phase: String = sqlx::query_scalar("SELECT phase FROM operations WHERE id=?")
+            .bind(&op)
+            .fetch_one(pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            phase, "stuck",
+            "native compensation must refuse process control"
+        );
+        assert_eq!(
+            delete(boot.app.clone(), &format!("/api/tracks/{track}")).await,
+            StatusCode::CONFLICT
+        );
+        assert_eq!(
+            delete(boot.app.clone(), &format!("/api/areas/{}", boot.area_id)).await,
+            StatusCode::CONFLICT
+        );
+    }
+
     let mut history = HashSet::new();
     assert_eq!(
         clean(pool, &boot.state.operation_runtime, &mut history)
@@ -290,4 +330,13 @@ async fn c3_closed_worktree_clean_refuses_active_forge_action() {
     );
     assert!(!ignored.exists());
     assert!(history.contains(&(track, 123)));
+}
+
+#[tokio::test]
+async fn c3_closed_worktree_clean_refuses_active_forge_action() {
+    assert_closed_worktree_clean_refuses_forge(false).await;
+}
+#[tokio::test]
+async fn c3_closed_worktree_clean_refuses_unresolved_native_stuck_forge_row() {
+    assert_closed_worktree_clean_refuses_forge(true).await;
 }

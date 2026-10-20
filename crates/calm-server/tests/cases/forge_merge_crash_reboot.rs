@@ -45,11 +45,18 @@ const PRE_GO_CRASH_POINT: &str = "forge-pre-go-token:forge.pr.merged";
 const CRASH_TIMEOUT: Duration = Duration::from_secs(30);
 const ORACLE_TIMEOUT: Duration = Duration::from_secs(15);
 
-/// How long the reparented wrapper gets to hit stdin EOF and exit 75 after the kernel abort.
-const WRAPPER_REAP_TIMEOUT: Duration = Duration::from_secs(10);
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn kernel_abort_pre_fence_commit_then_reboot_merges_exactly_once() {
+    assert_merge_crash(None).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn c3_boot_steal_never_double_spawns_probe() {
+    for released in [false, true] {
+        assert_merge_crash(Some(released)).await;
+    }
+}
+async fn assert_merge_crash(probe_window: Option<bool>) {
     let _env_lock = support::forge_env::FORGE_ENV_LOCK
         .get_or_init(|| tokio::sync::Mutex::new(()))
         .lock()
@@ -99,7 +106,12 @@ async fn kernel_abort_pre_fence_commit_then_reboot_merges_exactly_once() {
         ("NEIGE_TRUSTED_FORGE_PLUGINS", OsString::from(PLUGIN_ID)),
     ];
     let mut crash_env = base_env.clone();
-    crash_env.push(("CALM_TEST_CRASH_AT", OsString::from(CRASH_POINT)));
+    let crash_point = match probe_window {
+        None => CRASH_POINT,
+        Some(false) => "forge-probe-held",
+        Some(true) => "forge-probe-released",
+    };
+    crash_env.push(("CALM_TEST_CRASH_AT", OsString::from(crash_point)));
 
     let (pr_number, head_sha) = prepare_pr(
         repo.clone(),
@@ -110,6 +122,29 @@ async fn kernel_abort_pre_fence_commit_then_reboot_merges_exactly_once() {
     )
     .await;
     seed_caller_lease(&repo, &seeded).await;
+    if probe_window.is_some() {
+        let path = shim_dir.join("gh");
+        let mut shim = std::fs::read_to_string(&path).unwrap();
+        // The external mock lands the merge but loses its response; only the real plugin probe can decide.
+        let start = shim.find("  pr:merge)").unwrap();
+        let end = start + shim[start..].find("  issue:view)").unwrap();
+        let segment = shim[start..end].replace("    ;;", "    exit 7\n    ;;");
+        shim.replace_range(start..end, &segment);
+        let start = shim.find("  pr:view)").unwrap();
+        let end = start + shim[start..].find("    pr_dir=").unwrap();
+        shim.insert_str(
+            end,
+            r#"    inc_counter "$state/probe_view_count"
+    block_if_requested "$state" pr_view
+"#,
+        );
+        std::fs::write(path, shim).unwrap();
+        std::fs::write(
+            PathBuf::from(format!("{}.shimstate/block_pr_view", origin_repo.display())),
+            "",
+        )
+        .unwrap();
+    }
 
     // boot#1: crash seam armed
     let Some(mut boot1) = launch_kernel_to_with_args(
@@ -177,7 +212,7 @@ async fn kernel_abort_pre_fence_commit_then_reboot_merges_exactly_once() {
         .unwrap_or_else(|e| panic!("crash window: {} must exist ({e})", code_path.display()));
     assert_eq!(
         code.trim(),
-        "0",
+        if probe_window.is_some() { "7" } else { "0" },
         "crash window: the merge action must have run to completion before the abort"
     );
     let shim_state = PathBuf::from(format!("{repo_arg}.shimstate"));
@@ -186,6 +221,13 @@ async fn kernel_abort_pre_fence_commit_then_reboot_merges_exactly_once() {
         1,
         "crash window: gh must have merged exactly once before the abort"
     );
+
+    let before = forge_record(repo.pool(), &op_id).await;
+    if let Some(released) = probe_window {
+        let probe = &before["probes"]["verdict"];
+        assert!(probe["execution_id"].is_string());
+        assert_eq!(probe["release"].get("Released").is_some(), released);
+    }
 
     // boot#2: same tempdir, seam unarmed. Recovery runs before the HTTP listener binds.
     let Some(mut boot2) = launch_kernel_to_with_args(
@@ -198,6 +240,21 @@ async fn kernel_abort_pre_fence_commit_then_reboot_merges_exactly_once() {
     ) else {
         return;
     };
+    if probe_window.is_some() {
+        let after = forge_record(repo.pool(), &op_id).await;
+        assert_eq!(
+            after["probes"]["verdict"]["execution_id"],
+            before["probes"]["verdict"]["execution_id"]
+        );
+        let count: i64 = query_scalar_retry(
+            repo.pool(),
+            "SELECT count(*) FROM workspace_executions WHERE alias=?1",
+            &format!("forge:{op_id}:verdict"),
+        )
+        .await;
+        assert_eq!(count, 1);
+        std::fs::write(shim_state.join("release_pr_view"), "").unwrap();
+    }
     wait_for_operation_phase(repo.pool(), &op_id, "succeeded", ORACLE_TIMEOUT).await;
     let merged = wait_for_event_rows(repo.pool(), "forge.pr.merged", 1, ORACLE_TIMEOUT).await;
     boot2.sigkill_and_reap();
@@ -254,8 +311,6 @@ async fn kernel_abort_pre_go_token_then_reboot_never_runs_action() {
         .get_or_init(|| tokio::sync::Mutex::new(()))
         .lock()
         .await;
-    // Subreaper FIRST, before any kernel (and thus any wrapper) exists.
-    become_subreaper();
 
     // prod-safety hard guards (never touch the real DB / port)
     let tmp: TempDir = socket_safe_tempdir().expect("tempdir");
@@ -354,37 +409,15 @@ async fn kernel_abort_pre_go_token_then_reboot_never_runs_action() {
         "boot#1 must die by the CALM_TEST_CRASH_AT abort seam, got {status:?}"
     );
 
-    // Spawn artifacts are recorded durably BEFORE the driver parks, so their presence proves the
-    // wrapper spawn preceded the seam.
-    let artifacts = spawn_artifacts_json(repo.pool(), &op_id).await;
-    let wrapper_pid = i32::try_from(artifacts["pid"].as_i64().expect("wrapper pid"))
-        .expect("wrapper pid fits i32");
-    assert!(wrapper_pid > 0, "durable wrapper pid must be recorded");
-    let result_path = PathBuf::from(
-        artifacts["extra"]["result_path"]
-            .as_str()
-            .expect("forge result_path in spawn artifacts"),
-    );
-    assert!(
-        result_path.starts_with(tmp_path.join("data")),
-        "forge result file must live inside the throwaway data dir: {}",
-        result_path.display()
-    );
-
+    let record = forge_record(repo.pool(), &op_id).await;
+    assert_eq!(record["release"], "Held");
+    assert_eq!(record["decision"], "Observing");
+    let result_path = operation_result_path(repo.pool(), &op_id).await;
+    assert_eq!(query_operation_phase(repo.pool(), &op_id).await, "parked");
+    let unsettled: i64=query_scalar_retry(repo.pool(),"SELECT count(*) FROM workspace_executions WHERE execution_id=?1 AND settlement_json IS NULL",record["execution_id"].as_str().unwrap()).await;
     assert_eq!(
-        query_operation_phase(repo.pool(), &op_id).await,
-        "parked",
-        "crash window: the pre-go abort must leave the merge op parked (park \
-         committed before the observer — and thus the seam — ever ran)"
-    );
-
-    // Reap the wrapper NOW: exit 75 is the `read -r _go || exit 75` EOF path, and an unreaped
-    // zombie keeps its /proc/<pid>/stat entry, so boot#2's `parked_artifacts_alive` would report
-    // it ALIVE and VerifyParked would poll forever.
-    let wrapper_code = wait_reparented_exit(wrapper_pid, WRAPPER_REAP_TIMEOUT);
-    assert_eq!(
-        wrapper_code, 75,
-        "held launcher must die on the `read -r _go || exit 75` EOF path"
+        unsettled, 1,
+        "supervisor owns the held wrapper after kernel death"
     );
 
     assert_no_result_files(&result_path, "crash window");
@@ -436,8 +469,8 @@ async fn kernel_abort_pre_go_token_then_reboot_never_runs_action() {
     let detail: Value = serde_json::from_str(&detail_raw).expect("phase_detail_json parses");
     assert_eq!(
         detail["last_error_class"],
-        json!("action-not-landed"),
-        "boot#2 must resolve via the read-only probe verdict, got {detail:#?}"
+        json!("gate-infra"),
+        "boot#2 must refuse the unreleased Held action, got {detail:#?}"
     );
     assert_eq!(detail["from_phase"], json!("parked"));
     let last_error: String = query_scalar_retry(
@@ -447,7 +480,7 @@ async fn kernel_abort_pre_go_token_then_reboot_never_runs_action() {
     )
     .await;
     assert!(
-        last_error.contains("probe reports not landed"),
+        last_error.contains("release was not confirmed"),
         "last_error must carry the NotLanded probe reason, got: {last_error}"
     );
     boot2.sigkill_and_reap();
@@ -481,11 +514,11 @@ async fn kernel_abort_pre_go_token_then_reboot_never_runs_action() {
         merge_ops, 1,
         "exactly one operations row for the merge idempotency key (no blind re-launch)"
     );
-    let artifacts_after = spawn_artifacts_json(repo.pool(), &op_id).await;
-    assert_eq!(
-        artifacts_after["pid"], artifacts["pid"],
-        "recovery must not have spawned a new wrapper"
-    );
+    let after = forge_record(repo.pool(), &op_id).await;
+    assert_eq!(after["execution_id"], record["execution_id"]);
+    assert_eq!(after["probes"], json!({"verdict":null,"output":null}));
+    let retired: i64=query_scalar_retry(repo.pool(),"SELECT count(*) FROM workspace_executions WHERE execution_id=?1 AND desired='retire' AND settlement_json IS NOT NULL",after["execution_id"].as_str().unwrap()).await;
+    assert_eq!(retired, 1);
     assert_eq!(
         query_event_rows(repo.pool(), "forge.pr.published")
             .await
@@ -918,71 +951,14 @@ fn assert_tool_succeeded(resp: &Value, label: &str) {
     );
 }
 
-/// Make this test process a child subreaper so a dead kernel's setsid'd wrapper reparents HERE
-/// and can be `waitpid`ed. The flag is process-wide: nothing in this process may ever call
-/// `waitpid(-1, ..)` (even WNOHANG), or it could steal another test's aborted kernel.
-fn become_subreaper() {
-    // SAFETY: plain prctl(2) on our own process; no pointer arguments.
-    let rc = unsafe {
-        libc::prctl(
-            libc::PR_SET_CHILD_SUBREAPER,
-            1 as libc::c_ulong,
-            0 as libc::c_ulong,
-            0 as libc::c_ulong,
-            0 as libc::c_ulong,
-        )
-    };
-    assert_eq!(
-        rc,
-        0,
-        "PR_SET_CHILD_SUBREAPER failed: {}",
-        std::io::Error::last_os_error()
-    );
-}
-
-/// Reap the reparented wrapper — a SPECIFIC pid only — and return its exit code. ECHILD is
-/// asserted at once: the owning kernel was already reaped, so it can only mean the subreaper
-/// prctl never applied.
-fn wait_reparented_exit(pid: i32, timeout: Duration) -> i32 {
-    let deadline = std::time::Instant::now() + timeout;
-    loop {
-        let mut status: libc::c_int = 0;
-        // SAFETY: waitpid(2) on a specific pid with a valid status pointer.
-        let rc = unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) };
-        match rc {
-            0 => {} // still running (EOF delivery / exit in flight)
-            -1 => {
-                let err = std::io::Error::last_os_error();
-                panic!(
-                    "waitpid({pid}) failed — ECHILD here means PR_SET_CHILD_SUBREAPER \
-                     never applied (the wrapper reparented to init, not to this test): {err}"
-                );
-            }
-            _ => {
-                assert_eq!(rc, pid, "waitpid({pid}) reaped unexpected pid {rc}");
-                assert!(
-                    libc::WIFEXITED(status),
-                    "wrapper {pid} must exit normally (expected code 75), raw status {status:#x}"
-                );
-                return libc::WEXITSTATUS(status);
-            }
-        }
-        if std::time::Instant::now() > deadline {
-            panic!("wrapper {pid} did not exit within {timeout:?} after the kernel abort");
-        }
-        std::thread::sleep(Duration::from_millis(25));
-    }
-}
-
-/// Durable `operations.spawn_artifacts_json` for an op, readable while the kernel is dead.
-async fn spawn_artifacts_json(pool: &SqlitePool, op_id: &str) -> Value {
+async fn forge_record(pool: &SqlitePool, id: &str) -> Value {
     let raw: String = query_scalar_retry(
         pool,
-        "SELECT spawn_artifacts_json FROM operations WHERE id = ?1",
-        op_id,
+        "SELECT tx_output_json FROM operations WHERE id=?1",
+        id,
     )
     .await;
-    serde_json::from_str(&raw).expect("spawn_artifacts_json parses")
+    serde_json::from_str::<Value>(&raw).unwrap()["data"]["forge_execution"].clone()
 }
 
 /// Every write in the rendered wrapper comes only after `read -r _go` succeeds, so the EOF path

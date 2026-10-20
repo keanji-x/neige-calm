@@ -1,33 +1,30 @@
-//! `forge-action` operation adapter. The irreversible action is held behind a stdin handshake until the operation row is
-//! durably parked; the post-park observer owns the child + stdin handle and validates and releases the credential payload as its first awaited step.
+//! Forge's Engine consumer. Only a claimed post-park observer releases the credential
+//! payload; the durable owner record retains action and probe execution ownership.
 
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
-use crate::db::RouteRepo;
-use crate::db::sqlite::{append_decision_event_in_tx, begin_immediate_tx};
-use crate::error::{CalmError, Result};
-use crate::event::{
-    BroadcastEnvelope, Event, EventBus, EventScope, FieldSource, ForgeEventSpec, ForgeMergeSubject,
-    SYNC_EVENT_VERSION,
-};
-use crate::ids::{ActorId, AreaId, CardId, TrackId};
-use crate::proc_identity::{
-    read_boot_id, read_proc_start_time, signal_process_group, verify_owned_pid,
-};
-
+use super::forge_execution as execution;
 use super::{
-    AppServerInteractOutcome, CompensationStateVersioned, CompensationStep, Operation,
-    OperationCompletionBus, OwnerEvent, ParkedCompletion, ParkedOutcome, ParkedRecovery, PhaseTag,
-    ProviderAdapter, RecoveryMode, SpawnArtifacts, SpawnCtx, SpawnOutcome, Tx, TxOutput,
-    complete_parked_tx,
+    AppServerInteractOutcome, CompensationStateVersioned, CompensationStep, Operation, OwnerEvent,
+    ParkedOutcome, PhaseTag, ProviderAdapter, SpawnArtifacts, SpawnCtx, SpawnOutcome, Tx, TxOutput,
 };
+use crate::db::RouteRepo;
+use crate::error::{CalmError, Result};
+use crate::event::{Event, EventScope, FieldSource, ForgeEventSpec, ForgeMergeSubject};
+use crate::ids::{ActorId, AreaId, CardId, TrackId};
+mod lifecycle;
+mod observers;
+
+#[cfg(feature = "fixtures")]
+#[doc(hidden)]
+pub fn observer_count_for_test(id: &str) -> usize {
+    observers::live_count(id)
+}
 
 pub const FORGE_ACTION_KIND: &str = "forge-action";
 
@@ -38,9 +35,6 @@ pub(crate) const NOT_LANDED_ERROR_CLASSES: &[&str] = &["action-failed", "action-
 /// validate_payload rejects any other event_kind BEFORE the irreversible action can run, so a typo'd kind can never execute the side effect and then fail to record its event.
 pub use calm_types::forge_action::SUPPORTED_FORGE_EVENT_KINDS;
 
-const RELEASE_TIMEOUT: Duration = Duration::from_secs(60);
-const REATTACH_POLL: Duration = Duration::from_secs(2);
-const PROBE_TIMEOUT: Duration = Duration::from_secs(60);
 static NEXT_FORGE_ARTIFACT_TMP: AtomicU64 = AtomicU64::new(1);
 /// What a forge child inherits on top of the base allowlist (`PATH`, `HOME`).
 const FORGE_EXTRA_ENV_KEYS: [&str; 3] = ["LANG", "LC_ALL", "TERM"];
@@ -128,7 +122,6 @@ impl FrozenForge {
 
 #[doc(hidden)]
 pub mod credentials;
-use credentials::write_credential_payload;
 
 #[cfg(test)]
 mod tests;
@@ -167,14 +160,6 @@ enum ProbeVerdict {
 enum ForgeEventBuildError {
     ActionFailed { reason: String },
     ExtractionFailed { reason: String },
-}
-
-#[derive(Clone, Copy)]
-struct ForgeCompletionRefs<'a> {
-    pool: &'a crate::db::sqlite::SqliteDb,
-    completion: &'a OperationCompletionBus,
-    events: &'a EventBus,
-    repo: &'a dyn RouteRepo,
 }
 
 /// POSIX single-quote escaping: `'` -> `'\''`.
@@ -274,7 +259,7 @@ fn result_tmp_prefixes(result_path: &Path) -> Vec<PathBuf> {
     ]
 }
 
-async fn remove_stale_result_files(result_path: &Path) -> Result<()> {
+pub(crate) async fn remove_stale_result_files(result_path: &Path) -> Result<()> {
     for stale_path in [
         result_path.to_path_buf(),
         result_code_path(result_path),
@@ -311,12 +296,7 @@ async fn remove_stale_result_files(result_path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn kill_artifacts_group(artifacts: &SpawnArtifacts) {
-    if verify_owned_pid(artifacts.pid, artifacts.start_time, &artifacts.boot_id) {
-        signal_process_group(artifacts.pgid, libc::SIGKILL);
-    }
-}
-
+#[cfg(any(test, feature = "fixtures"))]
 fn forge_passthrough_env_from<F>(mut lookup: F) -> Vec<(&'static str, std::ffi::OsString)>
 where
     F: FnMut(&str) -> Option<std::ffi::OsString>,
@@ -347,407 +327,30 @@ pub(crate) fn forge_base_env(cmd: &mut tokio::process::Command) {
         ));
 }
 
-/// Shared allowlist for plugin-supplied argv. Probes retain credentials until C3.2c;
-/// the action removes them before spawn and receives them only at release.
-async fn apply_forge_subprocess_env(cmd: &mut tokio::process::Command, repo: &dyn RouteRepo) {
-    forge_base_env(cmd);
-    if let Value::Object(env) = super::terminal_adapter::terminal_worker_env(repo)
-        .await
-        .unwrap_or(Value::Null)
-    {
-        for (k, v) in env {
-            if let Value::String(v) = v {
-                cmd.env(k, v);
-            }
-        }
+/// The same allowlist for every forge intent; credentials enter only through release stdin.
+pub(crate) async fn forge_environment(repo: &dyn RouteRepo) -> Result<Vec<(String, String)>> {
+    let mut env = crate::plugin_host::child_process::inherited_env(&FORGE_EXTRA_ENV_KEYS)
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v.to_string_lossy().into_owned()))
+        .collect::<Vec<_>>();
+    if let Value::Object(worker) = super::terminal_adapter::terminal_worker_env(repo).await? {
+        env.extend(
+            worker
+                .into_iter()
+                .filter_map(|(k, v)| v.as_str().map(|v| (k, v.into()))),
+        );
     }
-    for (key, value) in forge_passthrough_env_from(|key| std::env::var_os(key)) {
-        cmd.env(key, value);
-    }
+    env.extend(
+        FORGE_NONCREDENTIAL_ENV_KEYS
+            .iter()
+            .filter_map(|key| std::env::var(key).ok().map(|v| ((*key).into(), v))),
+    );
+    env.retain(|(key, _)| !FORGE_CREDENTIAL_ENV_KEYS.contains(&key.as_str()));
+    Ok(env)
 }
 
-fn forge_event_spec_needs_json(event_spec: Option<&ForgeEventSpec>) -> bool {
-    event_spec
-        .map(|event_spec| {
-            event_spec
-                .fields
-                .values()
-                .any(|source| matches!(source, FieldSource::JsonField { .. }))
-        })
-        .unwrap_or(false)
-}
-
-fn required_output_fields(event_kind: &str) -> &'static [(&'static str, bool)] {
-    match event_kind {
-        "forge.pr.merged" => &[("head_sha", true), ("merge_sha", true)],
-        _ => &[],
-    }
-}
-
-#[derive(Clone, Copy)]
-enum ForgeFieldType {
-    Str,
-    U64,
-    VecU64,
-}
-
-impl ForgeFieldType {
-    fn matches_context_value(self, value: &Value) -> bool {
-        match self {
-            Self::Str => value.is_string(),
-            Self::U64 => value.is_u64(),
-            Self::VecU64 => value
-                .as_array()
-                .is_some_and(|items| items.iter().all(Value::is_u64)),
-        }
-    }
-
-    fn json_type_name(self) -> &'static str {
-        match self {
-            Self::Str => "string",
-            Self::U64 => "u64",
-            Self::VecU64 => "u64 array",
-        }
-    }
-}
-
-/// Required non-kernel payload fields per event kind; `forge.pr.merged` stays on `required_output_fields`.
-fn new_kind_required_fields(event_kind: &str) -> &'static [(&'static str, ForgeFieldType)] {
-    use ForgeFieldType::*;
-    match event_kind {
-        "forge.scan.completed" => &[("overlapping_prs", VecU64)],
-        "forge.pr.opened" | "forge.pr.published" => &[("pr_number", U64), ("head_sha", Str)],
-        "forge.pr.diff.read" => &[
-            ("pr_number", U64),
-            ("base_sha", Str),
-            ("head_sha", Str),
-            ("artifact_path", Str),
-        ],
-        "forge.issue.read" => &[("issue_number", U64), ("artifact_path", Str)],
-        "forge.issue.created" => &[("issue_number", U64), ("issue_url", Str)],
-        "forge.issue.searched" => &[("artifact_path", Str)],
-        "forge.pr.checks" => &[("pr_number", U64), ("conclusion", Str)],
-        "forge.ci.evidence.read" => &[
-            ("pr_number", U64),
-            ("head_sha", Str),
-            ("artifact_path", Str),
-        ],
-        "forge.issue.closed" => &[("issue_number", U64)],
-        "worktree.provisioned" | "worktree.removed" => &[("path", Str)],
-        "worktree.committed" => &[("commit_sha", Str), ("branch", Str)],
-        _ => &[],
-    }
-}
-
-/// Kernel-authoritative payload fields injected last, which plugin `context`/`event_spec.fields` may not set.
-fn kernel_injected_fields(event_kind: &str) -> &'static [&'static str] {
-    match event_kind {
-        "forge.pr.merged" => &["track_id", "subject"],
-        "forge.pr.diff.read"
-        | "forge.ci.evidence.read"
-        | "forge.issue.read"
-        | "forge.issue.searched" => &["track_id", "artifact_path"],
-        "worktree.provisioned" | "worktree.committed" | "worktree.removed" => {
-            &["track_id", "card_id"]
-        }
-        _ => &["track_id"],
-    }
-}
-
-fn field_source_type_name(source: &FieldSource) -> &'static str {
-    match source {
-        FieldSource::ExitCode => "exit_code",
-        FieldSource::JsonField { .. } => "json_field",
-    }
-}
-
-fn parse_json_stdout_if_needed(
-    event_spec: Option<&ForgeEventSpec>,
-    stdout: &str,
-) -> Result<Option<Value>> {
-    if !forge_event_spec_needs_json(event_spec) {
-        return Ok(None);
-    }
-    serde_json::from_str::<Value>(stdout)
-        .map(Some)
-        .map_err(|e| {
-            CalmError::Internal(format!(
-                "gate-infra: forge action JSON stdout unparseable: {e}"
-            ))
-        })
-}
-
-fn validate_payload(payload: &ForgeActionPayload) -> Result<()> {
-    if payload.track_id.trim().is_empty() {
-        return Err(CalmError::BadRequest(
-            "forge-action track_id must not be empty".into(),
-        ));
-    }
-    if payload.card_id.trim().is_empty() {
-        return Err(CalmError::BadRequest(
-            "forge-action card_id must not be empty".into(),
-        ));
-    }
-    if payload.argv.is_empty() {
-        return Err(CalmError::BadRequest(
-            "forge-action argv must not be empty".into(),
-        ));
-    }
-    if payload.idem_key.trim().is_empty() {
-        return Err(CalmError::BadRequest(
-            "forge-action idem_key must not be empty".into(),
-        ));
-    }
-    match (
-        payload
-            .event_spec
-            .as_ref()
-            .map(|event_spec| event_spec.event_kind.as_str()),
-        payload.subject.as_ref(),
-    ) {
-        (Some("forge.pr.merged"), None) => {
-            return Err(CalmError::BadRequest(
-                "forge.pr.merged requires subject".into(),
-            ));
-        }
-        (Some("forge.pr.merged"), Some(_)) => {}
-        (_, Some(_)) => {
-            return Err(CalmError::BadRequest(
-                "subject is only valid for forge.pr.merged".into(),
-            ));
-        }
-        (_, None) => {}
-    }
-    if let Some(event_spec) = payload.event_spec.as_ref() {
-        if event_spec.event_kind.trim().is_empty() {
-            return Err(CalmError::BadRequest(
-                "forge-action event_spec.event_kind must not be empty".into(),
-            ));
-        }
-        if !SUPPORTED_FORGE_EVENT_KINDS.contains(&event_spec.event_kind.as_str()) {
-            return Err(CalmError::BadRequest(format!(
-                "forge-action event_kind `{}` is not a supported forge event kind",
-                event_spec.event_kind
-            )));
-        }
-        for reserved in kernel_injected_fields(&event_spec.event_kind) {
-            if payload.context.contains_key(*reserved) || event_spec.fields.contains_key(*reserved)
-            {
-                return Err(CalmError::BadRequest(format!(
-                    "forge event context/output may not set reserved key `{reserved}`"
-                )));
-            }
-        }
-        for (field, field_type) in new_kind_required_fields(&event_spec.event_kind) {
-            if kernel_injected_fields(&event_spec.event_kind).contains(field) {
-                continue;
-            }
-            if let Some(source) = event_spec.fields.get(*field) {
-                if !matches!(source, FieldSource::JsonField { .. }) {
-                    return Err(CalmError::BadRequest(format!(
-                        "forge-action `{}` field `{field}` must be extracted via a JSON field source, not exit_code",
-                        event_spec.event_kind
-                    )));
-                }
-            } else if let Some(value) = payload.context.get(*field) {
-                if !field_type.matches_context_value(value) {
-                    return Err(CalmError::BadRequest(format!(
-                        "forge-action `{}` context field `{field}` must be a {}",
-                        event_spec.event_kind,
-                        field_type.json_type_name()
-                    )));
-                }
-            } else {
-                return Err(CalmError::BadRequest(format!(
-                    "forge-action event_spec/context for `{}` must provide field `{field}`",
-                    event_spec.event_kind
-                )));
-            }
-        }
-        for (field, source) in &event_spec.fields {
-            if let FieldSource::JsonField { path } = source
-                && !path.is_empty()
-                && !path.starts_with('/')
-            {
-                return Err(CalmError::BadRequest(format!(
-                    "forge-action event_spec field `{field}` JsonField path `{path}` must be a valid JSON Pointer (empty string or starting with `/`)"
-                )));
-            }
-        }
-        for (field, is_string) in required_output_fields(&event_spec.event_kind) {
-            let Some(source) = event_spec.fields.get(*field) else {
-                return Err(CalmError::BadRequest(format!(
-                    "forge-action event_spec for `{}` must populate field `{}`",
-                    event_spec.event_kind, field
-                )));
-            };
-            if *is_string && !matches!(source, FieldSource::JsonField { .. }) {
-                return Err(CalmError::BadRequest(format!(
-                    "forge-action `{}` field `{}` must be a JSON string source, not {}",
-                    event_spec.event_kind,
-                    field,
-                    field_source_type_name(source)
-                )));
-            }
-        }
-    }
-    if payload.cwd_lease.as_os_str().is_empty() {
-        return Err(CalmError::BadRequest(
-            "forge-action cwd_lease must not be empty".into(),
-        ));
-    }
-    if !payload.cwd_lease.is_absolute() {
-        return Err(CalmError::BadRequest(
-            "forge-action cwd_lease must be absolute".into(),
-        ));
-    }
-    if payload.result_path.as_os_str().is_empty() {
-        return Err(CalmError::BadRequest(
-            "forge-action result_path must not be empty".into(),
-        ));
-    }
-    if !payload.result_path.is_absolute() {
-        return Err(CalmError::BadRequest(
-            "forge-action result_path must be absolute".into(),
-        ));
-    }
-    if payload.deadline_ms <= 0 {
-        return Err(CalmError::BadRequest(
-            "forge-action deadline_ms must be positive".into(),
-        ));
-    }
-    if let Some(probe) = payload.probe.as_ref()
-        && probe.probe_argv.is_empty()
-    {
-        return Err(CalmError::BadRequest(
-            "forge-action probe.probe_argv must not be empty".into(),
-        ));
-    }
-    if let Some(probe) = payload.probe.as_ref() {
-        if let Some(output_probe_argv) = probe.output_probe_argv.as_ref()
-            && output_probe_argv.is_empty()
-        {
-            return Err(CalmError::BadRequest(
-                "forge-action probe.output_probe_argv must not be empty".into(),
-            ));
-        }
-        if forge_event_spec_needs_json(payload.event_spec.as_ref())
-            && probe.output_probe_argv.is_none()
-        {
-            return Err(CalmError::BadRequest(
-                "forge-action probe.output_probe_argv must be present when event_spec uses JsonField"
-                    .into(),
-            ));
-        }
-    }
-    Ok(())
-}
-
-fn build_forge_event(
-    frozen: &FrozenForge,
-    exit_code: i32,
-    stdout: &str,
-) -> std::result::Result<(Option<Event>, Value), ForgeEventBuildError> {
-    if exit_code != 0 {
-        return Err(ForgeEventBuildError::ActionFailed {
-            reason: format!("forge action exited with code {exit_code}"),
-        });
-    }
-    let Some(event_spec) = frozen.event_spec.as_ref() else {
-        return Ok((
-            None,
-            json!({
-                "exit_code": exit_code,
-                "event_kind": Value::Null,
-                "event": Value::Null,
-            }),
-        ));
-    };
-    let json_stdout = parse_json_stdout_if_needed(Some(event_spec), stdout).map_err(|e| {
-        ForgeEventBuildError::ExtractionFailed {
-            reason: e.to_string(),
-        }
-    })?;
-    let mut payload = frozen.context.clone();
-    for (key, value) in event_spec
-        .extract_payload(exit_code, json_stdout.as_ref())
-        .map_err(|e| ForgeEventBuildError::ExtractionFailed {
-            reason: format!("gate-infra: forge event extraction failed: {e}"),
-        })?
-    {
-        payload.insert(key, value);
-    }
-    for field in kernel_injected_fields(&event_spec.event_kind) {
-        if payload.contains_key(*field) {
-            return Err(ForgeEventBuildError::ExtractionFailed {
-                reason: format!("forge event context/output may not set reserved key `{field}`"),
-            });
-        }
-    }
-    for field in kernel_injected_fields(&event_spec.event_kind) {
-        match *field {
-            "track_id" => {
-                payload.insert(
-                    "track_id".into(),
-                    serde_json::to_value(TrackId::from(frozen.track_id.clone())).map_err(|e| {
-                        ForgeEventBuildError::ExtractionFailed {
-                            reason: format!(
-                                "gate-infra: forge event context serialize failed: {e}"
-                            ),
-                        }
-                    })?,
-                );
-            }
-            "subject" if event_spec.event_kind == "forge.pr.merged" => {
-                if let Some(subject) = frozen.subject.as_ref() {
-                    payload.insert(
-                        "subject".into(),
-                        serde_json::to_value(subject).map_err(|e| {
-                            ForgeEventBuildError::ExtractionFailed {
-                                reason: format!(
-                                    "gate-infra: forge event subject serialize failed: {e}"
-                                ),
-                            }
-                        })?,
-                    );
-                }
-            }
-            "card_id" => {
-                payload.insert(
-                    "card_id".into(),
-                    serde_json::to_value(CardId::from(frozen.card_id.clone())).map_err(|e| {
-                        ForgeEventBuildError::ExtractionFailed {
-                            reason: format!(
-                                "gate-infra: forge event card_id serialize failed: {e}"
-                            ),
-                        }
-                    })?,
-                );
-            }
-            "artifact_path" if is_artifact_bearing_forge_event_kind(&event_spec.event_kind) => {
-                payload.insert(
-                    "artifact_path".into(),
-                    Value::String(frozen.result_path.display().to_string()),
-                );
-            }
-            _ => {}
-        }
-    }
-    let payload_value = Value::Object(payload);
-    let event = Event::from_kind_and_payload(&event_spec.event_kind, payload_value.clone())
-        .map_err(|e| ForgeEventBuildError::ExtractionFailed {
-            reason: format!("gate-infra: forge event deserialize failed: {e}"),
-        })?;
-    let mut result = Map::new();
-    result.insert("exit_code".into(), json!(exit_code));
-    let event_kind = event_spec.event_kind.as_str();
-    result.insert("event_kind".into(), Value::String(event_kind.to_owned()));
-    result.insert("event".into(), payload_value);
-    if matches!(event_kind, "forge.issue.read" | "forge.issue.searched") {
-        result.insert("stdout".into(), Value::String(stdout.to_owned()));
-    }
-    Ok((Some(event), Value::Object(result)))
-}
+mod event_policy;
+use event_policy::*;
 
 pub(crate) async fn read_result_file(result_path: &Path) -> Result<ForgeActionResultFile> {
     let code_path = result_code_path(result_path);
@@ -813,58 +416,6 @@ async fn persist_forge_artifact_if_needed(
     Ok(())
 }
 
-async fn complete_forge_op_failed(
-    pool: &crate::db::sqlite::SqliteDb,
-    completion: &OperationCompletionBus,
-    op_id: &str,
-    reason: String,
-    last_error_class: Option<String>,
-) -> Result<()> {
-    let outcome = ParkedOutcome::Failed {
-        last_error: reason,
-        last_error_class,
-    };
-    let mut tx = begin_immediate_tx(pool).await?;
-    match complete_parked_tx(&mut tx, &op_id.to_string(), &outcome).await? {
-        ParkedCompletion::Completed(result) => {
-            tx.commit().await?;
-            completion.complete(result);
-        }
-        ParkedCompletion::AlreadyResolved { phase } => {
-            tx.rollback().await?;
-            tracing::debug!(
-                op_id,
-                phase = ?phase,
-                "forge observer: op already resolved; failure discarded"
-            );
-        }
-    }
-    Ok(())
-}
-
-pub(crate) async fn complete_forge_op_with_result(
-    pool: &crate::db::sqlite::SqliteDb,
-    completion: &OperationCompletionBus,
-    events: &EventBus,
-    op_id: &str,
-    frozen: &FrozenForge,
-    exit_code: i32,
-    stdout: &str,
-) -> Result<()> {
-    if let Err(e) = persist_forge_artifact_if_needed(frozen, exit_code, stdout).await {
-        return complete_forge_op_failed(
-            pool,
-            completion,
-            op_id,
-            format!("gate-infra: forge artifact write failed: {e}"),
-            Some("gate-infra".into()),
-        )
-        .await;
-    }
-    let (outcome, event) = forge_result_outcome(frozen, exit_code, stdout);
-    commit_forge_outcome(pool, completion, events, op_id, outcome, event).await
-}
-
 /// Verdict, artifact references and owner event facts have no transactional dependencies.
 fn forge_result_outcome(
     frozen: &FrozenForge,
@@ -896,320 +447,11 @@ fn forge_result_outcome(
     }
 }
 
-async fn complete_forge_op_from_live_result(
-    refs: ForgeCompletionRefs<'_>,
-    op_id: &str,
-    frozen: &FrozenForge,
-    exit_code: i32,
-    stdout: &str,
-) -> Result<()> {
-    if let Err(e) = persist_forge_artifact_if_needed(frozen, exit_code, stdout).await {
-        return complete_forge_op_failed(
-            refs.pool,
-            refs.completion,
-            op_id,
-            format!("gate-infra: forge artifact write failed: {e}"),
-            Some("gate-infra".into()),
-        )
-        .await;
-    }
-    let (outcome, event) = forge_result_outcome(frozen, exit_code, stdout);
-    if let ParkedOutcome::Failed {
-        last_error,
-        last_error_class,
-    } = &outcome
-    {
-        // After release, a nonzero exit or extraction error is ambiguous; probe it.
-        let reason = if last_error_class.as_deref() == Some("action-failed") {
-            format!("action-failed: {last_error}")
-        } else {
-            format!("extraction failed: {last_error}")
-        };
-        return resolve_post_release_via_probe(
-            refs.pool,
-            refs.completion,
-            refs.events,
-            refs.repo,
-            op_id,
-            frozen,
-            &reason,
-        )
-        .await;
-    }
-    commit_forge_outcome(
-        refs.pool,
-        refs.completion,
-        refs.events,
-        op_id,
-        outcome,
-        event,
-    )
-    .await
-}
-
-async fn commit_forge_outcome(
-    pool: &crate::db::sqlite::SqliteDb,
-    completion: &OperationCompletionBus,
-    events: &EventBus,
-    op_id: &str,
-    outcome: ParkedOutcome,
-    event: Option<OwnerEvent>,
-) -> Result<()> {
-    let mut tx = begin_immediate_tx(pool).await?;
-    match complete_parked_tx(&mut tx, &op_id.to_string(), &outcome).await? {
-        ParkedCompletion::Completed(result) => {
-            let envelope = if let Some(OwnerEvent {
-                actor,
-                scope,
-                event,
-            }) = event
-            {
-                let event_id =
-                    append_decision_event_in_tx(&mut tx, &actor, &scope, None, &event).await?;
-                Some(BroadcastEnvelope {
-                    id: event_id,
-                    event_version: SYNC_EVENT_VERSION,
-                    actor,
-                    scope,
-                    event,
-                })
-            } else {
-                None
-            };
-            // Crash seam, compiled only under the `fixtures` feature; placed immediately before the fence commit so a crash here proves
-            // the uncommitted fence UPDATE and the appended decision event vanish together.
-            #[cfg(feature = "fixtures")]
-            crate::test_seams::crash_point(&format!(
-                "forge-pre-fence-commit:{}",
-                envelope.as_ref().map_or("none", |e| e.event.kind_tag())
-            ));
-            tx.commit().await?;
-            completion.complete(result);
-            if let Some(envelope) = envelope {
-                events.emit_envelope(envelope);
-            }
-        }
-        ParkedCompletion::AlreadyResolved { phase } => {
-            tx.rollback().await?;
-            tracing::debug!(
-                op_id,
-                phase = ?phase,
-                "forge observer: op already resolved; event discarded"
-            );
-        }
-    }
-    Ok(())
-}
-
 fn verdict_from_exit_code(exit_code: Option<i32>) -> ProbeVerdict {
     match exit_code {
         Some(0) => ProbeVerdict::Landed,
         Some(1) => ProbeVerdict::NotLanded,
         _ => ProbeVerdict::Unknown,
-    }
-}
-
-async fn run_probe(
-    argv: &[String],
-    cwd: &Path,
-    repo: &dyn RouteRepo,
-) -> Result<(Option<i32>, String)> {
-    if argv.is_empty() {
-        return Err(CalmError::Internal(
-            "forge-action probe argv must not be empty".into(),
-        ));
-    }
-    let mut cmd = tokio::process::Command::new(&argv[0]);
-    cmd.args(&argv[1..])
-        .current_dir(cwd)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .kill_on_drop(true);
-    apply_forge_subprocess_env(&mut cmd, repo).await;
-    let output = tokio::time::timeout(PROBE_TIMEOUT, cmd.output())
-        .await
-        .map_err(|_| CalmError::Internal("forge-action probe timed out".into()))??;
-    Ok((
-        output.status.code(),
-        String::from_utf8_lossy(&output.stdout).to_string(),
-    ))
-}
-
-/// `not_landed` is the failure reason when the probe reports the action did not land.
-#[allow(clippy::too_many_arguments)]
-async fn complete_from_probe(
-    pool: &crate::db::sqlite::SqliteDb,
-    completion: &OperationCompletionBus,
-    events: &EventBus,
-    repo: &dyn RouteRepo,
-    op_id: &str,
-    frozen: &FrozenForge,
-    probe: &ProbeSpec,
-    not_landed: String,
-) -> Result<ParkedRecovery> {
-    let (exit_code, _) = match run_probe(&probe.probe_argv, &frozen.cwd_lease, repo).await {
-        Ok(result) => result,
-        Err(e) => {
-            return Ok(ParkedRecovery::Fail {
-                reason: format!("forge action probe failed; gate-infra: {e}"),
-            });
-        }
-    };
-    match verdict_from_exit_code(exit_code) {
-        ProbeVerdict::Landed => {
-            let stdout = if forge_event_spec_needs_json(frozen.event_spec.as_ref()) {
-                let Some(output_probe_argv) = probe.output_probe_argv.as_ref() else {
-                    return Ok(ParkedRecovery::Fail {
-                        reason:
-                            "forge action output probe missing for JSON re-extraction; gate-infra"
-                                .into(),
-                    });
-                };
-                match run_probe(output_probe_argv, &frozen.cwd_lease, repo).await {
-                    Ok((Some(0), stdout)) => stdout,
-                    Ok((exit_code, _)) => {
-                        return Ok(ParkedRecovery::Fail {
-                            reason: format!(
-                                "forge action output probe failed with exit code {exit_code:?}; gate-infra"
-                            ),
-                        });
-                    }
-                    Err(e) => {
-                        return Ok(ParkedRecovery::Fail {
-                            reason: format!("forge action output probe failed; gate-infra: {e}"),
-                        });
-                    }
-                }
-            } else {
-                String::new()
-            };
-            complete_forge_op_with_result(pool, completion, events, op_id, frozen, 0, &stdout)
-                .await?;
-            Ok(ParkedRecovery::LeaveParked)
-        }
-        ProbeVerdict::NotLanded => Ok(ParkedRecovery::Fail { reason: not_landed }),
-        ProbeVerdict::Unknown => Ok(ParkedRecovery::Fail {
-            reason: "forge action probe verdict unknown; gate-infra".into(),
-        }),
-    }
-}
-
-/// Once the go-token is released the probe is authoritative; gate-infra is only terminal when no probe can produce a verdict.
-/// An `Err` from `complete_from_probe` means the probe reported `Landed` but the completion tx failed, so the parked row must remain for a retry.
-async fn resolve_post_release_via_probe(
-    pool: &crate::db::sqlite::SqliteDb,
-    completion: &OperationCompletionBus,
-    events: &EventBus,
-    repo: &dyn RouteRepo,
-    op_id: &str,
-    frozen: &FrozenForge,
-    ambiguous_reason: &str,
-) -> Result<()> {
-    let Some(probe) = frozen.probe.as_ref() else {
-        if let Some(reason) = ambiguous_reason.strip_prefix("action-failed: ") {
-            let _ = complete_forge_op_failed(
-                pool,
-                completion,
-                op_id,
-                reason.to_string(),
-                Some("action-failed".into()),
-            )
-            .await;
-            return Ok(());
-        }
-        let _ = complete_forge_op_failed(
-            pool,
-            completion,
-            op_id,
-            format!("gate-infra: {ambiguous_reason}; no probe to resolve outcome"),
-            Some("gate-infra".into()),
-        )
-        .await;
-        return Ok(());
-    };
-
-    // #2058 D2: an action that exited keeps its status in the reason, so the caller can tell its
-    // own refusals (a script's exit code) from a dead process.
-    let not_landed = match ambiguous_reason.strip_prefix("action-failed: ") {
-        Some(status) => format!("{status}; probe reports not landed"),
-        None => "forge action process dead and probe reports not landed".to_string(),
-    };
-    match complete_from_probe(
-        pool, completion, events, repo, op_id, frozen, probe, not_landed,
-    )
-    .await
-    {
-        Ok(ParkedRecovery::Fail { reason }) => {
-            let last_error_class = if reason.contains("gate-infra") {
-                "gate-infra"
-            } else {
-                "action-not-landed"
-            };
-            let _ = complete_forge_op_failed(
-                pool,
-                completion,
-                op_id,
-                reason,
-                Some(last_error_class.into()),
-            )
-            .await;
-            Ok(())
-        }
-        Ok(_) => Ok(()),
-        Err(e) => Err(e),
-    }
-}
-
-/// Prefer the durable result files (written via tmp+rename only after the action completed), fall back to the plugin probe, fail only if neither can answer.
-async fn resolve_dead_outcome(
-    pool: &crate::db::sqlite::SqliteDb,
-    completion: &OperationCompletionBus,
-    events: &EventBus,
-    repo: &dyn RouteRepo,
-    op_id: &str,
-    frozen: &FrozenForge,
-    ambiguous_reason: &str,
-) {
-    if let Ok(result) = read_result_file(&frozen.result_path).await {
-        if let Err(e) = complete_forge_op_from_live_result(
-            ForgeCompletionRefs {
-                pool,
-                completion,
-                events,
-                repo,
-            },
-            op_id,
-            frozen,
-            result.exit_code,
-            &result.stdout,
-        )
-        .await
-        {
-            tracing::error!(
-                op_id,
-                error = %e,
-                "forge: result-file completion tx failed; falling back to probe"
-            );
-        } else {
-            return;
-        }
-    }
-    if let Err(e) = resolve_post_release_via_probe(
-        pool,
-        completion,
-        events,
-        repo,
-        op_id,
-        frozen,
-        ambiguous_reason,
-    )
-    .await
-    {
-        tracing::error!(
-            op_id,
-            error = %e,
-            "forge: landed-verdict completion tx failed during dead recovery; leaving op parked"
-        );
     }
 }
 
@@ -1287,6 +529,10 @@ impl ProviderAdapter for ForgeActionAdapter {
         Ok(AppServerInteractOutcome::NotApplicable)
     }
 
+    fn owns_parked_resource(&self) -> Option<&'static str> {
+        Some(execution::KEY)
+    }
+
     async fn spawn_side_effect(
         &self,
         output: &TxOutput,
@@ -1294,317 +540,81 @@ impl ProviderAdapter for ForgeActionAdapter {
         ctx: &SpawnCtx,
     ) -> Result<SpawnOutcome> {
         let frozen = FrozenForge::from_output(output)?;
-        if let Some(artifacts) = &op.spawn_artifacts {
-            kill_artifacts_group(artifacts);
+        let redrive = output.data.get(execution::KEY).is_some();
+        if op.spawn_artifacts.is_some() {
+            return Err(lifecycle::legacy_error(op));
         }
-
-        if let Some(parent) = frozen.result_path.parent()
-            && !parent.as_os_str().is_empty()
-        {
-            tokio::fs::create_dir_all(parent).await?;
-        }
-        remove_stale_result_files(&frozen.result_path).await?;
-        if !frozen.cwd_lease.is_dir() {
-            return Err(CalmError::Internal(format!(
-                "forge-action cwd_lease {} does not exist",
-                frozen.cwd_lease.display()
-            )));
-        }
-
-        let wrapper = render_forge_wrapper(&frozen.argv)?;
-        let mut cmd = tokio::process::Command::new("/bin/sh");
-        cmd.arg("-c")
-            .arg(wrapper)
-            .current_dir(&frozen.cwd_lease)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
-        apply_forge_subprocess_env(&mut cmd, ctx.repo.as_ref()).await;
-        for key in FORGE_CREDENTIAL_ENV_KEYS {
-            cmd.env_remove(key);
-        }
-        cmd.env("NEIGE_FORGE_RESULT_PATH", &frozen.result_path);
-        unsafe {
-            cmd.pre_exec(|| {
-                if libc::setsid() == -1 {
-                    return Err(std::io::Error::last_os_error());
-                }
-                Ok(())
-            });
-        }
-        let mut child = cmd.spawn()?;
-        let pid = child.id().map(|p| p as i32).ok_or_else(|| {
-            CalmError::Internal("forge wrapper exited before pid could be read".into())
-        })?;
-        let pgid = pid;
-        let start_time = read_proc_start_time(pid).ok_or_else(|| {
-            CalmError::Internal(format!("forge wrapper pid {pid}: starttime unreadable"))
-        })?;
-        let boot_id =
-            read_boot_id().ok_or_else(|| CalmError::Internal("boot_id unreadable".into()))?;
-        let artifacts = SpawnArtifacts {
-            pid,
-            pgid,
-            start_time,
-            boot_id,
-            log_path: None,
-            extra: json!({
-                "result_path": frozen.result_path.display().to_string(),
-            }),
-        };
-        ctx.record_spawn_artifacts(op, &artifacts).await?;
-
-        let pool = ctx.operation_repo.sqlite_db();
-        let completion = ctx.completion.clone();
-        let events = ctx.events.clone();
-        let op_id = op.id.clone();
-        let observer_frozen = frozen.clone();
-        let observer_artifacts = artifacts.clone();
-        let observer_repo = ctx.repo.clone();
-        let observer = Box::pin(async move {
-            // Crash seam, compiled only under the `fixtures` feature; as the FIRST statement of the observer it freezes the window
-            // "op durably parked + wrapper spawned + payload NOT yet written", where the wrapper's credential read hits EOF and exits 75 without running gh.
-            #[cfg(feature = "fixtures")]
-            crate::test_seams::crash_point(&format!(
-                "forge-pre-go-token:{}",
-                observer_frozen
-                    .event_spec
-                    .as_ref()
-                    .map_or("none", |s| s.event_kind.as_str())
-            ));
-            let release = async {
-                let mut stdin = child.stdin.take().ok_or_else(|| {
-                    CalmError::Internal("forge wrapper stdin handle missing".into())
-                })?;
-                write_credential_payload(&mut stdin, |key| std::env::var_os(key)).await?;
-                drop(stdin);
-                Ok::<(), CalmError>(())
-            };
-            match tokio::time::timeout(RELEASE_TIMEOUT, release).await {
-                Ok(Ok(())) => {}
-                Ok(Err(e)) => {
-                    kill_artifacts_group(&observer_artifacts);
-                    let _ = complete_forge_op_failed(
-                        &pool,
-                        &completion,
-                        &op_id,
-                        e.to_string(),
-                        Some("gate-infra".into()),
-                    )
-                    .await;
-                    return;
-                }
-                Err(_) => {
-                    kill_artifacts_group(&observer_artifacts);
-                    let _ = complete_forge_op_failed(
-                        &pool,
-                        &completion,
-                        &op_id,
-                        "gate-infra: forge release write did not complete within 60s".into(),
-                        Some("gate-infra".into()),
-                    )
-                    .await;
-                    return;
-                }
+        if redrive {
+            let record = execution::record(op)?;
+            if record.release == execution::Release::Held
+                && record.decision == execution::Decision::Observing
+            {
+                execution::stop(
+                    ctx,
+                    op,
+                    execution::Kind::Action,
+                    execution::StopReason::KernelRestarted,
+                )
+                .await?;
             }
-
-            // The parked-deadline sweep owns timeouts; the first-committer-wins guard makes any late observer completion roll back.
-            match child.wait().await {
-                Ok(status) if status.code().is_some() => {
-                    match read_result_file(&observer_frozen.result_path).await {
-                        Ok(result) => {
-                            if let Err(e) = complete_forge_op_from_live_result(
-                                ForgeCompletionRefs {
-                                    pool: &pool,
-                                    completion: &completion,
-                                    events: &events,
-                                    repo: observer_repo.as_ref(),
-                                },
-                                &op_id,
-                                &observer_frozen,
-                                result.exit_code,
-                                &result.stdout,
-                            )
-                            .await
-                            {
-                                tracing::error!(
-                                    op_id = %op_id,
-                                    error = %e,
-                                    "forge observer: completion tx failed; sweep/reconcile will recover"
-                                );
-                            }
-                        }
-                        Err(e) => {
-                            tracing::warn!(
-                                op_id = %op_id,
-                                error = %e,
-                                "forge observer: result file unreadable after post-release wait"
-                            );
-                            if let Err(e) = resolve_post_release_via_probe(
-                                &pool,
-                                &completion,
-                                &events,
-                                observer_repo.as_ref(),
-                                &op_id,
-                                &observer_frozen,
-                                "result file unreadable",
-                            )
-                            .await
-                            {
-                                tracing::error!(
-                                    op_id = %op_id,
-                                    error = %e,
-                                    "forge observer: landed-verdict completion tx failed; sweep/reconcile will recover"
-                                );
-                            }
-                        }
-                    }
-                }
-                Ok(_) => {
-                    if let Err(e) = resolve_post_release_via_probe(
-                        &pool,
-                        &completion,
-                        &events,
-                        observer_repo.as_ref(),
-                        &op_id,
-                        &observer_frozen,
-                        "forge wrapper killed by signal",
-                    )
-                    .await
-                    {
-                        tracing::error!(
-                            op_id = %op_id,
-                            error = %e,
-                            "forge observer: landed-verdict completion tx failed; sweep/reconcile will recover"
-                        );
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        op_id = %op_id,
-                        error = %e,
-                        "forge observer: wrapper wait failed"
-                    );
-                    if let Err(e) = resolve_post_release_via_probe(
-                        &pool,
-                        &completion,
-                        &events,
-                        observer_repo.as_ref(),
-                        &op_id,
-                        &observer_frozen,
-                        "wrapper wait failed",
-                    )
-                    .await
-                    {
-                        tracing::error!(
-                            op_id = %op_id,
-                            error = %e,
-                            "forge observer: landed-verdict completion tx failed; sweep/reconcile will recover"
-                        );
-                    }
-                }
+        } else {
+            execution::engine(ctx)?;
+            if let Some(parent) = frozen.result_path.parent() {
+                tokio::fs::create_dir_all(parent).await?;
             }
-        });
-
+            execution::admit_action(ctx, op, &frozen).await?;
+        }
+        let (ctx, id) = (ctx.clone(), op.id.clone());
         Ok(SpawnOutcome::Parked {
             deadline_ms: frozen.deadline_ms,
-            observer,
+            observer: Box::pin(async move {
+                if let Some(observer) = observers::ensure_observer(ctx, id) {
+                    let _ = observer.await;
+                }
+            }),
         })
     }
 
-    async fn recover_parked(
+    async fn recover_owned_parked(
         &self,
         op: &Operation,
-        artifacts: &SpawnArtifacts,
-        alive: bool,
-        mode: RecoveryMode,
+        mode: super::RecoveryMode,
         ctx: &SpawnCtx,
-    ) -> Result<ParkedRecovery> {
-        let frozen = op
-            .tx_output
+    ) -> Result<super::ParkedRecovery> {
+        let outcome = lifecycle::recover(op, mode, ctx).await?;
+        if matches!(outcome, super::ParkedRecovery::LeaveParked) {
+            // Every recovery that leaves work parked restores its accelerator after
+            // the committed step. The sweep guarantees liveness if an observer is lost.
+            observers::ensure_observer(ctx.clone(), op.id.clone());
+        }
+        Ok(outcome)
+    }
+
+    async fn complete_owned_parked_tx(
+        &self,
+        tx: &mut Tx<'_>,
+        op: &Operation,
+    ) -> Result<Vec<crate::event::BroadcastEnvelope>> {
+        execution::retire(tx, op).await?;
+        #[cfg(feature = "fixtures")]
+        crate::test_seams::crash_point(&format!(
+            "forge-pre-fence-commit:{}",
+            FrozenForge::from_output(
+                op.tx_output
+                    .as_ref()
+                    .ok_or_else(|| CalmError::Internal("missing forge output".into()))?
+            )?
+            .event_spec
             .as_ref()
-            .ok_or_else(|| CalmError::Internal("forge-action op missing tx_output".into()))
-            .and_then(FrozenForge::from_output)?;
-        if alive && verify_owned_pid(artifacts.pid, artifacts.start_time, &artifacts.boot_id) {
-            return match mode {
-                RecoveryMode::Boot => {
-                    let pool = ctx.operation_repo.sqlite_db();
-                    let completion = ctx.completion.clone();
-                    let events = ctx.events.clone();
-                    let repo = ctx.repo.clone();
-                    let op_id = op.id.clone();
-                    let artifacts = artifacts.clone();
-                    tokio::spawn(async move {
-                        loop {
-                            if !verify_owned_pid(
-                                artifacts.pid,
-                                artifacts.start_time,
-                                &artifacts.boot_id,
-                            ) {
-                                break;
-                            }
-                            tokio::time::sleep(REATTACH_POLL).await;
-                        }
-                        resolve_dead_outcome(
-                            &pool,
-                            &completion,
-                            &events,
-                            repo.as_ref(),
-                            &op_id,
-                            &frozen,
-                            "forge action process dead",
-                        )
-                        .await;
-                    });
-                    Ok(ParkedRecovery::LeaveParked)
-                }
-                RecoveryMode::PreDeadlineProbe => Ok(ParkedRecovery::LeaveParked),
-                RecoveryMode::PastDeadline => Ok(ParkedRecovery::Fail {
-                    reason: "action-timeout".into(),
-                }),
-            };
-        }
+            .map_or("none", |s| s.event_kind.as_str())
+        ));
+        Ok(Vec::new())
+    }
 
-        // The durable result files are authoritative (written via tmp+rename only after the action ran to completion); a read failure falls through to the probe path.
-        if let Ok(result) = read_result_file(&frozen.result_path).await {
-            // Propagate completion tx errors so the op stays parked for a later sweep.
-            let pool = ctx.operation_repo.sqlite_db();
-            complete_forge_op_from_live_result(
-                ForgeCompletionRefs {
-                    pool: &pool,
-                    completion: &ctx.completion,
-                    events: &ctx.events,
-                    repo: ctx.repo.as_ref(),
-                },
-                &op.id,
-                &frozen,
-                result.exit_code,
-                &result.stdout,
-            )
-            .await?;
-            return Ok(ParkedRecovery::LeaveParked);
+    fn owned_parked_completed(&self, op: &Operation, ctx: &SpawnCtx) {
+        if let Ok(record) = execution::record(op) {
+            ctx.execution.drive(record.ids());
         }
-
-        // Dead process: the probe is the ONLY truth for whether the irreversible action landed, so run it regardless of the deadline (exactly-once recovery).
-        if frozen.probe.is_none() {
-            return Ok(ParkedRecovery::Fail {
-                reason: match mode {
-                    RecoveryMode::PastDeadline => "action-timeout".into(),
-                    _ => "forge action process dead with no probe; gate-infra".into(),
-                },
-            });
-        }
-        resolve_post_release_via_probe(
-            &ctx.operation_repo.sqlite_db(),
-            &ctx.completion,
-            &ctx.events,
-            ctx.repo.as_ref(),
-            &op.id,
-            &frozen,
-            "forge action process dead",
-        )
-        .await?;
-        Ok(ParkedRecovery::LeaveParked)
     }
 
     async fn plan_compensation(
@@ -1645,7 +655,10 @@ impl ProviderAdapter for ForgeActionAdapter {
             "kill_forge_action_group" => {
                 if let Some(artifacts) = step.args.get("artifacts").filter(|v| !v.is_null()) {
                     let artifacts: SpawnArtifacts = serde_json::from_value(artifacts.clone())?;
-                    kill_artifacts_group(&artifacts);
+                    return Err(CalmError::Conflict(format!(
+                        "drain under the old kernel or manually stop pgid {}",
+                        artifacts.pgid
+                    )));
                 }
                 Ok(())
             }

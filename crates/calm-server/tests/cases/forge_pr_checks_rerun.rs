@@ -76,7 +76,7 @@ async fn a_fenced_wait_ignores_the_previous_attempts_failure() {
     );
     let resp = call_fenced(&cx, 81, "r-1").await;
     let op_id = assert_receipt(&resp);
-    let _child = parked_process_group_guard(&cx.fx.repo, &op_id).await;
+    let _child = forge_execution_id(&cx.fx.repo, &op_id).await;
     cx.assert_still_waiting(&op_id).await;
 
     // The rerun attempt failed too: that failure is reported.
@@ -105,7 +105,7 @@ async fn a_fenced_wait_settles_on_the_new_attempts_result() {
     );
     let resp = call_fenced(&cx, 82, "r-2").await;
     let op_id = assert_receipt(&resp);
-    let _child = parked_process_group_guard(&cx.fx.repo, &op_id).await;
+    let _child = forge_execution_id(&cx.fx.repo, &op_id).await;
     cx.assert_still_waiting(&op_id).await;
 
     seed_run(&cx, &cx.head_sha(), 2, "completed");
@@ -142,7 +142,7 @@ async fn a_fenced_wait_still_fails_on_other_runs() {
     );
     let resp = call_fenced(&cx, 83, "r-3").await;
     let op_id = assert_receipt_or_settled(&resp);
-    let _child = parked_process_group_guard(&cx.fx.repo, &op_id).await;
+    let _child = forge_execution_id(&cx.fx.repo, &op_id).await;
     let event = cx.wait_for_event(Duration::from_secs(10)).await;
     assert_eq!(event.payload["conclusion"], "failure", "{event:?}");
     // Only the other run's failure: the rerun run's stale check is pending.
@@ -169,10 +169,10 @@ async fn a_fenced_deadline_snapshot_reports_pending() {
     );
     let resp = call_fenced(&cx, 84, "r-4").await;
     let op_id = assert_receipt(&resp);
-    let _child = parked_process_group_guard(&cx.fx.repo, &op_id).await;
+    let _child = forge_execution_id(&cx.fx.repo, &op_id).await;
     cx.assert_still_waiting(&op_id).await;
 
-    cx.fx._runtime.sweep_parked().await.expect("parked sweep");
+    cx.wait_for_sweep_completion(&op_id).await;
     assert_eq!(operation_phase(&cx.fx.repo, &op_id).await, "succeeded");
     let event = cx.wait_for_event(Duration::from_secs(5)).await;
     assert_eq!(event.payload["conclusion"], "pending", "{event:?}");
@@ -281,7 +281,7 @@ async fn a_fenced_wait_ends_on_head_move() {
     );
     let resp = call_fenced(&cx, 85, "r-5").await;
     let op_id = assert_receipt(&resp);
-    let _child = parked_process_group_guard(&cx.fx.repo, &op_id).await;
+    let _child = forge_execution_id(&cx.fx.repo, &op_id).await;
     cx.assert_still_waiting(&op_id).await;
 
     let moved = cx.commit_to_pr_branch();

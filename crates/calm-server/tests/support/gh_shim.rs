@@ -260,7 +260,7 @@ case "$area:$verb" in
         # lose its result by killing the whole forge action once the request is counted.
         case "$*" in *'-X POST'*) ;; *) exit 2 ;; esac
         inc_counter "$state/rerun_failed_count"
-        if [ -f "$state/actions/rerun_kill" ]; then kill -KILL 0; fi
+        block_if_requested "$state" rerun_lost
         exit 0
         ;;
     esac

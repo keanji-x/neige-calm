@@ -45,7 +45,7 @@ fn args() -> Value {
     json!({"repo":"owner/repo","title":"Recovery title","body":"Recovery body","idem":"recover-one"})
 }
 async fn recover(fx: &Fixture, op: &str, lease: &str) -> OperationResult {
-    mark_parked_artifacts_dead(&fx.repo, op).await;
+    settle_parked_execution_without_result(fx, op).await;
     mark_workspace_lease_stale_for_boot(&fx.repo, lease).await;
     let runtime = boot_recovery_runtime(fx).await;
     let plan = runtime.recover_on_boot().await.unwrap();
@@ -102,7 +102,7 @@ async fn git_forge_issue_create_recovers_number_and_url_without_recreating() {
         URL
     );
     block.release();
-    wait_for_result_code_file(&result_path).await;
+    assert_result_files_absent(&result_path);
     assert_eq!(shim_counter(&api.state().join("issue_create_count")), 1);
     let rows = event_rows(&fx.repo, "forge.issue.created").await;
     assert_eq!(rows.len(), 1);
@@ -191,7 +191,7 @@ async fn git_forge_issue_create_probe_failure_is_unknown() {
         assert_eq!(replay["result"]["isError"], true, "{fault}: {replay}");
         assert_eq!(shim_counter(&api.state().join("issue_create_count")), 1);
         block.release();
-        wait_for_result_code_file(&result_path).await;
+        assert_result_files_absent(&result_path);
         assert!(event_rows(&fx.repo, "forge.issue.created").await.is_empty());
         assert_eq!(
             shim_counter(&api.state().join("issue_create_count")),
@@ -245,7 +245,7 @@ async fn git_forge_issue_create_recovery_does_not_borrow_another_caller() {
     assert_tool_succeeded(&second, CREATE);
     let op = op_id_from_response(&second);
     wait_for_operation_phase(&fx.repo, &op, "parked").await;
-    let process = parked_process_group_guard(&fx.repo, &op).await;
+    let process = forge_execution_id(&fx.repo, &op).await;
     let deadline = Instant::now() + Duration::from_secs(5);
     while !api.state().join("issue_create_before_started").exists() {
         assert!(Instant::now() < deadline);

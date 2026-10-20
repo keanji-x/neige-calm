@@ -123,10 +123,10 @@ async fn gh_pr_checks_all_empty_deadline_is_partial() {
     )
     .await;
     let op_id = assert_receipt(&resp);
-    let _child = parked_process_group_guard(&cx.fx.repo, &op_id).await;
+    let _child = forge_execution_id(&cx.fx.repo, &op_id).await;
     cx.assert_still_waiting(&op_id).await;
-    cx.fx._runtime.sweep_parked().await.unwrap();
-    let event = cx.wait_for_event(Duration::from_secs(5)).await;
+    cx.wait_for_sweep_completion(&op_id).await;
+    let event = cx.wait_for_event(Duration::from_secs(30)).await;
     assert_eq!(event.payload["conclusion"], "no_checks");
     assert_eq!(event.payload["snapshot"]["all_checks_completed"], false);
     assert_eq!(event.payload["failed_checks"], json!([]));
@@ -207,7 +207,7 @@ async fn gh_pr_checks_all_token_aliases_redacted_through_persistence_replay_wake
     let args = json!({"repo":cx.repo_arg,"pr":cx.pr,"attempt":"tokens","wait_for_all":true});
     let resp = call_tool(&cx.fx, 60, PR_CHECKS_TOOL, args.clone()).await;
     let op_id = assert_receipt_or_settled(&resp);
-    let _child = parked_process_group_guard(&cx.fx.repo, &op_id).await;
+    let _child = forge_execution_id(&cx.fx.repo, &op_id).await;
     let event = cx.wait_for_event(Duration::from_secs(10)).await;
     let replay = call_tool(&cx.fx, 61, PR_CHECKS_TOOL, args).await;
     let replayed = calm_types::event::Event::from_kind_and_payload(
@@ -257,7 +257,7 @@ async fn gh_pr_checks_all_conflict_and_headmove_preserve_partial_empty_snapshot(
         )
         .await;
         let op_id = assert_receipt_or_settled(&resp);
-        let _child = parked_process_group_guard(&cx.fx.repo, &op_id).await;
+        let _child = forge_execution_id(&cx.fx.repo, &op_id).await;
         let head = if conflicting {
             cx.head_sha()
         } else {
@@ -301,10 +301,10 @@ async fn gh_pr_checks_all_deadline_records_partial_diagnostics() {
     )
     .await;
     let op_id = assert_receipt(&resp);
-    let _child = parked_process_group_guard(&cx.fx.repo, &op_id).await;
+    let _child = forge_execution_id(&cx.fx.repo, &op_id).await;
     cx.assert_still_waiting(&op_id).await;
-    cx.fx._runtime.sweep_parked().await.unwrap();
-    let event = cx.wait_for_event(Duration::from_secs(5)).await;
+    cx.wait_for_sweep_completion(&op_id).await;
+    let event = cx.wait_for_event(Duration::from_secs(30)).await;
     assert_eq!(event.payload["conclusion"], "failure");
     assert_eq!(event.payload["snapshot"]["all_checks_completed"], false);
     assert_eq!(event.payload["failed_checks"].as_array().unwrap().len(), 1);
@@ -338,7 +338,7 @@ async fn gh_pr_checks_all_waits_for_two_shards_and_replays_diagnostics() {
     let args = json!({"repo":cx.repo_arg,"pr":cx.pr,"attempt":"all-1","wait_for_all":true});
     let resp = call_tool(&cx.fx, 60, PR_CHECKS_TOOL, args.clone()).await;
     let op_id = assert_receipt(&resp);
-    let _child = parked_process_group_guard(&cx.fx.repo, &op_id).await;
+    let _child = forge_execution_id(&cx.fx.repo, &op_id).await;
     cx.assert_still_waiting(&op_id).await;
     seed_shim_pr_checks(
         &cx.fx.origin_repo,

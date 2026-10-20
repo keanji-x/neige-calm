@@ -364,3 +364,37 @@ pub async fn reject_projection_retirement_for_test(db: &crate::db::sqlite::Sqlit
 pub use crate::workspace_service::sweep::{
     WorkspaceSweepHook, install_workspace_sweep_hook_for_test,
 };
+
+/// One-shot repository failures, keyed by method and operation; absent from production builds.
+#[cfg(feature = "fixtures")]
+mod operation_faults {
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex, OnceLock};
+    use tokio::sync::Notify;
+    type Faults = Mutex<HashMap<(String, String), Arc<Notify>>>;
+    fn faults() -> &'static Faults {
+        static FAULTS: OnceLock<Faults> = OnceLock::new();
+        FAULTS.get_or_init(Default::default)
+    }
+    pub fn install_operation_fault_for_test(method: &str, id: &str) -> Arc<Notify> {
+        let fired = Arc::new(Notify::new());
+        faults()
+            .lock()
+            .unwrap()
+            .insert((method.into(), id.into()), fired.clone());
+        fired
+    }
+    pub(crate) fn operation_fault(method: &str, id: &str) -> crate::error::Result<()> {
+        if let Some(fired) = faults().lock().unwrap().remove(&(method.into(), id.into())) {
+            fired.notify_one();
+            return Err(crate::error::CalmError::Internal(format!(
+                "injected {method} failure"
+            )));
+        }
+        Ok(())
+    }
+}
+#[cfg(feature = "fixtures")]
+pub use operation_faults::install_operation_fault_for_test;
+#[cfg(feature = "fixtures")]
+pub(crate) use operation_faults::operation_fault;

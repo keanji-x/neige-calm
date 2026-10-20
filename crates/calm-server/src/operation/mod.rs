@@ -20,6 +20,7 @@ pub mod claude_restart_adapter;
 pub mod codex_adapter;
 mod dry_run;
 pub mod forge_action_adapter;
+pub(crate) mod forge_execution;
 pub(crate) mod gate_execution;
 pub(crate) mod gate_lifecycle;
 pub(crate) mod gate_ops;
@@ -967,6 +968,8 @@ pub trait OperationRepo: Send + Sync {
     }
 
     async fn claim_parked(&self, op_id: &str) -> Result<Option<Operation>> {
+        #[cfg(feature = "fixtures")]
+        crate::test_seams::operation_fault("claim_parked", op_id)?;
         let now = now_ms();
         let lease_owner = new_id();
         let lease_until = now + OPERATION_LEASE_MS;

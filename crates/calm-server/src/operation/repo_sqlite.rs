@@ -221,6 +221,8 @@ impl OperationRepo for SqlxOperationRepo {
     }
 
     async fn get_operation(&self, op_id: &str) -> Result<Option<Operation>> {
+        #[cfg(feature = "fixtures")]
+        crate::test_seams::operation_fault("get_operation", op_id)?;
         self.find_by_id(op_id).await
     }
 

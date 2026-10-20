@@ -44,6 +44,7 @@ const EXPOSED_NAME: &str = "plugin_dev_neige_stub_forge_forge_scan";
 static FORGE_ENV_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
 
 struct Fixture {
+    _execution: support::execution::Fixture,
     _server: Arc<McpServer>,
     plugin_host: Arc<PluginHost>,
     repo: Arc<SqlxRepo>,
@@ -826,6 +827,7 @@ async fn boot_fixture_with_role(mode: StubMode, role: CardRole) -> Fixture {
     let completion = OperationCompletionBus::new();
     let route_repo: Arc<dyn RouteRepo> = repo.clone();
     let terminal_renderer = TerminalRendererRegistry::new_with_repo(route_repo.clone());
+    let execution = support::execution::Fixture::new(sqlx_repo.db().clone()).await;
     let runtime = Arc::new(
         OperationRuntime::new(
             operation_repo.clone(),
@@ -839,7 +841,8 @@ async fn boot_fixture_with_role(mode: StubMode, role: CardRole) -> Fixture {
                 terminal_renderer,
                 events.clone(),
                 completion,
-            ),
+            )
+            .with_execution(execution.lifecycle.clone()),
         )
         .await
         .expect("operation runtime"),
@@ -866,6 +869,7 @@ async fn boot_fixture_with_role(mode: StubMode, role: CardRole) -> Fixture {
     .expect("spawn McpServer");
 
     Fixture {
+        _execution: execution,
         _server: server,
         plugin_host,
         repo: sqlx_repo,

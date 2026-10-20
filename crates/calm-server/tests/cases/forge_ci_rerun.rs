@@ -369,17 +369,33 @@ async fn rerun_lost_result_is_unknown_and_never_reposted() {
         .lock()
         .await;
     let cx = RerunFixture::boot("lost").await;
-    // The request reaches GitHub, then the whole forge action dies before it records a result.
-    let kill = shim_state_dir(&cx.fx.origin_repo)
-        .join("actions")
-        .join("rerun_kill");
-    std::fs::write(&kill, "").unwrap();
+    // The POST lands, then the Engine stops the action before any result survives.
+    let state = shim_state_dir(&cx.fx.origin_repo);
+    let block = ShimBlock::new(&state, "rerun_lost");
     let args = cx.args("r-lost");
-    let lost = cx.call_approved(1, &args).await;
+    let call = cx.call_approved(1, &args);
+    tokio::pin!(call);
+    let counter = state.join("rerun_failed_count");
+    tokio::select! {
+        _=wait_for_counter(&counter,1)=>{},
+        result=&mut call=>panic!("rerun returned before the lost-response seam: {result:?}"),
+    }
+    let op: String = sqlx::query_scalar(
+        "SELECT id FROM operations WHERE kind='forge-action' AND phase='parked'",
+    )
+    .fetch_one(cx.fx.repo.pool())
+    .await
+    .unwrap();
+    settle_parked_execution_without_result(&cx.fx, &op).await;
+    let recovery = boot_recovery_runtime(&cx.fx).await;
+    let plan = recovery.recover_on_boot().await.unwrap();
+    recovery.apply_recovery(plan).await.unwrap();
+    let lost = timeout(Duration::from_secs(5), call)
+        .await
+        .expect("recovery wakes the original caller");
     assert!(refusal(&lost).contains("rerun-unknown"), "{lost:#}");
     assert_eq!(cx.posts(), 1);
-
-    std::fs::remove_file(&kill).unwrap();
+    block.release();
     let again = cx.call(3, &args).await;
     assert!(refusal(&again).contains("rerun-unknown"), "{again:#}");
     assert_eq!(cx.posts(), 1, "an unknown rerun is never posted again");

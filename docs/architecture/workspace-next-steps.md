@@ -426,6 +426,22 @@ R5-B1 续租前被取消泄漏预约、R6-B1 tokio 的 spawn 在 OS spawn 之后
     约束），不在 claim 内等待 probe 进程。claim 过期只让当前 claimant 的下一次写失败并退出，接手者从记录继续：probe 不重启，计时不重置
     （以 durable 的 `authorized_at_ms` 为准），probe 自身的 60s 与 claim 租约（60s，`server/operation/mod.rs:77`，`claim_parked` 不续租）
     不再有关系。
+  - sweep（以及 boot/recover）的一次 claim 只执行一次 durable 步骤并返回 LeaveParked，不等待 Stop、结算或 probe；
+    **parked sweep 保证活性，observer 只是加速器。** 所有 recovery mode（PreDeadlineProbe、PastDeadline、Boot）在一步提交后，
+    只要返回 LeaveParked，就从 adapter 的同一个调用点执行幂等 `ensure_observer`，不再按 mode 分散挂载；observer 丢失最多损失一个
+    sweep 周期，不会丢失 operation。sweep 返回后的完成由 observer 异步推进。原生测试只将返回后的终态即时断言改为有界等待，phase、失败原因、事件和 payload 均保持不变；
+    sweep 前仍须断言 parked 且无事件。未结算的 action 仍为 Observing 且 `now >= parked_deadline_ms` 时，observer 在取 claim 之前退出，
+    将 claim 让给下一次 sweep；一次 sweep 同事务写 Stopping{Timeout} 与 Stop 后，post-step 重挂 observer，此时 Stopping 不再让出 claim，
+    不需第二次 sweep 即可收尾、推进 probe 与完成。已结算的 action 没有剩余 action 计时，observer 可继续推进其 probe。
+    每个进程每个 op 最多一个 observer：forge adapter 自有按 op id 索引的内存注册表，所有挂载点统一经过
+    `ensure_observer(ctx, op_id)`；未注册时先注册再 spawn，已注册时只标记 restart 请求。observer 因 deadline yield、
+    不再 Parked 或 operation 不存在而退出时，在同一把锁内检查并消费 restart：有请求则继续循环，否则注销，避免 sweep 与退出竞争丢失唤醒。
+    observer 的 `get_operation`、`claim_parked` 临时仓库错误不退出，以 50ms 起、翻倍至最多 2s 的退避重试；完整读与 claim 成功后重置退避。
+    RAII 在 panic/drop 时同样清理注册；boot 在新进程重新挂载，不把该表当 durable probe 排斥。
+    deadline 测试只调用一次 `sweep_parked`，之后只作有界终态等待，不以重复 sweep 掩盖 claim 饥饿。
+    回归另验证重复成功的 PastDeadline sweep 在 probe 未结算时只保留一个 observer，结算后仍完成；
+    deadline yield 到注销之间暂停 observer，此时 sweep 已推进并请求 restart，恢复后无需第二次 sweep 即完成。
+    这些 observer 回归只轮询 `OperationRepo::operation_result` 等待终态，不调用会继续推进 deadline 的 `OperationRuntime::wait`。
 - **probe 的释放与计时（C3.2c）。** probe 只在 action 已结算、op 为 Parked、判决需要它时准入（见判决）。⑤ 与 action 释放三段相同（durable
   Held→Releasing 先于首字节，按 `accepted_bytes` 写凭据载荷与标记，`close_stdin` 确认后 Released）；与 action 一样只由 observer 在 parked claim
   下发送（park 时挂上的 observer，或 boot 在 owned 分支重挂的 observer，同 gate，`task_gate_run/mod.rs:396-401`），sweep 与 boot 本身不写字节。
@@ -442,7 +458,7 @@ R5-B1 续租前被取消泄漏预约、R6-B1 tokio 的 spawn 在 OS spawn 之后
   - SpawnStarted 有记录（必为 Held）与 Parked 且 Held：typed park 同一 execution，不释放，Stopping{KernelRestarted} 加 Stop，结算后
     Failed `gate-infra`，不跑 probe（token 从未写出）。`tests/forge_action_adapter.rs:2279` 的“重驱后跑一次”保留名字，断言改为零次执行、
     infra；理由同 C2b 的 R8a：换绑需要 Retire、准入与换绑同事务，没有生产消费者。
-  - Parked 且 Releasing：载荷可能部分送达，永不重放（凭据也不再取第二次）；wrapper 缺标记就不会执行 action；Stopping{ReleaseRefused} 加 Stop，结算后按下面的判决（文件 → probe → infra）。
+  - Parked 且 Releasing：载荷可能部分送达，永不重放（凭据也不再取第二次）；wrapper 缺标记就不会执行 action；Stopping{ReleaseRefused} 加 Stop，结算后判 `gate-infra`，不读 action 文件、不准入 probe。
   - Parked 且 Released：不重发载荷，只重试幂等 CloseStdin，重挂 observer，不 Stop，保留释放后的 action 跨重启继续并交付结果的合同
     （`tests/forge_action_adapter.rs:2881`、`:2967`）。
   - 已记 Stopping{r}：同一 execution，永不重启，结算后按 r。已结算：按判决；OS 重启的 NoChild 同此（已释放的 action 可能已落地）。
@@ -469,17 +485,20 @@ R5-B1 续租前被取消泄漏预约、R6-B1 tokio 的 spawn 在 OS spawn 之后
   action 与 probe 的 execution 另外经 `unsettled_executions` 挡住 clean。
 - **leader 退出与 Drained；timeout。** observer 经 `Engine::output` 看到 `Exited` 时只调用共享 `drain_exited` 请求 Stop 收尾子孙
   （如 checks 等待脚本，`crates/plugin/src/builtin/gitforge/git_actions/checks.rs:196-230`），只有 `Drained`/`NoChild` 结算才允许判决；
-  probe 同此。action 的 timeout 只有一个计时器：`parked_deadline_ms`（提交时刻加 300/900s，`transport.rs:872`）。PastDeadline 或 observer
-  发现已过期、未结算且仍 Observing → Stopping{Timeout} 加 Stop。probe 的计时见上，独立于 `parked_deadline_ms`。
+  probe 同此。action 的 timeout 只有一个计时器：`parked_deadline_ms`（提交时刻加 300/900s，`transport.rs:872`）。只有 parked sweep/driver 的 `recover_parked(PastDeadline)`
+  发现已过期、未结算且仍 Observing 才写 Stopping{Timeout} 加 Stop；observer 不写 action Timeout，但在到期且 action 未结算、仍 Observing 时退出取 claim 的循环，
+  给 sweep 让路；sweep 完成一步后重挂 observer，Stopping 或 action 已结算时继续异步推进，不需后续 sweep。其他 recovery mode 不应用 action deadline 判决。probe 的计时见上，独立于 action deadline，保持不变。
 - **结算后判决（只读 claim 快照里的记录与持久证据）。** action 或记录中任一 probe 未结算 → 一律 LeaveParked（必要时 `drain_exited`、
-  写 Timeout）。action 已结算：Held 或 Stopping{KernelRestarted} → `gate-infra`；结果文件可读（`read_result_file`，tmp+rename 后才出现）→
-  今天的 live-result 规则（`:875-931`，非零或提取失败仍交 probe）；Stopping{Timeout} 且无文件 → `action-timeout`，保留今天“过期仍活 →
-  kill → action-timeout、不 probe”（`:1544`），本片不改；其余无文件（signal、NoChild、ReleaseRefused）→ 有 probe 进入 probe 流程，无 probe
-  判 `gate-infra`，PastDeadline 时 `action-timeout`（`:1573`）。probe 流程（C3.2c 起，所有调用方——observer、pre/past-deadline sweep、boot、
-  dead-parked——都经同一个 forge-owned 的步进函数，每次 claim 推进一步）：verdict probe 未准入 → ④；已结算、Released 且 `Drained` →
+  写 Timeout）。action 已结算：Held 或 Stopping{KernelRestarted | ReleaseRefused} → `gate-infra`；结果文件可读（`read_result_file`，tmp+rename 后才出现）→
+  今天的 live-result 规则（`:875-931`，非零或提取失败仍交 probe）；Stopping{Timeout} 且无文件 → 冻结 action 声明了 probe 就进入 probe 流程（先 verdict、再按需 output），
+  按 probe 结果完成；未声明 probe 才判 `action-timeout`。这与今天 driver kill 后经 `recover_parked(alive=false, PastDeadline)`
+  进入 `resolve_post_release_via_probe` 的行为一致，保留 deadline snapshot 合同；其余无文件（signal、NoChild）→ 有 probe 进入 probe 流程，无 probe
+  判 `gate-infra`，PastDeadline 时 `action-timeout`（`:1573`）。仅未确认的释放发送失败（Releasing）写 ReleaseRefused，永不重发，结算后判 `gate-infra`。
+  action 或 probe 一旦 durable Released，观察与幂等 CloseStdin 的 transport 错误不改变 decision 或 Desired，op 保持 parked，后续 step 重试；不能把已确认释放改判 ReleaseRefused。probe 流程（C3.2c 起，所有调用方——observer、pre/past-deadline sweep、boot、
+  dead-parked——都经同一个 forge-owned 的步进函数，每次 claim 推进一步）：verdict probe 未准入 → ④；已结算且 Observing、Released、`Drained` 三条件同时成立 →
   读其 `.code` 经 `verdict_from_exit_code`（`:991-997`）：0 → Landed，1 → `action-not-landed`（原因文本同今天，`:1120-1123`），其他或缺失 →
   `gate-infra`（`:1077-1080`）；其余结算 → `gate-infra`。Landed 且 event 需要从 JSON 重新提取字段（`:1047`）：无 output probe argv →
-  `gate-infra`（`:1048-1054`）；否则 ④ 准入 output probe 并同事务写 Landed；output probe 已结算且 `.code` 为 0 → 读 `.stdout` 交今天的
+  `gate-infra`（`:1048-1054`）；否则 ④ 准入 output probe 并同事务写 Landed；output probe 同样必须 Observing、Released、`Drained` 且 `.code` 为 0 → 读 `.stdout` 交今天的
   完成规则（artifact 与 event 构造，C3.2b 的判决函数），否则 `gate-infra`（`:1056-1068`）。Landed 且不需要 JSON → 以空 stdout 完成
   （`:1070-1073`）。判决只来自已结算 probe 的文件；`verdict: Landed` 写入后，之后的 claimant 不再读 verdict probe 的文件。PastDeadline
   不跳过已准入或需要的 probe（今天 dead 时不论 deadline 都跑 probe，`:1569`）。probe 按 plugin 合同是读，且每种至多一个 execution，不再重复读。
@@ -495,7 +514,7 @@ R5-B1 续租前被取消泄漏预约、R6-B1 tokio 的 spawn 在 OS spawn 之后
   `c3_credentials_never_enter_intent`（action 与两种 probe 的 `intent_json` 与 journal 都无凭据键）、`c3_phase_writes_preserve_forge_record`、
   `c3_redrive_of_held_ends_infra_without_second_execution`、`c3_boot_held_stops_without_token`、`c3_boot_releasing_never_repeats_token`、
   `c3_boot_released_retries_only_close_then_reattaches`、`c3_leader_exit_drains_descendants_before_verdict`、
-  `c3_timeout_stops_then_completes_after_settlement`、`c3_unknown_execution_never_completes_op`（action 与 probe 两个变体）、
+  `c3_timeout_stops_then_completes_after_settlement`（经 sweep 触发）、`c3_observer_alone_never_times_out_expired_action`、`c3_unknown_execution_never_completes_op`（action 与 probe 两个变体）、
   `c3_completion_rechecks_record_and_retires_in_same_tx`（action 与已准入的 probe 都 Retire）、`c3_every_terminal_outcome_drives_retire`、
   `c3_park_write_failure_retains_owned_execution`、`c3_pre_c3_native_forge_op_is_never_advanced`（含补偿 → Stuck 后 track 与 area 删除仍被拒）；
   probe：`c3_probe_admission_is_durably_exclusive`（A 取 claim 后在 ④ 之前确定性暂停，boot 替换与过期 sweep 两个变体：A 的 ④ 回滚、零

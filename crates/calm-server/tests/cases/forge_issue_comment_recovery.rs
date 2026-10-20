@@ -41,7 +41,7 @@ async fn git_forge_issue_comment_crash_recovers_without_reposting() {
         wait_for_operation_phase(&fx.repo, &op_id, "parked").await;
         let result_path = operation_result_path(&fx.repo, &op_id).await;
         assert_result_files_absent(&result_path);
-        mark_parked_artifacts_dead(&fx.repo, &op_id).await;
+        settle_parked_execution_without_result(&fx, &op_id).await;
         mark_workspace_lease_stale_for_boot(&fx.repo, &fx.lease_id).await;
         let failure = state.join("issues/810.comments.fail");
         if outage {
@@ -70,7 +70,7 @@ async fn git_forge_issue_comment_crash_recovers_without_reposting() {
         }
         assert_eq!(shim_counter(&state.join("issue_comment_count")), 1);
         block.release();
-        wait_for_result_code_file(&result_path).await;
+        assert_result_files_absent(&result_path);
         assert_eq!(shim_counter(&state.join("issue_comment_count")), 1);
         fx.plugin_host.stop(PLUGIN_ID).await.unwrap();
     }
@@ -110,7 +110,7 @@ async fn git_forge_issue_comment_recovery_does_not_borrow_another_caller() {
     assert_tool_succeeded(&second_response, "gh_issue_comment");
     let op_id = op_id_from_response(&second_response);
     wait_for_operation_phase(&second.repo, &op_id, "parked").await;
-    let process = parked_process_group_guard(&second.repo, &op_id).await;
+    let process = forge_execution_id(&second.repo, &op_id).await;
     let deadline = Instant::now() + Duration::from_secs(5);
     while !state.join("issue_comment_before_started").exists() {
         assert!(
@@ -121,7 +121,7 @@ async fn git_forge_issue_comment_recovery_does_not_borrow_another_caller() {
     }
     let result_path = operation_result_path(&second.repo, &op_id).await;
     assert_result_files_absent(&result_path);
-    mark_parked_artifacts_dead(&second.repo, &op_id).await;
+    settle_parked_execution_without_result(&second, &op_id).await;
     mark_workspace_lease_stale_for_boot(&second.repo, &second.lease_id).await;
     let recovery = boot_recovery_runtime(&second).await;
     let plan = recovery.recover_on_boot().await.unwrap();

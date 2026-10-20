@@ -269,6 +269,11 @@ mod planner;
 async fn c3_forge_action_after_clean_check_waits_for_clean() {
     use calm_server::operation::forge_action_adapter::{FORGE_ACTION_KIND, ForgeActionPayload};
     let (b, track, path) = fixture().await;
+    let execution = crate::support::execution::Fixture::new(b.repo.db().clone()).await;
+    b.state
+        .operation_runtime
+        .execution()
+        .bind(Arc::new(execution.lifecycle.engine().unwrap().clone()));
     let pause = Pause::arm("c1-clean-fenced", &track);
     let cleaning = clean(b.clone());
     pause.entered().await;

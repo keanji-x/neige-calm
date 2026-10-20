@@ -2,7 +2,7 @@
 use sqlx::{Sqlite, Transaction};
 
 /// Independently owned fields preserved across generic operation checkpoints.
-pub const OWNER_STATE_KEYS: &[&str] = &["terminal_launch", "gate_execution"];
+pub const OWNER_STATE_KEYS: &[&str] = &["terminal_launch", "gate_execution", "forge_execution"];
 
 fn record_path(key: &str) -> String {
     assert!(

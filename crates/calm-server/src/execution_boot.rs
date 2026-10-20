@@ -21,6 +21,10 @@ pub async fn recover(
                 Arc::new(crate::operation::gate_execution::Projection),
             )
             .with_projection(
+                crate::operation::forge_execution::CONSUMER.into(),
+                Arc::new(crate::operation::forge_execution::Projection),
+            )
+            .with_projection(
                 crate::operation::terminal_execution_create::CONSUMER.into(),
                 Arc::new(crate::operation::terminal_execution_create::TerminalProjection),
             ),

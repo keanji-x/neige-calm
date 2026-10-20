@@ -1411,7 +1411,7 @@ async fn candidate_row_is_minted_from_operation_result_not_events() {
 // A4 / A4b: the crash window with no result file — the ref is the truth, not HEAD.
 // ---------------------------------------------------------------------------
 
-/// A parked forge Operation with dead-pid artifacts and no `.code`/`.stdout`: the live
+/// A parked forge Operation with its settled execution and no `.code`/`.stdout`: the live
 /// completion is rewound to the state a kernel death after the script (but before the wrapper
 /// wrote its files) leaves behind.
 pub(super) async fn park_without_result_file(fx: &Fx, attempt: &str) -> PathBuf {
@@ -1422,14 +1422,14 @@ pub(super) async fn park_without_result_file(fx: &Fx, attempt: &str) -> PathBuf 
         path.push(suffix);
         let _ = std::fs::remove_file(path);
     }
-    let artifacts = json!({"pid": 1, "pgid": 1, "start_time": 1, "boot_id": "boot-dead", "log_path": null, "extra": {}});
     sqlx::query(
-        "UPDATE operations SET phase = 'parked', parked_at_ms = ?1, parked_deadline_ms = ?2, \
-         spawn_artifacts_json = ?3, phase_detail_json = NULL, last_error = NULL WHERE id = ?4",
+        "UPDATE operations SET phase='parked',parked_at_ms=?1,parked_deadline_ms=?2, \
+         spawn_artifacts_json=NULL,phase_detail_json=NULL,last_error=NULL,completed_at_ms=NULL, \
+         lease_owner=?3,lease_until_ms=?2 WHERE id=?4",
     )
     .bind(now_ms())
     .bind(now_ms() + 600_000)
-    .bind(artifacts.to_string())
+    .bind(calm_server::model::new_id())
     .bind(&op.id)
     .execute(&fx.pool())
     .await

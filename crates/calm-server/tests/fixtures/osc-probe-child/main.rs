@@ -397,7 +397,16 @@ fn main() {
                     .unwrap();
                 let socket = std::path::PathBuf::from(&helper_args[3]);
                 let listener = calm_proc_supervisor::bind_control_listener(&socket).unwrap();
-                let (_stop, stopped) = tokio::sync::oneshot::channel();
+                let (stop, stopped) = tokio::sync::oneshot::channel();
+                let mut terminate =
+                    tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                        .unwrap();
+                let closing = registry.clone();
+                tokio::spawn(async move {
+                    terminate.recv().await;
+                    closing.terminate_all_process_groups().await;
+                    let _ = stop.send(());
+                });
                 calm_proc_supervisor::serve_with_listener(listener, socket, registry, stopped)
                     .await
                     .unwrap();
