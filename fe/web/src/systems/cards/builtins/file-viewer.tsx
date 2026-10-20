@@ -1,3 +1,4 @@
+import { CardFrame } from '../../../ui/card-frame/public.tsx';
 // The file card. Kernel kind `'file-viewer'`, payload `{ path }`. Owns a surface; owns no runtime, so its create is `generic`.
 // `buildPayload` takes only `path`: `title` is a column on the row, not a member of the payload.
 
@@ -29,7 +30,7 @@ function pathFromPayload(payload: unknown): string | null {
 
 function FileViewerCardView({ card, host, onRemove, header }: CardComponentProps<FileViewerCard>) {
   return (
-    <div className="term fv-card" data-nc-file-card="">
+    <CardFrame className="term fv-card" data-nc-file-card="">
       <CardHead
         header={header}
         className="card-drag-handle"
@@ -39,7 +40,7 @@ function FileViewerCardView({ card, host, onRemove, header }: CardComponentProps
       />
       {/* The theme is read at render from `<html data-theme>` rather than subscribed to: `systems/**` may not reach `app/theme`. A toggle while a card is open repaints on the next render. */}
       <FileViewer path={card.path} files={host.files} theme={readHostTheme()} slots={host.slots} />
-    </div>
+    </CardFrame>
   );
 }
 

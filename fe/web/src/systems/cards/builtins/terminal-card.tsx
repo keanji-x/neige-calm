@@ -1,3 +1,4 @@
+import { CardFrame } from '../../../ui/card-frame/public.tsx';
 import { Suspense, useCallback, useEffect, type ReactNode } from 'react';
 import { Banner } from '@astryxdesign/core/Banner';
 
@@ -67,7 +68,7 @@ export function TerminalCardView({
         : status === 'protocol-error' ? 'Connection error'
           : status === 'connected' ? null : 'Connecting…';
   return (
-    <div
+    <CardFrame
       className={attached ? 'term live' : 'term'}
       data-nc-terminal-card=""
       data-nc-terminal-id={card.terminalId ?? ''}
@@ -104,6 +105,6 @@ export function TerminalCardView({
           )
           : <div className="term-line">{ended ? 'No terminal session available.' : message}</div>}
       </div>
-    </div>
+    </CardFrame>
   );
 }

@@ -1,3 +1,4 @@
+import { CardFrame } from '../../../ui/card-frame/public.tsx';
 import { useState } from '../../../ui/state/public.ts';
 import { createCardHost } from '../host.ts';
 import { createCardRegistry, type CardComponentProps, type CardEntry } from '../registry.ts';
@@ -8,10 +9,10 @@ type PreviewCard = Readonly<{ type: 'motion-preview'; id: string; title: string;
 declare module '../registry.js' { interface CardDataMap { motionPreview: PreviewCard } }
 
 function PreviewCardView({ card, onRemove, header }: CardComponentProps<PreviewCard>) {
-  return <div className="term">
+  return <CardFrame className="term">
     <CardHead header={header} className="card-drag-handle" title={card.title} onClose={onRemove} closeAriaLabel={`删除${card.title}`} />
     <div className="term-body"><p>{card.detail}</p></div>
-  </div>;
+  </CardFrame>;
 }
 const entry: CardEntry<PreviewCard> = Object.freeze({
   type: 'motion-preview', component: (props: CardComponentProps<PreviewCard>) => <PreviewCardView {...props} />,

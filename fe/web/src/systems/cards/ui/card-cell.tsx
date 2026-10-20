@@ -1,3 +1,4 @@
+import { CardFrame } from '../../../ui/card-frame/public.tsx';
 import { useLayoutEffect, useRef, type ComponentType } from 'react';
 import { useState } from '../../../ui/state/public.ts';
 import type { CardComponentProps, CardHeaderPresentation, RegisteredCard } from '../registry.js';
@@ -76,7 +77,7 @@ export function CardCell({ host, item, focused, visible, onRemove, header }: {
 
   if (Component === undefined || capabilities === null) {
     return (
-      <div className="term">
+      <CardFrame className="term">
         {/* No entry claims an unknown card, so the × is drawn here rather than by the absent component. */}
         <CardHead
           header={header}
@@ -88,7 +89,7 @@ export function CardCell({ host, item, focused, visible, onRemove, header }: {
         <div className="term-body">
           <p className="term-line">{Component === undefined ? 'Unknown card' : item.title}</p>
         </div>
-      </div>
+      </CardFrame>
     );
   }
   return <><span ref={elementRef} hidden /><Component card={cardRef.current} host={capabilities} onRemove={onRemove} activity={item.activity} notice={item.notice} header={header} /></>;

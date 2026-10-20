@@ -103,10 +103,6 @@
     flex-direction: column;
     inline-size: 100%;
     block-size: 100%;
-    overflow: hidden;
-    border-radius: var(--nc-card-radius);
-    background: var(--surface-card);
-    box-shadow: 0 2px 12px color-mix(in oklab, var(--overlay-scrim) 35%, transparent);
     opacity: 1;
     translate: 0 0;
     transition: none;

@@ -1,3 +1,4 @@
+import { CardFrame } from '../card-frame/public.tsx';
 // The conversation drawer. It overlays the panel column rather than squeezing the main column, and is deliberately not modal: no focus trap, no inert background. Escape closes it.
 
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, type ReactNode } from 'react';
@@ -172,7 +173,7 @@ export function Drawer({ open, title, mobileBackLabel, mobileHeader, closeLabel 
     <>
     <div ref={panelFrameRef} data-nc-drawer-frame="" hidden={!open && !closing}
       className={`${styles.positioner} ${inline ? styles.embedded : ''}`}>
-    <div
+    <CardFrame
       id={id}
       hidden={!open && !closing}
       inert={!open}
@@ -210,7 +211,7 @@ export function Drawer({ open, title, mobileBackLabel, mobileHeader, closeLabel 
       {/* Last in the card so the first Tab off the container still lands on the header. Mounted only while open: the edge's lifetime is the drag's, so a close mid-drag ends it. */}
       {open && width !== undefined && !stacked && companion === undefined && parentResizeGroup === null
         && <ResizeEdge resize={width} panelRef={panelFrameRef} scrollRef={scrollRef} group={resizeGroup} />}
-    </div>
+    </CardFrame>
     </div>
     {/* The seam is after the card in source order deliberately and is not marked `data-nc-drawer`: one drawer must present one marker for `app/shell`'s `:has()` rule. */}
     <div ref={seamFrameRef} data-nc-drawer-frame="" className={styles.seamPositioner}>

@@ -3,6 +3,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { page as browserPage } from 'vitest/browser';
 
 import '../../../styles/entry.css';
+import { Drawer } from '../../../ui/drawer/public.tsx';
 import { createCardHost } from '../host.ts';
 import { createCardRegistry } from '../registry.ts';
 import { BoardHost } from '../ui/board-host.tsx';
@@ -54,3 +55,39 @@ it('preserves attached terminal geometry and output when its session exits', asy
   expect(after.width).toBeCloseTo(before.width, 1);
   expect(after.height).toBeCloseTo(before.height, 1);
 });
+
+for (const theme of ['light', 'dark'] as const) {
+  it(`matches conversation card corners and shadow in ${theme} theme`, async () => {
+    await browserPage.viewport(1200, 800);
+    const previousTheme = document.documentElement.getAttribute('data-theme');
+    document.documentElement.setAttribute('data-theme', theme);
+    try {
+      const registry = createCardRegistry();
+      registerAvailableBuiltinCards(registry);
+      const card = registry.resolve({ id: 'chrome-terminal', kind: 'terminal', payload: {} });
+      if (card === null) throw new Error('Missing terminal');
+      render(<div style={{ position: 'relative', width: 1100, height: 700, containerType: 'inline-size' }}>
+        <BoardHost host={createCardHost(registry)} items={[
+          { card, title: 'Terminal', originalIndex: 0, activity: null, notice: null },
+        ]} visible activeCardId={card.id} />
+        <Drawer open title="Conversation" onClose={() => {}}>Conversation content</Drawer>
+      </div>);
+      const terminal = await waitFor(() => {
+        const element = document.querySelector('[data-nc-terminal-card]');
+        expect(element).not.toBeNull();
+        return element!;
+      });
+      const expected = getComputedStyle(document.querySelector('[data-nc-drawer]')!);
+      const actual = getComputedStyle(terminal);
+      expect(expected.borderRadius).toBe('16px');
+      expect(expected.boxShadow).not.toBe('none');
+      expect(actual.borderRadius).toBe(expected.borderRadius);
+      expect(actual.boxShadow).toBe(expected.boxShadow);
+      expect(actual.borderWidth).toBe(expected.borderWidth);
+      await browserPage.screenshot({ path: `../../../../test-results/terminal-conversation-${theme}.png` });
+    } finally {
+      if (previousTheme === null) document.documentElement.removeAttribute('data-theme');
+      else document.documentElement.setAttribute('data-theme', previousTheme);
+    }
+  });
+}
