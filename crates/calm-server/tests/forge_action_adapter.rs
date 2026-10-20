@@ -2203,6 +2203,67 @@ async fn forge_action_recovery_probe_env_passes_auth_and_strips_forbidden() -> C
     let _forbidden = EnvVarGuard::set("FORGE_PROBE_FORBIDDEN_ENV_E2E", "must-not-pass");
 
     let boot = TestBoot::new().await;
+    // The held wrapper receives no credential environment; sample credentials only at release.
+    let payload_action = boot.temp_path("payload-auth.sh");
+    fs::write(
+        &payload_action,
+        r#"#!/bin/sh
+[ "$GH_TOKEN" = release-auth-token-e2e ] || exit 3
+[ -z "${FORGE_PROBE_FORBIDDEN_ENV_E2E+x}" ] || exit 4
+printf '{"oid":"payload-delivered","headRefOid":"clean"}'
+"#,
+    )?;
+    fs::set_permissions(&payload_action, fs::Permissions::from_mode(0o755))?;
+    let (action_id, action_op, output) = claimed_spawn_started_forge_op(
+        &boot,
+        "payload-auth",
+        payload(
+            &boot,
+            "payload-auth",
+            vec![payload_action.display().to_string()],
+            boot.temp_path("payload-auth-result"),
+        ),
+    )
+    .await?;
+    let SpawnOutcome::Parked {
+        deadline_ms,
+        observer,
+    } = ForgeActionAdapter::new()
+        .spawn_side_effect(&output, &action_op, &boot.spawn_ctx)
+        .await?
+    else {
+        panic!("action must park");
+    };
+    let held = boot
+        .operation_repo
+        .get_operation(&action_id)
+        .await?
+        .unwrap();
+    let pid = held.spawn_artifacts.as_ref().unwrap().pid;
+    let environment = fs::read(format!("/proc/{pid}/environ"))?;
+    for key in calm_server::operation::forge_action_adapter::FORGE_CREDENTIAL_ENV_KEYS {
+        assert!(
+            !environment
+                .split(|b| *b == 0)
+                .any(|entry| entry.starts_with(format!("{key}=").as_bytes())),
+            "credential must not enter action spawn environment"
+        );
+    }
+    assert!(!serde_json::to_string(&output)?.contains("probe-auth-token-e2e"));
+    {
+        let _release_auth = EnvVarGuard::set("GH_TOKEN", "release-auth-token-e2e");
+        spawn_observer_after_parking(&boot, &action_op, deadline_ms, observer)
+            .await?
+            .await
+            .expect("payload action joins");
+    }
+    let result = wait_for_operation_result(&boot, &action_id).await;
+    assert!(matches!(result.outcome, OperationOutcome::Succeeded { .. }));
+    assert_eq!(
+        latest_forge_event_payload(&boot.repo).await["merge_sha"],
+        json!("payload-delivered")
+    );
+
     let action = boot.temp_path("probe-env-action.sh");
     let counter = boot.temp_path("probe-env-counter");
     let sentinel = boot.temp_path("probe-env-sentinel");
@@ -3441,3 +3502,6 @@ async fn forge_action_dead_past_deadline_uses_probe_and_no_probe_times_out() -> 
 
     Ok(())
 }
+
+#[path = "cases/c3_credentials.rs"]
+mod c3_credentials;
