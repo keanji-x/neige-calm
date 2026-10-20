@@ -2,6 +2,9 @@
 use super::*;
 use crate::harness::backend::{StartDiagnostic, TurnStartFailure};
 use crate::harness::issuance::{IssuanceRefusal, SelectionSource};
+use base64::Engine as _;
+use calm_types::planner_attachment::AttachmentId;
+use provider::claude::protocol::{Base64Image, UserLineContent, client_line_uuid};
 use provider::control::*;
 
 impl ClaudePlannerSession {
@@ -144,4 +147,32 @@ pub(super) async fn user_line(
             .await
             .map_err(SpawnFailure::failed)?,
     ))
+}
+
+/// Text blocks, and one base64 image block per bound attachment (§5.6); the attachment's file name
+/// is its id, which names its format.
+async fn user_line_content(items: &[InputItem]) -> Result<Vec<UserLineContent>> {
+    let mut content = Vec::with_capacity(items.len());
+    for item in items {
+        match item {
+            InputItem::Text { text } => content.push(UserLineContent::Text { text: text.clone() }),
+            InputItem::LocalImage { path } => {
+                let id = std::path::Path::new(path)
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .and_then(|name| AttachmentId::parse(name).ok())
+                    .ok_or_else(|| {
+                        CalmError::BadRequest(format!("{path} is not a bound attachment"))
+                    })?;
+                let bytes = tokio::fs::read(path).await?;
+                content.push(UserLineContent::Image {
+                    source: Base64Image::new(
+                        id.format().mime(),
+                        base64::engine::general_purpose::STANDARD.encode(bytes),
+                    ),
+                });
+            }
+        }
+    }
+    Ok(content)
 }

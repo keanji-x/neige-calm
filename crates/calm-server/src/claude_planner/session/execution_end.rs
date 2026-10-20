@@ -1,6 +1,12 @@
 //! The existing session retains one actual driver and its completed result.
 use super::*;
 
+pub(super) enum Association {
+    Historical,
+    Work(crate::harness::backend::ExecutionInput),
+    Maintenance(crate::harness::backend::MaintenanceTarget),
+}
+
 enum Completion {
     Running(tokio::task::JoinHandle<bool>),
     Finished(std::result::Result<bool, ()>),
@@ -10,7 +16,7 @@ pub(super) struct DriverSlot {
     completion: Completion,
     thread: Uuid,
     turn: Uuid,
-    execution: Option<crate::harness::backend::ExecutionInput>,
+    execution: Association,
 }
 
 impl DriverSlot {
@@ -18,7 +24,7 @@ impl DriverSlot {
         driver: tokio::task::JoinHandle<bool>,
         thread: Uuid,
         turn: Uuid,
-        execution: Option<crate::harness::backend::ExecutionInput>,
+        execution: Association,
     ) -> Self {
         Self {
             completion: Completion::Running(driver),
@@ -37,10 +43,10 @@ impl DriverSlot {
             } => {
                 self.thread == *thread_id
                     && self.turn == *local_turn_id
-                    && self
-                        .execution
-                        .as_ref()
-                        .is_some_and(|input| input.matches(target))
+                    && match &self.execution {
+                        Association::Work(input) => input.matches(target),
+                        Association::Historical | Association::Maintenance(_) => false,
+                    }
             }
             ExecutionEndScope::NativeTurn { .. } => false,
         }
@@ -76,6 +82,48 @@ pub(super) async fn join_driver(shared: &Shared) -> Result<()> {
 }
 
 impl ClaudePlannerSession {
+    pub(in crate::claude_planner) fn owns_maintenance_target(
+        &self,
+        target: &crate::harness::backend::MaintenanceTarget,
+    ) -> bool {
+        let params = &self.shared.params;
+        target.card_id == params.card_id
+            && target.track_id == params.track_id
+            && target.worker_session_id == params.worker_session_id
+    }
+
+    pub(crate) async fn observe_maintenance(
+        &self,
+        target: &crate::harness::backend::MaintenanceTarget,
+    ) -> Result<Option<crate::harness::backend::MaintenanceObservation>> {
+        if !self.owns_maintenance_target(target) {
+            return Ok(None);
+        }
+        let mut slot = self.shared.driver.lock().await;
+        let Some(driver) = slot.as_mut() else {
+            return Ok(None);
+        };
+        let matches = match &driver.execution {
+            Association::Maintenance(current) => {
+                current == target && driver.thread.to_string() == target.thread_id
+            }
+            Association::Historical | Association::Work(_) => false,
+        };
+        if !matches {
+            return Ok(None);
+        }
+        let settled = match &driver.completion {
+            Completion::Running(handle) if !handle.is_finished() => None,
+            Completion::Running(_) | Completion::Finished(_) => {
+                Some(driver.finish().await.unwrap_or(false))
+            }
+        };
+        Ok(Some(crate::harness::backend::MaintenanceObservation {
+            turn_id: driver.turn.to_string(),
+            settled,
+        }))
+    }
+
     pub(crate) async fn owns_local_execution(
         &self,
         target: &crate::harness::backend::ExecutionEndTarget,

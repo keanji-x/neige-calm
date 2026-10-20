@@ -17,8 +17,6 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
-use base64::Engine as _;
-use calm_types::planner_attachment::AttachmentId;
 use tokio::process::{Child, Command};
 use tokio::sync::broadcast;
 use uuid::Uuid;
@@ -37,7 +35,7 @@ use crate::thread_seals::ThreadSeals;
 use calm_types::worker::WorkerSessionId;
 use provider::InputItem;
 use provider::TurnModelSelection;
-use provider::claude::protocol::{Base64Image, UserLine, UserLineContent, client_line_uuid};
+use provider::claude::protocol::UserLine;
 use provider::claude::translate::{ToolNames, TurnContext, TurnTranslator};
 use provider::events::PlannerEvent;
 
@@ -189,6 +187,7 @@ pub(super) enum SpawnInput<'a> {
         execution: crate::harness::backend::ExecutionInput,
     },
     Compaction,
+    CanonicalCompaction(crate::harness::backend::MaintenanceTarget),
 }
 
 /// Historical invocation intentionally has no canonical input policy.
@@ -303,7 +302,7 @@ impl ClaudePlannerSession {
     ) -> Result<Uuid, SpawnFailure> {
         let purpose = match &input {
             SpawnInput::Turn { .. } | SpawnInput::Canonical { .. } => SpawnPurpose::Turn,
-            SpawnInput::Compaction => SpawnPurpose::Compaction,
+            SpawnInput::Compaction | SpawnInput::CanonicalCompaction(_) => SpawnPurpose::Compaction,
         };
         let shared = &self.shared;
         let params = &shared.params;
@@ -406,7 +405,13 @@ impl ClaudePlannerSession {
                 truncation,
             } => {
                 let line = invocation::user_line(thread_uuid, client_id, &items).await?;
-                (line, client_id.to_string(), items, truncation, None)
+                (
+                    line,
+                    client_id.to_string(),
+                    items,
+                    truncation,
+                    execution_end::Association::Historical,
+                )
             }
             SpawnInput::Canonical {
                 items,
@@ -414,13 +419,36 @@ impl ClaudePlannerSession {
                 execution,
             } => {
                 let line = invocation::user_line(thread_uuid, client_id, &items).await?;
-                (line, client_id.to_string(), items, None, Some(execution))
+                (
+                    line,
+                    client_id.to_string(),
+                    items,
+                    None,
+                    execution_end::Association::Work(execution),
+                )
             }
             // No client sent this line: its uuid is fresh, and nothing of it is stored.
             SpawnInput::Compaction => {
                 let uuid = Uuid::new_v4();
                 let line = UserLine::compact(thread_uuid, uuid);
-                (line, uuid.simple().to_string(), Vec::new(), None, None)
+                (
+                    line,
+                    uuid.simple().to_string(),
+                    Vec::new(),
+                    None,
+                    execution_end::Association::Historical,
+                )
+            }
+            SpawnInput::CanonicalCompaction(target) => {
+                let uuid = Uuid::new_v4();
+                let line = UserLine::compact(thread_uuid, uuid);
+                (
+                    line,
+                    uuid.simple().to_string(),
+                    Vec::new(),
+                    None,
+                    execution_end::Association::Maintenance(target),
+                )
             }
         };
         let line = serde_json::to_string(&line).map_err(|e| SpawnFailure::failed(e.into()))?;
@@ -744,34 +772,6 @@ async fn interrupt_after_admission(
 
 fn sealed(thread: &str) -> CalmError {
     CalmError::Conflict(format!("thread {thread} is sealed for deletion"))
-}
-
-/// Text blocks, and one base64 image block per bound attachment (§5.6); the attachment's file name
-/// is its id, which names its format.
-async fn user_line_content(items: &[InputItem]) -> Result<Vec<UserLineContent>> {
-    let mut content = Vec::with_capacity(items.len());
-    for item in items {
-        match item {
-            InputItem::Text { text } => content.push(UserLineContent::Text { text: text.clone() }),
-            InputItem::LocalImage { path } => {
-                let id = std::path::Path::new(path)
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .and_then(|name| AttachmentId::parse(name).ok())
-                    .ok_or_else(|| {
-                        CalmError::BadRequest(format!("{path} is not a bound attachment"))
-                    })?;
-                let bytes = tokio::fs::read(path).await?;
-                content.push(UserLineContent::Image {
-                    source: Base64Image::new(
-                        id.format().mime(),
-                        base64::engine::general_purpose::STANDARD.encode(bytes),
-                    ),
-                });
-            }
-        }
-    }
-    Ok(content)
 }
 
 #[cfg(test)]

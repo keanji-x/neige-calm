@@ -1,4 +1,5 @@
 //! Real canonical transactions composed with the fake CLI at its process boundary.
+mod compact;
 mod control;
 mod loop_fixture;
 mod recovery;

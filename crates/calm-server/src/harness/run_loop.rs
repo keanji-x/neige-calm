@@ -361,6 +361,7 @@ enum HarnessObservationCommand {
         done: oneshot::Sender<Result<()>>,
     },
     Compact {
+        source: compact_command::Source,
         answer: oneshot::Sender<Result<()>>,
     },
     Delivery(HarnessObservationDelivery),
@@ -837,8 +838,34 @@ impl PlannerHarness {
         }
     }
 
+    pub(crate) async fn compact_from_request(
+        &self,
+        source: Option<crate::auth::HumanInputSource>,
+    ) -> Result<()> {
+        match &self.inner.inputs {
+            RuntimeInputs::Canonical(_) => {
+                self.compact_canonical(source.ok_or(CalmError::Unauthorized)?)
+                    .await
+            }
+            RuntimeInputs::Historical(_) => self.compact().await,
+        }
+    }
+
+    pub(crate) async fn compact_canonical(
+        &self,
+        source: crate::auth::HumanInputSource,
+    ) -> Result<()> {
+        self.submit_compact(compact_command::Source::Canonical(source))
+            .await
+    }
+
     pub async fn compact(&self) -> Result<()> {
         self.inner.historical_queue()?;
+        self.submit_compact(compact_command::Source::Historical)
+            .await
+    }
+
+    async fn submit_compact(&self, source: compact_command::Source) -> Result<()> {
         if self.inner.shutting_down.load(Ordering::SeqCst) {
             return Err(CalmError::Conflict(
                 "the conversation is shutting down".into(),
@@ -848,7 +875,7 @@ impl PlannerHarness {
             ObservationIngress::Running(sender) => {
                 let (answer, result) = oneshot::channel();
                 sender
-                    .try_send(HarnessObservationCommand::Compact { answer })
+                    .try_send(HarnessObservationCommand::Compact { source, answer })
                     .map_err(map_observation_send_error)?;
                 result.await.map_err(|_| {
                     CalmError::Conflict(
@@ -857,7 +884,9 @@ impl PlannerHarness {
                 })?
             }
             #[cfg(feature = "fixtures")]
-            ObservationIngress::Unstarted(_) => compact_command::handle_compact(&self.inner).await,
+            ObservationIngress::Unstarted(_) => {
+                compact_command::handle_compact(&self.inner, source).await
+            }
         }
     }
 
@@ -1686,8 +1715,8 @@ async fn run_loop(
                         let _=done.send(result);
                         if stop { break; }
                     }
-                    HarnessObservationCommand::Compact { answer } => {
-                        let outcome = compact_command::handle_compact(&inner).await;
+                    HarnessObservationCommand::Compact { source, answer } => {
+                        let outcome = compact_command::handle_compact(&inner, source).await;
                         let _ = answer.send(outcome);
                     }
                     HarnessObservationCommand::Delivery(delivery) => {
@@ -4175,7 +4204,15 @@ fn state_from_runtime_header(
     match snapshot.phase {
         HarnessPhaseTag::PendingThreadStart => HarnessState::PendingThreadStart,
         HarnessPhaseTag::Idle => HarnessState::Idle,
-        HarnessPhaseTag::Compacting => HarnessState::Wedged { since: now, reason: "Context compaction was interrupted by a server restart; reset the conversation to continue.".into() },
+        HarnessPhaseTag::Compacting => match inputs {
+            RuntimeInputs::Historical(_) => HarnessState::Wedged { since: now, reason: "Context compaction was interrupted by a server restart; reset the conversation to continue.".into() },
+            // Canonical recovery settles the persisted guard before construction.
+            // A live publication therefore projects the committed maintenance phase.
+            RuntimeInputs::Canonical(_) => match snapshot.compact_outcome.as_ref().and_then(|outcome| outcome.turn_id.clone()) {
+                Some(turn_id) => HarnessState::CompactionRunning { turn_id, started_at: now },
+                None => HarnessState::Compacting { since: now },
+            },
+        },
         HarnessPhaseTag::IssuingTurn => {
             if inputs.canonical().is_some() {
                 // An unresolved canonical invocation is still issuing. Neither

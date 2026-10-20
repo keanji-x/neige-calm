@@ -2,7 +2,20 @@
 use super::*;
 use provider::control::CompactSubmission;
 
-pub(super) async fn handle_compact(inner: &Arc<Inner>) -> Result<()> {
+pub(super) mod canonical;
+
+pub(super) enum Source {
+    Historical,
+    Canonical(crate::auth::HumanInputSource),
+}
+
+pub(super) async fn handle_compact(inner: &Arc<Inner>, source: Source) -> Result<()> {
+    match source {
+        Source::Canonical(source) => return canonical::start(inner, source).await,
+        Source::Historical => {
+            inner.historical_queue()?;
+        }
+    }
     use super::issuance::TrackIssuance;
     let track_guard = match super::issuance::lock_track_for_issuance(inner).await? {
         TrackIssuance::Acquired(guard) => guard,

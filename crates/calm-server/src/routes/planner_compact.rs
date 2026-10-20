@@ -36,6 +36,7 @@ pub struct CompactPlannerResponse {
 pub(crate) async fn compact_planner_card(
     State(s): State<RouteState>,
     actor: Actor,
+    source: Option<axum::Extension<crate::auth::HumanInputSource>>,
     Path(id): Path<String>,
 ) -> Result<Json<CompactPlannerResponse>> {
     require_rest_user_actor_for(
@@ -74,7 +75,10 @@ pub(crate) async fn compact_planner_card(
         .await?
         .ok_or_else(dormant)?;
     let harness = s.harness.get(&runtime.id).ok_or_else(dormant)?;
-    match harness.compact().await {
+    let result = harness
+        .compact_from_request(source.map(|axum::Extension(source)| source))
+        .await;
+    match result {
         Err(CalmError::CodexRefused(_)) => {
             return Err(CalmError::BadRequest(
                 "Codex refused context compaction; the conversation was not changed.".into(),

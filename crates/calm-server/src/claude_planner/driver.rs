@@ -661,26 +661,27 @@ async fn settle(shared: &Shared, input: SettleInput, ending: Ending) -> bool {
                 "claude planner settlement stop cut off at settle_by".into(),
             ))
         });
-    let recorded = if purpose == SpawnPurpose::Turn {
-        let confirmation = if stopped.is_ok() {
-            crate::harness::turn_outcome::Confirmation::ProviderTerminal
-        } else {
-            crate::harness::turn_outcome::Confirmation::Unconfirmed
-        };
-        record_outcome(
-            shared,
-            &slot,
-            &thread.to_string(),
-            &turn_id,
-            turn,
-            confirmation,
-        )
-        .await
-        .is_ok()
-    } else {
-        false
+    let terminal_qualified = match purpose {
+        SpawnPurpose::Turn => {
+            let confirmation = if stopped.is_ok() {
+                crate::harness::turn_outcome::Confirmation::ProviderTerminal
+            } else {
+                crate::harness::turn_outcome::Confirmation::Unconfirmed
+            };
+            record_outcome(
+                shared,
+                &slot,
+                &thread.to_string(),
+                &turn_id,
+                turn,
+                confirmation,
+            )
+            .await
+            .is_ok()
+        }
+        SpawnPurpose::Compaction => matches!(outcome, TurnOutcome::Completed),
     };
-    let qualified = stopped.is_ok() && recorded;
+    let qualified = stopped.is_ok() && terminal_qualified;
     if let Err(error) = stopped {
         tracing::warn!(
             worker_session_id = %params.worker_session_id,

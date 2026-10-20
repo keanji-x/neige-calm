@@ -54,7 +54,20 @@ fn require_restorable(target: &Target) -> Result<()> {
             frame.header.phase,
             HarnessPhaseTag::IssuingTurn | HarnessPhaseTag::TurnRunning
         );
-    if !(idle || target.inputs.is_unattempted_initial() || held_control)
+    // Reopen only to let the existing compact owner conservatively settle its
+    // in-flight guard. This grants no work input or maintenance retry.
+    let held_maintenance =
+        !PlannerFactory::canonical_recovery_requires_idle(&target.binding.provider)
+            && frame.canonical_inputs.active.is_none()
+            && (frame.header.phase == HarnessPhaseTag::Compacting
+                || frame
+                    .header
+                    .compact_outcome
+                    .as_ref()
+                    .is_some_and(|outcome| {
+                        outcome.status == crate::harness::compact_outcome::CompactStatus::Started
+                    }));
+    if !(idle || target.inputs.is_unattempted_initial() || held_control || held_maintenance)
         || frame.header.pending_rewind.is_some()
         || frame.header.interruption_intent.is_some()
         || frame.header.wedged_reason.is_some()

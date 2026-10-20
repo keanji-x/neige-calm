@@ -29,6 +29,31 @@ use provider::control::{
 pub(crate) const NO_BOUNDARY: &str = "claude ended the compaction without a compact boundary";
 
 impl ClaudePlannerSession {
+    pub(crate) async fn compact_canonical(
+        &self,
+        target: crate::harness::backend::MaintenanceTarget,
+        selection: &TurnModelSelection,
+        admission: &crate::harness::native_admission::NativePromptAdmission<'_>,
+    ) -> CompactSubmission<CalmError> {
+        if !self.owns_maintenance_target(&target) {
+            return submission_result(Err(CalmError::Conflict(
+                "maintenance target names another Claude owner".into(),
+            )
+            .into()));
+        }
+        let thread = target.thread_id.clone();
+        submission_result(
+            self.start_spawn(
+                &thread,
+                SpawnInput::CanonicalCompaction(target),
+                selection,
+                PlannerPermissionMode::Never,
+                admission,
+            )
+            .await,
+        )
+    }
+
     /// Start a compaction of `thread`'s session and report its submission. `selection` is the card's
     /// model, so the summary runs on the conversation's own context window. It runs under `never`:
     /// it asks nothing of the person, whatever the card's turns run under. A conversation whose

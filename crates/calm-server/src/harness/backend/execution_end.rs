@@ -164,3 +164,46 @@ impl PlannerBackend {
         }))
     }
 }
+
+/// A maintenance execution has no canonical input claim or user turn identity.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct MaintenanceTarget {
+    pub(crate) card_id: String,
+    pub(crate) track_id: String,
+    pub(crate) worker_session_id: String,
+    pub(crate) thread_id: String,
+    pub(crate) operation_id: String,
+}
+
+pub(crate) struct MaintenanceObservation {
+    pub(crate) turn_id: String,
+    pub(crate) settled: Option<bool>,
+}
+
+impl PlannerBackend {
+    pub(crate) async fn compact_canonical(
+        &self,
+        target: MaintenanceTarget,
+        request: CompactRequest,
+        admission: &crate::harness::native_admission::NativePromptAdmission<'_>,
+    ) -> Result<CompactSubmission<CalmError>> {
+        match &self.0 {
+            Arm::Claude(session) => Ok(session
+                .compact_canonical(target, &request.selection, admission)
+                .await),
+            Arm::Codex(..) | Arm::Acp(_) => Err(CalmError::BadRequest(
+                "canonical maintenance is unavailable for this provider".into(),
+            )),
+        }
+    }
+
+    pub(crate) async fn observe_maintenance(
+        &self,
+        target: &MaintenanceTarget,
+    ) -> Result<Option<MaintenanceObservation>> {
+        match &self.0 {
+            Arm::Claude(session) => session.observe_maintenance(target).await,
+            Arm::Codex(..) | Arm::Acp(_) => Ok(None),
+        }
+    }
+}

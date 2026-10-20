@@ -531,3 +531,131 @@ async fn canonical_claude_recovery_workspace_rechecks_membership_owner_and_carri
         assert!(fx.state.harness.get(&fx.worker).is_none());
     }
 }
+
+#[tokio::test]
+async fn canonical_claude_compact_route_requires_real_human_and_retained_recovery_wedges() {
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use tower::ServiceExt;
+    let fx = Fixture::claude().await;
+    std::fs::write(fx._dir.path().join("scenario"), "exit").unwrap();
+    let (_auth, _token, human) = source().await;
+    wake(&fx, human.clone()).await.unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(20), async {
+        while fx.frame().await.header.phase != HarnessPhaseTag::TurnCompleted {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    std::fs::write(fx._dir.path().join("scenario"), "compact").unwrap();
+    let app = axum::Router::new()
+        .route(
+            "/compact/{id}",
+            axum::routing::post(crate::routes::planner_compact::compact_planner_card),
+        )
+        .with_state(RouteState::from_ref(&fx.state));
+    let uri = format!("/compact/{}", fx.card);
+    let response = app
+        .clone()
+        .oneshot(
+            Request::post(&uri)
+                .extension(crate::actor::Actor("user".into()))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::UNAUTHORIZED,
+        "declared actor grants no Human source"
+    );
+    let response = app
+        .clone()
+        .oneshot(
+            Request::post(&uri)
+                .extension(crate::actor::Actor("ai:codex".into()))
+                .extension(human.clone())
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert_eq!(fx.lines(), 1);
+    let response = app
+        .oneshot(
+            Request::post(&uri)
+                .extension(crate::actor::Actor("user".into()))
+                .extension(human.clone())
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    tokio::time::timeout(std::time::Duration::from_secs(20), async {
+        while fx
+            .frame()
+            .await
+            .header
+            .compact_outcome
+            .as_ref()
+            .is_none_or(|outcome| {
+                outcome.status != crate::harness::compact_outcome::CompactStatus::Completed
+            })
+        {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    fx.state
+        .harness
+        .shutdown_and_remove(&fx.worker)
+        .await
+        .unwrap();
+    let before = fx.frame().await;
+    let mut tx = begin_immediate_tx(fx.repo.db()).await.unwrap();
+    let carrier = crate::db::sqlite::conversation::current_input_carrier_tx(
+        &mut tx,
+        fx.card.as_str(),
+        &fx.worker,
+    )
+    .await
+    .unwrap();
+    let fence = crate::db::sqlite::conversation::RuntimeExecutionFence::from_carrier(&carrier);
+    let mut header = fence.header().clone();
+    header["phase"] = json!("compacting");
+    header["compact_outcome"]["status"] = json!("started");
+    crate::db::sqlite::conversation::persist_runtime_frame_tx(
+        &mut tx,
+        fx.card.as_str(),
+        &fx.worker,
+        &fence,
+        header,
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    wake(&fx, human).await.unwrap();
+    let after = fx.frame().await;
+    assert_eq!(after.header.phase, HarnessPhaseTag::Wedged);
+    assert_eq!(
+        after.header.compact_outcome.unwrap().status,
+        crate::harness::compact_outcome::CompactStatus::Unconfirmed
+    );
+    assert_eq!(after.canonical_inputs, before.canonical_inputs);
+    assert_eq!(after.header.last_turn_id, before.header.last_turn_id);
+    assert_eq!(
+        fx.lines(),
+        2,
+        "retained recovery never writes another compact line"
+    );
+    fx.state
+        .harness
+        .shutdown_and_remove(&fx.worker)
+        .await
+        .unwrap();
+}

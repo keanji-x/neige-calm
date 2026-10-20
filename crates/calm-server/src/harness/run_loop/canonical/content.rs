@@ -24,7 +24,9 @@ pub(in crate::harness::run_loop) async fn on_notification(
             observe_metadata(inner, Metadata::Usage(params)).await?;
         }
         PlannerEventKind::ContextReplaced { turn_id } => {
-            observe_metadata(inner, Metadata::ContextBoundary(turn_id)).await?;
+            if !super::super::compact_command::canonical::boundary(inner, &turn_id).await? {
+                observe_metadata(inner, Metadata::ContextBoundary(turn_id)).await?;
+            }
         }
         PlannerEventKind::TurnStarted { turn_id } => {
             let current = read_current(inner).await?;
@@ -117,8 +119,7 @@ async fn observe_metadata(inner: &Arc<Inner>, observation: Metadata) -> Result<(
                     if header.last_turn_id.as_deref() != Some(turn.as_str()) {
                         return Ok(None);
                     }
-                    header.context_usage_invalidated = true;
-                    header.context_usage_invalidated_turn = Some(turn);
+                    invalidate_context_usage(header);
                 }
             }
             let persisted = persist_runtime_frame_tx(
@@ -167,4 +168,13 @@ pub(in crate::harness::run_loop) async fn persist_native_item(
         })
     })
     .await
+}
+
+/// The retained-context boundary is keyed to the user's watermark, including
+/// manual maintenance that has its own local execution identity.
+pub(in crate::harness::run_loop) fn invalidate_context_usage(
+    header: &mut calm_types::harness::snapshot::HarnessRuntimeHeader,
+) {
+    header.context_usage_invalidated = true;
+    header.context_usage_invalidated_turn = header.last_turn_id.clone();
 }

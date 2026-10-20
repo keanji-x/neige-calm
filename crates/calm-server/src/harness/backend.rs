@@ -59,7 +59,8 @@ pub(crate) use attempt::{
 };
 pub(crate) use budget_control::{BudgetControlScope, ControlDelivery};
 pub(crate) use execution_end::{
-    ExecutionEndScope, ExecutionEndTarget, ExecutionInput, QualifiedExecutionEnd,
+    ExecutionEndScope, ExecutionEndTarget, ExecutionInput, MaintenanceObservation,
+    MaintenanceTarget, QualifiedExecutionEnd,
 };
 
 /// A provider's failure to start a turn, classified by the provider that raised it (#1981): the
