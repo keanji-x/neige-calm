@@ -1202,6 +1202,12 @@ async fn resolve_dead_outcome(
 
 #[async_trait]
 impl ProviderAdapter for ForgeActionAdapter {
+    async fn preparation_track(&self, input: &Value, _ctx: &SpawnCtx) -> Result<Option<String>> {
+        Ok(Some(
+            serde_json::from_value::<ForgeActionPayload>(input.clone())?.track_id,
+        ))
+    }
+
     fn kind(&self) -> &'static str {
         FORGE_ACTION_KIND
     }

@@ -118,6 +118,8 @@ impl ClosedWorktreeFacts for ServerClosedWorktreeFacts {
             .into_iter()
             .any(|row| row.track_id == track && row.closed_at == closed_at);
         if !still_closed
+            || crate::operation::workspace_lease::track_has_active_forge_action(&self.pool, track)
+                .await?
             || checkout_occupancy(&mut *self.pool.acquire().await?, track, "").await?
                 != CheckoutOccupancy::Free
             || !calm_truth::db::sqlite::workspace_execution::unsettled_executions(

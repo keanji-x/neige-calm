@@ -264,3 +264,66 @@ async fn c1_fence_claude_worker_busy_retries() {
 
 #[path = "c1_planner_fence.rs"]
 mod planner;
+
+#[tokio::test]
+async fn c3_forge_action_after_clean_check_waits_for_clean() {
+    use calm_server::operation::forge_action_adapter::{FORGE_ACTION_KIND, ForgeActionPayload};
+    let (b, track, path) = fixture().await;
+    let pause = Pause::arm("c1-clean-fenced", &track);
+    let cleaning = clean(b.clone());
+    pause.entered().await;
+    let released = path.join("forge-released");
+    let payload = ForgeActionPayload {
+        track_id: track.clone(),
+        card_id: b.repo.cards_by_track(&track).await.unwrap()[0]
+            .id
+            .to_string(),
+        subject: None,
+        argv: vec![
+            "/bin/sh".into(),
+            "-c".into(),
+            ": > \"$1\"".into(),
+            "forge".into(),
+            released.display().to_string(),
+        ],
+        idem_key: "c3-clean".into(),
+        event_spec: None,
+        context: Default::default(),
+        probe: None,
+        cwd_lease: path.clone(),
+        result_path: b.tmp.path().join("forge-result"),
+        deadline_ms: calm_server::model::now_ms() + 60_000,
+    };
+    let op = SqlxOperationRepo::new(b.repo.db().clone())
+        .insert_operation(
+            FORGE_ACTION_KIND,
+            OperationKey {
+                operation_key: calm_server::model::new_id(),
+                idempotency_key: Some(payload.idem_key.clone()),
+                payload_hash: "c3-clean".into(),
+            },
+            serde_json::to_value(payload).unwrap(),
+        )
+        .await
+        .unwrap();
+    b.state.operation_runtime.drive().await.unwrap();
+    let (phase_tag, admitted, spawned): (String, bool, bool) = sqlx::query_as(
+        "SELECT phase, tx_output_json IS NOT NULL, spawn_artifacts_json IS NOT NULL FROM operations WHERE id=?"
+    ).bind(&op).fetch_one(b.repo.pool()).await.unwrap();
+    assert_eq!(phase_tag, "pending", "clean must fence forge preparation");
+    assert!(!admitted, "no admission while clean holds track");
+    assert!(!spawned, "no native spawn while clean holds track");
+    assert!(!released.exists(), "no go-token release during clean");
+    assert!(path.join("target/ignored").exists());
+    drop(pause);
+    assert_eq!(cleaning.await.unwrap().0, 1);
+    assert!(!path.join("target/ignored").exists());
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while phase(&b, &op).await != "succeeded" {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("Busy retry must complete forge after clean");
+    assert!(released.exists());
+}

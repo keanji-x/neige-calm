@@ -80,6 +80,8 @@
 # #2617 bounded exception: spec/crates 501 -> 503 comes solely from two struct literals of the
 # existing `event_spec` payload field (the event-free rerun payload and the approval gate's test
 # payload); no new domain term.
+# #2666 C3.2a bounded exception: spec/crates 509 -> 510 is the existing event_spec
+# field in the typed forge payload of the clean-fence regression; no new domain term.
 # #2671 bounded compatibility references: spec/crates 503 -> 508 adds five uses of
 # the existing serialized HarnessProfile::Planner value `spec`: the conversation
 # schema CHECK, three SQL fixtures, and the serialization compatibility test.

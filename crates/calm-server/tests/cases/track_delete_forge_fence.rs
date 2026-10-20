@@ -29,6 +29,7 @@ struct Boot {
     area_id: String,
     repo: Arc<dyn Repo>,
     tmp: TempDir,
+    state: AppState,
 }
 
 async fn boot() -> Boot {
@@ -92,13 +93,14 @@ async fn boot() -> Boot {
         .layer(axum::middleware::from_fn(
             calm_server::actor::actor_middleware,
         ))
-        .with_state(state);
+        .with_state(state.clone());
 
     Boot {
         app,
         area_id: area.id.to_string(),
         repo,
         tmp,
+        state,
     }
 }
 
@@ -232,4 +234,60 @@ async fn delete_area_conflicts_when_child_track_has_active_forge_action() {
 
     let status = delete(boot.app.clone(), &format!("/api/areas/{}", boot.area_id)).await;
     assert_eq!(status, StatusCode::CONFLICT);
+}
+
+#[tokio::test]
+async fn c3_closed_worktree_clean_refuses_active_forge_action() {
+    use crate::support::git_helpers::run_git;
+    use calm_server::test_seams::clean_closed_worktrees_with_history_for_test as clean;
+    use std::collections::HashSet;
+
+    let boot = boot().await;
+    let track = create_track(&boot, "clean-active").await;
+    let db = boot.repo.sqlite_db().unwrap();
+    let pool = db.writer_pool();
+    let sessions: Vec<String> = sqlx::query_scalar("SELECT id FROM worker_sessions")
+        .fetch_all(pool)
+        .await
+        .unwrap();
+    for session in sessions {
+        if let Some(handle) = boot.state.harness.remove(&session) {
+            let _ = handle.shutdown().await;
+        }
+    }
+    let path: String = sqlx::query_scalar("SELECT workspace_worktree_path FROM tracks WHERE id=?")
+        .bind(&track)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+    let path = PathBuf::from(path);
+    run_git(&path, ["config", "core.excludesFile", "/dev/null"]);
+    std::fs::write(path.join(".gitignore"), "target/\n").unwrap();
+    std::fs::create_dir_all(path.join("target")).unwrap();
+    let ignored = path.join("target/ignored");
+    std::fs::write(&ignored, "build output").unwrap();
+    sqlx::query("UPDATE tracks SET closed_at=123 WHERE id=?")
+        .bind(&track)
+        .execute(pool)
+        .await
+        .unwrap();
+    let op = insert_spawn_started_forge_action(&boot, &track, "clean-active-op").await;
+    let mut history = HashSet::new();
+    assert_eq!(
+        clean(pool, &boot.state.operation_runtime, &mut history)
+            .await
+            .unwrap(),
+        0
+    );
+    assert!(history.is_empty(), "refused clean must remain retryable");
+    assert!(ignored.exists(), "active forge must protect ignored files");
+    set_operation_phase(&boot, &op, "succeeded").await;
+    assert_eq!(
+        clean(pool, &boot.state.operation_runtime, &mut history)
+            .await
+            .unwrap(),
+        1
+    );
+    assert!(!ignored.exists());
+    assert!(history.contains(&(track, 123)));
 }
