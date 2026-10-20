@@ -51,7 +51,7 @@ function renderTasks(
     </div>,
   );
   // These cases inspect row hit targets after the reader discloses their group.
-  for (const summary of document.querySelectorAll<HTMLElement>('[data-nc-work-inventory] button[aria-expanded="false"]')) fireEvent.click(summary);
+  for (const summary of document.querySelectorAll<HTMLElement>('[data-nc-work-inventory] button[aria-expanded="false"][aria-controls]:not([aria-haspopup])')) fireEvent.click(summary);
   return document.querySelector<HTMLElement>('[data-nc-work-inventory] li')!;
 }
 

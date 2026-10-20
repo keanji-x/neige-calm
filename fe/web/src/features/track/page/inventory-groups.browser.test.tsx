@@ -179,7 +179,7 @@ it.each([false, true])('left-aligns type icons beside names with deletable=%s', 
   const onDeleteCard = vi.fn<NonNullable<DesktopPainterDeps['onDeleteCard']>>();
   const onOpenCard = vi.fn();
   render(<div style={{ inlineSize: 300 }}><PanelCard>{paintDesktopPanel(makeDesktopPainter({ onDeleteCard, onOpenCard }), view.desktop)}</PanelCard></div>);
-  for (const summary of document.querySelectorAll<HTMLElement>('[data-nc-module="work"] button[aria-expanded="false"]')) await userEvent.click(summary);
+  for (const summary of document.querySelectorAll<HTMLElement>('[data-nc-module="work"] button[aria-expanded="false"][aria-controls]:not([aria-haspopup])')) await userEvent.click(summary);
   const cardRow = document.querySelector<HTMLElement>('[data-nc-row="tool:worker"]')!;
   const taskRow = document.querySelector<HTMLElement>('[data-nc-row="task:work"]')!;
   const cardKind = cardRow.querySelector<HTMLElement>('[data-nc-field="kind"]')!;
