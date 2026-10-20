@@ -185,13 +185,25 @@ pub fn enforce_role(
                     });
                 }
             }
-            ActorId::AiCodex(card_id)
-            | ActorId::AiClaude(card_id)
-            | ActorId::AiManagedCard(card_id) => {
+            ActorId::AiCodex(card_id) => {
                 // The actor variant is the wire-level claim; the gate sticks to it rather
                 // than re-binding via the cache.
                 return Err(RoleViolation::NotPlannerForTrack {
-                    actor: ai_worker_actor_label(actor, card_id),
+                    actor: format!("AiCodex({card_id})"),
+                });
+            }
+            ActorId::AiClaude(card_id) => {
+                // The actor variant is the wire-level claim; the gate sticks to it rather
+                // than re-binding via the cache.
+                return Err(RoleViolation::NotPlannerForTrack {
+                    actor: format!("AiClaude({card_id})"),
+                });
+            }
+            ActorId::AiManagedCard(card_id) => {
+                // The actor variant is the wire-level claim; the gate sticks to it rather
+                // than re-binding via the cache.
+                return Err(RoleViolation::NotPlannerForTrack {
+                    actor: format!("AiManagedCard({card_id})"),
                 });
             }
             ActorId::AiPlannerSession(session)
@@ -224,11 +236,19 @@ pub fn enforce_role(
                     });
                 }
             }
-            ActorId::AiCodex(card_id)
-            | ActorId::AiClaude(card_id)
-            | ActorId::AiManagedCard(card_id) => {
+            ActorId::AiCodex(card_id) => {
                 return Err(RoleViolation::NotPlannerForDispatch {
-                    actor: ai_worker_actor_label(actor, card_id),
+                    actor: format!("AiCodex({card_id})"),
+                });
+            }
+            ActorId::AiClaude(card_id) => {
+                return Err(RoleViolation::NotPlannerForDispatch {
+                    actor: format!("AiClaude({card_id})"),
+                });
+            }
+            ActorId::AiManagedCard(card_id) => {
+                return Err(RoleViolation::NotPlannerForDispatch {
+                    actor: format!("AiManagedCard({card_id})"),
                 });
             }
             ActorId::AiPlannerSession(session)
@@ -257,11 +277,19 @@ pub fn enforce_role(
                     actor: format!("AiPlanner({card_id})"),
                 });
             }
-            ActorId::AiCodex(card_id)
-            | ActorId::AiClaude(card_id)
-            | ActorId::AiManagedCard(card_id) => {
+            ActorId::AiCodex(card_id) => {
                 return Err(RoleViolation::NotKernelForTaskDispatched {
-                    actor: ai_worker_actor_label(actor, card_id),
+                    actor: format!("AiCodex({card_id})"),
+                });
+            }
+            ActorId::AiClaude(card_id) => {
+                return Err(RoleViolation::NotKernelForTaskDispatched {
+                    actor: format!("AiClaude({card_id})"),
+                });
+            }
+            ActorId::AiManagedCard(card_id) => {
+                return Err(RoleViolation::NotKernelForTaskDispatched {
+                    actor: format!("AiManagedCard({card_id})"),
                 });
             }
             ActorId::AiPlannerSession(session)
@@ -295,11 +323,19 @@ pub fn enforce_role(
                     actor: format!("AiPlanner({card_id})"),
                 });
             }
-            ActorId::AiCodex(card_id)
-            | ActorId::AiClaude(card_id)
-            | ActorId::AiManagedCard(card_id) => {
+            ActorId::AiCodex(card_id) => {
                 return Err(RoleViolation::NotKernelForTaskContextFrozen {
-                    actor: ai_worker_actor_label(actor, card_id),
+                    actor: format!("AiCodex({card_id})"),
+                });
+            }
+            ActorId::AiClaude(card_id) => {
+                return Err(RoleViolation::NotKernelForTaskContextFrozen {
+                    actor: format!("AiClaude({card_id})"),
+                });
+            }
+            ActorId::AiManagedCard(card_id) => {
+                return Err(RoleViolation::NotKernelForTaskContextFrozen {
+                    actor: format!("AiManagedCard({card_id})"),
                 });
             }
             ActorId::AiPlannerSession(session)
@@ -347,11 +383,19 @@ pub fn enforce_role(
                     actor: format!("AiPlanner({card_id})"),
                 });
             }
-            ActorId::AiCodex(card_id)
-            | ActorId::AiClaude(card_id)
-            | ActorId::AiManagedCard(card_id) => {
+            ActorId::AiCodex(card_id) => {
                 return Err(RoleViolation::NotKernelForTaskContextAdvanced {
-                    actor: ai_worker_actor_label(actor, card_id),
+                    actor: format!("AiCodex({card_id})"),
+                });
+            }
+            ActorId::AiClaude(card_id) => {
+                return Err(RoleViolation::NotKernelForTaskContextAdvanced {
+                    actor: format!("AiClaude({card_id})"),
+                });
+            }
+            ActorId::AiManagedCard(card_id) => {
+                return Err(RoleViolation::NotKernelForTaskContextAdvanced {
+                    actor: format!("AiManagedCard({card_id})"),
                 });
             }
             ActorId::AiPlannerSession(session)
@@ -379,11 +423,19 @@ pub fn enforce_role(
                     actor: format!("AiPlanner({card_id})"),
                 });
             }
-            ActorId::AiCodex(card_id)
-            | ActorId::AiClaude(card_id)
-            | ActorId::AiManagedCard(card_id) => {
+            ActorId::AiCodex(card_id) => {
                 return Err(RoleViolation::NotKernelForTaskGateResult {
-                    actor: ai_worker_actor_label(actor, card_id),
+                    actor: format!("AiCodex({card_id})"),
+                });
+            }
+            ActorId::AiClaude(card_id) => {
+                return Err(RoleViolation::NotKernelForTaskGateResult {
+                    actor: format!("AiClaude({card_id})"),
+                });
+            }
+            ActorId::AiManagedCard(card_id) => {
+                return Err(RoleViolation::NotKernelForTaskGateResult {
+                    actor: format!("AiManagedCard({card_id})"),
                 });
             }
             ActorId::AiPlannerSession(session)
@@ -496,10 +548,21 @@ pub fn enforce_role(
         return Err(RoleViolation::SessionActorUnresolved { session: s.clone() });
     }
 
-    if let ActorId::AiCodex(card_id)
-    | ActorId::AiClaude(card_id)
-    | ActorId::AiManagedCard(card_id) = actor
-    {
+    let worker = match actor {
+        ActorId::AiCodex(card_id) => Some((card_id, "AiCodex")),
+        ActorId::AiClaude(card_id) => Some((card_id, "AiClaude")),
+        ActorId::AiManagedCard(card_id) => Some((card_id, "AiManagedCard")),
+        ActorId::User
+        | ActorId::Kernel
+        | ActorId::KernelDispatcher
+        | ActorId::Plugin(_)
+        | ActorId::AiPlanner(_)
+        | ActorId::AiPlannerSession(_)
+        | ActorId::AiCodexSession(_)
+        | ActorId::AiClaudeSession(_)
+        | ActorId::AiManagedSession(_) => None,
+    };
+    if let Some((card_id, actor_label)) = worker {
         match cache.get(card_id) {
             None => {
                 return Err(RoleViolation::UnknownCard {
@@ -519,8 +582,7 @@ pub fn enforce_role(
             Some(CardRole::Planner) => {
                 return Err(RoleViolation::NotPlannerForTrack {
                     actor: format!(
-                        "{} — card is Planner-roled but actor variant is not AiPlanner",
-                        ai_worker_actor_label(actor, card_id),
+                        "{actor_label}({card_id}) — card is Planner-roled but actor variant is not AiPlanner",
                     ),
                 });
             }
@@ -642,15 +704,6 @@ fn enforce_card_scope(
         ));
     }
     Ok(())
-}
-
-fn ai_worker_actor_label(actor: &ActorId, card_id: &CardId) -> String {
-    match actor {
-        ActorId::AiCodex(_) => format!("AiCodex({card_id})"),
-        ActorId::AiClaude(_) => format!("AiClaude({card_id})"),
-        ActorId::AiManagedCard(_) => format!("AiManagedCard({card_id})"),
-        _ => unreachable!("only AI worker actors call ai_worker_actor_label"),
-    }
 }
 
 fn is_own_worker_lifecycle_event(actor: &ActorId, event: &Event) -> bool {

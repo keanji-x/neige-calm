@@ -70,17 +70,6 @@ enum Command {
     },
 }
 
-impl Command {
-    fn config(&self) -> &Path {
-        match self {
-            Command::Auth(auth) => auth.config(),
-            Command::Capture { config }
-            | Command::UpgradeAnnualCatalog { config }
-            | Command::Notify { config, .. } => config,
-        }
-    }
-}
-
 #[derive(Debug, Subcommand)]
 enum AuthCommand {
     /// Import a token file the SDK wrote for the configured client id.
@@ -121,19 +110,15 @@ impl AuthCommand {
 pub fn run() -> i32 {
     let cli = Cli::parse();
     logging::init();
-    let command = cli.command;
-
-    // `notify` builds no SDK client, so the environment guard does not
-    // apply: it must alert even when the capture refused its environment.
-    if let Command::Notify {
-        config,
-        failed_unit,
-    } = &command
-    {
-        return match Config::load(config) {
+    match cli.command {
+        // `notify` builds no SDK client, so it must alert even when capture refused its environment.
+        Command::Notify {
+            config,
+            failed_unit,
+        } => match Config::load(&config) {
             Ok(config) => notify::run(
                 &config,
-                failed_unit,
+                &failed_unit,
                 Invocation::from_env("MONITOR_INVOCATION_ID").as_ref(),
                 SystemClock.now(),
             ),
@@ -141,9 +126,18 @@ pub fn run() -> i32 {
                 tracing::error!("{err}");
                 exit::FATAL
             }
-        };
+        },
+        Command::Auth(auth) => run_guarded(auth.config(), |config| match &auth {
+            AuthCommand::Import { from, force, .. } => import(config, from, *force),
+            AuthCommand::Login { .. } => login(config),
+            AuthCommand::Status { .. } => status(config),
+        }),
+        Command::Capture { config } => run_guarded(&config, capture),
+        Command::UpgradeAnnualCatalog { config } => run_guarded(&config, upgrade_annual_catalog),
     }
+}
 
+fn run_guarded(config_path: &Path, run: impl FnOnce(&Config) -> i32) -> i32 {
     let cwd = match std::env::current_dir() {
         Ok(cwd) => cwd,
         Err(err) => {
@@ -155,7 +149,7 @@ pub fn run() -> i32 {
         tracing::error!("{refusal}");
         return exit::FATAL;
     }
-    let config = match Config::load(command.config()) {
+    let config = match Config::load(config_path) {
         Ok(config) => config,
         Err(err) => {
             tracing::error!("{err}");
@@ -166,14 +160,7 @@ pub fn run() -> i32 {
     // only runtime is built below, after this call.
     unsafe { env_guard::pin_process_region(config.access_region) };
 
-    match command {
-        Command::Auth(AuthCommand::Import { from, force, .. }) => import(&config, &from, force),
-        Command::Auth(AuthCommand::Login { .. }) => login(&config),
-        Command::Auth(AuthCommand::Status { .. }) => status(&config),
-        Command::Capture { .. } => capture(&config),
-        Command::UpgradeAnnualCatalog { .. } => upgrade_annual_catalog(&config),
-        Command::Notify { .. } => unreachable!("notify returned above"),
-    }
+    run(&config)
 }
 
 /// The async runtime, built after the region is pinned.

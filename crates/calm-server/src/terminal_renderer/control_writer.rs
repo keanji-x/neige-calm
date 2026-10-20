@@ -60,12 +60,12 @@ enum Connection {
 impl Connection {
     async fn exchange(&mut self, message: ControlMsg) -> anyhow::Result<ControlReply> {
         use workspace_runtime::execution::{ExecutionReply, ProcessAction};
-        let Self::Typed { engine, id, repo } = self else {
-            let Self::Legacy(stream) = self else {
-                unreachable!()
-            };
-            write_frame(stream, &message).await?;
-            return Ok(read_frame(stream).await?);
+        let (engine, id, repo) = match self {
+            Self::Legacy(stream) => {
+                write_frame(stream, &message).await?;
+                return Ok(read_frame(stream).await?);
+            }
+            Self::Typed { engine, id, repo } => (engine, id, repo),
         };
         match message {
             ControlMsg::WriteStdin(request) => {

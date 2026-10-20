@@ -613,14 +613,40 @@ async fn handle_connection(mut stream: UnixStream, registry: ProcRegistry) -> an
             write_frame(&mut stream, &ControlReply::Execution(Box::new(reply))).await?;
             continue;
         }
-        let typed = matches!(&msg, ControlMsg::Execution(_));
-        let correct_mode = negotiated.as_ref().is_some_and(|(mode, _)| {
-            if typed {
-                *mode == ExecutionProtocolMode::RegisteredV3
-            } else {
-                *mode == ExecutionProtocolMode::LegacyWorktree
-            }
-        });
+        let (required_mode, alias) = match &msg {
+            ControlMsg::Execution(_) => (ExecutionProtocolMode::RegisteredV3, None),
+            ControlMsg::EnsureProc(request) => (
+                ExecutionProtocolMode::LegacyWorktree,
+                Some(&request.proc_id),
+            ),
+            ControlMsg::Attach(request) => (
+                ExecutionProtocolMode::LegacyWorktree,
+                Some(&request.proc_id),
+            ),
+            ControlMsg::WriteStdin(request) => (
+                ExecutionProtocolMode::LegacyWorktree,
+                Some(&request.proc_id),
+            ),
+            ControlMsg::ResizePty(request) => (
+                ExecutionProtocolMode::LegacyWorktree,
+                Some(&request.proc_id),
+            ),
+            ControlMsg::Signal(request) => (
+                ExecutionProtocolMode::LegacyWorktree,
+                Some(&request.proc_id),
+            ),
+            ControlMsg::Cleanup(request) => (
+                ExecutionProtocolMode::LegacyWorktree,
+                Some(&request.proc_id),
+            ),
+            ControlMsg::Probe(request) => (
+                ExecutionProtocolMode::LegacyWorktree,
+                Some(&request.proc_id),
+            ),
+        };
+        let correct_mode = negotiated
+            .as_ref()
+            .is_some_and(|(mode, _)| *mode == required_mode);
         if !correct_mode {
             write_frame(
                 &mut stream,
@@ -632,28 +658,18 @@ async fn handle_connection(mut stream: UnixStream, registry: ProcRegistry) -> an
             .await?;
             continue;
         }
-        if !typed {
-            let alias = match &msg {
-                ControlMsg::EnsureProc(request) => &request.proc_id,
-                ControlMsg::Attach(request) => &request.proc_id,
-                ControlMsg::WriteStdin(request) => &request.proc_id,
-                ControlMsg::ResizePty(request) => &request.proc_id,
-                ControlMsg::Signal(request) => &request.proc_id,
-                ControlMsg::Cleanup(request) => &request.proc_id,
-                ControlMsg::Probe(request) => &request.proc_id,
-                ControlMsg::Execution(_) => unreachable!("typed request"),
-            };
-            if let Err(error) = registry.check_legacy_alias(alias) {
-                write_frame(
-                    &mut stream,
-                    &ControlReply::Error {
-                        kind: ControlErrorKind::BadRequest,
-                        message: error.to_string(),
-                    },
-                )
-                .await?;
-                continue;
-            }
+        if let Some(alias) = alias
+            && let Err(error) = registry.check_legacy_alias(alias)
+        {
+            write_frame(
+                &mut stream,
+                &ControlReply::Error {
+                    kind: ControlErrorKind::BadRequest,
+                    message: error.to_string(),
+                },
+            )
+            .await?;
+            continue;
         }
         match msg {
             ControlMsg::EnsureProc(request) => {

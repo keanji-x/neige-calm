@@ -9,7 +9,7 @@ use std::collections::HashSet;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use calm_types::model::{TrackWorkspace, WorkspaceIsolation};
+use calm_types::model::{TrackWorkspace, TrackWorkspaceKind};
 
 use crate::error::WorkspaceError;
 use crate::track_worktree::ObservePoint;
@@ -73,11 +73,11 @@ where
     let rows = facts.closed_idle_worktrees().await?;
     let mut count = 0;
     for row in rows {
-        let worktree = match row.workspace.isolation() {
-            WorkspaceIsolation::Managed => continue,
-            // Guarantee G: never git-clean a borrowed source directory.
-            WorkspaceIsolation::None => continue,
-            WorkspaceIsolation::Worktree => row.workspace.worktree.expect("decoded worktree"),
+        let worktree = match (row.workspace.kind, row.workspace.worktree) {
+            (TrackWorkspaceKind::Managed, _) => continue,
+            // Guarantee G: never mutate a borrowed source directory.
+            (TrackWorkspaceKind::Attached, None) => continue,
+            (TrackWorkspaceKind::Attached, Some(worktree)) => worktree,
         };
         let key = (row.track_id, row.closed_at);
         if cleaned.contains(&key) {

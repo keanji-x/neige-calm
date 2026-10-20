@@ -1,7 +1,7 @@
 //! Kernel track creation/teardown and baseline selection policy.
 use crate::error::WorkspaceError;
 use async_trait::async_trait;
-use calm_types::model::{Track, TrackWorkspace, WorkspaceIsolation};
+use calm_types::model::{Track, TrackWorkspace, TrackWorkspaceKind};
 use std::path::Path;
 use workspace::worktree::track_worktree_target;
 
@@ -65,11 +65,11 @@ where
 /// Never fails the caller: the area delete sweeps every track with `?`, so an error here would
 /// abort the other tracks' sweeps.
 pub fn remove_track_worktree(track_id: &str, workspace: &TrackWorkspace, observe: ObservePoint) {
-    let worktree = match workspace.isolation() {
-        WorkspaceIsolation::Managed => return,
-        // Guarantee G: no teardown of the borrowed source directory.
-        WorkspaceIsolation::None => return,
-        WorkspaceIsolation::Worktree => workspace.worktree.as_deref().expect("decoded worktree"),
+    let worktree = match (workspace.kind, workspace.worktree.as_deref()) {
+        (TrackWorkspaceKind::Managed, _) => return,
+        // Guarantee G: never mutate a borrowed source directory.
+        (TrackWorkspaceKind::Attached, None) => return,
+        (TrackWorkspaceKind::Attached, Some(worktree)) => worktree,
     };
     let removed = track_worktree_target(track_id, worktree)
         .map_err(WorkspaceError::from)
