@@ -2845,13 +2845,11 @@ async fn after_sample_requires_drained() {
 }
 
 // ---------------------------------------------------------------------------
-// Review round 1 (5c): the boot-reattach observer (the wrapper alive at reboot) samples after
-// too. Out of process, as above. The row is terminal before boot#2 (flipped by hand while the
-// gate was parked, the D12 (i) shape), so boot#2's scheduler drives no gate — its
-// 25 ms `wait` loop would otherwise run the driver's dead-work probe, which completes a dead
-// leader through `recover_parked`'s `!alive` arm ahead of the 2 s re-attach poll (A12b pins
-// that arm). With no waiter, the re-attached observer is the one completion path, and the op
-// result carries its `finalize`.
+// Review round 1 (5c): the boot-reattach observer samples after execution drains, too.
+// Out of process, as above. The row is terminal before boot#2 (flipped by hand while
+// the gate was parked, the D12 (i) shape), so boot#2's scheduler drives no gate.
+// The reattached observer completes the typed execution and the op result carries
+// its `finalize`, while the terminal task row takes no result.
 // ---------------------------------------------------------------------------
 #[cfg(target_os = "linux")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2904,6 +2902,7 @@ async fn live_reattached_gate_result_discarded_when_tree_changed() {
     };
     wait_for_file(&lease.path.join("extra.txt"));
     boot1.sigkill_and_reap();
+    let pre_boot_owner = gate_op(fx, &task.id).await.unwrap().lease_owner;
     assert!(verify_owned_pid(
         artifacts.pid,
         artifacts.start_time,
@@ -2920,8 +2919,8 @@ async fn live_reattached_gate_result_discarded_when_tree_changed() {
     .await
     .unwrap();
 
-    // boot#2 finds the wrapper alive: the Boot arm leaves the op parked and re-attaches an
-    // observer (the listener binds only after recovery, so readiness proves the arm ran).
+    // boot#2 finds the execution unsettled: the Boot arm leaves the op parked and reattaches
+    // an observer (the listener binds only after recovery, so readiness proves the arm ran).
     let Some(mut boot2) = launch_kernel_to_with_args(
         &world.tmp_path,
         &world.db_path,
@@ -2935,8 +2934,8 @@ async fn live_reattached_gate_result_discarded_when_tree_changed() {
     let op = gate_op(fx, &task.id).await.unwrap();
     assert_eq!(op.phase.tag(), PhaseTag::Parked, "{op:?}");
     assert!(
-        op.lease_owner.is_none(),
-        "the parked lease was cleared for boot"
+        op.lease_owner.is_none() || op.lease_owner != pre_boot_owner,
+        "boot must replace the old parked claim; the reattached observer may already hold a new one: {op:?}"
     );
     assert!(verify_owned_pid(
         artifacts.pid,
@@ -2944,8 +2943,8 @@ async fn live_reattached_gate_result_discarded_when_tree_changed() {
         &artifacts.boot_id
     ));
 
-    // The wrapper finishes (exit 0); the re-attached observer reads the exit file, stops the
-    // group and samples: the tree changed during the steps, the result is discarded. The op
+    // The gate finishes (exit 0); the reattached observer waits for typed execution drainage
+    // and samples: the tree changed during the steps, the result is discarded. The op
     // result is the observer's verdict (the terminal row takes no result: guard miss, no
     // event).
     std::fs::write(&leader_flag, b"").unwrap();
