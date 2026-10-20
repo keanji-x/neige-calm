@@ -342,23 +342,25 @@ describe('track route CARDS panel', () => {
 
 describe('track route TASKS panel', () => {
   const taskRow = async (name: RegExp) => {
-    const inventory = await tasks();
-    for (const summary of inventory.querySelectorAll<HTMLElement>('details:not([open]) > summary')) fireEvent.click(summary);
+    const inventory = await openTasks();
     return within(inventory).findByRole('button', { name });
   };
   /** Scoped to the TASKS module: `terminal` and `codex` are also words the CARDS module prints. */
-  async function tasks(): Promise<HTMLElement> {
-    return waitFor(() => {
+  async function openTasks(): Promise<HTMLElement> {
+    const inventory = await waitFor(() => {
       const found = document.querySelector('[data-nc-work-inventory]');
       if (found === null) throw new Error('task inventory has not rendered');
       return found as HTMLElement;
     });
+    const toggle = within(inventory).getByRole('button', { name: 'Progress' });
+    if (toggle.getAttribute('aria-expanded') === 'false') await userEvent.click(toggle);
+    return inventory;
   }
 
   /* The control is the row's kind, not the row; the row itself always reveals the block. */
   it('opens the worker card from the kind of a task the registry can draw', async () => {
     setup(TASK_CARDS, { taskDiagnostics: TASK_DIAGNOSTICS });
-    await userEvent.click(within(await tasks()).getByRole('button', { name: 'Actions for has-adapter' }));
+    await userEvent.click(within(await openTasks()).getByRole('button', { name: 'Actions for has-adapter' }));
     await userEvent.click(await screen.findByRole('menuitem', { name: 'View execution' }));
     expect(document.querySelector('[data-nc-card-dock]:not([hidden])')?.getAttribute('data-nc-card-id')).toBe('card-term');
     expect(screen.getByText('No terminal session available.')).toBeTruthy();
@@ -367,7 +369,7 @@ describe('track route TASKS panel', () => {
 
   it('offers the codex card too, now that an entry claims that kind', async () => {
     setup(TASK_CARDS, { taskDiagnostics: TASK_DIAGNOSTICS });
-    await userEvent.click(within(await tasks()).getByRole('button', { name: 'Actions for codex-adapter' }));
+    await userEvent.click(within(await openTasks()).getByRole('button', { name: 'Actions for codex-adapter' }));
     await userEvent.click(await screen.findByRole('menuitem', { name: 'View execution' }));
     expect(document.querySelector('[data-nc-card-grid]')?.getAttribute('aria-hidden')).toBeNull();
     expect(document.querySelector('[data-nc-card-cell][data-nc-card-id="card-codex"]')).toBeTruthy();
@@ -375,7 +377,7 @@ describe('track route TASKS panel', () => {
 
   it('never routes at a card no adapter claimed: that kind is not a control at all', async () => {
     setup(TASK_CARDS, { taskDiagnostics: TASK_DIAGNOSTICS });
-    const list = within(await tasks());
+    const list = within(await openTasks());
     // `no-adapter` is dispatched onto `card-unclaimed`, whose kind no entry claims:
     // the word is on the row, but it is not something to click.
     expect(list.getByText('claude')).toBeTruthy();
@@ -411,7 +413,7 @@ describe('track route TASKS panel', () => {
       taskDiagnostics: TASK_DIAGNOSTICS,
       overlays: [activityOverlay([{ card_id: UNCLAIMED_CARD.id, state: 'working' }])],
     });
-    const list = within(await tasks());
+    const list = within(await openTasks());
     await waitFor(() => expect(document.querySelector('[data-nc-work-inventory] [data-nc-row="task:b-unknown"] [data-nc-activity]')
       ?.getAttribute('data-nc-activity')).toBe('working'));
     expect(list.getByText('claude')).toBeTruthy();
@@ -429,7 +431,7 @@ describe('track route TASKS panel', () => {
     });
     await waitFor(() => expect(document.querySelector('[data-nc-work-inventory] [data-nc-row="task:b-term"] [data-nc-activity]')
       ?.getAttribute('data-nc-activity')).toBe('failed'));
-    await userEvent.click(within(await tasks()).getByRole('button', { name: 'Actions for has-adapter' }));
+    await userEvent.click(within(await openTasks()).getByRole('button', { name: 'Actions for has-adapter' }));
     const control = (await screen.findByRole('menuitem', { name: 'View execution' })).querySelector('[title]')!;
     expect(control.getAttribute('title')).toBe('Open the worker card for has-adapter');
   });
@@ -472,7 +474,7 @@ describe('track route TASKS panel', () => {
         },
       },
     ] });
-    const list = within(await tasks());
+    const list = within(await openTasks());
     for (const [key, message] of [
       ['has-adapter', 'Waiting for `foundation`'],
       ['codex-adapter', 'Track busy'],
@@ -518,6 +520,7 @@ describe('track route TASKS panel convergence', () => {
     verdicts = running;
     await vi.advanceTimersByTimeAsync(3_000);
 
+    await userEvent.click(await screen.findByRole('button', { name: 'Progress' }));
     const converged = await screen.findByRole('button', { name: 'Actions for has-adapter' });
     await userEvent.click(converged);
     expect((await screen.findByRole('menuitem', { name: 'View execution' })).querySelector('[title]')?.getAttribute('title')).toBe('Open the worker card for has-adapter');
@@ -536,6 +539,7 @@ describe('track route TASKS panel convergence', () => {
     const { reportReads } = setup(TASK_CARDS, { taskDiagnostics: () => [{
       blockId: 'b-term', key: 'has-adapter', schedulable: true, diagnostics: [],
     }] });
+    await userEvent.click(await screen.findByRole('button', { name: 'Progress' }));
     await screen.findByRole('button', { name: /^has-adapter$/ });
     const afterFirstRead = reportReads();
     await vi.advanceTimersByTimeAsync(30_000);
