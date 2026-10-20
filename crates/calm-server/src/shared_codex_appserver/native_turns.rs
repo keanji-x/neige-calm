@@ -719,6 +719,7 @@ impl NativeTurns {
         self.lock().slots.remove(thread).map(|_| ())
     }
 
+    #[cfg(feature = "fixtures")]
     pub(super) fn retire_if(&self, thread: &str, predicate: impl FnOnce(&str, &String) -> bool) {
         let mut state = self.lock();
         let Some(slot) = state.slots.get_mut(thread) else {

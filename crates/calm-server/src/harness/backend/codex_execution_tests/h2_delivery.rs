@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use super::*;
 use crate::shared_codex_appserver::{CodexPromptDelivery, NativePromptAdmission, NativeSteer};
 
