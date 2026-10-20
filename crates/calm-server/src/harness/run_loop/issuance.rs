@@ -4,27 +4,6 @@ use crate::harness::backend::StartDiagnostic;
 use calm_types::harness::budget::FrozenContextUsage;
 use provider::control::{TurnEdit, TurnRequest, TurnStartOutcome};
 
-/// Reuse the frozen context fact under the turn budget's exact attempt rule.
-/// Otherwise compose and freeze a new segment; pre-feature matching attempts
-/// retain their absence of a segment rather than fabricating context text.
-async fn frozen_context_usage(inner: &Inner, client_id: &QueueEntryId) -> FrozenContextUsage {
-    if let budget::FrozenBudget::Planner {
-        start_attempt,
-        context_usage,
-        ..
-    } = &*inner.turn_budget.lock().await
-        && start_attempt == client_id
-    {
-        return context_usage.clone();
-    }
-    let invalidated = inner.context_usage_invalidation.lock().await.is_some();
-    let usage = inner.token_usage.lock().await;
-    FrozenContextUsage::Text(crate::harness::token_usage::planner_context_input(
-        usage.as_ref(),
-        invalidated,
-    ))
-}
-
 pub(super) async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
     input_commit::resume(inner).await?;
     // Dev-forced harnesses run against the replay binary's stub app-server.
@@ -353,17 +332,12 @@ pub(super) async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
         *slot = Some(key.clone());
         key
     };
-    let context_usage = if sampled_budget.is_some() {
-        Some(frozen_context_usage(inner, &client_id).await)
-    } else {
-        None
-    };
-    *inner.turn_budget.lock().await = match sampled_budget {
-        Some(budget) => budget::FrozenBudget::Planner {
-            budget,
+    *inner.turn_budget.lock().await = match &sampled_budget {
+        Some(sampled) => budget::FrozenBudget::Planner {
+            budget: sampled.budget,
             start_attempt: client_id.clone(),
             warning_attempted: false,
-            context_usage: context_usage.clone().expect("Planner context was sampled"),
+            context_usage: sampled.context_usage.clone(),
         },
         None => budget::FrozenBudget::NotApplicable,
     };
@@ -402,11 +376,11 @@ pub(super) async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
     .await;
 
     // Entry-index consumers must finish before adding kernel-owned context.
-    if let Some(budget) = sampled_budget {
-        let mut context = budget::segment(budget.initial_input());
+    if let Some(sampled) = sampled_budget {
+        let mut context = budget::segment(sampled.budget.initial_input());
         context.presentation = HarnessInputPresentation::SystemPlannerTurnBudget;
         segments.insert(0, context);
-        match context_usage.expect("Planner context was sampled") {
+        match sampled.context_usage {
             FrozenContextUsage::Text(text) => {
                 let mut usage = budget::segment(text);
                 usage.presentation = HarnessInputPresentation::SystemPlannerContextUsage;

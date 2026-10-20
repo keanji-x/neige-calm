@@ -423,7 +423,7 @@ pub(super) async fn tick(inner: &Arc<Inner>) -> Result<()> {
     })
     .await?;
     let resolved = async {
-        let budget = budget::sample(inner).await?;
+        let budget = budget::sample(inner).await?.map(|sampled| sampled.budget);
         let selection = inner.backend.resolve_selection(&read_admission).await?;
         let permission = turn_permission::resolve(inner).await?;
         Ok::<_, IssuanceRefusal>((budget, selection, permission))

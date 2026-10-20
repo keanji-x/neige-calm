@@ -1,5 +1,6 @@
 use super::completed_commit_tests::Fixture;
 use super::*;
+use crate::db::prelude::*;
 
 const UNKNOWN: &str = "[Trusted Planner context usage]\nContext usage is unknown (no reading yet).";
 const KNOWN: &str = "[Trusted Planner context usage]\nContext window: 50% used (142000 of 272000 tokens) as of the latest response before this turn. Record important state in the Report before compacting; conversation text after compaction is not guaranteed to survive.";
@@ -75,7 +76,16 @@ async fn context_usage_historical_reuses_matching_budget_without_projection_slot
         .unwrap()
         .projection_client_id
         .unwrap();
-    // A matching attempt reuses both frozen facts, just like the turn budget.
+    assert!(matches!(
+        fx.harness.snapshot().await.unwrap().turn_budget,
+        budget::FrozenBudget::Planner { budget, .. } if u16::from(budget) == 30
+    ));
+    // Without the pre-issuance slot, the budget rule samples both facts afresh,
+    // even though the queued entry will restore the same attempt identity.
+    fx.repo
+        .settings_upsert(crate::planner_turn_budget::KEY, "15")
+        .await
+        .unwrap();
     *fx.harness.inner.projection_client_id.lock().await = None;
     *fx.harness.inner.token_usage.lock().await = Some(TokenUsage {
         used_tokens: 142000,
@@ -86,14 +96,17 @@ async fn context_usage_historical_reuses_matching_budget_without_projection_slot
     *fx.harness.inner.issuance_retry_after.lock().await = None;
     fx.daemon.clear_turn_start_failure_for_test();
     fx.issue().await;
-    assert_eq!(fx.projected_segments().await[1].text, UNKNOWN);
+    let segments = fx.projected_segments().await;
+    assert!(segments[0].text.contains("budget is 15 minutes"));
+    assert_eq!(segments[1].text, KNOWN);
     assert!(matches!(
         fx.harness.snapshot().await.unwrap().turn_budget,
         budget::FrozenBudget::Planner {
+            budget,
             start_attempt,
             context_usage: calm_types::harness::budget::FrozenContextUsage::Text(text),
             ..
-        } if start_attempt == attempt && text == UNKNOWN
+        } if start_attempt == attempt && u16::from(budget) == 15 && text == KNOWN
     ));
 }
 
