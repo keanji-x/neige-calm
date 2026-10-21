@@ -98,6 +98,25 @@ export default defineConfig({
                 await iframe.locator(selector).hover({ position });
                 await page.mouse.wheel(0, deltaY);
               },
+              nativeEdgeTouch: (() => {
+                const sessions = new WeakMap<import('playwright').Page, import('playwright').CDPSession>();
+                return async ({ page, iframe }: import('vitest/node').BrowserCommandContext, type: 'touchStart' | 'touchMove' | 'touchEnd' | 'touchCancel', x: number) => {
+                  const box = await iframe.locator('[data-test-native-edge]').boundingBox();
+                  if (box === null) throw new Error('Production edge is not visible');
+                  if (type === 'touchStart') {
+                    await sessions.get(page)?.detach();
+                    sessions.set(page, await page.context().newCDPSession(page));
+                  }
+                  const session = sessions.get(page);
+                  if (session === undefined) throw new Error('No active native touch');
+                  try {
+                    await session.send('Input.dispatchTouchEvent', { type,
+                      touchPoints: type === 'touchEnd' || type === 'touchCancel' ? [] : [{ x: box.x + x, y: box.y + 100 }] });
+                  } finally {
+                    if (type === 'touchEnd' || type === 'touchCancel') { sessions.delete(page); await session.detach(); }
+                  }
+                };
+              })(),
               emulateReducedMotion: async ({ page }, reduce: boolean) => {
                 await page.emulateMedia({ reducedMotion: reduce ? 'reduce' : 'no-preference' });
               },

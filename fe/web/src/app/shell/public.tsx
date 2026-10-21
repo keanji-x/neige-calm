@@ -206,9 +206,10 @@ export function AppShell({
   const areas = visibleAreas(workspace.areas);
   const activeAreaId = routeAreaId ?? workspace.tracks.find((track) => track.id === routeTrackId)?.areaId;
   const activeArea = areas.find((area) => area.id === activeAreaId) ?? areas[0];
+  const mobileNavigationFrameRef = useRef<HTMLDivElement | null>(null);
   const mobileNavigationRef = useRef<HTMLDivElement | null>(null);
   const finishMobileClose = useCallback(() => setMobileSection(null), []);
-  const { close: closeMobileSection, cancel: cancelMobileExit, interactive: workspaceInteractive } = useMobileNavigationPresence(mobileNavigationRef, finishMobileClose, narrowRail && mobileNavOpen);
+  const { close: closeMobileSection, cancel: cancelMobileExit, interactive: workspaceInteractive } = useMobileNavigationPresence(mobileNavigationRef, mobileNavigationFrameRef, finishMobileClose, narrowRail && mobileNavOpen);
   const railCollapsed = manualRailCollapsed ?? narrowRail;
 
   const mobileFocusScope = useRef<Readonly<{ path: string; host: HTMLElement | null; intent: typeof mobileReturnIntent }> | null>(null);
@@ -422,6 +423,7 @@ export function AppShell({
         onOpenSettings={onOpenSettings}
         scopeLabel={conversationScope === null ? '当前 Track' : `当前 Track · ${trackDisplayTitle(conversationScope.track.title)}`}
         accountLabel={userLabel ?? '账号'} accountInitial={userLabel?.slice(0, 1) ?? '我'} onSignOut={onSignOut} />}
+      <div ref={mobileNavigationFrameRef} className={styles.navigationFrame}>
       <div
         ref={mobileNavigationRef}
         id="mobile-workspace-navigation"
@@ -524,6 +526,7 @@ export function AppShell({
 
           <OperationFeedback feedback={pinFeedback} />
         </div>
+      </div>
       </div>
       <main ref={drawerWidth.mainRef} className={styles.main} style={drawerWidth.style} inert={workspaceInteractive} aria-hidden={workspaceInteractive ? true : undefined}>
         {/* One flex item. Routes compose ErrorBox + page + Drawer as siblings;

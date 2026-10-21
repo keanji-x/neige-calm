@@ -1,5 +1,6 @@
 import '../../styles/entry.css';
 import { AREA, setup } from './mobile-browser-fixture.tsx';
+import { observeHistory } from './mobile-history-browser-trace.ts';
 import { withFontRoleProbe, fontRoleSnapshot } from '../../../../tools/styles/font-role-fixture.ts';
 /*
  * The mobile presentation, rendered on the real `AppShell` over a memory history;
@@ -435,21 +436,32 @@ describe('Track mobile presentation', () => {
   it('keeps workspace creation and history settings independently usable across their full touch targets', async () => {
     await page.viewport(390, 844);
     const router = setup('/track/w1');
-    await page.getByRole('button', { name: 'Open conversation history' }).click();
-    const settings = await page.getByRole('button', { name: '设置', exact: true }).findElement();
-    const box = settings.getBoundingClientRect();
-    expect(box.height).toBeGreaterThanOrEqual(44);
-    await page.elementLocator(settings).click({ position: { x: 4, y: box.height / 2 } });
-    await expect.poll(() => router.state.location.pathname).toBe('/settings');
-    await page.getByRole('navigation', { name: 'Settings categories' }).findElement();
-    await page.getByRole('button', { name: 'Back to workspace' }).click();
-    await expect.poll(() => router.state.location.pathname).toBe('/track/w1');
-    await openTrackNavigation();
-    const create = await page.getByRole('button', { name: 'New track', exact: true }).findElement();
-    expect(create.getBoundingClientRect().width).toBe(48);
-    expect(create.getBoundingClientRect().height).toBe(48);
-    await page.elementLocator(create).click({ position: { x: 4, y: 24 } });
-    await expect.poll(() => router.state.location.pathname).toBe('/area/c1/new');
+    const trace = observeHistory(() => router.state.location.href);
+    const unsubscribe = router.subscribe('onResolved', () => { trace.record('route'); });
+    try {
+      await page.getByRole('button', { name: 'Open conversation history' }).click();
+      const settings = await page.getByRole('button', { name: '设置', exact: true }).findElement();
+      const box = settings.getBoundingClientRect();
+      expect(box.height).toBeGreaterThanOrEqual(44);
+      trace.record('before-settings-edge-click');
+      await page.elementLocator(settings).click({ position: { x: 4, y: box.height / 2 } });
+      trace.record('after-settings-edge-click');
+      await expect.poll(() => router.state.location.pathname).toBe('/settings');
+      await page.getByRole('navigation', { name: 'Settings categories' }).findElement();
+      trace.record('settings-ready');
+      await page.getByRole('button', { name: 'Back to workspace' }).click();
+      await expect.poll(() => router.state.location.pathname).toBe('/track/w1');
+      await openTrackNavigation();
+      const create = await page.getByRole('button', { name: 'New track', exact: true }).findElement();
+      expect(create.getBoundingClientRect().width).toBe(48);
+      expect(create.getBoundingClientRect().height).toBe(48);
+      await page.elementLocator(create).click({ position: { x: 4, y: 24 } });
+      await expect.poll(() => router.state.location.pathname).toBe('/area/c1/new');
+    } catch (error) {
+      trace.failure(); throw error;
+    } finally {
+      unsubscribe(); trace.dispose();
+    }
   });
 
   it('keeps pressed and keyboard focus feedback on each control contour without native blue tap paint', async () => {

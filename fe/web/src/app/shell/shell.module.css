@@ -55,6 +55,7 @@
 
   /* Desktop keeps the existing rail as a direct grid child. The wrappers only
      become real boxes in the compact/mobile presentation below. */
+  .navigationFrame,
   .navigation,
   .navigationPanel,
   .navigationContent {
@@ -192,6 +193,14 @@
       --mobile-dock-h: 0px;
       grid-template-rows: auto minmax(0, 1fr);
       grid-template-columns: minmax(0, 1fr);
+    }
+
+    .navigationFrame {
+      z-index: var(--z-modal);
+      position: fixed;
+      inset: 0;
+      display: block;
+      pointer-events: none;
     }
 
     .navigation {

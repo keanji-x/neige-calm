@@ -1,9 +1,10 @@
-import { useRef } from 'react';
+import { useLayoutEffect, useRef } from 'react';
 import styles from './edge-swipe.module.css';
 
 /** A narrow touch-only right-swipe target; callers provide a visible button for keyboard access. */
 export function EdgeSwipe({ enabled, onSwipe }: Readonly<{ enabled: boolean; onSwipe: () => void }>) {
   const start = useRef<Readonly<{ id: number; x: number; y: number }> | null>(null);
+  useLayoutEffect(() => { if (!enabled) start.current = null; }, [enabled]);
   return <div className={styles.edge} aria-hidden="true" hidden={!enabled}
     onPointerDown={(event) => {
       if (enabled && event.pointerType === 'touch' && event.isPrimary) start.current = { id: event.pointerId, x: event.clientX, y: event.clientY };

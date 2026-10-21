@@ -19,7 +19,6 @@
   .inactivePage {
     visibility: hidden;
     pointer-events: none;
-    transform: translateX(100%);
   }
 
   .coveredPage { pointer-events: none; }

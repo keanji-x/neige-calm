@@ -16,12 +16,28 @@ The library trajectory is sampled once at 10ms rendering precision and played th
 
 `SizeMotion` measures an intrinsic flow root that contains margins/floats. Mode changes animate real height with no text scaling, unmount or focus movement. Ordinary typing/updates and initial mount are immediate; late intrinsic updates retarget while moving. Settlement restores automatic height. Reduced motion and unmount release clipping and effects. Only a declared mode change reads old geometry in React's pre-mutation snapshot and new geometry after the commit. This narrow class lifecycle is required for a real before/after capture; ordinary child updates do not synchronously measure or keep a height cache. ResizeObserver retargets only an active transition. See the [React snapshot contract](https://react.dev/reference/react/Component#getsnapshotbeforeupdate). Children must not derive their height as a percentage of the animated host. Keep floating/portalled overlays outside transient clipping.
 
-`useSpringPresence` supplies scalar presence for mobile navigation and Tracks page
-transitions. Dialog and ConfirmDialog use `useSurfacePresence` single lift with a
+`useEdgePresence` supplies physical edge presence for mobile navigation and Tracks
+page transitions. Dialog and ConfirmDialog use `useSurfacePresence` single lift with a
 required explicit `origin` and `present=open`: dismissal cancels effects and
 unmounts immediately. Drawer uses `useSurfacePresence` with the paired-only
 `edge-reveal` geometry below. Compact pages/reduced motion settle directly;
 native-child transition events never own the spring lifecycle.
+
+`EdgePresenceInput.frame` is a required `SurfaceSource` for the unanimated layout
+positioner; `part.element` is the exclusive paint node and the layout owner supplies
+`part.readFrame`. Present-scoped ResizeObserver observes both actual nodes (once
+when equal), refreshes on node or ref replacement, and releases old observations
+and queued work. A null frame suspends paint until a later layout commit restores
+it. Same-node declarations do not restart playback; completion reads the latest
+refs and reader. Independent frame resize rebases viewport contribution and signed
+velocity without requiring a paint resize, React render or window resize.
+
+The edge browser regressions cover independent frame invalidation and replacement
+of a ref declaration during close. History still uses its native deferred-close
+path: the earlier Settings edge-click failure has unknown cause. Test-side native
+input/close, dialog, focus and route traces improve future attribution; successful
+replays do not explain that historical failure. This slice does not complete the
+History/Sheet migration or close #3007.
 
 ## Press feedback
 

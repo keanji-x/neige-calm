@@ -3,7 +3,8 @@ import { MobileTrackList } from './mobile-track-list.tsx';
 // scopes the Track list; only opening a Track changes the page underneath.
 import { useLayoutEffect, useRef } from 'react';
 import { useState } from '../../ui/state/public.ts';
-import { useSpringPresence } from '../../ui/motion/presence.ts';
+import { useEdgePresence } from '../../ui/motion/edge-presence.ts';
+import { readSurfaceFrame } from '../../ui/motion/geometry.ts';
 import { visibleAreas, type Area } from '../../../../core/domain/area.ts';
 import { areaPinnedTracks, type Track } from '../../../../core/domain/track.ts';
 import { ErrorBox } from '../../ui/error-box/public.tsx';
@@ -33,16 +34,18 @@ type MobileTracksProps = Readonly<{
 
 /** Stable page shells preserve the Areas scroll position through direct page changes. */
 export function MobileTracks(props: MobileTracksProps) {
+  const tracksFrameRef = useRef<HTMLDivElement | null>(null);
   const tracksPageRef = useRef<HTMLDivElement | null>(null);
   const { view, areaId } = props;
   const [tracksPresented, setTracksPresented] = useState(view === 'tracks');
   if (view === 'tracks' && !tracksPresented) setTracksPresented(true);
-  useSpringPresence(tracksPageRef, null, view === 'tracks', tracksPresented, true,
-    () => { setTracksPresented(false); }, value => ({ transform: `translateX(${(1 - value) * 100}%)` }));
+  useEdgePresence({ frame: { ref: tracksFrameRef }, part: { element: tracksPageRef, readFrame: () => readSurfaceFrame(tracksFrameRef.current) },
+    edge: 'inline-end', open: view === 'tracks', present: tracksPresented, enabled: true,
+    onExited: () => { setTracksPresented(false); } });
   useLayoutEffect(() => {
     if (view === 'tracks' && tracksPageRef.current !== null) tracksPageRef.current.scrollTop = 0;
   }, [areaId, view]);
-  return <div className={styles.pages}>
+  return <div ref={tracksFrameRef} className={styles.pages}>
     <div data-nc-workspace-page="areas" className={`${styles.pageFrame} ${view === 'tracks' ? styles.coveredPage : ''}`}
       inert={view !== 'areas'} aria-hidden={view !== 'areas' || undefined}>
       <NavigationPage {...props} view="areas" />
