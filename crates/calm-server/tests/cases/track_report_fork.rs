@@ -2259,3 +2259,6 @@ async fn a_fork_of_a_headered_source_keeps_the_header_canonical_on_line_1() {
         "the forked document passes the funnel's own check"
     );
 }
+
+#[path = "track_report_fork_compact.rs"]
+mod compact;

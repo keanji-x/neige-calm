@@ -1663,6 +1663,16 @@ fn prepare_fork_report(
         ));
     }
 
+    // A fork cannot originate Planner-only compact tasks. Drop them before rewriting links
+    // so references to omitted blocks keep pointing at the source track.
+    blocks.retain(|block| {
+        block.kind != KIND_TASK
+            || block
+                .payload
+                .get("kind")
+                .and_then(serde_json::Value::as_str)
+                != Some("compact")
+    });
     let copied_block_ids: HashSet<String> = blocks.iter().map(|block| block.id.clone()).collect();
     let mut unsafe_links: Vec<(String, &'static str, UnsafeTrackLink)> = Vec::new();
     for block in &mut blocks {

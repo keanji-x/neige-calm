@@ -205,6 +205,13 @@ pub(crate) async fn structural_init_report_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     target: InitialReportTarget<'_>,
 ) -> Result<(Card, TaskProjectionOutcome), CalmError> {
+    // Structural initialization has no Planner principal. Every live block is new here,
+    // including declarations copied from a fork or instantiated from a template.
+    guard_compact_origination(
+        &[],
+        &target.doc.blocks_snapshot().map_err(block_op_internal)?,
+        EditAuthor::Kernel,
+    )?;
     let (card, projection) = write_report_row_and_project_tx(
         tx,
         target.report_card_id,

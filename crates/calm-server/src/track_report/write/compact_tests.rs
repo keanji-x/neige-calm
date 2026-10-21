@@ -256,3 +256,50 @@ async fn compact_task_requires_user_release_under_declare_and_wait() {
         "pending"
     );
 }
+
+#[tokio::test]
+async fn compact_structural_init_refuses_live_blocks_before_writing() {
+    let f = fixture().await;
+    let target = ReportEditTarget::resolve(f.repo.as_ref(), &f.track_id)
+        .await
+        .unwrap();
+    let blocks = vec![ReportBlock {
+        id: "b_1234".into(),
+        kind: "task".into(),
+        rev: 1,
+        payload: compact(),
+    }];
+    let mut doc = ReportDoc::from_blocks_exact("structural compact", &blocks).unwrap();
+    let (summary, body) = doc.project().unwrap();
+    let mut payload = TrackReportPayload::new(summary, body);
+    payload.blocks = Some(blocks.clone());
+    let (declarations, diagnostics) =
+        calm_types::report_blocks::tasks::project_task_declarations(&blocks);
+    let mut tx = f.repo.pool().begin().await.unwrap();
+    let result = structural_init_report_tx(
+        &mut tx,
+        InitialReportTarget {
+            report_card_id: target.report_card.id.as_str(),
+            track_id: &f.track_id,
+            payload: &payload,
+            doc: &mut doc,
+            declarations: &declarations,
+            diagnostics: &diagnostics,
+        },
+    )
+    .await;
+    assert!(
+        matches!(result, Err(CalmError::Forbidden(ref reason)) if reason.contains("Only the Planner")),
+        "{result:?}"
+    );
+    let stored: String = sqlx::query_scalar("SELECT payload FROM cards WHERE id=?1")
+        .bind(target.report_card.id.as_str())
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(&stored).unwrap(),
+        target.report_card.payload
+    );
+    tx.rollback().await.unwrap();
+}
