@@ -199,7 +199,8 @@ async fn kinds_returns_all_supported_schemas() {
             "preview",
             "view",
             "window",
-            "html"
+            "html",
+            "objective"
         ]
     );
     for kind in kinds {
