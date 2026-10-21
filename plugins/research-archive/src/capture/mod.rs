@@ -265,7 +265,7 @@ impl<C: Clock, D: TradingDays> Start<'_, C, D> {
         let oauth = match self.oauth(deadline, Some(as_of)).await {
             Ok(oauth) => oauth,
             Err(outcome) if outcome.kind == ExitKind::AuthUnavailable => {
-                return Ok(runner::core_outcome(&self.store, plan.run_id, as_of)
+                return Ok(runner::core_outcome(self.store, plan.run_id, as_of)
                     .await
                     .map_err(|e| store_err("reading Core outcome", e).on(as_of))?
                     .unwrap_or(outcome));
