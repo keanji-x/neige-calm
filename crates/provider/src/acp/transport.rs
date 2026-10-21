@@ -10,6 +10,7 @@ use tokio::sync::{Mutex, mpsc, oneshot, watch};
 const FRAME_LIMIT: usize = 8 * 1024 * 1024;
 const PENDING_LIMIT: usize = 64;
 const ADMISSION_TIMEOUT: Duration = Duration::from_secs(1);
+const TRANSPORT_WAIT_TIMEOUT: Duration = Duration::from_secs(5);
 const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -146,11 +147,11 @@ impl Client {
             .await
     }
     pub async fn respond(&self, id: Value, result: Value) -> Result<(), Error> {
-        self.write(json!({"jsonrpc":"2.0","id":id,"result":result}), None)
+        self.write_reply(json!({"jsonrpc":"2.0","id":id,"result":result}))
             .await
     }
     pub async fn reject_method(&self, id: Value) -> Result<(), Error> {
-        self.write(json!({"jsonrpc":"2.0","id":id,"error":{"code":-32601,"message":"Unsupported client method"}}), None).await
+        self.write_reply(json!({"jsonrpc":"2.0","id":id,"error":{"code":-32601,"message":"Unsupported client method"}})).await
     }
     pub fn close(&self) {
         let _ = self.0.close.send(true);
@@ -168,10 +169,19 @@ impl Client {
         )
         .await
     }
-    async fn write(&self, frame: Value, response: Option<(u64, Answer)>) -> Result<(), Error> {
-        self.write_gated(frame, response, &allow())
+    async fn write_reply(&self, frame: Value) -> Result<(), Error> {
+        // A taken peer request has no retry owner. Fence on every failure,
+        // including cancellation or timeout before writer ownership, so pending
+        // prompts cannot keep waiting on an answer that was consumed here.
+        let mut failure = CloseOnDrop {
+            close: &self.0.close,
+            armed: true,
+        };
+        self.write_gated(frame, None, &allow())
             .await
-            .map_err(WriteFailure::into_error)
+            .map_err(WriteFailure::into_error)?;
+        failure.armed = false;
+        Ok(())
     }
 
     async fn write_gated(
@@ -189,7 +199,7 @@ impl Client {
             )));
         }
         bytes.push(b'\n');
-        let deadline = tokio::time::Instant::now() + ADMISSION_TIMEOUT;
+        let deadline = tokio::time::Instant::now() + TRANSPORT_WAIT_TIMEOUT;
         let mut guard = tokio::time::timeout_at(deadline, self.0.writer.lock())
             .await
             .map_err(|_| before("writer wait timed out".into()))?;
@@ -219,7 +229,7 @@ impl Client {
         // Construct all I/O machinery before admission. The gate's final synchronous
         // check and the first write poll occur in the same task poll, with no await
         // on another owner between them.
-        let mut crossing = Crossing {
+        let mut crossing = CloseOnDrop {
             close: &self.0.close,
             armed: false,
         };
@@ -254,18 +264,18 @@ impl Client {
             crossing.armed = false;
             Ok(())
         };
-        tokio::time::timeout_at(deadline, gate.run())
+        tokio::time::timeout(ADMISSION_TIMEOUT, gate.run())
             .await
             .map_err(|_| before("admission timed out".into()))?
             .map_err(|error| before(error.0))?;
         write.await
     }
 }
-struct Crossing<'a> {
+struct CloseOnDrop<'a> {
     close: &'a watch::Sender<bool>,
     armed: bool,
 }
-impl Drop for Crossing<'_> {
+impl Drop for CloseOnDrop<'_> {
     fn drop(&mut self) {
         if self.armed {
             let _ = self.close.send(true);

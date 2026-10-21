@@ -166,34 +166,120 @@ async fn admission_timeout_is_before_write_and_write_timeout_is_crossed() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn writer_wait_timeout_is_before_write_and_does_not_poison_connection() {
+async fn two_second_writer_stall_preserves_second_write_and_admission_budget() {
     let (input, _input_peer) = tokio::io::duplex(4096);
-    let (output, mut peer) = tokio::io::duplex(4096);
+    let (output, peer) = tokio::io::duplex(1);
     let connection = Connection::new(input, output);
+    let first_gate = allow();
+    let mut first = Box::pin(
+        connection
+            .client
+            .notify_gated("first", json!({}), &first_gate),
+    );
+    let mut reader = BufReader::new(peer);
+    // Observe the actual first write, which holds the writer while the pipe is full.
+    tokio::select! {
+        result = &mut first => panic!("first frame must stall: {result:?}"),
+        byte = reader.read_u8() => assert_eq!(byte.unwrap(), b'{'),
+    }
+    let gate = PreSendGate::new(|| {
+        Box::pin(async {
+            tokio::time::sleep(Duration::from_millis(900)).await;
+            Ok(())
+        })
+    });
+    let mut second = Box::pin(connection.client.notify_gated("second", json!({}), &gate));
+    assert!(futures_util::poll!(&mut second).is_pending());
+    tokio::time::advance(Duration::from_secs(2)).await;
+    // Poll before releasing contention: the previous one-second wait rejects here.
+    assert!(futures_util::poll!(&mut second).is_pending());
+    let read = async {
+        let mut first_line = String::from("{");
+        reader.read_line(&mut first_line).await.unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(&first_line).unwrap()["method"],
+            "first"
+        );
+        let mut second_line = String::new();
+        reader.read_line(&mut second_line).await.unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(&second_line).unwrap()["method"],
+            "second"
+        );
+    };
+    let (first, second, ()) = tokio::join!(first, second, read);
+    first.unwrap();
+    second.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn taken_approval_answer_writer_timeout_fails_pending_prompt() {
+    use crate::acp::{
+        approvals::{AgentAsks, Approvals},
+        permission, protocol,
+    };
+    use crate::held_requests::HeldRequestMessage;
+    use calm_types::harness::PlannerPermissionMode;
+
+    let (input, _input_peer) = tokio::io::duplex(4096);
+    let (output, _peer) = tokio::io::duplex(4096);
+    let connection = Connection::new(input, output);
+    let prompt = protocol::prompt(
+        &connection.client,
+        &protocol::AgentCapabilities::default(),
+        "native",
+        &[protocol::ContentBlock::Text {
+            text: "hello".into(),
+        }],
+        &allow(),
+    )
+    .await
+    .unwrap();
+    let (sender, mut held) = tokio::sync::mpsc::unbounded_channel();
+    let approvals = Approvals::for_turn(
+        PlannerPermissionMode::Ask,
+        &sender,
+        "turn",
+        &connection.client,
+        AgentAsks::default(),
+    );
+    approvals
+        .request(
+            json!(7),
+            permission::METHOD,
+            json!({
+                "sessionId": "native",
+                "toolCall": {"toolCallId": "tool", "title": "Run tool"},
+                "options": [{"optionId": "once", "kind": "allow_once", "name": "Allow once"}]
+            }),
+        )
+        .await
+        .unwrap();
+    let HeldRequestMessage::Open { responder, .. } = held.recv().await.unwrap() else {
+        panic!("permission must be held");
+    };
+    // Isolate contention before crossing: no other write timeout can close the
+    // connection for us. The production responder takes the answer and waits.
     let lock = connection.client.0.writer.lock().await;
+    responder.respond(0);
+    let result = tokio::time::timeout(
+        Duration::from_secs(6),
+        prompt.wait(Duration::from_secs(3600)),
+    )
+    .await;
+    drop(lock);
+    assert_eq!(
+        result,
+        Ok(Err(Error::Closed)),
+        "a lost answer must fail the prompt, not leave it waiting"
+    );
     assert!(matches!(
         connection
             .client
-            .submit_gated("blocked", json!({}), &allow())
+            .notify_gated("later", json!({}), &allow())
             .await,
-        Err(WriteFailure::BeforeWrite(_))
+        Err(WriteFailure::BeforeWrite(Error::Closed))
     ));
-    drop(lock);
-    let pending = connection
-        .client
-        .submit_gated("ok", json!({}), &allow())
-        .await
-        .unwrap();
-    let mut frame = String::new();
-    BufReader::new(&mut peer)
-        .read_line(&mut frame)
-        .await
-        .unwrap();
-    assert_eq!(
-        serde_json::from_str::<serde_json::Value>(&frame).unwrap()["method"],
-        "ok"
-    );
-    drop(pending);
 }
 
 #[tokio::test]
@@ -297,4 +383,39 @@ async fn final_check_has_no_cooperative_yield_before_first_write_poll() {
         .await
         .unwrap();
     drop(pending);
+}
+
+#[tokio::test(start_paused = true)]
+async fn reply_writer_timeout_or_cancellation_fences_connection() {
+    for reject in [false, true] {
+        for cancel in [false, true] {
+            let (input, _input_peer) = tokio::io::duplex(4096);
+            let (output, _peer) = tokio::io::duplex(4096);
+            let connection = Connection::new(input, output);
+            let lock = connection.client.0.writer.lock().await;
+            let mut reply = Box::pin(async {
+                if reject {
+                    connection.client.reject_method(json!(7)).await
+                } else {
+                    connection.client.respond(json!(7), json!({})).await
+                }
+            });
+            assert!(futures_util::poll!(&mut reply).is_pending());
+            if cancel {
+                drop(reply);
+            } else {
+                let start = tokio::time::Instant::now();
+                assert!(matches!(reply.await, Err(Error::Refused(_))));
+                assert_eq!(start.elapsed(), Duration::from_secs(5));
+            }
+            drop(lock);
+            assert!(matches!(
+                connection
+                    .client
+                    .notify_gated("later", json!({}), &allow())
+                    .await,
+                Err(WriteFailure::BeforeWrite(Error::Closed))
+            ));
+        }
+    }
 }
