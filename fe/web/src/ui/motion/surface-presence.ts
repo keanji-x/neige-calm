@@ -66,7 +66,9 @@ function playSurface(elements: readonly HTMLElement[], snapshot: Snapshot, from:
     x: springTrajectory(point.x, 0, from.velocity.offsets[index].x),
     y: springTrajectory(point.y, 0, from.velocity.offsets[index].y),
   }));
-  return playTrajectory(elements, {
+  return playTrajectory<SurfaceState>(elements, {
+    scaleVelocity: (value, rate) => ({ progress: value.progress * rate,
+      offsets: value.offsets.map(point => ({ x: point.x * rate, y: point.y * rate })) }),
     duration: Math.max(p.duration, ...offsets.flatMap(({ x, y }) => [x.duration, y.duration])),
     sample: time => {
       const progress = p.sample(Math.min(time, p.duration));

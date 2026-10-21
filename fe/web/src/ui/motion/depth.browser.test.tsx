@@ -48,7 +48,7 @@ it('shows an instantaneous tap, inherits analytical velocity on reversal and rel
   const button = screen.getByRole('button', { name: 'Tap' });
   down(button);
   const inward = button.getAnimations()[0];
-  inward.pause(); inward.currentTime = 0;
+  inward.startTime = document.timeline.currentTime; inward.currentTime = 0;
   up(button); button.click();
   expect(click).toHaveBeenCalledOnce();
   const release = button.getAnimations()[0];
@@ -57,7 +57,7 @@ it('shows an instantaneous tap, inherits analytical velocity on reversal and rel
   const trajectory = springTrajectory(0, 0, TAP_VELOCITY);
   expect((release.effect as KeyframeEffect).getTiming().duration).toBe(trajectory.duration);
   expect(frames(release).some(frame => new DOMMatrix(frame.transform as string).a < .99)).toBe(true);
-  release.pause(); release.currentTime = 30;
+  release.startTime = document.timeline.currentTime; release.currentTime = 30;
   const state = trajectory.sample(30);
   down(button);
   const reverse = button.getAnimations()[0];

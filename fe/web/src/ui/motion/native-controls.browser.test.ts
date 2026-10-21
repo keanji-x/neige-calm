@@ -5,7 +5,7 @@ const frames = async (count: number) => { for (let i = 0; i < count; i++) await 
 const owned: ReturnType<typeof playTrajectory<number>>[] = [];
 function acquire(callback?: () => void, count = 1, duration = 2000) {
   const elements = Array.from({ length: count }, () => document.body.appendChild(document.createElement('div')));
-  const playback = playTrajectory(elements, { duration, sample: time => ({ value: time / duration, velocity: 0.5 }) }, opacity => ({ opacity }), callback);
+  const playback = playTrajectory(elements, { scaleVelocity: (value: number, rate: number) => value * rate, duration, sample: time => ({ value: time / duration, velocity: 0.5 }) }, opacity => ({ opacity }), callback);
   owned.push(playback); void playback.finished.catch(() => {});
   return playback;
 }

@@ -126,7 +126,7 @@ it('preserves outward velocity when an expanded panel reverses toward its compac
   const view = render(<Panel mode="compact" />);
   view.rerender(<Panel mode="expanded" height={500} />);
   const outward = host().getAnimations()[0];
-  outward.pause(); outward.currentTime = 80;
+  outward.startTime = document.timeline.currentTime; outward.currentTime = 80;
   const painted = host().getBoundingClientRect().height;
   view.rerender(<Panel mode="compact" />);
   const reverse = host().getAnimations()[0];

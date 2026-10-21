@@ -12,6 +12,7 @@ export type SpringPoint = Readonly<{ x: number; y: number }>;
 export type Playback<Value> = Readonly<{
   animations: readonly Animation[];
   finished: Promise<void>;
+  /** Primary native paint model value and signed velocity per wall-clock second. */
   sample: () => Readonly<{ value: Value; velocity: Value }>;
   cancel: () => void;
   setOnVisualChange: (callback: (() => void) | undefined) => void;
@@ -38,7 +39,8 @@ export function springTrajectory(from: number, to: number, velocity: number) {
 /** Shared native renderer, independent of scalar/vector geometry. */
 export function playTrajectory<Value>(
   elements: readonly (HTMLElement | SVGElement)[],
-  trajectory: Readonly<{ duration: number; sample: (time: number) => Readonly<{ value: Value; velocity: Value }> }>,
+  trajectory: Readonly<{ duration: number; sample: (time: number) => Readonly<{ value: Value; velocity: Value }>;
+    scaleVelocity: (velocity: Value, rate: number) => Value }>,
   paint: (value: Value, index: number) => Keyframe,
   onVisualChange?: () => void,
 ): Playback<Value> {
@@ -75,7 +77,12 @@ export function playTrajectory<Value>(
     sample: () => {
       const time = animations[0].currentTime;
       if (time !== null && typeof time !== 'number') throw new Error('Unsupported spring timeline');
-      return trajectory.sample(Math.max(0, Math.min(trajectory.duration, time ?? 0)));
+      const primary = animations[0];
+      const state = trajectory.sample(Math.max(0, Math.min(trajectory.duration, time ?? 0)));
+      // Pending controls expose their current clock/rate, not their future ready state.
+      const rate = primary.playState === 'running' && typeof time === 'number'
+        && typeof primary.startTime === 'number' ? primary.playbackRate : 0;
+      return { value: state.value, velocity: trajectory.scaleVelocity(state.velocity, rate) };
     },
     cancel: () => { visual.cancel(); for (const animation of animations) animation.cancel(); },
   };
@@ -85,7 +92,7 @@ export function playSpring(
   elements: readonly (HTMLElement | SVGElement)[], from: number, to: number, velocity: number,
   paint: (value: number) => Keyframe,
 ): SpringPlayback {
-  return playTrajectory(elements, springTrajectory(from, to, velocity), paint);
+  return playTrajectory(elements, { ...springTrajectory(from, to, velocity), scaleVelocity: (value, rate) => value * rate }, paint);
 }
 
 export function playPointSpring(
@@ -96,6 +103,7 @@ export function playPointSpring(
   const y = springTrajectory(from.y, to.y, velocity.y);
   return playTrajectory(elements, {
     duration: Math.max(x.duration, y.duration),
+    scaleVelocity: (value, rate) => ({ x: value.x * rate, y: value.y * rate }),
     sample: time => {
       const a = x.sample(Math.min(time, x.duration));
       const b = y.sample(Math.min(time, y.duration));

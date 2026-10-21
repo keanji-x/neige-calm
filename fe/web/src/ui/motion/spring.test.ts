@@ -19,7 +19,8 @@ it('acquires paired native controls on the owning document timeline in the DOM p
   expect(await first.ready).toBe(first);
   expect(first.finished).toBe(finished);
   expect(await ready).toBe(first);
-  expect(playback.sample()).toEqual(springTrajectory(0, 1, 0).sample(80));
+  const raw = springTrajectory(0, 1, 0).sample(80);
+  expect(playback.sample()).toEqual({ value: raw.value, velocity: raw.velocity * 0.5 });
   first.finish(); second.finish();
   expect(await finished).toBe(first);
   await playback.finished;

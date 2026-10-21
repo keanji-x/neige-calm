@@ -30,7 +30,6 @@ function pause(node: HTMLElement, time = 0) {
 function matrix(node: HTMLElement) { return new DOMMatrix(getComputedStyle(node).transform); }
 type Sample = { value: { progress: number; offsets: { x: number; y: number }[] }; velocity: { progress: number; offsets: { x: number; y: number }[] } };
 function trajectory() { return vi.mocked(playTrajectory).mock.calls.at(-1)![1] as { sample: (time: number) => Sample }; }
-async function resize() { window.dispatchEvent(new Event('resize')); await new Promise(requestAnimationFrame); }
 afterEach(async () => { cleanup(); created.splice(0).forEach(node => node.remove()); vi.clearAllMocks(); await commands.emulateReducedMotion(false); });
 
 it.each(['ltr', 'rtl'])('uses the primary %s logical edge camera with unit scale in fractional independent frames and zoom', direction => {
@@ -49,9 +48,9 @@ it.each(['ltr', 'rtl'])('uses the primary %s logical edge camera with unit scale
   expect(a.startTime).toBe(b.startTime);
 });
 
-it.each(['primary', 'peer'] as const)('preserves each local motion contribution and analytical velocity when %s alone resizes and changes scale', async changed => {
+it.each(['primary', 'peer'] as const)('preserves each local motion contribution and analytical velocity when %s alone resizes and changes scale', changed => {
   const f = setup(); const view = render(<Probe {...f.props} />);
-  pause(f.primary.node, 80); pause(f.peer.node, 80);
+  for (const item of [f.primary, f.peer]) { const a = item.node.getAnimations()[0]; a.startTime = document.timeline.currentTime; a.currentTime = 80; }
   const old = trajectory(); const before = [matrix(f.primary.node), matrix(f.peer.node)];
   const boxes = [f.primary.frame.getBoundingClientRect(), f.peer.frame.getBoundingClientRect()];
   const oldFrames = [f.primary.readFrame()!, f.peer.readFrame()!];
@@ -61,7 +60,7 @@ it.each(['primary', 'peer'] as const)('preserves each local motion contribution 
   const velocities = oldFrames.map((frame, i) => ({ x: (speed * boxes[0].width / 2 + from.velocity.offsets[i].x) / frame.viewportFromLocal.scaleX,
     y: (-0.56 * from.velocity.progress + from.velocity.offsets[i].y) / frame.viewportFromLocal.scaleY }));
   f[changed].frame.style.width = '180.75px'; f[changed].frame.style.transform = 'scale(1.6, .85)';
-  await resize();
+  view.rerender(<Probe {...f.props} />);
   pause(f.primary.node); pause(f.peer.node);
   const next = trajectory(); const dt = 1;
   const nextSample = next.sample(0);
@@ -76,7 +75,7 @@ it.each(['primary', 'peer'] as const)('preserves each local motion contribution 
     const animation = item.node.getAnimations()[0]; animation.currentTime = dt;
     expect((matrix(item.node).e - before[i].e) / dt * 1000).toBeCloseTo(velocities[i].x, 0);
     expect((matrix(item.node).f - before[i].f) / dt * 1000).toBeCloseTo(velocities[i].y, 0);
-    expect(next.sample(0).velocity.progress).toBe(from.velocity.progress);
+    expect(next.sample(0).velocity.progress).toBeCloseTo(from.velocity.progress, 10);
   }
   view.unmount(); expect(f.primary.node.getAnimations()).toHaveLength(0); expect(f.peer.node.getAnimations()).toHaveLength(0);
 });

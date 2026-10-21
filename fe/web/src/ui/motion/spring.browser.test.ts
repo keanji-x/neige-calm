@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from 'vitest';
-import { playPointSpring, playSpring } from './spring.ts';
+import { playPointSpring, playSpring, springTrajectory } from './spring.ts';
 
 afterEach(() => { document.body.replaceChildren(); vi.restoreAllMocks(); });
 
@@ -34,7 +34,7 @@ it('samples both point axes on one native clock and preserves their reversal vel
   const element = document.body.appendChild(document.createElement('div'));
   const paint = (value: { x: number; y: number }) => ({ transform: `translate(${value.x}px, ${value.y}px)` });
   const outward = playPointSpring([element], { x: 0, y: 0 }, { x: 600, y: 30 }, { x: 0, y: 0 }, paint);
-  outward.animations[0].pause(); outward.animations[0].currentTime = 80;
+  outward.animations[0].startTime = document.timeline.currentTime; outward.animations[0].currentTime = 80;
   const state = outward.sample();
   expect(state.value.x / 600).toBeCloseTo(state.value.y / 30, 6);
   expect(state.velocity.x / 600).toBeCloseTo(state.velocity.y / 30, 6);
@@ -55,7 +55,7 @@ it('invalidates changing native time and the terminal sample without paused sett
   const element = document.body.appendChild(document.createElement('div'));
   const request = vi.spyOn(window, 'requestAnimationFrame');
   const times: (number | null)[] = [];
-  const trajectory = { duration: 500, sample: (time: number) => ({ value: time / 500, velocity: 0 }) };
+  const trajectory = { scaleVelocity: (value: number, rate: number) => value * rate, duration: 500, sample: (time: number) => ({ value: time / 500, velocity: 0 }) };
   const { playTrajectory } = await import('./spring.ts');
   const playback = playTrajectory([element], trajectory, opacity => ({ opacity }), () => { times.push(playback.animations[0].currentTime as number | null); });
   void playback.finished.catch(() => {});
@@ -79,7 +79,7 @@ it('rearms native play after a drained pause without replacing the effect or pro
   const { playTrajectory } = await import('./spring.ts');
   const element = document.body.appendChild(document.createElement('div'));
   const notices = vi.fn();
-  const playback = playTrajectory([element], { duration: 1000, sample: time => ({ value: time / 1000, velocity: 1 }) }, opacity => ({ opacity }), notices);
+  const playback = playTrajectory([element], { scaleVelocity: (value: number, rate: number) => value * rate, duration: 1000, sample: time => ({ value: time / 1000, velocity: 1 }) }, opacity => ({ opacity }), notices);
   void playback.finished.catch(() => {});
   const animation = playback.animations[0]; const effect = animation.effect; const finished = animation.finished;
   animation.pause(); await animation.ready; await frames(3); notices.mockClear();
@@ -93,7 +93,7 @@ it('publishes a paused native seek once then returns to zero work', async () => 
   const { playTrajectory } = await import('./spring.ts');
   const element = document.body.appendChild(document.createElement('div'));
   const notices = vi.fn(); const request = vi.spyOn(window, 'requestAnimationFrame');
-  const playback = playTrajectory([element], { duration: 1000, sample: time => ({ value: time / 1000, velocity: 1 }) }, opacity => ({ opacity }), notices);
+  const playback = playTrajectory([element], { scaleVelocity: (value: number, rate: number) => value * rate, duration: 1000, sample: time => ({ value: time / 1000, velocity: 1 }) }, opacity => ({ opacity }), notices);
   void playback.finished.catch(() => {});
   const animation = element.getAnimations()[0]; animation.pause(); await animation.ready; await frames(3); notices.mockClear();
   animation.currentTime = 80; await frames(3);
@@ -101,4 +101,55 @@ it('publishes a paused native seek once then returns to zero work', async () => 
   notices.mockClear(); request.mockClear(); await frames(20);
   expect(request).toHaveBeenCalledTimes(20); expect(notices).not.toHaveBeenCalled();
   playback.cancel();
+});
+
+// These controls are real browser Animations; sampling and retargeting use the production primitives.
+it.each([-1, 0.5, 0])('reports scalar wall-clock velocity at native rate %s', async rate => {
+  const element = document.body.appendChild(document.createElement('div'));
+  const playback = playSpring([element], 0, 100, 0, value => ({ translate: `${value}px` }));
+  void playback.finished.catch(() => {});
+  const animation = playback.animations[0];
+  await animation.ready;
+  animation.playbackRate = rate; animation.currentTime = 80;
+  const raw = springTrajectory(0, 100, 0).sample(80);
+  expect(playback.sample().value).toBeCloseTo(raw.value, 8);
+  expect(playback.sample().velocity).toBeCloseTo(raw.velocity * rate, 8);
+  expect(parseFloat(getComputedStyle(element).translate)).toBeCloseTo(raw.value, 0);
+  playback.cancel();
+});
+
+it.each([-1, 0.5, 0])('reports point wall-clock velocity at native rate %s', async rate => {
+  const element = document.body.appendChild(document.createElement('div'));
+  const playback = playPointSpring([element], { x: 0, y: 0 }, { x: 100, y: 30 }, { x: 0, y: 0 },
+    value => ({ translate: `${value.x}px ${value.y}px` }));
+  void playback.finished.catch(() => {});
+  const animation = playback.animations[0]; await animation.ready;
+  animation.playbackRate = rate; animation.currentTime = 80;
+  const x = springTrajectory(0, 100, 0).sample(80); const y = springTrajectory(0, 30, 0).sample(80);
+  const state = playback.sample();
+  expect(state.value.x).toBeCloseTo(x.value, 8); expect(state.value.y).toBeCloseTo(y.value, 8);
+  expect(state.velocity.x).toBeCloseTo(x.velocity * rate, 8); expect(state.velocity.y).toBeCloseTo(y.velocity * rate, 8);
+  playback.cancel();
+});
+
+it('uses public clocks before and after pending ready and zeroes held and terminal velocity', async () => {
+  const element = document.body.appendChild(document.createElement('div'));
+  const playback = playSpring([element], 0, 100, 20, value => ({ translate: `${value}px` }));
+  void playback.finished.catch(() => {});
+  const animation = playback.animations[0];
+  const check = () => {
+    const raw = springTrajectory(0, 100, 20).sample(Number(animation.currentTime ?? 0));
+    const rate = animation.playState === 'running' && typeof animation.currentTime === 'number' && typeof animation.startTime === 'number' ? animation.playbackRate : 0;
+    expect(playback.sample()).toEqual({ value: raw.value, velocity: raw.velocity * rate });
+  };
+  check(); await animation.ready; check();
+  animation.currentTime = 80; animation.updatePlaybackRate(-1);
+  expect(animation.pending).toBe(true); check(); await animation.ready; check();
+  animation.pause(); check(); await animation.ready; check();
+  animation.currentTime = 100;
+  expect(playback.sample()).toEqual({ value: springTrajectory(0, 100, 20).sample(100).value, velocity: 0 });
+  animation.play(); check(); await animation.ready; check();
+  animation.playbackRate = 1; animation.finish(); await playback.finished;
+  expect(playback.sample()).toEqual({ value: 100, velocity: 0 });
+  playback.cancel(); expect(playback.sample()).toEqual({ value: 0, velocity: 0 });
 });

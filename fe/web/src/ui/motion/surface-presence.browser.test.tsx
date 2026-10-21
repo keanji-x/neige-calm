@@ -39,6 +39,11 @@ function freeze(element: HTMLElement, time: number) {
   const animation = element.getAnimations()[0];
   expect(animation).toBeDefined(); animation.pause(); animation.currentTime = time; return animation;
 }
+function running(element: HTMLElement, time: number) {
+  const animation = element.getAnimations()[0]; expect(animation).toBeDefined();
+  animation.startTime = document.timeline.currentTime; animation.currentTime = time;
+  expect(animation.playState).toBe('running'); return animation;
+}
 function matrix(element: HTMLElement) { return new DOMMatrix(getComputedStyle(element).transform); }
 function box(element: HTMLElement) { const b = element.getBoundingClientRect(); return [b.left, b.top, b.width, b.height]; }
 function sameBox(a: number[], b: number[]) { for (const [i, value] of a.entries()) expect(value).toBeCloseTo(b[i], 3); }
@@ -74,9 +79,9 @@ it('maps a common viewport source into fractional portal parts on one explicit n
 
 it('inherits paint position and velocity through rapid reversal and ignores a stale finish', async () => {
   const { primary, props } = fixture(); const view = render(<Probe {...props} />);
-  const old = freeze(primary.node, 80); const before = box(primary.node); const scale = matrix(primary.node).a;
+  const old = running(primary.node, 80); const before = box(primary.node); const scale = matrix(primary.node).a;
   view.rerender(<Probe {...props} open={false} />);
-  const closing = freeze(primary.node, 0); sameBox(box(primary.node), before);
+  const closing = running(primary.node, 0); sameBox(box(primary.node), before);
   closing.currentTime = 5;
   expect(matrix(primary.node).a).toBeGreaterThan(scale);
   closing.finish();
@@ -188,7 +193,7 @@ it.each(['primary', 'peer', 'both'].flatMap(which => [false, true].map(moveOrigi
   const anchorBox = anchor.node.getBoundingClientRect();
   const oldOrigin = { x: anchorBox.left + anchorBox.width / 2, y: anchorBox.top + anchorBox.height / 2 };
   const before = items.map((item, index) => {
-    freeze(item.node, 80); const m = matrix(item.node);
+    running(item.node, 80); const m = matrix(item.node);
     return { m, velocity: localVelocity(oldTrajectory.sample(80) as Sample, item.readFrame()!, oldOrigin, index) };
   });
   if (which !== 'peer') { primary.layout.style.left = '750.75px'; primary.layout.style.transform = 'scale(0.8, 1.3)'; }
@@ -196,7 +201,7 @@ it.each(['primary', 'peer', 'both'].flatMap(which => [false, true].map(moveOrigi
   if (moveOrigin) anchor.layout.style.left = '140.5px';
   view.rerender(<Probe {...paired} />);
   for (const [index, item] of items.entries()) {
-    const animation = freeze(item.node, 0); const m = matrix(item.node); const old = before[index];
+    const animation = running(item.node, 0); const m = matrix(item.node); const old = before[index];
     expect(m.e).toBeCloseTo(old.m.e, 4); expect(m.f).toBeCloseTo(old.m.f, 4); expect(m.a).toBeCloseTo(old.m.a, 4);
     const frame = item.readFrame()!; const rect = item.node.getBoundingClientRect();
     expect(rect.left).toBeCloseTo(frame.viewportFromLocal.x + old.m.e * frame.viewportFromLocal.scaleX, 3);
@@ -213,9 +218,9 @@ it.each(['primary', 'peer', 'both'].flatMap(which => [false, true].map(moveOrigi
 
 it.each(['ref', 'frame'].flatMap(kind => [false, true].map(open => ({ kind, open }))))('resumes sampled presence after null $kind (open=$open) with unique completion and stale-finish rejection', async ({ kind, open }) => {
   const { primary, props } = fixture(); const read = primary.readFrame.getMockImplementation()!;
-  const view = render(<Probe {...props} />); freeze(primary.node, 80);
+  const view = render(<Probe {...props} />); running(primary.node, 80);
   view.rerender(<Probe {...props} open={open} />);
-  const closing = freeze(primary.node, 20); const before = box(primary.node);
+  const closing = running(primary.node, 20); const before = box(primary.node);
   const sampled = activeTrajectory().sample(20) as Sample;
   if (kind === 'ref') primary.element.current = null as unknown as HTMLDivElement;
   else primary.readFrame.mockImplementation(() => null);
@@ -224,16 +229,16 @@ it.each(['ref', 'frame'].flatMap(kind => [false, true].map(open => ({ kind, open
   expect(primary.node.getAnimations()).toHaveLength(0); expect(props.onExited).not.toHaveBeenCalled();
   primary.element.current = primary.node; primary.readFrame.mockImplementation(read);
   view.rerender(<Probe {...props} open={open} />);
-  const resumed = freeze(primary.node, 0); sameBox(box(primary.node), before); expect(closing.playState).toBe('idle');
+  const resumed = running(primary.node, 0); sameBox(box(primary.node), before); expect(closing.playState).toBe('idle');
   const restored = activeTrajectory().sample(0) as Sample;
   expect(restored.value.progress).toBeCloseTo(sampled.value.progress, 10);
   expect(restored.velocity.progress).toBeCloseTo(sampled.velocity.progress, 10);
   expect(restored.value.offsets).toEqual(sampled.value.offsets); expect(restored.velocity.offsets).toEqual(sampled.velocity.offsets);
-  if (open) { view.rerender(<Probe {...props} open={false} />); freeze(primary.node, 0).finish(); }
+  if (open) { view.rerender(<Probe {...props} open={false} />); running(primary.node, 0).finish(); }
   else resumed.finish();
   view.rerender(<Probe {...props} />); await act(async () => { await Promise.resolve(); });
   expect(props.onExited).not.toHaveBeenCalled();
-  freeze(primary.node, 20); view.rerender(<Probe {...props} open={false} />); freeze(primary.node, 0).finish();
+  running(primary.node, 20); view.rerender(<Probe {...props} open={false} />); running(primary.node, 0).finish();
   await act(async () => { await Promise.resolve(); }); expect(props.onExited).toHaveBeenCalledOnce();
   view.rerender(<Probe {...props} open={false} />); expect(props.onExited).toHaveBeenCalledOnce();
 });
@@ -315,10 +320,10 @@ const replacements = Object.freeze(['single', 'primary', 'peer', 'both'].flatMap
 it.each(replacements)('transfers keyed $which replacement: newFrame=$newFrame during $phase', async ({ which, newFrame, phase }) => {
   const { props, anchor } = fixture(); let items = keyedItems().slice(0, which === 'single' ? 1 : 2);
   const view = render(<KeyedProbe {...props} items={items} />);
-  items.forEach(item => freeze(keyedNode(item.id), 80));
+  items.forEach(item => running(keyedNode(item.id), 80));
   if (phase !== 'entry') {
     view.rerender(<KeyedProbe {...props} items={items} open={false} />);
-    items.forEach(item => freeze(keyedNode(item.id), 20));
+    items.forEach(item => running(keyedNode(item.id), 20));
   }
   const open = phase !== 'closing';
   const trajectory = activeTrajectory(); const sample = trajectory.sample(phase === 'entry' ? 80 : 20) as Sample;
@@ -336,7 +341,7 @@ it.each(replacements)('transfers keyed $which replacement: newFrame=$newFrame du
   for (const [index, node] of current.entries()) {
     const old = before[index]; expect(old.animation.playState).toBe('idle');
     if (node !== old.node) { expect(old.node.isConnected).toBe(false); expect(old.node.getAnimations()).toHaveLength(0); }
-    freeze(node, 0); const m = matrix(node);
+    running(node, 0); const m = matrix(node);
     expect(m.a).toBeCloseTo(old.matrix.a, 4); expect(m.e).toBeCloseTo(old.matrix.e, 4); expect(m.f).toBeCloseTo(old.matrix.f, 4);
     const next = activeTrajectory().sample(0) as Sample;
     expect(next.value.progress).toBeCloseTo(sample.value.progress, 10); expect(next.velocity.progress).toBeCloseTo(sample.velocity.progress, 10);
@@ -348,7 +353,7 @@ it.each(replacements)('transfers keyed $which replacement: newFrame=$newFrame du
   before.forEach(old => old.animation.finish());
   await act(async () => { await Promise.resolve(); }); expect(props.onExited).not.toHaveBeenCalled();
   before.forEach(old => old.animation.cancel());
-  if (open) { view.rerender(<KeyedProbe {...props} items={items} open={false} />); current.forEach(node => freeze(node, 0)); }
+  if (open) { view.rerender(<KeyedProbe {...props} items={items} open={false} />); current.forEach(node => running(node, 0)); }
   if (current.length === 2) {
     current[0].getAnimations()[0].finish(); await act(async () => { await Promise.resolve(); });
     expect(props.onExited).not.toHaveBeenCalled();
@@ -377,11 +382,11 @@ it.each(['single', 'paired'])('binds keyed %s preparation and settled replacemen
 
 it.each([false, true])('moves per-part compensation with retained keyed elements across order and cardinality changes (equalFrames=%s)', equalFrames => {
   const { props, anchor } = fixture(); let items = keyedItems();
-  const view = render(<KeyedProbe {...props} items={items} />); items.forEach(item => freeze(keyedNode(item.id), 80));
+  const view = render(<KeyedProbe {...props} items={items} />); items.forEach(item => running(keyedNode(item.id), 80));
   // Create distinct nonzero per-part offsets before permuting the declarations.
   items = items.map((item, i) => equalFrames ? { ...item, x: 350.5, y: 210.25, sx: 0.8, sy: 1.3 }
     : { ...item, x: item.x + (i ? -30 : 70), sx: item.sx * (i ? 0.8 : 1.4) });
-  view.rerender(<KeyedProbe {...props} items={items} />); items.forEach(item => freeze(keyedNode(item.id), 20));
+  view.rerender(<KeyedProbe {...props} items={items} />); items.forEach(item => running(keyedNode(item.id), 20));
   const sample = activeTrajectory().sample(20) as Sample;
   const rect = anchor.node.getBoundingClientRect(); const origin = { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
   const before = items.map((item, index) => ({ node: keyedNode(item.id), matrix: matrix(keyedNode(item.id)),
@@ -389,13 +394,13 @@ it.each([false, true])('moves per-part compensation with retained keyed elements
   items = [items[1], items[0]];
   view.rerender(<KeyedProbe {...props} items={items} />);
   for (const [index, item] of items.entries()) {
-    const old = before[1 - index]; const node = keyedNode(item.id); expect(node).toBe(old.node); freeze(node, 0);
+    const old = before[1 - index]; const node = keyedNode(item.id); expect(node).toBe(old.node); running(node, 0);
     expect(matrix(node).e).toBeCloseTo(old.matrix.e, 4); expect(matrix(node).f).toBeCloseTo(old.matrix.f, 4);
     const velocity = localVelocity(activeTrajectory().sample(0) as Sample, readSurfaceFrame(node.parentElement)!, origin, index);
     expect(velocity.x).toBeCloseTo(old.velocity.x, 8); expect(velocity.y).toBeCloseTo(old.velocity.y, 8);
   }
   items = [items[1]]; const old = before[0];
-  view.rerender(<KeyedProbe {...props} items={items} />); freeze(old.node, 0);
+  view.rerender(<KeyedProbe {...props} items={items} />); running(old.node, 0);
   expect(matrix(old.node).e).toBeCloseTo(old.matrix.e, 4); expect(before[1].node.getAnimations()).toHaveLength(0);
 });
 
@@ -410,7 +415,7 @@ it('rejects a queued obsolete paired finish after a same-commit keyed replacemen
     view.rerender(<KeyedProbe {...props} items={items} open={true} />);
   });
   await act(async () => { await Promise.resolve(); }); expect(props.onExited).not.toHaveBeenCalled();
-  items.forEach(item => { freeze(keyedNode(item.id), 0); });
+  items.forEach(item => { running(keyedNode(item.id), 20); });
   view.rerender(<KeyedProbe {...props} items={items} open={false} />);
   items.forEach(item => freeze(keyedNode(item.id), 0).finish());
   await act(async () => { await Promise.resolve(); }); expect(props.onExited).toHaveBeenCalledOnce();
@@ -450,15 +455,15 @@ it.each(['single', 'paired'])('settles disabled keyed %s replacements and releas
 
 it.each(['replace', 'move-and-replace', 'gain-peer'])('maps nonzero part channels on keyed $0', transition => {
   const { props } = fixture(); let items = keyedItems().slice(0, transition === 'gain-peer' ? 1 : 2);
-  const view = render(<KeyedProbe {...props} items={items} />); items.forEach(item => freeze(keyedNode(item.id), 80));
+  const view = render(<KeyedProbe {...props} items={items} />); items.forEach(item => running(keyedNode(item.id), 80));
   items = items.map((item, i) => ({ ...item, x: item.x + (i ? -45 : 80), sx: item.sx * (i ? 1.4 : 0.8) }));
-  view.rerender(<KeyedProbe {...props} items={items} />); items.forEach(item => freeze(keyedNode(item.id), 20));
+  view.rerender(<KeyedProbe {...props} items={items} />); items.forEach(item => running(keyedNode(item.id), 20));
   const sample = activeTrajectory().sample(20) as Sample;
   const before = items.map(item => matrix(keyedNode(item.id)));
   if (transition === 'gain-peer') items = [...items, keyedItems()[1]];
   else if (transition === 'move-and-replace') items = [items[1], { ...items[0], id: 'c' }];
   else items = items.map(item => ({ ...item, id: item.id + '-offset' }));
-  view.rerender(<KeyedProbe {...props} items={items} />); items.forEach(item => freeze(keyedNode(item.id), 0));
+  view.rerender(<KeyedProbe {...props} items={items} />); items.forEach(item => running(keyedNode(item.id), 0));
   const next = activeTrajectory().sample(0) as Sample;
   expect(next.value.progress).toBeCloseTo(sample.value.progress, 10); expect(next.velocity.progress).toBeCloseTo(sample.velocity.progress, 10);
   if (transition === 'replace') {
@@ -610,4 +615,29 @@ it('revokes captured native controls across StrictMode replay and destruction', 
   const request = vi.spyOn(window, 'requestAnimationFrame');
   for (let i = 0; i < 20; i++) await new Promise(requestAnimationFrame);
   expect(request).toHaveBeenCalledTimes(20); expect(notices).not.toHaveBeenCalled(); live.cancel();
+});
+
+it.each([-1, 0.5, 0])('scales every surface channel once on the primary native clock %s', async rate => {
+  const { primary, props } = fixture(); const peer = part(450, 100, 0.5, 1.5);
+  const paired = { ...props, parts: { kind: 'paired' as const, primary, peer } };
+  const view = render(<Probe {...paired} />);
+  running(primary.node, 80); running(peer.node, 80);
+  primary.layout.style.left = '330px'; peer.layout.style.top = '180px';
+  view.rerender(<Probe {...paired} />);
+  const call = vi.mocked(playTrajectory).mock.results.at(-1)!;
+  if (call.type !== 'return') throw new Error('No acquired playback');
+  const playback = call.value; const animation = playback.animations[0];
+  await animation.ready; animation.playbackRate = rate; animation.currentTime = 20;
+  // A peer may be independently controlled; the public model deliberately uses the primary clock.
+  playback.animations[1].pause();
+  const raw = activeTrajectory().sample(Number(animation.currentTime)) as Sample;
+  expect(raw.velocity.offsets.some(point => point.x !== 0 || point.y !== 0)).toBe(true);
+  const state = playback.sample() as Sample;
+  expect(state.value).toEqual(raw.value);
+  expect(state.velocity.progress).toBeCloseTo(raw.velocity.progress * rate, 8);
+  for (const [i, point] of raw.velocity.offsets.entries()) {
+    expect(state.velocity.offsets[i].x).toBeCloseTo(point.x * rate, 8);
+    expect(state.velocity.offsets[i].y).toBeCloseTo(point.y * rate, 8);
+  }
+  view.unmount();
 });
