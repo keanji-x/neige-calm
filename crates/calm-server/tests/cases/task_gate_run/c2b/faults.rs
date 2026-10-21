@@ -300,3 +300,83 @@ async fn c2b_paused_release_observer_cannot_adopt_replacement_claim() {
     release_handoff(false, true, false).await;
     release_handoff(false, true, true).await;
 }
+
+#[tokio::test]
+async fn c4_recovery_tick_settles_drained_gate_before_deadline() {
+    let fx = world(Duration::from_millis(100)).await;
+    fx.execution.faults.arm("settle");
+    let a = running(&fx, "tick-settle", json!([{"name":"ok","cmd":"true"}])).await;
+    let start = Instant::now();
+    gate_run(&fx, &a, Some("test: tick settlement"))
+        .await
+        .unwrap();
+    assert!(run_result(&fx, &a.task.id, 1).await.verdict.passed);
+    assert!(
+        start.elapsed() < Duration::from_secs(20),
+        "must finish before 120s deadline"
+    );
+    assert_eq!(fx.execution.faults.failures.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn c4_recovery_tick_redrives_gate_retire_after_store_error() {
+    let (pause, entered, resume) = pause();
+    let reads = Arc::new(AtomicUsize::new(0));
+    let fx = world_with(Duration::from_millis(100), |b| {
+        hooked(b, |a| {
+            a.with_observer_read(Arc::new(move || {
+                let first = reads.fetch_add(1, Ordering::SeqCst) == 0;
+                let pause = pause.clone();
+                Box::pin(async move {
+                    if !first {
+                        pause().await;
+                    }
+                    Ok(())
+                })
+            }))
+        })
+    })
+    .await;
+    let flag = outside(&fx, "tick-retire-finish");
+    let a = running(
+        &fx,
+        "tick-retire",
+        json!([{"name":"ok","cmd":wait_for(&flag)}]),
+    )
+    .await;
+    gate_run(&fx, &a, Some("test: tick retirement"))
+        .await
+        .unwrap();
+    tokio::time::timeout(WAIT, entered.notified())
+        .await
+        .unwrap();
+    touch(&flag);
+    settled(&fx, &op(&fx, &a.task.id).await).await;
+    fx.execution.faults.arm("finish");
+    fx.runtime.sweep_parked().await.unwrap();
+    assert!(run_result(&fx, &a.task.id, 1).await.verdict.passed);
+    let id: workspace_runtime::execution::ExecutionId =
+        serde_json::from_value(record(&op(&fx, &a.task.id).await)["execution_id"].clone()).unwrap();
+    wait_until(async || {
+        sqlx::query_scalar::<_, bool>(
+            "SELECT secrets_json IS NULL FROM workspace_executions WHERE execution_id=?",
+        )
+        .bind(id.as_str())
+        .fetch_one(&fx.pool())
+        .await
+        .unwrap()
+    })
+    .await;
+    resume.notify_one();
+    assert_eq!(fx.execution.faults.failures.load(Ordering::SeqCst), 1);
+    assert!(matches!(
+        fx.execution
+            .lifecycle
+            .engine()
+            .unwrap()
+            .output(&id, None)
+            .await
+            .unwrap(),
+        workspace_runtime::execution::ExecutionReply::Retired(_)
+    ));
+}

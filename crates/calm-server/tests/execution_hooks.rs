@@ -793,3 +793,6 @@ mod terminal_recovery;
 
 #[path = "execution_hooks/refusal_order.rs"]
 mod refusal_order;
+
+#[path = "execution_hooks/c4_recovery_tick.rs"]
+mod c4_recovery_tick;

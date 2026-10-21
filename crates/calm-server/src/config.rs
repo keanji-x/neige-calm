@@ -52,6 +52,14 @@ pub struct Config {
     #[arg(long, default_value_t = false)]
     pub terminal_execution: bool,
 
+    /// Execution recovery cadence; tests shorten this through typed configuration only.
+    #[arg(skip = Duration::from_secs(30))]
+    pub execution_recovery_interval: Duration,
+
+    #[cfg(feature = "fixtures")]
+    #[arg(skip)]
+    pub execution_recovery_faults: std::sync::Arc<crate::test_seams::ExecutionRecoveryFaults>,
+
     /// Kernel-owned executor capability file, shared with the supervisor.
     #[arg(long)]
     pub kernel_client_key_file: Option<PathBuf>,

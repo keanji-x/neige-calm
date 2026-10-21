@@ -28,14 +28,23 @@ pub trait ExecutionProjection: Send + Sync {
 #[derive(Clone)]
 pub struct SqliteExecutionStore {
     pool: SqliteDb,
+    #[cfg(feature = "fixtures")]
+    faults: Arc<crate::test_seams::ExecutionRecoveryFaults>,
     projections: HashMap<ExecutionConsumer, Arc<dyn ExecutionProjection>>,
 }
 impl SqliteExecutionStore {
     pub fn new(pool: SqliteDb) -> Self {
         Self {
             pool,
+            #[cfg(feature = "fixtures")]
+            faults: Default::default(),
             projections: HashMap::new(),
         }
+    }
+    #[cfg(feature = "fixtures")]
+    pub fn with_faults(mut self, faults: Arc<crate::test_seams::ExecutionRecoveryFaults>) -> Self {
+        self.faults = faults;
+        self
     }
     pub fn with_projection(
         mut self,
@@ -134,6 +143,8 @@ impl Store for SqliteExecutionStore {
         }))
     }
     async fn spawned(&self, id: &ExecutionId) -> Result<(), StoreError> {
+        #[cfg(feature = "fixtures")]
+        self.faults.check("spawned")?;
         let mut tx = calm_truth::db::sqlite::begin_immediate_tx(&self.pool)
             .await
             .map_err(error)?;
@@ -151,6 +162,8 @@ impl Store for SqliteExecutionStore {
         tx.commit().await.map_err(error)
     }
     async fn settle(&self, id: &ExecutionId, settlement: &Settlement) -> Result<(), StoreError> {
+        #[cfg(feature = "fixtures")]
+        self.faults.check("settle")?;
         let mut tx = calm_truth::db::sqlite::begin_immediate_tx(&self.pool)
             .await
             .map_err(error)?;
@@ -173,9 +186,13 @@ impl Store for SqliteExecutionStore {
         tx.commit().await.map_err(error)
     }
     async fn finish(&self, id: &ExecutionId) -> Result<(), StoreError> {
+        #[cfg(feature = "fixtures")]
+        self.faults.check("finish")?;
         sql::finish(&self.pool, id.as_str()).await.map_err(error)
     }
     async fn pending(&self) -> Result<Vec<ExecutionId>, StoreError> {
+        #[cfg(feature = "fixtures")]
+        self.faults.check("pending")?;
         sql::pending(self.pool.read_pool())
             .await
             .map_err(error)?

@@ -398,3 +398,36 @@ mod operation_faults {
 pub use operation_faults::install_operation_fault_for_test;
 #[cfg(feature = "fixtures")]
 pub(crate) use operation_faults::operation_fault;
+
+/// Per-engine one-shot StoreError injection; no executor errors are synthesized.
+#[cfg(feature = "fixtures")]
+#[derive(Debug, Default)]
+pub struct ExecutionRecoveryFaults {
+    armed: std::sync::Mutex<Option<&'static str>>,
+    pub pending_calls: std::sync::atomic::AtomicUsize,
+    pub failures: std::sync::atomic::AtomicUsize,
+}
+#[cfg(feature = "fixtures")]
+impl ExecutionRecoveryFaults {
+    pub fn arm(&self, point: &'static str) {
+        assert!(self.armed.lock().unwrap().replace(point).is_none());
+    }
+    pub(crate) fn check(
+        &self,
+        point: &'static str,
+    ) -> Result<(), workspace_runtime::execution::StoreError> {
+        use std::sync::atomic::Ordering::SeqCst;
+        if point == "pending" {
+            self.pending_calls.fetch_add(1, SeqCst);
+        }
+        let mut armed = self.armed.lock().unwrap();
+        if *armed == Some(point) {
+            *armed = None;
+            self.failures.fetch_add(1, SeqCst);
+            return Err(workspace_runtime::execution::StoreError(format!(
+                "one-shot {point}"
+            )));
+        }
+        Ok(())
+    }
+}

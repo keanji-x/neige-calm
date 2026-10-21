@@ -25,9 +25,14 @@ async fn c3_credentials_never_enter_intent() {
     // Sample all PrepareExecution requests before completion can retire their journals.
     let mut requests = 0;
     for file in walk_journal(boot._execution.key.parent().unwrap().join("journal")) {
-        let raw = fs::read(file).unwrap();
+        let raw = fs::read(&file).unwrap();
         assert!(!String::from_utf8_lossy(&raw).contains("c3-private-credential"));
-        if let Ok(journal) = serde_json::from_slice::<Value>(&raw)
+        // Match Store::load: atomic writes can leave a staging copy beside the
+        // canonical journal. Scan its bytes above, but do not count it twice.
+        if file
+            .extension()
+            .is_some_and(|extension| extension == "execution")
+            && let Ok(journal) = serde_json::from_slice::<Value>(&raw)
             && journal.get("request").is_some()
         {
             requests += 1;

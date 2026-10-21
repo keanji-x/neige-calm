@@ -1635,6 +1635,7 @@ impl AppState {
         let mut state = state.into_app_state();
         state.bind_track_creator(cfg.track_add_max_open);
         state.route.terminal_execution = cfg.terminal_execution;
+        // Assembly completes boot recovery and starts its sole periodic recovery task.
         state.execution = crate::execution_boot::recover(cfg, pool).await?;
         if let Some(engine) = &state.execution {
             state.operation_runtime.execution().bind(engine.clone());

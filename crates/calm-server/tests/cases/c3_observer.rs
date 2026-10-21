@@ -266,3 +266,64 @@ async fn c3_observer_pre_deadline_sweep_reattaches_absent_observer() {
     assert!(boot.temp_path("ran").exists());
     c3_all_retired(&boot, &id).await;
 }
+
+#[tokio::test]
+async fn c4_recovery_tick_redrives_forge_retire_after_store_error() {
+    let boot = TestBoot::new().await;
+    let flag = boot.temp_path("finish-action");
+    let input = c3_input(
+        &boot,
+        "tick-retire",
+        &format!("until [ -f '{}' ]; do sleep .01; done", flag.display()),
+    );
+    let id = boot
+        .runtime
+        .submit(FORGE_ACTION_KIND, op_key("tick-retire"), input)
+        .await
+        .unwrap();
+    c3_wait(async || {
+        c3_record(&c3_op(&boot, &id).await)["release"]
+            .get("Released")
+            .is_some()
+    })
+    .await;
+    let pause = calm_server::test_seams::PausePoint::default();
+    calm_server::test_seams::install_pause_for_test(
+        "forge-observer-before-read",
+        &id,
+        pause.clone(),
+    );
+    tokio::time::timeout(Duration::from_secs(10), pause.entered.notified())
+        .await
+        .unwrap();
+    std::fs::write(flag, "").unwrap();
+    c3_wait(async || sqlx::query_scalar::<_, bool>("SELECT settlement_json IS NOT NULL FROM workspace_executions WHERE json_extract(intent_json,'$.owner')=?").bind(&id).fetch_one(boot.repo.pool()).await.unwrap()).await;
+    boot._execution.faults.arm("finish");
+    boot.runtime.sweep_parked().await.unwrap();
+    assert!(matches!(
+        c3_result(&boot, &id).await.outcome,
+        OperationOutcome::Succeeded { .. }
+    ));
+    c3_all_retired(&boot, &id).await;
+    pause.release.notify_one();
+    assert_eq!(
+        boot._execution
+            .faults
+            .failures
+            .load(std::sync::atomic::Ordering::SeqCst),
+        1
+    );
+    let execution =
+        serde_json::from_value(c3_record(&c3_op(&boot, &id).await)["execution_id"].clone())
+            .unwrap();
+    assert!(matches!(
+        boot.spawn_ctx
+            .execution
+            .engine()
+            .unwrap()
+            .output(&execution, None)
+            .await
+            .unwrap(),
+        workspace_runtime::execution::ExecutionReply::Retired(_)
+    ));
+}

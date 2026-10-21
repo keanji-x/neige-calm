@@ -32,6 +32,7 @@ pub fn supervisor(
 }
 
 pub struct Fixture {
+    pub faults: std::sync::Arc<calm_server::test_seams::ExecutionRecoveryFaults>,
     pub key: PathBuf,
     pub socket: PathBuf,
     pub lifecycle: calm_server::execution_quiesce::ExecutionLifecycle,
@@ -97,7 +98,7 @@ impl Fixture {
         let key = root.path().join("key.json");
         std::fs::write(&key, serde_json::to_vec(&secret).unwrap()).unwrap();
         let server = Self::spawn(root.path(), &path, &key);
-        let cfg = calm_server::config::Config::try_parse_from([
+        let mut cfg = calm_server::config::Config::try_parse_from([
             "calm-server",
             "--kernel-client-key-file",
             key.to_str().unwrap(),
@@ -105,6 +106,8 @@ impl Fixture {
             path.to_str().unwrap(),
         ])
         .unwrap();
+        cfg.execution_recovery_interval = std::time::Duration::from_secs(1);
+        let faults = cfg.execution_recovery_faults.clone();
         let engine = calm_server::execution_boot::recover(&cfg, pool)
             .await
             .unwrap()
@@ -119,6 +122,7 @@ impl Fixture {
         let lifecycle = calm_server::execution_quiesce::ExecutionLifecycle::default();
         lifecycle.bind(engine);
         Self {
+            faults,
             key,
             socket: path,
             lifecycle,
