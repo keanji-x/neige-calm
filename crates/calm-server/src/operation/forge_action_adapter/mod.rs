@@ -180,20 +180,7 @@ pub fn render_forge_wrapper(argv: &[String]) -> Result<String> {
         .collect::<Vec<_>>()
         .join(" ");
     let mut script = String::from("exec >/dev/null 2>&1\n");
-    for key in FORGE_CREDENTIAL_ENV_KEYS {
-        script.push_str(&format!(
-            "IFS= read -r neige_forge_credential || exit 75\n\
-             case \"$neige_forge_credential\" in\n\
-             0) unset {key} ;;\n\
-             1*) export {key}=\"${{neige_forge_credential#1}}\" ;;\n\
-             *) exit 75 ;;\n\
-             esac\n"
-        ));
-    }
-    script.push_str("unset neige_forge_credential\n");
-    script.push_str("IFS= read -r neige_forge_go || exit 75\n");
-    script.push_str("[ \"$neige_forge_go\" = go ] || exit 75\n");
-    script.push_str("unset neige_forge_go\n");
+    script.push_str(&credentials::payload_keys()?.read_prefix());
     script.push_str("neige_forge_result_path=$NEIGE_FORGE_RESULT_PATH\n");
     script.push_str("unset NEIGE_FORGE_RESULT_PATH\n");
     script.push_str("neige_forge_code_path=\"${neige_forge_result_path}.code\"\n");

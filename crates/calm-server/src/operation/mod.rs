@@ -31,6 +31,7 @@ pub mod planner_harness_shutdown_adapter;
 pub mod planner_harness_start_adapter;
 pub(crate) mod planner_plugin_instructions;
 pub(crate) mod planner_start_fence;
+pub(crate) mod stdin_payload;
 pub mod task_gate_run;
 pub(crate) mod task_launch;
 mod task_prompt;
