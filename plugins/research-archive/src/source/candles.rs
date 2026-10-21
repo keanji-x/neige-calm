@@ -1,14 +1,12 @@
 //! Versioned typed daily-bar projection. This is not an HTTP/raw-wire body.
-use super::{Fetched, LongbridgeSource, failed, invalid_body, snapshot_oauth};
+use super::{Fetched, LongbridgeSource, failed, invalid_body};
 use crate::types::{ErrorClass, FailureClass};
 use chrono::{DateTime, NaiveDate, Utc};
 use chrono_tz::America::New_York;
-use longbridge::{
-    Decimal,
-    quote::{AdjustType, Candlestick, Period, QuoteContext, TradeSession, TradeSessions},
-};
+use longbridge::Decimal;
+use longbridge_proto::quote::{self, Candlestick};
+use prost::Message;
 use serde_json::{Value, json};
-use std::sync::Arc;
 
 impl LongbridgeSource {
     pub(super) async fn candles(
@@ -40,61 +38,53 @@ impl LongbridgeSource {
         if !may_send() {
             return None;
         }
-        let context = {
-            let mut cached = self.quote.lock().await;
-            if !cached.as_ref().is_some_and(|(t, _)| t == &token) {
-                let oauth = match snapshot_oauth(self.oauth.client_id(), &token).await {
-                    Ok(o) => o,
-                    Err(e) => return Some(auth_failure(crate::sdk_error::oauth_kind(&e))),
-                };
-                let config = longbridge::Config::from_oauth(oauth)
-                    .http_url(&self.http_url)
-                    .quote_ws_url(url)
-                    .language(longbridge::Language::EN)
-                    .dont_print_quote_packages();
-                let (context, _pushes) = QuoteContext::new(Arc::new(config));
-                // OTP bootstrap is an upstream HTTP start too. Pace it once,
-                // under this initialization lock, before accepting the context.
-                self.limiter.acquire().await;
-                if !may_send() {
-                    return None;
-                }
-                match tokio::time::timeout(self.timeouts.fetch, context.quote_level()).await {
-                    Ok(Ok(_)) => {}
-                    Ok(Err(err)) => return Some(classify_quote(err)),
-                    Err(_) => return Some(invalid_body("quote_connect_timeout")),
-                }
-                *cached = Some((token, context));
-            }
-            cached.as_ref().expect("quote initialized").1.clone()
+        let mut cache = self.quote.lock().await;
+        // Move the connection OUT of the cache before awaiting anything.
+        // Dropping this future then closes its socket; no queue can send later.
+        let previous = cache
+            .take()
+            .filter(|(old, wire)| old == &token && wire.valid());
+        let operation = async {
+            let mut wire = match previous {
+                Some((_, wire)) => wire,
+                None => match super::wire::QuoteWire::open(self, url, &token, may_send).await {
+                    Ok(Some(wire)) => wire,
+                    Ok(None) => return None,
+                    Err(fetched) => return Some(fetched),
+                },
+            };
+            let request = quote::SecurityHistoryCandlestickRequest {
+                symbol: symbol.to_owned(),
+                period: 1000,
+                adjust_type: 0,
+                query_type: 2,
+                offset_request: None,
+                date_request: Some(quote::security_history_candlestick_request::DateQuery {
+                    start_date: start.to_string().replace('-', ""),
+                    end_date: end.to_string().replace('-', ""),
+                }),
+                trade_session: 0,
+            };
+            let raw = match wire.call(27, &request, self, may_send).await {
+                Ok(Some(body)) => body,
+                Ok(None) => return None,
+                Err(fetched) => return Some(fetched),
+            };
+            let response = match quote::SecurityCandlestickResponse::decode(raw.as_slice()) {
+                Ok(response) if response.symbol == symbol => response,
+                _ => return Some(invalid_body("invalid_daily_bar_response")),
+            };
+            let body = match normalize(symbol, start, end, response.candlesticks) {
+                Ok(body) => body,
+                Err(code) => return Some(invalid_body(code)),
+            };
+            *cache = Some((token, wire));
+            Some(Fetched::body(body.to_string()))
         };
-        if !may_send() {
-            return None;
+        match tokio::time::timeout(self.timeouts.fetch, operation).await {
+            Ok(result) => result,
+            Err(_) => Some(invalid_body("quote_timeout")),
         }
-        self.limiter.acquire().await;
-        if !may_send() {
-            return None;
-        }
-        let result = tokio::time::timeout(
-            self.timeouts.fetch,
-            context.history_candlesticks_by_date(
-                symbol,
-                Period::Day,
-                AdjustType::NoAdjust,
-                Some(start),
-                Some(end),
-                TradeSessions::Intraday,
-            ),
-        )
-        .await;
-        Some(match result {
-            Ok(Ok(rows)) => match normalize(symbol, start, end, rows) {
-                Ok(body) => Fetched::body(body.to_string()),
-                Err(code) => invalid_body(code),
-            },
-            Ok(Err(err)) => classify_quote(err),
-            Err(_) => invalid_body("quote_timeout"),
-        })
     }
 }
 
@@ -114,7 +104,7 @@ fn date(s: &str) -> Option<time::Date> {
     )
     .ok()
 }
-fn auth_failure(code: &str) -> Fetched {
+pub(super) fn auth_failure(code: &str) -> Fetched {
     Fetched {
         response: failed(
             FailureClass::AuthUnavailable,
@@ -124,26 +114,7 @@ fn auth_failure(code: &str) -> Fetched {
         retry_after: None,
     }
 }
-fn classify_quote(err: longbridge::Error) -> Fetched {
-    if let longbridge::Error::HttpClient(http) = err {
-        return super::classify(http);
-    }
-    if matches!(err, longbridge::Error::OAuth(_)) {
-        return auth_failure("quote_oauth");
-    }
-    if let Some(code) = err.openapi_error_code() {
-        return quote_code(code);
-    }
-    Fetched {
-        response: failed(
-            FailureClass::Transient,
-            ErrorClass::Transport,
-            crate::sdk_error::sdk_kind(&err).into_owned(),
-        ),
-        retry_after: None,
-    }
-}
-fn quote_code(code: i64) -> Fetched {
+pub(super) fn quote_code(code: i64) -> Fetched {
     let throttled = code == 301606 || (429000..=429999).contains(&code);
     Fetched {
         response: failed(
@@ -167,22 +138,28 @@ fn normalize(
 ) -> Result<Value, &'static str> {
     let mut by_date = std::collections::BTreeMap::new();
     for c in rows {
-        if [c.open, c.close, c.high, c.low]
-            .iter()
-            .any(|n| *n <= Decimal::ZERO)
-            || c.low > c.high
-            || c.open < c.low
-            || c.open > c.high
-            || c.close < c.low
-            || c.close > c.high
+        let parse = |s: &str| s.parse::<Decimal>().map_err(|_| "invalid_daily_bar");
+        let (open, close, high, low, turnover) = (
+            parse(&c.open)?,
+            parse(&c.close)?,
+            parse(&c.high)?,
+            parse(&c.low)?,
+            parse(&c.turnover)?,
+        );
+        if [open, close, high, low].iter().any(|n| *n <= Decimal::ZERO)
+            || low > high
+            || open < low
+            || open > high
+            || close < low
+            || close > high
             || c.volume < 0
-            || c.turnover < Decimal::ZERO
-            || c.trade_session != TradeSession::Intraday
+            || turnover < Decimal::ZERO
+            || c.trade_session != 0
         {
             return Err("invalid_daily_bar");
         }
-        let timestamp = DateTime::<Utc>::from_timestamp(c.timestamp.unix_timestamp(), 0)
-            .ok_or("invalid_bar_timestamp")?;
+        let timestamp =
+            DateTime::<Utc>::from_timestamp(c.timestamp, 0).ok_or("invalid_bar_timestamp")?;
         let day = timestamp.with_timezone(&New_York).date_naive().to_string();
         if day < start.to_string() || day > end.to_string() || by_date.contains_key(&day) {
             return Err("invalid_bar_trade_date");
@@ -205,10 +182,18 @@ fn normalize(
 mod tests {
     use super::*;
     fn bar(timestamp: &str, close: &str) -> Candlestick {
-        serde_json::from_value(json!({"timestamp":timestamp,"open":"10","close":close,
-            "high":"12","low":"8","volume":20,"turnover":"200.123456789",
-            "trade_session":"Intraday","open_updated":true}))
-        .unwrap()
+        Candlestick {
+            open: "10".into(),
+            close: close.into(),
+            high: "12".into(),
+            low: "8".into(),
+            volume: 20,
+            turnover: "200.123456789".into(),
+            trade_session: 0,
+            timestamp: chrono::DateTime::parse_from_rfc3339(timestamp)
+                .unwrap()
+                .timestamp(),
+        }
     }
     #[test]
     fn ny_trade_dates_and_decimal_strings_are_explicit() {
@@ -224,9 +209,9 @@ mod tests {
         }
     }
     #[test]
-    fn sdk_zero_fallback_and_inconsistent_ohlc_are_rejected() {
+    fn malformed_decimals_and_inconsistent_ohlc_are_rejected() {
         let d = date("2026-10-20").unwrap();
-        for close in ["0", "15"] {
+        for close in ["0", "15", "malformed"] {
             assert!(normalize("MSFT.US", d, d, vec![bar("2026-10-20T20:00:00Z", close)]).is_err());
         }
     }

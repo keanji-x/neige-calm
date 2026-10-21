@@ -3,7 +3,23 @@ use futures_util::{SinkExt, StreamExt};
 use longbridge_proto::{control, quote};
 use prost::Message;
 
+use std::sync::{Arc, Mutex};
+#[derive(Clone, Debug)]
+pub struct Arrival {
+    pub command: u8,
+    pub at: std::time::Instant,
+}
+pub struct Server {
+    pub url: String,
+    pub arrivals: Arc<Mutex<Vec<Arrival>>>,
+}
 pub fn start() -> String {
+    start_with_gate(None).url
+}
+pub fn start_with_gate(gate: Option<(u8, Arc<tokio::sync::Semaphore>)>) -> Server {
+    let arrivals = Arc::new(Mutex::new(Vec::new()));
+    let log = arrivals.clone();
+    let first = Arc::new(std::sync::atomic::AtomicBool::new(true));
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
     let address = listener.local_addr().unwrap();
@@ -17,6 +33,7 @@ pub fn start() -> String {
         rt.block_on(async {
             let listener = tokio::net::TcpListener::from_std(listener).unwrap();
             while let Ok((stream, _)) = listener.accept().await {
+                let (log, gate, first) = (log.clone(), gate.clone(), first.clone());
                 tokio::spawn(async move {
                     let Ok(mut socket) = tokio_tungstenite::accept_async(stream).await else {
                         return;
@@ -30,6 +47,19 @@ pub fn start() -> String {
                             continue;
                         }
                         let command = request[1];
+                        log.lock().unwrap().push(Arrival {
+                            command,
+                            at: std::time::Instant::now(),
+                        });
+                        if let Some((held, gate)) = &gate
+                            && *held == command
+                            && first.swap(false, std::sync::atomic::Ordering::SeqCst)
+                        {
+                            let Ok(permit) = gate.acquire().await else {
+                                return;
+                            };
+                            permit.forget();
+                        }
                         let len =
                             u32::from_be_bytes([0, request[8], request[9], request[10]]) as usize;
                         if request.len() < 11 + len {
@@ -95,5 +125,8 @@ pub fn start() -> String {
             }
         });
     });
-    format!("ws://{address}/v2")
+    Server {
+        url: format!("ws://{address}/v2"),
+        arrivals,
+    }
 }

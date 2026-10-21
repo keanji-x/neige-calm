@@ -27,6 +27,7 @@ mod login;
 mod logs;
 mod market_capture;
 mod membership;
+mod quote_fences;
 mod recording;
 mod refresh;
 mod runner;

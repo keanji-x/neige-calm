@@ -40,11 +40,10 @@ observation, not a promise to catch later same-night upstream updates.
 
 HTTP bodies retain exact data bytes. Calendar captures preserve raw pages inside
 a versioned wrapper and only publish a complete window. Every page is paced and
-checks cancellation/deadline. WS bars are an explicitly versioned typed
+checks cancellation/deadline. WS bars are an explicitly versioned validated protobuf
 projection (not raw JSON), with decimal-string prices, NY trade dates, regular
-sessions, and no adjustment. Reject invalid/nonpositive/inconsistent OHLC. The
-SDK drops unknown protobuf fields; this limitation is documented rather than
-claiming wire fidelity. No inferred prices, dates, or financial actuals.
+sessions, and no adjustment. Reject invalid/nonpositive/inconsistent OHLC. Unknown protobuf fields are not projected; this limitation is documented rather
+than claiming wire fidelity. Decimal parsing is strict, without SDK zero fallbacks. No inferred prices, dates, or financial actuals.
 
 ## Upgrade and verification
 
@@ -68,3 +67,45 @@ is about 5,056 plus calendar pages. At 2 starts/s the ideal first pass is about
 42 minutes plus pagination, latency, and retries. Preserve 25-minute attempts
 and the 30-minute timer; successful pairs are skipped on resumptions. Do not
 claim one invocation completes the run.
+
+## Independent review corrections
+
+Both independent channels found that the pinned QuoteContext queues detached
+commands: its cancellation and limiter fences apply before enqueue, not wire
+writes. A delayed first response reproduced three post-cancellation sends and
+burst starts. Production bars therefore use a narrowly scoped owned quote-v1
+socket adapter with the pinned official protobuf messages. Existing SDK OAuth,
+snapshot HttpClient, OTP parsing and connection-limit validation remain the
+only bootstrap authority. Every actual handshake/auth/business/control write is
+paced and fenced. A connection is taken out of its cache while awaited; errors,
+cancellation and timeout close it, with no background queue/reconnect tasks.
+This small framing implementation is an intentional source-adapter exception,
+needed because the existing SDK boundary cannot enforce archive cancellation.
+
+Review also exposed a missing final calendar remainder page being accepted.
+A known positive count now requires the requested date and nonempty events on
+every remaining page, including the final remainder and later-date-only pages.
+Both defects have regressions confirmed red before the structural fixes.
+
+The corrected owned transport was also exercised read-only against MSFT.US and
+all five benchmarks: each returned six closes ending on 2026-10-20. The probe
+held archive.lock, disabled credential refresh/storage writes, and did not open
+or migrate the production database. This validates the protocol path, not the
+full universe's monthly quota.
+
+## Unresolved live calendar contract (merge/deployment blocker)
+
+A bounded read-only replay for 2026-10-14 returned reported count 55. Requests
+with count=10 and offsets 0,10,20,30,40,50 returned 10,10,10,7,3,0 events for that
+date (23 unique event ids across pages); offset 50 contained only 2026-10-15.
+The meaning of the count/offset mismatch is NOT established. The production
+complete-window implementation rejects it as calendar_truncated rather than
+publishing a purportedly complete snapshot. The single-day source probe confirms
+this refusal. Do not infer that event ids were coalesced or that 23 is complete.
+
+Official SDK pagination docs and upstream PR longbridge/openapi#597 describe
+count/offset/next_date but do not reconcile this response. This needs an upstream
+contract clarification before the calendar acceptance criterion can be marked
+complete. The owner has been asked for any existing clarification. Other capture
+and read paths can be reviewed independently; do not deploy or migrate a real
+store on the strength of synthetic calendar fixtures alone.

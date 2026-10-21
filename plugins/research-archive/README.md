@@ -1132,9 +1132,12 @@ later same-night earnings updates; capture does not promise continuous freshness
 
 Calendar queries page at count=10. Live probes found `count=1000` does not remove
 truncation, `next_date` can advance while same-day events remain, and group count
-is a source-row count rather than the coalesced `infos` length. Each date exhausts
-explicit source offsets through the reported count; event ids deduplicate
-coalesced records. Nonprogressing pages, changing counts/events, malformed data,
+differs from the returned `infos` length. Its meaning is unresolved: a bounded
+live probe returned count 55 but only 23 unique events and then moved to the next
+date. This remains a merge/deployment blocker for calendar acceptance; the source
+currently fails closed with calendar_truncated, without claiming that 23 events
+are complete. Each date exhausts explicit offsets through its declared count;
+event ids deduplicate overlapping page records. Nonprogressing pages, changing counts/events, malformed data,
 and premature empty termination fail the pair. Bounds are 2,048 pages and 8 MiB
 of raw data per logical attempt. Every page passes the limiter and run deadline;
 a failed/cancelled attempt publishes no partial calendar value. The completed
@@ -1148,10 +1151,14 @@ end,session,adjust,bars`; each bar has `trade_date,timestamp,open,high,low,close
 volume,turnover`. NY session dates, regular hours, and no adjustment are explicit;
 prices/turnover are decimal strings. Invalid/nonpositive/inconsistent OHLC,
 negative volume/turnover, duplicate dates, and dates outside the query fail the
-pair. This is a typed SDK projection: unknown protobuf fields are not retained,
-and the SDK converts invalid numeric strings to zero. OHLC validation rejects
-that price fallback; zero volume/turnover remain valid and cannot prove their
-original wire spelling. This endpoint does not claim raw-wire preservation.
+pair. This is a validated projection of the official protobuf response: unknown
+protobuf fields are not retained. Decimal parsing rejects malformed strings;
+zero volume/turnover remain valid, and their original strings are retained.
+This endpoint does not claim raw-wire preservation. The pinned SDK's detached
+quote queue cannot fence cancelled sends, so bars use a narrowly scoped owned
+socket adapter. SDK OAuth, HttpClient and OTP/connection-limit checks are reused.
+Actual writes are paced and fenced, and cancellation drops the socket; no
+background reconnect or business request queue survives the caller.
 
 Use the existing `plugin_archive_read_at` with symbol for security endpoints, or
 `{"market":"US","endpoint":"finance_calendar","pointer":"/days/2026-10-21/MSFT.US"}`

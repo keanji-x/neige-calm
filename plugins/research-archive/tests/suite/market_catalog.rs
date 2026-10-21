@@ -2,6 +2,7 @@
 use crate::support::{at, dump, endpoint, key, ok, plan_request, raw};
 use research_archive::types::{Origin, RunId};
 use research_archive::{Catalog, OpenError, Store};
+use sqlx::Connection;
 
 async fn released_v2(path: &std::path::Path) {
     std::fs::File::create(path).unwrap();
@@ -42,7 +43,7 @@ async fn v3_upgrade_preserves_bytes_and_old_unfrozen_plans() {
     released_v2(&path).await;
     let mut conn = raw(&path, false).await;
     let before = dump(&mut conn).await;
-    drop(conn);
+    conn.close().await.unwrap();
     assert!(matches!(
         Store::open(&path).await,
         Err(OpenError::UserVersion {
@@ -63,7 +64,7 @@ async fn v3_upgrade_preserves_bytes_and_old_unfrozen_plans() {
         .await
         .unwrap();
     assert!(fk.is_empty());
-    drop(conn);
+    conn.close().await.unwrap();
     let original = store.coverage(RunId(1)).await.unwrap();
     assert_eq!(original.len(), 8);
     assert!(
@@ -191,7 +192,7 @@ async fn v3_upgrade_is_explicit_idempotent_and_rejects_drift_without_writes() {
         .execute(&mut conn)
         .await
         .unwrap();
-    drop(conn);
+    conn.close().await.unwrap();
     let before = std::fs::read(&path).unwrap();
     assert!(matches!(
         Store::upgrade_market_catalog(&path).await,
@@ -203,7 +204,7 @@ async fn v3_upgrade_is_explicit_idempotent_and_rejects_drift_without_writes() {
         .execute(&mut conn)
         .await
         .unwrap();
-    drop(conn);
+    conn.close().await.unwrap();
     Store::upgrade_market_catalog(&path)
         .await
         .unwrap()
@@ -211,7 +212,7 @@ async fn v3_upgrade_is_explicit_idempotent_and_rejects_drift_without_writes() {
         .await;
     let mut conn = raw(&path, false).await;
     let before = dump(&mut conn).await;
-    drop(conn);
+    conn.close().await.unwrap();
     Store::upgrade_market_catalog(&path)
         .await
         .unwrap()
@@ -220,7 +221,7 @@ async fn v3_upgrade_is_explicit_idempotent_and_rejects_drift_without_writes() {
     let mut conn = raw(&path, false).await;
     assert_eq!(dump(&mut conn).await, before);
     sqlx::raw_sql("DROP TRIGGER endpoint_no_update; UPDATE endpoint SET path='/drift' WHERE endpoint_id='consensus';").execute(&mut conn).await.unwrap();
-    drop(conn);
+    conn.close().await.unwrap();
     let before = std::fs::read(&path).unwrap();
     assert!(Store::upgrade_market_catalog(&path).await.is_err());
     assert_eq!(std::fs::read(&path).unwrap(), before);

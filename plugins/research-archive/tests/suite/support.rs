@@ -160,19 +160,18 @@ pub async fn complete_day(
         .await
         .unwrap();
     observe_and_freeze(store, &plan, at(n, 10), &[(index, members)]).await;
-    let mut t = 20;
-    for pair in store
-        .coverage(plan.run_id)
-        .await
-        .unwrap()
-        .into_iter()
-        .filter(|p| !p.has_ok)
-    {
+    for (t, pair) in (20..).zip(
+        store
+            .coverage(plan.run_id)
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|p| !p.has_ok),
+    ) {
         store
             .record_observation(plan.run_id, &pair.key, pair.endpoint, at(n, t), &ok(b"{}"))
             .await
             .unwrap();
-        t += 1;
     }
     store
         .end_run(plan.run_id, at(n, 10_000), Finish::Complete, None)

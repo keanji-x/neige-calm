@@ -21,6 +21,11 @@ name = "research-archive-plugin"
 path = "src/plugin_main.rs"
 
 [dependencies]
+flate2 = "1"
+futures-util = "0.3"
+prost = "0.14"
+tokio-tungstenite = { version = "0.27", features = ["rustls-tls-webpki-roots"] }
+longbridge-proto = { git = "https://github.com/longbridge/openapi", tag = "v5.2.0" }
 chrono = { version = "0.4", default-features = false, features = ["serde", "std"] }
 # New York local time for the capture window (DST included).
 chrono-tz = "0.10"
@@ -47,10 +52,6 @@ tracing-subscriber = { version = "0.3", features = ["fmt"] }
 url = "2"
 
 [dev-dependencies]
-futures-util = "0.3"
-prost = "0.14"
-tokio-tungstenite = "0.27"
-longbridge-proto = { git = "https://github.com/longbridge/openapi", tag = "v5.2.0" }
 axum = "0.8"
 # The report `table` block's validator, for the overlay the plugin pushes.
 calm-types = { path = "../../crates/calm-types" }

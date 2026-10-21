@@ -40,6 +40,7 @@ use longbridge::{
 use crate::catalog::{self, Endpoint, QueryValue};
 mod candles;
 mod market;
+mod wire;
 use crate::sdk_error;
 use crate::types::{ErrorClass, ErrorDetail, FailureClass, Key, Response};
 
@@ -184,7 +185,7 @@ pub struct LongbridgeSource {
     limiter: RateLimiter,
     timeouts: Timeouts,
     quote_ws_url: Option<String>,
-    quote: tokio::sync::Mutex<Option<(String, longbridge::quote::QuoteContext)>>,
+    quote: tokio::sync::Mutex<Option<(String, wire::QuoteWire)>>,
 }
 
 impl LongbridgeSource {

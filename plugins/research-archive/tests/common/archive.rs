@@ -13,7 +13,7 @@ use research_archive::config::Config;
 use research_archive::types::UnixMs;
 
 #[path = "quote.rs"]
-mod quote;
+pub(crate) mod quote;
 
 pub const CLIENT: &str = "test-client";
 

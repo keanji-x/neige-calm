@@ -1,9 +1,10 @@
 //! Complete US earnings calendar windows, with auditable raw HTTP pages.
 //!
-//! The upstream's group count is a source-row count, not infos.len(): it
-//! coalesces source records. Probes also show next_date can advance while
+//! The upstream group count differs from returned infos in live probes; its
+//! exact meaning is unresolved. Probes also show next_date can advance while
 //! same-day rows remain. Use small explicit offset pages within each date,
-//! exhausting its count before advancing. Never publish a partially read window.
+//! exhausting its declared count before advancing. Inconsistent live pages
+//! fail closed until the upstream contract is clarified; never infer completeness.
 use super::{Fetched, LongbridgeSource, invalid_body};
 use crate::{Endpoint, types::Response};
 use chrono::{Duration, NaiveDate};
@@ -175,9 +176,8 @@ impl DayPager {
         }
         if self
             .total
-            .is_some_and(|total| self.offset + PAGE_SIZE < total)
-            && groups.is_empty()
-            && body["next_date"] == ""
+            .is_some_and(|total| self.offset < total && total > 0)
+            && (!found || events.is_empty())
         {
             return Err("calendar_truncated");
         }
@@ -199,6 +199,23 @@ mod tests {
         assert!(!p.advance("2026-10-21", &first).unwrap().0);
         assert!(p.advance("2026-10-21", &last).unwrap().0);
     }
+    #[test]
+    fn missing_final_remainder_or_later_date_is_truncated() {
+        let first = json!({"list":[{"date":"2026-10-21","count":12,"infos":[{"id":"a"}]}],"next_date":"2026-10-22"});
+        for last in [
+            json!({"list":[],"next_date":""}),
+            json!({"list":[{"date":"2026-10-22","count":1,"infos":[{"id":"b"}]}],"next_date":"2026-10-23"}),
+            json!({"list":[{"date":"2026-10-21","count":12,"infos":[]}],"next_date":""}),
+        ] {
+            let mut p = DayPager::default();
+            assert!(!p.advance("2026-10-21", &first).unwrap().0);
+            assert_eq!(
+                p.advance("2026-10-21", &last).unwrap_err(),
+                "calendar_truncated"
+            );
+        }
+    }
+
     #[test]
     fn repeated_page_and_changed_count_are_not_complete() {
         let first = json!({"list":[{"date":"2026-10-21","count":22,"infos":[{"id":"a"}]}],"next_date":"2026-10-22"});
