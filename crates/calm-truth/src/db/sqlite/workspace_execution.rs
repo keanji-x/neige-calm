@@ -110,6 +110,35 @@ pub async fn pending(pool: &SqlitePool) -> Result<Vec<String>, sqlx::Error> {
     .await
 }
 
+/// Consumer-owned alias is opaque here; the consumer compares it with its owner claim.
+#[derive(Debug, sqlx::FromRow)]
+pub struct ConsumerExecution {
+    pub execution_id: String,
+    pub alias: String,
+    pub settled: bool,
+}
+
+/// Inventory for owner sweeps, including settled non-retired executions that
+/// `pending` intentionally omits. No owner join: deletion, NULL and mismatched
+/// claims must all remain visible, and corrupt claims must not abort this read.
+/// SqliteExecutionStore persists ExecutionMetadata directly in intent_json;
+/// consumer and alias use that existing serialization, not a second encoding.
+pub async fn consumer_inventory<'a>(
+    executor: impl sqlx::Executor<'a, Database = Sqlite>,
+    consumer: &str,
+) -> Result<Vec<ConsumerExecution>, sqlx::Error> {
+    sqlx::query_as(
+        "SELECT execution_id, json_extract(intent_json, '$.alias') AS alias,
+                settled_at_ms IS NOT NULL AS settled
+         FROM workspace_executions
+         WHERE desired <> 'retire' AND json_extract(intent_json, '$.consumer') = ?
+         ORDER BY execution_id",
+    )
+    .bind(consumer)
+    .fetch_all(executor)
+    .await
+}
+
 /// Occupancy scopes; lifecycle policy belongs to callers.
 pub enum Scope<'a> {
     Track(&'a str),

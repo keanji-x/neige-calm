@@ -109,18 +109,21 @@ pub async fn load<'a>(
 }
 
 /// Durable sweep inventory, including both Observing and Stopping claims.
+/// Each non-NULL row retains its session identity even if decoding fails, so a
+/// corrupt owner stays failed closed without blocking healthy owners' progress.
 pub async fn list<'a>(
     executor: impl Executor<'a, Database = Sqlite>,
-) -> Result<Vec<(String, Claim)>> {
+) -> Result<Vec<(String, Result<Claim>)>> {
     let rows: Vec<(String, String)> = sqlx::query_as(
         "SELECT id, provider_execution_json FROM worker_sessions
          WHERE provider_execution_json IS NOT NULL ORDER BY id",
     )
     .fetch_all(executor)
     .await?;
-    rows.into_iter()
-        .map(|(id, json)| Ok((id, Claim::decode(json)?)))
-        .collect()
+    Ok(rows
+        .into_iter()
+        .map(|(id, json)| (id, Claim::decode(json)))
+        .collect())
 }
 
 /// Admission cannot start already releasing, released, or stopping.
