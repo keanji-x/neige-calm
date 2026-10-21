@@ -78,6 +78,7 @@ async fn fixture_full_with_storage(
     );
     let session = Arc::new(
         ClaudePlannerSession::open(ClaudePlannerSessionParams {
+            engine: host.execution.engine().cloned(),
             host,
             worker_session_id: owner.worker.clone(),
             card_id: owner.card.clone(),

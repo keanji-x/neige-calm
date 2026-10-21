@@ -54,6 +54,7 @@ async fn fixture_full() -> (
         .unwrap(),
     );
     let session = Arc::new(AcpPlannerSession::open(SessionParams {
+        engine: host.execution.engine().cloned(),
         host,
         provider: AgentProvider::OpenCode,
         repo: owner.repo.clone(),

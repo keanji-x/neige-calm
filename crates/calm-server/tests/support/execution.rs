@@ -89,8 +89,8 @@ impl Fixture {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
     }
-    pub async fn new(pool: calm_server::db::sqlite::SqliteDb) -> Self {
-        use clap::Parser;
+    /// Start the supervisor independently of any kernel or database lifetime.
+    pub fn start() -> Self {
         let root = tempfile::tempdir().unwrap();
         let socket = calm_test_sockets::socket_dir("typed-gate");
         let path = socket.path().join("control.sock");
@@ -98,16 +98,29 @@ impl Fixture {
         let key = root.path().join("key.json");
         std::fs::write(&key, serde_json::to_vec(&secret).unwrap()).unwrap();
         let server = Self::spawn(root.path(), &path, &key);
-        let mut cfg = calm_server::config::Config::try_parse_from([
-            "calm-server",
-            "--kernel-client-key-file",
-            key.to_str().unwrap(),
-            "--proc-supervisor-sock",
-            path.to_str().unwrap(),
-        ])
-        .unwrap();
+        Self {
+            faults: Default::default(),
+            key,
+            socket: path,
+            lifecycle: Default::default(),
+            _socket: socket,
+            _root: root,
+            server,
+        }
+    }
+
+    pub fn configure(&self, cfg: &mut calm_server::config::Config) {
+        cfg.kernel_client_key_file = Some(self.key.clone());
+        cfg.proc_supervisor_sock = Some(self.socket.clone());
         cfg.execution_recovery_interval = std::time::Duration::from_secs(1);
-        let faults = cfg.execution_recovery_faults.clone();
+    }
+
+    pub async fn new(pool: calm_server::db::sqlite::SqliteDb) -> Self {
+        use clap::Parser;
+        let mut fixture = Self::start();
+        let mut cfg = calm_server::config::Config::try_parse_from(["calm-server"]).unwrap();
+        fixture.configure(&mut cfg);
+        fixture.faults = cfg.execution_recovery_faults.clone();
         let engine = calm_server::execution_boot::recover(&cfg, pool)
             .await
             .unwrap()
@@ -119,16 +132,7 @@ impl Fixture {
         })
         .await
         .unwrap();
-        let lifecycle = calm_server::execution_quiesce::ExecutionLifecycle::default();
-        lifecycle.bind(engine);
-        Self {
-            faults,
-            key,
-            socket: path,
-            lifecycle,
-            _socket: socket,
-            _root: root,
-            server,
-        }
+        fixture.lifecycle.bind(engine);
+        fixture
     }
 }

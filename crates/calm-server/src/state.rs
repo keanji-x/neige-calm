@@ -812,6 +812,9 @@ impl AppState {
             )
             .expect("claude planner host"),
         );
+        if let Some(engine) = &self.execution {
+            self.route.claude_planner.execution.bind(engine.clone());
+        }
         // An answer about the replaced backend must not outlive it.
         self.route.provider_availability = Arc::default();
         self.rebuild_operation_runtime();
@@ -834,6 +837,9 @@ impl AppState {
                     crate::mcp_server::build_default_registry(),
                 )),
         );
+        if let Some(engine) = &self.execution {
+            self.route.acp_planner.execution.bind(engine.clone());
+        }
         self.route.provider_availability = Arc::default();
         self.rebuild_operation_runtime();
         self
@@ -1638,6 +1644,8 @@ impl AppState {
         // Assembly completes boot recovery and starts its sole periodic recovery task.
         state.execution = crate::execution_boot::recover(cfg, pool).await?;
         if let Some(engine) = &state.execution {
+            state.route.claude_planner.execution.bind(engine.clone());
+            state.route.acp_planner.execution.bind(engine.clone());
             state.operation_runtime.execution().bind(engine.clone());
             state.plugin.execution.bind(engine.clone());
         }

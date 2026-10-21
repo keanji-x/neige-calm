@@ -28,6 +28,7 @@ pub(crate) async fn open_session(
     )
     .await?;
     Ok(Arc::new(AcpPlannerSession::open(SessionParams {
+        engine: host.execution.engine().cloned(),
         host: host.clone(),
         provider: row.binding.provider,
         repo,

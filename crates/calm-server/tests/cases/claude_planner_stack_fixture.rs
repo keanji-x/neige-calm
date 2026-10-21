@@ -36,13 +36,18 @@ const FAKE: &str = concat!(
 
 /// The files of one server's life that outlive a reboot: database, data dir, fake, config.
 pub struct Root {
+    // Owned by the test, so every boot over this root uses the same supervisor.
+    execution: crate::support::execution::Fixture,
     pub dir: tempfile::TempDir,
 }
 
 impl Root {
     pub fn new(scenario: &str) -> Self {
         let dir = tempfile::tempdir().expect("tempdir");
-        let root = Self { dir };
+        let root = Self {
+            dir,
+            execution: crate::support::execution::Fixture::start(),
+        };
         let fake = root.fake_dir();
         std::fs::create_dir_all(&fake).expect("fake dir");
         std::fs::create_dir_all(root.path().join("data")).expect("data dir");
@@ -122,6 +127,7 @@ impl Root {
             args.push(self.config_path().display().to_string());
         }
         let mut cfg = Config::parse_from(args);
+        self.execution.configure(&mut cfg);
         cfg.db_url = self.db_url();
         cfg.data_dir = Some(self.data_dir());
         cfg.plugins_dir = Some(self.path().join("plugins"));

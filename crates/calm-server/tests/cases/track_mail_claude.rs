@@ -97,6 +97,7 @@ async fn mail_trace_reaches_a_claude_planner() {
     let cwd = w.dir.path().join("claude-ws");
     std::fs::create_dir_all(&cwd).unwrap();
     let session = ClaudePlannerSession::open(ClaudePlannerSessionParams {
+        engine: host.execution.engine().cloned(),
         host,
         worker_session_id: r.session_id.clone(),
         card_id: r.card_id.to_string(),

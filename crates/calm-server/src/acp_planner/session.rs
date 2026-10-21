@@ -33,6 +33,8 @@ use std::time::Duration;
 use tokio::sync::{broadcast, watch};
 
 pub struct SessionParams {
+    /// Reserved for C4.1+; provider launches remain unchanged in C4.0b.
+    pub engine: Option<crate::execution_boot::ExecutionEngine>,
     pub host: Arc<AcpPlannerHost>,
     pub provider: AgentProvider,
     pub repo: Arc<dyn Repo>,

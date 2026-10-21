@@ -62,6 +62,7 @@ async fn acp_same_key_replay_checks_exact_claim_without_spawn_setup_or_prompt() 
             }]})).unwrap()), root.path(), root.path().join("unused-shim"), root.path().join("mcp.sock")
         ).unwrap());
         let session = AcpPlannerSession::open(SessionParams {
+            engine: host.execution.engine().cloned(),
             host,
             provider: AgentProvider::OpenCode,
             repo: repo.clone(),

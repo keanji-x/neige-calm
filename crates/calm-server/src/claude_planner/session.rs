@@ -55,6 +55,8 @@ const SHUTDOWN_SETTLE_WAIT: Duration = Duration::from_secs(20);
 /// Everything one Claude Planner harness is built from; the caller (the start adapter and
 /// recovery) supplies every field.
 pub struct ClaudePlannerSessionParams {
+    /// Reserved for C4.1+; provider launches remain unchanged in C4.0b.
+    pub engine: Option<crate::execution_boot::ExecutionEngine>,
     pub host: Arc<ClaudePlannerHost>,
     pub worker_session_id: String,
     pub card_id: String,

@@ -37,6 +37,7 @@ async fn acp_identical_local_turns_keep_two_owner_cancellation_separate() {
     let seals = Arc::new(ThreadSeals::new());
     let make = |owner: &str| {
         AcpPlannerSession::open(SessionParams {
+            engine: host.execution.engine().cloned(),
             host: host.clone(),
             provider: AgentProvider::OpenCode,
             repo: repo.clone(),

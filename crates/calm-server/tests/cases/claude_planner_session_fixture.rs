@@ -45,6 +45,7 @@ pub const P_D_FIXTURE: &str = concat!(
 );
 
 pub struct Rig {
+    _execution: crate::support::execution::Fixture,
     pub dir: tempfile::TempDir,
     /// The held-request channel every session of this rig is installed with, as a harness's is.
     held_tx: HeldRequestSender,
@@ -78,6 +79,7 @@ impl Rig {
         std::fs::write(bin.join("scenario"), scenario).expect("scenario");
 
         let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.expect("repo"));
+        let execution = crate::support::execution::Fixture::new(repo.db().clone()).await;
         let (card_id, track_id) = planner_card(&repo).await;
         let config = ClaudePlannerConfig {
             claude_binary: bin.join("claude"),
@@ -93,12 +95,15 @@ impl Rig {
             )
             .expect("host"),
         );
+        host.execution
+            .bind(Arc::new(execution.lifecycle.engine().unwrap().clone()));
         let daemon = SharedCodexAppServer::new_stub(repo.clone());
         let worker_session_id = new_id();
         let thread = uuid::Uuid::new_v4().to_string();
         worker_session_row(&repo, &worker_session_id, &card_id, &thread).await;
         let (held_tx, held_rx) = mpsc::unbounded_channel();
         let mut rig = Self {
+            _execution: execution,
             dir,
             held_tx,
             held_rx: tokio::sync::Mutex::new(held_rx),
@@ -146,6 +151,7 @@ impl Rig {
     /// A fresh session the registry never installed.
     pub async fn open_session_uninstalled(&self) -> ClaudePlannerSession {
         ClaudePlannerSession::open(ClaudePlannerSessionParams {
+            engine: self.host.execution.engine().cloned(),
             host: Arc::clone(&self.host),
             worker_session_id: self.worker_session_id.clone(),
             card_id: self.card_id.clone(),

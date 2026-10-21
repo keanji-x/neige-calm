@@ -464,6 +464,7 @@ async fn acp_boot_turn_refuses_before_spawn_and_revokes_minted_token() {
     // existing crate-private managed ACP entry: HTTP readiness rejects earlier and
     // would never exercise managed registration, token minting and revocation here.
     let session = super::session::AcpPlannerSession::open(super::session::SessionParams {
+        engine: host(&state).execution.engine().cloned(),
         host: host(&state),
         provider: AgentProvider::OpenCode,
         repo: repo.clone(),

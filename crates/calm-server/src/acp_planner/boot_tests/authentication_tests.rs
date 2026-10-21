@@ -195,6 +195,7 @@ async fn a_failed_authentication_revokes_the_turns_issued_context() {
         "1.0.62",
     ));
     let session = AcpPlannerSession::open(SessionParams {
+        engine: host.execution.engine().cloned(),
         host,
         provider: AgentProvider::Grok,
         repo: repo.clone(),

@@ -176,6 +176,8 @@ pub(super) struct Registration<'a> {
 
 #[derive(Debug)]
 pub struct AcpPlannerHost {
+    /// Shared engine binding, reserved for the Planner execution migration.
+    pub execution: crate::execution_quiesce::ExecutionLifecycle,
     config: Option<AcpPlannerConfig>,
     pub instance: MarkerInstance,
     pub mcp_shim: PathBuf,
@@ -204,6 +206,7 @@ impl AcpPlannerHost {
             config.validate()?;
         }
         Ok(Self {
+            execution: Default::default(),
             config,
             instance: MarkerInstance::for_data_dir(data_dir, MARKER_KEY)?,
             mcp_shim,

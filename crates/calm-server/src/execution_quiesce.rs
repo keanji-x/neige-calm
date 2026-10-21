@@ -11,6 +11,14 @@ use workspace_runtime::execution::{DriveTicket, ExecutionId};
 /// Shared by callbacks and operation contexts assembled before execution recovery.
 #[derive(Clone, Default)]
 pub struct ExecutionLifecycle(Arc<OnceLock<Arc<ExecutionEngine>>>);
+impl std::fmt::Debug for ExecutionLifecycle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ExecutionLifecycle")
+            .field("bound", &self.0.get().is_some())
+            .finish()
+    }
+}
+
 impl ExecutionLifecycle {
     pub fn bind(&self, engine: Arc<ExecutionEngine>) {
         assert!(self.0.set(engine).is_ok(), "execution engine already bound");

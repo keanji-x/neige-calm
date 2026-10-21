@@ -255,6 +255,7 @@ async fn an_install_race_loser_shuts_down_promptly_and_signals_nothing() {
     let session = Arc::new(
         calm_server::claude_planner::session::ClaudePlannerSession::open(
             calm_server::claude_planner::session::ClaudePlannerSessionParams {
+                engine: host.execution.engine().cloned(),
                 host: host.clone(),
                 worker_session_id: runtime.id.clone(),
                 card_id: card_id.clone(),

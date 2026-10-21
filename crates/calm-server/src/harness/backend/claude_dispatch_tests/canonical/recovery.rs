@@ -283,6 +283,7 @@ async fn reopen_session(
 ) -> (PlannerBackend, Arc<ClaudePlannerSession>) {
     let session = Arc::new(
         ClaudePlannerSession::open(ClaudePlannerSessionParams {
+            engine: fx.session.host().execution.engine().cloned(),
             host: fx.session.host().clone(),
             worker_session_id: fx.owner.worker.clone(),
             card_id: fx.owner.card.clone(),

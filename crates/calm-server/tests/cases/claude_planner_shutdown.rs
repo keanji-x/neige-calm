@@ -185,6 +185,7 @@ async fn live_extra_stop_uses_harness_id_even_with_unreadable_row_and_swallows_f
         // about the operation's extra sweep of the harness id.
         let session = Arc::new(
             ClaudePlannerSession::open(ClaudePlannerSessionParams {
+                engine: host.execution.engine().cloned(),
                 host: host.clone(),
                 worker_session_id: runtime.id.clone(),
                 card_id: card.clone(),

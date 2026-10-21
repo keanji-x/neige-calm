@@ -49,6 +49,7 @@ pub(crate) async fn open_session(
     .map(|(upper, lower, value)| (upper.to_string(), lower.to_string(), value))
     .collect();
     let session = ClaudePlannerSession::open(ClaudePlannerSessionParams {
+        engine: host.execution.engine().cloned(),
         host: Arc::clone(host),
         worker_session_id: row.worker_session_id.to_string(),
         card_id: row.card_id.to_string(),
