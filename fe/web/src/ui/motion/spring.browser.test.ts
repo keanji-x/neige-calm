@@ -137,11 +137,16 @@ it('uses public clocks before and after pending ready and zeroes held and termin
   const playback = playSpring([element], 0, 100, 20, value => ({ translate: `${value}px` }));
   void playback.finished.catch(() => {});
   const animation = playback.animations[0];
+  const trajectory = springTrajectory(0, 100, 20);
   const check = () => {
-    const raw = springTrajectory(0, 100, 20).sample(Number(animation.currentTime ?? 0));
+    // WAAPI can expose negative time (even rounding below zero on acquisition).
+    // The native fill model holds the endpoint outside the trajectory interval.
+    const raw = trajectory.sample(Math.max(0, Math.min(trajectory.duration, Number(animation.currentTime ?? 0))));
     const rate = animation.playState === 'running' && typeof animation.currentTime === 'number' && typeof animation.startTime === 'number' ? animation.playbackRate : 0;
     expect(playback.sample()).toEqual({ value: raw.value, velocity: raw.velocity * rate });
   };
+  animation.currentTime = -0.000001;
+  expect(animation.currentTime).toBeLessThan(0);
   check(); await animation.ready; check();
   animation.currentTime = 80; animation.updatePlaybackRate(-1);
   expect(animation.pending).toBe(true); check(); await animation.ready; check();
@@ -152,4 +157,24 @@ it('uses public clocks before and after pending ready and zeroes held and termin
   animation.playbackRate = 1; animation.finish(); await playback.finished;
   expect(playback.sample()).toEqual({ value: 100, velocity: 0 });
   playback.cancel(); expect(playback.sample()).toEqual({ value: 0, velocity: 0 });
+});
+
+it.each(['before', 'after'] as const)('holds the explicit endpoint and frozen velocity %s the native interval', async boundary => {
+  const element = document.body.appendChild(document.createElement('div'));
+  const playback = playSpring([element], 0, 100, 20, value => ({ translate: `${value}px` }));
+  void playback.finished.catch(() => {});
+  const animation = playback.animations[0];
+  animation.pause(); await animation.ready;
+  const duration = springTrajectory(0, 100, 20).duration;
+  animation.currentTime = boundary === 'before' ? -1 : duration + 1;
+  expect(animation.playState).toBe('paused');
+  if (boundary === 'before') expect(Number(animation.currentTime)).toBeLessThan(0);
+  else expect(Number(animation.currentTime)).toBeGreaterThan(duration);
+  // Independent endpoint facts, not a second invocation of the sampling algorithm.
+  const endpoint = boundary === 'before' ? 0 : 100;
+  expect(playback.sample()).toEqual({ value: endpoint, velocity: 0 });
+  expect(getComputedStyle(element).translate).toBe(`${endpoint}px`);
+  await frames(2);
+  expect(playback.sample()).toEqual({ value: endpoint, velocity: 0 });
+  playback.cancel();
 });
