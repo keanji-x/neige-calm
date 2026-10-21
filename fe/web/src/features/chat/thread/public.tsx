@@ -297,7 +297,6 @@ export const ChatThread = memo(function ChatThread({ conversation, turns, pendin
   const empty = turns.length === 0 && noticeKind === null && !hasPendingMessages && heldInputs.length === 0;
 
   const scrollControls = <div className={styles.scrollDockContent} data-nc-chat-scroll-dock="">
-    {scrollOverlay === null && <div className={styles.scrollBlur} aria-hidden="true" />}
     <ChatLayoutScrollButton isVisible className={styles.scrollButton} onClick={scrollFollower.followToEnd} />
   </div>;
 

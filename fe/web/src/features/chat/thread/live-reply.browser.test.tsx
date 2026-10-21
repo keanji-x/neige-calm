@@ -121,7 +121,7 @@ describe('a streamed reply in a real engine', () => {
 });
 
 describe('jump to the newest message', () => {
-  it.each([320, 640])('shows a frosted dock at %spx and resumes following after a click', async (width) => {
+  it.each([320, 640])('shows an unobscured dock at %spx and resumes following after a click', async (width) => {
     const turns = [...history, asked, live('First words')];
     const { rerender } = render(<Pane width={width} turns={turns} />);
     await frames();
@@ -133,9 +133,9 @@ describe('jump to the newest message', () => {
     const button = page.getByRole('button', { name: 'Scroll to bottom', exact: true });
     await expect.element(button).toBeVisible();
     const dock = document.querySelector<HTMLElement>('[data-nc-chat-scroll-dock]')!;
-    const blur = dock.firstElementChild!;
-    expect(getComputedStyle(blur).backdropFilter).toContain('blur(');
-    expect(getComputedStyle(blur).pointerEvents).toBe('none');
+    for (const element of [dock, ...dock.querySelectorAll('*')]) {
+      expect(getComputedStyle(element).backdropFilter).toBe('none');
+    }
     const box = (await button.findElement()).getBoundingClientRect();
     const viewport = pane().getBoundingClientRect();
     expect(box.top).toBeGreaterThan(viewport.top);
