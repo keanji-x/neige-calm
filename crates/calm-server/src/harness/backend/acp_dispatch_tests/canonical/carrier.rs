@@ -3,6 +3,65 @@ use super::*;
 use calm_truth::session_repo::SessionRepo;
 
 #[tokio::test]
+async fn canonical_acp_cancel_before_publication_refuses_park_until_cleanup_finishes() {
+    use crate::acp_planner::test_seams::{IssueStage, pause_issue};
+    for stage in [IssueStage::AfterSpawn, IssueStage::BeforeReceipt] {
+        let fx = Arc::new(Fixture::new("reply").await);
+        let pause = pause_issue(&fx.owner.worker, stage);
+        let dispatch = tokio::spawn({
+            let fx = fx.clone();
+            async move { fx.dispatch().await }
+        });
+        tokio::time::timeout(Duration::from_secs(20), pause.entered.notified())
+            .await
+            .unwrap();
+        // Revoke must acquire this real writer before it can stop the native process.
+        let tx = begin_immediate_tx(fx.owner.repo.db()).await.unwrap();
+        dispatch.abort();
+        match dispatch.await {
+            Err(error) => assert!(error.is_cancelled()),
+            Ok(_) => panic!("dispatch survived cancellation"),
+        }
+        assert!(
+            fx.session
+                .active_turn_id_for_thread(&fx.owner.thread)
+                .is_none()
+        );
+        let acquired = fx.session.carrier_idle_for_detach();
+        let acquisition_refused = acquired.is_none();
+        // If acquisition incorrectly succeeds, exercise the actual guard recheck too.
+        let recheck_refused = match acquired {
+            Some(park) => {
+                !crate::harness::backend::CarrierIdleGuard::Acp(&fx.session, park).recheck()
+            }
+            None => !fx.session.carrier_idle(), // Same predicate used by ACP guard recheck.
+        };
+        tx.rollback().await.unwrap();
+        // Observe completion without closing the session or joining away the retained slot.
+        tokio::time::timeout(Duration::from_secs(20), async {
+            loop {
+                if let Some(guard) = fx.backend.carrier_idle_for_detach(Some(&fx.owner.thread)) {
+                    assert!(guard.recheck());
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        fx.session.shutdown().await.unwrap();
+        assert!(
+            acquisition_refused,
+            "unfinished {stage:?} cleanup granted a park"
+        );
+        assert!(
+            recheck_refused,
+            "unfinished {stage:?} cleanup passed recheck"
+        );
+    }
+}
+
+#[tokio::test]
 async fn canonical_acp_parked_issue_refuses_before_sql_without_native_effects() {
     let fx = Fixture::new("reply").await;
     let mut tx = begin_immediate_tx(fx.owner.repo.db()).await.unwrap();

@@ -125,8 +125,13 @@ impl AcpPlannerSession {
         self.shared.parked.park()
     }
     pub(crate) fn carrier_idle(&self) -> bool {
-        let state = self.shared.state.lock().expect("ACP state");
-        !state.closed && state.active.is_none()
+        {
+            let state = self.shared.state.lock().expect("ACP state");
+            if state.closed || state.active.is_some() {
+                return false;
+            }
+        }
+        execution_end::driver_finished(&self.shared)
     }
 
     pub fn active_turn_id_for_thread(&self, thread: &str) -> Option<String> {

@@ -85,6 +85,19 @@ impl DriverSlot {
 fn slot(shared: &Shared) -> Option<Arc<tokio::sync::Mutex<DriverSlot>>> {
     shared.driver.lock().expect("ACP driver").clone()
 }
+/// Acquisition holds `issue`; recheck holds the park that excludes new issuance.
+/// Release `state` before calling, and release the driver pointer lock in `slot`
+/// before inspecting the slot. A join holds the slot while waiting for a task
+/// that may take `state` or the SQL writer: never wait for that slot here.
+pub(super) fn driver_finished(shared: &Shared) -> bool {
+    let Some(driver) = slot(shared) else {
+        return true;
+    };
+    match driver.try_lock() {
+        Ok(driver) => driver.completion.is_finished(),
+        Err(_) => false,
+    }
+}
 pub(super) fn install(shared: &Shared, driver: DriverSlot) {
     *shared.driver.lock().expect("ACP driver") = Some(Arc::new(tokio::sync::Mutex::new(driver)));
 }
