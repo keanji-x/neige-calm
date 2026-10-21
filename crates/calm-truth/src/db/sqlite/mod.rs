@@ -117,8 +117,8 @@ pub use infra::{
 pub(crate) use out_of_domain::worker_flow_item_insert_tx;
 pub use out_of_domain::{
     HarnessTranscriptMeasure, harness_items_delete_by_card_tx, harness_items_measure_by_card_tx,
-    transcript_delete_thread_suffix_tx, transcript_projection_delete_tx,
-    worker_flow_items_delete_by_card_tx,
+    record_native_input_projection_tx, record_native_item_tx, transcript_delete_thread_suffix_tx,
+    transcript_projection_delete_tx, worker_flow_items_delete_by_card_tx,
 };
 pub use overlay::{
     overlay_delete_by_entity_tx, overlay_delete_card_overlays_by_track_tx,

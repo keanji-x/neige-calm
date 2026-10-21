@@ -154,7 +154,7 @@ pub(super) async fn context(
 mod tests {
     use super::super::session_conversation_tests::card;
     use super::*;
-    use crate::db::{RepoOutOfDomain, RepoRead};
+    use crate::db::RepoRead;
     use serde_json::json;
 
     pub(super) async fn insert(
@@ -164,7 +164,7 @@ mod tests {
         segments: Option<serde_json::Value>,
         text: &str,
     ) -> i64 {
-        repo.harness_item_insert(
+        repo.fixture_transcript_insert(
             "retired",
             card,
             track,

@@ -12,9 +12,56 @@ use crate::db::{
 use crate::error::{CalmError, Result};
 use crate::model::*;
 
+/// Append a live native item with transaction-current carrier authority.
+#[allow(clippy::too_many_arguments)]
+pub async fn record_native_item_tx(
+    carrier: &mut super::conversation::CurrentCarrier<'_>,
+    thread: &str,
+    turn: Option<&str>,
+    id: Option<&str>,
+    kind: Option<&str>,
+    method: &str,
+    params: &str,
+    segments: Option<&str>,
+) -> Result<i64> {
+    insert_transcript_row(carrier, thread, turn, id, kind, method, params, segments).await
+}
+
+/// Replace a live input projection atomically, after resolving its original owner.
+pub async fn record_native_input_projection_tx(
+    carrier: &mut super::conversation::CurrentCarrier<'_>,
+    thread: &str,
+    client: &str,
+    params: &str,
+    segments: &str,
+) -> Result<(i64, u64)> {
+    let (connection, _, card, _) = carrier.insertion_parts();
+    let deleted = delete_projection(connection, card, client).await?;
+    let row = insert_transcript_row(
+        carrier,
+        thread,
+        None,
+        Some(client),
+        Some("userMessage"),
+        "item/completed",
+        params,
+        Some(segments),
+    )
+    .await?;
+    Ok((row, deleted))
+}
+
 /// Retire a pending input's projection in the transaction that makes its queue durable.
 pub async fn transcript_projection_delete_tx(
     tx: &mut Transaction<'_, Sqlite>,
+    card_id: &str,
+    client_id: &str,
+) -> Result<u64> {
+    delete_projection(&mut **tx, card_id, client_id).await
+}
+
+async fn delete_projection<'e, E: sqlx::Executor<'e, Database = Sqlite>>(
+    executor: E,
     card_id: &str,
     client_id: &str,
 ) -> Result<u64> {
@@ -25,7 +72,7 @@ pub async fn transcript_projection_delete_tx(
     )
     .bind(card_id)
     .bind(client_id)
-    .execute(&mut **tx)
+    .execute(executor)
     .await?;
     Ok(done.rows_affected())
 }
@@ -460,35 +507,6 @@ impl RepoOutOfDomain for SqlxRepo {
             .await
     }
 
-    async fn harness_item_insert(
-        &self,
-        worker_session_id: &str,
-        card_id: &str,
-        track_id: &str,
-        thread_id: &str,
-        turn_id: Option<&str>,
-        item_uuid: Option<&str>,
-        item_type: Option<&str>,
-        method: &str,
-        params: &str,
-        input_segments: Option<&str>,
-    ) -> Result<i64> {
-        insert_transcript_row(
-            self.db.writer_pool(),
-            worker_session_id,
-            card_id,
-            track_id,
-            thread_id,
-            turn_id,
-            item_uuid,
-            item_type,
-            method,
-            params,
-            input_segments,
-        )
-        .await
-    }
-
     async fn transcript_rows_of_thread(
         &self,
         card_id: &str,
@@ -514,17 +532,34 @@ impl RepoOutOfDomain for SqlxRepo {
         params: &str,
     ) -> Result<i64> {
         let mut tx = begin_immediate_tx(&self.db).await?;
-        let existing:Option<i64>=sqlx::query_scalar(
+        let mut carrier =
+            super::conversation::current_native_fact_tx(&mut tx, card_id, worker_session_id, true)
+                .await?;
+        let (connection, worker, card, current_track) = carrier.insertion_parts();
+        if current_track != track_id {
+            return Err(CalmError::Conflict(
+                "native outcome Track does not match carrier",
+            ));
+        }
+        let existing: Option<i64> = sqlx::query_scalar(
             "SELECT id FROM harness_items WHERE worker_session_id=?1 AND card_id=?2 AND thread_id=?3 AND \
                 turn_id=?4 AND method='turn/completed' ORDER BY id DESC LIMIT 1"
-        ).bind(worker_session_id).bind(card_id).bind(thread_id).bind(turn_id).fetch_optional(&mut **tx).await?;
-        let id=match existing {
-            Some(id)=>id,
-            None=>sqlx::query_scalar(
-                "INSERT INTO \
-                    harness_items(worker_session_id,card_id,track_id,thread_id,turn_id,method,params,created_at_ms) \
-                    VALUES(?1,?2,?3,?4,?5,'turn/completed',?6,?7) RETURNING id"
-            ).bind(worker_session_id).bind(card_id).bind(track_id).bind(thread_id).bind(turn_id).bind(params).bind(now_ms()).fetch_one(&mut **tx).await?,
+        ).bind(worker).bind(card).bind(thread_id).bind(turn_id).fetch_optional(connection).await?;
+        let id = match existing {
+            Some(id) => id,
+            None => {
+                insert_transcript_row(
+                    &mut carrier,
+                    thread_id,
+                    Some(turn_id),
+                    None,
+                    None,
+                    "turn/completed",
+                    params,
+                    None,
+                )
+                .await?
+            }
         };
         tx.commit().await?;
         Ok(id)
@@ -548,7 +583,7 @@ impl RepoOutOfDomain for SqlxRepo {
         Ok(row.map(|row| row.get::<i64, _>("id")))
     }
 
-    async fn transcript_projection_upgrade(
+    async fn transcript_admitted_projection_upgrade(
         &self,
         card_id: &str,
         client_id: &str,

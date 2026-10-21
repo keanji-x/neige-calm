@@ -76,7 +76,7 @@ pub(super) async fn seed_conversation_history(
 ) {
     let params = json!({"item":{"id":"old-answer","type":"agentMessage","text":text}}).to_string();
     boot.repo
-        .harness_item_insert(
+        .fixture_transcript_insert(
             runtime,
             card.id.as_str(),
             &boot.track_id,

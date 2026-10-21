@@ -83,7 +83,7 @@ pub(super) async fn on_item(
                     Some(codex_item_id) => {
                         inner
                             .repo
-                            .transcript_projection_upgrade(
+                            .transcript_admitted_projection_upgrade(
                                 inner.card_id.as_str(),
                                 client_id,
                                 turn_id.as_deref(),

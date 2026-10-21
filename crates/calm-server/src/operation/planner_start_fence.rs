@@ -33,6 +33,17 @@ pub(crate) struct CardStartFence {
     _guard: PerCardLockGuard,
 }
 
+/// Transaction-local start inventory has no resumable reservation for this card.
+/// Caller retains CardStartFence and the operation drive guard through commit.
+#[derive(Debug)]
+#[allow(
+    dead_code,
+    reason = "transaction proof consumed by the next rotation slice"
+)]
+pub(crate) struct SettledCardStart {
+    _card: CardId,
+}
+
 impl CardStartFence {
     /// Wait for the card's guard in `locks`, the process's one `planner_recovery_locks` map
     /// (`BootState` hands the same map to the routes and the scheduler). The only constructor.
@@ -108,22 +119,30 @@ impl CardStartFence {
         // Reuse the operation owner's recovery inventory: it includes every resumable
         // start phase and compensation, regardless of lease age. Start has no explicit
         // retry phase; terminal/stuck operations cannot be driven again.
-        for op in self
-            .operation_runtime
-            .repo
-            .abandoned_running_operations_on_boot()
-            .await?
-        {
-            if op.kind == PLANNER_HARNESS_START
-                && super::planner_harness_start_adapter::operation_card_id(&op.payload)?
-                    == self.card_id
-            {
-                return Err(CalmError::Conflict(
-                    "Wait for the conversation session start to finish before archiving.".into(),
-                ));
-            }
-        }
-        Ok(())
+        require_no_start(
+            self.operation_runtime
+                .repo
+                .abandoned_running_operations_on_boot()
+                .await?,
+            &self.card_id,
+        )
+    }
+
+    #[allow(
+        dead_code,
+        reason = "transaction proof consumed by the next rotation slice"
+    )]
+    pub(crate) async fn require_settled_tx(
+        tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        card: &str,
+    ) -> Result<SettledCardStart> {
+        require_no_start(
+            super::repo_sqlite::abandoned_running_operations_on(tx).await?,
+            &CardId::from(card),
+        )?;
+        Ok(SettledCardStart {
+            _card: CardId::from(card),
+        })
     }
 
     /// Submit one `planner-harness-start` for this fence's card and wait for its outcome. The
@@ -223,4 +242,17 @@ pub(crate) fn wake_canonical_human(
         #[cfg(feature = "fixtures")]
         crate::test_seams::pause_point("canonical-human-wake-finished", card_id.as_str()).await;
     });
+}
+
+fn require_no_start(operations: Vec<super::Operation>, card: &CardId) -> Result<()> {
+    for op in operations {
+        if op.kind == PLANNER_HARNESS_START
+            && super::planner_harness_start_adapter::operation_card_id(&op.payload)? == *card
+        {
+            return Err(CalmError::Conflict(
+                "Wait for the conversation session start to finish before archiving.".into(),
+            ));
+        }
+    }
+    Ok(())
 }

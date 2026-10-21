@@ -125,7 +125,7 @@ async fn native_fixture() -> (SqlxRepo, String, String, i64) {
         .await
         .unwrap();
     let row = repo
-        .harness_item_insert(
+        .fixture_transcript_insert(
             "runtime",
             &card,
             &track,
@@ -280,7 +280,7 @@ async fn canonical_native_presentation_excludes_input_projection_and_its_native_
     .unwrap();
     tx.commit().await.unwrap();
     let projection = repo
-        .harness_item_insert(
+        .fixture_transcript_insert(
             "runtime",
             &card,
             &track,
@@ -307,7 +307,7 @@ async fn canonical_native_presentation_excludes_input_projection_and_its_native_
     );
     tx.rollback().await.unwrap();
     assert_eq!(
-        repo.transcript_projection_upgrade(
+        repo.transcript_admitted_projection_upgrade(
             &card,
             "submission-client",
             Some("native-turn"),
@@ -365,7 +365,7 @@ async fn canonical_native_presentation_keeps_completed_item_when_started_arrives
     .unwrap();
     tx.commit().await.unwrap();
     let completed = repo
-        .harness_item_insert(
+        .fixture_transcript_insert(
             "runtime",
             &card,
             &track,
@@ -392,7 +392,7 @@ async fn canonical_native_presentation_keeps_completed_item_when_started_arrives
     );
     tx.commit().await.unwrap();
     let late = repo
-        .harness_item_insert(
+        .fixture_transcript_insert(
             "runtime",
             &card,
             &track,

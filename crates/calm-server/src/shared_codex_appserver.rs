@@ -16,7 +16,7 @@ mod native_turns;
 mod prompt_attempt;
 mod revert;
 mod thread_mint;
-pub(crate) use native_turns::{CodexHarnessBinding, NativeInput, NativeSteer};
+pub(crate) use native_turns::{CodexHarnessBinding, IdleDetachGuard, NativeInput, NativeSteer};
 use native_turns::{NativeTurns, SourceRetirement};
 pub(crate) use thread_mint::ThreadMintFailure;
 #[cfg(all(test, feature = "fixtures"))]

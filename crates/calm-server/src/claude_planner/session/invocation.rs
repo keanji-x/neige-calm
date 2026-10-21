@@ -69,7 +69,7 @@ impl ClaudePlannerSession {
         let _issue = self.shared.issue.lock().await;
         let busy = {
             let state = self.shared.state();
-            state.shutting_down || state.active.is_some()
+            state.shutting_down || state.active.is_some() || self.shared.parked.is_parked()
         };
         if busy {
             return Err(CalmError::Conflict(

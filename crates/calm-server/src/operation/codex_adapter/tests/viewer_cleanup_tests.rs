@@ -485,6 +485,7 @@ async fn exercise_viewer_report(expected: crate::model::TaskStatus, restart: Opt
         thread_id: session.thread_id.unwrap(),
     };
     let context = Arc::new(AppContext {
+        tool_calls: Default::default(),
         terminal_interaction: Arc::new(tokio::sync::OnceCell::new()),
         repo: harness.repo.clone(),
         track_vcs: None,

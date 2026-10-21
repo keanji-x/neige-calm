@@ -4,6 +4,7 @@
 use sha2::{Digest, Sha256};
 
 mod call;
+pub mod carrier_quiescence;
 mod forge_approval;
 pub(crate) use forge_approval::ApprovalAsks;
 mod forge_payload;
@@ -480,7 +481,7 @@ pub(crate) fn plugin_tool_descriptors_from(
     descriptors
 }
 
-async fn dispatch_tools_call(
+pub(crate) async fn dispatch_tools_call(
     ctx: &Arc<AppContext>,
     request_meta: Option<Value>,
     params: Value,
@@ -535,7 +536,7 @@ async fn resolve_tools_call_identity(
     name: &str,
     connection_identity: &ConnectionIdentity,
 ) -> Result<ToolCallIdentity, RpcError> {
-    match connection_identity {
+    let identity = match connection_identity {
         ConnectionIdentity::DaemonTrust => resolve_thread_identity(ctx, thread_id, name).await,
         ConnectionIdentity::CardBound(bound) => match thread_id {
             Some(tid) => {
@@ -548,7 +549,28 @@ async fn resolve_tools_call_identity(
             }
             None => card_bound_identity(ctx, bound, "tools/call").await,
         },
+    }?;
+    #[cfg(feature = "fixtures")]
+    crate::test_seams::pause_point("mcp-identity-discovered", &identity.session_id).await;
+    Ok(identity)
+}
+
+/// Discovery grants no authority. The guard protects the final current-session read.
+async fn admit_tools_call_identity(
+    ctx: &Arc<AppContext>,
+    thread_id: Option<&str>,
+    name: &str,
+    connection_identity: &ConnectionIdentity,
+) -> Result<(ToolCallIdentity, carrier_quiescence::ToolCallGuard), RpcError> {
+    let discovered = resolve_tools_call_identity(ctx, thread_id, name, connection_identity).await?;
+    let call = ctx.tool_calls.enter(&discovered.session_id)?;
+    let identity = resolve_tools_call_identity(ctx, thread_id, name, connection_identity).await?;
+    if identity.session_id != discovered.session_id {
+        return Err(RpcError::conflict(
+            "tools/call session changed during discovery",
+        ));
     }
+    Ok((identity, call))
 }
 
 async fn dispatch_plugin_tools_call(
@@ -560,8 +582,8 @@ async fn dispatch_plugin_tools_call(
     connection_identity: &ConnectionIdentity,
 ) -> Result<Value, RpcError> {
     // Identity FIRST, before any route knowledge, so identity failures are uniform whether or not `name` exists.
-    let identity = resolve_tools_call_identity(ctx, thread_id, name, connection_identity).await?;
-
+    let (identity, _call) =
+        admit_tools_call_identity(ctx, thread_id, name, connection_identity).await?;
     crate::managed_track::require_tool_allowed(ctx, &identity, name).await?;
     // EVERY existence-shaped rejection below is this one construction, so the error object is byte-identical and cannot be an existence oracle.
     let unknown_tool = || catalog::unknown_tool_error(ctx, registry, &identity, name);

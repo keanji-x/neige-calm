@@ -22,7 +22,12 @@ impl ThreadSlot {
         }
     }
 
-    pub(super) fn record_retired_acceptance(&mut self, ticket: &Arc<StartTicket>, turn: &str) {
+    pub(super) fn record_retired_acceptance(
+        &mut self,
+        source: &Weak<CodexAppServer>,
+        ticket: &Arc<StartTicket>,
+        turn: &str,
+    ) {
         if let Some(current) = &mut self.current
             && current.turn == turn
         {
@@ -45,6 +50,7 @@ impl ThreadSlot {
             })
             .unwrap_or_else(|| NativeExecution {
                 turn: turn.into(),
+                source: source.clone(),
                 input: ticket.input.clone(),
                 ended: false,
                 terminal: None,
@@ -82,7 +88,7 @@ impl NativeTurns {
             .as_ref()
             .is_some_and(|pending| Arc::ptr_eq(&pending.ticket, ticket))
         {
-            slot.record_retired_acceptance(ticket, turn);
+            slot.record_retired_acceptance(&Arc::downgrade(client), ticket, turn);
             return;
         }
         let mut pending = slot.pending.take().expect("matching actual pending start");
@@ -102,6 +108,7 @@ impl NativeTurns {
         }
         let next = NativeExecution {
             turn: turn.into(),
+            source: Arc::downgrade(client),
             input: ticket.input.clone(),
             ended: matching.as_ref().is_some_and(|candidate| candidate.ended),
             control_visible: matching

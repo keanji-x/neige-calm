@@ -82,6 +82,9 @@ enum StopAdmission {
 /// whole execution fence excludes newer pending input but includes the full
 /// header/active/attempts. The Truth writer preserves that pending authority.
 async fn transition(inner: &Arc<Inner>, change: Change) -> Result<CommittedFrame> {
+    if !matches!(&change, Change::Failed { .. }) {
+        inner.require_unparked()?;
+    }
     let (card, worker, provider) = (
         inner.card_id.to_string(),
         inner.worker_session_id.clone(),
@@ -200,6 +203,7 @@ fn require_running(
 pub(in crate::harness::run_loop) async fn select_stop(
     inner: &Arc<Inner>,
 ) -> Result<ExecutionEndTarget> {
+    inner.require_unparked()?;
     let (card, worker, provider) = (
         inner.card_id.to_string(),
         inner.worker_session_id.clone(),
@@ -222,6 +226,7 @@ pub(in crate::harness::run_loop) async fn select_human_stop(
     inner: &Arc<Inner>,
     source: &HumanInputSource,
 ) -> Result<ExecutionEndTarget> {
+    inner.require_unparked()?;
     let (card, worker, source) = (
         inner.card_id.to_string(),
         inner.worker_session_id.clone(),

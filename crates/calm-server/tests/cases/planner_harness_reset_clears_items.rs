@@ -155,7 +155,7 @@ async fn reset_planner_card_clears_persisted_harness_items() {
         .to_string();
         seeded_params.push(params.clone());
         boot.repo
-            .harness_item_insert(
+            .fixture_transcript_insert(
                 "runtime-before-reset",
                 boot.planner_card.id.as_str(),
                 boot.planner_card.track_id.as_str(),

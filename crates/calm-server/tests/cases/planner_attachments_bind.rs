@@ -292,8 +292,6 @@ async fn planner_run_lists_a_queued_messages_attachments_without_a_host_path() {
 /// waited for: an empty transcript would satisfy a grep without exercising anything.
 #[tokio::test]
 async fn the_transcript_route_does_not_carry_the_local_image_host_path() {
-    use calm_server::db::prelude::*;
-
     let boot = boot_with(idle_snapshot(vec![])).await;
     let card_id = boot.planner_card.id.as_str().to_string();
     let host_path = boot
@@ -303,7 +301,7 @@ async fn the_transcript_route_does_not_carry_the_local_image_host_path() {
         .into_owned();
 
     boot.repo
-        .harness_item_insert(
+        .fixture_transcript_insert(
             &boot.worker_session_id,
             &card_id,
             boot.planner_card.track_id.as_str(),

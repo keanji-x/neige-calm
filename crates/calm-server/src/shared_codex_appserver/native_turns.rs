@@ -3,10 +3,13 @@
 //! Source publication/invalidation takes this short lock inside the supervisor
 //! core lock. Observers never acquire core while holding it. No native call,
 //! repository operation or asynchronous cleanup runs under either lock.
+//! Detach leases fence one thread and fail recheck on source-generation changes.
 use super::*;
+mod detach;
 mod history;
 mod settlement;
 use crate::harness::backend::{ExecutionEndScope, ExecutionEndTarget, ExecutionInput};
+pub(crate) use detach::IdleDetachGuard;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::{Mutex as StdMutex, Weak};
@@ -126,6 +129,7 @@ struct PendingStart {
 
 struct NativeExecution {
     turn: String,
+    source: Weak<CodexAppServer>,
     input: NativeInput,
     ended: bool,
     terminal: Option<Value>,
@@ -176,6 +180,9 @@ impl ThreadSlot {
 struct State {
     source: Option<Weak<CodexAppServer>>,
     slots: HashMap<String, ThreadSlot>,
+    // The bool records a thread removal deferred until this lease drops.
+    detaching: HashMap<String, (Arc<()>, bool)>,
+    source_generation: u64,
 }
 
 impl State {
@@ -190,27 +197,6 @@ impl State {
             && source.upgrade().is_some_and(|client| {
                 !client.reader_finished() && !client.notification_stream_closed()
             })
-    }
-
-    fn invalidate(&mut self) {
-        self.source = None;
-        for slot in self.slots.values_mut() {
-            slot.settled_activity = None;
-            slot.unresolved_candidates.clear();
-            slot.retired.clear();
-            if let Some(current) = &mut slot.current {
-                current.input = NativeInput::Legacy;
-            }
-            if slot.steering.take().is_some() {
-                slot.unresolved = true;
-            }
-            if let Some(pending) = slot.pending.take() {
-                slot.unresolved = true;
-                if slot.current.as_ref().is_none_or(|current| current.ended) {
-                    slot.current = pending.candidate;
-                }
-            }
-        }
     }
 }
 
@@ -232,9 +218,7 @@ impl Drop for SourceRetirement {
         let mut state = self.owner.lock();
         // A dead source must still be able to retire itself; liveness is not
         // part of this identity comparison, and an old task cannot clear a new one.
-        if state.owns_source(&self.source) {
-            state.invalidate();
-        }
+        state.retire_source(&self.source);
     }
 }
 
@@ -305,6 +289,17 @@ impl NativeTurns {
         if !state.is_current(source) {
             return;
         }
+        if state.detaching.contains_key(thread) {
+            if state
+                .slots
+                .get(thread)
+                .and_then(|slot| slot.current.as_ref())
+                .is_some_and(|current| current.turn == turn)
+            {
+                state.retire_thread(thread);
+            }
+            return;
+        }
         let Some(slot) = state.slots.get_mut(thread) else {
             return;
         };
@@ -335,11 +330,7 @@ impl NativeTurns {
     }
 
     pub(super) fn publish(&self, client: &Arc<CodexAppServer>) {
-        let mut state = self.lock();
-        state.invalidate();
-        // Installed identity alone is not eligibility: every use reads the
-        // actual reader and original consumer, including pre-publication exit.
-        state.source = Some(Arc::downgrade(client));
+        self.lock().publish_source(client);
     }
 
     pub(super) fn prepare_start(
@@ -349,7 +340,7 @@ impl NativeTurns {
         input: NativeInput,
     ) -> Result<Arc<StartTicket>> {
         let mut state = self.lock();
-        if !state.is_current(&Arc::downgrade(client)) {
+        if !state.is_current(&Arc::downgrade(client)) || state.detaching.contains_key(thread) {
             return Err(CalmError::Conflict(
                 "Codex source changed before native issue".into(),
             ));
@@ -401,7 +392,7 @@ impl NativeTurns {
         input: &NativeSteer,
     ) -> Result<Arc<SteerTicket>> {
         let mut state = self.lock();
-        if !state.is_current(&Arc::downgrade(client)) {
+        if !state.is_current(&Arc::downgrade(client)) || state.detaching.contains_key(thread) {
             return Err(CalmError::Conflict(
                 "Codex source changed before supplemental issue".into(),
             ));
@@ -532,6 +523,9 @@ impl NativeTurns {
         if let Some(current) = &mut slot.current
             && current.turn == turn
         {
+            if ended {
+                current.source = source.clone();
+            }
             current.ended |= ended;
             if !ended {
                 current.control_visible = true;
@@ -556,6 +550,7 @@ impl NativeTurns {
                         .entry(turn.into())
                         .or_insert_with(|| NativeExecution {
                             turn: turn.into(),
+                            source: source.clone(),
                             input: NativeInput::Legacy,
                             ended: false,
                             terminal: None,
@@ -569,6 +564,7 @@ impl NativeTurns {
                 None => {
                     pending.candidate = Some(NativeExecution {
                         turn: turn.into(),
+                        source: source.clone(),
                         input: NativeInput::Legacy,
                         ended,
                         terminal,
@@ -579,6 +575,7 @@ impl NativeTurns {
         } else if !ended {
             let next = NativeExecution {
                 turn: turn.into(),
+                source: source.clone(),
                 input: NativeInput::Legacy,
                 ended: false,
                 terminal: None,
@@ -612,6 +609,7 @@ impl NativeTurns {
             .filter(|slot| !slot.unresolved && slot.pending.is_none() && slot.steering.is_none())
             .and_then(|slot| slot.current.as_ref());
         if !state.is_current(&Arc::downgrade(&client))
+            || state.detaching.contains_key(thread_id)
             || !current.is_some_and(|current| {
                 current.needs_control()
                     && current.turn == *native_turn_id
@@ -717,6 +715,7 @@ impl NativeTurns {
         let slot = state.slots.entry(thread).or_default();
         slot.current = Some(NativeExecution {
             turn,
+            source: Weak::new(),
             input: NativeInput::Legacy,
             ended: false,
             terminal: None,
@@ -725,7 +724,7 @@ impl NativeTurns {
     }
 
     pub(super) fn remove(&self, thread: &str) -> Option<()> {
-        self.lock().slots.remove(thread).map(|_| ())
+        self.lock().retire_thread(thread)
     }
 
     #[cfg(feature = "fixtures")]
@@ -745,7 +744,7 @@ impl NativeTurns {
     }
 
     pub(super) fn clear(&self) {
-        self.lock().slots.clear();
+        self.lock().clear_threads();
     }
 }
 

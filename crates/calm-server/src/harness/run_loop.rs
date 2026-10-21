@@ -273,6 +273,7 @@ pub(super) struct Inner {
     /// before the daemon returns a turn id; shutdown waits for that response,
     /// then interrupts the now-known turn after the loop has stopped.
     issuance: Mutex<()>,
+    parked: crate::harness::carrier_park::ParkState,
     /// Issuance kill-switch for dev-forced harnesses; only `pause_issuance_for_dev` sets it.
     issuance_paused: AtomicBool,
     provider_held: AtomicBool,
@@ -313,6 +314,14 @@ struct SteeredEntry {
 }
 
 impl Inner {
+    // Early refusal only; callers retain authoritative owner/current-carrier checks.
+    fn require_unparked(&self) -> Result<()> {
+        if self.parked.is_parked() {
+            return Err(CalmError::Conflict("carrier is parked".into()));
+        }
+        Ok(())
+    }
+
     /// Sample only when the bound Codex stop needs its fallback, under the caller's issuance lock.
     pub(super) async fn shutdown_last_turn(&self) -> Option<String> {
         self.last_turn_id.lock().await.clone()
@@ -1576,6 +1585,7 @@ fn inner_from_params(
         observations_closed: StdMutex::new(false),
         durable_observation: Mutex::new(()),
         issuance: Mutex::new(()),
+        parked: Default::default(),
         provider_held: AtomicBool::new(false),
         provider_hold_owns_block: AtomicBool::new(false),
         issuance_paused: AtomicBool::new(false),
@@ -1942,6 +1952,8 @@ async fn handle_steer(
     if_entry_rev: u32,
     actor: &ActorId,
 ) -> Result<SteerResult> {
+    let _issuance = inner.issuance.lock().await;
+    inner.require_unparked()?;
     // Read on this task: the phase leaves `TurnRunning` through the notification arm of the same
     // `select!`; a Stop landing after codex accepted is what `SteeredEntry` exists for.
     let running = inner.state.lock().await.clone();
@@ -2840,24 +2852,20 @@ async fn on_notification(
                 return persist_snapshot(inner).await;
             }
             let params_json = serde_json::to_string(&params)?;
-            inner
-                .repo
-                .harness_item_insert(
-                    &inner.worker_session_id,
-                    inner.card_id.as_str(),
-                    inner.track_id.as_str(),
-                    &thread_id,
-                    turn_id.as_deref(),
-                    // No `item_uuid` and no `item_type`: a plan is not an item.
-                    None,
-                    None,
-                    method,
-                    &params_json,
-                    None,
-                )
-                .await?;
+            insert_item_row(
+                inner,
+                &thread_id,
+                turn_id.as_deref(),
+                // No `item_uuid` and no `item_type`: a plan is not an item.
+                None,
+                None,
+                method,
+                &params_json,
+                None,
+            )
+            .await?;
             // Deliberately no transcript notification for a plan row: nothing reads plan rows, and the
-            // event would append a track-vcs commit per plan frame. `harness_items` is out-of-domain
+            // event would append a track-vcs commit per plan frame. Transcript rows use out-of-domain
             // storage, so a row without an event is legal here.
         }
         PlannerEventKind::ContextReplaced { turn_id } => {
@@ -2996,43 +3004,72 @@ async fn insert_item_row(
     params_json: &str,
     legacy_segments_json: Option<&str>,
 ) -> Result<i64> {
-    Ok(inner
-        .repo
-        .harness_item_insert(
-            &inner.worker_session_id,
-            inner.card_id.as_str(),
-            inner.track_id.as_str(),
-            thread_id,
-            turn_id,
-            item_uuid,
-            item_type,
-            method,
-            params_json,
-            legacy_segments_json,
-        )
-        .await?)
+    let owner = inner.clone();
+    let thread = thread_id.to_owned();
+    let turn = turn_id.map(str::to_owned);
+    let id = item_uuid.map(str::to_owned);
+    let kind = item_type.map(str::to_owned);
+    let method = method.to_owned();
+    let params = params_json.to_owned();
+    let segments = legacy_segments_json.map(str::to_owned);
+    write_in_tx_typed(inner.repo.as_ref(), move |tx| {
+        Box::pin(async move {
+            let mut carrier = crate::db::sqlite::conversation::current_native_fact_tx(
+                tx,
+                owner.card_id.as_str(),
+                &owner.worker_session_id,
+                true,
+            )
+            .await?;
+            Ok(crate::db::sqlite::record_native_item_tx(
+                &mut carrier,
+                &thread,
+                turn.as_deref(),
+                id.as_deref(),
+                kind.as_deref(),
+                &method,
+                &params,
+                segments.as_deref(),
+            )
+            .await?)
+        })
+    })
+    .await
 }
 
 async fn emit_presentation_changed(
     inner: &Arc<Inner>,
     cursor: calm_types::conversation_display::ConversationCursor,
 ) -> Result<()> {
-    inner
-        .repo
-        .log_pure_event(
-            ActorId::Kernel,
-            harness_event_scope(inner, "harness.presentation.changed"),
-            None,
-            &inner.events,
-            &inner.card_role_cache,
-            &inner.track_area_cache,
-            Event::HarnessPresentationChanged {
-                card_id: inner.card_id.clone(),
-                track_id: inner.track_id.clone(),
-                cursor,
-            },
-        )
-        .await?;
+    let card = inner.card_id.clone();
+    let worker = inner.worker_session_id.clone();
+    let scope = harness_event_scope(inner, "harness.presentation.changed");
+    let event = Event::HarnessPresentationChanged {
+        card_id: card.clone(),
+        track_id: inner.track_id.clone(),
+        cursor,
+    };
+    crate::db::write_with_actor_events_typed(
+        inner.repo.as_ref(),
+        None,
+        &inner.events,
+        &crate::state::WriteContext::new(
+            inner.card_role_cache.clone(),
+            inner.track_area_cache.clone(),
+        ),
+        move |tx| {
+            Box::pin(async move {
+                crate::db::sqlite::conversation::current_input_fact_carrier_tx(
+                    tx,
+                    card.as_str(),
+                    &worker,
+                )
+                .await?;
+                Ok(((), vec![(ActorId::Kernel, scope, event)]))
+            })
+        },
+    )
+    .await?;
     Ok(())
 }
 
@@ -3100,19 +3137,6 @@ async fn insert_projection_row(
     client_id: &str,
     segments: &[HarnessInputSegment],
 ) -> Result<i64> {
-    let stale = inner
-        .repo
-        .transcript_projection_delete(inner.card_id.as_str(), client_id)
-        .await?;
-    if stale > 0 {
-        tracing::debug!(
-            worker_session_id = %inner.worker_session_id,
-            card_id = %inner.card_id,
-            client_id,
-            stale,
-            "planner harness replaced a stale user-message projection"
-        );
-    }
     // Without the diff block: it is context the kernel prepends for codex, and no transcript
     // reader wants it.
     let text = segments
@@ -3131,21 +3155,33 @@ async fn insert_projection_row(
     });
     let params_json = serde_json::to_string(&params)?;
     let input_segments = serde_json::to_string(segments)?;
-    let item_db_id = inner
-        .repo
-        .harness_item_insert(
-            &inner.worker_session_id,
-            inner.card_id.as_str(),
-            inner.track_id.as_str(),
-            thread_id,
-            None,
-            Some(client_id),
-            Some("userMessage"),
-            "item/completed",
-            &params_json,
-            Some(&input_segments),
-        )
-        .await?;
+    let owner = inner.clone();
+    let thread = thread_id.to_owned();
+    let client = client_id.to_owned();
+    let (item_db_id, stale) = write_in_tx_typed(inner.repo.as_ref(), move |tx| {
+        Box::pin(async move {
+            let mut carrier = crate::db::sqlite::conversation::current_native_fact_tx(
+                tx,
+                owner.card_id.as_str(),
+                &owner.worker_session_id,
+                true,
+            )
+            .await?;
+            Ok(crate::db::sqlite::record_native_input_projection_tx(
+                &mut carrier,
+                &thread,
+                &client,
+                &params_json,
+                &input_segments,
+            )
+            .await?)
+        })
+    })
+    .await?;
+    if stale > 0 {
+        tracing::debug!(worker_session_id = %inner.worker_session_id, card_id = %inner.card_id,
+            client_id, stale, "planner harness replaced a stale user-message projection");
+    }
     Ok(item_db_id)
 }
 

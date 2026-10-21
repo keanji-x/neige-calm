@@ -755,3 +755,35 @@ async fn c1_fence_cancelled_compact_system_error_recovery_under_track() {
     );
     drop(track);
 }
+
+#[tokio::test]
+async fn carrier_quiescence_historical_entries_skip_held_resources() {
+    let fx = super::completed_commit_tests::Fixture::new().await;
+    fx.enqueue(vec![crate::harness::QueueEntry::user_message(
+        "pending".into(),
+        None,
+        vec![],
+    )])
+    .await;
+    let inner = &fx.harness.inner;
+    let _park = inner.parked.park().unwrap();
+    let _track =
+        crate::per_card_lock::lock_key(&inner.track_delete_locks, inner.track_id.as_str()).await;
+    let _tx = crate::db::sqlite::begin_immediate_tx(fx.repo.db())
+        .await
+        .unwrap();
+    let (compact, tick) = tokio::join!(
+        tokio::time::timeout(
+            Duration::from_millis(200),
+            compact_command::handle_compact(inner, compact_command::Source::Historical)
+        ),
+        tokio::time::timeout(
+            Duration::from_millis(200),
+            issuance::maybe_issue_turn(inner)
+        ),
+    );
+    assert!(
+        matches!(compact, Ok(Err(_))) && matches!(tick, Ok(Ok(()))),
+        "parked historical compact and tick must skip Track/SQL: {compact:?}, {tick:?}"
+    );
+}

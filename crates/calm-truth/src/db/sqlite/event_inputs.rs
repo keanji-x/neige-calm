@@ -82,6 +82,24 @@ pub async fn track_prefix(
     through: Option<i64>,
 ) -> Result<Vec<EventInputFact>> {
     let mut connection = pool.acquire().await?;
+    track_prefix_on(&mut connection, track, kinds, after, through).await
+}
+pub async fn track_prefix_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    track: &str,
+    kinds: &[&str],
+    after: i64,
+    through: Option<i64>,
+) -> Result<Vec<EventInputFact>> {
+    track_prefix_on(tx, track, kinds, after, through).await
+}
+async fn track_prefix_on(
+    connection: &mut SqliteConnection,
+    track: &str,
+    kinds: &[&str],
+    after: i64,
+    through: Option<i64>,
+) -> Result<Vec<EventInputFact>> {
     let mut query =
         QueryBuilder::<Sqlite>::new(format!("SELECT {COLUMNS} FROM events WHERE scope_track="));
     query.push_bind(track).push(" AND id>").push_bind(after);
@@ -96,7 +114,7 @@ pub async fn track_prefix(
     separated.push_unseparated(") ORDER BY id");
     query
         .build_query_as::<Stored>()
-        .fetch_all(&mut *connection)
+        .fetch_all(connection)
         .await?
         .into_iter()
         .map(decode)

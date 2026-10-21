@@ -160,7 +160,7 @@ async fn boot_with(plan: BootPlan) -> Boot {
             "_projection": true,
         });
         let segments = json!([{ "presentation": "user", "text": row.text, "attachments": [] }]);
-        repo.harness_item_insert(
+        repo.fixture_transcript_insert(
             "predecessor-session",
             card.id.as_str(),
             card.track_id.as_str(),
@@ -848,7 +848,7 @@ async fn an_echo_upgrades_the_projection_of_its_own_card_only() {
     let mut row_ids = Vec::new();
     for card in [&card_a, &card_b] {
         let id = repo
-            .harness_item_insert(
+            .fixture_transcript_insert(
                 "session",
                 card,
                 track.id.as_str(),
@@ -867,7 +867,7 @@ async fn an_echo_upgrades_the_projection_of_its_own_card_only() {
     let (row_a, row_b) = (row_ids[0], row_ids[1]);
 
     let upgraded = repo
-        .transcript_projection_upgrade(
+        .transcript_admitted_projection_upgrade(
             &card_a,
             client_id,
             Some("turn-a"),

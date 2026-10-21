@@ -479,6 +479,7 @@ async fn the_entry_asks_once_per_item_inside_its_transaction() {
 /// conversation reports in between is not the card's to ask.
 #[tokio::test]
 async fn a_superseded_session_asks_nothing() {
+    let (logs, _guard) = Logs::capture();
     let rig = rig(Profile::Planner).await;
     let mut tx = begin_immediate_tx(rig.repo.db()).await.unwrap();
     session_prepare_deferred_planner_tx(
@@ -512,8 +513,11 @@ async fn a_superseded_session_asks_nothing() {
     assert_eq!(old.state, WorkerSessionState::Superseded);
 
     rig.emit("item/completed", captured_params());
-    rig.settle().await;
-    assert!(rig.item_added(ITEM_ID).await, "the reply is stored");
+    wait_for("the retired native fact to be refused", || async {
+        logs.text().contains("no current content carrier")
+    })
+    .await;
+    assert!(!rig.item_added(ITEM_ID).await);
     let asks = rig.asks().await;
     assert!(asks.is_empty(), "{asks:?}");
     rig.harness.shutdown().await.unwrap();

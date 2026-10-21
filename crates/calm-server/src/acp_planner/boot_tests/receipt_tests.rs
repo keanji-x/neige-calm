@@ -196,3 +196,266 @@ async fn acp_same_key_replay_checks_exact_claim_without_spawn_setup_or_prompt() 
         session.shutdown().await.unwrap();
     }
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn carrier_quiescence_acp_issuance_before_active_turn_publication() {
+    let root = tempfile::tempdir().unwrap();
+    let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
+    let row = owner(&repo, root.path(), AgentProvider::OpenCode).await;
+    let host = Arc::new(AcpPlannerHost::new(
+            Some(serde_json::from_value(json!({"agents":[{
+                "provider":"opencode", "command":"/usr/bin/python3",
+                "args":["-u",concat!(env!("CARGO_MANIFEST_DIR"),"/tests/fixtures/acp_planner/agent.py")],
+                "env":{"ACP_FIXTURE_ROOT":root.path()},
+                "min_agent_version":"1.0.0"
+            }]})).unwrap()), root.path(), root.path().join("unused-shim"), root.path().join("mcp.sock")
+        ).unwrap());
+    let session = AcpPlannerSession::open(SessionParams {
+        engine: host.execution.engine().cloned(),
+        host,
+        provider: AgentProvider::OpenCode,
+        repo: repo.clone(),
+        seals: Arc::new(crate::thread_seals::ThreadSeals::new()),
+        worker_session_id: row.worker.clone(),
+        card_id: row.card.clone(),
+        track_id: row.track.clone(),
+        cwd: root.path().into(),
+        instructions: String::new(),
+    });
+    let (held, _receiver) = crate::harness::held_requests::channel();
+    session.mark_installed(held);
+    std::fs::write(root.path().join("scenario"), "reply").unwrap();
+
+    let pause = crate::test_seams::PausePoint::default();
+    crate::test_seams::install_pause_for_test(
+        "carrier-quiescence-acp-issuance",
+        &row.worker,
+        pause.clone(),
+    );
+    let session = Arc::new(session);
+    let idle = session.carrier_idle_for_detach().unwrap();
+    assert!(
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            session.start_turn(&row.thread, request("parked"), &[])
+        )
+        .await
+        .unwrap()
+        .is_err()
+    );
+    drop(idle);
+    let issuing = tokio::spawn({
+        let session = session.clone();
+        let thread = row.thread.clone();
+        async move {
+            session
+                .start_turn(&thread, request("quiescence"), &[])
+                .await
+        }
+    });
+    tokio::time::timeout(Duration::from_secs(20), pause.entered.notified())
+        .await
+        .unwrap();
+    assert!(session.active_turn_id_for_thread(&row.thread).is_none());
+    assert!(session.carrier_idle_for_detach().is_none());
+    let mut tx = repo.pool().begin().await.unwrap();
+    assert!(
+        crate::db::sqlite::acp_submission_unresolved_tx(&mut tx, &row.worker)
+            .await
+            .unwrap()
+    );
+    tx.rollback().await.unwrap();
+    pause.release.notify_one();
+    assert!(issuing.await.unwrap().is_ok());
+    session.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn carrier_quiescence_tool_call_vs_fence() {
+    tool_call_vs_fence(None).await;
+}
+#[tokio::test]
+async fn carrier_quiescence_registered_discovery_straddles_retirement() {
+    tool_call_vs_fence(Some("probe")).await;
+}
+#[tokio::test]
+async fn carrier_quiescence_plugin_discovery_straddles_retirement() {
+    tool_call_vs_fence(Some("plugin_missing")).await;
+}
+async fn tool_call_vs_fence(straddle: Option<&'static str>) {
+    use crate::mcp_server::registry::{
+        AppContext, CardIdentity, ConnectionIdentity, ToolDescriptor, ToolRegistry,
+    };
+    let root = tempfile::tempdir().unwrap();
+    let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
+    let row = owner(&repo, root.path(), AgentProvider::Codex).await;
+    let ctx = AppContext::new(
+        repo.clone(),
+        crate::event::EventBus::new(),
+        crate::state::WriteContext::new(
+            crate::card_role_cache::CardRoleCache::new(),
+            crate::track_area_cache::TrackAreaCache::new(),
+        ),
+        None,
+        Default::default(),
+        Default::default(),
+        root.path().into(),
+    );
+    let identity = ConnectionIdentity::CardBound(CardIdentity {
+        card_id: row.card.clone().into(),
+        role: CardRole::Planner,
+        provider: AgentProvider::Codex,
+        session_id: row.worker.clone(),
+        track_id: Some(row.track),
+        area_id: repo
+            .card_identity_get_by_session(&row.worker)
+            .await
+            .unwrap()
+            .unwrap()
+            .area_id
+            .to_string(),
+    });
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let mut registry = ToolRegistry::new();
+    registry.register(
+        ToolDescriptor {
+            name: "probe".into(),
+            description: "probe".into(),
+            input_schema: json!({"type":"object","properties":{}}),
+            annotations: None,
+            roles: &[CardRole::Planner],
+            listed_for: &[],
+        },
+        Arc::new({
+            let entered = entered.clone();
+            move |_, _, _| {
+                let entered = entered.clone();
+                Box::pin(async move {
+                    entered.notify_one();
+                    std::future::pending().await
+                })
+            }
+        }),
+    );
+    let registry = Arc::new(registry);
+    let invoke = {
+        let ctx = ctx.clone();
+        let registry = registry.clone();
+        let identity = identity.clone();
+        move || {
+            let (ctx, registry, identity) = (ctx.clone(), registry.clone(), identity.clone());
+            async move {
+                crate::mcp_server::transport::call_registered_tool(
+                    &ctx,
+                    &registry,
+                    &identity,
+                    None,
+                    "probe",
+                    json!({}),
+                )
+                .await
+            }
+        }
+    };
+    let call = tokio::spawn(invoke());
+    tokio::time::timeout(Duration::from_secs(5), entered.notified())
+        .await
+        .unwrap();
+    assert!(ctx.tool_calls.fence(&row.worker).is_err());
+    call.abort();
+    assert!(call.await.unwrap_err().is_cancelled());
+    let guard = ctx.tool_calls.fence(&row.worker).unwrap();
+    guard.require_idle().unwrap();
+    assert!(matches!(
+        tokio::time::timeout(Duration::from_secs(1), invoke()).await,
+        Ok(Err(_))
+    ));
+    drop(guard);
+    assert_eq!(ctx.tool_calls.entry_count(), 0);
+    ctx.tool_calls
+        .fence(&row.worker)
+        .unwrap()
+        .require_idle()
+        .unwrap();
+    assert_eq!(ctx.tool_calls.entry_count(), 0);
+    if let Some(name) = straddle {
+        // Discovery is provisional even when it returned an active Planner.
+        let pause = crate::test_seams::PausePoint::default();
+        crate::test_seams::install_pause_for_test(
+            "mcp-identity-discovered",
+            &row.worker,
+            pause.clone(),
+        );
+        let call = tokio::spawn({
+            let (ctx, registry, thread) = (ctx.clone(), registry.clone(), row.thread.clone());
+            async move {
+                crate::mcp_server::transport::dispatch_tools_call(
+                    &ctx,
+                    None,
+                    json!({"name": name, "_meta": {"threadId": thread}}),
+                    &ConnectionIdentity::DaemonTrust,
+                    &registry,
+                )
+                .await
+            }
+        });
+        tokio::time::timeout(Duration::from_secs(5), pause.entered.notified())
+            .await
+            .unwrap();
+        let fence = ctx.tool_calls.fence(&row.worker).unwrap();
+        sqlx::query("UPDATE worker_sessions SET state='superseded' WHERE id=?1")
+            .bind(&row.worker)
+            .execute(repo.pool())
+            .await
+            .unwrap();
+        drop(fence);
+        pause.release.notify_one();
+        let result = tokio::time::timeout(Duration::from_secs(1), call).await;
+        assert!(
+            matches!(result, Ok(Ok(Err(ref e))) if e.code == -32601 && e.message.contains("unknown thread_id")),
+            "retired discovery must fail authorization before either dispatch: {result:?}"
+        );
+        assert_eq!(ctx.tool_calls.entry_count(), 0);
+    }
+}
+
+#[tokio::test]
+async fn carrier_quiescence_retained_completed_start_is_not_pending() {
+    use crate::operation::{OperationKey, OperationRepo};
+    let root = tempfile::tempdir().unwrap();
+    let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
+    let row = owner(&repo, root.path(), AgentProvider::Codex).await;
+    let operations = crate::operation::SqlxOperationRepo::new(repo.db().clone());
+    let id = operations.insert_operation("planner-harness-start", OperationKey {
+        operation_key: "quiescence".into(), idempotency_key: None, payload_hash: "hash".into(),
+    }, json!({"canonical_activation_version":2,"card_id":row.card,"worker_session_id":row.worker})).await.unwrap();
+    sqlx::query("UPDATE worker_sessions SET spawn_op_id=?1 WHERE id=?2")
+        .bind(&id)
+        .bind(&row.worker)
+        .execute(repo.pool())
+        .await
+        .unwrap();
+    let mut tx = repo.pool().begin().await.unwrap();
+    assert!(
+        crate::operation::planner_start_fence::CardStartFence::require_settled_tx(
+            &mut tx, &row.card
+        )
+        .await
+        .is_err()
+    );
+    sqlx::query("UPDATE operations SET phase='succeeded',completed_at_ms=42 WHERE id=?1")
+        .bind(&id)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    crate::operation::planner_start_fence::CardStartFence::require_settled_tx(&mut tx, &row.card)
+        .await
+        .unwrap();
+    let retained: String =
+        sqlx::query_scalar("SELECT spawn_op_id FROM worker_sessions WHERE id=?1")
+            .bind(&row.worker)
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap();
+    assert_eq!(retained, id);
+}

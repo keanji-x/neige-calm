@@ -644,7 +644,7 @@ impl Fx {
         }
     }
 
-    /// One `turn/completed` transcript row through the outcome writer. Returns the row id.
+    /// Historical terminal evidence for read-model fixtures. Returns the row id.
     pub(crate) async fn turn_outcome(
         &self,
         ws: &str,
@@ -653,8 +653,19 @@ impl Fx {
         turn_id: &str,
         turn: Value,
     ) -> i64 {
-        self.repo_dyn
-            .harness_turn_outcome_put(ws, card, track, "th-fixture", turn_id, &turn.to_string())
+        self.repo
+            .fixture_transcript_insert(
+                ws,
+                card,
+                track,
+                "th-fixture",
+                Some(turn_id),
+                None,
+                None,
+                "turn/completed",
+                &turn.to_string(),
+                None,
+            )
             .await
             .unwrap()
     }
@@ -671,8 +682,8 @@ impl Fx {
         method: &str,
         params: Value,
     ) -> i64 {
-        self.repo_dyn
-            .harness_item_insert(
+        self.repo
+            .fixture_transcript_insert(
                 ws,
                 card,
                 track,

@@ -14,7 +14,8 @@ impl NativeTurns {
             .slots
             .get(thread)
             .ok_or_else(|| CalmError::Conflict("native start slot changed".into()))?;
-        let exact = state.is_current(&Arc::downgrade(client))
+        let exact = !state.detaching.contains_key(thread)
+            && state.is_current(&Arc::downgrade(client))
             && slot.pending.as_ref().is_some_and(|pending| {
                 Arc::ptr_eq(&pending.ticket, ticket)
                     && pending.candidate.is_none()

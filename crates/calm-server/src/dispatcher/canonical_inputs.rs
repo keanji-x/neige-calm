@@ -442,3 +442,18 @@ impl Inner {
         Ok(())
     }
 }
+
+impl Dispatcher {
+    /// Transactional form of the production catch-up prefix; no second event-kind list.
+    pub async fn carrier_quiescence_prefix_tx(
+        &self,
+        tx: &mut Transaction<'_, Sqlite>,
+        track: &TrackId,
+        after: i64,
+    ) -> Result<Vec<EventInputFact>> {
+        Ok(
+            event_inputs::track_prefix_tx(tx, track.as_str(), PLANNER_CATCH_UP_KINDS, after, None)
+                .await?,
+        )
+    }
+}

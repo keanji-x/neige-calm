@@ -1441,6 +1441,7 @@ async fn planner_tool_channel(
 
     let route_repo: Arc<dyn calm_server::db::RouteRepo> = boot.repo.clone();
     let ctx = Arc::new(AppContext {
+        tool_calls: Default::default(),
         terminal_interaction: Arc::new(tokio::sync::OnceCell::new()),
         repo: route_repo,
         track_vcs: None,

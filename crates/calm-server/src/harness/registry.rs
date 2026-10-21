@@ -116,6 +116,14 @@ impl Drop for HarnessReservation {
 }
 
 impl HarnessRegistry {
+    /// Missing/dormant/reserved is not positive native-idle evidence.
+    /// Caller holds the card start fence and drive lock while acquiring the owner proof.
+    pub fn carrier_quiescence_owner(&self, worker: &str) -> crate::error::Result<PlannerHarness> {
+        self.get(&worker.to_owned()).ok_or_else(|| {
+            crate::error::CalmError::Conflict("carrier has no live native owner".into())
+        })
+    }
+
     pub fn new() -> Self {
         Self::default()
     }

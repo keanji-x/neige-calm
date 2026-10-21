@@ -213,6 +213,7 @@ impl SchedulerPokes for Arc<crate::scheduler::Scheduler> {
 
 #[derive(Clone)]
 pub struct AppContext {
+    pub tool_calls: crate::mcp_server::transport::carrier_quiescence::ToolCallAdmission,
     pub terminal_interaction:
         Arc<tokio::sync::OnceCell<Arc<crate::terminal_interaction::TerminalInteraction>>>,
     /// Eventized writes route through this; the dyn-trait gate keeps sync-domain raw writes
@@ -280,6 +281,7 @@ impl AppContext {
             Arc::new(crate::report_series::SeriesResolver::new(sqlite_db.clone()));
         let route_repo: Arc<dyn RouteRepo> = repo;
         Arc::new(Self {
+            tool_calls: Default::default(),
             terminal_interaction: Arc::new(tokio::sync::OnceCell::new()),
             repo: route_repo,
             track_vcs,

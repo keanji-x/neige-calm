@@ -360,6 +360,7 @@ pub async fn boot_forge_e2e_fixture(
     assert!(operation_runtime_cell.set(runtime.clone()).is_ok());
 
     let ctx = Arc::new(AppContext {
+        tool_calls: Default::default(),
         terminal_interaction: Arc::new(tokio::sync::OnceCell::new()),
         repo: route_repo,
         track_vcs: sqlx_repo

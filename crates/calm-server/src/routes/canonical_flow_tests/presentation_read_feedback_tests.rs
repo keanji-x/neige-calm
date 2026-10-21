@@ -177,6 +177,7 @@ async fn canonical_run_reads_only_the_exact_current_terminal_timeout_and_still_s
         serde_json::to_value(&request).unwrap()
     );
     assert_eq!(run["history_replacement_supported"], false);
+    // Deliberately malformed historical attribution uses the raw history writer.
     for changed in ["session", "card", "track", "thread", "turn"] {
         let mut other = request.clone();
         match changed {
@@ -191,8 +192,8 @@ async fn canonical_run_reads_only_the_exact_current_terminal_timeout_and_still_s
             request: other.clone(),
             ended_at_ms: 2,
         };
-        fixture.repo.harness_turn_outcome_put(&other.session_id, &card, track_id, &other.thread_id, &other.turn_id,
-            &json!({"id":other.turn_id,"status":"interrupted","harness_interruption_reason":evidence}).to_string())
+        fixture.repo.fixture_transcript_insert(&other.session_id, &card, track_id, &other.thread_id, Some(&other.turn_id), None, None, "turn/completed",
+            &json!({"id":other.turn_id,"status":"interrupted","harness_interruption_reason":evidence}).to_string(), None)
             .await.unwrap();
         assert_eq!(
             read_run(&app, &cookie, &card).await["terminal_timeout"],

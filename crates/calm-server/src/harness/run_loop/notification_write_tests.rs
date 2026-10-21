@@ -162,3 +162,68 @@ async fn semantic_notifications_still_persist_recoverable_state_and_final_record
             && serde_json::from_str::<Value>(&row.params).unwrap()["status"] == "completed"));
     }
 }
+
+#[tokio::test]
+async fn carrier_quiescence_historical_plan_dispatch_refuses_committed_replacement() {
+    let f = Fixture::new().await;
+    let inner = &f.harness.inner;
+    let plan = |turn: &str| {
+        json!({"threadId":"thread-commit-wake","turnId":turn,
+        "plan":[{"step":"retained plan","status":"pending"}]})
+    };
+    deliver(&f, "turn/plan/updated", plan("before-rotation")).await;
+    let mut tx = crate::db::sqlite::begin_immediate_tx(f.repo.db())
+        .await
+        .unwrap();
+    crate::db::sqlite::session_supersede_and_start_tx(
+        &mut tx,
+        &inner.worker_session_id,
+        crate::session_projection_repo::WorkerSessionInit {
+            id: "plan-replacement".into(),
+            card_id: inner.card_id.to_string(),
+            kind: crate::session_projection_repo::WorkerSessionKind::SharedPlanner,
+            agent_provider: Some(crate::session_projection_repo::AgentProvider::Codex),
+            status: crate::session_projection_repo::WorkerSessionState::Idle,
+            terminal_run_id: None,
+            thread_id: None,
+            session_id: None,
+            active_turn_id: None,
+            handle_state_json: Some(
+                serde_json::to_value(
+                    calm_types::harness::snapshot::CanonicalHarnessSnapshot::dormant(0),
+                )
+                .unwrap(),
+            ),
+            spawn_op_id: None,
+            now_ms: crate::model::now_ms(),
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    let refused = on_notification(
+        inner,
+        &inner.live_claim.writer(),
+        planner_event(Notification::parse(
+            "turn/plan/updated".into(),
+            plan("after-rotation"),
+        )),
+    )
+    .await
+    .is_err();
+    let rows = f
+        .repo
+        .transcript_rows_of_thread(inner.card_id.as_str(), "thread-commit-wake")
+        .await
+        .unwrap();
+    assert_eq!(
+        rows.len(),
+        1,
+        "late native plan must not append after retirement"
+    );
+    assert_eq!(rows[0].turn_id.as_deref(), Some("before-rotation"));
+    assert!(
+        refused,
+        "production dispatch must refuse the retired plan owner"
+    );
+}

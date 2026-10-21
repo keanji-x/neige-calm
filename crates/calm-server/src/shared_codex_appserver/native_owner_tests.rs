@@ -666,3 +666,5 @@ async fn completion_blocked_after_observation_cannot_publish_from_a_retired_sour
         Some("current")
     );
 }
+
+mod detach_tests;

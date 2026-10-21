@@ -11,7 +11,7 @@ use axum::{
     http::{Request, StatusCode},
 };
 use calm_server::auth::Principal;
-use calm_server::db::{RepoOutOfDomain, RepoRead};
+use calm_server::db::RepoRead;
 use calm_server::ids::ActorId;
 use calm_server::{
     card_role_cache::CardRoleCache,
@@ -927,7 +927,7 @@ async fn a_summary_conversation_with_a_thread_to_preserve_is_dormant_and_keeps_i
     // per drained batch on its own schedule, and `harness_items.id` is `AUTOINCREMENT`.
     let sentinel = b
         .repo
-        .harness_item_insert(
+        .fixture_transcript_insert(
             "runtime-x",
             &card_id,
             &launchpad,

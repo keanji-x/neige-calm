@@ -165,6 +165,9 @@ pub(in crate::harness::run_loop) async fn start(
         }
     };
     let _issuance = inner.issuance.lock().await;
+    if inner.parked.is_parked() {
+        return Err(CalmError::Conflict("carrier is parked".into()));
+    }
     if inner.inputs.canonical().is_none()
         || inner.shutting_down.load(Ordering::SeqCst)
         || inner.backend.issuance_hold().is_some()

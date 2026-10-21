@@ -284,6 +284,9 @@ pub(super) async fn publish_issuance_error(inner: &Inner, error: &CalmError) {
 /// source entries carry no body, queue order, or reusable execution grant.
 pub(super) async fn tick(inner: &Arc<Inner>) -> Result<()> {
     let _issuance = inner.issuance.lock().await;
+    if inner.parked.is_parked() {
+        return Ok(());
+    }
     if inner.shutting_down.load(Ordering::SeqCst) {
         return Ok(());
     }
@@ -354,6 +357,9 @@ pub(super) async fn tick(inner: &Arc<Inner>) -> Result<()> {
         | super::issuance::TrackIssuance::Superseded => return Ok(()),
     };
     let _issuance = inner.issuance.lock().await;
+    if inner.parked.is_parked() {
+        return Ok(());
+    }
     if inner.shutting_down.load(Ordering::SeqCst) {
         return Ok(());
     }

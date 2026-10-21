@@ -260,23 +260,8 @@ impl OperationRepo for SqlxOperationRepo {
     }
 
     async fn abandoned_running_operations_on_boot(&self) -> Result<Vec<Operation>> {
-        let rows = sqlx::query(
-            r#"SELECT *
-               FROM operations
-               WHERE phase IN (
-                 'pending',
-                 'tx_committed',
-                 'app_server_interact',
-                 'spawn_started',
-                 'spawn_succeeded',
-                 'parked',
-                 'compensating'
-               )
-               ORDER BY created_at_ms ASC"#,
-        )
-        .fetch_all(self.pool.read_pool())
-        .await?;
-        rows.iter().map(operation_from_row).collect()
+        let mut connection = self.pool.read_pool().acquire().await?;
+        abandoned_running_operations_on(&mut connection).await
     }
 
     async fn abandoned_running_operations_steady_state(&self) -> Result<Vec<Operation>> {
@@ -805,4 +790,26 @@ fn sqlite_version_at_least(version: &str, want_major: u64, want_minor: u64) -> b
         .and_then(|p| p.parse::<u64>().ok())
         .unwrap_or(0);
     (major, minor) >= (want_major, want_minor)
+}
+
+pub(crate) async fn abandoned_running_operations_on(
+    connection: &mut sqlx::SqliteConnection,
+) -> Result<Vec<Operation>> {
+    let rows = sqlx::query(
+        r#"SELECT *
+               FROM operations
+               WHERE phase IN (
+                 'pending',
+                 'tx_committed',
+                 'app_server_interact',
+                 'spawn_started',
+                 'spawn_succeeded',
+                 'parked',
+                 'compensating'
+               )
+               ORDER BY created_at_ms ASC"#,
+    )
+    .fetch_all(connection)
+    .await?;
+    rows.iter().map(operation_from_row).collect()
 }

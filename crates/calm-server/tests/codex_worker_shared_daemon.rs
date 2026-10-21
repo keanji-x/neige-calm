@@ -241,6 +241,7 @@ async fn boot(start_shared: bool) -> Boot {
 
     let route_repo: Arc<dyn calm_server::db::RouteRepo> = repo.clone();
     let ctx = Arc::new(AppContext {
+        tool_calls: Default::default(),
         terminal_interaction: Arc::new(tokio::sync::OnceCell::new()),
         repo: route_repo,
         track_vcs: repo

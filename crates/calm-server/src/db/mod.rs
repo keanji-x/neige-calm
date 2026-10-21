@@ -782,19 +782,7 @@ pub trait ServerRepoOutOfDomainExt: ServerRepoReadExt {
     async fn terminal_delete(&self, id: &str) -> Result<()>;
     async fn shared_daemon_runtime_set(&self, update: SharedCodexDaemonUpdate) -> Result<()>;
     async fn shared_daemon_record_event(&self, action: &str, error: Option<&str>) -> Result<()>;
-    async fn harness_item_insert(
-        &self,
-        worker_session_id: &str,
-        card_id: &str,
-        track_id: &str,
-        thread_id: &str,
-        turn_id: Option<&str>,
-        item_uuid: Option<&str>,
-        item_type: Option<&str>,
-        method: &str,
-        params: &str,
-        input_segments: Option<&str>,
-    ) -> Result<i64>;
+
     async fn transcript_rows_of_thread(
         &self,
         card_id: &str,
@@ -811,7 +799,7 @@ pub trait ServerRepoOutOfDomainExt: ServerRepoReadExt {
     ) -> Result<i64>;
     async fn transcript_projection_id(&self, card_id: &str, client_id: &str)
     -> Result<Option<i64>>;
-    async fn transcript_projection_upgrade(
+    async fn transcript_admitted_projection_upgrade(
         &self,
         card_id: &str,
         client_id: &str,
@@ -922,35 +910,7 @@ where
             .await
             .map_err(Into::into)
     }
-    async fn harness_item_insert(
-        &self,
-        worker_session_id: &str,
-        card_id: &str,
-        track_id: &str,
-        thread_id: &str,
-        turn_id: Option<&str>,
-        item_uuid: Option<&str>,
-        item_type: Option<&str>,
-        method: &str,
-        params: &str,
-        input_segments: Option<&str>,
-    ) -> Result<i64> {
-        calm_truth::db::RepoOutOfDomain::harness_item_insert(
-            self,
-            worker_session_id,
-            card_id,
-            track_id,
-            thread_id,
-            turn_id,
-            item_uuid,
-            item_type,
-            method,
-            params,
-            input_segments,
-        )
-        .await
-        .map_err(Into::into)
-    }
+
     async fn transcript_rows_of_thread(
         &self,
         card_id: &str,
@@ -990,7 +950,7 @@ where
             .await
             .map_err(Into::into)
     }
-    async fn transcript_projection_upgrade(
+    async fn transcript_admitted_projection_upgrade(
         &self,
         card_id: &str,
         client_id: &str,
@@ -998,7 +958,7 @@ where
         item_uuid: &str,
         params: &str,
     ) -> Result<Option<i64>> {
-        calm_truth::db::RepoOutOfDomain::transcript_projection_upgrade(
+        calm_truth::db::RepoOutOfDomain::transcript_admitted_projection_upgrade(
             self, card_id, client_id, turn_id, item_uuid, params,
         )
         .await

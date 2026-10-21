@@ -57,7 +57,7 @@ async fn mixed_native_page_and_events_keep_presentation_cursor_separate_from_raw
     // Real native observation storage primitive; this fixture proves display, not END/delivery.
     let row = f
         .repo
-        .harness_item_insert(
+        .fixture_transcript_insert(
             &worker,
             &card,
             track["id"].as_str().unwrap(),

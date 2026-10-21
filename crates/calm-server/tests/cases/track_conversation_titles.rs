@@ -11,7 +11,7 @@ async fn conversation_title_planner_fresh_detail() {
             .fetch_one(b.repo.db().read_pool())
             .await
             .unwrap();
-    b.repo.harness_item_insert("title-runtime", &card, &track, "title-thread", None, None,
+    b.repo.fixture_transcript_insert("title-runtime", &card, &track, "title-thread", None, None,
         Some("userMessage"), "item/completed",
         &json!({"item":{"content":[{"type":"text","text":"Original planner title\nsecond line"}]}}).to_string(), None).await.unwrap();
     let (status, body) = b
@@ -59,7 +59,7 @@ async fn planner(b: &Boot, track: &str) -> String {
 
 async fn input(b: &Boot, track: &str, card: &str, segments: Option<Value>, text: &str) -> i64 {
     b.repo
-        .harness_item_insert(
+        .fixture_transcript_insert(
             "retired-title-runtime",
             card,
             track,

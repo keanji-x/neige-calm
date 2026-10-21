@@ -83,7 +83,20 @@ pub async fn acp_submission_get(
     Ok(sqlx::query_as(concat!("SELECT ","worker_session_id,client_id,turn_id,thread_id,native_session_id,input_json,state,outcome_j","son FROM acp_submissions WHERE worker_session_id=?1 AND client_id=?2")).bind(worker).bind(client).fetch_optional(pool).await?)
 }
 pub async fn acp_submission_unresolved(pool: &SqlitePool, worker: &str) -> Result<bool> {
-    Ok(sqlx::query_scalar::<_,i64>("SELECT EXISTS(SELECT 1 FROM acp_submissions WHERE worker_session_id=?1 AND state IN ('sending','unknown'))").bind(worker).fetch_one(pool).await? != 0)
+    let mut connection = pool.acquire().await?;
+    acp_submission_unresolved_on(&mut connection, worker).await
+}
+pub async fn acp_submission_unresolved_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    worker: &str,
+) -> Result<bool> {
+    acp_submission_unresolved_on(tx, worker).await
+}
+async fn acp_submission_unresolved_on(
+    connection: &mut sqlx::SqliteConnection,
+    worker: &str,
+) -> Result<bool> {
+    Ok(sqlx::query_scalar::<_,i64>("SELECT EXISTS(SELECT 1 FROM acp_submissions WHERE worker_session_id=?1 AND state IN ('sending','unknown'))").bind(worker).fetch_one(connection).await? != 0)
 }
 /// The persisted strings of every provider speaking ACP: only their sessions own submissions.
 fn acp_provider_db_strings() -> String {

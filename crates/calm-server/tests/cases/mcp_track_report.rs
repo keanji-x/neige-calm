@@ -371,6 +371,7 @@ async fn boot_with_scope(
     let track_area_cache = calm_server::track_area_cache::TrackAreaCache::new();
     repo.seed_track_area_cache(&track_area_cache).await.unwrap();
     let ctx = Arc::new(AppContext {
+        tool_calls: Default::default(),
         terminal_interaction: Arc::new(tokio::sync::OnceCell::new()),
         repo: route_repo,
         track_vcs: repo

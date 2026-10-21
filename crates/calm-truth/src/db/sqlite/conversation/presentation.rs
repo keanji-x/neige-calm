@@ -63,15 +63,11 @@ pub async fn observe_native_item_tx(
     if erased {
         return Ok(None);
     }
-    let track: String = sqlx::query_scalar("SELECT track_id FROM cards WHERE id=?1")
-        .bind(carrier.card_id())
-        .fetch_one(&mut **tx)
-        .await?;
+    let mut proof =
+        super::current_native_fact_tx(tx, carrier.card_id(), carrier.worker_session_id(), true)
+            .await?;
     let row = super::super::transcript_projection::insert_transcript_row(
-        &mut **tx,
-        carrier.worker_session_id(),
-        carrier.card_id(),
-        &track,
+        &mut proof,
         thread,
         turn,
         item,

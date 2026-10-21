@@ -41,6 +41,9 @@ pub(super) async fn handle_replace_admitted(
     source: Option<crate::conversation_inputs::HistoricalHumanSource>,
 ) -> Result<DurableAck> {
     let _issuance = inner.issuance.lock().await;
+    if inner.parked.is_parked() {
+        return Err(CalmError::Conflict("carrier is parked".into()));
+    }
     if let Some(source) = &source {
         source
             .require_card(inner.repo.as_ref(), inner.card_id.as_str())

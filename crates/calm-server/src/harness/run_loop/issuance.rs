@@ -5,6 +5,9 @@ use calm_types::harness::budget::FrozenContextUsage;
 use provider::control::{TurnEdit, TurnRequest, TurnStartOutcome};
 
 pub(super) async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
+    if inner.require_unparked().is_err() {
+        return Ok(());
+    }
     input_commit::resume(inner).await?;
     // Dev-forced harnesses run against the replay binary's stub app-server.
     if inner.issuance_paused.load(Ordering::SeqCst) {
@@ -222,6 +225,9 @@ pub(super) async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
         return Ok(());
     };
     let _issuance_guard = inner.issuance.lock().await;
+    if inner.parked.is_parked() {
+        return Ok(());
+    }
     // A lifecycle write holds this fence through its commit. Observations that
     // arrive later remain queued until the person explicitly restores the card.
     if inner
@@ -648,6 +654,7 @@ pub(super) enum TrackIssuance {
 /// No card, drive or issuance lock may be held while waiting here. Idle remains
 /// cleanable; only the transition to durable turn_pending excludes clean.
 pub(super) async fn lock_track_for_issuance(inner: &Arc<Inner>) -> Result<TrackIssuance> {
+    inner.require_unparked()?;
     let mut shutdown = inner.shutdown.subscribe();
     // Recovery holds track while awaiting this owner's Release acknowledgement.
     // A retained Compact must refuse a failed owner before waiting on that lock.

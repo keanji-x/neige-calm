@@ -161,7 +161,7 @@ async fn transcript_route_returns_rows_in_order_and_paginates() {
     ] {
         let id = boot
             .repo
-            .harness_item_insert(
+            .fixture_transcript_insert(
                 "runtime-rest",
                 boot.planner_card.id.as_str(),
                 boot.planner_card.track_id.as_str(),
@@ -264,7 +264,7 @@ async fn transcript_route_returns_strict_structured_input_segments() {
     ]"#;
     let row_id = boot
         .repo
-        .harness_item_insert(
+        .fixture_transcript_insert(
             "runtime-presentation",
             boot.planner_card.id.as_str(),
             boot.planner_card.track_id.as_str(),
@@ -343,7 +343,7 @@ async fn transcript_desc_cursor_uses_less_than_after_id() {
         let uuid = format!("item-desc-{index}");
         let id = boot
             .repo
-            .harness_item_insert(
+            .fixture_transcript_insert(
                 "runtime-desc",
                 boot.planner_card.id.as_str(),
                 boot.planner_card.track_id.as_str(),
@@ -418,7 +418,7 @@ async fn transcript_route_preserves_mcp_tool_call_camelcase() {
     let boot = boot().await;
     let started_id = boot
         .repo
-        .harness_item_insert(
+        .fixture_transcript_insert(
             "runtime-mcp",
             boot.planner_card.id.as_str(),
             boot.planner_card.track_id.as_str(),
@@ -443,7 +443,7 @@ async fn transcript_route_preserves_mcp_tool_call_camelcase() {
         .unwrap();
     let completed_id = boot
         .repo
-        .harness_item_insert(
+        .fixture_transcript_insert(
             "runtime-mcp",
             boot.planner_card.id.as_str(),
             boot.planner_card.track_id.as_str(),
@@ -500,7 +500,7 @@ async fn transcript_route_page_budget_skips_plan_rows() {
     let insert =
         async |uuid: Option<String>, item_type: Option<&str>, method: &str, params: String| {
             boot.repo
-                .harness_item_insert(
+                .fixture_transcript_insert(
                     "runtime-budget",
                     boot.planner_card.id.as_str(),
                     boot.planner_card.track_id.as_str(),
@@ -610,7 +610,7 @@ async fn transcript_route_returns_turn_outcome_rows() {
                         method: &str,
                         params: String| {
         boot.repo
-            .harness_item_insert(
+            .fixture_transcript_insert(
                 "runtime-outcome",
                 boot.planner_card.id.as_str(),
                 boot.planner_card.track_id.as_str(),

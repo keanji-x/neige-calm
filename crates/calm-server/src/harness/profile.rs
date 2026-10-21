@@ -1,12 +1,12 @@
 //! Conversation identity and capabilities, shared by creation and recovery.
 use crate::model::{Card, CardRole};
 use crate::session_projection_repo::AgentProvider;
-use crate::validation::{ASSISTANT_PROVIDER_PAYLOAD_KEY, PLANNER_PROVIDER_PAYLOAD_KEY};
+#[cfg(test)]
+use crate::validation::PLANNER_PROVIDER_PAYLOAD_KEY;
 pub use calm_types::harness::HarnessProfile;
 use serde_json::Value;
 
-pub(crate) const PLAIN_CHAT_MARKER: &str = "plain_chat";
-pub(crate) const ASSISTANT_MARKER: &str = "assistant";
+pub(crate) use calm_truth::planner_binding::{ASSISTANT_MARKER, PLAIN_CHAT_MARKER};
 
 /// Server-owned admission/capability helpers for the shared persisted vocabulary.
 pub(crate) trait HarnessProfileExt: Sized {
@@ -17,25 +17,7 @@ pub(crate) trait HarnessProfileExt: Sized {
 
 impl HarnessProfileExt for HarnessProfile {
     fn from_shape(kind: &str, role: CardRole, payload: &Value) -> Option<Self> {
-        if kind != "codex" {
-            return None;
-        }
-        match role {
-            CardRole::Planner => Some(Self::Planner),
-            CardRole::Worker
-                if payload.get("harness_profile").and_then(Value::as_str)
-                    == Some(PLAIN_CHAT_MARKER) =>
-            {
-                Some(Self::PlainChat)
-            }
-            CardRole::Assistant
-                if payload.get("harness_profile").and_then(Value::as_str)
-                    == Some(ASSISTANT_MARKER) =>
-            {
-                Some(Self::Assistant)
-            }
-            _ => None,
-        }
+        calm_truth::planner_binding::profile_from_shape(kind, role, payload)
     }
 
     fn session_kind(self) -> crate::session_projection_repo::WorkerSessionKind {
@@ -57,57 +39,36 @@ impl HarnessProfileExt for HarnessProfile {
     }
 }
 
-/// A harness card's identity at the construction boundary: what it is and which backend runs it.
+/// Server admission wraps the Truth decoder; backend capability remains server-owned.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PlannerBinding {
     pub profile: HarnessProfile,
     pub provider: AgentProvider,
 }
-
 impl PlannerBinding {
-    /// The row's declared contract must agree with the card's binding. Current
-    /// card/track identity and active ownership are checked by the caller.
-    pub(crate) fn matches_session_contract(
-        &self,
-        session: &calm_types::worker::WorkerSession,
-    ) -> bool {
-        use calm_types::worker::{SessionMode, WorkerContract, WorkerProviderKind};
-        let contract = match self.profile {
-            HarnessProfile::Planner => WorkerContract::Planner,
-            HarnessProfile::Assistant => WorkerContract::Assistant,
-            HarnessProfile::PlainChat => WorkerContract::Executor,
-        };
-        session.mode == SessionMode::Resumable
-            && session.contract == contract
-            && WorkerProviderKind::from(&self.provider) == session.provider
-    }
-
-    /// A Planner card names its backend in the server-owned `planner_provider` key; missing or
-    /// unknown makes it not a harness card (fail closed). Assistant names its own backend; PlainChat is Codex.
-    pub(crate) fn from_card(card: &Card, role: CardRole) -> Option<Self> {
+    pub fn from_card(card: &Card, role: CardRole) -> Option<Self> {
         Self::from_shape(&card.kind, role, &card.payload)
     }
-
-    pub(crate) fn from_shape(kind: &str, role: CardRole, payload: &Value) -> Option<Self> {
-        let profile = HarnessProfile::from_shape(kind, role, payload)?;
-        let provider = match profile {
-            HarnessProfile::Planner => {
-                let stored = payload.get(PLANNER_PROVIDER_PAYLOAD_KEY)?;
-                serde_json::from_value(stored.clone()).ok()?
-            }
-            HarnessProfile::Assistant => {
-                serde_json::from_value(payload.get(ASSISTANT_PROVIDER_PAYLOAD_KEY)?.clone()).ok()?
-            }
-            HarnessProfile::PlainChat => AgentProvider::Codex,
-        };
-        if profile == HarnessProfile::Assistant
-            && !crate::harness::backend::PlannerBackend::metadata(&provider)
+    pub fn from_shape(kind: &str, role: CardRole, payload: &Value) -> Option<Self> {
+        let binding = calm_truth::planner_binding::PlannerBinding::from_shape(kind, role, payload)?;
+        if binding.profile == HarnessProfile::Assistant
+            && !crate::harness::backend::PlannerBackend::metadata(&binding.provider)
                 .capabilities
                 .managed_conversation
         {
             return None;
         }
-        Some(Self { profile, provider })
+        Some(Self {
+            profile: binding.profile,
+            provider: binding.provider,
+        })
+    }
+    pub fn matches_session_contract(&self, session: &calm_types::worker::WorkerSession) -> bool {
+        calm_truth::planner_binding::PlannerBinding {
+            profile: self.profile,
+            provider: self.provider.clone(),
+        }
+        .matches_session_contract(session)
     }
 }
 

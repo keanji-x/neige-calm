@@ -233,7 +233,7 @@ can invoke it twice before committing; all writes roll back together.
   do not prove it. Caller supplies protected owner proofs for non-SQL predicates; durable ones are
   rechecked before writes. Do not transfer work or manufacture END.
 * In the supplied transaction supersede the old worker, revoke the card token and **all**
-  card-associated session mirror hashes (including stale retired mirrors), create an idle V2 worker
+  card-associated session mirror hashes (including stale retired mirrors), create an idle canonical worker (runtime frame V5)
   with new immutable binding/empty checkpoint, absent native ids/spawn claim/token, and CAS
   pointer/role/provider payload. Preserve this card's watermark and original history. Reuse
   carrier/save rules (`T/conversation/carrier.rs:105,147`); execution fence alone omits pending and
@@ -259,7 +259,10 @@ can invoke it twice before committing; all writes roll back together.
   outside an SQL transaction (including MCP maintenance VACUUM and pure external handler effects),
   retain existing handshake/per-call admission. U1a changes none of these operations. U1b must
   refuse rotation while the carrier has an active native turn **or an in-flight MCP tool call**,
-  using the existing owner of that state, including native issuance before active-turn publication.
+  using the native owner and the new per-worker `ToolCallAdmission` owner in MCP transport,
+  including native issuance before active-turn publication. Both registered kernel and plugin
+  calls retain admission until completion/cancellation. A rotation fence requires zero in-flight calls at acquisition and recheck, and refuses new calls; the entry is removed after the
+  last call/fence drops, rather than living for the AppContext lifetime.
   An idle session is not proof: MCP admission allows idle sessions and ACP registration precedes
   publication of its active turn (`T/session_row.rs:161`, `S/acp_planner/session.rs:261,412`).
 * Class C: work durably admitted before retirement (forge action payloads, recorded approvals/asks,
@@ -270,10 +273,95 @@ can invoke it twice before committing; all writes roll back together.
 * Cold boot rejects retired rows and seeds committed roles. Fresh credentials appear only on
   next authorized retained activation; receipts never contain raw tokens.
 
+U1b-pre supplies owner-local prerequisites, not replacement, revocation or publication.
+Rotation **parks issuance**, never ingress. Under each owner's existing issuance lock,
+verify its idle predicate and install an identity-bearing park token, then release the
+lock. Acquisition and recheck use the same predicate, including source `is_current`
+(reader/stream liveness) and source generation. Harness ticks and explicit issuance,
+Codex start/steer/control, ACP/Claude issue entries and MCP admission refuse or skip a
+parked owner. A parked canonical tick returns before opening SQL. No quiescence owner
+retains a lock guard through the caller's commit/publication window; dropping a token
+clears only that token's park, never a newer one. Parks are independent per card; #2774
+can park two cards without adding a lock order.
+
+Issuance entries check the park, or enter MCP admission, **before awaiting a
+resource rotation may hold**: card/drive/Track lifecycle locks, dispatcher push
+admission or the SQL writer. An entry may first await its own brief issuance/issue
+mutex (the mutex under which its park is installed), or make a provisional identity
+discovery read. Discovery grants no authority: MCP resolves identity again under
+`ToolCallAdmission`, requires the same worker and rejects retired/non-current sessions
+on both registered and plugin dispatch. Harness Track admission checks the park
+before repository/Track waits, releases any brief issuance guard before taking Track,
+and retains the authoritative park/current-carrier checks under issuance afterwards.
+Never invert the existing Track-before-issuance lock order to make an early check.
+
+Human Retry is content ingress, so its authenticated resolution transaction may enqueue an
+explicit successor while parked; it neither issues nor transfers execution. Resolution and
+repeat-source admission resolve the exact transaction-current carrier; receipt replay keeps
+its original attribution even after supersession. Successor claiming/sending uses the ordinary
+parked canonical tick and issuance path. Codex composes the park refusal into the same native
+source/activity/ticket predicate run after each asynchronous admission and immediately before
+send. ACP and Claude retain their issuance mutex across admission/send, so that same owner
+prevents a park from appearing between its early refusal and final admission. Do not add a
+second retry-specific busy checker.
+
+Notifications, native items, completion, status, questions and held approvals keep flowing
+through the real serial run loop and shared broadcast while parked. There is no in-memory
+hold, poison, exclusion queue or replay substitute. Ingress progress means parking itself
+adds no stall: with no writer transaction open, sibling and leased-thread notifications
+and held approvals are consumed and persisted without `input_lost`. Any held SQL writer
+can already stall that serial consumer and overflow the broadcast; that separate defect
+is tracked as “Harness can lose native notifications while the SQL writer is held”. U1b's
+rotation transaction must therefore be **short and SQL-only**, with no provider/network
+await. The park window is not permission to hold a writer during readiness or publication.
+
+Acquire and asynchronously recheck `IdleCarrierOwner` **before opening the caller's writer
+transaction**: canonical lifecycle checking opens its own `BEGIN IMMEDIATE`. Recheck durable
+predicates inside the caller's transaction. No asynchronous owner recheck runs inside it.
+Keep tokens through commit/publication, then invalidate old live/dormant/reserved slots and
+native subscriptions. Nonpersisted live broadcasts from retired sources are acceptable only
+when postcommit publication invalidation drops their old live writers and mappings.
+
+Ingress writes obey a type rule (S = server, T = Truth; paths relative to `src/`):
+
+| Class / boundary | Required transaction authority | Durable rotation comparison |
+| --- | --- | --- |
+| A: live native transcript, terminal outcome and canonical native presentation | Truth's raw insertion requires `CurrentCarrier<'tx>`. Only the transaction-current native carrier resolver constructs it. It exclusively borrows that transaction's connection and carries the resolved worker/card/Track, so an unfenced caller cannot supply a pool, another transaction or another identity. The repo-level pool insertion API is removed. Historical native dispatch, including `turn/plan/updated`, obeys the same rule as canonical dispatch. | Raw contents and presentation identities/content, including same-sequence updates and terminal rows |
+| A: runtime metadata, input receipts, END and attributed events/asks | Existing checkpoint/frame resolver or actor-authorized event transaction remains mandatory. These contracts also protect execution/checkpoint and source authorization; the native transcript proof does not replace them. | Full checkpoint/snapshot, open asks, native binding/registration and relevant event prefix |
+| C: receipt reconstruction | The separately named `transcript_receipt_restore` reconciles receipt-owned identities in original order. Its internal reconstruction insert is private to the projection owner; no raw reconstruction insertion is exposed to live callers. Test seeds use a fixtures-only seam. | Original admitted identity and body, including restored rows |
+| C: admitted input projection upgrade | The explicitly named `transcript_admitted_projection_upgrade` updates only an existing pending projection. It cannot create a native row when no admitted projection exists. | Original projection identity and updated contents |
+| C: publication of committed facts | Phase/item events publish the original committed snapshot/raw row and worker identity; they admit no new native fact. | Original attributed fact/event |
+
+A receipt's original worker/card/Track identity is immutable. Reconstruction does not grant
+replacement execution. The proof's private constructor and exclusive transaction borrow enforce
+the live insertion invariant as callers grow; this table is explanatory, not an enumerated fence.
+New native ingress uses the existing proof-taking entry without adding a policy list or test-name
+pin. Ordinary later test/file additions need no changes to this rule. Focused retirement tests
+exercise production dispatch; CI and the task gate own their declared replay frequency.
+
+`ExpectedCarrier` must include the exact current card/Track/worker and binding, full serialized
+snapshot/execution fence, accepted event prefix **and all relevant ingress event arrivals**,
+per-card watermark, complete presentation/raw-row identity and content revision (max sequence
+alone misses in-place updates and terminal rows), open ask state, native binding/registration,
+retry submission rows (including root-plan references and effective/retired claims), retry-intent
+relations and their exact resolution receipts, and caller-owned role revision when applicable.
+These are required CAS inputs, not a claim that `replace_idle_carrier_tx` is already implemented. A committed ingress write precedes
+rotation and invalidates that comparison, or follows rotation and is refused as retired.
+
+Positive Codex evidence requires a current source, a known ended execution, and no pending,
+steering or unresolved slot; `active_turn_id == None` and absent owner handles are insufficient.
+`CardStartFence::require_settled_tx` returns a typed `SettledCardStart` from the existing operation
+recovery inventory. Caller retains the card-start and drive guards: a retained `spawn_op_id`
+whose operation completed is history, not a live reservation. ACP unresolved submission and
+dispatcher event-prefix transaction forms reuse the original query predicates/event kinds.
+Truth owns the persisted `PlannerBinding` decoder; the server admission wrapper retains its
+backend `managed_conversation` capability check. The current canonical runtime frame is V5
+(with explicit released V2/V3/V4 conversion); its header version is independent of submission proof/render-plan versions.
+
 The caller acquires sorted card fences, then drive → Track lifecycle → resume locks as applicable
 (`S/planner_hibernation.rs:97,104`); no new inverse Track-first lock order. Hold dispatcher push admission
-plus native issuance and ingress exclusion through final recheck/commit/publication. Extend existing owner
-guard contracts, not a parallel busy checker. `lock_if_idle` checks issuance/ingress but is insufficient alone
+plus native issuance parks through final recheck/commit/publication. Extend existing owner
+park contracts, not a parallel busy checker. `lock_if_idle` checks issuance/ingress but is insufficient alone
 (`S/harness/run_loop/hibernation.rs:9,107,113`). Protect ask creation, event arrival and unfinished native
 registration through shared guards or transaction-current SQL admission. Reuse dispatch qualification/prefix
 queries (`S/dispatcher/canonical_inputs.rs:278,324`), not a second event-kind list.
@@ -391,31 +479,31 @@ behind generic “cache cleanup”.
 
 ## 7. Ordered slices and gates
 
-Every row is a separate closed-outcome PR, L2 (persistence/authority); estimates include tests/generated
-artifacts and target ≤1,500 changed lines. If measured larger, split by provider/entry before accepting work;
-never split acceptance from its working retained activation. No requirement to wait for all providers to
-implement the generic primitive. #2774 product release still waits for complete canonical cutover, as its
-owner states. U10 is deleted, not reassigned here.
+Every row is a separate closed-outcome PR, L2 (persistence/authority). Persistence and credential
+slices stay at or below 1,500 changed lines including code/tests/generated artifacts; U1b-pre's
+design-document update is excluded from its measured code/test cap. The three approved combined
+provider/entry/deletion rows may reach approximately 2,500 lines. Split only when the applicable
+limit is actually exceeded, and never separate acceptance from working retained activation.
+#2774 product release waits for complete canonical cutover; U10 is deleted, not reassigned here.
+U1b-pre is delivered before the one-card replacement primitive; the table has fifteen rows.
 
 | Order / slice / target lines | Real dependencies | Owning files / closed production acceptance |
 | --- | --- | --- |
 | 1 / U1a current-carrier authorization fences / 900 | Existing Codex canonical Planner | MCP transaction owners/transport, native pre-send owners; stale already-admitted mutation and native-registration race fail after retirement; no new tool |
-| 2 / U1b one-card tx rotation + publication hooks / 1,400 | U1a; owner quiescence/exclusion proofs in §5 | Truth conversation/carrier sibling, session/token/link owners, registry/publication hooks; full-snapshot/prefix CAS, both token stores, rollback, original history, Codex same-role next-send and cold boot. Twice in one test tx; no product two-card flow/revision schema |
-| 3 / U2 imported provenance schema/read / 1,200 | #2671 imported representation agreement | New migration, Truth presentation/read, types/display/generated + consumers; schema-only, no population; echo/missing-native-id, mixed order/cursors, redaction/erasure |
-| 4 / U3 Codex Assistant canonical create/activate / 1,400 | Existing Codex lifecycle; U1b for rotation integration | Assistant route, Truth creation receipt, retained/profile/attachment owners; authenticated real HTTP card+carrier+accept+ACK, side context, outage/replay and correct tools; no compensate/requeue |
-| 5 / U4 Claude Assistant create/activate / 1,200 | U3; external Claude track slices 2–5 | Same entry/profile with actual Claude send/END/retained/control; lost reply/no resend, cold resume; Planner work is external |
-| 6 / U5 ACP canonical host integration / 1,400 | External #2836 M3a lazy new/load/receipts/no-resend/driver join; H1 if needed for stronger quiescence | Host backend dispatch/END, retained/control/resume; real local ACP peer qualified original-worker send/load/Stop/compact/END. No ACP transport reimplementation |
-| 7 / U6 ACP Planner/Assistant admission / 800 | U3,U5; Claude slice 5 for shared predicate | Existing creation_plan/dormant + Assistant entry; empty/first input/outage, no V1 fallback |
+| 2 / U1b-pre owner-local quiescence prerequisites / 1,500 | U1a | MCP in-flight fence/bounded cleanup, positive native/harness safe-detach guards, unresolved-start typed tx proof, ACP/event-prefix tx queries, Truth binding decoder with server capability admission; production races, retained completed start and fence/idle mutation evidence; no replacement/revocation/publication |
+| 3 / U1b one-card tx rotation + publication hooks / 1,400 | U1a, U1b-pre; protected owner proofs in §5 | Truth conversation/carrier sibling, session/token/link owners, registry/publication hooks; full-snapshot/prefix CAS, both token stores, rollback, original history, Codex same-role next-send and cold boot. Twice in one test tx; no product two-card flow/revision schema |
+| 4 / U2 imported provenance schema/read / 1,200 | #2671 imported representation agreement | New migration, Truth presentation/read, types/display/generated + consumers; schema-only, no population; echo/missing-native-id, mixed order/cursors, redaction/erasure |
+| 5 / U3 Codex Assistant canonical create/activate / 1,400 | Existing Codex lifecycle; U1b for rotation integration | Assistant route, Truth creation receipt, retained/profile/attachment owners; authenticated real HTTP card+carrier+accept+ACK, side context, outage/replay and correct tools; no compensate/requeue |
+| 6 / U4 Claude Assistant create/activate / 1,200 | U3; external Claude track slices 2–5 | Same entry/profile with actual Claude send/END/retained/control; lost reply/no resend, cold resume; Planner work is external |
+| 7 / U5+U6 ACP host integration + Planner/Assistant admission / 2,200 | U3; external #2836 M3a lazy new/load/receipts/no-resend/driver join; H1 if stronger quiescence needed; Claude slice 5 for shared predicate | Host backend dispatch/END, retained/control/resume and existing creation_plan/dormant + Assistant entry; real local ACP peer qualified original-worker send/load/Stop/compact/END; empty/first input/outage, no V1 fallback or ACP transport reimplementation |
 | 8 / U7 template/recipe/fork admission / 1,200 | Delivered provider lifecycle for admitted bindings; Claude slice 5 | Existing preparation/allocation/create owners; immutable recipe/report context, original key replay; need not wait for internal entries |
 | 9 / U8 Workspace/attached/cross-area/admin admission / 1,300 | U7, actual Workspace qualification | Existing isolation/fork_guard/area_admin owners; denied/deletion/materialization races, no retained repoint or grant expansion |
 | 10 / U9 creator/mail + managed/daily entries / 1,100 | Qualified source/provider contracts; U7/U8 where resources require them | add.rs, tracks.rs, daily_planner; cap race, original mail key, no-start daily carrier, qualified first input |
-| 11 / U11 child + Today launchpad / 1,200 | Source decision if bootstrap unrepresentable; lifecycle/Workspace proof | child_track_adapter, scheduler, track_creation, today; inherited provider/Area, no bootstrap remint, retained-safe adoption preserving old history |
-| 12 / U12 summary/watcher System entry / 900 | #2671 source agreement; U3/U4/U6 for admitted provider | Existing summary/watcher/dispatcher; authenticated issuer/prefix, replay/cold watermark, no server_send fallback |
-| 13 / U13 offline classifier/export/boot barrier / 1,200 | U2; approved §9 dispositions | Truth upgrade/boot owner + offline command; no population yet, manifest covers all stores/keys, exact classification, boot fails closed when required |
-| 14 / U14 atomic migration application / 1,400 | U13; all entries/lifecycles delivered and stopped backup rehearsal | Truth upgrade tx + receipt replay owners; in-place worker/native continuity, original/null ACK, atomic index/frame/completion, crash each phase/restore |
-| 15 / U15 historical input/control deletion / 1,300 | U14; external Claude slice 6 | Historical queue/parallel codecs/input/edit/withdraw/steer/Stop branches; canonical production paths + Worker/PlainChat regression; keep factual digest replay |
-| 16 / U16 historical creation/start deletion / 1,300 | U15 | Existing create/delivery/start historical/input_transfer/Assistant wire owners; every §1 entry canonical, original receipt replay, no queue harvest/retry mint |
-| 17 / U17 raw read/wire retirement + lifecycle rows / 1,200 | U16; released-client window | Canonical read/types/generated/frontend consumers/lifecycle doc; browser pagination/outbox/title/Tier1; remove negotiated raw routing only after client retirement |
+| 11 / U11+U12 child/Today + summary/watcher System entry / 2,100 | Source decision if bootstrap unrepresentable; #2671 source agreement; lifecycle/Workspace proof; U3/U4/U6 for admitted provider | child_track_adapter, scheduler, track_creation, today, summary/watcher/dispatcher; inherited provider/Area, no bootstrap remint, retained-safe adoption preserving history; authenticated issuer/prefix, replay/cold watermark, no server_send fallback |
+| 12 / U13 offline classifier/export/boot barrier / 1,200 | U2; approved §9 dispositions | Truth upgrade/boot owner + offline command; no population yet, manifest covers all stores/keys, exact classification, boot fails closed when required |
+| 13 / U14 atomic migration application / 1,400 | U13; all entries/lifecycles delivered and stopped backup rehearsal | Truth upgrade tx + receipt replay owners; in-place worker/native continuity, original/null ACK, atomic index/frame/completion, crash each phase/restore |
+| 14 / U15+U16 historical input/control + creation/start deletion / 2,500 | U14; external Claude slice 6 | Historical queue/parallel codecs/input/edit/withdraw/steer/Stop and create/delivery/start/input_transfer/Assistant wire owners; canonical production paths + Worker/PlainChat regression, factual digest replay; every §1 entry canonical, original receipt replay, no queue harvest/retry mint |
+| 15 / U17 raw read/wire retirement + lifecycle rows / 1,200 | U16; released-client window | Canonical read/types/generated/frontend consumers/lifecycle doc; browser pagination/outbox/title/Tier1; remove negotiated raw routing only after client retirement |
 
 Worker runs focused production-entry tests and formatter fixes; kernel owns required text/contract/quick
 checks and one focused replay rejecting empty selection. CI owns broad suites. Docs-only revision: kernel

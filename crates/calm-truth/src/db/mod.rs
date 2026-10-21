@@ -590,21 +590,6 @@ pub trait RepoOutOfDomain: RepoRead {
     async fn shared_daemon_runtime_set(&self, update: SharedCodexDaemonUpdate) -> Result<()>;
     async fn shared_daemon_record_event(&self, action: &str, error: Option<&str>) -> Result<()>;
 
-    #[allow(clippy::too_many_arguments)]
-    async fn harness_item_insert(
-        &self,
-        worker_session_id: &str,
-        card_id: &str,
-        track_id: &str,
-        thread_id: &str,
-        turn_id: Option<&str>,
-        item_uuid: Option<&str>,
-        item_type: Option<&str>,
-        method: &str,
-        params: &str,
-        input_segments: Option<&str>,
-    ) -> Result<i64>;
-
     /// Atomically reconcile only receipt-owned item identities in their declared order.
     #[allow(clippy::too_many_arguments)]
     async fn transcript_receipt_restore(
@@ -644,9 +629,9 @@ pub trait RepoOutOfDomain: RepoRead {
     async fn transcript_projection_id(&self, card_id: &str, client_id: &str)
     -> Result<Option<i64>>;
 
-    /// Upgrade the projection row in place with codex's echo (turn, item id, verbatim `params`); `input_segments` is
+    /// Class C: upgrade only an already admitted projection row in place with codex's echo (turn, item id, verbatim `params`); `input_segments` is
     /// untouched. `None` when no projection stands (the echo is then an ordinary insert).
-    async fn transcript_projection_upgrade(
+    async fn transcript_admitted_projection_upgrade(
         &self,
         card_id: &str,
         client_id: &str,

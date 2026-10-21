@@ -9,6 +9,7 @@ pub(super) async fn issue_interrupt_for_turn(
     if inner.inputs.canonical().is_some() {
         return canonical::control::timeout(inner, &target_turn_id).await;
     }
+    inner.require_unparked()?;
     let Some(thread_id) = inner.thread_id.read().await.clone() else {
         return Ok(());
     };

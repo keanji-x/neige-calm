@@ -36,6 +36,9 @@ pub(super) async fn handle_compact(inner: &Arc<Inner>, source: Source) -> Result
         }
     };
     let _issuance = inner.issuance.lock().await;
+    if inner.parked.is_parked() {
+        return Err(CalmError::Conflict("carrier is parked".into()));
+    }
     crate::conversation_archive::require_unarchived(inner.repo.as_ref(), inner.card_id.as_str())
         .await?;
     if let Some(reader) = inner.backend.issuance_hold() {

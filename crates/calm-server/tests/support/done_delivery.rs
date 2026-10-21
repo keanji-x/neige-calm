@@ -283,6 +283,7 @@ pub fn context(
     gate_logs_dir: PathBuf,
 ) -> Arc<AppContext> {
     Arc::new(AppContext {
+        tool_calls: Default::default(),
         terminal_interaction: Arc::new(tokio::sync::OnceCell::new()),
         repo: repo.clone(),
         track_vcs: repo

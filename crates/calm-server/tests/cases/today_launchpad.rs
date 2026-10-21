@@ -11,7 +11,7 @@ use calm_server::routes::today::SystemAreaMintCounters;
 use calm_server::track_report::TrackReportPayload;
 use calm_server::{
     card_role_cache::CardRoleCache,
-    db::{Repo, RepoOutOfDomain, sqlite::SqlxRepo},
+    db::{Repo, sqlite::SqlxRepo},
     event::EventBus,
     plugin_host::{PluginHost, PluginRegistry},
     routes,
@@ -244,7 +244,7 @@ async fn repeated_ensure_preserves_planner_transcript_and_ids_and_singleton() {
     let (first_status, first) = ensure(b.app.clone()).await;
     assert_eq!(first_status, StatusCode::CREATED);
     b.repo
-        .harness_item_insert(
+        .fixture_transcript_insert(
             "runtime",
             first["planner_card_id"].as_str().unwrap(),
             first["track_id"].as_str().unwrap(),
@@ -285,7 +285,7 @@ async fn legacy_today_adoption_resets_planner_transcript_and_preserves_terminal(
         .await
         .unwrap();
     b.repo
-        .harness_item_insert(
+        .fixture_transcript_insert(
             "legacy-runtime",
             original["planner_card_id"].as_str().unwrap(),
             original["track_id"].as_str().unwrap(),

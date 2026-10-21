@@ -41,6 +41,15 @@ impl Fixture {
         usage: Option<TokenUsage>,
         invalidated: bool,
     ) -> Self {
+        Self::with_source(config, usage, invalidated, None).await
+    }
+
+    async fn with_source(
+        config: HarnessConfig,
+        usage: Option<TokenUsage>,
+        invalidated: bool,
+        shared: Option<Arc<crate::shared_codex_appserver::SharedCodexAppServer>>,
+    ) -> Self {
         let original = ExistingRuntime::new().await;
         let inner = &original.harness.inner;
         let auth = crate::auth::AuthState::new(crate::auth::AuthConfig {
@@ -64,7 +73,15 @@ impl Fixture {
         assert_eq!(status, axum::http::StatusCode::OK);
         let source = source.unwrap();
         let mut snapshot = CanonicalHarnessSnapshot::dormant(0);
-        snapshot.header.last_thread_id = inner.thread_id.read().await.clone();
+        let thread = format!("thread-{}", uuid::Uuid::new_v4());
+        *inner.thread_id.write().await = Some(thread.clone());
+        sqlx::query("UPDATE worker_sessions SET thread_id=?1 WHERE id=?2")
+            .bind(&thread)
+            .bind(&inner.worker_session_id)
+            .execute(original.repo.db().writer_pool())
+            .await
+            .unwrap();
+        snapshot.header.last_thread_id = Some(thread);
         snapshot.header.token_usage = usage;
         snapshot.header.context_usage_invalidated = invalidated;
         let mut tx = begin_immediate_tx(original.repo.db()).await.unwrap();
@@ -98,8 +115,9 @@ impl Fixture {
         };
         // The old queue fixture uses the fake turn/start shortcut. This test
         // needs the real transport and native receipt owner on its actual row.
-        let daemon =
-            crate::shared_codex_appserver::SharedCodexAppServer::new_stub(original.repo.clone());
+        let daemon = shared.unwrap_or_else(|| {
+            crate::shared_codex_appserver::SharedCodexAppServer::new_stub(original.repo.clone())
+        });
         let actual_card = original
             .repo
             .card_get(inner.card_id.as_str())

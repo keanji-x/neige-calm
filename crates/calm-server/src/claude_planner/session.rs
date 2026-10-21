@@ -100,6 +100,7 @@ pub(crate) struct Shared {
     state: Mutex<State>,
     /// Serializes `turn_start` and `shutdown`, so no spawn outlives a shutdown.
     issue: tokio::sync::Mutex<()>,
+    parked: crate::harness::carrier_park::ParkState,
     driver: tokio::sync::Mutex<Option<execution_end::DriverSlot>>,
     /// Set once the harness holding this session is installed in the registry (§5.1 item 2), to
     /// the channel that harness reads its paused requests from (#2348); before that `turn_start`
@@ -245,6 +246,7 @@ impl ClaudePlannerSession {
                 events,
                 state: Mutex::new(state),
                 issue: tokio::sync::Mutex::new(()),
+                parked: Default::default(),
                 driver: tokio::sync::Mutex::new(None),
                 installed: OnceLock::new(),
                 #[cfg(feature = "fixtures")]
@@ -271,6 +273,20 @@ impl ClaudePlannerSession {
     /// Whether the deletion fence has sealed `thread`.
     pub fn thread_sealed(&self, thread: &str) -> bool {
         self.shared.params.seals.is_sealed(thread)
+    }
+
+    pub(crate) fn carrier_idle_for_detach(
+        &self,
+    ) -> Option<crate::harness::carrier_park::ParkToken<'_>> {
+        let _issue = self.shared.issue.try_lock().ok()?;
+        if !self.carrier_idle() {
+            return None;
+        }
+        self.shared.parked.park()
+    }
+    pub(crate) fn carrier_idle(&self) -> bool {
+        let state = self.shared.state();
+        !state.shutting_down && state.active.is_none() && state.row_bound
     }
 
     pub fn active_turn_id_for_thread(&self, thread: &str) -> Option<String> {
@@ -311,6 +327,9 @@ impl ClaudePlannerSession {
         let shared = &self.shared;
         let params = &shared.params;
         let _issue = shared.issue.lock().await;
+        if shared.parked.is_parked() {
+            return Err(CalmError::Conflict("Claude carrier is parked".into()).into());
+        }
         let Some(held) = shared.installed.get() else {
             return Err(
                 CalmError::Conflict("claude planner harness is not installed yet".into()).into(),

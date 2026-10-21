@@ -279,6 +279,23 @@ impl PlannerBackend {
         }
     }
 
+    pub(crate) fn carrier_idle_for_detach(
+        &self,
+        thread: Option<&str>,
+    ) -> Option<CarrierIdleGuard<'_>> {
+        match &self.0 {
+            Arm::Codex(daemon, _) => daemon
+                .carrier_idle_for_detach(thread?)
+                .map(CarrierIdleGuard::Codex),
+            Arm::Claude(session) => session
+                .carrier_idle_for_detach()
+                .map(|park| CarrierIdleGuard::Claude(session, park)),
+            Arm::Acp(session) => session
+                .carrier_idle_for_detach()
+                .map(|park| CarrierIdleGuard::Acp(session, park)),
+        }
+    }
+
     pub fn active_turn_id_for_thread(&self, thread_id: &str) -> Option<TurnId> {
         match &self.0 {
             Arm::Acp(session) => session.active_turn_id_for_thread(thread_id),
@@ -441,6 +458,29 @@ async fn interrupt_codex_thread(
             NativeInterruptOutcome::Unconfirmed { error } => {
                 on_error(CodexInterruptStep::FallbackTurn(turn_id), error)
             }
+        }
+    }
+}
+
+/// Provider-owned park retained with the harness proof through commit.
+pub(crate) enum CarrierIdleGuard<'a> {
+    Codex(crate::shared_codex_appserver::IdleDetachGuard<'a>),
+    Acp(
+        &'a crate::acp_planner::session::AcpPlannerSession,
+        crate::harness::carrier_park::ParkToken<'a>,
+    ),
+    Claude(
+        &'a crate::claude_planner::session::ClaudePlannerSession,
+        crate::harness::carrier_park::ParkToken<'a>,
+    ),
+}
+
+impl CarrierIdleGuard<'_> {
+    pub(crate) fn recheck(&self) -> bool {
+        match self {
+            Self::Codex(guard) => guard.recheck(),
+            Self::Acp(session, park) => park.is_current() && session.carrier_idle(),
+            Self::Claude(session, park) => park.is_current() && session.carrier_idle(),
         }
     }
 }

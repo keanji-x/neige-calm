@@ -16,6 +16,7 @@ pub(crate) async fn call_registered_tool(
     let handler = registry
         .lookup(name)
         .ok_or_else(|| RpcError::method_not_found(&format!("tools/call: {name}")))?;
-    let identity = resolve_tools_call_identity(ctx, thread_id, name, connection_identity).await?;
+    let (identity, _call) =
+        admit_tools_call_identity(ctx, thread_id, name, connection_identity).await?;
     handler(ctx.clone(), identity, arguments).await
 }

@@ -5,8 +5,27 @@ use crate::error::Result;
 use crate::model::now_ms;
 use sqlx::{Row, Sqlite};
 
+/// Live insertion accepts only the resolver's borrowed transaction and identities.
 #[allow(clippy::too_many_arguments)]
-pub(super) async fn insert_transcript_row<'e, E: sqlx::Executor<'e, Database = Sqlite>>(
+pub(super) async fn insert_transcript_row(
+    carrier: &mut super::conversation::CurrentCarrier<'_>,
+    thread: &str,
+    turn: Option<&str>,
+    id: Option<&str>,
+    kind: Option<&str>,
+    method: &str,
+    params: &str,
+    segments: Option<&str>,
+) -> Result<i64> {
+    let (connection, worker, card, track) = carrier.insertion_parts();
+    insert_reconstructed_transcript_row(
+        connection, worker, card, track, thread, turn, id, kind, method, params, segments,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn insert_reconstructed_transcript_row<'e, E: sqlx::Executor<'e, Database = Sqlite>>(
     executor: E,
     worker: &str,
     card: &str,
@@ -104,7 +123,7 @@ pub(super) async fn restore(
     .execute(&mut **tx)
     .await?;
     for item in items {
-        insert_transcript_row(
+        insert_reconstructed_transcript_row(
             &mut **tx,
             worker,
             card,
@@ -121,4 +140,38 @@ pub(super) async fn restore(
     }
     tx.commit().await?;
     Ok(())
+}
+
+// Test seeds are not a production reconstruction or ingress API.
+#[cfg(any(test, feature = "fixtures"))]
+impl super::SqlxRepo {
+    #[allow(clippy::too_many_arguments)]
+    pub async fn fixture_transcript_insert(
+        &self,
+        worker: &str,
+        card: &str,
+        track: &str,
+        thread: &str,
+        turn: Option<&str>,
+        id: Option<&str>,
+        kind: Option<&str>,
+        method: &str,
+        params: &str,
+        segments: Option<&str>,
+    ) -> Result<i64> {
+        insert_reconstructed_transcript_row(
+            self.db.writer_pool(),
+            worker,
+            card,
+            track,
+            thread,
+            turn,
+            id,
+            kind,
+            method,
+            params,
+            segments,
+        )
+        .await
+    }
 }

@@ -1,5 +1,6 @@
 pub mod backend;
 pub(crate) mod backend_metadata;
+pub(crate) mod carrier_park;
 pub(crate) mod catch_up;
 pub(crate) mod codex_events;
 #[cfg(test)]

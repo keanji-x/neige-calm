@@ -59,6 +59,7 @@ struct Shared {
     events: broadcast::Sender<PlannerEvent>,
     state: Mutex<State>,
     issue: tokio::sync::Mutex<()>,
+    parked: crate::harness::carrier_park::ParkState,
     driver: tokio::sync::Mutex<Option<DriverSlot>>,
     /// Set when the registry installed the harness: the channel the turns' approvals go to.
     installed: OnceLock<HeldRequestSender>,
@@ -78,6 +79,7 @@ impl AcpPlannerSession {
                     closed: false,
                 }),
                 issue: tokio::sync::Mutex::new(()),
+                parked: Default::default(),
                 driver: tokio::sync::Mutex::new(None),
                 installed: OnceLock::new(),
             }),
@@ -100,6 +102,20 @@ impl AcpPlannerSession {
     pub fn thread_sealed(&self, thread: &str) -> bool {
         self.shared.params.seals.is_sealed(thread)
     }
+    pub(crate) fn carrier_idle_for_detach(
+        &self,
+    ) -> Option<crate::harness::carrier_park::ParkToken<'_>> {
+        let _issue = self.shared.issue.try_lock().ok()?;
+        if !self.carrier_idle() {
+            return None;
+        }
+        self.shared.parked.park()
+    }
+    pub(crate) fn carrier_idle(&self) -> bool {
+        let state = self.shared.state.lock().expect("ACP state");
+        !state.closed && state.active.is_none()
+    }
+
     pub fn active_turn_id_for_thread(&self, thread: &str) -> Option<String> {
         self.shared
             .state
@@ -140,6 +156,9 @@ impl AcpPlannerSession {
         let shared = &self.shared;
         let params = &shared.params;
         let _issue = shared.issue.lock().await;
+        if shared.parked.is_parked() {
+            return Err(refused("ACP carrier is parked"));
+        }
         let Some(held) = shared.installed.get().cloned() else {
             return Err(refused("ACP harness has not been installed"));
         };
@@ -411,6 +430,12 @@ impl AcpPlannerSession {
         let approvals =
             Approvals::for_turn(permission, &held, &turn, &process.connection.client, asks);
         let (cancel, cancelled) = watch::channel(false);
+        #[cfg(feature = "fixtures")]
+        crate::test_seams::pause_point(
+            "carrier-quiescence-acp-issuance",
+            &params.worker_session_id,
+        )
+        .await;
         shared.state.lock().expect("ACP state").active = Some(Active {
             thread: thread.into(),
             turn: turn.clone(),

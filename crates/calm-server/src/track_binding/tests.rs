@@ -395,6 +395,7 @@ impl Boot {
             .map_err(|_| ())
             .expect("late-bound plugin host cell set once");
         Arc::new(AppContext {
+            tool_calls: Default::default(),
             terminal_interaction: Arc::new(tokio::sync::OnceCell::new()),
             repo: route_repo,
             track_vcs: None,

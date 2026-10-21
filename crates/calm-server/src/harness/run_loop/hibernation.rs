@@ -20,6 +20,7 @@ impl PlannerHarness {
             ObservationIngress::Unstarted(sender) => sender.capacity() == sender.max_capacity(),
         };
         if self.inner.shutting_down.load(Ordering::SeqCst)
+            || self.inner.parked.is_parked()
             || !idle_for_lifecycle(&self.inner, ingress_empty).await?
         {
             return Err(CalmError::Conflict("Wait for the reply and queued messages to finish before archiving this conversation.".into()));
@@ -95,7 +96,7 @@ pub(super) async fn quiesce(
     reply: Option<&oneshot::Sender<Result<bool>>>,
 ) -> Result<bool> {
     let _issuance = inner.issuance.lock().await;
-    if !idle_for_lifecycle(inner, ingress_empty).await? {
+    if inner.parked.is_parked() || !idle_for_lifecycle(inner, ingress_empty).await? {
         return Ok(false);
     }
     #[cfg(feature = "fixtures")]
@@ -128,6 +129,14 @@ pub(super) async fn quiesce(
 }
 
 async fn idle_for_lifecycle(inner: &Arc<Inner>, ingress_empty: bool) -> Result<bool> {
+    idle_for_lifecycle_guarded(inner, ingress_empty, false).await
+}
+
+async fn idle_for_lifecycle_guarded(
+    inner: &Arc<Inner>,
+    ingress_empty: bool,
+    native_guarded: bool,
+) -> Result<bool> {
     let state = inner.state.lock().await.clone();
     if !ingress_empty
         || !matches!(
@@ -140,11 +149,70 @@ async fn idle_for_lifecycle(inner: &Arc<Inner>, ingress_empty: bool) -> Result<b
         return Ok(false);
     }
     let thread = inner.thread_id.read().await.clone();
-    if thread
-        .as_deref()
-        .is_some_and(|thread| inner.backend.active_turn_id_for_thread(thread).is_some())
+    if !native_guarded
+        && thread
+            .as_deref()
+            .is_some_and(|thread| inner.backend.active_turn_id_for_thread(thread).is_some())
     {
         return Ok(false);
     }
     Ok(true)
+}
+
+/// Parks issuance, never ingress. No lock guard crosses the caller's SQL window.
+/// Acquire/recheck before opening SQL; durable predicates are rechecked in SQL.
+pub struct IdleCarrierOwner<'a> {
+    handle: &'a PlannerHarness,
+    native: crate::harness::backend::CarrierIdleGuard<'a>,
+    park: crate::harness::carrier_park::ParkToken<'a>,
+}
+impl IdleCarrierOwner<'_> {
+    pub async fn recheck(&self) -> Result<()> {
+        let inner = &self.handle.inner;
+        let _issuance = inner.issuance.lock().await;
+        if !self.park.is_current()
+            || inner.shutting_down.load(Ordering::SeqCst)
+            || !inner.held_requests.is_empty()
+            || !self.native.recheck()
+            || !idle_for_lifecycle_guarded(inner, ingress_empty(inner), true).await?
+        {
+            return Err(CalmError::Conflict(
+                "carrier cannot prove safe detachment".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+fn ingress_empty(inner: &Inner) -> bool {
+    match &inner.observations {
+        ObservationIngress::Running(sender) => sender.capacity() == sender.max_capacity(),
+        #[cfg(feature = "fixtures")]
+        ObservationIngress::Unstarted(sender) => sender.capacity() == sender.max_capacity(),
+    }
+}
+impl PlannerHarness {
+    pub async fn idle_carrier_owner(&self) -> Result<IdleCarrierOwner<'_>> {
+        let issuance = self.lock_if_idle().await?;
+        let thread = self.inner.thread_id.read().await.clone();
+        let native = self
+            .inner
+            .backend
+            .carrier_idle_for_detach(thread.as_deref())
+            .ok_or_else(|| {
+                CalmError::Conflict("native owner cannot prove safe detachment".into())
+            })?;
+        let park = self
+            .inner
+            .parked
+            .park()
+            .ok_or_else(|| CalmError::Conflict("carrier is already parked".into()))?;
+        let proof = IdleCarrierOwner {
+            handle: self,
+            park,
+            native,
+        };
+        drop(issuance);
+        proof.recheck().await?;
+        Ok(proof)
+    }
 }
