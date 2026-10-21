@@ -56,12 +56,13 @@ async fn c2b_malformed_record_is_retained_with_backoff() {
             );
             assert!(retained.lease_owner.is_some());
             assert!(retained.lease_until_ms.unwrap() > calm_server::model::now_ms());
-            let tries = if recovering && parked { 2 } else { 1 };
-            assert_eq!(errors(&fx).await, tries);
+            // Boot's VerifyParked attempts once; its final sweep must honor the
+            // retention lease instead of reclaiming and retrying the same row.
+            assert_eq!(errors(&fx).await, 1, "one attempt before lease expiry");
             fx.runtime.drive().await.unwrap();
             fx.runtime.sweep_parked().await.unwrap();
             tokio::time::sleep(Duration::from_millis(150)).await;
-            assert_eq!(errors(&fx).await, tries, "lease prevents hot retries");
+            assert_eq!(errors(&fx).await, 1, "lease prevents hot retries");
             assert_eq!(op(&fx, &a.task.id).await.lease_owner, retained.lease_owner);
             expire(&fx, &before.id).await;
             if parked {
@@ -69,7 +70,7 @@ async fn c2b_malformed_record_is_retained_with_backoff() {
             } else {
                 fx.runtime.drive().await.unwrap();
             }
-            assert_eq!(errors(&fx).await, tries + 1, "one retry after expiry");
+            assert_eq!(errors(&fx).await, 2, "one retry after expiry");
             assert_eq!(execution_count(&fx, &before.id).await, 1);
             let settlement: Option<String> = sqlx::query_scalar(
                 "SELECT settlement_json FROM workspace_executions WHERE execution_id=?",
