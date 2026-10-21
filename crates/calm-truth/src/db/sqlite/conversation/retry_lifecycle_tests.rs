@@ -84,20 +84,26 @@ async fn canonical_retry_survives_session_owner_delete() {
 
 #[tokio::test]
 async fn canonical_retry_card_owner_delete_cascades() {
-    assert_owner_delete("card").await;
+    assert_owner_delete(Owner::Card).await;
 }
 
 #[tokio::test]
 async fn canonical_retry_track_owner_delete_cascades() {
-    assert_owner_delete("track").await;
+    assert_owner_delete(Owner::Track).await;
 }
 
 #[tokio::test]
 async fn canonical_retry_area_owner_delete_cascades() {
-    assert_owner_delete("area").await;
+    assert_owner_delete(Owner::Area).await;
 }
 
-async fn assert_owner_delete(owner: &str) {
+enum Owner {
+    Card,
+    Track,
+    Area,
+}
+
+async fn assert_owner_delete(owner: Owner) {
     let (s, successor) = committed_retry().await;
     let mut tx = begin_immediate_tx(s.repo.db()).await.unwrap();
     let (track, area): (String, String) = sqlx::query_as(
@@ -108,14 +114,13 @@ async fn assert_owner_delete(owner: &str) {
     .await
     .unwrap();
     match owner {
-        "card" => card_delete_tx(&mut tx, &s.card, s.repo.card_role_cache())
+        Owner::Card => card_delete_tx(&mut tx, &s.card, s.repo.card_role_cache())
             .await
             .unwrap(),
-        "track" => track_delete_tx(&mut tx, &track, s.repo.track_area_cache())
+        Owner::Track => track_delete_tx(&mut tx, &track, s.repo.track_area_cache())
             .await
             .unwrap(),
-        "area" => area_delete_tx(&mut tx, &area).await.unwrap(),
-        _ => unreachable!(),
+        Owner::Area => area_delete_tx(&mut tx, &area).await.unwrap(),
     }
     tx.commit()
         .await

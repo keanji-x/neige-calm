@@ -152,7 +152,21 @@ async fn canonical_retry_erasure_between_resolve_and_send_has_zero_effects() {
 
 #[tokio::test]
 async fn canonical_retry_rechecks_activity_and_source_after_gate_await() {
-    for change in ["activity", "logout", "erasure"] {
+    enum Change {
+        Activity,
+        Logout,
+        Erasure,
+    }
+    impl std::fmt::Display for Change {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str(match self {
+                Self::Activity => "activity",
+                Self::Logout => "logout",
+                Self::Erasure => "erasure",
+            })
+        }
+    }
+    for change in [Change::Activity, Change::Logout, Change::Erasure] {
         let (r, mut peer) = RetryFixture::new().await;
         r.attach().await;
         r.read_activity(&mut peer, "idle").await;
@@ -194,7 +208,7 @@ async fn canonical_retry_rechecks_activity_and_source_after_gate_await() {
         .await
         .unwrap();
         match change {
-            "activity" => {
+            Change::Activity => {
                 notify_thread(
                     &r.fx.daemon,
                     &mut peer,
@@ -204,10 +218,10 @@ async fn canonical_retry_rechecks_activity_and_source_after_gate_await() {
                 )
                 .await
             }
-            "logout" => {
+            Change::Logout => {
                 r.fx.auth.sessions.remove(&r.fx.session).unwrap();
             }
-            "erasure" => {
+            Change::Erasure => {
                 sqlx::query(
                     "UPDATE conversation_message_revisions SET payload_json=?1 WHERE message_id=?2",
                 )
@@ -225,7 +239,6 @@ async fn canonical_retry_rechecks_activity_and_source_after_gate_await() {
                 .await
                 .unwrap();
             }
-            _ => panic!("closed test cases"),
         }
         release.notify_one();
         let call = request(&mut peer).await;
