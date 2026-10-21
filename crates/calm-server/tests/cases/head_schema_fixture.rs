@@ -119,6 +119,7 @@ const POST_0067_MIGRATION_NAMES: &[&str] = &[
     "0179_track_capabilities.sql",
     "0180_canonical_input_revision.sql",
     "0181_canonical_input_resolutions.sql",
+    "0182_objective_input_sources.sql",
 ];
 
 #[test]
