@@ -69,6 +69,7 @@ impl AcpPlannerHost {
                     &mut process,
                     "session/new",
                     protocol::encode_new_session(cwd, &[]),
+                    &provider::send_boundary::PreSendGate::new(|| Box::pin(async { Ok(()) })),
                 )
                 .await?;
                 let native: protocol::NewSessionResponse = protocol::decode(result.clone())
@@ -84,6 +85,7 @@ impl AcpPlannerHost {
                         &mut process,
                         "session/close",
                         protocol::encode_close_session(&native.session_id),
+                        &provider::send_boundary::PreSendGate::new(|| Box::pin(async { Ok(()) })),
                     )
                     .await?;
                 }

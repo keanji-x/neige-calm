@@ -1,5 +1,6 @@
 //! The supported ACP v1 contract. Optional capabilities are absent unless advertised.
-use super::{Client, Error, PendingResponse};
+use super::{Client, Error, PendingResponse, WriteFailure};
+use crate::send_boundary::PreSendGate;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::time::Duration;
@@ -167,27 +168,35 @@ pub async fn prompt(
     capabilities: &AgentCapabilities,
     session: &str,
     blocks: &[ContentBlock],
-) -> Result<PendingResponse, Error> {
+    gate: &PreSendGate<'_>,
+) -> Result<PendingResponse, WriteFailure> {
     if blocks.is_empty() {
-        return Err(Error::Protocol("empty prompt"));
+        return Err(WriteFailure::BeforeWrite(Error::Protocol("empty prompt")));
     }
     if !capabilities.prompt_capabilities.image
         && blocks
             .iter()
             .any(|block| matches!(block, ContentBlock::Image { .. }))
     {
-        return Err(Error::Protocol("agent does not support image prompts"));
+        return Err(WriteFailure::BeforeWrite(Error::Protocol(
+            "agent does not support image prompts",
+        )));
     }
     client
-        .submit(
+        .submit_gated(
             "session/prompt",
             json!({"sessionId":session,"prompt":blocks}),
+            gate,
         )
         .await
 }
-pub async fn cancel(client: &Client, session: &str) -> Result<(), Error> {
+pub async fn cancel(
+    client: &Client,
+    session: &str,
+    gate: &PreSendGate<'_>,
+) -> Result<(), WriteFailure> {
     client
-        .notify("session/cancel", json!({"sessionId":session}))
+        .notify_gated("session/cancel", json!({"sessionId":session}), gate)
         .await
 }
 pub fn decode<T: serde::de::DeserializeOwned>(value: Value) -> Result<T, Error> {

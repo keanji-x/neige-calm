@@ -70,7 +70,7 @@ impl Peer {
         tokio::time::sleep(Duration::from_millis(200)).await;
         self.connection
             .client
-            .notify("sentinel", json!({}))
+            .notify_gated("sentinel", json!({}), &allow())
             .await
             .unwrap();
         assert_eq!(self.read().await["method"], "sentinel");
@@ -156,7 +156,7 @@ async fn a_cancel_answers_pending_requests_cancelled_and_reports_them_gone() {
     let mut peer = peer(PlannerPermissionMode::Ask);
     peer.request(7, bash()).await;
     let responder = expect_open(peer.next_held().await, 7);
-    peer.approvals.cancel("native").await.unwrap();
+    peer.approvals.cancel("native", &allow()).await.unwrap();
     assert_eq!(
         peer.read().await,
         json!({"jsonrpc": "2.0", "method": "session/cancel", "params": {"sessionId": "native"}})
@@ -217,15 +217,16 @@ async fn an_answer_after_a_cut_short_cancel_is_cancelled() {
     let mut peer = peer(PlannerPermissionMode::Ask);
     peer.request(11, bash()).await;
     let responder = expect_open(peer.next_held().await, 11);
-    // Poll the cancel once, to where it waits on its `session/cancel` write, and drop it there,
+    // Block admission, poll cancel once, and drop it before the first write,
     // as the driver's timeout would.
-    let mut cancel = Box::pin(peer.approvals.cancel("native"));
+    let gate = crate::send_boundary::PreSendGate::new(|| Box::pin(std::future::pending()));
+    let mut cancel = Box::pin(peer.approvals.cancel("native", &gate));
     let first = std::future::poll_fn(|cx| std::task::Poll::Ready(cancel.as_mut().poll(cx))).await;
     assert!(
         first.is_pending(),
         "the cancel was cut short before its answers"
     );
-    // The transport skips a write whose writer is gone, so not even `session/cancel` went out.
+    // Admission was cancelled: not even `session/cancel` went out.
     drop(cancel);
     responder.respond(0);
     assert_eq!(
@@ -266,7 +267,7 @@ async fn a_never_or_full_turn_answers_cancelled_itself() {
             answer(0, json!({"outcome": {"outcome": "cancelled"}})),
             "{mode:?}"
         );
-        peer.approvals.cancel("native").await.unwrap();
+        peer.approvals.cancel("native", &allow()).await.unwrap();
         assert_eq!(peer.read().await["method"], "session/cancel");
         let replacement = Approvals::for_turn(
             mode,
@@ -525,7 +526,7 @@ async fn an_own_server_tool_is_not_allowed_after_the_fence() {
     let title = "neige-k1__neige_report_commit";
     for mode in [PlannerPermissionMode::Never, PlannerPermissionMode::Ask] {
         let mut peer = peer_with(mode, own_tools());
-        peer.approvals.cancel("native").await.unwrap();
+        peer.approvals.cancel("native", &allow()).await.unwrap();
         assert_eq!(peer.read().await["method"], "session/cancel");
         peer.request(6, grok_mcp_tool(title, "other")).await;
         assert_eq!(
@@ -614,4 +615,8 @@ async fn a_reject_the_person_chose_names_why_the_turn_ended() {
         peer.read().await;
         assert_eq!(peer.approvals.declined().as_deref(), declined, "{option}");
     }
+}
+
+fn allow() -> crate::send_boundary::PreSendGate<'static> {
+    crate::send_boundary::PreSendGate::new(|| Box::pin(async { Ok(()) }))
 }

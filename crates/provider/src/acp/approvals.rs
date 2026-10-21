@@ -255,11 +255,17 @@ impl Approvals {
     }
 
     /// Send `session/cancel` for the native session `native`, and answer what is still pending.
-    pub async fn cancel(&self, native: &str) -> Result<(), Error> {
+    pub async fn cancel(
+        &self,
+        native: &str,
+        gate: &crate::send_boundary::PreSendGate<'_>,
+    ) -> Result<(), Error> {
         self.fenced.store(true, Ordering::SeqCst);
         match &self.answers {
-            Answers::Refused(client, _) => super::protocol::cancel(client, native).await,
-            Answers::Held(held) => held.cancel(native).await,
+            Answers::Refused(client, _) => super::protocol::cancel(client, native, gate)
+                .await
+                .map_err(super::WriteFailure::into_error),
+            Answers::Held(held) => held.cancel(native, gate).await,
         }
     }
 
@@ -357,10 +363,16 @@ impl HeldPermissions {
 
     /// `session/cancel`, then `cancelled` for every request still pending, under the lock every
     /// answer takes; then `Gone` for each, so the harness withdraws their asks.
-    async fn cancel(&self, native: &str) -> Result<(), Error> {
+    async fn cancel(
+        &self,
+        native: &str,
+        gate: &crate::send_boundary::PreSendGate<'_>,
+    ) -> Result<(), Error> {
         let mut requests = self.requests.lock().await;
         requests.fenced = true;
-        super::protocol::cancel(&self.client, native).await?;
+        super::protocol::cancel(&self.client, native, gate)
+            .await
+            .map_err(super::WriteFailure::into_error)?;
         let pending = std::mem::take(&mut requests.pending);
         for id in pending.values() {
             self.client

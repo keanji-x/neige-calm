@@ -243,11 +243,12 @@ pub(super) async fn setup_request(
     process: &mut Process,
     method: &str,
     params: Value,
+    gate: &provider::send_boundary::PreSendGate<'_>,
 ) -> std::result::Result<Value, StartFailure> {
     let response = process
         .connection
         .client
-        .submit(method, params)
+        .submit_gated(method, params, gate)
         .await
         .map_err(|error| StartFailure::Failed(CalmError::Conflict(error.to_string())))?;
     let response = response.wait(Duration::from_secs(10));
@@ -320,11 +321,13 @@ mod setup_tests {
         let mut connection = provider::acp::Connection::new(read, write);
         let pending = connection
             .client
-            .submit(
+            .submit_gated(
                 "session/load",
                 protocol::encode_load_session("native", std::path::Path::new("/workspace"), &[]),
+                &provider::send_boundary::PreSendGate::new(|| Box::pin(async { Ok(()) })),
             )
             .await
+            .map_err(provider::acp::WriteFailure::into_error)
             .unwrap();
         let (read, mut write) = tokio::io::split(peer);
         let mut read = BufReader::new(read);
@@ -407,6 +410,7 @@ sys.stdin.read()
             &mut process,
             "session/new",
             protocol::encode_new_session(std::path::Path::new("/workspace"), &[]),
+            &provider::send_boundary::PreSendGate::new(|| Box::pin(async { Ok(()) })),
         )
         .await;
         cleanup(&mut process).await;
@@ -426,6 +430,7 @@ sys.stdin.read()
             &mut process,
             "session/load",
             protocol::encode_load_session("native", std::path::Path::new("/workspace"), &[]),
+            &provider::send_boundary::PreSendGate::new(|| Box::pin(async { Ok(()) })),
         )
         .await;
         assert_eq!(result.unwrap(), json!({}));
@@ -451,6 +456,7 @@ sys.stdin.read()
             &mut process,
             "session/new",
             protocol::encode_new_session(std::path::Path::new("/workspace"), &[]),
+            &provider::send_boundary::PreSendGate::new(|| Box::pin(async { Ok(()) })),
         )
         .await;
         cleanup(&mut process).await;
@@ -469,6 +475,7 @@ sys.stdin.read()
             &mut process,
             "session/set_config_option",
             protocol::encode_set_config_option("native", "model", "chosen"),
+            &provider::send_boundary::PreSendGate::new(|| Box::pin(async { Ok(()) })),
         )
         .await;
         cleanup(&mut process).await;

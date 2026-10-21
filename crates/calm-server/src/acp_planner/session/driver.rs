@@ -6,14 +6,14 @@ pub(super) async fn drive(
     mut process: Process,
     receipt: AcpSubmission,
     mut translator: TurnTranslator,
-    pending: std::result::Result<provider::acp::PendingResponse, provider::acp::Error>,
+    pending: std::result::Result<provider::acp::PendingResponse, provider::acp::WriteFailure>,
     mut cancelled: watch::Receiver<bool>,
     approvals: Approvals,
 ) {
     let params = &shared.params;
     let mut retained = Vec::<Value>::new();
     let outcome=async {
-        let pending=pending.map_err(wire_error)?;
+        let pending=pending.map_err(|error| wire_error(error.into_error()))?;
         let response=pending.wait(Duration::from_secs(3600));tokio::pin!(response);
         let mut stop_at=None;
         loop {tokio::select! {
@@ -45,7 +45,7 @@ pub(super) async fn drive(
                 if changed.is_err() || *cancelled.borrow() {
                     stop_at=Some(tokio::time::Instant::now()+Duration::from_secs(5));
                     tokio::time::timeout(Duration::from_secs(3),async {
-                        approvals.cancel(&receipt.native_session_id).await.map_err(wire_error)
+                        approvals.cancel(&receipt.native_session_id, shared.admission(&receipt.thread_id, None, Some(&receipt.native_session_id), Some(&receipt.turn_id)).gate()).await.map_err(wire_error)
                     }).await.map_err(|_|CalmError::Conflict("ACP cancellation writes timed out".into()))??;
                 }
             },

@@ -37,8 +37,18 @@ async fn send(writer: &mut tokio::io::WriteHalf<DuplexStream>, value: Value) {
 #[tokio::test]
 async fn concurrent_requests_correlate_out_of_order_responses_and_preserve_peer_request_ids() {
     let (mut connection, mut reader, mut writer) = peer();
-    let first = connection.client.submit("one", json!({})).await.unwrap();
-    let second = connection.client.submit("two", json!({})).await.unwrap();
+    let first = connection
+        .client
+        .submit_gated("one", json!({}), &allow())
+        .await
+        .map_err(WriteFailure::into_error)
+        .unwrap();
+    let second = connection
+        .client
+        .submit_gated("two", json!({}), &allow())
+        .await
+        .map_err(WriteFailure::into_error)
+        .unwrap();
     let one = read(&mut reader).await;
     let two = read(&mut reader).await;
     send(
@@ -73,11 +83,13 @@ async fn dispatched_prompt_disconnect_is_unknown_and_never_resent() {
     let (connection, mut reader, mut writer) = peer();
     let pending = connection
         .client
-        .submit(
+        .submit_gated(
             "session/prompt",
             json!({"sessionId":"native","prompt":[{"type":"text","text":"act once"}]}),
+            &allow(),
         )
         .await
+        .map_err(WriteFailure::into_error)
         .unwrap();
     let frame = read(&mut reader).await;
     assert_eq!(frame["method"], "session/prompt");
@@ -87,8 +99,9 @@ async fn dispatched_prompt_disconnect_is_unknown_and_never_resent() {
     assert_eq!(
         connection
             .client
-            .submit("session/prompt", json!({}))
+            .submit_gated("session/prompt", json!({}), &allow())
             .await
+            .map_err(WriteFailure::into_error)
             .err(),
         Some(Error::Closed)
     );
@@ -106,8 +119,9 @@ async fn timeout_closes_connection_without_retrying() {
     let (connection, mut reader, _writer) = peer();
     let pending = connection
         .client
-        .submit("session/prompt", json!({}))
+        .submit_gated("session/prompt", json!({}), &allow())
         .await
+        .map_err(WriteFailure::into_error)
         .unwrap();
     assert_eq!(read(&mut reader).await["method"], "session/prompt");
     assert_eq!(
@@ -117,8 +131,9 @@ async fn timeout_closes_connection_without_retrying() {
     assert_eq!(
         connection
             .client
-            .submit("session/prompt", json!({}))
+            .submit_gated("session/prompt", json!({}), &allow())
             .await
+            .map_err(WriteFailure::into_error)
             .err(),
         Some(Error::Closed)
     );
@@ -133,8 +148,9 @@ async fn malformed_and_uncorrelated_frames_poison_all_pending_requests() {
         let (connection, mut reader, mut writer) = peer();
         let pending = connection
             .client
-            .submit("initialize", json!({}))
+            .submit_gated("initialize", json!({}), &allow())
             .await
+            .map_err(WriteFailure::into_error)
             .unwrap();
         read(&mut reader).await;
         send(&mut writer, invalid).await;
@@ -143,7 +159,12 @@ async fn malformed_and_uncorrelated_frames_poison_all_pending_requests() {
             Err(Error::Protocol(_))
         ));
         assert_eq!(
-            connection.client.submit("again", json!({})).await.err(),
+            connection
+                .client
+                .submit_gated("again", json!({}), &allow())
+                .await
+                .map_err(WriteFailure::into_error)
+                .err(),
             Some(Error::Closed)
         );
     }
@@ -153,8 +174,9 @@ async fn frames_can_be_fragmented_but_cannot_exceed_the_limit() {
     let (connection, mut reader, mut writer) = peer();
     let pending = connection
         .client
-        .submit("initialize", json!({}))
+        .submit_gated("initialize", json!({}), &allow())
         .await
+        .map_err(WriteFailure::into_error)
         .unwrap();
     let request = read(&mut reader).await;
     let frame = format!(
@@ -167,8 +189,9 @@ async fn frames_can_be_fragmented_but_cannot_exceed_the_limit() {
     assert_eq!(pending.wait(BUDGET).await.unwrap()["value"], "完整");
     let pending = connection
         .client
-        .submit("oversized", json!({}))
+        .submit_gated("oversized", json!({}), &allow())
         .await
+        .map_err(WriteFailure::into_error)
         .unwrap();
     read(&mut reader).await;
     let write = tokio::spawn(async move {
@@ -283,8 +306,9 @@ async fn an_unanswered_authenticate_times_out_and_closes_the_connection() {
     assert_eq!(
         connection
             .client
-            .submit("session/new", json!({}))
+            .submit_gated("session/new", json!({}), &allow())
             .await
+            .map_err(WriteFailure::into_error)
             .err(),
         Some(Error::Closed)
     );
@@ -351,7 +375,9 @@ async fn new_load_and_cancel_use_native_identity_without_creating_a_prompt() {
         )
         .await
         .unwrap();
-    protocol::cancel(&connection.client, &native).await.unwrap();
+    protocol::cancel(&connection.client, &native, &allow())
+        .await
+        .unwrap();
     agent.await.unwrap();
 }
 #[tokio::test]
@@ -366,7 +392,8 @@ async fn unsupported_image_is_refused_before_any_write() {
             &[protocol::ContentBlock::Image {
                 data: "abc".into(),
                 mime_type: "image/png".into()
-            }]
+            }],
+            &allow()
         )
         .await
         .is_err()
@@ -518,16 +545,18 @@ async fn abandoned_dispatched_response_closes_the_pipe_before_more_requests() {
     let (connection, mut reader, _writer) = peer();
     let pending = connection
         .client
-        .submit("session/prompt", json!({}))
+        .submit_gated("session/prompt", json!({}), &allow())
         .await
+        .map_err(WriteFailure::into_error)
         .unwrap();
     assert_eq!(read(&mut reader).await["method"], "session/prompt");
     drop(pending);
     assert_eq!(
         connection
             .client
-            .submit("session/prompt", json!({}))
+            .submit_gated("session/prompt", json!({}), &allow())
             .await
+            .map_err(WriteFailure::into_error)
             .err(),
         Some(Error::Closed)
     );
@@ -587,4 +616,8 @@ fn setup_close_wire_contains_only_production_fields() {
         protocol::encode_close_session("native"),
         json!({"sessionId":"native"})
     );
+}
+
+fn allow() -> crate::send_boundary::PreSendGate<'static> {
+    crate::send_boundary::PreSendGate::new(|| Box::pin(async { Ok(()) }))
 }

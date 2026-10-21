@@ -1,4 +1,5 @@
 use super::start::{self, StartFailure};
+mod admission;
 mod driver;
 use driver::drive;
 mod execution_end;
@@ -150,33 +151,7 @@ impl AcpPlannerSession {
             .repo
             .sqlite_db()
             .ok_or_else(|| refused("ACP requires durable submission storage"))?;
-        let row = params
-            .repo
-            .session_get(&WorkerSessionId(params.worker_session_id.clone()))
-            .await
-            .map_err(CalmError::from)?
-            .ok_or_else(|| refused("ACP owner is missing"))?;
-        if row.provider != WorkerProviderKind::from(&params.provider)
-            || !matches!(
-                row.contract,
-                WorkerContract::Planner | WorkerContract::Assistant
-            )
-            || row.card_id.as_ref().map(|id| id.as_str()) != Some(&params.card_id)
-            || row.thread_id.as_deref() != Some(thread)
-            || !row.state.is_active_authority()
-        {
-            return Err(refused("ACP owner identity changed"));
-        }
-        let binding = crate::harness::profile::live_binding(params.repo.as_ref(), &row)
-            .await
-            .map_err(TurnStartFailure::from)?
-            .ok_or_else(|| refused("ACP live owner identity changed"))?;
-        if row.track_id.as_str() != params.track_id
-            || (binding.profile == crate::harness::profile::HarnessProfile::Assistant
-                && permission != PlannerPermissionMode::Never)
-        {
-            return Err(refused("ACP live owner identity changed"));
-        }
+        let row = shared.current_owner(thread, Some(permission)).await?;
         if let Some(receipt) =
             acp_submission_get(pool.read_pool(), &params.worker_session_id, client)
                 .await
@@ -287,6 +262,9 @@ impl AcpPlannerSession {
                 return Err(error);
             }
         };
+        let original_native = row.agent_session_id.clone();
+        let admission =
+            shared.admission(thread, Some(permission), original_native.as_deref(), None);
         let prepared = async {
             let mcp = [protocol::McpServer::Stdio {
                 name: server.clone(),
@@ -310,6 +288,7 @@ impl AcpPlannerSession {
                         &mut process,
                         "session/load",
                         protocol::encode_load_session(&native, &params.cwd, &mcp),
+                        admission.gate(),
                     )
                     .await?;
                     (
@@ -323,6 +302,7 @@ impl AcpPlannerSession {
                         &mut process,
                         "session/new",
                         protocol::encode_new_session(&params.cwd, &mcp),
+                        admission.gate(),
                     )
                     .await?;
                     let configuration =
@@ -357,6 +337,9 @@ impl AcpPlannerSession {
                     &mut process,
                     "session/set_config_option",
                     protocol::encode_set_config_option(&native, &option.id, value),
+                    shared
+                        .admission(thread, Some(permission), Some(&native), None)
+                        .gate(),
                 )
                 .await?;
                 configuration = provider::acp::configuration::Configuration::from_response(&result)
@@ -427,6 +410,9 @@ impl AcpPlannerSession {
             &process.capabilities,
             &native,
             &blocks,
+            shared
+                .admission(thread, Some(permission), Some(&native), Some(&turn))
+                .gate(),
         )
         .await;
         let mut driver_slot = shared.driver.lock().await;
@@ -583,3 +569,6 @@ fn cancel_outcome(
 
 #[cfg(test)]
 mod control_tests;
+
+#[cfg(test)]
+mod admission_tests;
