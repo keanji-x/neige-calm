@@ -57,6 +57,7 @@ http_url = "https://openapi.longbridge.cn"
 quote_ws_url = "wss://openapi-quote.longbridge.cn/v2"
 callback_port = {callback_port}
 research = ["AAPL.US"]
+benchmarks = []
 indexes = [".SPX.US"]
 rps = 2
 attempt_cap = 5

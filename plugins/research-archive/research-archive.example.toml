@@ -24,6 +24,10 @@ callback_port = 60355
 # Security keys, CODE.MARKET.
 research = ["AAPL.US", "MSFT.US", "NVDA.US"]
 
+# Research choices, bars only; [] explicitly disables additional benchmarks.
+# Overlap with research/index members is deduplicated when planning pairs.
+benchmarks = ["QQQ.US", "SOXX.US", "KBE.US", "SPY.US", "SMH.US"]
+
 # Index symbols in dotted form. The membership request asks for
 # limit=1000, so an index with more than 1,000 members never yields a
 # complete membership.

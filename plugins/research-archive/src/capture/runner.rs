@@ -18,14 +18,16 @@
 //!
 //! **The end.** A run ends `complete` only when it is frozen and every pair
 //! has an `ok` or is at its cap. With work left, it ends `partial` once the
-//! window closes, and otherwise stays open for the next start.
+//! window closes, and otherwise stays open for the next start. Core completes
+//! independently; its checkpoint and counts determine exit/health, while the
+//! overall run remains resumable for Supplemental work.
 
 use std::sync::Arc;
 
 use super::fail;
 use super::latch::{Latch, Stop};
 use super::schedule::{COUNTED, Pool, Rule, Span, survey, work_off};
-use crate::catalog::EndpointId;
+use crate::catalog::{CaptureTier, EndpointId};
 use crate::clock::Clock;
 use crate::source::LongbridgeSource;
 use crate::state::{ExitKind, Outcome};
@@ -158,7 +160,14 @@ async fn phases<C: Clock>(ctx: &RunCtx<C>) -> Result<Outcome, Outcome> {
         .await
         .map_err(|e| store_err("working the run", e))?;
     match worked.stop {
-        Some(Stop::Auth) => {
+        Some(Stop::Auth)
+            if ctx
+                .store
+                .core_complete_at(run)
+                .await
+                .map_err(|e| store_err("reading Core completion", e))?
+                .is_none() =>
+        {
             tracing::error!(%as_of, "a request found no usable token; the run stays open");
             return Err(Outcome::of(ExitKind::AuthUnavailable, as_of));
         }
@@ -167,7 +176,7 @@ async fn phases<C: Clock>(ctx: &RunCtx<C>) -> Result<Outcome, Outcome> {
             return Err(Outcome::of(ExitKind::Fatal, as_of));
         }
         // The end below finds the window closed.
-        Some(Stop::WindowClosed) | None => {}
+        Some(Stop::Auth | Stop::WindowClosed) | None => {}
     }
     let frozen = worked.frozen;
     finish(ctx, &pool.recorder, frozen).await
@@ -222,13 +231,19 @@ async fn finish<C: Clock>(
         ExitKind::Partial
     } else {
         tracing::info!(%as_of, pairs = survey.pending.len(), frozen, "attempt timeout; the run stays open");
-        return Ok(Outcome::of(ExitKind::Resumable, as_of));
+        return core_outcome(&ctx.store, ctx.plan.run_id, as_of)
+            .await
+            .map_err(|e| fail("Core outcome", &e).on(as_of))
+            .map(|core| core.unwrap_or_else(|| Outcome::of(ExitKind::Resumable, as_of)));
     };
-    let mut outcome = Outcome::of(kind, as_of);
-    if kind != ExitKind::Complete {
+    let mut outcome = core_outcome(&ctx.store, ctx.plan.run_id, as_of)
+        .await
+        .map_err(|e| fail("Core outcome", &e).on(as_of))?
+        .unwrap_or_else(|| Outcome::of(kind, as_of));
+    if outcome.kind != ExitKind::Complete {
         outcome.failure = ctx
             .store
-            .dominant_failure(ctx.plan.run_id, &COUNTED)
+            .dominant_failure(ctx.plan.run_id, &COUNTED, Some(CaptureTier::Core))
             .await
             .map_err(|e| fail("dominant_failure", &e).on(as_of))?
             .map(|(class, code, _)| format!("{class}:{code}"));
@@ -243,4 +258,38 @@ async fn finish<C: Clock>(
         "run ended"
     );
     Ok(outcome)
+}
+
+/// Health/exit result of settled Core work, independent of auxiliary retries.
+/// None means Core is still pending; the caller keeps its original stop result.
+pub(super) async fn core_outcome(
+    store: &Store,
+    run: RunId,
+    as_of: crate::types::AsOf,
+) -> Result<Option<Outcome>, StoreError> {
+    if store.core_complete_at(run).await?.is_none() {
+        return Ok(None);
+    }
+    let core: Vec<_> = store
+        .coverage(run)
+        .await?
+        .into_iter()
+        .filter(|p| p.tier == CaptureTier::Core)
+        .collect();
+    let ok = core.iter().filter(|p| p.has_ok).count();
+    let kind = if ok == core.len() {
+        ExitKind::Complete
+    } else if degraded(ok, core.len()) {
+        ExitKind::Degraded
+    } else {
+        ExitKind::CompleteWithFailures
+    };
+    let mut outcome = Outcome::of(kind, as_of);
+    if kind != ExitKind::Complete {
+        outcome.failure = store
+            .dominant_failure(run, &COUNTED, Some(CaptureTier::Core))
+            .await?
+            .map(|(class, code, _)| format!("{class}:{code}"));
+    }
+    Ok(Some(outcome))
 }

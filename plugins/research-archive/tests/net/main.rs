@@ -38,3 +38,4 @@ mod source;
 #[path = "../suite/support.rs"]
 #[allow(dead_code)]
 mod support;
+mod tiers;

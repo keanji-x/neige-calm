@@ -51,6 +51,7 @@ impl Universe {
 pub struct PairCoverage {
     pub key: Key,
     pub endpoint: EndpointId,
+    pub tier: crate::catalog::CaptureTier,
     /// Observation rows of any status.
     pub attempts: u32,
     /// Whether any of them is `ok`.
@@ -82,6 +83,8 @@ pub struct RunSummary {
     pub started_at: UnixMs,
     /// `None` while the run is open.
     pub end: Option<RunEnd>,
+    /// Settled Core capture, independently of the overall run end.
+    pub core_complete_at: Option<UnixMs>,
     /// The frozen indexes, by index; empty before the freeze.
     pub frozen: Vec<FrozenIndex>,
 }
@@ -93,8 +96,9 @@ impl Store {
         let mut conn = self.pool.begin().await?;
         let rows = sqlx::query(
             "SELECT r.run_id, r.as_of, r.window_start, r.window_end, r.started_at,
-                    e.finished_at, e.outcome, e.reason
+                    e.finished_at, e.outcome, e.reason, c.finished_at AS core_complete_at
              FROM run r LEFT JOIN run_end e ON e.run_id = r.run_id
+             LEFT JOIN run_core_complete c ON c.run_id=r.run_id
              WHERE r.source = ?
              ORDER BY r.as_of DESC LIMIT ?",
         )
@@ -139,6 +143,7 @@ impl Store {
                 )?,
                 started_at: UnixMs(r.try_get("started_at")?),
                 end,
+                core_complete_at: r.try_get::<Option<i64>, _>("core_complete_at")?.map(UnixMs),
                 frozen,
             });
         }
@@ -263,7 +268,7 @@ impl Store {
     /// one is `ok`. Index members appear once the freeze has committed.
     pub async fn coverage(&self, run_id: RunId) -> Result<Vec<PairCoverage>> {
         let rows = sqlx::query(&format!(
-            "SELECT p.key, p.endpoint_id,
+            "SELECT p.key, p.endpoint_id, p.capture_tier,
                     COUNT(o.attempt) AS attempts,
                     COALESCE(MAX(o.status = 'ok'), 0) AS has_ok
              FROM ({PLANNED_PAIRS}) p
@@ -281,6 +286,9 @@ impl Store {
                 Ok(PairCoverage {
                     key: Key::new(r.try_get::<String, _>("key")?)?,
                     endpoint: self.endpoint_id(&r.try_get::<String, _>("endpoint_id")?)?,
+                    tier: crate::catalog::CaptureTier::parse(
+                        &r.try_get::<String, _>("capture_tier")?,
+                    )?,
                     attempts: u32::try_from(r.try_get::<i64, _>("attempts")?)
                         .expect("a COUNT is never negative"),
                     has_ok: r.try_get("has_ok")?,
@@ -312,26 +320,32 @@ impl Store {
 
     /// The most frequent `(error_class, error_code)` among a run's rows with
     /// a status in `among`, with its row count (ties to the smaller class,
-    /// then code). `None` when there is none.
+    /// then code). Restrict to a capture tier when requested; `None` selects all.
     pub async fn dominant_failure(
         &self,
         run_id: RunId,
         among: &[Status],
+        tier: Option<crate::catalog::CaptureTier>,
     ) -> Result<Option<(String, String, u32)>> {
         if among.is_empty() {
             return Ok(None);
         }
-        let marks = vec!["?"; among.len()].join(", ");
-        let sql = format!(
-            "SELECT error_class, error_code, COUNT(*) AS n FROM observation
-             WHERE run_id = ? AND error_class IS NOT NULL AND status IN ({marks})
-             GROUP BY error_class, error_code
-             ORDER BY n DESC, error_class, error_code LIMIT 1"
-        );
-        let mut query = sqlx::query(&sql).bind(run_id.0);
+        let mut sql = sqlx::QueryBuilder::<sqlx::Sqlite>::new(format!(
+            "SELECT o.error_class, o.error_code, COUNT(*) AS n FROM observation o
+             JOIN ({PLANNED_PAIRS}) p ON p.run_id=o.run_id AND p.key=o.key AND p.endpoint_id=o.endpoint_id
+             WHERE o.run_id = "));
+        sql.push_bind(run_id.0)
+            .push(" AND o.error_class IS NOT NULL AND o.status IN (");
+        let mut separated = sql.separated(",");
         for status in among {
-            query = query.bind(status.as_str());
+            separated.push_bind(status.as_str());
         }
+        separated.push_unseparated(")");
+        if let Some(tier) = tier {
+            sql.push(" AND p.capture_tier=").push_bind(tier.as_str());
+        }
+        sql.push(" GROUP BY o.error_class,o.error_code ORDER BY n DESC,o.error_class,o.error_code LIMIT 1");
+        let query = sql.build();
         let row = query.fetch_optional(&self.pool).await?;
         row.map(|r| {
             Ok((

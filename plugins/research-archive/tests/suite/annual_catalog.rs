@@ -219,7 +219,7 @@ async fn upgrade_does_not_create_a_missing_archive() {
 async fn downgrade_fixture_to_v1(path: &std::path::Path) {
     use research_archive::store::schema::DDL;
     let mut conn = raw(path, false).await;
-    sqlx::raw_sql("DROP TABLE run_pair; DROP TABLE run_plan_v3; DROP TABLE run_endpoint;")
+    sqlx::raw_sql("DROP TABLE run_core_complete; DROP TABLE run_pair; DROP TABLE run_plan_v3; DROP TABLE run_endpoint;")
         .execute(&mut conn)
         .await
         .unwrap();

@@ -39,6 +39,7 @@ columns are `NOT NULL`. `run` and `run_end` key on `INTEGER PRIMARY KEY`
 | `run_key` | (`run_id`, `key`, `origin`) PK | `origin` is `config`, `index-symbol` or `index:<sym>`. |
 | `run_membership` | (`run_id`, `index_sym`) PK, `mode`, `source_run_id` NULL, `frozen_at` | `mode` ∈ `observed`, `carried`, `none`. `source_run_id` is set if and only if `mode = carried`. |
 | `observation` | (`run_id`, `key`, `endpoint_id`, `attempt`) PK, `fetched_at`, `status`, `sha256` NULL, `error_class` NULL, `error_code` NULL | Every attempt is a row. `attempt` starts at 1. `error_class` and `error_code` are both NULL on `ok` rows and both set on failure rows. |
+| `run_core_complete` | `run_id` PK, `finished_at` | Append-only v3 checkpoint: Core settled, supplemental work may remain open. No legacy backfill. |
 | `run_end` | `run_id` PK, `finished_at`, `outcome`, `reason` NULL | `outcome` ∈ `complete`, `partial`, `missed`. |
 
 The partial index `observation_ok_by_key (key, endpoint_id, fetched_at) WHERE
@@ -371,7 +372,8 @@ refused. `research-archive.example.toml` documents each field:
 `data_dir` (absolute), `oauth_client_id`, `access_region` (`global` or
 `cn`), `http_url` (`https://host`, no path; plain `http://` only for a
 loopback IP literal, a local test server), `quote_ws_url` (`wss://`),
-`callback_port`, `research` (`CODE.MARKET` keys), `indexes` (dotted index
+`callback_port`, `research` (`CODE.MARKET` keys), `benchmarks` (bar-only
+comparison keys; explicitly `[]` to disable extra benchmarks), `indexes` (dotted index
 symbols such as `.SPX.US`), `rps` (1 to 20), `attempt_cap`,
 `attempt_timeout_minutes`, `carry_deadline_minutes` (which must end before
 the shortest window `window_start` can open: to 09:30 New York the next
@@ -641,13 +643,23 @@ different rules.
 3. **Fetch**, only after the freeze: every planned pair (`coverage`) without
    an `ok` and below its cap, on the coverage rule.
 
+**Core first.** After membership/freeze, settle every Core pair before sending
+any Supplemental request, including while Core retries wait for backoff. Catalog
+metadata owns this classification: the released eight endpoints are Core and the
+four new endpoints are Supplemental. Each start resumes that same priority.
+The tier is frozen with each request in `run_pair`; later catalog changes do
+not change historical health. Store records `run_core_complete` once Core
+settles (ok or capped), independently
+of the overall run. This checkpoint never marks failures as successful data.
+
 **The end.** A run ends `complete` only when it is frozen and every pair has
 an `ok` or is at its cap; with the schedule above, a capped pair was retried
 over a long span. With work left, a start whose deadline is the window end
 waits for it and ends the run `partial`; any other start leaves it open.
 
 **Config at each start.** The run's planned keys and its frozen index set
-come from its plan and freeze, never from the current config (I12). The
+come from its plan and freeze, never from the current config (I12). This includes
+the configured benchmark list; editing it affects the next daily plan. The
 retry and timing policy (`attempt_cap`, `carry_deadline_minutes`, `rps`,
 `attempt_timeout_minutes`) is read from the config at each start, so a
 change applies to the open run from its next start.
@@ -697,15 +709,15 @@ limiter is therefore four requests in flight × 6 = 24 requests within about
 
 | ending | exit | `last_exit.json` kind | the run |
 |---|---|---|---|
-| every pair `ok` | 0 | `complete` | ended `complete` |
-| every pair `ok` or at its cap, some at the cap, at least half `ok` | 0 | `complete_with_failures` | ended `complete` |
-| every pair `ok` or at its cap, fewer than half `ok` (`DEGRADED_BELOW` = 0.5) | 5 (`DEGRADED`) | `degraded` | ended `complete` |
+| every Core pair `ok` | 0 | `complete` | may remain open for Supplemental work |
+| every Core pair `ok` or capped, some capped, at least half `ok` | 0 | `complete_with_failures` | may remain open for Supplemental work |
+| Core settled, fewer than half Core pairs `ok` (`DEGRADED_BELOW` = 0.5) | 5 (`DEGRADED`) | `degraded` | may remain open for Supplemental work |
 | the day's run had ended | 0 | `already_ended` | unchanged |
-| the attempt timeout, window still open | 0 | `resumable` | left open; the next start resumes it |
+| the attempt timeout, Core still pending, window still open | 0 | `resumable` | left open; the next start resumes it |
 | no window open | 0 | `no_window` | none |
 | the lock is held | 0 (`BUSY`) | not written | untouched |
-| the window closed with work left, or a dangling run was ended | 3 (`PARTIAL`) | `partial` | ended `partial` |
-| a request or the calendar refresh found no usable token, or the SDK wanted the browser flow | 75 (`AUTH_UNAVAILABLE`) | `auth_unavailable` | left open; resumes after `auth import`/`login` |
+| the window closed with Core work left, or a dangling run lacks Core completion | 3 (`PARTIAL`) | `partial` | ended `partial` |
+| Core/preflight without Core completion found no usable token, or calendar refresh needed browser login | 75 (`AUTH_UNAVAILABLE`) | `auth_unavailable` | left open; resumes after `auth import`/`login` |
 | anything else | 70 (`FATAL`) | `fatal` | left open |
 
 **`last_exit.json`** is written atomically before the lock is released:
@@ -714,10 +726,10 @@ missed_scan_incomplete?}`. `invocation` is the start's systemd
 `$INVOCATION_ID`, when it runs under systemd. A start whose lock fails with an I/O error (not a
 held lock) writes `fatal`, so the alert never reads an older start's state.
 
-- `failure` is the run's most frequent counted failure as
+- `failure` is the Core tier's most frequent counted failure as
   `error_class:error_code`, for `complete_with_failures`, `degraded` and
   `partial`.
-- `closed_dangling` lists every run left open whose window had closed and
+- `closed_dangling` lists runs without Core completion whose window closed and
   that this start ended `partial`, oldest first, as `{as_of, failure?}`. It
   is kept whatever the start's own ending: when the start would otherwise
   exit 0, it exits `PARTIAL` for the latest such day instead (with `failure`
@@ -727,14 +739,14 @@ held lock) writes `fatal`, so the alert never reads an older start's state.
 - It holds no token and no server text. A start that never took the lock
   writes none.
 
-**A mostly lost day alerts.** A run that ends `complete` with fewer than
-half of its planned pairs having an `ok` (`capture::DEGRADED_BELOW`, 0.5)
+**A mostly lost Core day alerts.** Settled Core capture with fewer than
+half of its Core pairs having an `ok` (`capture::DEGRADED_BELOW`, 0.5)
 exits `DEGRADED`, so `OnFailure=` fires; at half or more, the losses are
 ordinary (a few delisted symbols answering 2601400, a few capped pairs) and
 the start exits 0 as `complete_with_failures`. This is what catches a
 server-side auth rejection inside the envelope: its code was never probed,
 so it is stored as `permanent`, not `auth_unavailable`, every pair reaches
-its cap, and the run ends `degraded` with `failure` naming the envelope
+its cap, and the Core result is `degraded` with `failure` naming the envelope
 code.
 
 ## The alert
@@ -866,14 +878,16 @@ about 45.
 - `capture_status` answers `ok`, `attention` or `failing`, every finding, the last
   exit and the last 7 runs with their pair counts (ok, tried with no ok, not
   tried, planned) and frozen membership. One source per fact:
-  - **The runs** record data loss for good. A run that ended `partial`, or
+  - **The Core tier** records consensus/archive data loss for good. Core that ended `partial`, or
     `complete` but degraded (fewer than [`DEGRADED_BELOW`](src/types.rs) of
-    its pairs `ok`, the capture's own `DEGRADED` rule), is `failing` until a
+    its Core pairs `ok`, the capture's own `DEGRADED` rule), is `failing` until a
     later day ends `complete`, which demotes it to `attention`. A later
     `missed` or open run does not, so an outage across several windows (a
     day closed `partial` at the next start, the days after it `missed`)
     stays `failing`. A `missed` day is `attention`, and so is a run
-    `complete` with pairs that have no `ok`. An open run is not judged.
+    `complete` with Core pairs that have no `ok`. Pending Core is not judged.
+    Supplemental failures, quotas, auth pauses and timeouts are report-only;
+    overall partial/open does not invalidate an existing Core checkpoint.
   - **`last_exit.json`** tells only what the runs cannot: it is `failing`
     when it is missing or older than `stale_after_minutes`, or when the last
     start had no usable token (`auth_unavailable`) or stopped on `fatal`;
@@ -1101,7 +1115,8 @@ V3 adds append-only `run_plan_v3(run_id)` and
 `run_pair(run_id,key,endpoint_id,request_json)`. A marker identifies runs using
 explicit immutable pair requests. Plan creation commits initial pairs with the
 keys; membership freeze commits each new member's pairs with its keys. Each
-request is an ordered JSON array of resolved string pairs. Dates come from the
+request is an ordered JSON array of resolved string pairs; `capture_tier`
+freezes its Core/Supplemental classification in that same row. Dates come from the
 run's `as_of`, so midnight, changed config, and resumption never change a request.
 Historical runs without a marker keep the released `run_key × run_endpoint`
 relation, including an old run whose index membership freezes after upgrade.
@@ -1121,7 +1136,13 @@ new endpoint id; legacy catalog fields are never rewritten.
 | `earnings_snapshot` | research securities, daily; symbol, upstream latest report | raw `data`: report, fiscal_year/period, currency, fp_start/end, fo_* and fr_* |
 | `financial_reports` | research securities, daily; symbol, kind=ALL, report=qf | raw `data`: list.IS/BS/CF.indicators[].accounts[].values[] |
 | `finance_calendar` | one `market:US` key, daily; as_of−7 through as_of+30, report events | `earnings_calendar_v1` |
-| `daily_candlesticks` | research securities plus QQQ.US, SOXX.US, KBE.US, SPY.US, SMH.US | `daily_bars_v1` |
+| `daily_candlesticks` | research securities plus configured `benchmarks` | `daily_bars_v1` |
+
+The required `benchmarks` TOML list lives next to `research` and `indexes`. The
+example selects QQQ/SOXX/KBE/SPY/SMH; these are operator research choices, not a
+Store constant. Symbols are validated and unique; `[]` is explicit. Existing
+configs must add this field before using the new binary (including upgrades).
+No production config is edited by this PR.
 
 Benchmark-only keys have origin `benchmark` and only get daily bars. The US
 calendar has origin `market` and is not passed as a security symbol. Overlapping
@@ -1181,9 +1202,17 @@ trading day; `fetched_at` is knowledge time, not an event/report/trade date.
 Existing `not_archived`, `no_value`, empty-value, and 40 KiB limits remain.
 
 `capture_status.runs[].endpoints` reports planned/ok/failed/untried counts per
-endpoint, including the market pair and benchmark bars. Existing run outcome
-semantics remain: `complete` can include pairs that exhausted their attempt cap;
-health and endpoint counts expose failures rather than treating them as data.
+endpoint, including market and benchmark pairs, with a `tier` classification.
+The eight released endpoints are Core; the four additions are Supplemental.
+`runs[].core` and `runs[].supplemental` each expose planned/ok/failed/untried;
+`core_outcome` and `core_finished_at` describe Core independently of the overall
+`outcome`/`finished_at`. Total `pairs_*` counts still cover both tiers. Report
+rows show both tiers explicitly; supplemental gaps never add health findings or
+OnFailure notifications. Missing starts/unreadable storage remain operational
+failures. Core auth/data loss, degraded ratios and membership warnings retain
+existing semantics. Old run history is unchanged and receives no checkpoint
+backfill. `complete` in either tier can include capped failures; counts expose
+them rather than treating failure as data.
 
 The sample token read MSFT and all five benchmarks successfully. This does not
 prove monthly symbol capacity for the full universe. Permission/quota failures
@@ -1205,3 +1234,7 @@ The measured199-page calendar adds198 starts over its single logical pair:
 approximately44 minutes of ideal start pacing for the expanded first pass,
 plus bootstrap, latency and retries. The calendar itself completed within one
 25-minute attempt; successful stock pairs still resume across timer starts.
+
+Follow-ups: [SDK adapter removal and financial-report cadence #2993](https://github.com/keanji-x/neige-calm/issues/2993);
+[existing market.series US chart/501 defect #2994](https://github.com/keanji-x/neige-calm/issues/2994).
+Archive closes do not themselves repair the Report chart data source.

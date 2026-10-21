@@ -12,6 +12,7 @@ use std::path::Path;
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 
+use crate::catalog::CaptureTier;
 use crate::state::{ExitKind, LastExit};
 use crate::store::{PairCoverage, ReadOnlyStore, RunSummary, Store, StoreError};
 use crate::types::{MembershipMode, RunOutcome, Source, UnixMs, degraded};
@@ -56,9 +57,19 @@ pub struct IndexStatus {
 }
 
 /// Coverage of a single endpoint, including market and benchmark pairs.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct EndpointStatus {
+    pub tier: CaptureTier,
     pub endpoint: String,
+    pub planned: u32,
+    pub ok: u32,
+    pub failed: u32,
+    pub untried: u32,
+}
+
+/// Independent counts for Core health and supplemental report-only coverage.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct TierStatus {
     pub planned: u32,
     pub ok: u32,
     pub failed: u32,
@@ -83,6 +94,11 @@ pub struct RunStatus {
     pub pairs_untried: u32,
     pub frozen: Vec<IndexStatus>,
     pub endpoints: Vec<EndpointStatus>,
+    pub core: TierStatus,
+    pub supplemental: TierStatus,
+    /// Independent Core state; overall `outcome` still describes all capture.
+    pub core_outcome: &'static str,
+    pub core_finished_at: Option<i64>,
 }
 
 /// The archive's health at `checked_at`.
@@ -227,24 +243,52 @@ fn run_status(run: &RunSummary, coverage: &[PairCoverage]) -> RunStatus {
         u32::try_from(coverage.iter().filter(|p| f(p)).count()).expect("pairs fit in u32")
     };
     let mut endpoints = std::collections::BTreeMap::<String, EndpointStatus>::new();
+    let mut core = TierStatus::default();
+    let mut supplemental = TierStatus::default();
     for pair in coverage {
         let name = pair.endpoint.to_string();
         let entry = endpoints
             .entry(name.clone())
             .or_insert_with(|| EndpointStatus {
                 endpoint: name,
-                ..Default::default()
+                tier: pair.tier,
+                planned: 0,
+                ok: 0,
+                failed: 0,
+                untried: 0,
             });
+        let tier = match pair.tier {
+            CaptureTier::Core => &mut core,
+            CaptureTier::Supplemental => &mut supplemental,
+        };
+        tier.planned += 1;
         entry.planned += 1;
         if pair.has_ok {
             entry.ok += 1;
+            tier.ok += 1;
         } else if pair.attempts > 0 {
             entry.failed += 1;
+            tier.failed += 1;
         } else {
             entry.untried += 1;
+            tier.untried += 1;
         }
     }
+    // A checkpoint keeps capped Core failures separate from auxiliary timeout.
+    // Old complete histories have no checkpoint and retain their released end.
+    let core_outcome = if run.core_complete_at.is_some() {
+        "complete"
+    } else {
+        run.end.as_ref().map_or("open", |e| e.outcome.as_str())
+    };
     RunStatus {
+        core,
+        supplemental,
+        core_outcome,
+        core_finished_at: run
+            .core_complete_at
+            .map(|t| t.0)
+            .or_else(|| run.end.as_ref().map(|e| e.finished_at.0)),
         endpoints: endpoints.into_values().collect(),
         as_of: run.as_of.to_string(),
         outcome: run.end.as_ref().map_or("open", |e| e.outcome.as_str()),
@@ -274,9 +318,14 @@ fn run_findings(runs: &[(RunSummary, RunStatus)], out: &mut Vec<Finding>) {
     // Runs come latest first: whether one seen so far ended `complete`.
     let mut later_complete = false;
     for (run, status) in runs {
-        let Some(end) = &run.end else { continue };
+        let outcome = match status.core_outcome {
+            "complete" => RunOutcome::Complete,
+            "partial" => RunOutcome::Partial,
+            "missed" => RunOutcome::Missed,
+            _ => continue,
+        };
         let unrecovered = !later_complete;
-        later_complete |= end.outcome == RunOutcome::Complete;
+        later_complete |= outcome == RunOutcome::Complete;
         let lost = |text: String| Finding {
             health: if unrecovered {
                 Health::Failing
@@ -292,8 +341,8 @@ fn run_findings(runs: &[(RunSummary, RunStatus)], out: &mut Vec<Finding>) {
                 text
             },
         };
-        let (ok, planned) = (status.pairs_ok, status.pairs_planned);
-        match end.outcome {
+        let (ok, planned) = (status.core.ok, status.core.planned);
+        match outcome {
             RunOutcome::Missed => out.push(Finding {
                 health: Health::Attention,
                 text: format!("{} was missed: no capture ran during its window", run.as_of),
@@ -309,12 +358,12 @@ fn run_findings(runs: &[(RunSummary, RunStatus)], out: &mut Vec<Finding>) {
                     run.as_of
                 )))
             }
-            RunOutcome::Complete if status.pairs_failed > 0 => out.push(Finding {
+            RunOutcome::Complete if status.core.failed > 0 => out.push(Finding {
                 health: Health::Attention,
                 text: format!(
                     "{} ended complete with failures: {} of {planned} pairs used up their \
                      attempts with no ok",
-                    run.as_of, status.pairs_failed
+                    run.as_of, status.core.failed
                 ),
             }),
             RunOutcome::Complete => {}

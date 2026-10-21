@@ -191,14 +191,9 @@ async fn end_day(dir: &Path, n: i64, oks: usize, finish: Finish) {
         &[(".SPX.US", &["AAPL.US", "MSFT.US"])],
     )
     .await;
-    for (i, pair) in store
-        .coverage(plan.run_id)
-        .await
-        .unwrap()
-        .into_iter()
-        .filter(|p| !p.has_ok)
-        .enumerate()
-    {
+    let mut pairs = store.coverage(plan.run_id).await.unwrap();
+    pairs.sort_by_key(|p| p.tier != research_archive::catalog::CaptureTier::Core);
+    for (i, pair) in pairs.into_iter().filter(|p| !p.has_ok).enumerate() {
         let response = if i < oks {
             ok(b"{}")
         } else {
@@ -230,7 +225,7 @@ async fn a_degraded_day_fails_until_a_later_day_completes() {
     let dir = healthy_dir().await;
     // 4 of 27 pairs ok: below half.
     end_day(dir.path(), 2, 3, Finish::Complete).await;
-    let degraded = "2026-01-03 ended degraded: only 4 of 27 pairs have an ok";
+    let degraded = "2026-01-03 ended degraded: only 4 of 15 pairs have an ok";
     // The capture's own exit, then later starts that overwrite it.
     for kind in [
         ExitKind::Degraded,
@@ -258,7 +253,7 @@ async fn a_partial_latest_day_fails_until_a_later_day_completes() {
     let dir = healthy_dir().await;
     end_day(dir.path(), 2, 2, Finish::Partial).await;
     exit(ExitKind::NoWindow, NOW.0 - MINUTE).write(dir.path());
-    let partial = "2026-01-03 ended partial: 24 of 27 pairs have no ok";
+    let partial = "2026-01-03 ended partial: 12 of 15 pairs have no ok";
     assert_eq!(
         texts(&read(dir.path()).await),
         [(Health::Failing, format!("{partial}{LOST}").as_str())]
@@ -294,7 +289,7 @@ async fn an_outage_fails_until_a_later_day_completes() {
         .await
         .unwrap();
     store.close().await;
-    let partial = "2026-01-03 ended partial: 17 of 17 pairs have no ok";
+    let partial = "2026-01-03 ended partial: 8 of 8 pairs have no ok";
     let missed = "2026-01-04 was missed: no capture ran during its window";
 
     let mut first = exit(ExitKind::Partial, NOW.0 - 2 * MINUTE);
@@ -328,7 +323,7 @@ async fn an_outage_fails_until_a_later_day_completes() {
 #[tokio::test]
 async fn complete_with_failures_needs_attention_from_the_rows() {
     let dir = healthy_dir().await;
-    end_day(dir.path(), 2, 25, Finish::Complete).await;
+    end_day(dir.path(), 2, 13, Finish::Complete).await;
     // The exit says nothing of it: the rows do.
     exit(ExitKind::Complete, NOW.0 - MINUTE).write(dir.path());
     let status = read(dir.path()).await;
@@ -336,13 +331,13 @@ async fn complete_with_failures_needs_attention_from_the_rows() {
         texts(&status),
         [(
             Health::Attention,
-            "2026-01-03 ended complete with failures: 1 of 27 pairs used up their attempts \
+            "2026-01-03 ended complete with failures: 1 of 15 pairs used up their attempts \
              with no ok"
         )]
     );
     assert_eq!(
         (status.runs[0].pairs_ok, status.runs[0].pairs_failed),
-        (26, 1)
+        (14, 13)
     );
 }
 
@@ -451,7 +446,7 @@ async fn a_missed_day_does_not_demote_a_partial_one() {
         [
             (
                 Health::Failing,
-                format!("2026-01-03 ended partial: 16 of 17 pairs have no ok{LOST}").as_str()
+                format!("2026-01-03 ended partial: 7 of 8 pairs have no ok{LOST}").as_str()
             ),
             (
                 Health::Attention,
@@ -507,4 +502,46 @@ async fn an_unreadable_archive_is_failing() {
         status.findings
     );
     assert!(status.runs.is_empty());
+}
+
+#[tokio::test]
+async fn supplemental_only_failures_do_not_change_core_health() {
+    let dir = healthy_dir().await;
+    let store = Store::open(&Store::path(dir.path())).await.unwrap();
+    let plan = store
+        .plan_run(&plan_request(2, &["AAPL.US"], &[]))
+        .await
+        .unwrap();
+    store
+        .freeze_membership(plan.run_id, at(2, 2))
+        .await
+        .unwrap();
+    for pair in store.coverage(plan.run_id).await.unwrap() {
+        let supplemental = matches!(
+            pair.endpoint.as_str(),
+            "earnings_snapshot" | "financial_reports" | "finance_calendar" | "daily_candlesticks"
+        );
+        let response = if supplemental {
+            failed(FailureClass::Permanent)
+        } else {
+            ok(b"{}")
+        };
+        store
+            .record_observation(plan.run_id, &pair.key, pair.endpoint, at(2, 3), &response)
+            .await
+            .unwrap();
+    }
+    store
+        .end_run(plan.run_id, at(2, 4), Finish::Complete, None)
+        .await
+        .unwrap();
+    store.close().await;
+    let status = read(dir.path()).await;
+    assert_eq!(
+        status.health,
+        Health::Ok,
+        "auxiliary quota failures must stay in the report: {:?}",
+        status.findings
+    );
+    assert!(status.runs[0].endpoints.iter().any(|e| e.failed > 0));
 }

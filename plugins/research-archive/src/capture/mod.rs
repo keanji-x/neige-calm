@@ -186,6 +186,16 @@ impl<C: Clock, D: TradingDays> Start<'_, C, D> {
             .await
             .map_err(|e| store_err("closing dangling runs", e))?;
         for run in &dangling {
+            if self
+                .store
+                .core_complete_at(*run)
+                .await
+                .map_err(|e| store_err("reading Core completion", e))?
+                .is_some()
+            {
+                tracing::info!(%run, "closed supplemental work; Core completion is unchanged");
+                continue;
+            }
             let plan = self
                 .store
                 .plan(*run)
@@ -193,7 +203,7 @@ impl<C: Clock, D: TradingDays> Start<'_, C, D> {
                 .map_err(|e| store_err("reading a dangling run", e))?;
             let failure = self
                 .store
-                .dominant_failure(*run, &COUNTED)
+                .dominant_failure(*run, &COUNTED, Some(crate::catalog::CaptureTier::Core))
                 .await
                 .map_err(|e| store_err("reading a dangling run", e))?
                 .map(|(class, code, _)| format!("{class}:{code}"));
@@ -226,6 +236,7 @@ impl<C: Clock, D: TradingDays> Start<'_, C, D> {
             window,
             started_at: self.clock.now(),
             config: self.config.research.clone(),
+            benchmarks: self.config.benchmarks.clone(),
             indexes: self.config.indexes.clone(),
         };
         let plan = match self.store.plan_run(&request).await {
@@ -251,7 +262,16 @@ impl<C: Clock, D: TradingDays> Start<'_, C, D> {
         }
 
         let deadline = plan.window.end().min(self.process_deadline());
-        let oauth = self.oauth(deadline, Some(as_of)).await?;
+        let oauth = match self.oauth(deadline, Some(as_of)).await {
+            Ok(oauth) => oauth,
+            Err(outcome) if outcome.kind == ExitKind::AuthUnavailable => {
+                return Ok(runner::core_outcome(&self.store, plan.run_id, as_of)
+                    .await
+                    .map_err(|e| store_err("reading Core outcome", e).on(as_of))?
+                    .unwrap_or(outcome));
+            }
+            Err(outcome) => return Err(outcome),
+        };
         let source = LongbridgeSource::new(
             oauth,
             &self.config.http_url,

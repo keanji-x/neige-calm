@@ -104,10 +104,38 @@ impl std::fmt::Display for EndpointId {
     }
 }
 
+/// Capture priority and health ownership. Request definitions remain unchanged.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CaptureTier {
+    Core,
+    Supplemental,
+}
+
+impl CaptureTier {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Core => "core",
+            Self::Supplemental => "supplemental",
+        }
+    }
+    pub fn parse(value: &str) -> Result<Self, crate::types::InvalidValue> {
+        match value {
+            "core" => Ok(Self::Core),
+            "supplemental" => Ok(Self::Supplemental),
+            _ => Err(crate::types::InvalidValue {
+                what: "capture tier",
+                value: value.to_owned(),
+            }),
+        }
+    }
+}
+
 /// One catalog entry.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Endpoint {
     pub id: EndpointId,
+    pub tier: CaptureTier,
     pub method: Method,
     pub path: &'static str,
     /// The query pairs, in the order they are sent.
@@ -127,6 +155,7 @@ impl Endpoint {
     ) -> Endpoint {
         Endpoint {
             id: EndpointId(id),
+            tier: CaptureTier::Core,
             method: Method::Get,
             path,
             query,
@@ -134,6 +163,12 @@ impl Endpoint {
             dc_restrict: None,
             key_kind,
         }
+    }
+
+    /// Declare auxiliary capture without duplicating health/dispatch endpoint lists.
+    pub const fn supplemental(mut self) -> Self {
+        self.tier = CaptureTier::Supplemental;
+        self
     }
 
     /// The canonical `endpoint.query_json`: a compact JSON array of
@@ -259,7 +294,8 @@ const COMPILED: &[Endpoint] = &[
         "/v1/quote/financials/earnings-snapshot",
         KEY_ONLY,
         KeyKind::Security,
-    ),
+    )
+    .supplemental(),
     Endpoint::new(
         "financial_reports",
         "/v1/quote/financial-reports",
@@ -269,8 +305,10 @@ const COMPILED: &[Endpoint] = &[
             ("report", QueryValue::Fixed("qf")),
         ],
         KeyKind::Security,
-    ),
+    )
+    .supplemental(),
     Endpoint {
+        tier: CaptureTier::Supplemental,
         method: Method::Calendar,
         ..Endpoint::new(
             "finance_calendar",
@@ -287,6 +325,7 @@ const COMPILED: &[Endpoint] = &[
         )
     },
     Endpoint {
+        tier: CaptureTier::Supplemental,
         method: Method::Quote,
         ..Endpoint::new(
             "daily_candlesticks",

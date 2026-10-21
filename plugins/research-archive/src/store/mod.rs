@@ -1,6 +1,7 @@
 //! `Store`: the single owner of `archive.sqlite3`: its schema, guard
 //! triggers and catalog check, and every write the capture job makes.
 
+mod core;
 mod freeze;
 mod planning;
 mod read;

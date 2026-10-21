@@ -5,7 +5,7 @@
 //! the order of membership and fetch, resumption, missed days, and the
 //! serialized recorder.
 
-use crate::archive::security_count;
+use crate::archive::{core_security_count, security_count};
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
@@ -384,7 +384,7 @@ fn a_hanging_request_is_dropped_at_the_deadline() {
         );
         assert_eq!(outcome.kind, ExitKind::Partial, "{outcome:?}");
         let recorded = rows(&a).await;
-        assert_eq!(recorded.len(), security_count() + 6, "{recorded:?}");
+        assert_eq!(recorded.len(), core_security_count(), "{recorded:?}");
         let forecast: Vec<_> = recorded.iter().filter(|r| r.1 == "forecast_eps").collect();
         assert_eq!(forecast.len(), 1);
         assert_eq!(forecast[0].4, "transient");
@@ -537,11 +537,11 @@ fn membership_waits_for_the_carry_deadline_then_carries() {
             .iter()
             .filter(|r| r.path != "/v1/quote/index-constituents")
             .count();
-        assert_eq!(securities, 2 * security_count());
+        assert_eq!(securities, 2 * core_security_count());
         let coverage = a.store().await.coverage(RunId(2)).await.unwrap();
         assert_eq!(
             coverage.iter().filter(|p| p.has_ok).count(),
-            2 * security_count() + 6
+            2 * core_security_count()
         );
         let mut conn = raw(&a.data_dir.join("archive.sqlite3"), false).await;
         let (mode, source): (String, Option<i64>) =
@@ -744,5 +744,38 @@ fn the_first_auth_failure_stops_every_worker_at_once() {
         assert_eq!(recorded[0].4, "auth_unavailable");
         assert!(run_end(&a, 1).await.is_none());
         assert_eq!(a.last_exit()["kind"], "auth_unavailable");
+    })
+}
+
+#[test]
+fn core_requests_finish_before_supplemental_requests_start() {
+    hermetic::run(async {
+        let clock = FakeClock::at(tue_start());
+        let server =
+            TimedServer::start(clock.clone(), |s, _| ok_reply(s, &["AAPL.US", "ZZZZ.US"])).await;
+        let knobs = Knobs {
+            research: vec!["AAPL.US", "ZZZZ.US"],
+            ..Knobs::default()
+        };
+        let a = archive(&server.server.url, &knobs, clock.now());
+        assert_eq!(capture(&a, &clock).await.kind, ExitKind::Complete);
+        let arrivals = server.arrivals();
+        let first_aux = arrivals
+            .iter()
+            .position(|r| {
+                matches!(
+                    r.path.as_str(),
+                    "/v1/quote/financials/earnings-snapshot" | "/v1/quote/financial-reports"
+                )
+            })
+            .unwrap();
+        let last_core = arrivals
+            .iter()
+            .rposition(|r| r.path == "/v1/quote/valuation")
+            .unwrap();
+        assert!(
+            last_core < first_aux,
+            "a new endpoint ran before the original core completed"
+        );
     })
 }

@@ -226,3 +226,144 @@ async fn v3_upgrade_is_explicit_idempotent_and_rejects_drift_without_writes() {
     assert!(Store::upgrade_market_catalog(&path).await.is_err());
     assert_eq!(std::fs::read(&path).unwrap(), before);
 }
+
+#[tokio::test]
+async fn configured_benchmarks_are_frozen_and_can_change_next_day() {
+    let f = crate::support::fresh().await;
+    let mut req = plan_request(1, &["MSFT.US"], &[]);
+    req.benchmarks = vec![key("IWM.US"), key("MSFT.US")];
+    let first = f.store.plan_run(&req).await.unwrap();
+    assert_eq!(first.benchmarks, vec![key("IWM.US"), key("MSFT.US")]);
+    let pairs = f.store.coverage(first.run_id).await.unwrap();
+    let iwm: Vec<_> = pairs.iter().filter(|p| p.key == key("IWM.US")).collect();
+    assert_eq!(iwm.len(), 1);
+    assert_eq!(iwm[0].endpoint, endpoint("daily_candlesticks"));
+    assert!(!pairs.iter().any(|p| p.key == key("QQQ.US")));
+    assert_eq!(
+        pairs
+            .iter()
+            .filter(|p| p.key == key("MSFT.US") && p.endpoint == endpoint("daily_candlesticks"))
+            .count(),
+        1
+    );
+    req.benchmarks = vec![key("DIA.US")];
+    let resumed = f.store.plan_run(&req).await.unwrap();
+    assert!(!resumed.created);
+    assert_eq!(resumed.benchmarks, first.benchmarks);
+    assert_eq!(f.store.coverage(first.run_id).await.unwrap(), pairs);
+    let mut tomorrow = plan_request(2, &["MSFT.US"], &[]);
+    tomorrow.benchmarks = vec![];
+    let next = f.store.plan_run(&tomorrow).await.unwrap();
+    assert!(next.benchmarks.is_empty());
+    assert!(
+        !f.store
+            .coverage(next.run_id)
+            .await
+            .unwrap()
+            .iter()
+            .any(|p| p.key == key("IWM.US"))
+    );
+}
+
+#[tokio::test]
+async fn core_checkpoint_requires_frozen_rows_is_immutable_and_keeps_aux_writable() {
+    use research_archive::catalog::CaptureTier;
+    let f = crate::support::fresh().await;
+    let plan = f
+        .store
+        .plan_run(&plan_request(1, &["MSFT.US"], &[".SPX.US"]))
+        .await
+        .unwrap();
+    assert!(f.store.complete_core(plan.run_id, at(1, 5)).await.is_err());
+    f.store
+        .freeze_membership(plan.run_id, at(1, 6))
+        .await
+        .unwrap();
+    assert!(f.store.complete_core(plan.run_id, at(1, 7)).await.is_err());
+    let pairs = f.store.coverage(plan.run_id).await.unwrap();
+    for p in pairs.iter().filter(|p| p.tier == CaptureTier::Core) {
+        let body = if p.endpoint == endpoint("index_constituents") {
+            crate::support::constituents(&["MSFT.US"])
+        } else {
+            b"{}".to_vec()
+        };
+        f.store
+            .record_observation(plan.run_id, &p.key, p.endpoint, at(1, 8), &ok(&body))
+            .await
+            .unwrap();
+    }
+    f.store.complete_core(plan.run_id, at(1, 9)).await.unwrap();
+    f.store.complete_core(plan.run_id, at(1, 10)).await.unwrap();
+    assert_eq!(
+        f.store.core_complete_at(plan.run_id).await.unwrap(),
+        Some(at(1, 9))
+    );
+    assert!(
+        f.store
+            .record_observation(
+                plan.run_id,
+                &key("MSFT.US"),
+                endpoint("earnings_snapshot"),
+                at(1, 8),
+                &ok(b"{}")
+            )
+            .await
+            .is_err()
+    );
+    f.store
+        .record_observation(
+            plan.run_id,
+            &key("MSFT.US"),
+            endpoint("earnings_snapshot"),
+            at(1, 10),
+            &ok(b"{}"),
+        )
+        .await
+        .unwrap();
+    let mut conn = raw(&f.path, false).await;
+    for sql in [
+        "UPDATE run_core_complete SET finished_at=0",
+        "DELETE FROM run_core_complete",
+        "INSERT INTO run_core_complete SELECT * FROM run_core_complete",
+    ] {
+        assert!(sqlx::query(sql).execute(&mut conn).await.is_err());
+    }
+}
+
+#[tokio::test]
+async fn capture_tiers_are_frozen_with_requests_not_reinterpreted_on_reopen() {
+    use research_archive::catalog::CaptureTier;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("archive.sqlite3");
+    let store = Store::open(&path).await.unwrap();
+    let plan = store
+        .plan_run(&plan_request(1, &["MSFT.US"], &[]))
+        .await
+        .unwrap();
+    let original = store.coverage(plan.run_id).await.unwrap();
+    store.close().await;
+    let mut endpoints = Catalog::compiled().endpoints().to_vec();
+    endpoints
+        .iter_mut()
+        .find(|e| e.id.as_str() == "earnings_snapshot")
+        .unwrap()
+        .tier = CaptureTier::Core;
+    let catalog = Catalog::new(endpoints).unwrap();
+    let store = Store::open_with_catalog(&path, &catalog).await.unwrap();
+    assert_eq!(store.coverage(plan.run_id).await.unwrap(), original);
+    let next = store
+        .plan_run(&plan_request(2, &["MSFT.US"], &[]))
+        .await
+        .unwrap();
+    assert_eq!(
+        store
+            .coverage(next.run_id)
+            .await
+            .unwrap()
+            .iter()
+            .find(|p| p.endpoint.as_str() == "earnings_snapshot")
+            .unwrap()
+            .tier,
+        CaptureTier::Core
+    );
+}

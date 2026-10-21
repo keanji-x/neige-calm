@@ -31,6 +31,7 @@ struct RawConfig {
     quote_ws_url: String,
     callback_port: u16,
     research: Vec<String>,
+    benchmarks: Vec<String>,
     indexes: Vec<String>,
     rps: u32,
     attempt_cap: u32,
@@ -56,6 +57,8 @@ pub struct Config {
     pub callback_port: CallbackPort,
     /// Security keys (`AAPL.US`), unique.
     pub research: Vec<Key>,
+    /// Configured bar-only comparison symbols, frozen with the daily plan.
+    pub benchmarks: Vec<Key>,
     /// Index symbols in dotted form (`.SPX.US`), unique. The membership
     /// request asks for `limit=1000`, so an index with more than 1,000
     /// members never yields a complete membership.
@@ -151,6 +154,7 @@ impl RawConfig {
         let callback_port = CallbackPort::new(self.callback_port)
             .ok_or_else(|| invalid("callback_port", "must be the registered port, not 0"))?;
         let research = keys("research", &self.research, KeyForm::Security)?;
+        let benchmarks = keys("benchmarks", &self.benchmarks, KeyForm::Security)?;
         let indexes = keys("indexes", &self.indexes, KeyForm::Index)?;
         if research.is_empty() && indexes.is_empty() {
             return Err(invalid("research", "research and indexes are both empty"));
@@ -206,6 +210,7 @@ impl RawConfig {
             quote_ws_url: ws_url("quote_ws_url", &self.quote_ws_url)?,
             callback_port,
             research,
+            benchmarks,
             indexes,
             rps,
             attempt_cap,

@@ -150,3 +150,39 @@ bytes (below8MiB),8,692,635 serialized wrapper bytes,139.0 seconds at2rps. Its
 small-page references. This fits the25-minute attempt bound without checkpoints
 or a production configuration change. The large wrapper is read through JSON
 pointers under the unchanged40KiB tool answer cap.
+
+## Pre-merge revision: configurable benchmarks and core health
+
+The required TOML `benchmarks` list sits beside `research` and `indexes`, accepts
+security symbols (including an explicitly empty list), and is frozen into the
+run's existing benchmark origins. Store receives that list rather than owning
+research choices. Resuming a run uses its stored list even if config changes.
+
+Endpoint catalog metadata declares Core versus Supplemental; the classification
+is frozen per pair along with its request, so later catalog policy cannot
+reinterpret an old day. The released eight
+endpoints remain Core; the four additions are Supplemental. One metadata entry
+owns dispatch phase and status/report classification; adding an endpoint does
+not require editing a second list. Endpoint request SQL literals stay unchanged.
+After membership/freeze, every start settles Core work before dispatching any
+Supplemental work, including when Core retries are waiting. Capped Core failures
+are settled failures, not successful data.
+
+The unreleased v3 migration adds an append-only Core completion checkpoint. It
+records that Core work settled without ending the overall run: supplemental
+capture can resume until its existing window/deadline. Store validates frozen
+membership and Core row coverage before checkpointing. Health, exit codes and
+OnFailure alerts judge Core counts/checkpoint; Report and capture_status show
+both tiers, including auxiliary failures/untried pairs and the overall outcome.
+Missing timer starts, inaccessible storage and genuine Core auth/data failures
+retain their existing health semantics. Auxiliary HTTP, quota, auth and timeout
+failures do not turn a completed healthy Core into failing. Legacy histories
+retain their released run-end semantics and migration never backfills checkpoint
+rows. Released v1/v2 migration bytes remain untouched.
+
+Acceptance: red regressions for required benchmark config, core-before-aux wire
+order and auxiliary-only failure health; frozen benchmark list across resume;
+core failure/degraded and carry warnings still visible; aux-only timeout, auth,
+resume and dangling closure do not alert; report exposes both tiers. Mutation
+verification pins priority and health isolation, followed by required gates and
+two fresh independent L2 reviews. No production config/store edits or deployment.

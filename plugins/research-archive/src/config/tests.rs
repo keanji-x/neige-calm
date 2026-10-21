@@ -84,6 +84,7 @@ fn every_field_is_required() {
         "quote_ws_url",
         "callback_port",
         "research",
+        "benchmarks",
         "indexes",
         "rps",
         "attempt_cap",
@@ -212,5 +213,22 @@ fn the_carry_deadline_ends_before_the_shortest_window() {
         let err = refused(&at(ws, carry));
         assert_eq!(field_of(&err), "carry_deadline_minutes", "{ws} {carry}");
         assert!(err.to_string().contains("at most 510"), "{err}");
+    }
+}
+
+#[test]
+fn benchmark_selection_is_required_validated_config() {
+    let configured = with("benchmarks", "benchmarks = [\"IWM.US\"]");
+    let c = Config::parse(&configured).expect("benchmark choices belong to configuration");
+    assert_eq!(
+        c.benchmarks.iter().map(Key::as_str).collect::<Vec<_>>(),
+        ["IWM.US"]
+    );
+    Config::parse(&with("benchmarks", "benchmarks = []")).unwrap();
+    for line in [
+        "benchmarks = [\"IWM.US\", \"IWM.US\"]",
+        "benchmarks = [\".SPX.US\"]",
+    ] {
+        assert_eq!(field_of(&refused(&with("benchmarks", line))), "benchmarks");
     }
 }

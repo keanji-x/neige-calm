@@ -141,8 +141,22 @@ fn stamps_are_taken_under_the_turn_with_parallel_workers() {
             for round in 0..4 {
                 let gate = Arc::new(tokio::sync::Semaphore::new(0));
                 let g = gate.clone();
-                let server =
-                    FakeServer::start_capture(move |_| Reply::data(r#"{"v":1}"#).gated(&g)).await;
+                let core_paths: std::collections::BTreeSet<_> =
+                    research_archive::Catalog::compiled()
+                        .endpoints()
+                        .iter()
+                        .filter(|e| e.tier == research_archive::catalog::CaptureTier::Core)
+                        .map(|e| e.path)
+                        .collect();
+                let server = FakeServer::start_capture(move |seen| {
+                    let reply = Reply::data(r#"{"v":1}"#);
+                    if core_paths.contains(seen.path.as_str()) {
+                        reply.gated(&g)
+                    } else {
+                        reply
+                    }
+                })
+                .await;
                 let start = UnixMs(tue_start().0 + 60_000);
                 let clock = Arc::new(Jittery(AtomicI64::new(start.0)));
                 let knobs = Knobs {
@@ -152,13 +166,15 @@ fn stamps_are_taken_under_the_turn_with_parallel_workers() {
                 let a = archive(&server.url, &knobs, start);
                 let config = a.config();
                 let pairs = 3 * security_count() + 6;
-                let http_requests = 3 * (security_count() - 1) + 2;
                 let (outcome, ()) = tokio::join!(capture::run(&config, clock, None), async {
                     // Release the replies in batches of the requests in
                     // flight, all of a batch at once.
                     let mut released = 0;
-                    while released < http_requests {
-                        let batch = capture::MAX_IN_FLIGHT.min(http_requests - released);
+                    // Exercise real four-way recorder contention in Core.
+                    // Auxiliary socket waits need not yield four HTTP arrivals.
+                    let core = 3 * crate::archive::core_security_count();
+                    while released < core {
+                        let batch = capture::MAX_IN_FLIGHT.min(core - released);
                         let started = std::time::Instant::now();
                         while server.seen().len() < released + batch {
                             assert!(started.elapsed() < Duration::from_secs(30));

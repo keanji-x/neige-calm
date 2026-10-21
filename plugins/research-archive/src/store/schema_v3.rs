@@ -1,4 +1,4 @@
-//! Released v3 migration. Never edit after release.
+//! Unreleased v3 migration. Freeze these bytes on release.
 //!
 //! The explicit command disables foreign keys BEFORE its transaction, rebuilds
 //! only the two closed-set tables, checks all foreign keys before committing,
@@ -63,6 +63,7 @@ CREATE TABLE run_pair (
     key TEXT NOT NULL CHECK (length(key) > 0),
     endpoint_id TEXT NOT NULL REFERENCES endpoint (endpoint_id),
     request_json TEXT NOT NULL CHECK (json_valid(request_json)),
+    capture_tier TEXT NOT NULL CHECK (capture_tier IN ('core','supplemental')),
     PRIMARY KEY (run_id, key, endpoint_id)
 ) STRICT, WITHOUT ROWID;
 CREATE TRIGGER run_pair_no_update BEFORE UPDATE ON run_pair
@@ -72,6 +73,18 @@ BEGIN SELECT RAISE(ABORT, 'run_pair is append-only'); END;
 CREATE TRIGGER run_pair_no_duplicate BEFORE INSERT ON run_pair
 WHEN EXISTS (SELECT 1 FROM run_pair WHERE run_id = NEW.run_id AND key = NEW.key AND endpoint_id = NEW.endpoint_id)
 BEGIN SELECT RAISE(ABORT, 'run_pair row exists'); END;
+
+CREATE TABLE run_core_complete (
+    run_id INTEGER NOT NULL PRIMARY KEY REFERENCES run (run_id),
+    finished_at INTEGER NOT NULL
+) STRICT, WITHOUT ROWID;
+CREATE TRIGGER run_core_complete_no_update BEFORE UPDATE ON run_core_complete
+BEGIN SELECT RAISE(ABORT, 'run_core_complete is append-only'); END;
+CREATE TRIGGER run_core_complete_no_delete BEFORE DELETE ON run_core_complete
+BEGIN SELECT RAISE(ABORT, 'run_core_complete is append-only'); END;
+CREATE TRIGGER run_core_complete_no_duplicate BEFORE INSERT ON run_core_complete
+WHEN EXISTS (SELECT 1 FROM run_core_complete WHERE run_id = NEW.run_id)
+BEGIN SELECT RAISE(ABORT, 'run_core_complete row exists'); END;
 
 PRAGMA user_version = 3;
 "#;

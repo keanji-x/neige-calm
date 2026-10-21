@@ -4,8 +4,6 @@ use crate::catalog::{Catalog, KeyKind, Method};
 use crate::types::{AsOf, Key, Origin, RunId};
 use sqlx::SqliteConnection;
 
-pub const BENCHMARKS: &[&str] = &["QQQ.US", "SOXX.US", "KBE.US", "SPY.US", "SMH.US"];
-
 pub(super) async fn append_pairs(
     conn: &mut SqliteConnection,
     run: RunId,
@@ -36,10 +34,10 @@ pub(super) async fn append_pairs(
             continue;
         }
         let request = serde_json::to_string(&e.resolve(key.as_str(), as_of)).expect("string pairs");
-        sqlx::query("INSERT INTO run_pair(run_id,key,endpoint_id,request_json)
-            SELECT ?1,?2,?3,?4 WHERE EXISTS(SELECT 1 FROM run_endpoint WHERE run_id=?1 AND endpoint_id=?3)
+        sqlx::query("INSERT INTO run_pair(run_id,key,endpoint_id,request_json,capture_tier)
+            SELECT ?1,?2,?3,?4,?5 WHERE EXISTS(SELECT 1 FROM run_endpoint WHERE run_id=?1 AND endpoint_id=?3)
             AND NOT EXISTS(SELECT 1 FROM run_pair WHERE run_id=?1 AND key=?2 AND endpoint_id=?3)")
-            .bind(run.0).bind(key.as_str()).bind(e.id.as_str()).bind(request)
+            .bind(run.0).bind(key.as_str()).bind(e.id.as_str()).bind(request).bind(e.tier.as_str())
             .execute(&mut *conn).await?;
     }
     Ok(())

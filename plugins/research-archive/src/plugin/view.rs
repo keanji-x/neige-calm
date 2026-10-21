@@ -19,7 +19,9 @@ pub fn table(status: &ArchiveStatus) -> Value {
     json!({
         "columns": [
             { "key": "as_of", "label": "Trading day" },
-            { "key": "outcome", "label": "Outcome" },
+            { "key": "outcome", "label": "Overall outcome" },
+            { "key": "core", "label": "Core (health)" },
+            { "key": "supplemental", "label": "Supplemental (report only)" },
             { "key": "ok", "label": "OK", "align": "right" },
             { "key": "failed", "label": "Tried, no ok", "align": "right" },
             { "key": "untried", "label": "Not tried", "align": "right" },
@@ -41,6 +43,8 @@ fn row(run: &RunStatus) -> Value {
     json!({
         "as_of": run.as_of,
         "outcome": run.outcome,
+        "core": format!("{}: {}/{} ok, {} failed, {} untried", run.core_outcome, run.core.ok, run.core.planned, run.core.failed, run.core.untried),
+        "supplemental": format!("{}/{} ok, {} failed, {} untried", run.supplemental.ok, run.supplemental.planned, run.supplemental.failed, run.supplemental.untried),
         "ok": run.pairs_ok,
         "failed": run.pairs_failed,
         "untried": run.pairs_untried,
@@ -75,6 +79,18 @@ pub fn answer(status: &ArchiveStatus) -> String {
             " · last capture start: {} at {}",
             last.kind.as_str(),
             time(last.at)
+        ));
+    }
+    if let Some(run) = status.runs.first() {
+        text.push_str(&format!(
+            " · Core {}: {}/{} ok · Supplemental (report only): {}/{} ok, {} failed, {} untried",
+            run.core_outcome,
+            run.core.ok,
+            run.core.planned,
+            run.supplemental.ok,
+            run.supplemental.planned,
+            run.supplemental.failed,
+            run.supplemental.untried
         ));
     }
     text.push_str(&format!(" · checked {}", time(status.checked_at)));

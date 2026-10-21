@@ -78,6 +78,7 @@ pub fn plan_request(n: i64, config: &[&str], indexes: &[&str]) -> PlanRequest {
         window: window(n),
         started_at: at(n, 1),
         config: keys(config),
+        benchmarks: keys(&["QQQ.US", "SOXX.US", "KBE.US", "SPY.US", "SMH.US"]),
         indexes: keys(indexes),
     }
 }

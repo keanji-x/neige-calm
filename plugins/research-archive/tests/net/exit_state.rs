@@ -156,6 +156,7 @@ fn every_dangling_run_is_on_record() {
                     window: calendar.window_of(date, window_start).unwrap(),
                     started_at: t(started),
                     config: vec![Key::new("AAPL.US").unwrap()],
+                    benchmarks: a.config().benchmarks,
                     indexes: vec![],
                 })
                 .await

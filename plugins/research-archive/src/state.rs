@@ -15,14 +15,15 @@ use crate::types::{AsOf, UnixMs};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ExitKind {
-    /// The run ended `complete`; every planned pair has an `ok`.
+    /// Core capture settled; every planned Core pair has an `ok`.
+    /// The overall run may remain open for supplemental work.
     Complete,
-    /// The run ended `complete`, but some pairs ended with their attempt cap
+    /// Core capture settled, but some Core pairs ended with their attempt cap
     /// exhausted and no `ok`. See `failure` for the most frequent cause.
     CompleteWithFailures,
-    /// The run ended `complete` with fewer than
+    /// Core capture settled with fewer than
     /// [`DEGRADED_BELOW`](crate::types::DEGRADED_BELOW) of its planned pairs
-    /// having an `ok`. Alerts; see `failure`.
+    /// having an `ok`. Supplemental pairs never enter this ratio. Alerts; see `failure`.
     Degraded,
     /// The day's run had already ended; nothing to do.
     AlreadyEnded,
@@ -33,7 +34,7 @@ pub enum ExitKind {
     NoWindow,
     /// Another process holds the lock. Never written to the file.
     Busy,
-    /// A window closed with its run ended `partial`: this run's, or a
+    /// A window closed without Core completion: this run's, or a
     /// dangling one closed at start.
     Partial,
     /// No usable token; the run, if any, stays open.

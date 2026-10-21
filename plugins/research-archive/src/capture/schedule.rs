@@ -67,7 +67,7 @@ use tokio::task::JoinSet;
 
 use super::latch::{Latch, Stop};
 use super::runner::{Observed, Recorder};
-use crate::catalog::EndpointId;
+use crate::catalog::{CaptureTier, EndpointId};
 use crate::clock::{self, Clock};
 use crate::source::{LongbridgeSource, RETRY_AFTER_FALLBACK, RETRY_AFTER_MAX};
 use crate::store::PairCoverage;
@@ -346,12 +346,15 @@ pub(super) async fn work_off<C: Clock>(
         since: frozen_at.map(|at| (membership, at)),
     };
     let mut pending = Vec::new();
+    let mut supplemental = false;
     // Indexes without an `ok` constituents row yet.
     let mut unsettled: HashSet<Key> = HashSet::new();
     if frozen {
-        pending = survey(store, run, coverage(frozen_at), pool.clock.now(), |_| true)
-            .await?
-            .pending;
+        pending = survey(store, run, coverage(frozen_at), pool.clock.now(), |p| {
+            p.tier == CaptureTier::Core
+        })
+        .await?
+        .pending;
     } else if pool.clock.now() < carry {
         let indexes = survey(
             store,
@@ -388,12 +391,31 @@ pub(super) async fn work_off<C: Clock>(
                 .filter(|(_, endpoint)| *endpoint == membership)
                 .cloned()
                 .collect();
-            pending = survey(store, run, coverage(frozen_at), stamp, |_| true)
+            pending = survey(store, run, coverage(frozen_at), stamp, |p| {
+                p.tier == CaptureTier::Core
+            })
+            .await?
+            .pending
+            .into_iter()
+            .filter(|w| !flying.contains(&w.id()))
+            .collect();
+        }
+        // A second phase, not per-key ordering: no auxiliary request may
+        // occupy a slot while Core is pending (including a backoff wait).
+        if frozen && !supplemental && in_flight.is_empty() && pending.is_empty() {
+            let core = survey(store, run, coverage(frozen_at), now, |p| {
+                p.tier == CaptureTier::Core
+            })
+            .await?;
+            if core.pending.is_empty() && now < pool.recorder.window().end() {
+                store.complete_core(run, now).await?;
+                supplemental = true;
+                pending = survey(store, run, coverage(frozen_at), now, |p| {
+                    p.tier == CaptureTier::Supplemental
+                })
                 .await?
-                .pending
-                .into_iter()
-                .filter(|w| !flying.contains(&w.id()))
-                .collect();
+                .pending;
+            }
         }
         let bound = if frozen {
             span.deadline
