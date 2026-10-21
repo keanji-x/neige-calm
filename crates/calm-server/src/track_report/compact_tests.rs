@@ -1,4 +1,5 @@
 //! Compact origination is checked at the shared persisted report door, regardless of caller.
+use super::write::{InitialReportTarget, structural_init_report_tx};
 use super::*;
 use crate::db::RepoSyncDomainRaw;
 use crate::db::sqlite::SqlxRepo;
@@ -6,6 +7,20 @@ use crate::model::{NewArea, NewCard, NewTrack};
 use crate::{card_role_cache::CardRoleCache, track_area_cache::TrackAreaCache};
 use serde_json::{Value, json};
 use std::sync::Arc;
+
+// The agent boundary accepts caller-provided attribution; the probe adds no policy.
+struct Probe;
+
+#[async_trait::async_trait]
+impl RecorderShadowProbe for Probe {
+    async fn record(
+        &self,
+        _: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        _: RecorderShadowDecisionKind,
+    ) -> Result<(), CalmError> {
+        Ok(())
+    }
+}
 
 struct Fixture {
     repo: Arc<SqlxRepo>,
@@ -83,7 +98,7 @@ impl Fixture {
                 .rev
         });
         let if_doc_rev = id.is_none().then_some(target.current_payload.doc_rev);
-        persist(
+        write::agent_report_op(
             self.repo.as_ref(),
             &self.events,
             &self.write,
@@ -100,8 +115,7 @@ impl Fixture {
             },
             None,
             None,
-            None,
-            TaskWriteAdmission::Project,
+            Arc::new(Probe),
         )
         .await
         .map(|(card, _)| card)

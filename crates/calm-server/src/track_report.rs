@@ -583,6 +583,9 @@ fn apply_delete(doc: &mut ReportDoc, id: &str, if_rev: u32) -> Result<(), CalmEr
 /// Upper bound on the ops one `neige_report_commit` may carry.
 pub const MAX_BATCH_OPS: usize = 64;
 
+mod compact_origination;
+#[cfg(test)]
+mod compact_tests;
 mod ops;
 use ops::apply_persisted_report_op;
 #[cfg(test)]
