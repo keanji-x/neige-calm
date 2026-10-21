@@ -1,5 +1,5 @@
-# research-archive config (#2575). Every field is required; nothing has a
-# default. Pass it with `--config <file>` to every command.
+# research-archive config (#2575). Existing fields are required.
+# benchmarks is optional and defaults to []; pass --config <file> to every command.
 
 # Absolute. Holds archive.sqlite3, archive.lock and oauth/<client_id>.json.
 data_dir = "/home/user/.local/share/neige-next/research-archive/data"
@@ -24,7 +24,7 @@ callback_port = 60355
 # Security keys, CODE.MARKET.
 research = ["AAPL.US", "MSFT.US", "NVDA.US"]
 
-# Research choices, bars only; [] explicitly disables additional benchmarks.
+# Optional research choices, bars only; absent or [] means no extra benchmarks.
 # Overlap with research/index members is deduplicated when planning pairs.
 benchmarks = ["QQQ.US", "SOXX.US", "KBE.US", "SPY.US", "SMH.US"]
 

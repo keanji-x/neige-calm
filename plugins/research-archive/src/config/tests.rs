@@ -75,7 +75,7 @@ fn an_unknown_key_is_refused() {
 }
 
 #[test]
-fn every_field_is_required() {
+fn all_existing_fields_remain_required() {
     for field in [
         "data_dir",
         "oauth_client_id",
@@ -84,7 +84,6 @@ fn every_field_is_required() {
         "quote_ws_url",
         "callback_port",
         "research",
-        "benchmarks",
         "indexes",
         "rps",
         "attempt_cap",
@@ -217,7 +216,7 @@ fn the_carry_deadline_ends_before_the_shortest_window() {
 }
 
 #[test]
-fn benchmark_selection_is_required_validated_config() {
+fn configured_benchmark_selection_is_validated() {
     let configured = with("benchmarks", "benchmarks = [\"IWM.US\"]");
     let c = Config::parse(&configured).expect("benchmark choices belong to configuration");
     assert_eq!(
@@ -231,4 +230,12 @@ fn benchmark_selection_is_required_validated_config() {
     ] {
         assert_eq!(field_of(&refused(&with("benchmarks", line))), "benchmarks");
     }
+}
+
+#[test]
+fn a_deployed_config_without_benchmarks_loads_with_no_extra_symbols() {
+    let legacy = Config::parse(&with("benchmarks", ""))
+        .expect("new benchmark capture is opt-in, not a startup requirement");
+    assert!(legacy.benchmarks.is_empty());
+    assert_eq!(legacy.research, Config::parse(EXAMPLE).unwrap().research);
 }

@@ -1,5 +1,5 @@
-//! The typed TOML config (#2575, "Typed config"). Every field is required:
-//! a value missing from the file is an error, never a default. See
+//! The typed TOML config (#2575, "Typed config"). Existing fields are required;
+//! optional additional benchmark capture defaults to an empty list. See
 //! `research-archive.example.toml` for a commented sample.
 //!
 //! The config is the only input that steers the job. The environment is
@@ -31,6 +31,8 @@ struct RawConfig {
     quote_ws_url: String,
     callback_port: u16,
     research: Vec<String>,
+    /// New optional capture scope: absent means no additional benchmark symbols.
+    #[serde(default)]
     benchmarks: Vec<String>,
     indexes: Vec<String>,
     rps: u32,

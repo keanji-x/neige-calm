@@ -188,3 +188,34 @@ fn a_pending_core_retry_prevents_supplemental_requests() {
         assert_eq!(health(&a, clock.now()).await.health, Health::Failing);
     })
 }
+
+#[test]
+fn deployed_config_without_benchmarks_still_captures_core_and_stock_bars() {
+    hermetic::run(async {
+        let clock = FakeClock::at(tue_start());
+        let server = TimedServer::start(clock.clone(), |_, _| Reply::data("{}")).await;
+        let a = archive(&server.server.url, &Knobs::default(), clock.now());
+        let text = std::fs::read_to_string(&a.config_path).unwrap();
+        let legacy = text
+            .lines()
+            .filter(|line| !line.starts_with("benchmarks ="))
+            .collect::<Vec<_>>()
+            .join("\n");
+        std::fs::write(&a.config_path, legacy).unwrap();
+        assert_eq!(capture(&a, &clock).await.kind, ExitKind::Complete);
+        let store = a.store().await;
+        let plan = store.plan(RunId(1)).await.unwrap();
+        assert!(plan.benchmarks.is_empty());
+        let coverage = store.coverage(plan.run_id).await.unwrap();
+        assert!(
+            coverage
+                .iter()
+                .filter(|p| p.tier == research_archive::catalog::CaptureTier::Core)
+                .all(|p| p.has_ok)
+        );
+        assert!(coverage.iter().any(|p| p.key == key("AAPL.US")
+            && p.endpoint.as_str() == "daily_candlesticks"
+            && p.has_ok));
+        assert!(!coverage.iter().any(|p| p.key == key("QQQ.US")));
+    })
+}

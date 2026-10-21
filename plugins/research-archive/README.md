@@ -367,13 +367,13 @@ the config, then set the region, all before any thread starts. The upgrade
 builds no SDK client and needs no token or network, but uses the same guard.
 `notify` skips the guard and only reads the config.
 
-**Config.** A TOML file with every field required; unknown fields are
-refused. `research-archive.example.toml` documents each field:
+**Config.** Existing fields remain required; unknown fields are refused.
+Optional `benchmarks` defaults to `[]`, so existing deployed configs load. `research-archive.example.toml` documents each field:
 `data_dir` (absolute), `oauth_client_id`, `access_region` (`global` or
 `cn`), `http_url` (`https://host`, no path; plain `http://` only for a
 loopback IP literal, a local test server), `quote_ws_url` (`wss://`),
 `callback_port`, `research` (`CODE.MARKET` keys), `benchmarks` (bar-only
-comparison keys; explicitly `[]` to disable extra benchmarks), `indexes` (dotted index
+comparison keys; absent or `[]` disables extra benchmarks), `indexes` (dotted index
 symbols such as `.SPX.US`), `rps` (1 to 20), `attempt_cap`,
 `attempt_timeout_minutes`, `carry_deadline_minutes` (which must end before
 the shortest window `window_start` can open: to 09:30 New York the next
@@ -1138,10 +1138,12 @@ new endpoint id; legacy catalog fields are never rewritten.
 | `finance_calendar` | one `market:US` key, daily; as_of−7 through as_of+30, report events | `earnings_calendar_v1` |
 | `daily_candlesticks` | research securities plus configured `benchmarks` | `daily_bars_v1` |
 
-The required `benchmarks` TOML list lives next to `research` and `indexes`. The
+The optional `benchmarks` TOML list lives next to `research` and `indexes`. The
 example selects QQQ/SOXX/KBE/SPY/SMH; these are operator research choices, not a
-Store constant. Symbols are validated and unique; `[]` is explicit. Existing
-configs must add this field before using the new binary (including upgrades).
+Store constant. Symbols are validated and unique. Absent or `[]` means no
+additional benchmarks; existing deployed configs and upgrade commands continue
+to load without editing the production config. Research/member stock bars still
+run. Add the list explicitly to enable comparison ETFs on a future daily plan.
 No production config is edited by this PR.
 
 Benchmark-only keys have origin `benchmark` and only get daily bars. The US

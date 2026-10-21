@@ -153,8 +153,8 @@ pointers under the unchanged40KiB tool answer cap.
 
 ## Pre-merge revision: configurable benchmarks and core health
 
-The required TOML `benchmarks` list sits beside `research` and `indexes`, accepts
-security symbols (including an explicitly empty list), and is frozen into the
+The optional TOML `benchmarks` list sits beside `research` and `indexes`, accepts
+security symbols (absent or empty means no extra benchmark symbols), and is frozen into the
 run's existing benchmark origins. Store receives that list rather than owning
 research choices. Resuming a run uses its stored list even if config changes.
 
@@ -180,9 +180,15 @@ failures do not turn a completed healthy Core into failing. Legacy histories
 retain their released run-end semantics and migration never backfills checkpoint
 rows. Released v1/v2 migration bytes remain untouched.
 
-Acceptance: red regressions for required benchmark config, core-before-aux wire
+Acceptance: red regressions for benchmark configuration/old-config loading, core-before-aux wire
 order and auxiliary-only failure health; frozen benchmark list across resume;
 core failure/degraded and carry warnings still visible; aux-only timeout, auth,
 resume and dangling closure do not alert; report exposes both tiers. Mutation
 verification pins priority and health isolation, followed by required gates and
 two fresh independent L2 reviews. No production config/store edits or deployment.
+
+Deployment compatibility correction: `benchmarks` is optional and defaults to
+empty. Missing this new opt-in scope must not prevent an existing config from
+starting or running explicit upgrades. All previously required fields remain
+required; invalid explicit benchmarks remain errors. A production-entry test
+loads the old config, captures Core and stock bars, and plans no extra ETFs.
