@@ -138,7 +138,13 @@ async fn idle_for_lifecycle_guarded(
     native_guarded: bool,
 ) -> Result<bool> {
     let state = inner.state.lock().await.clone();
-    if !ingress_empty
+    if inner
+        .planner_compaction
+        .lock()
+        .await
+        .as_ref()
+        .is_some_and(|r| r.pending())
+        || !ingress_empty
         || !matches!(
             state,
             HarnessState::Idle | HarnessState::TurnCompleted { .. } | HarnessState::Resumed { .. }

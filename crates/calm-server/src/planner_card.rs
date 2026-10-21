@@ -372,7 +372,7 @@ mod tests {
     }
 
     /// One-sided cap (#1893): a change that shrinks `prompts/planner.md` lowers it in the same PR.
-    const PLANNER_PROMPT_MAX_BYTES: usize = 7_500;
+    const PLANNER_PROMPT_MAX_BYTES: usize = 7_498;
 
     #[test]
     fn planner_prompt_fits_its_byte_budget() {

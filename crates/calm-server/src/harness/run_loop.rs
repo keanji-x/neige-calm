@@ -55,6 +55,9 @@ use provider::events::{ItemPhase, PlannerEvent, PlannerEventKind};
 mod canonical;
 mod content_observer;
 mod input_contract;
+mod self_compact;
+#[cfg(test)]
+mod self_compact_tests;
 pub use input_contract::HarnessRuntimeSnapshot;
 use input_contract::{LoadedRuntimeSnapshot, RuntimeInputs, RuntimeSnapshotKind};
 
@@ -231,6 +234,8 @@ pub(super) struct Inner {
     /// Latest context-window reading from `thread/tokenUsage/updated`; latest-wins.
     token_usage: Mutex<Option<TokenUsage>>,
     compact_outcome: Mutex<Option<crate::harness::compact_outcome::CompactOutcome>>,
+    planner_compaction: Mutex<Option<crate::harness::compact_outcome::PlannerCompaction>>,
+    compaction_retry_after: Mutex<Option<Instant>>,
     maintenance_turns: Mutex<HashSet<String>>,
     context_usage_invalidation: Mutex<Option<compact_command::UsageInvalidation>>,
     /// See `HarnessSnapshot::pending_rewind`; `maybe_issue_turn` hands it to the next `turn/start`
@@ -368,6 +373,10 @@ enum HarnessObservationCommand {
     Release {
         kind: OwnerRelease,
         done: oneshot::Sender<Result<()>>,
+    },
+    RequestCompaction {
+        request_id: String,
+        answer: oneshot::Sender<Result<crate::harness::compact_outcome::CompactionAnswer>>,
     },
     Compact {
         source: compact_command::Source,
@@ -1463,6 +1472,7 @@ fn inner_from_params(
     shutdown: broadcast::Sender<()>,
     held_request_sender: HeldRequestSender,
 ) -> (Arc<Inner>, bool) {
+    let mut planner_compaction = None;
     let (
         header,
         inputs,
@@ -1482,6 +1492,7 @@ fn inner_from_params(
             let debounce = debounce_from_initial_queue(&queue);
             let (keys, key_set) = recent_hook_keys_from_pending_queue(&queue);
             snapshot.restore_context_feedback();
+            planner_compaction = snapshot.planner_compaction.clone();
             (
                 snapshot.runtime_header(),
                 RuntimeInputs::Historical(Mutex::new(queue)),
@@ -1565,6 +1576,8 @@ fn inner_from_params(
                 .collect(),
         ),
         compact_outcome: Mutex::new(header.compact_outcome),
+        planner_compaction: Mutex::new(planner_compaction),
+        compaction_retry_after: Mutex::new(None),
         context_usage_invalidation: Mutex::new(header.context_usage_invalidated.then_some(
             compact_command::UsageInvalidation {
                 user_turn_id: header.context_usage_invalidated_turn,
@@ -1734,6 +1747,9 @@ async fn run_loop(
                         let _=done.send(result);
                         if stop { break; }
                     }
+                    HarnessObservationCommand::RequestCompaction { request_id, answer } => {
+                        let _ = answer.send(self_compact::request(&inner, request_id).await);
+                    }
                     HarnessObservationCommand::Compact { source, answer } => {
                         let outcome = compact_command::handle_compact(&inner, source).await;
                         let _ = answer.send(outcome);
@@ -1800,6 +1816,11 @@ async fn run_loop(
                 }
                 if let Err(e) = watchdog_tick(&inner).await {
                     tracing::warn!(error = %e, "planner harness watchdog tick failed");
+                }
+                #[cfg(feature = "fixtures")]
+                crate::test_seams::pause_point("planner-compact-tick", inner.card_id.as_str()).await;
+                if let Err(e) = self_compact::tick(&inner, observations.is_empty()).await {
+                    tracing::warn!(error = %e, "Planner compaction tick failed");
                 }
                 if let Err(e) = maybe_issue_turn(&inner).await {
                     tracing::warn!(error = %e, "planner harness turn issuance failed");
@@ -2618,6 +2639,7 @@ async fn on_notification(
             ) || last_seen.as_deref() != Some(turn_id.as_str());
             if !already_running_same && new_user_start {
                 *inner.compact_outcome.lock().await = None;
+                self_compact::clear_settled(inner).await;
             }
             *inner.last_turn_id.lock().await = Some(turn_id.clone());
             live.turn_started(&turn_id);
@@ -3825,6 +3847,7 @@ async fn snapshot_from_state(inner: &Arc<Inner>, state: &HarnessState) -> Result
     snapshot.projection_client_id = projection_client_id;
     snapshot.token_usage = token_usage;
     snapshot.compact_outcome = inner.compact_outcome.lock().await.clone();
+    snapshot.planner_compaction = inner.planner_compaction.lock().await.clone();
     let invalidation = inner.context_usage_invalidation.lock().await;
     snapshot.context_usage_invalidated = invalidation.is_some();
     snapshot.context_usage_invalidated_turn = invalidation
@@ -4126,7 +4149,8 @@ async fn persist_guarded_snapshot(
     let state_for_status = inner.state.lock().await.clone();
     let status = run_status_for(&state_for_status);
     let new_phase = snapshot.phase;
-    let snapshot_value = serde_json::to_value(snapshot)?;
+    let wake = self_compact::prepare_wake(inner, &mut snapshot);
+    let snapshot_value = serde_json::to_value(&snapshot)?;
     let repo = Arc::clone(&inner.repo);
     let bound_card_id = inner.card_id.to_string();
 
@@ -4165,7 +4189,12 @@ async fn persist_guarded_snapshot(
                 )
                 .await?;
             }
-            Ok(written)
+            let wake = if written {
+                self_compact::append_wake(tx, wake).await?
+            } else {
+                None
+            };
+            Ok((written, wake))
         })
     })
     .await;
@@ -4175,11 +4204,12 @@ async fn persist_guarded_snapshot(
         inner.card_id.as_str(),
     )
     .await;
-    let written = written?;
+    let (written, wake) = written?;
     if !written {
         return Ok(false);
     }
     *completion = None;
+    self_compact::publish_wake(inner, snapshot.planner_compaction, wake).await;
     drop(completion);
     inner
         .restored_projections

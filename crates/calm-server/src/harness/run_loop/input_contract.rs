@@ -86,7 +86,14 @@ impl HarnessRuntimeSnapshot {
     /// live quiescence. This is not permission to restore or execute a thread.
     pub(crate) fn idle_for_lifecycle(value: Value) -> Result<bool> {
         match Self::decode(value.clone())?.kind {
-            RuntimeSnapshotKind::Historical(_) => {
+            RuntimeSnapshotKind::Historical(snapshot) => {
+                if snapshot
+                    .planner_compaction
+                    .as_ref()
+                    .is_some_and(|r| r.pending())
+                {
+                    return Ok(false);
+                }
                 // Preserve the published V1 scan's exact queue prerequisite,
                 // including not treating a missing body array as empty.
                 Ok(value

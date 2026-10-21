@@ -16,6 +16,24 @@ pub(super) async fn handle_compact(inner: &Arc<Inner>, source: Source) -> Result
             inner.historical_queue()?;
         }
     }
+    let admitted = admit_historical(inner).await?;
+    start(inner, admitted, Origin::Human).await
+}
+
+pub(super) enum Origin {
+    Human,
+    PlannerRequest,
+}
+
+/// Holds both existing fences from admission through the Start write.
+pub(super) struct Admitted<'a> {
+    thread: String,
+    track_guard: crate::per_card_lock::KeyedLockGuard,
+    _issuance: tokio::sync::MutexGuard<'a, ()>,
+}
+
+pub(super) async fn admit_historical(inner: &Arc<Inner>) -> Result<Admitted<'_>> {
+    inner.historical_queue()?;
     use super::issuance::TrackIssuance;
     let track_guard = match super::issuance::lock_track_for_issuance(inner).await? {
         TrackIssuance::Acquired(guard) => guard,
@@ -76,6 +94,23 @@ pub(super) async fn handle_compact(inner: &Arc<Inner>, source: Source) -> Result
             "Send a message before compacting this conversation.".into(),
         ));
     }
+    Ok(Admitted {
+        thread,
+        track_guard,
+        _issuance,
+    })
+}
+
+pub(super) async fn start(
+    inner: &Arc<Inner>,
+    admitted: Admitted<'_>,
+    origin: Origin,
+) -> Result<()> {
+    let Admitted {
+        thread,
+        track_guard,
+        _issuance,
+    } = admitted;
     use crate::harness::compact_outcome::{CompactOutcome, CompactStatus};
     let previous_outcome = inner.compact_outcome.lock().await.clone();
     *inner.compact_outcome.lock().await = Some(CompactOutcome {
@@ -84,6 +119,20 @@ pub(super) async fn handle_compact(inner: &Arc<Inner>, source: Source) -> Result
         turn_id: None,
         status: CompactStatus::Started,
     });
+    let previous_request = inner.planner_compaction.lock().await.clone();
+    if matches!(origin, Origin::PlannerRequest) {
+        let operation_id = inner
+            .compact_outcome
+            .lock()
+            .await
+            .as_ref()
+            .expect("Start outcome")
+            .operation_id
+            .clone();
+        let mut request = inner.planner_compaction.lock().await;
+        request.as_mut().expect("admitted request").phase =
+            crate::harness::compact_outcome::PlannerCompactionPhase::Submitted { operation_id };
+    }
     let previous = inner.state.lock().await.clone();
     *inner.state.lock().await = HarnessState::Compacting {
         since: Instant::now(),
@@ -93,6 +142,7 @@ pub(super) async fn handle_compact(inner: &Arc<Inner>, source: Source) -> Result
         result => {
             *inner.state.lock().await = previous;
             *inner.compact_outcome.lock().await = previous_outcome;
+            *inner.planner_compaction.lock().await = previous_request;
             return Err(match result {
                 Err(error) => error,
                 _ => CalmError::PlannerHarnessRuntimeSuperseded(
@@ -134,7 +184,15 @@ pub(super) async fn settle(
     if let Some(outcome) = inner.compact_outcome.lock().await.as_mut()
         && outcome.status == crate::harness::compact_outcome::CompactStatus::Started
     {
-        outcome.status = status;
+        outcome.status = status.clone();
+        if let Some(request) = inner.planner_compaction.lock().await.as_mut()
+            && matches!(&request.phase, crate::harness::compact_outcome::PlannerCompactionPhase::Submitted { operation_id } if operation_id == &outcome.operation_id)
+        {
+            request.phase = crate::harness::compact_outcome::PlannerCompactionPhase::Settled {
+                operation_id: outcome.operation_id.clone(),
+                status,
+            };
+        }
     }
 }
 

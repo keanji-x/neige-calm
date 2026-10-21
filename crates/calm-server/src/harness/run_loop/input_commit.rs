@@ -109,6 +109,9 @@ pub(super) async fn admit(
         HarnessObservationCommand::Hibernate { done } => {
             let _ = done.send(Err(busy()));
         }
+        HarnessObservationCommand::RequestCompaction { answer, .. } => {
+            let _ = answer.send(Err(busy()));
+        }
         HarnessObservationCommand::Compact { answer, source: _ } => {
             let _ = answer.send(Err(busy()));
         }

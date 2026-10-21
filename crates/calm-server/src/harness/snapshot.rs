@@ -143,6 +143,9 @@ pub struct HarnessSnapshot {
     /// Additive maintenance facts; historical snapshots have no confirmed operation.
     #[serde(default)]
     pub compact_outcome: Option<super::compact_outcome::CompactOutcome>,
+    /// Additive session-owned compaction intent; old binaries ignore it on rollback.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub planner_compaction: Option<super::compact_outcome::PlannerCompaction>,
     /// Preserve lifetime totals internally, but do not expose this reading as current occupancy.
     #[serde(default)]
     pub context_usage_invalidated: bool,
@@ -191,6 +194,9 @@ impl HarnessSnapshot {
 
     /// Loading cannot confirm a maintenance operation whose provider completion was not observed.
     pub fn restore_context_feedback(&mut self) {
+        if let Some(request) = &mut self.planner_compaction {
+            request.restore();
+        }
         if let Some(outcome) = self.compact_outcome.as_mut()
             && outcome.status == super::compact_outcome::CompactStatus::Started
         {
@@ -276,6 +282,7 @@ impl HarnessSnapshot {
             interruption_intent,
             token_usage,
             compact_outcome,
+            planner_compaction: None,
             context_usage_invalidated,
             context_usage_invalidated_turn,
             pending_rewind: pending_rewind.map(BackendRewind::from_persisted),

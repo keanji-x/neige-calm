@@ -563,3 +563,72 @@ async fn a_compact_with_uncertain_write_wedges_without_retry() {
     );
     stack.shutdown().await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn compact_planner_request_claude_historical_wakes_once_without_user_turn() {
+    let root = Root::new("exit-trailing");
+    let stack = Stack::boot(&root).await;
+    let (_track, card) = stack.create_claude_track().await;
+    stack
+        .run_turn(&root, &card, "exit-trailing", "checkpoint")
+        .await;
+    let runtime = stack.runtime(&card).await;
+    stack.harness(&runtime.id).pause_issuance_for_dev();
+    let before = rows(&stack, &card).await;
+    let count = spawns(&root);
+    root.set_scenario("compact");
+    let result = stack
+        .harness(&runtime.id)
+        .request_compaction("request".into())
+        .await
+        .unwrap();
+    assert_eq!(
+        result,
+        calm_server::harness::compact_outcome::CompactionAnswer::Scheduled
+    );
+    let mut settled = None;
+    for _ in 0..200 {
+        let snapshot = stored_snapshot(&stack, &card).await;
+        if snapshot["planner_compaction"]["wake_enqueued"] == true
+            && snapshot["pending_queue"]
+                .as_array()
+                .is_some_and(|q| q.iter().any(|o| o["type"] == "track_wake"))
+        {
+            settled = Some(snapshot);
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    let snapshot = settled.expect("compaction settles and existing Dispatcher queues its wake");
+    assert_eq!(
+        snapshot["planner_compaction"]["phase"]["status"],
+        "completed"
+    );
+    assert_eq!(spawns(&root), count + 1);
+    assert_eq!(
+        rows(&stack, &card).await,
+        before,
+        "maintenance writes no user turn"
+    );
+    let stdin = root.read_fake("stdin").unwrap();
+    let line: Value = serde_json::from_str(stdin.lines().last().unwrap()).unwrap();
+    assert_eq!(
+        line["message"]["content"],
+        json!([{"type":"text","text":"/compact"}])
+    );
+    let wakes: Vec<_> = snapshot["pending_queue"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|o| o["source"] == "planner_compaction")
+        .collect();
+    assert_eq!(wakes.len(), 1);
+    assert_eq!(wakes[0]["key"], "request");
+    assert!(
+        wakes[0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("neige_report_read")
+    );
+    stack.shutdown().await;
+}

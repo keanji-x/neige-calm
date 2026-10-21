@@ -503,3 +503,19 @@ async fn canonical_qualified_end_records_closed_facts_without_private_native_ext
     peer.close(None).await.unwrap();
     fx.harness.shutdown().await.unwrap();
 }
+
+#[tokio::test]
+async fn compact_planner_request_refuses_canonical_conversation() {
+    let f = Fixture::new().await;
+    let result = f
+        .harness
+        .request_compaction("request".into())
+        .await
+        .unwrap();
+    assert_eq!(
+        result,
+        crate::harness::compact_outcome::CompactionAnswer::Refused(
+            crate::harness::compact_outcome::CompactionRefusal::UnsupportedConversation
+        )
+    );
+}
