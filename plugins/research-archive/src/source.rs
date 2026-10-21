@@ -36,9 +36,10 @@ use longbridge::{
     httpclient::{DcRegion as SdkDcRegion, HttpClient, HttpClientConfig, HttpClientError, Method},
     oauth::{OAuth, OAuthBuilder, OAuthError, OAuthResult, StoredToken, TokenStorage},
 };
-use serde::{Serialize, Serializer, ser::SerializeMap};
 
 use crate::catalog::{self, Endpoint, QueryValue};
+mod candles;
+mod market;
 use crate::sdk_error;
 use crate::types::{ErrorClass, ErrorDetail, FailureClass, Key, Response};
 
@@ -182,6 +183,8 @@ pub struct LongbridgeSource {
     snapshot: Mutex<Option<(String, HttpClient)>>,
     limiter: RateLimiter,
     timeouts: Timeouts,
+    quote_ws_url: Option<String>,
+    quote: tokio::sync::Mutex<Option<(String, longbridge::quote::QuoteContext)>>,
 }
 
 impl LongbridgeSource {
@@ -194,7 +197,15 @@ impl LongbridgeSource {
             snapshot: Mutex::new(None),
             limiter: RateLimiter::new(rps),
             timeouts,
+            quote_ws_url: None,
+            quote: tokio::sync::Mutex::new(None),
         }
+    }
+
+    /// The quote URL is supplied by validated typed configuration, never environment.
+    pub fn with_quote_ws_url(mut self, url: &str) -> Self {
+        self.quote_ws_url = Some(url.to_owned());
+        self
     }
 
     /// Perform `endpoint` for `key` once, in this order:
@@ -225,7 +236,40 @@ impl LongbridgeSource {
         &self,
         endpoint: &Endpoint,
         key: &Key,
-        may_send: impl FnOnce() -> bool,
+        may_send: impl Fn() -> bool + Sync,
+    ) -> Option<Fetched> {
+        let mut query = Vec::new();
+        for (name, value) in endpoint.query {
+            let value = match value {
+                QueryValue::Key => key.to_string(),
+                QueryValue::Fixed(v) => (*v).to_owned(),
+                QueryValue::AsOfDays(_) => return Some(invalid_body("missing_frozen_request")),
+            };
+            query.push(((*name).to_owned(), value));
+        }
+        self.fetch_request_if(endpoint, &query, may_send).await
+    }
+
+    /// Execute a Store-resolved request. Each actual upstream request is paced
+    /// and checks the same run fence, including all calendar pages.
+    pub async fn fetch_request_if(
+        &self,
+        endpoint: &Endpoint,
+        query: &[(String, String)],
+        may_send: impl Fn() -> bool + Sync,
+    ) -> Option<Fetched> {
+        match endpoint.method {
+            catalog::Method::Quote => self.candles(query, &may_send).await,
+            catalog::Method::Calendar => self.market_calendar(endpoint, query, &may_send).await,
+            catalog::Method::Get => self.http_page(endpoint, query, &may_send).await,
+        }
+    }
+
+    async fn http_page(
+        &self,
+        endpoint: &Endpoint,
+        query: &[(String, String)],
+        may_send: &(impl Fn() -> bool + Sync),
     ) -> Option<Fetched> {
         let auth_failure = |code: &str| Fetched {
             response: failed(
@@ -250,7 +294,8 @@ impl LongbridgeSource {
             return None;
         }
         let method = match endpoint.method {
-            catalog::Method::Get => Method::GET,
+            catalog::Method::Get | catalog::Method::Calendar => Method::GET,
+            catalog::Method::Quote => return Some(invalid_body("invalid_http_transport")),
         };
         let mut request = http.request(method, endpoint.path);
         for (name, value) in endpoint.headers {
@@ -261,13 +306,7 @@ impl LongbridgeSource {
                 catalog::DcRegion::Us => SdkDcRegion::Us,
             });
         }
-        let send = request
-            .query_params(KeyQuery {
-                key: key.as_str(),
-                query: endpoint.query,
-            })
-            .response::<String>()
-            .send();
+        let send = request.query_params(query).response::<String>().send();
         Some(
             match tokio::time::timeout(self.timeouts.fetch, send).await {
                 Ok(Ok(data)) => Fetched::body(data),
@@ -321,7 +360,14 @@ impl TokenStorage for Snapshot {
 /// SDK sends as `X-Api-Key` (`request.rs:326`), so a request carries the
 /// same headers as through the shared client.
 async fn snapshot_client(client_id: &str, token: &str, http_url: &str) -> OAuthResult<HttpClient> {
-    let oauth = OAuthBuilder::new(client_id)
+    let oauth = snapshot_oauth(client_id, token).await?;
+    Ok(HttpClient::new(
+        HttpClientConfig::from_oauth(oauth).http_url(http_url),
+    ))
+}
+
+async fn snapshot_oauth(client_id: &str, token: &str) -> OAuthResult<OAuth> {
+    OAuthBuilder::new(client_id)
         .callback_port(0)
         .token_storage(Snapshot(StoredToken {
             client_id: client_id.to_owned(),
@@ -331,28 +377,17 @@ async fn snapshot_client(client_id: &str, token: &str, http_url: &str) -> OAuthR
         }))
         // Unreachable: the storage always yields a token that never expires.
         .build(|_| tracing::error!("a token snapshot asked for a browser login"))
-        .await?;
-    Ok(HttpClient::new(
-        HttpClientConfig::from_oauth(oauth).http_url(http_url),
-    ))
+        .await
 }
 
-/// The endpoint's query pairs in catalog order, the key in its slot.
-struct KeyQuery<'a> {
-    key: &'a str,
-    query: &'a [(&'a str, QueryValue)],
-}
-
-impl Serialize for KeyQuery<'_> {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let mut map = serializer.serialize_map(Some(self.query.len()))?;
-        for (name, value) in self.query {
-            match value {
-                QueryValue::Key => map.serialize_entry(name, self.key)?,
-                QueryValue::Fixed(v) => map.serialize_entry(name, v)?,
-            }
-        }
-        map.end()
+fn invalid_body(code: &str) -> Fetched {
+    Fetched {
+        response: failed(
+            FailureClass::Transient,
+            ErrorClass::UnexpectedResponse,
+            code.to_owned(),
+        ),
+        retry_after: None,
     }
 }
 

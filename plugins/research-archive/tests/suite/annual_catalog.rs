@@ -109,15 +109,25 @@ async fn explicit_upgrade_only_appends_and_preserves_historical_bytes() {
     old.close().await;
     let mut conn = raw(&path, false).await;
     let before = dump(&mut conn).await;
-    sqlx::raw_sql("DROP TABLE run_endpoint; PRAGMA user_version = 1;")
-        .execute(&mut conn)
-        .await
-        .unwrap();
     drop(conn);
+    downgrade_fixture_to_v1(&path).await;
     assert!(Store::open(&path).await.is_err());
-    let upgraded = Store::upgrade_annual_catalog(&path)
-        .await
-        .expect("released v1 must upgrade; explicitly assess policy when compiled catalog changes");
+    Store::upgrade_annual_catalog(&path).await.unwrap();
+    let mut conn = raw(&path, false).await;
+    let after = dump(&mut conn).await;
+    let legacy_rows: Vec<_> = after
+        .iter()
+        .filter(|r| !r.starts_with("endpoint|'consensus_annual'|"))
+        .cloned()
+        .collect();
+    assert_eq!(legacy_rows, before);
+    assert_eq!(after.len(), before.len() + 1);
+    drop(conn);
+    Store::upgrade_annual_catalog(&path).await.unwrap();
+    let mut conn = raw(&path, false).await;
+    assert_eq!(dump(&mut conn).await, after);
+    drop(conn);
+    let upgraded = Store::upgrade_market_catalog(&path).await.unwrap();
     assert_eq!(
         before_coverage,
         upgraded.coverage(plan.run_id).await.unwrap()
@@ -141,26 +151,7 @@ async fn explicit_upgrade_only_appends_and_preserves_historical_bytes() {
             .unwrap()
             .is_none()
     );
-    upgraded.close().await;
-    let mut conn = raw(&path, false).await;
-    let after = dump(&mut conn).await;
-    let legacy_rows: Vec<_> = after
-        .iter()
-        .filter(|r| !r.starts_with("endpoint|'consensus_annual'|"))
-        .cloned()
-        .collect();
-    assert_eq!(legacy_rows, before);
-    assert_eq!(after.len(), before.len() + 1);
-    drop(conn);
-    Store::upgrade_annual_catalog(&path)
-        .await
-        .unwrap()
-        .close()
-        .await;
-    let mut conn = raw(&path, false).await;
-    assert_eq!(dump(&mut conn).await, after);
-    drop(conn);
-    let upgraded = Store::open(&path).await.unwrap();
+
     let next = upgraded
         .plan_run(&plan_request(2, &["NVDA.US"], &[]))
         .await
@@ -226,13 +217,48 @@ async fn upgrade_does_not_create_a_missing_archive() {
 }
 
 async fn downgrade_fixture_to_v1(path: &std::path::Path) {
-    use sqlx::Connection;
+    use research_archive::store::schema::DDL;
     let mut conn = raw(path, false).await;
-    sqlx::raw_sql("DROP TABLE run_endpoint; PRAGMA user_version = 1;")
+    sqlx::raw_sql("DROP TABLE run_pair; DROP TABLE run_plan_v3; DROP TABLE run_endpoint;")
         .execute(&mut conn)
         .await
         .unwrap();
-    conn.close().await.unwrap();
+    // Reconstruct the byte-frozen released schema, retaining fixture row values.
+    // The fixture was seeded through Store; this is not a copy of upgrade logic.
+    for table in ["endpoint", "run_key"] {
+        sqlx::raw_sql(&format!(
+            "CREATE TEMP TABLE saved AS SELECT * FROM {table}; DROP TABLE {table};"
+        ))
+        .execute(&mut conn)
+        .await
+        .unwrap();
+        let begin = DDL.find(&format!("CREATE TABLE {table} (")).unwrap();
+        let end = begin + DDL[begin..].find(';').unwrap() + 1;
+        sqlx::raw_sql(&DDL[begin..end])
+            .execute(&mut conn)
+            .await
+            .unwrap();
+        sqlx::raw_sql(&format!(
+            "INSERT INTO {table} SELECT * FROM saved; DROP TABLE saved;"
+        ))
+        .execute(&mut conn)
+        .await
+        .unwrap();
+        for name in ["no_update", "no_delete", "no_duplicate"] {
+            let begin = DDL.find(&format!("CREATE TRIGGER {table}_{name}")).unwrap();
+            let end = begin + DDL[begin..].find("END;").unwrap() + 4;
+            sqlx::raw_sql(&DDL[begin..end])
+                .execute(&mut conn)
+                .await
+                .unwrap();
+        }
+    }
+    sqlx::raw_sql(
+        "PRAGMA user_version = 1; PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode = DELETE;",
+    )
+    .execute(&mut conn)
+    .await
+    .unwrap();
 }
 
 #[tokio::test]
@@ -312,7 +338,7 @@ async fn cli_upgrade_obeys_capture_lock_and_needs_no_token() {
         crate::cli_env::text(&result.stderr)
     );
     assert!(!env.token_path().exists());
-    Store::open(&path).await.unwrap().close().await;
+    assert!(Store::open(&path).await.is_err());
     let result = env.run(&["upgrade-annual-catalog"]);
     assert!(result.status.success());
 }
@@ -336,7 +362,8 @@ async fn upgraded_open_legacy_run_keeps_index_members_and_can_complete_without_a
     let before = old.coverage(plan.run_id).await.unwrap();
     old.close().await;
     downgrade_fixture_to_v1(&path).await;
-    let upgraded = Store::upgrade_annual_catalog(&path).await.unwrap();
+    Store::upgrade_annual_catalog(&path).await.unwrap();
+    let upgraded = Store::upgrade_market_catalog(&path).await.unwrap();
     assert_eq!(upgraded.coverage(plan.run_id).await.unwrap(), before);
     let annual = upgraded
         .record_observation(

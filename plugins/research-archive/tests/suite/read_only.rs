@@ -60,7 +60,7 @@ async fn refuses_what_the_capture_refuses() {
             err,
             OpenError::UserVersion {
                 found: 99,
-                expected: 2
+                expected: 3
             }
         ),
         "{err:?}"

@@ -267,7 +267,14 @@ async fn attempt<C: Clock>(pool: Arc<Pool<C>>, work: Work, deadline: UnixMs) -> 
         pool.recorder.window().start(),
         deadline,
     );
-    let fetch = pool.source.fetch_if(&endpoint, &work.key, may_send);
+    let query = match pool.recorder.request(&work.key, work.endpoint).await {
+        Ok(q) => q,
+        Err(e) => {
+            pool.latch.halt(Stop::Fatal(e.to_string()));
+            return None;
+        }
+    };
+    let fetch = pool.source.fetch_request_if(&endpoint, &query, may_send);
     let bounded = clock::within(&*pool.clock, deadline, fetch);
     let Some(Some(Some(fetched))) = pool.latch.unless_stopped(bounded).await else {
         return None;

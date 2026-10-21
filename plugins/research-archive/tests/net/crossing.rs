@@ -29,7 +29,7 @@ fn a_margin_crossing_during_the_slot_wait_never_refreshes_inside_send() {
     let deadline = Duration::from_secs(2);
 
     runtime.block_on(async {
-        let server = FakeServer::start(|_| Reply::data("{}")).await;
+        let server = FakeServer::start_capture(|_| Reply::data("{}")).await;
         let oauth = auth::build_oauth(&ClientId::parse(CLIENT).unwrap(), storage.clone(), deadline)
             .await
             .expect("the token is outside the margin at build");

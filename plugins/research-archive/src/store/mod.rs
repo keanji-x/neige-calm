@@ -2,8 +2,11 @@
 //! triggers and catalog check, and every write the capture job makes.
 
 mod freeze;
+mod planning;
 mod read;
 pub mod schema;
+mod schema_v3;
+mod upgrade;
 mod write;
 
 use std::path::{Path, PathBuf};
@@ -152,8 +155,10 @@ impl Store {
 
     /// Explicit, append-only upgrade from the released seven-entry catalog.
     /// The CLI must hold the data-dir lock. Ordinary open/read never upgrades.
-    pub async fn upgrade_annual_catalog(path: &Path) -> std::result::Result<Store, OpenError> {
-        Self::open_catalog(path, &Catalog::compiled(), true).await
+    pub async fn upgrade_annual_catalog(path: &Path) -> std::result::Result<(), OpenError> {
+        let store = Self::open_catalog(path, &Catalog::released_v2(), true).await?;
+        store.close().await;
+        Ok(())
     }
 
     async fn open_catalog(
@@ -201,7 +206,11 @@ impl Store {
         &self,
         allow_annual_upgrade: bool,
     ) -> std::result::Result<(), OpenError> {
-        let expected = schema::reference().await?;
+        let expected = if allow_annual_upgrade {
+            schema::reference_v2().await?
+        } else {
+            schema::reference().await?
+        };
         let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         let found_version = schema::user_version(&mut tx).await?;
         let found_schema = schema::read_schema(&mut tx).await?;
@@ -214,6 +223,7 @@ impl Store {
             }
             sqlx::Executor::execute(&mut *tx, schema::DDL).await?;
             sqlx::Executor::execute(&mut *tx, schema::MIGRATION_V2).await?;
+            sqlx::Executor::execute(&mut *tx, schema_v3::MIGRATION_V3).await?;
             for e in self.catalog.endpoints() {
                 insert_endpoint(&mut tx, e).await?;
             }
@@ -273,7 +283,7 @@ impl Store {
         if let Some(drift) = SchemaDrift::between(&expected_schema, &found_schema) {
             return Err(OpenError::Schema(drift));
         }
-        if let Some(drift) = self.catalog_drift(conn).await? {
+        if let Some(drift) = Self::catalog_drift_for(conn, &self.catalog).await? {
             return Err(OpenError::Catalog(drift));
         }
         Ok(())
@@ -291,9 +301,9 @@ impl Store {
         }
     }
 
-    async fn catalog_drift(
-        &self,
+    pub(super) async fn catalog_drift_for(
         conn: &mut SqliteConnection,
+        catalog: &Catalog,
     ) -> std::result::Result<Option<CatalogDrift>, sqlx::Error> {
         let rows = sqlx::query(
             "SELECT endpoint_id, method, path, query_json, headers_json, dc_restrict, key_kind
@@ -319,7 +329,7 @@ impl Store {
             extra: Vec::new(),
             changed: Vec::new(),
         };
-        for e in self.catalog.endpoints() {
+        for e in catalog.endpoints() {
             match stored.remove(e.id.as_str()) {
                 None => drift.missing.push(e.id.as_str().to_owned()),
                 Some(row) if row != endpoint_row(e) => drift.changed.push(e.id.as_str().to_owned()),

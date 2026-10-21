@@ -40,9 +40,22 @@ struct Args {
 }
 
 #[derive(Deserialize)]
+#[serde(untagged)]
+enum ReadArgs {
+    Security(SecurityRead),
+    Market(MarketRead),
+}
+#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct ReadArgs {
+struct SecurityRead {
     symbol: String,
+    endpoint: String,
+    pointer: String,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MarketRead {
+    market: String,
     endpoint: String,
     pointer: String,
 }
@@ -50,6 +63,7 @@ struct ReadArgs {
 /// One checked read.
 #[derive(Clone, Debug)]
 struct Read {
+    kind: KeyKind,
     key: Key,
     endpoint: EndpointId,
     /// An RFC 6901 pointer: empty, or starting with `/`.
@@ -65,11 +79,34 @@ pub struct Request {
 
 /// The endpoints a read may name: the catalog's security endpoints.
 pub fn readable(catalog: &Catalog) -> impl Iterator<Item = EndpointId> + '_ {
-    catalog.for_kind(KeyKind::Security).map(|e| e.id)
+    catalog
+        .endpoints()
+        .iter()
+        .filter(|e| e.key_kind != KeyKind::Index)
+        .map(|e| e.id)
 }
 
 /// Checks the call's arguments. Every refusal names what to fix.
 pub fn parse(args: &Value) -> Result<Request, String> {
+    if let Some(reads) = args.get("reads").and_then(Value::as_array) {
+        for (i, read) in reads.iter().enumerate() {
+            if let Some(fields) = read.as_object() {
+                for field in fields.keys() {
+                    if !["symbol", "market", "endpoint", "pointer"].contains(&field.as_str()) {
+                        return Err(format!("reads[{i}]: unknown field `{field}`"));
+                    }
+                }
+            }
+            for field in ["endpoint", "pointer"] {
+                if read.get(field).is_none() {
+                    return Err(format!("reads[{i}]: missing field `{field}`"));
+                }
+            }
+            if read.get("symbol").is_none() && read.get("market").is_none() {
+                return Err(format!("reads[{i}]: missing field `symbol` or `market`"));
+            }
+        }
+    }
     let args = Args::deserialize(args).map_err(|e| format!("bad arguments: {e}"))?;
     let at = DateTime::parse_from_rfc3339(&args.at).map_err(|e| {
         format!(
@@ -90,28 +127,58 @@ pub fn parse(args: &Value) -> Result<Request, String> {
         .into_iter()
         .enumerate()
         .map(|(i, r)| {
-            let key = Key::new(r.symbol).map_err(|e| format!("reads[{i}].symbol: {e}"))?;
+            let (key, kind, endpoint, pointer) = match r {
+                ReadArgs::Security(r) => (
+                    Key::new(r.symbol).map_err(|e| format!("reads[{i}].symbol: {e}"))?,
+                    KeyKind::Security,
+                    r.endpoint,
+                    r.pointer,
+                ),
+                ReadArgs::Market(r) => {
+                    if r.market != "US" {
+                        return Err(format!("reads[{i}].market must be US"));
+                    }
+                    (
+                        Key::new("market:US").expect("fixed market key"),
+                        KeyKind::Market,
+                        r.endpoint,
+                        r.pointer,
+                    )
+                }
+            };
+            let endpoint_name = endpoint;
             let endpoint = readable(&catalog)
-                .find(|id| id.as_str() == r.endpoint)
+                .find(|id| id.as_str() == endpoint_name)
                 .ok_or_else(|| {
                     let ids: Vec<&str> = readable(&catalog).map(EndpointId::as_str).collect();
                     format!(
                         "reads[{i}].endpoint {:?} is not readable; one of: {}",
-                        r.endpoint,
+                        endpoint_name,
                         ids.join(", ")
                     )
                 })?;
-            if !is_pointer(&r.pointer) {
+            if catalog
+                .get(endpoint.as_str())
+                .expect("readable endpoint")
+                .key_kind
+                != kind
+            {
+                return Err(format!(
+                    "reads[{i}] target kind does not match endpoint {endpoint}"
+                ));
+            }
+            if !is_pointer(&pointer) {
                 return Err(format!(
                     "reads[{i}].pointer {:?} is not an RFC 6901 JSON pointer: use \"\" for \
                      the whole body or start with /, and escape ~ as ~0 and / as ~1",
-                    r.pointer
+                    pointer
                 ));
             }
             Ok(Read {
+                kind,
                 key,
                 endpoint,
-                pointer: r.pointer,
+                pointer,
             })
         })
         .collect::<Result<_, String>>()?;
@@ -133,10 +200,18 @@ fn is_pointer(p: &str) -> bool {
 
 /// What one read asked for, echoed in its answer.
 #[derive(Clone, Debug, Serialize)]
-struct Target {
-    symbol: String,
-    endpoint: &'static str,
-    pointer: String,
+#[serde(untagged)]
+enum Target {
+    Security {
+        symbol: String,
+        endpoint: &'static str,
+        pointer: String,
+    },
+    Market {
+        market: &'static str,
+        endpoint: &'static str,
+        pointer: String,
+    },
 }
 
 /// What one read found.
@@ -200,12 +275,20 @@ pub async fn answer(data_dir: &Path, request: &Request) -> Result<Value, String>
             .iter()
             .enumerate()
             .map(|(i, a)| {
-                let t = &a.target;
+                let (target, endpoint, pointer) = match &a.target {
+                    Target::Security {
+                        symbol,
+                        endpoint,
+                        pointer,
+                    } => (symbol.as_str(), *endpoint, pointer.as_str()),
+                    Target::Market {
+                        market,
+                        endpoint,
+                        pointer,
+                    } => (*market, *endpoint, pointer.as_str()),
+                };
                 format!(
-                    "reads[{i}] {} {} {:?}: {} bytes",
-                    t.symbol,
-                    t.endpoint,
-                    t.pointer,
+                    "reads[{i}] {target} {endpoint} {pointer:?}: {} bytes",
                     serde_json::to_string(a).map_or(0, |s| s.len())
                 )
             })
@@ -220,10 +303,18 @@ pub async fn answer(data_dir: &Path, request: &Request) -> Result<Value, String>
 }
 
 async fn read_one(store: &ReadOnlyStore, at: UnixMs, read: &Read) -> Result<Answer, String> {
-    let target = Target {
-        symbol: read.key.to_string(),
-        endpoint: read.endpoint.as_str(),
-        pointer: read.pointer.clone(),
+    let target = match read.kind {
+        KeyKind::Market => Target::Market {
+            market: "US",
+            endpoint: read.endpoint.as_str(),
+            pointer: read.pointer.clone(),
+        },
+        KeyKind::Security => Target::Security {
+            symbol: read.key.to_string(),
+            endpoint: read.endpoint.as_str(),
+            pointer: read.pointer.clone(),
+        },
+        KeyKind::Index => unreachable!("index endpoints are not readable"),
     };
     let row = store
         .read_at(&read.key, read.endpoint, at)

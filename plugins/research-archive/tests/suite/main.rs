@@ -19,6 +19,7 @@ mod clock;
 mod fake;
 mod freeze;
 mod guards;
+mod market_catalog;
 mod open;
 mod plugin;
 mod plugin_read_at;

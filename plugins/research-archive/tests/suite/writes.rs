@@ -432,7 +432,7 @@ async fn complete_needs_a_frozen_universe_and_a_row_per_pair() {
             frozen: false,
             pairs_without_rows,
             ..
-        }) if pairs_without_rows == crate::archive::security_count() + 1
+        }) if pairs_without_rows == crate::archive::security_count() + 7
     ));
     observe_and_freeze(&f.store, &plan, at(1, 10), &[(".SPX.US", &["MSFT.US"])]).await;
     // AAPL.US and MSFT.US × 6 security endpoints are still empty.
@@ -442,22 +442,26 @@ async fn complete_needs_a_frozen_universe_and_a_row_per_pair() {
             frozen: true,
             pairs_without_rows,
             ..
-        }) if pairs_without_rows == 2 * crate::archive::security_count()
+        }) if pairs_without_rows == 2 * crate::archive::security_count() + 6
     ));
-    let catalog = research_archive::Catalog::compiled();
-    for e in catalog.for_kind(research_archive::KeyKind::Security) {
-        for k in ["AAPL.US", "MSFT.US"] {
-            f.store
-                .record_observation(
-                    plan.run_id,
-                    &key(k),
-                    e.id,
-                    at(1, 20),
-                    &failed(FailureClass::Permanent),
-                )
-                .await
-                .unwrap();
-        }
+    for pair in f
+        .store
+        .coverage(plan.run_id)
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|p| !p.has_ok)
+    {
+        f.store
+            .record_observation(
+                plan.run_id,
+                &pair.key,
+                pair.endpoint,
+                at(1, 20),
+                &failed(FailureClass::Permanent),
+            )
+            .await
+            .unwrap();
     }
     complete().await.unwrap();
     assert_eq!(

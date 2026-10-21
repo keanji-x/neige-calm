@@ -178,7 +178,9 @@ async fn i5_overlapping_origins_are_kept() {
         ],
     )
     .await;
-    let u = f.store.universe_at(at(1, 50)).await.unwrap().unwrap();
+    let mut u = f.store.universe_at(at(1, 50)).await.unwrap().unwrap();
+    u.members
+        .retain(|(_, origin)| !matches!(origin, Origin::Benchmark | Origin::Market));
     let ndx = || Origin::Index(key(".NDX.US"));
     let spx = || Origin::Index(key(".SPX.US"));
     assert_eq!(
@@ -199,7 +201,7 @@ async fn i5_overlapping_origins_are_kept() {
     assert_eq!(u.keys().len(), 6);
     let coverage = f.store.coverage(plan.run_id).await.unwrap();
     // 4 securities × 6 endpoints + 2 indexes × 1.
-    assert_eq!(coverage.len(), 4 * security_count() + 2);
+    assert_eq!(coverage.len(), 4 * security_count() + 8);
     let aapl = coverage.iter().filter(|c| c.key == key("AAPL.US")).count();
     assert_eq!(aapl, security_count());
 }
@@ -252,7 +254,9 @@ async fn universe_at_follows_started_at_and_frozen_at() {
     let keys_at = |t| {
         let store = f.store.clone();
         async move {
-            let u = store.universe_at(t).await.unwrap().unwrap();
+            let mut u = store.universe_at(t).await.unwrap().unwrap();
+            u.members
+                .retain(|(_, origin)| !matches!(origin, Origin::Benchmark | Origin::Market));
             let keys: Vec<String> = u.keys().iter().map(|k| k.to_string()).collect();
             let pending: Vec<String> = u.pending.iter().map(|k| k.to_string()).collect();
             (u.run_id, keys, pending)
@@ -306,7 +310,7 @@ async fn coverage_counts_rows_per_planned_pair() {
         .await
         .unwrap();
     let before = f.store.coverage(plan.run_id).await.unwrap();
-    assert_eq!(before.len(), security_count() + 1);
+    assert_eq!(before.len(), security_count() + 7);
     assert!(before.iter().all(|c| c.attempts == 0 && !c.has_ok));
     f.store
         .record_observation(
@@ -322,7 +326,7 @@ async fn coverage_counts_rows_per_planned_pair() {
     let after = f.store.coverage(plan.run_id).await.unwrap();
     assert_eq!(
         after.len(),
-        2 * security_count() + 1,
+        2 * security_count() + 7,
         "members join the coverage at the freeze"
     );
     let get = |k: &str, e: &str| {

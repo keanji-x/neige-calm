@@ -315,7 +315,15 @@ fn base_url(field: &'static str, value: &str, scheme: &str) -> Result<String, Co
 }
 
 fn ws_url(field: &'static str, value: &str) -> Result<String, ConfigError> {
-    parse_url(field, value, "wss").map(|_| value.to_owned())
+    let loopback = url::Url::parse(value).is_ok_and(|u| {
+        u.scheme() == "ws"
+            && match u.host() {
+                Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+                Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+                _ => false,
+            }
+    });
+    parse_url(field, value, if loopback { "ws" } else { "wss" }).map(|_| value.to_owned())
 }
 
 fn parse_url(field: &'static str, value: &str, scheme: &str) -> Result<url::Url, ConfigError> {

@@ -245,18 +245,25 @@ pub(crate) async fn user_version(conn: &mut SqliteConnection) -> Result<i64, sql
 /// in-memory database. Comparing against this, rather than a second copy of
 /// the statements, keeps `DDL` the only definition.
 pub(crate) async fn reference() -> Result<(Schema, i64), sqlx::Error> {
-    reference_version(true).await
+    reference_version(3).await
 }
 
 pub(crate) async fn reference_v1() -> Result<(Schema, i64), sqlx::Error> {
-    reference_version(false).await
+    reference_version(1).await
 }
 
-async fn reference_version(v2: bool) -> Result<(Schema, i64), sqlx::Error> {
+pub(crate) async fn reference_v2() -> Result<(Schema, i64), sqlx::Error> {
+    reference_version(2).await
+}
+
+async fn reference_version(version: i64) -> Result<(Schema, i64), sqlx::Error> {
     let mut conn = SqliteConnection::connect("sqlite::memory:").await?;
     sqlx::Executor::execute(&mut conn, DDL).await?;
-    if v2 {
+    if version >= 2 {
         sqlx::Executor::execute(&mut conn, MIGRATION_V2).await?;
+    }
+    if version >= 3 {
+        sqlx::Executor::execute(&mut conn, super::schema_v3::MIGRATION_V3).await?;
     }
     let schema = read_schema(&mut conn).await?;
     let version = user_version(&mut conn).await?;

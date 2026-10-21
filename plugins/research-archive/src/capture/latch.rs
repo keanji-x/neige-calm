@@ -98,7 +98,7 @@ impl Latch {
         clock: Arc<C>,
         from: UnixMs,
         deadline: UnixMs,
-    ) -> impl FnOnce() -> bool + Send + 'static {
+    ) -> impl Fn() -> bool + Send + Sync + 'static {
         let latch = Arc::clone(self);
         move || {
             let now = clock.now();

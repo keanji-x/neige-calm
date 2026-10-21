@@ -4,7 +4,7 @@
 use std::path::{Path, PathBuf};
 
 use chrono::NaiveDate;
-use research_archive::catalog::{Catalog, EndpointId, KeyKind};
+use research_archive::catalog::{Catalog, EndpointId};
 use research_archive::store::{PlanRequest, RunPlan};
 use research_archive::types::{
     AsOf, ErrorClass, ErrorDetail, FailureClass, Finish, Key, Membership, Response, RunId, Source,
@@ -160,18 +160,19 @@ pub async fn complete_day(
         .await
         .unwrap();
     observe_and_freeze(store, &plan, at(n, 10), &[(index, members)]).await;
-    let mut securities: Vec<&str> = config.iter().chain(members).copied().collect();
-    securities.sort();
-    securities.dedup();
     let mut t = 20;
-    for security in securities {
-        for e in Catalog::compiled().for_kind(KeyKind::Security) {
-            store
-                .record_observation(plan.run_id, &key(security), e.id, at(n, t), &ok(b"{}"))
-                .await
-                .unwrap();
-            t += 1;
-        }
+    for pair in store
+        .coverage(plan.run_id)
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|p| !p.has_ok)
+    {
+        store
+            .record_observation(plan.run_id, &pair.key, pair.endpoint, at(n, t), &ok(b"{}"))
+            .await
+            .unwrap();
+        t += 1;
     }
     store
         .end_run(plan.run_id, at(n, 10_000), Finish::Complete, None)

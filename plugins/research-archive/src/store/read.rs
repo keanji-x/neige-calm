@@ -217,7 +217,7 @@ impl Store {
         let rows = sqlx::query(
             "SELECT k.key, k.origin FROM run_key k
              WHERE k.run_id = ?1 AND (
-                k.origin IN ('config', 'index-symbol')
+                k.origin IN ('config', 'index-symbol', 'benchmark', 'market')
                 OR EXISTS (SELECT 1 FROM run_membership m
                            WHERE m.run_id = k.run_id AND k.origin = 'index:' || m.index_sym
                              AND m.frozen_at <= ?2))",

@@ -47,6 +47,10 @@ tracing-subscriber = { version = "0.3", features = ["fmt"] }
 url = "2"
 
 [dev-dependencies]
+futures-util = "0.3"
+prost = "0.14"
+tokio-tungstenite = "0.27"
+longbridge-proto = { git = "https://github.com/longbridge/openapi", tag = "v5.2.0" }
 axum = "0.8"
 # The report `table` block's validator, for the overlay the plugin pushes.
 calm-types = { path = "../../crates/calm-types" }

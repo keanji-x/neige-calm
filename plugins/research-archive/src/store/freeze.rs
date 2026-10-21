@@ -104,6 +104,8 @@ impl Store {
             let origin = Origin::Index(index.clone());
             for member in membership.members() {
                 insert_run_key(&mut tx, run_id, member, &origin).await?;
+                super::planning::append_pairs(&mut tx, run_id, member, &origin, &self.catalog)
+                    .await?;
             }
             written.push((index, membership));
         }

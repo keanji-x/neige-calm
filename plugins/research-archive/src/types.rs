@@ -159,6 +159,10 @@ impl fmt::Display for Key {
 pub enum Origin {
     /// The research list, as configured when the run was planned.
     Config,
+    /// Fixed benchmark securities; daily bars only.
+    Benchmark,
+    /// One market-level subject.
+    Market,
     /// A configured index symbol itself, fetched with the index endpoints.
     IndexSymbol,
     /// A member of the named index, written by the freeze.
@@ -170,6 +174,8 @@ impl Origin {
     pub fn to_sql(&self) -> String {
         match self {
             Origin::Config => "config".to_owned(),
+            Origin::Benchmark => "benchmark".to_owned(),
+            Origin::Market => "market".to_owned(),
             Origin::IndexSymbol => "index-symbol".to_owned(),
             Origin::Index(sym) => format!("index:{sym}"),
         }
@@ -178,6 +184,8 @@ impl Origin {
     pub fn parse(s: &str) -> Result<Origin, InvalidValue> {
         match s {
             "config" => Ok(Origin::Config),
+            "benchmark" => Ok(Origin::Benchmark),
+            "market" => Ok(Origin::Market),
             "index-symbol" => Ok(Origin::IndexSymbol),
             other => match other.strip_prefix("index:") {
                 Some(sym) => Key::new(sym).map(Origin::Index),

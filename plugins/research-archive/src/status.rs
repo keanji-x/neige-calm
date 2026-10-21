@@ -55,6 +55,16 @@ pub struct IndexStatus {
     pub mode: &'static str,
 }
 
+/// Coverage of a single endpoint, including market and benchmark pairs.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct EndpointStatus {
+    pub endpoint: String,
+    pub planned: u32,
+    pub ok: u32,
+    pub failed: u32,
+    pub untried: u32,
+}
+
 /// One recent run and its pair counts.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct RunStatus {
@@ -72,6 +82,7 @@ pub struct RunStatus {
     /// Pairs with no row yet.
     pub pairs_untried: u32,
     pub frozen: Vec<IndexStatus>,
+    pub endpoints: Vec<EndpointStatus>,
 }
 
 /// The archive's health at `checked_at`.
@@ -215,7 +226,26 @@ fn run_status(run: &RunSummary, coverage: &[PairCoverage]) -> RunStatus {
     let count = |f: &dyn Fn(&PairCoverage) -> bool| {
         u32::try_from(coverage.iter().filter(|p| f(p)).count()).expect("pairs fit in u32")
     };
+    let mut endpoints = std::collections::BTreeMap::<String, EndpointStatus>::new();
+    for pair in coverage {
+        let name = pair.endpoint.to_string();
+        let entry = endpoints
+            .entry(name.clone())
+            .or_insert_with(|| EndpointStatus {
+                endpoint: name,
+                ..Default::default()
+            });
+        entry.planned += 1;
+        if pair.has_ok {
+            entry.ok += 1;
+        } else if pair.attempts > 0 {
+            entry.failed += 1;
+        } else {
+            entry.untried += 1;
+        }
+    }
     RunStatus {
+        endpoints: endpoints.into_values().collect(),
         as_of: run.as_of.to_string(),
         outcome: run.end.as_ref().map_or("open", |e| e.outcome.as_str()),
         started_at: run.started_at.0,

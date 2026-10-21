@@ -64,7 +64,7 @@ impl TimedServer {
     ) -> TimedServer {
         let arrivals = Arc::new(Mutex::new(Vec::new()));
         let log = arrivals.clone();
-        let server = FakeServer::start(move |seen| {
+        let server = FakeServer::start_capture(move |seen| {
             log.lock().unwrap().push(Arrival {
                 query: seen.query.clone(),
                 at: clock.now(),

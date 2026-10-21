@@ -93,7 +93,7 @@ async fn i11_capture_output_exit_state_alert_and_archive_hold_no_secret() {
     let stage = Arc::new(AtomicUsize::new(0));
     let throttles = Arc::new(AtomicUsize::new(0));
     let (s, th) = (stage.clone(), throttles.clone());
-    let server = FakeServer::start(move |seen: &Seen| match seen.path.as_str() {
+    let server = FakeServer::start_capture(move |seen: &Seen| match seen.path.as_str() {
         "/v1/quote/valuation" if s.load(Ordering::SeqCst) == 0 => {
             Reply::new(401, format!(r#"{{"error":"{ACCOUNT}"}}"#))
         }
@@ -190,7 +190,7 @@ async fn i11_capture_output_exit_state_alert_and_archive_hold_no_secret() {
 /// not recorded as sent; the command sees only the allowlisted variables.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn notify_dedupes_by_kind_and_passes_only_allowlisted_variables() {
-    let server = FakeServer::start(|_| Reply::data("{}")).await;
+    let server = FakeServer::start_capture(|_| Reply::data("{}")).await;
     let root = tempfile::tempdir().unwrap();
     let (script, out) = notify_script(root.path());
     let p = Proc::new(&server.url, knobs(&script, &out));
@@ -265,7 +265,7 @@ async fn notify_dedupes_by_kind_and_passes_only_allowlisted_variables() {
 /// `notify` in the same environment still runs the alert, as `unknown`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn notify_alerts_when_capture_refused_its_environment() {
-    let server = FakeServer::start(|_| Reply::data("{}")).await;
+    let server = FakeServer::start_capture(|_| Reply::data("{}")).await;
     let root = tempfile::tempdir().unwrap();
     let (script, out) = notify_script(root.path());
     let p = Proc::new(&server.url, knobs(&script, &out));
@@ -317,7 +317,7 @@ async fn notify_alerts_when_capture_refused_its_environment() {
 async fn notify_trusts_only_the_failed_starts_own_state() {
     const THIS: &str = "0123456789abcdef0123456789abcdef";
     const OTHER: &str = "fedcba9876543210fedcba9876543210";
-    let server = FakeServer::start(|_| Reply::data("{}")).await;
+    let server = FakeServer::start_capture(|_| Reply::data("{}")).await;
     let root = tempfile::tempdir().unwrap();
     let (script, out) = notify_script(root.path());
     let p = Proc::new(&server.url, knobs(&script, &out));

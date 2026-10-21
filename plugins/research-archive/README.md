@@ -65,7 +65,8 @@ status = 'ok'` serves the point-in-time read.
 - **A changed field needs a new id.** A change to any field of an endpoint
   ships under a new `endpoint_id`.
 
-The compiled catalog has seven security endpoints and one index endpoint:
+The original v2 catalog has seven security endpoints and one index endpoint;
+v3 additions are documented under [Market capture](#market-capture-and-schema-version-3):
 
 - **Security endpoints:** `consensus`, `forecast_eps`, `rating_latest`,
   `ratings`, `rating_detail`, `valuation` and `consensus_annual`. They take
@@ -199,7 +200,8 @@ The membership facts work like this:
 - **Each key counts once.** `Universe::keys()` returns each distinct key
   once.
 
-**Coverage of a run.** Coverage joins each distinct key in `run_key` to the
+**Coverage of a legacy run.** V3 runs use persisted requests (see the v3 section).
+For legacy runs, coverage joins each distinct key in `run_key` to the
 same run's saved `run_endpoint` set and then filters by endpoint kind. Each
 pair counts once. It never crosses historical keys with today's whole catalog:
 
@@ -309,15 +311,15 @@ written while a guard or check was off.
 - **An existing file** is refused on any of these mismatches:
   - **`user_version`** differs from this build's.
   - **Schema drift.** Any table, index or trigger is missing, extra, or
-    differs in its stored SQL text from what `DDL` plus `MIGRATION_V2` produce.
+    differs in its stored SQL text from what `DDL`, `MIGRATION_V2`, and `MIGRATION_V3` produce.
   - **Catalog drift.** A stored `endpoint` row is missing, extra or changed
     compared with the compiled catalog.
 - **A refused file is left as it was.** The WAL journal mode is set only
   after the check (or the creation) succeeds.
 
-Ordinary capture and plugin opens require v2 and never upgrade v1. Use the
-explicit [annual upgrade](#annual-consensus-and-schema-version-2) on a writable
-v1 copy; refused versions remain untouched.
+Ordinary capture and plugin opens require v3 and never migrate. Follow the
+explicit [v3 upgrade path](#market-capture-and-schema-version-3); v1 copies first
+use the retained annual command. Refused versions remain untouched.
 
 ## Importing read-only
 
@@ -898,7 +900,7 @@ about 45.
 
 - `read_at {at, reads}` (#2597) answers what the archive held at `at`, an
   RFC 3339 time with an offset. Each of 1 to 12 reads names a `symbol`, one
-  of the catalog's seven security `endpoint`s (the manifest's enum is pinned to
+  of the catalog's security `endpoint`s (the manifest's enum is pinned to
   the catalog by a test; `index_constituents` is not readable here) and an
   RFC 6901 `pointer` into the body (`""` is the whole body). Each read is
   [`read_at`](#read-contract) through `ReadOnlyStore`, the same query, and
@@ -997,7 +999,7 @@ Two integration binaries:
 | test module | covers |
 |---|---|
 | `guards` | I2, on every table, including the rowid collision |
-| `open` | new archives use v2 and the compiled catalog; the refusals, and that a refused file is untouched |
+| `open` | new archives use v3 and the compiled catalog; the refusals, and that a refused file is untouched |
 | `annual_catalog` | frozen released v1 input; explicit upgrade preserving historical bytes/plans, schema/catalog refusals without writes, CLI lock (`LOCKED`), token-free upgrade and idempotence |
 | `writes` | plan atomicity, the window bound and window order, `complete`, the attempt counter and the CHECKs |
 | `clock` | the monotonic run clock, blob + observation atomicity, error class per endpoint |
@@ -1033,7 +1035,7 @@ separate security endpoint on the same path with `period_type=af`; the parameter
 was checked against a live response. `period=af` and `report=af` do not select the
 annual view. The read-only plugin exposes both through `read_at`.
 
-New archives use schema v2. Its append-only `run_endpoint` table freezes the
+The released v2 format introduced an append-only `run_endpoint` table freezes the
 endpoint set in the same transaction as each run's plan. Coverage, completeness,
 write eligibility and `ever_planned` use that stored set: adding an endpoint must
 not turn an old completed run into a newly incomplete run.
@@ -1070,3 +1072,106 @@ and this annual addition. A future catalog change must update the explicit
 upgrade policy and its compatibility tests; do not silently generalize the
 accepted drift set. The migration does not infer missing historical endpoint
 sets from observations.
+
+## Market capture and schema version 3
+
+See [design and probe limitations](../../docs/research-archive-market-capture.md).
+The capture binary and the read-only plugin must be upgraded together. Ordinary
+opens require v3 and never upgrade an existing file. With captures paused, take
+and verify a consistent SQLite `.backup` (including committed WAL contents), then:
+
+```sh
+# Only if the archive is still v1; this remains narrowly v1→v2.
+research-archive upgrade-annual-catalog --config /path/to/research-archive.toml
+# Explicit v2→v3, holding the same archive.lock; no auth or network needed.
+research-archive upgrade-market-catalog --config /path/to/research-archive.toml
+```
+
+The market command refuses v1, missing files, schema/catalog drift, and broken
+foreign keys. Repeating it on a valid v3 archive validates without migrating.
+It reconstructs only the two closed-set tables (`endpoint` and `run_key`),
+retaining every historical column value and recreating their append-only guards.
+The original v1 DDL and v2 migration remain byte-frozen. This is an explicit
+format upgrade, not an ordinary append operation. No past day's observations are
+backfilled. The old binary cannot open v3: rollback requires a v3-capable build,
+or deliberate reconciliation of post-backup captures before restoring a backup.
+This PR does not perform any production migration, rollout, or plugin reload.
+
+V3 adds append-only `run_plan_v3(run_id)` and
+`run_pair(run_id,key,endpoint_id,request_json)`. A marker identifies runs using
+explicit immutable pair requests. Plan creation commits initial pairs with the
+keys; membership freeze commits each new member's pairs with its keys. Each
+request is an ordered JSON array of resolved string pairs. Dates come from the
+run's `as_of`, so midnight, changed config, and resumption never change a request.
+Historical runs without a marker keep the released `run_key × run_endpoint`
+relation, including an old run whose index membership freezes after upgrade.
+All coverage, completeness, write eligibility, and `ever_planned` use that one
+Store-owned relation. Marker and request tables reject updates, deletes, and
+replacement/conflict inserts under either recursive-trigger setting.
+
+`endpoint.method` now identifies a request contract: `GET` retains its released
+meaning; `GET_CALENDAR_V1` means paginated HTTP GET with an auditable page wrapper;
+`QUOTE` with `quote:27` means the declared daily-bar WebSocket projection. Scope
+and transport are independent. The query recipe admits `{ "as_of_days": N }`
+for dates resolved and persisted at planning. A changed request or codec needs a
+new endpoint id; legacy catalog fields are never rewritten.
+
+| endpoint | scope / request | body |
+|---|---|---|
+| `earnings_snapshot` | research securities, daily; symbol, upstream latest report | raw `data`: report, fiscal_year/period, currency, fp_start/end, fo_* and fr_* |
+| `financial_reports` | research securities, daily; symbol, kind=ALL, report=qf | raw `data`: list.IS/BS/CF.indicators[].accounts[].values[] |
+| `finance_calendar` | one `market:US` key, daily; as_of−7 through as_of+30, report events | `earnings_calendar_v1` |
+| `daily_candlesticks` | research securities plus QQQ.US, SOXX.US, KBE.US, SPY.US, SMH.US | `daily_bars_v1` |
+
+Benchmark-only keys have origin `benchmark` and only get daily bars. The US
+calendar has origin `market` and is not passed as a security symbol. Overlapping
+research/benchmark origins remain separate facts, with one shared bar pair.
+Reports are daily in this first version, covering weekly/post-earnings needs
+without a separate scheduling policy. A successful daily snapshot may precede
+later same-night earnings updates; capture does not promise continuous freshness.
+
+Calendar queries page at count=10. Live probes found `count=1000` does not remove
+truncation, `next_date` can advance while same-day events remain, and group count
+is a source-row count rather than the coalesced `infos` length. Each date exhausts
+explicit source offsets through the reported count; event ids deduplicate
+coalesced records. Nonprogressing pages, changing counts/events, malformed data,
+and premature empty termination fail the pair. Bounds are 2,048 pages and 8 MiB
+of raw data per logical attempt. Every page passes the limiter and run deadline;
+a failed/cancelled attempt publishes no partial calendar value. The completed
+wrapper has `market,start,end,days,pages`: `days[DATE][SYMBOL][EVENT_ID]` contains
+events, and each page retains `date,offset,fetched_at,raw_json`. Decoding raw_json
+reproduces exact upstream data bytes. The wrapper itself is not a raw HTTP body.
+
+Daily bars query as_of−14 calendar days through as_of and retain the latest six
+available closes (five returns). The body declares `format,symbol,timezone,start,
+end,session,adjust,bars`; each bar has `trade_date,timestamp,open,high,low,close,
+volume,turnover`. NY session dates, regular hours, and no adjustment are explicit;
+prices/turnover are decimal strings. Invalid/nonpositive/inconsistent OHLC,
+negative volume/turnover, duplicate dates, and dates outside the query fail the
+pair. This is a typed SDK projection: unknown protobuf fields are not retained,
+and the SDK converts invalid numeric strings to zero. OHLC validation rejects
+that price fallback; zero volume/turnover remain valid and cannot prove their
+original wire spelling. This endpoint does not claim raw-wire preservation.
+
+Use the existing `plugin_archive_read_at` with symbol for security endpoints, or
+`{"market":"US","endpoint":"finance_calendar","pointer":"/days/2026-10-21/MSFT.US"}`
+for the calendar. One call can read a stock and its benchmark. Align actual
+`trade_date` values; the same `at` does not guarantee matching sessions. Missing
+sessions are missing, never an older-date substitute. `as_of` is the capture's
+trading day; `fetched_at` is knowledge time, not an event/report/trade date.
+Existing `not_archived`, `no_value`, empty-value, and 40 KiB limits remain.
+
+`capture_status.runs[].endpoints` reports planned/ok/failed/untried counts per
+endpoint, including the market pair and benchmark bars. Existing run outcome
+semantics remain: `complete` can include pairs that exhausted their attempt cap;
+health and endpoint counts expose failures rather than treating them as data.
+
+The sample token read MSFT and all five benchmarks successfully. This does not
+prove monthly symbol capacity for the full universe. Permission/quota failures
+keep their numeric codes (including 301604/301607); no fallback bypasses them.
+Sample reports include MSFT CapEx and JPM BPS but did not establish separate
+finance-lease additions, segments, or TBVPS. Missing actuals must not be inferred.
+At N=505, five additional benchmarks and one index, first-pass logical pairs are
+10N+5+1+1=5,057. At 2 starts/s that is about 42 minutes before calendar pagination,
+quote bootstrap, latency and retries. Retain the 25-minute attempt and 30-minute
+timer: saved successful pairs resume, and one invocation need not complete.

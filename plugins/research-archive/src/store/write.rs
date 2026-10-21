@@ -43,7 +43,9 @@ pub(super) const PLANNED_PAIRS: &str = "
     SELECT DISTINCT rk.run_id AS run_id, rk.key AS key, e.endpoint_id AS endpoint_id
     FROM run_key rk JOIN run_endpoint re ON re.run_id = rk.run_id
     JOIN endpoint e ON e.endpoint_id = re.endpoint_id AND e.key_kind =
-        CASE rk.origin WHEN 'index-symbol' THEN 'index' ELSE 'security' END";
+        CASE rk.origin WHEN 'index-symbol' THEN 'index' ELSE 'security' END
+    WHERE NOT EXISTS(SELECT 1 FROM run_plan_v3 v WHERE v.run_id = rk.run_id)
+    UNION ALL SELECT run_id,key,endpoint_id FROM run_pair";
 
 /// What `plan_run` writes.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -100,11 +102,45 @@ impl Store {
         }
         require_window_order(&mut tx, req.source, req.as_of, req.window).await?;
         let run_id = insert_run(&mut tx, req.source, req.as_of, req.window, req.started_at).await?;
+        sqlx::query("INSERT INTO run_plan_v3(run_id) VALUES (?)")
+            .bind(run_id.0)
+            .execute(&mut *tx)
+            .await?;
         for key in &req.config {
             insert_run_key(&mut tx, run_id, key, &Origin::Config).await?;
+            super::planning::append_pairs(&mut tx, run_id, key, &Origin::Config, &self.catalog)
+                .await?;
         }
         for key in &req.indexes {
             insert_run_key(&mut tx, run_id, key, &Origin::IndexSymbol).await?;
+            super::planning::append_pairs(
+                &mut tx,
+                run_id,
+                key,
+                &Origin::IndexSymbol,
+                &self.catalog,
+            )
+            .await?;
+        }
+        if self.catalog.get("daily_candlesticks").is_some() {
+            for symbol in super::planning::BENCHMARKS {
+                let key = Key::new(*symbol)?;
+                insert_run_key(&mut tx, run_id, &key, &Origin::Benchmark).await?;
+                super::planning::append_pairs(
+                    &mut tx,
+                    run_id,
+                    &key,
+                    &Origin::Benchmark,
+                    &self.catalog,
+                )
+                .await?;
+            }
+        }
+        if self.catalog.get("finance_calendar").is_some() {
+            let key = Key::new("market:US")?;
+            insert_run_key(&mut tx, run_id, &key, &Origin::Market).await?;
+            super::planning::append_pairs(&mut tx, run_id, &key, &Origin::Market, &self.catalog)
+                .await?;
         }
         let plan = load_plan(&mut tx, run_id, true).await?;
         tx.commit().await?;
@@ -552,6 +588,7 @@ pub(super) async fn load_plan(
         let key = Key::new(k.try_get::<String, _>("key")?)?;
         match Origin::parse(&k.try_get::<String, _>("origin")?)? {
             Origin::Config => config.push(key),
+            Origin::Benchmark | Origin::Market => {}
             _ => indexes.push(key),
         }
     }

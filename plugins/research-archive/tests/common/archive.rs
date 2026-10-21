@@ -12,6 +12,9 @@ use research_archive::calendar::TradingCalendar;
 use research_archive::config::Config;
 use research_archive::types::UnixMs;
 
+#[path = "quote.rs"]
+mod quote;
+
 pub const CLIENT: &str = "test-client";
 
 /// Unix ms of an RFC 3339 instant.
@@ -66,6 +69,7 @@ pub struct Archive {
     pub data_dir: PathBuf,
     pub config_path: PathBuf,
     pub http_url: String,
+    quote_url: String,
 }
 
 fn quoted(items: &[impl AsRef<str>]) -> String {
@@ -85,6 +89,7 @@ impl Archive {
             data_dir,
             root,
             http_url: http_url.to_owned(),
+            quote_url: quote::start(),
         };
         archive.write_config(knobs);
         archive
@@ -97,7 +102,7 @@ impl Archive {
 oauth_client_id = "{CLIENT}"
 access_region = "cn"
 http_url = "{}"
-quote_ws_url = "wss://127.0.0.1:{}/v2"
+quote_ws_url = "{}"
 callback_port = {}
 research = [{}]
 indexes = [{}]
@@ -110,7 +115,7 @@ notify_command = [{}]
 "#,
             self.data_dir.display(),
             self.http_url,
-            closed_port(),
+            self.quote_url,
             closed_port(),
             quoted(&knobs.research),
             quoted(&knobs.indexes),

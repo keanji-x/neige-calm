@@ -257,7 +257,8 @@ impl<C: Clock, D: TradingDays> Start<'_, C, D> {
             &self.config.http_url,
             self.config.rps,
             Timeouts::PRODUCTION,
-        );
+        )
+        .with_quote_ws_url(&self.config.quote_ws_url);
         let carry_deadline = clock::after(plan.window.start(), self.config.carry_deadline);
         let outcome = runner::drive(runner::RunCtx {
             clock: Arc::clone(self.clock),

@@ -60,6 +60,11 @@ enum Command {
         #[arg(long)]
         config: PathBuf,
     },
+    /// Explicitly upgrade a released v2 archive to market capture schema v3.
+    UpgradeMarketCatalog {
+        #[arg(long)]
+        config: PathBuf,
+    },
     /// Alert the owner that a unit failed (`OnFailure=`).
     Notify {
         #[arg(long)]
@@ -134,6 +139,7 @@ pub fn run() -> i32 {
         }),
         Command::Capture { config } => run_guarded(&config, capture),
         Command::UpgradeAnnualCatalog { config } => run_guarded(&config, upgrade_annual_catalog),
+        Command::UpgradeMarketCatalog { config } => run_guarded(&config, upgrade_market_catalog),
     }
 }
 
@@ -189,13 +195,36 @@ fn upgrade_annual_catalog(config: &Config) -> i32 {
         ))
         .await
         {
-            Ok(store) => {
-                store.close().await;
+            Ok(()) => {
                 println!("annual catalog ready");
                 exit::OK
             }
             Err(error) => {
                 tracing::error!("{error}");
+                exit::FATAL
+            }
+        }
+    })
+}
+
+fn upgrade_market_catalog(config: &Config) -> i32 {
+    let _lock = match lock(config) {
+        Ok(lock) => lock,
+        Err(code) => return code,
+    };
+    let runtime = match runtime() {
+        Ok(runtime) => runtime,
+        Err(code) => return code,
+    };
+    runtime.block_on(async {
+        match crate::Store::upgrade_market_catalog(&config.archive_path()).await {
+            Ok(store) => {
+                store.close().await;
+                println!("market catalog ready");
+                exit::OK
+            }
+            Err(err) => {
+                tracing::error!("{err}");
                 exit::FATAL
             }
         }

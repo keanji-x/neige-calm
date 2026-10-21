@@ -33,7 +33,7 @@ const CONSTITUENTS: &str = "/v1/quote/index-constituents";
 /// Members for any index; a delay on `slow_path` (every path for `*`) while
 /// `slow` is set.
 async fn server(slow: Arc<AtomicBool>, slow_path: &'static str) -> FakeServer {
-    FakeServer::start(move |s: &Seen| {
+    FakeServer::start_capture(move |s: &Seen| {
         let reply = if s.path == CONSTITUENTS {
             Reply::data(&members(&["AAPL.US", "MSFT.US"]))
         } else {
@@ -60,7 +60,7 @@ fn index_knobs() -> Knobs {
 /// `run_membership` row, and the run's end.
 async fn universe(p: &Proc) -> (Vec<(String, String)>, Vec<(String, String)>, Option<String>) {
     let mut conn = raw(&p.archive.data_dir.join("archive.sqlite3"), false).await;
-    let keys = sqlx::query_as("SELECT key, origin FROM run_key ORDER BY key, origin")
+    let keys = sqlx::query_as("SELECT key, origin FROM run_key WHERE origin NOT IN ('benchmark','market') ORDER BY key, origin")
         .fetch_all(&mut conn)
         .await
         .unwrap();
@@ -106,7 +106,7 @@ async fn i4_a_kill_during_fetch_leaves_a_whole_freeze_and_a_rerun_completes() {
     let (_, _, end) = universe(&p).await;
     assert_eq!(end.as_deref(), Some("complete"));
     let coverage = p.archive.store().await.coverage(RunId(1)).await.unwrap();
-    assert_eq!(coverage.len(), crate::archive::security_count() + 1);
+    assert_eq!(coverage.len(), crate::archive::security_count() + 7);
     assert!(coverage.iter().all(|c| c.has_ok));
 }
 
@@ -284,6 +284,17 @@ async fn a_failed_calendar_refresh_is_fatal_without_a_catalog_request() {
         &p.archive.data_dir,
     ))
     .unwrap();
+    let config_text = std::fs::read_to_string(&p.archive.config_path).unwrap();
+    let config = regex::Regex::new(r#"quote_ws_url = "[^"]+""#)
+        .unwrap()
+        .replace(
+            &config_text,
+            format!(
+                "quote_ws_url = \"wss://127.0.0.1:{}/v2\"",
+                crate::archive::closed_port()
+            ),
+        );
+    std::fs::write(&p.archive.config_path, config.as_bytes()).unwrap();
     let out = p.capture().await;
     assert_eq!(code(&out), 70, "{}", text(&out.stderr));
     assert!(text(&out.stderr).contains("refreshing the calendar failed"));
@@ -301,7 +312,7 @@ async fn a_failed_calendar_refresh_is_fatal_without_a_catalog_request() {
 /// The production CLI must actually send both views, not just list a new id.
 #[tokio::test]
 async fn annual_capture_cli_plans_and_fetches_both_consensus_views() {
-    let server = FakeServer::start(|s: &Seen| {
+    let server = FakeServer::start_capture(|s: &Seen| {
         if s.query
             .as_deref()
             .unwrap_or_default()

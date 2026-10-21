@@ -23,6 +23,8 @@ pub enum KeyKind {
     Index,
     /// A security symbol such as `AAPL.US`.
     Security,
+    /// A market-wide request, never a security symbol.
+    Market,
 }
 
 impl KeyKind {
@@ -31,6 +33,7 @@ impl KeyKind {
         match self {
             KeyKind::Index => "index",
             KeyKind::Security => "security",
+            KeyKind::Market => "market",
         }
     }
 }
@@ -39,6 +42,10 @@ impl KeyKind {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Method {
     Get,
+    /// Paged HTTP GET with the frozen calendar_v1 body codec.
+    Calendar,
+    /// Quote WebSocket business command; path contains its fixed identifier.
+    Quote,
 }
 
 impl Method {
@@ -46,6 +53,8 @@ impl Method {
     pub fn as_str(self) -> &'static str {
         match self {
             Method::Get => "GET",
+            Method::Calendar => "GET_CALENDAR_V1",
+            Method::Quote => "QUOTE",
         }
     }
 }
@@ -74,6 +83,8 @@ pub enum QueryValue {
     Key,
     /// A literal value.
     Fixed(&'static str),
+    /// ISO date derived from the run trading day, never invocation wall time.
+    AsOfDays(i64),
 }
 
 /// A catalog endpoint id, such as `consensus`. Ids only come from a
@@ -129,15 +140,38 @@ impl Endpoint {
     /// `[name, value]` pairs in send order, where the value `null` stands
     /// for the run key. Example: `[["symbol",null],["indicator","pe"]]`.
     pub fn query_json(&self) -> String {
-        let pairs: Vec<(&str, Option<&str>)> = self
+        let pairs: Vec<serde_json::Value> = self
             .query
             .iter()
-            .map(|(name, value)| match value {
-                QueryValue::Key => (*name, None),
-                QueryValue::Fixed(v) => (*name, Some(*v)),
+            .map(|(name, value)| {
+                let value = match value {
+                    QueryValue::Key => serde_json::Value::Null,
+                    QueryValue::Fixed(v) => serde_json::json!(v),
+                    QueryValue::AsOfDays(days) => serde_json::json!({"as_of_days": days}),
+                };
+                serde_json::json!([name, value])
             })
             .collect();
-        canonical_json(&pairs)
+        serde_json::to_string(&pairs).expect("catalog values serialize")
+    }
+
+    /// Resolve the complete request once, at planning time.
+    pub fn resolve(&self, key: &str, as_of: crate::types::AsOf) -> Vec<(String, String)> {
+        self.query
+            .iter()
+            .map(|(name, value)| {
+                let value = match value {
+                    QueryValue::Key => key.to_owned(),
+                    QueryValue::Fixed(v) => (*v).to_owned(),
+                    QueryValue::AsOfDays(days) => as_of
+                        .date()
+                        .checked_add_signed(chrono::Duration::days(*days))
+                        .expect("validated run date plus bounded catalog offset")
+                        .to_string(),
+                };
+                ((*name).to_owned(), value)
+            })
+            .collect()
     }
 
     /// The canonical `endpoint.headers_json`: a compact JSON array of
@@ -220,6 +254,54 @@ const COMPILED: &[Endpoint] = &[
         ],
         KeyKind::Security,
     ),
+    Endpoint::new(
+        "earnings_snapshot",
+        "/v1/quote/financials/earnings-snapshot",
+        KEY_ONLY,
+        KeyKind::Security,
+    ),
+    Endpoint::new(
+        "financial_reports",
+        "/v1/quote/financial-reports",
+        &[
+            (KEY_PARAM, QueryValue::Key),
+            ("kind", QueryValue::Fixed("ALL")),
+            ("report", QueryValue::Fixed("qf")),
+        ],
+        KeyKind::Security,
+    ),
+    Endpoint {
+        method: Method::Calendar,
+        ..Endpoint::new(
+            "finance_calendar",
+            "/v1/quote/finance_calendar",
+            &[
+                ("date", QueryValue::AsOfDays(-7)),
+                ("date_end", QueryValue::AsOfDays(30)),
+                ("types[]", QueryValue::Fixed("report")),
+                ("markets[]", QueryValue::Fixed("US")),
+                ("count", QueryValue::Fixed("10")),
+                ("next", QueryValue::Fixed("later")),
+            ],
+            KeyKind::Market,
+        )
+    },
+    Endpoint {
+        method: Method::Quote,
+        ..Endpoint::new(
+            "daily_candlesticks",
+            "quote:27",
+            &[
+                (KEY_PARAM, QueryValue::Key),
+                ("start", QueryValue::AsOfDays(-14)),
+                ("end", QueryValue::AsOfDays(0)),
+                ("period", QueryValue::Fixed("day")),
+                ("adjust", QueryValue::Fixed("none")),
+                ("session", QueryValue::Fixed("regular")),
+            ],
+            KeyKind::Security,
+        )
+    },
 ];
 
 /// A set of endpoints with unique ids, in a fixed order, with exactly one
@@ -243,6 +325,11 @@ impl Catalog {
     /// The catalog this binary was built with.
     pub fn compiled() -> Catalog {
         Catalog::new(COMPILED.to_vec()).expect("the compiled catalog is valid")
+    }
+
+    /// Frozen released v2 catalog used only by the explicit legacy upgrade.
+    pub fn released_v2() -> Catalog {
+        Catalog::new(COMPILED[..8].to_vec()).expect("released catalog")
     }
 
     pub fn new(endpoints: Vec<Endpoint>) -> Result<Catalog, CatalogError> {
@@ -365,6 +452,13 @@ mod tests {
                     None,
                     "security",
                 ),
+                security("earnings_snapshot", "/v1/quote/financials/earnings-snapshot"),
+                ("financial_reports", "GET", "/v1/quote/financial-reports",
+                    r#"[["symbol",null],["kind","ALL"],["report","qf"]]"#.to_owned(),en.clone(),None,"security"),
+                ("finance_calendar", "GET_CALENDAR_V1", "/v1/quote/finance_calendar",
+                    r#"[["date",{"as_of_days":-7}],["date_end",{"as_of_days":30}],["types[]","report"],["markets[]","US"],["count","10"],["next","later"]]"#.to_owned(),en.clone(),None,"market"),
+                ("daily_candlesticks", "QUOTE", "quote:27",
+                    r#"[["symbol",null],["start",{"as_of_days":-14}],["end",{"as_of_days":0}],["period","day"],["adjust","none"],["session","regular"]]"#.to_owned(),en.clone(),None,"security"),
             ]
         );
     }
@@ -390,7 +484,8 @@ mod tests {
         for e in catalog.endpoints() {
             assert_eq!(catalog.get(e.id.as_str()), Some(e));
         }
-        assert_eq!(catalog.for_kind(KeyKind::Security).count(), 7);
+        assert_eq!(catalog.for_kind(KeyKind::Security).count(), 10);
+        assert_eq!(catalog.for_kind(KeyKind::Market).count(), 1);
         assert_eq!(catalog.for_kind(KeyKind::Index).count(), 1);
         assert!(catalog.get("missing").is_none());
         assert_eq!(catalog.membership().as_str(), "index_constituents");

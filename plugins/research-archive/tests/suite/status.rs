@@ -4,7 +4,6 @@
 use std::path::Path;
 
 use research_archive::Store;
-use research_archive::catalog::{Catalog, KeyKind};
 use research_archive::plugin::view;
 use research_archive::state::{ClosedDangling, ExitKind, LastExit};
 use research_archive::status::{self, ArchiveStatus, Health, Policy};
@@ -70,6 +69,21 @@ async fn a_healthy_archive_is_ok() {
     let run = &status.runs[0];
     assert_eq!(run.as_of, "2026-01-02");
     assert_eq!(run.outcome, "complete");
+    let bars = run
+        .endpoints
+        .iter()
+        .find(|e| e.endpoint == "daily_candlesticks")
+        .unwrap();
+    assert_eq!(
+        (bars.planned, bars.ok, bars.failed, bars.untried),
+        (7, 7, 0, 0)
+    );
+    let market = run
+        .endpoints
+        .iter()
+        .find(|e| e.endpoint == "finance_calendar")
+        .unwrap();
+    assert_eq!((market.planned, market.ok), (1, 1));
     assert_eq!(
         (
             run.pairs_planned,
@@ -77,7 +91,7 @@ async fn a_healthy_archive_is_ok() {
             run.pairs_failed,
             run.pairs_untried
         ),
-        (15, 15, 0, 0)
+        (27, 27, 0, 0)
     );
     assert_eq!(run.frozen.len(), 1);
     assert_eq!(
@@ -177,20 +191,29 @@ async fn end_day(dir: &Path, n: i64, oks: usize, finish: Finish) {
         &[(".SPX.US", &["AAPL.US", "MSFT.US"])],
     )
     .await;
-    let mut t = 20;
-    for security in ["AAPL.US", "MSFT.US"] {
-        for e in Catalog::compiled().for_kind(KeyKind::Security) {
-            let response = if t - 20 < oks as i64 {
-                ok(b"{}")
-            } else {
-                failed(FailureClass::Permanent)
-            };
-            store
-                .record_observation(plan.run_id, &key(security), e.id, at(n, t), &response)
-                .await
-                .unwrap();
-            t += 1;
-        }
+    for (i, pair) in store
+        .coverage(plan.run_id)
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|p| !p.has_ok)
+        .enumerate()
+    {
+        let response = if i < oks {
+            ok(b"{}")
+        } else {
+            failed(FailureClass::Permanent)
+        };
+        store
+            .record_observation(
+                plan.run_id,
+                &pair.key,
+                pair.endpoint,
+                at(n, 20 + i as i64),
+                &response,
+            )
+            .await
+            .unwrap();
     }
     store
         .end_run(plan.run_id, at(n, 10_000), finish, None)
@@ -205,9 +228,9 @@ const LOST: &str = ". Data of that day is lost for good; check `journalctl --use
 #[tokio::test]
 async fn a_degraded_day_fails_until_a_later_day_completes() {
     let dir = healthy_dir().await;
-    // 4 of 15 pairs ok: below half.
+    // 4 of 27 pairs ok: below half.
     end_day(dir.path(), 2, 3, Finish::Complete).await;
-    let degraded = "2026-01-03 ended degraded: only 4 of 15 pairs have an ok";
+    let degraded = "2026-01-03 ended degraded: only 4 of 27 pairs have an ok";
     // The capture's own exit, then later starts that overwrite it.
     for kind in [
         ExitKind::Degraded,
@@ -235,7 +258,7 @@ async fn a_partial_latest_day_fails_until_a_later_day_completes() {
     let dir = healthy_dir().await;
     end_day(dir.path(), 2, 2, Finish::Partial).await;
     exit(ExitKind::NoWindow, NOW.0 - MINUTE).write(dir.path());
-    let partial = "2026-01-03 ended partial: 12 of 15 pairs have no ok";
+    let partial = "2026-01-03 ended partial: 24 of 27 pairs have no ok";
     assert_eq!(
         texts(&read(dir.path()).await),
         [(Health::Failing, format!("{partial}{LOST}").as_str())]
@@ -271,7 +294,7 @@ async fn an_outage_fails_until_a_later_day_completes() {
         .await
         .unwrap();
     store.close().await;
-    let partial = "2026-01-03 ended partial: 8 of 8 pairs have no ok";
+    let partial = "2026-01-03 ended partial: 17 of 17 pairs have no ok";
     let missed = "2026-01-04 was missed: no capture ran during its window";
 
     let mut first = exit(ExitKind::Partial, NOW.0 - 2 * MINUTE);
@@ -305,7 +328,7 @@ async fn an_outage_fails_until_a_later_day_completes() {
 #[tokio::test]
 async fn complete_with_failures_needs_attention_from_the_rows() {
     let dir = healthy_dir().await;
-    end_day(dir.path(), 2, 13, Finish::Complete).await;
+    end_day(dir.path(), 2, 25, Finish::Complete).await;
     // The exit says nothing of it: the rows do.
     exit(ExitKind::Complete, NOW.0 - MINUTE).write(dir.path());
     let status = read(dir.path()).await;
@@ -313,13 +336,13 @@ async fn complete_with_failures_needs_attention_from_the_rows() {
         texts(&status),
         [(
             Health::Attention,
-            "2026-01-03 ended complete with failures: 1 of 15 pairs used up their attempts \
+            "2026-01-03 ended complete with failures: 1 of 27 pairs used up their attempts \
              with no ok"
         )]
     );
     assert_eq!(
         (status.runs[0].pairs_ok, status.runs[0].pairs_failed),
-        (14, 1)
+        (26, 1)
     );
 }
 
@@ -421,14 +444,14 @@ async fn a_missed_day_does_not_demote_a_partial_one() {
             day2.pairs_failed,
             day2.pairs_untried
         ),
-        (8, 1, 0, 7)
+        (17, 1, 0, 16)
     );
     assert_eq!(
         texts(&status),
         [
             (
                 Health::Failing,
-                format!("2026-01-03 ended partial: 7 of 8 pairs have no ok{LOST}").as_str()
+                format!("2026-01-03 ended partial: 16 of 17 pairs have no ok{LOST}").as_str()
             ),
             (
                 Health::Attention,

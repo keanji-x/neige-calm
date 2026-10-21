@@ -262,7 +262,7 @@ async fn status_answers_with_the_health() {
     assert_eq!(result["structuredContent"]["health"], "ok");
     assert_eq!(
         result["structuredContent"]["runs"][0]["pairs_ok"],
-        2 * crate::archive::security_count() + 1
+        2 * crate::archive::security_count() + 7
     );
     let text = result["content"][0]["text"].as_str().unwrap();
     assert!(
@@ -339,7 +339,7 @@ async fn a_watching_track_gets_the_live_table_until_it_stops() {
     assert_eq!(table["rows"][0]["as_of"], "2026-01-02");
     assert_eq!(
         table["rows"][0]["ok"],
-        2 * crate::archive::security_count() + 1
+        2 * crate::archive::security_count() + 7
     );
     assert_eq!(table["rows"][0]["membership"], ".SPX.US observed");
 

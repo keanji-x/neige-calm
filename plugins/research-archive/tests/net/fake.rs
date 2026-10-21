@@ -81,6 +81,30 @@ pub struct FakeServer {
 }
 
 impl FakeServer {
+    /// Capture fixture explicitly supplies empty calendar and socket bootstrap
+    /// responses for the newly integrated protocols, preserving caller delays
+    /// and failures. Ordinary source tests keep start() without these routes.
+    pub async fn start_capture(respond: impl Fn(&Seen) -> Reply + Send + Sync + 'static) -> Self {
+        Self::start(move |seen| {
+            let mut reply = respond(seen);
+            let success = reply.status == 200
+                && serde_json::from_str::<serde_json::Value>(&reply.body)
+                    .is_ok_and(|v| v["code"] == 0);
+            if success {
+                let body = match seen.path.as_str() {
+                    "/v1/socket/token" => Some(r#"{"otp":"fixture-otp","limit":100,"online":0}"#),
+                    "/v1/quote/finance_calendar" => Some(r#"{"list":[],"next_date":""}"#),
+                    _ => None,
+                };
+                if let Some(body) = body {
+                    reply.body = Reply::data(body).body;
+                }
+            }
+            reply
+        })
+        .await
+    }
+
     pub async fn start(respond: impl Fn(&Seen) -> Reply + Send + Sync + 'static) -> Self {
         let seen = Arc::new(Mutex::new(Vec::new()));
         let respond = Arc::new(respond);

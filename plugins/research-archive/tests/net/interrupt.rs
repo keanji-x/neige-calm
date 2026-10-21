@@ -64,7 +64,7 @@ async fn interrupt_in_membership(a: &Archive, clock: &Arc<FakeClock>, server: &T
 /// `run_membership` row.
 async fn universe(a: &Archive) -> (Vec<(String, String)>, Vec<(String, String)>) {
     let mut conn = raw(&a.data_dir.join("archive.sqlite3"), false).await;
-    let keys = sqlx::query_as("SELECT key, origin FROM run_key ORDER BY key, origin")
+    let keys = sqlx::query_as("SELECT key, origin FROM run_key WHERE origin NOT IN ('benchmark','market') ORDER BY key, origin")
         .fetch_all(&mut conn)
         .await
         .unwrap();

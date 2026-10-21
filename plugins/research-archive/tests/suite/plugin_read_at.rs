@@ -437,24 +437,23 @@ fn the_manifest_schema_matches_the_catalog() {
     let item = &reads["items"];
     let catalog = Catalog::compiled();
     let ids: Vec<&str> = readable(&catalog).map(EndpointId::as_str).collect();
-    assert_eq!(ids.len(), security_count());
+    assert_eq!(ids.len(), security_count() + 1);
     assert_eq!(item["properties"]["endpoint"]["enum"], json!(ids));
     assert_eq!(
         (&reads["minItems"], &reads["maxItems"]),
         (&json!(1), &json!(MAX_READS))
     );
-    for (s, required) in [
-        (schema, json!(["at", "reads"])),
-        (item, json!(["symbol", "endpoint", "pointer"])),
-    ] {
-        assert_eq!(s["additionalProperties"], false);
-        assert_eq!(s["required"], required);
-        let mut keys: Vec<&String> = s["properties"].as_object().unwrap().keys().collect();
-        keys.sort();
-        let mut want: Vec<String> = serde_json::from_value(required).unwrap();
-        want.sort();
-        assert_eq!(keys, want.iter().collect::<Vec<_>>());
-    }
+    assert_eq!(schema["additionalProperties"], false);
+    assert_eq!(schema["required"], json!(["at", "reads"]));
+    assert_eq!(item["additionalProperties"], false);
+    assert_eq!(item["required"], json!(["endpoint", "pointer"]));
+    assert_eq!(
+        item["oneOf"],
+        json!([
+            {"required":["symbol"],"not":{"required":["market"]}},
+            {"required":["market"],"not":{"required":["symbol"]}}
+        ])
+    );
     assert_eq!(tool["annotations"]["readOnlyHint"], true);
 }
 
@@ -502,4 +501,71 @@ async fn annual_and_quarterly_bodies_are_independent_point_in_time_values() {
     );
     assert_eq!(result["reads"][0]["value"], 2);
     assert_eq!(result["reads"][1]["value"], 10);
+}
+
+#[tokio::test]
+async fn market_and_benchmark_reads_keep_point_in_time_and_target_contracts() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(&Store::path(dir.path())).await.unwrap();
+    let plan = store
+        .plan_run(&plan_request(1, &["MSFT.US"], &[]))
+        .await
+        .unwrap();
+    let calendar = endpoint("finance_calendar");
+    record(
+        &store,
+        plan.run_id,
+        "market:US",
+        "finance_calendar",
+        at(1, 20),
+        Response::Body(br#"{"days":{"2026-01-02":{"MSFT.US":{"a":{"id":"a"}}}}}"#.to_vec()),
+    )
+    .await;
+    for symbol in ["MSFT.US", "SOXX.US"] {
+        record(
+            &store,
+            plan.run_id,
+            symbol,
+            "daily_candlesticks",
+            at(1, 30),
+            Response::Body(
+                br#"{"bars":[{"trade_date":"2026-01-02","close":"10.123456789"}]}"#.to_vec(),
+            ),
+        )
+        .await;
+    }
+    assert!(
+        store
+            .ever_planned(&crate::support::key("market:US"), calendar)
+            .await
+            .unwrap()
+    );
+    store.close().await;
+    let mut kernel = Kernel::spawn(config(dir.path()));
+    let market =
+        json!({"market":"US","endpoint":"finance_calendar","pointer":"/days/2026-01-02/MSFT.US/a"});
+    let early = call(&mut kernel, &rfc3339(at(1, 10)), vec![market.clone()]);
+    assert_eq!(early["reads"][0]["result"], "no_value");
+    let found = call(
+        &mut kernel,
+        &rfc3339(at(1, 40)),
+        vec![
+            market,
+            read("MSFT.US", "daily_candlesticks", "/bars/0"),
+            read("SOXX.US", "daily_candlesticks", "/bars/0"),
+        ],
+    );
+    assert_eq!(found["reads"][0]["market"], "US");
+    assert_eq!(found["reads"][0]["value"]["id"], "a");
+    assert_eq!(
+        found["reads"][1]["value"]["trade_date"],
+        found["reads"][2]["value"]["trade_date"]
+    );
+    assert_eq!(found["reads"][1]["as_of"], "2026-01-02");
+    assert_eq!(found["reads"][1]["fetched_at"], rfc3339(at(1, 30)));
+    let text = refused(
+        &mut kernel,
+        json!({"at":rfc3339(at(1,40)),"reads":[read("US","finance_calendar","")]}),
+    );
+    assert!(text.contains("target kind"));
 }

@@ -83,6 +83,14 @@ impl<C: Clock> Recorder<C> {
             .map(Observed::Recorded)
     }
 
+    pub(super) async fn request(
+        &self,
+        key: &Key,
+        endpoint: EndpointId,
+    ) -> Result<Vec<(String, String)>, StoreError> {
+        self.store.pair_request(self.run, key, endpoint).await
+    }
+
     /// The run's window.
     pub(super) fn window(&self) -> Window {
         self.window

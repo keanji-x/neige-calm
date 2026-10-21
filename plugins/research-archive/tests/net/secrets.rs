@@ -135,7 +135,10 @@ fn i11_no_secret_reaches_output_logs_archive_or_debug() {
         for (i, e) in catalog
             .endpoints()
             .iter()
-            .filter(|e| e.id.as_str() != "index_constituents")
+            .filter(|e| {
+                e.key_kind == research_archive::KeyKind::Security
+                    && e.method == research_archive::catalog::Method::Get
+            })
             .enumerate()
         {
             let fetched = source.fetch(e, &key("AAPL.US")).await;

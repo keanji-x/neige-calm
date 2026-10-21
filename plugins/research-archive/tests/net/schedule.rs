@@ -62,7 +62,7 @@ fn a_short_outage_loses_no_pair() {
         let outcome = capture(&a, &clock).await;
         assert_eq!(outcome.kind, ExitKind::Complete, "{outcome:?}");
         let coverage = a.store().await.coverage(RunId(1)).await.unwrap();
-        assert_eq!(coverage.len(), 2 * security_count() + 1);
+        assert_eq!(coverage.len(), 2 * security_count() + 7);
         assert!(coverage.iter().all(|p| p.has_ok));
     })
 }
@@ -344,7 +344,7 @@ fn a_resume_after_the_carry_deadline_freezes_at_once_despite_a_hanging_attempt()
         // The security rows were recorded before the constituents
         // answered (the barrier above); then the constituents row.
         let recorded = rows(&a).await;
-        assert_eq!(recorded.len(), security_count() + 1);
+        assert_eq!(recorded.len(), security_count() + 7);
         let constituents: Vec<_> = recorded
             .iter()
             .filter(|r| r.1 == "index_constituents")

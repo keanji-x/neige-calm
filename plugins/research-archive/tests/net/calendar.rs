@@ -308,7 +308,7 @@ fn a_start_in_a_window_never_waits_on_the_history() {
             .coverage(research_archive::types::RunId(2))
             .await
             .unwrap();
-        assert_eq!(coverage.len(), security_count());
+        assert_eq!(coverage.len(), security_count() + 6);
         assert!(coverage.iter().all(|p| p.has_ok));
     })
 }

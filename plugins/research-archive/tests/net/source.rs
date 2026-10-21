@@ -153,10 +153,13 @@ fn every_catalog_entry_sends_its_path_query_and_headers() {
         let source = source(&server.url, OAuth::from_token(TOKEN));
         let catalog = Catalog::compiled();
         let mut expected = Vec::new();
-        for e in catalog.endpoints() {
+        for e in catalog.endpoints().iter().filter(|e| {
+            e.method == research_archive::catalog::Method::Get && e.key_kind != KeyKind::Market
+        }) {
             let k = match e.key_kind {
                 KeyKind::Index => ".SPX.US",
                 KeyKind::Security => "AAPL.US",
+                KeyKind::Market => unreachable!("tested in market capture suite"),
             };
             let fetched = source.fetch(e, &key(k)).await;
             assert_eq!(
@@ -171,6 +174,7 @@ fn every_catalog_entry_sends_its_path_query_and_headers() {
                 .map(|(name, value)| match value {
                     QueryValue::Key => format!("{name}={k}"),
                     QueryValue::Fixed(v) => format!("{name}={v}"),
+                    QueryValue::AsOfDays(_) => unreachable!("dated endpoints tested separately"),
                 })
                 .collect();
             expected.push((e.path.to_owned(), query.join("&")));
