@@ -18,18 +18,20 @@ pub(super) async fn stop_for_start(
     Ok(())
 }
 
-/// No child has been attempted. Only failed instructions cleanup can invalidate
-/// the preceding driver's evidence; another marker stop is unnecessary.
-pub(super) fn abort_preparation(
+/// One exit for every process-free preparation step. Only confirmed cleanup
+/// allows the preceding driver's evidence to survive in its existing slot.
+pub(super) fn finish_preparation<T, E>(
     slot: &mut Option<execution_end::DriverSlot>,
-    instructions: InstructionsFile,
-    error: CalmError,
-) -> CalmError {
-    if instructions.remove().is_err() {
-        *slot = None;
+    result: std::result::Result<T, spawn::PreparationFailure<E>>,
+) -> std::result::Result<T, E> {
+    match result {
+        Ok(prepared) => Ok(prepared),
+        Err(spawn::PreparationFailure::Clean(error)) => Err(error),
+        Err(spawn::PreparationFailure::Unconfirmed(error)) => {
+            *slot = None;
+            Err(error)
+        }
     }
-    drop(instructions);
-    error
 }
 
 impl ClaudePlannerSession {

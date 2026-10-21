@@ -150,9 +150,66 @@ async fn canonical_claude_settled_keep_successor_compact_next_once() {
     kept_sequence(Sequence::Compact).await;
 }
 
+#[tokio::test]
+async fn canonical_claude_settled_instructions_write_failed_removal_holds() {
+    preparation_cleanup_failure(false).await;
+}
+
+#[tokio::test]
+async fn canonical_claude_settled_instructions_sync_failed_removal_holds() {
+    preparation_cleanup_failure(true).await;
+}
+
+async fn preparation_cleanup_failure(sync: bool) {
+    let fx = Fixture::new("exit").await;
+    fx.dispatch().await.unwrap();
+    finished(&fx).await;
+    assert!(settled(&fx).await);
+    fx.session
+        .set_instructions_fault_for_test(Some(Arc::new(move |path, syncing| {
+            if syncing == sync {
+                std::fs::remove_file(path)?;
+                std::fs::create_dir(path)?;
+                return Err(std::io::Error::other("fixture instructions I/O failure"));
+            }
+            Ok(())
+        })));
+    let proof = crate::harness::backend::dispatch_tests::proof();
+    let report = fx
+        .backend
+        .dispatch_input(
+            None,
+            &crate::harness::backend::dispatch_tests::logical_turn_id(),
+            proof.attempt(),
+            &fx.owner.thread,
+            &proof,
+            vec![InputItem::Text {
+                text: "failed preparation".into(),
+            }],
+            &TurnModelSelection::inherit(),
+            PlannerPermissionMode::Never,
+            &admission(),
+        )
+        .await;
+    assert!(report.outcome().is_err());
+    assert_eq!(fx.session.user_line_writes_for_test(), 1);
+    assert!(
+        !settled(&fx).await,
+        "unconfirmed instructions cleanup must hold"
+    );
+    fx.session.set_instructions_fault_for_test(None);
+    fx.session.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn canonical_claude_settled_instructions_write_removed_retries_once() {
+    kept_sequence(Sequence::WriteFailure).await;
+}
+
 enum Sequence {
     Normal,
     PreparationFailure,
+    WriteFailure,
     Compact,
 }
 
@@ -261,7 +318,10 @@ async fn kept_sequence(sequence: Sequence) {
         entered: Arc::default(),
         release: Arc::default(),
     };
-    if matches!(sequence, Sequence::PreparationFailure) {
+    if matches!(
+        sequence,
+        Sequence::PreparationFailure | Sequence::WriteFailure
+    ) {
         fx.session
             .set_before_turn_completed_pause_for_test(cleanup_pause.clone());
     }
@@ -273,12 +333,26 @@ async fn kept_sequence(sequence: Sequence) {
         fx.session.turn_interrupt(&fx.owner.thread, &turn).await,
         provider::control::InterruptOutcome::LocalSignalDelivered
     ));
-    if matches!(sequence, Sequence::PreparationFailure) {
+    if matches!(
+        sequence,
+        Sequence::PreparationFailure | Sequence::WriteFailure
+    ) {
         tokio::time::timeout(Duration::from_secs(25), cleanup_pause.entered.notified())
             .await
             .unwrap();
-        std::fs::rename(&instructions, &saved).unwrap();
-        std::fs::write(&instructions, "block instructions creation").unwrap();
+        match sequence {
+            Sequence::PreparationFailure => {
+                std::fs::rename(&instructions, &saved).unwrap();
+                std::fs::write(&instructions, "block instructions creation").unwrap();
+            }
+            Sequence::WriteFailure => {
+                fx.session
+                    .set_instructions_fault_for_test(Some(Arc::new(|_, _| {
+                        Err(std::io::Error::other("fixture instructions write failure"))
+                    })))
+            }
+            Sequence::Normal | Sequence::Compact => panic!("preparation sequence"),
+        }
         cleanup_pause.release.notify_one();
         tokio::time::timeout(Duration::from_secs(30), async {
             loop {
@@ -297,8 +371,14 @@ async fn kept_sequence(sequence: Sequence) {
             settled(&fx).await,
             "process-free failure preserves exact cleanup"
         );
-        std::fs::remove_file(&instructions).unwrap();
-        std::fs::rename(&saved, &instructions).unwrap();
+        match sequence {
+            Sequence::PreparationFailure => {
+                std::fs::remove_file(&instructions).unwrap();
+                std::fs::rename(&saved, &instructions).unwrap();
+            }
+            Sequence::WriteFailure => fx.session.set_instructions_fault_for_test(None),
+            Sequence::Normal | Sequence::Compact => panic!("preparation sequence"),
+        }
     }
     tokio::time::timeout(Duration::from_secs(30), async {
         loop {
@@ -310,7 +390,10 @@ async fn kept_sequence(sequence: Sequence) {
     })
     .await
     .expect("settled kept driver releases following canonical input");
-    if matches!(sequence, Sequence::PreparationFailure) {
+    if matches!(
+        sequence,
+        Sequence::PreparationFailure | Sequence::WriteFailure
+    ) {
         cleanup_pause.release.notify_one();
     }
     fx.phase("turn_completed").await;
@@ -318,7 +401,7 @@ async fn kept_sequence(sequence: Sequence) {
     assert_eq!(fx.session.user_line_writes_for_test(), 2);
     let expected_attempts = match sequence {
         Sequence::Normal | Sequence::Compact => 2,
-        Sequence::PreparationFailure => 3,
+        Sequence::PreparationFailure | Sequence::WriteFailure => 3,
     };
     assert_eq!(fx.checkpoint().await.attempts.len(), expected_attempts);
     if matches!(sequence, Sequence::Compact) {

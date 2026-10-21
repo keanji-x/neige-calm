@@ -153,6 +153,7 @@ pub(crate) struct FinishedTurn {
 #[cfg(feature = "fixtures")]
 #[derive(Default)]
 pub(crate) struct TestHooks {
+    pub(crate) instructions_fault: Option<spawn::InstructionsFault>,
     pub(crate) after_spawn: Option<Arc<dyn Fn() + Send + Sync>>,
     pub(crate) before_turn_completed: Option<SettlePause>,
     pub(crate) user_flush_failure: Option<SettlePause>,
@@ -400,99 +401,109 @@ impl ClaudePlannerSession {
         let mut driver_slot = shared.driver.lock().await;
         process::stop_for_start(shared, &mut driver_slot).await?;
 
-        let (line, client_id, items, truncation, execution) = match input {
-            SpawnInput::Turn {
-                items,
-                client_id,
-                truncation,
-            } => {
-                let line = invocation::user_line(thread_uuid, client_id, &items).await?;
-                (
-                    line,
-                    client_id.to_string(),
+        let prepared = async {
+            let (line, client_id, items, truncation, execution) = match input {
+                SpawnInput::Turn {
                     items,
+                    client_id,
                     truncation,
-                    execution_end::Association::Historical,
-                )
-            }
-            SpawnInput::Canonical {
-                items,
-                client_id,
-                execution,
-            } => {
-                let line = invocation::user_line(thread_uuid, client_id, &items).await?;
-                (
-                    line,
-                    client_id.to_string(),
+                } => {
+                    let line = invocation::user_line(thread_uuid, client_id, &items).await?;
+                    (
+                        line,
+                        client_id.to_string(),
+                        items,
+                        truncation,
+                        execution_end::Association::Historical,
+                    )
+                }
+                SpawnInput::Canonical {
                     items,
-                    None,
-                    execution_end::Association::Work(execution),
-                )
-            }
-            // No client sent this line: its uuid is fresh, and nothing of it is stored.
-            SpawnInput::Compaction => {
-                let uuid = Uuid::new_v4();
-                let line = UserLine::compact(thread_uuid, uuid);
-                (
-                    line,
-                    uuid.simple().to_string(),
-                    Vec::new(),
-                    None,
-                    execution_end::Association::Historical,
-                )
-            }
-            SpawnInput::CanonicalCompaction(target) => {
-                let uuid = Uuid::new_v4();
-                let line = UserLine::compact(thread_uuid, uuid);
-                (
-                    line,
-                    uuid.simple().to_string(),
-                    Vec::new(),
-                    None,
-                    execution_end::Association::Maintenance(target),
-                )
-            }
-        };
-        let line = serde_json::to_string(&line).map_err(|e| SpawnFailure::failed(e.into()))?;
-        let mut translator = TurnTranslator::new(
-            TurnContext {
-                thread_id: thread.to_string(),
-                turn_id: turn_id.clone(),
-                client_id,
-                input: items,
-                cwd: params.cwd.to_string_lossy().into_owned(),
-                prior_total_tokens,
-            },
-            params.calm_tools.clone(),
-        )
-        .map_err(|e| SpawnFailure::failed(CalmError::BadRequest(e.to_string())))?;
-        let instructions = InstructionsFile::write(
-            &host.instructions_dir,
-            &params.worker_session_id,
-            &turn_id,
-            &params.instructions,
-        )?;
-        let argv = spawn::argv(
-            thread_uuid,
-            purpose,
-            start,
-            truncation,
-            selection,
-            mode,
-            &params.cwd,
-            &host.mcp_shim,
-            instructions.path(),
-        );
-        let argv = match argv {
-            Ok(argv) => argv,
-            Err(error) => {
-                return Err(SpawnFailure::failed(process::abort_preparation(
-                    &mut driver_slot,
-                    instructions,
-                    error,
-                )));
-            }
-        };
+                    client_id,
+                    execution,
+                } => {
+                    let line = invocation::user_line(thread_uuid, client_id, &items).await?;
+                    (
+                        line,
+                        client_id.to_string(),
+                        items,
+                        None,
+                        execution_end::Association::Work(execution),
+                    )
+                }
+                // No client sent this line: its uuid is fresh, and nothing of it is stored.
+                SpawnInput::Compaction => {
+                    let uuid = Uuid::new_v4();
+                    let line = UserLine::compact(thread_uuid, uuid);
+                    (
+                        line,
+                        uuid.simple().to_string(),
+                        Vec::new(),
+                        None,
+                        execution_end::Association::Historical,
+                    )
+                }
+                SpawnInput::CanonicalCompaction(target) => {
+                    let uuid = Uuid::new_v4();
+                    let line = UserLine::compact(thread_uuid, uuid);
+                    (
+                        line,
+                        uuid.simple().to_string(),
+                        Vec::new(),
+                        None,
+                        execution_end::Association::Maintenance(target),
+                    )
+                }
+            };
+            let line = serde_json::to_string(&line).map_err(|e| SpawnFailure::failed(e.into()))?;
+            let translator = TurnTranslator::new(
+                TurnContext {
+                    thread_id: thread.to_string(),
+                    turn_id: turn_id.clone(),
+                    client_id,
+                    input: items,
+                    cwd: params.cwd.to_string_lossy().into_owned(),
+                    prior_total_tokens,
+                },
+                params.calm_tools.clone(),
+            )
+            .map_err(|e| SpawnFailure::failed(CalmError::BadRequest(e.to_string())))?;
+            let instructions = InstructionsFile::write(
+                &host.instructions_dir,
+                &params.worker_session_id,
+                &turn_id,
+                &params.instructions,
+                #[cfg(feature = "fixtures")]
+                shared
+                    .hooks
+                    .lock()
+                    .expect("hooks")
+                    .instructions_fault
+                    .clone(),
+            )
+            .map_err(|failure| failure.map_error(SpawnFailure::from))?;
+            let argv = spawn::argv(
+                thread_uuid,
+                purpose,
+                start,
+                truncation,
+                selection,
+                mode,
+                &params.cwd,
+                &host.mcp_shim,
+                instructions.path(),
+            );
+            let argv = match argv {
+                Ok(argv) => argv,
+                Err(error) => {
+                    return Err(instructions.abort(error).map_error(SpawnFailure::failed));
+                }
+            };
+            Ok((line, translator, instructions, argv, execution))
+        }
+        .await;
+        let (line, mut translator, instructions, argv, execution) =
+            process::finish_preparation(&mut driver_slot, prepared)?;
         // From this boundary a process may exist. Cancellation or uncertain
         // cleanup must never expose the preceding driver's result.
         let previous = driver_slot.take();

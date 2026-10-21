@@ -316,9 +316,35 @@ pub(crate) fn base_env(inputs: &EnvInputs<'_>) -> Vec<(String, OsString)> {
     env
 }
 
+#[cfg(feature = "fixtures")]
+pub(crate) type InstructionsFault =
+    std::sync::Arc<dyn Fn(&Path, bool) -> std::io::Result<()> + Send + Sync>;
+
+/// Process-free preparation either left no resource behind or could not confirm cleanup.
+/// The lifecycle owner decides whether preceding driver evidence may survive.
+pub(crate) enum PreparationFailure<E> {
+    Clean(E),
+    Unconfirmed(E),
+}
+
+impl<E> From<E> for PreparationFailure<E> {
+    fn from(error: E) -> Self {
+        Self::Clean(error)
+    }
+}
+
+impl<E> PreparationFailure<E> {
+    pub(crate) fn map_error<F>(self, map: impl FnOnce(E) -> F) -> PreparationFailure<F> {
+        match self {
+            Self::Clean(error) => PreparationFailure::Clean(map(error)),
+            Self::Unconfirmed(error) => PreparationFailure::Unconfirmed(map(error)),
+        }
+    }
+}
+
 /// The per-spawn instructions file: 0600 in the 0700 `claude-planner/tmp` directory, kept off argv
-/// because `/proc/<pid>/cmdline` is world-readable. Dropping the guard removes the file, so every
-/// exit before `Ok` leaves none; settlement drops it after its `stop`.
+/// because `/proc/<pid>/cmdline` is world-readable. Preparation explicitly reports removal
+/// certainty; Drop is only a best-effort fallback. Settlement removes it after its `stop`.
 #[derive(Debug)]
 pub(crate) struct InstructionsFile {
     path: PathBuf,
@@ -330,7 +356,8 @@ impl InstructionsFile {
         worker_session_id: &str,
         turn_id: &str,
         text: &str,
-    ) -> Result<Self> {
+        #[cfg(feature = "fixtures")] fault: Option<InstructionsFault>,
+    ) -> std::result::Result<Self, PreparationFailure<CalmError>> {
         for part in [worker_session_id, turn_id] {
             if part.is_empty()
                 || !part
@@ -339,7 +366,8 @@ impl InstructionsFile {
             {
                 return Err(CalmError::BadRequest(format!(
                     "{part:?} cannot name a claude planner instructions file"
-                )));
+                ))
+                .into());
             }
         }
         let path = dir.join(format!("{worker_session_id}-{turn_id}.md"));
@@ -347,11 +375,33 @@ impl InstructionsFile {
             .write(true)
             .create_new(true)
             .mode(0o600)
-            .open(&path)?;
+            .open(&path)
+            .map_err(CalmError::from)?;
         let guard = Self { path };
-        file.write_all(text.as_bytes())?;
-        file.sync_all()?;
+        let written = (|| -> std::io::Result<()> {
+            #[cfg(feature = "fixtures")]
+            if let Some(fault) = &fault {
+                fault(&guard.path, false)?;
+            }
+            file.write_all(text.as_bytes())?;
+            #[cfg(feature = "fixtures")]
+            if let Some(fault) = &fault {
+                fault(&guard.path, true)?;
+            }
+            file.sync_all()
+        })();
+        if let Err(error) = written {
+            return Err(guard.abort(error.into()));
+        }
         Ok(guard)
+    }
+
+    /// Consume a process-free resource and report cleanup to the lifecycle owner.
+    pub(crate) fn abort(self, error: CalmError) -> PreparationFailure<CalmError> {
+        match self.remove() {
+            Ok(()) => PreparationFailure::Clean(error),
+            Err(_) => PreparationFailure::Unconfirmed(error),
+        }
     }
 
     pub(crate) fn path(&self) -> &Path {

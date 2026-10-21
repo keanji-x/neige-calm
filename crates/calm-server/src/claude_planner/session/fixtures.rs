@@ -78,3 +78,10 @@ impl ClaudePlannerSession {
         }));
     }
 }
+
+#[cfg(test)]
+impl ClaudePlannerSession {
+    pub(crate) fn set_instructions_fault_for_test(&self, fault: Option<spawn::InstructionsFault>) {
+        self.shared.hooks.lock().expect("hooks").instructions_fault = fault;
+    }
+}
