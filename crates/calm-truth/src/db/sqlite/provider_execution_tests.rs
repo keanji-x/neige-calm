@@ -426,12 +426,16 @@ async fn provider_execution_sweep_inventory_finds_orphans_including_settled() {
     assert_eq!(
         inventory
             .iter()
-            .map(|row| row.execution_id.as_str())
+            .map(|(id, row)| {
+                assert_eq!(id, &row.as_ref().unwrap().execution_id);
+                id.as_str()
+            })
             .collect::<Vec<_>>(),
         ["deleted", "healthy", "mismatch", "null", "settled"]
     );
     let mut orphans = Vec::new();
-    for row in inventory {
+    for (_, row) in inventory {
+        let row = row.unwrap();
         assert_eq!(row.settled, row.execution_id == "settled");
         let claim = load(db.read_pool(), &row.alias).await;
         match row.execution_id.as_str() {
@@ -474,4 +478,90 @@ async fn provider_execution_sweep_inventory_finds_orphans_including_settled() {
             .unwrap()
             .is_empty()
     );
+}
+
+#[tokio::test]
+async fn provider_execution_column_decode_errors_are_isolated() {
+    let db = fixture().await;
+    let mut tx = db.writer_pool().begin().await.unwrap();
+    let healthy = applied(admission(&mut tx, "healthy").await);
+    sqlx::raw_sql(
+        "INSERT INTO worker_sessions(id, provider_execution_json) VALUES
+        ('blob', x'FF'), ('text', CAST(x'FF' AS TEXT));",
+    )
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    let inventory = list(db.read_pool()).await.unwrap();
+    assert_eq!(inventory.len(), 3);
+    for (id, claim) in inventory {
+        if id == "worker" {
+            assert_eq!(claim.unwrap(), healthy);
+        } else {
+            assert!(
+                matches!(claim, Err(CalmError::Db(sqlx::Error::ColumnDecode { .. }))),
+                "{id}"
+            );
+            assert!(
+                matches!(
+                    load(db.read_pool(), &id).await,
+                    Err(CalmError::Db(sqlx::Error::ColumnDecode { .. }))
+                ),
+                "{id}"
+            );
+        }
+    }
+    sqlx::query("DROP TABLE worker_sessions")
+        .execute(db.writer_pool())
+        .await
+        .unwrap();
+    assert!(matches!(
+        list(db.read_pool()).await,
+        Err(CalmError::Db(sqlx::Error::Database(_)))
+    ));
+}
+
+#[tokio::test]
+async fn provider_execution_consumer_inventory_isolates_corrupt_rows() {
+    use super::workspace_execution as executions;
+    let db = fixture().await;
+    sqlx::raw_sql(include_str!(
+        "../../../migrations/0170_workspace_executions.sql"
+    ))
+    .execute(db.writer_pool())
+    .await
+    .unwrap();
+    // Bypass the JSON CHECK only to exercise damaged persisted data, too.
+    sqlx::raw_sql(r#"PRAGMA ignore_check_constraints = ON;
+        INSERT INTO workspace_executions(execution_id,track_id,alias,intent_json,secrets_json,desired) VALUES
+        ('healthy','track','healthy','{"consumer":"selected","alias":"worker"}','{}','run'),
+        ('blob','track','blob',x'FF','{}','run'),
+        ('text','track','text',CAST(x'FF' AS TEXT),'{}','run'),
+        ('json','track','json','{','{}','run'),
+        ('alias','track','alias','{"consumer":"selected","alias":null}','{}','run');
+        PRAGMA ignore_check_constraints = OFF;"#)
+        .execute(db.writer_pool()).await.unwrap();
+    let inventory = executions::consumer_inventory(db.read_pool(), "selected")
+        .await
+        .unwrap();
+    assert_eq!(inventory.len(), 5);
+    for (id, row) in inventory {
+        if id == "healthy" {
+            let row = row.unwrap();
+            assert_eq!(row.execution_id, id);
+            assert_eq!(row.alias, "worker");
+            assert!(!row.settled);
+        } else {
+            assert!(row.is_err(), "{id}");
+        }
+    }
+    sqlx::query("DROP TABLE workspace_executions")
+        .execute(db.writer_pool())
+        .await
+        .unwrap();
+    assert!(matches!(
+        executions::consumer_inventory(db.read_pool(), "selected").await,
+        Err(sqlx::Error::Database(_))
+    ));
 }

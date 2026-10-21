@@ -2,7 +2,7 @@
 //! Settlement and owner-completion evidence belong to the owner, not this SQL layer.
 use crate::error::{CalmError, Result};
 use serde::{Deserialize, Serialize};
-use sqlx::{Executor, Sqlite, Transaction};
+use sqlx::{Executor, Row, Sqlite, Transaction};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(try_from = "u64", into = "u64")]
@@ -96,6 +96,7 @@ pub enum Cas<T> {
 }
 
 /// Missing session is RowNotFound; only a present session with NULL permits admission.
+/// Invalid column types, UTF-8 and claim JSON are errors, never an empty claim.
 pub async fn load<'a>(
     executor: impl Executor<'a, Database = Sqlite>,
     worker_session_id: &str,
@@ -114,16 +115,19 @@ pub async fn load<'a>(
 pub async fn list<'a>(
     executor: impl Executor<'a, Database = Sqlite>,
 ) -> Result<Vec<(String, Result<Claim>)>> {
-    let rows: Vec<(String, String)> = sqlx::query_as(
+    let rows = sqlx::query(
         "SELECT id, provider_execution_json FROM worker_sessions
          WHERE provider_execution_json IS NOT NULL ORDER BY id",
     )
     .fetch_all(executor)
     .await?;
-    Ok(rows
-        .into_iter()
-        .map(|(id, json)| (id, Claim::decode(json)))
-        .collect())
+    rows.into_iter()
+        .map(|row| {
+            let id = row.try_get("id")?;
+            let claim = (|| Claim::decode(row.try_get("provider_execution_json")?))();
+            Ok((id, claim))
+        })
+        .collect()
 }
 
 /// Admission cannot start already releasing, released, or stopping.

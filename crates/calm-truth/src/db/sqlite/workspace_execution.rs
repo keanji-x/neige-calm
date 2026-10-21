@@ -1,5 +1,5 @@
 //! Execution persistence SQL. Domain transactions reuse these writes; no lifecycle policy here.
-use sqlx::{Sqlite, SqlitePool, Transaction};
+use sqlx::{Row, Sqlite, SqlitePool, Transaction};
 
 /// Sole mapping between Terminal identity and the execution alias namespace.
 pub fn terminal_alias(id: &str) -> String {
@@ -120,23 +120,50 @@ pub struct ConsumerExecution {
 
 /// Inventory for owner sweeps, including settled non-retired executions that
 /// `pending` intentionally omits. No owner join: deletion, NULL and mismatched
-/// claims must all remain visible, and corrupt claims must not abort this read.
+/// claims must all remain visible. Undecodable intents retain their execution id
+/// as a per-row error for every consumer, since ownership cannot be established.
+/// Query failures and unreadable execution identities remain top-level errors.
 /// SqliteExecutionStore persists ExecutionMetadata directly in intent_json;
 /// consumer and alias use that existing serialization, not a second encoding.
 pub async fn consumer_inventory<'a>(
     executor: impl sqlx::Executor<'a, Database = Sqlite>,
     consumer: &str,
-) -> Result<Vec<ConsumerExecution>, sqlx::Error> {
-    sqlx::query_as(
-        "SELECT execution_id, json_extract(intent_json, '$.alias') AS alias,
-                settled_at_ms IS NOT NULL AS settled
-         FROM workspace_executions
-         WHERE desired <> 'retire' AND json_extract(intent_json, '$.consumer') = ?
-         ORDER BY execution_id",
+) -> Result<Vec<(String, crate::error::Result<ConsumerExecution>)>, sqlx::Error> {
+    // Read the inventory projection of ExecutionMetadata, without requiring
+    // unrelated metadata fields in this SQL layer.
+    #[derive(serde::Deserialize)]
+    struct Intent {
+        consumer: String,
+        alias: String,
+    }
+    let rows = sqlx::query(
+        "SELECT execution_id, intent_json, settled_at_ms IS NOT NULL AS settled
+         FROM workspace_executions WHERE desired <> 'retire' ORDER BY execution_id",
     )
-    .bind(consumer)
     .fetch_all(executor)
-    .await
+    .await?;
+    let mut inventory = Vec::new();
+    for row in rows {
+        let execution_id: String = row.try_get("execution_id")?;
+        let entry = (|| -> crate::error::Result<_> {
+            let json: String = row.try_get("intent_json")?;
+            let intent: Intent = serde_json::from_str(&json)?;
+            if intent.consumer != consumer {
+                return Ok(None);
+            }
+            Ok(Some(ConsumerExecution {
+                execution_id: execution_id.clone(),
+                alias: intent.alias,
+                settled: row.try_get("settled")?,
+            }))
+        })();
+        match entry {
+            Ok(None) => {}
+            Ok(Some(entry)) => inventory.push((execution_id, Ok(entry))),
+            Err(error) => inventory.push((execution_id, Err(error))),
+        }
+    }
+    Ok(inventory)
 }
 
 /// Occupancy scopes; lifecycle policy belongs to callers.
