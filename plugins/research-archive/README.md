@@ -1130,20 +1130,32 @@ Reports are daily in this first version, covering weekly/post-earnings needs
 without a separate scheduling policy. A successful daily snapshot may precede
 later same-night earnings updates; capture does not promise continuous freshness.
 
-Calendar queries page at count=10. Live probes found `count=1000` does not remove
-truncation, `next_date` can advance while same-day events remain, and group count
-differs from the returned `infos` length. Its meaning is unresolved: a bounded
-live probe returned count 55 but only 23 unique events and then moved to the next
-date. This remains a merge/deployment blocker for calendar acceptance; the source
-currently fails closed with calendar_truncated, without claiming that 23 events
-are complete. Each date exhausts explicit offsets through its declared count;
-event ids deduplicate overlapping page records. Nonprogressing pages, changing counts/events, malformed data,
-and premature empty termination fail the pair. Bounds are 2,048 pages and 8 MiB
-of raw data per logical attempt. Every page passes the limiter and run deadline;
-a failed/cancelled attempt publishes no partial calendar value. The completed
-wrapper has `market,start,end,days,pages`: `days[DATE][SYMBOL][EVENT_ID]` contains
-events, and each page retains `date,offset,fetched_at,raw_json`. Decoding raw_json
+Calendar coverage is `upstream_group_company_dates`: API-published company/date
+representatives, not every underlying fiscal variant or verified NY earnings
+date. Live probes explain why count cannot be compared with unique event IDs:
+on group2026-10-14, report count55 yields46 nonempty raw positions,36 IDs and22
+companies; financial-only yields46 IDs for the same22 companies. A broad report
+page displays22 representatives. qf/3q/saf/af variants and normalized report IDs
+are not additional company dates. Reported count remains source metadata; its
+exact private-backend meaning is not inferred.
+
+Page requests use count100. A short normalized page can precede more companies:
+continue through the stable reported offset bound, advancing by at least one and
+otherwise by returned current-group infos length. This conservatively overlaps
+positions rather than assuming the requested size was consumed. Identical pages
+are valid; conflicting event versions, changing counts, malformed data, failed
+HTTP pages, or cancellation fail the logical pair. Strictly increasing offsets,
+a100,000 bound per group,2,048 pages,8MiB raw data and the run deadline bound work.
+No partial failed/cancelled window is published.
+
+The completed wrapper has `coverage,market,start,end,reported_counts,company_counts,
+days,pages`: `days[GROUP_DATE][SYMBOL][EVENT_ID]` retains observed representatives.
+Each page retains `date,offset,count,fetched_at,raw_json`; decoding raw_json
 reproduces exact upstream data bytes. The wrapper itself is not a raw HTTP body.
+Absent reported_counts keys mean the source provided no such group; derived
+company_counts describe published values, not an inferred source total.
+Group dates, event date/datetime and ext.local_date may disagree; they remain
+unchanged. Never assume group keys are New York event dates.
 
 Daily bars query as_of−14 calendar days through as_of and retain the latest six
 available closes (five returns). The body declares `format,symbol,timezone,start,
@@ -1178,7 +1190,18 @@ prove monthly symbol capacity for the full universe. Permission/quota failures
 keep their numeric codes (including 301604/301607); no fallback bypasses them.
 Sample reports include MSFT CapEx and JPM BPS but did not establish separate
 finance-lease additions, segments, or TBVPS. Missing actuals must not be inferred.
+The corrected production-source live window (2026-10-13…2026-11-19) completed:
+199 pages,2,246 upstream group/company date keys,5,534,482 raw bytes,139 seconds.
+The22-company historical sample and181-company boundary sample matched their
+completed exhaustive small-page references. These probes held the archive lock,
+disabled refresh/storage writes, and never opened the production database.
+
 At N=505, five additional benchmarks and one index, first-pass logical pairs are
 10N+5+1+1=5,057. At 2 starts/s that is about 42 minutes before calendar pagination,
 quote bootstrap, latency and retries. Retain the 25-minute attempt and 30-minute
 timer: saved successful pairs resume, and one invocation need not complete.
+
+The measured199-page calendar adds198 starts over its single logical pair:
+approximately44 minutes of ideal start pacing for the expanded first pass,
+plus bootstrap, latency and retries. The calendar itself completed within one
+25-minute attempt; successful stock pairs still resume across timer starts.

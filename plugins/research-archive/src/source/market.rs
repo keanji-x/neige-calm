@@ -1,16 +1,17 @@
 //! Complete US earnings calendar windows, with auditable raw HTTP pages.
 //!
-//! The upstream group count differs from returned infos in live probes; its
-//! exact meaning is unresolved. Probes also show next_date can advance while
-//! same-day rows remain. Use small explicit offset pages within each date,
-//! exhausting its declared count before advancing. Inconsistent live pages
-//! fail closed until the upstream contract is clarified; never infer completeness.
+//! `count` bounds raw offsets, not published event cardinality: the service
+//! normalizes fiscal variants and report aliases into company/date entries.
+//! Walk through that stable bound even across short, repeated, or empty pages.
+//! Advance only by visible length (at least one), conservatively overlapping
+//! raw positions instead of assuming a requested page size was consumed.
+//! Coverage refers to upstream group labels, not inferred NY earnings dates.
 use super::{Fetched, LongbridgeSource, invalid_body};
 use crate::{Endpoint, types::Response};
 use chrono::{Duration, NaiveDate};
 use serde_json::{Value, json};
-use std::collections::{BTreeMap, BTreeSet};
-const PAGE_SIZE: usize = 10;
+use std::collections::BTreeMap;
+const PAGE_SIZE: usize = 100;
 const MAX_PAGES: usize = 2048;
 const MAX_RAW_BYTES: usize = 8 * 1024 * 1024;
 
@@ -38,6 +39,7 @@ impl LongbridgeSource {
         }
         let mut pages = Vec::new();
         let mut days = BTreeMap::<String, BTreeMap<String, BTreeMap<String, Value>>>::new();
+        let mut reported_counts = BTreeMap::new();
         let mut size = 0;
         let mut day = start;
         'dates: while day <= end {
@@ -47,6 +49,7 @@ impl LongbridgeSource {
                 if pages.len() >= MAX_PAGES {
                     return Some(invalid_body("calendar_page_limit"));
                 }
+                let page_offset = pager.offset;
                 let mut page_query = query.to_vec();
                 for (name, value) in &mut page_query {
                     if name == "date" {
@@ -73,6 +76,9 @@ impl LongbridgeSource {
                     Ok(result) => result,
                     Err(code) => return Some(invalid_body(code)),
                 };
+                if let Some(total) = pager.total {
+                    reported_counts.insert(day_string.clone(), total);
+                }
                 let date_events = days.entry(day_string.clone()).or_default();
                 for event in events {
                     let (Some(symbol), Some(id)) = (event["symbol"].as_str(), event["id"].as_str())
@@ -91,7 +97,7 @@ impl LongbridgeSource {
                 // Keep raw data bytes inside a JSON string: decoding raw_json
                 // reproduces exactly the SDK HTTP data body, including numbers.
                 pages.push(
-                    json!({"date":day_string,"offset":pager.offset.saturating_sub(PAGE_SIZE),
+                    json!({"date":day_string,"offset":page_offset,"count":PAGE_SIZE,
                     "fetched_at":chrono::Utc::now().to_rfc3339(),
                     "raw_json":std::str::from_utf8(raw).expect("SDK returned UTF-8")}),
                 );
@@ -115,8 +121,13 @@ impl LongbridgeSource {
                 .checked_add_signed(Duration::days(1))
                 .expect("bounded calendar date");
         }
+        let company_counts: BTreeMap<_, _> = days
+            .iter()
+            .map(|(date, companies)| (date, companies.len()))
+            .collect();
         Some(Fetched::body(
             json!({"format":"earnings_calendar_v1","market":"US",
+            "coverage":"upstream_group_company_dates","reported_counts":reported_counts,"company_counts":company_counts,
             "start":start.to_string(),"end":end.to_string(),"days":days,"pages":pages})
             .to_string(),
         ))
@@ -127,7 +138,6 @@ impl LongbridgeSource {
 struct DayPager {
     offset: usize,
     total: Option<usize>,
-    seen: BTreeSet<String>,
 }
 impl DayPager {
     fn advance(&mut self, day: &str, body: &Value) -> Result<(bool, Vec<Value>), &'static str> {
@@ -168,20 +178,10 @@ impl DayPager {
             self.total = Some(total);
             events.extend(infos.iter().cloned());
         }
-        // Repeating an identical body at another offset proves the offset was
-        // ignored. Do not turn an upstream paging bug into a successful window.
-        let fingerprint = body.to_string();
-        if found && !self.seen.insert(fingerprint) {
-            return Err("calendar_no_progress");
-        }
-        if self
-            .total
-            .is_some_and(|total| self.offset < total && total > 0)
-            && (!found || events.is_empty())
-        {
-            return Err("calendar_truncated");
-        }
-        self.offset += PAGE_SIZE;
+        // A displayed row represents at least one raw offset position. A
+        // shorter stride creates safe overlap when the provider coalesces rows
+        // or caps a page. Identical normalized pages can be legitimate.
+        self.offset += events.len().max(1);
         let done = self.total.is_none_or(|total| self.offset >= total);
         Ok((done, events))
     }
@@ -191,44 +191,64 @@ impl DayPager {
 mod tests {
     use super::*;
     #[test]
-    fn next_date_does_not_skip_remaining_same_day_source_rows() {
+    fn short_page_cannot_skip_a_later_company() {
+        let first = json!({"list":[{"date":"2026-10-14","count":3,"infos":[{"id":"a"}]}],"next_date":"2026-10-15"});
+        let last = json!({"list":[{"date":"2026-10-14","count":3,"infos":[{"id":"b"}]}],"next_date":"2026-10-15"});
         let mut p = DayPager::default();
-        // Synthetic count exceeds this page length; next_date alone cannot prove completion.
-        let first = json!({"list":[{"date":"2026-10-21","count":12,"infos":[{"id":"a"}]}],"next_date":"2026-10-22"});
-        let last = json!({"list":[{"date":"2026-10-21","count":12,"infos":[{"id":"b"}]}],"next_date":"2026-10-22"});
-        assert!(!p.advance("2026-10-21", &first).unwrap().0);
-        assert!(p.advance("2026-10-21", &last).unwrap().0);
+        assert!(!p.advance("2026-10-14", &first).unwrap().0);
+        assert!(!p.advance("2026-10-14", &first).unwrap().0);
+        assert!(p.advance("2026-10-14", &last).unwrap().0);
     }
+
     #[test]
-    fn missing_final_remainder_or_later_date_is_truncated() {
-        let first = json!({"list":[{"date":"2026-10-21","count":12,"infos":[{"id":"a"}]}],"next_date":"2026-10-22"});
+    fn empty_raw_positions_do_not_invent_missing_events() {
+        let first = json!({"list":[{"date":"2026-10-14","count":2,"infos":[{"id":"a"}]}],"next_date":"2026-10-15"});
         for last in [
             json!({"list":[],"next_date":""}),
-            json!({"list":[{"date":"2026-10-22","count":1,"infos":[{"id":"b"}]}],"next_date":"2026-10-23"}),
-            json!({"list":[{"date":"2026-10-21","count":12,"infos":[]}],"next_date":""}),
+            json!({"list":[{"date":"2026-10-15","count":1,"infos":[{"id":"b"}]}],"next_date":"2026-10-16"}),
+            json!({"list":[{"date":"2026-10-14","count":2,"infos":[]}],"next_date":""}),
         ] {
             let mut p = DayPager::default();
-            assert!(!p.advance("2026-10-21", &first).unwrap().0);
-            assert_eq!(
-                p.advance("2026-10-21", &last).unwrap_err(),
-                "calendar_truncated"
-            );
+            assert!(!p.advance("2026-10-14", &first).unwrap().0);
+            let (done, events) = p.advance("2026-10-14", &last).unwrap();
+            assert!(done);
+            assert!(events.is_empty());
+            assert_eq!(p.offset, 2);
         }
     }
 
     #[test]
-    fn repeated_page_and_changed_count_are_not_complete() {
-        let first = json!({"list":[{"date":"2026-10-21","count":22,"infos":[{"id":"a"}]}],"next_date":"2026-10-22"});
+    fn changing_or_invalid_offset_bounds_fail_closed() {
+        let first = json!({"list":[{"date":"2026-10-14","count":22,"infos":[{"id":"a"}]}],"next_date":"2026-10-15"});
         let mut p = DayPager::default();
-        assert!(!p.advance("2026-10-21", &first).unwrap().0);
+        assert!(!p.advance("2026-10-14", &first).unwrap().0);
+        let changed = json!({"list":[{"date":"2026-10-14","count":23,"infos":[]}],"next_date":""});
         assert_eq!(
-            p.advance("2026-10-21", &first).unwrap_err(),
-            "calendar_no_progress"
-        );
-        let changed = json!({"list":[{"date":"2026-10-21","count":23,"infos":[]}],"next_date":""});
-        assert_eq!(
-            p.advance("2026-10-21", &changed).unwrap_err(),
+            p.advance("2026-10-14", &changed).unwrap_err(),
             "calendar_changed_during_capture"
         );
+        let invalid =
+            json!({"list":[{"date":"2026-10-14","count":100001,"infos":[]}],"next_date":""});
+        assert_eq!(
+            DayPager::default()
+                .advance("2026-10-14", &invalid)
+                .unwrap_err(),
+            "invalid_calendar_count"
+        );
+    }
+
+    #[test]
+    fn normalized_pages_overlap_without_matching_record_cardinality() {
+        let first = json!({"list":[{"date":"2026-10-14","count":4,"infos":[{"id":"a"}]}],"next_date":"2026-10-15"});
+        let empty = json!({"list":[],"next_date":"2026-10-15"});
+        let last = json!({"list":[{"date":"2026-10-14","count":4,"infos":[{"id":"b"}]}],"next_date":"2026-10-15"});
+        let mut p = DayPager::default();
+        for (i, page) in [&first, &first, &empty, &last].into_iter().enumerate() {
+            let (done, _) = p
+                .advance("2026-10-14", page)
+                .expect("normalized overlaps and empty raw positions are valid");
+            assert_eq!(done, i == 3);
+            assert_eq!(p.offset, i + 1);
+        }
     }
 }

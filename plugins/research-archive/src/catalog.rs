@@ -280,7 +280,7 @@ const COMPILED: &[Endpoint] = &[
                 ("date_end", QueryValue::AsOfDays(30)),
                 ("types[]", QueryValue::Fixed("report")),
                 ("markets[]", QueryValue::Fixed("US")),
-                ("count", QueryValue::Fixed("10")),
+                ("count", QueryValue::Fixed("100")),
                 ("next", QueryValue::Fixed("later")),
             ],
             KeyKind::Market,
@@ -456,7 +456,7 @@ mod tests {
                 ("financial_reports", "GET", "/v1/quote/financial-reports",
                     r#"[["symbol",null],["kind","ALL"],["report","qf"]]"#.to_owned(),en.clone(),None,"security"),
                 ("finance_calendar", "GET_CALENDAR_V1", "/v1/quote/finance_calendar",
-                    r#"[["date",{"as_of_days":-7}],["date_end",{"as_of_days":30}],["types[]","report"],["markets[]","US"],["count","10"],["next","later"]]"#.to_owned(),en.clone(),None,"market"),
+                    r#"[["date",{"as_of_days":-7}],["date_end",{"as_of_days":30}],["types[]","report"],["markets[]","US"],["count","100"],["next","later"]]"#.to_owned(),en.clone(),None,"market"),
                 ("daily_candlesticks", "QUOTE", "quote:27",
                     r#"[["symbol",null],["start",{"as_of_days":-14}],["end",{"as_of_days":0}],["period","day"],["adjust","none"],["session","regular"]]"#.to_owned(),en.clone(),None,"security"),
             ]

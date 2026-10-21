@@ -39,7 +39,7 @@ second, calendar-dependent scheduling policy. A successful daily snapshot is an
 observation, not a promise to catch later same-night upstream updates.
 
 HTTP bodies retain exact data bytes. Calendar captures preserve raw pages inside
-a versioned wrapper and only publish a complete window. Every page is paced and
+a versioned wrapper and only publish a completed bounded traversal. Every page is paced and
 checks cancellation/deadline. WS bars are an explicitly versioned validated protobuf
 projection (not raw JSON), with decimal-string prices, NY trade dates, regular
 sessions, and no adjustment. Reject invalid/nonpositive/inconsistent OHLC. Unknown protobuf fields are not projected; this limitation is documented rather
@@ -56,7 +56,7 @@ existing not_archived/no_value results without fabricating past observations.
 
 Acceptance checks: exact legacy row/body/coverage equality across upgrade;
 unfrozen old-run resume; immutable v3 requests across config/date changes;
-calendar pagination/truncation/nonprogress/error; WS error codes and OHLC/date
+calendar normalization/bounded progress/error; WS error codes and OHLC/date
 validation; benchmark-only bar plans; plugin entry-point reads and manifest
 contract. Mutation-check historical-plan isolation and pagination completeness.
 Run package tests, text/contract gates, and quick Rust gates, then two independent
@@ -82,10 +82,11 @@ cancellation and timeout close it, with no background queue/reconnect tasks.
 This small framing implementation is an intentional source-adapter exception,
 needed because the existing SDK boundary cannot enforce archive cancellation.
 
-Review also exposed a missing final calendar remainder page being accepted.
-A known positive count now requires the requested date and nonempty events on
-every remaining page, including the final remainder and later-date-only pages.
-Both defects have regressions confirmed red before the structural fixes.
+Review initially treated count as event cardinality. Further controlled probes
+showed this is not the provider contract. A red-before/green-after regression
+pins the corrected conservative offset walk across normalized duplicates, empty
+raw positions and later companies. Failed HTTP pages remain failures; empty
+well-formed raw positions are not fabricated events.
 
 The corrected owned transport was also exercised read-only against MSFT.US and
 all five benchmarks: each returned six closes ending on 2026-10-20. The probe
@@ -93,19 +94,59 @@ held archive.lock, disabled credential refresh/storage writes, and did not open
 or migrate the production database. This validates the protocol path, not the
 full universe's monthly quota.
 
-## Unresolved live calendar contract (merge/deployment blocker)
+## Calendar counts, normalization, and verified coverage
 
-A bounded read-only replay for 2026-10-14 returned reported count 55. Requests
-with count=10 and offsets 0,10,20,30,40,50 returned 10,10,10,7,3,0 events for that
-date (23 unique event ids across pages); offset 50 contained only 2026-10-15.
-The meaning of the count/offset mismatch is NOT established. The production
-complete-window implementation rejects it as calendar_truncated rather than
-publishing a purportedly complete snapshot. The single-day source probe confirms
-this refusal. Do not infer that event ids were coalesced or that 23 is complete.
+The initial 55-versus-23 comparison mixed different cardinalities. Controlled
+read-only probes for upstream group 2026-10-14 established:
 
-Official SDK pagination docs and upstream PR longbridge/openapi#597 describe
-count/offset/next_date but do not reconcile this response. This needs an upstream
-contract clarification before the calendar acceptance criterion can be marked
-complete. The owner has been asked for any existing clarification. Other capture
-and read paths can be reviewed independently; do not deploy or migrate a real
-store on the strength of synthetic calendar fixtures alone.
+| query | reported count | returned positions | unique event ids | companies |
+|---|---:|---:|---:|---:|
+| report, count=1, offsets 0–55 | 55 | 46 nonempty | 36 | 22 |
+| financial, count=1, offsets 0–45 | 46 | 46 | 46 | 22 |
+| report, count=1000, offset=0 | 55 | 22 | 22 | 22 |
+
+All three company sets match. ASML has separate qf/3q records for the same
+quarter; other companies have semiannual/annual or other fiscal variants.
+The report query also maps some raw positions onto identical latest-event IDs:
+MS offsets 4/5 are identical, while financial-only exposes its qf/3q IDs.
+Single-symbol ASML reports count3 for report versus count2 for financial, yet
+both broad pages display one company event. These observations establish that
+reported count is not published infos/unique-event/company cardinality. They do
+not establish an exact private backend schema or a universal 55=46+9 mapping.
+
+The calendar contract is therefore API-published **upstream group/company date**
+coverage, not exhaustive hidden fiscal variants or independently verified NY
+earnings dates. Preserve every observed event/raw page and source count; do not
+invent missing events or fill their actuals from the separate report endpoints.
+Group labels may disagree with ext.local_date and datetime: WSE's group label
+2026-10-16 accompanies local_date2026-10-15 and a NY timestamp on the15th. All
+these fields remain unchanged; clients must not reinterpret group keys as NY
+event dates.
+
+A short normalized page is not by itself a termination proof. The conservative
+walker uses stable reported count as an upper offset bound, requesting at most
+100 published rows per page and advancing by max(1, returned current-group infos
+length). The stride cannot exceed represented raw positions when normalization
+does not expand records, so grouping/caps produce overlap rather than gaps.
+Continue through the bound even across short, identical, or empty pages. Strictly
+increasing offset and count/page/byte/deadline caps establish progress; identical
+pages are legitimate, while conflicting event versions or changed counts fail.
+HTTP/parse/cancellation failures still publish no partial calendar value.
+
+Output declares coverage=upstream_group_company_dates, retains reported_counts,
+company_counts and raw pages with their exact request offsets/counts and fetch
+times. Empty published groups are explicit. Calendar dates are source labels;
+statement variants and actuals belong to the fundamental endpoints.
+
+A real >100 boundary was checked on group2026-10-28: reported count181,
+count1000 returned181 companies, conservative count100 took2 pages and returned
+the identical set, and exhaustive count10 took19 pages with the same181 IDs and
+companies. The one-event path timed out at offset57; it is not claimed as a
+complete independent reference. The completed ten-event scan is that reference.
+The corrected production source then captured its full2026-10-13 through
+2026-11-19 window:199 pages,38 groups/days,2,246 company/date keys,5,534,482 raw
+bytes (below8MiB),8,692,635 serialized wrapper bytes,139.0 seconds at2rps. Its
+2026-10-14 and2026-10-28 company sets exactly matched the completed exhaustive
+small-page references. This fits the25-minute attempt bound without checkpoints
+or a production configuration change. The large wrapper is read through JSON
+pointers under the unchanged40KiB tool answer cap.
