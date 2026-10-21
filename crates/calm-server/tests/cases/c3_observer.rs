@@ -5,6 +5,55 @@ use calm_server::operation::forge_action_adapter::observer_count_for_test;
 use calm_server::test_seams::{PausePoint, install_pause_for_test};
 
 #[tokio::test]
+async fn c3_boot_final_sweep_preserves_fresh_probe_claim() {
+    let boot = TestBoot::new().await;
+    let (id, read) = held_observer(&boot, "boot-release-race", true).await;
+    let sweep = PausePoint::default();
+    let release = PausePoint::default();
+    install_pause_for_test("operation-before-parked-sweep", &id, sweep.clone());
+    install_pause_for_test("forge-before-release-confirmed", &id, release.clone());
+    let plan = boot.runtime.recover_on_boot().await.unwrap();
+    let runtime = boot.runtime.clone();
+    let recovery = tokio::spawn(async move { runtime.apply_recovery(plan).await.unwrap() });
+    tokio::time::timeout(Duration::from_secs(10), sweep.entered.notified())
+        .await
+        .unwrap();
+    // VerifyParked has finished. Its accelerator now owns a fresh claim and has
+    // sent the one-shot token, but has not committed its confirmation yet.
+    read.release.notify_one();
+    tokio::time::timeout(Duration::from_secs(10), release.entered.notified())
+        .await
+        .unwrap();
+    let claimed = c3_op(&boot, &id).await;
+    assert!(claimed.lease_owner.is_some());
+    assert!(
+        c3_record(&claimed)["probes"]["verdict"]["release"]
+            .get("Releasing")
+            .is_some()
+    );
+    sweep.release.notify_one();
+    recovery.await.unwrap();
+    let after = c3_op(&boot, &id).await;
+    release.release.notify_one();
+    let result = result_without_sweep(&boot, &id).await;
+    assert!(
+        matches!(result.outcome, OperationOutcome::Succeeded { .. }),
+        "{result:?}"
+    );
+    assert_eq!(
+        after.lease_owner, claimed.lease_owner,
+        "boot's final sweep must respect a fresh observer claim"
+    );
+    assert!(
+        c3_record(&c3_op(&boot, &id).await)["probes"]["verdict"]["release"]
+            .get("Released")
+            .is_some()
+    );
+    assert_eq!(c3_count(&boot, &id).await, 2);
+    c3_all_retired(&boot, &id).await;
+}
+
+#[tokio::test]
 async fn c3_observer_repeated_sweeps_stay_bounded() {
     let boot = TestBoot::new().await;
     let id = c3_running_probe(&boot, "bounded-observer").await;

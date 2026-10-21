@@ -582,7 +582,10 @@ impl OperationRuntime {
                 }
             }
         }
-        self.sweep_parked_for_boot().await?;
+        // VerifyParked already reclaimed old-boot leases. Recovery can start live
+        // observers, so this final pass must respect their newly acquired claims.
+        // Stealing an in-flight release here strands its confirmation as Releasing.
+        self.sweep_parked().await?;
         Ok(())
     }
 
@@ -1136,13 +1139,11 @@ impl OperationRuntime {
             .await
     }
 
-    async fn sweep_parked_for_boot(&self) -> Result<()> {
-        self.sweep_parked_with_claim(ParkedClaimMode::Boot).await
-    }
-
     async fn sweep_parked_with_claim(&self, claim_mode: ParkedClaimMode) -> Result<()> {
         let rows = self.repo.parked_operations().await?;
         for op in rows {
+            #[cfg(feature = "fixtures")]
+            crate::test_seams::pause_point("operation-before-parked-sweep", &op.id).await;
             if let Err(e) = self
                 .apply_parked_sweep_with_claim(op.clone(), claim_mode)
                 .await

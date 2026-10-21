@@ -367,6 +367,8 @@ pub(crate) async fn release(ctx: &SpawnCtx, op: &Operation, kind: Kind) -> Resul
     .await
     {
         Ok(Ok(())) => {
+            #[cfg(feature = "fixtures")]
+            crate::test_seams::pause_point("forge-before-release-confirmed", &op.id).await;
             probe.release = Release::Released { authorized_at_ms };
             let mut released = releasing.clone();
             released.set(kind, probe);
