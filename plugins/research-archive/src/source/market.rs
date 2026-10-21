@@ -193,7 +193,7 @@ mod tests {
     #[test]
     fn next_date_does_not_skip_remaining_same_day_source_rows() {
         let mut p = DayPager::default();
-        // Source coalesces records: one info can represent several counted rows.
+        // Synthetic count exceeds this page length; next_date alone cannot prove completion.
         let first = json!({"list":[{"date":"2026-10-21","count":12,"infos":[{"id":"a"}]}],"next_date":"2026-10-22"});
         let last = json!({"list":[{"date":"2026-10-21","count":12,"infos":[{"id":"b"}]}],"next_date":"2026-10-22"});
         assert!(!p.advance("2026-10-21", &first).unwrap().0);
