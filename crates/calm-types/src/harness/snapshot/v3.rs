@@ -1,12 +1,13 @@
 //! Released V3 carries no Human decisions; explicit conversion starts unresolved.
+use super::released_pending::ReleasedPendingInput;
 use super::*;
-use crate::conversation::{ActiveInputSubmissions, InputAttemptCheckpoint, PendingInput};
+use crate::conversation::{ActiveInputSubmissions, InputAttemptCheckpoint};
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct CheckpointV3 {
     next_queue_position: u64,
-    pending: Vec<PendingInput>,
+    pending: Vec<ReleasedPendingInput>,
     active: Option<ActiveInputSubmissions>,
     attempts: Vec<InputAttemptCheckpoint>,
 }
@@ -18,12 +19,17 @@ pub(super) fn upgrade(value: Value) -> Result<CanonicalHarnessSnapshot, String> 
         return Err("released canonical frame requires V3 harness format".into());
     }
     CanonicalHarnessSnapshot::try_from(CanonicalFrameWire {
-        schema_version: 4,
+        schema_version: 5,
         mode: old.mode,
         header: old.header,
         canonical_inputs: ConversationInputCheckpoint {
             next_queue_position: old.canonical_inputs.next_queue_position,
-            pending: old.canonical_inputs.pending,
+            pending: old
+                .canonical_inputs
+                .pending
+                .into_iter()
+                .map(Into::into)
+                .collect(),
             active: old.canonical_inputs.active,
             attempts: old.canonical_inputs.attempts,
             receipts: vec![],

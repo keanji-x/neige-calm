@@ -153,6 +153,7 @@ use utoipa::{Modify, OpenApi, ToSchema};
         crate::routes::harness_live::get_harness_live,
         crate::routes::planner_input_send::send_planner_input,
         crate::routes::conversation_input_resolution::keep_conversation_input,
+        crate::routes::conversation_input_resolution::retry_conversation_input,
         crate::routes::planner_cards::interrupt_planner_card,
         crate::routes::planner_compact::compact_planner_card,
         crate::routes::planner_cards::get_planner_run,

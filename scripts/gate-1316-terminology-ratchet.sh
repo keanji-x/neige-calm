@@ -138,6 +138,14 @@
 # excluded path, scan rule or inventory. A later trigger migration retains the
 # physical column name and updates this same counted baseline.
 
+# #2836 retry storage bounded exception: migration 0184 recreates the cyclic
+# schema and its V5 creation fence, retaining physical contract identifiers:
+# runtime_id/crates 1128 -> 1134 (six occurrences), spec/crates 510 -> 511 (the
+# frozen profile value), harness_item/crates 336 -> 337 (the presentation FK).
+# Only the new migration adds these occurrences. The existing scan/baseline
+# runs once in each ratchet gate target; no exclusion or extra inventory/check
+# is added. Later schema changes update this same occurrence baseline.
+
 set -uo pipefail
 
 cd "$(git rev-parse --show-toplevel)" || exit 1

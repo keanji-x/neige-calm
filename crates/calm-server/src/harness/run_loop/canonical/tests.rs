@@ -9,26 +9,26 @@ use crate::db::sqlite::{begin_immediate_tx, session_set_handle_state_tx};
 use crate::harness::run_loop::completed_commit_tests::Fixture as ExistingRuntime;
 use crate::shared_codex_appserver::native_owner_tests::{connect, notify_thread, request, send};
 use calm_types::conversation::MessageRevisionRef;
-use calm_types::conversation::{HumanPayload, InputDeliveryFact};
+use calm_types::conversation::{AcceptedInputRef, HumanPayload, InputDeliveryFact};
 use serde_json::json;
 
 mod content_tests;
 mod control_tests;
 mod selection_authority_tests;
 
-struct Fixture {
-    original: ExistingRuntime,
-    harness: PlannerHarness,
-    source: HumanInputSource,
-    message: MessageRevisionRef,
-    auth: crate::auth::AuthState,
-    session: String,
-    daemon: Arc<crate::shared_codex_appserver::SharedCodexAppServer>,
-    registry: crate::harness::registry::HarnessRegistry,
+pub(super) struct Fixture {
+    pub(super) original: ExistingRuntime,
+    pub(super) harness: PlannerHarness,
+    pub(super) source: HumanInputSource,
+    pub(super) message: MessageRevisionRef,
+    pub(super) auth: crate::auth::AuthState,
+    pub(super) session: String,
+    pub(super) daemon: Arc<crate::shared_codex_appserver::SharedCodexAppServer>,
+    pub(super) registry: crate::harness::registry::HarnessRegistry,
 }
 
 impl Fixture {
-    async fn new() -> Self {
+    pub(super) async fn new() -> Self {
         Self::with_config(HarnessConfig::default()).await
     }
 
@@ -150,7 +150,7 @@ impl Fixture {
         }
     }
 
-    async fn frame(&self) -> CanonicalHarnessSnapshot {
+    pub(super) async fn frame(&self) -> CanonicalHarnessSnapshot {
         let inner = &self.harness.inner;
         let row = self
             .original
@@ -164,7 +164,7 @@ impl Fixture {
         serde_json::from_value(row.handle_state_json.unwrap()).unwrap()
     }
 
-    async fn wait_phase(&self, phase: HarnessPhaseTag) -> CanonicalHarnessSnapshot {
+    pub(super) async fn wait_phase(&self, phase: HarnessPhaseTag) -> CanonicalHarnessSnapshot {
         tokio::time::timeout(Duration::from_secs(5), async {
             loop {
                 let frame = self.frame().await;

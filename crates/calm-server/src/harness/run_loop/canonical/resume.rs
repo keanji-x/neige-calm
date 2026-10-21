@@ -36,6 +36,20 @@ pub(super) async fn resume_unattempted(inner: &Arc<Inner>, current: &CommittedFr
                 if RuntimeExecutionFence::from_carrier(&carrier) != expected {
                     return Err(CalmError::Conflict("unattempted execution changed".into()));
                 }
+                if let Some(retry_intent_id) =
+                    crate::db::sqlite::conversation::submission_retry_intent_tx(tx, &submission)
+                        .await?
+                {
+                    crate::db::sqlite::conversation::retry_intent_tx(
+                        tx,
+                        &carrier,
+                        &retry_intent_id,
+                    )
+                    .await?;
+                    return Ok(Some(CanonicalPendingIdentity::ExplicitSuccessor {
+                        retry_intent_id,
+                    }));
+                }
                 let stored =
                     crate::db::sqlite::conversation::submission_plan_tx(tx, &submission).await?;
                 let refs = stored
@@ -43,7 +57,9 @@ pub(super) async fn resume_unattempted(inner: &Arc<Inner>, current: &CommittedFr
                     .input_refs()
                     .map_err(|error| CalmError::Conflict(error.into()))?;
                 Ok(match refs.as_slice() {
-                    [input] => Some(input.clone()),
+                    [input] => Some(CanonicalPendingIdentity::Accepted {
+                        input: input.clone(),
+                    }),
                     _ => None,
                 })
             })
@@ -80,6 +96,35 @@ pub(super) async fn resume_unattempted(inner: &Arc<Inner>, current: &CommittedFr
         }
     })
     .await?;
+    if let CanonicalPendingIdentity::ExplicitSuccessor { retry_intent_id } = &message {
+        let card = inner.card_id.to_string();
+        let runtime = inner.worker_session_id.clone();
+        let id = retry_intent_id.clone();
+        let invocation = write_in_tx_typed(inner.repo.as_ref(), move |tx| {
+            Box::pin(async move {
+                let carrier = current_input_carrier_tx(tx, &card, &runtime).await?;
+                Ok(
+                    crate::db::sqlite::conversation::retry_intent_tx(tx, &carrier, &id)
+                        .await?
+                        .invocation,
+                )
+            })
+        })
+        .await?;
+        read_admission.revalidate().await?;
+        return dispatch_initial(
+            inner,
+            &source,
+            &submission,
+            &active.logical_turn_id,
+            &TurnModelSelection {
+                model: invocation.model,
+                effort: invocation.effort,
+            },
+            invocation.permission,
+        )
+        .await;
+    }
     let resolved = async {
         Ok::<_, IssuanceRefusal>((
             inner.backend.resolve_selection(&read_admission).await?,

@@ -141,3 +141,16 @@ it('shows first-message sending feedback while conversation creation is held', a
     expect(screen.getByRole('button', { name: 'Send' }).hasAttribute('disabled')).toBe(true);
   } finally { await response.release({ id: 'created', trackId: 'daily', title: null, kind: 'track-assistant', provider: 'codex', state: null, updatedAt: 1, archivedAt: null, lastTurnCompletedAt: null }); cleanup(); view.client.clear(); }
 });
+
+it('retry callback stays committed across input renders', async () => {
+  const view = mount();
+  try {
+    await openExisting();
+    await type('Draft before retry');
+    vi.mocked(currentResponseMessage).mockClear();
+    vi.mocked(groupTranscriptActivities).mockClear();
+    await type('Draft after retry');
+    expect(currentResponseMessage).not.toHaveBeenCalled();
+    expect(groupTranscriptActivities).not.toHaveBeenCalled();
+  } finally { cleanup(); view.client.clear(); }
+});

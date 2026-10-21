@@ -306,6 +306,8 @@ impl SharedCodexAppServer {
             Err(error) => return CodexPromptReport::failure(thread_id, client_id, error, false),
         };
         let gate = admission;
+        let final_gate = admission
+            .gate_with_final_check(|| self.native_turns.admit_start(&client, thread_id, &ticket));
         let delivery = client
             .turn_start_delivery_gated(
                 thread_id,
@@ -313,7 +315,7 @@ impl SharedCodexAppServer {
                 selection,
                 approvals,
                 client_id,
-                gate.gate(),
+                &final_gate,
             )
             .await;
         let response_turn = match &delivery {

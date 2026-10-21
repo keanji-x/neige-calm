@@ -301,3 +301,33 @@ async fn object_sweep_manifest_parsing_does_not_hold_database_writer() {
         "retained document"
     );
 }
+
+#[tokio::test]
+async fn canonical_retry_v5_preserves_conservative_skip_prune() {
+    let f = Fixture::new().await;
+    let frame = calm_types::harness::snapshot::CanonicalHarnessSnapshot::dormant(0);
+    let mut tx = begin_immediate_tx(f.repo.db()).await.unwrap();
+    sqlx::query(
+        "INSERT INTO worker_sessions(id,track_id,provider,mode,contract,state,handle_state_json,
+        created_at_ms,updated_at_ms) VALUES(?1,?2,'codex','resumable','planner','idle',?3,0,0)",
+    )
+    .bind(crate::model::new_id())
+    .bind(f.track.as_str())
+    .bind(serde_json::to_string(&frame).unwrap())
+    .execute(&mut **tx)
+    .await
+    .unwrap();
+    assert!(matches!(
+        super::active_diff_endpoint_commits_tx(&mut tx, &f.track)
+            .await
+            .unwrap(),
+        super::ActiveLastSeenHeads::SkipPrune
+    ));
+    assert_eq!(
+        super::prune_track_history_tx(&mut tx, &f.track, 1)
+            .await
+            .unwrap(),
+        0
+    );
+    tx.commit().await.unwrap();
+}

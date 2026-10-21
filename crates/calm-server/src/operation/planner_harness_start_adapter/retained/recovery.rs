@@ -23,8 +23,8 @@ impl crate::harness::backend::factory::ActiveRecoveryAdmission for RetainedRecov
             || current.track_id != self.expected.track_id
             || !current
                 .inputs
-                .refs()
-                .starts_with(self.expected.inputs.refs())
+                .identities()
+                .starts_with(self.expected.inputs.identities())
         {
             return Err(CalmError::Conflict(
                 "retained recovery target changed".into(),

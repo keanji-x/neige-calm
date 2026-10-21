@@ -584,6 +584,7 @@ function useConversationPane(
   const interrupt = useCommittedCallback(existingId, store.interrupt);
   const compact = useCommittedCallback(existingId, store.compact);
   const keepInput = useCommittedCallback(existingId, store.keepInput);
+  const retryInput = useCommittedCallback(existingId, store.retryInput);
   const deleteQueuedEntry = useCommittedCallback(existingId, store.deleteQueuedEntry);
   const editQueuedEntry = useCommittedCallback(existingId, edit.startQueued);
   const steerQueuedEntry = useCommittedCallback(existingId, (entry: PendingQueueEntry) => {
@@ -891,7 +892,7 @@ function useConversationPane(
             {!threadPresented && outgoingPreview !== undefined && <OutgoingMessage speaker={outgoingPreview.author} text={outgoingPreview.text} mobile={compactViewport} />}
             {!threadPresented && hasPendingMessages && pendingMessages}
             {threadPresented && (
-              <ChatThread historyPrefetch={historyPrefetch} readingView={threadReadingView} key={open.id} pendingMessages={pendingMessages} activeInput={store.activeInput} keepInput={keepInput}
+              <ChatThread historyPrefetch={historyPrefetch} readingView={threadReadingView} key={open.id} pendingMessages={pendingMessages} activeInput={store.activeInput} keepInput={keepInput} retryInput={retryInput}
                 hasPendingMessages={hasPendingMessages || (pendingPresentation?.conversationId === existingId && pendingPresentation.visible)}
                 conversation={open}
                 imageFiles={imageFiles}

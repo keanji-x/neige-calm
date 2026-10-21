@@ -55,6 +55,7 @@ input_id!(SystemObservationId, 32);
 input_id!(LogicalTurnId, 32);
 input_id!(InputSubmissionId, 32);
 input_id!(InputAttemptId, 32);
+input_id!(RetryIntentId, 32);
 input_id!(PrivateHistoryOperationId, 32);
 input_id!(SubmissionRenderDigest, 64);
 

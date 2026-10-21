@@ -446,7 +446,9 @@ async fn canonical_selection_read_preserves_appended_pending_while_issuing_origi
     let crossing = fx.frame().await;
     assert_eq!(crossing.canonical_inputs.pending.len(), 1);
     assert_eq!(
-        crossing.canonical_inputs.pending[0].input_ref(),
+        crossing.canonical_inputs.pending[0]
+            .accepted_input_ref()
+            .unwrap(),
         appended.input_ref
     );
     let thread = start["params"]["threadId"].as_str().unwrap();

@@ -307,7 +307,7 @@ pub async fn submission_plan_tx(
     submission_id: &InputSubmissionId,
 ) -> Result<StoredSubmissionPlan> {
     let stored: Option<(String,String)> = sqlx::query_as(
-        "SELECT render_plan_json,render_plan_sha256 FROM conversation_input_submissions WHERE id=?1",
+        "SELECT render_plan_json,render_plan_sha256 FROM conversation_resolved_submission_plans WHERE id=?1",
     ).bind(submission_id.as_str()).fetch_optional(&mut **tx).await?;
     let (plan_json, original_digest) =
         stored.ok_or_else(|| CalmError::NotFound(format!("submission {submission_id}")))?;

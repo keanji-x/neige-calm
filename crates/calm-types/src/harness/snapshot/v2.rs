@@ -1,14 +1,15 @@
 //! Private released V2 shape; used only by explicit evidence adaptation.
+use super::released_pending::ReleasedPendingInput;
 use super::*;
 use crate::conversation::{
-    ActiveInputSubmissions, InputAttemptCheckpoint, InputAttemptFact, InputInvocation, PendingInput,
+    ActiveInputSubmissions, InputAttemptCheckpoint, InputAttemptFact, InputInvocation,
 };
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct CheckpointV2 {
     next_queue_position: u64,
-    pending: Vec<PendingInput>,
+    pending: Vec<ReleasedPendingInput>,
     active: Option<ActiveInputSubmissions>,
     attempts: Vec<InputAttemptFact>,
 }
@@ -21,7 +22,12 @@ pub(super) fn upgrade(value: Value) -> Result<CanonicalHarnessSnapshot, String> 
     }
     let checkpoint = ConversationInputCheckpoint {
         next_queue_position: old.canonical_inputs.next_queue_position,
-        pending: old.canonical_inputs.pending,
+        pending: old
+            .canonical_inputs
+            .pending
+            .into_iter()
+            .map(Into::into)
+            .collect(),
         active: old.canonical_inputs.active,
         receipts: vec![],
         attempts: old
@@ -38,7 +44,7 @@ pub(super) fn upgrade(value: Value) -> Result<CanonicalHarnessSnapshot, String> 
             .collect(),
     };
     CanonicalHarnessSnapshot::try_from(CanonicalFrameWire {
-        schema_version: 4,
+        schema_version: 5,
         mode: old.mode,
         canonical_inputs: checkpoint,
         header: old.header,
@@ -81,7 +87,7 @@ mod tests {
             let converted =
                 serde_json::to_value(CanonicalHarnessSnapshot::from_released(old.clone()).unwrap())
                     .unwrap();
-            assert_eq!(converted["schema_version"], 4);
+            assert_eq!(converted["schema_version"], 5);
             assert_eq!(converted["canonical_inputs"]["attempts"][0]["revision"], 0);
             assert_eq!(
                 converted["canonical_inputs"]["attempts"][0]["invocation"],
@@ -119,7 +125,7 @@ mod tests {
             json!({"kind":"recorded","configuration":{"model":null,"permission":"never"}});
         assert!(serde_json::from_value::<CanonicalHarnessSnapshot>(recorded).is_err());
         let mut future = current;
-        future["schema_version"] = json!(5);
+        future["schema_version"] = json!(6);
         assert!(CanonicalHarnessSnapshot::from_released(future).is_err());
         for (field, value) in [
             ("schema_version", json!(1)),

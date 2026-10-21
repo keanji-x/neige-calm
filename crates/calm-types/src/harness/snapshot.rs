@@ -1,11 +1,13 @@
-//! The declared V4 persisted frame. Both Truth and the server use this exact codec.
+//! The declared V5 persisted frame. Both Truth and the server use this exact codec.
 use super::budget::FrozenBudget;
 use super::{HARNESS_MODE, HarnessPhaseTag};
 use crate::conversation::ConversationInputCheckpoint;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+mod released_pending;
 mod v2;
 mod v3;
+mod v4;
 mod values;
 pub use values::{
     CompactOutcome, CompactStatus, PersistedRewind, QueueEntryId, TokenUsage, TurnBase,
@@ -59,8 +61,8 @@ impl TryFrom<CanonicalFrameWire<ConversationInputCheckpoint>> for CanonicalHarne
     fn try_from(
         wire: CanonicalFrameWire<ConversationInputCheckpoint>,
     ) -> Result<Self, Self::Error> {
-        if wire.schema_version != 4 || wire.mode != HARNESS_MODE {
-            return Err("canonical frame requires its declared V4 harness format".into());
+        if wire.schema_version != 5 || wire.mode != HARNESS_MODE {
+            return Err("canonical frame requires its declared V5 harness format".into());
         }
         wire.canonical_inputs.validate()?;
         let header = serde_json::from_value(Value::Object(wire.header))
@@ -111,7 +113,8 @@ impl CanonicalHarnessSnapshot {
         match value.get("schema_version").and_then(Value::as_u64) {
             Some(2) => v2::upgrade(value),
             Some(3) => v3::upgrade(value),
-            Some(4) => serde_json::from_value(value).map_err(|error| error.to_string()),
+            Some(4) => v4::upgrade(value),
+            Some(5) => serde_json::from_value(value).map_err(|error| error.to_string()),
             Some(_) | None => Err("unsupported canonical frame version".into()),
         }
     }
@@ -119,7 +122,7 @@ impl CanonicalHarnessSnapshot {
     /// A deliberate new dormant frame, never a fallback for malformed stored data.
     pub fn dormant(push_watermark: i64) -> Self {
         Self {
-            schema_version: 4,
+            schema_version: 5,
             mode: HARNESS_MODE.into(),
             header: HarnessRuntimeHeader::new(
                 HarnessPhaseTag::Idle,
@@ -138,6 +141,68 @@ impl CanonicalHarnessSnapshot {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn v4_upgrade_preserves_keep_and_invocation_without_context_backfill() {
+        let mut old = serde_json::to_value(CanonicalHarnessSnapshot::dormant(7)).unwrap();
+        old["schema_version"] = json!(4);
+        let request = json!({"carrier_id":"carrier", "submission_id":"11111111111111111111111111111111",
+            "attempt_id":"22222222222222222222222222222222", "revision":"7"});
+        let result = json!({"carrier_id":"carrier", "submission_id":request["submission_id"],
+            "attempt_id":request["attempt_id"], "revision":"8", "waiting_for_settlement":true});
+        for invocation in [
+            json!({"kind":"prior_invocation_not_recorded"}),
+            json!({"kind":"recorded","configuration":{"model":null,"effort":null,"permission":"never"}}),
+            json!({"kind":"recorded","configuration":{"model":"frozen","effort":"high","permission":"never"}}),
+        ] {
+            old["canonical_inputs"]["attempts"] = json!([{
+                "revision":8, "invocation":invocation,
+                "attempt":{"submission_id":request["submission_id"],"attempt_id":request["attempt_id"]},
+                "correlation":{"provider":"codex","thread_id":"thread","native_session_id":null,
+                    "local_turn_id":null,"native_turn_id":null,"rpc_request_id":null},
+                "delivery":{"kind":"unknown"}
+            }]);
+            old["canonical_inputs"]["receipts"] = json!([{
+                "key":"keep", "principal":"human", "fingerprint":"a".repeat(64),
+                "request":request, "result":result
+            }]);
+            let upgraded = CanonicalHarnessSnapshot::from_released(old.clone()).unwrap();
+            let mut expected = old.clone();
+            expected["schema_version"] = json!(5);
+            expected["canonical_inputs"]["receipts"][0] = json!({
+                "key":"keep", "principal":"human", "fingerprint":"a".repeat(64),
+                "decision":{"kind":"keep","request":request,"result":result}
+            });
+            assert_eq!(serde_json::to_value(upgraded).unwrap(), expected);
+            assert!(serde_json::from_value::<CanonicalHarnessSnapshot>(old.clone()).is_err());
+            assert!(serde_json::from_value::<CanonicalHarnessSnapshot>(expected.clone()).is_ok());
+            for field in ["invocation", "revision"] {
+                let mut invalid = old.clone();
+                invalid["canonical_inputs"]["attempts"][0]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove(field);
+                assert!(CanonicalHarnessSnapshot::from_released(invalid).is_err());
+            }
+            for field in ["key", "principal", "fingerprint", "request", "result"] {
+                let mut invalid = old.clone();
+                invalid["canonical_inputs"]["receipts"][0]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove(field);
+                assert!(CanonicalHarnessSnapshot::from_released(invalid).is_err());
+            }
+            let mut untagged_v5 = old.clone();
+            untagged_v5["schema_version"] = json!(5);
+            assert!(CanonicalHarnessSnapshot::from_released(untagged_v5).is_err());
+            let mut tagged_v4 = expected.clone();
+            tagged_v4["schema_version"] = json!(4);
+            assert!(CanonicalHarnessSnapshot::from_released(tagged_v4).is_err());
+            let mut invalid = expected;
+            invalid["canonical_inputs"]["receipts"][0]["decision"]["kind"] = json!("retry");
+            assert!(CanonicalHarnessSnapshot::from_released(invalid).is_err());
+        }
+    }
 
     #[test]
     fn v3_frame_requires_declared_header_and_nested_value_shapes() {
@@ -180,5 +245,34 @@ mod tests {
         let restored: CanonicalHarnessSnapshot = serde_json::from_value(encoded.clone()).unwrap();
         assert_eq!(restored, frame);
         assert_eq!(serde_json::to_value(restored).unwrap(), encoded);
+    }
+
+    #[test]
+    fn canonical_released_frames_reject_v5_retry_pending_kind() {
+        use crate::conversation::{PendingInput, RetryIntentId};
+        let mut frame = CanonicalHarnessSnapshot::dormant(0);
+        frame
+            .canonical_inputs
+            .pending
+            .push(PendingInput::ExplicitSuccessor {
+                retry_intent_id: RetryIntentId::parse(&"a".repeat(32)).unwrap(),
+                queue_position: 0,
+                queued_at_ms: 0,
+            });
+        frame.canonical_inputs.next_queue_position = 1;
+        for version in [2, 3, 4] {
+            let mut value = serde_json::to_value(&frame).unwrap();
+            value["schema_version"] = serde_json::json!(version);
+            if version < 4 {
+                value["canonical_inputs"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("receipts");
+            }
+            assert!(
+                CanonicalHarnessSnapshot::from_released(value).is_err(),
+                "released V{version} must reject the unreleased successor kind"
+            );
+        }
     }
 }

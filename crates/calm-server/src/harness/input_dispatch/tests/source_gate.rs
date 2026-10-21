@@ -191,7 +191,7 @@ async fn input_gate_case(change: u8, outbound: bool) {
     } else {
         assert_eq!(checkpoint.pending.len(), 1);
         assert_eq!(
-            checkpoint.pending[0].input_ref(),
+            checkpoint.pending[0].accepted_input_ref().unwrap(),
             AcceptedInputRef::Human {
                 message: fixture.message.clone()
             }

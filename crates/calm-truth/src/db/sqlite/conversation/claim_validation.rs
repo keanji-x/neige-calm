@@ -16,9 +16,9 @@ pub(super) async fn validate_claim_tx(
     let refs = plan.input_refs().map_err(CalmError::Conflict)?;
     let expected = entries
         .iter()
-        .map(PendingInput::input_ref)
-        .collect::<Vec<_>>();
-    if refs != expected {
+        .map(PendingInput::accepted_input_ref)
+        .collect::<Option<Vec<_>>>();
+    if expected.as_ref() != Some(&refs) {
         return Err(CalmError::Conflict(
             "render plan does not select the exact pending revisions in order",
         ));
@@ -76,8 +76,31 @@ pub(super) async fn validate_claim_tx(
                     payload: PrivateHistoryPayload::Present { value },
                     ..
                 },
-            ) if observation == value => {}
-            _ => {
+            ) => {
+                if observation != value {
+                    return Err(CalmError::Conflict(
+                        "pending input and submitted source/payload kind disagree",
+                    ));
+                }
+            }
+            (PendingInput::Human { .. }, SubmissionRenderInput::System { .. })
+            | (PendingInput::System { .. }, SubmissionRenderInput::Human { .. })
+            | (
+                PendingInput::System { .. },
+                SubmissionRenderInput::System {
+                    payload: PrivateHistoryPayload::ErasedByPrivateHistoryOperation { .. },
+                    ..
+                },
+            ) => {
+                return Err(CalmError::Conflict(
+                    "pending input and submitted source/payload kind disagree",
+                ));
+            }
+            // Successors claim only through the relation-backed InitialClaim path.
+            (
+                PendingInput::ExplicitSuccessor { .. },
+                SubmissionRenderInput::Human { .. } | SubmissionRenderInput::System { .. },
+            ) => {
                 return Err(CalmError::Conflict(
                     "pending input and submitted source/payload kind disagree",
                 ));

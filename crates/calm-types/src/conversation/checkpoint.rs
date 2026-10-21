@@ -102,7 +102,7 @@ pub struct ConversationInputCheckpoint {
     /// Lookup-only correlation facts. Ordering never chooses work to execute.
     /// At most the latest attempt of each immutable submission is retained.
     pub attempts: Vec<InputAttemptCheckpoint>,
-    pub receipts: Vec<super::HumanKeepReceipt>,
+    pub receipts: Vec<super::HumanInputResolutionReceipt>,
 }
 
 impl ConversationInputCheckpoint {
@@ -146,28 +146,47 @@ impl ConversationInputCheckpoint {
         let mut keys = HashSet::new();
         let mut decisions = HashSet::new();
         for receipt in &self.receipts {
+            let (request, carrier, submission, attempt, revision) = match &receipt.decision {
+                super::HumanInputResolutionDecision::Keep { request, result } => (
+                    request,
+                    &result.carrier_id,
+                    &result.submission_id,
+                    &result.attempt_id,
+                    &result.revision,
+                ),
+                super::HumanInputResolutionDecision::Retry {
+                    predecessor,
+                    revision,
+                    ..
+                } => (
+                    predecessor,
+                    &predecessor.carrier_id,
+                    &predecessor.submission_id,
+                    &predecessor.attempt_id,
+                    revision,
+                ),
+            };
             if receipt.key.is_empty()
                 || receipt.principal.is_empty()
                 || receipt.fingerprint.len() != 64
                 || !keys.insert(&receipt.key)
-                || !decisions.insert(&receipt.result.attempt_id)
-                || receipt.request.carrier_id != receipt.result.carrier_id
-                || receipt.request.submission_id != receipt.result.submission_id
-                || receipt.request.attempt_id != receipt.result.attempt_id
+                || !decisions.insert(attempt)
+                || &request.carrier_id != carrier
+                || &request.submission_id != submission
+                || &request.attempt_id != attempt
             {
-                return Err("invalid Human Keep receipt identity");
+                return Err("invalid Human resolution receipt identity");
             }
-            let prior = receipt
-                .request
+            let prior = request
                 .revision
                 .parse::<u64>()
                 .map_err(|_| "invalid Keep revision")?;
             let next = prior.checked_add(1).ok_or("Keep revision overflow")?;
-            if prior.to_string() != receipt.request.revision
-                || next.to_string() != receipt.result.revision
+            if prior.to_string() != request.revision
+                || next.to_string() != *revision
                 || !self.attempts.iter().any(|a| {
-                    a.attempt.attempt_id.as_str() == receipt.result.attempt_id
-                        && a.attempt.submission_id.as_str() == receipt.result.submission_id
+                    a.attempt.attempt_id.as_str() == attempt
+                        && a.attempt.submission_id.as_str() == submission
                         && a.revision >= next
                 })
             {
@@ -291,7 +310,7 @@ impl ConversationInputCheckpoint {
         for attempt in &self.attempts {
             match &attempt.delivery {
                 InputDeliveryFact::CrossingUnknown | InputDeliveryFact::Unknown => {
-                    if !self.is_kept(&attempt.attempt)
+                    if !self.is_human_resolved(&attempt.attempt)
                         && !ids.contains(&attempt.attempt.submission_id)
                     {
                         ids.push(attempt.attempt.submission_id.clone());
@@ -308,12 +327,15 @@ impl ConversationInputCheckpoint {
     pub fn requires_settled_activity(&self, current_thread: &str) -> Result<bool, &'static str> {
         let mut required = false;
         for attempt in &self.attempts {
-            if self.is_kept(&attempt.attempt)
-                && attempt.correlation.native_turn_id.is_none()
-                && attempt.correlation.local_turn_id.is_none()
+            if self
+                .resolution_waiting_for_settlement(&attempt.attempt)
+                .is_some_and(|waiting| {
+                    attempt.correlation.local_turn_id.is_none()
+                        && (waiting || attempt.correlation.native_turn_id.is_none())
+                })
             {
                 if attempt.correlation.thread_id != current_thread {
-                    return Err("kept input requires settlement of its original exact thread");
+                    return Err("resolved input requires settlement of its original exact thread");
                 }
                 required = true;
             }
@@ -321,11 +343,11 @@ impl ConversationInputCheckpoint {
         Ok(required)
     }
 
-    pub fn kept_execution_without_target(&self) -> bool {
+    pub fn resolved_execution_without_target(&self) -> bool {
         self.active.as_ref().is_some_and(|active| {
             active.submission_ids.iter().all(|id| {
                 self.attempt(id).is_some_and(|attempt| {
-                    self.is_kept(&attempt.attempt)
+                    self.is_human_resolved(&attempt.attempt)
                         && attempt.correlation.native_turn_id.is_none()
                         && attempt.correlation.local_turn_id.is_none()
                 })
@@ -333,11 +355,28 @@ impl ConversationInputCheckpoint {
         })
     }
 
-    pub fn is_kept(&self, attempt: &InputAttempt) -> bool {
-        self.receipts.iter().any(|receipt| {
-            receipt.result.submission_id == attempt.submission_id.as_str()
-                && receipt.result.attempt_id == attempt.attempt_id.as_str()
-        })
+    pub fn is_human_resolved(&self, attempt: &InputAttempt) -> bool {
+        self.resolution_waiting_for_settlement(attempt).is_some()
+    }
+
+    // A late native target refines correlation, not the immutable requirement
+    // to settle the thread before starting another effect after a targetless decision.
+    fn resolution_waiting_for_settlement(&self, attempt: &InputAttempt) -> Option<bool> {
+        self.receipts
+            .iter()
+            .find_map(|receipt| match &receipt.decision {
+                super::HumanInputResolutionDecision::Keep { result, .. } => (result.submission_id
+                    == attempt.submission_id.as_str()
+                    && result.attempt_id == attempt.attempt_id.as_str())
+                .then_some(result.waiting_for_settlement),
+                super::HumanInputResolutionDecision::Retry {
+                    predecessor,
+                    waiting_for_settlement,
+                    ..
+                } => (predecessor.submission_id == attempt.submission_id.as_str()
+                    && predecessor.attempt_id == attempt.attempt_id.as_str())
+                .then_some(*waiting_for_settlement),
+            })
     }
 
     pub fn attempt(&self, submission: &InputSubmissionId) -> Option<&InputAttemptCheckpoint> {

@@ -294,9 +294,13 @@ async fn cold_attempt_is_not_readmitted(outcome: NativeOutcome) {
         NativeOutcome::Accepted => json!({"kind":"unavailable","reason":"not_held"}),
     };
     assert_eq!(delivery["attempt"]["actions"]["keep"], keep);
+    let retry_reason = match outcome {
+        NativeOutcome::Unknown => "invocation_not_fully_frozen",
+        NativeOutcome::Accepted => "not_held",
+    };
     assert_eq!(
         delivery["attempt"]["actions"]["retry"],
-        json!({"kind":"unavailable","reason":"not_implemented_yet"})
+        json!({"kind":"unavailable","reason":retry_reason})
     );
     assert!(delivery["attempt"].get("resolution").unwrap().is_null());
     let appended = post_and_settle_wake(

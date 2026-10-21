@@ -102,6 +102,15 @@ pub(super) async fn read(
             .pending
             .iter()
             .map(|input| match input {
+                PendingInput::ExplicitSuccessor {
+                    retry_intent_id,
+                    queue_position,
+                    queued_at_ms,
+                } => Ok(ConversationPendingInput::ExplicitSuccessor {
+                    retry_intent_id: retry_intent_id.as_str().into(),
+                    queue_position: *queue_position,
+                    queued_at_ms: *queued_at_ms,
+                }),
                 PendingInput::Human {
                     message,
                     queue_position,
@@ -142,7 +151,13 @@ pub(super) async fn read(
                     && Some(outcome.turn_id.as_str()) == header.last_turn_id.as_deref()
             })
             .and_then(|outcome| outcome.timeout());
-        let active_input = frame.active_input;
+        let active_input = crate::conversation_inputs::resolution::retry_read(
+            s.repo.as_ref(),
+            source.clone(),
+            id.clone(),
+            frame.active_input,
+        )
+        .await?;
         let selection = crate::planner_model::CardModelSelection::from_payload(&card.payload)
             .unwrap_or_default();
         let unknown = snapshot
@@ -152,7 +167,7 @@ pub(super) async fn read(
             .is_some_and(|active| {
                 snapshot.canonical_inputs.attempts.iter().any(|a| {
                     active.submission_ids.contains(&a.attempt.submission_id)
-                        && !snapshot.canonical_inputs.is_kept(&a.attempt)
+                        && !snapshot.canonical_inputs.is_human_resolved(&a.attempt)
                         && matches!(
                             a.delivery,
                             InputDeliveryFact::CrossingUnknown | InputDeliveryFact::Unknown
@@ -172,14 +187,16 @@ pub(super) async fn read(
                     at_ms: usage.at_ms,
                 })
         };
-        let kept_waiting = snapshot.canonical_inputs.kept_execution_without_target();
+        let resolved_waiting = snapshot
+            .canonical_inputs
+            .resolved_execution_without_target();
         let blocked_reason = header.wedged_reason.clone().or(issuance_block).or_else(|| {
             runtime.state.is_terminal().then(|| if runtime.state == calm_types::worker::WorkerSessionState::Failed {
                 "Execution is held after this session failed. Messages remain saved."
             } else {
                 "Execution is held because this session is no longer active. Messages remain saved."
             }.into())
-        }).or_else(|| kept_waiting.then(|| "Input kept as delivered. Further input waits for the original thread to settle.".into()))
+        }).or_else(|| resolved_waiting.then(|| "Input resolved by a Human. Further input waits for the original thread to settle.".into()))
                 .or_else(|| unknown.then(||
                 "Delivery could not be confirmed. This message is held to avoid sending it twice.".into()))
                 .or_else(|| (!pending_inputs.is_empty() && handle_fence.is_none())

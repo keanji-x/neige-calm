@@ -384,7 +384,7 @@ async fn production_http_invalid_closed_snapshot_cannot_abort_other_planner_hibe
     let source_index = state
         .harness
         .canonical_sources(&bad_worker, &bad_track.to_owned().into());
-    let input = original.canonical_inputs.pending[0].input_ref();
+    let input = original.canonical_inputs.pending[0].identity();
     tokio::time::timeout(Duration::from_secs(5), async {
         while source_index.source(&input).is_none() {
             tokio::task::yield_now().await;

@@ -117,6 +117,11 @@ pub enum ConversationInputContract {
 #[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ConversationPendingInput {
+    ExplicitSuccessor {
+        retry_intent_id: String,
+        queue_position: u64,
+        queued_at_ms: i64,
+    },
     Human {
         message_id: String,
         revision: u32,
@@ -154,7 +159,13 @@ pub enum ConversationActionAvailability {
 #[serde(rename_all = "snake_case")]
 #[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub enum ConversationActionUnavailableReason {
-    NotImplementedYet,
+    PriorInvocationNotRecorded,
+    InvocationNotFullyFrozen,
+    AttachmentsNotFrozen,
+    ErasedOrWithdrawn,
+    UnsupportedBinding,
+    UnsupportedSource,
+    AlreadyResolved,
     AlreadyKept,
     NotHeld,
 }
@@ -192,7 +203,7 @@ pub struct ConversationAttemptDelivery {
     pub invocation: crate::conversation::InputInvocation,
     pub actions: ConversationResolutionActions,
     #[schema(required = true, nullable = true)]
-    pub resolution: Option<crate::conversation::KeepConversationInputResult>,
+    pub resolution: Option<crate::conversation::ConversationInputResolutionResult>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema, TS)]
@@ -223,6 +234,9 @@ impl ConversationActiveInput {
             crate::conversation::InputSubmissionId,
             crate::conversation::LogicalTurnId,
         )],
+        retry_availability: impl Fn(
+            &crate::conversation::InputSubmissionId,
+        ) -> Result<ConversationActionAvailability, &'static str>,
     ) -> Result<Option<Self>, &'static str> {
         use crate::conversation::InputDeliveryFact;
         value.validate()?;
@@ -240,6 +254,7 @@ impl ConversationActiveInput {
                     .iter()
                     .find(|(id, _)| id == submission)
                     .ok_or("submission lacks its original logical turn identity")?;
+                let retry = retry_availability(submission)?;
                 Ok(ConversationSubmissionDelivery {
                     carrier_id: carrier_id.into(),
                     logical_turn_id: logical.1.as_str().into(),
@@ -272,16 +287,23 @@ impl ConversationActiveInput {
                                     ConversationDelivery::Accepted
                                 }
                             },
-                            resolution: value
-                                .receipts
-                                .iter()
-                                .find(|receipt| {
-                                    receipt.result.attempt_id == attempt.attempt.attempt_id.as_str()
-                                })
-                                .map(|receipt| receipt.result.clone()),
+                            resolution: value.receipts.iter().find_map(|receipt| {
+                                let target = match &receipt.decision {
+                                    crate::conversation::HumanInputResolutionDecision::Keep {
+                                        request,
+                                        ..
+                                    } => request,
+                                    crate::conversation::HumanInputResolutionDecision::Retry {
+                                        predecessor,
+                                        ..
+                                    } => predecessor,
+                                };
+                                (target.attempt_id == attempt.attempt.attempt_id.as_str())
+                                    .then(|| receipt.decision.public_result())
+                            }),
                             invocation: attempt.invocation.clone(),
                             actions: ConversationResolutionActions {
-                                keep: if value.is_kept(&attempt.attempt) {
+                                keep: if value.is_human_resolved(&attempt.attempt) {
                                     ConversationActionAvailability::Unavailable {
                                         reason: ConversationActionUnavailableReason::AlreadyKept,
                                     }
@@ -300,9 +322,7 @@ impl ConversationActiveInput {
                                         }
                                     }
                                 },
-                                retry: ConversationActionAvailability::Unavailable {
-                                    reason: ConversationActionUnavailableReason::NotImplementedYet,
-                                },
+                                retry: retry.clone(),
                             },
                         }),
                 })

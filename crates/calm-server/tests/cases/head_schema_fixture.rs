@@ -121,6 +121,7 @@ const POST_0067_MIGRATION_NAMES: &[&str] = &[
     "0181_canonical_input_resolutions.sql",
     "0182_objective_input_sources.sql",
     "0183_workspace_execution_pending.sql",
+    "0184_canonical_input_retry.sql",
 ];
 
 #[test]

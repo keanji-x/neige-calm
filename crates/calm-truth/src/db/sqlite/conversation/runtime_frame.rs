@@ -5,7 +5,8 @@ use super::carrier::save_input_carrier_tx;
 use super::{CurrentInputCarrier, current_input_fact_carrier_tx};
 use crate::error::{CalmError, Result};
 use calm_types::conversation::{
-    ActiveInputSubmissions, CONVERSATION_INPUT_CHECKPOINT_KEY, InputAttemptCheckpoint,
+    ActiveInputSubmissions, CONVERSATION_INPUT_CHECKPOINT_KEY, HumanInputResolutionReceipt,
+    InputAttemptCheckpoint,
 };
 use calm_types::harness::HarnessPhaseTag;
 use serde_json::Value;
@@ -18,6 +19,7 @@ pub struct RuntimeExecutionFence {
     header: Value,
     active: Option<ActiveInputSubmissions>,
     attempts: Vec<InputAttemptCheckpoint>,
+    receipts: Vec<HumanInputResolutionReceipt>,
 }
 
 impl RuntimeExecutionFence {
@@ -35,6 +37,7 @@ impl RuntimeExecutionFence {
             header,
             active: carrier.checkpoint().active.clone(),
             attempts: carrier.checkpoint().attempts.clone(),
+            receipts: carrier.checkpoint().receipts.clone(),
         }
     }
 

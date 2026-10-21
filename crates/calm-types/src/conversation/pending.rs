@@ -6,9 +6,39 @@ use super::{
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
+/// Queue/source identity is independent of the accepted provenance in a render plan.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum CanonicalPendingIdentity {
+    Accepted {
+        input: AcceptedInputRef,
+    },
+    ExplicitSuccessor {
+        retry_intent_id: super::RetryIntentId,
+    },
+}
+
+impl From<AcceptedInputRef> for CanonicalPendingIdentity {
+    fn from(input: AcceptedInputRef) -> Self {
+        Self::Accepted { input }
+    }
+}
+
+impl From<MessageRevisionRef> for CanonicalPendingIdentity {
+    fn from(message: MessageRevisionRef) -> Self {
+        Self::Accepted {
+            input: AcceptedInputRef::Human { message },
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum PendingInput {
+    ExplicitSuccessor {
+        retry_intent_id: super::RetryIntentId,
+        queue_position: u64,
+        queued_at_ms: i64,
+    },
     Human {
         message: MessageRevisionRef,
         queue_position: u64,
@@ -30,38 +60,52 @@ pub enum PendingInput {
 impl PendingInput {
     pub fn queue_position(&self) -> u64 {
         match self {
-            Self::Human { queue_position, .. } | Self::System { queue_position, .. } => {
-                *queue_position
-            }
+            Self::Human { queue_position, .. }
+            | Self::System { queue_position, .. }
+            | Self::ExplicitSuccessor { queue_position, .. } => *queue_position,
         }
     }
 
     pub fn queued_at_ms(&self) -> i64 {
         match self {
-            Self::Human { queued_at_ms, .. } | Self::System { queued_at_ms, .. } => *queued_at_ms,
+            Self::Human { queued_at_ms, .. }
+            | Self::System { queued_at_ms, .. }
+            | Self::ExplicitSuccessor { queued_at_ms, .. } => *queued_at_ms,
         }
     }
-    pub fn input_ref(&self) -> AcceptedInputRef {
+    pub fn identity(&self) -> CanonicalPendingIdentity {
         match self {
-            Self::Human { message, .. } => AcceptedInputRef::Human {
-                message: message.clone(),
+            Self::ExplicitSuccessor {
+                retry_intent_id, ..
+            } => CanonicalPendingIdentity::ExplicitSuccessor {
+                retry_intent_id: retry_intent_id.clone(),
             },
+            Self::Human { message, .. } => message.clone().into(),
             Self::System { observation_id, .. } => AcceptedInputRef::System {
                 observation_id: observation_id.clone(),
-            },
+            }
+            .into(),
+        }
+    }
+
+    pub fn accepted_input_ref(&self) -> Option<AcceptedInputRef> {
+        match self.identity() {
+            CanonicalPendingIdentity::Accepted { input } => Some(input),
+            CanonicalPendingIdentity::ExplicitSuccessor { .. } => None,
         }
     }
 
     pub fn message_id(&self) -> Option<&ConversationMessageId> {
         match self {
             Self::Human { message, .. } => Some(&message.message_id),
-            Self::System { .. } => None,
+            Self::System { .. } | Self::ExplicitSuccessor { .. } => None,
         }
     }
 
     pub fn envelope_id(&self) -> Option<i64> {
         match self {
             Self::Human { envelope_id, .. } | Self::System { envelope_id, .. } => *envelope_id,
+            Self::ExplicitSuccessor { .. } => None,
         }
     }
 }
@@ -70,14 +114,21 @@ impl PendingInput {
 /// current author/source, revision, membership and exact current carrier.
 pub fn validate_pending_inputs(pending: &[PendingInput]) -> Result<(), &'static str> {
     let mut seen = HashSet::new();
+    let mut intents = HashSet::new();
     let mut last_position = None;
     for entry in pending {
         if last_position.is_some_and(|last| last >= entry.queue_position()) {
             return Err("pending queue positions must be strictly increasing");
         }
         last_position = Some(entry.queue_position());
-        if !seen.insert(entry.input_ref().identity()) {
-            return Err("pending queue repeats an accepted input identity");
+        let unique = match entry.identity() {
+            CanonicalPendingIdentity::Accepted { input } => seen.insert(input.identity()),
+            CanonicalPendingIdentity::ExplicitSuccessor { retry_intent_id } => {
+                intents.insert(retry_intent_id)
+            }
+        };
+        if !unique {
+            return Err("pending queue repeats an input identity");
         }
     }
     Ok(())

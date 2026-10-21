@@ -2264,6 +2264,134 @@
         }
       }
     },
+    "/api/cards/{id}/conversation/input/retry": {
+      "post": {
+        "tags": [
+          "cards"
+        ],
+        "operationId": "retry_conversation_input",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RetryConversationInputRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RetryConversationInputResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "`payload_too_large`: the body is over the request size limit.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "`unsupported_media_type`: the request does not say `Content-Type: application/json`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`invalid_body`: the JSON is not the body's shape (a field missing or of the wrong type).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/cards/{id}/harness/items": {
       "get": {
         "tags": [
@@ -14041,7 +14169,13 @@
       "ConversationActionUnavailableReason": {
         "type": "string",
         "enum": [
-          "not_implemented_yet",
+          "prior_invocation_not_recorded",
+          "invocation_not_fully_frozen",
+          "attachments_not_frozen",
+          "erased_or_withdrawn",
+          "unsupported_binding",
+          "unsupported_source",
+          "already_resolved",
           "already_kept",
           "not_held"
         ]
@@ -14110,7 +14244,7 @@
                 "type": "null"
               },
               {
-                "$ref": "#/components/schemas/KeepConversationInputResult"
+                "$ref": "#/components/schemas/ConversationInputResolutionResult"
               }
             ]
           },
@@ -14583,6 +14717,46 @@
           "historical"
         ]
       },
+      "ConversationInputResolutionResult": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "result",
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "keep"
+                ]
+              },
+              "result": {
+                "$ref": "#/components/schemas/KeepConversationInputResult"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "result",
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "retry"
+                ]
+              },
+              "result": {
+                "$ref": "#/components/schemas/RetryConversationInputResult"
+              }
+            }
+          }
+        ]
+      },
       "ConversationInputTarget": {
         "type": "object",
         "required": [
@@ -14718,6 +14892,35 @@
       },
       "ConversationPendingInput": {
         "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "retry_intent_id",
+              "queue_position",
+              "queued_at_ms",
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "explicit_successor"
+                ]
+              },
+              "queue_position": {
+                "type": "integer",
+                "format": "int64",
+                "minimum": 0
+              },
+              "queued_at_ms": {
+                "type": "integer",
+                "format": "int64"
+              },
+              "retry_intent_id": {
+                "type": "string"
+              }
+            }
+          },
           {
             "type": "object",
             "required": [
@@ -18485,6 +18688,63 @@
             "description": "Absolute filesystem path to resolve against every area's folder claims; `null` if no claim covers it."
           }
         }
+      },
+      "RetryConversationInputRequest": {
+        "type": "object",
+        "description": "Exact predecessor CAS for an explicit Human repeat; never a resend command.",
+        "required": [
+          "carrier_id",
+          "submission_id",
+          "attempt_id",
+          "revision"
+        ],
+        "properties": {
+          "attempt_id": {
+            "type": "string"
+          },
+          "carrier_id": {
+            "type": "string"
+          },
+          "revision": {
+            "type": "string"
+          },
+          "submission_id": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "RetryConversationInputResult": {
+        "type": "object",
+        "required": [
+          "carrier_id",
+          "submission_id",
+          "attempt_id",
+          "revision",
+          "retry_intent_id",
+          "waiting_for_settlement"
+        ],
+        "properties": {
+          "attempt_id": {
+            "type": "string"
+          },
+          "carrier_id": {
+            "type": "string"
+          },
+          "retry_intent_id": {
+            "type": "string"
+          },
+          "revision": {
+            "type": "string"
+          },
+          "submission_id": {
+            "type": "string"
+          },
+          "waiting_for_settlement": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false
       },
       "RunRecovery": {
         "type": "object",

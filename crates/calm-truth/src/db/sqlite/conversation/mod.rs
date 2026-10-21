@@ -12,8 +12,15 @@ pub(super) mod messages;
 mod plans;
 pub(super) mod presentation;
 mod release;
+mod retry;
+pub(in crate::db::sqlite) use retry::retry_availability_tx;
+pub use retry::{
+    RetryUnavailableReason, StoredRetryIntent, retry_intent_tx, submission_retry_intent_tx,
+};
 mod resolution;
-pub use resolution::keep_conversation_input_tx;
+pub use resolution::{
+    keep_conversation_input_tx, replay_retry_conversation_input_tx, retry_conversation_input_tx,
+};
 mod runtime_frame;
 mod storage_contract;
 
@@ -26,7 +33,7 @@ pub use carrier::{
     CurrentInputCarrier, current_input_carrier_tx, current_input_content_carrier_tx,
     current_input_fact_carrier_tx,
 };
-pub use claims::{ClaimedSubmission, claim_initial_submission_tx};
+pub use claims::{ClaimedSubmission, InitialClaim, claim_initial_submission_tx};
 pub use creation::{
     HumanTrackCreationAcceptance, HumanTrackCreationAck, HumanTrackCreationRecord,
     human_track_creation_get_tx, human_track_creation_insert_tx,
@@ -130,3 +137,12 @@ mod transaction_tests;
 
 #[cfg(test)]
 mod resolution_tests;
+
+#[cfg(test)]
+mod retry_storage_tests;
+
+#[cfg(test)]
+mod retry_tests;
+
+#[cfg(test)]
+mod retry_lifecycle_tests;

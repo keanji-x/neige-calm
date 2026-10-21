@@ -63,10 +63,70 @@ pub(super) async fn current_frame(
                 super::conversation::submission_plan_tx(&mut tx, &id).await?;
                 identities.push((id, identity.logical_turn_id));
             }
+            let needs_retry_policy = identities.iter().any(|(id, _)| {
+                frame.canonical_inputs.attempt(id).is_some_and(|attempt| {
+                    !frame.canonical_inputs.is_human_resolved(&attempt.attempt)
+                        && matches!(
+                            attempt.delivery,
+                            calm_types::conversation::InputDeliveryFact::Unknown
+                                | calm_types::conversation::InputDeliveryFact::CrossingUnknown
+                        )
+                })
+            });
+            let current = if needs_retry_policy
+                && (carrier.state.is_active_authority()
+                    || carrier.state == calm_types::worker::WorkerSessionState::Failed)
+            {
+                Some(
+                    super::conversation::current_input_fact_carrier_tx(&mut tx, card, &carrier.id)
+                        .await?,
+                )
+            } else {
+                None
+            };
+            let mut availability = Vec::with_capacity(identities.len());
+            for (id, _) in &identities {
+                let reason = match frame.canonical_inputs.attempt(id) {
+                    None => Some(ConversationActionUnavailableReason::NotHeld),
+                    Some(attempt) if frame.canonical_inputs.is_human_resolved(&attempt.attempt) => {
+                        Some(ConversationActionUnavailableReason::AlreadyResolved)
+                    }
+                    Some(attempt) => match attempt.delivery {
+                        calm_types::conversation::InputDeliveryFact::CrossingUnknown
+                        | calm_types::conversation::InputDeliveryFact::Unknown => match &current {
+                            Some(current) => {
+                                super::conversation::retry_availability_tx(&mut tx, current, id)
+                                    .await?
+                                    .err()
+                                    .map(retry_reason)
+                            }
+                            None => Some(ConversationActionUnavailableReason::UnsupportedBinding),
+                        },
+                        calm_types::conversation::InputDeliveryFact::NotDispatched { .. }
+                        | calm_types::conversation::InputDeliveryFact::Accepted { .. } => {
+                            Some(ConversationActionUnavailableReason::NotHeld)
+                        }
+                    },
+                };
+                availability.push((
+                    id.clone(),
+                    match reason {
+                        Some(reason) => ConversationActionAvailability::Unavailable { reason },
+                        None => ConversationActionAvailability::Available,
+                    },
+                ));
+            }
             ConversationActiveInput::from_checkpoint(
                 &frame.canonical_inputs,
                 &carrier.id,
                 &identities,
+                |id| {
+                    availability
+                        .iter()
+                        .find(|(stored, _)| stored == id)
+                        .map(|(_, action)| action.clone())
+                        .ok_or("submission lacks its checked retry availability")
+                },
             )
             .map_err(CalmError::Conflict)?
         }
@@ -106,6 +166,11 @@ pub(super) async fn page_on_connection(
         (">", "ASC", after)
     };
     // One autocommit statement sees each message's current revision/tombstone and backing row together.
+    // Display provenance outlives an execution claim. A checked Human retirement
+    // links its predecessor input to the immutable retry root even while only an
+    // ExplicitSuccessor is queued (including restored NotDispatched successors).
+    // Select one backing input so retry chains never multiply presentation rows;
+    // execution admission continues to require effective claims in its own owner.
     let sql = format!(
         "SELECT p.sequence,p.source_kind,p.source_identity,p.erased_by_operation_id,
                 p.native_item_row_id AS backing_native_id,
@@ -122,9 +187,23 @@ pub(super) async fn page_on_connection(
            ON p.source_kind='system_observation' AND json_extract(system_pending.value,'$.kind')='system'
            AND json_extract(system_pending.value,'$.observation_id')=p.observation_id
          LEFT JOIN conversation_submission_inputs system_input
-           ON p.source_kind='system_observation' AND system_input.observation_id=p.observation_id AND system_input.effective=1
-         LEFT JOIN conversation_input_submissions system_submission
-           ON system_submission.id=system_input.submission_id AND system_submission.card_id=p.card_id
+           ON p.source_kind='system_observation' AND system_input.rowid=(
+             SELECT backing.rowid FROM conversation_submission_inputs backing
+             JOIN conversation_input_submissions predecessor ON predecessor.id=backing.submission_id
+               AND predecessor.card_id=p.card_id
+             LEFT JOIN conversation_input_retry_relations retry
+               ON retry.retry_intent_id=backing.retired_by_retry_intent_id
+               AND retry.predecessor_submission_id=backing.submission_id AND retry.card_id=p.card_id
+               AND retry.root_submission_id=COALESCE(predecessor.render_plan_root_submission_id,predecessor.id)
+             WHERE backing.observation_id=p.observation_id AND backing.input_kind='system'
+               AND (backing.effective=1 OR (backing.retirement_reason='human_resolution'
+                    AND retry.retry_intent_id IS NOT NULL))
+             ORDER BY backing.effective DESC,backing.rowid LIMIT 1)
+         LEFT JOIN conversation_input_retry_relations system_retry
+           ON system_retry.retry_intent_id=system_input.retired_by_retry_intent_id
+         LEFT JOIN conversation_resolved_submission_plans system_submission
+           ON system_submission.id=COALESCE(system_retry.root_submission_id,system_input.submission_id)
+           AND system_submission.card_id=p.card_id
          LEFT JOIN json_each(system_submission.render_plan_json,'$.segments') system_claim
            ON json_extract(system_claim.value,'$.kind')='input'
            AND json_extract(system_claim.value,'$.input.kind')='system'
@@ -350,4 +429,24 @@ pub(super) async fn page_on_connection(
         items,
         next_cursor,
     })
+}
+
+fn retry_reason(
+    reason: super::conversation::RetryUnavailableReason,
+) -> ConversationActionUnavailableReason {
+    use super::conversation::RetryUnavailableReason as R;
+    match reason {
+        R::PriorInvocationNotRecorded => {
+            ConversationActionUnavailableReason::PriorInvocationNotRecorded
+        }
+        R::InvocationNotFullyFrozen => {
+            ConversationActionUnavailableReason::InvocationNotFullyFrozen
+        }
+        R::AttachmentsNotFrozen => ConversationActionUnavailableReason::AttachmentsNotFrozen,
+        R::ErasedOrWithdrawn => ConversationActionUnavailableReason::ErasedOrWithdrawn,
+        R::UnsupportedBinding => ConversationActionUnavailableReason::UnsupportedBinding,
+        R::UnsupportedSource => ConversationActionUnavailableReason::UnsupportedSource,
+        R::AlreadyResolved => ConversationActionUnavailableReason::AlreadyResolved,
+        R::NotHeld => ConversationActionUnavailableReason::NotHeld,
+    }
 }

@@ -143,7 +143,7 @@ async fn actual_pre_send_proof_restores_pending_on_failed_current_carrier_withou
     assert!(inputs.active.is_none());
     assert_eq!(inputs.pending.len(), 1);
     assert_eq!(
-        inputs.pending[0].input_ref(),
+        inputs.pending[0].accepted_input_ref().unwrap(),
         AcceptedInputRef::Human {
             message: fx.message.clone()
         }

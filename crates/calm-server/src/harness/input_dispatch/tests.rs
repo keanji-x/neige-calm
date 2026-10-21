@@ -330,7 +330,7 @@ async fn private_pre_send_proof_releases_only_the_original_claim_in_its_transact
     let checkpoint = fx.checkpoint().await;
     assert_eq!(checkpoint.pending.len(), 1);
     assert_eq!(
-        checkpoint.pending[0].input_ref(),
+        checkpoint.pending[0].accepted_input_ref().unwrap(),
         AcceptedInputRef::Human {
             message: fx.message.clone()
         }

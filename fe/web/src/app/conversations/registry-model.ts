@@ -125,11 +125,11 @@ export type RememberedConversation = Readonly<{
   turns: readonly TranscriptEntry[];
 }>;
 
-export type KeepInputIntent = Readonly<{ key: string; args: Readonly<KeepConversationInputRequest>; status: 'sending' | 'unknown' }>;
+export type InputResolutionIntent = Readonly<{ decision: 'keep' | 'retry'; key: string; args: Readonly<KeepConversationInputRequest>; status: 'sending' | 'unknown' }>;
 
 export type ConversationRegistry = Readonly<{
-  beginKeep: (card: string, args: KeepConversationInputRequest, key: string) => KeepInputIntent | null;
-  finishKeep: (card: string, key: string, status: 'unknown' | 'done') => void;
+  beginResolution: (card: string, decision: 'keep' | 'retry', args: KeepConversationInputRequest, key: string) => InputResolutionIntent | null;
+  finishResolution: (card: string, key: string, status: 'unknown' | 'done') => void;
   turnsOf: (conversationId: string) => readonly TranscriptEntry[];
   /** Stored canonical source only. Never feed the display's outbox fold back into memory. */
   rememberedTurnsOf: (conversationId: string) => readonly TranscriptEntry[];

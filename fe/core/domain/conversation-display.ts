@@ -18,6 +18,20 @@ export function keepConversationInputOperation(card: string, args: import('../ap
     'Keep receipt does not match its original CAS request') };
 }
 
+const retryResultSchema = z.object({...keepResultSchema.shape,retry_intent_id:z.string().min(1)}).strict();
+export function retryConversationInputOperation(card: string, args: import('../api/generated/wire.js').RetryConversationInputRequest, key: string): ApiOperation<import('../api/generated/wire.js').RetryConversationInputResult> {
+  return { method:'POST', path:`/api/cards/${encodeURIComponent(card)}/conversation/input/retry`,
+    headers:{'Idempotency-Key':key}, body:args, responseSchema:retryResultSchema.refine(result =>
+      result.carrier_id === args.carrier_id && result.submission_id === args.submission_id
+      && result.attempt_id === args.attempt_id && result.revision === (BigInt(args.revision)+1n).toString(),
+    'Retry receipt does not match its original CAS request') };
+}
+const availabilitySchema = z.discriminatedUnion('kind', [
+  z.object({kind:z.literal('available')}).strict(),
+  z.object({kind:z.literal('unavailable'),reason:z.enum(['already_kept','already_resolved','not_held','prior_invocation_not_recorded',
+    'invocation_not_fully_frozen','attachments_not_frozen','erased_or_withdrawn','unsupported_binding','unsupported_source'])}).strict(),
+]);
+
 const attachment = z.object({ id: z.string(), size: z.number(), url: z.string(), contentType:z.string() });
 const identity = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('human'), message_id: z.string() }).strict(),
@@ -90,6 +104,7 @@ export const conversationRunMetadataSchema = z.object({
   history_replacement_supported:z.boolean(),
   terminal_timeout:harnessTimeoutEvidenceSchema.nullable(),
   pending_inputs:z.array(z.discriminatedUnion('kind',[
+    z.object({kind:z.literal('explicit_successor'),retry_intent_id:z.string().min(1),queue_position:z.number().int().nonnegative(),queued_at_ms:z.number()}).strict(),
     z.object({kind:z.literal('human'),message_id:z.string(),revision:z.number().int().positive(),
       queue_position:z.number().int().nonnegative(),queued_at_ms:z.number()}).strict(),
     z.object({kind:z.literal('system'),observation_id:z.string(),
@@ -106,9 +121,11 @@ export const conversationRunMetadataSchema = z.object({
         z.object({kind:z.literal('recorded'),configuration:z.object({model:z.string().nullable(),effort:z.string().nullable(),permission:plannerPermissionModeSchema}).strict()}).strict(),
         z.object({kind:z.literal('prior_invocation_not_recorded')}).strict(),
       ]),
-      resolution:keepResultSchema.nullable(),
-      actions:z.object({keep:z.discriminatedUnion('kind', [z.object({kind:z.literal('available')}).strict(), z.object({kind:z.literal('unavailable'),reason:z.enum(['already_kept','not_held'])}).strict()]),
-        retry:z.object({kind:z.literal('unavailable'),reason:z.literal('not_implemented_yet')}).strict()}).strict(),
+      resolution:z.discriminatedUnion('kind',[
+        z.object({kind:z.literal('keep'),result:keepResultSchema}).strict(),
+        z.object({kind:z.literal('retry'),result:retryResultSchema}).strict(),
+      ]).nullable(),
+      actions:z.object({keep:availabilitySchema,retry:availabilitySchema}).strict(),
     }).strict().nullable(),
   }).strict()) }).strict().nullable(),
   native_turn_id:z.string().nullable(),

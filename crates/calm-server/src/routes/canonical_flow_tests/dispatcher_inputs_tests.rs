@@ -6,6 +6,7 @@ use calm_types::conversation::PendingInput;
 
 mod qualification;
 mod recovery;
+mod retry_read;
 
 const SYSTEM_BODY: &str = "System report work queued during the original Human turn";
 const HUMAN_BODY: &str = "A later Human input must continue without another POST";
@@ -60,6 +61,9 @@ struct Flow {
 }
 impl Flow {
     async fn running() -> Self {
+        Self::running_with_model(false).await
+    }
+    async fn running_with_model(frozen: bool) -> Self {
         let fixture = Fixture::new().await;
         let (state, app, cookie) = fixture.application().await;
         let area = post(
@@ -71,20 +75,24 @@ impl Flow {
         )
         .await;
         let (client, mut peer) = connect(&state.shared_codex_appserver).await;
-        let created = post(
-            &app,
-            &cookie,
-            "/api/tracks",
-            "first",
-            json!({
-                "area_id":area["id"],"title":"","planner_provider":"codex",
-                "theme":{"fg":[255,255,255],"bg":[0,0,0]},"first_message":FIRST_BODY
-            }),
-        )
-        .await;
+        let mut body = json!({"area_id":area["id"],"title":"","planner_provider":"codex",
+            "theme":{"fg":[255,255,255],"bg":[0,0,0]},"first_message":FIRST_BODY});
+        if frozen {
+            body["model"] = json!("retry-model");
+            body["reasoning_effort"] = json!("high");
+        }
+        let create = post(&app, &cookie, "/api/tracks", "first", body);
+        let native = async {
+            if frozen {
+                let catalog = request(&mut peer).await;
+                assert_eq!(catalog["method"], "model/list");
+                send(&mut peer, json!({"id":catalog["id"],"error":{"code":-32603,"message":"catalog unavailable"}})).await;
+            }
+            super::native_attempt_recovery_tests::initial_request(&mut peer).await
+        };
+        let (created, call) = tokio::join!(create, native);
         let track = created["id"].as_str().unwrap().to_owned();
         let (card, worker, _) = fixture.carrier(&track).await;
-        let call = super::native_attempt_recovery_tests::initial_request(&mut peer).await;
         send(
             &mut peer,
             json!({"id":call["id"],"result":{"turn":{"id":TURN}}}),
@@ -345,4 +353,92 @@ async fn real_system_then_human_tail_continues_after_both_preceding_end_events()
 #[tokio::test]
 async fn real_human_then_system_tail_continues_after_both_preceding_end_events() {
     mixed_order(false).await;
+}
+
+pub(super) async fn retry_system_via_http() {
+    let mut flow = Flow::running_with_model(true).await;
+    flow.report(SYSTEM_BODY).await;
+    flow.end(TURN).await;
+    let call = flow.next().await.expect("real Dispatcher input must cross");
+    assert!(call["params"]["input"].to_string().contains(SYSTEM_BODY));
+    send(
+        &mut flow.peer,
+        json!({"id":call["id"],"result":{"turn":{}}}),
+    )
+    .await;
+    let before = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let frame = flow.fixture.carrier(&flow.track).await.2;
+            if frame.canonical_inputs.attempts.len() == 2
+                && matches!(
+                    frame.canonical_inputs.attempts[1].delivery,
+                    InputDeliveryFact::Unknown
+                )
+            {
+                break frame;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    flow.state
+        .harness
+        .get(&flow.worker)
+        .unwrap()
+        .pause_issuance_for_dev();
+    let display = retry_read::system_display(&flow.app, &flow.cookie, &flow.card).await;
+    let predecessor = &before.canonical_inputs.attempts[1];
+    let uri = format!("/api/cards/{}/conversation/input/retry", flow.card);
+    let result = post(&flow.app,&flow.cookie,&uri,"system-repeat",json!({"carrier_id":flow.worker,
+        "submission_id":predecessor.attempt.submission_id,"attempt_id":predecessor.attempt.attempt_id,"revision":predecessor.revision.to_string()})).await;
+    let id =
+        calm_types::conversation::RetryIntentId::parse(result["retry_intent_id"].as_str().unwrap())
+            .unwrap();
+    let mut tx = crate::db::sqlite::begin_immediate_tx(flow.fixture.repo.db())
+        .await
+        .unwrap();
+    let carrier = crate::db::sqlite::conversation::current_input_fact_carrier_tx(
+        &mut tx,
+        &flow.card,
+        &flow.worker,
+    )
+    .await
+    .unwrap();
+    let intent = crate::db::sqlite::conversation::retry_intent_tx(&mut tx, &carrier, &id)
+        .await
+        .unwrap();
+    let original = crate::db::sqlite::conversation::submission_plan_tx(
+        &mut tx,
+        &predecessor.attempt.submission_id,
+    )
+    .await
+    .unwrap();
+    assert_eq!(intent.plan, original);
+    assert!(original.plan.segments().iter().any(|segment| matches!(
+        segment,
+        calm_types::conversation::SubmissionRenderSegment::Input {
+            input: calm_types::conversation::SubmissionRenderInput::System { .. },
+            ..
+        }
+    )));
+    assert!(original.plan.segments().iter().all(|segment| !matches!(
+        segment,
+        calm_types::conversation::SubmissionRenderSegment::Input {
+            input: calm_types::conversation::SubmissionRenderInput::Human { .. },
+            ..
+        }
+    )));
+    tx.commit().await.unwrap();
+    let after = flow.fixture.carrier(&flow.track).await.2;
+    assert_eq!(
+        after.canonical_inputs.attempts[1].attempt,
+        predecessor.attempt
+    );
+    assert_eq!(
+        after.canonical_inputs.attempts[1].delivery,
+        predecessor.delivery
+    );
+    assert_eq!(after.canonical_inputs.pending.len(), 1);
+    retry_read::queued_restore_reopen(flow, id, display).await;
 }

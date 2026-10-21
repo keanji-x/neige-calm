@@ -27,7 +27,7 @@ function fixture(items:ConversationDisplayItem[],run:Readonly<{state:WorkerSessi
       attachments_supported:false,compact_outcome:null,context_usage_invalidated:false,running_turn:null,token_usage:null,
       input_contract:'canonical',history_replacement_supported:false,terminal_timeout:run.terminalTimeout,runtime_state:run.state,pending_inputs:run.pendingInputs,active_input:run.activeInput ?? null,native_turn_id:null,
     }};
-    if(request.path.endsWith('/conversation/input/keep') && onKeep !== undefined) return onKeep(request);
+    if((request.path.endsWith('/conversation/input/keep') || request.path.endsWith('/conversation/input/retry')) && onKeep !== undefined) return onKeep(request);
     if(request.path.endsWith('/planner/input')){
       stored=onSend?.() ?? stored;
       return {status:200,statusText:'OK',body:{card_id:'daily-planner',worker_session_id:'original-retained',entry_id:'ack-message'}};
@@ -71,7 +71,7 @@ it.each([false,true])('keeps the two canonical pending refs separate from one AC
       compact_outcome:null,context_usage_invalidated:false,running_turn:{turn_id:'native-h1',elapsed_ms:1000},token_usage:null,
       input_contract:'canonical',history_replacement_supported:false,terminal_timeout:null,runtime_state:'running',
       pending_inputs:sent ? [s1Ref,h2Ref] : [s1Ref],native_turn_id:'native-h1',
-      active_input:{current_execution_id:'logical-h1',submissions:[{carrier_id:'original-retained',logical_turn_id:'logical-h1',submission_id:'submission-h1',attempt:{attempt_id:'attempt-h1',revision:'1',delivery:'accepted',target:{provider:'codex',thread_id:'thread-h1',native_session_id:null,local_turn_id:null,native_turn_id:'native-h1',rpc_request_id:null},invocation:{kind:'prior_invocation_not_recorded'},resolution:null,actions:{keep:{kind:'unavailable',reason:'not_held'},retry:{kind:'unavailable',reason:'not_implemented_yet'}}}}]},
+      active_input:{current_execution_id:'logical-h1',submissions:[{carrier_id:'original-retained',logical_turn_id:'logical-h1',submission_id:'submission-h1',attempt:{attempt_id:'attempt-h1',revision:'1',delivery:'accepted',target:{provider:'codex',thread_id:'thread-h1',native_session_id:null,local_turn_id:null,native_turn_id:'native-h1',rpc_request_id:null},invocation:{kind:'prior_invocation_not_recorded'},resolution:null,actions:{keep:{kind:'unavailable',reason:'not_held'},retry:{kind:'unavailable',reason:'unsupported_source'}}}}]},
     });
     if(request.method==='POST' && request.path.endsWith('/planner/input')){
       expect(request.body).toEqual({text});
@@ -248,7 +248,7 @@ it.each([1280,390])('shows canonical held delivery without another transcript ro
   const input:ConversationActiveInput={current_execution_id:null,submissions:[{
     carrier_id:'original-retained',logical_turn_id:'logical',submission_id:'submission',attempt:{
       attempt_id:'attempt',revision:'7',delivery:'unknown',target:{provider:'codex',thread_id:'thread',native_session_id:null,native_turn_id:null,local_turn_id:null,rpc_request_id:null},
-      invocation:width === 1280 ? {kind:'recorded',configuration:{model:'original-model',effort:'high',permission:'never'}} : {kind:'prior_invocation_not_recorded'},resolution:null,actions:{keep:{kind:'available'},retry:{kind:'unavailable',reason:'not_implemented_yet'}},
+      invocation:width === 1280 ? {kind:'recorded',configuration:{model:'original-model',effort:'high',permission:'never'}} : {kind:'prior_invocation_not_recorded'},resolution:null,actions:{keep:{kind:'available'},retry:{kind:'unavailable',reason:'unsupported_source'}},
     },
   }]};
   const run={state:'failed' as const,phase:'wedged' as const,blockedReason:'Execution is held.',terminalTimeout:null,pendingInputs:[],activeInput:input};
@@ -258,8 +258,8 @@ it.each([1280,390])('shows canonical held delivery without another transcript ro
     keys.push(request.headers?.['Idempotency-Key'] ?? ''); bodies.push(request.body);
     if(keys.length === 1) return {status:503,statusText:'Unavailable',body:{error:'Unavailable',code:'service_unavailable',message:'Answer lost. Try again.'}};
     const result={carrier_id:'original-retained',submission_id:'submission',attempt_id:'attempt',revision:'8',waiting_for_settlement:true};
-    run.activeInput={current_execution_id:null,submissions:[{...input.submissions[0],attempt:{...input.submissions[0].attempt!,revision:'8',resolution:result,
-      actions:{keep:{kind:'unavailable',reason:'already_kept'},retry:{kind:'unavailable',reason:'not_implemented_yet'}}}}]};
+    run.activeInput={current_execution_id:null,submissions:[{...input.submissions[0],attempt:{...input.submissions[0].attempt!,revision:'8',resolution:{kind:'keep',result},
+      actions:{keep:{kind:'unavailable',reason:'already_kept'},retry:{kind:'unavailable',reason:'unsupported_source'}}}}]};
     return {status:200,statusText:'OK',body:result};
   });
   await page.getByRole('button',{name:/Conversation Daily Planner conversation/}).click();
@@ -279,5 +279,83 @@ it.each([1280,390])('shows canonical held delivery without another transcript ro
   await f.client.invalidateQueries({queryKey:queryKeys.plannerRun('daily-planner')});
   await waitFor(()=>expect(screen.queryByText('Delivery not confirmed',{exact:true})).toBeNull());
   expect(screen.getAllByText('One saved canonical input',{exact:true})).toHaveLength(1);
+  f.client.clear();
+});
+
+async function retryView(width: number, available = true, loseFirst = false) {
+  await page.viewport(width,800);
+  const attempt = {attempt_id:'retry-attempt',revision:'7',delivery:'unknown' as const,
+    target:{provider:'codex' as const,thread_id:'thread',native_session_id:null,native_turn_id:null,local_turn_id:null,rpc_request_id:null},
+    invocation:{kind:'recorded' as const,configuration:{model:'original-model',effort:'high',permission:'never' as const}},resolution:null,
+    actions:{keep:{kind:'available' as const},retry:available ? {kind:'available' as const} : {kind:'unavailable' as const,reason:'invocation_not_fully_frozen' as const}}};
+  const input:ConversationActiveInput={current_execution_id:null,submissions:[{carrier_id:'original-retained',logical_turn_id:'logical',submission_id:'retry-submission',attempt}]};
+  const run={state:'failed' as const,phase:'wedged' as const,blockedReason:'Execution is held.',terminalTimeout:null,pendingInputs:[] as ConversationPendingInput[],activeInput:input};
+  const requests:ApiRequest[]=[];
+  const f=fixture([human('retry-message','jian','Jian',1,'Saved input to repeat')],run,undefined,request=>{
+    requests.push(request);
+    if(loseFirst && requests.length === 1) return {status:503,statusText:'Unavailable',body:{error:'Unavailable',code:'service_unavailable',message:'Answer lost. Try again.'}};
+    const result={carrier_id:'original-retained',submission_id:'retry-submission',attempt_id:'retry-attempt',revision:'8',retry_intent_id:'intent',waiting_for_settlement:true};
+    run.pendingInputs=[{kind:'explicit_successor',retry_intent_id:'intent',queue_position:2,queued_at_ms:22}];
+    run.activeInput={current_execution_id:null,submissions:[{...input.submissions[0],attempt:{...attempt,revision:'8',resolution:{kind:'retry',result},
+      actions:{keep:{kind:'unavailable',reason:'already_resolved'},retry:{kind:'unavailable',reason:'already_resolved'}}}}]};
+    return {status:200,statusText:'OK',body:result};
+  });
+  await page.getByRole('button',{name:/Conversation Daily Planner conversation/}).click();
+  await expect.element(page.getByText('Delivery not confirmed',{exact:true})).toBeVisible();
+  return {...f,retries:requests};
+}
+it.each([1280,390])('retry requires confirmation and explains duplicate effects at width %s',async width=>{
+  const f=await retryView(width);
+  await page.getByRole('button',{name:'Retry',exact:true}).click();
+  await expect.element(page.getByRole('dialog',{name:'Retry this input?'})).toBeVisible();
+  await expect.element(page.getByText('This input may already have been delivered. Sending it again can repeat its effects.')).toBeVisible();
+  expect(f.retries).toHaveLength(0);
+  await waitFor(()=>expect(document.activeElement?.textContent).toBe('Cancel'));
+  await userEvent.keyboard('{Escape}');
+  await waitFor(()=>expect(document.activeElement?.textContent).toBe('Retry'));
+  f.client.clear();
+});
+it.each([1280,390])('retry cancellation sends nothing at width %s',async width=>{
+  const f=await retryView(width);
+  await page.getByRole('button',{name:'Retry',exact:true}).click();
+  await page.getByRole('button',{name:'Cancel',exact:true}).click();
+  await waitFor(()=>expect(screen.queryByRole('dialog',{name:'Retry this input?'})).toBeNull());
+  expect(f.retries).toHaveLength(0);
+  await waitFor(()=>expect(document.activeElement?.textContent).toBe('Retry'));
+  f.client.clear();
+});
+it.each([1280,390])('retry queues one canonical successor without an optimistic message at width %s',async width=>{
+  const f=await retryView(width);
+  await page.getByRole('button',{name:'Retry',exact:true}).click();
+  await page.getByRole('button',{name:'Send again',exact:true}).click();
+  await expect.element(page.getByText('Retry queued',{exact:true})).toBeVisible();
+  expect(f.retries).toHaveLength(1);
+  expect(f.retries[0].path).toBe('/api/cards/daily-planner/conversation/input/retry');
+  expect(f.retries[0].body).toEqual({carrier_id:'original-retained',submission_id:'retry-submission',attempt_id:'retry-attempt',revision:'7'});
+  expect(screen.getAllByText('Saved input to repeat',{exact:true})).toHaveLength(1);
+  expect(document.querySelector('[data-nc-pending-send]')).toBeNull();
+  await waitFor(()=>expect(document.activeElement?.getAttribute('data-nc-held-input')).toBe('retry-submission'));
+  await page.screenshot({path:`./__screenshots__/canonical-retry-${width}.png`});
+  f.client.clear();
+});
+it.each([1280,390])('unknown retry response replays the same key at width %s',async width=>{
+  const f=await retryView(width,true,true);
+  await page.getByRole('button',{name:'Retry',exact:true}).click();
+  await page.getByRole('button',{name:'Send again',exact:true}).click();
+  await expect.element(page.getByRole('dialog').getByRole('alert')).toBeVisible();
+  await page.getByRole('button',{name:'Send again',exact:true}).click();
+  await expect.element(page.getByText('Retry queued',{exact:true})).toBeVisible();
+  expect(f.retries).toHaveLength(2);
+  expect(f.retries[0].headers?.['Idempotency-Key']).toBeTruthy();
+  expect(f.retries[1].headers?.['Idempotency-Key']).toBe(f.retries[0].headers?.['Idempotency-Key']);
+  expect(f.retries[1].body).toEqual(f.retries[0].body);
+  f.client.clear();
+});
+it.each([1280,390])('retry keep-only reason remains visible at width %s',async width=>{
+  const f=await retryView(width,false);
+  await expect.element(page.getByText('Retry requires an explicitly recorded model and effort.')).toBeVisible();
+  expect(screen.queryByRole('button',{name:'Retry'})).toBeNull();
+  await expect.element(page.getByRole('button',{name:'Keep as delivered',exact:true})).toBeVisible();
+  expect(f.retries).toHaveLength(0);
   f.client.clear();
 });

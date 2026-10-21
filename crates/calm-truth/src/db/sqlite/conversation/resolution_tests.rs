@@ -277,3 +277,82 @@ async fn canonical_keep_prevents_late_non_dispatch_from_requeueing_the_input() {
         .bind(attempt.submission_id.as_str()).fetch_one(&mut **tx).await.unwrap();
     assert_eq!(effective, 1);
 }
+
+#[tokio::test]
+async fn canonical_keep_reopen_v5_preserves_original_receipt() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = format!("sqlite://{}?mode=rwc", dir.path().join("v5.db").display());
+    let repo = SqlxRepo::open(&url).await.unwrap();
+    let (card, worker, attempt) = held(&repo).await;
+    let args = request(&worker, &attempt);
+    let result = keep(&repo, &card, "human", "keep-v5", args.clone())
+        .await
+        .unwrap();
+    let before: String =
+        sqlx::query_scalar("SELECT handle_state_json FROM worker_sessions WHERE id=?1")
+            .bind(&worker)
+            .fetch_one(repo.pool())
+            .await
+            .unwrap();
+    let value: serde_json::Value = serde_json::from_str(&before).unwrap();
+    assert_eq!(value["schema_version"], 5);
+    assert_eq!(
+        value["canonical_inputs"]["receipts"][0]["decision"]["result"],
+        serde_json::to_value(&result).unwrap()
+    );
+    let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
+    let mut carrier = current_input_fact_carrier_tx(&mut tx, &card, &worker)
+        .await
+        .unwrap();
+    let fence = RuntimeExecutionFence::from_carrier(&carrier);
+    carrier.checkpoint.receipts[0].fingerprint = "b".repeat(64);
+    assert_ne!(fence, RuntimeExecutionFence::from_carrier(&carrier));
+    tx.commit().await.unwrap();
+    drop(repo);
+    let repo = SqlxRepo::open(&url).await.unwrap();
+    let after: String =
+        sqlx::query_scalar("SELECT handle_state_json FROM worker_sessions WHERE id=?1")
+            .bind(&worker)
+            .fetch_one(repo.pool())
+            .await
+            .unwrap();
+    assert_eq!(before, after, "valid V5 must not be rewritten on open");
+    assert_eq!(
+        keep(&repo, &card, "human", "keep-v5", args.clone())
+            .await
+            .unwrap(),
+        result
+    );
+    // Exercise boot adaptation of a released Keep, without recreating it via a
+    // second writer. Retained failed/superseded carriers remain replay authority.
+    let mut old = value.clone();
+    old["schema_version"] = json!(4);
+    let receipt = old["canonical_inputs"]["receipts"][0]
+        .as_object_mut()
+        .unwrap();
+    let decision = receipt.remove("decision").unwrap();
+    receipt.insert("request".into(), decision["request"].clone());
+    receipt.insert("result".into(), decision["result"].clone());
+    sqlx::query("UPDATE worker_sessions SET state='superseded', handle_state_json=?1 WHERE id=?2")
+        .bind(old.to_string())
+        .bind(&worker)
+        .execute(repo.pool())
+        .await
+        .unwrap();
+    drop(repo);
+    let repo = SqlxRepo::open(&url).await.unwrap();
+    let upgraded: String =
+        sqlx::query_scalar("SELECT handle_state_json FROM worker_sessions WHERE id=?1")
+            .bind(&worker)
+            .fetch_one(repo.pool())
+            .await
+            .unwrap();
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&upgraded).unwrap(),
+        value
+    );
+    assert_eq!(
+        keep(&repo, &card, "human", "keep-v5", args).await.unwrap(),
+        result
+    );
+}

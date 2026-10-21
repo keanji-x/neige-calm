@@ -12,6 +12,10 @@ use std::sync::Arc;
 #[derive(Clone)]
 enum InputScope {
     Pending(SubmissionRenderPlan),
+    RetryPending {
+        id: calm_types::conversation::RetryIntentId,
+        plan: SubmissionRenderPlan,
+    },
     Stored {
         id: InputSubmissionId,
         plan: StoredSubmissionPlan,
@@ -52,6 +56,27 @@ impl SelectionReadAdmission {
         plan: SubmissionRenderPlan,
     ) -> Result<Self> {
         Self::bind(tx, repo, source.into(), carrier, InputScope::Pending(plan)).await
+    }
+
+    pub(crate) async fn retry_pending_tx(
+        tx: &mut Transaction<'_, Sqlite>,
+        repo: Arc<dyn Repo>,
+        source: InputSource,
+        carrier: &CurrentInputCarrier,
+        id: calm_types::conversation::RetryIntentId,
+    ) -> Result<Self> {
+        let intent = conversation::retry_intent_tx(tx, carrier, &id).await?;
+        Self::bind(
+            tx,
+            repo,
+            source,
+            carrier,
+            InputScope::RetryPending {
+                id,
+                plan: intent.plan.plan,
+            },
+        )
+        .await
     }
 
     pub(crate) async fn stored_tx(
@@ -132,7 +157,19 @@ async fn check_input_and_target(
 ) -> Result<ReadTarget> {
     let mut original_execution = None;
     let plan = match input {
+        InputScope::RetryPending { id, plan } => {
+            source.require_submission_intent(Some(id))?;
+            let intent = conversation::retry_intent_tx(tx, carrier, id).await?;
+            if intent.unavailable.is_some()
+                || carrier.checkpoint().pending.first() != Some(&intent.pending)
+                || intent.plan.plan != *plan
+            {
+                return Err(CalmError::Conflict("retry pending head changed".into()));
+            }
+            plan
+        }
         InputScope::Pending(plan) => {
+            source.require_submission_intent(None)?;
             let refs = plan
                 .input_refs()
                 .map_err(|error| CalmError::Conflict(error.into()))?;
@@ -141,12 +178,16 @@ async fn check_input_and_target(
                 .pending
                 .iter()
                 .take(refs.len())
-                .map(PendingInput::input_ref)
+                .map(PendingInput::identity)
                 .collect::<Vec<_>>();
             if refs.is_empty()
                 || (carrier.checkpoint().active.is_some()
-                    && !carrier.checkpoint().kept_execution_without_target())
-                || refs != actual
+                    && !carrier.checkpoint().resolved_execution_without_target())
+                || refs
+                    .into_iter()
+                    .map(calm_types::conversation::CanonicalPendingIdentity::from)
+                    .collect::<Vec<_>>()
+                    != actual
             {
                 return Err(CalmError::Conflict(
                     "model read pending prefix changed".into(),
@@ -155,6 +196,8 @@ async fn check_input_and_target(
             plan
         }
         InputScope::Stored { id, plan } => {
+            let retry = conversation::submission_retry_intent_tx(tx, id).await?;
+            source.require_submission_intent(retry.as_ref())?;
             let identity = submission_identity_tx(tx, id).await?;
             let active = carrier.checkpoint().active.as_ref().ok_or_else(|| {
                 CalmError::Conflict("model read has no current claimed execution".into())

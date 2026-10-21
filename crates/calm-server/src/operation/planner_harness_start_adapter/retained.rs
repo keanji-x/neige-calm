@@ -162,7 +162,7 @@ impl PlannerHarnessStartAdapter {
             &wire.worker_session_id,
             &TrackId::from(target.track_id.clone()),
         );
-        for input in target.inputs.refs() {
+        for input in target.inputs.identities() {
             sources.observe(input.clone(), source.clone());
         }
         if self.harness_registry.get(&wire.worker_session_id).is_none() {

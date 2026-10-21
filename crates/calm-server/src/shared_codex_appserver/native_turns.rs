@@ -4,6 +4,7 @@
 //! core lock. Observers never acquire core while holding it. No native call,
 //! repository operation or asynchronous cleanup runs under either lock.
 use super::*;
+mod history;
 mod settlement;
 use crate::harness::backend::{ExecutionEndScope, ExecutionEndTarget, ExecutionInput};
 use serde_json::Value;
@@ -61,6 +62,7 @@ pub(crate) enum NativeInput {
 pub(crate) struct CanonicalNativeInput {
     binding: CodexHarnessBinding,
     input: ExecutionInput,
+    require_settled: bool,
 }
 
 impl NativeInput {
@@ -68,10 +70,12 @@ impl NativeInput {
         binding: CodexHarnessBinding,
         logical_turn_id: &calm_types::conversation::LogicalTurnId,
         proof: &calm_types::conversation::SubmissionDispatchProof,
+        require_settled: bool,
     ) -> Self {
         Self::Canonical(Arc::new(CanonicalNativeInput {
             binding,
             input: ExecutionInput::canonical(logical_turn_id, proof),
+            require_settled,
         }))
     }
 
@@ -105,16 +109,19 @@ pub(super) struct SettlementFence {
     candidate: Option<String>,
     ambiguous: bool,
     unresolved: bool,
+    activity: Arc<()>,
 }
 
 pub(super) struct StartTicket {
     input: NativeInput,
+    activity: Arc<()>,
 }
 
 struct PendingStart {
     ticket: Arc<StartTicket>,
     candidate: Option<NativeExecution>,
     ambiguous: bool,
+    other_candidates: HashMap<String, NativeExecution>,
 }
 
 struct NativeExecution {
@@ -143,6 +150,10 @@ struct ThreadSlot {
     pending: Option<PendingStart>,
     unresolved: bool,
     steering: Option<Arc<SteerTicket>>,
+    activity: Arc<()>,
+    settled_activity: Option<Arc<()>>,
+    retired: HashMap<String, NativeExecution>,
+    unresolved_candidates: std::collections::HashSet<String>,
 }
 
 impl ThreadSlot {
@@ -184,6 +195,9 @@ impl State {
     fn invalidate(&mut self) {
         self.source = None;
         for slot in self.slots.values_mut() {
+            slot.settled_activity = None;
+            slot.unresolved_candidates.clear();
+            slot.retired.clear();
             if let Some(current) = &mut slot.current {
                 current.input = NativeInput::Legacy;
             }
@@ -346,11 +360,35 @@ impl NativeTurns {
                 "Codex has an unresolved native start".into(),
             ));
         }
-        let ticket = Arc::new(StartTicket { input });
+        if matches!(&input, NativeInput::Canonical(input) if input.require_settled)
+            && !slot
+                .settled_activity
+                .as_ref()
+                .is_some_and(|activity| Arc::ptr_eq(activity, &slot.activity))
+        {
+            return Err(CalmError::Conflict(
+                "exact-thread idle observation expired before native issue".into(),
+            ));
+        }
+        if matches!(&input, NativeInput::Canonical(_))
+            && slot
+                .current
+                .as_ref()
+                .is_some_and(NativeExecution::needs_control)
+        {
+            return Err(CalmError::Conflict(
+                "Codex has a different live native execution".into(),
+            ));
+        }
+        let ticket = Arc::new(StartTicket {
+            input,
+            activity: slot.activity.clone(),
+        });
         slot.pending = Some(PendingStart {
             ticket: ticket.clone(),
             candidate: None,
             ambiguous: false,
+            other_candidates: HashMap::new(),
         });
         Ok(ticket)
     }
@@ -422,56 +460,6 @@ impl NativeTurns {
         }
     }
 
-    pub(super) fn accepted(
-        &self,
-        client: &Arc<CodexAppServer>,
-        thread: &str,
-        ticket: &Arc<StartTicket>,
-        turn: &str,
-    ) {
-        let mut state = self.lock();
-        if !state.is_current(&Arc::downgrade(client)) {
-            return;
-        }
-        let Some(slot) = state.slots.get_mut(thread) else {
-            return;
-        };
-        if !slot
-            .pending
-            .as_ref()
-            .is_some_and(|pending| Arc::ptr_eq(&pending.ticket, ticket))
-        {
-            return;
-        }
-        let pending = slot.pending.take().expect("matching actual pending start");
-        slot.unresolved = pending.ambiguous
-            || pending
-                .candidate
-                .as_ref()
-                .is_some_and(|candidate| candidate.turn != turn);
-        let ended = pending
-            .candidate
-            .as_ref()
-            .is_some_and(|candidate| candidate.turn == turn && candidate.ended);
-        let control_visible = pending
-            .candidate
-            .as_ref()
-            .filter(|candidate| candidate.turn == turn)
-            .is_none_or(|candidate| candidate.control_visible);
-        let terminal = pending
-            .candidate
-            .as_ref()
-            .filter(|candidate| candidate.turn == turn)
-            .and_then(|candidate| candidate.terminal.clone());
-        slot.current = Some(NativeExecution {
-            turn: turn.into(),
-            input: ticket.input.clone(),
-            ended,
-            terminal,
-            control_visible,
-        });
-    }
-
     /// Release only this unstarted request. A notification candidate contradicts
     /// a refusal and keeps the outcome uncertain; stale responses cannot clear
     /// a replacement source's slot.
@@ -527,10 +515,27 @@ impl NativeTurns {
         };
         let terminal = ended.then(|| terminal_fact(turn, native));
         let slot = state.slots.entry(thread.clone()).or_default();
+        if let Some(old) = slot.retired.get_mut(turn) {
+            old.ended |= ended;
+            if ended && old.terminal.is_none() {
+                old.terminal = terminal;
+            }
+            if ended && slot.unresolved_candidates.remove(turn) {
+                slot.activity = Arc::new(());
+                if slot.unresolved_candidates.is_empty() {
+                    slot.unresolved = false;
+                }
+            }
+            return true;
+        }
+        slot.activity = Arc::new(());
         if let Some(current) = &mut slot.current
             && current.turn == turn
         {
             current.ended |= ended;
+            if !ended {
+                current.control_visible = true;
+            }
             if ended && current.terminal.is_none() {
                 current.terminal = terminal;
             }
@@ -544,7 +549,23 @@ impl NativeTurns {
                         candidate.terminal = terminal;
                     }
                 }
-                Some(_) => pending.ambiguous = true,
+                Some(_) => {
+                    pending.ambiguous = true;
+                    let other = pending
+                        .other_candidates
+                        .entry(turn.into())
+                        .or_insert_with(|| NativeExecution {
+                            turn: turn.into(),
+                            input: NativeInput::Legacy,
+                            ended: false,
+                            terminal: None,
+                            control_visible: true,
+                        });
+                    other.ended |= ended;
+                    if ended && other.terminal.is_none() {
+                        other.terminal = terminal;
+                    }
+                }
                 None => {
                     pending.candidate = Some(NativeExecution {
                         turn: turn.into(),
@@ -556,49 +577,18 @@ impl NativeTurns {
                 }
             }
         } else if !ended {
-            slot.current = Some(NativeExecution {
+            let next = NativeExecution {
                 turn: turn.into(),
                 input: NativeInput::Legacy,
                 ended: false,
                 terminal: None,
                 control_visible: true,
-            });
+            };
+            if let Some(previous) = slot.current.replace(next) {
+                slot.retain_observed(previous);
+            }
         }
         true
-    }
-
-    pub(super) fn qualified_terminal(&self, target: &ExecutionEndTarget) -> Option<Value> {
-        let ExecutionEndScope::NativeTurn {
-            thread_id,
-            native_turn_id,
-        } = &target.scope
-        else {
-            return None;
-        };
-        let state = self.lock();
-        let eligible = state
-            .source
-            .as_ref()
-            .is_some_and(|source| state.is_current(source))
-            && state.slots.get(thread_id).is_some_and(|slot| {
-                !slot.unresolved
-                    && slot.pending.is_none()
-                    && slot.steering.is_none()
-                    && slot.current.as_ref().is_some_and(|current| {
-                        current.ended
-                            && current.turn == *native_turn_id
-                            && current.input.matches(target)
-                    })
-            });
-        eligible
-            .then(|| {
-                state
-                    .slots
-                    .get(thread_id)
-                    .and_then(|slot| slot.current.as_ref())
-                    .and_then(|current| current.terminal.clone())
-            })
-            .flatten()
     }
 
     pub(super) fn begin_control(

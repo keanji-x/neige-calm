@@ -92,7 +92,7 @@ async fn installed_system_source_is_refused_by_input_dispatch_in_another_reposit
             let snapshot = flow.fixture.carrier(&flow.track).await.2;
             for pending in &snapshot.canonical_inputs.pending {
                 if matches!(pending, PendingInput::System { .. })
-                    && let Some(source) = sources.source(&pending.input_ref())
+                    && let Some(source) = sources.source(&pending.identity())
                 {
                     return source;
                 }

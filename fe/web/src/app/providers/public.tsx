@@ -17,7 +17,7 @@ import { LiveConnectionProvider } from './connection-status.tsx';
  */
 // #2618: timeout activity notices require an explicit decoder and presentation.
 // #2672: template purposes and readiness are required in the creation flow.
-export const WEB_COMPAT_VERSION = 61;
+export const WEB_COMPAT_VERSION = 62;
 /** `databaseId` is optional in the type so an older kernel still parses before the curtain decides; absent means a `null` database scope, under which no per-database choice applies. */
 export type ServerVersionInfo = Readonly<{ assistantProviders?: boolean; conversationCreateModel?: boolean; conversationInitialInput?: boolean; conversationSide?: boolean; webCompatVersion: number; minWebCompatVersion: number; syncEventVersion: number; dbInstanceId: string; databaseId?: string }>;
 export interface ProviderRuntime {

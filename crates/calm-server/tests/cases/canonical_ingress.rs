@@ -148,7 +148,7 @@ impl Fixture {
             "acceptance cannot invent a native thread"
         );
         let snapshot: Value = serde_json::from_str(&snapshot).unwrap();
-        assert_eq!(snapshot["schema_version"], 4);
+        assert_eq!(snapshot["schema_version"], 5);
         assert!(snapshot.get("pending_queue").is_none());
         assert!(snapshot.get("issued_input_segments").is_none());
         (card, worker, snapshot)
@@ -602,3 +602,105 @@ async fn conversation_reader_rejects_cross_card_cursor() {
 
 #[path = "canonical_presentation.rs"]
 mod presentation;
+
+#[tokio::test]
+async fn canonical_retry_http_requires_exact_cas_and_a_held_attempt() {
+    let fixture = Fixture::new().await;
+    let (app, cookie) = fixture.application().await;
+    let (status, track) = post(
+        &app,
+        &cookie,
+        "/api/tracks",
+        "retry-contract",
+        fixture.create_body(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (card, worker, before) = fixture.carrier(track["id"].as_str().unwrap()).await;
+    let uri = format!("/api/cards/{card}/conversation/input/retry");
+    let args = json!({"carrier_id":worker,"submission_id":"unattempted","attempt_id":"not-crossed","revision":"0"});
+    let response = post(&app, &cookie, &uri, "retry", args.clone()).await;
+    assert_eq!(response.0, StatusCode::CONFLICT, "{response:?}");
+    assert_eq!(response.1["code"], "conflict");
+    for field in ["carrier_id", "submission_id", "attempt_id", "revision"] {
+        let mut missing = args.clone();
+        missing.as_object_mut().unwrap().remove(field);
+        let response = post(&app, &cookie, &uri, "missing", missing).await;
+        assert_eq!(
+            response.0,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "{field}: {response:?}"
+        );
+    }
+    let (_, _, after) = fixture.carrier(track["id"].as_str().unwrap()).await;
+    assert_eq!(after, before);
+    assert!(
+        after["canonical_inputs"]["receipts"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn canonical_retry_wire_schema_uses_intent_and_exhaustive_resolution() {
+    use utoipa::OpenApi;
+    let document = serde_json::to_value(calm_server::openapi::ApiDoc::openapi()).unwrap();
+    let schemas = &document["components"]["schemas"];
+    assert_eq!(
+        document["paths"]["/api/cards/{id}/conversation/input/retry"]["post"]["requestBody"]["content"]
+            ["application/json"]["schema"]["$ref"],
+        "#/components/schemas/RetryConversationInputRequest"
+    );
+    for (schema, fields) in [
+        (
+            "RetryConversationInputRequest",
+            vec!["carrier_id", "submission_id", "attempt_id", "revision"],
+        ),
+        (
+            "RetryConversationInputResult",
+            vec![
+                "carrier_id",
+                "submission_id",
+                "attempt_id",
+                "revision",
+                "retry_intent_id",
+                "waiting_for_settlement",
+            ],
+        ),
+        (
+            "KeepConversationInputResult",
+            vec![
+                "carrier_id",
+                "submission_id",
+                "attempt_id",
+                "revision",
+                "waiting_for_settlement",
+            ],
+        ),
+    ] {
+        let mut actual: Vec<&str> = schemas[schema]["required"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        let mut expected = fields;
+        actual.sort();
+        expected.sort();
+        assert_eq!(actual, expected, "{schema}");
+    }
+    let resolution = &schemas["ConversationInputResolutionResult"]["oneOf"];
+    let mut kinds: Vec<&str> = resolution
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v["properties"]["kind"]["enum"][0].as_str().unwrap())
+        .collect();
+    kinds.sort();
+    assert_eq!(kinds, vec!["keep", "retry"]);
+    assert_eq!(
+        schemas["ConversationAttemptDelivery"]["properties"]["resolution"]["oneOf"][1]["$ref"],
+        "#/components/schemas/ConversationInputResolutionResult"
+    );
+}

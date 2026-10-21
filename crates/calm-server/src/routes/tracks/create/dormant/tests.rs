@@ -175,7 +175,9 @@ async fn actual_allocation_accepts_once_without_native_or_workspace_effects() {
     assert!(formal.header.last_thread_id.is_none());
     assert_eq!(formal.canonical_inputs.pending.len(), 1);
     assert_eq!(
-        formal.canonical_inputs.pending[0].input_ref(),
+        formal.canonical_inputs.pending[0]
+            .accepted_input_ref()
+            .unwrap(),
         AcceptedInputRef::Human {
             message: message.clone()
         }

@@ -20,11 +20,7 @@ pub async fn accept_pending_human_tx(
     authenticated_user_id: &str,
     payload: HumanPayload,
 ) -> Result<AcceptedPendingInput> {
-    let position = carrier.checkpoint.next_queue_position;
-    let next = position
-        .checked_add(1)
-        .filter(|next| *next <= i64::MAX as u64)
-        .ok_or_else(|| CalmError::Conflict("conversation queue order exhausted"))?;
+    let (position, next) = pending_position(carrier)?;
     let stored = insert_message_tx(
         tx,
         &carrier.card_id,
@@ -75,11 +71,7 @@ pub async fn accept_pending_system_tx(
     if envelope_id <= floor {
         return Err(CalmError::Conflict("event prefix was already accepted"));
     }
-    let position = carrier.checkpoint.next_queue_position;
-    let next = position
-        .checked_add(1)
-        .filter(|next| *next <= i64::MAX as u64)
-        .ok_or(CalmError::Conflict("conversation queue order exhausted"))?;
+    let (position, next) = pending_position(carrier)?;
     let observation_id = event_system_observation_id_tx(tx, carrier, event, &observation).await?;
     let accepted_at_ms = crate::model::now_ms();
     let presentation_sequence = allocate_presentation_tx(
@@ -135,4 +127,14 @@ pub async fn event_system_observation_id_tx(
     ))?;
     calm_types::conversation::SystemObservationId::parse(&digest[..32])
         .map_err(|error| CalmError::Internal(error.to_string()))
+}
+
+/// All pending kinds share one allocation counter and SQLite's ordering range.
+pub(super) fn pending_position(carrier: &CurrentInputCarrier) -> Result<(u64, u64)> {
+    let position = carrier.checkpoint.next_queue_position;
+    let next = position
+        .checked_add(1)
+        .filter(|next| *next <= i64::MAX as u64)
+        .ok_or(CalmError::Conflict("conversation queue order exhausted"))?;
+    Ok((position, next))
 }

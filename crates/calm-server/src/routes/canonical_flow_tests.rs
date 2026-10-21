@@ -318,7 +318,7 @@ async fn original_input_flow(
     let crate::db::sqlite::conversation::HumanTrackCreationAck::V1 { first_message, .. } =
         &original_receipt.acknowledgement;
     assert_eq!(
-        accepted_refs[0].input_ref(),
+        accepted_refs[0].accepted_input_ref().unwrap(),
         calm_types::conversation::AcceptedInputRef::Human {
             message: first_message.clone()
         }
@@ -364,7 +364,7 @@ async fn original_input_flow(
     ));
     let original_refs = accepted_refs
         .iter()
-        .map(calm_types::conversation::PendingInput::input_ref)
+        .map(|entry| entry.accepted_input_ref().unwrap())
         .collect::<Vec<_>>();
     let mut tx = fixture.repo.pool().begin().await.unwrap();
     let submission = crate::db::sqlite::conversation::submission_plan_tx(

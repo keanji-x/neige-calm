@@ -37,7 +37,7 @@ impl RuntimeInputs {
                 .await?
                 .snapshot
                 .canonical_inputs
-                .kept_execution_without_target()),
+                .resolved_execution_without_target()),
         }
     }
 

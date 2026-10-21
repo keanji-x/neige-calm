@@ -68,6 +68,7 @@ impl PlannerBackend {
                             approvals.binding.clone(),
                             logical_turn_id,
                             proof,
+                            settlement_card.is_some(),
                         ),
                         admission,
                     )

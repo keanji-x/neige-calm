@@ -28,6 +28,109 @@ async fn response(
 }
 
 #[tokio::test]
+async fn canonical_retry_commits_one_successor_and_receipt_atomically() {
+    let fixture = Fixture::new().await;
+    let (state, app, cookie) = fixture.application().await;
+    let area = post(
+        &app,
+        &cookie,
+        "/api/areas",
+        "area",
+        json!({"name":"Explicit retry", "color":"#123456"}),
+    )
+    .await;
+    let (_client, mut peer) = connect(&state.shared_codex_appserver).await;
+    let create = post(
+        &app,
+        &cookie,
+        "/api/tracks",
+        "create",
+        json!({"area_id":area["id"],"title":"","planner_provider":"codex", "model":"retry-model", "reasoning_effort":"high", "theme":{"fg":[255,255,255],"bg":[0,0,0]},"first_message":FIRST_BODY}),
+    );
+    let native = async {
+        let catalog = request(&mut peer).await;
+        assert_eq!(catalog["method"], "model/list");
+        send(
+            &mut peer,
+            json!({"id":catalog["id"],"error":{"code":-32603,"message":"catalog unavailable"}}),
+        )
+        .await;
+        super::native_attempt_recovery_tests::initial_request(&mut peer).await
+    };
+    let (created, initial) = tokio::join!(create, native);
+    assert_eq!(initial["params"]["model"], "retry-model");
+    assert_eq!(initial["params"]["effort"], "high");
+    let track = created["id"].as_str().unwrap();
+    send(&mut peer, json!({"id":initial["id"],"result":{"turn":{}}})).await;
+    let (card, worker, before) = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let facts = fixture.carrier(track).await;
+            if matches!(
+                facts.2.canonical_inputs.attempts[0].delivery,
+                InputDeliveryFact::Unknown
+            ) {
+                break facts;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    state.harness.get(&worker).unwrap().pause_issuance_for_dev();
+    let attempt = &before.canonical_inputs.attempts[0];
+    let args = json!({"carrier_id":worker,"submission_id":attempt.attempt.submission_id,"attempt_id":attempt.attempt.attempt_id,"revision":attempt.revision.to_string()});
+    let uri = format!("/api/cards/{card}/conversation/input/retry");
+    // Check status before decoding: the pre-feature route has an empty 404 body.
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(&uri)
+                .header(header::COOKIE, &cookie)
+                .header(header::CONTENT_TYPE, "application/json")
+                .header("Idempotency-Key", "explicit-retry")
+                .body(Body::from(args.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let result: Value = serde_json::from_slice(&bytes).unwrap();
+    let (_, _, after) = fixture.carrier(track).await;
+    assert_eq!(after.canonical_inputs.pending.len(), 1);
+    assert_eq!(
+        after.canonical_inputs.next_queue_position,
+        before.canonical_inputs.next_queue_position + 1
+    );
+    assert_eq!(after.canonical_inputs.receipts.len(), 1);
+    assert_eq!(after.canonical_inputs.attempts.len(), 1);
+    assert_eq!(after.canonical_inputs.attempts[0].attempt, attempt.attempt);
+    assert_eq!(
+        after.canonical_inputs.attempts[0].delivery,
+        attempt.delivery
+    );
+    assert_eq!(
+        after.canonical_inputs.attempts[0].correlation,
+        attempt.correlation
+    );
+    assert_eq!(
+        after.canonical_inputs.active,
+        before.canonical_inputs.active
+    );
+    assert_eq!(
+        self::response(&app, &cookie, &uri, "explicit-retry", args).await,
+        (StatusCode::OK, result)
+    );
+    assert_eq!(
+        fixture.carrier(track).await.2.canonical_inputs,
+        after.canonical_inputs
+    );
+    fixture.shutdown_process(&state).await;
+}
+
+#[tokio::test]
 async fn canonical_keep_without_turn_requires_exact_settled_activity_for_next_input() {
     let fixture = Fixture::new().await;
     let (state, app, cookie) = fixture.application().await;
@@ -199,10 +302,12 @@ async fn canonical_keep_without_turn_requires_exact_settled_activity_for_next_in
             .await
             .unwrap();
     let restored: CanonicalHarnessSnapshot = serde_json::from_str(&raw).unwrap();
-    assert_eq!(
-        serde_json::to_value(&restored.canonical_inputs.receipts[0].result).unwrap(),
-        kept
-    );
+    let calm_types::conversation::HumanInputResolutionDecision::Keep { result, .. } =
+        &restored.canonical_inputs.receipts[0].decision
+    else {
+        panic!("Keep must store a Keep receipt")
+    };
+    assert_eq!(serde_json::to_value(result).unwrap(), kept);
     post(&app, &cookie, "/api/auth/logout", "logout", json!({})).await;
     assert_eq!(
         response(&app, &cookie, &uri, "keep", args).await.0,
@@ -303,10 +408,12 @@ async fn canonical_keep_access_revoked_before_committed_replay_and_fresh_key() {
     assert_eq!(status, StatusCode::OK, "{kept}");
     let (_, _, committed) = fixture.carrier(track).await;
     assert_eq!(committed.canonical_inputs.receipts.len(), 1);
-    assert_eq!(
-        serde_json::to_value(&committed.canonical_inputs.receipts[0].result).unwrap(),
-        kept
-    );
+    let calm_types::conversation::HumanInputResolutionDecision::Keep { result, .. } =
+        &committed.canonical_inputs.receipts[0].decision
+    else {
+        panic!("Keep must store a Keep receipt")
+    };
+    assert_eq!(serde_json::to_value(result).unwrap(), kept);
     assert_eq!(
         committed.canonical_inputs.attempts[0].revision,
         attempt.revision + 1
@@ -366,3 +473,6 @@ async fn canonical_keep_access_revoked_before_committed_replay_and_fresh_key() {
     }
     fixture.shutdown_process(&state).await;
 }
+
+#[cfg(test)]
+mod retry_http_tests;

@@ -69,6 +69,13 @@ impl PreparedInputDispatch {
                     return Err(CalmError::Conflict("native input execution changed".into()));
                 }
                 let stored = submission_plan_tx(tx, &attempt.submission_id).await?;
+                let retry = crate::db::sqlite::conversation::submission_retry_intent_tx(
+                    tx,
+                    &attempt.submission_id,
+                )
+                .await?;
+                source.require_submission_intent(retry.as_ref())?;
+                hydrate::hydrate(tx, &card, &stored.plan).await?;
                 let identity = submission_identity_tx(tx, &attempt.submission_id).await?;
                 let (execution, runtime) = crate::conversation_inputs::authorize_execution_tx(
                     tx,
@@ -102,7 +109,7 @@ impl PreparedInputDispatch {
 
 pub(crate) struct CommittedInputReport {
     pub report: InputAttemptReport,
-    pub consumed: Vec<calm_types::conversation::AcceptedInputRef>,
+    pub consumed: Vec<calm_types::conversation::CanonicalPendingIdentity>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -185,6 +192,18 @@ async fn prepare(
             let mut carrier = current_input_carrier_tx(tx, &card_id, &worker_session_id).await?;
             let identity = submission_identity_tx(tx, &submission_id).await?;
             let stored = submission_plan_tx(tx, &submission_id).await?;
+            let retry =
+                crate::db::sqlite::conversation::submission_retry_intent_tx(tx, &submission_id)
+                    .await?;
+            source.require_submission_intent(retry.as_ref())?;
+            let invocation = match retry {
+                None => invocation,
+                Some(id) => {
+                    crate::db::sqlite::conversation::retry_intent_tx(tx, &carrier, &id)
+                        .await?
+                        .invocation
+                }
+            };
             // A previous claim/provenance is not a grant for a fresh crossing,
             // including recovery of a claimed submission with no attempt yet.
             let (execution, runtime) = crate::conversation_inputs::authorize_execution_tx(
@@ -278,10 +297,16 @@ async fn prepare(
                 }
             };
             Ok(PreparedInputDispatch {
-                require_settled: carrier
-                    .checkpoint()
-                    .requires_settled_activity(&thread_id)
-                    .map_err(|error| CalmError::Conflict(error.into()))?,
+                require_settled: crate::db::sqlite::conversation::submission_retry_intent_tx(
+                    tx,
+                    &attempt.submission_id,
+                )
+                .await?
+                .is_some()
+                    || carrier
+                        .checkpoint()
+                        .requires_settled_activity(&thread_id)
+                        .map_err(|error| CalmError::Conflict(error.into()))?,
                 logical_turn_id: identity.logical_turn_id,
                 proof,
                 thread_id,
@@ -313,17 +338,39 @@ async fn settle(
             let mut carrier =
                 current_input_fact_carrier_tx(tx, &card_id, &worker_session_id).await?;
             record_input_attempt_fact_tx(tx, &mut carrier, fact.clone()).await?;
-            let may_release = may_release && !carrier.checkpoint().is_kept(&fact.attempt);
+            let may_release = may_release && !carrier.checkpoint().is_human_resolved(&fact.attempt);
             if may_release {
                 release_submission_tx(tx, &mut carrier, &fact.attempt).await?;
             }
             if may_release {
                 Ok(vec![])
+            } else if let Some(retry_intent_id) =
+                crate::db::sqlite::conversation::submission_retry_intent_tx(
+                    tx,
+                    &fact.attempt.submission_id,
+                )
+                .await?
+            {
+                Ok(vec![
+                    calm_types::conversation::CanonicalPendingIdentity::ExplicitSuccessor {
+                        retry_intent_id,
+                    },
+                ])
             } else {
                 submission_plan_tx(tx, &fact.attempt.submission_id)
                     .await?
                     .plan
                     .input_refs()
+                    .map(|inputs| {
+                        inputs
+                            .into_iter()
+                            .map(|input| {
+                                calm_types::conversation::CanonicalPendingIdentity::Accepted {
+                                    input,
+                                }
+                            })
+                            .collect()
+                    })
                     .map_err(|error| CalmError::Conflict(error.into()))
             }
         })

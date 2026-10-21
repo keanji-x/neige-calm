@@ -195,6 +195,9 @@ fn canonical_held_projection_survives_without_active_execution() {
             attempt("22222222222222222222222222222222").submission_id,
             LogicalTurnId::parse("33333333333333333333333333333333").unwrap(),
         )],
+        |_| Ok(crate::conversation_display::ConversationActionAvailability::Unavailable {
+            reason: crate::conversation_display::ConversationActionUnavailableReason::UnsupportedSource,
+        }),
     )
     .unwrap();
     let projected = serde_json::to_value(projected).unwrap();
@@ -284,6 +287,9 @@ fn projection(delivery: InputDeliveryFact) -> crate::conversation_display::Conve
             original.submission_id,
             LogicalTurnId::parse("33333333333333333333333333333333").unwrap(),
         )],
+        |_| Ok(crate::conversation_display::ConversationActionAvailability::Unavailable {
+            reason: crate::conversation_display::ConversationActionUnavailableReason::UnsupportedSource,
+        }),
     )
     .unwrap()
     .unwrap()
@@ -370,7 +376,7 @@ fn canonical_projection_no_host_paths_or_diagnostic_leakage_and_typed_actions() 
         encoded["submissions"][0]["attempt"]["actions"],
         json!({
             "keep":{"kind":"unavailable","reason":"not_held"},
-            "retry":{"kind":"unavailable","reason":"not_implemented_yet"}
+            "retry":{"kind":"unavailable","reason":"unsupported_source"}
         })
     );
 }
@@ -404,6 +410,9 @@ fn canonical_projection_keeps_ended_accepted_evidence_out_of_held_display() {
             original.submission_id,
             LogicalTurnId::parse("33333333333333333333333333333333").unwrap(),
         )],
+        |_| Ok(crate::conversation_display::ConversationActionAvailability::Unavailable {
+            reason: crate::conversation_display::ConversationActionUnavailableReason::UnsupportedSource,
+        }),
     )
     .unwrap();
     assert!(
@@ -414,4 +423,156 @@ fn canonical_projection_keeps_ended_accepted_evidence_out_of_held_display() {
         checkpoint, retained,
         "display must retain the original Accepted evidence"
     );
+}
+
+#[test]
+fn canonical_resolution_receipt_fences_runtime_and_pending_identity() {
+    let original = attempt("22222222222222222222222222222222");
+    let mut checkpoint = ConversationInputCheckpoint::empty();
+    checkpoint
+        .begin_attempt(original.clone(), correlation(), invocation())
+        .unwrap();
+    checkpoint.attempts[0].revision = 1;
+    let request = json!({"carrier_id":"carrier", "submission_id":original.submission_id,
+        "attempt_id":original.attempt_id, "revision":"0"});
+    let result = json!({"carrier_id":"carrier", "submission_id":original.submission_id,
+        "attempt_id":original.attempt_id, "revision":"1", "waiting_for_settlement":true});
+    let mut encoded = serde_json::to_value(&checkpoint).unwrap();
+    encoded["receipts"] = json!([{"key":"keep", "principal":"human", "fingerprint":"a".repeat(64),
+        "decision":{"kind":"keep","request":request,"result":result}}]);
+    let checkpoint: ConversationInputCheckpoint = serde_json::from_value(encoded.clone()).unwrap();
+    checkpoint.validate().unwrap();
+    assert!(checkpoint.referenced_submissions().is_empty());
+    assert!(checkpoint.requires_settled_activity("thread").unwrap());
+    assert!(
+        checkpoint
+            .requires_settled_activity("different-thread")
+            .is_err()
+    );
+    let mut invalid = encoded.clone();
+    invalid["receipts"][0]["decision"]["result"]["revision"] = json!("2");
+    assert!(
+        serde_json::from_value::<ConversationInputCheckpoint>(invalid)
+            .unwrap()
+            .validate()
+            .is_err()
+    );
+    let mut duplicate = encoded;
+    let receipt = duplicate["receipts"][0].clone();
+    duplicate["receipts"].as_array_mut().unwrap().push(receipt);
+    assert!(
+        serde_json::from_value::<ConversationInputCheckpoint>(duplicate)
+            .unwrap()
+            .validate()
+            .is_err()
+    );
+    let pending = human(1);
+    assert_eq!(
+        pending.identity(),
+        CanonicalPendingIdentity::Accepted {
+            input: pending.accepted_input_ref().unwrap(),
+        }
+    );
+    assert_ne!(
+        pending.identity(),
+        human(2).identity(),
+        "sources bind exact revisions"
+    );
+    assert!(validate_pending_inputs(&[pending, human(2)]).is_err());
+}
+
+#[test]
+fn canonical_resolution_late_ack_cannot_remove_the_settlement_gate() {
+    let original = attempt("22222222222222222222222222222222");
+    let request = KeepConversationInputRequest {
+        carrier_id: "carrier".into(),
+        submission_id: original.submission_id.to_string(),
+        attempt_id: original.attempt_id.to_string(),
+        revision: "0".into(),
+    };
+    let decisions = [
+        HumanInputResolutionDecision::Keep {
+            request: request.clone(),
+            result: KeepConversationInputResult {
+                carrier_id: request.carrier_id.clone(),
+                submission_id: request.submission_id.clone(),
+                attempt_id: request.attempt_id.clone(),
+                revision: "1".into(),
+                waiting_for_settlement: true,
+            },
+        },
+        HumanInputResolutionDecision::Retry {
+            predecessor: request,
+            retry_intent_id: RetryIntentId::parse(&"a".repeat(32)).unwrap(),
+            revision: "1".into(),
+            waiting_for_settlement: true,
+        },
+    ];
+    for decision in decisions {
+        let mut checkpoint = ConversationInputCheckpoint::empty();
+        checkpoint
+            .begin_attempt(original.clone(), correlation(), invocation())
+            .unwrap();
+        checkpoint.attempts[0].revision = 1;
+        checkpoint.receipts.push(HumanInputResolutionReceipt {
+            key: "resolve".into(),
+            principal: "human".into(),
+            fingerprint: "a".repeat(64),
+            decision,
+        });
+        let mut late = correlation();
+        late.native_turn_id = Some("late-original-native".into());
+        checkpoint
+            .record_attempt_fact(InputAttemptFact {
+                attempt: original.clone(),
+                correlation: late,
+                delivery: InputDeliveryFact::Accepted {
+                    basis: "codex_turn_start".into(),
+                    evidence: NativeInputAcceptance::NativeTurn {
+                        native_turn_id: "late-original-native".into(),
+                    },
+                },
+            })
+            .unwrap();
+        assert!(checkpoint.requires_settled_activity("thread").unwrap());
+        assert!(
+            checkpoint
+                .requires_settled_activity("another-thread")
+                .is_err()
+        );
+    }
+}
+
+#[test]
+fn canonical_resolution_known_local_execution_needs_no_native_activity_probe() {
+    let original = attempt("22222222222222222222222222222222");
+    let mut local = correlation();
+    local.provider = AgentProvider::Claude;
+    local.local_turn_id = Some("local-turn".into());
+    let mut checkpoint = ConversationInputCheckpoint::empty();
+    checkpoint
+        .begin_attempt(original.clone(), local, invocation())
+        .unwrap();
+    checkpoint.attempts[0].revision = 1;
+    let request = KeepConversationInputRequest {
+        carrier_id: "carrier".into(),
+        submission_id: original.submission_id.to_string(),
+        attempt_id: original.attempt_id.to_string(),
+        revision: "0".into(),
+    };
+    let result = KeepConversationInputResult {
+        carrier_id: request.carrier_id.clone(),
+        submission_id: request.submission_id.clone(),
+        attempt_id: request.attempt_id.clone(),
+        revision: "1".into(),
+        waiting_for_settlement: true,
+    };
+    checkpoint.receipts.push(HumanInputResolutionReceipt {
+        key: "keep-local".into(),
+        principal: "human".into(),
+        fingerprint: "a".repeat(64),
+        decision: HumanInputResolutionDecision::Keep { request, result },
+    });
+    checkpoint.validate().unwrap();
+    assert!(!checkpoint.requires_settled_activity("thread").unwrap());
 }

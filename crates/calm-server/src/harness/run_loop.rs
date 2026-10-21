@@ -343,7 +343,7 @@ enum HarnessObservationCommand {
         answer: oneshot::Sender<Result<()>>,
     },
     CanonicalSource {
-        input: calm_types::conversation::AcceptedInputRef,
+        input: calm_types::conversation::CanonicalPendingIdentity,
         source: crate::conversation_inputs::InputSource,
         observed: oneshot::Sender<Result<()>>,
     },
@@ -554,7 +554,7 @@ impl PlannerHarness {
     /// Acceptance is owned by the conversation transaction, independently of wake.
     pub(crate) async fn observe_canonical_source(
         &self,
-        input: impl Into<calm_types::conversation::AcceptedInputRef>,
+        input: impl Into<calm_types::conversation::CanonicalPendingIdentity>,
         source: impl Into<crate::conversation_inputs::InputSource>,
     ) -> Result<()> {
         let input = input.into();

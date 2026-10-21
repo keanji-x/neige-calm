@@ -136,7 +136,7 @@ export type ClaudeInstalledVersion = { version: string | null, };
 
 export type ConversationActionAvailability = { "kind": "available" } | { "kind": "unavailable", reason: ConversationActionUnavailableReason, };
 
-export type ConversationActionUnavailableReason = "not_implemented_yet" | "already_kept" | "not_held";
+export type ConversationActionUnavailableReason = "prior_invocation_not_recorded" | "invocation_not_fully_frozen" | "attachments_not_frozen" | "erased_or_withdrawn" | "unsupported_binding" | "unsupported_source" | "already_resolved" | "already_kept" | "not_held";
 
 export type ConversationActiveInput = { 
 /**
@@ -148,7 +148,7 @@ export type ConversationAttemptDelivery = { attempt_id: string,
 /**
  * Decimal text preserves the full persisted u64 CAS identity in browsers.
  */
-revision: string, target: ConversationInputTarget, delivery: ConversationDelivery, invocation: InputInvocation, actions: ConversationResolutionActions, resolution: KeepConversationInputResult | null, };
+revision: string, target: ConversationInputTarget, delivery: ConversationDelivery, invocation: InputInvocation, actions: ConversationResolutionActions, resolution: ConversationInputResolutionResult | null, };
 
 export type ConversationCursor = { contract: ConversationReadContract, card_id: string, source: ConversationCursorSource, position: number, };
 
@@ -182,6 +182,8 @@ export type ConversationInitialInputReceiptResult = { "kind": "known", receipt: 
 
 export type ConversationInputContract = "canonical" | "historical";
 
+export type ConversationInputResolutionResult = { "kind": "keep", result: KeepConversationInputResult, } | { "kind": "retry", result: RetryConversationInputResult, };
+
 export type ConversationInputTarget = { provider: AgentProvider, thread_id: string, native_session_id: string | null, local_turn_id: string | null, native_turn_id: string | null, rpc_request_id: string | null, };
 
 export type ConversationLiveReplies = { contract: ConversationReadContract, turn: ConversationLiveTurn | null, };
@@ -190,7 +192,7 @@ export type ConversationLiveTurn = { thread_id: string, turn_id: string, items: 
 
 export type ConversationPage = { contract: ConversationReadContract, source: ConversationCursorSource, items: Array<ConversationDisplayItem>, next_cursor: ConversationCursor | null, };
 
-export type ConversationPendingInput = { "kind": "human", message_id: string, revision: number, queue_position: number, queued_at_ms: number, } | { "kind": "system", observation_id: string, queue_position: number, queued_at_ms: number, };
+export type ConversationPendingInput = { "kind": "explicit_successor", retry_intent_id: string, queue_position: number, queued_at_ms: number, } | { "kind": "human", message_id: string, revision: number, queue_position: number, queued_at_ms: number, } | { "kind": "system", observation_id: string, queue_position: number, queued_at_ms: number, };
 
 export type ConversationReadContract = "conversation_v1";
 
@@ -659,6 +661,13 @@ export type ReportEdit = { track_id: string, edit_id: string, summary_before: st
 export type ReportEditEntry = { event_id: number, at: number, edit: ReportEdit, };
 
 export type ReportEditsPage = { edits: Array<ReportEditEntry>, next_cursor: string | null, };
+
+/**
+ * Exact predecessor CAS for an explicit Human repeat; never a resend command.
+ */
+export type RetryConversationInputRequest = { carrier_id: string, submission_id: string, attempt_id: string, revision: string, };
+
+export type RetryConversationInputResult = { carrier_id: string, submission_id: string, attempt_id: string, revision: string, retry_intent_id: string, waiting_for_settlement: boolean, };
 
 /**
  * One D3.0 sample of a checkout: HEAD, the porcelain status lines, and the lease-provenance observation.

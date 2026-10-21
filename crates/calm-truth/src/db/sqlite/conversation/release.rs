@@ -24,7 +24,7 @@ pub async fn release_submission_tx(
         .checkpoint
         .attempt(&attempt.submission_id)
         .ok_or_else(|| CalmError::Conflict("submission has no persisted execution evidence"))?;
-    if carrier.checkpoint.is_kept(attempt)
+    if carrier.checkpoint.is_human_resolved(attempt)
         || checkpoint.attempt != *attempt
         || !matches!(checkpoint.delivery, InputDeliveryFact::NotDispatched { .. })
     {
@@ -42,12 +42,14 @@ pub async fn release_submission_tx(
     let turn_id = submission
         .ok_or_else(|| CalmError::Conflict("submission belongs to another conversation"))?;
     let stored = submission_plan_tx(tx, &attempt.submission_id).await?;
-    let rows=sqlx::query("SELECT queue_position,queued_at_ms,envelope_id,system_addressable,effective,released_by_attempt_id
+    let rows=sqlx::query("SELECT queue_position,queued_at_ms,envelope_id,system_addressable,effective,released_by_attempt_id,retirement_reason
          FROM conversation_submission_inputs
          WHERE submission_id=?1 ORDER BY input_position")
         .bind(attempt.submission_id.as_str()).fetch_all(&mut **tx).await?;
     if rows.iter().all(|row| {
         row.get::<i64, _>("effective") == 0
+            && row.get::<Option<String>, _>("retirement_reason").as_deref()
+                == Some("not_dispatched")
             && row
                 .get::<Option<String>, _>("released_by_attempt_id")
                 .as_deref()
@@ -74,7 +76,20 @@ pub async fn release_submission_tx(
             "submission release crosses the current logical Turn",
         ));
     }
+    let retry = super::retry::submission_retry_intent_tx(tx, &attempt.submission_id).await?;
     let mut restored = Vec::new();
+    if let Some(id) = &retry {
+        let intent = super::retry::retry_intent_tx(tx, carrier, id).await?;
+        if carrier.checkpoint.pending.iter().any(|p| {
+            p.identity() == intent.pending.identity()
+                || p.queue_position() == intent.pending.queue_position()
+        }) {
+            return Err(CalmError::Conflict(
+                "release would duplicate pending retry intent",
+            ));
+        }
+        restored.push(intent.pending);
+    }
     let inputs = stored
         .plan
         .segments()
@@ -83,7 +98,7 @@ pub async fn release_submission_tx(
             SubmissionRenderSegment::Input { input, .. } => Some(input),
             _ => None,
         });
-    for (input, row) in inputs.zip(&rows) {
+    for (input, row) in inputs.zip(&rows).filter(|_| retry.is_none()) {
         let queue_position = u64::try_from(row.try_get::<i64, _>("queue_position")?)
             .map_err(|_| CalmError::Internal("invalid original queue order".into()))?;
         if queue_position >= carrier.checkpoint.next_queue_position {
@@ -135,7 +150,27 @@ pub async fn release_submission_tx(
         };
         if carrier.checkpoint.pending.iter().any(|pending| {
             pending.queue_position() == queue_position
-                || pending.input_ref().identity() == entry.input_ref().identity()
+                || match (pending.identity(), entry.identity()) {
+                    (
+                        calm_types::conversation::CanonicalPendingIdentity::Accepted { input: a },
+                        calm_types::conversation::CanonicalPendingIdentity::Accepted { input: b },
+                    ) => a.identity() == b.identity(),
+                    (
+                        calm_types::conversation::CanonicalPendingIdentity::ExplicitSuccessor {
+                            ..
+                        },
+                        calm_types::conversation::CanonicalPendingIdentity::Accepted { .. }
+                        | calm_types::conversation::CanonicalPendingIdentity::ExplicitSuccessor {
+                            ..
+                        },
+                    )
+                    | (
+                        calm_types::conversation::CanonicalPendingIdentity::Accepted { .. },
+                        calm_types::conversation::CanonicalPendingIdentity::ExplicitSuccessor {
+                            ..
+                        },
+                    ) => false,
+                }
         }) {
             return Err(CalmError::Conflict(
                 "release would duplicate or replace unrelated pending input",
@@ -143,7 +178,8 @@ pub async fn release_submission_tx(
         }
         restored.push(entry);
     }
-    let changed=sqlx::query("UPDATE conversation_submission_inputs SET effective=0,released_by_attempt_id=?1 WHERE submission_id=?2 AND effective=1")
+    let changed=sqlx::query("UPDATE conversation_submission_inputs SET effective=0,retirement_reason='not_dispatched',released_by_attempt_id=?1
+         WHERE submission_id=?2 AND effective=1")
         .bind(attempt.attempt_id.as_str()).bind(attempt.submission_id.as_str()).execute(&mut **tx).await?;
     if usize::try_from(changed.rows_affected()).ok() != Some(rows.len()) {
         return Err(CalmError::Conflict(

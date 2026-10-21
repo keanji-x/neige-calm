@@ -54,6 +54,34 @@ impl<'a> NativePromptAdmission<'a> {
         (self.check)().await
     }
 
+    /// Compose a protocol-owner check after all asynchronous source admission.
+    pub(crate) fn gate_with_final_check<'b>(
+        &'b self,
+        check: impl Fn() -> Result<()> + Send + Sync + 'b,
+    ) -> provider::send_boundary::PreSendGate<'b>
+    where
+        'a: 'b,
+    {
+        let check = Arc::new(check);
+        provider::send_boundary::PreSendGate::new(move || {
+            let admission = self.check.clone();
+            let refusal = self.refusal.clone();
+            let check = check.clone();
+            Box::pin(async move {
+                let result = match admission().await {
+                    Ok(()) => check(),
+                    Err(error) => Err(error),
+                };
+                result.map_err(|error| {
+                    *refusal.lock().unwrap() = Some(error);
+                    provider::send_boundary::SendRefusal(
+                        "native source/activity changed before send".into(),
+                    )
+                })
+            })
+        })
+    }
+
     pub(crate) fn gate(&self) -> &provider::send_boundary::PreSendGate<'a> {
         &self.gate
     }

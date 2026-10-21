@@ -1,5 +1,5 @@
 import { describe,it,expect } from 'vitest';
-import { keepConversationInputOperation, buildConversationTranscript, conversationPageSchema, conversationRunMetadataSchema, orderedPendingInputs, removedHumanIds } from './conversation-display.js';
+import { keepConversationInputOperation, retryConversationInputOperation, buildConversationTranscript, conversationPageSchema, conversationRunMetadataSchema, orderedPendingInputs, removedHumanIds } from './conversation-display.js';
 import { outboxFactsWithRemovedInputs, matchSendOps, type SendOp } from './conversation-outbox.js';
 import type { ConversationDisplayItem, HarnessItem } from '../api/generated/wire.js';
 import { isConversationMessage, SYSTEM_PRESENTATION_LABELS } from './conversation.js';
@@ -102,7 +102,7 @@ it('requires one tagged pending input list without losing Human revisions or Sys
 it('rejects missing CAS identity and unknown availability in canonical delivery',()=>{
   const attempt={attempt_id:'attempt',revision:'7',delivery:'unknown',target:{provider:'codex',thread_id:'thread',native_session_id:null,
     native_turn_id:null,local_turn_id:null,rpc_request_id:null},invocation:{kind:'prior_invocation_not_recorded'},
-    resolution:null,actions:{keep:{kind:'available'},retry:{kind:'unavailable',reason:'not_implemented_yet'}}};
+    resolution:null,actions:{keep:{kind:'available'},retry:{kind:'unavailable',reason:'unsupported_source'}}};
   const submission={carrier_id:'carrier',logical_turn_id:'logical',submission_id:'submission',attempt};
   const run={input_contract:'canonical',runtime_state:'failed',history_replacement_supported:false,terminal_timeout:null,
     pending_inputs:[],active_input:{current_execution_id:null,submissions:[submission]},native_turn_id:null};
@@ -120,7 +120,7 @@ it('rejects missing CAS identity and unknown availability in canonical delivery'
     expect(conversationRunMetadataSchema.safeParse({...run,active_input:{...run.active_input,submissions:[{...submission,[field]:undefined}]}}).success).toBe(false);
   }
   expect(conversationRunMetadataSchema.safeParse({...run,active_input:{...run.active_input,submissions:[{...submission,attempt:{...attempt,
-    actions:{...attempt.actions,keep:{kind:'unavailable',reason:'not_implemented_yet'}}}}]}}).success).toBe(false);
+    actions:{...attempt.actions,keep:{kind:'unavailable',reason:'invalid_reason'}}}}]}}).success).toBe(false);
 });
 
 it('Keep preserves its owned operation key and exact CAS arguments and refuses a crossed receipt', () => {
@@ -131,4 +131,23 @@ it('Keep preserves its owned operation key and exact CAS arguments and refuses a
   expect(operation.responseSchema.parse(result)).toEqual(result);
   expect(operation.responseSchema.safeParse({...result,attempt_id:'different-attempt'}).success).toBe(false);
   expect(operation.responseSchema.safeParse({...result,revision:'9'}).success).toBe(false);
+});
+
+
+it('retry operation preserves exact CAS and key', () => {
+  const args={carrier_id:'carrier',submission_id:'submission',attempt_id:'attempt',revision:'7'};
+  const operation=retryConversationInputOperation('card /',args,'owned-key');
+  expect(operation).toMatchObject({method:'POST',path:'/api/cards/card%20%2F/conversation/input/retry',headers:{'Idempotency-Key':'owned-key'},body:args});
+  const result={...args,revision:'8',retry_intent_id:'intent',waiting_for_settlement:true};
+  expect(operation.responseSchema.parse(result)).toEqual(result);
+  expect(operation.responseSchema.safeParse({...result,attempt_id:'other'}).success).toBe(false);
+  expect(operation.responseSchema.safeParse({...result,revision:'9'}).success).toBe(false);
+  expect(operation.responseSchema.safeParse({...result,retry_intent_id:undefined}).success).toBe(false);
+});
+it('queued successor uses the ordinary unattempted pending projection', () => {
+  const pending={kind:'explicit_successor',retry_intent_id:'intent',queue_position:2,queued_at_ms:22};
+  const run={input_contract:'canonical',runtime_state:'idle',history_replacement_supported:false,terminal_timeout:null,
+    pending_inputs:[pending],active_input:null,native_turn_id:null};
+  expect(conversationRunMetadataSchema.parse(run)).toMatchObject({pending_inputs:[pending],active_input:null});
+  expect(conversationRunMetadataSchema.safeParse({...run,pending_inputs:[{...pending,retry_intent_id:undefined}]}).success).toBe(false);
 });

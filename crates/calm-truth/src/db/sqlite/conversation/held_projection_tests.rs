@@ -288,3 +288,25 @@ async fn canonical_migration_refuses_malformed_and_future_atomically() {
         assert_eq!(serde_json::from_str::<Value>(&raw).unwrap(), old);
     }
 }
+
+#[tokio::test]
+async fn canonical_retry_projection_preserves_terminal_conversation_reads() {
+    for state in ["exited", "superseded"] {
+        let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
+        let (card, worker, attempt) = held(&repo).await;
+        sqlx::query("UPDATE worker_sessions SET state=?1 WHERE id=?2")
+            .bind(state)
+            .bind(&worker)
+            .execute(repo.pool())
+            .await
+            .unwrap();
+        let read = repo.conversation_read_frame(&card).await.unwrap();
+        assert!(read.runtime.unwrap().state.is_terminal());
+        let submission = &read.active_input.unwrap().submissions[0];
+        assert_eq!(submission.submission_id, attempt.submission_id.as_str());
+        assert_eq!(submission.attempt.as_ref().unwrap().actions.retry,
+            calm_types::conversation_display::ConversationActionAvailability::Unavailable {
+                reason: calm_types::conversation_display::ConversationActionUnavailableReason::UnsupportedBinding,
+            });
+    }
+}

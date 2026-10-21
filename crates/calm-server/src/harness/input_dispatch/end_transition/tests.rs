@@ -55,7 +55,10 @@ async fn real_end_preserves_input_accepted_after_its_runtime_sample() {
     let after = fx.checkpoint().await;
     assert_eq!(after.pending, before.pending);
     assert_eq!(after.next_queue_position, before.next_queue_position);
-    assert_eq!(after.pending[0].input_ref(), accepted.input_ref);
+    assert_eq!(
+        after.pending[0].accepted_input_ref().unwrap(),
+        accepted.input_ref
+    );
     assert_eq!(after.attempts, before.attempts);
     assert!(after.active.is_none());
     assert_eq!(frame.snapshot["phase"], "turn_completed");

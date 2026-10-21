@@ -6,7 +6,7 @@ use super::claim_storage::insert_submission_tx;
 use super::claim_validation::validate_claim_tx;
 use super::{CurrentInputCarrier, history_contract_tx};
 use crate::error::{CalmError, Result};
-use crate::model::{new_id, now_ms};
+use crate::model::new_id;
 use calm_types::conversation::{
     ActiveInputSubmissions, ConversationExecutionProvenance, ConversationHistoryContract,
     InputSubmissionId, LogicalTurnId, SubmissionRenderDigest, SubmissionRenderPlan,
@@ -24,38 +24,74 @@ pub struct ClaimedSubmission {
     pub snapshot_after_write: serde_json::Value,
 }
 
+/// The claim owner selects ordinary input provenance or one explicit intent.
+#[derive(Clone)]
+pub enum InitialClaim {
+    PendingPrefix {
+        plan: SubmissionRenderPlan,
+    },
+    ExplicitSuccessor {
+        retry_intent_id: calm_types::conversation::RetryIntentId,
+    },
+}
+impl From<SubmissionRenderPlan> for InitialClaim {
+    fn from(plan: SubmissionRenderPlan) -> Self {
+        Self::PendingPrefix { plan }
+    }
+}
+
 /// Claims only an exact prefix of the current sole queue; inputs accepted after
 /// the caller selected its batch remain untouched in that queue. All authority
 /// checks and this call must share the caller's protected immediate transaction.
 pub async fn claim_initial_submission_tx(
     tx: &mut Transaction<'_, Sqlite>,
     carrier: &mut CurrentInputCarrier,
-    plan: SubmissionRenderPlan,
+    selection: impl Into<InitialClaim>,
     provenance: &ConversationExecutionProvenance,
 ) -> Result<ClaimedSubmission> {
     carrier.require_execution_current()?;
-    let kept = carrier.checkpoint.kept_execution_without_target();
+    let resolved = carrier.checkpoint.resolved_execution_without_target();
     if (!matches!(
         carrier.phase()?,
         HarnessPhaseTag::Idle | HarnessPhaseTag::TurnCompleted | HarnessPhaseTag::Resumed
-    ) && !(kept && carrier.phase()? == HarnessPhaseTag::IssuingTurn))
-        || (carrier.checkpoint.active.is_some() && !kept)
+    ) && !(resolved && carrier.phase()? == HarnessPhaseTag::IssuingTurn))
+        || (carrier.checkpoint.active.is_some() && !resolved)
     {
         return Err(CalmError::Conflict(
             "conversation cannot claim another Initial submission now",
         ));
     }
     require_private_tx(tx, &carrier.card_id).await?;
-    let refs = plan.input_refs().map_err(CalmError::Conflict)?;
-    if refs.len() > carrier.checkpoint.pending.len() {
-        return Err(CalmError::Conflict("pending batch changed before claim"));
-    }
-    let entries = carrier.checkpoint.pending[..refs.len()].to_vec();
-    validate_claim_tx(tx, carrier, &plan, &entries).await?;
+    let (plan, entries, retry) = match selection.into() {
+        InitialClaim::PendingPrefix { plan } => {
+            let refs = plan.input_refs().map_err(CalmError::Conflict)?;
+            if refs.len() > carrier.checkpoint.pending.len() {
+                return Err(CalmError::Conflict("pending batch changed before claim"));
+            }
+            let entries = carrier.checkpoint.pending[..refs.len()].to_vec();
+            validate_claim_tx(tx, carrier, &plan, &entries).await?;
+            (plan, entries, None)
+        }
+        InitialClaim::ExplicitSuccessor { retry_intent_id } => {
+            let intent = super::retry::retry_intent_tx(tx, carrier, &retry_intent_id).await?;
+            if intent.unavailable.is_some()
+                || carrier.checkpoint.pending.first() != Some(&intent.pending)
+            {
+                return Err(CalmError::Conflict(
+                    "retry intent is not the exact pending head",
+                ));
+            }
+            (
+                intent.plan.plan.clone(),
+                vec![intent.pending.clone()],
+                Some((retry_intent_id, intent)),
+            )
+        }
+    };
     let ConversationExecutionProvenance::LegacySingleUserDeployment {
         deployment_owner_user_id,
         provider,
-        profile,
+        profile: _,
     } = provenance;
     super::super::area_membership::application_user_require_registered(
         tx,
@@ -76,22 +112,39 @@ pub async fn claim_initial_submission_tx(
         .map_err(|error| CalmError::Internal(error.to_string()))?;
     let logical_turn_id =
         LogicalTurnId::parse(&new_id()).map_err(|error| CalmError::Internal(error.to_string()))?;
-    let profile = serde_json::to_value(profile)?;
-    sqlx::query("INSERT INTO conversation_turns(id,card_id,initiating_runtime_id,initial_submission_id,execution_kind,
-         deployment_owner_user_id,provider,profile,created_at_ms)
-         VALUES(?1,?2,?3,?4,'legacy_single_user_deployment',?5,?6,?7,?8)")
-        .bind(logical_turn_id.as_str()).bind(&carrier.card_id).bind(&carrier.worker_session_id).bind(submission_id.as_str())
-        .bind(deployment_owner_user_id).bind(provider.wire_name()).bind(profile.as_str().ok_or_else(|| CalmError::Internal("invalid persisted harness profile".into()))?)
-        .bind(now_ms()).execute(&mut **tx).await?;
-    let original_digest = insert_submission_tx(
+    super::claim_storage::insert_turn_tx(
         tx,
         &carrier.card_id,
+        &carrier.worker_session_id,
         &logical_turn_id,
         &submission_id,
-        &plan,
-        &entries,
+        provenance,
     )
     .await?;
+    let original_digest = match retry {
+        None => {
+            insert_submission_tx(
+                tx,
+                &carrier.card_id,
+                &logical_turn_id,
+                &submission_id,
+                &plan,
+                &entries,
+            )
+            .await?
+        }
+        Some((id, intent)) => {
+            super::claim_storage::insert_retry_submission_tx(
+                tx,
+                &carrier.card_id,
+                &logical_turn_id,
+                &submission_id,
+                &id,
+                &intent,
+            )
+            .await?
+        }
+    };
     carrier.checkpoint.pending.drain(..entries.len());
     carrier.checkpoint.active = Some(ActiveInputSubmissions {
         logical_turn_id: logical_turn_id.clone(),

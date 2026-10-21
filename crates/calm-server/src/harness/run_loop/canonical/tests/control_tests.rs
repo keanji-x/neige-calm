@@ -330,7 +330,9 @@ async fn failed_stays_failed_after_end(
         original.canonical_inputs.attempts
     );
     assert_eq!(
-        done.canonical_inputs.pending[0].input_ref(),
+        done.canonical_inputs.pending[0]
+            .accepted_input_ref()
+            .unwrap(),
         AcceptedInputRef::Human { message }
     );
     let row = fx

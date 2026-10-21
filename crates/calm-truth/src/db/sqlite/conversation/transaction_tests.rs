@@ -240,7 +240,7 @@ async fn canonical_initial_non_delivery_release_preserves_pending_and_newer_queu
             .checkpoint()
             .pending
             .iter()
-            .map(PendingInput::input_ref)
+            .map(|entry| entry.accepted_input_ref().unwrap())
             .collect::<Vec<_>>(),
         expected
     );

@@ -25,7 +25,10 @@ async fn first_plan(
     tx: &mut Transaction<'_, Sqlite>,
     carrier: &CurrentInputCarrier,
 ) -> SubmissionRenderPlan {
-    let AcceptedInputRef::Human { message } = carrier.checkpoint().pending[0].input_ref() else {
+    let AcceptedInputRef::Human { message } = carrier.checkpoint().pending[0]
+        .accepted_input_ref()
+        .unwrap()
+    else {
         panic!("human fixture")
     };
     let identity = conversation::message_tx(tx, &message.message_id)

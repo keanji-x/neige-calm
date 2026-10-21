@@ -16,7 +16,7 @@ use crate::harness::snapshot::{
 };
 use crate::planner_permission_mode::PlannerPermissionMode;
 use calm_types::conversation::{
-    AcceptedInputRef, InputDeliveryFact, PendingInput, SystemRenderContext,
+    CanonicalPendingIdentity, InputDeliveryFact, PendingInput, SystemRenderContext,
 };
 use provider::TurnModelSelection;
 
@@ -24,10 +24,13 @@ mod content;
 mod load;
 pub(super) use load::load_current;
 mod resume;
+mod retry;
 use resume::resume_unattempted;
 pub(super) mod control;
 pub(super) use content::{invalidate_context_usage, on_notification, persist_native_item};
 
+#[cfg(all(test, feature = "fixtures"))]
+mod retry_tests;
 #[cfg(all(test, feature = "fixtures"))]
 mod tests;
 
@@ -83,10 +86,10 @@ pub(super) struct CommittedFrame {
 /// private native receipts, or another runtime state machine are retained here.
 #[derive(Clone, PartialEq)]
 pub(super) struct PublicFeedback {
-    pending: Vec<(AcceptedInputRef, u64, i64)>,
+    pending: Vec<(CanonicalPendingIdentity, u64, i64)>,
     active: Option<calm_types::conversation::ActiveInputSubmissions>,
     attempts: Vec<calm_types::conversation::InputAttemptCheckpoint>,
-    receipts: Vec<calm_types::conversation::HumanKeepReceipt>,
+    receipts: Vec<calm_types::conversation::HumanInputResolutionReceipt>,
     usage: Option<(i64, Option<i64>, Option<f64>, i64)>,
     blocked: Option<String>,
     native_turn: Option<String>,
@@ -99,7 +102,7 @@ impl PublicFeedback {
                 .canonical_inputs
                 .pending
                 .iter()
-                .map(|p| (p.input_ref(), p.queue_position(), p.queued_at_ms()))
+                .map(|p| (p.identity(), p.queue_position(), p.queued_at_ms()))
                 .collect(),
             active: frame.canonical_inputs.active.clone(),
             attempts: frame.canonical_inputs.attempts.clone(),
@@ -134,11 +137,11 @@ impl CanonicalInputs {
         }
     }
 
-    pub async fn observe_source(&self, input: AcceptedInputRef, source: InputSource) {
+    pub async fn observe_source(&self, input: CanonicalPendingIdentity, source: InputSource) {
         self.sources.observe(input, source);
     }
 
-    pub async fn source(&self, input: &AcceptedInputRef) -> Option<InputSource> {
+    pub async fn source(&self, input: &CanonicalPendingIdentity) -> Option<InputSource> {
         self.sources.source(input)
     }
 
@@ -318,14 +321,14 @@ pub(super) async fn tick(inner: &Arc<Inner>) -> Result<()> {
     {
         return Ok(());
     }
-    if checkpoint.active.is_some() && !checkpoint.kept_execution_without_target() {
+    if checkpoint.active.is_some() && !checkpoint.resolved_execution_without_target() {
         return resume_unattempted(inner, &current).await;
     }
     if checkpoint.pending.is_empty()
         || !matches!(
             header.phase,
             HarnessPhaseTag::Idle | HarnessPhaseTag::TurnCompleted
-        ) && !checkpoint.kept_execution_without_target()
+        ) && !checkpoint.resolved_execution_without_target()
     {
         return Ok(());
     }
@@ -334,7 +337,7 @@ pub(super) async fn tick(inner: &Arc<Inner>) -> Result<()> {
             .inputs
             .canonical()
             .expect("canonical consumer")
-            .source(&pending.input_ref())
+            .source(&pending.identity())
             .await
             .is_none()
     {
@@ -372,11 +375,11 @@ pub(super) async fn tick(inner: &Arc<Inner>) -> Result<()> {
     {
         return Ok(());
     }
-    if (checkpoint.active.is_some() && !checkpoint.kept_execution_without_target())
+    if (checkpoint.active.is_some() && !checkpoint.resolved_execution_without_target())
         || (!matches!(
             header.phase,
             HarnessPhaseTag::Idle | HarnessPhaseTag::TurnCompleted
-        ) && !checkpoint.kept_execution_without_target())
+        ) && !checkpoint.resolved_execution_without_target())
     {
         return Ok(());
     }
@@ -384,11 +387,14 @@ pub(super) async fn tick(inner: &Arc<Inner>) -> Result<()> {
         return Ok(());
     };
     let inputs = inner.inputs.canonical().expect("canonical consumer");
-    let message = pending.input_ref();
+    let message = pending.identity();
     let Some(source) = inputs.source(&message).await else {
         publish_issuance_error(inner, &CalmError::Unauthorized).await;
         return Ok(());
     };
+    if let CanonicalPendingIdentity::ExplicitSuccessor { retry_intent_id } = &message {
+        return retry::dispatch_pending(inner, &current, source, retry_intent_id.clone()).await;
+    }
     let card = inner.card_id.to_string();
     let runtime = inner.worker_session_id.clone();
     let expected = current.fence.clone();
@@ -763,14 +769,14 @@ async fn dispatch_initial(
 fn require_head(
     carrier: &CurrentInputCarrier,
     expected: &RuntimeExecutionFence,
-    message: &AcceptedInputRef,
+    message: &CanonicalPendingIdentity,
 ) -> Result<()> {
     if RuntimeExecutionFence::from_carrier(carrier) != *expected
         || carrier
             .checkpoint()
             .pending
             .first()
-            .map(PendingInput::input_ref)
+            .map(PendingInput::identity)
             != Some(message.clone())
     {
         return Err(CalmError::Conflict(

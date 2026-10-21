@@ -24,11 +24,11 @@ pub(super) async fn migrate(db: &super::SqliteDb) -> Result<()> {
             CalmError::Internal(format!("canonical revision migration {id}: {error}"))
         })?;
         let encoded = serde_json::to_string(&frame)?;
-        // V4 is validated on every open but not rewritten. JSON key order is not
+        // V5 is validated on every open but not rewritten. JSON key order is not
         // a reason to replace a protected carrier or alter its snapshot fence.
         if serde_json::from_str::<serde_json::Value>(&raw)?["schema_version"]
             .as_u64()
-            .is_some_and(|version| version < 4)
+            .is_some_and(|version| version < 5)
         {
             sqlx::query("UPDATE worker_sessions SET handle_state_json=?1 WHERE id=?2 AND handle_state_json=?3")
                 .bind(encoded).bind(id).bind(raw).execute(&mut **tx).await?;

@@ -175,14 +175,33 @@ it('retains Keep key and immutable CAS through response loss, remount and card s
   const owner = createConversationOwner();
   const registry = owner.commands;
   const args = { carrier_id: 'carrier', submission_id: 'submission', attempt_id: 'attempt', revision: '1' };
-  const first = registry.beginKeep(card, args, 'key');
+  const first = registry.beginResolution(card, 'keep', args, 'key');
   expect(first?.key).toBe('key');
-  expect(registry.beginKeep(card, args, 'new-key')).toBeNull();
-  registry.finishKeep(card, 'key', 'unknown');
-  registry.beginKeep('other-card', { ...args, carrier_id: 'other' }, 'other-key');
-  const retry = registry.beginKeep(card, { ...args, revision: '2' }, 'discarded-key');
+  expect(registry.beginResolution(card, 'keep', args, 'new-key')).toBeNull();
+  registry.finishResolution(card, 'key', 'unknown');
+  registry.beginResolution('other-card', 'keep', { ...args, carrier_id: 'other' }, 'other-key');
+  const retry = registry.beginResolution(card, 'keep', { ...args, revision: '2' }, 'discarded-key');
   expect(retry?.key).toBe('key');
   expect(retry?.args).toEqual(args);
-  registry.finishKeep(card, 'key', 'done');
-  expect(registry.beginKeep(card, { ...args, revision: '2' }, 'fresh')?.key).toBe('fresh');
+  registry.finishResolution(card, 'key', 'done');
+  expect(registry.beginResolution(card, 'keep', { ...args, revision: '2' }, 'fresh')?.key).toBe('fresh');
+});
+
+
+it('retry response loss reuses the original decision key', () => {
+  const registry = createConversationOwner().commands;
+  const args = { carrier_id:'carrier', submission_id:'submission', attempt_id:'attempt', revision:'7' };
+  expect(registry.beginResolution(card, 'retry', args, 'original')).toMatchObject({decision:'retry', key:'original', args});
+  registry.finishResolution(card, 'original', 'unknown');
+  expect(registry.beginResolution(card, 'retry', {...args, revision:'8'}, 'discarded')).toMatchObject({decision:'retry',key:'original',args});
+});
+it('keep and retry share one attempt intent', () => {
+  const registry = createConversationOwner().commands;
+  const args = { carrier_id:'carrier', submission_id:'submission', attempt_id:'attempt', revision:'7' };
+  registry.beginResolution(card, 'retry', args, 'original');
+  expect(registry.beginResolution(card, 'keep', args, 'competing')).toBeNull();
+  registry.finishResolution(card, 'original', 'unknown');
+  expect(registry.beginResolution(card, 'keep', args, 'competing')).toMatchObject({decision:'retry',key:'original'});
+  registry.finishResolution(card, 'original', 'done');
+  expect(registry.beginResolution(card, 'keep', {...args,revision:'8'}, 'fresh')).toMatchObject({decision:'keep',key:'fresh'});
 });

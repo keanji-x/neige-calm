@@ -35,7 +35,9 @@ async fn runtime_frame_preserves_later_accepted_input_and_its_queue_counter() {
         .unwrap();
     assert_eq!(current.checkpoint().pending.len(), 1);
     assert_eq!(
-        current.checkpoint().pending[0].input_ref(),
+        current.checkpoint().pending[0]
+            .accepted_input_ref()
+            .unwrap(),
         accepted.input_ref
     );
     assert_eq!(current.checkpoint().next_queue_position, 1);
