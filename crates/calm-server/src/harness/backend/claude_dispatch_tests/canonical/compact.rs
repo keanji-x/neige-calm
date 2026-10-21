@@ -6,7 +6,20 @@ use crate::harness::PlannerHarness;
 async fn ready() -> (Fixture, PlannerHarness, serde_json::Value) {
     let fx = Fixture::new("exit").await;
     let harness = fx.start_loop().await;
-    let before = fx.phase("turn_completed").await;
+    // #2982: turn_completed can precede the exit fixture's sole usage event.
+    // Wait for that persisted reading so whole-frame comparisons below cannot
+    // race unrelated telemetry, including after a failed compact guard.
+    let before = tokio::time::timeout(Duration::from_secs(25), async {
+        loop {
+            let frame = fx.frame().await;
+            if frame["phase"] == "turn_completed" && !frame["token_usage"].is_null() {
+                return frame;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("completed exit fixture with persisted usage");
     std::fs::write(fx.dir.path().join("scenario"), "compact").unwrap();
     (fx, harness, before)
 }
