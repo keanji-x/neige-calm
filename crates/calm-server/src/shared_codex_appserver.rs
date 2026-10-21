@@ -35,7 +35,7 @@ use std::sync::Arc;
 #[cfg(feature = "fixtures")]
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use dashmap::DashMap;
 use sha2::{Digest, Sha256};
@@ -73,12 +73,12 @@ use provider::InputItem;
 use provider::TurnModelSelection;
 mod daemon_state;
 mod heal_retry;
+#[cfg(any(test, feature = "fixtures"))]
+use daemon_state::WatcherKind;
 pub use daemon_state::{
     DaemonReadiness, ReplaceOutcome, ReplacePrecondition, SharedDaemonRuntime, SharedDaemonStatus,
 };
-use daemon_state::{
-    LaunchedSharedDaemon, SupervisorCore, SupervisorState, SupervisorWatcher, WatcherKind,
-};
+use daemon_state::{LaunchedSharedDaemon, SupervisorCore, SupervisorState, SupervisorWatcher};
 use heal_retry::{
     BackoffState, FailureClass, HEAL_SLOW_RETRY_CEILING, classify_spawn_failure, heal_jitter,
 };
@@ -1823,7 +1823,8 @@ impl SharedCodexAppServer {
                         client,
                         runtime,
                         watcher: SupervisorWatcher {
-                            kind: WatcherKind::TakenOverPid { pid },
+                            #[cfg(any(test, feature = "fixtures"))]
+                            kind: WatcherKind::TakenOverPid,
                             handle,
                         },
                     })
@@ -1926,18 +1927,11 @@ impl SharedCodexAppServer {
                     }
                 }
                 core.attempts = core.attempts.saturating_add(1);
-                let attempts = core.attempts;
                 self.native_turns.invalidate();
-                let prev_pid = match &core.state {
-                    SupervisorState::Running { runtime, .. } => Some(runtime.pid),
-                    _ => None,
-                };
                 let old_state = std::mem::replace(
                     &mut core.state,
                     SupervisorState::Restarting {
-                        prev_pid,
                         reason: reason.to_string(),
-                        attempts,
                     },
                 );
                 let parts = match old_state {
@@ -2208,11 +2202,7 @@ impl SharedCodexAppServer {
         let generation = {
             let mut core = self.core.lock().await;
             self.native_turns.invalidate();
-            core.state = SupervisorState::Failed {
-                last_error,
-                class,
-                since: Instant::now(),
-            };
+            core.state = SupervisorState::Failed { last_error, class };
             core.generation
         };
         // Readiness stamped on every terminal Failed.
@@ -2466,6 +2456,7 @@ impl SharedCodexAppServer {
             client,
             runtime,
             watcher: SupervisorWatcher {
+                #[cfg(any(test, feature = "fixtures"))]
                 kind: WatcherKind::SpawnedChild,
                 handle,
             },
@@ -2852,10 +2843,7 @@ impl SharedCodexAppServer {
         {
             let mut core = self.core.lock().await;
             self.native_turns.invalidate();
-            core.state = SupervisorState::Starting {
-                backoff_until: None,
-                socket_path: socket_path.clone(),
-            };
+            core.state = SupervisorState::Starting;
         }
         match spawn(socket_path).await {
             Ok(launched) => {
@@ -2888,7 +2876,6 @@ impl SharedCodexAppServer {
                     core.state = SupervisorState::Failed {
                         last_error: err.to_string(),
                         class,
-                        since: Instant::now(),
                     };
                     core.generation
                 };
@@ -3849,7 +3836,7 @@ impl SharedCodexAppServer {
             &core.state,
             SupervisorState::Running {
                 watcher: SupervisorWatcher {
-                    kind: WatcherKind::TakenOverPid { .. },
+                    kind: WatcherKind::TakenOverPid,
                     ..
                 },
                 ..

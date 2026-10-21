@@ -43,7 +43,7 @@ pub(crate) async fn publish(daemon: &Arc<SharedCodexAppServer>, client: Arc<Code
                     started_at: 0,
                 },
                 watcher: SupervisorWatcher {
-                    kind: WatcherKind::TakenOverPid { pid: 0 },
+                    kind: WatcherKind::TakenOverPid,
                     handle: tokio::spawn(async {}),
                 },
             })

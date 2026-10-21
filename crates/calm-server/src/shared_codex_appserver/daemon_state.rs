@@ -2,7 +2,7 @@
 use super::heal_retry::FailureClass;
 use crate::codex_appserver::CodexAppServer;
 use crate::db::SharedDaemonState;
-use std::{path::PathBuf, sync::Arc, time::Instant};
+use std::sync::Arc;
 use tokio::{process::Child, task::JoinHandle};
 
 #[derive(Debug, Clone)]
@@ -59,16 +59,11 @@ pub enum ReplaceOutcome {
 /// Typestate companion to `SharedDaemonState`. `Child` MUST stay private; only transition
 /// APIs may kill/replace. Sibling attribution (thread_cache, active_turns, pending) survives
 /// process restarts and is NOT part of typestate.
+// Keep the running process inline; smaller transition states need no allocation.
+#[allow(clippy::large_enum_variant)]
 pub(crate) enum SupervisorState {
     Idle,
-    Starting {
-        // Retained by this relocation; supervisor transitions still populate this field.
-        #[allow(dead_code)]
-        backoff_until: Option<Instant>,
-        // Retained by this relocation; supervisor transitions still populate this field.
-        #[allow(dead_code)]
-        socket_path: PathBuf,
-    },
+    Starting,
     Running {
         child: Option<Child>,
         client: Arc<CodexAppServer>,
@@ -76,36 +71,23 @@ pub(crate) enum SupervisorState {
         watcher: SupervisorWatcher,
     },
     Restarting {
-        // Retained by this relocation; supervisor transitions still populate this field.
-        #[allow(dead_code)]
-        prev_pid: Option<i32>,
         reason: String,
-        // Retained by this relocation; supervisor transitions still populate this field.
-        #[allow(dead_code)]
-        attempts: u32,
     },
     Failed {
         last_error: String,
         /// Heal-lane classification for this failure.
         class: FailureClass,
-        // Retained by this relocation; supervisor transitions still populate this field.
-        #[allow(dead_code)]
-        since: Instant,
     },
 }
 
+#[cfg(any(test, feature = "fixtures"))]
 pub(crate) enum WatcherKind {
     SpawnedChild,
-    TakenOverPid {
-        // Retained by this relocation; takeover still records the watched process.
-        #[allow(dead_code)]
-        pid: i32,
-    },
+    TakenOverPid,
 }
 
 pub(crate) struct SupervisorWatcher {
-    // Only the existing test/fixture watcher inspection reads this retained tag.
-    #[cfg_attr(not(any(test, feature = "fixtures")), allow(dead_code))]
+    #[cfg(any(test, feature = "fixtures"))]
     pub kind: WatcherKind,
     pub handle: JoinHandle<()>,
 }
@@ -130,11 +112,11 @@ impl SupervisorState {
     /// None for Idle/Starting/Running.
     pub(crate) fn last_error(&self) -> Option<&str> {
         match self {
-            SupervisorState::Restarting { reason, .. } => Some(reason.as_str()),
+            SupervisorState::Restarting { reason } => Some(reason.as_str()),
             SupervisorState::Failed { last_error, .. } => Some(last_error.as_str()),
-            SupervisorState::Idle
-            | SupervisorState::Starting { .. }
-            | SupervisorState::Running { .. } => None,
+            SupervisorState::Idle | SupervisorState::Starting | SupervisorState::Running { .. } => {
+                None
+            }
         }
     }
 
@@ -142,7 +124,7 @@ impl SupervisorState {
     pub(crate) fn as_shared_daemon_state(&self) -> SharedDaemonState {
         match self {
             SupervisorState::Idle => SharedDaemonState::Idle,
-            SupervisorState::Starting { .. } => SharedDaemonState::Starting,
+            SupervisorState::Starting => SharedDaemonState::Starting,
             SupervisorState::Running { .. } => SharedDaemonState::Running,
             SupervisorState::Restarting { .. } => SharedDaemonState::Restarting,
             SupervisorState::Failed { .. } => SharedDaemonState::Failed,
