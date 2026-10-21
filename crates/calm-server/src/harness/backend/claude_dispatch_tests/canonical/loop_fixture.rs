@@ -3,6 +3,12 @@ use super::*;
 
 impl Fixture {
     pub(super) async fn start_loop(&self) -> crate::harness::PlannerHarness {
+        self.start_loop_in(Default::default()).await
+    }
+    pub(super) async fn start_loop_in(
+        &self,
+        registry: crate::harness::registry::HarnessRegistry,
+    ) -> crate::harness::PlannerHarness {
         use crate::harness::{HarnessRuntimeSnapshot, PlannerHarness, PlannerHarnessParams};
         let mut tx = begin_immediate_tx(self.owner.repo.db()).await.unwrap();
         let carrier = current_input_carrier_tx(&mut tx, &self.owner.card, &self.owner.worker)
@@ -34,7 +40,6 @@ impl Fixture {
         roles.seed_from_db(self.owner.repo.pool()).await.unwrap();
         let areas = crate::track_area_cache::TrackAreaCache::new();
         areas.seed_from_db(self.owner.repo.pool()).await.unwrap();
-        let registry = crate::harness::registry::HarnessRegistry::default();
         let harness = PlannerHarness::run(PlannerHarnessParams {
             track_delete_locks: Default::default(),
             worker_session_id: self.owner.worker.clone(),

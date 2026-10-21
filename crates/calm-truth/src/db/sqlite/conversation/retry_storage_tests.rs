@@ -51,8 +51,37 @@ pub(super) async fn seed_repo_payload(
     invocation: FrozenInputInvocation,
     payload: HumanPayload,
 ) -> Seed {
+    seed_repo_binding(
+        repo,
+        card,
+        legacy,
+        invocation,
+        payload,
+        (calm_types::runtime::AgentProvider::Codex, "thread"),
+    )
+    .await
+}
+
+pub(super) async fn seed_repo_binding(
+    repo: SqlxRepo,
+    card: String,
+    legacy: bool,
+    invocation: FrozenInputInvocation,
+    payload: HumanPayload,
+    (provider, thread): (calm_types::runtime::AgentProvider, &str),
+) -> Seed {
     let carrier = runtime(&repo, &card).await;
     let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
+    sqlx::query(
+        "UPDATE worker_sessions SET provider=?1, thread_id=?2,
+        handle_state_json=json_set(handle_state_json, '$.last_thread_id', ?2) WHERE id=?3",
+    )
+    .bind(provider.wire_name())
+    .bind(thread)
+    .bind(&carrier)
+    .execute(&mut **tx)
+    .await
+    .unwrap();
     let mut current = current_input_carrier_tx(&mut tx, &card, &carrier)
         .await
         .unwrap();
@@ -135,7 +164,12 @@ pub(super) async fn seed_repo_payload(
             render,
         };
     }
-    let claimed = claim_initial_submission_tx(&mut tx, &mut current, render.clone(), &provenance())
+    let mut execution = provenance();
+    let ConversationExecutionProvenance::LegacySingleUserDeployment {
+        provider: original, ..
+    } = &mut execution;
+    *original = provider.clone();
+    let claimed = claim_initial_submission_tx(&mut tx, &mut current, render.clone(), &execution)
         .await
         .unwrap();
     begin_input_attempt_tx(
@@ -146,8 +180,8 @@ pub(super) async fn seed_repo_payload(
             attempt_id: InputAttemptId::parse(ATTEMPT).unwrap(),
         },
         InputCorrelationFact {
-            provider: calm_types::runtime::AgentProvider::Codex,
-            thread_id: "thread".into(),
+            provider: provider.clone(),
+            thread_id: thread.into(),
             native_turn_id: None,
             native_session_id: None,
             local_turn_id: None,

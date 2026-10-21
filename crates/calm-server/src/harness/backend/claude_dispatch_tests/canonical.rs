@@ -3,6 +3,7 @@ mod compact;
 mod control;
 mod loop_fixture;
 mod recovery;
+mod retry;
 mod settled;
 use super::*;
 use crate::auth::{AuthConfig, AuthState, SessionAuthority, SessionIdentity};
@@ -112,6 +113,13 @@ impl Fixture {
     pub(in crate::harness) async fn dispatch(
         &self,
     ) -> crate::error::Result<crate::harness::input_dispatch::CommittedInputReport> {
+        self.dispatch_selection(&TurnModelSelection::inherit())
+            .await
+    }
+    async fn dispatch_selection(
+        &self,
+        selection: &TurnModelSelection,
+    ) -> crate::error::Result<crate::harness::input_dispatch::CommittedInputReport> {
         crate::harness::input_dispatch::initial(
             self.owner.repo.as_ref(),
             &self.source,
@@ -119,7 +127,7 @@ impl Fixture {
             &self.owner.worker,
             &self.submission,
             &self.backend,
-            &TurnModelSelection::inherit(),
+            selection,
             PlannerPermissionMode::Never,
         )
         .await

@@ -59,14 +59,28 @@ pub(in crate::db::sqlite) async fn retry_availability_tx(
             .bind(carrier.card_id())
             .fetch_one(&mut **tx)
             .await?;
+    let provider =
+        calm_types::worker::WorkerProviderKind::try_from(provider).map_err(CalmError::Internal)?;
+    let Ok(provider) = AgentProvider::try_from(provider) else {
+        return Ok(Err(RetryUnavailableReason::UnsupportedBinding));
+    };
+    let supported = match provider {
+        AgentProvider::Codex => true,
+        // Slice 3 binds this exact Neige-owned local thread UUID to the row
+        // and canonical header; no native session receipt is needed.
+        AgentProvider::Claude => thread
+            .as_deref()
+            .is_some_and(|thread| uuid::Uuid::try_parse(thread).is_ok()),
+        AgentProvider::OpenCode | AgentProvider::Grok => false,
+    };
     let original = submission_identity_tx(tx, predecessor).await?;
     let ConversationExecutionProvenance::LegacySingleUserDeployment {
         provider: original_provider,
         ..
     } = original.execution;
-    if provider != "codex"
-        || original_provider != AgentProvider::Codex
-        || attempt.correlation.provider != AgentProvider::Codex
+    if !supported
+        || original_provider != provider
+        || attempt.correlation.provider != provider
         || thread.as_deref() != Some(attempt.correlation.thread_id.as_str())
         || carrier
             .snapshot()

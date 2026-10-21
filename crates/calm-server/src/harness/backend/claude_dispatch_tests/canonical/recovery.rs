@@ -277,7 +277,7 @@ async fn canonical_claude_recovery_cancel_before_first_write_survives_database_r
     assert!(!fx.dir.path().join("stdin").exists());
 }
 
-async fn reopen_session(
+pub(super) async fn reopen_session(
     fx: &Fixture,
     repo: Arc<crate::db::sqlite::SqlxRepo>,
 ) -> (PlannerBackend, Arc<ClaudePlannerSession>) {

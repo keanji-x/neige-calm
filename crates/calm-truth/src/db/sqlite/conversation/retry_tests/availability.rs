@@ -244,3 +244,61 @@ async fn canonical_retry_queue_exhaustion_has_zero_resolution_writes() {
     );
     tx.rollback().await.unwrap();
 }
+
+#[tokio::test]
+async fn claude_retry_exact_local_binding_available() {
+    binding_availability(calm_types::runtime::AgentProvider::Claude, false, true).await;
+}
+
+#[tokio::test]
+async fn claude_retry_mismatched_local_thread_unsupported() {
+    binding_availability(calm_types::runtime::AgentProvider::Claude, true, false).await;
+}
+
+#[tokio::test]
+async fn claude_retry_acp_binding_unsupported() {
+    binding_availability(calm_types::runtime::AgentProvider::OpenCode, false, false).await;
+}
+
+async fn binding_availability(
+    provider: calm_types::runtime::AgentProvider,
+    mismatch: bool,
+    available: bool,
+) {
+    let (repo, _, card) = super::super::tests::fixture().await;
+    let thread = uuid::Uuid::new_v4().to_string();
+    let s = super::super::retry_storage_tests::seed_repo_binding(
+        repo,
+        card,
+        false,
+        FrozenInputInvocation {
+            model: Some("frozen".into()),
+            effort: Some("high".into()),
+            permission: calm_types::harness::PlannerPermissionMode::Never,
+        },
+        super::super::tests::body("frozen Human"),
+        (provider, &thread),
+    )
+    .await;
+    let mut tx = begin_immediate_tx(s.repo.db()).await.unwrap();
+    if mismatch {
+        sqlx::query("UPDATE worker_sessions SET thread_id=?1 WHERE id=?2")
+            .bind(uuid::Uuid::new_v4().to_string())
+            .bind(&s.carrier)
+            .execute(&mut **tx)
+            .await
+            .unwrap();
+    }
+    let carrier = current_input_fact_carrier_tx(&mut tx, &s.card, &s.carrier)
+        .await
+        .unwrap();
+    let result = super::super::retry::retry_availability_tx(&mut tx, &carrier, &s.root)
+        .await
+        .unwrap();
+    if available {
+        assert!(result.is_ok(), "{result:?}");
+    } else {
+        assert_eq!(result, Err(RetryUnavailableReason::UnsupportedBinding));
+    }
+    tx.rollback().await.unwrap();
+}

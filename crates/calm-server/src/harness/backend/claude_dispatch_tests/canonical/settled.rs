@@ -106,7 +106,7 @@ async fn canonical_claude_settled_live_and_cleanup_pending_hold() {
     fx.session.shutdown().await.unwrap();
 }
 
-async fn application(fx: &Fixture) -> (crate::state::AppState, axum::Router) {
+pub(super) async fn application(fx: &Fixture) -> (crate::state::AppState, axum::Router) {
     use crate::plugin_host::{PluginHost, PluginRegistry};
     use crate::state::{AppState, CodexClient, DaemonClient, WriteContext};
     let roles = crate::card_role_cache::CardRoleCache::new();
