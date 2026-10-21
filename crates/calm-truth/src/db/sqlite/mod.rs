@@ -65,6 +65,9 @@ pub use session_system_error_recovery::{
     session_resume_system_error_tx, session_set_failed_harness_snapshot_tx,
     session_system_error_recovery_matches, session_system_error_recovery_matches_tx,
 };
+pub mod provider_execution;
+#[cfg(test)]
+mod provider_execution_tests;
 mod task;
 mod task_attempt;
 #[cfg(test)]
