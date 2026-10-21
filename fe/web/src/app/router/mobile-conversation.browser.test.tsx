@@ -2,9 +2,9 @@ import '../../styles/entry.css';
 import type { ReactNode } from 'react';
 import { cleanup, render } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
-import { commands, page } from 'vitest/browser';
+import { commands, page, userEvent } from 'vitest/browser';
 import { ConversationSurface } from './mobile-conversation-surface.tsx';
-import { ChatThread } from '../../features/chat/thread/public.tsx';
+import { ChatComposer, ChatThread } from '../../features/chat/thread/public.tsx';
 import type { TranscriptEntry } from '../../../../core/domain/conversation.ts';
 
 afterEach(async () => { cleanup(); await page.viewport(1280, 800); });
@@ -145,4 +145,87 @@ it('keeps a leading history control at its intrinsic width', async () => {
   const scroll = scroller();
   expect(control.getBoundingClientRect().width).toBeLessThan(scroll.clientWidth / 2);
   expect(Math.abs(control.getBoundingClientRect().left - scroll.getBoundingClientRect().left - parseFloat(getComputedStyle(scroll).paddingLeft))).toBeLessThan(1);
+});
+
+
+it.each(['focus and keyboard', 'trusted pointer'] as const)('revokes retained native footer interaction at close commit: %s', async (interaction) => {
+  await page.viewport(390, 844);
+  const send = vi.fn(() => false);
+  const surface = (open: boolean) => <ConversationSurface mobileSheet open={open} title="Footer authority" onClose={() => {}}
+    footer={<ChatComposer layout="mobile" onSend={send} />}><p>Messages</p></ConversationSurface>;
+  const view = render(surface(true));
+  const editor = await page.getByRole('textbox', { name: 'Message', exact: true }).findElement() as HTMLElement;
+  const footer = editor.closest<HTMLElement>('[data-nc-sheet-footer]')!;
+  const dialog = editor.closest('dialog')!;
+  await page.elementLocator(editor).fill('Retained draft');
+  const submit = page.getByRole('button', { name: 'Send', exact: true }).element() as HTMLElement;
+  await expect.poll(() => dialog.getAnimations({ subtree: true }).every(animation => animation.playState !== 'running')).toBe(true);
+  editor.blur();
+  const pointer: boolean[] = [];
+  const observe = (event: PointerEvent) => pointer.push(event.isTrusted);
+  document.addEventListener('pointerdown', observe, true);
+  try {
+    view.rerender(surface(false));
+    expect(dialog.open).toBe(true);
+    expect(editor.isConnected).toBe(true);
+    if (interaction === 'focus and keyboard') {
+      editor.focus();
+      expect(document.activeElement).not.toBe(editor);
+      await userEvent.keyboard('{Enter}');
+    } else {
+      // Force bypasses driver actionability, but still sends a real browser
+      // pointer at the retained button's coordinates. Native inert must reject it.
+      await page.elementLocator(submit).click({ force: true });
+      expect(pointer).toEqual([true]);
+    }
+    expect(send).not.toHaveBeenCalled();
+    expect(dialog.open).toBe(true);
+    expect(editor.isConnected).toBe(true);
+    expect(footer.inert).toBe(true);
+    expect(footer.getAttribute('aria-hidden')).toBe('true');
+    await expect.poll(() => dialog.open).toBe(false);
+  } finally { document.removeEventListener('pointerdown', observe, true); }
+});
+
+it('restores the same real footer editor immediately on native reopen and ignores the old exit', async () => {
+  await page.viewport(390, 844);
+  const opener = document.body.appendChild(document.createElement('button'));
+  opener.textContent = 'Footer opener';
+  opener.focus();
+  const send = vi.fn(() => false);
+  const surface = (open: boolean) => <ConversationSurface mobileSheet open={open} title="Footer reopen" onClose={() => {}}
+    footer={<ChatComposer layout="mobile" onSend={send} />}><p>Messages</p></ConversationSurface>;
+  const view = render(surface(true));
+  try {
+    const editor = await page.getByRole('textbox', { name: 'Message', exact: true }).findElement() as HTMLElement;
+    await page.elementLocator(editor).fill('Retained selection draft');
+    const footer = editor.closest<HTMLElement>('[data-nc-sheet-footer]')!;
+    const portal = footer.parentElement;
+    const dialog = editor.closest('dialog')!;
+    await expect.poll(() => dialog.getAnimations({ subtree: true }).every(animation => animation.playState !== 'running')).toBe(true);
+    const text = editor.firstChild!;
+    document.getSelection()!.setBaseAndExtent(text, 5, text, 9);
+    view.rerender(surface(false));
+    expect(dialog.open).toBe(true);
+    view.rerender(surface(true));
+    editor.focus({ preventScroll: true });
+    expect(document.activeElement).toBe(editor);
+    expect(footer.inert).toBe(false);
+    expect(footer.getAttribute('aria-hidden')).toBeNull();
+    expect(editor.closest('[data-nc-sheet-footer]')).toBe(footer);
+    expect(footer.parentElement).toBe(portal);
+    expect(document.getSelection()?.anchorNode).toBe(text);
+    expect(document.getSelection()?.anchorOffset).toBe(5);
+    expect(document.getSelection()?.focusOffset).toBe(9);
+    expect(editor.textContent).toBe('Retained selection draft');
+    await expect.poll(() => dialog.getAnimations({ subtree: true }).every(animation => animation.playState !== 'running')).toBe(true);
+    expect(dialog.open).toBe(true);
+    expect(document.activeElement).toBe(editor);
+    expect(editor.isConnected).toBe(true);
+    await page.getByRole('button', { name: 'Send', exact: true }).click();
+    expect(send).toHaveBeenCalledExactlyOnceWith('Retained selection draft');
+    view.rerender(surface(false));
+    await expect.poll(() => dialog.open).toBe(false);
+    await expect.poll(() => document.activeElement).toBe(opener);
+  } finally { view.unmount(); opener.remove(); }
 });

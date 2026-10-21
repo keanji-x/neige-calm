@@ -514,6 +514,8 @@ it('keeps a rapid native reopen focused inside and restores the opener only afte
     const dialog = page.getByRole('dialog', { name: 'Rapid conversation' }).element() as HTMLDialogElement;
     const editor = page.getByRole('textbox', { name: 'Rapid draft' }).element() as HTMLInputElement;
     await expect.poll(() => dialog.open).toBe(true);
+    // Retention requires entered paint: paused entry zero is already the closed endpoint.
+    const entry = dialog.getAnimations({ subtree: true })[0]; entry.pause(); await entry.ready; entry.currentTime = 80;
     editor.focus();
     view.rerender(surface(false));
     expect(dialog.open).toBe(true);

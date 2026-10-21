@@ -12,6 +12,7 @@ import { inPreviewBridge, placePreview, PREVIEW_GAP, PREVIEW_WIDTH, PREVIEW_MAX_
 import styles from './preview.module.css';
 import { CardFrame } from '../card-frame/public.tsx';
 import { useInteractionScope } from './interaction-scope.ts';
+import { subscribeAncestorVisualChange } from './visual-change.ts';
 
 type Phase = 'closed' | 'waiting' | 'open';
 const HOVER_DELAY = 300;
@@ -19,7 +20,7 @@ const LEAVE_DELAY = 180;
 const TRAVEL_DELAY = 800;
 const NAVIGATION_DISMISS = 'nc-preview-navigation';
 const INTERACTION_REGISTER = 'nc-preview-register';
-type ParentView = { kind: 'pending' | 'revoked' } | { kind: 'admitted'; token: object; read: () => boolean };
+type ParentView = { kind: 'pending' | 'revoked' } | { kind: 'admitted'; token: object; read: () => boolean; dependsOn: (ancestor: HTMLElement) => boolean };
 type NestedInteraction = { setParent: (view: ParentView) => void; release: (() => void) | null };
 type Paint = { kind: 'empty' } | { kind: 'suspended' | 'retained'; actual: HTMLDivElement; part: HTMLDivElement }
   | { kind: 'admitted'; actual: HTMLDivElement; part: HTMLDivElement; binding: Extract<BindingView, { kind: 'ready' }>; cycle: object; ancestor: object; slot: Placement; height: number };
@@ -54,7 +55,7 @@ export function HoverPreview({ title, trigger, children, getReadingSurface, getA
   getReadingSurface?: (trigger: HTMLElement) => HTMLElement | null;
   getAvoidSurfaces?: (trigger: HTMLElement) => readonly HTMLElement[];
 }>) {
-  const parent = useRef<ParentView>({ kind: 'admitted', token: {}, read: () => true });
+  const parent = useRef<ParentView>({ kind: 'admitted', token: {}, read: () => true, dependsOn: () => false });
   const paint = useRef<Paint>({ kind: 'empty' });
   const cycle = useRef<object>({});
   const intent = useRef<Phase>('closed');
@@ -104,9 +105,18 @@ export function HoverPreview({ title, trigger, children, getReadingSurface, getA
       && current.ancestor === ancestor && intent.current === 'open'
       && measurement.readBinding() === current.binding;
   };
+  const dependencyInputs = useRef({ getReadingSurface, getAvoidSurfaces });
+  dependencyInputs.current = { getReadingSurface, getAvoidSurfaces };
+  const dependsOnAncestor = (ancestor: HTMLElement): boolean => {
+    const trigger = anchor.current;
+    if (trigger === null) return false;
+    return [trigger, trigger.closest<HTMLElement>('[data-nc-preview-owner]'), dependencyInputs.current.getReadingSurface?.(trigger),
+      ...(dependencyInputs.current.getAvoidSurfaces?.(trigger) ?? [])].some(node => node != null && ancestor.contains(node))
+      || parent.current.kind === 'admitted' && parent.current.dependsOn(ancestor);
+  };
   const parentView = (): ParentView => {
     const token = paint.current;
-    return admitted() ? { kind: 'admitted', token, read: () => paint.current === token && admitted() }
+    return admitted() ? { kind: 'admitted', token, read: () => paint.current === token && admitted(), dependsOn: dependsOnAncestor }
       : { kind: intent.current === 'open' ? 'pending' : 'revoked' };
   };
   const readAdmission = useEffectEvent(admitted);
@@ -197,7 +207,7 @@ export function HoverPreview({ title, trigger, children, getReadingSurface, getA
     if ((registeredParent.current?.endpoint ?? null) === endpoint) return;
     if (registeredParent.current !== null) {
       registeredParent.current.child.release?.(); registeredParent.current = null;
-      revoke(); parent.current = { kind: 'admitted', token: {}, read: () => true };
+      revoke(); parent.current = { kind: 'admitted', token: {}, read: () => true, dependsOn: () => false };
     }
     if (endpoint === null) return;
     const child: NestedInteraction = { release: null, setParent: view => {
@@ -337,6 +347,11 @@ export function HoverPreview({ title, trigger, children, getReadingSurface, getA
     observed.current = { nodes, dispose: () => observer.disconnect() };
   });
   useLayoutEffect(() => () => { observed.current?.dispose(); observed.current = null; }, []);
+  const ancestorChanged = useEffectEvent((ancestor: HTMLElement) => {
+    // Geometry notices never grant admission to retained or unrequested paint.
+    if (requested && admitted() && dependsOnAncestor(ancestor)) updateLayout();
+  });
+  useEffect(() => subscribeAncestorVisualChange(document, ancestor => { ancestorChanged(ancestor); }), []);
   useEffect(() => {
     if (!requested) return;
     const upstream = (event: Event) => {

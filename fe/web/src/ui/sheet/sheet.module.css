@@ -1,0 +1,10 @@
+@layer ui {
+  .dialog { position: fixed; z-index: var(--z-modal); inset: 0; margin: 0; padding: 0; border: 0; inline-size: 100%; block-size: 100%; max-inline-size: none; max-block-size: none; overflow: visible; background: transparent; color: inherit; pointer-events: none; }
+  .frame { position: fixed; inset-inline: 0; pointer-events: none; }
+  .panel { position: relative; block-size: calc(100% + 48px); box-sizing: border-box; border-radius: calc(var(--radius-md) * 2) calc(var(--radius-md) * 2) 0 0; background: var(--paper); box-shadow: var(--shadow-float); pointer-events: auto; }
+  .handle { position: absolute; z-index: var(--z-raised); inset-block-start: max(0px, calc(env(safe-area-inset-top) - var(--sheet-open-top))); inset-inline: calc(50% - var(--space-6) * 2); block-size: var(--space-6); display: flex; align-items: center; justify-content: center; touch-action: none; cursor: grab; }
+  .handle > div { inline-size: var(--space-6); block-size: var(--space-1); border-radius: var(--radius-pill); background: var(--hairline); }
+  .content { block-size: calc(100% - 48px); overflow: hidden; }
+  .footer { position: fixed; inset-inline: 0; z-index: var(--z-raised); pointer-events: none; }
+  .footer > * { pointer-events: auto; }
+}
