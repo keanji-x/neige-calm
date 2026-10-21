@@ -22,7 +22,9 @@ renames only the provider package.
   Tool-name metadata takes the required MCP server key and declared visible
   names from the kernel; the provider package does not infer application policy.
 - Server: process environment, spawn/stop, credential issuance, authorization,
-  thread seals, recovery, persistence, and transaction settlement.
+  thread seals, recovery (including shared-daemon retry policy and supervisor
+  typestate), persistence, and transaction settlement. The shared-daemon database
+  state vocabulary and decoding belong to calm-truth.
 
 Move cross-layer provider conformance tests to the server integration surface;
 their actual truth-layer harness remains unchanged. Move the redacted Claude

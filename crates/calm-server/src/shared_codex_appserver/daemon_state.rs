@@ -1,46 +1,11 @@
 //! Shared daemon state and connection ownership contracts.
-use crate::codex::CodexAppServer;
-use serde::Serialize;
-use std::{
-    path::PathBuf,
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use super::heal_retry::FailureClass;
+use crate::codex_appserver::CodexAppServer;
+use crate::db::SharedDaemonState;
+use std::{path::PathBuf, sync::Arc, time::Instant};
 use tokio::{process::Child, task::JoinHandle};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum SharedDaemonState {
-    Idle,
-    Starting,
-    Running,
-    Restarting,
-    Failed,
-}
-
-impl SharedDaemonState {
-    pub fn as_db_str(self) -> &'static str {
-        match self {
-            SharedDaemonState::Idle => "idle",
-            SharedDaemonState::Starting => "starting",
-            SharedDaemonState::Running => "running",
-            SharedDaemonState::Restarting => "restarting",
-            SharedDaemonState::Failed => "failed",
-        }
-    }
-
-    pub fn from_db_str(s: &str) -> Self {
-        match s {
-            "starting" => SharedDaemonState::Starting,
-            "running" => SharedDaemonState::Running,
-            "restarting" => SharedDaemonState::Restarting,
-            "failed" => SharedDaemonState::Failed,
-            _ => SharedDaemonState::Idle,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone)]
 pub struct SharedDaemonRuntime {
     pub pid: i32,
     pub pgid: i32,
@@ -49,7 +14,7 @@ pub struct SharedDaemonRuntime {
     pub started_at: i64,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone)]
 pub struct SharedDaemonStatus {
     pub state: SharedDaemonState,
     pub sock: String,
@@ -59,24 +24,6 @@ pub struct SharedDaemonStatus {
     pub pending_count: usize,
     pub restart_count: u64,
     pub last_error: Option<String>,
-}
-
-/// Slow-lane retry ceiling for the self-heal loop. A code invariant, not a knob.
-pub const HEAL_SLOW_RETRY_CEILING: Duration = Duration::from_secs(300);
-
-/// Classified failure lanes for the self-heal loop.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FailureClass {
-    /// Fast lane — the existing `BackoffState` knobs. Child exited,
-    /// handshake/cold-start deadline, socket errors.
-    Transient,
-    /// Slow lane — spawn exec error, settings/config read error, guard
-    /// refusal that is safe to retry (floor `restart_max_delay_ms`, ceiling
-    /// [`HEAL_SLOW_RETRY_CEILING`]).
-    Persistent,
-    /// Slow lane, reconciliation-only rounds: a possible surviving daemon we could not prove
-    /// gone. The spawn path is unreachable until a round proves absence.
-    Unreconciled,
 }
 
 /// Precondition validated under the core lock before any destructive work; the transition
@@ -112,10 +59,14 @@ pub enum ReplaceOutcome {
 /// Typestate companion to `SharedDaemonState`. `Child` MUST stay private; only transition
 /// APIs may kill/replace. Sibling attribution (thread_cache, active_turns, pending) survives
 /// process restarts and is NOT part of typestate.
-pub enum SupervisorState {
+pub(crate) enum SupervisorState {
     Idle,
     Starting {
+        // Retained by this relocation; supervisor transitions still populate this field.
+        #[allow(dead_code)]
         backoff_until: Option<Instant>,
+        // Retained by this relocation; supervisor transitions still populate this field.
+        #[allow(dead_code)]
         socket_path: PathBuf,
     },
     Running {
@@ -125,29 +76,41 @@ pub enum SupervisorState {
         watcher: SupervisorWatcher,
     },
     Restarting {
+        // Retained by this relocation; supervisor transitions still populate this field.
+        #[allow(dead_code)]
         prev_pid: Option<i32>,
         reason: String,
+        // Retained by this relocation; supervisor transitions still populate this field.
+        #[allow(dead_code)]
         attempts: u32,
     },
     Failed {
         last_error: String,
         /// Heal-lane classification for this failure.
         class: FailureClass,
+        // Retained by this relocation; supervisor transitions still populate this field.
+        #[allow(dead_code)]
         since: Instant,
     },
 }
 
-pub enum WatcherKind {
+pub(crate) enum WatcherKind {
     SpawnedChild,
-    TakenOverPid { pid: i32 },
+    TakenOverPid {
+        // Retained by this relocation; takeover still records the watched process.
+        #[allow(dead_code)]
+        pid: i32,
+    },
 }
 
-pub struct SupervisorWatcher {
+pub(crate) struct SupervisorWatcher {
+    // Only the existing test/fixture watcher inspection reads this retained tag.
+    #[cfg_attr(not(any(test, feature = "fixtures")), allow(dead_code))]
     pub kind: WatcherKind,
     pub handle: JoinHandle<()>,
 }
 
-pub struct SupervisorCore {
+pub(crate) struct SupervisorCore {
     pub state: SupervisorState,
     pub attempts: u32,
     /// Bumped (`wrapping_add`) each time a Running state is installed. Consumers compare by
@@ -155,7 +118,7 @@ pub struct SupervisorCore {
     pub generation: u64,
 }
 
-pub struct LaunchedSharedDaemon {
+pub(crate) struct LaunchedSharedDaemon {
     pub child: Option<Child>,
     pub client: Arc<CodexAppServer>,
     pub runtime: SharedDaemonRuntime,
@@ -165,7 +128,7 @@ pub struct LaunchedSharedDaemon {
 impl SupervisorState {
     /// Return last_error string when present (Restarting.reason, Failed.last_error).
     /// None for Idle/Starting/Running.
-    pub fn last_error(&self) -> Option<&str> {
+    pub(crate) fn last_error(&self) -> Option<&str> {
         match self {
             SupervisorState::Restarting { reason, .. } => Some(reason.as_str()),
             SupervisorState::Failed { last_error, .. } => Some(last_error.as_str()),
@@ -176,7 +139,7 @@ impl SupervisorState {
     }
 
     /// DB string mapping for persistence + status_snapshot.
-    pub fn as_shared_daemon_state(&self) -> SharedDaemonState {
+    pub(crate) fn as_shared_daemon_state(&self) -> SharedDaemonState {
         match self {
             SupervisorState::Idle => SharedDaemonState::Idle,
             SupervisorState::Starting { .. } => SharedDaemonState::Starting,

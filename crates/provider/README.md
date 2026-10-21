@@ -17,7 +17,9 @@ database dependency, including in unit-test builds.
   also re-exported here. Its generic execution vocabulary stays in its owner.
 
 The server owns authorization, credentials, process lifecycle, thread seals,
-recovery, and database settlement. Cross-layer provider conformance tests live
+recovery (including shared-daemon retry policy and supervisor typestate), and
+database settlement. The shared-daemon state vocabulary and typed row decoding
+belong to calm-truth. Cross-layer provider conformance tests live
 under `calm-server/tests/provider_conformance.rs` and use the real truth harness.
 
 Run protocol and worker unit tests on the shared host with:

@@ -19,6 +19,8 @@ use sqlx::{Sqlite, Transaction};
 use std::sync::Arc;
 
 pub mod rows;
+mod shared_codex_daemon_state;
+pub use shared_codex_daemon_state::SharedDaemonState;
 pub mod sqlite;
 pub mod terminal_outcome;
 pub mod worker_flow_capture;
@@ -76,7 +78,7 @@ pub struct TrackEvent {
 
 #[derive(Debug, Clone)]
 pub struct SharedCodexDaemonRecord {
-    pub state: String,
+    pub state: SharedDaemonState,
     pub pid: Option<i32>,
     pub pgid: Option<i32>,
     pub sock_path: Option<String>,
@@ -101,7 +103,7 @@ pub struct SessionCardIdentity {
 
 #[derive(Debug, Clone)]
 pub struct SharedCodexDaemonUpdate {
-    pub state: String,
+    pub state: SharedDaemonState,
     pub pid: Option<i32>,
     pub pgid: Option<i32>,
     pub sock_path: Option<String>,

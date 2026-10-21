@@ -413,7 +413,7 @@ impl RepoOutOfDomain for SqlxRepo {
                    last_error = excluded.last_error,
                    daemon_env_signature = excluded.daemon_env_signature"#,
         )
-        .bind(&update.state)
+        .bind(update.state.as_db_str())
         .bind(update.pid)
         .bind(update.pgid)
         .bind(&update.sock_path)

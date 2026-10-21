@@ -1,8 +1,8 @@
 pub use calm_truth::db::{
     Repo, RepoEventWrite, RepoOutOfDomain, RepoRead, RepoSyncDomainRaw, RouteRepo,
-    SessionCardIdentity, SharedCodexDaemonRecord, SharedCodexDaemonUpdate, TrackAreaMembership,
-    TrackEvent, TranscriptRow, WorkspaceLease, WriteInTxFn, WriteWithActorEventsFn,
-    WriteWithEventFn, WriteWithEventsFn, rows,
+    SessionCardIdentity, SharedCodexDaemonRecord, SharedCodexDaemonUpdate, SharedDaemonState,
+    TrackAreaMembership, TrackEvent, TranscriptRow, WorkspaceLease, WriteInTxFn,
+    WriteWithActorEventsFn, WriteWithEventFn, WriteWithEventsFn, rows,
 };
 
 use async_trait::async_trait;

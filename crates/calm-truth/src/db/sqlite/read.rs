@@ -7,7 +7,9 @@ use super::{
 };
 use crate::card_role_cache::CardRoleCache;
 use crate::db::rows::{TRACK_SELECT_COLUMNS, TRACK_SELECT_COLUMNS_W};
-use crate::db::{RepoRead, SessionCardIdentity, SharedCodexDaemonRecord, WorkspaceLease};
+use crate::db::{
+    RepoRead, SessionCardIdentity, SharedCodexDaemonRecord, SharedDaemonState, WorkspaceLease,
+};
 use crate::error::{CalmError, Result};
 use crate::ids::{AreaId, CardId, TrackId};
 use crate::model::*;
@@ -760,7 +762,9 @@ impl RepoRead for SqlxRepo {
         .fetch_one(self.db.read_pool())
         .await?;
         Ok(SharedCodexDaemonRecord {
-            state: row.0,
+            state: SharedDaemonState::try_from(row.0).map_err(|e| {
+                CalmError::Internal(format!("shared_codex_daemon.state decode: {e}"))
+            })?,
             pid: row.1,
             pgid: row.2,
             sock_path: row.3,

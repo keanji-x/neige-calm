@@ -52,7 +52,7 @@ use crate::codex_appserver::{
 };
 use crate::config::Config;
 use crate::db::sqlite::session_projection_active_for_card_tx;
-use crate::db::{Repo, SharedCodexDaemonUpdate, write_in_tx_typed};
+use crate::db::{Repo, SharedCodexDaemonUpdate, SharedDaemonState, write_in_tx_typed};
 use crate::error::{CalmError, Result};
 use crate::mcp_server::transport;
 use crate::mcp_server::wiring::{card_mcp_thread_start_config, mint_and_persist_card_token};
@@ -71,13 +71,18 @@ use crate::shared_codex_home::{EXPECTED_MCP_SERVERS, SharedCodexHome};
 use crate::thread_seals::ThreadSeals;
 use provider::InputItem;
 use provider::TurnModelSelection;
-pub use provider::codex::shared::{
-    BackoffState, DaemonReadiness, FailureClass, HEAL_SLOW_RETRY_CEILING, LaunchedSharedDaemon,
-    ReplaceOutcome, ReplacePrecondition, SharedDaemonRuntime, SharedDaemonState,
-    SharedDaemonStatus, SupervisorCore, SupervisorState, SupervisorWatcher, WatcherKind,
-    bounded_exponential_backoff,
+mod daemon_state;
+mod heal_retry;
+pub use daemon_state::{
+    DaemonReadiness, ReplaceOutcome, ReplacePrecondition, SharedDaemonRuntime, SharedDaemonStatus,
 };
-use provider::codex::shared::{classify_spawn_failure, heal_jitter, liveness_facts_from_read};
+use daemon_state::{
+    LaunchedSharedDaemon, SupervisorCore, SupervisorState, SupervisorWatcher, WatcherKind,
+};
+use heal_retry::{
+    BackoffState, FailureClass, HEAL_SLOW_RETRY_CEILING, classify_spawn_failure, heal_jitter,
+};
+use provider::codex::shared::liveness_facts_from_read;
 
 pub type TurnId = String;
 
@@ -336,7 +341,7 @@ fn strip_unreconciled_prefix(last_error: &str) -> &str {
 /// Read-side rule: `state='failed'` ∧ all identity columns NULL ⇒ safe to retry; any
 /// identity column present ⇒ unreconciled, run the per-shape resolution before any spawn.
 fn failed_row_identity_present(record: &crate::db::SharedCodexDaemonRecord) -> bool {
-    SharedDaemonState::from_db_str(&record.state) == SharedDaemonState::Failed
+    record.state == SharedDaemonState::Failed
         && (record.pid.is_some()
             || record.pgid.is_some()
             || record.process_start_time.is_some()
@@ -1730,7 +1735,7 @@ impl SharedCodexAppServer {
             return Ok(false);
         };
         if matches!(
-            SharedDaemonState::from_db_str(&record.state),
+            record.state,
             SharedDaemonState::Idle | SharedDaemonState::Failed
         ) {
             return Ok(false);
@@ -1780,10 +1785,7 @@ impl SharedCodexAppServer {
         let sock = PathBuf::from(sock_path);
         // A `starting` row names a child still inside its cold-start budget (mid-backfill), so it
         // gets the REMAINING readiness window instead of the instant handshake fast-fail.
-        let probe = if matches!(
-            SharedDaemonState::from_db_str(&record.state),
-            SharedDaemonState::Starting
-        ) {
+        let probe = if matches!(record.state, SharedDaemonState::Starting) {
             // ms-domain saturating math anchored to the PERSISTED `started_at`: clock skew degenerates
             // to a full or zero window; repeated boots never re-arm the window.
             let elapsed = Duration::from_millis(now_ms().saturating_sub(started_at).max(0) as u64);
@@ -1833,7 +1835,7 @@ impl SharedCodexAppServer {
                 if let Err(e) = self
                     .repo
                     .shared_daemon_runtime_set(SharedCodexDaemonUpdate {
-                        state: SharedDaemonState::Running.as_db_str().to_string(),
+                        state: SharedDaemonState::Running,
                         pid: Some(adopted.pid),
                         pgid: Some(adopted.pgid),
                         sock_path: record.sock_path.clone(),
@@ -2249,7 +2251,7 @@ impl SharedCodexAppServer {
         match self
             .repo
             .shared_daemon_runtime_set(SharedCodexDaemonUpdate {
-                state: SharedDaemonState::Failed.as_db_str().to_string(),
+                state: SharedDaemonState::Failed,
                 pid: identity.pid,
                 pgid: identity.pgid,
                 sock_path: identity.sock_path.clone(),
@@ -2402,7 +2404,7 @@ impl SharedCodexAppServer {
             let pair = self.poll_connect_initialized(&mut spawn_guard).await?;
             self.repo
                 .shared_daemon_runtime_set(SharedCodexDaemonUpdate {
-                    state: SharedDaemonState::Running.as_db_str().to_string(),
+                    state: SharedDaemonState::Running,
                     pid: Some(pid),
                     pgid: Some(pgid),
                     sock_path: Some(self.sock.display().to_string()),
@@ -2544,7 +2546,7 @@ impl SharedCodexAppServer {
     ) -> Result<()> {
         self.repo
             .shared_daemon_runtime_set(SharedCodexDaemonUpdate {
-                state: SharedDaemonState::Starting.as_db_str().to_string(),
+                state: SharedDaemonState::Starting,
                 pid: Some(runtime.pid),
                 pgid: Some(runtime.pgid),
                 sock_path: Some(self.sock.display().to_string()),
@@ -4431,10 +4433,6 @@ impl provider::worker::CodexDaemonProbe for SharedCodexAppServer {
             .map(|turn_id| turn_id.to_string())
     }
 
-    fn remote_uri(&self) -> String {
-        SharedCodexAppServer::remote_uri(self)
-    }
-
     fn daemon_connected_at_ms(&self) -> calm_types::runtime::TimestampMs {
         SharedCodexAppServer::daemon_connected_at_ms(self)
     }
@@ -4574,84 +4572,11 @@ mod tests {
         assert!(!dedup.should_skip("boom", FailureClass::Persistent, &identity));
     }
 
-    /// Lane classification: cold-start poll failures and child-exit shapes are Transient;
-    /// exec/config/guard failures are Persistent.
-    #[test]
-    fn classify_spawn_failure_assigns_lanes() {
-        let transient = [
-            "shared codex app-server exited before initialize (exit status: 7) after 0.1s: x",
-            "shared codex app-server not initialized after 2.0s (deadline 2s, child still alive): x",
-            "shared codex app-server exited: exit status: 1",
-        ];
-        for msg in transient {
-            assert_eq!(
-                classify_spawn_failure(&CalmError::CodexAppServer(msg.into())),
-                FailureClass::Transient,
-                "{msg}"
-            );
-        }
-        let persistent = [
-            "spawn shared codex app-server: No such file or directory (os error 2)",
-            "refusing to launch shared codex app-server: unexpected mcp server evil",
-            "db error: settings read failed",
-        ];
-        for msg in persistent {
-            assert_eq!(
-                classify_spawn_failure(&CalmError::CodexAppServer(msg.into())),
-                FailureClass::Persistent,
-                "{msg}"
-            );
-        }
-    }
-
-    /// Jitter stays within ±20%.
-    #[test]
-    fn heal_jitter_stays_within_twenty_percent() {
-        for _ in 0..64 {
-            let jittered = heal_jitter(Duration::from_secs(100));
-            assert!(
-                jittered >= Duration::from_secs(80) && jittered <= Duration::from_secs(120),
-                "jittered delay {jittered:?} outside ±20% of 100s"
-            );
-        }
-    }
-
-    /// Persistent hits the slow ceiling with a floor at `restart_max_delay`; Transient stays
-    /// on the fast lane cap.
-    #[test]
-    fn slow_lane_floors_at_restart_max_and_caps_at_const_ceiling() {
-        let state = BackoffState::new(Duration::from_millis(250), Duration::from_secs(10));
-        assert_eq!(
-            state.next_slow_delay(HEAL_SLOW_RETRY_CEILING),
-            Duration::from_secs(10),
-            "slow-lane floor must be restart_max_delay"
-        );
-        let mut last = Duration::ZERO;
-        for _ in 0..20 {
-            last = state.next_slow_delay(HEAL_SLOW_RETRY_CEILING);
-        }
-        assert_eq!(
-            last, HEAL_SLOW_RETRY_CEILING,
-            "slow-lane ceiling must be the 300s const"
-        );
-
-        let fast = BackoffState::new(Duration::from_millis(250), Duration::from_secs(10));
-        let mut last_fast = Duration::ZERO;
-        for _ in 0..20 {
-            last_fast = fast.next_delay();
-        }
-        assert_eq!(
-            last_fast,
-            Duration::from_secs(10),
-            "the Transient lane keeps the configured fast cap"
-        );
-    }
-
     /// Read-side classification rule over row shapes.
     #[test]
     fn failed_row_identity_presence_classifies_unreconciled() {
         let mut record = crate::db::SharedCodexDaemonRecord {
-            state: "failed".into(),
+            state: SharedDaemonState::Failed,
             pid: None,
             pgid: None,
             sock_path: None,
@@ -4673,7 +4598,7 @@ mod tests {
             failed_row_identity_present(&record),
             "ANY identity column present marks the row unreconciled"
         );
-        record.state = "running".into();
+        record.state = SharedDaemonState::Running;
         assert!(
             !failed_row_identity_present(&record),
             "the rule applies to failed rows only"
@@ -4700,7 +4625,7 @@ mod tests {
         let start_time = read_proc_start_time(self_pid).expect("own start time");
         let boot_id = read_boot_id().unwrap_or_default();
         repo.shared_daemon_runtime_set(SharedCodexDaemonUpdate {
-            state: SharedDaemonState::Running.as_db_str().to_string(),
+            state: SharedDaemonState::Running,
             pid: Some(self_pid),
             pgid: Some(self_pid),
             sock_path: Some("/tmp/none.sock".into()),
@@ -4761,7 +4686,7 @@ mod tests {
         // Row untouched: it still truthfully names the live verified daemon.
         let record = repo.shared_daemon_runtime_get().await.unwrap();
         assert_eq!(
-            SharedDaemonState::from_db_str(&record.state),
+            record.state,
             SharedDaemonState::Running,
             "no forged failed/absence write over the live daemon's row"
         );

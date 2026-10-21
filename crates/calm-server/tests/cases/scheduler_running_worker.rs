@@ -53,10 +53,6 @@ impl CodexDaemonProbe for ScriptedProbe {
         self.active_turn.clone()
     }
 
-    fn remote_uri(&self) -> String {
-        String::new()
-    }
-
     fn daemon_connected_at_ms(&self) -> i64 {
         0
     }

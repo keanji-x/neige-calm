@@ -61,7 +61,6 @@ pub struct CodexLivenessFacts {
 pub trait CodexDaemonProbe: Send + Sync {
     fn is_running(&self) -> bool;
     fn active_turn_id_for_thread(&self, thread_id: &str) -> Option<String>;
-    fn remote_uri(&self) -> String;
 
     /// Wall-clock ms of the most recent successful daemon (re)connect; within the rebuild grace the loaded-thread roster is not stable yet.
     fn daemon_connected_at_ms(&self) -> TimestampMs;
@@ -246,9 +245,6 @@ mod tests {
         }
         fn active_turn_id_for_thread(&self, _thread_id: &str) -> Option<String> {
             None
-        }
-        fn remote_uri(&self) -> String {
-            "unix:///tmp/fake.sock".into()
         }
         fn daemon_connected_at_ms(&self) -> TimestampMs {
             0

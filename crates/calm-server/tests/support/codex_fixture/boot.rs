@@ -7,6 +7,7 @@ use std::sync::atomic::AtomicBool;
 
 use calm_server::card_role_cache::CardRoleCache;
 use calm_server::config::Config;
+use calm_server::db::SharedDaemonState;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::EventBus;
 use calm_server::harness::HarnessRegistry;
@@ -20,7 +21,7 @@ use calm_server::operation::{
     OperationCompletionBus, OperationRuntime, ProviderAdapter, SpawnCtx, SqlxOperationRepo,
 };
 use calm_server::session_projection_repo::AgentProvider;
-use calm_server::shared_codex_appserver::{SharedCodexAppServer, SharedDaemonState};
+use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_server::shared_codex_home::SharedCodexHome;
 use calm_server::state::{CodexClient, DaemonClient, WriteContext};
 use calm_server::templates::DEV;

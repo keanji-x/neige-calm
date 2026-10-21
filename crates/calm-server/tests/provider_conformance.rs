@@ -39,7 +39,6 @@ async fn codex_provider_conformance_unknown_without_supervisor() {
     let daemon = Arc::new(StaticCodexDaemonProbe {
         running: false,
         active_turn_id: None,
-        remote_uri: "ws://x".into(),
     });
     calm_truth_test_harness::provider_conformance(CodexProvider::new(sock, daemon)).await;
 }
@@ -70,7 +69,6 @@ fn resolve_codex_bin() -> Option<PathBuf> {
 struct StaticCodexDaemonProbe {
     running: bool,
     active_turn_id: Option<String>,
-    remote_uri: String,
 }
 
 #[cfg(all(unix, feature = "codex-e2e"))]
@@ -82,10 +80,6 @@ impl CodexDaemonProbe for StaticCodexDaemonProbe {
 
     fn active_turn_id_for_thread(&self, _thread_id: &str) -> Option<String> {
         self.active_turn_id.clone()
-    }
-
-    fn remote_uri(&self) -> String {
-        self.remote_uri.clone()
     }
 
     fn daemon_connected_at_ms(&self) -> calm_types::runtime::TimestampMs {
