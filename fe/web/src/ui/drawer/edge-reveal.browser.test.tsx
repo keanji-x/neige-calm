@@ -30,7 +30,7 @@ it('revokes retained panel and seam authority in the close commit while retainin
   const content = <input aria-label="Draft" defaultValue="kept" />;
   const view = render(<Drawer open title="Reader" onClose={close}>{content}</Drawer>);
   const panel = view.getByRole('complementary'); const seam = drawerSeamAround(panel)!;
-  pause(panel); pause(seam);
+  pause(panel).currentTime = 80; pause(seam).currentTime = 80;
   const input = view.getByRole('textbox');
   view.rerender(<Drawer open={false} title="Reader" onClose={close}>{content}</Drawer>);
   pause(panel); pause(seam);
@@ -63,7 +63,7 @@ it('lets trusted pointer and keyboard input reach the page rather than retained 
   const seamButton = seam.appendChild(document.createElement('button'));
   seamButton.textContent = 'Seam action'; seamButton.addEventListener('click', seamAction);
   const input = view.getByRole('textbox') as HTMLInputElement;
-  pause(panel); pause(seam); input.focus();
+  pause(panel).currentTime = 80; pause(seam).currentTime = 80; input.focus();
   view.rerender(<Drawer open={false} title="Input" onClose={() => {}}>{null}</Drawer>);
   pause(panel); pause(seam);
   await userEvent.keyboard('should not type'); expect(input.value).toBe('retained');
@@ -94,4 +94,41 @@ it('observes primary and peer layout resizing through the existing paint observe
       expect(matrix.e).toBeCloseTo(before[i].e, 4); expect(matrix.f).toBeCloseTo(before[i].f, 4);
     }
   }
+});
+
+// Retained-exit fixtures must enter first; a frozen entry at its closed endpoint
+// has no distance or wall-clock velocity left to animate on dismissal.
+it.each(['paused0', 'zero-rate0', 'paused80'] as const)('applies the real Drawer exit boundary at %s', async mode => {
+  await page.viewport(1280, 900);
+  const content = <input aria-label="Boundary draft" />;
+  const view = render(<Drawer open title="Boundary" onClose={() => {}}>{content}</Drawer>);
+  const panel = view.getByRole('complementary'); const seam = drawerSeamAround(panel)!;
+  const frames = [panel.parentElement!, seam.parentElement!];
+  const entering = [panel, seam].map(node => node.getAnimations()[0]);
+  for (const animation of entering) {
+    expect(animation).toBeDefined();
+    if (mode === 'zero-rate0') {
+      animation.playbackRate = 0; animation.startTime = document.timeline.currentTime;
+    } else animation.pause();
+    animation.currentTime = mode === 'paused80' ? 80 : 0;
+    expect(animation.currentTime).toBe(mode === 'paused80' ? 80 : 0);
+    expect(animation.playState).toBe(mode === 'zero-rate0' ? 'running' : 'paused');
+    if (mode === 'zero-rate0') expect(animation.playbackRate).toBe(0);
+  }
+  view.rerender(<Drawer open={false} title="Boundary" onClose={() => {}}>{content}</Drawer>);
+  expect(view.queryByRole('complementary')).toBeNull();
+  expect(view.queryByRole('textbox')).toBeNull();
+  for (const [index, node] of [panel, seam].entries()) {
+    if (mode === 'paused80') {
+      expect(node.isConnected).toBe(true); expect(node.parentElement).toBe(frames[index]);
+      expect(node.inert).toBe(true); expect(node.getAttribute('aria-hidden')).toBe('true');
+      expect(node.getAnimations()).toHaveLength(1);
+      expect(node.getAnimations()[0]).not.toBe(entering[index]);
+    } else {
+      expect(node.isConnected).toBe(false); expect(frames[index].isConnected).toBe(false);
+      expect(node.getAnimations()).toHaveLength(0);
+    }
+    expect(entering[index].playState).toBe('idle');
+  }
+  expect(view.container.querySelectorAll('[data-nc-drawer]')).toHaveLength(mode === 'paused80' ? 1 : 0);
 });

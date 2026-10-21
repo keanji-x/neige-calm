@@ -463,6 +463,7 @@ it('uses one source lift per nested portal and dismisses navigation before retai
   expect(matrix.f).toBeCloseTo((1 - 800 / 808) * (source.y - layout.top) + 0.56, 3);
   expect(root.getAnimations()).toHaveLength(1); expect(nested.getAnimations()).toHaveLength(1);
   expect(animation instanceof CSSAnimation).toBe(false);
+  animation.currentTime = 80;
   const action = screen.getByRole('button', { name: 'Navigate now' });
   act(() => { action.focus(); action.click(); });
   expect(navigate).toHaveBeenCalledExactlyOnceWith(screen.getByRole('button', { name: 'Root source' }));
@@ -774,4 +775,46 @@ it.each(['seek', 'resume'] as const)('follows native parent %s after drained pau
   await frames(5); request.mockClear(); inputs.mockClear(); writes.length = 0; observer.observe(slot, { attributes: true, subtree: true });
   await frames(20); observer.disconnect(); expect(writes).toEqual([]); expect(request).toHaveBeenCalledTimes(20); expect(inputs).not.toHaveBeenCalled();
   request.mockRestore();
+});
+
+it.each(['paused0', 'zero-rate0', 'paused80'] as const)('applies the real HoverPreview exit boundary at %s', mode => {
+  render(<HoverPreview title="Boundary" trigger={activate => <button onClick={activate}>Boundary source</button>}>
+    {dismiss => <button onClick={dismiss}>Dismiss boundary</button>}
+  </HoverPreview>);
+  const trigger = screen.getByRole('button', { name: 'Boundary source' });
+  fireEvent.keyDown(trigger, { key: 'ArrowDown' });
+  const card = screen.getByRole('dialog', { name: 'Preview: Boundary' });
+  const positioner = card.parentElement!;
+  const action = screen.getByRole('button', { name: 'Dismiss boundary' });
+  const entering = card.getAnimations()[0];
+  expect(entering).toBeDefined();
+  if (mode === 'zero-rate0') {
+    entering.playbackRate = 0; entering.startTime = document.timeline.currentTime;
+  } else entering.pause();
+  entering.currentTime = mode === 'paused80' ? 80 : 0;
+  expect(entering.currentTime).toBe(mode === 'paused80' ? 80 : 0);
+  expect(entering.playState).toBe(mode === 'zero-rate0' ? 'running' : 'paused');
+  if (mode === 'zero-rate0') expect(entering.playbackRate).toBe(0);
+  act(() => { action.focus(); action.click(); });
+  expect(document.activeElement).toBe(trigger);
+  expect(screen.queryByRole('dialog')).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Dismiss boundary' })).toBeNull();
+  expect(card.hasAttribute('data-nc-link-preview')).toBe(false);
+  expect(card.hasAttribute('data-nc-escape-layer')).toBe(false);
+  expect(entering.playState).toBe('idle');
+  if (mode === 'paused80') {
+    expect(card.isConnected).toBe(true);
+    expect(card.parentElement).toBe(positioner);
+    expect(card.contains(action)).toBe(true);
+    expect(card.inert).toBe(true);
+    expect(card.getAttribute('aria-hidden')).toBe('true');
+    expect(card.getAnimations()).toHaveLength(1);
+    expect(card.getAnimations()[0]).not.toBe(entering);
+    expect(document.querySelectorAll('[data-nc-preview-owner]')).toHaveLength(1);
+  } else {
+    expect(card.isConnected).toBe(false);
+    expect(positioner.isConnected).toBe(false);
+    expect(card.getAnimations()).toHaveLength(0);
+    expect(document.querySelectorAll('[data-nc-preview-owner]')).toHaveLength(0);
+  }
 });
