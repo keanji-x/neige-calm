@@ -3,6 +3,10 @@
 # committed baseline tsv. Both directions fail: a rise is new retiring vocabulary,
 # a fall means tighten the ratchet (`--update-baseline`, commit the tsv).
 # A baseline is only valid for the tree it was generated on — regenerate after every merge of upstream.
+# U1b bounded exception: runtime_id/crates 1134 -> 1136 is two history
+# assertions reading the frozen initiating-worker column. harness_item/crates
+# 303 -> 304 is the exact-content carrier CAS read of the existing transcript table.
+# No new domain identifiers or scan rules; future storage queries keep this ratchet.
 # r16 upstream composition: the same title references add 11 crates occurrences
 # and one FE pagination import to main's 298/135 baseline, yielding 309/136.
 # Current #2858/#2859 composition: main's 300 crates occurrences plus the same

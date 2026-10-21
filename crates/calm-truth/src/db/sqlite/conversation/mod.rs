@@ -146,3 +146,14 @@ mod retry_tests;
 
 #[cfg(test)]
 mod retry_lifecycle_tests;
+
+mod carrier_replacement;
+pub use carrier_replacement::{
+    CallerRevision, CarrierReplacement, CarrierReplacementGuard, ExpectedCarrier,
+    replace_idle_carrier_tx,
+};
+#[cfg(test)]
+mod carrier_replacement_tests;
+
+mod carrier_revision;
+pub use carrier_revision::{CarrierIngressRevision, carrier_ingress_revision_tx};

@@ -167,6 +167,16 @@ pub struct IdleCarrierOwner<'a> {
     park: crate::harness::carrier_park::ParkToken<'a>,
 }
 impl IdleCarrierOwner<'_> {
+    pub(crate) fn matches_current(&self, card: &str, worker: &str) -> bool {
+        let inner = &self.handle.inner;
+        inner.card_id.as_str() == card
+            && inner.worker_session_id == worker
+            && self.park.is_current()
+            && self.native.recheck()
+            && !inner.shutting_down.load(Ordering::SeqCst)
+            && inner.held_requests.is_empty()
+    }
+
     pub async fn recheck(&self) -> Result<()> {
         let inner = &self.handle.inner;
         let _issuance = inner.issuance.lock().await;

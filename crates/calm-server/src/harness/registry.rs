@@ -400,7 +400,7 @@ impl HarnessRegistry {
 mod tests {
     use super::*;
 
-    async fn unstarted_handle(worker_session_id: &str) -> PlannerHarness {
+    pub(super) async fn unstarted_handle(worker_session_id: &str) -> PlannerHarness {
         crate::harness::run_loop::registry_handle_for_test(worker_session_id).await
     }
 
@@ -516,5 +516,114 @@ mod tests {
         let handle2 = unstarted_handle(&runtime_id).await;
         assert!(reservation2.install(handle2));
         assert_eq!(registry.len_active(), 1);
+    }
+}
+
+/// Identity captured while caller admission is excluded. A stale publication
+/// cannot remove a later reservation or installed owner.
+pub enum CarrierRetirementSlot {
+    Absent,
+    Dormant,
+    Reserved(ReservationId),
+    Live(PlannerHarness),
+}
+impl HarnessRegistry {
+    pub fn carrier_retirement_slot(&self, worker: &str) -> CarrierRetirementSlot {
+        match self.0.map.get(worker).map(|entry| match &entry.slot {
+            Slot::Dormant => CarrierRetirementSlot::Dormant,
+            Slot::Reserved(id) => CarrierRetirementSlot::Reserved(*id),
+            Slot::Live(handle) => CarrierRetirementSlot::Live(handle.clone()),
+        }) {
+            Some(slot) => slot,
+            None => CarrierRetirementSlot::Absent,
+        }
+    }
+    fn retire_carrier_slot(&self, worker: &str, expected: &CarrierRetirementSlot) {
+        if let Entry::Occupied(entry) = self.0.map.entry(worker.to_owned()) {
+            let same = match (&entry.get().slot, expected) {
+                (Slot::Dormant, CarrierRetirementSlot::Dormant) => true,
+                (Slot::Reserved(actual), CarrierRetirementSlot::Reserved(expected)) => {
+                    actual == expected
+                }
+                (Slot::Live(actual), CarrierRetirementSlot::Live(expected)) => {
+                    actual.same_instance(expected)
+                }
+                _ => false,
+            };
+            if same {
+                entry.get().sources.retire();
+                entry.remove();
+            }
+        }
+    }
+    /// Postcommit only. Caller retains card/dispatch/native/MCP exclusion.
+    pub async fn publish_carrier_replacement(
+        &self,
+        replacement: &calm_truth::db::sqlite::conversation::CarrierReplacement,
+        expected: CarrierRetirementSlot,
+        roles: &crate::card_role_cache::CardRoleCache,
+        daemon: Option<&crate::shared_codex_appserver::SharedCodexAppServer>,
+    ) -> crate::error::Result<()> {
+        let worker = replacement.old_worker.id.as_str();
+        self.retire_carrier_slot(worker, &expected);
+        self.0
+            .live_replies
+            .retire_carrier(&replacement.card_id.clone().into(), worker);
+        let (role, _) = replacement
+            .new_binding
+            .conversation_shape(serde_json::json!({}))?;
+        roles.insert(
+            replacement.card_id.clone().into(),
+            role,
+            replacement.track_id.clone().into(),
+        );
+        let shutdown = if let CarrierRetirementSlot::Live(handle) = &expected {
+            handle.shutdown().await
+        } else {
+            Ok(())
+        };
+        if let Some(daemon) = daemon {
+            daemon
+                .forget_threads_for_replaced_carrier(
+                    &replacement.card_id,
+                    replacement.old_worker.thread_id.as_deref(),
+                )
+                .await;
+        }
+        shutdown?;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod carrier_replacement_publication_tests {
+    use super::*;
+    #[tokio::test]
+    async fn carrier_replacement_cancels_only_the_captured_reservation() {
+        let registry = HarnessRegistry::new();
+        let old = registry.try_reserve("old".into()).unwrap();
+        let old_drop = old.duplicate_for_test();
+        let ticket = registry.carrier_retirement_slot("old");
+        registry.retire_carrier_slot("old", &ticket);
+        let next = registry.try_reserve("old".into()).unwrap();
+        registry.retire_carrier_slot("old", &ticket);
+        drop(old_drop);
+        assert!(registry.try_reserve("old".into()).is_none());
+        let handle = super::tests::unstarted_handle("old").await;
+        assert!(!old.install(handle.clone()));
+        handle.shutdown().await.unwrap();
+        let next_handle = super::tests::unstarted_handle("old").await;
+        assert!(next.install(next_handle.clone()));
+        next_handle.shutdown().await.unwrap();
+        let live = registry.carrier_retirement_slot("old");
+        registry.retire_carrier_slot("old", &live);
+        assert!(registry.get(&"old".into()).is_none());
+        registry.canonical_sources("dormant", &TrackId::from("track"));
+        let dormant = registry.carrier_retirement_slot("dormant");
+        registry.retire_carrier_slot("dormant", &dormant);
+        assert!(matches!(
+            registry.carrier_retirement_slot("dormant"),
+            CarrierRetirementSlot::Absent
+        ));
     }
 }

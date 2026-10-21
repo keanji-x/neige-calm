@@ -51,6 +51,9 @@ impl ToolCallAdmission {
     }
 }
 impl ToolCallGuard {
+    pub fn worker(&self) -> &str {
+        &self.worker
+    }
     pub fn require_idle(&self) -> Result<(), RpcError> {
         let entries = self.owner.0.lock().expect("tool admission");
         let state = &entries[&self.worker];

@@ -36,6 +36,10 @@ pub struct CurrentInputCarrier {
 }
 
 impl CurrentInputCarrier {
+    pub fn original_snapshot(&self) -> &str {
+        &self.original_snapshot
+    }
+
     pub fn checkpoint(&self) -> &ConversationInputCheckpoint {
         &self.checkpoint
     }

@@ -1274,6 +1274,31 @@ impl SharedCodexAppServer {
         dropped.len()
     }
 
+    /// Exact predecessor cleanup after a carrier replacement commits. Attribution
+    /// and native subscription are separate owner operations.
+    pub async fn forget_threads_for_replaced_carrier(&self, card: &str, thread: Option<&str>) {
+        let Some(thread) = thread else {
+            return;
+        };
+        let removed = {
+            let _start = self.kernel_thread_start_serial.lock().await;
+            let _resume = self.resume_replay_serial.lock().await;
+            let removed = self
+                .thread_cache
+                .remove_if(thread, |_, owner| owner == card)
+                .is_some();
+            let cleanup = removed || !self.thread_cache.contains_key(thread);
+            if cleanup {
+                self.forgotten_threads.lock().await.remember(thread);
+            }
+            cleanup
+        };
+        if removed {
+            self.native_turns.remove(thread);
+            self.release_hibernating_thread(thread).await;
+        }
+    }
+
     /// Drop the active-turn bookkeeping for threads a committed delete has sealed and quiesced;
     /// the caller forgets their seals in [`ThreadSeals::forget_deleted`]. Deliberately takes no
     /// guard: the native owner uses its own short lock only, and taking

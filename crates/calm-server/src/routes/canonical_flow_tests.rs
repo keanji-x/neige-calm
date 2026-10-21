@@ -525,3 +525,5 @@ async fn production_http_executes_original_input_and_reopens_its_completed_recor
 async fn production_http_retry_after_native_unavailability_resumes_original_head() {
     original_input_flow(false, None).await;
 }
+
+mod carrier_replacement_tests;

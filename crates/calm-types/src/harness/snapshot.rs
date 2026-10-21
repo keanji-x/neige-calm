@@ -107,6 +107,18 @@ impl HarnessRuntimeHeader {
 }
 
 impl CanonicalHarnessSnapshot {
+    pub fn idle_for_lifecycle(&self) -> bool {
+        let header = &self.header;
+        matches!(
+            header.phase,
+            HarnessPhaseTag::Idle | HarnessPhaseTag::TurnCompleted | HarnessPhaseTag::Resumed
+        ) && self.canonical_inputs.pending.is_empty()
+            && self.canonical_inputs.active.is_none()
+            && header.interruption_intent.is_none()
+            && header.pending_rewind.is_none()
+            && header.wedged_reason.is_none()
+    }
+
     /// Read adaptation for released immutable outputs and the boot-time migration.
     /// Live carrier reads deliberately use Deserialize instead.
     pub fn from_released(value: Value) -> Result<Self, String> {

@@ -704,3 +704,30 @@ pub(super) async fn session_state_transition_at_tx(
         .await?
         .ok_or_else(|| CalmError::Internal(format!("worker session {id} missing after transition")))
 }
+
+/// Revoke both credential stores, including mirrors on all retired card rows.
+pub(super) async fn revoke_card_credentials_tx(
+    tx: &mut SessionTx<'_>,
+    card: &str,
+) -> Result<(u64, u64)> {
+    let cards: i64 = sqlx::query_scalar("SELECT count(*) FROM card_mcp_tokens WHERE card_id=?1")
+        .bind(card)
+        .fetch_one(&mut **tx)
+        .await?;
+    let mirrors: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM worker_sessions WHERE card_id=?1 AND mcp_token_hash IS NOT NULL",
+    )
+    .bind(card)
+    .fetch_one(&mut **tx)
+    .await?;
+    let deleted = sqlx::query("DELETE FROM card_mcp_tokens WHERE card_id=?1")
+        .bind(card)
+        .execute(&mut **tx)
+        .await?
+        .rows_affected();
+    let cleared = sqlx::query("UPDATE worker_sessions SET mcp_token_hash=NULL WHERE card_id=?1 AND mcp_token_hash IS NOT NULL").bind(card).execute(&mut **tx).await?.rows_affected();
+    if deleted != cards as u64 || cleared != mirrors as u64 {
+        return Err(CalmError::Conflict("credential revocation count changed"));
+    }
+    Ok((deleted, cleared))
+}

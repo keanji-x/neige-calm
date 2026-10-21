@@ -474,6 +474,20 @@ pub(crate) async fn withdraw_hold_asks_tx(
         .collect())
 }
 
+/// Rotation checks before revocation, using the same open predicate as answers.
+pub(crate) async fn require_no_open_carrier_asks_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    card: &str,
+) -> Result<()> {
+    let open: bool = sqlx::query_scalar(&format!(
+        concat!("SELECT EXISTS(SELECT 1 FROM events r JOIN cards c ON c.track_id=r.scope_track WHERE c.id=?1 AND ","r.kind='ask.requested' AND (r.scope_card IS NULL OR r.scope_card=c.id) AND ({}))"), ASK_OPEN_SQL))
+        .bind(card).fetch_one(&mut **tx).await?;
+    if open {
+        return Err(CalmError::Conflict("carrier has an open ask".into()));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

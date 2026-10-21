@@ -127,15 +127,7 @@ impl HarnessRuntimeSnapshot {
 }
 
 fn canonical_idle_for_lifecycle(snapshot: &CanonicalHarnessSnapshot) -> bool {
-    let header = &snapshot.header;
-    matches!(
-        header.phase,
-        HarnessPhaseTag::Idle | HarnessPhaseTag::TurnCompleted | HarnessPhaseTag::Resumed
-    ) && snapshot.canonical_inputs.pending.is_empty()
-        && snapshot.canonical_inputs.active.is_none()
-        && header.interruption_intent.is_none()
-        && header.pending_rewind.is_none()
-        && header.wedged_reason.is_none()
+    snapshot.idle_for_lifecycle()
 }
 
 impl TryFrom<HarnessSnapshot> for HarnessRuntimeSnapshot {

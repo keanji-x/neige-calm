@@ -13,18 +13,62 @@ pub struct PlannerBinding {
 }
 
 impl PlannerBinding {
-    /// The row's declared contract must agree with the card's binding. Current
-    /// card/track identity and active ownership are checked by the caller.
-    pub fn matches_session_contract(&self, session: &calm_types::worker::WorkerSession) -> bool {
-        use calm_types::worker::{SessionMode, WorkerContract, WorkerProviderKind};
-        let contract = match self.profile {
+    pub(crate) fn contract(&self) -> calm_types::worker::WorkerContract {
+        use calm_types::worker::WorkerContract;
+        match self.profile {
             HarnessProfile::Planner => WorkerContract::Planner,
             HarnessProfile::Assistant => WorkerContract::Assistant,
             HarnessProfile::PlainChat => WorkerContract::Executor,
-        };
+        }
+    }
+
+    /// The row's declared contract must agree with the card's binding. Current
+    /// card/track identity and active ownership are checked by the caller.
+    pub fn matches_session_contract(&self, session: &calm_types::worker::WorkerSession) -> bool {
+        use calm_types::worker::{SessionMode, WorkerProviderKind};
         session.mode == SessionMode::Resumable
-            && session.contract == contract
+            && session.contract == self.contract()
             && WorkerProviderKind::from(&self.provider) == session.provider
+    }
+
+    pub fn conversation_shape(
+        &self,
+        mut payload: Value,
+    ) -> crate::error::Result<(CardRole, Value)> {
+        let object = payload
+            .as_object_mut()
+            .ok_or(crate::error::CalmError::Conflict(
+                "conversation payload must be an object",
+            ))?;
+        object.remove(PLANNER_PROVIDER_PAYLOAD_KEY);
+        object.remove(ASSISTANT_PROVIDER_PAYLOAD_KEY);
+        object.remove("harness_profile");
+        let role = match self.profile {
+            HarnessProfile::Planner => {
+                object.insert(
+                    PLANNER_PROVIDER_PAYLOAD_KEY.into(),
+                    serde_json::to_value(&self.provider)?,
+                );
+                CardRole::Planner
+            }
+            HarnessProfile::Assistant => {
+                object.insert(
+                    ASSISTANT_PROVIDER_PAYLOAD_KEY.into(),
+                    serde_json::to_value(&self.provider)?,
+                );
+                object.insert(
+                    "harness_profile".into(),
+                    Value::String(ASSISTANT_MARKER.into()),
+                );
+                CardRole::Assistant
+            }
+            HarnessProfile::PlainChat => {
+                return Err(crate::error::CalmError::Conflict(
+                    "replacement requires a conversation binding",
+                ));
+            }
+        };
+        Ok((role, payload))
     }
 
     /// A Planner card names its backend in the server-owned `planner_provider` key; missing or

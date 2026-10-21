@@ -154,6 +154,17 @@ impl LiveReplies {
         }
     }
 
+    /// Retire only this predecessor's writer; every later write from it is inert.
+    pub(crate) fn retire_carrier(&self, card: &CardId, worker: &str) {
+        let mut cards = self.lock();
+        if cards
+            .get(card)
+            .is_some_and(|entry| entry.worker_session_id == worker)
+        {
+            cards.remove(card);
+        }
+    }
+
     fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<CardId, CardEntry>> {
         self.cards.lock().expect("live replies mutex poisoned")
     }
