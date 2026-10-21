@@ -373,13 +373,19 @@ async fn rerun_lost_result_is_unknown_and_never_reposted() {
     let state = shim_state_dir(&cx.fx.origin_repo);
     let block = ShimBlock::new(&state, "rerun_lost");
     let args = cx.args("r-lost");
+    let waiting = Arc::new(tokio::sync::Notify::new());
+    cx.fx
+        ._runtime
+        .install_wait_entered_hook_for_test(waiting.clone());
     let call = cx.call_approved(1, &args);
     tokio::pin!(call);
-    let counter = state.join("rerun_failed_count");
+    // Suspend only once submission has returned and wait holds no transaction or claim.
+    // Suspending at the shim counter can freeze the caller inside a database await.
     tokio::select! {
-        _=wait_for_counter(&counter,1)=>{},
+        _=waiting.notified()=>{},
         result=&mut call=>panic!("rerun returned before the lost-response seam: {result:?}"),
     }
+    wait_for_counter(&state.join("rerun_failed_count"), 1).await;
     let op: String = sqlx::query_scalar(
         "SELECT id FROM operations WHERE kind='forge-action' AND phase='parked'",
     )
