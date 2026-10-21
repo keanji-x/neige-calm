@@ -35,7 +35,7 @@ fn objective_of(event: &Event) -> Option<&ObjectiveKey> {
         Event::RevisionDelivered { .. } | Event::HostIdle { .. } | Event::Usage { .. } => None,
     }
 }
-fn payload(event: &Event) -> Result<String> {
+pub(super) fn payload(event: &Event) -> Result<String> {
     let json = serde_json::to_string(event).map_err(|e| TruthError::BadRequest(e.to_string()))?;
     // serde_json encodes non-finite floats as null. Never persist a lossy event.
     let decoded = serde_json::from_str::<Event>(&json);
@@ -118,6 +118,15 @@ pub(super) async fn read_tx(
         }
         let source_key: &str = row.try_get("source_key")?;
         let source = match row.try_get::<&str, _>("source_kind")? {
+            "report_block" => {
+                let (report_card_id, doc_rev, block_id) =
+                    serde_json::from_str(source_key).map_err(internal)?;
+                InputSource::ReportBlock {
+                    report_card_id,
+                    doc_rev,
+                    block_id,
+                }
+            }
             "intent_job" => InputSource::IntentJob {
                 intent: serde_json::from_str(source_key).map_err(internal)?,
             },

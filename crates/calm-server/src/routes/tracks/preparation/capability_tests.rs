@@ -9,11 +9,15 @@ use serde_json::json;
 use std::sync::Arc;
 
 async fn fixture(dir: &std::path::Path) -> (RouteState, Arc<SqlxRepo>, String) {
+    fixture_body(dir, "").await
+}
+
+async fn fixture_body(dir: &std::path::Path, extra: &str) -> (RouteState, Arc<SqlxRepo>, String) {
     let templates_dir = dir.join("templates");
     std::fs::create_dir(&templates_dir).unwrap();
     let body =
         calm_types::report_contract::canonical_line(&calm_types::track_report::work_brief_header());
-    std::fs::write(templates_dir.join("cap.md"), format!("+++\nid = \"cap\"\ntitle = \"Capability\"\ncapabilities = [\"objectives\"]\n+++\n{body}\n# Plan\n")).unwrap();
+    std::fs::write(templates_dir.join("cap.md"), format!("+++\nid = \"cap\"\ntitle = \"Capability\"\ncapabilities = [\"objectives\"]\n+++\n{body}\n# Plan\n{extra}")).unwrap();
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let area = repo
         .area_create(
@@ -200,4 +204,27 @@ async fn capability_stamped_only_for_template_init() {
     assert!(matches!(result, Err(CalmError::Internal(_))), "{result:?}");
     let after: (i64,i64,i64) = sqlx::query_as("SELECT (SELECT count(*) FROM tracks),(SELECT count(*) FROM track_capabilities),(SELECT count(*) FROM cards)").fetch_one(repo.pool()).await.unwrap();
     assert_eq!(before, after);
+}
+
+#[tokio::test]
+async fn template_born_objective_is_defined_at_creation() {
+    let dir = tempfile::tempdir().unwrap();
+    let definition = serde_json::json!({"key":"build","title":"Build","mode":"converge", "checks":[{"id":"tests","role":"goal","config":{"kind":"command","params":{"command":"true"}}}],"constraints":[],"budget":{"turns":10,"tokens":1000,"wall_secs":60},"compact":"none"});
+    let fence = calm_types::report_blocks::render_fence("objective", &definition);
+    let (s, repo, area) = fixture_body(dir.path(), &fence).await;
+    let track = create(
+        &s,
+        &area,
+        preparation::NamedSource::Template("site/cap".into()),
+    )
+    .await;
+    let (seq, state) = calm_truth::objective_host::load_state(repo.db(), &track.id)
+        .await
+        .unwrap();
+    assert_eq!(seq.0, 1);
+    assert_eq!(state.objectives.len(), 1);
+    assert_eq!(
+        serde_json::to_value(&state.objectives.values().next().unwrap().definition).unwrap(),
+        definition
+    );
 }

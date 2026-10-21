@@ -71,6 +71,12 @@ pub(crate) fn guard_non_prose_stomp(doc: &ReportDoc, body: &str) -> Result<(), C
     let current = doc
         .blocks_snapshot()
         .map_err(|e| CalmError::Internal(format!("track_report: snapshot for stomp guard: {e}")))?;
+    // Whole writes retain objectives through update_with_hints_keeping; the stomp check
+    // judges only the blocks that this legacy replace actually rewrites.
+    let current: Vec<_> = current
+        .into_iter()
+        .filter(|block| block.kind != calm_types::report_blocks::KIND_OBJECTIVE)
+        .collect();
     if current.iter().all(|block| block.kind == KIND_PROSE) {
         return Ok(());
     }

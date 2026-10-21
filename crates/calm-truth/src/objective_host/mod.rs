@@ -7,6 +7,7 @@ pub mod capability;
 mod intents;
 mod lifecycle;
 mod log;
+pub mod report;
 mod snapshot;
 
 use serde::{Deserialize, Serialize};
@@ -41,6 +42,11 @@ impl PlannerRequestId {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "source", rename_all = "snake_case")]
 pub enum InputSource {
+    ReportBlock {
+        report_card_id: crate::ids::CardId,
+        doc_rev: u64,
+        block_id: String,
+    },
     IntentJob {
         intent: IntentId,
     },
@@ -57,6 +63,21 @@ pub enum InputSource {
 impl InputSource {
     fn identity(&self) -> Result<(&'static str, String)> {
         let (kind, session, id) = match self {
+            Self::ReportBlock {
+                report_card_id,
+                doc_rev,
+                block_id,
+            } => {
+                if report_card_id.as_str().is_empty() || block_id.is_empty() {
+                    return Err(TruthError::BadRequest(
+                        "objective report source identity is empty",
+                    ));
+                }
+                return Ok((
+                    "report_block",
+                    serde_json::to_string(&(report_card_id, doc_rev, block_id))?,
+                ));
+            }
             Self::IntentJob { intent } => {
                 return Ok(("intent_job", serde_json::to_string(intent)?));
             }

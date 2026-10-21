@@ -658,6 +658,7 @@ pub use calm_report::document as track_report_doc;
 mod track_report_edit_guard;
 mod track_report_gate_guard;
 mod track_report_guard;
+mod track_report_objective_guard;
 /// Write-origin vocabulary. Not wired into production yet.
 pub mod track_report_origin;
 pub mod track_report_read;

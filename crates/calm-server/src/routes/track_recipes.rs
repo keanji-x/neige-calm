@@ -109,6 +109,15 @@ fn validate_recipe_body(body: &str) -> Result<()> {
                 .into(),
         ));
     }
+    if split_body(body)
+        .iter()
+        .filter_map(|slice| parse_fence(&slice.raw))
+        .any(|fence| fence.kind == calm_types::report_blocks::KIND_OBJECTIVE)
+    {
+        return Err(CalmError::BadRequest(
+            "recipes may not contain objective blocks".into(),
+        ));
+    }
     crate::track_report_guard::validate_body_fences(body)
         // A 400 keeps its kind, so only its reason is wrapped; any other kind passes through.
         .map_err(|error| match error {
@@ -299,4 +308,19 @@ pub(crate) async fn delete_recipe(
     require_recipe_user_actor(&actor)?;
     s.repo.track_recipe_delete(&id).await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+#[cfg(test)]
+mod objective_tests {
+    use super::*;
+    #[test]
+    fn objective_recipe_is_refused() {
+        let body = render_fence(
+            "objective",
+            &crate::track_report::objective_tests::payload(),
+        );
+        assert!(
+            matches!(validate_recipe_body(&body),Err(CalmError::BadRequest(reason)) if reason.contains("objective"))
+        );
+    }
 }

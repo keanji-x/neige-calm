@@ -30,7 +30,7 @@ async fn restarts_preserve_state_ordered_intents_and_dispatched_results() {
         },
         request_id: PlannerRequestId::new("foreign"),
     };
-    react(repo.db(), input).await.unwrap();
+    fixture_input_react(&repo, input).await.unwrap();
     let before = load_state(repo.db(), &"t".into()).await.unwrap();
     assert_eq!(before.1.usage.turns, 2);
     let rows = unsettled_intents(repo.db()).await.unwrap();

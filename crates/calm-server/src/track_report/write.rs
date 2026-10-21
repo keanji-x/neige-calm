@@ -174,6 +174,7 @@ pub(crate) async fn structural_init_report_tx(
         tx,
         target.report_card_id,
         target.track_id,
+        &[],
         target.payload,
         target.doc,
         target.declarations,
@@ -402,6 +403,7 @@ async fn persist(
                 tx,
                 &id,
                 track_id.as_str(),
+                &before_blocks,
                 &projected_payload,
                 &mut doc,
                 &declarations,
@@ -523,10 +525,12 @@ fn refuse_fixable_task_declarations(
 /// The order is the contract: the block-existence leg of task projection resolves `refs` by
 /// reading the report card's payload cache, so the cache must already hold this write's
 /// snapshot — swapped, every ref into new content silently collects `reference_missing`.
+#[allow(clippy::too_many_arguments)]
 async fn write_report_row_and_project_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     report_card_id: &str,
     track_id: &str,
+    before: &[ReportBlock],
     payload: &TrackReportPayload,
     doc: &mut ReportDoc,
     declarations: &[calm_types::report_blocks::tasks::TaskDeclaration],
@@ -560,7 +564,22 @@ async fn write_report_row_and_project_tx(
         payload: Some(payload_value),
         deletable: None,
     };
+    let after = payload.blocks.as_ref().ok_or_else(|| {
+        CalmError::Internal("track_report: projected payload has no block snapshot".into())
+    })?;
     let updated = card_update_with_crdt_tx(tx, report_card_id, patch, doc.to_bytes()).await?;
     let projection = project_tasks_tx(tx, track_id, declarations, diagnostics).await?;
+    calm_truth::objective_host::report::project_report_tx(
+        tx,
+        calm_truth::objective_host::report::ReportObjectiveWrite {
+            track_id: &track_id.into(),
+            report_card_id,
+            before,
+            after,
+            doc_rev: payload.doc_rev,
+        },
+        updated.updated_at,
+    )
+    .await?;
     Ok((updated, projection))
 }

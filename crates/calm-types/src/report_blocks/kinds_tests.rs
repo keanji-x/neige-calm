@@ -320,7 +320,8 @@ fn unknown_kind_is_an_error() {
             "preview",
             "view",
             "window",
-            "html"
+            "html",
+            "objective"
         ],
         "the closed data-kind set, in blocks.kinds order"
     );

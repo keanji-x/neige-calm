@@ -12,6 +12,7 @@ use objective::standard::{Approval, standard_hash};
 mod lifecycle;
 mod refusal;
 mod replay;
+mod report;
 mod restart;
 mod schema;
 
@@ -245,4 +246,12 @@ fn scenario() -> Vec<Event> {
             objective: definition().key,
         },
     ]
+}
+
+// Tests of storage semantics seed engine events explicitly without the production authorization door.
+async fn fixture_input_react(repo: &SqlxRepo, input: ObjectiveInput) -> Result<CommittedReaction> {
+    let mut tx = begin_immediate_tx(repo.db()).await?;
+    let reaction = react_fixture_tx(&mut tx, &input, 0).await?;
+    tx.commit().await?;
+    Ok(CommittedReaction { reaction })
 }

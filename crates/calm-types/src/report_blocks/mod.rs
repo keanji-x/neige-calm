@@ -7,6 +7,7 @@ pub mod html;
 pub mod kinds;
 pub mod live_refs;
 pub mod native_view;
+pub mod objectives;
 pub mod tasks;
 pub mod window;
 
@@ -23,8 +24,8 @@ pub use align::{
 pub use chart_series::{RANGE_DAYS, chart_series_range_days, is_valid_ymd, parse_ymd};
 pub use fence::{NonProseFence, canonical_json, neige_open_kind, parse_fence, render_fence};
 pub use kinds::{
-    DATA_KINDS, KIND_APP, KIND_CHART_CANDLES, KIND_CHART_SERIES, KIND_HTML, KIND_PREVIEW,
-    KIND_PROSE, KIND_TABLE, KIND_TASK, KIND_VIEW, KIND_WINDOW, MAX_CANONICAL_BYTES,
+    DATA_KINDS, KIND_APP, KIND_CHART_CANDLES, KIND_CHART_SERIES, KIND_HTML, KIND_OBJECTIVE,
+    KIND_PREVIEW, KIND_PROSE, KIND_TABLE, KIND_TASK, KIND_VIEW, KIND_WINDOW, MAX_CANONICAL_BYTES,
     MAX_CHART_CANDLES, MAX_CHART_SERIES, MAX_LIVE_UNIT_BYTES, MAX_STRING_CHARS, MAX_TABLE_COLUMNS,
     MAX_TABLE_ROWS, TASK_FIELDS, in_sections, is_data_kind, scannable_text_fields,
     validate_payload,
@@ -673,3 +674,6 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod objective_tests;

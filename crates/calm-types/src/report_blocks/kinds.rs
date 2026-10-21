@@ -12,6 +12,7 @@ pub const KIND_CHART_SERIES: &str = "chart.series";
 pub const KIND_TABLE: &str = "table";
 pub const KIND_VIEW: &str = "view";
 pub const KIND_APP: &str = "app";
+pub const KIND_OBJECTIVE: &str = "objective";
 pub const KIND_TASK: &str = "task";
 pub const KIND_PREVIEW: &str = "preview";
 pub const KIND_WINDOW: &str = "window";
@@ -34,7 +35,7 @@ pub const MAX_CANONICAL_BYTES: usize = 256 * 1024;
 pub const MAX_LIVE_UNIT_BYTES: usize = 4 * 1024 * 1024;
 
 /// The non-prose kinds a report may contain, in `blocks.kinds` order.
-pub const DATA_KINDS: [&str; 9] = [
+pub const DATA_KINDS: [&str; 10] = [
     KIND_CHART_CANDLES,
     KIND_CHART_SERIES,
     KIND_TABLE,
@@ -44,16 +45,17 @@ pub const DATA_KINDS: [&str; 9] = [
     KIND_VIEW,
     KIND_WINDOW,
     KIND_HTML,
+    KIND_OBJECTIVE,
 ];
 
 pub fn is_data_kind(kind: &str) -> bool {
     DATA_KINDS.contains(&kind)
 }
 
-/// Whether a block of `kind` belongs to the H1 section it sits in (#2598). A task block belongs to
-/// no section wherever it sits in block order: it is read by id and written by an `upsert` op.
+/// Whether a block of `kind` belongs to the H1 section it sits in (#2598). Task and objective blocks belong
+/// to no section: read and upsert them by id. Whole writes must preserve declarations and standards.
 pub fn in_sections(kind: &str) -> bool {
-    kind != KIND_TASK
+    kind != KIND_TASK && kind != KIND_OBJECTIVE
 }
 
 /// Markdown-bearing payload fields the kernel declares safe to scan for report links.
@@ -96,6 +98,11 @@ pub fn validate_payload(kind: &str, payload: &Value) -> Result<(), String> {
         }
         KIND_APP => validate_app(map, &mut errors),
         KIND_TASK => validate_task(map, &mut errors),
+        KIND_OBJECTIVE => {
+            if let Err(error) = super::objectives::parse_objective(payload) {
+                errors.push(error);
+            }
+        }
         KIND_PREVIEW => validate_preview(map, &mut errors),
         KIND_WINDOW => super::window::validate_window(map, &mut errors),
         KIND_HTML => super::html::validate_html(map, &mut errors),
@@ -169,212 +176,9 @@ pub fn parse_live_source(source: &str) -> Result<(&str, &str), String> {
     Ok((plugin_id, kind))
 }
 
-pub const TASK_FIELDS: &[&str] = &[
-    "key",
-    "kind",
-    "goal",
-    "command",
-    "acceptance",
-    "gate",
-    "no_gate_reason",
-    "depends_on",
-    "priority",
-    "cwd",
-    "context",
-    "refs",
-    "ready",
-    "declared_by",
-    "released_by_user",
-    "spawn",
-    "access",
-    "head",
-    "base",
-    "start",
-    "result_contract",
-    "child_track",
-    "tombstone",
-    "tombstoned_by",
-];
-
-fn validate_task(map: &Map<String, Value>, errors: &mut Vec<String>) {
-    reject_unknown(map, TASK_FIELDS, errors);
-
-    let key = match map.get("key") {
-        Some(Value::String(key)) if key_is_valid(key) => {
-            check_string_cap("key", key, errors);
-            Some(key.as_str())
-        }
-        Some(Value::String(_)) => {
-            errors.push("key: must match ^[a-z0-9][a-z0-9._-]{0,63}$".into());
-            None
-        }
-        _ => {
-            errors.push("key: required string matching ^[a-z0-9][a-z0-9._-]{0,63}$".into());
-            None
-        }
-    };
-
-    let tombstone = map.get("tombstone").is_some_and(|value| !value.is_null());
-    if tombstone {
-        for field in TASK_FIELDS
-            .iter()
-            .filter(|field| !["key", "tombstone", "declared_by", "tombstoned_by"].contains(field))
-        {
-            if map.contains_key(*field) {
-                errors.push(format!("{field}: must be absent from a tombstone task"));
-            }
-        }
-        validate_declared_by(map, errors);
-        required_enum(map, "tombstoned_by", &["spec", "user"], errors);
-        match &map["tombstone"] {
-            Value::Object(value) => {
-                reject_unknown(value, &["reason"], errors);
-                if let Some(reason) = value.get("reason") {
-                    match reason {
-                        Value::Null => {}
-                        Value::String(reason) => {
-                            check_string_cap("tombstone.reason", reason, errors)
-                        }
-                        _ => errors.push("tombstone.reason: must be a string or null".into()),
-                    }
-                }
-            }
-            _ => errors.push("tombstone: must be an object".into()),
-        }
-        return;
-    }
-
-    if map.contains_key("tombstoned_by") {
-        errors.push("tombstoned_by: must be absent from a non-tombstone task".into());
-    }
-    let task_kind = match map.get("kind").and_then(Value::as_str) {
-        Some(kind @ ("codex" | "claude" | "terminal")) => Some(kind),
-        _ => {
-            errors.push(
-                "kind: required; must be one of \"codex\" | \"claude\" | \"terminal\"".into(),
-            );
-            None
-        }
-    };
-    match task_kind {
-        Some("terminal") => {
-            required_non_empty_string(map, "command", errors);
-            if map.contains_key("goal") {
-                errors.push("goal: must be absent when kind is \"terminal\"".into());
-            }
-        }
-        Some("codex" | "claude") => {
-            required_non_empty_string(map, "goal", errors);
-            if map.contains_key("command") {
-                errors.push("command: must be absent when kind is \"codex\" or \"claude\"".into());
-            }
-        }
-        _ => {}
-    }
-    optional_non_empty_string(map, "acceptance", errors);
-    optional_non_empty_string(map, "no_gate_reason", errors);
-    optional_abs_path(map, "cwd", errors);
-    if let Some(gate) = map.get("gate") {
-        match serde_json::from_value::<GateInput>(gate.clone()) {
-            Ok(gate) => {
-                if let Err(error) = validate_gate_shape(key.unwrap_or("<invalid>"), &gate) {
-                    let detail = error
-                        .strip_prefix(&format!("task {}: ", key.unwrap_or("<invalid>")))
-                        .unwrap_or(error.as_str());
-                    errors.push(detail.to_string());
-                }
-                check_gate_strings(&gate, errors);
-            }
-            Err(error) => errors.push(format!("gate: invalid shape: {error}")),
-        }
-    }
-    optional_string_array(map, "depends_on", false, errors);
-    if let Some(priority) = map.get("priority")
-        && priority.as_i64().is_none()
-    {
-        errors.push(format!(
-            "priority: must be an integer between {} and {}",
-            i64::MIN,
-            i64::MAX
-        ));
-    }
-    if let Some(context) = map.get("context") {
-        check_nested_string_caps("context", context, errors);
-    }
-    match map.get("refs") {
-        None => {}
-        Some(Value::Array(refs)) => {
-            for (index, reference) in refs.iter().enumerate() {
-                match reference.as_str() {
-                    Some(reference) => {
-                        check_string_cap(&format!("refs[{index}]"), reference, errors);
-                        if !matches!(parse_destination(reference), Some((_, Some(_)))) {
-                            errors.push(format!("refs[{index}]: must be a neige://wave/<track>#b_xxxx block reference"));
-                        }
-                    }
-                    None => errors.push(format!("refs[{index}]: must be a string")),
-                }
-            }
-        }
-        Some(_) => errors.push("refs: must be an array".into()),
-    }
-    if !matches!(map.get("ready"), Some(Value::Bool(_))) {
-        errors.push("ready: required boolean".into());
-    }
-    validate_declared_by(map, errors);
-    if let Some(value) = map.get("released_by_user")
-        && !value.is_boolean()
-    {
-        errors.push("released_by_user: must be a boolean".into());
-    }
-    if let Some(value) = map.get("spawn")
-        && !value.is_null()
-        && !matches!(value.as_str(), Some("in-wave" | "sub-track"))
-    {
-        errors.push("spawn: must be one of \"in-wave\" | \"sub-track\"".into());
-    }
-    if matches!(map.get("spawn").and_then(Value::as_str), Some("sub-track"))
-        && !matches!(map.get("kind").and_then(Value::as_str), Some("codex"))
-    {
-        errors.push("spawn: \"sub-track\" requires kind \"codex\"".into());
-    }
-    if let Some(value) = map.get("child_track") {
-        if map.get("spawn").and_then(Value::as_str) != Some("sub-track") {
-            errors.push("child_track: requires spawn \"sub-track\"".into());
-        }
-        match serde_json::from_value::<super::tasks::ChildTrackConfig>(value.clone()) {
-            Ok(config) => {
-                if let Some(object) = value.as_object() {
-                    for (name, member) in object {
-                        if !member.is_string() {
-                            errors.push(format!("child_track.{name}: must be a string"));
-                        }
-                    }
-                }
-                for (name, value) in [
-                    ("provider", config.provider),
-                    ("model", config.model),
-                    ("reasoning_effort", config.reasoning_effort),
-                ] {
-                    if let Some(value) = value {
-                        if value.trim().is_empty() {
-                            errors.push(format!("child_track.{name}: must be non-empty"));
-                        }
-                        check_string_cap(&format!("child_track.{name}"), &value, errors);
-                    }
-                }
-                if !value.is_object() {
-                    errors.push("child_track: must be an object".into());
-                }
-            }
-            Err(error) => errors.push(format!("child_track: invalid shape: {error}")),
-        }
-    }
-    crate::task_execution::validate_task_access(map, errors);
-    crate::task_execution::validate_reader_commits(map, errors);
-    crate::task_execution::validate_task_start(map, errors);
-    crate::task_result::validate_task_result_contract(map, errors);
-}
+pub use task::TASK_FIELDS;
+mod task;
+use task::validate_task;
 
 fn validate_declared_by(map: &Map<String, Value>, errors: &mut Vec<String>) {
     if !matches!(
@@ -437,7 +241,7 @@ fn optional_abs_path(map: &Map<String, Value>, field: &str, errors: &mut Vec<Str
     }
 }
 
-fn check_nested_string_caps(path: &str, value: &Value, errors: &mut Vec<String>) {
+pub(super) fn check_nested_string_caps(path: &str, value: &Value, errors: &mut Vec<String>) {
     match value {
         Value::String(value) => check_string_cap(path, value, errors),
         Value::Array(values) => {

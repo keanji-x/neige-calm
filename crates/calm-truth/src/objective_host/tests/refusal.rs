@@ -4,8 +4,9 @@ use super::*;
 async fn identical_planner_retry_is_duplicate() {
     let repo = fixture().await;
     let input = planner(
-        Event::DefinitionChanged {
-            objective: definition(),
+        Event::Requested {
+            objective: definition().key,
+            revision: Revision::new("first"),
         },
         "same",
     );
@@ -28,12 +29,17 @@ async fn identical_planner_retry_is_duplicate() {
     .await;
     // A source may emit distinct event kinds; a changed payload of the same kind conflicts.
     result.unwrap();
-    let mut changed = definition();
-    changed.title = "changed".into();
+
     assert!(matches!(
         react(
             repo.db(),
-            planner(Event::DefinitionChanged { objective: changed }, "same")
+            planner(
+                Event::Requested {
+                    objective: definition().key,
+                    revision: Revision::new("changed")
+                },
+                "same"
+            )
         )
         .await,
         Err(TruthError::Core(calm_types::error::CoreError::Conflict(_)))
@@ -77,10 +83,7 @@ async fn closed_authorization_matrix() {
                     } else {
                         matches!(
                             event,
-                            Event::DefinitionChanged { .. }
-                                | Event::Requested { .. }
-                                | Event::Settled { .. }
-                                | Event::Closed { .. }
+                            Event::Requested { .. } | Event::Settled { .. } | Event::Closed { .. }
                         )
                     };
                 let input = ObjectiveInput {
@@ -220,8 +223,8 @@ async fn intent_insert_failure_rolls_back_every_write() {
     let before = load_state(repo.db(), &"t".into()).await.unwrap();
     sqlx::query("CREATE TRIGGER refuse_intents BEFORE INSERT ON objective_intents BEGIN SELECT RAISE(ABORT,'test failure'); END").execute(repo.pool()).await.unwrap();
     assert!(
-        react(
-            repo.db(),
+        fixture_input_react(
+            &repo,
             planner(
                 Event::DefinitionChanged {
                     objective: definition()
@@ -270,8 +273,8 @@ async fn effect_collision_rolls_back() {
 #[tokio::test]
 async fn log_is_append_only() {
     let repo = fixture().await;
-    react(
-        repo.db(),
+    fixture_input_react(
+        &repo,
         planner(
             Event::DefinitionChanged {
                 objective: definition(),
@@ -331,6 +334,11 @@ async fn capability_absent_track_refuses_every_source() {
             InputSource::HarnessTurn {
                 session_id: "p".into(),
                 turn_id: format!("{i}"),
+            },
+            InputSource::ReportBlock {
+                report_card_id: "report".into(),
+                doc_rev: 1,
+                block_id: "b_1111".into(),
             },
             InputSource::IntentJob {
                 intent: IntentId {

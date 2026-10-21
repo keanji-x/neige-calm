@@ -223,7 +223,8 @@ mod tests {
         // Keep one aggregate cap, not per-tool pins.
         // #2777: four optional compiled history tools add 1740 bytes to the declared
         // Planner surface; runtime discovery still applies bound-track and lifecycle gates.
-        const SURFACE_MAX_BYTES: usize = 35_760;
+        // Objective kind discovery is paid for by trimming repeated kind labels.
+        const SURFACE_MAX_BYTES: usize = 35_755;
         const DESCRIPTION_MAX_BYTES: usize = 2_048;
 
         let descriptors = build_default_registry().descriptors_listed_for(CardRole::Planner);

@@ -1654,6 +1654,15 @@ fn prepare_fork_report(
         UnsafeTrackLink, rewrite_track_destination, rewrite_track_links,
     };
 
+    if blocks
+        .iter()
+        .any(|block| block.kind == calm_types::report_blocks::KIND_OBJECTIVE)
+    {
+        return Err(CalmError::BadRequest(
+            "cannot fork a report containing objective blocks".into(),
+        ));
+    }
+
     let copied_block_ids: HashSet<String> = blocks.iter().map(|block| block.id.clone()).collect();
     let mut unsafe_links: Vec<(String, &'static str, UnsafeTrackLink)> = Vec::new();
     for block in &mut blocks {
@@ -4067,3 +4076,6 @@ mod tests {
 
 #[cfg(test)]
 mod report_boundaries_tests;
+
+#[cfg(test)]
+mod objective_tests;

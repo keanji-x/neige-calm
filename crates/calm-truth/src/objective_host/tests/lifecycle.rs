@@ -339,8 +339,8 @@ async fn redefined_evaluation_is_logged_as_stale_and_reported() {
     dispatch(&repo, &job.id).await;
     let mut definition = definition();
     definition.constraints.push("new standard".into());
-    react(
-        repo.db(),
+    fixture_input_react(
+        &repo,
         planner(
             Event::DefinitionChanged {
                 objective: definition,

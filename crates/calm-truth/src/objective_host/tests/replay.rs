@@ -92,8 +92,8 @@ async fn version_bump_rebuild_keeps_intents() {
 #[tokio::test]
 async fn snapshot_seq_tracks_log_tip() {
     let repo = fixture().await;
-    react(
-        repo.db(),
+    fixture_input_react(
+        &repo,
         planner(
             Event::DefinitionChanged {
                 objective: definition(),
@@ -138,8 +138,8 @@ async fn snapshot_seq_tracks_log_tip() {
 #[tokio::test]
 async fn corrupt_log_row_fails_closed() {
     let repo = fixture().await;
-    react(
-        repo.db(),
+    fixture_input_react(
+        &repo,
         planner(
             Event::DefinitionChanged {
                 objective: definition(),
@@ -176,8 +176,8 @@ async fn corrupt_log_row_fails_closed() {
 #[tokio::test]
 async fn snapshot_corruption_and_unknown_event_version_fail_closed() {
     let repo = fixture().await;
-    react(
-        repo.db(),
+    fixture_input_react(
+        &repo,
         planner(
             Event::DefinitionChanged {
                 objective: definition(),
@@ -217,8 +217,8 @@ async fn snapshot_corruption_and_unknown_event_version_fail_closed() {
 async fn track_delete_cascades_both_paths() {
     for area in [false, true] {
         let repo = fixture().await;
-        react(
-            repo.db(),
+        fixture_input_react(
+            &repo,
             planner(
                 Event::DefinitionChanged {
                     objective: definition(),

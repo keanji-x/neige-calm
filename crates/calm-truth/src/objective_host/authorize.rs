@@ -17,15 +17,17 @@ pub(super) async fn authorize<'a>(
 ) -> Result<AuthorizedInput<'a>> {
     capability::require_tx(tx, &input.track_id).await?;
     let principal = match (&input.event, &input.source) {
+        (Event::DefinitionChanged { .. }, InputSource::ReportBlock { .. }) => {
+            report::verify_source_tx(tx, input).await?;
+            input.source.identity()?;
+            return Ok(AuthorizedInput { input });
+        }
         (Event::CheckFinished { .. }, InputSource::IntentJob { .. }) => {
             input.source.identity()?;
             return Ok(AuthorizedInput { input });
         }
         (
-            Event::DefinitionChanged { .. }
-            | Event::Requested { .. }
-            | Event::Settled { .. }
-            | Event::Closed { .. },
+            Event::Requested { .. } | Event::Settled { .. } | Event::Closed { .. },
             InputSource::Planner { principal, .. },
         ) => principal.clone(),
         (
