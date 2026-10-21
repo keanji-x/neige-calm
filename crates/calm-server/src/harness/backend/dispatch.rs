@@ -107,16 +107,48 @@ impl PlannerBackend {
                     },
                 }
             }
-            Arm::Acp(_) => not_dispatched(
-                correlation,
-                NonDispatchBasis::LocalPreflight,
-                TurnStartFailure::Refused {
-                    error: CalmError::BadRequest(
-                        "canonical input execution is unsupported for ACP".into(),
-                    ),
-                    reader: "Canonical input execution is unsupported for ACP".into(),
-                },
-            ),
+            Arm::Acp(session) => {
+                use crate::acp_planner::session::CanonicalStart;
+                match session
+                    .start_canonical(
+                        thread_id,
+                        items,
+                        attempt.submission_id.as_str(),
+                        selection,
+                        permission,
+                        ExecutionInput::canonical(logical_turn_id, proof),
+                        admission,
+                    )
+                    .await
+                {
+                    CanonicalStart::UncertainReceipt(error) => InputAttemptReport {
+                        delivery: InputDelivery::Unknown(correlation),
+                        outcome: Err(error.into()),
+                    },
+                    CanonicalStart::BeforeReceipt(error) => {
+                        not_dispatched(correlation, NonDispatchBasis::LocalPreflight, error.into())
+                    }
+                    CanonicalStart::Receipted { receipt, outcome } => {
+                        let correlation =
+                            correlation.with_native_session(receipt.native_session_id);
+                        match uuid::Uuid::parse_str(&receipt.turn) {
+                            Ok(turn) => InputAttemptReport {
+                                delivery: InputDelivery::Unknown(correlation.with_local_turn(turn)),
+                                outcome: outcome
+                                    .map(|()| ExecutionIdentity::Local(turn))
+                                    .map_err(Into::into),
+                            },
+                            Err(error) => InputAttemptReport {
+                                delivery: InputDelivery::Unknown(correlation),
+                                outcome: Err(CalmError::Conflict(format!(
+                                    "ACP local receipt identity is invalid: {error}"
+                                ))
+                                .into()),
+                            },
+                        }
+                    }
+                }
+            }
         }
     }
 }

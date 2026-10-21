@@ -7,7 +7,7 @@ use calm_types::organization::LEGACY_OWNER_USER_ID;
 use provider::send_boundary::{PreSendGate, SendRefusal};
 use tokio::io::AsyncReadExt;
 
-async fn fixture() -> (AcpPlannerSession, Arc<SqlxRepo>, String) {
+pub(super) async fn fixture() -> (AcpPlannerSession, Arc<SqlxRepo>, String) {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let area = repo
         .area_create(
@@ -79,6 +79,11 @@ async fn fixture() -> (AcpPlannerSession, Arc<SqlxRepo>, String) {
 
 #[tokio::test]
 async fn acp_final_live_fence_refuses_setup_prompt_and_cancel_after_writer_wait() {
+    final_live_fence(false).await;
+    final_live_fence(true).await;
+}
+
+async fn final_live_fence(parked: bool) {
     for method in [
         "session/new",
         "session/load",
@@ -122,7 +127,12 @@ async fn acp_final_live_fence_refuses_setup_prompt_and_cancel_after_writer_wait(
         };
         tokio::pin!(send);
         assert!(futures_util::poll!(&mut send).is_pending());
-        session.shared.params.seals.seal_for_deletion(&thread);
+        let _park = if parked {
+            Some(session.carrier_idle_for_detach().unwrap())
+        } else {
+            session.shared.params.seals.seal_for_deletion(&thread);
+            None
+        };
         release.notify_one();
         assert!(matches!(
             blocker.await,

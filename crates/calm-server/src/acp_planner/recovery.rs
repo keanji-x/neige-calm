@@ -24,11 +24,14 @@ where
 }
 
 fn retire(snapshot: &mut HarnessSnapshot, receipt: &AcpSubmission) -> Result<bool> {
-    let input: Value = serde_json::from_str(&receipt.input_json)?;
-    let claims = input
-        .get("queue")
-        .ok_or_else(|| CalmError::Conflict("ACP receipt has no queue ownership proof".into()))?;
-    crate::harness::submission_claims::retire(snapshot, &receipt.client_id, claims)
+    match crate::db::sqlite::AcpSubmissionInput::decode(&receipt.input_json)? {
+        crate::db::sqlite::AcpSubmissionInput::Historical(input) => {
+            crate::harness::submission_claims::retire(snapshot, &receipt.client_id, &input.queue)
+        }
+        crate::db::sqlite::AcpSubmissionInput::Canonical(_) => Err(CalmError::Conflict(
+            "Canonical ACP receipts require retained recovery".into(),
+        )),
+    }
 }
 
 /// A reset inherits only input still owned by the queue, never input already dispatched.

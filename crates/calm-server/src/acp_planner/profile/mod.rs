@@ -15,6 +15,8 @@ mod grok;
 mod opencode;
 
 pub(crate) struct AcpAgentProfile {
+    /// Supports receipt-owned canonical Planner input; activation is independently gated.
+    pub(crate) canonical_planner_inputs: bool,
     /// The agent CLI's ACP entry: the arguments around a Planner turn's agent options.
     pub(crate) entry: AgentEntry,
     /// Where the agent's `initialize` answer reports who it is.

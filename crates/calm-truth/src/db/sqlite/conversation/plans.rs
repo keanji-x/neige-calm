@@ -149,10 +149,16 @@ impl OriginalInputExecution {
                 Some(turn)
             }
             (None, session, Some(turn))
-                if correlation.provider.protocol()
-                    == calm_types::runtime::AgentProtocol::Claude
-                    && !turn.is_empty()
-                    && session.is_none_or(|session| !session.is_empty()) =>
+                if !turn.is_empty()
+                    && match correlation.provider.protocol() {
+                        calm_types::runtime::AgentProtocol::Claude => {
+                            session.is_none_or(|session| !session.is_empty())
+                        }
+                        calm_types::runtime::AgentProtocol::Acp => {
+                            session.is_some_and(|session| !session.is_empty())
+                        }
+                        calm_types::runtime::AgentProtocol::Codex => false,
+                    } =>
             {
                 Some(turn)
             }

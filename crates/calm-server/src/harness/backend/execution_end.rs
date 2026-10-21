@@ -21,6 +21,13 @@ impl ExecutionInput {
         }
     }
 
+    pub(crate) fn acp_association(&self) -> crate::db::sqlite::AcpCanonicalInput {
+        crate::db::sqlite::AcpCanonicalInput {
+            logical_turn_id: self.logical_turn_id.clone(),
+            proof: self.proof.clone(),
+        }
+    }
+
     pub(crate) fn matches(&self, target: &ExecutionEndTarget) -> bool {
         self.logical_turn_id == target.logical_turn_id && self.proof == target.proof
     }
@@ -43,6 +50,11 @@ pub(crate) enum ExecutionEndScope {
     LocalProcess {
         thread_id: uuid::Uuid,
         local_turn_id: uuid::Uuid,
+    },
+    ReceiptProcess {
+        thread_id: uuid::Uuid,
+        local_turn_id: uuid::Uuid,
+        native_session_id: String,
     },
     NativeTurn {
         thread_id: String,
@@ -77,7 +89,12 @@ impl ExecutionEndScope {
                     thread_id: uuid::Uuid::parse_str(&correlation.thread_id).ok()?,
                     local_turn_id: uuid::Uuid::parse_str(turn).ok()?,
                 }),
-                AgentProtocol::Codex | AgentProtocol::Acp => None,
+                AgentProtocol::Acp => Some(Self::ReceiptProcess {
+                    thread_id: uuid::Uuid::parse_str(&correlation.thread_id).ok()?,
+                    local_turn_id: uuid::Uuid::parse_str(turn).ok()?,
+                    native_session_id: correlation.native_session_id.clone()?,
+                }),
+                AgentProtocol::Codex => None,
             },
             (Some(_), Some(_)) | (None, None) => None,
         }
@@ -92,6 +109,11 @@ impl ExecutionEndScope {
             Self::LocalProcess {
                 thread_id,
                 local_turn_id,
+            }
+            | Self::ReceiptProcess {
+                thread_id,
+                local_turn_id,
+                ..
             } => (thread_id.to_string(), local_turn_id.to_string()),
         }
     }
@@ -139,7 +161,8 @@ impl PlannerBackend {
     pub(crate) async fn owns_local_execution(&self, target: &ExecutionEndTarget) -> bool {
         match &self.0 {
             Arm::Claude(session) => session.owns_local_execution(target).await,
-            Arm::Codex(..) | Arm::Acp(_) => false,
+            Arm::Acp(session) => session.owns_local_execution(target).await,
+            Arm::Codex(..) => false,
         }
     }
 
@@ -149,7 +172,7 @@ impl PlannerBackend {
     ) -> Result<Option<QualifiedExecutionEnd>> {
         let terminal = match &self.0 {
             Arm::Claude(session) => session.qualify_execution_end(target).await?.then_some(None),
-            Arm::Acp(_) => None,
+            Arm::Acp(session) => session.qualify_execution_end(target).await?.map(Some),
             Arm::Codex(daemon, owner) => {
                 if owner.binding.matches(target) {
                     daemon.qualified_execution_terminal(target).map(Some)

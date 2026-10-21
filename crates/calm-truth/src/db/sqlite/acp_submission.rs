@@ -104,13 +104,54 @@ fn acp_provider_db_strings() -> String {
         provider.protocol() == Some(calm_types::runtime::AgentProtocol::Acp)
     })
 }
+#[derive(Debug, thiserror::Error)]
+pub enum AcpPrepareError {
+    #[error("ACP receipt refused before insertion: {0}")]
+    BeforeReceipt(crate::error::TruthError),
+    #[error("ACP receipt commit is uncertain: {0}")]
+    CommitUncertain(crate::error::TruthError),
+}
 pub async fn acp_submission_prepare(
     pool: &crate::db::sqlite::SqliteDb,
     receipt: &AcpSubmission,
     at_ms: i64,
+) -> std::result::Result<(), AcpPrepareError> {
+    let mut tx = super::begin_immediate_tx(pool)
+        .await
+        .map_err(AcpPrepareError::BeforeReceipt)?;
+    prepare_tx(&mut tx, receipt, at_ms)
+        .await
+        .map_err(AcpPrepareError::BeforeReceipt)?;
+    tx.commit()
+        .await
+        .map_err(|error| AcpPrepareError::CommitUncertain(error.into()))
+}
+async fn prepare_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    receipt: &AcpSubmission,
+    at_ms: i64,
 ) -> Result<()> {
+    let input = super::AcpSubmissionInput::decode(&receipt.input_json)?;
+    match &input {
+        super::AcpSubmissionInput::Canonical(association) => {
+            super::acp_submission_input::validate_tx(tx, receipt, association).await?;
+        }
+        super::AcpSubmissionInput::Historical(_) => {
+            let card: Option<String> =
+                sqlx::query_scalar("SELECT card_id FROM worker_sessions WHERE id=?1")
+                    .bind(&receipt.worker_session_id)
+                    .fetch_one(&mut **tx)
+                    .await?;
+            let card = card.ok_or(CalmError::Conflict("ACP historical receipt has no card"))?;
+            if super::conversation::card_has_canonical_storage(tx, &card).await? {
+                return Err(CalmError::Conflict(
+                    "ACP historical receipt cannot execute canonical storage",
+                ));
+            }
+        }
+    }
     let inserted = sqlx::query(concat!("INSERT INTO ","acp_submissions(worker_session_id,client_id,turn_id,thread_id,native_session_id,input_json",",state,created_at_ms) SELECT ?1,?2,?3,?4,?5,?6,'sending',?7 WHERE EXISTS(SELECT 1 FROM ","worker_sessions ws JOIN cards c ON c.session_id=ws.id AND c.id=ws.card_id WHERE ws.id=?1 ","AND ws.provider IN (SELECT value FROM json_each(?8)) AND ws.mode='resumable' AND c.track_id=ws.track_id ","AND ((ws.contract='planner' AND c.role='planner' AND json_extract(c.payload,'$.planner_provider')=ws.provider) ","OR (ws.contract='assistant' AND c.role='assistant' AND c.kind='codex' ","AND json_extract(c.payload,'$.harness_profile')='assistant' ","AND json_extract(c.payload,'$.assistant_provider')=ws.provider)) ","AND ws.thread_id=?4 AND ws.agent_session_id=?5 AND ws.state IN ","('starting','running','idle','turn_pending'))"))
-        .bind(&receipt.worker_session_id).bind(&receipt.client_id).bind(&receipt.turn_id).bind(&receipt.thread_id).bind(&receipt.native_session_id).bind(&receipt.input_json).bind(at_ms).bind(acp_provider_db_strings()).execute(pool.writer_pool()).await?;
+        .bind(&receipt.worker_session_id).bind(&receipt.client_id).bind(&receipt.turn_id).bind(&receipt.thread_id).bind(&receipt.native_session_id).bind(&receipt.input_json).bind(at_ms).bind(acp_provider_db_strings()).execute(&mut **tx).await?;
     if inserted.rows_affected() != 1 {
         return Err(CalmError::Conflict(
             "ACP submission owner changed before dispatch",

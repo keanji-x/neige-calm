@@ -6,14 +6,16 @@ pub(super) async fn drive(
     mut process: Process,
     receipt: AcpSubmission,
     mut translator: TurnTranslator,
-    pending: std::result::Result<provider::acp::PendingResponse, provider::acp::WriteFailure>,
-    mut cancelled: watch::Receiver<bool>,
-    approvals: Approvals,
-) {
+    pending: tokio::sync::oneshot::Receiver<
+        std::result::Result<provider::acp::PendingResponse, provider::acp::WriteFailure>,
+    >,
+    mut cancelled: watch::Receiver<CancelRequest>,
+    approvals: Arc<Approvals>,
+) -> super::execution_end::Settlement {
     let params = &shared.params;
     let mut retained = Vec::<Value>::new();
     let outcome=async {
-        let pending=pending.map_err(|error| wire_error(error.into_error()))?;
+        let pending=pending.await.map_err(|_|CalmError::Conflict("ACP prompt handoff was cancelled".into()))?.map_err(|error| wire_error(error.into_error()))?;
         let response=pending.wait(Duration::from_secs(3600));tokio::pin!(response);
         let mut stop_at=None;
         loop {tokio::select! {
@@ -42,11 +44,13 @@ pub(super) async fn drive(
                 return Ok::<_,CalmError>(translator.finish(response.stop_reason,crate::model::now_ms()));
             },
             changed=cancelled.changed(),if stop_at.is_none()=>{
-                if changed.is_err() || *cancelled.borrow() {
+                if changed.is_err() || !matches!(*cancelled.borrow(), CancelRequest::Running) {
                     stop_at=Some(tokio::time::Instant::now()+Duration::from_secs(5));
+                    if !matches!(*cancelled.borrow(), CancelRequest::Written) {
                     tokio::time::timeout(Duration::from_secs(3),async {
                         approvals.cancel(&receipt.native_session_id, shared.admission(&receipt.thread_id, None, Some(&receipt.native_session_id), Some(&receipt.turn_id)).gate()).await.map_err(wire_error)
                     }).await.map_err(|_|CalmError::Conflict("ACP cancellation writes timed out".into()))??;
+                    }
                 }
             },
             _=async{match stop_at{Some(at)=>tokio::time::sleep_until(at).await,None=>std::future::pending().await}}=>return Err(CalmError::Conflict("ACP cancellation outcome is unknown".into())),
@@ -116,6 +120,7 @@ pub(super) async fn drive(
         settle_receipt(&pool, &receipt, outcome_json.as_deref()).await
     }
     .await;
+    let persisted = settle.is_ok();
     if let Err(error) = settle {
         #[cfg(feature = "fixtures")]
         super::super::test_seams::settlement_note(&params.worker_session_id, "failed");
@@ -154,6 +159,11 @@ pub(super) async fn drive(
     state.active = None;
     for event in events {
         let _ = shared.events.send(event);
+    }
+    if known && persisted {
+        super::execution_end::Settlement::Completed
+    } else {
+        super::execution_end::Settlement::Unconfirmed
     }
 }
 fn retain_item(retained: &mut Vec<Value>, event: &PlannerEvent) {

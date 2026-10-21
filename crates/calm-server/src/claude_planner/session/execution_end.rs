@@ -7,13 +7,10 @@ pub(super) enum Association {
     Maintenance(crate::harness::backend::MaintenanceTarget),
 }
 
-enum Completion {
-    Running(tokio::task::JoinHandle<bool>),
-    Finished(std::result::Result<bool, ()>),
-}
+use crate::harness::retained_join::RetainedJoin;
 
 pub(super) struct DriverSlot {
-    completion: Completion,
+    completion: RetainedJoin<bool>,
     thread: Uuid,
     turn: Uuid,
     execution: Association,
@@ -27,7 +24,7 @@ impl DriverSlot {
         execution: Association,
     ) -> Self {
         Self {
-            completion: Completion::Running(driver),
+            completion: RetainedJoin::new(driver),
             thread,
             turn,
             execution,
@@ -48,29 +45,25 @@ impl DriverSlot {
                         Association::Historical | Association::Maintenance(_) => false,
                     }
             }
-            ExecutionEndScope::NativeTurn { .. } => false,
+            ExecutionEndScope::NativeTurn { .. } | ExecutionEndScope::ReceiptProcess { .. } => {
+                false
+            }
         }
     }
 
     async fn qualified(&mut self) -> Result<bool> {
-        match &self.completion {
-            Completion::Running(driver) if !driver.is_finished() => return Ok(false),
-            Completion::Running(_) | Completion::Finished(_) => {}
+        if !self.completion.is_finished() {
+            return Ok(false);
         }
         self.finish().await
     }
 
     async fn finish(&mut self) -> Result<bool> {
-        let result = match &mut self.completion {
-            Completion::Running(driver) => {
-                // Borrowed await retains task ownership if the caller is cancelled.
-                let result = driver.await.map_err(|_| ());
-                self.completion = Completion::Finished(result);
-                result
-            }
-            Completion::Finished(result) => *result,
-        };
-        result.map_err(|()| CalmError::Conflict("Claude driver did not finish normally".into()))
+        self.completion
+            .finish()
+            .await
+            .copied()
+            .map_err(|()| CalmError::Conflict("Claude driver did not finish normally".into()))
     }
 }
 
@@ -108,13 +101,16 @@ impl ClaudePlannerSession {
         else {
             return Ok(false);
         };
-        if live.card_id.as_ref().map(|id| id.as_str()) != Some(card)
-            || live.track_id.as_str() != params.track_id
-            || live.thread_id.as_deref() != Some(thread)
-            || live.provider != calm_types::worker::WorkerProviderKind::Claude
-            || crate::harness::profile::live_binding(params.repo.as_ref(), &live)
-                .await?
-                .is_none()
+        if crate::harness::profile::local_binding(
+            params.repo.as_ref(),
+            &live,
+            &calm_types::runtime::AgentProvider::Claude,
+            card,
+            &params.track_id,
+            thread,
+        )
+        .await?
+        .is_none()
         {
             return Ok(false);
         }
@@ -164,11 +160,10 @@ impl ClaudePlannerSession {
         if !matches {
             return Ok(None);
         }
-        let settled = match &driver.completion {
-            Completion::Running(handle) if !handle.is_finished() => None,
-            Completion::Running(_) | Completion::Finished(_) => {
-                Some(driver.finish().await.unwrap_or(false))
-            }
+        let settled = if driver.completion.is_finished() {
+            Some(driver.finish().await.unwrap_or(false))
+        } else {
+            None
         };
         Ok(Some(crate::harness::backend::MaintenanceObservation {
             turn_id: driver.turn.to_string(),

@@ -22,6 +22,7 @@ pub mod profile;
 pub mod queue;
 pub mod registry;
 mod result_receipt;
+pub(crate) mod retained_join;
 pub(crate) mod rewind;
 pub mod run_loop;
 pub mod run_recovery;

@@ -21,15 +21,57 @@ async fn fixture_full() -> (
     tempfile::TempDir,
     crate::harness::held_requests::HeldRequestReceiver,
 ) {
+    fixture_storage(false).await
+}
+
+async fn fixture_storage(
+    persistent: bool,
+) -> (
+    PlannerBackend,
+    Arc<AcpPlannerSession>,
+    super::dispatch_fixture::Owner,
+    tempfile::TempDir,
+    crate::harness::held_requests::HeldRequestReceiver,
+) {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("scenario"), "reply").unwrap();
-    let owner = super::dispatch_fixture::seed(dir.path(), AgentProvider::OpenCode).await;
+    let url = if persistent {
+        format!("sqlite:{}", dir.path().join("receipt.db").display())
+    } else {
+        "sqlite::memory:".into()
+    };
+    let owner =
+        super::dispatch_fixture::seed_with_url(dir.path(), AgentProvider::OpenCode, &url).await;
+    let (backend, session, rx) = session_for(&owner, &dir);
+    (backend, session, owner, dir, rx)
+}
+
+fn session_for(
+    owner: &super::dispatch_fixture::Owner,
+    dir: &tempfile::TempDir,
+) -> (
+    PlannerBackend,
+    Arc<AcpPlannerSession>,
+    crate::harness::held_requests::HeldRequestReceiver,
+) {
+    session_for_command(owner, dir, "/usr/bin/python3")
+}
+
+fn session_for_command(
+    owner: &super::dispatch_fixture::Owner,
+    dir: &tempfile::TempDir,
+    command: &str,
+) -> (
+    PlannerBackend,
+    Arc<AcpPlannerSession>,
+    crate::harness::held_requests::HeldRequestReceiver,
+) {
     let host = Arc::new(
         AcpPlannerHost::new(
             Some(AcpPlannerConfig {
                 agents: vec![AcpAgentConfig {
                     provider: AgentProvider::OpenCode,
-                    command: "/usr/bin/python3".into(),
+                    command: command.into(),
                     args: vec![
                         "-u".into(),
                         concat!(
@@ -67,51 +109,9 @@ async fn fixture_full() -> (
     }));
     let (held, rx) = tokio::sync::mpsc::unbounded_channel();
     session.mark_installed(held);
-    (
-        PlannerBackend(Arm::Acp(session.clone())),
-        session,
-        owner,
-        dir,
-        rx,
-    )
+    (PlannerBackend(Arm::Acp(session.clone())), session, rx)
 }
 
-#[tokio::test]
-async fn canonical_input_is_unsupported_before_admission_or_native_effects() {
-    let (backend, session, owner, _dir) = fixture().await;
-    let thread = owner.thread;
-    let proof = super::dispatch_tests::proof();
-    let report = backend
-        .dispatch_input(
-            None,
-            &super::dispatch_tests::logical_turn_id(),
-            proof.attempt(),
-            &thread,
-            &proof,
-            vec![InputItem::Text {
-                text: "input".into(),
-            }],
-            &TurnModelSelection::inherit(),
-            PlannerPermissionMode::Never,
-            &crate::harness::native_admission::NativePromptAdmission::new(
-                || Ok(()),
-                || Box::pin(async { panic!("unsupported backend must not admit native effects") }),
-            ),
-        )
-        .await;
-    assert!(matches!(report.delivery(), InputDelivery::NotDispatched(_)));
-    assert!(
-        report
-            .outcome()
-            .as_ref()
-            .unwrap_err()
-            .to_string()
-            .contains("unsupported")
-    );
-    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM acp_submissions")
-        .fetch_one(owner.repo.pool())
-        .await
-        .unwrap();
-    assert_eq!(count, 0);
-    session.shutdown().await.unwrap();
-}
+mod canonical;
+
+mod cleanup;

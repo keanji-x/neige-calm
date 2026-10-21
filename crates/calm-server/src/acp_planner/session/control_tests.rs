@@ -51,17 +51,21 @@ async fn acp_identical_local_turns_keep_two_owner_cancellation_separate() {
     };
     let a = make("a");
     let b = make("b");
-    let (a_cancel, a_seen) = watch::channel(false);
-    let (b_cancel, b_seen) = watch::channel(false);
+    let (a_cancel, a_seen) = watch::channel(CancelRequest::Running);
+    let (b_cancel, b_seen) = watch::channel(CancelRequest::Running);
     a.shared.state.lock().unwrap().active = Some(Active {
         thread: "a".into(),
         turn: "same-local-turn".into(),
         cancel: a_cancel,
+        approvals: std::sync::Weak::new(),
+        native_session_id: "a".into(),
     });
     b.shared.state.lock().unwrap().active = Some(Active {
         thread: "b".into(),
         turn: "same-local-turn".into(),
         cancel: b_cancel,
+        approvals: std::sync::Weak::new(),
+        native_session_id: "b".into(),
     });
     assert!(matches!(
         a.turn_interrupt("b", "same-local-turn").await,
@@ -71,15 +75,15 @@ async fn acp_identical_local_turns_keep_two_owner_cancellation_separate() {
         a.turn_interrupt("a", "other-turn").await,
         InterruptOutcome::NoTarget
     ));
-    assert!(!*a_seen.borrow());
-    assert!(!*b_seen.borrow());
+    assert!(matches!(*a_seen.borrow(), CancelRequest::Running));
+    assert!(matches!(*b_seen.borrow(), CancelRequest::Running));
     assert!(matches!(
         a.turn_interrupt("a", "same-local-turn").await,
         InterruptOutcome::LocalSignalDelivered
     ));
-    assert!(*a_seen.borrow());
+    assert!(matches!(*a_seen.borrow(), CancelRequest::Requested));
     assert!(
-        !*b_seen.borrow(),
+        matches!(*b_seen.borrow(), CancelRequest::Running),
         "identical local turn must not give authority over another owner"
     );
 }

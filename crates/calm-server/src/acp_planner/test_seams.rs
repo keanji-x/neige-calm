@@ -132,3 +132,23 @@ pub(crate) fn settlement_note(worker: &str, note: &'static str) {
         let _ = sender.send(note);
     }
 }
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum IssueStage {
+    BeforeMint,
+    AfterSpawn,
+    BeforeReceipt,
+    AfterReceipt,
+    DriverInstalled,
+}
+#[cfg(test)]
+static ISSUE: LazyLock<Mutex<HashMap<String, Hook>>> = LazyLock::new(Mutex::default);
+#[cfg(test)]
+pub(crate) fn pause_issue(worker: &str, stage: IssueStage) -> SettlementPause {
+    pause_at(&ISSUE, &format!("{worker}:{stage:?}"))
+}
+#[cfg(test)]
+pub(crate) async fn wait_issue(worker: &str, stage: IssueStage) {
+    wait_at(&ISSUE, &format!("{worker}:{stage:?}")).await;
+}

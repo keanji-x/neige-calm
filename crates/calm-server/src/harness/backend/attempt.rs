@@ -57,6 +57,11 @@ impl AttemptCorrelation {
         self
     }
 
+    pub(super) fn with_native_session(mut self, native: String) -> Self {
+        self.native_session_id = Some(native);
+        self
+    }
+
     pub(super) fn with_request(mut self, request: Option<u64>) -> Self {
         self.rpc_request_id = request;
         self

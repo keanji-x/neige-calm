@@ -16,21 +16,22 @@ impl Shared {
             .await
             .map_err(CalmError::from)?
             .ok_or_else(|| refused("ACP owner is missing"))?;
-        if row.provider != WorkerProviderKind::from(&params.provider)
-            || !matches!(
-                row.contract,
-                WorkerContract::Planner | WorkerContract::Assistant
-            )
-            || row.card_id.as_ref().map(|id| id.as_str()) != Some(params.card_id.as_str())
-            || row.track_id.as_str() != params.track_id
-            || row.thread_id.as_deref() != Some(thread)
-            || !row.state.is_active_authority()
-        {
+        if !matches!(
+            row.contract,
+            WorkerContract::Planner | WorkerContract::Assistant
+        ) {
             return Err(refused("ACP owner identity changed"));
         }
-        let binding = crate::harness::profile::live_binding(params.repo.as_ref(), &row)
-            .await?
-            .ok_or_else(|| refused("ACP live owner identity changed"))?;
+        let binding = crate::harness::profile::local_binding(
+            params.repo.as_ref(),
+            &row,
+            &params.provider,
+            &params.card_id,
+            &params.track_id,
+            thread,
+        )
+        .await?
+        .ok_or_else(|| refused("ACP live owner identity changed"))?;
         if binding.profile == crate::harness::profile::HarnessProfile::Assistant
             && permission.is_some_and(|mode| mode != PlannerPermissionMode::Never)
         {
@@ -50,12 +51,14 @@ impl Shared {
             move || {
                 let state = self.state.lock().expect("ACP state");
                 if state.closed
+                    || self.parked.is_parked()
                     || self.params.seals.is_sealed(thread)
                     || turn.is_some_and(|turn| {
-                        state
-                            .active
-                            .as_ref()
-                            .is_none_or(|active| active.thread != thread || active.turn != turn)
+                        state.active.as_ref().is_none_or(|active| {
+                            active.thread != thread
+                                || active.turn != turn
+                                || native != Some(active.native_session_id.as_str())
+                        })
                     })
                 {
                     return Err(CalmError::Conflict(

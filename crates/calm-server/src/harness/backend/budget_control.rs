@@ -104,7 +104,8 @@ impl PlannerBackend {
                 daemon.interrupt_execution(target, admission).await
             }
             Arm::Claude(session) => session.interrupt_execution(target, admission).await,
-            Arm::Codex(..) | Arm::Acp(_) => Err(CalmError::Conflict(
+            Arm::Acp(session) => session.interrupt_execution(target, admission).await,
+            Arm::Codex(..) => Err(CalmError::Conflict(
                 "control requires this backend's original native owner".into(),
             )),
         }

@@ -51,6 +51,8 @@ pub use session_conversation::{
     PLANNER_START_CARD_KEY, PLANNER_START_OPERATION_KIND, TERMINAL_OPERATION_PHASES,
 };
 mod acp_submission;
+mod acp_submission_input;
+pub use acp_submission_input::{AcpCanonicalInput, AcpHistoricalInput, AcpSubmissionInput};
 #[cfg(test)]
 mod acp_submission_tests;
 #[cfg(test)]

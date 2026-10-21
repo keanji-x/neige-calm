@@ -376,15 +376,18 @@ impl ClaudePlannerSession {
             .await
             .map_err(CalmError::from)?
             .ok_or_else(|| CalmError::Conflict("Claude owner is missing".into()))?;
-        let binding = crate::harness::profile::live_binding(params.repo.as_ref(), &live)
-            .await?
-            .ok_or_else(|| CalmError::Conflict("Claude live owner identity changed".into()))?;
-        if live.provider != calm_types::worker::WorkerProviderKind::Claude
-            || live.card_id.as_ref().map(|id| id.as_str()) != Some(params.card_id.as_str())
-            || live.track_id.as_str() != params.track_id
-            || live.thread_id.as_deref() != Some(thread)
-            || (binding.profile == crate::harness::profile::HarnessProfile::Assistant
-                && mode != PlannerPermissionMode::Never)
+        let binding = crate::harness::profile::local_binding(
+            params.repo.as_ref(),
+            &live,
+            &calm_types::runtime::AgentProvider::Claude,
+            &params.card_id,
+            &params.track_id,
+            thread,
+        )
+        .await?
+        .ok_or_else(|| CalmError::Conflict("Claude live owner identity changed".into()))?;
+        if binding.profile == crate::harness::profile::HarnessProfile::Assistant
+            && mode != PlannerPermissionMode::Never
         {
             return Err(CalmError::Conflict("Claude live owner identity changed".into()).into());
         }

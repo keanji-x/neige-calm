@@ -149,6 +149,26 @@ pub(crate) async fn live_binding(
     persisted_binding(repo, session).await
 }
 
+/// Validate a local owner's current row and its single declared card binding.
+/// Callers retain their own issue/driver locks and live seal checks.
+pub(crate) async fn local_binding(
+    repo: &dyn crate::db::RouteRepo,
+    row: &calm_types::worker::WorkerSession,
+    provider: &AgentProvider,
+    card: &str,
+    track: &str,
+    thread: &str,
+) -> crate::error::Result<Option<PlannerBinding>> {
+    if row.provider != calm_types::worker::WorkerProviderKind::from(provider)
+        || row.card_id.as_ref().map(|id| id.as_str()) != Some(card)
+        || row.track_id.as_str() != track
+        || row.thread_id.as_deref() != Some(thread)
+    {
+        return Ok(None);
+    }
+    live_binding(repo, row).await
+}
+
 /// Resolve a declared card backend, including dormant cards, and reject a conflicting current row.
 pub(crate) async fn checked_card_binding(
     repo: &dyn crate::db::RouteRepo,

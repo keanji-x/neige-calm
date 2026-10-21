@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 /// Retain the caller's error in its owning layer; the provider sees only refusal.
 pub(crate) struct NativePromptAdmission<'a> {
+    live: Arc<dyn Fn() -> Result<()> + Send + Sync + 'a>,
     gate: provider::send_boundary::PreSendGate<'a>,
     check: Arc<dyn Fn() -> BoxFuture<'a, Result<()>> + Send + Sync + 'a>,
     refusal: Arc<std::sync::Mutex<Option<CalmError>>>,
@@ -18,6 +19,7 @@ impl<'a> NativePromptAdmission<'a> {
         // The async owner must finish all reads and its commit before the live
         // issuer is checked. No caller can accidentally reverse this ordering.
         let live_issuer = Arc::new(live_issuer);
+        let live = live_issuer.clone();
         let admission = Arc::new(move || {
             let future = revalidate();
             let live_issuer = live_issuer.clone();
@@ -42,10 +44,34 @@ impl<'a> NativePromptAdmission<'a> {
             })
         });
         Self {
+            live,
             gate,
             refusal,
             check,
         }
+    }
+
+    /// Preserve both issuers through all async revalidation before the actual write.
+    pub(crate) fn combined<'b, 'c>(
+        &'b self,
+        other: &'b NativePromptAdmission<'c>,
+    ) -> NativePromptAdmission<'b>
+    where
+        'a: 'b,
+        'c: 'b,
+    {
+        NativePromptAdmission::new(
+            move || {
+                (self.live)()?;
+                (other.live)()
+            },
+            move || {
+                Box::pin(async move {
+                    other.check_local().await?;
+                    self.check_local().await
+                })
+            },
+        )
     }
 
     /// Local observations run the same admission under their lifecycle owner.

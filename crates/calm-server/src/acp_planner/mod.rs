@@ -10,4 +10,6 @@ pub mod session;
 mod start;
 #[cfg(feature = "fixtures")]
 pub mod test_seams;
+#[cfg(all(test, feature = "fixtures"))]
+pub(crate) mod test_transport;
 pub mod wiring;
