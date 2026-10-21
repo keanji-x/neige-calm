@@ -78,3 +78,29 @@ it.each(['codex', 'claude'] as const)('keeps a completed %s review readable in t
   expect(document.querySelector('[data-nc-task-state="done"]')).not.toBeNull();
   expect(document.body.textContent).not.toContain('unsupported block kind');
 });
+
+it('renders a compact declaration and refusal without worker-only fields', async () => {
+  await page.viewport(1000, 700);
+  const report = readTrackReport([{
+    id: 'report', track_id: 't', kind: 'track-report', title: null, sort: 0,
+    deletable: false, created_at: 0, updated_at: 0,
+    payload: { body: '', blocks: [{ id: 'b-compact', kind: 'task', payload: {
+      key: 'compact-planner', kind: 'compact', ready: true, declared_by: 'spec',
+    } }] },
+  }]);
+  const tasks = deriveReportTasks(report?.blocks ?? null, [{
+    blockId: 'b-compact', key: 'compact-planner', schedulable: true,
+    status: 'failed', statusDetail: 'compaction-refused: unavailable',
+  }]);
+  render(<ReportDocument report={report} taskRows={tasks} empty={null} />);
+  await userEvent.click(document.querySelector('[data-nc-report-reference] > summary')!);
+  await userEvent.click(document.querySelector('#b-compact details > summary')!);
+  await expect.element(page.getByText('compact', { exact: true })).toBeVisible();
+  await expect.element(page.getByText('Planner agent', { exact: true })).toBeVisible();
+  expect(document.querySelector('#b-compact details > summary [title]')?.getAttribute('title'))
+    .toBe('failed — compaction-refused: unavailable');
+  expect(document.body.textContent).not.toContain('Done when');
+  expect(document.body.textContent).not.toContain('Checks');
+  expect(document.body.textContent).not.toContain('unsupported block kind');
+  await page.screenshot();
+});

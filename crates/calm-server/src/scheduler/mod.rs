@@ -3,6 +3,7 @@
 //! never reorders beyond `(priority DESC, created_at ASC, key ASC)`, never edits the plan.
 
 mod git_delivery;
+mod planner_compaction;
 mod running_worker;
 mod worker_failure;
 mod worker_liveness;
@@ -156,6 +157,9 @@ async fn refresh_catch_up_upstream(track: &Track) {
 /// post-crash resubmit idempotency-matches the original instead of conflicting on payload hash.
 pub fn build_worker_payload(task: &Task) -> Result<(&'static str, Value)> {
     match task.kind {
+        TaskKind::Compact => Err(CalmError::Internal(
+            "compact tasks have no worker payload".into(),
+        )),
         TaskKind::Codex => {
             let payload = serde_json::to_value(CodexWorkerOperationPayload {
                 actor: ActorId::KernelDispatcher,
@@ -222,6 +226,7 @@ fn task_kind_str(kind: TaskKind) -> &'static str {
         TaskKind::Codex => "codex",
         TaskKind::Claude => "claude",
         TaskKind::Terminal => "terminal",
+        TaskKind::Compact => "compact",
     }
 }
 
@@ -1082,6 +1087,9 @@ impl Scheduler {
     /// task.id`), `wait()` it to a terminal phase, then reconcile the row with guarded
     /// writes. Shared between the live dispatch path and the sweep's `dispatched` arm.
     async fn drive_spawn(&self, task: &Task, track: &Track) -> Result<()> {
+        if task.kind == TaskKind::Compact {
+            return self.refuse_compact(task, track).await;
+        }
         if task.spawn == calm_types::task_recovery::TASK_CHILD_TRACK_ROUTE {
             return self.drive_child_track(task, track).await;
         }

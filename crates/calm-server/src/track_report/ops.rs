@@ -319,6 +319,7 @@ pub(crate) fn apply_report_op_traced(
             .collect(),
         _ => Vec::new(),
     };
+    super::write::guard_compact_origination(&before, &after, author)?;
     guard_task_declarations(&before, &after, author, &deleted_by_id)?;
     crate::track_report_objective_guard::guard_objective_blocks(&before, &after, author)?;
     Ok(ReportOpTrace {

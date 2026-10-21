@@ -146,6 +146,17 @@
 # runs once in each ratchet gate target; no exclusion or extra inventory/check
 # is added. Later schema changes update this same occurrence baseline.
 
+# Planner compact-kind bounded contract exception: spec/crates 511 -> 523 retains
+# the serialized Planner declaration author in the migration default (1), MCP
+# schema (1), prompt and generated prompt golden (2), authority-fence explanation
+# (1), and validator/contract/authority/scheduler/recovery fixtures (7).
+# spec/fe 63 -> 66 is the same wire author in the read schema, its parse test,
+# and the browser regression that renders the declared compact task.
+# wave/crates 706 -> 708 preserves the released spawn default in the rebuilt
+# tasks table and in a recovery-allocation fixture. No domain name or scan rule
+# changes. Ordinary later contract references update the owning schema/test and
+# this existing occurrence baseline; no file roster or additional CI pass is added.
+
 set -uo pipefail
 
 cd "$(git rev-parse --show-toplevel)" || exit 1

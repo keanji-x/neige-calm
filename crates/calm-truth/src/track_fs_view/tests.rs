@@ -489,6 +489,7 @@ fn run_kind_static_vocabulary() {
     assert_eq!(run_kind_static("codex"), "codex");
     assert_eq!(run_kind_static("terminal"), "terminal");
     assert_eq!(run_kind_static("claude"), "claude");
+    assert_eq!(run_kind_static("compact"), "compact");
 }
 
 #[test]

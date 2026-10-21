@@ -345,6 +345,19 @@ fn task_kind() -> Value {
                         { "required": ["head"] }, { "required": ["base"] },
                         { "required": ["start"] }, { "required": ["result_contract"] }, { "required": ["child_track"] }
                     ] }
+                },
+                {
+                    "description": "Planner compaction task",
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["key", "kind", "ready", "declared_by"],
+                    "properties": {
+                        "key": {},
+                        "kind": { "const": "compact" },
+                        "ready": {},
+                        "released_by_user": {},
+                        "declared_by": { "const": "spec" }
+                    }
                 }
             ],
             "allOf": [{ "anyOf": [
@@ -361,7 +374,7 @@ fn task_kind() -> Value {
                     }
                 },
                 "key": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$" },
-                "kind": { "type": "string", "enum": ["codex", "claude", "terminal"] },
+                "kind": { "type": "string", "enum": ["codex", "claude", "terminal", "compact"] },
                 "goal": {
                     "type": "string",
                     "minLength": 1,

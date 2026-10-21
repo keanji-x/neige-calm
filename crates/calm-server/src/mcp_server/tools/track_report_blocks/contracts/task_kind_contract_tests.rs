@@ -210,3 +210,47 @@ fn minimal_gate_task_payload_matches_published_task_schema_field_by_field() {
     assert_required_fields("task", &payload, &schema["oneOf"][0]);
     assert_value_matches_published_schema("task", &payload, schema);
 }
+
+#[test]
+fn compact_task_kind_published_contract_matches_validator() {
+    let table = kinds_table();
+    let schema = task_schema(&table);
+    let minimal = json!({"key":"compact", "kind":"compact", "ready":true,"declared_by":"spec"});
+    let check = |value: &Value, expected| {
+        assert_eq!(
+            super::schema_checks::accepts(schema, value, schema),
+            expected,
+            "schema: {value}"
+        );
+        assert_eq!(
+            calm_types::report_blocks::validate_payload("task", value).is_ok(),
+            expected,
+            "validator: {value}"
+        );
+    };
+    check(&minimal, true);
+    for field in TASK_FIELDS.iter().filter(|field| {
+        !["key", "kind", "ready", "released_by_user", "declared_by"].contains(field)
+    }) {
+        let mut payload = minimal.clone();
+        payload[*field] = Value::Null;
+        check(&payload, false);
+    }
+    for (field, value, expected) in [
+        ("declared_by", json!("user"), false),
+        ("released_by_user", json!(true), true),
+        ("released_by_user", Value::Null, false),
+        ("ready", json!(false), true),
+        ("ready", Value::Null, false),
+        ("unknown", json!(true), false),
+    ] {
+        let mut payload = minimal.clone();
+        payload[field] = value;
+        check(&payload, expected);
+    }
+    for field in ["key", "kind", "ready", "declared_by"] {
+        let mut payload = minimal.clone();
+        payload.as_object_mut().unwrap().remove(field);
+        check(&payload, false);
+    }
+}

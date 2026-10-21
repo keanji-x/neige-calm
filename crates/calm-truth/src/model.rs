@@ -291,6 +291,7 @@ pub enum TaskKind {
     Codex,
     Claude,
     Terminal,
+    Compact,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, sqlx::Type, ToSchema)]
@@ -406,6 +407,7 @@ impl Task {
             TaskKind::Codex => "codex",
             TaskKind::Claude => "claude",
             TaskKind::Terminal => "terminal",
+            TaskKind::Compact => "compact",
         };
         calm_types::task_execution::runs_in_track_checkout(kind, &self.spawn)
     }

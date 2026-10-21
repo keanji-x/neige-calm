@@ -1052,3 +1052,14 @@ describe('subtrack route vocabulary', () => {
     expect(payload.spawn).toBe(legacyRoute);
   });
 });
+
+
+describe('compact task declarations', () => {
+  it('parses the Planner payload and optional user release', () => {
+    const payload = { key: 'compact', kind: 'compact', ready: true, declared_by: 'spec' };
+    expect(taskBlockPayloadSchema.parse(payload)).toEqual(payload);
+    expect(taskBlockPayloadSchema.parse({ ...payload, released_by_user: true })).toEqual({ ...payload, released_by_user: true });
+    expect(taskBlockPayloadSchema.safeParse({ ...payload, declared_by: 'user' }).success).toBe(false);
+    expect(taskBlockPayloadSchema.safeParse({ ...payload, goal: 'forbidden' }).success).toBe(false);
+  });
+});

@@ -69,7 +69,7 @@ const TASK_BLOCK_PROTOCOL_GOLDEN: &str = concat!(
     "`neige_report_commit`; pass no revisions; your read anchors the ",
     "op. To start an authorized Planner task, ",
     "its payload needs a per-track-unique ",
-    "`key`, `kind` (`codex`, `claude`, or `terminal`), `ready: true`, ",
+    "`key`, `kind` (`codex`, `claude`, `terminal`, or `compact`), `ready: true`, ",
     "and `declared_by: \"spec\"`; it may also carry `acceptance`, `depends_on` ",
     "sibling keys, `priority`, and usually `gate`. Use `neige_task_cancel` to ",
     "cancel a pending task, or a running codex/claude task whose worker the kernel ",
@@ -372,7 +372,7 @@ mod tests {
     }
 
     /// One-sided cap (#1893): a change that shrinks `prompts/planner.md` lowers it in the same PR.
-    const PLANNER_PROMPT_MAX_BYTES: usize = 7_498;
+    const PLANNER_PROMPT_MAX_BYTES: usize = 7_728;
 
     #[test]
     fn planner_prompt_fits_its_byte_budget() {
@@ -698,9 +698,14 @@ mod tests {
         use crate::model::TaskKind;
 
         let prompt = render_system_prompt(PLANNER_SYSTEM_PROMPT_TEMPLATE, "track-kinds");
-        for kind in [TaskKind::Codex, TaskKind::Claude, TaskKind::Terminal] {
+        for kind in [
+            TaskKind::Codex,
+            TaskKind::Claude,
+            TaskKind::Terminal,
+            TaskKind::Compact,
+        ] {
             match kind {
-                TaskKind::Codex | TaskKind::Claude | TaskKind::Terminal => {}
+                TaskKind::Codex | TaskKind::Claude | TaskKind::Terminal | TaskKind::Compact => {}
             }
             let serialized = serde_json::to_value(kind).unwrap();
             let spelled = format!("`{}`", serialized.as_str().unwrap());

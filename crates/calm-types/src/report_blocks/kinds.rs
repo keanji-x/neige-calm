@@ -626,3 +626,7 @@ fn type_name(value: &Value) -> &'static str {
 #[cfg(test)]
 #[path = "kinds_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "compact_kind_tests.rs"]
+mod compact_kind_tests;

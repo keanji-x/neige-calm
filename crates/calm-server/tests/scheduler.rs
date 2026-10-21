@@ -5,6 +5,8 @@
 mod c2b;
 #[path = "scheduler/child_track_config.rs"]
 mod child_track_config;
+#[path = "scheduler/compact.rs"]
+mod compact;
 mod support;
 
 use calm_types::organization::LEGACY_OWNER_USER_ID;
@@ -456,6 +458,7 @@ fn plan_task(track_id: &TrackId, key: &str, kind: TaskKind, deps: &[&str]) -> Ta
         goal: match kind {
             TaskKind::Codex | TaskKind::Claude => format!("do {key}"),
             TaskKind::Terminal => "true".into(),
+            TaskKind::Compact => String::new(),
         },
         context_json: "null".into(),
         acceptance_criteria: None,

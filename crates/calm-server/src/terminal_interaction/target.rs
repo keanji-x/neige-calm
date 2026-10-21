@@ -427,6 +427,7 @@ impl TerminalInteraction {
                     "worker card/session is not owned by this task execution"
                 );
                 let expected = match latest.kind {
+                    TaskKind::Compact => anyhow::bail!("compact tasks have no worker terminal"),
                     TaskKind::Terminal => "terminal",
                     TaskKind::Codex => "codex",
                     TaskKind::Claude => "claude",

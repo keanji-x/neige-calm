@@ -666,6 +666,7 @@ pub(crate) fn run_kind_static(kind: &str) -> &'static str {
     match kind {
         "codex" => "codex",
         "claude" => "claude",
+        "compact" => "compact",
         "terminal" => "terminal",
         _ => "unknown",
     }

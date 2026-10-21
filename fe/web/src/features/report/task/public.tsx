@@ -52,6 +52,7 @@ export function ReportTaskBlock({ payload, blockId, task, renderExecution, textC
   }
 
   const live: LiveTask = payload;
+  const worker = live.kind === 'compact' ? null : live;
   const status = task?.execution?.status ?? task?.status ?? null;
   const explanation = [
     status === null ? null : taskStatusPhrase(task?.execution?.label ?? status, task?.execution === undefined ? task?.statusDetail ?? null : boundedStatusDetail(task.execution.statusDetail)),
@@ -65,7 +66,7 @@ export function ReportTaskBlock({ payload, blockId, task, renderExecution, textC
         <span className={styles.key}>{live.key === '' ? blockId : live.key}</span>
         <span className={styles.spacer} />
         <span className={styles.kind}>
-          {live.kind}{live.spawn === 'sub-track' ? ' · sub-track' : ''}
+          {live.kind}{worker?.spawn === 'sub-track' ? ' · sub-track' : ''}
         </span>
         <span className={styles.state} title={explanation || undefined}>
           {task?.execution?.label ?? status ?? (live.ready ? 'Declaration ready' : 'Declaration not ready')}
@@ -73,23 +74,23 @@ export function ReportTaskBlock({ payload, blockId, task, renderExecution, textC
       </summary>
 
       {task !== undefined && live.key !== '' && renderExecution?.(task, expanded)}
-      <div className={styles.goal}>
-        {live.kind === 'terminal' ? live.command : <ProseBlock markdown={live.goal} blockId={null} compact {...textContext} />}
-      </div>
+      {worker !== null && <div className={styles.goal}>
+        {worker.kind === 'terminal' ? worker.command : <ProseBlock markdown={worker.goal} blockId={null} compact {...textContext} />}
+      </div>}
 
       <dl className={styles.fields}>
-        {live.acceptance != null && live.acceptance !== '' && (
+        {worker?.acceptance != null && worker.acceptance !== '' && (
           <>
             <dt className={styles.label}>Done when</dt>
-            <dd className={styles.value}><ProseBlock markdown={live.acceptance} blockId={null} compact {...textContext} /></dd>
+            <dd className={styles.value}><ProseBlock markdown={worker.acceptance} blockId={null} compact {...textContext} /></dd>
           </>
         )}
-        {live.gate != null && live.gate.steps.length > 0 && (
+        {worker?.gate != null && worker.gate.steps.length > 0 && (
           <>
             <dt className={styles.label}>Checks</dt>
             <dd className={styles.value}>
               <ul>
-                {live.gate.steps.map((step, index) => (
+                {worker.gate.steps.map((step, index) => (
                   <li key={`${step.name}-${index}`} className={styles.step}>
                     <span className={styles.stepCmd}>{step.cmd}</span>
                   </li>

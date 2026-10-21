@@ -265,6 +265,7 @@ fn declaration_from_normalized(task: &NormalizedTask) -> Result<TaskDeclaration,
             TaskKind::Codex => "codex",
             TaskKind::Claude => "claude",
             TaskKind::Terminal => "terminal",
+            TaskKind::Compact => "compact",
         }
         .into(),
         goal: task.goal.clone(),
@@ -697,12 +698,11 @@ fn task_list_entry(t: &Task) -> Value {
         "created_at": crate::time_format::at(t.created_at_ms),
         "finished_at": crate::time_format::at_opt(t.finished_at_ms),
     });
-    let instruction_field = if t.kind == TaskKind::Terminal {
-        "command"
-    } else {
-        "goal"
-    };
-    entry[instruction_field] = json!(t.goal);
+    match t.kind {
+        TaskKind::Terminal => entry["command"] = json!(t.goal),
+        TaskKind::Codex | TaskKind::Claude => entry["goal"] = json!(t.goal),
+        TaskKind::Compact => {}
+    }
     entry
 }
 

@@ -80,14 +80,36 @@ pub(super) fn validate_task(map: &Map<String, Value>, errors: &mut Vec<String>) 
         errors.push("tombstoned_by: must be absent from a non-tombstone task".into());
     }
     let task_kind = match map.get("kind").and_then(Value::as_str) {
-        Some(kind @ ("codex" | "claude" | "terminal")) => Some(kind),
+        Some(kind @ ("codex" | "claude" | "terminal" | "compact")) => Some(kind),
         _ => {
             errors.push(
-                "kind: required; must be one of \"codex\" | \"claude\" | \"terminal\"".into(),
+                "kind: required; must be one of \"codex\" | \"claude\" | \"terminal\" | \"compact\"".into(),
             );
             None
         }
     };
+    if task_kind == Some("compact") {
+        reject_unknown(
+            map,
+            &["key", "kind", "ready", "released_by_user", "declared_by"],
+            errors,
+        );
+        required_enum(
+            map,
+            "declared_by",
+            &[crate::report_blocks::tasks::PLANNER_DECLARATION_AUTHOR],
+            errors,
+        );
+        if !matches!(map.get("ready"), Some(Value::Bool(_))) {
+            errors.push("ready: required boolean".into());
+        }
+        if let Some(value) = map.get("released_by_user")
+            && !value.is_boolean()
+        {
+            errors.push("released_by_user: must be a boolean".into());
+        }
+        return;
+    }
     match task_kind {
         Some("terminal") => {
             required_non_empty_string(map, "command", errors);

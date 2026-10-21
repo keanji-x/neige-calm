@@ -6,12 +6,12 @@ cove	crates	143
 cove	fe	0
 cove	docs	0
 cove	e2e	0
-wave	crates	706
+wave	crates	708
 wave	fe	16
 wave	docs	12
 wave	e2e	0
-spec	crates	511
-spec	fe	63
+spec	crates	523
+spec	fe	66
 spec	docs	0
 spec	e2e	1
 runtime_id	crates	1134

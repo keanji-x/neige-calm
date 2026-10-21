@@ -171,7 +171,17 @@ const legacyTerminalTaskBlockPayloadSchema = z.strictObject({
   ...liveTaskSharedShape(),
 }).transform(({ goal, ...payload }) => ({ ...payload, command: goal }));
 
+const compactTaskBlockPayloadSchema = z.strictObject({
+  key: z.string(),
+  kind: z.literal('compact'),
+  ready: z.boolean(),
+  declared_by: z.literal('spec'),
+  released_by_user: z.boolean().nullish(),
+  tombstone: z.null().nullish(),
+});
+
 const liveTaskBlockPayloadSchema = z.union([
+  compactTaskBlockPayloadSchema,
   agentTaskBlockPayloadSchema,
   terminalTaskBlockPayloadSchema,
   legacyTerminalTaskBlockPayloadSchema,
@@ -486,8 +496,8 @@ export function trackTaskVerdictsOperation(trackId: string): ApiOperation<TaskVe
   };
 }
 
-/** The three worker kinds a live task declaration can name; a verdict does not carry one. */
-export type TaskWorkerKind = 'codex' | 'claude' | 'terminal';
+/** The execution kinds a live task declaration can name; a verdict does not carry one. */
+export type TaskWorkerKind = 'codex' | 'claude' | 'terminal' | 'compact';
 
 /**
  * One row of the panel's task inventory. The declaration word, status and kind travel separately
