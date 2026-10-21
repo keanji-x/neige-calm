@@ -48,9 +48,19 @@ export function useEdgePresence(input: EdgePresenceInput): void {
     if (binding.current !== current) return;
     current.sample = { value: target, velocity: 0 };
     const element = current.snapshot.element;
-    if (input.part.element.current !== element || !element.isConnected
-      || input.frame.ref.current === null || !input.frame.ref.current.isConnected || input.part.readFrame() === null) {
-      current.target = null; return;
+    try {
+      const positioner = input.frame.ref.current;
+      if (input.part.element.current !== element || !element.isConnected
+        || positioner === null || !positioner.isConnected) { suspend(); return; }
+      const frame = input.part.readFrame();
+      if (frame === null) { suspend(); return; }
+      validateFrame(frame, element.ownerDocument);
+      validateFrame(frame, positioner.ownerDocument);
+      // An adopted node cannot grant an old document's completion before commit.
+      if (frame.document !== current.snapshot.frame.document) { suspend(); return; }
+    } catch (error) {
+      cancel(); binding.current = null;
+      throw error;
     }
     if (target !== 0) exit();
   });
@@ -62,9 +72,11 @@ export function useEdgePresence(input: EdgePresenceInput): void {
     const element = part.element.current;
     const positioner = input.frame.ref.current;
     if (element === null || !element.isConnected || positioner === null || !positioner.isConnected) { suspend(); return; }
+    try {
     const frame = part.readFrame();
     if (frame === null) { suspend(); return; }
     validateFrame(frame, element.ownerDocument);
+    validateFrame(frame, positioner.ownerDocument);
     const view = element.ownerDocument.defaultView!;
     const vertical = edge === 'bottom';
     const end = (edge === 'inline-end') !== (view.getComputedStyle(element).direction === 'rtl');
@@ -92,27 +104,35 @@ export function useEdgePresence(input: EdgePresenceInput): void {
       transform: vertical ? `translateY(${offset / scale}px)` : `translateX(${offset / scale}px)`,
     }));
     current.playback.replace(playback, () => { complete(current, target); });
+    } catch (error) {
+      cancel(); binding.current = null;
+      throw error;
+    }
   });
   useLayoutEffect(() => { update(); });
   const observing = useRef<{
     element: HTMLElement | null; positioner: HTMLElement | null;
+    document: Document; view: Window; frameDocument: Document | null; frameView: Window | null;
     paintRef: SurfacePart['element']; frameRef: SurfaceSource['ref']; dispose: () => void;
   } | null>(null);
   useLayoutEffect(() => {
     const element = input.present ? input.part.element.current : null;
     const positioner = input.present ? input.frame.ref.current : null;
     const paintRef = input.part.element; const frameRef = input.frame.ref;
-    if (observing.current?.element === element && observing.current.positioner === positioner
-      && observing.current.paintRef === paintRef && observing.current.frameRef === frameRef) return;
-    observing.current?.dispose(); observing.current = null;
     const host = element ?? positioner;
-    if (host === null) return;
-    const view = host.ownerDocument.defaultView!;
+    const document = host?.ownerDocument; const view = document?.defaultView;
+    const frameDocument = positioner?.ownerDocument ?? null; const frameView = frameDocument?.defaultView ?? null;
+    if (observing.current?.element === element && observing.current.positioner === positioner
+      && observing.current.paintRef === paintRef && observing.current.frameRef === frameRef
+      && observing.current.document === document && observing.current.view === view
+      && observing.current.frameDocument === frameDocument && observing.current.frameView === frameView) return;
+    observing.current?.dispose(); observing.current = null;
+    if (document === undefined || view == null) return;
     let queued: number | null = null;
-    const record = { element, positioner, paintRef, frameRef, dispose: () => {
+    const record = { element, positioner, document, view, frameDocument, frameView, paintRef, frameRef, dispose: () => {
       if (queued !== null) view.cancelAnimationFrame(queued);
       observer.disconnect(); view.removeEventListener('resize', schedule);
-      host.ownerDocument.removeEventListener('scroll', schedule, true);
+      document.removeEventListener('scroll', schedule, true);
       view.visualViewport?.removeEventListener('resize', schedule);
       view.visualViewport?.removeEventListener('scroll', schedule);
       preference.removeEventListener('change', reduce);
@@ -127,7 +147,7 @@ export function useEdgePresence(input: EdgePresenceInput): void {
     if (positioner !== null && positioner !== element) observer.observe(positioner);
     const preference = view.matchMedia('(prefers-reduced-motion: reduce)');
     view.addEventListener('resize', schedule);
-    host.ownerDocument.addEventListener('scroll', schedule, true);
+    document.addEventListener('scroll', schedule, true);
     view.visualViewport?.addEventListener('resize', schedule);
     view.visualViewport?.addEventListener('scroll', schedule);
     preference.addEventListener('change', reduce);

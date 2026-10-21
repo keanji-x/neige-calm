@@ -230,3 +230,35 @@ it('refreshes frame and paint observations on ref replacement and releases them 
   closing.finish(); await Promise.resolve();
   expect(props.onExited).not.toHaveBeenCalled();
 });
+
+it('adopts fixed frame and paint identities into a new native document and observes its layout', async () => {
+  const f = fixture(); f.node.style.width = '120px'; const view = render(<Probe {...f.props} />);
+  const old = latest(); await old.animations[0].ready;
+  old.animations[0].pause(); old.animations[0].currentTime = 60;
+  for (let i = 0; i < 4; i++) await new Promise(requestAnimationFrame);
+  const before = old.sample();
+  const iframe = document.createElement('iframe'); document.body.append(iframe); frames.push(iframe);
+  const documentB = iframe.contentDocument!; const windowB = iframe.contentWindow!;
+  const cancelFrame = vi.spyOn(window, 'cancelAnimationFrame');
+  window.dispatchEvent(new Event('resize'));
+  documentB.body.append(documentB.adoptNode(f.frame));
+  view.rerender(<Probe {...f.props} />);
+  expect(f.props.part.element.current).toBe(f.node); expect(f.props.frame.ref.current).toBe(f.frame);
+  expect(f.node.ownerDocument).toBe(documentB); expect(readSurfaceFrame(f.frame)!.document.defaultView).toBe(windowB);
+  expect(cancelFrame).toHaveBeenCalled(); expect(old.animations[0].playState).toBe('idle');
+  const adopted = latest(); const native = adopted.animations[0];
+  native.pause(); native.currentTime = 0;
+  expect(native.timeline).toBe(documentB.timeline);
+  expect(adopted.sample().value).toBeCloseTo(before.value, 6);
+  expect(f.node.getBoundingClientRect().left - f.frame.getBoundingClientRect().left).toBeCloseTo(before.value, 4);
+  for (let i = 0; i < 4; i++) await new Promise(requestAnimationFrame);
+  f.frame.style.width = '400px';
+  await expect.poll(() => f.node.getAnimations()[0] !== native).toBe(true);
+  expect(native.playState).toBe('idle');
+  old.animations[0].finish(); await Promise.resolve(); expect(f.props.onExited).not.toHaveBeenCalled();
+  // Native finish() reactivates a cancelled effect; release this test-owned revival.
+  expect(f.node.getAnimations()).toContain(old.animations[0]); old.animations[0].cancel();
+  await commands.emulateReducedMotion(true);
+  await expect.poll(() => f.node.getAnimations().length).toBe(0);
+  view.unmount();
+});

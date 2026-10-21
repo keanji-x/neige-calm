@@ -27,8 +27,12 @@ native-child transition events never own the spring lifecycle.
 positioner; `part.element` is the exclusive paint node and the layout owner supplies
 `part.readFrame`. Present-scoped ResizeObserver observes both actual nodes (once
 when equal), refreshes on node or ref replacement, and releases old observations
-and queued work. A null frame suspends paint until a later layout commit restores
-it. Same-node declarations do not restart playback; completion reads the latest
+and queued work. Observation identity includes each owner's document/window, so
+same-node adoption rebinds subscriptions and cleanup uses the captured original
+document/window. Reader or frame-validation errors revoke playback and completion
+authority before propagating; completion validates the latest frame and both
+owners' documents even before observer delivery. A null frame suspends paint
+until a later layout commit restores it. Same-node declarations do not restart playback; completion reads the latest
 refs and reader. Independent frame resize rebases viewport contribution and signed
 velocity without requiring a paint resize, React render or window resize.
 
