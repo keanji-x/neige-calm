@@ -127,7 +127,7 @@ D1–D3 的前提是三条更窄的事实：(a) **准入时排除**：每个新�
 | C3.2a | 已关闭 worktree 清理器消费 forge-owned 的占用检查，forge 声明 `preparation_track`：修复 main 上已有、与 Engine 无关的缺口（设计见 C3 设计的“清理栅栏”） | 生产消费者：10 分钟 clean 的 fence（`server/workspace_service/ports.rs:109-135`）与每个 `forge-action` 的 Pending 准备（`driver.rs:658-670`）。范围：fence 在既有锁下调用 `track_has_active_forge_action`（`server/operation/workspace_lease/mod.rs:73-110`），不在 `checkout_occupancy` 或 runtime 复制其 SQL；`ForgeActionAdapter::preparation_track` 返回 payload 的 `track_id`，复用 C1 的通用 Busy 重试，通用代码无 forge 特例。新测试 track_suite `track_delete_forge_fence::c3_closed_worktree_clean_refuses_active_forge_action`、`track_worktree::c1_fence::c3_forge_action_after_clean_check_waits_for_clean`（`c1-clean-fenced` 暂停后提交并驱动 forge action，clean 结束前无准入、无释放，之后照常完成）；replay track_suite `track_delete_forge_fence::` 与 `track_worktree::c1_fence::`、forge_action_adapter 全部。规模（设计值）：fence 与端口 +30、`preparation_track` +10、测试 +100，合计约 +140/−5 ≈ 145，预计约 250–380 | C1（已合入） |
 | C3.2b | 原生 forge action 的凭据改走释放 stdin 载荷，判决与 event 构造改为纯函数；Engine 之前、C3.2c 原样复用的两项（设计见 C3 设计的“构造与环境”） | 生产消费者：今天的原生 action（`spawn_side_effect`，`server/operation/forge_action_adapter/mod.rs:1271-1494`）。范围：① `render_forge_wrapper`（`:182-230`）首行 `exec >/dev/null 2>&1`，按固定键序 `IFS= read -r` 读取凭据载荷与终止标记，不符或 EOF 即 `exit 75`；kernel 侧载荷渲染与校验（换行、NUL、超长在写第一个字节之前拒绝，走今天的释放失败路径）；原生 observer 以载荷取代 `go\n` 写入 child stdin（`:1353-1362`），action 的 spawn 环境不再含 `FORGE_CREDENTIAL_ENV_KEYS`；probe 仍经 `apply_forge_subprocess_env`（`:336-351`）继承凭据，到 C3.2c 才随迁移改走载荷。② 把 `complete_forge_op_with_result`/`_from_live_result`/`_succeeded`（`:829-989`）中的判决、artifact 与 event 构造抽成返回 `(ParkedOutcome, Option<OwnerEvent>)` 的函数，原生路径仍以 `complete_parked_tx` 提交，判决不变。新测试 target forge_action_adapter `c3_credential_payload_round_trips_shell_values`（未设、空、空白、反斜杠、shell 元字符）、`c3_partial_credential_payload_never_runs_action`、`c3_refused_release_writes_no_byte`（换行、NUL、超长值）；`forge_action_recovery_probe_env_passes_auth_and_strips_forbidden`（`tests/forge_action_adapter.rs:2193`）中 action 的断言改为载荷送达、probe 的断言不变；replay forge_action_adapter 全部、lib `operation::forge_action_adapter::tests`、forge_suite、mcp_plugin_forge_action 全部。规模（设计值）：wrapper +25、载荷渲染与校验 +45、observer +15/−8、判决函数 +70/−60、新测试 +120、既有用例改写 +30/−30，合计 +305/−98 ≈ 400，预计约 700–1050 | 无 |
 | C3.2c | forge action 与它的两种 probe（verdict 与 output，今天的 `run_probe`，`mod.rs:999-1023`）一起改为 Engine 消费者：唯一构造点 `server/operation/forge_execution.rs`、必需记录 `forge_execution` v1，probe 是同一记录拥有的 execution，durable 排斥（设计见下） | 生产消费者：MCP plugin forge 工具经 `server/mcp_server/transport.rs:920` 提交的每个 `forge-action` op。范围：action 与 probe 共用的 Pipe intent 工厂（凭据只走 C3.2b 的 stdin 载荷）、键加入 `OWNER_STATE_KEYS`、consumer `forge` 的 no-op projection（`server/execution_boot.rs:18-28`）、`owns_parked_resource()` 返回该键、owned park、park 后释放、boot 矩阵（含 probe 行）、probe 的 create-if-absent 准入与释放、计时与 Stop、经 `owned_parked::reconcile` 完成（decision event 经 C3.0 的 `Complete`，与 action 及全部 probe 的 Retire 同事务）、`ExecutionUnavailable` 拒绝、pre-C3 原生 op 不推进且 forge-owned 占用检查保留其 Stuck 行。删除：`kill_artifacts_group`（`:299-303`）与重驱 kill-prior（`:1278-1280`）、原生 `Command`/`setsid`/`SpawnArtifacts`（`:1295-1333`）、observer 的 stdin 写入、释放失败直接判 infra 与 `child.wait`（`:1342-1488`）、原生 probe 与 dead 恢复漏斗 `run_probe`/`complete_from_probe`/`resolve_post_release_via_probe`/`resolve_dead_outcome`（`:999-1201`，`verdict_from_exit_code` `:991-997` 保留为 `.code` 映射）、原生 `recover_parked` 的 PID 存活轮询（`:1496-1589`）、补偿 `kill_forge_action_group` 的 kill（`:1591-1638`，改为拒绝）、直接写 `complete_parked_tx` 的 `complete_forge_op_failed` 与 C3.2b 判决函数的原生提交外壳（`:800-827`、`:933-989`）；`apply_forge_subprocess_env` 改为构造 intent 环境向量（同一白名单，无凭据键）。新测试、replay 与 mutation 见 C3 设计。规模（设计值）：构造点与记录（含 probe 子记录、准入、释放、计时）+315、adapter +260/−590、注册、键与原生 Stuck 检查 +20/−3、24+1 个新测试 +750、原生 PID/EOF/probe 用例改写 +280/−300，合计 +1625/−893 ≈ 2520，预计约 4300–6500。远超 800：一个生产消费者与其不变量测试必须同片切换（见 C3 设计的“切片与规模”），可前置的部分已移入 C3.0、C3.2a、C3.2b，其中约 −590 是删除后无调用者、clippy 不允许留下的原生代码 | C3.0、C3.2a、C3.2b |
-| C4.0d | **C4 的第一片，独立可部署**：全局未完成 execution 的周期恢复。Engine 的组装 owner（`server/execution_boot.rs`）在 boot `recover` 之后起唯一的 30s `Engine::recover` 节拍，同片加 pending 部分索引；生产消费者是既有 gate、forge 与 typed 终端，它同时修复它们今天的缺口（`StoreError` 或提交后 drive 丢失后要等重启） | StoreError 与丢失 drive 的回归（gate、forge、typed 终端），见 C4 设计“全局周期恢复” | 无 |
+| C4.0d | **已由 #2999（`36b22516c`）交付；C4 的第一片，独立可部署**：全局未完成 execution 的周期恢复。Engine 的组装 owner（`server/execution_boot.rs`）在 boot `recover` 之后起唯一的 30s `Engine::recover` 节拍，同片加 pending 部分索引；生产消费者是既有 gate、forge 与 typed 终端，它同时修复它们今天的缺口（`StoreError` 或提交后 drive 丢失后要等重启） | StoreError 与丢失 drive 的回归（gate、forge、typed 终端），见 C4 设计“全局周期恢复” | 无 |
 | C4.0a | 行为不变：forge 的 stdin 载荷编码与 wrapper 读取前缀抽成按键表参数化的共享模块（设计见下“C4 设计决定”） | forge 全部 replay 不变 | 无 |
 | C4.0b | 行为不变：Claude/ACP Planner 测试世界接真实 executor support，重启测试的 supervisor 活过 kernel | 断言不变 | 无 |
 | C4.0c | `worker_sessions.provider_execution_json` 迁移与 calm-truth 记录 SQL，无消费者 | 迁移与 CAS 测试 | 无 |
@@ -622,8 +622,10 @@ C4 各片不依赖 W，也不为 worker 预置只有 worker 需要的东西；�
   重启后接回进行中的协议流（kernel 重启时今天就杀掉并记 interrupted，boot 矩阵保持这一合同）。consumer `claude-planner` 与 `acp-planner`
   各自显式注册 no-op projection（`server/execution_boot.rs:18-28`）；owner 为 `OperationRef("worker-session:<id>")`（不透明字符串，SQL 不读
   它，`server/execution_store.rs`），track 取 `PlannerRow.track_id`（必填，`harness/wiring.rs:14-20`），root 为 `canonicalize(agent_cwd)`；
-  alias 统一为 `planner:<worker_session_id>`：`workspace_executions_current_alias` 唯一索引（`truth/migrations/0170_workspace_executions.sql:14-15`）
-  保证每个 worker session 至多一个未 Retire 的 provider execution。
+  alias 为每个 execution 唯一的 `planner:<worker_session_id>:<execution_id>`，使用本次准入的 execution_id；同一 execution 重放仍用同一 alias。
+  executor 的 alias slot 一经占用不释放，Retire 后 tombstone 仍保留它，重启也重建它（workspace-execution.md §7 的 alias slot）；
+  `SessionExecutor` 保持 `handoff: None`，不加交接、不改 Engine 合同。`workspace_executions_current_alias` 唯一索引只约束同 alias 的行，
+  不负责同 session 排斥；该排斥由下述与 `Engine::admit` 同事务的 `provider_execution_json` NULL→记录 CAS 和 `admission_gate` 共同保证。
 - **owner 记录（durable release/decision，C4.0c 迁移）。** 没有每 turn 的 operation，记录放在 owner 行上：新迁移给 `worker_sessions` 加可空列
   `provider_execution_json`（编号合入时取下一个空号），删行即删记录，孤儿由 sweep 处理。`version` 为 JSON 整数 1：`{execution_id, purpose:
   Turn{turn_id} | Compaction{turn_id} | RewindCheck, release: NotRequired | Held | Releasing{authorized_at_ms} | Released{authorized_at_ms},
@@ -632,8 +634,10 @@ C4 各片不依赖 W，也不为 worker 预置只有 worker 需要的东西；�
   SQL 全在 calm-truth `truth/db/sqlite/provider_execution.rs`，整记录 CAS（同 C3.0 的按键比较整个对象）。只有四种写入：
   ① 准入：记录为 NULL 时写 `{新 id, Held|NotRequired, Observing}`，与 `Engine::admit` 同一写事务（token mint 仍按今天在其之前的事务）；
   ② release 的 Held→Releasing→Released；③ Observing→Stopping 与 `Engine::request(Stop)` 同事务；④ 完成：记录指向的 execution **已结算**、
-  且 **owner 完成已确认**（下述入口返回 Ok）时清空记录并 `request(Retire)` 同事务，提交后 drive。**Retire 只在结算之后请求**：Retire 一经请求，
-  唯一索引即放行同 alias 的下一行，而未结算的旧进程可能仍在同一 Claude session 上写 transcript。**记录只在 owner 完成之后清空**：它是丢失驱动者
+  且 **owner 完成已确认**（下述入口返回 Ok）时清空记录并 `request(Retire)` 同事务，提交后 drive。**Retire 只在结算之后请求**：
+  保留先确认旧进程已停止写 transcript、再完成并清空记录的顺序；未结算就清空会允许新进程与旧进程操作同一 Claude session。
+  Retire 负责输出与秘密回收，不释放 executor alias slot，也不是下一次准入的前提；④ 提交之后，下一次准入无需等待 executor 实际 Retire。
+  **记录只在 owner 完成之后清空**：它是丢失驱动者
   之后唯一的恢复依据（purpose 里的 turn_id 与 execution_id），先清空就无从完成 owner。下一次准入要求记录为 NULL，见“同 session 的唯一准入规则”。
   不选 `operations.tx_output_json`：turn 不是 operation；不选新表：每个 session 只有一个当前记录，历史已在 `workspace_executions`。
   `workspace_executions` 的 pending 部分索引归 C4.0d（见“全局周期恢复”），C4.0c 的迁移只加这一列。
@@ -662,7 +666,7 @@ C4 各片不依赖 W，也不为 worker 预置只有 worker 需要的东西；�
     （`acp_planner/session/execution_end.rs:9-40`）同样按 execution_id 清除。
   确认 = `complete` 返回 Ok（durable 写入已提交、进程内围栏已释放；session 不在内存时只做 durable 部分，下次安装从 durable 状态重建）；
   返回 Err 或超时（每次调用 10s 上限）→ 记录保留，下一轮重试。`complete` 与 ④ 之间崩溃 → 下一轮重跑 `complete`（幂等）再 ④。
-- **全局周期恢复（C4.0d，C4 的第一片，修第二轮 adversarial R2-B1 / boundary B3）。** 今天 `Engine::recover` 只在 boot 调用一次（`server/execution_boot.rs:33`，
+- **全局周期恢复（C4.0d，已由 #2999（`36b22516c`）交付，C4 的第一片，修第二轮 adversarial R2-B1 / boundary B3）。** 以下为交付前的缺口与该片的修复设计：此前 `Engine::recover` 只在 boot 调用一次（`server/execution_boot.rs:33`，
   源码中没有别的生产调用点）；Engine 周期遇 `StoreError` 时记错并移除 slot（`workspace-runtime/src/execution/engine.rs:109-133`），之后只有新的
   `drive` 才会重建它，executor 的 generation 变化唤醒不了已移除的 slot；SQL 中 Desired 改变也不唤醒已 park 的 Wait（`engine.rs:136-143`）。
   **既有消费者有同一缺口**（源码核实）：gate 的 parked reconcile 在未结算时只经 `drain_exited` drive，而它只在 leader 为 `Exited` 时请求 Stop
@@ -691,13 +695,13 @@ C4 各片不依赖 W，也不为 worker 预置只有 worker 需要的东西；�
   （与 terminal sweeper 同节拍，`server/state.rs:1646` 附近起任务）。Engine 进度——提交后 drive 丢失（future 在 COMMIT 确认前被取消）、瞬时
   `StoreError`、Stopping 中与 ④ 已提交的 C4 行——由 C4.0d 的全局节拍保证，本 sweep 不再调用 `recover`。每轮按序：
   (a) C4 consumer 的未 Retire 行，若 owner 记录缺失或指向别的 id：未结算 → `request(Stop)`，已结算 → `request(Retire)`（card/track/worker
-  session 删除留下的孤儿；在此之前同 alias 的新准入被唯一索引拒绝，失败关闭）；(b) 记录指向它、本进程无驱动者、仍 Observing → ③
+  session 删除留下的孤儿；被删除的 session 已不能再启动，不依赖 alias 索引排斥）；(b) 记录指向它、本进程无驱动者、仍 Observing → ③
   Stopping{DriverLost}；(c) 记录指向它、已结算、无驱动者 → owner 的 `complete(…, None)`，Ok 后 ④。记录为 Stopping 且未结算时无需额外动作：
   ③ 已在同一事务写了 `Desired::Stop`，由 C4.0d 的全局节拍保证推进。每步一个事务、提交后 drive；(a)–(c) 每行一个事务，`complete` 有 10s 上限，一行卡住不拖住整轮。
 - **同 session 的唯一准入规则（自 C4.1 起，修第一轮 adversarial B3）。** 同一 worker session 的每个启动——C4 的 Engine 准入 ① 与仍原生的
   启动（C4.1 时 Claude 的 turn、canonical 与 compaction 都经 `start_spawn`，`claude_planner/session.rs:295`；rewind 经 `prepare_edit`，
   `session/invocation.rs:63-80`）——都在既有 `issue` 锁内（`session.rs:309`）先调用同一个 `provider_execution::admission_gate(worker_session_id)`：
-  记录为 NULL → 继续；非空、已结算、本进程无驱动者 → 内联做 owner `complete` 与 ④ 后继续；其余 → `Conflict`（失败关闭、可重试，对应今天
+  记录为 NULL → 继续（Engine 准入仍须在 ① 的同一事务以 NULL→记录 CAS 排斥竞争者）；非空、已结算、本进程无驱动者 → 内联做 owner `complete` 与 ④ 后继续；其余 → `Conflict`（失败关闭、可重试，对应今天
   “下一次 spawn 的 stop 失败即关闭”，`driver.rs:690`）。读语句在 calm-truth，原生路径的检查与 Engine 路径共用这一函数。由此 C4.1 单独部署即安全：
   被取消的 rewind 请求在 `issue` 锁释放后仍留着非空记录，直到结算与 ④，期间同 session 的原生 turn 或 compaction 被拒，不会与它并发操作同一
   Claude session；反方向由既有 `active.is_some()` 检查（`session.rs:322`，同一锁内）排斥 rewind。与删除和 boot 的交互：删 worker session 行即删记录，
@@ -819,7 +823,7 @@ C4 各片不依赖 W，也不为 worker 预置只有 worker 需要的东西；�
 
   | # | 结果 | 前置 | owner 记录 | boot 矩阵 | release / 凭据 | 活性 | 删除的原生路径 | 规模（设计 → 预计） | 等级 |
   |---|---|---|---|---|---|---|---|---|---|
-  | C4.0d | **C4 的第一片，独立可部署**；全局周期恢复：`server/execution_boot.rs` 在 boot `recover` 成功后起唯一的 30s `Engine::recover` 节拍（`RecoverReport.error` 记日志、下一轮重试），`state.rs` 接线；`workspace_executions` 的 pending 部分索引迁移；`fixtures` 下的一次性 store 故障接缝；生产消费者是既有 gate、forge 与 typed 终端 | 无 | 部分索引 | boot `recover` 不变，节拍在其后 | 无 | 节拍保证每个未完成行（含 Stopping、已请求 Retire 而秘密未清）推进 | 无 | 节拍与接线 +50、迁移 +15、故障接缝 +40、新测试 +240、`execution_boot::port_contract` 改写 +20 ≈ 365 → 450–800 | L2：生命周期进度与迁移 |
+  | C4.0d | **已由 #2999（`36b22516c`）交付；C4 的第一片，独立可部署**；全局周期恢复：`server/execution_boot.rs` 在 boot `recover` 成功后起唯一的 30s `Engine::recover` 节拍（`RecoverReport.error` 记日志、下一轮重试），`state.rs` 接线；`workspace_executions` 的 pending 部分索引迁移；`fixtures` 下的一次性 store 故障接缝；生产消费者是既有 gate、forge 与 typed 终端 | 无 | 部分索引 | boot `recover` 不变，节拍在其后 | 无 | 节拍保证每个未完成行（含 Stopping、已请求 Retire 而秘密未清）推进 | 无 | 节拍与接线 +50、迁移 +15、故障接缝 +40、新测试 +240、`execution_boot::port_contract` 改写 +20 ≈ 365 → 450–800 | L2：生命周期进度与迁移 |
   | C4.0a | 行为不变：forge 的载荷编码/校验与 wrapper 读取前缀抽成按键表参数化的 `server/operation/stdin_payload.rs`，含载荷键合同（`PayloadKeys::new`/`validate_key`，见“载荷键合同”），forge 改用它 | 无 | 无 | 无 | 共享载荷（换行、NUL、超长在首字节前拒绝；键须为非保留的可移植标识符） | 无 | 无（移动） | +190/−110，测试 +110 ≈ 410 → 410–650 | L2：凭据边界 |
   | C4.0b | 行为不变：Claude（`tests/cases/claude_planner_session_fixture.rs`、`claude_planner_stack_fixture.rs`）与 ACP（`acp_planner_provider` 的 boot 世界）测试世界接 `tests/support/execution.rs` 的真实 executor，重启类测试的 supervisor 留在测试进程、活过 kernel kill；`ClaudePlannerHost`/`AcpPlannerHost` 的会话参数带上 Engine 句柄（未使用） | 无 | 无 | 无 | 无 | 无 | 无 | +200/−40 ≈ 240 → 300–550 | L1：只动测试支撑与未用参数 |
   | C4.0c | `worker_sessions.provider_execution_json` 迁移与 calm-truth 记录 SQL（①–④ 的 CAS、sweep 与 `admission_gate` 读取），无消费者（同 E2a 先例：store 是迁移的写者） | 无 | 列与编解码 | 无 | 无 | 无 | 无 | 迁移 +20、SQL +150、迁移与 CAS 测试 +150 ≈ 320 → 320–520 | L2：迁移 |
@@ -835,7 +839,7 @@ C4 各片不依赖 W，也不为 worker 预置只有 worker 需要的东西；�
   周期恢复已移到 C4.0d。另一种切法“把 rewind 推迟到 C4.2 与 turn 同片”会让 C4.2 超过 5000 预计行，所以不选。C4.2：turn 与 compaction 共用 `start_spawn`，
   必须同片切换；可先抽出的“唯一完成函数”在 live 原生路径上没有第二个调用者，提前抽出只是无消费者的移动，不拆；Planner 的代理分类函数只有 C4.2 这一个
   首个消费者，随它引入，不再依赖 worker 片。C4.3：ACP 的传输、release 与 receipt 是同一消费者。
-  依赖与顺序：**C4.0d 是 C4 的第一片**，无前置、独立可部署，先于其余各片合入；它的生产消费者是既有 gate、forge 与 typed 终端，合入即修复它们的恢复缺口。
+  依赖与顺序：**C4.0d 是 C4 的第一片，已由 #2999（`36b22516c`）交付**，无前置、独立可部署，先于其余各片合入；它的生产消费者是既有 gate、forge 与 typed 终端，合入即修复它们的恢复缺口。
   C4.0a–C4.0c 无前置，可在 C4.0d 之后并行；之后 C4.1（依赖 C4.0b–C4.0d）→ C4.2（依赖 C4.0a、C4.1）→ C4.3 → C4.4。C4 各片不依赖 W 的任何片，
   W 各片也不放进 C4（§3.3）。规模比第三轮设计变化：C4.1 +25（stderr 结束标记与第五条 stderr 用例）、C4.2 +40（代理分类的表测试随函数从 C4.5a 移入）；
   原 C4.5a–C4.7 移到 W。若 Q2 选另一支，另加一片 executor 同宿主正向排空（见开放问题 Q2），位置在 C4.0a–C4.0d 之后、C4.1 之前。
@@ -883,13 +887,15 @@ C4 各片不依赖 W，也不为 worker 预置只有 worker 需要的东西；�
   C4.1：`c4_rewind_has_one_engine_construction`、`c4_rewind_refuses_unavailable_executor`、`c4_rewind_verdict_waits_for_settlement`
   （leader 退出、setsid 子孙留在 cwd：Drained 之前无判词）、`c4_rewind_timeout_stops_through_engine`、`c4_dropped_rewind_request_is_stopped_by_sweep`、
   `c4_boot_stops_recorded_provider_execution`、`c4_boot_pass_a_precedes_listener_and_failure_is_covered_by_sweep`、`c4_orphan_execution_without_record_is_retired`、
-  `c4_provider_admission_is_exclusive_per_session`（记录 CAS 与 alias 索引）、`c4_retire_only_after_settlement`、
+  `c4_provider_admission_is_exclusive_per_session`（同事务 NULL→记录 CAS 与 `admission_gate`，竞争者用不同 execution alias 仍被拒）、`c4_retire_only_after_settlement`、
   `c4_canceled_rewind_blocks_native_turn_and_compaction_until_settled`（C4.1 边界上的“取消 rewind 后立即发原生 turn/compaction”，第一轮 adversarial B3）、
   `c4_planner_lost_post_commit_drive_recovers_by_tick`（③ 提交后 drive 丢失，无 executor 事件、无重启：C4.0d 节拍使 Stop、结算、④ 与秘密清除最终都发生）、
   `c4_planner_committed_retire_recovers_by_tick`（④ 已提交而 drive 丢失：Retire 与秘密清除完成）、`c4_stderr_sink_is_bounded_and_reports_overflow`、
   `c4_stderr_overflow_survives_stop`、`c4_stderr_stop_at_cap_is_never_untruncated`、`c4_stderr_overflow_survives_descendant_holding_fifo`、`c4_stderr_exact_cap_is_not_overflow`、
-  `c4_stderr_unreadable_never_blocks_complete`、`c4_stderr_sink_cleared_after_driver_loss`。
-  C4.2：`c4_proxy_value_classification_table`（无 userinfo、含 userinfo、无法解析、空值各一例）、`c4_claude_turn_has_one_engine_construction`、`c4_claude_turn_refuses_unavailable_executor`、`c4_credentials_never_enter_intent_or_journal`
+  `c4_stderr_unreadable_never_blocks_complete`、`c4_stderr_sink_cleared_after_driver_loss`、
+  `c4_repeated_rewind_launches_with_distinct_execution_aliases`（同 session 连续两次 rewind，真实启动并完成第二次）。
+  C4.2：`c4_rewind_then_turn_launches_with_distinct_execution_aliases`、`c4_turn_compaction_turn_launches_with_distinct_execution_aliases`
+  （同 session 的 rewind→turn、turn→compaction→turn，每一步都真实启动并完成）；`c4_proxy_value_classification_table`（无 userinfo、含 userinfo、无法解析、空值各一例）、`c4_claude_turn_has_one_engine_construction`、`c4_claude_turn_refuses_unavailable_executor`、`c4_credentials_never_enter_intent_or_journal`
   （含带 userinfo 的代理值）、`c4_release_precedes_first_protocol_byte`、`c4_payload_leaves_protocol_bytes_for_provider`、`c4_boot_never_resends_payload`
   （Held、Releasing 两例）、`c4_boot_stops_running_turn_and_records_interrupted`、`c4_turn_verdict_requires_drained`、`c4_lingering_cli_after_result_is_stopped_and_completes`、
   `c4_refusal_before_ok_settles_before_retire`、`c4_output_gap_fails_the_turn`（完整与不完整末尾输出两例）、`c4_torn_stdin_stops_the_turn`、
@@ -901,10 +907,15 @@ C4 各片不依赖 W，也不为 worker 预置只有 worker 需要的东西；�
   `c4_shutdown_deadline_includes_provider_cleanup`、`c4_track_stop_settles_within_quiesce_deadline`、`c4_interrupt_keeps_protocol_grace`、
   `c4_concurrent_complete_same_turn_is_idempotent`（同一 turn 一路经 `admission_gate` 内联完成、一路经 sweep）、`c4_complete_retry_after_active_cleared_before_record_clear`、
   `c4_unconfirmed_then_settled_with_new_turn_attempt`（Unconfirmed 之后发起新 turn 被拒，结算后补做 `complete` 与 ④ 再放行）。
-  C4.3：ACP 的同名对应物，加 `c4_acp_registration_env_only_in_payload`、`c4_acp_env_partition_preserves_override_order`、`c4_existing_bad_acp_key_refuses_before_mint`、
+  C4.3：`c4_consecutive_acp_turns_launch_with_distinct_execution_aliases`（同 session 连续两次 ACP turn，真实启动并完成第二次）；ACP 的同名对应物，加 `c4_acp_registration_env_only_in_payload`、`c4_acp_env_partition_preserves_override_order`、`c4_existing_bad_acp_key_refuses_before_mint`、
   `c4_acp_setup_failure_settles_before_retire`、`c4_lost_acp_driver_revokes_and_settles_receipt`（driver 丢失后 credential 撤销、receipt 以 unknown 结算、
   approvals 围栏释放、下一 turn 可启动）。C4.4：`c4_claude_readiness_kills_group_on_timeout_and_cancel`（成功 leader 留下子孙、超时、取消三例）、
   `c4_acp_catalog_total_deadline_kills_group`、`c4_pre_c4_boot_sweep_still_runs`。
+  上述 C4.1–C4.3 的四条连续启动回归必须走真实 **Engine→SessionExecutor→executor**（可用假 provider CLI，不以 mock executor 或仅 SQL 准入代替）。
+  每条都覆盖下一次准入发生在前驱已结算、owner 完成且 ④ 提交之后、executor 实际 Retire **之前**与 **之后**两种时序；前者延迟前驱 Retire，
+  后者确认 tombstone 已写入。两种时序各加跨 kernel 重启的例子（supervisor 活过 kernel），并加已结算前驱跨 supervisor 重启的例子，
+  验证热记录或 tombstone 重建的旧 alias slot 都不阻塞新 execution。断言同 session 的各 execution_id 与 alias 不同、确有下一次 Launch 与 provider 运行证据、
+  前驱未结算时仍被 CAS + `admission_gate` 拒绝；不把成功写入 execution 行当作启动成功。
   mutation 只在实现 PR 内各做一次，先按名字写出完整的预测红集，再运行容纳它们的整个 target 或过滤器，并与实际红集逐一比对：准入提交前释放、凭据进 intent、
   boot 不 Stop Observing、`Exited` 即判 `ProviderTerminal`、结算前请求 Retire、前一 execution 未结算仍准入、原生启动绕过 `admission_gate`、
   sweep 在 owner `complete` 之前做 ④、`EXIT_WAIT` 后只在 `Exited` 时 Stop、`validate_key` 放行 `neige_*`、stderr 汇点去掉溢出标记、
@@ -1490,7 +1501,7 @@ effect 本身只限于其根，是否对 worktree 根放宽为只拒绝“位于
    时每个破坏性入口都必须表态。
 2. **C0a–C0d 与 I1 并行**（D1/D6 被接受后）：按请求组的纯删除，缩小 executor 协议面；兼容规则在 C0a 落地。
 3. **C1** 关闭唯一已知的清理竞态，规模小，与其余切片无依赖。
-4. **O1**（接受后）在 C5 之前。**C2a → C2b/C3.0、C3.2a、C3.2b → C3.2c/C4（C4.0d 是第一片，独立可部署；C4.0a–C4.0c 在其后并行；之后 C4.1 → C4.2 → C4.3 → C4.4）→ C5**：先让长寿启动成为 executor 事实，再让破坏性 effect
+4. **O1**（接受后）在 C5 之前。**C2a → C2b/C3.0、C3.2a、C3.2b → C3.2c/C4（C4.0d 是第一片，已由 #2999 交付，独立可部署；C4.0a–C4.0c 在其后并行；之后 C4.1 → C4.2 → C4.3 → C4.4）→ C5**：先让长寿启动成为 executor 事实，再让破坏性 effect
    依赖这些事实；顺序反过来，C5 只能继续依赖 DB 代理事实。forge probe 随 C3.2c 成为 execution，不再是例外。C5 之后仍不是 executor 事实、
    C5 不得删除其占用检查的有：pre-C3 原生 forge 行（含 Stuck，由 forge-owned 检查覆盖）、共享 Codex daemon 下的线程（线程级检查）、
    owner 自建 card 与升级前的 Legacy worker 行，以及在 W 之前仍是 Legacy PTY 的 task worker（Legacy 检查）。若用户对 C4 的 Q2 选另一支，
