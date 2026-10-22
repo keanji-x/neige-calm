@@ -3,6 +3,27 @@ use super::*;
 
 #[tokio::test]
 async fn dispatcher_historical_wake_out_of_order_preserves_prefix() {
+    assert_historical_prefix(LaterObservation::Wake).await;
+}
+
+#[tokio::test]
+async fn dispatcher_historical_wake_before_report_out_of_order_preserves_prefix() {
+    assert_historical_prefix(LaterObservation::Report).await;
+}
+
+#[tokio::test]
+async fn dispatcher_historical_wake_before_forge_out_of_order_preserves_prefix() {
+    assert_historical_prefix(LaterObservation::Forge).await;
+}
+
+#[derive(Clone, Copy)]
+enum LaterObservation {
+    Wake,
+    Report,
+    Forge,
+}
+
+async fn assert_historical_prefix(later: LaterObservation) {
     use crate::db::prelude::*;
     use crate::db::sqlite::{
         SqlxRepo, append_decision_event_in_tx, card_create_with_id_tx, session_start_runtime_tx,
@@ -170,22 +191,48 @@ async fn dispatcher_historical_wake_out_of_order_preserves_prefix() {
 
     let scope = track_scope(&track.id, &area.id);
     let mut envelopes = Vec::new();
-    for key in ["A", "B"] {
-        let event = Event::TrackWakeRequested {
-            track_id: track.id.clone(),
-            source: "objective".into(),
-            key: key.into(),
-            text: format!("objective notice {key}"),
-        };
+    let wake = |key: &str| Event::TrackWakeRequested {
+        track_id: track.id.clone(),
+        source: "objective".into(),
+        key: key.into(),
+        text: format!("objective notice {key}"),
+    };
+    let (b_event, b_actor) = match later {
+        LaterObservation::Wake => (wake("B"), ActorId::Kernel),
+        LaterObservation::Report => (
+            Event::TrackReportEdited {
+                track_id: track.id.clone(),
+                card_id: planner_card.id.clone(),
+                author: EditAuthor::User,
+                author_plugin_id: None,
+                edit_id: "report-B".into(),
+                summary_before: String::new(),
+                summary_after: String::new(),
+                body_before: String::new(),
+                body_after: "user report B".into(),
+                agent_message: None,
+            },
+            ActorId::User,
+        ),
+        LaterObservation::Forge => (
+            Event::ForgePrOpened {
+                track_id: track.id.clone(),
+                pr_number: 3084,
+                head_sha: "head-B".into(),
+            },
+            ActorId::Kernel,
+        ),
+    };
+    for (event, actor) in [(wake("A"), ActorId::Kernel), (b_event, b_actor)] {
         let mut tx = repo.pool().begin().await.unwrap();
-        let id = append_decision_event_in_tx(&mut tx, &ActorId::Kernel, &scope, None, &event)
+        let id = append_decision_event_in_tx(&mut tx, &actor, &scope, None, &event)
             .await
             .unwrap();
         tx.commit().await.unwrap();
         envelopes.push(BroadcastEnvelope {
             id,
             event_version: 1,
-            actor: ActorId::Kernel,
+            actor,
             scope: scope.clone(),
             event,
         });
@@ -211,18 +258,26 @@ async fn dispatcher_historical_wake_out_of_order_preserves_prefix() {
         Err(MutationRefused::NotFound)
     );
     let snapshot = handle.snapshot().await.unwrap();
-    let texts: Vec<_> = snapshot
-        .pending_observations()
-        .iter()
-        .map(|o| o.to_turn_text())
-        .collect();
+    let observations = snapshot.pending_observations();
+    assert_eq!(observations.len(), 2, "wake A must precede B exactly once");
     assert_eq!(
-        texts,
-        vec![
-            "Wake from objective (A): objective notice A",
-            "Wake from objective (B): objective notice B"
-        ]
+        observations[0].to_turn_text(),
+        "Wake from objective (A): objective notice A"
     );
+    match (later, &observations[1]) {
+        (LaterObservation::Wake, HarnessObservation::TrackWake { key, text, .. }) => {
+            assert_eq!(key, "B");
+            assert_eq!(text, "objective notice B");
+        }
+        (LaterObservation::Report, HarnessObservation::ReportEdited { body, author, .. }) => {
+            assert_eq!(body, "user report B");
+            assert_eq!(*author, Some(EditAuthor::User));
+        }
+        (LaterObservation::Forge, HarnessObservation::ForgePrOpened { pr_number, .. }) => {
+            assert_eq!(*pr_number, 3084);
+        }
+        (_, unexpected) => panic!("unexpected second observation: {unexpected:?}"),
+    }
     assert_eq!(snapshot.push_watermark, b_id);
     assert_eq!(inner.push_cursor.get(&planner_card.id), b_id);
     handle.shutdown().await.unwrap();
