@@ -67,11 +67,12 @@ fn released_rows(fx: &ForgeRuntimeFixture) -> Vec<(PluginForgePayload, Value)> {
     let mut previous = edited_program(lowered(args.clone()));
     previous.idem_key = format!("gh_pr_checks:v2:{}", json!(["owner/repo", 42, "upgrade"]));
     previous.argv = release_argv(fx, CURRENT_OUTPUT);
-    let mut previous_all = previous.clone();
+    let mut previous_all = edited_program(lowered(all_args.clone()));
     previous_all.idem_key = format!(
         "gh_pr_checks_all:v2:{}",
         json!(["owner/repo", 42, "upgrade"])
     );
+    previous_all.argv = release_argv(fx, CURRENT_OUTPUT);
     let rerun_args = json!({"repo":"owner/repo","pr":42,"attempt":"upgrade","after_rerun":{"run_id":100,"run_attempt":1}});
     let mut previous_rerun = edited_program(lowered(rerun_args.clone()));
     previous_rerun.idem_key = format!(
