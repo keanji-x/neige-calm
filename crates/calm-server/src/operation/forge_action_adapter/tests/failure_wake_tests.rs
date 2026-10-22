@@ -60,8 +60,14 @@ async fn settled(fx: &ForgeRuntimeFixture, id: &str) -> OperationResult {
 #[tokio::test]
 async fn failed_forge_wake_and_result_commit_atomically() {
     let fx = forge_runtime_fixture().await;
-    sqlx::query("CREATE TRIGGER reject_failure_wake BEFORE INSERT ON events WHEN NEW.kind='track.wake_requested' BEGIN SELECT RAISE(ABORT, 'injected failure wake rejection'); END")
-        .execute(fx.repo.pool()).await.unwrap();
+    sqlx::query(
+        "CREATE TRIGGER reject_failure_wake BEFORE INSERT ON events \
+         WHEN NEW.kind='track.wake_requested' BEGIN \
+         SELECT RAISE(ABORT, 'injected failure wake rejection'); END",
+    )
+    .execute(fx.repo.pool())
+    .await
+    .unwrap();
     let payload = merge_payload(
         &fx,
         shell_probe("exit 7"),

@@ -13,7 +13,7 @@ pub(super) async fn event_tx(
         payload
             .event_spec
             .as_ref()
-            .map(|spec| spec.event_kind.as_str()),
+            .map(|descriptor| descriptor.event_kind.as_str()),
     ) {
         // Same closed set as Forge's success wakes. Receipt-only reads/publish
         // and worker worktree events keep their existing caller-owned reporting.

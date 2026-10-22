@@ -29,10 +29,13 @@ async fn child_result(deleted: bool, incomplete: bool, gated: bool) {
         .await
         .unwrap();
     let task_id = crate::model::new_id();
-    sqlx::query("INSERT INTO tasks(id,track_id,key,kind,goal,context_json,status,declared_by,spawn,child_track_id,gate_json,created_at_ms,updated_at_ms) VALUES(?1,?2,'waiting-child','codex','child result','{}','running','spec','sub-track',?3,?4,?5,?5)")
+    sqlx::query("INSERT INTO tasks(id,track_id,key,kind,goal,context_json,status,declared_by,spawn,\
+         child_track_id,gate_json,created_at_ms,updated_at_ms) \
+         VALUES(?1,?2,'waiting-child','codex','child result','{}','running',?6,'sub-track',?3,?4,?5,?5)")
         .bind(&task_id).bind(&flow.track).bind(child.id.as_str())
         .bind(gated.then(|| json!({"steps":[{"name":"verify","cmd":"true"}]}).to_string()))
-        .bind(crate::model::now_ms()).execute(flow.fixture.repo.pool()).await.unwrap();
+        .bind(crate::model::now_ms()).bind(calm_types::report_blocks::tasks::PLANNER_DECLARATION_AUTHOR)
+        .execute(flow.fixture.repo.pool()).await.unwrap();
     if deleted {
         flow.fixture
             .repo
@@ -40,9 +43,19 @@ async fn child_result(deleted: bool, incomplete: bool, gated: bool) {
             .await
             .unwrap();
     } else if incomplete {
-        sqlx::query("INSERT INTO tasks(id,track_id,key,kind,goal,context_json,status,declared_by,spawn,created_at_ms,updated_at_ms) VALUES(?1,?2,'unfinished','codex','remaining work','{}','pending','spec','in-wave',?3,?3)")
-            .bind(crate::model::new_id()).bind(child.id.as_str()).bind(crate::model::now_ms())
-            .execute(flow.fixture.repo.pool()).await.unwrap();
+        sqlx::query(
+            "INSERT INTO tasks(id,track_id,key,kind,goal,context_json,status,declared_by,spawn,\
+             created_at_ms,updated_at_ms) \
+             VALUES(?1,?2,'unfinished','codex','remaining work','{}','pending',?4,?5,?3,?3)",
+        )
+        .bind(crate::model::new_id())
+        .bind(child.id.as_str())
+        .bind(crate::model::now_ms())
+        .bind(calm_types::report_blocks::tasks::PLANNER_DECLARATION_AUTHOR)
+        .bind(calm_types::task_recovery::TASK_IN_TRACK_ROUTE)
+        .execute(flow.fixture.repo.pool())
+        .await
+        .unwrap();
     }
     flow.state
         .dispatcher

@@ -105,8 +105,14 @@ async fn preownership_notification_write_failure_recovers_on_periodic_reconcile(
         &flow.track,
     )
     .await;
-    sqlx::query("CREATE TRIGGER reject_failure_wake BEFORE INSERT ON events WHEN NEW.kind='track.wake_requested' BEGIN SELECT RAISE(ABORT, 'injected failure wake rejection'); END")
-        .execute(flow.fixture.repo.pool()).await.unwrap();
+    sqlx::query(
+        "CREATE TRIGGER reject_failure_wake BEFORE INSERT ON events \
+         WHEN NEW.kind='track.wake_requested' BEGIN \
+         SELECT RAISE(ABORT, 'injected failure wake rejection'); END",
+    )
+    .execute(flow.fixture.repo.pool())
+    .await
+    .unwrap();
     let id = broken_forge(&flow, "retry-notification").await;
     assert!(
         flow.state
