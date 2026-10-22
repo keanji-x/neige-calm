@@ -637,6 +637,8 @@ impl OperationRuntime {
                 }
                 if let Err(error) = runtime.drive().await {
                     tracing::error!(%error, operation_id = %id, "Busy retry drive failed");
+                    #[cfg(feature = "fixtures")]
+                    crate::test_seams::pause_point("operation-busy-retry-failed", &id).await;
                 }
             });
         tokio::spawn(retry);

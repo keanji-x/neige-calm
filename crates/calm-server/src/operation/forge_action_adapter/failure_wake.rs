@@ -9,18 +9,11 @@ pub(super) async fn event_tx(
     // Preparation can be deferred after the caller receives pending, so tx_output
     // is not required. The accepted payload is the original operation's contract.
     let payload: ForgeActionPayload = serde_json::from_value(op.payload.clone())?;
-    if !matches!(
+    if !wakes_on_failure(
         payload
             .event_spec
             .as_ref()
             .map(|spec| spec.event_kind.as_str()),
-        Some(
-            "forge.scan.completed"
-                | "forge.pr.opened"
-                | "forge.pr.checks"
-                | "forge.issue.closed"
-                | "forge.pr.merged"
-        )
     ) {
         // Same closed set as Forge's success wakes. Receipt-only reads/publish
         // and worker worktree events keep their existing caller-owned reporting.
@@ -52,4 +45,41 @@ pub(super) async fn event_tx(
             ),
         },
     }))
+}
+
+fn wakes_on_failure(kind: Option<&str>) -> bool {
+    matches!(
+        kind,
+        Some(
+            "forge.scan.completed"
+                | "forge.pr.opened"
+                | "forge.pr.checks"
+                | "forge.issue.closed"
+                | "forge.pr.merged"
+        )
+    )
+}
+
+#[test]
+fn failure_wake_covers_every_forge_success_wake_kind() {
+    let data = json!({
+        "track_id":"track", "card_id":"card", "subject":{"pr_number":42},
+        "overlapping_prs":[], "pr_number":42, "head_sha":"head", "merge_sha":"merge",
+        "base_sha":"base", "artifact_path":"/tmp/evidence", "conclusion":"success",
+        "issue_number":42, "issue_url":"https://example.invalid/42", "path":"/tmp/worktree",
+        "commit_sha":"commit", "branch":"topic"
+    });
+    for kind in SUPPORTED_FORGE_EVENT_KINDS {
+        let event = Event::from_kind_and_payload(kind, data.clone()).unwrap();
+        assert_eq!(
+            wakes_on_failure(Some(kind)),
+            crate::dispatcher::event_warrants_planner_push_with_role(
+                &event,
+                &ActorId::KernelDispatcher,
+                |_| None
+            ),
+            "Forge failure and success notification policy drifted for {kind}"
+        );
+    }
+    assert!(!wakes_on_failure(None));
 }
