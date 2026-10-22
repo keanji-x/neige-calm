@@ -126,7 +126,7 @@ impl PlannerBackend {
                         outcome: Err(error.into()),
                     },
                     CanonicalStart::BeforeReceipt(error) => {
-                        not_dispatched(correlation, NonDispatchBasis::LocalPreflight, error.into())
+                        not_dispatched(correlation, NonDispatchBasis::LocalPreflight, error)
                     }
                     CanonicalStart::Receipted { receipt, outcome } => {
                         let correlation =

@@ -20,15 +20,41 @@ pub struct AcpSubmission {
     pub input_json: String,
     pub state: AcpSubmissionState,
     pub outcome_json: Option<String>,
+    #[sqlx(rename = "kept_cleanup_json")]
+    pub kept_cleanup: Option<sqlx::types::Json<super::AcpKeptCleanup>>,
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum AcpRegistrationError {
+    #[error("ACP registration changed; reset the conversation explicitly")]
+    Changed,
+    #[error("ACP cannot adopt a native session it did not create")]
+    UnownedNative,
+    #[error(transparent)]
+    Storage(#[from] crate::error::TruthError),
+}
+impl From<AcpRegistrationError> for crate::error::TruthError {
+    fn from(error: AcpRegistrationError) -> Self {
+        match error {
+            AcpRegistrationError::Storage(error) => error,
+            mismatch @ (AcpRegistrationError::Changed | AcpRegistrationError::UnownedNative) => {
+                Self::Conflict(mismatch.to_string())
+            }
+        }
+    }
+}
+impl From<sqlx::Error> for AcpRegistrationError {
+    fn from(error: sqlx::Error) -> Self {
+        Self::Storage(error.into())
+    }
+}
 /// Claim only a fresh managed session, or the exact registration that already owns it.
 pub async fn acp_registration_claim(
     pool: &crate::db::sqlite::SqliteDb,
     worker: &str,
     digest: &str,
     native_bound: bool,
-) -> Result<()> {
+) -> std::result::Result<(), AcpRegistrationError> {
     let mut tx = super::begin_immediate_tx(pool).await?;
     use crate::decision_gate::{PrincipalDecisionGate, WriteTx};
     let id = crate::worker::WorkerSessionId::from(worker);
@@ -48,7 +74,7 @@ pub async fn acp_registration_claim(
         .recorder_grant(&mut *tx, &session.track_id)
         .await?
     {
-        return Err(CalmError::Conflict("ACP registration owner changed"));
+        return Err(CalmError::Conflict("ACP registration owner changed").into());
     }
     let prior: Option<String> = sqlx::query_scalar(
         "SELECT registration_digest FROM acp_managed_sessions WHERE worker_session_id=?1",
@@ -59,14 +85,10 @@ pub async fn acp_registration_claim(
     match prior {
         Some(prior) if prior == digest => {}
         Some(_) => {
-            return Err(CalmError::Conflict(
-                "ACP registration changed; reset the conversation explicitly",
-            ));
+            return Err(AcpRegistrationError::Changed);
         }
         None if native_bound => {
-            return Err(CalmError::Conflict(
-                "ACP cannot adopt a native session it did not create",
-            ));
+            return Err(AcpRegistrationError::UnownedNative);
         }
         None => {
             sqlx::query("INSERT INTO acp_managed_sessions(worker_session_id,registration_digest) VALUES(?1,?2)").bind(worker).bind(digest).execute(&mut **tx).await?;
@@ -83,7 +105,7 @@ pub async fn acp_submission_get<'e, E>(
 where
     E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
 {
-    Ok(sqlx::query_as(concat!("SELECT ","worker_session_id,client_id,turn_id,thread_id,native_session_id,input_json,state,outcome_j","son FROM acp_submissions WHERE worker_session_id=?1 AND client_id=?2")).bind(worker).bind(client).fetch_optional(executor).await?)
+    Ok(sqlx::query_as(concat!("SELECT ","worker_session_id,client_id,turn_id,thread_id,native_session_id,input_json,state,outcome_j","son,kept_cleanup_json FROM acp_submissions WHERE worker_session_id=?1 AND client_id=?2")).bind(worker).bind(client).fetch_optional(executor).await?)
 }
 pub async fn acp_submission_unresolved(pool: &SqlitePool, worker: &str) -> Result<bool> {
     let mut connection = pool.acquire().await?;
@@ -99,7 +121,36 @@ async fn acp_submission_unresolved_on(
     connection: &mut sqlx::SqliteConnection,
     worker: &str,
 ) -> Result<bool> {
-    Ok(sqlx::query_scalar::<_,i64>("SELECT EXISTS(SELECT 1 FROM acp_submissions WHERE worker_session_id=?1 AND state IN ('sending','unknown'))").bind(worker).fetch_one(connection).await? != 0)
+    let sql = format!(
+        "SELECT EXISTS(SELECT 1 FROM acp_submissions WHERE worker_session_id=?1 AND ({ACP_BLOCKING_RECEIPT_SQL}))"
+    );
+    Ok(sqlx::query_scalar::<_, i64>(&sql)
+        .bind(worker)
+        .fetch_one(connection)
+        .await?
+        != 0)
+}
+/// The journal's authoritative blocking predicate, also used by recovery.
+/// The unique index is its durable SQL counterpart.
+pub const ACP_BLOCKING_RECEIPT_SQL: &str =
+    "state = 'sending' OR (state = 'unknown' AND kept_cleanup_json IS NULL)";
+pub async fn acp_submission_other_blocking_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    worker: &str,
+    client: &str,
+) -> Result<bool> {
+    let sql = format!(
+        concat!(
+            "SELECT EXISTS(SELECT 1 FROM acp_submissions WHERE worker_session_id=?1 AND client_id!=?2 AND ",
+            "({blocking}))",
+        ),
+        blocking = ACP_BLOCKING_RECEIPT_SQL
+    );
+    Ok(sqlx::query_scalar::<_, bool>(&sql)
+        .bind(worker)
+        .bind(client)
+        .fetch_one(&mut **tx)
+        .await?)
 }
 /// The persisted strings of every provider speaking ACP: only their sessions own submissions.
 fn acp_provider_db_strings() -> String {
@@ -152,6 +203,9 @@ async fn prepare_tx(
                 ));
             }
         }
+    }
+    if acp_submission_unresolved_tx(tx, &receipt.worker_session_id).await? {
+        return Err(CalmError::Conflict("ACP receipt remains blocking"));
     }
     let inserted = sqlx::query(concat!("INSERT INTO ","acp_submissions(worker_session_id,client_id,turn_id,thread_id,native_session_id,input_json",",state,created_at_ms) SELECT ?1,?2,?3,?4,?5,?6,'sending',?7 WHERE EXISTS(SELECT 1 FROM ","worker_sessions ws JOIN cards c ON c.session_id=ws.id AND c.id=ws.card_id WHERE ws.id=?1 ","AND ws.provider IN (SELECT value FROM json_each(?8)) AND ws.mode='resumable' AND c.track_id=ws.track_id ","AND ((ws.contract='planner' AND c.role='planner' AND json_extract(c.payload,'$.planner_provider')=ws.provider) ","OR (ws.contract='assistant' AND c.role='assistant' AND c.kind='codex' ","AND json_extract(c.payload,'$.harness_profile')='assistant' ","AND json_extract(c.payload,'$.assistant_provider')=ws.provider)) ","AND ws.thread_id=?4 AND ws.agent_session_id=?5 AND ws.state IN ","('starting','running','idle','turn_pending'))"))
         .bind(&receipt.worker_session_id).bind(&receipt.client_id).bind(&receipt.turn_id).bind(&receipt.thread_id).bind(&receipt.native_session_id).bind(&receipt.input_json).bind(at_ms).bind(acp_provider_db_strings()).execute(&mut **tx).await?;

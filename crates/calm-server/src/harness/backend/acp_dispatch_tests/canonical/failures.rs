@@ -41,6 +41,8 @@ async fn canonical_acp_revoke_stop_and_receipt_failures_never_qualify_end() {
             .await
             .unwrap();
         assert_ne!(state, "completed");
+        fx.keep_unknown(&fx.submission, "keep-failed-cleanup").await;
+        assert!(fx.backend.settle_kept_execution().await.unwrap().is_none());
         assert_eq!(fx.prompts(), 1);
         match failure {
             Failure::Revoke => {

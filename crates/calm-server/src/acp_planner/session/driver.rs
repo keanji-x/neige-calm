@@ -84,6 +84,7 @@ pub(super) async fn drive(
         tracing::warn!(%error, worker = %params.worker_session_id, turn = %receipt.turn_id,
             "ACP agent process stop failed; the turn's outcome is unknown");
     }
+    let cleanup_confirmed = stopped.is_ok() && revoked.is_ok();
     let (mut events, known) = match outcome {
         Ok(events) if stopped.is_ok() && revoked.is_ok() => (events, true),
         _ => (
@@ -162,6 +163,8 @@ pub(super) async fn drive(
     }
     if known && persisted {
         super::execution_end::Settlement::Completed
+    } else if cleanup_confirmed {
+        super::execution_end::Settlement::CleanUnknown
     } else {
         super::execution_end::Settlement::Unconfirmed
     }

@@ -213,7 +213,7 @@ for line in sys.stdin:
                 'socket_present': 'NEIGE_MCP_SOCKET' in os.environ}))
         if (root / 'scenario').read_text().strip() == 'catalog_cancel_initialize':
             hold_catalog()
-        capabilities = {'loadSession': True}
+        capabilities = {'loadSession': (root / 'scenario').read_text().strip() != 'unsupported-load'}
         if (root / 'scenario').read_text().strip() != 'catalog_no_close':
             capabilities['sessionCapabilities'] = {'close': {}}
         version = 'wrong' if wrong else os.environ.get('ACP_FIXTURE_VERSION', '1.18.35')

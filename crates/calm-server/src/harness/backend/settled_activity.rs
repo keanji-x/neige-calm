@@ -38,3 +38,15 @@ impl PlannerBackend {
         }
     }
 }
+
+impl PlannerBackend {
+    /// Observation by the provider owner, independent of END and input dispatch.
+    pub(crate) async fn settle_kept_execution(
+        &self,
+    ) -> Result<Option<crate::db::sqlite::conversation::RuntimeFrameAfterWrite>> {
+        match &self.0 {
+            Arm::Acp(session) => session.settle_kept_execution().await,
+            Arm::Claude(_) | Arm::Codex(_, _) => Ok(None),
+        }
+    }
+}

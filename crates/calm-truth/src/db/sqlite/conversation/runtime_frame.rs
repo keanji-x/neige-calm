@@ -95,6 +95,50 @@ pub async fn persist_runtime_frame_tx(
     })
 }
 
+/// Existing control ownership check shared by END and factual Keep settlement.
+pub(super) async fn interruption_matches_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    current: &super::CurrentInputCarrier,
+    thread_id: &str,
+    turn_id: &str,
+) -> Result<bool> {
+    let card_id = current.card_id();
+    let worker_session_id = current.worker_session_id();
+    if let Some(intent) = current
+        .snapshot()
+        .get("interruption_intent")
+        .filter(|value| !value.is_null())
+    {
+        use calm_types::harness::{
+            HarnessControlIntent, HarnessInterruptionIntent, HarnessTimeoutIntent,
+        };
+        let intent: HarnessInterruptionIntent = serde_json::from_value(intent.clone())?;
+        let track: String = sqlx::query_scalar("SELECT track_id FROM worker_sessions WHERE id=?1")
+            .bind(worker_session_id)
+            .fetch_one(&mut **tx)
+            .await?;
+        let matches = match &intent {
+            HarnessInterruptionIntent::Versioned(HarnessTimeoutIntent::V1(request)) => {
+                request.session_id == worker_session_id
+                    && request.card_id == card_id
+                    && request.track_id == track
+                    && request.thread_id == thread_id
+                    && request.turn_id == turn_id
+            }
+            HarnessInterruptionIntent::Control(HarnessControlIntent::UserStopV1(request)) => {
+                request.session_id == worker_session_id
+                    && request.card_id == card_id
+                    && request.track_id == track
+                    && request.thread_id == thread_id
+                    && request.turn_id == turn_id
+            }
+            HarnessInterruptionIntent::Legacy(intent) => intent.turn_id == turn_id,
+        };
+        return Ok(matches);
+    }
+    Ok(true)
+}
+
 /// The kernel has observed an exact native END outside this transaction. This
 /// dedicated fact mutation closes only its unchanged logical execution; it
 /// never changes delivery/claims or grants a new native/Workspace operation.
@@ -117,39 +161,8 @@ pub async fn complete_input_execution_tx(
     let Some(turn) = original.turn_id() else {
         return Ok(None);
     };
-    if let Some(intent) = current
-        .snapshot()
-        .get("interruption_intent")
-        .filter(|value| !value.is_null())
-    {
-        use calm_types::harness::{
-            HarnessControlIntent, HarnessInterruptionIntent, HarnessTimeoutIntent,
-        };
-        let intent: HarnessInterruptionIntent = serde_json::from_value(intent.clone())?;
-        let track: String = sqlx::query_scalar("SELECT track_id FROM worker_sessions WHERE id=?1")
-            .bind(worker_session_id)
-            .fetch_one(&mut **tx)
-            .await?;
-        let matches = match &intent {
-            HarnessInterruptionIntent::Versioned(HarnessTimeoutIntent::V1(request)) => {
-                request.session_id == worker_session_id
-                    && request.card_id == card_id
-                    && request.track_id == track
-                    && request.thread_id == original.correlation.thread_id
-                    && request.turn_id == turn
-            }
-            HarnessInterruptionIntent::Control(HarnessControlIntent::UserStopV1(request)) => {
-                request.session_id == worker_session_id
-                    && request.card_id == card_id
-                    && request.track_id == track
-                    && request.thread_id == original.correlation.thread_id
-                    && request.turn_id == turn
-            }
-            HarnessInterruptionIntent::Legacy(intent) => intent.turn_id == turn,
-        };
-        if !matches {
-            return Ok(None);
-        }
+    if !interruption_matches_tx(tx, &current, &original.correlation.thread_id, turn).await? {
+        return Ok(None);
     }
     let phase = current.phase()?;
     let has_intent = current

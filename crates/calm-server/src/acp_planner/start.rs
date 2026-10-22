@@ -63,6 +63,49 @@ pub(super) fn receipt_input(items: &[provider::InputItem]) -> serde_json::Value 
     )
 }
 
+impl StartFailure {
+    pub(super) fn into_host(self) -> TurnStartFailure {
+        match self {
+            Self::Host(failure) => failure,
+            Self::Failed(error) => error.into(),
+        }
+    }
+}
+
+/// ACP continuation refusal facts are classified here, before reader mapping.
+pub(super) enum ContinuationRefusal {
+    LoadUnsupported,
+    RegistrationChanged,
+    UnownedNative,
+}
+impl From<ContinuationRefusal> for StartFailure {
+    fn from(reason: ContinuationRefusal) -> Self {
+        let reader = match reason {
+            ContinuationRefusal::LoadUnsupported => {
+                "ACP agent cannot load its persisted conversation"
+            }
+            ContinuationRefusal::RegistrationChanged => {
+                "ACP registration changed; this conversation cannot continue."
+            }
+            ContinuationRefusal::UnownedNative => {
+                "ACP cannot load a native conversation owned by another registration."
+            }
+        };
+        Self::Host(TurnStartFailure::Refused {
+            error: CalmError::Conflict(reader.into()),
+            reader: reader.into(),
+        })
+    }
+}
+pub(super) fn registration_error(error: crate::db::sqlite::AcpRegistrationError) -> StartFailure {
+    use crate::db::sqlite::AcpRegistrationError;
+    match error {
+        AcpRegistrationError::Changed => ContinuationRefusal::RegistrationChanged.into(),
+        AcpRegistrationError::UnownedNative => ContinuationRefusal::UnownedNative.into(),
+        AcpRegistrationError::Storage(error) => StartFailure::from(CalmError::from(error)),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

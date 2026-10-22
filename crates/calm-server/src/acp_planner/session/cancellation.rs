@@ -38,6 +38,7 @@ impl IssueGuard {
         let shared = self.shared.clone();
         let process = self.process.take();
         let receipt = self.receipt.take();
+        let associated = receipt.clone();
         let driver = tokio::spawn(async move {
             let params = &shared.params;
             let revoked = revoke(params).await;
@@ -49,6 +50,7 @@ impl IssueGuard {
                         .await
                 }
             };
+            let confirmed = prepared && revoked.is_ok() && stopped.is_ok();
             if let Some(receipt) = receipt
                 && let Some(pool) = params.repo.sqlite_db()
             {
@@ -77,9 +79,36 @@ impl IssueGuard {
             if let Some(result) = result {
                 let _ = result.send(cleanup);
             }
-            Settlement::Unconfirmed
+            if confirmed {
+                Settlement::CleanUnknown
+            } else {
+                Settlement::Unconfirmed
+            }
         });
-        install(&self.shared, DriverSlot::cleanup(driver));
+        let slot = match associated {
+            Some(receipt) => {
+                match crate::db::sqlite::AcpSubmissionInput::decode(&receipt.input_json) {
+                    Ok(crate::db::sqlite::AcpSubmissionInput::Canonical(association)) => {
+                        DriverSlot::new(
+                            driver,
+                            receipt,
+                            super::execution_end::Association::Canonical(association),
+                        )
+                    }
+                    Ok(crate::db::sqlite::AcpSubmissionInput::Historical(_)) => DriverSlot::new(
+                        driver,
+                        receipt,
+                        super::execution_end::Association::Historical,
+                    ),
+                    Err(error) => {
+                        tracing::error!(%error, "ACP cancelled receipt association invalid; cleanup stays held");
+                        DriverSlot::cleanup(driver)
+                    }
+                }
+            }
+            None => DriverSlot::cleanup(driver),
+        };
+        install(&self.shared, slot);
     }
 }
 impl Drop for IssueGuard {

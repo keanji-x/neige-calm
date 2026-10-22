@@ -1,4 +1,4 @@
-//! Authenticated Keep records a decision without lifting the ACP receipt fence.
+//! Authenticated Keep settles only after qualified receipt-specific cleanup.
 #![cfg(test)]
 use super::*;
 
@@ -102,7 +102,7 @@ async fn canonical_acp_unknown_keep_is_idempotent_and_forced_retry_has_no_succes
             .settled_activity(&fx.owner.card, &fx.owner.thread, &admission)
             .await
             .unwrap(),
-        SettledActivity::Held
+        SettledActivity::Settled
     ));
     assert!(fx.complete().await.is_none());
     assert_eq!(fx.prompts(), 1);

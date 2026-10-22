@@ -11,6 +11,27 @@ pub(super) enum InputContract<'a, 'g> {
     },
 }
 impl InputContract<'_, '_> {
+    pub(super) fn registration_failure(
+        &self,
+        error: crate::db::sqlite::AcpRegistrationError,
+    ) -> super::super::start::StartFailure {
+        match self {
+            Self::Canonical { .. } => super::super::start::registration_error(error),
+            Self::Historical(_) => {
+                CalmError::from(calm_truth::error::TruthError::from(error)).into()
+            }
+        }
+    }
+    pub(super) fn unresolved_failure(&self) -> super::super::start::StartFailure {
+        match self {
+            Self::Canonical { .. } => refused(
+                "Previous ACP outcome is unknown. Execution remains held; nothing will be resent.",
+            ),
+            Self::Historical(_) => refused(
+                "Previous ACP outcome is unknown. Start a fresh session; nothing will be resent.",
+            ),
+        }
+    }
     pub(super) fn association(&self) -> super::execution_end::Association {
         match self {
             Self::Historical(_) => super::execution_end::Association::Historical,
@@ -68,5 +89,32 @@ impl InputContract<'_, '_> {
                 NativePromptAdmission::new(|| Ok(()), move || Box::pin(owner.check_local()))
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn acp_historical_registration_failure_keeps_its_existing_host_contract() {
+        let input = InputContract::Historical(json!([]));
+        let failure = input.registration_failure(crate::db::sqlite::AcpRegistrationError::Changed);
+        let super::super::super::start::StartFailure::Host(TurnStartFailure::Transient(
+            CalmError::Conflict(reason),
+        )) = failure
+        else {
+            panic!("historical contract changed");
+        };
+        assert_eq!(
+            reason,
+            "ACP registration changed; reset the conversation explicitly"
+        );
+        let failure = super::super::super::start::registration_error(
+            crate::db::sqlite::AcpRegistrationError::Changed,
+        );
+        assert!(matches!(
+            failure,
+            super::super::super::start::StartFailure::Host(TurnStartFailure::Refused { .. })
+        ));
     }
 }

@@ -12,34 +12,7 @@ async fn canonical_acp_retained_activation_replay_preserves_local_binding_withou
         .unwrap()
         .unwrap()
         .workspace;
-    std::fs::write(fx._dir.path().join("scenario"), "reply").unwrap();
-    std::fs::create_dir_all(fx._dir.path().join("data")).unwrap();
-    fx.state = fx.state.with_acp_planner_config(
-        crate::acp_planner::config::AcpPlannerConfig {
-            agents: vec![crate::acp_planner::config::AcpAgentConfig {
-                provider: AgentProvider::OpenCode,
-                command: "/usr/bin/python3".into(),
-                args: vec![
-                    "-u".into(),
-                    concat!(
-                        env!("CARGO_MANIFEST_DIR"),
-                        "/tests/fixtures/acp_planner/agent.py"
-                    )
-                    .into(),
-                ],
-                env: [(
-                    "ACP_FIXTURE_ROOT".into(),
-                    fx._dir.path().to_string_lossy().into_owned(),
-                )]
-                .into(),
-                min_agent_version: semver::Version::new(1, 0, 0),
-                default_permission_mode: None,
-            }],
-        },
-        &fx._dir.path().join("data"),
-        fx._dir.path().join("shim"),
-        fx._dir.path().join("mcp.sock"),
-    );
+    configure_acp(&mut fx, "reply");
     let pause = crate::test_seams::PausePoint::default();
     crate::test_seams::install_pause_for_test(
         "retained-local-bound",
@@ -138,6 +111,150 @@ async fn canonical_acp_retained_activation_replay_preserves_local_binding_withou
             .unwrap(),
         1
     );
+    fx.state
+        .harness
+        .shutdown_and_remove(&fx.worker)
+        .await
+        .unwrap();
+}
+
+fn configure_acp(fx: &mut Fixture, scenario: &str) {
+    std::fs::write(fx._dir.path().join("scenario"), scenario).unwrap();
+    std::fs::create_dir_all(fx._dir.path().join("data")).unwrap();
+    fx.state = fx.state.clone().with_acp_planner_config(
+        crate::acp_planner::config::AcpPlannerConfig {
+            agents: vec![crate::acp_planner::config::AcpAgentConfig {
+                provider: AgentProvider::OpenCode,
+                command: "/usr/bin/python3".into(),
+                args: vec![
+                    "-u".into(),
+                    concat!(
+                        env!("CARGO_MANIFEST_DIR"),
+                        "/tests/fixtures/acp_planner/agent.py"
+                    )
+                    .into(),
+                ],
+                env: [(
+                    "ACP_FIXTURE_ROOT".into(),
+                    fx._dir.path().to_string_lossy().into_owned(),
+                )]
+                .into(),
+                min_agent_version: semver::Version::new(1, 0, 0),
+                default_permission_mode: None,
+            }],
+        },
+        &fx._dir.path().join("data"),
+        fx._dir.path().join("shim"),
+        fx._dir.path().join("mcp.sock"),
+    );
+}
+
+#[tokio::test]
+async fn canonical_acp_http_keep_wakes_tick_and_claims_fresh_input_on_same_conversation() {
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+    };
+    use calm_types::conversation::InputDeliveryFact;
+    use tower::ServiceExt;
+    let mut fx = Fixture::with_provider(false, AgentProvider::OpenCode).await;
+    configure_acp(&mut fx, "lost");
+    let (auth, token, input) = source().await;
+    let app = crate::routes::application_router(fx.state.clone(), auth);
+    wake(&fx, input).await.unwrap();
+    let original = tokio::time::timeout(std::time::Duration::from_secs(20), async {
+        loop {
+            let row = fx.repo.session_get(&calm_types::worker::WorkerSessionId(fx.worker.clone())).await.unwrap().unwrap();
+            let frame: CanonicalHarnessSnapshot = serde_json::from_value(row.handle_state_json.unwrap()).unwrap();
+            if let Some(attempt) = frame.canonical_inputs.attempts.first()
+                && matches!(attempt.delivery, InputDeliveryFact::Unknown)
+                && sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM acp_submissions WHERE worker_session_id=?1 AND state='unknown')").bind(&fx.worker).fetch_one(fx.repo.pool()).await.unwrap()
+            { break attempt.clone(); }
+            tokio::task::yield_now().await;
+        }
+    }).await.unwrap();
+    let before: (String, String, Option<String>) = sqlx::query_as(
+        "SELECT input_json,state,outcome_json FROM acp_submissions WHERE client_id=?1",
+    )
+    .bind(original.attempt.submission_id.as_str())
+    .fetch_one(fx.repo.pool())
+    .await
+    .unwrap();
+    let cookie = format!("{}={token}", crate::auth::SESSION_COOKIE);
+    let send = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/cards/{}/planner/input", fx.card))
+                .header("Cookie", &cookie)
+                .header("Content-Type", "application/json")
+                .header("Idempotency-Key", "fresh-human")
+                .body(Body::from(
+                    json!({"text":"fresh Human after Unknown"}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(send.status(), StatusCode::OK);
+    let keep = app.oneshot(Request::builder().method("POST").uri(format!("/api/cards/{}/conversation/input/keep", fx.card))
+        .header("Cookie", cookie).header("Content-Type", "application/json").header("Idempotency-Key", "keep-original")
+        .body(Body::from(json!({"carrier_id":fx.worker,"submission_id":original.attempt.submission_id,"attempt_id":original.attempt.attempt_id,"revision":original.revision.to_string()}).to_string())).unwrap()).await.unwrap();
+    assert_eq!(keep.status(), StatusCode::OK);
+    let requests = tokio::time::timeout(std::time::Duration::from_secs(20), async {
+        loop {
+            let raw =
+                std::fs::read_to_string(fx._dir.path().join("requests.jsonl")).unwrap_or_default();
+            let requests: Vec<Value> = raw
+                .split_inclusive('\n')
+                .filter(|line| line.ends_with('\n'))
+                .map(|line| serde_json::from_str(line).unwrap())
+                .collect();
+            if requests
+                .iter()
+                .filter(|r| r["method"] == "session/prompt")
+                .count()
+                == 2
+            {
+                break requests;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    let prompts: Vec<_> = requests
+        .iter()
+        .filter(|r| r["method"] == "session/prompt")
+        .collect();
+    assert_ne!(prompts[0]["_pid"], prompts[1]["_pid"]);
+    assert_eq!(
+        prompts[0]["params"]["sessionId"],
+        prompts[1]["params"]["sessionId"]
+    );
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|r| r["method"] == "session/load")
+            .count(),
+        1
+    );
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|r| r["method"] == "session/new")
+            .count(),
+        1
+    );
+    let after: (String, String, Option<String>) = sqlx::query_as(
+        "SELECT input_json,state,outcome_json FROM acp_submissions WHERE client_id=?1",
+    )
+    .bind(original.attempt.submission_id.as_str())
+    .fetch_one(fx.repo.pool())
+    .await
+    .unwrap();
+    assert_eq!(before, after);
     fx.state
         .harness
         .shutdown_and_remove(&fx.worker)

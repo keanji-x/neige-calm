@@ -18,6 +18,12 @@ async fn receipt() -> SqliteDb {
     .unwrap();
     sqlx::query("INSERT INTO acp_submissions VALUES ('worker','client','turn','thread','native','{}','sending',NULL,0)")
         .execute(pool.writer_pool()).await.unwrap();
+    sqlx::raw_sql(include_str!(
+        "../../../migrations/0187_acp_kept_cleanup.sql"
+    ))
+    .execute(pool.writer_pool())
+    .await
+    .unwrap();
     pool
 }
 fn conflict(result: Result<(), TruthError>) {

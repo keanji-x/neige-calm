@@ -2,6 +2,7 @@
 #![cfg(test)]
 mod carrier;
 mod cleanup;
+mod continuation;
 mod control;
 mod failures;
 mod recovery;
@@ -299,6 +300,16 @@ async fn canonical_acp_replay_is_receipt_owned_for_completed_sending_and_unknown
             serde_json::from_value(input["association"]["logical_turn_id"].clone()).unwrap();
         let proof: SubmissionDispatchProof =
             serde_json::from_value(input["association"]["proof"].clone()).unwrap();
+        // A completed local write can precede the peer's asynchronous spy log.
+        // Observe the original request before checking that replay adds none.
+        tokio::time::timeout(Duration::from_secs(20), async {
+            while fx.prompts() == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(fx.prompts(), 1);
         let before = fx.prompts();
         for changed in [false, true] {
             let mut proof = proof.clone();

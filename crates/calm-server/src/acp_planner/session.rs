@@ -209,7 +209,7 @@ impl AcpPlannerSession {
                     receipt,
                     outcome: Err(error.into()),
                 },
-                ReceiptPresence::Absent => CanonicalStart::BeforeReceipt(error.into()),
+                ReceiptPresence::Absent => CanonicalStart::BeforeReceipt(error.into_host()),
                 ReceiptPresence::Unchecked => CanonicalStart::UncertainReceipt(error.into()),
             },
         }
@@ -316,9 +316,7 @@ impl AcpPlannerSession {
                 .await
                 .map_err(CalmError::from)?
         {
-            return Err(refused(
-                "Previous ACP outcome is unknown. Start a fresh session; nothing will be resent.",
-            ));
+            return Err(input.unresolved_failure());
         }
         join_driver(shared).await?;
         let mut blocks = Vec::new();
@@ -365,7 +363,7 @@ impl AcpPlannerSession {
             row.agent_session_id.is_some(),
         )
         .await
-        .map_err(CalmError::from)?;
+        .map_err(|error| input.registration_failure(error))?;
         let mut guard = IssueGuard::new(shared);
         #[cfg(all(test, feature = "fixtures"))]
         super::test_seams::wait_issue(
@@ -427,7 +425,7 @@ impl AcpPlannerSession {
             let (native, mut configuration) = match row.agent_session_id {
                 Some(native) => {
                     if !process.capabilities.load_session {
-                        return Err(refused("ACP agent cannot load its persisted conversation"));
+                        return Err(super::start::ContinuationRefusal::LoadUnsupported.into());
                     }
                     let result = setup_request(
                         process,
@@ -512,6 +510,7 @@ impl AcpPlannerSession {
                 native_session_id: native.clone(),
                 input_json: input.receipt(&items, &blocks)?,
                 state: crate::db::sqlite::AcpSubmissionState::Sending,
+                kept_cleanup: None,
                 outcome_json: None,
             };
             guard.receipt = Some(receipt.clone());
@@ -687,7 +686,7 @@ enum ReceiptPresence {
 }
 pub(crate) enum CanonicalStart {
     UncertainReceipt(CalmError),
-    BeforeReceipt(CalmError),
+    BeforeReceipt(TurnStartFailure),
     Receipted {
         receipt: ReceiptAttempt,
         outcome: Result<()>,

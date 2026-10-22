@@ -290,6 +290,9 @@ pub(super) async fn tick(inner: &Arc<Inner>) -> Result<()> {
     if inner.shutting_down.load(Ordering::SeqCst) {
         return Ok(());
     }
+    if let Some(settled) = inner.backend.settle_kept_execution().await? {
+        publish(inner, written(settled)?).await;
+    }
     if let Some(done) = crate::harness::input_dispatch::complete_once(
         inner.repo.as_ref(),
         &inner.backend,

@@ -7,6 +7,8 @@ use crate::harness::retained_join::RetainedJoin;
 #[derive(Clone, Copy)]
 pub(super) enum Settlement {
     Completed,
+    /// Unknown delivery, with confirmed stop/revoke; only a normal join observes it.
+    CleanUnknown,
     Unconfirmed,
 }
 pub(super) enum Association {
@@ -151,7 +153,103 @@ pub(super) async fn join_driver(shared: &Shared) -> Result<()> {
     }
     Ok(())
 }
+async fn current_receipt_owner(params: &SessionParams, expected: &AcpSubmission) -> Result<bool> {
+    let (card, worker, track, provider, thread, native) = (
+        params.card_id.clone(),
+        params.worker_session_id.clone(),
+        params.track_id.clone(),
+        params.provider.clone(),
+        expected.thread_id.clone(),
+        expected.native_session_id.clone(),
+    );
+    write_in_tx_typed(params.repo.as_ref(), move |tx| {
+        Box::pin(async move {
+            let carrier =
+                crate::db::sqlite::conversation::current_input_fact_carrier_tx(tx, &card, &worker)
+                    .await?;
+            let (binding, row) =
+                crate::harness::profile::input_carrier_contract_tx(tx, &carrier).await?;
+            Ok(binding.provider == provider
+                && row.track_id.as_str() == track
+                && row.thread_id.as_deref() == Some(thread.as_str())
+                && row.agent_session_id.as_deref() == Some(native.as_str()))
+        })
+    })
+    .await
+}
+/// Only the exact retained driver can produce this fact; a recovered Completed
+/// slot and a process sweep cannot manufacture a normal Unknown driver join.
+async fn settle_kept_under_issue(
+    shared: &Shared,
+) -> Result<Option<crate::db::sqlite::conversation::RuntimeFrameAfterWrite>> {
+    {
+        let state = shared.state.lock().expect("ACP state");
+        if state.closed || state.active.is_some() {
+            return Ok(None);
+        }
+    }
+    let Some(driver) = slot(shared) else {
+        return Ok(None);
+    };
+    let receipt = {
+        let mut driver = driver.lock().await;
+        if !driver.completion.is_finished() {
+            return Ok(None);
+        }
+        match driver.finish().await? {
+            Settlement::CleanUnknown => {}
+            Settlement::Completed | Settlement::Unconfirmed => return Ok(None),
+        }
+        let DriverInput::Canonical(input) = &driver.input else {
+            return Ok(None);
+        };
+        input.receipt.clone()
+    };
+    let params = &shared.params;
+    let pool = params
+        .repo
+        .sqlite_db()
+        .ok_or_else(|| CalmError::Internal("ACP journal missing".into()))?;
+    let digest: String = sqlx::query_scalar(
+        "SELECT registration_digest FROM acp_managed_sessions WHERE worker_session_id=?1",
+    )
+    .bind(&receipt.worker_session_id)
+    .fetch_one(pool.read_pool())
+    .await?;
+    let (card, provider) = (params.card_id.clone(), params.provider.clone());
+    write_in_tx_typed(params.repo.as_ref(), move |tx| {
+        Box::pin(async move {
+            let carrier = crate::db::sqlite::conversation::current_input_carrier_tx(
+                tx,
+                &card,
+                &receipt.worker_session_id,
+            )
+            .await?;
+            let (binding, _) =
+                crate::harness::profile::input_carrier_contract_tx(tx, &carrier).await?;
+            if binding.provider != provider {
+                return Ok(None);
+            }
+            crate::db::sqlite::conversation::settle_kept_acp_receipt_tx(
+                tx,
+                &card,
+                &receipt,
+                &digest,
+                crate::db::sqlite::AcpCleanupObservation::StoppedRevokedNormallyJoined,
+            )
+            .await
+            .map_err(Into::into)
+        })
+    })
+    .await
+}
 impl AcpPlannerSession {
+    pub(crate) async fn settle_kept_execution(
+        &self,
+    ) -> Result<Option<crate::db::sqlite::conversation::RuntimeFrameAfterWrite>> {
+        let _issue = self.shared.issue.lock().await;
+        settle_kept_under_issue(&self.shared).await
+    }
     /// ACP has no native idle query. Settlement is the exact completed receipt
     /// and its qualified cleanup, observed under issuance exclusion.
     pub(crate) async fn read_settled(
@@ -177,6 +275,35 @@ impl AcpPlannerSession {
         let Some(driver) = slot(shared) else {
             return Ok(false);
         };
+        settle_kept_under_issue(shared).await?;
+        let expected = {
+            let driver = driver.lock().await;
+            match &driver.input {
+                DriverInput::Canonical(input) => Some(input.receipt.clone()),
+                DriverInput::Cleanup | DriverInput::Historical => None,
+            }
+        };
+        if let Some(expected) = expected {
+            let pool = shared
+                .params
+                .repo
+                .sqlite_db()
+                .ok_or_else(|| CalmError::Internal("ACP journal missing".into()))?;
+            if let Some(receipt) = acp_submission_get(
+                pool.read_pool(),
+                &expected.worker_session_id,
+                &expected.client_id,
+            )
+            .await?
+                && receipt.thread_id == thread
+                && receipt.kept_cleanup.is_some()
+                && current_receipt_owner(&shared.params, &receipt).await?
+                && !acp_submission_unresolved(pool.read_pool(), &expected.worker_session_id).await?
+            {
+                admission.check_local().await?;
+                return Ok(true);
+            }
+        }
         let Some(target) = driver.lock().await.target(&shared.params) else {
             return Ok(false);
         };
@@ -213,7 +340,7 @@ impl AcpPlannerSession {
             return Ok(None);
         }
         match driver.finish().await? {
-            Settlement::Unconfirmed => return Ok(None),
+            Settlement::Unconfirmed | Settlement::CleanUnknown => return Ok(None),
             Settlement::Completed => {}
         }
         let DriverInput::Canonical(input) = &driver.input else {
@@ -225,29 +352,7 @@ impl AcpPlannerSession {
         // END is returned factual ingress, including on a failed current
         // carrier. Reuse the canonical fact/contract owners, not issuance's
         // active-only admission. A park excludes sends, never this observation.
-        let (card, worker, track, provider, thread, native) = (
-            params.card_id.clone(),
-            params.worker_session_id.clone(),
-            params.track_id.clone(),
-            params.provider.clone(),
-            expected.thread_id.clone(),
-            expected.native_session_id.clone(),
-        );
-        let current = write_in_tx_typed(params.repo.as_ref(), move |tx| {
-            Box::pin(async move {
-                let carrier = crate::db::sqlite::conversation::current_input_fact_carrier_tx(
-                    tx, &card, &worker,
-                )
-                .await?;
-                let (binding, row) =
-                    crate::harness::profile::input_carrier_contract_tx(tx, &carrier).await?;
-                Ok(binding.provider == provider
-                    && row.track_id.as_str() == track
-                    && row.thread_id.as_deref() == Some(thread.as_str())
-                    && row.agent_session_id.as_deref() == Some(native.as_str()))
-            })
-        })
-        .await?;
+        let current = current_receipt_owner(params, expected).await?;
         if !current {
             return Ok(None);
         }
@@ -367,6 +472,7 @@ mod tests {
                 .encode()
                 .unwrap(),
             state: AcpSubmissionState::Completed,
+            kept_cleanup: None,
             outcome_json: Some(json!({"id":turn,"status":"completed"}).to_string()),
         };
         let driver = tokio::spawn(async { panic!("driver panic") });

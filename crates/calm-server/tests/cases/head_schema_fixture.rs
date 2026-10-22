@@ -124,6 +124,7 @@ const POST_0067_MIGRATION_NAMES: &[&str] = &[
     "0184_canonical_input_retry.sql",
     "0185_provider_execution.sql",
     "0186_tasks_kind_compact.sql",
+    "0187_acp_kept_cleanup.sql",
 ];
 
 #[test]

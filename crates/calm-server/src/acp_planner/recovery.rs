@@ -14,13 +14,22 @@ where
     E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
 {
     let client = snapshot.projection_client_id.as_ref().map(|id| id.as_str());
-    Ok(sqlx::query_as(concat!(
-        "SELECT worker_session_id,client_id,turn_id,thread_id,native_session_id,input_json,state,outcome_json ",
-        "FROM acp_submissions WHERE worker_session_id=?1 AND ",
-        "((?2 IS NOT NULL AND client_id=?2) OR (?2 IS NULL AND ",
-        "(state IN ('sending','unknown') OR turn_id=?3))) ",
-        "ORDER BY created_at_ms DESC LIMIT 1"
-    )).bind(worker).bind(client).bind(snapshot.last_turn_id.as_deref()).fetch_optional(executor).await?)
+    let sql = format!(
+        concat!(
+            "SELECT worker_session_id,client_id,turn_id,thread_id,native_session_id,input_json,state,outcome_json,kept_cleanup_json ",
+            "FROM acp_submissions WHERE worker_session_id=?1 AND ",
+            "((?2 IS NOT NULL AND client_id=?2) OR (?2 IS NULL AND ",
+            "(({blocking}) OR turn_id=?3))) ",
+            "ORDER BY created_at_ms DESC LIMIT 1"
+        ),
+        blocking = crate::db::sqlite::ACP_BLOCKING_RECEIPT_SQL
+    );
+    Ok(sqlx::query_as(&sql)
+        .bind(worker)
+        .bind(client)
+        .bind(snapshot.last_turn_id.as_deref())
+        .fetch_optional(executor)
+        .await?)
 }
 
 fn retire(snapshot: &mut HarnessSnapshot, receipt: &AcpSubmission) -> Result<bool> {

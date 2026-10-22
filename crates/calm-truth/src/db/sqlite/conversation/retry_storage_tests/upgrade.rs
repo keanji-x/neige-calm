@@ -205,6 +205,13 @@ async fn populated_upgrade(empty_presentations: bool) {
         // The only creation-fence evolution is its declared live codec version.
         let sql = if name == "conversation_human_track_creation_fact_scope" {
             sql.replace("'$.schema_version')=4", "'$.schema_version')=5")
+        } else if name == "acp_one_unresolved_submission" {
+            // C2 intentionally replaces this receipt fence; its owner supplies
+            // the head predicate. Every unrelated schema object stays exact.
+            sql.replace(
+                "state IN ('sending','unknown')",
+                crate::db::sqlite::ACP_BLOCKING_RECEIPT_SQL,
+            )
         } else {
             sql
         };
