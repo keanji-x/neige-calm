@@ -4407,6 +4407,7 @@ describe('side conversations', () => {
     setup((request) => request.path === '/api/version' ? sideVersion() : undefined);
     fireEvent.click(await screen.findByRole('button', { name: 'Conversation Assistant' }));
     await waitFor(() => expect(messageField().getAttribute('contenteditable')).toBe('true'));
+    await waitFor(() => expect(drawerElement().querySelector('[data-nc-thread]')).not.toBeNull());
     await completeAndSubmit('side');
     const branch = await screen.findByRole('region', { name: 'Side conversation · Codex' });
     const field = within(branch).getByRole('combobox', { name: 'Message' });
@@ -4466,6 +4467,7 @@ it.each(['parent', 'side'] as const)('interrupts only the focused %s pane when p
   });
   fireEvent.click(await screen.findByRole('button', { name: 'Conversation Assistant' }));
   await waitFor(() => expect(messageField().getAttribute('contenteditable')).toBe('true'));
+  await waitFor(() => expect(drawerElement().querySelector('[data-nc-thread]')).not.toBeNull());
   await completeAndSubmit('side');
   const branch = await screen.findByRole('region', { name: 'Side conversation · Codex' });
   const field = within(focused === 'side' ? branch : screen.getByRole('complementary', { name: 'Assistant' }))
@@ -4485,6 +4487,7 @@ it('does not offer an ordinary /new draft in the side-only slot', async () => {
   setup((request) => request.path === '/api/version' ? sideVersion() : undefined);
   fireEvent.click(await screen.findByRole('button', { name: 'Conversation Assistant' }));
   await waitFor(() => expect(messageField().getAttribute('contenteditable')).toBe('true'));
+  await waitFor(() => expect(drawerElement().querySelector('[data-nc-thread]')).not.toBeNull());
   await completeAndSubmit('side');
   const branch = await screen.findByRole('region', { name: 'Side conversation · Codex' });
   await typeInto(within(branch).getByRole('combobox', { name: 'Message' }), '/');
