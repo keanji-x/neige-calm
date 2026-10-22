@@ -611,7 +611,9 @@ async fn long_term_goal_startup_keeps_auto_merge_and_tools_without_input() {
     )
     .await
     .unwrap();
-    assert!(prompt.contains("gh_pr_merge（expected_head_sha）直接合并，不再问用户。"));
+    assert!(
+        prompt.contains("plugin_gitforge_gh_pr_merge（expected_head_sha）直接合并，不再问用户。")
+    );
     assert!(prompt.contains("## Development capability"));
     assert!(!prompt.contains("## Bound Template Input"));
     assert!(!prompt.contains("neige:input-form"));

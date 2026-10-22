@@ -32,9 +32,9 @@ instructions = """
 · 一个功能可切 3–4 片 PR，不必第一片就端到端可用，但不要一二十个 PR 才能用。
 · 实现、评审、修复都用 Codex worker；需要结构设计时用 Claude 只读任务。
 · 每片：实现任务带门禁 → 评审（按仓库分级，L2 两路独立）→ 修阻塞 →
-  plugin_gitforge_publish 发 PR → gh_pr_checks 等 CI → gh_pr_diff 核对 →
-  gh_pr_merge（expected_head_sha）直接合并，不再问用户。
-· CI 失败读 gh_ci_failure_evidence；与改动无关的失败用 gh_run_rerun 重跑。
+  plugin_gitforge_publish 发 PR → plugin_gitforge_gh_pr_checks 等 CI → plugin_gitforge_gh_pr_diff 核对 →
+  plugin_gitforge_gh_pr_merge（expected_head_sha）直接合并，不再问用户。
+· CI 失败读 plugin_gitforge_gh_ci_failure_evidence；与改动无关的失败用 plugin_gitforge_gh_run_rerun 重跑。
 · 只有目标无法推进、需要越权或取舍时才问用户。
 -->
 
