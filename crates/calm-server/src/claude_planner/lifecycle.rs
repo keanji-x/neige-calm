@@ -107,3 +107,18 @@ pub(crate) async fn shutdown_replay(host: &ClaudePlannerHost, worker_session_id:
             "planner harness shutdown: the Claude Planner stop did not confirm");
     }
 }
+
+/// A reset stops the predecessor by id even on registry-miss replay. Failure is
+/// warning-only: boot or the next destructive step retries the scoped sweep.
+pub(crate) async fn stop_historical_predecessor(
+    host: &ClaudePlannerHost,
+    card_id: &str,
+    old_worker_session_id: &str,
+) {
+    if let Err(error) = super::stop::stop(&host.instance, old_worker_session_id).await {
+        tracing::warn!(
+            card_id, old_worker_session_id, %error,
+            "planner harness reset: the Claude Planner predecessor's stop did not confirm"
+        );
+    }
+}

@@ -12,7 +12,6 @@ use async_trait::async_trait;
 use calm_types::conversation_receipt::{
     ConversationInitialInputReceipt, InitialInputReceiptVersion,
 };
-use calm_types::runtime::AgentProtocol;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -22,14 +21,13 @@ use crate::db::sqlite::{
     HarnessTranscriptMeasure, HarvestOutcome, HarvestedFrom, HarvestedMessage,
     append_decision_event_in_tx, card_create_with_id_tx, card_delete_tx, card_update_tx,
     harness_items_delete_by_card_tx, harness_items_measure_by_card_tx,
-    harvest_pending_user_messages_tx, session_bind_attribution_tx,
-    session_clear_queue_harvested_tx, session_delete_tx, session_fail_if_active_runtime_tx,
-    session_handle_state_by_id_tx, session_mark_queue_harvested_tx,
-    session_prepare_deferred_planner_tx, session_projection_active_for_card_tx,
-    session_projection_failed_carrier_for_card_tx, session_restore_failed_carrier_runtime_tx,
-    session_restore_from_superseded_runtime_tx, session_set_handle_state_of_any_runtime_tx,
-    session_set_handle_state_tx, session_start_runtime_tx, session_supersede_active_tx,
-    session_supersede_and_start_tx,
+    harvest_pending_user_messages_tx, session_clear_queue_harvested_tx, session_delete_tx,
+    session_fail_if_active_runtime_tx, session_handle_state_by_id_tx,
+    session_mark_queue_harvested_tx, session_prepare_deferred_planner_tx,
+    session_projection_active_for_card_tx, session_projection_failed_carrier_for_card_tx,
+    session_restore_failed_carrier_runtime_tx, session_restore_from_superseded_runtime_tx,
+    session_set_handle_state_of_any_runtime_tx, session_set_handle_state_tx,
+    session_start_runtime_tx, session_supersede_active_tx, session_supersede_and_start_tx,
 };
 use crate::db::{Repo, write_in_tx_typed, write_with_event_typed};
 use crate::error::{CalmError, Result};
@@ -43,8 +41,8 @@ use crate::harness::{
 };
 use crate::ids::{ActorId, CardId, TrackId};
 use crate::mcp_server::wiring::{
-    CodexAssistantCredential, capture_codex_assistant_credential_tx, mint_card_mcp_token_pair,
-    mirror_session_mcp_token, persist_card_mcp_token_hash, restore_codex_assistant_credential_tx,
+    CodexAssistantCredential, capture_codex_assistant_credential_tx, mirror_session_mcp_token,
+    persist_card_mcp_token_hash, restore_codex_assistant_credential_tx,
 };
 use crate::model::{Card, CardPatch, CardRole, NewCard, new_id, now_ms};
 use crate::operation::codex_adapter::card_payload_get_tx;
@@ -55,7 +53,7 @@ use crate::per_card_lock::{PerCardLockGuard, PerCardLocks, lock_card, new_per_ca
 use crate::plugin_host::{PluginHost, manifest::TemplateDescriptor};
 use crate::routes::cards::{card_scope, card_scope_tx};
 use crate::session_projection_repo::{
-    AgentProvider, ThreadAttribution, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
+    AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
 };
 use crate::shared_codex_appserver::SharedCodexAppServer;
 use crate::state::WriteContext;
@@ -72,6 +70,8 @@ use super::{
 #[cfg(all(test, feature = "fixtures"))]
 mod canonical_lifecycle_tests;
 mod historical;
+#[cfg(all(test, feature = "fixtures"))]
+mod historical_lifecycle_tests;
 mod retained;
 use retained::{RetainedPayload, StartInvocation};
 
@@ -884,10 +884,9 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
         // The failed carrier's own copy of its queue, carrying the ids the journal names.
         let mut failed_carrier_keeps: Option<HarnessSnapshot> = None;
         if let Some(mut inherited) = inherited_snapshot {
-            if provider.protocol() == AgentProtocol::Acp
-                && let Some(existing) = predecessor
-            {
-                crate::acp_planner::recovery::retire_before_transfer(
+            if let Some(existing) = predecessor {
+                PlannerFactory::retire_inherited_checkpoint_tx(
+                    &provider,
                     tx,
                     &existing.id,
                     &mut inherited,
@@ -1206,27 +1205,13 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
                 .shutdown_and_remove(&old_worker_session_id)
                 .await?;
             self.admit_historical(&card_id).await?;
-            if provider.protocol() == AgentProtocol::Acp {
-                crate::planner_process::stop(&self.acp_host.instance, &old_worker_session_id)
-                    .await?;
-            }
-            // #1791 §5.1: a Claude predecessor is stopped by id, registered or not (a replay repeats it). A failure is
-            // logged and left to the boot sweep or the next destructive step's scoped sweep; the superseded row's token
-            // no longer authenticates.
-            if provider == AgentProvider::Claude
-                && let Err(error) = crate::claude_planner::stop::stop(
-                    &self.claude_host.instance,
-                    &old_worker_session_id,
-                )
-                .await
-            {
-                tracing::warn!(
-                    card_id = %card_id,
-                    old_worker_session_id = %old_worker_session_id,
-                    %error,
-                    "planner harness reset: the Claude Planner predecessor's stop did not confirm"
-                );
-            }
+            PlannerFactory::new(
+                Arc::downgrade(&self.daemon),
+                &self.claude_host,
+                &self.acp_host,
+            )
+            .stop_historical_predecessor(&provider, &card_id, &old_worker_session_id)
+            .await?;
         }
         if let Some(existing) = output_existing_thread_id(output)? {
             return Ok(AppServerInteractOutcome::MintedAndAwaited {
@@ -1241,53 +1226,30 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
         // The fence is the caller's, though: a cancelled caller, or boot recovery re-driving an unfinished
         // start, can overlap a second start. Even then this start mints its own thread, prompt, cwd and
         // credential rather than taking a thread a competing operation owns.
-        let mut new_mcp_token_hash = None;
-        let thread_id = if provider != AgentProvider::Codex {
-            // #1791 §4.4: a fresh UUID names the Claude session, with no RPC; the MCP credential is minted at the first turn.
-            uuid::Uuid::new_v4().to_string()
-        } else {
-            let developer_instructions = match profile {
-                HarnessProfile::PlainChat => None,
-                _ => Some(
-                    crate::harness::instructions::profile_instructions(
-                        self.repo.as_ref(),
-                        &self.plugin,
-                        &track_id,
-                        &card_id,
-                        &crate::harness::profile::PlannerBinding {
-                            profile,
-                            provider: provider.clone(),
-                        },
-                    )
-                    .await?,
-                ),
-            };
-            self.admit_historical(&card_id).await?;
-            let (raw, hashed) = mint_card_mcp_token_pair();
-            new_mcp_token_hash = Some(hashed);
-            let socket_path = self.mcp_socket_path_for_thread()?;
-            PlannerFactory::new(
-                std::sync::Arc::downgrade(&self.daemon),
-                &self.claude_host,
-                &self.acp_host,
-            )
-            .prepare_codex_thread(
-                &card_id,
-                card_role,
-                &track_id,
-                cwd,
-                developer_instructions,
-                profile.mcp_role(),
-                PathBuf::from(socket_path),
-                raw,
-                runtime_deferred,
-                &crate::harness::native_admission::NativePromptAdmission::new(
-                    || self.check_historical_issuer(),
-                    || Box::pin(self.admit_historical(&card_id)),
-                ),
-            )
-            .await?
-        };
+        let prepared = PlannerFactory::new(
+            Arc::downgrade(&self.daemon),
+            &self.claude_host,
+            &self.acp_host,
+        )
+        .prepare_historical_identity(
+            &provider,
+            self.repo.as_ref(),
+            &self.plugin,
+            &card_id,
+            &track_id,
+            profile,
+            card_role,
+            cwd,
+            runtime_deferred,
+            || self.mcp_socket_path_for_thread(),
+            || Box::pin(self.admit_historical(&card_id)),
+            &crate::harness::native_admission::NativePromptAdmission::new(
+                || self.check_historical_issuer(),
+                || Box::pin(self.admit_historical(&card_id)),
+            ),
+        )
+        .await?;
+        let thread_id = prepared.thread_id().to_string();
         output.set_output_data(
             "codex_thread_id",
             json!(thread_id.clone()),
@@ -1332,7 +1294,7 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
                     this.admit_historical_tx(tx, &card_id).await?;
                     let mut checkpoint_output = output_clone;
                     let mut old_worker_session_id = None;
-                    if let Some(hashed) = new_mcp_token_hash.as_ref() {
+                    if let Some(hashed) = prepared.mcp_token_hash() {
                         persist_card_mcp_token_hash(tx, &card_id, hashed).await?;
                     }
                     if runtime_deferred {
@@ -1440,29 +1402,11 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
                             }
                         }
                     } else {
-                        // A Claude row keeps a bound `agent_session_id`: nulling it would make the next spawn create a session
-                        // that already exists (`--session-id`) instead of resuming it.
-                        let session_id = match provider_for_tx.protocol() {
-                            AgentProtocol::Codex => None,
-                            AgentProtocol::Claude | AgentProtocol::Acp => {
-                                crate::db::sqlite::session_get_tx(
-                                    tx,
-                                    &calm_types::worker::WorkerSessionId(worker_session_id.clone()),
-                                )
-                                .await?
-                                .and_then(|row| row.agent_session_id)
-                            }
-                        };
-                        session_bind_attribution_tx(
+                        PlannerFactory::bind_historical_attribution_tx(
+                            &provider_for_tx,
                             tx,
                             &worker_session_id,
-                            ThreadAttribution {
-                                worker_session_id: worker_session_id.clone(),
-                                provider: provider_for_tx.clone(),
-                                thread_id: Some(thread_for_tx.clone()),
-                                session_id,
-                                active_turn_id: None,
-                            },
+                            &thread_for_tx,
                         )
                         .await?;
                         // Same rule on this arm: the queue comes from the row.
@@ -1480,7 +1424,7 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
                         )
                         .await?;
                     }
-                    if let Some(hashed) = new_mcp_token_hash.as_ref() {
+                    if let Some(hashed) = prepared.mcp_token_hash() {
                         mirror_session_mcp_token(tx, &worker_session_id, hashed).await?;
                     }
                     // The delete is a hard delete across the card's whole history, so measure the transcript inside the tx and strictly before it.
@@ -1526,12 +1470,17 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
         // any fallible post-commit work so both driver persistence and compensation use exactly
         // the state that committed, including a raced predecessor and its harvest/credential.
         *output = committed_output;
-        if provider.protocol() == AgentProtocol::Acp
-            && let Some(displaced) = old_worker_session_id.as_ref()
-        {
-            self.harness_registry.shutdown_and_remove(displaced).await?;
-            crate::planner_process::stop(&self.acp_host.instance, displaced).await?;
-        }
+        PlannerFactory::new(
+            Arc::downgrade(&self.daemon),
+            &self.claude_host,
+            &self.acp_host,
+        )
+        .stop_displaced_historical(
+            &provider,
+            &self.harness_registry,
+            old_worker_session_id.as_deref(),
+        )
+        .await?;
         drop(mint_lock_guard);
         if reset_transcript {
             ctx.repo
@@ -3187,7 +3136,7 @@ mod tests {
     }
 
     /// `plugin_scope` is a parameter every caller has to state: create copies the bound plugin into `plugin_scope` and refuses `template_input` without one.
-    async fn make_track(
+    pub(super) async fn make_track(
         repo: &SqlxRepo,
         template_id: Option<&str>,
         template_input: Option<serde_json::Value>,
@@ -3280,7 +3229,10 @@ mod tests {
         (host, tmp)
     }
 
-    fn adapter_for(repo: Arc<SqlxRepo>, plugin: Arc<PluginHost>) -> PlannerHarnessStartAdapter {
+    pub(super) fn adapter_for(
+        repo: Arc<SqlxRepo>,
+        plugin: Arc<PluginHost>,
+    ) -> PlannerHarnessStartAdapter {
         let repo_dyn: Arc<dyn Repo> = repo;
         let daemon = SharedCodexAppServer::new_stub(repo_dyn.clone());
         PlannerHarnessStartAdapter::new(

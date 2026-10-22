@@ -16,6 +16,7 @@ use calm_types::runtime::AgentProtocol;
 mod catalog_readiness;
 pub(crate) use catalog_readiness::CatalogReadiness;
 mod codex;
+mod historical;
 mod recovery;
 pub(crate) use recovery::{ActiveRecoveryAdmission, RecoveryTarget};
 
@@ -205,7 +206,10 @@ impl<'a> PlannerFactory<'a> {
             Some(AgentProtocol::Acp) if managed => {
                 crate::planner_process::stop(&self.acp.instance, &runtime.id).await
             }
-            _ => self.shutdown_codex_replay(runtime).await,
+            Some(AgentProtocol::Codex) | None => self.shutdown_codex_replay(runtime).await,
+            Some(AgentProtocol::Claude | AgentProtocol::Acp) => {
+                self.shutdown_codex_replay(runtime).await
+            }
         }
     }
 }

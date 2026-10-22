@@ -1,7 +1,9 @@
 //! The local identity has no external effect: claim, runtime fence, attribution
 //! and the existing operation checkpoint commit together, or none of them do.
 use super::*;
+use crate::db::sqlite::session_bind_attribution_tx;
 use crate::harness::snapshot::canonical_runtime_header_value;
+use crate::session_projection_repo::ThreadAttribution;
 
 impl PlannerHarnessStartAdapter {
     pub(super) async fn retained_bind_local(

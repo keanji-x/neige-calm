@@ -4,6 +4,7 @@ use super::*;
 use crate::conversation_inputs::InputSource;
 use crate::db::sqlite::conversation::{self, RuntimeExecutionFence};
 use crate::harness::snapshot::CanonicalHarnessSnapshot;
+use crate::mcp_server::wiring::mint_card_mcp_token_pair;
 
 mod binding;
 mod recovery;
