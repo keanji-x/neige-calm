@@ -10,12 +10,12 @@ use crate::operation::claude_adapter::{
     prepare_claude_create_request,
 };
 use crate::operation::{OperationKey, OperationOutcome};
-use crate::routes::codex_cards::shell_single_quote;
 use crate::routes::idempotency_key::{
     calm_error_from_operation_failure, keyed_card_answer, parse_idempotency_key_header,
     stable_payload_hash,
 };
 use crate::session_projection_lookup::project_runtime_into_card_payload;
+use crate::shell_command::sh_single_quote;
 use crate::state::{AppState, CodexShellState, RouteState};
 use axum::{
     Router,
@@ -201,10 +201,10 @@ pub(crate) fn claude_hook_command(bridge_bin: &str, card_id: &str, base_url: &st
     );
     format!(
         "NEIGE_HOOK_PROVIDER=claude NEIGE_CARD_ID={} NEIGE_CALM_BASE_URL={} NEIGE_HOOK_URL={} {} --provider claude",
-        shell_single_quote(card_id),
-        shell_single_quote(base_url),
-        shell_single_quote(&hook_url),
-        shell_single_quote(bridge_bin),
+        sh_single_quote(card_id),
+        sh_single_quote(base_url),
+        sh_single_quote(&hook_url),
+        sh_single_quote(bridge_bin),
     )
 }
 

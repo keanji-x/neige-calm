@@ -1,3 +1,4 @@
+use crate::shell_command::sh_single_quote;
 use provider::control::NativeInterruptOutcome;
 use std::sync::Arc;
 use std::time::Duration;
@@ -29,7 +30,7 @@ use crate::pending_codex_threads::{PendingEntry, PendingThreadStartRegistry};
 use crate::routes::cards::card_scope;
 use crate::routes::codex_cards::{
     INITIAL_TURN_LIFECYCLE_TIMEOUT, await_shared_initial_turn_lifecycle, default_cwd,
-    normalize_optional_css_color, shell_single_quote,
+    normalize_optional_css_color,
 };
 use crate::routes::settings::load_settings;
 use crate::routes::theme::RequestTheme;
@@ -567,13 +568,13 @@ impl ProviderAdapter for CodexAdapter {
             let thread_id = output.output_string("codex_thread_id", "codex")?;
             format!(
                 "codex resume {} --remote {}",
-                shell_single_quote(&thread_id),
-                shell_single_quote(&self.shared_codex_appserver.remote_uri()),
+                sh_single_quote(&thread_id),
+                sh_single_quote(&self.shared_codex_appserver.remote_uri()),
             )
         } else {
             format!(
                 "codex --remote {}",
-                shell_single_quote(&self.shared_codex_appserver.remote_uri()),
+                sh_single_quote(&self.shared_codex_appserver.remote_uri()),
             )
         };
 
@@ -1282,8 +1283,8 @@ pub(crate) async fn spawn_codex_worker_via_shared_daemon(
 
     let command_line = format!(
         "codex resume {} --remote {}",
-        shell_single_quote(&thread_id),
-        shell_single_quote(&remote_uri)
+        sh_single_quote(&thread_id),
+        sh_single_quote(&remote_uri)
     );
     match ctx
         .spawn_ctx

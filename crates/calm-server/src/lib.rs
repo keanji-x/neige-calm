@@ -23,6 +23,7 @@ mod planner_session;
 pub mod provider_execution;
 pub mod provider_registry;
 pub mod reaper;
+pub(crate) mod shell_command;
 mod state_clients;
 mod time_format;
 // Integration tests compile the library without `cfg(test)`, so re-gating this module for

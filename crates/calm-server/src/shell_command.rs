@@ -1,4 +1,4 @@
-//! POSIX command argument construction shared by host process adapters.
+//! POSIX command argument construction shared by server command builders.
 
 /// POSIX single-quote escaping: `'` → `'\''`.
 pub(crate) fn sh_single_quote(s: &str) -> String {
@@ -12,6 +12,12 @@ mod quote_contract_tests {
         for (input, expected) in [
             ("", "''"),
             ("plain", "'plain'"),
+            ("hello", "'hello'"),
+            ("she said 'hi'", "'she said '\\''hi'\\'''"),
+            (
+                "$(rm -rf /) `whoami` ; echo pwned && true | cat",
+                "'$(rm -rf /) `whoami` ; echo pwned && true | cat'",
+            ),
             ("two words", "'two words'"),
             ("a'b", "'a'\\''b'"),
             ("''", "''\\'''\\'''"),

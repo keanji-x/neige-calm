@@ -26,10 +26,11 @@ use crate::routes::cards::card_scope;
 use crate::routes::claude_cards::{
     build_claude_settings_json, build_claude_worker_settings_json, claude_hook_command,
 };
-use crate::routes::codex_cards::{normalize_optional_css_color, shell_single_quote};
+use crate::routes::codex_cards::normalize_optional_css_color;
 use crate::routes::settings::load_settings;
 use crate::routes::theme::RequestTheme;
 use crate::session_projection_repo::{AgentProvider, WorkerSessionKind, WorkerSessionState};
+use crate::shell_command::sh_single_quote;
 use crate::state::{CodexClient, WriteContext};
 use crate::terminal_sweeper::try_reap_terminal_artifacts_with_renderer;
 use crate::track_area_cache::TrackAreaCache;
@@ -320,13 +321,13 @@ pub async fn prepare_claude_create_request(
     // itself, not on the wrapping shell (#2516). An id rides as one `--flag=value` token.
     let mut command_line = format!(
         "exec {} {CLAUDE_CARD_PERMISSION_FLAGS} --settings {} --session-id={}",
-        shell_single_quote(&claude_bin),
-        shell_single_quote(&settings_path),
-        shell_single_quote(&claude_session_id),
+        sh_single_quote(&claude_bin),
+        sh_single_quote(&settings_path),
+        sh_single_quote(&claude_session_id),
     );
     if let Some(prompt) = request.prompt.as_deref() {
         command_line.push_str(" -- ");
-        command_line.push_str(&shell_single_quote(prompt));
+        command_line.push_str(&sh_single_quote(prompt));
     }
 
     Ok(PreparedClaudeCreateRequest {
@@ -393,16 +394,16 @@ fn build_claude_worker_command_line(
     // `exec` and the one-token id as in `prepare_claude_create_request`.
     let mut command_line = format!(
         "exec {} {CLAUDE_WORKER_PERMISSION_FLAGS} --settings {} --session-id={} --append-system-prompt {}",
-        shell_single_quote(claude_bin),
-        shell_single_quote(&settings_path.to_string_lossy()),
-        shell_single_quote(claude_session_id),
-        shell_single_quote(&worker_system_prompt),
+        sh_single_quote(claude_bin),
+        sh_single_quote(&settings_path.to_string_lossy()),
+        sh_single_quote(claude_session_id),
+        sh_single_quote(&worker_system_prompt),
     );
     command_line.push_str(&worker_mcp::mcp_flags(&worker_mcp::mcp_config_path(
         settings_path,
     )?));
     command_line.push_str(" -- ");
-    command_line.push_str(&shell_single_quote(prompt));
+    command_line.push_str(&sh_single_quote(prompt));
     Ok(command_line)
 }
 

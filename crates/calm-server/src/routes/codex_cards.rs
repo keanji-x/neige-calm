@@ -181,21 +181,6 @@ pub(crate) async fn await_shared_initial_turn_lifecycle(
     }
 }
 
-/// Wrap a string in POSIX-shell single quotes, escaping embedded single quotes as `'\''`, so an arbitrary prompt passes through `sh -c` as one literal word.
-pub(crate) fn shell_single_quote(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() + 2);
-    out.push('\'');
-    for ch in s.chars() {
-        if ch == '\'' {
-            out.push_str("'\\''");
-        } else {
-            out.push(ch);
-        }
-    }
-    out.push('\'');
-    out
-}
-
 pub(crate) fn normalize_optional_css_color(
     raw: Option<&str>,
     field: &str,
@@ -225,37 +210,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn shell_single_quote_basic() {
-        assert_eq!(shell_single_quote("hello"), "'hello'");
-        assert_eq!(shell_single_quote(""), "''");
-    }
-
-    #[test]
     fn initial_turn_lifecycle_timeout_is_30_seconds() {
         assert_eq!(INITIAL_TURN_LIFECYCLE_TIMEOUT, Duration::from_secs(30));
-    }
-
-    #[test]
-    fn shell_single_quote_embedded_single_quote() {
-        assert_eq!(
-            shell_single_quote("she said 'hi'"),
-            "'she said '\\''hi'\\'''"
-        );
-    }
-
-    #[test]
-    fn shell_single_quote_metacharacters_are_literal() {
-        // Defends against `sh -c "codex $promptArg"` re-interpreting metacharacters.
-        let prompt = "$(rm -rf /) `whoami` ; echo pwned && true | cat";
-        let quoted = shell_single_quote(prompt);
-        assert!(quoted.starts_with('\''));
-        assert!(quoted.ends_with('\''));
-        // An unescaped single quote inside the body would close our quoting and let sh re-parse the rest.
-        let body = &quoted[1..quoted.len() - 1];
-        for window in body.as_bytes().windows(1) {
-            if window == b"'" {
-                panic!("unescaped single quote inside body: {body}");
-            }
-        }
     }
 }

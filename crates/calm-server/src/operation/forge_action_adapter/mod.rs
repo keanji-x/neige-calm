@@ -1,7 +1,7 @@
 //! Forge's Engine consumer. Only a claimed post-park observer releases the credential
 //! payload; the durable owner record retains action and probe execution ownership.
 
-use super::shell_command::sh_single_quote;
+use crate::shell_command::sh_single_quote;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 

@@ -13,7 +13,7 @@ use crate::error::{CalmError, Result};
 use crate::mcp_server::McpServer;
 use crate::mcp_server::wiring::{MCP_SERVER_KEY, card_mcp_env, claude_mcp_config_json};
 use crate::operation::SpawnCtx;
-use crate::routes::codex_cards::shell_single_quote;
+use crate::shell_command::sh_single_quote;
 
 /// The worker's MCP config file, beside its settings file in the card's own settings dir.
 pub(crate) fn mcp_config_path(settings_path: &Path) -> Result<PathBuf> {
@@ -29,7 +29,7 @@ pub(crate) fn mcp_config_path(settings_path: &Path) -> Result<PathBuf> {
 pub(crate) fn mcp_flags(mcp_config: &Path) -> String {
     format!(
         " --allowedTools mcp__{MCP_SERVER_KEY} --strict-mcp-config --mcp-config {}",
-        shell_single_quote(&mcp_config.to_string_lossy())
+        sh_single_quote(&mcp_config.to_string_lossy())
     )
 }
 

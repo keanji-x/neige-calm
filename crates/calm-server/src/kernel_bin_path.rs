@@ -1,6 +1,8 @@
 //! The PATH of every Planner and Worker execution environment leads with the running kernel's
 //! own bin dir, so `neige` there is the CLI installed beside this calm-server (#1784).
 
+use crate::shell_command::sh_single_quote;
+
 use std::ffi::{OsStr, OsString};
 use std::io;
 use std::path::{Path, PathBuf};
@@ -49,13 +51,16 @@ pub fn kernel_led_path() -> io::Result<KernelLedPath> {
 /// inherited, so a PTY child keeps the proc supervisor's PATH byte-for-byte (UTF-8 or not)
 /// behind it. The supervisor's wire is String-typed, so only the bin dir must be UTF-8.
 pub fn shell_path_prepend() -> io::Result<String> {
-    let bin_dir = kernel_bin_dir()?;
+    shell_path_prepend_for(&kernel_bin_dir()?)
+}
+
+fn shell_path_prepend_for(bin_dir: &Path) -> io::Result<String> {
     let dir = bin_dir
         .to_str()
         .ok_or_else(|| io::Error::other(format!("kernel bin dir is not UTF-8: {bin_dir:?}")))?;
     Ok(format!(
-        "PATH='{}'\"${{PATH:+:$PATH}}\"; export PATH",
-        dir.replace('\'', "'\\''")
+        "PATH={}\"${{PATH:+:$PATH}}\"; export PATH",
+        sh_single_quote(dir)
     ))
 }
 
@@ -72,6 +77,16 @@ fn path_leading_with(bin_dir: &Path, inherited: Option<&OsStr>) -> io::Result<Os
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shell_prepend_preserves_quoted_directory_bytes() {
+        assert_eq!(
+            shell_path_prepend_for(Path::new("/kernel's bin"))
+                .unwrap()
+                .as_bytes(),
+            br#"PATH='/kernel'\''s bin'"${PATH:+:$PATH}"; export PATH"#,
+        );
+    }
 
     #[test]
     fn bin_dir_leads_and_the_inherited_path_follows_unchanged() {

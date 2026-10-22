@@ -1,6 +1,6 @@
 //! Shared host gate process machinery. Admission and completion belong to adapters.
 use super::gate_lifecycle::{GateStep, GateVerdict};
-use super::shell_command::sh_single_quote;
+use crate::shell_command::sh_single_quote;
 use std::path::{Path, PathBuf};
 const LOG_TAIL_BYTES: u64 = 8 * 1024;
 

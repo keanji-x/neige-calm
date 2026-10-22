@@ -21,12 +21,12 @@ use crate::operation::workspace_lease::worker::{
 };
 use crate::routes::cards::{card_scope, card_scope_tx};
 use crate::routes::claude_cards::{build_claude_settings_json, claude_hook_command};
-use crate::routes::codex_cards::shell_single_quote;
 use crate::routes::theme::RequestTheme;
 use crate::session_projection_lookup::{claude_session_of_runtime, legacy_claude_session_of_card};
 use crate::session_projection_repo::{
     AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
 };
+use crate::shell_command::sh_single_quote;
 use crate::state::{CodexClient, WriteContext};
 use crate::track_area_cache::TrackAreaCache;
 use calm_truth::db::sqlite::{
@@ -262,14 +262,14 @@ impl ProviderAdapter for ClaudeRestartAdapter {
         let claude_bin = crate::claude_version::resolve_claude_bin(&self.codex.claude_bin);
         let mut command_line = format!(
             "exec {} {} --settings {} --resume={}",
-            shell_single_quote(&claude_bin),
+            sh_single_quote(&claude_bin),
             if is_worker {
                 CLAUDE_WORKER_PERMISSION_FLAGS
             } else {
                 CLAUDE_CARD_PERMISSION_FLAGS
             },
-            shell_single_quote(&settings_path),
-            shell_single_quote(&agent_session_id),
+            sh_single_quote(&settings_path),
+            sh_single_quote(&agent_session_id),
         );
         let mcp_config = if is_worker {
             let path = worker_mcp::mcp_config_path(Path::new(&settings_path))?;
