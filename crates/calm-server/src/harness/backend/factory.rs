@@ -143,8 +143,8 @@ impl<'a> PlannerFactory<'a> {
         })
     }
 
-    /// Conventional historical catch-up must not run before ACP receipt retirement.
-    /// ACP restores its quiesced checkpoint first; the harness then folds later events.
+    /// ACP receipt recovery owns its checkpoint; conventional historical event replay
+    /// must not add Planner backlog before or after restoring that checkpoint.
     /// Planner role admission and queue/watermark updates remain in the harness.
     pub(crate) fn historical_replay_eligible(provider: &AgentProvider) -> bool {
         match provider.protocol() {
@@ -229,7 +229,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn factory_historical_replay_waits_for_acp_receipt_recovery() {
+    fn factory_historical_replay_excludes_acp_receipt_recovery() {
         assert!(PlannerFactory::historical_replay_eligible(
             &AgentProvider::Codex
         ));

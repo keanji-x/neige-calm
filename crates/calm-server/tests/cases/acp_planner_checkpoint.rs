@@ -95,7 +95,7 @@ async fn checkpoint_after_settlement(operation_replay: bool) {
     assert!(checkpoint.push_watermark > 0);
     let later = QueueEntry::system(
         Observation::ReportEdited {
-            track_id: track.into(),
+            track_id: track.clone().into(),
             body_sha256: "later".into(),
             body: "later report".into(),
             author: Some(calm_server::event::EditAuthor::User),
@@ -115,6 +115,35 @@ async fn checkpoint_after_settlement(operation_replay: bool) {
         .execute(pool.writer_pool())
         .await
         .unwrap();
+    // A persisted event beyond the receipt-owned checkpoint must not become
+    // conventional Planner backlog in either ACP recovery entry.
+    let repo = stack.repo();
+    let track_row = repo.track_get(&track).await.unwrap().unwrap();
+    repo.log_pure_event(
+        calm_server::ids::ActorId::User,
+        calm_server::event::EventScope::Track {
+            track: track.clone().into(),
+            area: track_row.area_id,
+        },
+        None,
+        &calm_server::event::EventBus::new(),
+        &stack.state.card_role_cache,
+        &stack.state.track_area_cache,
+        calm_server::event::Event::TrackReportEdited {
+            track_id: track.clone().into(),
+            card_id: card.clone().into(),
+            author: calm_server::event::EditAuthor::User,
+            author_plugin_id: None,
+            edit_id: "must-not-replay".into(),
+            summary_before: String::new(),
+            summary_after: "missed summary".into(),
+            body_before: String::new(),
+            body_after: "must not enter ACP backlog".into(),
+            agent_message: None,
+        },
+    )
+    .await
+    .unwrap();
     pause.release.notify_one();
     tokio::time::timeout(Duration::from_secs(20), recovery)
         .await

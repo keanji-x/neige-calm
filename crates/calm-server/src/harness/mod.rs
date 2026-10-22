@@ -395,7 +395,8 @@ pub(crate) async fn spawn_recovered_harness_admitted(
         .await?
     {
         snapshot = checkpoint;
-        if role == Some(CardRole::Planner) {
+        if role == Some(CardRole::Planner) && PlannerFactory::historical_replay_eligible(&provider)
+        {
             let watermark = snapshot.push_watermark;
             replay_harness_events_since(
                 repo.clone(),
