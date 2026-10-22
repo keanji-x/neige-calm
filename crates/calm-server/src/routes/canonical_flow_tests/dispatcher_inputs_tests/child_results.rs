@@ -1,6 +1,6 @@
 //! Child finality is decided by the real scheduler, then admitted by Dispatcher.
 use super::*;
-use calm_truth::db::RepoEventWrite as _;
+use calm_truth::db::{RepoEventWrite as _, RepoRead as _};
 
 async fn child_result(deleted: bool, incomplete: bool, gated: bool) {
     let mut flow = Flow::running().await;
