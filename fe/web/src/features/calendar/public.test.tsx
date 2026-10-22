@@ -76,7 +76,7 @@ it('orders daily tasks all-day first then by start time, independent of creation
   const weekly: CalendarListedEntry = { ...entry, id: 'Standup', task: { ...entry.task, title: 'Standup', schedule: { kind: 'weekly', weekdays: ['fri'], start: '12:00', end: '12:30', timezone: 'Asia/Shanghai', from: '2026-09-01' } }, occurrences: [span('12')] };
   render(<CalendarTasks {...props({ day: { entries: [timed('Evening', '17'), weekly, timed('Morning', '09'), entry], loading: false, error: null } })} />);
   const buttons = within(screen.getByRole('region', { name: 'Selected day tasks' })).getAllByRole('button');
-  expect(buttons.map((button) => button.textContent)).toEqual(['', 'ResearchAll day', 'Morning09:00 – 09:30', 'Standup12:00 – 12:30 · Weekly', 'Evening17:00 – 17:30']);
+  expect(buttons.map((button) => button.textContent)).toEqual(['', 'ResearchAll day', 'Morning09:00 – 09:30', 'Standup↻ 周五 12:00', 'Evening17:00 – 17:30']);
 });
 it('shows a weekly entry read-only and points edits to its Track', async () => {
   const onSave = vi.fn(() => Promise.resolve());
@@ -85,7 +85,7 @@ it('shows a weekly entry read-only and points edits to its Track', async () => {
   const onOpenTrack = vi.fn();
   render(<CalendarTasks {...props({ date: '2026-10-05', onSave, onOpenTrack, day: { entries: [weekly], loading: false, error: null } })} />);
   const user = userEvent.setup();
-  await user.click(screen.getByRole('button', { name: /Research.*Weekly/ }));
+  await user.click(screen.getByRole('button', { name: /Research.*周一、三 09:30/ }));
   const dialog = within(screen.getByRole('dialog', { name: 'Weekly task' }));
   expect(dialog.getByText('Mon, Wed · 09:30 – 10:00 · Asia/Shanghai', { exact: false })).toBeTruthy();
   expect(dialog.getByText('From 2026-10-05 through 2026-12-31', { exact: false })).toBeTruthy();
