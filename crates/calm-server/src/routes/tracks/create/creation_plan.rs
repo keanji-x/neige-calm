@@ -22,7 +22,7 @@ pub(in crate::routes::tracks) async fn creation_plan(
         if canonical_creation_supported(&shape, CreateShape::MessageLess(())) {
             return Err(CalmError::Unauthorized);
         }
-        return Ok(CreatePlan::Excluded(request));
+        return Ok(CreatePlan::Historical(request));
     };
     let key = track_create_key(headers)?;
     if let Some(text) = &request.first_message {
@@ -88,7 +88,7 @@ pub(in crate::routes::tracks) async fn creation_plan(
                         }
                         calm_types::runtime::AgentProtocol::Codex
                         | calm_types::runtime::AgentProtocol::Acp => {
-                            Ok(CreatePlan::Excluded(request))
+                            Ok(CreatePlan::Historical(request))
                         }
                     };
                 }
@@ -97,7 +97,7 @@ pub(in crate::routes::tracks) async fn creation_plan(
             // replay and historical owners recheck their own admission; fresh
             // excluded shapes must retain that owner's error ordering too.
             if !canonical_creation_supported(&shape, input) {
-                return Ok(CreatePlan::Excluded(request));
+                return Ok(CreatePlan::Historical(request));
             }
             let area = crate::organization_access::require_area_access_tx(
                 tx,
@@ -113,7 +113,7 @@ pub(in crate::routes::tracks) async fn creation_plan(
                     workspace_root,
                 )?))
             } else {
-                CreatePlan::Excluded(request)
+                CreatePlan::Historical(request)
             })
         })
     })

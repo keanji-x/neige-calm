@@ -57,18 +57,23 @@ struct PriorAttempt {
     cwd: Option<String>,
 }
 
-/// Creation ownership is decided before historical preparation. Only excluded
-/// shapes may mint historically; a historical replay carries the actual receipt.
+/// Canonical creation plans carry allocation data for either input shape.
 type CanonicalCreation =
     CreateShape<creation_plan::HumanTrackCreationPlan, creation_plan::EmptyTrackCreationPlan>;
 
+/// Creation ownership is decided before historical preparation. A historical
+/// receipt carries its binding; a raw request leaves planning to that owner.
 pub(super) enum CreatePlan {
     Canonical(KeyedPlan<CanonicalCreation, CanonicalCreation>),
     HistoricalReceipt {
         binding: crate::db::sqlite::TrackCreateBinding,
         request: super::CreateTrackRequest,
     },
-    Excluded(super::CreateTrackRequest),
+    /// Hand the raw request to historical planning for shapes outside the canonical
+    /// cutover, non-User areas, or operation-only retries routed to that owner.
+    /// Historical planning retains retry selection and error ordering; this arm
+    /// does not imply a fresh mint.
+    Historical(super::CreateTrackRequest),
 }
 
 /// A [`KeyedPlan::Resume`]'s payload: the shared plan plus the prior attempt

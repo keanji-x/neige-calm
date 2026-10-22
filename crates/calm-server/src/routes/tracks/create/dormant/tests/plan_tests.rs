@@ -158,7 +158,7 @@ async fn canonical_claude_creation_unsupported_shapes_keep_explicit_coverage() {
                 creation_plan(&fx.route, Some(&fx.source), &headers, request)
                     .await
                     .unwrap(),
-                CreatePlan::Excluded(_)
+                CreatePlan::Historical(_)
             ),
             "{field}"
         );
@@ -172,7 +172,7 @@ async fn canonical_claude_creation_unsupported_shapes_keep_explicit_coverage() {
             creation_plan(&fx.route, Some(&fx.source), &headers, request)
                 .await
                 .unwrap(),
-            CreatePlan::Excluded(_)
+            CreatePlan::Historical(_)
         ));
     }
     assert_eq!(fx.counts().await, (0, 0, 0, 0, 0, 0));

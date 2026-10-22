@@ -788,7 +788,7 @@ pub(crate) async fn create_track(
         create::CreatePlan::HistoricalReceipt { binding, request } => {
             create::KeyedPlan::Resume((binding, request))
         }
-        create::CreatePlan::Excluded(request) => create::KeyedPlan::Mint(request),
+        create::CreatePlan::Historical(request) => create::KeyedPlan::Mint(request),
         create::CreatePlan::Canonical(plan) => {
             let _area_delete_guard =
                 crate::per_card_lock::lock_key(&s.area_delete_locks, area_id.as_str()).await;
