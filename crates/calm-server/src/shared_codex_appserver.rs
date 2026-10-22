@@ -22,9 +22,13 @@ pub(crate) use thread_mint::ThreadMintFailure;
 #[cfg(all(test, feature = "fixtures"))]
 pub(crate) mod native_owner_tests;
 pub(crate) use prompt_attempt::{CodexPromptDelivery, CodexPromptReport};
+mod connection_recovery;
+mod resume_replay;
 #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
 mod termination_identity_tests;
 mod thread_release;
+#[cfg(all(test, feature = "fixtures"))]
+mod transport_recovery_tests;
 
 use std::collections::HashSet;
 use std::collections::VecDeque;
@@ -500,6 +504,9 @@ pub struct SharedCodexAppServer {
     needs_respawn_on_next_thread_start: Arc<AtomicBool>,
     /// Typestate-companion state machine.
     core: Arc<tokio::sync::Mutex<SupervisorCore>>,
+    /// Serializes connection replacement and automatic subscription restoration.
+    connection_recovery_serial: Mutex<()>,
+    connection_needs_replay: AtomicBool,
     /// Serializes process transitions.
     transition_serial: Arc<tokio::sync::Mutex<()>>,
     /// Singleton claim for the background heal task; cleared by the RAII [`HealActiveGuard`].
@@ -736,6 +743,8 @@ impl SharedCodexAppServer {
                 attempts: 0,
                 generation: 0,
             })),
+            connection_recovery_serial: Mutex::new(()),
+            connection_needs_replay: AtomicBool::new(false),
             transition_serial: Arc::new(tokio::sync::Mutex::new(())),
             heal_active: Arc::new(AtomicBool::new(false)),
             heal_nudge: Arc::new(tokio::sync::Notify::new()),
@@ -806,6 +815,8 @@ impl SharedCodexAppServer {
                 attempts: 0,
                 generation: 0,
             })),
+            connection_recovery_serial: Mutex::new(()),
+            connection_needs_replay: AtomicBool::new(false),
             transition_serial: Arc::new(tokio::sync::Mutex::new(())),
             heal_active: Arc::new(AtomicBool::new(false)),
             heal_nudge: Arc::new(tokio::sync::Notify::new()),
@@ -1735,14 +1746,6 @@ impl SharedCodexAppServer {
         let client = self.connected_client().await?;
         self.require_authentication()?;
         Ok(client)
-    }
-
-    async fn connected_client(&self) -> std::result::Result<Arc<CodexAppServer>, ControlError> {
-        self.running_client().await.ok_or_else(|| {
-            ControlError::Unanswered(CalmError::CodexAppServer(
-                "shared app-server is not connected".into(),
-            ))
-        })
     }
 
     /// Caller MUST hold `transition_serial`.
@@ -2695,7 +2698,7 @@ impl SharedCodexAppServer {
     async fn running_client(&self) -> Option<Arc<CodexAppServer>> {
         let core = self.core.lock().await;
         match &core.state {
-            SupervisorState::Running { client, .. } => Some(client.clone()),
+            SupervisorState::Running { client, .. } if !client.is_closed() => Some(client.clone()),
             _ => None,
         }
     }
@@ -3051,9 +3054,17 @@ impl SharedCodexAppServer {
     async fn install_client(
         self: &Arc<Self>,
         client: Arc<CodexAppServer>,
-        mut notifications: crate::codex_appserver::NotificationStream,
+        notifications: crate::codex_appserver::NotificationStream,
     ) -> Result<JoinHandle<()>> {
         self.start_authentication_monitor();
+        self.forward_client(client, notifications).await
+    }
+
+    async fn forward_client(
+        &self,
+        client: Arc<CodexAppServer>,
+        mut notifications: crate::codex_appserver::NotificationStream,
+    ) -> Result<JoinHandle<()>> {
         // Stamp the daemon (re)connect wall-clock; common path for both fresh-spawn and hot-takeover.
         self.daemon_connected_at_ms
             .store(now_ms(), Ordering::SeqCst);
@@ -3186,151 +3197,6 @@ impl SharedCodexAppServer {
             self.thread_cache.insert(thread_id, card_id);
         }
         Ok(())
-    }
-
-    async fn resume_cached_threads(&self, mode: ResumeMode) {
-        let Some(client) = self.running_client().await else {
-            return;
-        };
-        for (thread_id, card_id) in self.resume_candidates() {
-            // The candidate list is a SNAPSHOT; a delete can drop a mapping while this loop is parked,
-            // so every candidate is re-validated HERE under `resume_replay_serial`, held across the
-            // whole iteration including the RPC (releasing it first would leave the window).
-            let _replay_guard = self.resume_replay_serial.lock().await;
-            if self.cached_card_for_thread(&thread_id).as_deref() != Some(card_id.as_str()) {
-                tracing::info!(
-                    target = "shared_codex_daemon::resume",
-                    %thread_id,
-                    %card_id,
-                    "skipping shared codex thread whose attribution was dropped \
-                     while the resume replay was in flight"
-                );
-                continue;
-            }
-            match crate::conversation_inputs::has_canonical_storage(self.repo.as_ref(), &card_id)
-                .await
-            {
-                Ok(false) => {}
-                Ok(true) => {
-                    tracing::info!(%card_id, "canonical conversation awaits current-source recovery");
-                    continue;
-                }
-                Err(_) => {
-                    tracing::warn!(%card_id, "conversation storage contract unavailable; automatic resume held");
-                    continue;
-                }
-            }
-            tracing::info!(
-                target = "shared_codex_daemon::resume",
-                %thread_id,
-                %card_id,
-                "resuming shared codex thread"
-            );
-            if mode == ResumeMode::HotTakeover {
-                Self::resume_thread_typed(&client, &thread_id, &card_id, ThreadConfig::NoMcp).await;
-                continue;
-            }
-
-            let (role, raw_token) = match write_in_tx_typed(self.repo.as_ref(), {
-                let thread_id = thread_id.clone();
-                let card_id = card_id.clone();
-                move |tx| {
-                    Box::pin(async move {
-                        let shape=crate::db::sqlite::card_execution_shape_tx(tx,&card_id).await?;
-                        let Some(runtime) =
-                            session_projection_active_for_card_tx(tx, &card_id).await?
-                        else {
-                            // Decide inside the same transaction as the token
-                            // choice: a systemError can arrive during replay.
-                            let failed: bool = sqlx::query_scalar(
-                                "SELECT EXISTS(SELECT 1 FROM cards c JOIN worker_sessions ws ON ws.id=c.session_id WHERE c.id=?1 \
-                                    AND ws.state='failed' AND json_extract(ws.handle_state_json,'$.mode')=?2)"
-                            ).bind(&card_id).bind(calm_types::harness::HARNESS_MODE).fetch_one(&mut **tx).await?;
-                            return Ok(if failed { ColdResumeAuthorization::Skip } else { ColdResumeAuthorization::NoMcp });
-                        };
-                        if runtime.thread_id.as_deref() != Some(thread_id.as_str()) {
-                            return Ok(ColdResumeAuthorization::NoMcp);
-                        }
-                        // One decoder for harness identity: a Planner card without a known Codex binding is not a
-                        // harness card and gets no credential; a conversation profile without an MCP role neither.
-                        let binding = crate::harness::profile::PlannerBinding::from_shape(&shape.kind,shape.role,&shape.payload);
-                        let no_mcp = match &binding {
-                            Some(binding) => binding.profile.mcp_role().is_none()
-                                || binding.provider != crate::session_projection_repo::AgentProvider::Codex,
-                            None => shape.role == CardRole::Planner,
-                        };
-                        if no_mcp {
-                            return Ok(ColdResumeAuthorization::NoMcp);
-                        }
-                        let raw=mint_and_persist_card_token(tx, &card_id, &runtime.id).await?;
-                        Ok(ColdResumeAuthorization::Token {role:shape.role,raw})
-                    })
-                }
-            })
-            .await
-            {
-                Ok(ColdResumeAuthorization::Token {role,raw}) => (role,raw),
-                Ok(ColdResumeAuthorization::Skip) => continue,
-                Ok(ColdResumeAuthorization::NoMcp) => {
-                    Self::resume_thread_typed(&client, &thread_id, &card_id, ThreadConfig::NoMcp)
-                        .await;
-                    continue;
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        target = "shared_codex_daemon::resume",
-                        %thread_id,
-                        %card_id,
-                        error = %e,
-                        "shared codex thread token refresh failed; leaving the thread unloaded"
-                    );
-                    continue;
-                }
-            };
-            // Only the cold respawn caller may rotate and reemit per-card MCP config, and only for the
-            // card's active thread; hot takeover plain-resumes because loaded threads ignore resume config.
-            Self::resume_thread_typed(
-                &client,
-                &thread_id,
-                &card_id,
-                ThreadConfig::McpShell {
-                    role,
-                    socket_path: self.kernel_mcp_socket_path.clone(),
-                    raw_token,
-                },
-            )
-            .await;
-        }
-    }
-
-    async fn resume_thread_typed(
-        client: &CodexAppServer,
-        thread_id: &str,
-        card_id: &str,
-        config: ThreadConfig,
-    ) {
-        let lowered = match config.to_wire_config() {
-            Ok(lowered) => lowered,
-            Err(e) => {
-                tracing::warn!(
-                    target = "shared_codex_daemon::resume",
-                    %thread_id,
-                    %card_id,
-                    error = %e,
-                    "shared codex thread resume config unavailable; leaving mapping intact"
-                );
-                return;
-            }
-        };
-        if let Err(e) = client.thread_resume_with_config(thread_id, lowered).await {
-            tracing::warn!(
-                target = "shared_codex_daemon::resume",
-                %thread_id,
-                %card_id,
-                error = %e,
-                "shared codex thread resume failed; leaving mapping intact"
-            );
-        }
     }
 }
 

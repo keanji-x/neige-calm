@@ -2,6 +2,7 @@
 
 mod support;
 mod codex_worker_shared_daemon {
+    mod recovery_tests;
     mod transport_tests;
 }
 

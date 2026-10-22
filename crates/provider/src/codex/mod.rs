@@ -20,6 +20,8 @@ mod interrupt;
 pub mod request_attempt;
 #[cfg(test)]
 mod start_mapping_tests;
+#[cfg(test)]
+mod transport_tests;
 use crate::send_boundary::PreSendGate;
 use request_attempt::RpcResponseError;
 pub use request_attempt::{RequestCrossing, RpcAttemptFailure, RpcRemoteError};
@@ -221,6 +223,11 @@ fn turn_steer_params(
 }
 
 impl CodexAppServer {
+    /// Local connection health only; a closed connection says nothing about remote execution.
+    pub fn is_closed(&self) -> bool {
+        self.transport.check().is_err() || self.reader.is_finished()
+    }
+
     /// Local transport-reader lifetime only; this does not prove a remote turn ended.
     pub fn reader_finished(&self) -> bool {
         self.reader.is_finished()
@@ -320,7 +327,11 @@ impl CodexAppServer {
 
         let (ws, _resp) = match tokio::time::timeout(
             CONNECT_TIMEOUT,
-            tokio_tungstenite::client_async(request, stream),
+            tokio_tungstenite::client_async_with_config(
+                request,
+                stream,
+                Some(client_transport::websocket_config()),
+            ),
         )
         .await
         {
@@ -604,7 +615,7 @@ async fn reader_loop(
     transport: Arc<TransportAbort>,
     routes: Arc<ApprovalRoutes>,
 ) {
-    let mut requests = server_requests::Dispatch::new(sink, transport, routes);
+    let mut requests = server_requests::Dispatch::new(sink, transport.clone(), routes);
     loop {
         let frame = tokio::select! {
             finished = requests.tasks.join_next() => {
@@ -616,7 +627,10 @@ async fn reader_loop(
         let msg = match frame {
             Ok(m) => m,
             Err(e) => {
-                tracing::debug!(error = %e, "codex app-server: ws read error; reader stopping");
+                transport.close(format!(
+                    "WebSocket read failed: {e}; pending outcomes unknown"
+                ));
+                tracing::warn!(error = %e, "codex app-server: ws read error; reader stopping");
                 break;
             }
         };
@@ -684,6 +698,7 @@ async fn reader_loop(
         }
     }
 
+    transport.close("WebSocket reader stopped; pending outcomes unknown".into());
     // Drain pending requests so their futures resolve with "connection closed" instead of hanging.
     let mut guard = pending.lock().unwrap();
     guard.clear();

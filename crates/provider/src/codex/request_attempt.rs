@@ -309,9 +309,17 @@ impl CodexAppServer {
                 after(Error::Transport(format!("decode {method} result: {error}")))
             }),
             Ok(Err(error)) => Err(RpcAttemptFailure::response(method, id, error)),
-            Err(_) => Err(after(Error::Transport(format!(
-                "{method}: connection closed before response"
-            )))),
+            Err(_) => {
+                let cause = self
+                    .transport
+                    .check()
+                    .err()
+                    .map(|error| error.to_string())
+                    .unwrap_or_else(|| "reader exited".into());
+                Err(after(Error::Transport(format!(
+                    "{method}: connection closed before response: {cause}"
+                ))))
+            }
         }
     }
 }

@@ -12,7 +12,7 @@ fn existing_caller_read() -> BoxFuture<'static, Result<()>> {
 
 impl SharedCodexAppServer {
     /// `model/list`, drained across codex's pagination cursor. Read-only and connection-only:
-    /// it never spawns or heals the daemon.
+    /// it may reconnect a failed transport but never spawns or heals the daemon.
     pub async fn model_list(&self, deadline: tokio::time::Instant) -> Result<Vec<CodexModel>> {
         self.model_list_admitted(
             deadline,

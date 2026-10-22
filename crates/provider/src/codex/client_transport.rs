@@ -1,31 +1,40 @@
 use super::{Error, Pending, Result};
 use std::os::fd::AsFd;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
+
+pub(super) fn websocket_config() -> tokio_tungstenite::tungstenite::protocol::WebSocketConfig {
+    let mut config = tokio_tungstenite::tungstenite::protocol::WebSocketConfig::default();
+    // thread/resume emits the entire retained history as ONE frame (#3039).
+    // A frame may reach the existing 64 MiB message bound, never exceed it.
+    config.max_frame_size = config.max_message_size;
+    config
+}
 
 /// A separately OWNED descriptor for the same socket, never a saved raw fd.
 /// shutdown reaches both split WS halves immediately, including read-side Pong
 /// flushing. Aborting a reader task alone only schedules its later destruction.
 pub(super) struct TransportAbort {
     socket: std::os::unix::net::UnixStream,
-    poisoned: AtomicBool,
+    failure: Mutex<Option<String>>,
 }
 impl TransportAbort {
     pub(super) fn new(stream: &tokio::net::UnixStream) -> std::io::Result<Self> {
         Ok(Self {
             socket: stream.as_fd().try_clone_to_owned()?.into(),
-            poisoned: AtomicBool::new(false),
+            failure: Mutex::new(None),
         })
     }
     pub(super) fn check(&self) -> Result<()> {
-        if self.poisoned.load(Ordering::Acquire) {
-            return Err(Error::Transport(
-                "transport aborted after incomplete write; outcome unknown".into(),
-            ));
+        if let Some(reason) = self.failure.lock().unwrap().as_ref() {
+            return Err(Error::Transport(reason.clone()));
         }
         Ok(())
     }
     pub(super) fn poison(&self) {
-        self.poisoned.store(true, Ordering::Release);
+        self.close("transport aborted after incomplete write; outcome unknown".into());
+    }
+    pub(super) fn close(&self, reason: String) {
+        self.failure.lock().unwrap().get_or_insert(reason);
         // No WebSocket close/flush: buffered application bytes must be discarded.
         loop {
             match self.socket.shutdown(std::net::Shutdown::Both) {

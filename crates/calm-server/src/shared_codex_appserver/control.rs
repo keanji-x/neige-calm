@@ -259,6 +259,8 @@ impl SharedCodexAppServer {
         if self.fake.is_some() {
             return Ok(self.native_turns.interrupt_snapshot(thread_id));
         }
+        // Recover the transport first; a disconnected source never proves quiescence.
+        self.connected_client().await.map_err(CalmError::from)?;
         // An empty in-process cache says nothing about a persisted thread on a
         // daemon awaiting hot takeover. Require the actual Running connection.
         let core = self.core.lock().await;

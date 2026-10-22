@@ -48,3 +48,10 @@ where
         .await
         .map_err(|e| format!("send notification: {e}"))
 }
+
+/// Per-socket fault injection: consume one method name and close without a response.
+pub(super) fn disconnect_once(sock: &std::path::Path, method: &str) -> bool {
+    let path = sock.with_extension("disconnect-once");
+    std::fs::read_to_string(&path).is_ok_and(|configured| configured.trim() == method)
+        && std::fs::remove_file(path).is_ok()
+}

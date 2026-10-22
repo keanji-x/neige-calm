@@ -439,6 +439,9 @@ async fn serve_conn(
         // Notifications (no id) — ignore.
         let Some(id) = id else { continue };
 
+        if wire::disconnect_once(&reads.sock, &method) {
+            return Ok(());
+        }
         match method.as_str() {
             "initialize" => {
                 if let Some(delay) = env_delay("FAKE_CODEX_INITIALIZE_DELAY_MS") {
