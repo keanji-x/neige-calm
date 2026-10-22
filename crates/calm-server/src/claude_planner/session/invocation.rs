@@ -76,7 +76,23 @@ impl ClaudePlannerSession {
                 "the Claude conversation is busy".into(),
             ));
         }
-        super::super::rewind::check(&self.shared.params, thread, &cut).await
+        let params = &self.shared.params;
+        self.provider_admission_gate().await?;
+        super::super::rewind::check(params, thread, &cut).await
+    }
+
+    /// All starts call this while holding this session's issue lock.
+    pub(super) async fn provider_admission_gate(&self) -> Result<()> {
+        let params = &self.shared.params;
+        let pool = params
+            .repo
+            .sqlite_db()
+            .ok_or(CalmError::ExecutionUnavailable)?;
+        params
+            .host
+            .provider_execution
+            .admission_gate(&pool, params.engine.as_ref(), &params.worker_session_id)
+            .await
     }
 
     pub(crate) async fn resolve_selection(

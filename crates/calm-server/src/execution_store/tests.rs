@@ -370,3 +370,69 @@ async fn unregistered_consumer_refused_at_admit() {
     assert!(store.load(&id).await.unwrap().is_none());
     assert!(store.pending().await.unwrap().is_empty());
 }
+
+#[tokio::test]
+async fn c4_consumer_inventory_real_store_unclassified_rows_and_scan_cost() {
+    let (store, pool) = fixture().await;
+    let intent = inserted(&store, &pool).await;
+    let id = intent.metadata.id.as_str();
+    let inventory = sql::consumer_inventory(pool.read_pool(), test_support::TEST_CONSUMER)
+        .await
+        .unwrap();
+    let row = inventory[0].1.as_ref().unwrap();
+    assert_eq!(row.execution_id, id);
+    assert_eq!(row.alias, intent.metadata.alias.0);
+    assert!(!row.settled);
+    sqlx::query("DROP TRIGGER workspace_executions_immutable")
+        .execute(pool.writer_pool())
+        .await
+        .unwrap();
+    // A malformed intent is unclassified even when queried for another consumer.
+    sqlx::query("UPDATE workspace_executions SET intent_json='{}' WHERE execution_id=?")
+        .bind(id)
+        .execute(pool.writer_pool())
+        .await
+        .unwrap();
+    for consumer in [test_support::TEST_CONSUMER, "another-consumer"] {
+        let rows = sql::consumer_inventory(pool.read_pool(), consumer)
+            .await
+            .unwrap();
+        assert!(rows[0].1.is_err());
+    }
+    sqlx::query("UPDATE workspace_executions SET intent_json=? WHERE execution_id=?")
+        .bind(serde_json::to_string(&intent.metadata).unwrap())
+        .bind(id)
+        .execute(pool.writer_pool())
+        .await
+        .unwrap();
+    // Real Store serialization across a representative retained-history inventory.
+    let mut tx = pool.writer_pool().begin().await.unwrap();
+    for _ in 0..1000 {
+        let next = test_support::intent("/".into());
+        store.insert(&mut tx, &next).await.unwrap();
+    }
+    tx.commit().await.unwrap();
+    let before = std::time::Instant::now();
+    let rows = sql::consumer_inventory(pool.read_pool(), test_support::TEST_CONSUMER)
+        .await
+        .unwrap();
+    eprintln!(
+        "consumer_inventory: {} non-retired real Store rows in {:?}",
+        rows.len(),
+        before.elapsed()
+    );
+    assert_eq!(rows.len(), 1001);
+    assert!(rows.iter().all(|(_, row)| row.is_ok()));
+    // Uniform with Store::pending(): one malformed identity fails the entire scan.
+    sqlx::query("UPDATE workspace_executions SET execution_id='malformed' WHERE execution_id=?")
+        .bind(id)
+        .execute(pool.writer_pool())
+        .await
+        .unwrap();
+    assert!(store.pending().await.is_err());
+    assert!(
+        sql::consumer_inventory(pool.read_pool(), test_support::TEST_CONSUMER)
+            .await
+            .is_err()
+    );
+}

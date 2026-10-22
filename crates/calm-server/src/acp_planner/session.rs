@@ -310,6 +310,15 @@ impl AcpPlannerSession {
                 native_session_id: receipt.native_session_id,
             });
         }
+        // Exact receipt replay above starts no process. Every new issue, historical or
+        // canonical, shares the provider fence under this session's issue lock.
+        crate::provider_execution::admission_gate(
+            &pool,
+            params.engine.as_ref(),
+            &params.worker_session_id,
+            None, // ACP has no Engine completion owner in C4.1.
+        )
+        .await?;
         input.check_source().await?;
         if shared.state.lock().expect("ACP state").active.is_some()
             || acp_submission_unresolved(pool.read_pool(), &params.worker_session_id)

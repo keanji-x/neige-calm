@@ -55,7 +55,7 @@ const SHUTDOWN_SETTLE_WAIT: Duration = Duration::from_secs(20);
 /// Everything one Claude Planner harness is built from; the caller (the start adapter and
 /// recovery) supplies every field.
 pub struct ClaudePlannerSessionParams {
-    /// Reserved for C4.1+; provider launches remain unchanged in C4.0b.
+    /// Rewind uses the registered Engine; turn and compaction migrate in C4.2.
     pub engine: Option<crate::execution_boot::ExecutionEngine>,
     pub host: Arc<ClaudePlannerHost>,
     pub worker_session_id: String,
@@ -327,6 +327,7 @@ impl ClaudePlannerSession {
         let shared = &self.shared;
         let params = &shared.params;
         let _issue = shared.issue.lock().await;
+        self.provider_admission_gate().await?;
         if shared.parked.is_parked() {
             return Err(CalmError::Conflict("Claude carrier is parked".into()).into());
         }

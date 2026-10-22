@@ -145,6 +145,10 @@ pub async fn consumer_inventory<'a>(
     let mut inventory = Vec::new();
     for row in rows {
         let execution_id: String = row.try_get("execution_id")?;
+        // Match Store::pending: malformed identity aborts the whole inventory.
+        // Typed writers guarantee this column; damage is not an orphan signal.
+        workspace::execution::ExecutionId::try_from(execution_id.clone())
+            .map_err(|error| sqlx::Error::Decode(error.into()))?;
         let entry = (|| -> crate::error::Result<_> {
             let json: String = row.try_get("intent_json")?;
             let intent: Intent = serde_json::from_str(&json)?;
@@ -274,6 +278,16 @@ pub async fn terminal_settled_tx(
         .execute(&mut **tx)
         .await?;
     Ok(())
+}
+
+pub async fn settlement(
+    tx: &mut Transaction<'_, Sqlite>,
+    id: &str,
+) -> Result<Option<String>, sqlx::Error> {
+    sqlx::query_scalar("SELECT settlement_json FROM workspace_executions WHERE execution_id=?1")
+        .bind(id)
+        .fetch_one(&mut **tx)
+        .await
 }
 
 #[cfg(test)]

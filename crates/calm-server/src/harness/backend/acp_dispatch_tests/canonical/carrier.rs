@@ -273,3 +273,34 @@ async fn canonical_acp_end_is_fact_on_failed_current_carrier_and_refuses_retirem
     drop(park);
     fx.session.shutdown().await.unwrap();
 }
+
+#[tokio::test]
+async fn c4_canonical_acp_issue_refuses_outstanding_provider_execution() {
+    let fx = Fixture::new("reply").await;
+    // A retained owner claim is an admission fence even if its execution is unclassified.
+    sqlx::query("UPDATE worker_sessions SET provider_execution_json=? WHERE id=?")
+        .bind(
+            serde_json::json!({"version":1,"execution_id":crate::model::new_id(),
+            "purpose":"RewindCheck","release":"Held","decision":"Observing"})
+            .to_string(),
+        )
+        .bind(&fx.owner.worker)
+        .execute(fx.owner.repo.pool())
+        .await
+        .unwrap();
+    let report = fx.dispatch().await.unwrap();
+    let error = report
+        .report
+        .outcome()
+        .as_ref()
+        .expect_err("retained execution must fence ACP issuance");
+    assert!(error.to_string().contains("provider execution"), "{error}");
+    assert_eq!(fx.prompts(), 0);
+    assert!(!fx.dir.path().join("requests.jsonl").exists());
+    let receipts: i64 = sqlx::query_scalar("SELECT count(*) FROM acp_submissions")
+        .fetch_one(fx.owner.repo.pool())
+        .await
+        .unwrap();
+    assert_eq!(receipts, 0);
+    fx.session.shutdown().await.unwrap();
+}

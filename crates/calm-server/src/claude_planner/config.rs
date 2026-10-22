@@ -113,8 +113,9 @@ pub const CONFIG_FLAG: &str = "--claude-planner-config";
 /// without the config, so the boot sweep and every retirement `stop` work either way.
 #[derive(Debug)]
 pub struct ClaudePlannerHost {
-    /// Shared engine binding, reserved for the Planner execution migration.
+    /// Shared Engine binding for registered Planner executions.
     pub execution: crate::execution_quiesce::ExecutionLifecycle,
+    pub provider_execution: crate::provider_execution::ProviderExecution,
     config: Option<ClaudePlannerConfig>,
     pub instance: MarkerInstance,
     pub instructions_dir: PathBuf,
@@ -139,14 +140,16 @@ impl ClaudePlannerHost {
                 .into_iter()
                 .map(|descriptor| descriptor.name),
         );
+        let instructions_dir = instructions_dir(data_dir)?;
         Ok(Self {
             execution: Default::default(),
+            provider_execution: super::execution::owner(instructions_dir.clone()),
             config,
             instance: MarkerInstance::for_data_dir(
                 data_dir,
                 crate::claude_planner::stop::MARKER_KEY,
             )?,
-            instructions_dir: instructions_dir(data_dir)?,
+            instructions_dir,
             mcp_shim,
             mcp_socket,
             calm_tools,

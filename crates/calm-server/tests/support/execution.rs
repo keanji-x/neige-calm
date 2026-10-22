@@ -58,6 +58,31 @@ impl Drop for Fixture {
     }
 }
 impl Fixture {
+    pub fn assert_journal_excludes(&self, needle: &str) {
+        fn visit(dir: &Path, needle: &[u8], journals: &mut usize) {
+            for entry in std::fs::read_dir(dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    visit(&path, needle, journals);
+                } else if path
+                    .extension()
+                    .is_some_and(|extension| extension == "execution")
+                {
+                    *journals += 1;
+                    let bytes = std::fs::read(path).unwrap();
+                    assert!(!bytes.windows(needle.len()).any(|window| window == needle));
+                }
+            }
+        }
+        let mut journals = 0;
+        visit(
+            &self._root.path().join("journal"),
+            needle.as_bytes(),
+            &mut journals,
+        );
+        assert!(journals > 0, "secrecy assertion inspected a live journal");
+    }
+
     pub fn kernel_args(&self) -> Vec<std::ffi::OsString> {
         vec![
             "--kernel-client-key-file".into(),
@@ -109,22 +134,40 @@ impl Fixture {
         }
     }
 
-    pub fn configure(&self, cfg: &mut calm_server::config::Config) {
-        cfg.kernel_client_key_file = Some(self.key.clone());
-        cfg.proc_supervisor_sock = Some(self.socket.clone());
-        cfg.execution_recovery_interval = std::time::Duration::from_secs(1);
-    }
-
-    pub async fn new(pool: calm_server::db::sqlite::SqliteDb) -> Self {
+    pub async fn new_kernel(
+        &self,
+        pool: calm_server::db::sqlite::SqliteDb,
+        hold_retire: bool,
+    ) -> calm_server::execution_boot::ExecutionEngine {
         use clap::Parser;
-        let mut fixture = Self::start();
         let mut cfg = calm_server::config::Config::try_parse_from(["calm-server"]).unwrap();
-        fixture.configure(&mut cfg);
-        fixture.faults = cfg.execution_recovery_faults.clone();
+        self.configure(&mut cfg);
+        cfg.execution_recovery_interval = std::time::Duration::from_secs(3600);
+        if hold_retire {
+            cfg.execution_recovery_faults.arm("load");
+        }
         let engine = calm_server::execution_boot::recover(&cfg, pool)
             .await
             .unwrap()
             .unwrap();
+        if hold_retire {
+            tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                while cfg
+                    .execution_recovery_faults
+                    .failures
+                    .load(std::sync::atomic::Ordering::SeqCst)
+                    != 1
+                {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+        }
+        Self::wait_available(&engine).await;
+        engine.as_ref().clone()
+    }
+    async fn wait_available(engine: &calm_server::execution_boot::ExecutionEngine) {
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
             while !engine.available() {
                 tokio::time::sleep(std::time::Duration::from_millis(10)).await;
@@ -132,6 +175,32 @@ impl Fixture {
         })
         .await
         .unwrap();
+    }
+
+    pub fn configure(&self, cfg: &mut calm_server::config::Config) {
+        cfg.kernel_client_key_file = Some(self.key.clone());
+        cfg.proc_supervisor_sock = Some(self.socket.clone());
+        cfg.execution_recovery_interval = std::time::Duration::from_secs(1);
+    }
+
+    pub async fn new(pool: calm_server::db::sqlite::SqliteDb) -> Self {
+        Self::new_with_interval(pool, std::time::Duration::from_secs(1)).await
+    }
+    pub async fn new_with_interval(
+        pool: calm_server::db::sqlite::SqliteDb,
+        interval: std::time::Duration,
+    ) -> Self {
+        use clap::Parser;
+        let mut fixture = Self::start();
+        let mut cfg = calm_server::config::Config::try_parse_from(["calm-server"]).unwrap();
+        fixture.configure(&mut cfg);
+        cfg.execution_recovery_interval = interval;
+        fixture.faults = cfg.execution_recovery_faults.clone();
+        let engine = calm_server::execution_boot::recover(&cfg, pool)
+            .await
+            .unwrap()
+            .unwrap();
+        Self::wait_available(&engine).await;
         fixture.lifecycle.bind(engine);
         fixture
     }

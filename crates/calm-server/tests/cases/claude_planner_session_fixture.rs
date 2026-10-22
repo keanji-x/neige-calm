@@ -68,6 +68,13 @@ impl Rig {
     }
 
     pub async fn with_instructions(scenario: &str, instructions: &str) -> Self {
+        Self::with_execution_interval(scenario, instructions, Duration::from_secs(1)).await
+    }
+    pub async fn with_execution_interval(
+        scenario: &str,
+        instructions: &str,
+        interval: Duration,
+    ) -> Self {
         let dir = tempfile::tempdir().expect("tempdir");
         let bin = dir.path().join("bin");
         let data = dir.path().join("data");
@@ -79,7 +86,9 @@ impl Rig {
         std::fs::write(bin.join("scenario"), scenario).expect("scenario");
 
         let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.expect("repo"));
-        let execution = crate::support::execution::Fixture::new(repo.db().clone()).await;
+        let execution =
+            crate::support::execution::Fixture::new_with_interval(repo.db().clone(), interval)
+                .await;
         let (card_id, track_id) = planner_card(&repo).await;
         let config = ClaudePlannerConfig {
             claude_binary: bin.join("claude"),
@@ -123,6 +132,22 @@ impl Rig {
     }
 
     /// The session every test drives.
+    pub async fn restart_executor(&mut self) {
+        self._execution.restart().await;
+    }
+    pub async fn new_kernel(
+        &self,
+        hold_retire: bool,
+    ) -> calm_server::execution_boot::ExecutionEngine {
+        self._execution
+            .new_kernel(self.repo.db().clone(), hold_retire)
+            .await
+    }
+
+    pub fn assert_execution_journal_excludes(&self, needle: &str) {
+        self._execution.assert_journal_excludes(needle);
+    }
+
     pub fn session(&self) -> &Arc<ClaudePlannerSession> {
         self.session.as_ref().expect("opened in the constructor")
     }
@@ -150,8 +175,17 @@ impl Rig {
 
     /// A fresh session the registry never installed.
     pub async fn open_session_uninstalled(&self) -> ClaudePlannerSession {
+        self.open_session_with_environment(Vec::new(), self.host.execution.engine().cloned())
+            .await
+    }
+
+    pub async fn open_session_with_environment(
+        &self,
+        proxy: Vec<(String, String, String)>,
+        engine: Option<calm_server::execution_boot::ExecutionEngine>,
+    ) -> ClaudePlannerSession {
         ClaudePlannerSession::open(ClaudePlannerSessionParams {
-            engine: self.host.execution.engine().cloned(),
+            engine,
             host: Arc::clone(&self.host),
             worker_session_id: self.worker_session_id.clone(),
             card_id: self.card_id.clone(),
@@ -162,7 +196,7 @@ impl Rig {
                 calm_server::mcp_server::wiring::MCP_SERVER_KEY,
                 ["neige_report_commit".to_string()],
             ),
-            proxy: Vec::new(),
+            proxy,
             prior_total_tokens: 0,
             repo: self.repo.clone(),
             seals: Arc::clone(self.daemon.thread_seals()),
@@ -279,7 +313,7 @@ pub fn client_id() -> String {
     uuid::Uuid::new_v4().simple().to_string()
 }
 
-async fn planner_card(repo: &Arc<SqlxRepo>) -> (String, String) {
+pub(super) async fn planner_card(repo: &Arc<SqlxRepo>) -> (String, String) {
     let area = repo
         .area_create(
             LEGACY_OWNER_USER_ID,
@@ -328,7 +362,12 @@ async fn planner_card(repo: &Arc<SqlxRepo>) -> (String, String) {
 }
 
 /// A managed Claude Planner row, with native identity still unbound before its first spawn.
-async fn worker_session_row(repo: &Arc<SqlxRepo>, id: &str, card_id: &str, thread: &str) {
+pub(super) async fn worker_session_row(
+    repo: &Arc<SqlxRepo>,
+    id: &str,
+    card_id: &str,
+    thread: &str,
+) {
     let mut tx = repo.pool().begin().await.expect("tx");
     session_start_runtime_tx(
         &mut tx,

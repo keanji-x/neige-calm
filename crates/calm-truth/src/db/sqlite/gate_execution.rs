@@ -85,12 +85,4 @@ pub async fn require_record(
     }
     Ok(())
 }
-pub async fn settlement(
-    tx: &mut Transaction<'_, Sqlite>,
-    id: &str,
-) -> Result<Option<String>, sqlx::Error> {
-    sqlx::query_scalar("SELECT settlement_json FROM workspace_executions WHERE execution_id=?1")
-        .bind(id)
-        .fetch_one(&mut **tx)
-        .await
-}
+pub use super::workspace_execution::settlement;

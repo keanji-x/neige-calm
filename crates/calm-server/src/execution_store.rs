@@ -110,6 +110,8 @@ impl Store for SqliteExecutionStore {
         sql::request(tx, id.as_str(), desired).await.map_err(error)
     }
     async fn load(&self, id: &ExecutionId) -> Result<Option<Stored>, StoreError> {
+        #[cfg(feature = "fixtures")]
+        self.faults.check("load")?;
         let Some(row) = sql::load(self.pool.read_pool(), id.as_str())
             .await
             .map_err(error)?

@@ -366,13 +366,55 @@ async fn provider_execution_sweep_inventory_finds_orphans_including_settled() {
     let mut tx = db.writer_pool().begin().await.unwrap();
     let consumer = "consumer'with-quote";
     for (id, session, settled, retired, selected) in [
-        ("deleted", "deleted-session", false, false, true),
-        ("null", "empty", false, false, true),
-        ("mismatch", "worker", false, false, true),
-        ("settled", "settled-session", true, false, true),
-        ("healthy", "healthy-session", false, false, true),
-        ("retired", "retired-session", true, true, true),
-        ("other", "other-session", false, false, false),
+        (
+            "00000000000000000000000000000001",
+            "deleted-session",
+            false,
+            false,
+            true,
+        ),
+        (
+            "00000000000000000000000000000004",
+            "empty",
+            false,
+            false,
+            true,
+        ),
+        (
+            "00000000000000000000000000000003",
+            "worker",
+            false,
+            false,
+            true,
+        ),
+        (
+            "00000000000000000000000000000005",
+            "settled-session",
+            true,
+            false,
+            true,
+        ),
+        (
+            "00000000000000000000000000000002",
+            "healthy-session",
+            false,
+            false,
+            true,
+        ),
+        (
+            "00000000000000000000000000000006",
+            "retired-session",
+            true,
+            true,
+            true,
+        ),
+        (
+            "00000000000000000000000000000007",
+            "other-session",
+            false,
+            false,
+            false,
+        ),
     ] {
         sqlx::query("INSERT OR IGNORE INTO worker_sessions(id) VALUES (?)")
             .bind(session)
@@ -380,7 +422,7 @@ async fn provider_execution_sweep_inventory_finds_orphans_including_settled() {
             .await
             .unwrap();
         // ExecutionMetadata is persisted directly in intent_json by SqliteExecutionStore.
-        let intent = serde_json::json!({"consumer": if selected { consumer } else { "other" },
+        let intent = serde_json::json!({"consumer": if selected { consumer } else { "00000000000000000000000000000007" },
             "alias": session})
         .to_string();
         executions::insert(&mut tx, id, "track", session, &intent, "{}")
@@ -392,12 +434,12 @@ async fn provider_execution_sweep_inventory_finds_orphans_including_settled() {
         if retired {
             executions::request(&mut tx, id, "retire").await.unwrap();
         }
-        if id == "healthy" || id == "mismatch" {
+        if id == "00000000000000000000000000000002" || id == "00000000000000000000000000000003" {
             applied(
                 admit(
                     &mut tx,
                     session,
-                    if id == "healthy" {
+                    if id == "00000000000000000000000000000002" {
                         id
                     } else {
                         "another-execution"
@@ -416,7 +458,7 @@ async fn provider_execution_sweep_inventory_finds_orphans_including_settled() {
         .await
         .unwrap();
     // Exercise a stopped execution as well as desired=run.
-    executions::request(&mut tx, "mismatch", "stop")
+    executions::request(&mut tx, "00000000000000000000000000000003", "stop")
         .await
         .unwrap();
     tx.commit().await.unwrap();
@@ -431,20 +473,31 @@ async fn provider_execution_sweep_inventory_finds_orphans_including_settled() {
                 id.as_str()
             })
             .collect::<Vec<_>>(),
-        ["deleted", "healthy", "mismatch", "null", "settled"]
+        [
+            "00000000000000000000000000000001",
+            "00000000000000000000000000000002",
+            "00000000000000000000000000000003",
+            "00000000000000000000000000000004",
+            "00000000000000000000000000000005"
+        ]
     );
     let mut orphans = Vec::new();
     for (_, row) in inventory {
         let row = row.unwrap();
-        assert_eq!(row.settled, row.execution_id == "settled");
+        assert_eq!(
+            row.settled,
+            row.execution_id == "00000000000000000000000000000005"
+        );
         let claim = load(db.read_pool(), &row.alias).await;
         match row.execution_id.as_str() {
-            "deleted" => assert!(matches!(
+            "00000000000000000000000000000001" => assert!(matches!(
                 &claim,
                 Err(CalmError::Db(sqlx::Error::RowNotFound))
             )),
-            "null" | "settled" => assert!(claim.as_ref().unwrap().is_none()),
-            "mismatch" => assert_eq!(
+            "00000000000000000000000000000004" | "00000000000000000000000000000005" => {
+                assert!(claim.as_ref().unwrap().is_none())
+            }
+            "00000000000000000000000000000003" => assert_eq!(
                 claim
                     .as_ref()
                     .unwrap()
@@ -454,7 +507,7 @@ async fn provider_execution_sweep_inventory_finds_orphans_including_settled() {
                     .execution_id,
                 "another-execution"
             ),
-            "healthy" => assert_eq!(
+            "00000000000000000000000000000002" => assert_eq!(
                 claim
                     .as_ref()
                     .unwrap()
@@ -471,7 +524,15 @@ async fn provider_execution_sweep_inventory_finds_orphans_including_settled() {
             orphans.push(row.execution_id);
         }
     }
-    assert_eq!(orphans, ["deleted", "mismatch", "null", "settled"]);
+    assert_eq!(
+        orphans,
+        [
+            "00000000000000000000000000000001",
+            "00000000000000000000000000000003",
+            "00000000000000000000000000000004",
+            "00000000000000000000000000000005"
+        ]
+    );
     assert!(
         executions::consumer_inventory(db.read_pool(), "absent")
             .await
@@ -535,11 +596,11 @@ async fn provider_execution_consumer_inventory_isolates_corrupt_rows() {
     // Bypass the JSON CHECK only to exercise damaged persisted data, too.
     sqlx::raw_sql(r#"PRAGMA ignore_check_constraints = ON;
         INSERT INTO workspace_executions(execution_id,track_id,alias,intent_json,secrets_json,desired) VALUES
-        ('healthy','track','healthy','{"consumer":"selected","alias":"worker"}','{}','run'),
-        ('blob','track','blob',x'FF','{}','run'),
-        ('text','track','text',CAST(x'FF' AS TEXT),'{}','run'),
-        ('json','track','json','{','{}','run'),
-        ('alias','track','alias','{"consumer":"selected","alias":null}','{}','run');
+        ('00000000000000000000000000000001','track','healthy','{"consumer":"selected","alias":"worker"}','{}','run'),
+        ('00000000000000000000000000000002','track','blob',x'FF','{}','run'),
+        ('00000000000000000000000000000003','track','text',CAST(x'FF' AS TEXT),'{}','run'),
+        ('00000000000000000000000000000004','track','json','{','{}','run'),
+        ('00000000000000000000000000000005','track','alias','{"consumer":"selected","alias":null}','{}','run');
         PRAGMA ignore_check_constraints = OFF;"#)
         .execute(db.writer_pool()).await.unwrap();
     let inventory = executions::consumer_inventory(db.read_pool(), "selected")
@@ -547,7 +608,7 @@ async fn provider_execution_consumer_inventory_isolates_corrupt_rows() {
         .unwrap();
     assert_eq!(inventory.len(), 5);
     for (id, row) in inventory {
-        if id == "healthy" {
+        if id == "00000000000000000000000000000001" {
             let row = row.unwrap();
             assert_eq!(row.execution_id, id);
             assert_eq!(row.alias, "worker");

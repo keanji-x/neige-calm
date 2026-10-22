@@ -298,6 +298,7 @@ http-body-util = "0.1"
 # `hyper-util` supplies `TokioIo`, the tokio-IO adapter hyper 1 no longer ships.
 hyper = { version = "1", features = ["client", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
+url = "2"
 qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 
 # Plugin host (Slice B): unix-only — used by `plugin_host::process` to send a
@@ -320,7 +321,6 @@ libc = "0.2"
 
 [dev-dependencies]
 workspace-runtime = { path = "../workspace-runtime", features = ["test-support"] }
-url = "2"
 plugin = { path = "../plugin", features = ["test-support"] }
 calm-test-sockets = { path = "../calm-test-sockets" }
 # `test_support::{ChildGuard, ReapedProcDir}` for the /proc-scan unit tests (#1793).

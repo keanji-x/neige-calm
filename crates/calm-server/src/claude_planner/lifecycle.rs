@@ -26,6 +26,28 @@ async fn revoke(
 /// never consults the fixtures stop-failure seam.
 pub async fn boot(repo: &dyn RepoEventWrite, host: &ClaudePlannerHost) -> Result<()> {
     let ids = revoke(repo, ClaudePlannerScope::All).await?;
+    #[cfg(feature = "fixtures")]
+    crate::test_seams::pause_point(
+        "c4-boot-after-revoke",
+        &host.instructions_dir.display().to_string(),
+    )
+    .await;
+    let pass_a_ids = ids.clone();
+    if let Err(error) = write_in_tx_typed(repo, move |tx| {
+        Box::pin(
+            async move { crate::provider_execution::sweep::boot_pass_a(tx, &pass_a_ids).await },
+        )
+    })
+    .await
+    {
+        tracing::warn!(%error, "Claude provider boot pass A failed; durable sweep will retry");
+    }
+    #[cfg(feature = "fixtures")]
+    crate::test_seams::pause_point(
+        "c4-boot-after-pass-a",
+        &host.instructions_dir.display().to_string(),
+    )
+    .await;
     let ids: Vec<&str> = ids.iter().map(String::as_str).collect();
     if let Err(error) = sweep(&host.instance, &ids, SeamPolicy::Ignore).await {
         tracing::warn!(
@@ -36,7 +58,11 @@ pub async fn boot(repo: &dyn RepoEventWrite, host: &ClaudePlannerHost) -> Result
     match std::fs::read_dir(&host.instructions_dir) {
         Ok(entries) => {
             for entry in entries.flatten() {
-                if let Err(error) = std::fs::remove_file(entry.path()) {
+                if let Err(error) = if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+                    std::fs::remove_dir_all(entry.path())
+                } else {
+                    std::fs::remove_file(entry.path())
+                } {
                     tracing::warn!(
                         path = %entry.path().display(),
                         %error,

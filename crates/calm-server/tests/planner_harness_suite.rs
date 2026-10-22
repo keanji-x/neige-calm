@@ -1,3 +1,11 @@
+#[path = "cases/c4_provider_alias.rs"]
+mod c4_provider_alias;
+#[path = "cases/c4_provider_boot.rs"]
+mod c4_provider_boot;
+#[path = "cases/c4_provider_execution.rs"]
+mod c4_provider_execution;
+#[path = "cases/c4_provider_stderr.rs"]
+mod c4_provider_stderr;
 mod support;
 
 #[path = "cases/planner_release_commit.rs"]

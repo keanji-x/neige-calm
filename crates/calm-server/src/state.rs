@@ -1650,6 +1650,13 @@ impl AppState {
             state.route.acp_planner.execution.bind(engine.clone());
             state.operation_runtime.execution().bind(engine.clone());
             state.plugin.execution.bind(engine.clone());
+            if let Some(pool) = state.raw.sqlite_db() {
+                crate::provider_execution::sweep::spawn(
+                    pool,
+                    engine.as_ref().clone(),
+                    crate::execution_boot::provider_owners(&state.route.claude_planner),
+                );
+            }
         }
 
         // Orphan-terminal sweeper; emits `TerminalDeleted` through the audited write pipeline. The

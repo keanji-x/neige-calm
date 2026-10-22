@@ -17,6 +17,7 @@ pub mod catalog_fetch;
 pub(crate) mod compact;
 pub mod config;
 mod driver;
+pub(crate) mod execution;
 pub mod lifecycle;
 pub mod models;
 mod outcome_record;
