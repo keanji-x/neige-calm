@@ -52,7 +52,61 @@ pub(crate) struct RecoveryThread<'a> {
     card_id: &'a str,
 }
 
+#[cfg(all(test, feature = "fixtures"))]
+pub(super) struct ExactLookupWaiter {
+    card_id: String,
+    thread_id: String,
+    entered: tokio::sync::oneshot::Sender<()>,
+}
+
 impl SharedCodexAppServer {
+    #[cfg(all(test, feature = "fixtures"))]
+    pub(crate) fn expect_exact_lookup_waiter_for_test(
+        &self,
+        card_id: &str,
+        thread_id: &str,
+    ) -> tokio::sync::oneshot::Receiver<()> {
+        let (entered, receiver) = tokio::sync::oneshot::channel();
+        let mut waiter = self.exact_lookup_waiter.lock().unwrap();
+        assert!(waiter.is_none(), "exact lookup observer already armed");
+        *waiter = Some(ExactLookupWaiter {
+            card_id: card_id.to_owned(),
+            thread_id: thread_id.to_owned(),
+            entered,
+        });
+        receiver
+    }
+
+    #[cfg(all(test, feature = "fixtures"))]
+    async fn acquire_exact_client(
+        &self,
+        target: &RecoveryTarget,
+    ) -> std::result::Result<Arc<CodexAppServer>, ControlError> {
+        let connection = self.connected_client();
+        tokio::pin!(connection);
+        std::future::poll_fn(|cx| {
+            let result = std::future::Future::poll(connection.as_mut(), cx);
+            if result.is_pending() {
+                let mut waiter = self.exact_lookup_waiter.lock().unwrap();
+                if waiter.as_ref().is_some_and(|waiter| {
+                    waiter.card_id == target.card_id() && waiter.thread_id == target.thread_id()
+                }) {
+                    let _ = waiter.take().unwrap().entered.send(());
+                }
+            }
+            result
+        })
+        .await
+    }
+
+    #[cfg(not(all(test, feature = "fixtures")))]
+    async fn acquire_exact_client(
+        &self,
+        _target: &RecoveryTarget,
+    ) -> std::result::Result<Arc<CodexAppServer>, ControlError> {
+        self.connected_client().await
+    }
+
     pub(crate) async fn with_exact_thread<T>(
         &self,
         target: &RecoveryTarget,
@@ -64,10 +118,10 @@ impl SharedCodexAppServer {
         let client = if self.fake.is_some() {
             RecoveryClient::Fixture
         } else {
-            RecoveryClient::Native(self.connected_client().await?)
+            RecoveryClient::Native(self.acquire_exact_client(target).await?)
         };
         #[cfg(not(feature = "fixtures"))]
-        let client = RecoveryClient::Native(self.connected_client().await?);
+        let client = RecoveryClient::Native(self.acquire_exact_client(target).await?);
         let _transition = self.transition_serial.lock().await;
         let _replay = self.resume_replay_serial.lock().await;
         match &client {

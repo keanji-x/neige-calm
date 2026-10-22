@@ -19,7 +19,7 @@ impl SharedCodexAppServer {
             .map_err(ControlError::Unanswered)?;
         self.ready_client().await.ok_or_else(|| {
             ControlError::Unanswered(CalmError::CodexAppServer(
-                "shared app-server is not connected or restoration is incomplete".into(),
+                "shared app-server is not connected".into(),
             ))
         })
     }

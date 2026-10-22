@@ -70,6 +70,11 @@ pub(super) async fn second_turn(
     } else {
         None
     };
+    let entered = (scenario == Scenario::RevokeGate).then(|| {
+        state
+            .shared_codex_appserver
+            .expect_exact_lookup_waiter_for_test(card, THREAD)
+    });
     if scenario == Scenario::HistoricalRefusal {
         let row = fixture
             .repo
@@ -117,23 +122,13 @@ pub(super) async fn second_turn(
         "stage: new HTTP input committed on original worker; pending1, original attempt1, no new active"
     );
     if scenario == Scenario::RevokeGate {
-        // The retained owner's initial SQL finishes before entering the
-        // recovery transport. That transport holds transition before waiting
-        // for the Core we hold; its first admission is AFTER connected_client.
-        tokio::time::timeout(Duration::from_secs(5), async {
-            loop {
-                let transition = state
-                    .shared_codex_appserver
-                    .lock_transition_serial_for_test();
-                tokio::pin!(transition);
-                if futures_util::poll!(&mut transition).is_pending() {
-                    break;
-                }
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("actual recovery reached the native owner behind held Core");
+        // Exact recovery acquires its connected source before taking transition.
+        // Observe that real lookup pending behind held Core, then revoke before
+        // releasing it so admission must recheck the current source.
+        tokio::time::timeout(Duration::from_secs(5), entered.unwrap())
+            .await
+            .expect("actual recovery reached the native owner behind held Core")
+            .expect("exact lookup observer remains attached");
         post(app, cookie, "/api/auth/logout", "logout", json!({})).await;
         drop(gate);
         assert_recovery_held(fixture, state, &mut peer, track, card, worker, old_token).await;

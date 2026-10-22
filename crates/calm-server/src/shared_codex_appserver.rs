@@ -490,6 +490,8 @@ pub struct SharedCodexAppServer {
     core: Arc<tokio::sync::Mutex<SupervisorCore>>,
     /// Serializes connection replacement and automatic subscription restoration.
     connection_recovery_serial: Mutex<()>,
+    #[cfg(all(test, feature = "fixtures"))]
+    exact_lookup_waiter: std::sync::Mutex<Option<exact_thread::ExactLookupWaiter>>,
     /// Serializes process transitions.
     transition_serial: Arc<tokio::sync::Mutex<()>>,
     /// Singleton claim for the background heal task; cleared by the RAII [`HealActiveGuard`].
@@ -727,6 +729,8 @@ impl SharedCodexAppServer {
                 generation: 0,
             })),
             connection_recovery_serial: Mutex::new(()),
+            #[cfg(all(test, feature = "fixtures"))]
+            exact_lookup_waiter: std::sync::Mutex::new(None),
             transition_serial: Arc::new(tokio::sync::Mutex::new(())),
             heal_active: Arc::new(AtomicBool::new(false)),
             heal_nudge: Arc::new(tokio::sync::Notify::new()),
@@ -798,6 +802,8 @@ impl SharedCodexAppServer {
                 generation: 0,
             })),
             connection_recovery_serial: Mutex::new(()),
+            #[cfg(all(test, feature = "fixtures"))]
+            exact_lookup_waiter: std::sync::Mutex::new(None),
             transition_serial: Arc::new(tokio::sync::Mutex::new(())),
             heal_active: Arc::new(AtomicBool::new(false)),
             heal_nudge: Arc::new(tokio::sync::Notify::new()),
