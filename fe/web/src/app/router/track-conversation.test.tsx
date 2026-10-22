@@ -4407,7 +4407,7 @@ describe('side conversations', () => {
     setup((request) => request.path === '/api/version' ? sideVersion() : undefined);
     fireEvent.click(await screen.findByRole('button', { name: 'Conversation Assistant' }));
     await waitFor(() => expect(messageField().getAttribute('contenteditable')).toBe('true'));
-    await write('/side');
+    await completeAndSubmit('side');
     const branch = await screen.findByRole('region', { name: 'Side conversation · Codex' });
     const field = within(branch).getByRole('combobox', { name: 'Message' });
     await typeInto(field, 'Unsent side words');
@@ -4466,7 +4466,7 @@ it.each(['parent', 'side'] as const)('interrupts only the focused %s pane when p
   });
   fireEvent.click(await screen.findByRole('button', { name: 'Conversation Assistant' }));
   await waitFor(() => expect(messageField().getAttribute('contenteditable')).toBe('true'));
-  await write('/side');
+  await completeAndSubmit('side');
   const branch = await screen.findByRole('region', { name: 'Side conversation · Codex' });
   const field = within(focused === 'side' ? branch : screen.getByRole('complementary', { name: 'Assistant' }))
     .getByRole('combobox', { name: 'Message' });
@@ -4485,7 +4485,7 @@ it('does not offer an ordinary /new draft in the side-only slot', async () => {
   setup((request) => request.path === '/api/version' ? sideVersion() : undefined);
   fireEvent.click(await screen.findByRole('button', { name: 'Conversation Assistant' }));
   await waitFor(() => expect(messageField().getAttribute('contenteditable')).toBe('true'));
-  await write('/side');
+  await completeAndSubmit('side');
   const branch = await screen.findByRole('region', { name: 'Side conversation · Codex' });
   await typeInto(within(branch).getByRole('combobox', { name: 'Message' }), '/');
   expect(screen.queryByRole('option', { name: /^new/ })).toBeNull();
