@@ -1837,6 +1837,8 @@ impl Scheduler {
             Ok(p) => p,
             Err(_) => return,
         };
+        #[cfg(feature = "fixtures")]
+        crate::test_seams::pause_point("compact-sweep-before-drive", &task.id).await;
         if let Err(e) = self.drive_spawn(&task, &track, true).await {
             tracing::warn!(
                 task_id = %task.id,

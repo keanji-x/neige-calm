@@ -92,7 +92,7 @@ pub(super) async fn request(inner: &Arc<Inner>, request_id: String) -> Result<Co
         phase: PlannerCompactionPhase::Requested,
         wake_enqueued: false,
     });
-    match persist_snapshot_inner(inner, None, None).await {
+    match persist_snapshot_inner(inner, None, None, false).await {
         Ok(true) => Ok(CompactionAnswer::Scheduled),
         result => {
             *inner.planner_compaction.lock().await = previous;
@@ -205,6 +205,7 @@ pub(super) async fn append_task_lifecycle(
     track: &crate::ids::TrackId,
     request: Option<&PlannerCompaction>,
     scope: &EventScope,
+    compact_start: bool,
 ) -> Result<Vec<crate::event::BroadcastEnvelope>> {
     use crate::db::sqlite::{
         TaskReporter, status_detail_with_reason, task_complete_from_worker_tx,
@@ -223,7 +224,15 @@ pub(super) async fn append_task_lifecycle(
     let event = match &request.phase {
         PlannerCompactionPhase::Requested => return Ok(vec![]),
         PlannerCompactionPhase::Submitted { .. } => {
-            task_mark_compact_running_tx(tx, &task.id, track.as_str(), now).await?;
+            // Only Start consumes dispatched. Later Submitted checkpoints merely
+            // persist observations; a lost Start guard rolls back the whole snapshot.
+            if compact_start
+                && task_mark_compact_running_tx(tx, &task.id, track.as_str(), now).await? == 0
+            {
+                return Err(CalmError::Conflict(
+                    "compaction task is no longer dispatched".into(),
+                ));
+            }
             return Ok(vec![]);
         }
         PlannerCompactionPhase::Settled { status, .. } => {

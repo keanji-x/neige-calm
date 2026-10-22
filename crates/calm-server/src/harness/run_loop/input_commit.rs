@@ -80,7 +80,7 @@ pub(super) async fn resume(inner: &Arc<Inner>) -> Result<()> {
 pub(super) async fn commit_issue(inner: &Arc<Inner>) -> Result<()> {
     // This actual operation owns the commit even if ingress closed while the provider answered.
     // An active miss can still use only the original issuance boundary's retired writer.
-    if !persist_guarded_snapshot(inner, None, None).await?
+    if !persist_guarded_snapshot(inner, None, None, false).await?
         && !persist_issuance_outcome(inner).await?
     {
         return Err(CalmError::Conflict(

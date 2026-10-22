@@ -6,11 +6,11 @@ use crate::model::CardRole;
 use crate::session_projection_repo::{WorkerSessionKind, WorkerSessionProjection};
 use crate::state::WriteContext;
 
-pub(crate) async fn resolve(
+pub(crate) async fn resolve_card(
     repo: &dyn Repo,
     write: &WriteContext,
     track: &TrackId,
-) -> Result<Option<(CardId, Option<WorkerSessionProjection>)>> {
+) -> Result<Option<CardId>> {
     let Some(card) = repo
         .cards_by_track(track.as_str())
         .await?
@@ -19,8 +19,16 @@ pub(crate) async fn resolve(
     else {
         return Ok(None);
     };
+    Ok(Some(card.id))
+}
+
+/// Hydrate only for callers that consume the historical harness contract.
+pub(crate) async fn historical_session(
+    repo: &dyn Repo,
+    card: &CardId,
+) -> Result<Option<WorkerSessionProjection>> {
     let session = repo
-        .session_projection_active_for_card(&card.id.to_string())
+        .session_projection_active_for_card(&card.to_string())
         .await?
         .filter(|session| {
             session.kind == WorkerSessionKind::SharedPlanner
@@ -29,5 +37,5 @@ pub(crate) async fn resolve(
                     .as_ref()
                     .is_some_and(crate::harness::is_harness_snapshot_value)
         });
-    Ok(Some((card.id, session)))
+    Ok(session)
 }

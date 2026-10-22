@@ -371,3 +371,102 @@ async fn compact_task_second_key_refuses_already_pending_and_pushes() {
     );
     assert!(f.daemon.compacted_threads_for_test().is_empty());
 }
+
+#[tokio::test]
+async fn compact_task_delayed_sweep_after_record_clear_is_inert() {
+    use crate::test_seams::{PausePoint, install_pause_for_test};
+    let f = Fixture::new().await;
+    let (scheduler, _) = declared(&f).await;
+    let inner = &f.harness.inner;
+    let id = format!("{}:compact", inner.track_id);
+    let pause = PausePoint::default();
+    install_pause_for_test("compact-sweep-before-drive", &id, pause.clone());
+    let sweep = scheduler.sweep_all();
+    tokio::pin!(sweep);
+    tokio::select! {
+        _ = &mut sweep => panic!("sweep did not pause"),
+        _ = pause.entered.notified() => {}
+    }
+    self_compact::tick(inner, true).await.unwrap();
+    finish(&f, "completed").await.unwrap();
+    self_compact::clear_settled(inner).await;
+    persist_snapshot(inner).await.unwrap();
+    let terminal = f.repo.task_get(&id).await.unwrap().unwrap();
+    pause.release.notify_one();
+    sweep.await;
+    assert!(
+        inner.planner_compaction.lock().await.is_none(),
+        "stale sweep must not request again"
+    );
+    self_compact::tick(inner, true).await.unwrap();
+    assert_eq!(f.daemon.compacted_threads_for_test().len(), 1);
+    assert_eq!(
+        f.repo.task_get(&id).await.unwrap().unwrap().updated_at_ms,
+        terminal.updated_at_ms
+    );
+    assert_eq!(
+        f.repo
+            .events_since(0, 1000)
+            .await
+            .unwrap()
+            .iter()
+            .filter(|event| matches!(event.3, Event::TrackWakeRequested { .. }))
+            .count(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn compact_task_start_lost_guard_rolls_back() {
+    let f = Fixture::new().await;
+    declared(&f).await;
+    let inner = &f.harness.inner;
+    let id = format!("{}:compact", inner.track_id);
+    // The task settles after request admission, before the idle Start transaction.
+    sqlx::query("UPDATE tasks SET status='done',finished_at_ms=7,updated_at_ms=7 WHERE id=?")
+        .bind(&id)
+        .execute(f.repo.pool())
+        .await
+        .unwrap();
+    let before = f
+        .repo
+        .session_projection_active_for_card(&inner.card_id.to_string())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(self_compact::tick(inner, true).await.is_err());
+    let after = f
+        .repo
+        .session_projection_active_for_card(&inner.card_id.to_string())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        after.handle_state_json, before.handle_state_json,
+        "Start snapshot rolled back"
+    );
+    assert!(matches!(
+        inner
+            .planner_compaction
+            .lock()
+            .await
+            .as_ref()
+            .unwrap()
+            .phase,
+        crate::harness::compact_outcome::PlannerCompactionPhase::Requested
+    ));
+    assert!(f.daemon.compacted_threads_for_test().is_empty());
+    let task = f.repo.task_get(&id).await.unwrap().unwrap();
+    assert_eq!(
+        (task.status, task.updated_at_ms, task.finished_at_ms),
+        (TaskStatus::Done, 7, Some(7))
+    );
+    assert!(
+        !f.repo
+            .events_since(0, 1000)
+            .await
+            .unwrap()
+            .iter()
+            .any(|event| matches!(event.3, Event::TrackWakeRequested { .. }))
+    );
+}

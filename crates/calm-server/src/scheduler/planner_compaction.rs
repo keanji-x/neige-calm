@@ -22,19 +22,29 @@ impl Scheduler {
         } else {
             "unavailable"
         };
-        let Some((card, _)) =
-            crate::planner_session::resolve(self.repo.as_ref(), &self.write, &track.id).await?
+        let Some(card) =
+            crate::planner_session::resolve_card(self.repo.as_ref(), &self.write, &track.id)
+                .await?
         else {
             return self.refuse_compact(task, track, unavailable_reason).await;
         };
         let _fence =
             crate::per_card_lock::lock_card(&self.planner_recovery_locks, card.as_str()).await;
         // Re-read after the fence: reset/rewind may have replaced the session while we waited.
-        let Some((current_card, session)) =
-            crate::planner_session::resolve(self.repo.as_ref(), &self.write, &track.id).await?
+        let Some(current_card) =
+            crate::planner_session::resolve_card(self.repo.as_ref(), &self.write, &track.id)
+                .await?
         else {
             return self.refuse_compact(task, track, "superseded").await;
         };
+        // Sweep rows are snapshots taken before semaphore and card-fence waits.
+        let Some(current_task) = self.repo.task_get(&task.id).await? else {
+            return Ok(());
+        };
+        let task = &current_task;
+        if !matches!(task.status, TaskStatus::Dispatched | TaskStatus::Running) {
+            return Ok(());
+        }
         if card != current_card {
             return self.refuse_compact(task, track, "superseded").await;
         }
@@ -53,7 +63,9 @@ impl Scheduler {
                 )
                 .await;
         }
-        let Some(session) = session else {
+        let Some(session) =
+            crate::planner_session::historical_session(self.repo.as_ref(), &card).await?
+        else {
             return self.refuse_compact(task, track, unavailable_reason).await;
         };
         let recorded = session

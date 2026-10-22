@@ -347,7 +347,7 @@ pub(super) async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
         },
         None => budget::FrozenBudget::NotApplicable,
     };
-    if !persist_snapshot_inner(inner, None, None).await? {
+    if !persist_snapshot_inner(inner, None, None, false).await? {
         *inner.state.lock().await = prior_turn
             .map(|last_turn_id| HarnessState::TurnCompleted { last_turn_id })
             .unwrap_or(HarnessState::Idle);

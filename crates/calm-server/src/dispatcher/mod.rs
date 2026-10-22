@@ -1200,8 +1200,9 @@ impl Inner {
         envelope_id: i64,
     ) {
         let track_id = guard.track_id().clone();
-        let (planner_card_id, planner_session) =
-            match crate::planner_session::resolve(self.repo.as_ref(), &self.write, &track_id).await
+        let planner_card_id =
+            match crate::planner_session::resolve_card(self.repo.as_ref(), &self.write, &track_id)
+                .await
             {
                 Ok(Some(target)) => target,
                 result => {
@@ -1252,6 +1253,18 @@ impl Inner {
             return;
         }
 
+        let planner_session = match crate::planner_session::historical_session(
+            self.repo.as_ref(),
+            &planner_card_id,
+        )
+        .await
+        {
+            Ok(session) => session,
+            Err(error) => {
+                tracing::warn!(%track_id, %error, "dispatcher push: Planner session lookup failed");
+                return;
+            }
+        };
         let Some(runtime_id) = planner_session.map(|session| session.id) else {
             tracing::debug!(
                 track_id = %track_id,
@@ -1361,14 +1374,13 @@ impl Inner {
 
     /// Find the planner card for a track via `card_role_cache`; `None` if the track has none or the lookup errors.
     async fn resolve_planner_card(self: &Arc<Self>, track_id: &TrackId) -> Option<CardId> {
-        crate::planner_session::resolve(self.repo.as_ref(), &self.write, track_id)
+        crate::planner_session::resolve_card(self.repo.as_ref(), &self.write, track_id)
             .await
             .map_err(
                 |error| tracing::warn!(%track_id, %error, "dispatcher push: Planner lookup failed"),
             )
             .ok()
             .flatten()
-            .map(|(card, _)| card)
     }
 }
 

@@ -137,7 +137,8 @@ pub(super) async fn start(
     *inner.state.lock().await = HarnessState::Compacting {
         since: Instant::now(),
     };
-    match persist_snapshot_inner(inner, None, None).await {
+    match persist_snapshot_inner(inner, None, None, matches!(origin, Origin::PlannerRequest)).await
+    {
         Ok(true) => {}
         result => {
             *inner.state.lock().await = previous;

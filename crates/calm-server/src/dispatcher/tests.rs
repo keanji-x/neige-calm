@@ -4418,3 +4418,74 @@ async fn grant_admin_wake_text_is_explicit() {
     };
     assert_eq!(answers[0].answer, "Admin granted.");
 }
+
+#[tokio::test]
+async fn dispatcher_card_lookup_survives_session_projection_failure() {
+    use crate::db::prelude::*;
+    let (repo, _) = planner_push_delivery_fixture().await;
+    let repo = Arc::new(repo);
+    let card = repo
+        .card_create(crate::model::NewCard {
+            track_id: TrackId::from("w"),
+            kind: "codex".into(),
+            sort: None,
+            title: None,
+            payload: serde_json::json!({"schemaVersion":1}),
+        })
+        .await
+        .unwrap();
+    let roles = CardRoleCache::new();
+    roles.insert(card.id.clone(), CardRole::Planner, TrackId::from("w"));
+    let write = WriteContext::new(roles, crate::track_area_cache::TrackAreaCache::new());
+    let events = EventBus::new();
+    let semaphore = Arc::new(Semaphore::new(1));
+    let scheduler = Scheduler::new(
+        repo.clone(),
+        events.clone(),
+        write.clone(),
+        std::sync::Weak::new(),
+        crate::per_card_lock::new_per_card_locks(),
+        semaphore.clone(),
+        "/tmp".into(),
+        crate::scheduler::WorkerLiveness::DEFAULT,
+        crate::scheduler::WorkerIdleWake::new(
+            crate::shared_codex_appserver::SharedCodexAppServer::new_stub(repo.clone()),
+            crate::scheduler::WORKER_IDLE_TURN_GRACE,
+            crate::scheduler::WORKER_IDLE_PROBE_TIMEOUT,
+        ),
+    );
+    let context_monitor = Arc::new(TaskContextMonitor::new_with_metrics(
+        repo.clone(),
+        events,
+        write.clone(),
+        scheduler.context_metrics(),
+    ));
+    let inner = Arc::new(Inner {
+        planner_wake: std::sync::RwLock::new(None),
+        canonical_producer: std::sync::RwLock::new(None),
+        repo: repo.clone(),
+        write,
+        harness: HarnessRegistry::new(),
+        scheduler,
+        context_monitor,
+        push_cursor: EventCursorCache::new(),
+        push_locks: DashMap::new(),
+        failure_push_hook: std::sync::Mutex::new(None),
+        semaphore,
+    });
+    // Break only the session-projection query; the card read still succeeds.
+    sqlx::query("ALTER TABLE worker_sessions RENAME TO unavailable_sessions")
+        .execute(repo.pool())
+        .await
+        .unwrap();
+    assert!(
+        repo.session_projection_active_for_card(&card.id.to_string())
+            .await
+            .is_err()
+    );
+    assert_eq!(repo.cards_by_track("w").await.unwrap().len(), 1);
+    assert_eq!(
+        inner.resolve_planner_card(&TrackId::from("w")).await,
+        Some(card.id)
+    );
+}
