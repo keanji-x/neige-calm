@@ -6,6 +6,7 @@ use calm_types::conversation::PendingInput;
 
 #[cfg(all(test, feature = "fixtures"))]
 mod planner_switch_tests;
+mod child_results;
 mod qualification;
 mod recovery;
 mod reliable_results;

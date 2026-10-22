@@ -99,6 +99,8 @@ async fn deferred_self_report(repo: &dyn Repo, event: &Event, reads: FactReads) 
                     Some("worker-reported")
                         | Some("spawn-failed")
                         | Some("worker-timeout")
+                        | Some("child-track-incomplete")
+                        | Some("child-track-deleted")
                         | Some(crate::scheduler::WORKER_TURN_ENDED)
                 );
             Ok(!failure_landed_pre_gate)
