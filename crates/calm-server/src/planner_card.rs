@@ -372,10 +372,11 @@ mod tests {
     }
 
     /// One-sided cap (#1893): a change that shrinks `prompts/planner.md` lowers it in the same PR.
-    const PLANNER_PROMPT_MAX_BYTES: usize = 7_927;
+    // Fixed compaction advice moved here from every turn (+122 bytes at startup).
+    const PLANNER_PROMPT_MAX_BYTES: usize = 8_049;
 
     #[test]
-    fn planner_prompt_fits_its_byte_budget() {
+    fn context_usage_planner_prompt_fits_its_byte_budget() {
         // A production-shaped track id (`new_id`, 32 bytes), so the budget measures what ships.
         let track = crate::model::new_id();
         assert_eq!(track.len(), 32);

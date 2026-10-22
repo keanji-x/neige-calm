@@ -32,7 +32,7 @@ impl PlannerTurnBudgetExt for PlannerTurnBudget {
     }
     fn initial_input(self) -> String {
         format!(
-            "[Trusted Planner turn budget]\nThis turn's execution budget is {} minutes, excluding held requests. Begin wrapping up with {} seconds remaining; finish or hand off work before the hard stop. This budget is frozen for this turn.",
+            "[回合预算] {} 分钟，剩 {} 秒时收尾",
             u16::from(self),
             self.warning_remaining().as_secs()
         )
@@ -96,5 +96,23 @@ impl BudgetControlNotice {
 
     pub(crate) fn text(&self) -> String {
         self.budget.warning_input()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn turn_budget_initial_is_one_line_and_keeps_final_warning() {
+        let budget = PlannerTurnBudget::default();
+        assert_eq!(
+            budget.initial_input(),
+            "[回合预算] 30 分钟，剩 300 秒时收尾"
+        );
+        assert!(
+            budget
+                .warning_input()
+                .contains("Wrap up now before the hard stop.")
+        );
     }
 }

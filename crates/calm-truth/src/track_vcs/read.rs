@@ -1,5 +1,6 @@
 use crate::error::{CalmError, Result};
-use crate::ids::{CardId, TrackId};
+use crate::ids::{ActorId, CardId, TrackId};
+use calm_types::worker::WorkerSessionId;
 use similar::TextDiff;
 use sqlx::SqlitePool;
 use std::collections::{BTreeMap, BTreeSet};
@@ -191,6 +192,7 @@ pub async fn since_last_turn_block(
     last_seen_head: Option<&str>,
     current_override: Option<&CommitHash>,
     planner_card_id: Option<&CardId>,
+    planner_session_id: &WorkerSessionId,
     report_patch: ReportPatch,
 ) -> Result<SinceLastTurnBlock> {
     let Some(current) = (match current_override {
@@ -212,22 +214,40 @@ pub async fn since_last_turn_block(
         });
     }
 
-    let entries = diff(pool, previous, &current, None)
+    let previous_tree = tree_at(pool, previous)
         .await?
+        .ok_or_else(|| CalmError::NotFound(format!("track-vcs commit {previous}")))?;
+    let current_tree = tree_at(pool, &current)
+        .await?
+        .ok_or_else(|| CalmError::NotFound(format!("track-vcs commit {current}")))?;
+    let entries = diff_manifests(&previous_tree, &current_tree, None)
         .into_iter()
         .filter(|entry| !is_internal_observation_diff_path(&entry.path, planner_card_id))
         .collect::<Vec<_>>();
-    if entries.is_empty() {
+    let attribution = path_authors_since(pool, previous, &current, planner_session_id).await?;
+    let mixed_report = attribution
+        .as_ref()
+        .is_some_and(|authors| authors.report_own && authors.report_other);
+    if entries.is_empty() && !mixed_report {
         return Ok(SinceLastTurnBlock {
             current_head: Some(current),
             block: None,
         });
     }
-    let report_changed = entries.iter().any(|entry| {
-        entry.path == "report.md"
-            && matches!(entry.status, DiffStatus::Added | DiffStatus::Modified)
-    });
-    let patch = if report_changed && report_patch == ReportPatch::Include {
+    let report_changed = entries.iter().any(|entry| entry.path == "report.md");
+    let report_note = if report_patch == ReportPatch::Omit {
+        Some("see the block-level diff below")
+    } else if mixed_report {
+        Some("mixed authors: includes other authors' edits; read report.md and track history")
+    } else if attribution.is_none() {
+        Some("authors unknown: may include others' edits; read report.md and track history")
+    } else {
+        None
+    };
+    let own_report = attribution
+        .as_ref()
+        .is_some_and(|authors| authors.report_own);
+    let patch = if report_changed && report_note.is_none() && !own_report {
         diff_with_patches(
             pool,
             previous,
@@ -241,20 +261,45 @@ pub async fn since_last_turn_block(
     } else {
         None
     };
-    let path_authors = path_authors_since(pool, previous, &current).await?;
+    let mut cards = BTreeSet::new();
+    for entry in &entries {
+        if let Some(card) = observation_card_id(&entry.path) {
+            cards.insert(card.to_owned());
+        }
+    }
     let mut out = String::new();
     out.push_str(&format!(
         "## Track state changes since your last turn (HEAD {} -> {})\n",
         short_hash(previous),
         short_hash(&current)
     ));
+    for card in &cards {
+        let prefix = format!("cards/{card}/");
+        let existed = previous_tree
+            .entries
+            .keys()
+            .any(|path| path.starts_with(&prefix));
+        out.push_str(&format!(
+            "- 卡片 {card} {}\n",
+            if existed { "更新" } else { "新建" }
+        ));
+    }
+    if mixed_report && !report_changed {
+        out.push_str("- report.md (mixed authors: includes other authors' edits with no net change; read track history)\n");
+    }
     for entry in entries {
+        if observation_card_id(&entry.path).is_some()
+            || (!cards.is_empty() && matches!(entry.path.as_str(), "cards/index.json" | "index.md"))
+        {
+            continue;
+        }
         out.push_str("- ");
         out.push_str(&entry.path);
         out.push(' ');
         out.push_str(entry.status.observation_label());
-        if let Some(author) = path_authors.as_ref().and_then(|authors| {
+        if let Some(author) = attribution.as_ref().and_then(|authors| {
             authors
+                .latest
                 .get(&entry.path)
                 .and_then(|author| author.as_deref())
         }) {
@@ -264,9 +309,12 @@ pub async fn since_last_turn_block(
         }
         if entry.path == "report.md" && patch.is_some() {
             out.push_str(" (unified patch follows)");
-        } else if entry.path == "report.md" && report_changed && report_patch == ReportPatch::Omit {
-            // The caller's turn input is the block-level diff of this very edit, so the patch is not repeated here.
-            out.push_str(" (see the block-level diff below)");
+        } else if entry.path == "report.md"
+            && let Some(note) = report_note
+        {
+            out.push_str(" (");
+            out.push_str(note);
+            out.push(')');
         }
         out.push('\n');
         if entry.path == "report.md"
@@ -289,11 +337,29 @@ pub async fn since_last_turn_block(
     })
 }
 
+fn observation_card_id(path: &str) -> Option<&str> {
+    let (card, leaf) = path.strip_prefix("cards/")?.split_once('/')?;
+    (!card.is_empty()
+        && matches!(
+            leaf,
+            ".meta.json" | ".payload.json" | "conversation.md" | "events.json"
+        ))
+    .then_some(card)
+}
+
+#[derive(Default)]
+struct PathAuthors {
+    latest: BTreeMap<String, Option<String>>,
+    report_own: bool,
+    report_other: bool,
+}
+
 async fn path_authors_since(
     pool: &SqlitePool,
     previous: &str,
     current: &str,
-) -> Result<Option<BTreeMap<String, Option<String>>>> {
+    planner_session_id: &WorkerSessionId,
+) -> Result<Option<PathAuthors>> {
     let mut records = Vec::new();
     let mut cursor = current.to_string();
     let mut reached_previous = false;
@@ -318,7 +384,8 @@ async fn path_authors_since(
     }
 
     let mut tree_cache = BTreeMap::<String, TreeManifest>::new();
-    let mut authors = BTreeMap::<String, Option<String>>::new();
+    let mut authors = PathAuthors::default();
+    let own_author = ActorId::AiPlannerSession(planner_session_id.clone()).to_string();
     for record in records {
         let Some(parent_hash) = record.parent_hash.as_deref() else {
             return Ok(None);
@@ -331,7 +398,15 @@ async fn path_authors_since(
             return Ok(None);
         };
         for entry in diff_manifests(&parent, &tree, None) {
+            if entry.path == "report.md" {
+                if record.author.as_deref() == Some(own_author.as_str()) {
+                    authors.report_own = true;
+                } else {
+                    authors.report_other = true;
+                }
+            }
             authors
+                .latest
                 .entry(entry.path)
                 .or_insert_with(|| record.author.clone());
         }

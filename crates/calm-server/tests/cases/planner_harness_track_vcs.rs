@@ -1497,18 +1497,15 @@ async fn turn_issuance_refreshes_hook_transcripts_before_diff() {
         .await
         .issued_turn_head
         .expect("issued turn head");
-    let events_path = format!("cards/{}/events.json", worker.id.as_str());
     let conversation_path = format!("cards/{}/conversation.md", worker.id.as_str());
-
     assert!(text.starts_with("## Track state changes since your last turn"));
     assert!(text.contains(&format!(
         "HEAD {} -> {}",
         short(&before),
         short(&issued_head)
     )));
-    assert_eq!(text.matches(&format!("{events_path} edited")).count(), 1);
     assert_eq!(
-        text.matches(&format!("{conversation_path} edited")).count(),
+        text.matches(&format!("- 卡片 {} 更新", worker.id)).count(),
         1
     );
     assert_receipt_identity(&text, "hook-transcript-refresh");
@@ -1552,7 +1549,6 @@ async fn since_last_turn_override_fences_post_refresh_hook_commit() {
     let boot = boot().await;
     let worker = add_worker_card_event(&boot, "post-refresh-fence").await;
     let before = complete_first_turn_and_stamp(&boot).await;
-    let events_path = format!("cards/{}/events.json", worker.id.as_str());
     let conversation_path = format!("cards/{}/conversation.md", worker.id.as_str());
 
     log_worker_codex_hook(&boot, &worker, "pre-refresh-hook", "pre refresh prompt").await;
@@ -1589,6 +1585,7 @@ async fn since_last_turn_override_fences_post_refresh_hook_commit() {
         Some(&before),
         Some(&refresh_head),
         Some(&boot.planner_card_id),
+        &calm_types::worker::WorkerSessionId::from("this"),
         track_vcs::ReportPatch::Include,
     )
     .await
@@ -1597,13 +1594,7 @@ async fn since_last_turn_override_fences_post_refresh_hook_commit() {
     let fenced_block = fenced.block.expect("fenced diff block");
     assert_eq!(
         fenced_block
-            .matches(&format!("- {events_path} edited"))
-            .count(),
-        1
-    );
-    assert_eq!(
-        fenced_block
-            .matches(&format!("- {conversation_path} edited"))
+            .matches(&format!("- 卡片 {} 更新", worker.id))
             .count(),
         1
     );
@@ -1614,6 +1605,7 @@ async fn since_last_turn_override_fences_post_refresh_hook_commit() {
         Some(&before),
         None,
         Some(&boot.planner_card_id),
+        &calm_types::worker::WorkerSessionId::from("this"),
         track_vcs::ReportPatch::Include,
     )
     .await
@@ -1634,6 +1626,7 @@ async fn since_last_turn_override_fences_post_refresh_hook_commit() {
         Some(&refresh_head),
         Some(&next_refresh_head),
         Some(&boot.planner_card_id),
+        &calm_types::worker::WorkerSessionId::from("this"),
         track_vcs::ReportPatch::Include,
     )
     .await
@@ -1645,13 +1638,7 @@ async fn since_last_turn_override_fences_post_refresh_hook_commit() {
     let next_block = next.block.expect("next diff block");
     assert_eq!(
         next_block
-            .matches(&format!("- {events_path} edited"))
-            .count(),
-        1
-    );
-    assert_eq!(
-        next_block
-            .matches(&format!("- {conversation_path} edited"))
+            .matches(&format!("- 卡片 {} 更新", worker.id))
             .count(),
         1
     );
@@ -1662,6 +1649,7 @@ async fn since_last_turn_override_fences_post_refresh_hook_commit() {
         Some(&next_refresh_head),
         None,
         Some(&boot.planner_card_id),
+        &calm_types::worker::WorkerSessionId::from("this"),
         track_vcs::ReportPatch::Include,
     )
     .await
@@ -1841,7 +1829,7 @@ async fn planner_card_own_payload_path_is_suppressed_from_turn_observation() {
         !text.contains(&format!("cards/{}/.payload.json", boot.planner_card_id)),
         "planner card payload path should be internal observation noise: {text}"
     );
-    assert!(text.contains(&format!("cards/{}/.meta.json edited", boot.planner_card_id)));
+    assert!(text.contains(&format!("卡片 {} 更新", boot.planner_card_id)));
     assert_receipt_identity(&text, "planner-payload-only");
     boot.harness.shutdown().await.unwrap();
 }
@@ -1958,7 +1946,7 @@ async fn batched_observations_get_one_diff_block_covering_all_changes() {
         "batched diff must start from the issued first-turn head: {text}"
     );
     assert!(text.contains(first.id.as_str()));
-    assert!(text.contains(&format!("cards/{}/.payload.json new", first.id)));
+    assert!(text.contains(&format!("卡片 {} 新建", first.id)));
     assert!(text.contains(second.id.as_str()));
     assert!(text.contains(third.id.as_str()));
     assert_eq!(text.matches("Task completion report received").count(), 3);

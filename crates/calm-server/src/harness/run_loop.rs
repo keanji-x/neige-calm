@@ -3618,6 +3618,7 @@ async fn since_last_turn_diff_block(
         last_seen_head.as_deref(),
         current_override,
         Some(&inner.card_id),
+        &calm_types::worker::WorkerSessionId::from(inner.worker_session_id.clone()),
         report_patch,
     )
     .await

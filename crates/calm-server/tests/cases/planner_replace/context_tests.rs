@@ -6,7 +6,7 @@ use super::*;
 #[tokio::test]
 async fn context_usage_replace_refuses_nonregenerable_context_even_with_a_user_message() {
     for context in [
-        json!({"presentation":"system","text":"[Trusted Planner turn budget]","attachments":[]}),
+        json!({"presentation":"system","text":"[回合预算]","attachments":[]}),
         json!({"presentation":"system","text":"budget reminder","attachments":[]}),
         json!({"presentation":"system","text":"previous timeout","attachments":[]}),
         json!({"presentation":"system_task_completed","text":"result","attachments":[],"origin":{"observation":"task_completed","event_id":42}}),

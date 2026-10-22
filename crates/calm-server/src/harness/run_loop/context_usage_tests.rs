@@ -2,8 +2,8 @@ use super::completed_commit_tests::Fixture;
 use super::*;
 use calm_truth::db::RepoOutOfDomain as _;
 
-const UNKNOWN: &str = "[Trusted Planner context usage]\nContext usage is unknown (no reading yet).";
-const KNOWN: &str = "[Trusted Planner context usage]\nContext window: 50% used (142000 of 272000 tokens) as of the latest response before this turn. Record important state in the Report before compacting; conversation text after compaction is not guaranteed to survive.";
+const UNKNOWN: &str = "[上下文] 未知（no reading yet）";
+const KNOWN: &str = "[上下文] 50%（142000/272000 tokens）";
 
 #[tokio::test]
 async fn context_usage_historical_is_after_budget_and_unknown_without_reading() {
@@ -35,7 +35,7 @@ async fn context_usage_historical_uses_percent_policy_and_freezes_failed_attempt
     fx.issue().await;
     let snapshot = fx.harness.snapshot().await.unwrap();
     let wire = serde_json::to_value(&snapshot).unwrap();
-    assert!(wire.to_string().contains("Context window: 50% used"));
+    assert!(wire.to_string().contains("[上下文] 50%"));
     let mut restored = HarnessSnapshot::from_value_strict(wire);
     restored.token_usage = None; // A later reading cannot rewrite the issued attempt.
     let inner = &fx.harness.inner;
@@ -97,7 +97,7 @@ async fn context_usage_historical_reuses_matching_budget_without_projection_slot
     fx.daemon.clear_turn_start_failure_for_test();
     fx.issue().await;
     let segments = fx.projected_segments().await;
-    assert!(segments[0].text.contains("budget is 15 minutes"));
+    assert!(segments[0].text.contains("15 分钟"));
     assert_eq!(segments[1].text, KNOWN);
     assert!(matches!(
         fx.harness.snapshot().await.unwrap().turn_budget,
@@ -144,7 +144,7 @@ async fn assert_restored_context_usage(shape: &str) {
     fx.issue().await;
     let snapshot = fx.harness.snapshot().await.unwrap();
     let mut wire = serde_json::to_value(&snapshot).unwrap();
-    assert!(wire.to_string().contains("Context window: 50% used"));
+    assert!(wire.to_string().contains("[上下文] 50%"));
     let attempt = snapshot.projection_client_id.clone().unwrap();
     match shape {
         "missing_context_usage" => {
@@ -196,7 +196,7 @@ async fn assert_restored_context_usage(shape: &str) {
         assert!(
             segments
                 .iter()
-                .all(|segment| !segment.text.contains("context usage")
+                .all(|segment| !segment.text.contains("[上下文]")
                     && !segment.text.contains("not recorded"))
         );
         calm_types::harness::budget::FrozenContextUsage::LegacyNotRecorded
@@ -258,7 +258,7 @@ async fn context_usage_historical_unknown_never_renders_a_number() {
         fx.issue().await;
         assert_eq!(
             fx.projected_segments().await[1].text,
-            format!("[Trusted Planner context usage]\nContext usage is unknown ({reason}).")
+            format!("[上下文] 未知（{reason}）")
         );
     }
 }

@@ -220,7 +220,7 @@ async fn planner_timeout_recovery_reads_terminal_and_keeps_system_projection() {
 }
 
 #[tokio::test]
-async fn planner_timeout_assistant_still_receives_previous_timeout() {
+async fn turn_budget_assistant_still_receives_previous_timeout() {
     use crate::support::planner_timeout_fixture::{finish, request};
     let boot = boot_with_issuance(idle_snapshot(vec![]), Issuance::Live).await;
     let turn = request(&boot).await;
@@ -257,7 +257,7 @@ async fn planner_timeout_assistant_still_receives_previous_timeout() {
         delivered.contains(&format!("planner_turn_timeout:{}", row.id)),
         "{delivered}"
     );
-    assert!(!delivered.contains("Trusted Planner turn budget"));
+    assert!(!delivered.contains("[回合预算]"));
     boot.harness.shutdown().await.unwrap();
 }
 

@@ -19,7 +19,7 @@ use serde_json::json;
 pub(super) fn initial_budget_segment() -> HarnessInputSegment {
     HarnessInputSegment {
         presentation: HarnessInputPresentation::SystemPlannerTurnBudget,
-        text: "[Trusted Planner turn budget]\nThis turn's execution budget is 30 minutes, excluding held requests. Begin wrapping up with 300 seconds remaining; finish or hand off work before the hard stop. This budget is frozen for this turn.".into(),
+        text: "[回合预算] 30 分钟，剩 300 秒时收尾".into(),
         attachments: vec![],
         origin: None,
     }
@@ -28,7 +28,7 @@ pub(super) fn initial_budget_segment() -> HarnessInputSegment {
 pub(super) fn initial_context_usage_segment() -> HarnessInputSegment {
     HarnessInputSegment {
         presentation: HarnessInputPresentation::SystemPlannerContextUsage,
-        text: "[Trusted Planner context usage]\nContext usage is unknown (no reading yet).".into(),
+        text: "[上下文] 未知（no reading yet）".into(),
         attachments: vec![],
         origin: None,
     }

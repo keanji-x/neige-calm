@@ -461,9 +461,7 @@ async fn context_usage_canonical_pre_feature_claim_is_sent_unchanged() {
 
 #[tokio::test]
 async fn context_usage_canonical_resumed_claim_replays_identical_text() {
-    assert_resumed_context_usage(Some(
-        "[Trusted Planner context usage]\nContext window: 50% used (142000 of 272000 tokens) as of the latest response before this turn. Record important state in the Report before compacting; conversation text after compaction is not guaranteed to survive."
-    )).await;
+    assert_resumed_context_usage(Some("[上下文] 50%（142000/272000 tokens）")).await;
 }
 
 async fn assert_resumed_context_usage(usage: Option<&str>) {
@@ -552,7 +550,7 @@ async fn assert_resumed_context_usage(usage: Option<&str>) {
     assert_eq!(call["params"]["input"].as_array().unwrap().len(), 1);
     let input = call["params"]["input"].to_string();
     assert_eq!(
-        input.matches("[Trusted Planner context usage]").count(),
+        input.matches("[上下文]").count(),
         usize::from(usage.is_some())
     );
     assert!(!input.contains("not recorded"));
@@ -582,17 +580,10 @@ async fn context_usage_canonical_freezes_context_at_claim() {
     let call = request(&mut peer).await;
     assert_eq!(call["method"], "turn/start");
     let input = call["params"]["input"][0]["text"].as_str().unwrap();
-    assert!(input.contains("[Trusted Planner turn budget]"));
-    assert_eq!(input.matches("[Trusted Planner context usage]").count(), 1);
-    assert!(
-        input.contains(
-            "[Trusted Planner context usage]\nContext usage is unknown (no reading yet)."
-        ),
-        "{input}"
-    );
-    assert!(
-        input.find("[Trusted Planner turn budget]") < input.find("[Trusted Planner context usage]")
-    );
+    assert!(input.contains("[回合预算]"));
+    assert_eq!(input.matches("[上下文]").count(), 1);
+    assert!(input.contains("[上下文] 未知（no reading yet）"), "{input}");
+    assert!(input.find("[回合预算]") < input.find("[上下文]"));
     let frozen = fx.frame().await;
     let wire = serde_json::to_string(&frozen).unwrap();
     assert_eq!(
@@ -692,41 +683,31 @@ async fn context_usage_canonical_freezes_context_at_claim() {
 #[tokio::test]
 async fn context_usage_canonical_known_and_invalidated_readings() {
     for (used_tokens, context_window, invalidated, expected) in [
-        (
-            -1,
-            Some(258400),
-            false,
-            "Context usage is unknown (invalid reading).",
-        ),
+        (-1, Some(258400), false, "[上下文] 未知（invalid reading）"),
         (
             i64::MIN,
             Some(258400),
             false,
-            "Context usage is unknown (invalid reading).",
+            "[上下文] 未知（invalid reading）",
         ),
         (
             142000,
             Some(272000),
             false,
-            "Context window: 50% used (142000 of 272000 tokens)",
+            "[上下文] 50%（142000/272000 tokens）",
         ),
         (
             142000,
             Some(272000),
             true,
-            "Context usage is unknown (reset by compaction).",
+            "[上下文] 未知（reset by compaction）",
         ),
-        (
-            142000,
-            None,
-            false,
-            "Context usage is unknown (window unknown).",
-        ),
+        (142000, None, false, "[上下文] 未知（window unknown）"),
         (
             272001,
             Some(272000),
             false,
-            "Context usage is unknown (reading exceeds window).",
+            "[上下文] 未知（reading exceeds window）",
         ),
     ] {
         let fx = Fixture::with_usage(

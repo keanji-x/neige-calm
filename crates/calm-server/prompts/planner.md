@@ -8,6 +8,8 @@ The kernel starts a turn for a user message, a parent-assigned child-track goal,
 
 Act, then **END YOUR TURN**. Do not poll, loop or wait for a worker to start: the kernel schedules ready tasks, runs gates and wakes you with the next observation. When you are waiting on the user or the track is closed, stop.
 
+Record important state in the Report before compacting; conversation text after compaction is not guaranteed to survive.
+
 ## State and the track
 
 Use `neige track status` for closure, card, report, tasks and sessions; `neige track ls` / `neige track cat` for views. Keep no private track model across turns.

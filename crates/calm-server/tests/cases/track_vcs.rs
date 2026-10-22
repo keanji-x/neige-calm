@@ -927,6 +927,7 @@ async fn since_last_turn_suppresses_legacy_planner_payload_cutover_noise() {
         Some(&legacy_head),
         None,
         Some(&planner.id),
+        &calm_types::worker::WorkerSessionId::from("this"),
         track_vcs::ReportPatch::Include,
     )
     .await
@@ -1768,6 +1769,7 @@ async fn mixed_actor_batch_commit_is_unattributed_in_diff_block() {
         Some(&before),
         None,
         None,
+        &calm_types::worker::WorkerSessionId::from("this"),
         track_vcs::ReportPatch::Include,
     )
     .await
@@ -2060,6 +2062,7 @@ async fn hook_only_commits_leave_transcript_paths_unchanged_until_turn_refresh()
         Some(&before),
         None,
         None,
+        &calm_types::worker::WorkerSessionId::from("this"),
         track_vcs::ReportPatch::Include,
     )
     .await
@@ -2154,17 +2157,15 @@ async fn turn_boundary_refresh_makes_hook_transcripts_fresh_once() {
         Some(&before),
         None,
         None,
+        &calm_types::worker::WorkerSessionId::from("this"),
         track_vcs::ReportPatch::Include,
     )
     .await
     .expect("boundary since-last-turn")
     .block
     .expect("boundary diff block");
-    assert_eq!(block.matches(&format!("- {events_path} edited")).count(), 1);
     assert_eq!(
-        block
-            .matches(&format!("- {conversation_path} edited"))
-            .count(),
+        block.matches(&format!("- 卡片 {} 更新", worker.id)).count(),
         1
     );
 }
@@ -2754,6 +2755,7 @@ async fn since_last_turn_report_diff_uses_dynamic_fence_for_markdown_code_blocks
         Some(&before),
         None,
         None,
+        &calm_types::worker::WorkerSessionId::from("this"),
         track_vcs::ReportPatch::Include,
     )
     .await
@@ -2823,6 +2825,7 @@ async fn since_last_turn_range_over_bound_falls_back_without_attribution() {
         Some(&before),
         None,
         None,
+        &calm_types::worker::WorkerSessionId::from("this"),
         track_vcs::ReportPatch::Include,
     )
     .await
@@ -2875,6 +2878,7 @@ async fn since_last_turn_legacy_null_author_commit_has_no_suffix() {
         Some(&before),
         None,
         None,
+        &calm_types::worker::WorkerSessionId::from("this"),
         track_vcs::ReportPatch::Include,
     )
     .await
@@ -3277,13 +3281,14 @@ async fn runtime_event_heals_legacy_projected_payload_blob_once() {
         Some(&before),
         None,
         None,
+        &calm_types::worker::WorkerSessionId::from("this"),
         track_vcs::ReportPatch::Include,
     )
     .await
     .expect("since-last-turn block")
     .block
     .expect("payload heal block");
-    let payload_line = format!("- {payload_path} edited (by kernel)\n");
+    let payload_line = format!("- 卡片 {} 更新\n", worker.id);
     assert_eq!(block.matches(&payload_line).count(), 1, "{block}");
 
     let healed_manifest = head_manifest(&repo, &track.id).await;

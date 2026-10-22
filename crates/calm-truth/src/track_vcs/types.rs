@@ -141,7 +141,8 @@ pub struct SinceLastTurnBlock {
     pub block: Option<String>,
 }
 
-/// Whether `since_last_turn_block` inlines the `report.md` unified patch under its `report.md` line.
+/// Whether `since_last_turn_block` may inline a Report patch. Own-session edits are
+/// never inlined; mixed or unavailable attribution gets an explicit history hint.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ReportPatch {
     Include,

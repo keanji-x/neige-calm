@@ -16,6 +16,8 @@ mod runs;
 mod snapshot;
 #[cfg(test)]
 pub(crate) use snapshot::run_blob_bytes;
+#[cfg(test)]
+mod since_last_turn_tests;
 mod store;
 #[cfg(test)]
 mod tests;

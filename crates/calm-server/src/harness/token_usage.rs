@@ -129,7 +129,7 @@ pub(crate) fn planner_context_input(usage: Option<&TokenUsage>, invalidated: boo
             "invalid reading"
         } else if let Some(percent) = usage.percent() {
             return format!(
-                "[Trusted Planner context usage]\nContext window: {:.0}% used ({} of {} tokens) as of the latest response before this turn. Record important state in the Report before compacting; conversation text after compaction is not guaranteed to survive.",
+                "[上下文] {:.0}%（{}/{} tokens）",
                 percent.round(),
                 usage.used_tokens,
                 usage.context_window.expect("percent requires a window")
@@ -146,13 +146,31 @@ pub(crate) fn planner_context_input(usage: Option<&TokenUsage>, invalidated: boo
 }
 
 fn planner_context_unknown(reason: &str) -> String {
-    format!("[Trusted Planner context usage]\nContext usage is unknown ({reason}).")
+    format!("[上下文] 未知（{reason}）")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn token_usage_reminder_is_one_line() {
+        let usage = TokenUsage {
+            used_tokens: 159000,
+            total_tokens: 9000000,
+            context_window: Some(1000000),
+            at_ms: 1,
+        };
+        assert_eq!(
+            planner_context_input(Some(&usage), false),
+            "[上下文] 15%（159000/1000000 tokens）"
+        );
+        assert_eq!(
+            planner_context_input(None, false),
+            "[上下文] 未知（no reading yet）"
+        );
+    }
 
     /// A frame as codex sends it; `total` is the lifetime sum, `last` the latest response.
     fn frame(total: i64, last: i64, window: Value) -> Value {

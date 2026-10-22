@@ -61,7 +61,7 @@ async fn planner_turn_budget_rest_existing_harness_warns_and_stops() {
     .await;
     let input = format!("{:?}", boot.daemon.started_turns_for_test());
     assert!(
-        input.contains("budget"),
+        input.contains("[回合预算] 1 分钟，剩 12 秒时收尾"),
         "initial trusted budget missing: {input}"
     );
     setting(&boot, json!("240")).await; // The running one-minute budget stays frozen.
@@ -179,7 +179,7 @@ async fn planner_turn_budget_corrupt_storage_leaves_input_queued_until_reset() {
     .await
     .unwrap();
     let input = format!("{:?}", boot.daemon.started_turns_for_test());
-    assert!(input.contains("30 minutes"));
+    assert!(input.contains("30 分钟"));
     boot.harness.shutdown().await.unwrap();
 }
 
@@ -365,11 +365,8 @@ async fn planner_turn_budget_only_real_planner_role_and_profile() {
         })
         .await;
         let input = format!("{:?}", boot.daemon.started_turns_for_test());
-        assert!(!input.contains("turn budget"), "{role}: {input}");
-        assert!(
-            !input.contains("Trusted Planner context usage"),
-            "{role}: {input}"
-        );
+        assert!(!input.contains("[回合预算]"), "{role}: {input}");
+        assert!(!input.contains("[上下文]"), "{role}: {input}");
         boot.harness
             .rewind_turn_clock_for_test(Duration::from_secs(61))
             .await;
@@ -402,13 +399,10 @@ async fn planner_turn_budget_claude_initial_warning_only() {
     assert_eq!(status, 200, "{body}");
     super::claude_planner_wiring::wait_file(&root, "stdin").await;
     let stdin = root.read_fake("stdin").unwrap();
-    assert!(stdin.contains("1 minutes"), "{stdin}");
-    assert!(stdin.contains("12 seconds"), "{stdin}");
-    assert!(stdin.contains("[Trusted Planner context usage]"), "{stdin}");
-    assert!(
-        stdin.contains("Context usage is unknown (no reading yet)."),
-        "{stdin}"
-    );
+    assert!(stdin.contains("1 分钟"), "{stdin}");
+    assert!(stdin.contains("剩 12 秒时收尾"), "{stdin}");
+    assert!(stdin.contains("[上下文]"), "{stdin}");
+    assert!(stdin.contains("[上下文] 未知（no reading yet）"), "{stdin}");
     stack.wait_phase(&session.id, "turn_running").await;
     let harness = stack.harness(&session.id);
     harness
@@ -613,7 +607,7 @@ async fn planner_turn_budget_failed_start_replays_its_frozen_attempt() {
     assert_eq!(frozen, boot.harness.snapshot().await.unwrap().turn_budget);
     let input = format!("{:?}", boot.daemon.started_turns_for_test());
     assert!(
-        input.contains("1 minutes"),
+        input.contains("1 分钟"),
         "the durable attempt must not be resampled: {input}"
     );
     boot.harness.shutdown().await.unwrap();

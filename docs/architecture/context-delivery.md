@@ -134,7 +134,7 @@ for p in paths:
         assert m
         print('input-form block', len(m[0].encode()), len(m[0]))
 s = Path('crates/calm-server/src/planner_turn_budget.rs').read_text()
-m = re.search(r'"(\[Trusted Planner turn budget\].*?)",\n', s, re.S)
+m = re.search(r'"(\[回合预算\].*?)",\n', s, re.S)
 assert m and m[1].count('{}') == 2
 t = m[1].replace('\\n', '\n').replace('{}', '30', 1).replace('{}', '300', 1)
 print('default budget render', len(t.encode()), len(t))
@@ -356,3 +356,28 @@ mcp 路由 1/1，api_suite 正式消息权限 1/1 全绿。Planner 角色实测 
 `git diff --check`、相对链接核对通过。未跑浏览器、广泛 suite、真实 provider 或 mutation。
 成本捕获和对应源文 SHA-256 留在 `/tmp/context-final/measurements.json` 与
 `source-manifest.json`，不增加永久测量脚本/断言。
+
+
+## 8. 每轮提醒精简
+
+本切片为 **L1**：只改变 Planner 输入的展示，不改授权、持久化或 compact 决策。
+预算首条提醒压成 `[回合预算] 30 分钟，剩 300 秒时收尾`；最终硬停止警告保留。
+预算仍按本轮冻结值计算，等待请求期间不计时。上下文提醒压成一行，如
+`[上下文] 50%（142000/272000 tokens）`，未知时保留原因；百分比仍使用原有
+扣除 baseline 的 occupancy 规则，括号内保留原始 token 数，不把累计计费当占用。
+Report/compact 固定建议只在 Planner 主提示中出现一次；相应启动字节上限增加 122，
+不按每轮提醒的旧长度保留余量。
+
+wake block 使用当前 `WorkerSessionId` 对应的 `ActorId::AiPlannerSession`，复用
+`path_authors_since` 对 `CommitRecord.author` 的遍历；只有本会话修改 Report 时不回显
+unified patch，其他作者（包括别的 Planner 会话及旧 NULL author）仍有 patch。
+本会话与其他作者混合时给显式 `mixed authors` 提示，要求读取 Report/历史，避免把
+整段 patch 误标为别人修改；超过既有 50 commit 归因界限时也给显式提示，不猜归属。
+卡片 `.meta.json`、`.payload.json`、`conversation.md`、`events.json` 合并为每卡一行，
+由区间起点是否已有卡片文件判断新建/更新；同轮索引噪音随卡片行合并。
+`runs/` 文件继续逐条展示；没有卡片变动的独立索引修改仍可见。
+
+不新增并行归因机制或永久测试名列表。后续新增普通测试不需修改生产列表；新增卡片
+内部文件种类需由 track VCS 展示 owner 明确决定是否折叠。既有 prose baseline 与
+Planner golden 用原生成入口更新，CI 调用次数不增加。正式 L1 评审由 Planner 安排；
+本地聚焦测试与冻结 gate 的实际证据见本任务结果，本文不预填通过。
