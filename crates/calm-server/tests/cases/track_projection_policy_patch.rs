@@ -202,6 +202,8 @@ const TRACK_PERSISTENT_COLUMNS: &[&str] = &[
     "creator_track_id",
     "creator_key",
     "admin_granted_at",
+    "planner_revision",
+    "planner_event_baseline",
 ];
 
 type PersistedTrackEvent = (

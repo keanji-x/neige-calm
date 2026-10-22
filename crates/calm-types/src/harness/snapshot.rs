@@ -106,17 +106,32 @@ impl HarnessRuntimeHeader {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LifecycleRefusal {
+    PendingMessages,
+    TurnInFlight,
+}
+
 impl CanonicalHarnessSnapshot {
-    pub fn idle_for_lifecycle(&self) -> bool {
+    pub fn lifecycle_refusal(&self) -> Option<LifecycleRefusal> {
+        if !self.canonical_inputs.pending.is_empty() {
+            return Some(LifecycleRefusal::PendingMessages);
+        }
         let header = &self.header;
-        matches!(
+        if !matches!(
             header.phase,
             HarnessPhaseTag::Idle | HarnessPhaseTag::TurnCompleted | HarnessPhaseTag::Resumed
-        ) && self.canonical_inputs.pending.is_empty()
-            && self.canonical_inputs.active.is_none()
-            && header.interruption_intent.is_none()
-            && header.pending_rewind.is_none()
-            && header.wedged_reason.is_none()
+        ) || self.canonical_inputs.active.is_some()
+            || header.interruption_intent.is_some()
+            || header.pending_rewind.is_some()
+            || header.wedged_reason.is_some()
+        {
+            return Some(LifecycleRefusal::TurnInFlight);
+        }
+        None
+    }
+    pub fn idle_for_lifecycle(&self) -> bool {
+        self.lifecycle_refusal().is_none()
     }
 
     /// Read adaptation for released immutable outputs and the boot-time migration.

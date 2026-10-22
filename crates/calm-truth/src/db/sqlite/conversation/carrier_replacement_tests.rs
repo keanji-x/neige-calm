@@ -7,7 +7,7 @@ use calm_types::{harness::HarnessProfile, runtime::AgentProvider, worker::*};
 use serde_json::json;
 use sqlx::{Sqlite, Transaction};
 
-struct Protected;
+pub(super) struct Protected;
 #[async_trait::async_trait]
 impl CarrierReplacementGuard for Protected {
     async fn recheck_tx(
@@ -24,7 +24,7 @@ fn binding() -> PlannerBinding {
         provider: AgentProvider::Codex,
     }
 }
-async fn expected<'a>(
+pub(super) async fn expected<'a>(
     tx: &mut Transaction<'_, Sqlite>,
     card: &str,
     worker: &str,

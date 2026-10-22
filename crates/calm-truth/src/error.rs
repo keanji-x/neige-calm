@@ -2,6 +2,9 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum TruthError {
+    #[error("{0}")]
+    CarrierReplacementRefused(crate::db::sqlite::conversation::ReplacementRefusal),
+
     #[error(transparent)]
     Core(calm_types::error::CoreError),
 

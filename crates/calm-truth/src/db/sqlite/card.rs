@@ -160,7 +160,7 @@ pub async fn card_create_tx(
     card_create_with_id_tx(tx, new_id(), p, CardRole::Worker, true, card_role_cache).await
 }
 
-async fn card_for_update_tx(tx: &mut Transaction<'_, Sqlite>, id: &str) -> Result<Card> {
+pub(super) async fn card_for_update_tx(tx: &mut Transaction<'_, Sqlite>, id: &str) -> Result<Card> {
     sqlx::query_as::<_, crate::db::rows::CardRow>(
         r#"SELECT id, track_id, kind, sort, payload, title, deletable, created_at, updated_at
            FROM cards WHERE id = ?1"#,

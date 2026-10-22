@@ -476,3 +476,5 @@ mod terminal_presentation_tests;
 mod typed_gate_park_migration_tests;
 
 pub mod gate_execution;
+
+pub mod track_planner;

@@ -154,7 +154,7 @@ mod retry_lifecycle_tests;
 mod carrier_replacement;
 pub use carrier_replacement::{
     CallerRevision, CarrierReplacement, CarrierReplacementGuard, ExpectedCarrier,
-    replace_idle_carrier_tx,
+    ReplacementRefusal, check_idle_carrier_tx, replace_idle_carrier_tx,
 };
 #[cfg(test)]
 mod carrier_replacement_tests;
@@ -164,3 +164,6 @@ pub use carrier_revision::{CarrierIngressRevision, carrier_ingress_revision_tx};
 
 mod acp_cleanup;
 pub use acp_cleanup::settle_kept_acp_receipt_tx;
+
+#[cfg(test)]
+mod planner_switch_tests;

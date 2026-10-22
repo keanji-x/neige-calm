@@ -54,11 +54,54 @@ pub struct CarrierReplacement {
     pub revoked_session_mirrors: u64,
 }
 
-pub async fn replace_idle_carrier_tx(
+/// Transaction-local replacement refusal; callers map reasons, never error text.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum ReplacementRefusal {
+    #[error("carrier changed")]
+    Changed,
+    #[error("binding unsupported")]
+    BindingUnsupported,
+    #[error("historical storage")]
+    HistoricalStorage,
+    #[error("pending messages")]
+    PendingMessages,
+    #[error("pending submission")]
+    PendingSubmission,
+    #[error("turn in flight")]
+    TurnInFlight,
+    #[error("session unavailable")]
+    SessionUnavailable,
+}
+fn refused(reason: ReplacementRefusal) -> CalmError {
+    CalmError::CarrierReplacementRefused(reason)
+}
+
+/// Shared preflight, also used before either member of a pair is revoked.
+pub async fn check_idle_carrier_tx(
     tx: &mut Transaction<'_, Sqlite>,
-    expected: ExpectedCarrier<'_>,
-    next: PlannerBinding,
-) -> Result<CarrierReplacement> {
+    expected: &ExpectedCarrier<'_>,
+) -> Result<()> {
+    if !super::card_has_canonical_storage(tx, &expected.card_id).await? {
+        return Err(refused(ReplacementRefusal::HistoricalStorage));
+    }
+    let current: Option<String> = sqlx::query_scalar("SELECT session_id FROM cards WHERE id=?1")
+        .bind(&expected.card_id)
+        .fetch_optional(&mut **tx)
+        .await?
+        .flatten();
+    if current.as_deref() != Some(expected.worker_session_id.as_str()) {
+        return Err(refused(ReplacementRefusal::Changed));
+    }
+    let available: bool = sqlx::query_scalar(concat!(
+        "SELECT EXISTS(SELECT 1 FROM worker_sessions WHERE id=?1 AND state IN ",
+        "('idle','running','starting','turn_pending') AND handle_state_json IS NOT NULL)"
+    ))
+    .bind(&expected.worker_session_id)
+    .fetch_one(&mut **tx)
+    .await?;
+    if !available {
+        return Err(refused(ReplacementRefusal::SessionUnavailable));
+    }
     let carrier =
         current_input_carrier_tx(tx, &expected.card_id, &expected.worker_session_id).await?;
     let frame: CanonicalHarnessSnapshot = serde_json::from_value(carrier.snapshot().clone())?;
@@ -66,38 +109,43 @@ pub async fn replace_idle_carrier_tx(
         || RuntimeExecutionFence::from_carrier(&carrier) != expected.execution
         || frame.header.push_watermark != expected.accepted_prefix
     {
-        return Err(CalmError::Conflict(
-            "replacement carrier snapshot or prefix changed",
-        ));
+        return Err(refused(ReplacementRefusal::Changed));
     }
     let shape = super::super::card_execution_shape_tx(tx, &expected.card_id).await?;
     let binding = PlannerBinding::from_shape(&shape.kind, shape.role, &shape.payload)
-        .ok_or(CalmError::Conflict("replacement binding unavailable"))?;
+        .ok_or(refused(ReplacementRefusal::BindingUnsupported))?;
     let old =
         super::super::session_get_tx(tx, &WorkerSessionId(expected.worker_session_id.clone()))
             .await?
-            .ok_or(CalmError::Conflict("replacement worker unavailable"))?;
-    if binding.profile == calm_types::harness::HarnessProfile::PlainChat
-        || binding != expected.binding
-        || !binding.matches_session_contract(&old)
-        || old.track_id.as_str() != expected.track_id
-        || !matches!(
-            old.state,
-            WorkerSessionState::Idle | WorkerSessionState::Running
-        )
-        || old.thread_id != frame.header.last_thread_id
-        || old.active_turn_id.is_some()
-        || !frame.idle_for_lifecycle()
-        || !frame.canonical_inputs.referenced_submissions().is_empty()
+            .ok_or(refused(ReplacementRefusal::SessionUnavailable))?;
+    if binding.profile == calm_types::harness::HarnessProfile::PlainChat {
+        return Err(refused(ReplacementRefusal::BindingUnsupported));
+    }
+    if binding != expected.binding || old.track_id.as_str() != expected.track_id {
+        return Err(refused(ReplacementRefusal::Changed));
+    }
+    if !binding.matches_session_contract(&old) || old.thread_id != frame.header.last_thread_id {
+        return Err(refused(ReplacementRefusal::SessionUnavailable));
+    }
+    if let Some(reason) = frame.lifecycle_refusal() {
+        use calm_types::harness::snapshot::LifecycleRefusal;
+        return Err(refused(match reason {
+            LifecycleRefusal::PendingMessages => ReplacementRefusal::PendingMessages,
+            LifecycleRefusal::TurnInFlight => ReplacementRefusal::TurnInFlight,
+        }));
+    }
+    if !frame.canonical_inputs.referenced_submissions().is_empty() {
+        return Err(refused(ReplacementRefusal::PendingSubmission));
+    }
+    if !matches!(
+        old.state,
+        WorkerSessionState::Idle | WorkerSessionState::Running
+    ) || old.active_turn_id.is_some()
     {
-        return Err(CalmError::Conflict(
-            "replacement requires the unchanged idle carrier",
-        ));
+        return Err(refused(ReplacementRefusal::TurnInFlight));
     }
     if super::super::acp_submission_unresolved_tx(tx, &expected.worker_session_id).await? {
-        return Err(CalmError::Conflict(
-            "replacement has an unresolved native submission",
-        ));
+        return Err(refused(ReplacementRefusal::PendingSubmission));
     }
     if super::carrier_ingress_revision_tx(
         tx,
@@ -108,7 +156,7 @@ pub async fn replace_idle_carrier_tx(
     .await?
         != expected.ingress
     {
-        return Err(CalmError::Conflict("replacement ingress changed"));
+        return Err(refused(ReplacementRefusal::Changed));
     }
     expected.owner.recheck_tx(tx, &carrier).await?;
     if let CallerRevision::Compare(revision) = expected.revision {
@@ -126,10 +174,23 @@ pub async fn replace_idle_carrier_tx(
     .await?
         != expected.ingress
     {
-        return Err(CalmError::Conflict(
-            "replacement ingress changed during owner check",
-        ));
+        return Err(refused(ReplacementRefusal::Changed));
     }
+    Ok(())
+}
+
+pub async fn replace_idle_carrier_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    expected: ExpectedCarrier<'_>,
+    next: PlannerBinding,
+) -> Result<CarrierReplacement> {
+    check_idle_carrier_tx(tx, &expected).await?;
+    let shape = super::super::card_execution_shape_tx(tx, &expected.card_id).await?;
+    let binding = expected.binding.clone();
+    let old =
+        super::super::session_get_tx(tx, &WorkerSessionId(expected.worker_session_id.clone()))
+            .await?
+            .ok_or_else(|| refused(ReplacementRefusal::SessionUnavailable))?;
     let root_session_id = sqlx::query_scalar("SELECT root_session_id FROM tracks WHERE id=?1")
         .bind(&expected.track_id)
         .fetch_one(&mut **tx)
@@ -183,7 +244,7 @@ pub async fn replace_idle_carrier_tx(
         .bind(&expected.card_id).bind(&expected.worker_session_id).bind(shape.role.as_db_str())
         .execute(&mut **tx).await?.rows_affected();
     if changed != 1 {
-        return Err(CalmError::Conflict("replacement pointer changed"));
+        return Err(refused(ReplacementRefusal::Changed));
     }
     Ok(CarrierReplacement {
         card_id: expected.card_id,
@@ -211,7 +272,7 @@ impl CarrierReplacement {
                 .fetch_one(&mut **tx)
                 .await?;
         if current != self.root_session_id {
-            return Err(CalmError::Conflict("replacement root changed"));
+            return Err(refused(ReplacementRefusal::Changed));
         }
         super::super::session_mark_track_root_tx(tx, &self.new_worker.track_id, &self.new_worker.id)
             .await
