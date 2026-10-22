@@ -110,9 +110,7 @@ fn define(state: &mut State, definition: &ObjectiveDefinition) -> Vec<Occurrence
     };
     let standard_changed = standard_hash(&objective.definition) != standard_hash(definition);
     let previous = std::mem::replace(&mut objective.definition, definition.clone());
-    let still_exhausted = definition
-        .budget
-        .exhausted(&usage.since(&objective.usage_at_start));
+    let still_exhausted = definition.budget.exhausted(&objective.used(&usage));
     objective
         .budget_notified
         .retain(|limit| still_exhausted.contains(limit));

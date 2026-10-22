@@ -15,6 +15,7 @@ use serde_json::json;
 
 mod content_tests;
 mod control_tests;
+mod objective_tests;
 mod selection_authority_tests;
 
 pub(super) struct Fixture {

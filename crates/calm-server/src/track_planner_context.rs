@@ -19,6 +19,8 @@ use crate::{
     state::WriteContext,
 };
 
+mod objective_budget;
+
 pub const RUN_STATS_OVERLAY_KIND: &str = "run.stats";
 
 pub const PLANNER_CONTEXT_OVERLAY_KIND: &str = "planner.context";
@@ -198,7 +200,21 @@ impl TrackPlannerContextProjector {
                 serde_json::to_value(stats)?,
             )
             .await?;
-        Ok(context_changed || stats_changed)
+        let mut objective_changed = false;
+        if let Some(unit) = objective_budget::build(&self.pool, track_id).await? {
+            let previous = overlays.iter().find(|o| {
+                o.plugin_id == KERNEL_OVERLAY_PLUGIN_ID && o.kind == objective_budget::KIND
+            });
+            objective_changed = self
+                .publish(
+                    track_id,
+                    objective_budget::KIND,
+                    previous.map(|o| &o.payload),
+                    serde_json::to_value(unit)?,
+                )
+                .await?;
+        }
+        Ok(context_changed || stats_changed || objective_changed)
     }
 
     async fn run_stats(&self, track_id: &str) -> Result<DataUnit> {

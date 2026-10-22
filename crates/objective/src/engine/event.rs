@@ -56,7 +56,7 @@ pub enum Event {
     HostIdle {
         queue_len: u32,
     },
-    /// Cumulative session usage.
+    /// Cumulative user-turn usage; context tokens sum positive visible occupancy deltas.
     Usage {
         usage: Usage,
     },

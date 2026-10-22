@@ -278,6 +278,7 @@ calm-types = { path = "../calm-types" }
 calm-report = { path = "../calm-report" }
 calm-exec = { path = "../calm-exec" }
 calm-truth = { path = "../calm-truth" }
+objective = { path = "../objective" }
 provider = { path = "../provider" }
 calm-session = { path = "../calm-session" }
 calm-proc-supervisor = { path = "../calm-proc-supervisor" }

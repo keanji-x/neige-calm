@@ -15,6 +15,7 @@ mod replay;
 mod report;
 mod restart;
 mod schema;
+mod usage;
 
 async fn fixture() -> SqlxRepo {
     fixture_at("sqlite::memory:").await

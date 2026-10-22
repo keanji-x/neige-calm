@@ -1,5 +1,6 @@
 +++
 id = "long-term-goal"
+capabilities = ["objectives"]
 title = "长期目标"
 description = "长期自主推进一个目标：按 Roadmap 分阶段交付，KR 由独立 worker 测量，自动合并，只在有问题时问你。"
 instructions = """
@@ -18,6 +19,10 @@ instructions = """
   （只读任务）或命令完成，「当前」只引用测量结果；使任一 KR 变差的交付不合并。
 · Roadmap：阶段一个接一个，每个阶段固定写：
   交付物（PR 等）/ 推动（哪个 KR）/ 上下文 预算 Xk（已用读下方运行数据） / 现在。
+  每个进行中阶段写一个 objective 块：key stage-N、mode converge、compact none；
+  checks 只放一个 role goal 的 fact task_accepted 检查，subject 为阶段收尾任务 key。
+  budget.tokens 为阶段预算，turns=1000000、wall_secs=315360000（宽松上限）。
+  「已用」由 objective.budget 自动累计，不手写。
   状态用 `进行中` `待开始` `未开始`，做完移到「已交付」。
 · 压缩检查点：阶段之间只留一行「⏸ 压缩检查点 → compact 任务 <key>」。若剩余上下文 <
   下一阶段的上下文预算，就在当回合最后声明 compact 任务（key 唯一、ready true）；
@@ -76,6 +81,19 @@ instructions = """
       "id": "run-statistics",
       "layout": "one",
       "title": ""
+    },
+    {
+      "cells": [
+        {
+          "expects": "table",
+          "id": "objective-budget",
+          "kind": "live",
+          "source": "neige://plugin/kernel/objective.budget"
+        }
+      ],
+      "id": "objective-budgets",
+      "layout": "one",
+      "title": "阶段预算"
     }
   ],
   "snapshot": null,

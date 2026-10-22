@@ -585,3 +585,92 @@ async fn run_stats_and_planner_context_live_slot_resolve_kernel_projector_data()
         ])
     );
 }
+
+#[tokio::test]
+async fn objective_budget_live_slot_projects_stage_usage_and_exhaustion() {
+    use calm_truth::objective_host::{TurnUsage, record_turn_usage};
+    let boot = boot().await;
+    let db = boot.repo.sqlite_db().unwrap();
+    let mut tx = calm_server::db::sqlite::begin_immediate_tx(&db)
+        .await
+        .unwrap();
+    calm_server::db::sqlite::track_capabilities::stamp_tx(
+        &mut tx,
+        &boot.track_id,
+        &[calm_types::track_capability::TrackCapability::Objectives],
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    record_turn_usage(
+        &db,
+        &boot.track_id,
+        "planner-session".into(),
+        "before".into(),
+        TurnUsage {
+            context_growth: 40000,
+            secs: 10,
+        },
+    )
+    .await
+    .unwrap();
+    create(&boot, "objective", json!({
+        "key":"stage-1", "title":"Stage one", "mode":"converge",
+        "checks":[{"id":"accepted", "role":"goal", "config":{"kind":"fact", "params":{"fact":"task_accepted", "subject":"finish-stage-1"}}}],
+        "constraints":[], "budget":{"tokens":150000,"turns":1000000,"wall_secs":315360000},"compact":"none"
+    })).await;
+    let source = include_str!("../../templates/builtin/long-term-goal.md");
+    let start = source.find("```neige-block view\n").unwrap() + "```neige-block view\n".len();
+    let end = source[start..].find("\n```").unwrap() + start;
+    let created = create(
+        &boot,
+        "view",
+        serde_json::from_str(&source[start..end]).unwrap(),
+    )
+    .await;
+    let projector = calm_server::track_planner_context::TrackPlannerContextProjector::new(
+        boot.repo.clone(),
+        boot.ctx.events.clone(),
+        boot.ctx.write.clone(),
+    )
+    .unwrap();
+    for (turn, growth, used, exceeded) in [
+        ("after", 30000, 30000.0, "false"),
+        ("over", 130000, 160000.0, "true"),
+    ] {
+        record_turn_usage(
+            &db,
+            &boot.track_id,
+            "planner-session".into(),
+            turn.into(),
+            TurnUsage {
+                context_growth: growth,
+                secs: 10,
+            },
+        )
+        .await
+        .unwrap();
+        assert!(
+            projector
+                .recompute_track(boot.track_id.as_str())
+                .await
+                .unwrap()
+        );
+        let report = read_full(&boot, &created["id"]).await;
+        let cell = &cells(resolved(&report, &created["id"]))[2];
+        assert_eq!(cell["status"], "ok", "{cell}");
+        assert_eq!(cell["source"], "neige://plugin/kernel/objective.budget");
+        let row = &cell["data"]["cell"]["table"]["rows"][0];
+        assert_eq!(row["key"], "stage-1");
+        assert_eq!(row["status"], "open");
+        assert_eq!(row["used"], used);
+        assert_eq!(row["budget"], 150000.0);
+        assert_eq!(row["exceeded"], exceeded);
+        assert!(
+            !projector
+                .recompute_track(boot.track_id.as_str())
+                .await
+                .unwrap()
+        );
+    }
+}

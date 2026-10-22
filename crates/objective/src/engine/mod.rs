@@ -65,6 +65,11 @@ pub struct ObjectiveState {
 }
 
 impl ObjectiveState {
+    /// Usage since definition. Closing/freezing is handled in the later lifecycle slice.
+    pub fn used(&self, current: &Usage) -> Usage {
+        current.since(&self.usage_at_start)
+    }
+
     pub fn is_approved(&self) -> bool {
         self.approval
             .as_ref()

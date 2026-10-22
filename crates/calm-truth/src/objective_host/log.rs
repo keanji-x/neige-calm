@@ -96,10 +96,17 @@ pub(super) async fn read_tx(
     tx: &mut Transaction<'_, Sqlite>,
     track: &TrackId,
 ) -> Result<Vec<LoggedEvent>> {
-    let rows = sqlx::query("SELECT * FROM objective_events WHERE track_id=? ORDER BY seq")
+    let rows = sqlx::query("SELECT e.*,t.area_id FROM objective_events e JOIN tracks t ON t.id=e.track_id WHERE e.track_id=? ORDER BY e.seq")
         .bind(track.as_str())
         .fetch_all(&mut **tx)
         .await?;
+    decode_rows(&rows, track)
+}
+
+pub(super) fn decode_rows(
+    rows: &[sqlx::sqlite::SqliteRow],
+    track: &TrackId,
+) -> Result<Vec<LoggedEvent>> {
     let mut result = vec![];
     for row in rows {
         let seq: i64 = row.try_get("seq")?;
@@ -137,10 +144,7 @@ pub(super) async fn read_tx(
                     principal: Principal::Agent {
                         session_id: session,
                         track_id: track.clone(),
-                        area_id: tx
-                            .read_track_area(track)
-                            .await?
-                            .ok_or_else(|| internal("missing track"))?,
+                        area_id: row.try_get::<String, _>("area_id")?.into(),
                     },
                     request_id: PlannerRequestId::new(id),
                 }
@@ -166,4 +170,3 @@ pub(super) async fn read_tx(
     }
     Ok(result)
 }
-use crate::decision_gate::WriteTx;

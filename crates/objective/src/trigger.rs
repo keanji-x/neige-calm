@@ -148,7 +148,7 @@ fn remind_budgets(state: &mut State, intents: &mut Vec<Intent>) {
         if objective.status != Status::Open {
             continue;
         }
-        let used = usage.since(&objective.usage_at_start);
+        let used = objective.used(&usage);
         for limit in objective.definition.budget.exhausted(&used) {
             if objective.budget_notified.insert(limit) {
                 intents.push(Intent::Notify {

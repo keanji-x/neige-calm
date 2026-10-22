@@ -15,19 +15,27 @@ pub(super) async fn load_tx(
             .bind(track.as_str())
             .fetch_one(&mut **tx)
             .await?;
+    let (seq, state) = decode(row, tip)?;
+    let state = match state {
+        Some(state) => state,
+        None => super::fold_log(&log::read_tx(tx, track).await?).0,
+    };
+    Ok((seq, state))
+}
+
+/// None requests pure replay, never snapshot repair.
+pub(super) fn decode(row: Option<(i64, i64, String)>, tip: i64) -> Result<(LogSeq, Option<State>)> {
     match row {
-        None if tip == 0 => Ok((LogSeq(0), State::default())),
+        None if tip == 0 => Ok((LogSeq(0), Some(State::default()))),
         None => Err(internal("missing snapshot for nonempty log")),
         Some((seq, version, json)) => {
             if seq != tip {
                 return Err(internal("snapshot does not match log tip"));
             }
             let state = if version == i64::from(objective::engine::STATE_VERSION) {
-                serde_json::from_str(&json).map_err(internal)?
+                Some(serde_json::from_str(&json).map_err(internal)?)
             } else {
-                let rows = log::read_tx(tx, track).await?;
-                // State-only: replayed intents must never be inserted here.
-                super::fold_log(&rows).0
+                None
             };
             Ok((LogSeq(u64::try_from(seq).map_err(internal)?), state))
         }

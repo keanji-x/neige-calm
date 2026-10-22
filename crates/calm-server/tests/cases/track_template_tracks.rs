@@ -1637,7 +1637,7 @@ async fn optional_history_template_reports_setup_and_ready_through_owner_lifecyc
 }
 
 #[tokio::test]
-async fn long_term_goal_run_stats_creates_without_template_input_bound_to_gitforge() {
+async fn objective_long_term_goal_run_stats_creates_without_template_input_bound_to_gitforge() {
     let boot = boot().await;
     let (status, body) = post(
         boot.app.clone(),
@@ -1665,5 +1665,24 @@ async fn long_term_goal_run_stats_creates_without_template_input_bound_to_gitfor
             .contains("neige://plugin/kernel/planner.context")
     );
     assert!(payload.body.contains("neige://plugin/kernel/run.stats"));
+    assert!(
+        payload
+            .body
+            .contains("neige://plugin/kernel/objective.budget")
+    );
+    let mut tx = boot
+        .repo
+        .sqlite_db()
+        .unwrap()
+        .read_pool()
+        .begin()
+        .await
+        .unwrap();
+    assert!(
+        calm_truth::objective_host::capability::enabled_tx(&mut tx, &track_id.into())
+            .await
+            .unwrap()
+    );
+    tx.commit().await.unwrap();
     assert!(!payload.body.contains("neige:input-form"));
 }

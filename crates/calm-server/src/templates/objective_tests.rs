@@ -14,3 +14,23 @@ fn objective_roster_requires_capability_and_unique_keys() {
     assert!(TemplateRoster::from_sources(&[source("capabilities = [\"objectives\"]", 2)]).is_err());
     assert!(TemplateRoster::from_sources(&[source("capabilities = [\"objectives\"]", 1)]).is_ok());
 }
+
+#[test]
+fn objective_long_term_goal_template_declares_budget_slot() {
+    let template = TemplateRoster::builtin().get(LONG_TERM_GOAL).unwrap();
+    assert_eq!(
+        template.capabilities(),
+        &[calm_types::track_capability::TrackCapability::Objectives]
+    );
+    let recipe = template.recipe();
+    let start = recipe.body.find("```neige-block view\n").unwrap() + "```neige-block view\n".len();
+    let end = recipe.body[start..].find("\n```").unwrap() + start;
+    let payload: Value = serde_json::from_str(&recipe.body[start..end]).unwrap();
+    let parsed: calm_types::report_blocks::native_view::NativeView =
+        serde_json::from_value(payload).unwrap();
+    assert!(
+        serde_json::to_string(&parsed)
+            .unwrap()
+            .contains("neige://plugin/kernel/objective.budget")
+    );
+}

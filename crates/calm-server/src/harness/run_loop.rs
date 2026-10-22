@@ -197,7 +197,10 @@ pub struct PlannerHarnessParams {
     pub snapshot: HarnessRuntimeSnapshot,
 }
 
+mod objective_usage;
+
 pub(super) struct Inner {
+    objective_usage: Mutex<objective_usage::TurnMeter>,
     track_delete_locks: crate::per_card_lock::KeyedLocks,
     pub(super) worker_session_id: String,
     track_id: TrackId,
@@ -1566,6 +1569,7 @@ fn inner_from_params(
         legacy_issued_input_segments: Mutex::new(legacy_issued_input_segments),
         last_report_body_sha256: Mutex::new(header.last_report_body_sha256),
         last_seen_head: Mutex::new(header.last_seen_head),
+        objective_usage: Mutex::new(objective_usage::TurnMeter::default()),
         // Round-trips through the snapshot: codex only re-pushes it on the next model response, so a
         // resumed-but-idle thread would otherwise read as having no context usage.
         token_usage: Mutex::new(header.token_usage),
@@ -4237,7 +4241,7 @@ async fn persist_guarded_snapshot(
     for event in task_events {
         inner.events.emit_envelope(event);
     }
-    self_compact::publish_wake(inner, snapshot.planner_compaction, wake).await;
+    self_compact::publish_wake(inner, snapshot.planner_compaction.clone(), wake).await;
     drop(completion);
     inner
         .restored_projections
@@ -4245,6 +4249,13 @@ async fn persist_guarded_snapshot(
         .await
         .retain(|id| !retired.contains(id));
 
+    objective_usage::observe(
+        inner,
+        new_phase,
+        snapshot.last_turn_id.as_deref(),
+        crate::harness::token_usage::planner_context_usage(&snapshot).map(|r| r.used_tokens),
+    )
+    .await;
     emit_phase_refresh(
         inner,
         new_phase,

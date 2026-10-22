@@ -9,6 +9,8 @@ mod lifecycle;
 mod log;
 pub mod report;
 mod snapshot;
+mod usage;
+pub use usage::{TurnUsage, TurnUsageResult, read_state, record_turn_usage};
 
 use serde::{Deserialize, Serialize};
 use sqlx::{Sqlite, Transaction};

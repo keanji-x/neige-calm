@@ -65,7 +65,9 @@ pub enum BudgetLimit {
     WallSecs,
 }
 
-/// Cumulative usage the host reports. The engine never reads a clock.
+/// Cumulative user-turn usage. Context tokens sum positive end-minus-start visible
+/// occupancy deltas; either endpoint missing or invalidated contributes zero.
+/// Turns count user turns, elapsed seconds sum their wall time. The engine reads no clock.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Usage {
     pub turns: u32,
