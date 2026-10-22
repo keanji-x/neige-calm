@@ -1,5 +1,6 @@
 //! ACP retained activation is a local identity, independent of native setup.
 use super::*;
+use calm_truth::db::RepoRead;
 use serde_json::Value;
 
 #[tokio::test]

@@ -6,6 +6,7 @@ mod codex_worker_shared_daemon {
     mod transport_tests;
 }
 
+use calm_truth::db::RepoRead;
 use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::path::{Path, PathBuf};
 use std::process::Command;

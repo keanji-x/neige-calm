@@ -1,5 +1,6 @@
 //! Real-model Calendar usability probe, executed only by the Docker-isolated runner.
 use super::*;
+use calm_truth::db::RepoRead;
 
 #[tokio::test]
 async fn real_planner_creates_calendar_commitment() {

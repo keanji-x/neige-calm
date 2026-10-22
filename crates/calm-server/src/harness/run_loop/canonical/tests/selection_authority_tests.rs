@@ -1,5 +1,6 @@
 //! Revoke the real request issuer between actual provider metadata requests.
 use super::*;
+use calm_truth::db::RepoRead;
 use futures_util::StreamExt;
 
 #[tokio::test]

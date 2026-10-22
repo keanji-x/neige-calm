@@ -144,7 +144,7 @@ pub(crate) async fn resolve_today_launchpad(
 /// re-derivation from `purpose`. `false` when there is no launchpad yet; nothing is
 /// ensured from here.
 pub(crate) async fn is_launchpad_track(
-    repo: &(impl crate::db::ServerRepoReadExt + ?Sized),
+    repo: &(impl calm_truth::db::RepoRead + ?Sized),
     track_id: &str,
 ) -> Result<bool> {
     Ok(repo

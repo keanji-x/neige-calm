@@ -1,4 +1,5 @@
 use super::*;
+use calm_truth::db::RepoRead;
 
 #[test]
 fn checks_wake_includes_exact_snapshot_for_success_and_failure() {
@@ -3640,7 +3641,7 @@ async fn settled_event_for_a_row_on_another_track_maps_to_nothing() {
         unreachable!()
     };
     assert_eq!(event_track, &track, "the envelope guard passes");
-    let row = crate::db::ServerRepoReadExt::task_get(&repo, "row-on-x")
+    let row = calm_truth::db::RepoRead::task_get(&repo, "row-on-x")
         .await
         .unwrap()
         .expect("the tasks row exists");

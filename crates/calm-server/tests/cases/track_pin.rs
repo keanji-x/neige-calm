@@ -6,6 +6,7 @@
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::model::*;
+use calm_truth::db::RepoRead;
 use calm_types::organization::LEGACY_OWNER_USER_ID;
 
 async fn fresh_repo() -> SqlxRepo {

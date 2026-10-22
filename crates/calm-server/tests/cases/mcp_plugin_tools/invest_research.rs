@@ -3,6 +3,7 @@
 //! kernel's provenance `_meta`, and every live slot of each recipe resolves, on the Track whose
 //! report places it, to a unit that passes `validate_unit`.
 
+use calm_truth::db::RepoRead;
 use std::collections::BTreeMap;
 
 use super::*;

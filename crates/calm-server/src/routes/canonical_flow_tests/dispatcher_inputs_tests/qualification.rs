@@ -3,6 +3,7 @@ use super::*;
 use crate::event::{Event, EventScope};
 use crate::ids::{ActorId, CardId};
 use calm_truth::db::RepoEventWrite as _;
+use calm_truth::db::RepoRead;
 
 #[tokio::test]
 async fn failed_required_task_lookup_keeps_the_real_event_prefix_unaccepted() {

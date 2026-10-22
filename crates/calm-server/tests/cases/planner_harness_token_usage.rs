@@ -1,6 +1,7 @@
 //! `thread/tokenUsage/updated` end to end: a real notification reaches the run loop, the reading rides the runtime
 //! snapshot through `worker_sessions.handle_state` and back, and `GET /api/cards/{id}/planner/run` reports it from `last`.
 
+use calm_truth::db::RepoRead;
 use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::path::PathBuf;
 use std::sync::Arc;

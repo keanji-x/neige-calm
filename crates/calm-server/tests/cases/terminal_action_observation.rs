@@ -1,5 +1,6 @@
 //! Actual MCP and PTY; readback is presentation, never another physical action.
 use super::terminal_support::Harness;
+use calm_truth::db::RepoRead;
 use serde_json::{Value, json};
 use std::time::Duration;
 
@@ -518,7 +519,6 @@ async fn submission_keys_cannot_repeat_or_write_before_validation() {
 
 #[tokio::test]
 async fn action_readback_does_not_follow_a_replacement_worker_session() {
-    use calm_server::db::prelude::*;
     use calm_server::db::sqlite::session_supersede_and_start_tx;
     use calm_server::model::{new_id, now_ms};
     use calm_server::session_projection_repo::{

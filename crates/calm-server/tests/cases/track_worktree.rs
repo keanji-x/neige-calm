@@ -9,6 +9,7 @@ mod c1_fence;
 #[path = "track_metadata_concurrency.rs"]
 mod metadata_concurrency;
 
+use calm_truth::db::RepoRead;
 use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

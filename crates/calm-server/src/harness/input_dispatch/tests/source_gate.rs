@@ -1,6 +1,7 @@
 //! Revoke the actual issuer after its marker, during native connection or sink waits.
 use super::*;
 use crate::shared_codex_appserver::native_owner_tests::{connect, request, send};
+use calm_truth::db::RepoRead;
 use serde_json::json;
 
 async fn input_gate_case(change: u8, outbound: bool) {

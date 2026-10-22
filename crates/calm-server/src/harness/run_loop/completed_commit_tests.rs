@@ -13,6 +13,7 @@ use crate::session_projection_repo::{
 };
 use crate::shared_codex_appserver::SharedCodexAppServer;
 use calm_truth::db::RepoEventWrite as _;
+use calm_truth::db::RepoRead;
 use serde_json::json;
 
 /// Independent exact oracle for the default, kernel-generated prefix; never a queued entry.

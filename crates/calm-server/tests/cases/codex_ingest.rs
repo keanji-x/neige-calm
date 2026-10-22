@@ -1,6 +1,7 @@
 //! Codex hook ingest: POSTing a fake hook payload produces a `codex.hook` event with the snake_case
 //! `hook.codex.<event>` discriminator. No real `codex` CLI is spawned.
 
+use calm_truth::db::RepoRead;
 use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::sync::Arc;
 

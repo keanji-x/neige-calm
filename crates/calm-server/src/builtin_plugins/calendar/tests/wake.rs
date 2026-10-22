@@ -9,6 +9,7 @@ use crate::harness::{
     PlannerHarnessParams,
 };
 use crate::shared_codex_appserver::SharedCodexAppServer;
+use calm_truth::db::RepoRead;
 use chrono::{DateTime, Utc};
 use std::time::{Duration, Instant};
 

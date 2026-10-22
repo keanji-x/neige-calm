@@ -1,4 +1,5 @@
 use super::*;
+use calm_truth::db::RepoRead;
 
 async fn assistant(b: &Boot, track: &str, provider: &str) -> String {
     let id = calm_server::model::new_id();

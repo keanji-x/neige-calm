@@ -20,10 +20,10 @@ mod deterministic_gates;
 #[path = "codex_forge_e2e/scenario_support.rs"]
 mod scenario_support;
 
+use calm_truth::db::RepoRead;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use calm_server::db::prelude::*;
 use calm_server::harness::Observation;
 use calm_server::ids::ActorId;
 use capstone::*;

@@ -1,4 +1,5 @@
 use super::*;
+use calm_truth::db::RepoRead;
 
 async fn loaded_planner(boot: &Boot) -> (Card, String, PlannerHarness) {
     use calm_server::shared_codex_appserver::{SharedThreadStartParams, ThreadConfig};

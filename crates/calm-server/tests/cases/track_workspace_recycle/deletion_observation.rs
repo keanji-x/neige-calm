@@ -1,5 +1,6 @@
 //! Capture real route observations while the actual lifecycle/writer owner is held.
 use super::*;
+use calm_truth::db::RepoRead;
 use std::sync::Mutex;
 use std::time::Duration;
 use tracing::field::{Field, Visit};

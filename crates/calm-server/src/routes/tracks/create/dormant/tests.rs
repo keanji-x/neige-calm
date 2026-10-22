@@ -11,6 +11,7 @@ use crate::routes::tracks::CreateTrackRequest;
 use crate::session_projection_repo::AgentProvider;
 use crate::state::AppState;
 use axum::extract::FromRef;
+use calm_truth::db::RepoRead;
 use calm_types::conversation::*;
 use calm_types::organization::LEGACY_OWNER_USER_ID;
 

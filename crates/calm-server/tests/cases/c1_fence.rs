@@ -4,6 +4,7 @@ use calm_server::operation::{
     OperationKey, OperationRepo, Phase, RecoveryItem, RecoveryPlan, SqlxOperationRepo,
 };
 use calm_server::test_seams::{PausePoint, install_pause_for_test};
+use calm_truth::db::RepoRead;
 use std::{collections::HashSet, time::Duration};
 
 struct Pause(PausePoint);

@@ -1,9 +1,10 @@
 use super::store::{self, Applied};
 use super::{MAX_TAG_CHARS, MAX_TAGS_PER_REPORT, normalize_tag};
+use crate::db::RepoSyncDomainRaw;
 use crate::db::sqlite::SqlxRepo;
-use crate::db::{RepoSyncDomainRaw, ServerRepoReadExt};
 use crate::error::CalmError;
 use crate::model::{NewArea, NewTrack, RequestTheme};
+use calm_truth::db::RepoRead;
 
 /// A track with a report card whose `updated_at` is 1, far behind any real clock.
 async fn fixture() -> (SqlxRepo, String) {

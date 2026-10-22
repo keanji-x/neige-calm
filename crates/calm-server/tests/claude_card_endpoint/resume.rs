@@ -1,5 +1,6 @@
 //! #2516: a Claude card resumes the session it last started, by hand and after its PTY was lost.
 
+use calm_truth::db::RepoRead;
 use std::sync::Arc;
 
 use axum::body::Body;

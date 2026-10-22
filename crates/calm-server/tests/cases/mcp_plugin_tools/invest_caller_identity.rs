@@ -1,6 +1,7 @@
 //! The real invest App behind the plugin host: host-resolved caller identity fences its portfolio
 //! tools, and every unit it publishes is valid for the slot its portfolio recipe gives it.
 
+use calm_truth::db::RepoRead;
 use std::collections::BTreeMap;
 
 use super::*;

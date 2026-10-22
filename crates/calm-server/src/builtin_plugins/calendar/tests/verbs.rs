@@ -4,6 +4,7 @@
 use super::wake::{at, create, cursor, delivered_wakes, planner, rm, set, start_ms, wake_events};
 use super::*;
 use crate::builtin_plugins::calendar::wake::scan;
+use calm_truth::db::RepoRead;
 
 async fn call(
     fx: &Fixture,

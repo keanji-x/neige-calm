@@ -3,6 +3,7 @@
 //! delete releases nothing. Driven through the REST routes against the in-process fake daemon.
 
 use super::*;
+use calm_truth::db::RepoRead;
 
 /// Every cached thread owned by one of `track_ids`' Cards, sorted: what the delete must release.
 async fn cached_threads_of_tracks(b: &Boot, track_ids: &[&str]) -> Vec<String> {

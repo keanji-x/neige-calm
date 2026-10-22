@@ -1,4 +1,5 @@
 //! Acceptance must survive native unavailability through the production HTTP routes.
+use calm_truth::db::RepoRead;
 use std::net::SocketAddr;
 use std::sync::Arc;
 

@@ -250,8 +250,8 @@ pub fn selected_blocks_text<'a>(
 mod tests {
     use super::*;
     use crate::card_role_cache::CardRoleCache;
+    use crate::db::RepoSyncDomainRaw;
     use crate::db::sqlite::SqlxRepo;
-    use crate::db::{RepoSyncDomainRaw, ServerRepoReadExt};
     use crate::event::{EditAuthor, EventBus};
     use crate::ids::ActorId;
     use crate::model::{NewArea, NewTrack, RequestTheme};
@@ -259,6 +259,7 @@ mod tests {
     use crate::track_area_cache::TrackAreaCache;
     use crate::track_report::{TrackReportPayload, persist_report};
     use automerge::{AutoCommit, ObjType, ROOT, transaction::Transactable};
+    use calm_truth::db::RepoRead;
     use serde_json::json;
 
     async fn fixture(legacy_crdt: bool) -> (SqlxRepo, crate::model::Track, crate::model::Card) {

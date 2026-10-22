@@ -2,6 +2,7 @@
 //! raw-inserted into a fresh in-memory server and drained over WS with `since=0`.
 
 use calm_truth::db::RepoEventWrite as _;
+use calm_truth::db::RepoRead;
 use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::path::PathBuf;
 use std::sync::Arc;

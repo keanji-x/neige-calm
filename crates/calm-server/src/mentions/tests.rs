@@ -2,6 +2,7 @@
 //! `area/reports/` resolver `neige track cat` / `neige report find` use, only the caller's area is searched,
 //! matching and ranking follow `rank`'s documented order, and every request reads afresh.
 
+use calm_truth::db::RepoRead;
 use std::sync::Arc;
 
 use axum::body::Body;

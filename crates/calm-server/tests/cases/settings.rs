@@ -1,11 +1,11 @@
 //! Settings persistence + REST end-to-end: the `Repo` KV surface and `GET`/`PUT /api/settings`.
 
 use calm_truth::db::RepoOutOfDomain as _;
+use calm_truth::db::RepoRead;
 use std::sync::Arc;
 
 use axum::body::Body;
 use axum::http::Request;
-use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::EventBus;
 use calm_server::plugin_host::{PluginHost, PluginRegistry};

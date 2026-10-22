@@ -3,6 +3,7 @@
 //! the run loop's item path to the stored `ask.requested` and the activity overlay.
 
 use calm_truth::db::RepoEventWrite as _;
+use calm_truth::db::RepoRead;
 use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::io::Write;
 use std::sync::{Arc, Mutex};

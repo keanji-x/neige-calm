@@ -2,6 +2,7 @@
 //! writer closes execution authority. No test manufactures a receipt or END.
 use super::*;
 use crate::shared_codex_appserver::native_owner_tests::{connect, notify_thread, request, send};
+use calm_truth::db::RepoRead;
 use serde_json::json;
 
 async fn real() -> Arc<Fixture> {

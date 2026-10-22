@@ -4,6 +4,7 @@ use calm_server::harness::run_loop::{
     PlannerHarnessObservationRaceHook, install_planner_harness_observation_race_hook_for_test,
 };
 use calm_server::ids::ActorId;
+use calm_truth::db::RepoRead;
 use tokio::sync::Notify;
 
 #[tokio::test]

@@ -2,7 +2,7 @@
 //! workspace, as a terminal card does, never in the server's `$HOME`.
 
 use axum::http::StatusCode;
-use calm_server::db::prelude::*;
+use calm_truth::db::RepoRead;
 use serde_json::json;
 
 use super::{ENV_LOCK, boot_success, post};

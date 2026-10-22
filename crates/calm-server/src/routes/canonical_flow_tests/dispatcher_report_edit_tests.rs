@@ -4,6 +4,7 @@ use crate::event::{EditAuthor, Event};
 use crate::harness::profile::{HarnessProfile, PlannerBinding};
 use crate::ids::{ActorId, CardId};
 use crate::shared_codex_appserver::native_owner_tests::Peer;
+use calm_truth::db::RepoRead;
 use calm_types::conversation::PendingInput;
 
 const REPORT_BODY: &str = "Preserve this actual User report update in the Planner workflow";

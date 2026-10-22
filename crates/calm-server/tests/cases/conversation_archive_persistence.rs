@@ -1,4 +1,5 @@
 use super::*;
+use calm_truth::db::RepoRead;
 
 #[tokio::test]
 async fn archive_migration_upgrades_current_main_without_rewriting_released_migrations() {

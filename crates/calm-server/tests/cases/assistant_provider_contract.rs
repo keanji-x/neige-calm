@@ -1,5 +1,6 @@
 //! Production JSON compatibility and persisted Assistant identity.
 use super::*;
+use calm_truth::db::RepoRead;
 
 #[tokio::test]
 async fn assistant_provider_unconfigured_claude_does_not_silently_start_codex() {

@@ -12,6 +12,7 @@ use calm_server::session_projection_repo::WorkerSessionState;
 use calm_server::terminal_renderer::{RendererConfig, RendererEntry, TerminalExitInfo};
 use calm_server::worker_quiet::{QuietWorkerInbox, WorkerQuietDetector};
 use calm_server::worker_watch::{WorkerWatcher, watch_text, watcher_card_id};
+use calm_truth::db::RepoRead;
 use calm_truth::db::sqlite::card_with_terminal_create_tx;
 use futures::future::BoxFuture;
 use serde_json::{Value, json};

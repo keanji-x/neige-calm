@@ -8,6 +8,7 @@ use super::terminal_support::Harness;
 use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
 use calm_server::model::{CardRole, NewTrack, new_id, now_ms};
+use calm_truth::db::RepoRead;
 use calm_truth::db::sqlite::{
     card_mcp_token_set_tx, card_with_claude_create_tx, card_with_codex_create_tx,
     card_with_terminal_create_tx, session_mcp_token_set_tx,

@@ -6,6 +6,7 @@ use crate::event::EditAuthor;
 use crate::model::TaskStatus;
 use crate::track_report::{TrackReportPayload, persist_report, resolve_report_for_track};
 use calm_truth::db::RepoEventWrite as _;
+use calm_truth::db::RepoRead;
 use provider::events::PlannerEventKind;
 use serde_json::json;
 

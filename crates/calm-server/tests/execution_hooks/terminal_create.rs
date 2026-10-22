@@ -1,6 +1,7 @@
 use super::*;
 use calm_server::operation::terminal_execution_create::{CONSUMER, KIND};
 use calm_server::operation::{OperationKey, OperationRepo, SqlxOperationRepo};
+use calm_truth::db::RepoRead;
 
 pub(super) async fn create(f: &Fixture, cwd: &str, program: &str) -> (StatusCode, String) {
     f.request(

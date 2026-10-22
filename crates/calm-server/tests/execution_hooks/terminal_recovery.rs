@@ -2,6 +2,7 @@ use super::terminal_execution_create::{create, execution_id, terminal};
 use super::terminal_io::next;
 use super::*;
 use calm_session::{ClientMsg, DaemonMsg};
+use calm_truth::db::RepoRead;
 use futures_util::SinkExt;
 use tokio_tungstenite::tungstenite::Message;
 

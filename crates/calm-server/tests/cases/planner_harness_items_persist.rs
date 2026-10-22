@@ -1,4 +1,5 @@
 use calm_truth::db::RepoEventWrite as _;
+use calm_truth::db::RepoRead;
 use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::sync::Arc;
 use std::time::{Duration, Instant};

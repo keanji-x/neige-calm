@@ -11,6 +11,7 @@ use super::worker_message::{
     wait_for_reads, written,
 };
 use super::worker_message_lifecycle::assert_waited;
+use calm_truth::db::RepoRead;
 use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -323,7 +324,6 @@ async fn replace_session(
     terminal: &str,
     id: String,
 ) {
-    use calm_server::db::prelude::*;
     use calm_server::db::sqlite::session_supersede_and_start_tx;
     use calm_server::session_projection_repo::{
         AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,

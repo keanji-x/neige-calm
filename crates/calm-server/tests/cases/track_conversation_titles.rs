@@ -1,5 +1,6 @@
 //! Fresh reads exercise server title metadata, without the history REST endpoint.
 use super::*;
+use calm_truth::db::RepoRead;
 
 #[tokio::test]
 async fn conversation_title_planner_fresh_detail() {

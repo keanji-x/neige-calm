@@ -10,6 +10,7 @@ use crate::{
     track_area_cache::TrackAreaCache,
 };
 use calm_truth::db::RepoOutOfDomain as _;
+use calm_truth::db::RepoRead;
 struct Fixture {
     repo: Arc<SqlxRepo>,
     host: Arc<PluginHost>,

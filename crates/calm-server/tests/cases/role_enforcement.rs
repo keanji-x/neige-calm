@@ -2,6 +2,7 @@
 //! (`Repo::write_with_event` / `Repo::log_pure_event`).
 
 use calm_truth::db::RepoEventWrite as _;
+use calm_truth::db::RepoRead;
 use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::sync::Arc;
 

@@ -3,6 +3,7 @@
 //! `ActorId::AiClaude(card_id)` and the snake_case `hook.claude.<event>`
 //! discriminator.
 
+use calm_truth::db::RepoRead;
 use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::sync::Arc;
 

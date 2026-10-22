@@ -7,6 +7,7 @@ use super::terminal_support::Harness;
 use calm_server::db::prelude::*;
 use calm_server::model::CardRole;
 use calm_server::worker_watch::{Note, Outcome, Verdict, report_line};
+use calm_truth::db::RepoRead;
 use calm_types::observation::WORKER_WATCH_WAKE_SOURCE;
 use serde_json::{Value, json};
 

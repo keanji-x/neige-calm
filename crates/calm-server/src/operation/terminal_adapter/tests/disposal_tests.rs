@@ -1,5 +1,4 @@
 use super::*;
-use crate::db::prelude::*;
 use crate::event::EventBus;
 use crate::operation::launch_cleanup_test_support::read_legacy_v2_request;
 use crate::plugin_host::{PluginHost, PluginRegistry};
@@ -13,6 +12,7 @@ use axum::{
 use calm_session::control::{ControlMsg, ControlReply};
 use calm_session::{read_frame, write_frame};
 use calm_truth::db::RepoOutOfDomain as _;
+use calm_truth::db::RepoRead;
 use http_body_util::BodyExt;
 use std::{
     path::{Path, PathBuf},

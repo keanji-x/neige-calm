@@ -6,6 +6,7 @@
 #![cfg(all(unix, feature = "codex-e2e"))]
 
 use crate::support;
+use calm_truth::db::RepoRead;
 use calm_types::organization::LEGACY_OWNER_USER_ID;
 
 use std::sync::Arc;

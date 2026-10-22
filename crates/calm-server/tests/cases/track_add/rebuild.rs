@@ -1,4 +1,5 @@
 use super::*;
+use calm_truth::db::RepoRead;
 
 #[tokio::test]
 async fn rebuild_template_add_replays_once() {

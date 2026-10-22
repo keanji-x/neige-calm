@@ -2,6 +2,7 @@
 use super::*;
 use calm_server::test_seams::{PausePoint, install_pause_for_test};
 use calm_server::workspace_service::trash::collect_once;
+use calm_truth::db::RepoRead;
 use std::time::Duration;
 
 const LIMIT: Duration = Duration::from_secs(10);

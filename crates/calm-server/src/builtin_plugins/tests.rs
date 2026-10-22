@@ -9,6 +9,7 @@ use crate::session_projection_repo::AgentProvider;
 use crate::state::WriteContext;
 use crate::track_area_cache::TrackAreaCache;
 use calm_truth::db::RepoOutOfDomain as _;
+use calm_truth::db::RepoRead;
 
 const ID: &str = "gitforge";
 const NATIVE: [&str; 2] = ["plugin_gitforge_gh_run_rerun", "plugin_gitforge_publish"];

@@ -4,6 +4,7 @@ use super::*;
 use crate::db::sqlite::conversation::{
     self, CallerRevision, ExpectedCarrier, RuntimeExecutionFence,
 };
+use calm_truth::db::RepoRead;
 use calm_truth::planner_binding::PlannerBinding;
 use calm_types::worker::WorkerSessionId;
 

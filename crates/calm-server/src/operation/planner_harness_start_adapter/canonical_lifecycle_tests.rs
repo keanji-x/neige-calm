@@ -11,6 +11,7 @@ use crate::operation::planner_start_fence::CardStartFence;
 use crate::plugin_host::PluginRegistry;
 use crate::state::{AppState, CodexClient, DaemonClient, RouteState};
 use axum::extract::FromRef;
+use calm_truth::db::RepoRead;
 use calm_types::conversation::HumanPayload;
 use calm_types::organization::LEGACY_OWNER_USER_ID;
 

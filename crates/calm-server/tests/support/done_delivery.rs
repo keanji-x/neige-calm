@@ -1,4 +1,5 @@
 //! Genuine scheduled worker delivery for forge fixtures. Candidate rows are only read here.
+use calm_truth::db::RepoRead;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;

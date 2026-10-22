@@ -10,6 +10,7 @@ use calm_server::track_activity::{
     TrackActivityProjector,
 };
 use calm_truth::db::RepoOutOfDomain as _;
+use calm_truth::db::RepoRead;
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
 use std::sync::Arc;

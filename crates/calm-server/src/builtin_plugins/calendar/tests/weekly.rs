@@ -4,6 +4,7 @@ use super::wake::{at, create, cursor, delivered_wakes, planner, start_ms, wake_e
 use super::*;
 use crate::builtin_plugins::calendar::wake::scan;
 use crate::event::Event;
+use calm_truth::db::RepoRead;
 use serde_json::Value;
 
 fn weekly(weekdays: &[&str], start: &str, end: &str, zone: &str, from: &str) -> Value {

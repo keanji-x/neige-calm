@@ -184,6 +184,7 @@ pub async fn mint_and_persist_managed_planner_token(
 
 #[cfg(test)]
 mod tests {
+    use calm_truth::db::RepoRead;
     use std::path::Path;
 
     use super::*;

@@ -15,6 +15,7 @@ use calm_server::{
     state::{AppState, CodexClient, DaemonClient, WriteContext},
 };
 use calm_truth::db::RepoOutOfDomain as _;
+use calm_truth::db::RepoRead;
 use calm_truth::db::sqlite::workspace_execution::{self as sql, Scope};
 use http_body_util::BodyExt;
 use serde_json::json;

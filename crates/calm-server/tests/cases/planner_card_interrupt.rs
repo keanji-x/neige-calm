@@ -1,5 +1,6 @@
 //! `POST /api/cards/{id}/planner/interrupt` and `GET /api/cards/{id}/planner/run` route tests.
 
+use calm_truth::db::RepoRead;
 use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::path::PathBuf;
 use std::sync::Arc;

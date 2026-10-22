@@ -1,5 +1,6 @@
 //! Tick regressions sharing the real typed supervisor and Terminal projection fixture.
 use super::*;
+use calm_truth::db::RepoRead;
 use clap::Parser;
 use std::sync::atomic::Ordering::SeqCst;
 

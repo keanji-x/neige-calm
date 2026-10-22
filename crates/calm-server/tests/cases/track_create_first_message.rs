@@ -9,6 +9,7 @@ mod template_startup_context;
 #[path = "planner_provider_identity.rs"]
 mod planner_provider_identity;
 
+use calm_truth::db::RepoRead;
 use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::path::PathBuf;
 use std::sync::Arc;

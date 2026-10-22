@@ -1,6 +1,7 @@
 //! Integration tests for the `/api/areas` + `/api/areas/system` routes: the race-safe system-area upsert,
 //! and `POST /api/areas` silently dropping a client-supplied `kind`.
 
+use calm_truth::db::RepoRead;
 use std::sync::Arc;
 
 use axum::body::Body;

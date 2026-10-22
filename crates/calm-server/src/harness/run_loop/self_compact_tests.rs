@@ -1,10 +1,10 @@
 //! Exercise harness admission, persistence and existing event replay.
 use super::completed_commit_tests::Fixture;
 use super::*;
-use crate::db::prelude::*;
 use crate::harness::compact_outcome::{CompactionAnswer, CompactionRefusal};
 use crate::session_projection_repo::AgentProvider;
 use calm_truth::db::RepoEventWrite as _;
+use calm_truth::db::RepoRead;
 use serde_json::json;
 
 async fn request(f: &Fixture) -> CompactionAnswer {

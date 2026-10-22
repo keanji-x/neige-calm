@@ -1,5 +1,6 @@
 //! Integration tests for the auth surface, driving the production router assembly via `oneshot`.
 
+use calm_truth::db::RepoRead;
 use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::net::SocketAddr;
 use std::sync::Arc;

@@ -4,6 +4,7 @@ use super::*;
 use crate::operation::{OperationRepo, SqlxOperationRepo};
 use crate::shared_codex_appserver::native_owner_tests::Peer;
 use axum::extract::FromRef;
+use calm_truth::db::RepoRead;
 
 const PLANNER_B_THREAD: &str = "archive-existing-planner-thread";
 const ASSISTANT_B_THREAD: &str = "archive-existing-assistant-thread";

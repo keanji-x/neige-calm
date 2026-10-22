@@ -9,6 +9,7 @@ use crate::db::sqlite::{SqlxRepo, begin_immediate_tx};
 use crate::model::{CardRole, NewArea, NewCard, NewTrack, RequestTheme, new_id};
 use crate::session_projection_repo::{WorkerSessionInit, WorkerSessionState};
 use crate::shared_codex_appserver::{SharedCodexAppServer, TurnStartReturnHook};
+use calm_truth::db::RepoRead;
 use calm_types::conversation::*;
 use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::sync::Arc;

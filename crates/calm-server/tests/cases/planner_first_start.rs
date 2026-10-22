@@ -4,6 +4,7 @@
 //! `POST /planner/input` must start the conversation and queue the message, not answer 409
 //! `planner_harness_dormant`. A live or retired carrier, or a transcript, keeps the dormant answer.
 
+use calm_truth::db::RepoRead;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};

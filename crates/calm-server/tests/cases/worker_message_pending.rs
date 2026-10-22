@@ -7,11 +7,11 @@ use super::terminal_support::Harness;
 use super::worker_message::{
     Fixture, assert_refusal, expected, message, running, wait_for_reads, written,
 };
-use calm_server::db::prelude::*;
 use calm_server::mcp_server::registry::ToolCallIdentity;
 use calm_server::model::CardRole;
 use calm_server::session_projection_repo::AgentProvider;
 use calm_server::terminal_interaction::Target;
+use calm_truth::db::RepoRead;
 use serde_json::json;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;

@@ -354,13 +354,14 @@ mod tests {
     use super::*;
     use crate::card_role_cache::CardRoleCache;
     use crate::db::sqlite::SqlxRepo;
-    use crate::db::{RepoSyncDomainRaw, RouteRepo, ServerRepoReadExt};
+    use crate::db::{RepoSyncDomainRaw, RouteRepo};
     use crate::event::{EditAuthor, EventBus};
     use crate::ids::ActorId;
     use crate::model::{NewArea, NewTrack, RequestTheme};
     use crate::state::WriteContext;
     use crate::track_area_cache::TrackAreaCache;
     use crate::track_report::{ReportBlock, TrackReportPayload, persist_report};
+    use calm_truth::db::RepoRead;
     use serde_json::json;
 
     async fn area(repo: &SqlxRepo, name: &str) -> crate::model::Area {

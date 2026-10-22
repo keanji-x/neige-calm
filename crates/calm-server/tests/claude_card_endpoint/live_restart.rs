@@ -1,6 +1,7 @@
 //! #2516: Update of a Claude card whose child is running, with real processes under a real proc
 //! supervisor. The child is a stand-in for the Claude CLI that logs each start and each SIGTERM.
 
+use calm_truth::db::RepoRead;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::sync::Arc;
@@ -9,7 +10,6 @@ use std::time::Duration;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use calm_proc_supervisor::test_support::InProcessProcSupervisor;
-use calm_server::db::prelude::*;
 use calm_server::test_seams::{PausePoint, VIEWER_REATTACH_PROBED, install_pause_for_test};
 use serde_json::json;
 use tokio::sync::Notify;

@@ -3,6 +3,7 @@
 
 #![cfg(unix)]
 
+use calm_truth::db::RepoRead;
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;

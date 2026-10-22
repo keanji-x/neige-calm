@@ -8,6 +8,7 @@ use crate::db::sqlite::conversation::human_plan_for_pending_prefix_tx;
 use crate::db::sqlite::{begin_immediate_tx, session_set_handle_state_tx};
 use crate::harness::run_loop::completed_commit_tests::Fixture as ExistingRuntime;
 use crate::shared_codex_appserver::native_owner_tests::{connect, notify_thread, request, send};
+use calm_truth::db::RepoRead;
 use calm_types::conversation::MessageRevisionRef;
 use calm_types::conversation::{AcceptedInputRef, HumanPayload, InputDeliveryFact};
 use serde_json::json;

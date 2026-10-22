@@ -1,6 +1,7 @@
 //! S3 exercises the real close handler against Tracks created by the real add entry point.
 use super::*;
 use calm_server::mcp_server::tools::track_state::TOOL_TRACK_CLOSE;
+use calm_truth::db::RepoRead;
 
 async fn close(boot: &Boot, caller: &Caller, target: &str) -> Result<Value, RpcError> {
     let handler = boot.registry.lookup(TOOL_TRACK_CLOSE).unwrap();

@@ -1,5 +1,6 @@
 //! Host-resolved caller identity reaches local plugins; the real paper-trading App fences on it.
 
+use calm_truth::db::RepoRead;
 use std::collections::BTreeMap;
 
 use super::*;

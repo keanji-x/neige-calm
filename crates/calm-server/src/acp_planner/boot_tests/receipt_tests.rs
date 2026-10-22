@@ -7,6 +7,7 @@ use super::*;
 use crate::acp_planner::config::AcpPlannerHost;
 use crate::acp_planner::session::{AcpPlannerSession, SessionParams};
 use crate::harness::QueueEntry;
+use calm_truth::db::RepoRead;
 use provider::control::TurnStartOutcome;
 use serde_json::Value;
 use std::sync::Arc;

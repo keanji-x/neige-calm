@@ -513,6 +513,7 @@ mod tests {
     use crate::recorder_shadow::divergence_count_for_test;
     use crate::track_area_cache::TrackAreaCache;
     use calm_truth::db::RepoEventWrite as _;
+    use calm_truth::db::RepoRead;
     use calm_types::worker::WorkerSessionState;
     use serde_json::{Value, json};
     use std::path::Path;
