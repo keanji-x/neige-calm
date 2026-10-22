@@ -134,8 +134,13 @@ async fn assert_merge_crash(probe_window: Option<bool>) {
         let end = start + shim[start..].find("    pr_dir=").unwrap();
         shim.insert_str(
             end,
-            r#"    inc_counter "$state/probe_view_count"
-    block_if_requested "$state" pr_view
+            // Stall only the recovery verdict, after the guarded merge has run.
+            r#"    case "$json_fields" in
+      state|state,headRefOid)
+        inc_counter "$state/probe_view_count"
+        block_if_requested "$state" pr_view
+        ;;
+    esac
 "#,
         );
         std::fs::write(path, shim).unwrap();
