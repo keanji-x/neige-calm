@@ -131,7 +131,7 @@ pub(crate) async fn rest_user_block_op(
     .map(|(card, trace)| (card, trace.block))
 }
 
-/// The agent-MCP funnel. Takes its attribution and recorder-shadow probe
+/// The agent-MCP funnel. Takes its attribution and recorder admission gate
 /// from the caller and validates none of them: the boundary bounds the set of doors, not what
 /// a caller says when it walks through this one.
 #[allow(clippy::too_many_arguments)]
@@ -145,7 +145,7 @@ pub(crate) async fn agent_report_op(
     op: ReportDocOp,
     agent_message: Option<String>,
     knowledge: Option<crate::report_read_ledger::LastRead>,
-    recorder_shadow: Arc<dyn RecorderShadowProbe>,
+    recorder_admission: Arc<dyn RecorderAdmissionGate>,
 ) -> Result<(Card, ReportOpTrace), CalmError> {
     persist(
         repo,
@@ -157,7 +157,7 @@ pub(crate) async fn agent_report_op(
         op,
         agent_message,
         knowledge,
-        Some(recorder_shadow),
+        Some(recorder_admission),
         TaskWriteAdmission::RefuseFixableDeclarations,
     )
     .await
@@ -262,7 +262,7 @@ async fn persist(
     op: ReportDocOp,
     agent_message: Option<String>,
     knowledge: Option<crate::report_read_ledger::LastRead>,
-    recorder_shadow: Option<Arc<dyn RecorderShadowProbe>>,
+    recorder_admission: Option<Arc<dyn RecorderAdmissionGate>>,
     task_admission: TaskWriteAdmission,
 ) -> Result<(Card, ReportOpTrace), CalmError> {
     let ReportEditTarget {
@@ -294,13 +294,12 @@ async fn persist(
         let op = op.clone();
         let actor = actor.clone();
         let agent_message = agent_message.clone();
-        let recorder_shadow = recorder_shadow.clone();
+        let recorder_admission = recorder_admission.clone();
         let knowledge = knowledge.clone();
         Box::pin(async move {
             let mut events: Vec<(ActorId, EventScope, Event)> = Vec::new();
-            if let Some(probe) = recorder_shadow.as_ref() {
-                probe
-                    .record(tx, RecorderShadowDecisionKind::ReportWrite)
+            if let Some(gate) = recorder_admission.as_ref() {
+                gate.require_admission(tx, RecorderAdmissionDecisionKind::ReportWrite)
                     .await?;
             }
             // 1. Load (or lazy-init) the CRDT doc. Loaded docs may still carry the old layout (no block

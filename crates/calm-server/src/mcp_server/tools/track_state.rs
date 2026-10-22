@@ -3,7 +3,7 @@
 //! `neige_task_regate` (Planner-only re-run of a failed gate on the same candidate, #2405)
 //! and `neige_track_close` (own close, or an Admin closing a Track it added).
 
-use crate::decision_sink::{CardDecisionSink, CardDecisionSinkRecorderShadowProbe};
+use crate::decision_sink::{CardDecisionSink, CardDecisionSinkRecorderAdmissionGate};
 use crate::error::CalmError;
 use crate::event::{Event, EventScope};
 use crate::mcp_server::framing::RpcError;
@@ -14,7 +14,7 @@ use crate::mcp_server::registry::{
 use crate::mcp_server::tools::track_file::resolve_track_for_identity;
 use crate::mcp_server::tools::write_args::{message_schema, parse_write_args};
 use crate::model::{Card, CardRole, Track, TrackPatch};
-use crate::recorder_shadow::{RecorderShadowDecisionKind, RecorderShadowProbe};
+use crate::recorder_admission::{RecorderAdmissionDecisionKind, RecorderAdmissionGate};
 use crate::track_report::TrackReportPayload;
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -402,7 +402,7 @@ async fn track_close(
             "The kernel controls this Track’s lifecycle.",
         ));
     }
-    let recorder = CardDecisionSinkRecorderShadowProbe::for_identity(&identity, track.id.clone());
+    let recorder = CardDecisionSinkRecorderAdmissionGate::for_identity(&identity, track.id.clone());
     // The write adapter transports storage errors; preserve typed refusals across its rollback.
     let refusal = Arc::new(std::sync::OnceLock::<CloseError>::new());
     let refusal_in_tx = refusal.clone();
@@ -441,7 +441,7 @@ async fn track_close(
 /// Admission and the recorder share the write transaction; only the caller supplies authority.
 async fn close_authorized_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
-    recorder: CardDecisionSinkRecorderShadowProbe,
+    recorder: CardDecisionSinkRecorderAdmissionGate,
     caller: Track,
     target_id: crate::ids::TrackId,
     other: bool,
@@ -459,7 +459,7 @@ async fn close_authorized_tx(
     }
     // Always bind the recorder to the caller, never the close target.
     recorder
-        .record(tx, RecorderShadowDecisionKind::TrackClose)
+        .require_admission(tx, RecorderAdmissionDecisionKind::TrackClose)
         .await?;
     let target = calm_truth::db::sqlite::track_get_tx(tx, &target_id)
         .await

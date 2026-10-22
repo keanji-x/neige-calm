@@ -8,15 +8,15 @@ use crate::{card_role_cache::CardRoleCache, track_area_cache::TrackAreaCache};
 use serde_json::{Value, json};
 use std::sync::Arc;
 
-// The agent boundary accepts caller-provided attribution; the probe adds no policy.
-struct Probe;
+// The agent boundary accepts caller-provided attribution; the test gate allows admission.
+struct AllowRecorderAdmission;
 
 #[async_trait::async_trait]
-impl RecorderShadowProbe for Probe {
-    async fn record(
+impl RecorderAdmissionGate for AllowRecorderAdmission {
+    async fn require_admission(
         &self,
         _: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
-        _: RecorderShadowDecisionKind,
+        _: RecorderAdmissionDecisionKind,
     ) -> Result<(), CalmError> {
         Ok(())
     }
@@ -115,7 +115,7 @@ impl Fixture {
             },
             None,
             None,
-            Arc::new(Probe),
+            Arc::new(AllowRecorderAdmission),
         )
         .await
         .map(|(card, _)| card)

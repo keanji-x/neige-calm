@@ -66,9 +66,10 @@ const FORBIDDEN_IN_THE_DOOR: &[&str] = &[
     "lifecycle",
     "auto_promote_draft",
     // No recorder gate: there is no agent principal on a create request.
-    "RecorderShadowProbe",
-    "RecorderShadowDecisionKind",
-    "recorder_shadow",
+    "RecorderAdmissionGate",
+    "RecorderAdmissionDecisionKind",
+    "recorder_admission",
+    "gate",
     "probe",
 ];
 
@@ -251,7 +252,7 @@ fn rendered(tokens: &impl ToTokens) -> String {
 }
 
 /// The door's argument set is pinned by name AND written type, plus the return type, so it can
-/// name no author, bus, actor, prior revision, lifecycle, or recorder probe. Reads the file
+/// name no author, bus, actor, prior revision, lifecycle, or recorder admission gate. Reads the file
 /// rather than the compiled crate because the door is `pub(crate)`.
 #[test]
 fn the_structural_door_cannot_name_an_author_an_actor_or_a_revision() {

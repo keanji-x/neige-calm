@@ -188,13 +188,13 @@ async fn objective_capability_absent_write_rolls_back_everything() {
     );
 }
 
-struct Probe;
+struct AllowRecorderAdmission;
 #[async_trait::async_trait]
-impl crate::recorder_shadow::RecorderShadowProbe for Probe {
-    async fn record(
+impl crate::recorder_admission::RecorderAdmissionGate for AllowRecorderAdmission {
+    async fn require_admission(
         &self,
         _: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
-        _: crate::recorder_shadow::RecorderShadowDecisionKind,
+        _: crate::recorder_admission::RecorderAdmissionDecisionKind,
     ) -> Result<(), CalmError> {
         Ok(())
     }
@@ -215,7 +215,7 @@ async fn objective_agent_write_feeds_definition_in_the_same_tx() {
         create_op(),
         None,
         None,
-        Arc::new(Probe),
+        Arc::new(AllowRecorderAdmission),
     )
     .await
     .unwrap();
@@ -264,7 +264,7 @@ async fn objective_agent_write_feeds_definition_in_the_same_tx() {
             op,
             None,
             None,
-            Arc::new(Probe)
+            Arc::new(AllowRecorderAdmission)
         )
         .await
         .is_err()
@@ -311,7 +311,7 @@ async fn objective_agent_capability_absence_rolls_back() {
             create_op(),
             None,
             None,
-            Arc::new(Probe)
+            Arc::new(AllowRecorderAdmission)
         )
         .await
         .is_err()

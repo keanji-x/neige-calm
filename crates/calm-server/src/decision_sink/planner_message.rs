@@ -1,11 +1,11 @@
 //! Admission of authoritative Planner records, independent of terminal notice delivery.
-use super::{CardDecisionSink, CardDecisionSinkRecorderShadowProbe};
+use super::{CardDecisionSink, CardDecisionSinkRecorderAdmissionGate};
 use crate::db::{RouteRepo, write_in_tx_typed};
 use crate::error::CalmError;
 use crate::mcp_server::registry::ToolCallIdentity;
 use crate::model::CardRole;
 use crate::operation::worker_attempt::{current_running_attempt_tx, owned_attempt_tx};
-use crate::recorder_shadow::{RecorderShadowDecisionKind, RecorderShadowProbe};
+use crate::recorder_admission::{RecorderAdmissionDecisionKind, RecorderAdmissionGate};
 
 impl CardDecisionSink {
     /// Commit the record before a transport attempts its non-authoritative notice.
@@ -27,7 +27,7 @@ impl CardDecisionSink {
             .clone()
             .ok_or_else(|| CalmError::Forbidden("Planner message requires a track".into()))?;
         let recorder =
-            CardDecisionSinkRecorderShadowProbe::for_identity(identity, track.clone().into());
+            CardDecisionSinkRecorderAdmissionGate::for_identity(identity, track.clone().into());
         let (attempt, card, key, text) = (
             attempt_id.to_owned(),
             worker_card.to_owned(),
@@ -37,7 +37,7 @@ impl CardDecisionSink {
         write_in_tx_typed(repo, move |tx| {
             Box::pin(async move {
                 recorder
-                    .record(tx, RecorderShadowDecisionKind::PlannerMessage)
+                    .require_admission(tx, RecorderAdmissionDecisionKind::PlannerMessage)
                     .await?;
                 let task = owned_attempt_tx(tx, &attempt, &card, &track).await?;
                 current_running_attempt_tx(tx, &task).await?;

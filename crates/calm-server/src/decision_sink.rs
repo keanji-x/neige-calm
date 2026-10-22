@@ -14,8 +14,8 @@ use crate::ids::{CardId, TrackId};
 use crate::mcp_server::registry::{AppContext, ToolCallIdentity};
 use crate::model::{Card, CardRole, Track};
 use crate::operation::workspace_lease::release_workspace_lease_for_card_tx;
-use crate::recorder_shadow::{
-    RecorderShadowDecisionKind, RecorderShadowDivergence, RecorderShadowProbe, emit_divergence,
+use crate::recorder_admission::{
+    RecorderAdmissionDecisionKind, RecorderAdmissionDenial, RecorderAdmissionGate, emit_denial,
 };
 use crate::report_sources::{self, SourceLinkWarning};
 use crate::state::WriteContext;
@@ -297,7 +297,7 @@ impl CardDecisionSink {
         Ok(())
     }
 
-    /// The agent-MCP report write: the recorder shadow gate and the persist boundary, with an arbitrary [`ReportDocOp`] executed inside the transaction.
+    /// The agent-MCP report write: the recorder admission gate and the persist boundary, with an arbitrary [`ReportDocOp`] executed inside the transaction.
     /// The single funnel every block-channel write passes through, so attribution is decided here, once, from `identity.role`: hard-coding `Planner` would attribute an assistant's edits to the planner.
     #[allow(clippy::too_many_arguments)]
     pub async fn commit_report_op(
@@ -311,8 +311,8 @@ impl CardDecisionSink {
     ) -> Result<ReportOpCommit, CalmError> {
         let actor = identity.to_actor_id();
         let track_id = track.id.clone();
-        let recorder_shadow: Arc<dyn RecorderShadowProbe> = Arc::new(
-            CardDecisionSinkRecorderShadowProbe::for_identity(identity, track.id.clone()),
+        let recorder_admission: Arc<dyn RecorderAdmissionGate> = Arc::new(
+            CardDecisionSinkRecorderAdmissionGate::for_identity(identity, track.id.clone()),
         );
         let author = report_op_attribution(identity.role)?;
         // The writer is private to its module; this is the one entry point that accepts a caller-decided attribution.
@@ -328,7 +328,7 @@ impl CardDecisionSink {
             op,
             agent_message,
             captured.as_ref().map(|(_, read)| read.clone()),
-            recorder_shadow,
+            recorder_admission,
         )
         .await?;
         if let (Some((generation, _)), Some(read)) = (captured, trace.knowledge) {
@@ -380,13 +380,13 @@ fn report_op_attribution(role: CardRole) -> Result<EditAuthor, CalmError> {
     })
 }
 
-pub(crate) struct CardDecisionSinkRecorderShadowProbe {
+pub(crate) struct CardDecisionSinkRecorderAdmissionGate {
     principal: Option<Principal>,
     track_id: TrackId,
     card_id: CardId,
 }
 
-impl CardDecisionSinkRecorderShadowProbe {
+impl CardDecisionSinkRecorderAdmissionGate {
     /// The recorder gate for a write the MCP caller makes on `track_id` outside the report funnel.
     pub(crate) fn for_identity(identity: &ToolCallIdentity, track_id: TrackId) -> Self {
         Self {
@@ -398,11 +398,11 @@ impl CardDecisionSinkRecorderShadowProbe {
 }
 
 #[async_trait]
-impl RecorderShadowProbe for CardDecisionSinkRecorderShadowProbe {
-    async fn record(
+impl RecorderAdmissionGate for CardDecisionSinkRecorderAdmissionGate {
+    async fn require_admission(
         &self,
         tx: &mut Transaction<'_, Sqlite>,
-        decision_kind: RecorderShadowDecisionKind,
+        decision_kind: RecorderAdmissionDecisionKind,
     ) -> Result<(), CalmError> {
         let principal = self.principal.as_ref().ok_or_else(|| {
             CalmError::Forbidden("recorder gate requires an agent principal".into())
@@ -413,7 +413,7 @@ impl RecorderShadowProbe for CardDecisionSinkRecorderShadowProbe {
             ));
         };
         let gate = PrincipalDecisionGate::new(principal.clone());
-        let decision = if decision_kind == RecorderShadowDecisionKind::PlannerMessage {
+        let decision = if decision_kind == RecorderAdmissionDecisionKind::PlannerMessage {
             gate.decide_card_write(tx, &self.track_id, &self.card_id, CardRole::Planner)
                 .await
         } else {
@@ -422,7 +422,7 @@ impl RecorderShadowProbe for CardDecisionSinkRecorderShadowProbe {
         match decision {
             Ok(GateDecision::Allow) => Ok(()),
             Ok(GateDecision::Deny(message)) => {
-                emit_divergence(&RecorderShadowDivergence {
+                emit_denial(&RecorderAdmissionDenial {
                     track_id: self.track_id.clone(),
                     session_id: session_id.clone(),
                     decision_kind,
@@ -439,7 +439,7 @@ impl RecorderShadowProbe for CardDecisionSinkRecorderShadowProbe {
                     session_id = %session_id,
                     decision_kind = decision_kind.as_str(),
                     error = %error,
-                    "recorder gate computation failed; denying card-era write"
+                    "recorder admission gate computation failed; denying write"
                 );
                 Err(CalmError::Forbidden(format!(
                     "recorder gate failed closed for {}: {error}",
@@ -460,7 +460,6 @@ mod tests {
     use crate::operation::workspace_lease::{
         acquire_workspace_lease_tx, prepare_worker_lease_as_tx,
     };
-    use crate::recorder_shadow::divergence_count_for_test;
     use crate::track_area_cache::TrackAreaCache;
     use calm_truth::db::RepoEventWrite as _;
     use calm_truth::db::RepoRead;
@@ -498,11 +497,11 @@ mod tests {
         }
     }
 
-    struct RecorderShadowWarnLayer {
+    struct RecorderAdmissionWarnLayer {
         hits: Arc<AtomicUsize>,
     }
 
-    impl<S> Layer<S> for RecorderShadowWarnLayer
+    impl<S> Layer<S> for RecorderAdmissionWarnLayer
     where
         S: tracing::Subscriber,
     {
@@ -708,7 +707,7 @@ mod tests {
         assert_eq!(removed_events, 0);
     }
 
-    /// An identity whose `session_id` has no `worker_sessions` row is a denial. Pins the fail-closed shape: `Forbidden`, one divergence record, one warning, and the report row and event log both untouched.
+    /// An identity whose `session_id` has no `worker_sessions` row is a denial. Pins the fail-closed shape: `Forbidden`, one warning, and the report row and event log both untouched.
     #[tokio::test(flavor = "current_thread")]
     async fn report_write_from_an_unresolvable_session_is_forbidden_under_recorder_enforce() {
         let repo = Arc::new(
@@ -720,7 +719,7 @@ mod tests {
             .area_create(
                 calm_types::organization::LEGACY_OWNER_USER_ID,
                 NewArea {
-                    name: "recorder-shadow".into(),
+                    name: "recorder-admission".into(),
                     color: "#000".into(),
                     sort: None,
                 },
@@ -731,7 +730,7 @@ mod tests {
             .track_create(NewTrack {
                 template_input: None,
                 area_id: area.id.clone(),
-                title: "shadow track".into(),
+                title: "admission track".into(),
                 sort: None,
                 cwd: String::new(),
                 template_id: None,
@@ -802,11 +801,10 @@ mod tests {
         };
         let next = TrackReportPayload::new("non-root summary", "# Goal\n\nnon-root body\n");
         let warnings = Arc::new(AtomicUsize::new(0));
-        let subscriber = tracing_registry().with(RecorderShadowWarnLayer {
+        let subscriber = tracing_registry().with(RecorderAdmissionWarnLayer {
             hits: Arc::clone(&warnings),
         });
         let _guard = tracing::subscriber::set_default(subscriber);
-        let before_divergences = divergence_count_for_test();
         let before_events = repo
             .events_since(0, i64::MAX)
             .await
@@ -841,7 +839,6 @@ mod tests {
             ),
             "expected the recorder gate's session-resolution denial, got {err:?}"
         );
-        assert_eq!(divergence_count_for_test(), before_divergences + 1);
         assert_eq!(warnings.load(Ordering::Relaxed), 1);
 
         let after_report = repo
