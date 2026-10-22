@@ -1,4 +1,4 @@
-/** Semantic recipes shared by CSS and imperative Motion consumers. */
+/** Test-only reader for the styles-owned CSS motion recipes. */
 const RECIPES = Object.freeze({
   enter: Object.freeze({ duration: '--motion-medium', ease: '--ease-enter' }),
   exit: Object.freeze({ duration: '--motion-snappy', ease: '--ease-exit' }),

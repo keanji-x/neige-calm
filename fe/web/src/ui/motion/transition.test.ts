@@ -1,5 +1,5 @@
 import { afterEach, expect, it } from 'vitest';
-import { readMotionTransition } from './transition.ts';
+import { readMotionTransition } from '../../../../tools/vitest/read-motion-transition.ts';
 
 function surface() {
   const element = document.createElement('div');

@@ -196,61 +196,23 @@ EOF
 RATCHETED_SCOPES=(crates fe docs e2e)
 INFO_SCOPES=(web)
 
-# Counts OCCURRENCES, not matching lines: `-o` emits one line per match, so appending a second match to an already-matching line still moves the count.
-# `--untracked` scans tracked and untracked files in the working tree and skips ignored ones.
-count() { # $1=pattern $2=scope
-  local matches grep_status
-
-  matches="$(git grep --untracked -P -o -h "$1" -- "$2" ":!$SELF" ":!$BASELINE" 2>/dev/null)"
-  grep_status=$?
-  case "$grep_status" in
-    0) printf '%s\n' "$matches" | wc -l ;;
-    1) printf '0\n' ;;
-    *)
-      echo "::error::git grep failed with exit $grep_status while scanning '$2'; refusing to use a partial count." >&2
-      return "$grep_status"
-      ;;
-  esac
-}
+# Shared mechanics; vocabulary, scope and error context remain in this entrypoint.
+source scripts/text-ratchet-engine.sh
+count() { ratchet_count "$@"; }
+RATCHETED_PATHS=("${RATCHETED_SCOPES[@]}")
 
 emit_baseline() {
-  local found
-
   echo "# #1316 retiring-vocabulary ratchet baseline. Regenerate with:"
   echo "#   ./$SELF --update-baseline"
   echo "# Counts are OCCURRENCES per (term, scope). Only-down is enforced."
   printf '# term\tscope\tcount\n'
-  while IFS=$'\t' read -r term pattern; do
-    case "$term" in ''|'#'*) continue ;; esac
-    for scope in "${RATCHETED_SCOPES[@]}"; do
-      if ! found="$(count "$pattern" "$scope")"; then
-        return 1
-      fi
-      printf '%s\t%s\t%s\n' "$term" "$scope" "$found"
-    done
-  done <<<"$TERMS"
+  ratchet_emit_rows
 }
 
 if [ "${1:-}" = '--update-baseline' ]; then
-  if ! baseline_tmp="$(mktemp "$BASELINE.tmp.XXXXXX")"; then
-    echo "::error::could not create a temporary baseline next to $BASELINE." >&2
-    exit 1
-  fi
-  cleanup_baseline_tmp() { rm -f -- "$baseline_tmp"; }
-  trap cleanup_baseline_tmp EXIT
-  trap 'exit 130' HUP INT TERM
-
-  if ! emit_baseline >"$baseline_tmp"; then
-    echo "::error::failed to generate $BASELINE; the existing baseline was preserved." >&2
-    exit 1
-  fi
-  if ! chmod 0644 "$baseline_tmp" || ! mv -- "$baseline_tmp" "$BASELINE"; then
-    echo "::error::could not replace $BASELINE; the existing baseline was preserved." >&2
-    exit 1
-  fi
-  trap - EXIT HUP INT TERM
-  echo "wrote $BASELINE"
-  exit 0
+  ratchet_update_baseline "could not create a temporary baseline next to $BASELINE." \
+    "could not replace $BASELINE; the existing baseline was preserved."
+  exit "$?"
 fi
 
 if [ "${1:-}" = '--selftest' ]; then
@@ -357,52 +319,12 @@ EOF
   exit "$fails"
 fi
 
-if [ ! -f "$BASELINE_FILE" ]; then
-  echo "::error::$BASELINE_FILE is missing. Generate it with: ./$SELF --update-baseline"
-  exit 1
-fi
+load_baseline "$BASELINE_FILE" || exit 1
 
-# Rows are validated first: `[ "$got" -gt "$want" ]` on `824x` is a bash error (status 2) that sets NEITHER branch = green.
-declare -A EXPECTED=()
-n=0
-while IFS= read -r line || [ -n "$line" ]; do
-  n=$((n + 1))
-  case "$line" in *$'\r'*) echo "::error::$BASELINE_FILE:$n contains a carriage return; the baseline must be LF-only."; exit 1 ;; esac
-  case "$line" in ''|'#'*) continue ;; esac
-  tabs="${line//[!$'\t']/}"
-  [ "${#tabs}" -eq 2 ] || { echo "::error::$BASELINE_FILE:$n has ${#tabs} tab(s), expected exactly 2 (term<TAB>scope<TAB>count): '$line'"; exit 1; }
-  term="${line%%$'\t'*}"; rest="${line#*$'\t'}"; scope="${rest%%$'\t'*}"; want="${rest#*$'\t'}"
-  { [ -n "$term" ] && [ -n "$scope" ]; } || { echo "::error::$BASELINE_FILE:$n has an empty term or scope: '$line'"; exit 1; }
-  case "$want" in ''|*[!0-9]*) echo "::error::$BASELINE_FILE:$n count '$want' is not a non-negative integer: '$line'"; exit 1 ;; esac
-  [ "${#want}" -le 12 ] || { echo "::error::$BASELINE_FILE:$n count '$want' has more than 12 digits; bash compares signed 64-bit integers and a longer count would error into a green result: '$line'"; exit 1; }
-  [ -z "${EXPECTED[$term/$scope]+x}" ] || { echo "::error::$BASELINE_FILE:$n duplicates the row for '$term/$scope'."; exit 1; }
-  EXPECTED["$term/$scope"]="$want"
-done <"$BASELINE_FILE"
-
-fail=0
-while IFS=$'\t' read -r term pattern; do
-  case "$term" in ''|'#'*) continue ;; esac
-  for scope in "${RATCHETED_SCOPES[@]}"; do
-    key="$term/$scope"
-    if ! got="$(count "$pattern" "$scope")"; then
-      fail=1
-      continue
-    fi
-    case "$got" in ''|*[!0-9]*) echo "::error::the count for '$key' is not an integer ('$got'); refusing to compare."; fail=1; continue ;; esac
-    [ "${#got}" -le 12 ] || { echo "::error::the count for '$key' has more than 12 digits ('$got'); refusing to compare."; fail=1; continue; }
-    want="${EXPECTED[$key]:-}"
-    if [ -z "$want" ]; then
-      echo "::error::$BASELINE_FILE has no row for '$key'. Run --update-baseline."
-      fail=1
-    elif [ "$got" -gt "$want" ]; then
-      echo "::error::$key rose from $want to $got occurrences — new '$term' vocabulary entered the tree (#1316 is retiring it)."
-      fail=1
-    elif [ "$got" -lt "$want" ]; then
-      echo "::error::$key fell from $want to $got. Tighten the ratchet: ./$SELF --update-baseline, then commit $BASELINE. A baseline left high re-permits every occurrence this change removed."
-      fail=1
-    fi
-  done
-done <<<"$TERMS"
+ratchet_rose_error() {
+  echo "::error::$key rose from $want to $got occurrences — new '$term' vocabulary entered the tree (#1316 is retiring it)."
+}
+ratchet_compare
 
 echo "--- informational only (not gated; the legacy bundle is being deleted) ---"
 while IFS=$'\t' read -r term pattern; do

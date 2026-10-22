@@ -7,7 +7,7 @@ import '../../../styles/entry.css';
 import { useState } from '../../../ui/state/public.ts';
 import { createCardHost, createCardRegistry } from '../public.js';
 import type { CardEntry } from '../registry.js';
-import { readMotionTransition } from '../../../ui/motion/transition.ts';
+import { readMotionTransition } from '../../../../../tools/vitest/read-motion-transition.ts';
 import { CardHead } from './card-head.tsx';
 import { BoardHost, type BoardHostItem } from './board-host.tsx';
 

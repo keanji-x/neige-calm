@@ -73,7 +73,7 @@ remains caller-owned. Controls must use native disabled or aria-disabled semanti
 
 ## Other motion
 
-`readMotionTransition` consumes the styles-owned enter, exit, layout, disclosure, feedback and emphasis recipes for CSS/other consumers. Motion physics replaces the former size-specific distance formula. Keep simple color feedback, static controls, pointer-linear response, report emphasis and owner-defined activity/brand native loops on their existing contracts.
+The test-only `readMotionTransition` helper in `fe/tools/vitest/read-motion-transition.ts` reads the styles-owned enter, exit, layout, disclosure, feedback and emphasis recipes for assertions. Motion physics replaces the former size-specific distance formula. Keep simple color feedback, static controls, pointer-linear response, report emphasis and owner-defined activity/brand native loops on their existing contracts.
 
 ## Verification
 

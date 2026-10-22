@@ -47,65 +47,23 @@ cjk	$CJK
 long_literal	$LONG_LITERAL
 EOF
 
-# Counts OCCURRENCES, not matching lines (`-o`); git's stderr is captured so a ≥2 exit names its cause.
-# `--untracked` scans tracked and untracked files in the working tree and skips ignored ones.
-count() { # $1=pattern $2=pathspec
-  local matches grep_status errfile
-  errfile="$(mktemp)" || return 1
-  matches="$(git grep --untracked -P -o -h "$1" -- "$2" ":!$SELF" ":!$BASELINE" 2>"$errfile")"
-  grep_status=$?
-  case "$grep_status" in
-    0) printf '%s\n' "$matches" | wc -l; grep_status=0 ;;
-    1) printf '0\n'; grep_status=0 ;;
-    *) echo "::error::git grep failed with exit $grep_status while scanning '$2'; refusing to use a partial count. git said: $(<"$errfile")" >&2 ;;
-  esac
-  rm -f -- "$errfile"
-  return "$grep_status"
-}
-
-# Fails closed on ANY malformed row: the compare loop's `-gt`/`-lt` cannot be trusted with one.
-declare -A EXPECTED=()
-load_baseline() { # $1=tsv path
-  local line term scope want rest tabs n=0
-  EXPECTED=()
-  [ -f "$1" ] || { echo "::error::$1 is missing. Generate it with: ./$SELF --update-baseline"; return 1; }
-  while IFS= read -r line || [ -n "$line" ]; do
-    n=$((n + 1))
-    case "$line" in *$'\r'*) echo "::error::$1:$n contains a carriage return; the baseline must be LF-only."; return 1 ;; esac
-    case "$line" in ''|'#'*) continue ;; esac
-    tabs="${line//[!$'\t']/}"
-    [ "${#tabs}" -eq 2 ] || { echo "::error::$1:$n has ${#tabs} tab(s), expected exactly 2 (term<TAB>scope<TAB>count): '$line'"; return 1; }
-    term="${line%%$'\t'*}"; rest="${line#*$'\t'}"; scope="${rest%%$'\t'*}"; want="${rest#*$'\t'}"
-    { [ -n "$term" ] && [ -n "$scope" ]; } || { echo "::error::$1:$n has an empty term or scope: '$line'"; return 1; }
-    case "$want" in ''|*[!0-9]*) echo "::error::$1:$n count '$want' is not a non-negative integer: '$line'"; return 1 ;; esac
-    [ "${#want}" -le 12 ] || { echo "::error::$1:$n count '$want' has more than 12 digits; bash compares signed 64-bit integers and a longer count would error into a green result: '$line'"; return 1; }
-    [ -z "${EXPECTED[$term/$scope]+x}" ] || { echo "::error::$1:$n duplicates the row for '$term/$scope'."; return 1; }
-    EXPECTED["$term/$scope"]="$want"
-  done <"$1"
-}
+# Shared mechanics; vocabulary, scope and error context remain in this entrypoint.
+source scripts/text-ratchet-engine.sh
+count() { ratchet_count "$@" detail; }
+RATCHETED_SCOPES=("$SCOPE")
+RATCHETED_PATHS=("$PATHSPEC")
 
 emit_baseline() {
-  local term pattern found
   echo "# #1635 S6 prose ratchet baseline. Regenerate with:"
   echo "#   ./$SELF --update-baseline"
   echo "# Counts are OCCURRENCES per (term, scope) in non-ignored *.rs under crates/. Only-down is enforced."
   printf '# term\tscope\tcount\n'
-  while IFS=$'\t' read -r term pattern; do
-    case "$term" in ''|'#'*) continue ;; esac
-    found="$(count "$pattern" "$PATHSPEC")" || return 1
-    printf '%s\t%s\t%s\n' "$term" "$SCOPE" "$found"
-  done <<<"$TERMS"
+  ratchet_emit_rows
 }
 
 if [ "${1:-}" = '--update-baseline' ]; then
-  baseline_tmp="$(mktemp "$BASELINE.tmp.XXXXXX")" || exit 1
-  trap 'rm -f -- "$baseline_tmp"' EXIT
-  trap 'exit 130' HUP INT TERM
-  { emit_baseline >"$baseline_tmp" && chmod 0644 "$baseline_tmp" && mv -- "$baseline_tmp" "$BASELINE"; } \
-    || { echo "::error::failed to generate $BASELINE; the existing baseline was preserved." >&2; exit 1; }
-  trap - EXIT HUP INT TERM
-  echo "wrote $BASELINE"
-  exit 0
+  ratchet_update_baseline "" "failed to generate $BASELINE; the existing baseline was preserved."
+  exit "$?"
 fi
 
 if [ "${1:-}" = '--selftest' ]; then
@@ -226,22 +184,10 @@ fi
 
 load_baseline "$BASELINE_FILE" || exit 1
 
-fail=0
-while IFS=$'\t' read -r term pattern; do
-  case "$term" in ''|'#'*) continue ;; esac
-  key="$term/$SCOPE"
-  got="$(count "$pattern" "$PATHSPEC")" || { fail=1; continue; }
-  case "$got" in ''|*[!0-9]*) echo "::error::the count for '$key' is not an integer ('$got'); refusing to compare."; fail=1; continue ;; esac
-  [ "${#got}" -le 12 ] || { echo "::error::the count for '$key' has more than 12 digits ('$got'); refusing to compare."; fail=1; continue; }
-  want="${EXPECTED[$key]:-}"
-  if [ -z "$want" ]; then
-    echo "::error::$BASELINE_FILE has no row for '$key'. Run --update-baseline."; fail=1
-  elif [ "$got" -gt "$want" ]; then
-    echo "::error::$key rose from $want to $got occurrences — new '$term' prose entered Rust (#1635 D6: move it to a prompts/ or templates/ .md, or argue an enumerated raise in the header of $SELF)."; fail=1
-  elif [ "$got" -lt "$want" ]; then
-    echo "::error::$key fell from $want to $got. Tighten the ratchet: ./$SELF --update-baseline, then commit $BASELINE. A baseline left high re-permits every occurrence this change removed."; fail=1
-  fi
-done <<<"$TERMS"
+ratchet_rose_error() {
+  echo "::error::$key rose from $want to $got occurrences — new '$term' prose entered Rust (#1635 D6: move it to a prompts/ or templates/ .md, or argue an enumerated raise in the header of $SELF)."
+}
+ratchet_compare
 
 [ "$fail" -eq 0 ] || { echo "::error::#1635 S6 prose ratchet failed. This is drift control over a stated baseline, not a proof that Rust holds no prose; see the header of $SELF."; exit 1; }
 echo "OK: agent-facing prose in *.rs under crates/ is at the #1635 baseline for every term."

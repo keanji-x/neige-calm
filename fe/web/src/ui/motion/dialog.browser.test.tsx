@@ -5,7 +5,7 @@ import { afterEach, expect, it } from 'vitest';
 import '../../styles/entry.css';
 import { Dialog } from '../dialog/public.tsx';
 import { useState } from '../state/public.ts';
-import { readMotionTransition } from './transition.ts';
+import { readMotionTransition } from '../../../../tools/vitest/read-motion-transition.ts';
 import { springTrajectory } from './spring.ts';
 
 function Scene() {

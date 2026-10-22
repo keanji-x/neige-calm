@@ -3,7 +3,7 @@ import { afterEach, expect, it } from 'vitest';
 import { commands } from 'vitest/browser';
 
 import '../../../styles/entry.css';
-import { readMotionTransition } from '../../../ui/motion/transition.ts';
+import { readMotionTransition } from '../../../../../tools/vitest/read-motion-transition.ts';
 import { ReportDocument } from './public.tsx';
 
 afterEach(cleanup);

@@ -6,7 +6,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 import '../../styles/entry.css';
 import { ConfirmDialog } from '../dialog/public.tsx';
 import { PageHeader } from '../page-header/public.tsx';
-import { readMotionTransition } from './transition.ts';
+import { readMotionTransition } from '../../../../tools/vitest/read-motion-transition.ts';
 
 afterEach(async () => { cleanup(); await commands.emulateReducedMotion(false); });
 it('shares feedback timing on actual confirmation controls and page header chrome', async () => {
