@@ -1,9 +1,9 @@
-//! Slice 2's report declaration, checkout admission, and temporary drive refusal.
+//! Compact admission and transient waiting without an installed Planner runtime.
 use super::*;
 use calm_server::db::sqlite::{CheckoutOccupancy, checkout_admission, checkout_occupancy};
 
 #[tokio::test]
-async fn compact_task_is_admitted_beside_writer_and_refused_without_worker_or_lease() {
+async fn compact_task_is_admitted_beside_writer_and_waits_without_worker_or_lease() {
     let boot = boot().await;
     let writer = plan_task(&boot.track_id, "writer", TaskKind::Codex, &[]);
     seed_projected_task(&boot, writer.clone()).await;
@@ -67,14 +67,11 @@ async fn compact_task_is_admitted_beside_writer_and_refused_without_worker_or_le
     let mut events = boot.events.subscribe();
     let (_runtime, scheduler) = build_scheduler(&boot, vec![]);
     scheduler.schedule_track(boot.track_id.clone()).await;
-    let failed = boot.repo.task_get(&id).await.unwrap().unwrap();
-    assert_eq!(failed.status, TaskStatus::Failed);
-    assert_eq!(
-        failed.status_detail.as_deref(),
-        Some("compaction-refused: unavailable")
-    );
-    assert!(failed.worker_card_id.is_none());
-    assert!(failed.running_deadline_ms.is_none());
+    let waiting = boot.repo.task_get(&id).await.unwrap().unwrap();
+    assert_eq!(waiting.status, TaskStatus::Dispatched);
+    assert!(waiting.status_detail.is_none());
+    assert!(waiting.worker_card_id.is_none());
+    assert!(waiting.running_deadline_ms.is_none());
     assert_eq!(
         sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM workspace_leases")
             .fetch_one(db.read_pool())
@@ -107,15 +104,10 @@ async fn compact_task_is_admitted_beside_writer_and_refused_without_worker_or_le
             _ => {}
         }
     }
-    assert_eq!((dispatched, failures), (1, 1));
+    assert_eq!((dispatched, failures), (1, 0));
     // Only the compact row remains active; it must never occupy the checkout.
     sqlx::query("UPDATE tasks SET status='done' WHERE id=?1")
         .bind(&writer.id)
-        .execute(db.writer_pool())
-        .await
-        .unwrap();
-    sqlx::query("UPDATE tasks SET status='dispatched' WHERE id=?1")
-        .bind(&id)
         .execute(db.writer_pool())
         .await
         .unwrap();

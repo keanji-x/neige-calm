@@ -565,10 +565,10 @@ async fn a_compact_with_uncertain_write_wedges_without_retry() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn compact_planner_request_claude_historical_wakes_once_without_user_turn() {
+async fn compact_planner_task_claude_historical_wakes_once_without_user_turn() {
     let root = Root::new("exit-trailing");
     let stack = Stack::boot(&root).await;
-    let (_track, card) = stack.create_claude_track().await;
+    let (track_id, card) = stack.create_claude_track().await;
     stack
         .run_turn(&root, &card, "exit-trailing", "checkpoint")
         .await;
@@ -577,15 +577,41 @@ async fn compact_planner_request_claude_historical_wakes_once_without_user_turn(
     let before = rows(&stack, &card).await;
     let count = spawns(&root);
     root.set_scenario("compact");
-    let result = stack
-        .harness(&runtime.id)
-        .request_compaction("request".into())
-        .await
-        .unwrap();
-    assert_eq!(
-        result,
-        calm_server::harness::compact_outcome::CompactionAnswer::Scheduled
+    let (track, report_card, report) =
+        calm_server::track_report::resolve_report_for_track(stack.repo(), &track_id)
+            .await
+            .unwrap();
+    let body = format!(
+        "{}\n{}",
+        report.body,
+        calm_types::report_blocks::render_fence(
+            "task",
+            &json!({
+                "key":"compact", "kind":"compact", "ready":true,"declared_by":"spec"
+            })
+        )
     );
+    calm_server::track_report::persist_report(
+        stack.repo(),
+        &stack.state.events,
+        stack.state.write(),
+        calm_server::ids::ActorId::KernelDispatcher,
+        calm_server::event::EditAuthor::Planner,
+        track,
+        report_card,
+        report.clone(),
+        calm_server::track_report::TrackReportPayload::new(report.summary, body),
+        report.doc_rev,
+        None,
+    )
+    .await
+    .unwrap();
+    stack
+        .state
+        .scheduler_for_test()
+        .schedule_track(track_id.clone().into())
+        .await;
+    let attempt = format!("{track_id}:compact");
     let mut settled = None;
     for _ in 0..200 {
         let snapshot = stored_snapshot(&stack, &card).await;
@@ -616,6 +642,11 @@ async fn compact_planner_request_claude_historical_wakes_once_without_user_turn(
         line["message"]["content"],
         json!([{"type":"text","text":"/compact"}])
     );
+    assert_eq!(
+        snapshot["pending_queue"].as_array().unwrap().len(),
+        1,
+        "one queued wake total"
+    );
     let wakes: Vec<_> = snapshot["pending_queue"]
         .as_array()
         .unwrap()
@@ -623,7 +654,31 @@ async fn compact_planner_request_claude_historical_wakes_once_without_user_turn(
         .filter(|o| o["source"] == "planner_compaction")
         .collect();
     assert_eq!(wakes.len(), 1);
-    assert_eq!(wakes[0]["key"], "request");
+    assert_eq!(wakes[0]["key"], attempt);
+    let completion = stack.repo().events_since(0, 1000).await.unwrap().into_iter()
+        .find(|event| matches!(&event.3, calm_server::event::Event::TaskCompleted { idempotency_key, .. } if idempotency_key == &attempt))
+        .expect("compact task completion is durable");
+    assert!(
+        !calm_server::dispatcher::task_event_pushes_planner_for_test(
+            stack.repo(),
+            stack.state.write(),
+            &completion.3,
+            &calm_server::ids::ActorId::Kernel
+        )
+        .await,
+        "the compaction wake exclusively carries task completion"
+    );
+
+    assert_eq!(
+        stack
+            .repo()
+            .task_get(&attempt)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        calm_server::model::TaskStatus::Done
+    );
     assert!(
         wakes[0]["text"]
             .as_str()

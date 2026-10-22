@@ -7,8 +7,8 @@ impl PlannerHarness {
     /// Persist maintenance intent for this harness's session. The caller owns
     /// authorization and request identity; guarded persistence rejects supersession.
     /// The same ID is answered idempotently while its record is retained. Durable
-    /// once-per-ID execution is the caller's responsibility: the future compact
-    /// task row must be terminal before this record is cleared.
+    /// once-per-ID execution belongs to the task layer: settlement terminalizes
+    /// the task row before this record can be cleared.
     pub async fn request_compaction(&self, request_id: String) -> Result<CompactionAnswer> {
         match &self.inner.observations {
             ObservationIngress::Running(sender) => {
@@ -197,6 +197,93 @@ pub(super) fn prepare_wake(
         text,
     };
     Some((harness_event_scope(inner, event.kind_tag()), event))
+}
+
+/// Task facts and the wake share the session snapshot's active-row guard and commit.
+pub(super) async fn append_task_lifecycle(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    track: &crate::ids::TrackId,
+    request: Option<&PlannerCompaction>,
+    scope: &EventScope,
+) -> Result<Vec<crate::event::BroadcastEnvelope>> {
+    use crate::db::sqlite::{
+        TaskReporter, status_detail_with_reason, task_complete_from_worker_tx,
+        task_fail_from_worker_tx, task_get_tx, task_mark_compact_running_tx,
+    };
+    let Some(request) = request else {
+        return Ok(vec![]);
+    };
+    let Some(task) = task_get_tx(tx, &request.request_id).await? else {
+        return Ok(vec![]);
+    };
+    if task.kind != crate::model::TaskKind::Compact || task.track_id != track.as_str() {
+        return Err(CalmError::Conflict("compaction task owner mismatch".into()));
+    }
+    let now = crate::model::now_ms();
+    let event = match &request.phase {
+        PlannerCompactionPhase::Requested => return Ok(vec![]),
+        PlannerCompactionPhase::Submitted { .. } => {
+            task_mark_compact_running_tx(tx, &task.id, track.as_str(), now).await?;
+            return Ok(vec![]);
+        }
+        PlannerCompactionPhase::Settled { status, .. } => {
+            if *status == CompactStatus::Completed {
+                if task_complete_from_worker_tx(
+                    tx,
+                    &task.id,
+                    track.as_str(),
+                    TaskReporter::Kernel,
+                    now,
+                )
+                .await?
+                    == 0
+                {
+                    return Ok(vec![]);
+                }
+                Event::TaskCompleted {
+                    idempotency_key: task.id,
+                    result: serde_json::Value::Null,
+                    artifacts: vec![],
+                    agent_message: None,
+                }
+            } else {
+                let status = serde_json::to_value(status)?;
+                let detail = status_detail_with_reason(
+                    "compaction-incomplete",
+                    status.as_str().expect("compact status"),
+                );
+                if task_fail_from_worker_tx(
+                    tx,
+                    &task.id,
+                    track.as_str(),
+                    TaskReporter::Kernel,
+                    &detail,
+                    now,
+                )
+                .await?
+                    == 0
+                {
+                    return Ok(vec![]);
+                }
+                Event::TaskFailed {
+                    idempotency_key: task.id,
+                    reason: detail,
+                    details: None,
+                    agent_message: None,
+                }
+            }
+        }
+    };
+    let id =
+        crate::db::sqlite::append_decision_event_in_tx(tx, &ActorId::Kernel, scope, None, &event)
+            .await?;
+    Ok(vec![crate::event::BroadcastEnvelope {
+        id,
+        event_version: crate::event::SYNC_EVENT_VERSION,
+        actor: ActorId::Kernel,
+        scope: scope.clone(),
+        event,
+    }])
 }
 
 pub(super) async fn append_wake(

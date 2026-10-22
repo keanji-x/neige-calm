@@ -40,7 +40,7 @@ async fn reload_params(f: &Fixture) -> PlannerHarnessParams {
     }
 }
 
-async fn reload(f: &Fixture) -> PlannerHarness {
+pub(super) async fn reload(f: &Fixture) -> PlannerHarness {
     PlannerHarness::run_unstarted_for_test(reload_params(f).await, 8).0
 }
 
@@ -267,11 +267,18 @@ async fn compact_request_refuses_acp() {
     .await
     .unwrap();
     Arc::get_mut(&mut f.harness.inner).unwrap().backend = backend;
+    super::compact_task_tests::declared(&f).await;
+    let task = f
+        .repo
+        .task_get(&format!("{}:compact", f.harness.inner.track_id))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(task.status, crate::model::TaskStatus::Failed);
     assert_eq!(
-        request(&f).await,
-        CompactionAnswer::Refused(CompactionRefusal::UnsupportedProvider)
+        task.status_detail.as_deref(),
+        Some("compaction-refused: unsupported_provider")
     );
-    assert!(f.daemon.compacted_threads_for_test().is_empty());
 }
 
 #[tokio::test]

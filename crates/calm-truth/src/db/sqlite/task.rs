@@ -116,6 +116,26 @@ pub async fn task_mark_sub_track_running_tx(
     .rows_affected())
 }
 
+/// A compact task has no worker or deadline. Called only by its guarded session snapshot owner.
+pub async fn task_mark_compact_running_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    id: &str,
+    track: &str,
+    now: i64,
+) -> Result<u64> {
+    Ok(sqlx::query(
+        "UPDATE tasks SET status='running',worker_card_id=NULL,running_deadline_ms=NULL, \
+         running_started_at_ms=?1,updated_at_ms=?1 \
+         WHERE id=?2 AND track_id=?3 AND kind='compact' AND status='dispatched'",
+    )
+    .bind(now)
+    .bind(id)
+    .bind(track)
+    .execute(&mut **tx)
+    .await?
+    .rows_affected())
+}
+
 /// `tasks.track_id` has no FK to `tracks`, so without this check a
 /// delete/upsert race could insert plan rows for a removed track.
 pub async fn require_track_exists_tx(

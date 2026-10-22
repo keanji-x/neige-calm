@@ -53,6 +53,8 @@ use provider::TurnModelSelection;
 use provider::events::{ItemPhase, PlannerEvent, PlannerEventKind};
 
 mod canonical;
+#[cfg(test)]
+mod compact_task_tests;
 mod content_observer;
 mod input_contract;
 mod self_compact;
@@ -4150,6 +4152,9 @@ async fn persist_guarded_snapshot(
     let status = run_status_for(&state_for_status);
     let new_phase = snapshot.phase;
     let wake = self_compact::prepare_wake(inner, &mut snapshot);
+    let compact_request = snapshot.planner_compaction.clone();
+    let compact_track = inner.track_id.clone();
+    let compact_scope = harness_event_scope(inner, "task.completed");
     let snapshot_value = serde_json::to_value(&snapshot)?;
     let repo = Arc::clone(&inner.repo);
     let bound_card_id = inner.card_id.to_string();
@@ -4189,12 +4194,23 @@ async fn persist_guarded_snapshot(
                 )
                 .await?;
             }
+            let task_events = if written {
+                self_compact::append_task_lifecycle(
+                    tx,
+                    &compact_track,
+                    compact_request.as_ref(),
+                    &compact_scope,
+                )
+                .await?
+            } else {
+                vec![]
+            };
             let wake = if written {
                 self_compact::append_wake(tx, wake).await?
             } else {
                 None
             };
-            Ok((written, wake))
+            Ok((written, (wake, task_events)))
         })
     })
     .await;
@@ -4204,11 +4220,15 @@ async fn persist_guarded_snapshot(
         inner.card_id.as_str(),
     )
     .await;
-    let (written, wake) = written?;
+    let (written, (wake, task_events)) = written?;
     if !written {
         return Ok(false);
     }
     *completion = None;
+    // Publish lifecycle before wake, preserving committed event order.
+    for event in task_events {
+        inner.events.emit_envelope(event);
+    }
     self_compact::publish_wake(inner, snapshot.planner_compaction, wake).await;
     drop(completion);
     inner

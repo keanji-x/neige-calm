@@ -15,7 +15,6 @@ use crate::event::{
 use crate::event_cursor::EventCursorCache;
 use crate::harness::{
     HarnessRegistry, HookKind as HarnessHookKind, Observation as HarnessObservation, PushLockGuard,
-    is_harness_snapshot_value,
 };
 use crate::ids::{ActorId, CardId, TrackId};
 use crate::model::CardRole;
@@ -35,7 +34,6 @@ use crate::plugin_host::{PluginHost, PluginRegistry};
 use crate::provider_registry::WorkerProviderRegistry;
 use crate::reaper::{DEFAULT_REAPER_RECONCILE_SECS, Reaper, reaper_disabled_from_env};
 use crate::scheduler::{DEFAULT_RECONCILE_SECS, Scheduler, TerminalTaskHook};
-use crate::session_projection_repo::WorkerSessionKind;
 use crate::shared_codex_appserver::SharedCodexAppServer;
 use crate::state::{CodexClient, DaemonClient, WriteContext};
 use crate::task_context::TaskContextMonitor;
@@ -783,6 +781,7 @@ impl Dispatcher {
                 crate::scheduler::WORKER_IDLE_PROBE_TIMEOUT,
             ),
         );
+        scheduler.bind_compaction_harness(harness.clone());
         let context_monitor = Arc::new(TaskContextMonitor::new_with_metrics(
             repo.clone(),
             events.clone(),
@@ -1201,16 +1200,21 @@ impl Inner {
         envelope_id: i64,
     ) {
         let track_id = guard.track_id().clone();
-        let planner_card_id = match self.resolve_planner_card(&track_id).await {
-            Some(id) => id,
-            None => {
-                tracing::debug!(
-                    track_id = %track_id,
-                    "dispatcher push: no planner card found for track; skipping"
-                );
-                return;
-            }
-        };
+        let (planner_card_id, planner_session) =
+            match crate::planner_session::resolve(self.repo.as_ref(), &self.write, &track_id).await
+            {
+                Ok(Some(target)) => target,
+                result => {
+                    if let Err(error) = result {
+                        tracing::warn!(%track_id, %error, "dispatcher push: Planner lookup failed");
+                    }
+                    tracing::debug!(
+                        track_id = %track_id,
+                        "dispatcher push: no planner card found for track; skipping"
+                    );
+                    return;
+                }
+            };
 
         match crate::conversation_inputs::has_canonical_storage(
             self.repo.as_ref(),
@@ -1248,10 +1252,7 @@ impl Inner {
             return;
         }
 
-        let Some(runtime_id) = self
-            .harness_runtime_id_for_planner_card(&planner_card_id)
-            .await
-        else {
+        let Some(runtime_id) = planner_session.map(|session| session.id) else {
             tracing::debug!(
                 track_id = %track_id,
                 planner_card_id = %planner_card_id,
@@ -1360,54 +1361,14 @@ impl Inner {
 
     /// Find the planner card for a track via `card_role_cache`; `None` if the track has none or the lookup errors.
     async fn resolve_planner_card(self: &Arc<Self>, track_id: &TrackId) -> Option<CardId> {
-        let cards = match self.repo.cards_by_track(track_id.as_str()).await {
-            Ok(c) => c,
-            Err(e) => {
-                tracing::warn!(
-                    track_id = %track_id,
-                    error = %e,
-                    "dispatcher push: cards_by_track failed; cannot resolve planner card"
-                );
-                return None;
-            }
-        };
-        cards.into_iter().find_map(|c| {
-            if self.write.verify_role(&c.id) == Some(CardRole::Planner) {
-                Some(c.id)
-            } else {
-                None
-            }
-        })
-    }
-
-    async fn harness_runtime_id_for_planner_card(
-        self: &Arc<Self>,
-        planner_card_id: &CardId,
-    ) -> Option<String> {
-        let runtime = match self
-            .repo
-            .session_projection_active_for_card(&planner_card_id.to_string())
+        crate::planner_session::resolve(self.repo.as_ref(), &self.write, track_id)
             .await
-        {
-            Ok(runtime) => runtime?,
-            Err(e) => {
-                tracing::warn!(
-                    planner_card_id = %planner_card_id,
-                    error = %e,
-                    "dispatcher push: active runtime lookup failed; skipping harness observation"
-                );
-                return None;
-            }
-        };
-        if runtime.kind != WorkerSessionKind::SharedPlanner {
-            return None;
-        }
-        let handle_state = runtime.handle_state_json.as_ref()?;
-        if is_harness_snapshot_value(handle_state) {
-            Some(runtime.id)
-        } else {
-            None
-        }
+            .map_err(
+                |error| tracing::warn!(%track_id, %error, "dispatcher push: Planner lookup failed"),
+            )
+            .ok()
+            .flatten()
+            .map(|(card, _)| card)
     }
 }
 

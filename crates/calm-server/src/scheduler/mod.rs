@@ -404,6 +404,7 @@ pub async fn guarded_child_deleted_flip_for_test(
 }
 
 pub struct Scheduler {
+    compaction_harness: std::sync::OnceLock<crate::harness::HarnessRegistry>,
     repo: Arc<dyn Repo>,
     events: EventBus,
     write: WriteContext,
@@ -482,6 +483,7 @@ impl Scheduler {
         worker_idle: WorkerIdleWake,
     ) -> Arc<Self> {
         Arc::new(Self {
+            compaction_harness: Default::default(),
             repo,
             events,
             write,
@@ -897,7 +899,7 @@ impl Scheduler {
             hook.claimed.notify_one();
             hook.resume.notified().await;
         }
-        if let Err(e) = self.drive_spawn(&frozen, track).await {
+        if let Err(e) = self.drive_spawn(&frozen, track, false).await {
             tracing::warn!(
                 task_id = %pre_claim_task_id,
                 error = %e,
@@ -1086,9 +1088,9 @@ impl Scheduler {
     /// Build the deterministic payload, submit the worker operation (`idempotency_key =
     /// task.id`), `wait()` it to a terminal phase, then reconcile the row with guarded
     /// writes. Shared between the live dispatch path and the sweep's `dispatched` arm.
-    async fn drive_spawn(&self, task: &Task, track: &Track) -> Result<()> {
+    async fn drive_spawn(&self, task: &Task, track: &Track, recovering: bool) -> Result<()> {
         if task.kind == TaskKind::Compact {
-            return self.refuse_compact(task, track).await;
+            return self.drive_compact(task, track, recovering).await;
         }
         if task.spawn == calm_types::task_recovery::TASK_CHILD_TRACK_ROUTE {
             return self.drive_child_track(task, track).await;
@@ -1600,6 +1602,9 @@ impl Scheduler {
                 TaskStatus::Pending => {
                     pending_tracks.insert(task.track_id.clone());
                 }
+                TaskStatus::Running if task.kind == TaskKind::Compact => {
+                    self.resume_dispatched(task).await;
+                }
                 TaskStatus::Dispatched => {
                     self.resume_dispatched(task).await;
                 }
@@ -1832,7 +1837,7 @@ impl Scheduler {
             Ok(p) => p,
             Err(_) => return,
         };
-        if let Err(e) = self.drive_spawn(&task, &track).await {
+        if let Err(e) = self.drive_spawn(&task, &track, true).await {
             tracing::warn!(
                 task_id = %task.id,
                 error = %e,

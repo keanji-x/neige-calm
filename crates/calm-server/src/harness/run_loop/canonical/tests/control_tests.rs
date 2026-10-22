@@ -518,4 +518,12 @@ async fn compact_planner_request_refuses_canonical_conversation() {
             crate::harness::compact_outcome::CompactionRefusal::UnsupportedConversation
         )
     );
+    crate::harness::run_loop::compact_task_tests::declared(&f.original).await;
+    let id = format!("{}:compact", f.original.harness.inner.track_id);
+    let task = f.original.repo.task_get(&id).await.unwrap().unwrap();
+    assert_eq!(task.status, crate::model::TaskStatus::Failed);
+    assert_eq!(
+        task.status_detail.as_deref(),
+        Some("compaction-refused: unsupported_conversation")
+    );
 }

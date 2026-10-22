@@ -1,0 +1,373 @@
+//! Report declaration -> scheduler -> harness -> atomic task settlement.
+use super::completed_commit_tests::Fixture;
+use super::*;
+use crate::db::prelude::*;
+use crate::event::EditAuthor;
+use crate::model::TaskStatus;
+use crate::track_report::{TrackReportPayload, persist_report, resolve_report_for_track};
+use provider::events::PlannerEventKind;
+use serde_json::json;
+
+pub(super) async fn declared(
+    f: &Fixture,
+) -> (Arc<crate::scheduler::Scheduler>, crate::state::WriteContext) {
+    use crate::event::EditAuthor;
+    use crate::model::NewCard;
+    use crate::state::WriteContext;
+    use crate::track_report::TrackReportPayload;
+    use crate::track_report::{persist_report, resolve_report_for_track};
+    let inner = &f.harness.inner;
+    *inner.last_turn_id.lock().await = Some("old-turn".into());
+    f.repo
+        .card_create(NewCard {
+            track_id: inner.track_id.clone(),
+            kind: "track-report".into(),
+            sort: None,
+            title: None,
+            payload: serde_json::to_value(TrackReportPayload::initial()).unwrap(),
+        })
+        .await
+        .unwrap();
+    let write = WriteContext::new(
+        inner.card_role_cache.clone(),
+        inner.track_area_cache.clone(),
+    );
+    let (track, card, current) = resolve_report_for_track(f.repo.as_ref(), inner.track_id.as_str())
+        .await
+        .unwrap();
+    let body = format!(
+        "{}\n{}",
+        current.body,
+        calm_types::report_blocks::render_fence(
+            "task",
+            &json!({
+                "key":"compact", "kind":"compact", "ready":true, "declared_by":"spec"
+            })
+        )
+    );
+    persist_report(
+        f.repo.as_ref(),
+        &inner.events,
+        &write,
+        ActorId::KernelDispatcher,
+        EditAuthor::Planner,
+        track,
+        card,
+        current.clone(),
+        TrackReportPayload::new(current.summary, body),
+        current.doc_rev,
+        None,
+    )
+    .await
+    .unwrap();
+    let scheduler = crate::scheduler::Scheduler::new(
+        f.repo.clone(),
+        inner.events.clone(),
+        write.clone(),
+        std::sync::Weak::new(),
+        Default::default(),
+        Arc::new(tokio::sync::Semaphore::new(1)),
+        std::path::PathBuf::from("/tmp"),
+        crate::scheduler::WorkerLiveness::DEFAULT,
+        crate::scheduler::WorkerIdleWake::new(
+            f.daemon.clone(),
+            Duration::from_secs(60),
+            Duration::from_secs(1),
+        ),
+    );
+    let registry = crate::harness::HarnessRegistry::new();
+    registry.insert(inner.worker_session_id.clone(), f.harness.clone());
+    scheduler.bind_compaction_harness(registry);
+    scheduler.mark_boot_sweep_complete();
+    scheduler.mark_context_sweep_boot_complete();
+    scheduler.schedule_track(inner.track_id.clone()).await;
+    (scheduler, write)
+}
+
+async fn finish(f: &Fixture, status: &str) -> Result<()> {
+    let live = f.harness.inner.live_claim.writer();
+    for kind in [
+        PlannerEventKind::TurnStarted {
+            turn_id: "compact-task".into(),
+        },
+        PlannerEventKind::TurnCompleted {
+            turn: json!({"id":"compact-task", "status":status}),
+        },
+    ] {
+        on_notification(
+            &f.harness.inner,
+            &live,
+            PlannerEvent {
+                thread_id: Some("thread-commit-wake".into()),
+                kind,
+            },
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+async fn redeclare(f: &Fixture, write: &crate::state::WriteContext) {
+    let inner = &f.harness.inner;
+    let (track, card, current) = resolve_report_for_track(f.repo.as_ref(), inner.track_id.as_str())
+        .await
+        .unwrap();
+    persist_report(
+        f.repo.as_ref(),
+        &inner.events,
+        write,
+        ActorId::KernelDispatcher,
+        EditAuthor::Planner,
+        track,
+        card,
+        current.clone(),
+        TrackReportPayload::new(current.summary, current.body),
+        current.doc_rev,
+        None,
+    )
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn compact_task_closed_loop_one_wake_and_no_redeclare() {
+    for status in ["completed", "interrupted", "failed", "unconfirmed"] {
+        let f = Fixture::new().await;
+        let (scheduler, write) = declared(&f).await;
+        let inner = &f.harness.inner;
+        let id = format!("{}:compact", inner.track_id);
+        // A queued input and a running turn both precede compaction.
+        *inner.state.lock().await = HarnessState::turn_running("old-turn".into(), Instant::now());
+        self_compact::tick(inner, true).await.unwrap();
+        assert!(f.daemon.compacted_threads_for_test().is_empty());
+        *inner.state.lock().await = HarnessState::Idle;
+        self_compact::tick(inner, false).await.unwrap();
+        assert!(f.daemon.compacted_threads_for_test().is_empty());
+        scheduler.sweep_all().await;
+        self_compact::tick(inner, true).await.unwrap();
+        let running = f.repo.task_get(&id).await.unwrap().unwrap();
+        assert_eq!(running.status, TaskStatus::Running);
+        assert!(running.worker_card_id.is_none() && running.running_deadline_ms.is_none());
+        finish(&f, status).await.unwrap();
+        let terminal = f.repo.task_get(&id).await.unwrap().unwrap();
+        assert_eq!(
+            terminal.status,
+            if status == "completed" {
+                TaskStatus::Done
+            } else {
+                TaskStatus::Failed
+            }
+        );
+        if status != "completed" {
+            assert_eq!(
+                terminal.status_detail,
+                Some(format!("compaction-incomplete: {status}"))
+            );
+        }
+        let events = f.repo.events_since(0, 1000).await.unwrap();
+        let mut pushes = 0;
+        let mut wakes = 0;
+        for (_, _, _, event) in &events {
+            if matches!(
+                event,
+                Event::TaskCompleted { .. }
+                    | Event::TaskFailed { .. }
+                    | Event::TrackWakeRequested { .. }
+            ) && crate::dispatcher::task_event_pushes_planner_for_test(
+                f.repo.as_ref(),
+                &write,
+                event,
+                &ActorId::Kernel,
+            )
+            .await
+            {
+                pushes += 1;
+            }
+            if let Event::TrackWakeRequested { key, text, .. } = event {
+                assert_eq!(key, &id);
+                assert!(text.contains("neige_report_read") && text.contains("neige_task_ls"));
+                wakes += 1;
+            }
+        }
+        assert_eq!((pushes, wakes), (1, 1), "exactly one qualified wake");
+        self_compact::clear_settled(inner).await;
+        redeclare(&f, &write).await;
+        scheduler.schedule_track(inner.track_id.clone()).await;
+        scheduler.sweep_all().await;
+        self_compact::tick(inner, true).await.unwrap();
+        assert_eq!(
+            f.repo.task_get(&id).await.unwrap().unwrap().status,
+            terminal.status,
+            "terminal key stays frozen"
+        );
+        assert_eq!(f.daemon.compacted_threads_for_test().len(), 1);
+        assert!(
+            inner.planner_compaction.lock().await.is_none(),
+            "redeclare never requests again"
+        );
+        let after = f.repo.task_get(&id).await.unwrap().unwrap();
+        assert_eq!(after.finished_at_ms, terminal.finished_at_ms);
+        assert_eq!(after.status_detail, terminal.status_detail);
+        let events = f.repo.events_since(0, 1000).await.unwrap();
+        assert_eq!(events.iter().filter(|event| matches!(&event.3, Event::TaskDispatched { idempotency_key, .. } if idempotency_key == &id)).count(), 1);
+    }
+}
+
+#[tokio::test]
+async fn compact_task_restart_settles_without_resend() {
+    let f = Fixture::new().await;
+    let (scheduler, _) = declared(&f).await;
+    scheduler.sweep_all().await;
+    self_compact::tick(&f.harness.inner, true).await.unwrap();
+    let restored = super::self_compact_tests::reload(&f).await;
+    self_compact::tick(&restored.inner, true).await.unwrap();
+    persist_snapshot(&restored.inner).await.unwrap();
+    let id = format!("{}:compact", f.harness.inner.track_id);
+    let task = f.repo.task_get(&id).await.unwrap().unwrap();
+    assert_eq!(task.status, TaskStatus::Failed);
+    assert_eq!(
+        task.status_detail.as_deref(),
+        Some("compaction-incomplete: unconfirmed")
+    );
+    assert_eq!(f.daemon.compacted_threads_for_test().len(), 1);
+    let events = f.repo.events_since(0, 1000).await.unwrap();
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event.3, Event::TrackWakeRequested { .. }))
+            .count(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn compact_task_sweep_fails_superseded_session() {
+    for started in [false, true] {
+        let f = Fixture::new().await;
+        let (scheduler, write) = declared(&f).await;
+        if started {
+            self_compact::tick(&f.harness.inner, true).await.unwrap();
+        }
+        sqlx::query("UPDATE worker_sessions SET state='superseded' WHERE id=?")
+            .bind(&f.harness.inner.worker_session_id)
+            .execute(f.repo.pool())
+            .await
+            .unwrap();
+        scheduler.sweep_all().await;
+        let id = format!("{}:compact", f.harness.inner.track_id);
+        let task = f.repo.task_get(&id).await.unwrap().unwrap();
+        assert_eq!(
+            task.status_detail.as_deref(),
+            Some("compaction-refused: superseded")
+        );
+        let event = f
+            .repo
+            .events_since(0, 1000)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|event| matches!(event.3, Event::TaskFailed { .. }))
+            .unwrap();
+        assert!(
+            crate::dispatcher::task_event_pushes_planner_for_test(
+                f.repo.as_ref(),
+                &write,
+                &event.3,
+                &ActorId::KernelDispatcher
+            )
+            .await
+        );
+    }
+}
+
+#[tokio::test]
+async fn compact_task_settlement_rolls_back_with_wake() {
+    let f = Fixture::new().await;
+    declared(&f).await;
+    self_compact::tick(&f.harness.inner, true).await.unwrap();
+    sqlx::query(
+        "CREATE TRIGGER compact_task_wake_fail BEFORE INSERT ON events \
+         WHEN NEW.kind='track.wake_requested' \
+         BEGIN SELECT RAISE(ABORT,'blocked wake'); END",
+    )
+    .execute(f.repo.pool())
+    .await
+    .unwrap();
+    assert!(finish(&f, "completed").await.is_err());
+    let id = format!("{}:compact", f.harness.inner.track_id);
+    assert_eq!(
+        f.repo.task_get(&id).await.unwrap().unwrap().status,
+        TaskStatus::Running
+    );
+    assert!(
+        !f.repo
+            .events_since(0, 1000)
+            .await
+            .unwrap()
+            .iter()
+            .any(|event| matches!(event.3, Event::TaskCompleted { .. }))
+    );
+    sqlx::query("DROP TRIGGER compact_task_wake_fail")
+        .execute(f.repo.pool())
+        .await
+        .unwrap();
+    persist_snapshot(&f.harness.inner).await.unwrap();
+    assert_eq!(
+        f.repo.task_get(&id).await.unwrap().unwrap().status,
+        TaskStatus::Done
+    );
+}
+
+#[tokio::test]
+async fn compact_task_second_key_refuses_already_pending_and_pushes() {
+    let f = Fixture::new().await;
+    let (scheduler, write) = declared(&f).await;
+    let inner = &f.harness.inner;
+    let (track, card, current) = resolve_report_for_track(f.repo.as_ref(), inner.track_id.as_str())
+        .await
+        .unwrap();
+    let body = format!(
+        "{}\n{}",
+        current.body,
+        calm_types::report_blocks::render_fence(
+            "task",
+            &json!({
+                "key":"compact-second", "kind":"compact", "ready":true, "declared_by":"spec"
+            })
+        )
+    );
+    persist_report(
+        f.repo.as_ref(),
+        &inner.events,
+        &write,
+        ActorId::KernelDispatcher,
+        EditAuthor::Planner,
+        track,
+        card,
+        current.clone(),
+        TrackReportPayload::new(current.summary, body),
+        current.doc_rev,
+        None,
+    )
+    .await
+    .unwrap();
+    scheduler.schedule_track(inner.track_id.clone()).await;
+    let id = format!("{}:compact-second", inner.track_id);
+    let task = f.repo.task_get(&id).await.unwrap().unwrap();
+    assert_eq!(task.status, TaskStatus::Failed);
+    assert_eq!(
+        task.status_detail.as_deref(),
+        Some("compaction-refused: already_pending")
+    );
+    let event = f.repo.events_since(0, 1000).await.unwrap().into_iter().find(|event| matches!(&event.3, Event::TaskFailed { idempotency_key, .. } if idempotency_key == &id)).unwrap();
+    assert!(
+        crate::dispatcher::task_event_pushes_planner_for_test(
+            f.repo.as_ref(),
+            &write,
+            &event.3,
+            &ActorId::KernelDispatcher
+        )
+        .await
+    );
+    assert!(f.daemon.compacted_threads_for_test().is_empty());
+}

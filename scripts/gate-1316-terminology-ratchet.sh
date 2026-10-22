@@ -161,6 +161,14 @@
 # changes. Ordinary later contract references update the owning schema/test and
 # this existing occurrence baseline; no file roster or additional CI pass is added.
 
+# Planner compact execution bounded contract exception: spec/crates 523 -> 528
+# retains the serialized declaration author in the context-full prompt and its
+# generated golden (2), two report-to-scheduler fixtures (2), and the Claude
+# historical stack declaration (1). These are references to the frozen wire
+# author, not a domain name. The existing occurrence scan still runs once per
+# ratchet target. A later serialized-author fixture edits its owning test and
+# this existing baseline; no new scan, exclusion, or file/test inventory is added.
+
 set -uo pipefail
 
 cd "$(git rev-parse --show-toplevel)" || exit 1

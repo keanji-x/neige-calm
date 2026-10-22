@@ -787,6 +787,7 @@ impl AppState {
                 crate::scheduler::WORKER_IDLE_PROBE_TIMEOUT,
             ),
         );
+        scheduler.bind_compaction_harness(self.harness.clone());
         scheduler.mark_boot_sweep_complete();
         scheduler.mark_context_sweep_boot_complete();
         scheduler

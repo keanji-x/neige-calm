@@ -111,7 +111,10 @@ async fn isolation_none_scheduler_refuses_upstream_worker_before_fetch_writes() 
         ),
     );
     let before = bytes(source.path());
-    scheduler.drive_spawn(&dispatched, &track).await.unwrap();
+    scheduler
+        .drive_spawn(&dispatched, &track, false)
+        .await
+        .unwrap();
     assert_eq!(
         bytes(source.path()),
         before,

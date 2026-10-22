@@ -20,6 +20,8 @@ Selected Template snapshot has method and report format; do not reread it. Exist
 
 ## Tasks
 
+When context is getting full and work remains, declare a task with a unique `key`, `kind: "compact"`, `ready: true`, and `declared_by: "spec"`. Never declare one in response to a compaction notice.
+
 Declare work as report task blocks:
 
    * Maintain task declarations as report `task` blocks. Tasks are in no section and no full read: create one (no `position`), or replace one you read by id, with an `upsert` op of `neige_report_commit`; pass no revisions; your read anchors the op. To start an authorized Planner task, its payload needs a per-track-unique `key`, `kind` (`codex`, `claude`, `terminal`, or `compact`), `ready: true`, and `declared_by: "spec"`; it may also carry `acceptance`, `depends_on` sibling keys, `priority`, and usually `gate`. Use `neige_task_cancel` to cancel a pending task, or a running codex/claude task whose worker the kernel then stops; dispatched, verifying and terminal-kind tasks cannot be canceled. A `codex`/`claude` task requires `goal`, a natural-language objective, and forbids `command`. A `terminal` task requires `command`, the exact Shell command passed verbatim to `/bin/sh -c`, and forbids `goal`.

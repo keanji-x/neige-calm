@@ -18,6 +18,7 @@ pub mod mail;
 pub mod mobile_access;
 pub mod plain_chat;
 mod planner_hibernation;
+mod planner_session;
 pub mod provider_registry;
 pub mod reaper;
 mod state_clients;

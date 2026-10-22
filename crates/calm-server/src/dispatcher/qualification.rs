@@ -74,6 +74,17 @@ async fn deferred_self_report(repo: &dyn Repo, event: &Event, reads: FactReads) 
     }
     match repo.task_get(idempotency_key).await {
         Ok(Some(task)) => {
+            if task.kind == crate::model::TaskKind::Compact
+                && ((!is_failure && task.status == crate::model::TaskStatus::Done)
+                    || (is_failure
+                        && task
+                            .status_detail
+                            .as_deref()
+                            .map(crate::db::sqlite::status_detail_class)
+                            == Some("compaction-incomplete")))
+            {
+                return Ok(true);
+            }
             if task.gate_json.is_none() {
                 return Ok(false);
             }
