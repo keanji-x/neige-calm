@@ -3,6 +3,7 @@
 // deep link addresses); `body` is the flat fallback. Everything here is fail-soft.
 
 import { z } from 'zod';
+import { objectiveBlockPayloadSchema, type ObjectiveBlockPayload } from './report-objective.js';
 import { max2048CodePoints, inlineTableBlockPayloadSchema } from './report-table.js';
 import { isCalendarDate } from './report-date.js';
 import { nativeViewPayloadSchema, type NativeViewPayload } from './report-view.js';
@@ -232,6 +233,7 @@ export type ReportBlock =
   | Readonly<{ id: string; kind: 'prose'; payload: ProseBlockPayload }>
   | Readonly<{ id: string; kind: 'chart.candles'; payload: ChartCandlesPayload }>
   | Readonly<{ id: string; kind: 'chart.series'; rev: number; payload: ChartSeriesPayload }>
+  | Readonly<{ id: string; kind: 'objective'; payload: ObjectiveBlockPayload }>
   | Readonly<{ id: string; kind: 'table'; payload: TableBlockPayload }>
   | Readonly<{ id: string; kind: 'view'; payload: NativeViewPayload }>
   | Readonly<{ id: string; kind: 'app'; payload: AppBlockPayload }>
@@ -255,6 +257,7 @@ function payloadSchemaFor(kind: string): z.ZodType | null {
     case 'prose': return proseBlockPayloadSchema;
     case 'chart.candles': return chartCandlesPayloadSchema;
     case 'chart.series': return chartSeriesPayloadSchema;
+    case 'objective': return objectiveBlockPayloadSchema;
     case 'table': return tableBlockPayloadSchema;
     case 'view': return nativeViewPayloadSchema;
     case 'app': return appBlockPayloadSchema;

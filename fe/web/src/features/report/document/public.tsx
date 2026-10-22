@@ -28,6 +28,7 @@ import { ReportHtmlBlock } from '../html/public.tsx';
 import { ReportCandlesBlock } from '../candles/public.tsx';
 import { ReportPreviewBlock, type PreviewViewportStore } from '../preview/public.tsx';
 import { ReportSeriesBlock } from '../series/public.tsx';
+import { ReportObjectiveBlock } from '../objective/public.tsx';
 import { ReportTableBlock } from '../table/public.tsx';
 import { NativeReportView } from '../native/public.tsx';
 import { ReportTaskBlock } from '../task/public.tsx';
@@ -264,6 +265,7 @@ function BlockBody({
   const textContext = { referenceRepository, onOpenLink, onOpenFileLink, onOpenSourceLink, fileRoot, fileBasePath, linkPreview };
   const renderText = (text: string) => <PlainReportText text={text} context={textContext} />;
   switch (block.kind) {
+    case 'objective': return <ReportObjectiveBlock payload={block.payload} />;
     case 'table':
       return <ReportTableBlock renderText={renderText} payload={block.payload} resolveLive={resolveOverlay} onOpenSourceLink={onOpenSourceLink} linkPreview={linkPreview} />;
     case 'view': return <NativeReportView renderText={renderText} payload={block.payload} resolveOverlay={resolveOverlay} onOpenSourceLink={onOpenSourceLink} linkPreview={linkPreview} />;
