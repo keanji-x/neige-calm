@@ -693,7 +693,9 @@ where
                         tracing::warn!(?id, "mcp response for unknown request id; dropping");
                     }
                 }
-                Ok(Frame::Request { id, method, params }) => {
+                Ok(Frame::Request {
+                    id, method, params, ..
+                }) => {
                     let (responder_tx, responder_rx) = oneshot::channel();
                     let req = InboundRequest {
                         id: id.clone(),
@@ -753,7 +755,7 @@ fn flush_responders_with_error(responders: &ResponderMap, msg: &str) {
 
 /// Decoded JSON-RPC frame.
 #[derive(Debug)]
-pub(crate) enum Frame {
+pub enum Frame {
     Response {
         id: RequestId,
         body: Result<Value, RpcError>,
@@ -762,6 +764,8 @@ pub(crate) enum Frame {
         id: RequestId,
         method: String,
         params: Value,
+        /// Top-level `_meta`, preserved independently of `params._meta`.
+        request_meta: Option<Value>,
     },
     Notification {
         method: String,
@@ -769,7 +773,7 @@ pub(crate) enum Frame {
     },
 }
 
-pub(crate) fn parse_frame(s: &str) -> Result<Frame, String> {
+pub fn parse_frame(s: &str) -> Result<Frame, String> {
     let v: Value = serde_json::from_str(s).map_err(|e| format!("json parse: {e}"))?;
     let obj = v
         .as_object()
@@ -786,10 +790,12 @@ pub(crate) fn parse_frame(s: &str) -> Result<Frame, String> {
             let id = serde_json::from_value::<RequestId>(id_v.clone())
                 .map_err(|e| format!("invalid id: {e}"))?;
             let params = obj.get("params").cloned().unwrap_or(Value::Null);
+            let request_meta = obj.get("_meta").cloned();
             Ok(Frame::Request {
                 id,
                 method: m,
                 params,
+                request_meta,
             })
         }
         (Some(id_v), None) => {
@@ -918,12 +924,38 @@ mod tests {
     fn parse_request_frame_round_trip() {
         let f = parse_frame(r#"{"jsonrpc":"2.0","id":7,"method":"foo","params":{"a":1}}"#).unwrap();
         match f {
-            Frame::Request { id, method, params } => {
+            Frame::Request {
+                id,
+                method,
+                params,
+                request_meta,
+            } => {
                 assert_eq!(id, RequestId::Num(7));
                 assert_eq!(method, "foo");
                 assert_eq!(params["a"], 1);
+                assert_eq!(request_meta, None);
             }
             _ => panic!("expected request"),
+        }
+    }
+
+    #[test]
+    fn parse_request_preserves_top_level_meta() {
+        for meta in [json!({"threadId": "top"}), Value::Null, json!("invalid")] {
+            let frame = json!({
+                "id": 7, "method": "foo", "_meta": meta,
+                "params": {"_meta": {"threadId": "params"}}
+            });
+            let Frame::Request {
+                request_meta,
+                params,
+                ..
+            } = parse_frame(&frame.to_string()).unwrap()
+            else {
+                panic!("expected request");
+            };
+            assert_eq!(request_meta, Some(meta));
+            assert_eq!(params, frame["params"]);
         }
     }
 

@@ -410,3 +410,26 @@ async fn existing_handlers_unchanged_when_meta_present() {
 
     let _ = &boot.server;
 }
+
+#[tokio::test]
+async fn daemontrust_top_level_meta_takes_precedence_over_params_meta() {
+    let (registry, mut rx) = identity_capture_registry();
+    let boot = boot_with_registry_as_daemontrust(registry).await;
+    let (mut rd, mut wr) = initialized_client(&boot).await;
+
+    for (id, params_meta) in [
+        (2, None),
+        (3, Some(json!({ "threadId": "unknown-thread" }))),
+    ] {
+        let mut frame = tools_call_frame(id, "test.echo_identity", json!({}));
+        frame["_meta"] = json!({ "threadId": boot.thread_id });
+        if let Some(meta) = params_meta {
+            frame["params"]["_meta"] = meta;
+        }
+        send_frame(&mut wr, frame).await;
+        let resp = recv_frame(&mut rd).await;
+        assert!(resp.get("error").is_none(), "tools/call errored: {resp:#?}");
+        assert_eq!(recv_identity(&mut rx).await.thread_id, boot.thread_id);
+    }
+    let _ = &boot.server;
+}

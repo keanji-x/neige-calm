@@ -536,6 +536,33 @@ async fn initialize_with_bad_token_returns_minus_32401_and_closes() {
 }
 
 #[tokio::test]
+async fn invalid_frames_and_stray_responses_are_ignored_before_and_after_initialize() {
+    let b = boot().await;
+    let (mut rd, mut wr) = connect(&b.socket_path).await;
+    for initialized in [false, true] {
+        wr.write_all(b"not json\n[]\n{\"id\":1}\n").await.unwrap();
+        send_frame(&mut wr, json!({ "id": 900, "result": {} })).await;
+        send_frame(
+            &mut wr,
+            json!({ "id": 901, "error": { "code": -32601, "message": "stray" } }),
+        )
+        .await;
+        if initialized {
+            send_frame(&mut wr, json!({ "id": 2, "method": "tools/list" })).await;
+        } else {
+            send_frame(&mut wr, initialize_frame(1, &b.raw_token)).await;
+        }
+        let resp = recv_frame(&mut rd).await;
+        assert_eq!(resp["id"], if initialized { 2 } else { 1 });
+        assert!(
+            resp.get("error").is_none(),
+            "unexpected response: {resp:#?}"
+        );
+    }
+    let _ = &b.server;
+}
+
+#[tokio::test]
 async fn tools_call_before_initialize_is_rejected() {
     let b = boot().await;
     let (mut rd, mut wr) = connect(&b.socket_path).await;
