@@ -715,3 +715,70 @@ it('settles a paused terminal endpoint on rebase without manufacturing a playbac
   expect(q()).toBe(0); expect(panel.getAnimations()).toHaveLength(0);
   expect(vi.mocked(spring.playSpring).mock.calls.length).toBe(count);
 });
+
+
+it.each([false, true])('prepares first entry only after a closed native mount is shown: strict=%s', async strict => {
+  const { panel, frame, dialog, update, props } = await mount({ open: false }, strict);
+  await frames(2);
+  expect(dialog.open).toBe(false); expect(panel.getBoundingClientRect().height).toBe(0);
+  const calls = vi.mocked(spring.playSpring); const count = calls.mock.calls.length;
+  const focus = vi.spyOn(HTMLElement.prototype, 'focus');
+  update({ frame: { heightPx: 0, bottomInsetPx: 20 } });
+  update({ frame: { heightPx: 500.375, bottomInsetPx: 50 } });
+  expect(calls.mock.calls.length).toBe(count); expect(focus).not.toHaveBeenCalled();
+  expect(props.onCloseRequest).not.toHaveBeenCalled();
+  let captured: Animation | undefined; let initial = 0;
+  const { playSpring: original } = await vi.importActual<typeof spring>('../motion/spring.ts');
+  calls.mockImplementation((...args) => {
+    initial = panel.getBoundingClientRect().top - frame.getBoundingClientRect().top;
+    const playback = original(...args); captured = playback.animations[0]; captured.pause(); return playback;
+  });
+  try { update({ open: true }); } finally { calls.mockImplementation(original); }
+  expect(captured).toBeDefined(); expect(dialog.open).toBe(true);
+  const height = panel.getBoundingClientRect().height;
+  expect(height).toBe(548.375); expect(initial).toBeCloseTo(height, 1);
+  expect(calls.mock.lastCall!.slice(1, 4)).toEqual([height, 0, 0]);
+  await captured!.ready;
+  captured!.currentTime = Number(captured!.effect!.getComputedTiming().duration) * .15;
+  const q = panel.getBoundingClientRect().top - frame.getBoundingClientRect().top;
+  expect(q).toBeGreaterThan(10); expect(q).toBeLessThan(height - 10);
+});
+
+it('waits for a valid first frame and never finishes a never-presented close', async () => {
+  vi.mocked(spring.playSpring).mockClear();
+  const { panel, dialog, update } = await mount({ open: false, frame: { heightPx: 0, bottomInsetPx: 0 } });
+  const close = vi.spyOn(dialog, 'close'); const calls = vi.mocked(spring.playSpring);
+  update({ open: true }); expect(dialog.open).toBe(false); expect(calls).not.toHaveBeenCalled();
+  update({ open: false }); expect(close).not.toHaveBeenCalled();
+  update({ open: true, frame: { heightPx: 600, bottomInsetPx: 0 } });
+  expect(dialog.open).toBe(true); expect(calls.mock.lastCall!.slice(1, 4)).toEqual([648, 0, 0]);
+  expect(panel.getAnimations()).toHaveLength(1);
+});
+
+
+it.each(['enable', 'remount', 'hidden', 'reduced'] as const)('prepares an unavailable first presentation through %s', async mode => {
+  vi.mocked(spring.playSpring).mockClear();
+  let view = await mount({ open: false, enabled: mode !== 'enable' });
+  if (mode === 'remount') { view.unmount(); view = await mount({ open: false }); }
+  if (mode === 'enable') view.update({ enabled: true });
+  const panel = document.querySelector<HTMLDivElement>('[data-nc-sheet-panel]')!;
+  const dialog = document.querySelector<HTMLDialogElement>('dialog')!;
+  const frame = document.querySelector<HTMLElement>('[data-nc-sheet-frame]')!;
+  const close = vi.spyOn(dialog, 'close'); const calls = vi.mocked(spring.playSpring);
+  if (mode === 'reduced') await commands.emulateReducedMotion(true);
+  expect(calls).not.toHaveBeenCalled(); expect(close).not.toHaveBeenCalled();
+  if (mode === 'hidden') panel.hidden = true;
+  view.update({ open: true });
+  if (mode === 'hidden') {
+    expect(panel.getBoundingClientRect().height).toBe(0); expect(calls).not.toHaveBeenCalled();
+    panel.hidden = false; view.update({ frame: { heightPx: 500, bottomInsetPx: 10 } });
+  }
+  expect(dialog.open).toBe(true);
+  if (mode === 'reduced') {
+    expect(calls).not.toHaveBeenCalled(); expect(panel.getBoundingClientRect().top).toBe(frame.getBoundingClientRect().top);
+    view.update({ open: false }); expect(dialog.open).toBe(false); expect(panel.textContent).toBe('');
+  } else {
+    expect(panel.getAnimations()).toHaveLength(1);
+    expect(calls.mock.lastCall!.slice(1, 4)).toEqual([panel.getBoundingClientRect().height, 0, 0]);
+  }
+});

@@ -428,7 +428,11 @@ describe('Unified mobile headers', () => {
       await expect.poll(() => header.closest('#mobile-workspace-navigation')?.getAnimations({ subtree: true })
         .filter((animation) => animation.effect?.getTiming().iterations !== Infinity)
         .every((animation) => animation.playState !== 'running') ?? true).toBe(true);
-      await Promise.all(header.closest('[data-nc-mobile-page], [data-nc-drawer], [data-nc-workspace-page]')?.getAnimations().map((animation) => animation.finished) ?? []);
+      // Content is inside the Sheet paint owner; waiting on content alone
+      // observes no animations while a first entry still translates the header.
+      const presentation = header.closest('[data-nc-sheet-panel]')
+        ?? header.closest('[data-nc-mobile-page], [data-nc-drawer], [data-nc-workspace-page]');
+      await Promise.all(presentation?.getAnimations().map((animation) => animation.finished) ?? []);
       await Promise.all(header.getAnimations({ subtree: true }).filter((animation) => animation.effect?.getTiming().iterations !== Infinity)
         .map((animation) => animation.finished.catch(() => undefined)));
       await settlePaint();

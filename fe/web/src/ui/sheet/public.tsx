@@ -114,7 +114,7 @@ export function Sheet(props: SheetProps) {
     const token = {}; intent.current = token;
     if (open || !enabled) clearExitFocus();
     if (!enabled) {
-      owner.current?.gesture.revoke(); owner.current?.motion.hold();
+      owner.current?.gesture.revoke();
       if (dialog?.open) dialog.close();
       setPresent(false); return;
     }
@@ -135,6 +135,9 @@ export function Sheet(props: SheetProps) {
       doc.addEventListener('focusin', chosen, true);
     }
     if (panel === null || dialog === null || owner.current === null || !Number.isFinite(frame.heightPx) || frame.heightPx <= 0) return;
+    // A native-closed host cannot supply a new painted position. In
+    // particular, its zero border box is not a closed endpoint to cache.
+    if (!open && !dialog.open) { owner.current.gesture.revoke(); return; }
     if (open) {
       setPresent(true);
       if (!dialog.open) dialog.show();
@@ -147,7 +150,8 @@ export function Sheet(props: SheetProps) {
     const preference = window.matchMedia('(prefers-reduced-motion: reduce)');
     const change = () => {
       const current = owner.current;
-      if (!preference.matches || current === null || panel === null || dialog === null) return;
+      if (!preference.matches || !latest.current.enabled || current === null || panel === null || dialog === null || !dialog.open
+        || !Number.isFinite(latest.current.frame.heightPx) || latest.current.frame.heightPx <= 0) return;
       current.gesture.revoke(); const token = intent.current;
       current.motion.move(latest.current.open ? 0 : panel.getBoundingClientRect().height, true, () => { if (!latest.current.open) finish(token, dialog); });
     };

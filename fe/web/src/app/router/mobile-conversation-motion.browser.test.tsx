@@ -13,10 +13,10 @@ const handleSelector = '[data-nc-mobile-chat-panel] > [aria-hidden="true"]:first
 const frames = async (count: number) => {
   for (let index = 0; index < count; index++) await new Promise(requestAnimationFrame);
 };
-function Fixture() {
-  const [open, setOpen] = useState(true);
-  return <ConversationSurface mobileSheet open={open} title="Motion handoff" onClose={() => setOpen(false)}
-    footer={<input aria-label="Motion draft" />}><p>Real conversation surface</p></ConversationSurface>;
+function Fixture({ initialOpen = true }: { initialOpen?: boolean }) {
+  const [open, setOpen] = useState(initialOpen);
+  return <><button onClick={() => setOpen(true)}>Open conversation</button><ConversationSurface mobileSheet open={open} title="Motion handoff" onClose={() => setOpen(false)}
+    footer={<input aria-label="Motion draft" />}><p>Real conversation surface</p></ConversationSurface></>;
 }
 async function mount() {
   await page.viewport(390, 844);
@@ -28,23 +28,33 @@ async function mount() {
 }
 // Observe only this fixture's real panel playback while its layout effect is
 // still on the stack. The spy always returns the original Playback unchanged.
-async function renderEntry(freeze: boolean) {
+async function renderEntry(freeze: boolean, closedMount = false) {
   const calls = vi.mocked(spring.playSpring);
   const { playSpring: original } = await vi.importActual<typeof spring>('../../ui/motion/spring.ts');
   let count = 0;
-  let captured: { panel: HTMLElement; playback: spring.SpringPlayback; entry: Animation } | undefined;
+  let captured: { panel: HTMLElement; playback: spring.SpringPlayback; entry: Animation; before: number; height: number; frameTop: number } | undefined;
   calls.mockImplementation((...args) => {
-    const playback = original(...args);
     const panel = args[0][0];
+    const before = panel.getBoundingClientRect().top;
+    const playback = original(...args);
     if (panel instanceof HTMLElement && panel.matches('[data-nc-mobile-chat-panel]')) {
       count++;
       const entry = playback.animations[0];
-      captured = { panel, playback, entry };
+      captured = { panel, playback, entry, before, height: panel.getBoundingClientRect().height,
+        frameTop: panel.closest('[data-nc-sheet-frame]')!.getBoundingClientRect().top };
       if (freeze) entry.pause();
     }
     return playback;
   });
-  try { render(<Fixture />); } finally { calls.mockImplementation(original); }
+  try {
+    render(<Fixture initialOpen={!closedMount} />);
+    if (closedMount) {
+      await frames(2);
+      expect(count, 'closed mount must not start motion').toBe(0);
+      expect(document.querySelector('dialog')!.open).toBe(false);
+      act(() => { fireEvent.click(page.getByRole('button', { name: 'Open conversation' }).element()); });
+    }
+  } finally { calls.mockImplementation(original); }
   expect(count, 'one production entry').toBe(1);
   expect(captured, 'real production entry playback captured synchronously').toBeDefined();
   return captured!;
@@ -149,7 +159,8 @@ it.each([
   expect(document.activeElement).toBe(external); expect(dialog.open).toBe(true);
   await expect.poll(() => dialog.open).toBe(false);
   expect(document.activeElement).toBe(external);
-  expect(panel.textContent).not.toContain('Retained conversation');
+  // Native close is synchronous; retained content leaves in the React commit.
+  await expect.poll(() => panel.textContent).not.toContain('Retained conversation');
 });
 it('restores the default conversation destination without an external choice', async () => {
   await page.viewport(390, 844); render(<FocusFixture />);
@@ -192,3 +203,41 @@ it.each(['forward', 'negative', 'half', 'reverse', 'paused', 'zero'] as const)(
     }
     expect(dialog.open).toBe(true); expect(panel.closest('[inert]')).toBeNull();
   });
+
+
+it('enters the real conversation from a closed mount using visible border-box travel', async () => {
+  await page.viewport(390, 844);
+  const { panel, entry, before, height, frameTop } = await renderEntry(true, true);
+  expect(height).toBeGreaterThan(48);
+  expect(Math.abs(before - frameTop - height)).toBeLessThan(1);
+  await frames(1); await entry.ready;
+  expect(panel.getAnimations()).toContain(entry);
+  expect(Math.abs(panel.getBoundingClientRect().top - frameTop - height)).toBeLessThan(1);
+  entry.currentTime = Number(entry.effect!.getComputedTiming().duration) * .15;
+  const q = panel.getBoundingClientRect().top - frameTop;
+  expect(q).toBeGreaterThan(10); expect(q).toBeLessThan(height - 10);
+  // The content marker is not the animated presentation owner. Consumers
+  // measuring terminal header geometry must wait on the actual panel.
+  expect(panel.querySelector('[data-nc-drawer]')!.getAnimations()).toHaveLength(0);
+  expect(panel.getAnimations()).toContain(entry);
+});
+
+it('observes native close before the retained React commit on a fixed completion schedule', async () => {
+  await page.viewport(320, 844); render(<FocusFixture />);
+  const dialog = page.getByRole('dialog', { name: 'Exit focus' }).element() as HTMLDialogElement;
+  const panel = document.querySelector<HTMLElement>('[data-nc-mobile-chat-panel]')!;
+  await expect.poll(() => panel.getAnimations().length).toBe(0);
+  act(() => { fireEvent.click(page.getByRole('button', { name: 'Close conversation', exact: true }).element()); });
+  const exit = panel.getAnimations()[0]; exit.pause(); await exit.ready;
+  const external = page.getByRole('button', { name: 'External destination' }).element() as HTMLElement;
+  external.focus();
+  let checkpoint: { open: boolean; content: string | null; focus: Element | null } | undefined;
+  const nativeClose = dialog.close.bind(dialog);
+  vi.spyOn(dialog, 'close').mockImplementation(() => {
+    nativeClose(); checkpoint = { open: dialog.open, content: panel.textContent, focus: document.activeElement };
+  });
+  await act(async () => { exit.finish(); await exit.finished; });
+  expect(checkpoint).toEqual({ open: false, content: 'Exit focusRetained conversation', focus: external });
+  expect(dialog.open).toBe(false); expect(document.activeElement).toBe(external);
+  expect(panel.textContent).not.toContain('Retained conversation');
+});

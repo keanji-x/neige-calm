@@ -29,7 +29,12 @@ export function createSheetMotion(panel: HTMLDivElement) {
     hold,
     direct: (sample: SpringSample) => { if (live) { painted = sample; write(sample.value); } },
     move: (to: number, immediate: boolean, settled: () => void) => {
-      if (!live) return;
+      // Initialization is available only after native show/layout. A hidden
+      // border box (including its default zero) is never ready paint. Existing
+      // q/v remains untouched while geometry is unavailable.
+      if (!live || !panel.isConnected || panel.getClientRects().length === 0) return;
+      const height = panel.getBoundingClientRect().height;
+      if (!Number.isFinite(height) || height <= 0 || getComputedStyle(panel).visibility !== 'visible') return;
       const from = hold(); const generation = revision;
       if (immediate || from.value === to && from.velocity === 0) {
         painted = { value: to, velocity: 0 }; write(to); settled(); return;

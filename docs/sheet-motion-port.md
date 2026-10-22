@@ -4,6 +4,108 @@ Status: footer `87c6e2cd` is accepted. Planner froze design event 518614 for the
 
 Review tier: L2 because retained native content crosses an interaction/focus authority boundary. Formal independent reviews, original-page preview, stack Tier 1 and exact-head CI remain Planner work.
 
+## Closed-mount preparation and native-close observation (after A568703)
+
+Planner approved a narrow position-preparation amendment: an unpresented, hidden
+or invalid-frame panel is unavailable, not ready paint at zero. The native-closed
+branch now revokes any lease without sampling, moving or completing motion.
+Disabling removes the panel lifetime without sampling its removed border box.
+Runtime reduced-motion notifications also require enabled/native-open/valid-frame
+state. The motion adapter rejects disconnected, hidden or zero/nonfinite border
+boxes before sampling or writing. After the first native `show()`, the existing
+hold/write path reads the actual fractional panel border box, writes closed
+travel in the same layout task, and enters the one shared spring. No timer,
+extra RAF, component curve, solver, fake velocity or shared-motion edit exists.
+Existing presented q/v, retained reversal, frame rebase, and exact-target
+synchronous settlement are preserved; opening never resets existing paint.
+
+The original `/tmp/sheet-final-a-probe/parity-result.json` and `parity.log` were
+read with the complete probe/base source. They contain one production failure,
+one vendor-baseline pass and one skipped direct probe, exit 1. Both real callers
+used two closed RAFs and one open RAF: production had zero animations, vendor
+one. The baseline source equals `d9b58c67` after only documented import relocation
+(`/tmp/sheet-lifecycle-baseline-audit.json`). These are original observations,
+not a production mutation or a replacement solver.
+
+New regressions in the existing Sheet and production motion targets first
+reported three behavioral reds: closed-mount Sheet with/without StrictMode and
+the real ConversationSurface first entry (`/tmp/sheet-lifecycle-red.{json,log}`).
+The production fixture has an ordinary open button and starts closed. Its
+synchronous call-through observes the same genuine new Playback before returning
+it unchanged. Actual panel/frame rectangles prove the closed starting position
+before spring creation, then nonterminal native paint. The original entry
+phases .15/.3, >10px ruler and <1px native-grab oracle remain intact. Sibling
+coverage includes closed frame changes, zero-to-valid frame, enable, remount,
+hidden-to-valid geometry and immediate first-show reduced motion. Tests clear
+only their own spy history; initial trial failures from inherited call counts
+remain in `sheet-lifecycle-green`/`sheet-lifecycle-siblings`, not product reds.
+
+The exact CI artifact was readable at
+`/home/kenji/.local/share/neige-next/data/forge-results/330fd28fad2cd038603d039e2ef22668b6954247b9c3978b028d910e4426ddb5.result`:
+head `77c4d6c0`, stale false, run 39741348267 attempt 1, job 119699106012,
+212 targets / 2072 pass / one failure at production motion line 152 (320/Escape,
+retained content). Its job log is explicitly truncated, with long lines omitted;
+it is not a full CI log and was not rerun. A fixed native-animation finish now
+records `dialog.open=false`, external focus retained and content still present
+inside the synchronous native-close call; the following React commit removes
+that content. This deterministic control passed before the entry fix. The
+original content-removal assertion now awaits that actual commit using the
+existing polling assertion, with no timeout change, sleep, retry or removed
+assertion. There is no evidence that the two failures share a product cause,
+or that the exact remote scheduling history was reconstructed.
+
+Worker owns focused tests and exclusive mutations; kernel owns text/lint/build
+and its complete Sheet/production/hover replay. Tier remains L2; independent
+reviews, final original-page/new-head integration and exact-head CI remain
+Planner-owned. No permanent test-name roster or new gate invocation is added;
+ordinary new cases edit only their owner target. Historical input and connection
+unknowns below remain unknown and are not certified by later green runs.
+
+### Final entry/endpoint mutation evidence
+
+`python3 /tmp/sheet-lifecycle-mutate.py first-entry` and `endpoint` each execute
+`python3 /tmp/sheet-focused.py <label>` over the same 16 complete observable
+targets / 275 cases, both browser projects, four workers and empty selection
+rejected. The fresh import walk remains byte-identical: 90 reachable tests,
+`/tmp/sheet-lifecycle-reachability.txt`; the existing exclusions above remain.
+The declaration `/tmp/sheet-lifecycle-mutation-plan.json` precedes production
+mutation. Each per-factor declaration/result records original/applied/restored
+SHA-256, all expected and actual failing names, target counts and exits. Original
+bytes are restored in `finally`, followed by the same complete green selection.
+
+| Production-only factor | Exact predicted/actual red | Full restored green |
+| --- | --- | --- |
+| first-entry: allow hidden native-closed height to contaminate paint again | 6 / 6 | 275 / 275 |
+| endpoint: require no active playback for exact-target synchronous settle | 3 / 3 | 275 / 275 |
+
+Full evidence prefixes are `/tmp/sheet-lifecycle-{first-entry,endpoint}-`:
+`declaration.json`, `result.json`, `red.json/log`, `restored.json/log`, and command
+`*-summary.log`. First-entry restores public SHA-256
+`8e2a4a4e0b701eda52bd6c330466beebf83b2e9b3bcb2b8d300fc9123f95914f`;
+endpoint restores motion SHA-256
+`f6a3013491f5d3cd8e434cc318f68afcc506937811a72b0960caf2c405769150`.
+New cases do not add nonzero active sample/handle handoff observations, so the
+old active/grab/zero predictions are unchanged; those historical mutants are
+not claimed as new executions. Current signed/cap/focus/reopen tests run in each
+complete replay. No shared solver or test is mutated.
+
+One earlier cycle matched all six reds but restored 274/275: the composed header
+consumer waited on `[data-nc-drawer]` content, not the real Sheet panel. Its
+exact 44px terminal measurement ran during newly restored first entry and read
+44.00001525878906px. The test now waits on the actual presentation Animation;
+all exact geometry assertions remain. The production entry case independently
+proves content has no animations while its panel does. The incomplete cycle is
+preserved under `/tmp/sheet-lifecycle-first-entry-incomplete/`, followed by the
+valid complete cycle above, not silently counted as green.
+
+Other incomplete runs remain explicit: `sheet-lifecycle-full-green` executed
+87 cases with Vite reload/missing optimized modules; `*-serial` executed 275,
+with one desktop README CodeMirror extension-instance error. Ignored Vite cache
+was saved reversibly at `/tmp/sheet-lifecycle-vite-cache-before`; `*-fresh`
+then passed 275/275 unchanged. The exact optimizer/CodeMirror cause is unknown;
+no dependency/config change, reinstall, retry policy or weakened assertion was
+introduced. This recovery does not explain historical input unknowns.
+
 ## Formal upstream sample integration
 
 The kernel checked out upstream `d9b58c672f866e561e40b045b6d5df6c85e0214f`.
