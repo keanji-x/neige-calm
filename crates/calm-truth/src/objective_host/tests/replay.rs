@@ -241,3 +241,66 @@ async fn track_delete_cascades_both_paths() {
         assert_eq!(counts(&repo).await, (0, 0, 0));
     }
 }
+
+#[tokio::test]
+async fn objective_v1_snapshot_rebuild_preserves_frozen_usage() {
+    let repo = fixture().await;
+    for (i, event) in scenario().into_iter().enumerate() {
+        fixture_react(&repo, event, &i.to_string()).await;
+    }
+    for turn in ["later-one", "later-two"] {
+        record_turn_usage(
+            repo.db(),
+            &"t".into(),
+            "p".into(),
+            turn.into(),
+            TurnUsage {
+                context_growth: 7000,
+                secs: 8,
+            },
+        )
+        .await
+        .unwrap();
+    }
+    let expected = load_state(repo.db(), &"t".into()).await.unwrap();
+    let used = Usage {
+        turns: 2,
+        context_tokens: 100,
+        elapsed_secs: 10,
+    };
+    assert_eq!(
+        expected.1.objectives[&definition().key].used(&expected.1.usage),
+        used
+    );
+    // Real v1 shape: terminal statuses were strings, not variants containing usage.
+    let mut v1 = serde_json::to_value(&expected.1).unwrap();
+    v1["objectives"]["build"]["status"] = serde_json::json!("closed");
+    sqlx::query("UPDATE objective_states SET state_version=1,state_json=?")
+        .bind(v1.to_string())
+        .execute(repo.pool())
+        .await
+        .unwrap();
+    assert_eq!(objective::engine::STATE_VERSION, 2);
+    assert_eq!(load_state(repo.db(), &"t".into()).await.unwrap(), expected);
+    assert_eq!(
+        read_state(repo.db().read_pool(), &"t".into())
+            .await
+            .unwrap(),
+        expected
+    );
+    assert_eq!(
+        replay_log(repo.db(), &"t".into()).await.unwrap().0,
+        expected.1
+    );
+    react(
+        repo.db(),
+        harness(Event::HostIdle { queue_len: 1 }, "upgrade"),
+    )
+    .await
+    .unwrap();
+    let version: i64 = sqlx::query_scalar("SELECT state_version FROM objective_states")
+        .fetch_one(repo.pool())
+        .await
+        .unwrap();
+    assert_eq!(version, 2);
+}

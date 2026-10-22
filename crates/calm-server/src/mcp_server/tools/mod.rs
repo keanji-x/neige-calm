@@ -8,6 +8,7 @@ pub mod area_reports;
 pub mod emit;
 pub mod mail;
 pub mod message_read;
+pub mod objective;
 pub mod op;
 pub(crate) mod paging;
 pub mod plan;
@@ -46,6 +47,7 @@ pub fn register_default_tools(registry: &mut ToolRegistry) {
     user_ask::register_into(registry);
     mail::register_into(registry);
     op::register_into(registry);
+    objective::register_into(registry);
     preview::register_into(registry);
     track_state::register_into(registry);
     track_add::register_into(registry);
@@ -224,7 +226,8 @@ mod tests {
         // #2777: four optional compiled history tools add 1740 bytes to the declared
         // Planner surface; runtime discovery still applies bound-track and lifecycle gates.
         // Objective kind discovery is paid for by trimming repeated kind labels.
-        const SURFACE_MAX_BYTES: usize = 35_755;
+        // Objective close adds 380 bytes of Planner description/schema; keep the aggregate cap.
+        const SURFACE_MAX_BYTES: usize = 36_135;
         const DESCRIPTION_MAX_BYTES: usize = 2_048;
 
         let descriptors = build_default_registry().descriptors_listed_for(CardRole::Planner);

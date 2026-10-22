@@ -265,6 +265,7 @@ fn settle(
     decision: Decision,
     note: &str,
 ) -> Vec<Occurrence> {
+    let usage = state.usage;
     let objective = match open(state, key) {
         Ok(objective) => objective,
         Err(ignored) => return ignored,
@@ -295,7 +296,9 @@ fn settle(
     }
     objective.evaluation = None;
     if decision == Decision::Done {
-        objective.status = Status::Done;
+        objective.status = Status::Done {
+            usage: objective.used(&usage),
+        };
     }
     vec![Occurrence::Settled {
         objective: key.clone(),
@@ -306,9 +309,13 @@ fn settle(
 fn close(state: &mut State, key: &ObjectiveKey) -> Vec<Occurrence> {
     match state.objectives.get_mut(key) {
         None => ignored(IgnoreReason::UnknownObjective),
-        Some(objective) if objective.status == Status::Closed => ignored(IgnoreReason::NotOpen),
+        Some(objective) if matches!(objective.status, Status::Closed { .. }) => {
+            ignored(IgnoreReason::NotOpen)
+        }
         Some(objective) => {
-            objective.status = Status::Closed;
+            objective.status = Status::Closed {
+                usage: objective.used(&state.usage),
+            };
             objective.evaluation = None;
             vec![Occurrence::Closed {
                 objective: key.clone(),

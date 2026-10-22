@@ -273,6 +273,34 @@
     ]
   },
   {
+    "name": "neige_objective_close",
+    "description_sha256": "11dfc8a9270672ab71cf9f26da7fb600fe8bfc4c994d139e32cc5beeae42cdd5",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "key": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "key"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "roles": [
+      "planner"
+    ],
+    "listed_for": [
+      "planner"
+    ]
+  },
+  {
     "name": "neige_op_show",
     "description_sha256": "cf9102f06b1c086c6697455731a2604aae8141a281c4ce493fe680cf204d972c",
     "input_schema": {

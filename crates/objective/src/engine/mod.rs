@@ -7,7 +7,7 @@
 /// Persisted Event serde contract; bump when that shape changes.
 pub const EVENT_VERSION: u32 = 1;
 /// Persisted State/reaction contract; bump on shape or react semantics changes.
-pub const STATE_VERSION: u32 = 1;
+pub const STATE_VERSION: u32 = 2;
 
 mod event;
 mod reduce;
@@ -41,8 +41,8 @@ pub struct State {
 #[serde(rename_all = "snake_case")]
 pub enum Status {
     Open,
-    Done,
-    Closed,
+    Done { usage: Usage },
+    Closed { usage: Usage },
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -65,9 +65,12 @@ pub struct ObjectiveState {
 }
 
 impl ObjectiveState {
-    /// Usage since definition. Closing/freezing is handled in the later lifecycle slice.
+    /// Usage since definition, frozen when the objective finishes or closes.
     pub fn used(&self, current: &Usage) -> Usage {
-        current.since(&self.usage_at_start)
+        match self.status {
+            Status::Open => current.since(&self.usage_at_start),
+            Status::Done { usage } | Status::Closed { usage } => usage,
+        }
     }
 
     pub fn is_approved(&self) -> bool {

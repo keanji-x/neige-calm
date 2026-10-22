@@ -1,0 +1,1 @@
+Close an objective by key in the caller's track and freeze its actual usage. Planner only; the track must declare objectives. Repeating a close in the same session returns Duplicate. Call when moving a stage to delivered; read actual usage from objective.budget.

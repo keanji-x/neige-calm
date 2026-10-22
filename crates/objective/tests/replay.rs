@@ -408,7 +408,7 @@ fn the_scenario_leaves_ledgers_and_statuses_consistent() {
     assert_eq!(speed.ledger.plateau, 2);
 
     let docs = &state.objectives[&key("docs")];
-    assert_eq!(docs.status, Status::Closed);
+    assert!(matches!(docs.status, Status::Closed { .. }));
     assert_eq!(docs.ledger.baseline.as_ref().unwrap().revision, rev("r3"));
     assert_eq!(state.compactions, 2);
     assert!(!state.pending_compact);
@@ -417,7 +417,7 @@ fn the_scenario_leaves_ledgers_and_statuses_consistent() {
 #[test]
 fn objective_host_serde_version_pins() {
     assert_eq!(objective::engine::EVENT_VERSION, 1);
-    assert_eq!(objective::engine::STATE_VERSION, 1);
+    assert_eq!(objective::engine::STATE_VERSION, 2);
     let events = scenario();
     let steps = replay(State::default(), &events);
     let running = steps
@@ -445,12 +445,28 @@ fn objective_host_serde_version_pins() {
         })
         .unwrap();
     let actual = serde_json::json!({"events": events, "default":State::default(), "running":running, "ready":ready, "final":final_state(&steps)});
+    if std::env::var_os("REGEN_OBJECTIVE_STATE_GOLDEN").is_some() {
+        std::fs::write(
+            concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/goldens/state-final-v2.json"
+            ),
+            format!(
+                "{}\n",
+                serde_json::to_string_pretty(&actual["final"]).unwrap()
+            ),
+        )
+        .unwrap();
+        panic!(
+            "state-final-v2.json regenerated; inspect and rerun without REGEN_OBJECTIVE_STATE_GOLDEN"
+        );
+    }
     let events: serde_json::Value =
         serde_json::from_str(include_str!("goldens/events-v1.json")).unwrap();
     let active: serde_json::Value =
         serde_json::from_str(include_str!("goldens/states-active-v1.json")).unwrap();
     let final_state: serde_json::Value =
-        serde_json::from_str(include_str!("goldens/state-final-v1.json")).unwrap();
+        serde_json::from_str(include_str!("goldens/state-final-v2.json")).unwrap();
     let expected = serde_json::json!({"events":events,"default":active["default"],"running":active["running"],"ready":active["ready"],"final":final_state});
     assert_eq!(
         actual, expected,

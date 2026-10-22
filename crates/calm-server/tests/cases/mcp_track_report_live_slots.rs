@@ -698,4 +698,99 @@ async fn objective_budget_live_slot_projects_stage_usage_and_exhaustion() {
                 .unwrap()
         );
     }
+    assert_eq!(
+        call(&boot, "neige_objective_close", json!({"key":"stage-1"})).await["status"],
+        "Appended"
+    );
+    assert_eq!(
+        call(&boot, "neige_objective_close", json!({"key":"stage-1"})).await["status"],
+        "Duplicate"
+    );
+    for turn in ["after-close-one", "after-close-two"] {
+        record_turn_usage(
+            &db,
+            &boot.track_id,
+            "planner-session".into(),
+            turn.into(),
+            TurnUsage {
+                context_growth: 50000,
+                secs: 10,
+            },
+        )
+        .await
+        .unwrap();
+        projector
+            .recompute_track(boot.track_id.as_str())
+            .await
+            .unwrap();
+        let report = read_full(&boot, &created["id"]).await;
+        let row = &cells(resolved(&report, &created["id"]))[2]["data"]["cell"]["table"]["rows"][0];
+        assert_eq!(row["status"], "已关闭");
+        assert_eq!(row["used"], 160000.0);
+        assert_eq!(row["turns"], 2.0);
+    }
+}
+
+#[tokio::test]
+async fn objective_close_tool_requires_planner_and_capability() {
+    let boot = boot().await;
+    let error = call_tool(
+        &boot,
+        "neige_objective_close",
+        planner_identity(&boot),
+        json!({"key":"missing"}),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(error.code, -32403);
+    assert!(error.message.contains("objectives capability"), "{error:?}");
+    let error = call_tool(
+        &boot,
+        "neige_objective_close",
+        assistant_identity(&boot),
+        json!({"key":"missing"}),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(error.code, -32403);
+    let db = boot.repo.sqlite_db().unwrap();
+    let mut tx = calm_server::db::sqlite::begin_immediate_tx(&db)
+        .await
+        .unwrap();
+    calm_server::db::sqlite::track_capabilities::stamp_tx(
+        &mut tx,
+        &boot.track_id,
+        &[calm_types::track_capability::TrackCapability::Objectives],
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    // Bypass only the registry's role label: the host still checks persisted authority.
+    let mut spoofed = assistant_identity(&boot);
+    spoofed.role = calm_server::model::CardRole::Planner;
+    let error = call_tool(
+        &boot,
+        "neige_objective_close",
+        spoofed,
+        json!({"key":"missing"}),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(error.code, -32403);
+    let events: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM objective_events")
+        .fetch_one(db.read_pool())
+        .await
+        .unwrap();
+    assert_eq!(events, 0);
+    for key in [json!(""), json!("  "), json!(7), Value::Null] {
+        let error = call_tool(
+            &boot,
+            "neige_objective_close",
+            planner_identity(&boot),
+            json!({"key":key}),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.code, -32602);
+    }
 }

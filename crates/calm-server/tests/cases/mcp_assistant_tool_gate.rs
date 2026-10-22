@@ -63,6 +63,8 @@ const ASSISTANT_DENIED_TOOLS_PLANNER_REACHABLE: &[&str] = &[
     "plugin_opencodehistory_message_cat",
     // Closing the track is a Planner action; only the user reopens.
     "neige_track_close",
+    // Closing an objective and freezing its usage is a Planner action.
+    "neige_objective_close",
     // Opening a top-level Track from a recipe is a Planner action.
     "neige_track_add",
     "neige_catalog_ls",

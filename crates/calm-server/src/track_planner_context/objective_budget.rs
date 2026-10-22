@@ -25,8 +25,8 @@ pub(super) async fn build(pool: &sqlx::SqlitePool, track: &str) -> Result<Option
             let definition = &objective.definition;
             let status = match objective.status {
                 Status::Open => "进行中",
-                Status::Done => "已完成",
-                Status::Closed => "已关闭",
+                Status::Done { .. } => "已完成",
+                Status::Closed { .. } => "已关闭",
             };
             [
                 (
