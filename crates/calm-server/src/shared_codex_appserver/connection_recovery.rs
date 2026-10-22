@@ -1,4 +1,4 @@
-//! A connection failure is not a daemon crash and never authorizes resending input.
+//! Recovery admits a source before locked native scopes; it never resends business input.
 use super::*;
 
 impl SharedCodexAppServer {
@@ -8,49 +8,40 @@ impl SharedCodexAppServer {
         if let Some(client) = self.ready_client().await {
             return Ok(client);
         }
+        // One order for recovery: coordinator -> process transition -> per-thread replay.
         let _recovery = self.connection_recovery_serial.lock().await;
-        // Another waiter may already have installed and restored a healthy connection.
         if let Some(client) = self.ready_client().await {
             return Ok(client);
         }
-        if self
-            .reconnect_running_client()
+        let transition = self.transition_serial.lock().await;
+        self.replay_cached_threads_locked(&transition)
             .await
-            .map_err(ControlError::Unanswered)?
-            .is_some()
-        {
-            self.replay_cached_threads(ResumeMode::HotTakeover).await;
-        }
-        if self.connection_needs_replay.load(Ordering::SeqCst) {
-            return Err(ControlError::Unanswered(CalmError::CodexAppServer(
-                "shared app-server subscription recovery is incomplete".into(),
-            )));
-        }
+            .map_err(ControlError::Unanswered)?;
         self.ready_client().await.ok_or_else(|| {
             ControlError::Unanswered(CalmError::CodexAppServer(
-                "shared app-server is not connected".into(),
+                "shared app-server is not connected or restoration is incomplete".into(),
             ))
         })
     }
 
-    // Read readiness under the SAME core lock as source publication. Checking the
-    // replay flag before awaiting core could return a newly published, unrestored source.
-    async fn ready_client(&self) -> Option<Arc<CodexAppServer>> {
+    pub(super) async fn ready_client(&self) -> Option<Arc<CodexAppServer>> {
         let core = self.core.lock().await;
         match &core.state {
-            SupervisorState::Running { client, .. }
-                if !client.is_closed() && !self.connection_needs_replay.load(Ordering::SeqCst) =>
-            {
-                Some(client.clone())
-            }
+            SupervisorState::Running {
+                client,
+                replay: ConnectionReplay::Complete,
+                ..
+            } if !client.is_closed() => Some(client.clone()),
             _ => None,
         }
     }
 
-    // Serialized against process replacement. Do not hold core across handshake/RPCs.
-    // Replay calls this primitive instead of connected_client (no recursive recovery).
-    pub(super) async fn reconnect_running_client(&self) -> Result<Option<Arc<CodexAppServer>>> {
-        let _transition = self.transition_serial.lock().await;
+    // The caller retains this process boundary through the whole replay. A fresh
+    // process cannot inherit an old pass's hot mode or prepared credentials.
+    pub(super) async fn reconnect_running_client_locked(
+        &self,
+        _transition: &tokio::sync::MutexGuard<'_, ()>,
+    ) -> Result<Option<Arc<CodexAppServer>>> {
         let previous = {
             let core = self.core.lock().await;
             match &core.state {
@@ -67,14 +58,23 @@ impl SharedCodexAppServer {
         drop(self.forward_client(client.clone(), notifications).await?);
         let mut core = self.core.lock().await;
         let SupervisorState::Running {
-            client: installed, ..
+            client: installed,
+            replay,
+            ..
         } = &mut core.state
         else {
             return Ok(None);
         };
-        // Only this connection is replaced: preserve the child, PID identity and watcher.
-        debug_assert!(Arc::ptr_eq(installed, &previous));
-        self.connection_needs_replay.store(true, Ordering::SeqCst);
+        if !Arc::ptr_eq(installed, &previous) {
+            return Err(CalmError::Conflict(
+                "Codex process source changed during connection recovery".into(),
+            ));
+        }
+        // Pending cold progress belongs to this PROCESS and survives cancellation
+        // and socket replacement. Only a completed process starts a new hot pass.
+        if matches!(replay, ConnectionReplay::Complete) {
+            *replay = ConnectionReplay::Pending(ReplayPlan::new(ResumeMode::HotTakeover));
+        }
         self.native_turns.publish(&client);
         *installed = client.clone();
         core.generation = core.generation.wrapping_add(1);
@@ -83,7 +83,7 @@ impl SharedCodexAppServer {
             running: true,
         });
         tracing::info!(
-            "shared codex app-server connection re-established; previous request outcomes remain unknown"
+            "shared codex connection re-established; previous request outcomes remain unknown"
         );
         Ok(Some(client))
     }

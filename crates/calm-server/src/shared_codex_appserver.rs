@@ -24,6 +24,7 @@ pub(crate) mod native_owner_tests;
 pub(crate) use prompt_attempt::{CodexPromptDelivery, CodexPromptReport};
 mod connection_recovery;
 mod resume_replay;
+use resume_replay::{ConnectionReplay, ReplayPlan};
 #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
 mod termination_identity_tests;
 mod thread_release;
@@ -92,16 +93,8 @@ pub type TurnId = String;
 
 pub use provider::codex::shared::SPAWN_ENV_PASSTHROUGH;
 
-// A cold load must distinguish an explicitly suspended harness from legacy
-// threads that have no runtime. Never load a failed harness without its token.
-enum ColdResumeAuthorization {
-    Skip,
-    NoMcp,
-    Token { role: CardRole, raw: String },
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ResumeMode {
+pub(crate) enum ResumeMode {
     ColdRespawn,
     HotTakeover,
 }
@@ -111,15 +104,6 @@ enum ResumeMode {
 enum StartedVia {
     Takeover,
     Spawn,
-}
-
-impl StartedVia {
-    fn resume_mode(self) -> ResumeMode {
-        match self {
-            StartedVia::Takeover => ResumeMode::HotTakeover,
-            StartedVia::Spawn => ResumeMode::ColdRespawn,
-        }
-    }
 }
 
 /// Result of the exhaustive per-shape resolution over a persisted daemon record.
@@ -506,7 +490,6 @@ pub struct SharedCodexAppServer {
     core: Arc<tokio::sync::Mutex<SupervisorCore>>,
     /// Serializes connection replacement and automatic subscription restoration.
     connection_recovery_serial: Mutex<()>,
-    connection_needs_replay: AtomicBool,
     /// Serializes process transitions.
     transition_serial: Arc<tokio::sync::Mutex<()>>,
     /// Singleton claim for the background heal task; cleared by the RAII [`HealActiveGuard`].
@@ -744,7 +727,6 @@ impl SharedCodexAppServer {
                 generation: 0,
             })),
             connection_recovery_serial: Mutex::new(()),
-            connection_needs_replay: AtomicBool::new(false),
             transition_serial: Arc::new(tokio::sync::Mutex::new(())),
             heal_active: Arc::new(AtomicBool::new(false)),
             heal_nudge: Arc::new(tokio::sync::Notify::new()),
@@ -816,7 +798,6 @@ impl SharedCodexAppServer {
                 generation: 0,
             })),
             connection_recovery_serial: Mutex::new(()),
-            connection_needs_replay: AtomicBool::new(false),
             transition_serial: Arc::new(tokio::sync::Mutex::new(())),
             heal_active: Arc::new(AtomicBool::new(false)),
             heal_nudge: Arc::new(tokio::sync::Notify::new()),
@@ -864,8 +845,8 @@ impl SharedCodexAppServer {
         // Thread resume runs after the serial is released (not a transition).
         let serial = Arc::clone(&self.transition_serial).lock_owned().await;
         self.rebuild_thread_cache_from_db().await?;
-        let via = self.start_body_locked(serial, false, None).await?;
-        self.resume_cached_threads(via.resume_mode()).await;
+        let _via = self.start_body_locked(serial, false, None).await?;
+        self.resume_cached_threads().await;
         Ok(())
     }
 
@@ -1850,6 +1831,7 @@ impl SharedCodexAppServer {
                         child: None,
                         client,
                         runtime,
+                        replay: ConnectionReplay::Pending(ReplayPlan::new(ResumeMode::HotTakeover)),
                         watcher: SupervisorWatcher {
                             #[cfg(any(test, feature = "fixtures"))]
                             kind: WatcherKind::TakenOverPid,
@@ -1932,7 +1914,7 @@ impl SharedCodexAppServer {
         increment_restart_count: bool,
         last_error: Option<String>,
     ) -> Result<ReplaceOutcome> {
-        let via = {
+        let _via = {
             let serial = Arc::clone(&self.transition_serial).lock_owned().await;
             let (running, outgoing_generation) = {
                 let mut core = self.core.lock().await;
@@ -1992,7 +1974,7 @@ impl SharedCodexAppServer {
             self.start_body_locked(serial, increment_restart_count, last_error)
                 .await?
         };
-        self.resume_cached_threads(via.resume_mode()).await;
+        self.resume_cached_threads().await;
         Ok(ReplaceOutcome::Replaced)
     }
 
@@ -2483,6 +2465,7 @@ impl SharedCodexAppServer {
             child: Some(child),
             client,
             runtime,
+            replay: ConnectionReplay::Pending(ReplayPlan::new(ResumeMode::ColdRespawn)),
             watcher: SupervisorWatcher {
                 #[cfg(any(test, feature = "fixtures"))]
                 kind: WatcherKind::SpawnedChild,
@@ -2886,6 +2869,7 @@ impl SharedCodexAppServer {
                         client: launched.client,
                         runtime: launched.runtime,
                         watcher: launched.watcher,
+                        replay: launched.replay,
                     };
                     core.generation
                 };

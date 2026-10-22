@@ -23,11 +23,21 @@ not corrupt JSONL, process exit, or the 64 MiB complete-message bound.
 - Shared daemon owner replaces only a failed connection, initializes it, reuses
   approval routes, publishes the actual new native source, and preserves the
   owned process, watcher and PID identity. No RPC is retried by the transport.
-- Connection recovery and subscription restoration are serialized; process
-  replacement retains its own transition lock. Core is never held across I/O.
+- Running owns one process-bound pending replay plan (ColdRespawn or HotTakeover)
+  until completion. Connection replacement preserves its prepared configurations
+  and failed-candidate exclusions; process replacement discards them. Completed
+  replay releases cached credentials and cannot be cold-replayed a second time.
+- The lock order is recovery coordinator, process transition, then per-thread
+  replay. Restoration retains the process boundary, and each resume RPC budgets
+  its complete send and response. Core is never held across I/O.
+- Exact-thread operations obtain a ready connection before entering lifecycle
+  locks, revalidate and pin it inside, and never reconnect within the callback.
+  Mid-scope EOF fails on that original source; it does not change sources.
 - Automatic replay revalidates attribution under the existing deletion fence.
   It keeps canonical recovery in its existing owner and uses the existing cold
-  authorization. Typed configs are reused rather than rotating tokens again.
+  authorization. Prepared cold configs are retained before sending and revalidated
+  against current card/thread/runtime authority on every attempt, including
+  active-versus-failed state, rather than rotating tokens again after cancellation.
 - A replay candidate that closes the connection is skipped for that recovery
   pass, with a warning and its mapping intact. Earlier healthy subscriptions
   are restored on the final connection; the number of candidate exclusions is

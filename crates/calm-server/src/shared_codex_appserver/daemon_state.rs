@@ -1,5 +1,6 @@
 //! Shared daemon state and connection ownership contracts.
 use super::heal_retry::FailureClass;
+use super::resume_replay::ConnectionReplay;
 use crate::codex_appserver::CodexAppServer;
 use crate::db::SharedDaemonState;
 use std::sync::Arc;
@@ -69,6 +70,7 @@ pub(crate) enum SupervisorState {
         client: Arc<CodexAppServer>,
         runtime: SharedDaemonRuntime,
         watcher: SupervisorWatcher,
+        replay: ConnectionReplay,
     },
     Restarting {
         reason: String,
@@ -105,6 +107,7 @@ pub(crate) struct LaunchedSharedDaemon {
     pub client: Arc<CodexAppServer>,
     pub runtime: SharedDaemonRuntime,
     pub watcher: SupervisorWatcher,
+    pub replay: ConnectionReplay,
 }
 
 impl SupervisorState {

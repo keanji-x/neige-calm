@@ -29,12 +29,21 @@ pub(crate) async fn connect_unpublished(
 }
 
 pub(crate) async fn publish(daemon: &Arc<SharedCodexAppServer>, client: Arc<CodexAppServer>) {
+    publish_replay(daemon, client, ConnectionReplay::Complete).await;
+}
+
+pub(crate) async fn publish_replay(
+    daemon: &Arc<SharedCodexAppServer>,
+    client: Arc<CodexAppServer>,
+    replay: ConnectionReplay,
+) {
     let launched = client.clone();
     daemon
         .start_new_process_typestate(|_| async move {
             Ok(LaunchedSharedDaemon {
                 child: None,
                 client: launched,
+                replay,
                 runtime: SharedDaemonRuntime {
                     pid: 0,
                     pgid: 0,
@@ -68,8 +77,7 @@ pub(crate) async fn connect(daemon: &Arc<SharedCodexAppServer>) -> (Arc<CodexApp
 /// Exercise the actual automatic recovery owner with no request source. Cache
 /// attribution is populated by the real native receipt, never this helper.
 pub(crate) async fn resume_cached_without_source(daemon: &SharedCodexAppServer) {
-    daemon.resume_cached_threads(ResumeMode::HotTakeover).await;
-    daemon.resume_cached_threads(ResumeMode::ColdRespawn).await;
+    daemon.resume_cached_threads().await;
 }
 
 pub(crate) async fn hold_attribution(daemon: &SharedCodexAppServer) -> impl Drop + '_ {
