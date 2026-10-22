@@ -50,7 +50,9 @@ pub(in crate::routes::tracks) async fn creation_plan(
                     .await?
                     .is_some()
                 {
-                    return Ok(CreatePlan::Canonical(KeyedPlan::Resume(prepare_canonical_creation(request, &headers, workspace_root)?)));
+                    return Ok(CreatePlan::Canonical(KeyedPlan::Resume(
+                        prepare_canonical_creation(request, &headers, workspace_root)?,
+                    )));
                 }
                 if let Some(binding) =
                     crate::db::sqlite::track_create_idempotency_get_tx(tx, &area_id, key).await?
@@ -62,7 +64,11 @@ pub(in crate::routes::tracks) async fn creation_plan(
                         )
                         .await?
                         {
-                            CreatePlan::Canonical(KeyedPlan::Resume(prepare_canonical_creation(request, &headers, workspace_root)?))
+                            CreatePlan::Canonical(KeyedPlan::Resume(prepare_canonical_creation(
+                                request,
+                                &headers,
+                                workspace_root,
+                            )?))
                         } else {
                             CreatePlan::HistoricalReceipt { binding, request }
                         },
@@ -71,9 +77,20 @@ pub(in crate::routes::tracks) async fn creation_plan(
                 if canonical_creation_supported(&shape, input)
                     && super::dormant::prior_start_attempt_tx(tx, &area_id, key).await?
                 {
-                    return Err(CalmError::IdempotencyKeyReused(
-                        "this Idempotency-Key has a historical start attempt without a creation receipt".into(),
-                    ));
+                    // Preserve the historical owner's retry selection and error
+                    // ordering for other providers. Claude cannot mint through
+                    // that owner, but a lost binding is the same server error.
+                    return match shape.planner_provider.protocol() {
+                        calm_types::runtime::AgentProtocol::Claude => {
+                            Err(super::historical_plan::binding_lost(
+                                &derive_track_create_operation_key(&area_id, key),
+                            ))
+                        }
+                        calm_types::runtime::AgentProtocol::Codex
+                        | calm_types::runtime::AgentProtocol::Acp => {
+                            Ok(CreatePlan::Excluded(request))
+                        }
+                    };
                 }
             }
             // A storage decision grants no resource access. The immutable
@@ -90,7 +107,11 @@ pub(in crate::routes::tracks) async fn creation_plan(
             )
             .await?;
             Ok(if area.kind == crate::model::AreaKind::User {
-                CreatePlan::Canonical(KeyedPlan::Mint(prepare_canonical_creation(request, &headers, workspace_root)?))
+                CreatePlan::Canonical(KeyedPlan::Mint(prepare_canonical_creation(
+                    request,
+                    &headers,
+                    workspace_root,
+                )?))
             } else {
                 CreatePlan::Excluded(request)
             })

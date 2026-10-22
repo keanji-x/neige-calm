@@ -90,18 +90,24 @@ pub(in crate::routes::tracks) async fn plan_keyed_create(
 
     match (binding, chosen_existing) {
         (None, None) => Ok(KeyedPlan::Mint(plan)),
-        (None, Some(_)) => Err(CalmError::Internal(format!(
-            "operation {operation_key} exists under this Idempotency-Key but no \
-             track_create_idempotency row does. The binding commits inside the transaction that \
-             mints the track, strictly before the operation is submitted, so this state is not \
-             reachable from POST /api/tracks. Refusing rather than minting: a mint here would \
-             commit a track and then collide on the operation's unique key, leaving an orphan \
-             track behind a 409."
-        ))),
+        (None, Some(_)) => Err(binding_lost(operation_key)),
         (Some(binding), chosen) => Ok(KeyedPlan::Resume(bound_resume(
             binding, plan, chosen, &base_key,
         )?)),
     }
+}
+
+/// An operation without its creation binding is a server-side inconsistency,
+/// never client key reuse. Both creation owners retain the original refusal.
+pub(super) fn binding_lost(operation_key: &str) -> CalmError {
+    CalmError::Internal(format!(
+        "operation {operation_key} exists under this Idempotency-Key but no \
+         track_create_idempotency row does. The binding commits inside the transaction that \
+         mints the track, strictly before the operation is submitted, so this state is not \
+         reachable from POST /api/tracks. Refusing rather than minting: a mint here would \
+         commit a track and then collide on the operation's unique key, leaving an orphan \
+         track behind a 409."
+    ))
 }
 
 /// The message-less twin of [`plan_first_message`]'s keyed half: one lookup, a two-cell
