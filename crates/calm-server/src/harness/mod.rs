@@ -268,7 +268,8 @@ pub(crate) async fn spawn_recovered_harness_admitted(
     let mut snapshot = HarnessSnapshot::from_value_strict(state_json);
     // Catch-up is a PLANNER-push catch-up: replaying it into a conversation harness would inject
     // a backlog it was never meant to see. Unknown/absent role falls into the no-replay arm (fail-closed).
-    if role == Some(CardRole::Planner) && PlannerFactory::historical_replay_eligible(&provider) {
+    if role == Some(CardRole::Planner) && PlannerFactory::pre_checkpoint_replay_eligible(&provider)
+    {
         let catch_up_watermark = snapshot.push_watermark;
         replay_harness_events_since(
             repo.clone(),
@@ -395,8 +396,7 @@ pub(crate) async fn spawn_recovered_harness_admitted(
         .await?
     {
         snapshot = checkpoint;
-        if role == Some(CardRole::Planner) && PlannerFactory::historical_replay_eligible(&provider)
-        {
+        if role == Some(CardRole::Planner) {
             let watermark = snapshot.push_watermark;
             replay_harness_events_since(
                 repo.clone(),

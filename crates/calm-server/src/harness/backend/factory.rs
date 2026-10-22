@@ -143,10 +143,10 @@ impl<'a> PlannerFactory<'a> {
         })
     }
 
-    /// ACP receipt recovery owns its checkpoint; conventional historical event replay
-    /// must not add Planner backlog before or after restoring that checkpoint.
+    /// Eligibility for conventional event replay before restoring a receipt checkpoint.
+    /// ACP replays only after its receipt checkpoint has retired dispatched entries.
     /// Planner role admission and queue/watermark updates remain in the harness.
-    pub(crate) fn historical_replay_eligible(provider: &AgentProvider) -> bool {
+    pub(crate) fn pre_checkpoint_replay_eligible(provider: &AgentProvider) -> bool {
         match provider.protocol() {
             AgentProtocol::Codex | AgentProtocol::Claude => true,
             AgentProtocol::Acp => false,
@@ -229,17 +229,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn factory_historical_replay_excludes_acp_receipt_recovery() {
-        assert!(PlannerFactory::historical_replay_eligible(
+    fn factory_pre_checkpoint_replay_excludes_acp_receipt_recovery() {
+        assert!(PlannerFactory::pre_checkpoint_replay_eligible(
             &AgentProvider::Codex
         ));
-        assert!(PlannerFactory::historical_replay_eligible(
+        assert!(PlannerFactory::pre_checkpoint_replay_eligible(
             &AgentProvider::Claude
         ));
-        assert!(!PlannerFactory::historical_replay_eligible(
+        assert!(!PlannerFactory::pre_checkpoint_replay_eligible(
             &AgentProvider::OpenCode
         ));
-        assert!(!PlannerFactory::historical_replay_eligible(
+        assert!(!PlannerFactory::pre_checkpoint_replay_eligible(
             &AgentProvider::Grok
         ));
     }
