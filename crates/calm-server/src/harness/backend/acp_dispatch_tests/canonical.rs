@@ -5,6 +5,7 @@ mod cleanup;
 mod control;
 mod failures;
 mod recovery;
+mod recovery_windows;
 mod resolution;
 mod transport;
 use super::*;
