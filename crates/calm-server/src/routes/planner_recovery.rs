@@ -73,25 +73,26 @@ pub(super) async fn recover_admitted(
         &s.claude_planner,
         &s.acp_planner,
     );
-    factory
-        .ready(
-            &crate::session_projection_repo::AgentProvider::Codex,
-            crate::harness::backend::factory::ReadinessFor::RestoreOrSend,
-        )
-        .await?;
+    let target = factory.system_error_recovery_target(&runtime).await?;
     let outcome = factory
-        .resume_system_error_conversation(w.repo.as_ref(), &runtime, source.clone(), async || {
-            if let Some(source) = &source {
-                source
-                    .require_card(s.repo.as_ref(), &runtime.card_id)
-                    .await?;
-            }
-            if let Some(old) = s.harness.get(&runtime.id) {
-                old.quiesce_system_error_for_recovery().await?;
-                s.harness.remove_if_same(&runtime.id, &old);
-            }
-            Ok(())
-        })
+        .resume_system_error_conversation(
+            w.repo.as_ref(),
+            &runtime,
+            source.clone(),
+            target,
+            async || {
+                if let Some(source) = &source {
+                    source
+                        .require_card(s.repo.as_ref(), &runtime.card_id)
+                        .await?;
+                }
+                if let Some(old) = s.harness.get(&runtime.id) {
+                    old.quiesce_system_error_for_recovery().await?;
+                    s.harness.remove_if_same(&runtime.id, &old);
+                }
+                Ok(())
+            },
+        )
         .await?;
     if let Some((item_db_id, turn_id)) = outcome {
         s.repo
@@ -179,7 +180,6 @@ pub(super) async fn retry_provider_conversations(
     cs: &CodexShellState,
 ) -> Result<Vec<super::agent_providers::ConversationRecoveryNotice>> {
     use crate::operation::planner_start_fence::CardStartFence;
-    use crate::session_projection_repo::AgentProvider;
     let mut notices = Vec::new();
     for area in s.repo.areas_list().await? {
         for track in s.repo.tracks_by_area(area.id.as_str()).await? {
@@ -199,9 +199,9 @@ pub(super) async fn retry_provider_conversations(
                 let Some(runtime) = runtimes.get(card.id.as_str()) else {
                     continue;
                 };
-                if runtime.agent_provider != Some(AgentProvider::Codex)
-                    || runtime.status != WorkerSessionState::Failed
-                {
+                if !crate::harness::backend::factory::RecoveryTarget::queued_retry_candidate(
+                    runtime,
+                ) {
                     continue;
                 }
                 let Some(snapshot) = failed_wedged_snapshot(runtime) else {

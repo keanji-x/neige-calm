@@ -82,16 +82,12 @@ async fn hibernate_one(
     let Some(runtime) = s.repo.session_projection_by_id(&id).await? else {
         return Ok(());
     };
-    let thread = crate::harness::effective_runtime_thread_id(&runtime);
-    let needs_release = |thread: &Option<String>| {
-        thread.as_deref().is_some_and(|thread| {
-            state
-                .shared_codex_appserver
-                .cached_card_for_thread(thread)
-                .is_some()
-        })
-    };
-    if s.harness.get(&id).is_none() && !needs_release(&thread) {
+    let factory = crate::harness::backend::factory::PlannerFactory::new(
+        std::sync::Arc::downgrade(&state.shared_codex_appserver),
+        &s.claude_planner,
+        &s.acp_planner,
+    );
+    if s.harness.get(&id).is_none() && !factory.has_detached_hibernation_resources(&runtime) {
         return Ok(());
     }
     let _card = CardStartFence::lock(
@@ -110,9 +106,8 @@ async fn hibernate_one(
     let Some(runtime) = s.repo.session_projection_by_id(&id).await? else {
         return Ok(());
     };
-    let thread = crate::harness::effective_runtime_thread_id(&runtime);
     let handle = s.harness.get(&id);
-    if handle.is_none() && !needs_release(&thread) {
+    if handle.is_none() && !factory.has_detached_hibernation_resources(&runtime) {
         return Ok(());
     }
     if let Some(handle) = &handle {
@@ -127,14 +122,9 @@ async fn hibernate_one(
     if let Some(handle) = handle {
         handle.release_hibernated_resources().await?;
     }
-    if runtime.agent_provider == Some(crate::session_projection_repo::AgentProvider::Codex)
-        && let Some(thread) = thread
-    {
-        state
-            .shared_codex_appserver
-            .release_hibernating_thread(&thread)
-            .await;
-    }
+    factory
+        .release_detached_hibernation_resources(&runtime)
+        .await?;
     Ok(())
 }
 
@@ -268,7 +258,6 @@ impl WakeContext {
         &self,
         runtime: crate::session_projection_repo::WorkerSessionProjection,
     ) -> Result<crate::harness::PlannerHarness> {
-        use calm_types::runtime::AgentProtocol;
         crate::conversation_inputs::require_historical_storage(
             self.repo.as_ref(),
             &runtime.card_id,
@@ -280,51 +269,18 @@ impl WakeContext {
                 .require_card(s.repo.as_ref(), &runtime.card_id)
                 .await?;
         }
-        match runtime.agent_provider.as_ref() {
-            Some(provider) if provider.protocol() == AgentProtocol::Codex => {
-                let card =
-                    s.repo.card_get(&runtime.card_id).await?.ok_or_else(|| {
-                        crate::error::CalmError::NotFound("conversation card".into())
-                    })?;
-                let _track = lock_key(&s.track_delete_locks, card.track_id.as_str()).await;
-                let track = s
-                    .repo
-                    .track_get(card.track_id.as_str())
-                    .await?
-                    .ok_or_else(|| {
-                        crate::error::CalmError::NotFound("conversation track".into())
-                    })?;
-                if !workspace_runtime::recycle::workspace_allows_runtime_recovery(&track) {
-                    return Err(crate::error::CalmError::Conflict(
-                        "Restore this conversation's workspace before resuming".into(),
-                    ));
-                }
-                crate::harness::backend::factory::PlannerFactory::new(
-                    s.daemon.clone(),
-                    &s.providers.claude,
-                    &s.providers.acp,
-                )
-                .resume_active_conversation(s.repo.as_ref(), &runtime, s.historical_source.clone())
-                .await?;
-            }
-            Some(provider) => {
-                crate::harness::backend::factory::PlannerFactory::new(
-                    s.daemon.clone(),
-                    &s.providers.claude,
-                    &s.providers.acp,
-                )
-                .ready(
-                    provider,
-                    crate::harness::backend::factory::ReadinessFor::RestoreOrSend,
-                )
-                .await?;
-            }
-            None => {
-                return Err(crate::error::CalmError::Conflict(
-                    "conversation provider is missing".into(),
-                ));
-            }
-        }
+        crate::harness::backend::factory::PlannerFactory::new(
+            s.daemon.clone(),
+            &s.providers.claude,
+            &s.providers.acp,
+        )
+        .prepare_historical_recovery(
+            s.repo.as_ref(),
+            &runtime,
+            &s.track_delete_locks,
+            s.historical_source.clone(),
+        )
+        .await?;
         self.install_resumed(runtime).await
     }
 

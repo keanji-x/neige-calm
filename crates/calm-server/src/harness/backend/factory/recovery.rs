@@ -65,6 +65,18 @@ pub(crate) struct RecoveryTarget {
     card_id: String,
 }
 impl RecoveryTarget {
+    /// Queued provider retry retains notices for malformed native carriers, but must
+    /// never attempt local or absent-provider rows. Exact target admission follows.
+    pub(crate) fn queued_retry_candidate(runtime: &WorkerSessionProjection) -> bool {
+        use crate::session_projection_repo::{AgentProvider, WorkerSessionState};
+        match runtime.agent_provider.as_ref() {
+            Some(AgentProvider::Codex) => runtime.status == WorkerSessionState::Failed,
+            Some(AgentProvider::Claude | AgentProvider::OpenCode | AgentProvider::Grok) | None => {
+                false
+            }
+        }
+    }
+
     pub(in crate::harness::backend) fn for_settlement(card: &str, thread: &str) -> Result<Self> {
         if card.is_empty() || thread.is_empty() {
             return Err(CalmError::Conflict(
@@ -102,6 +114,73 @@ impl RecoveryTarget {
 }
 
 impl PlannerFactory<'_> {
+    /// Historical install keeps local readiness separate from native workspace admission.
+    pub(crate) async fn prepare_historical_recovery(
+        &self,
+        repo: &dyn crate::db::Repo,
+        runtime: &WorkerSessionProjection,
+        track_delete_locks: &crate::per_card_lock::KeyedLocks,
+        source: Option<crate::conversation_inputs::HistoricalHumanSource>,
+    ) -> Result<()> {
+        use crate::per_card_lock::lock_key;
+        use crate::session_projection_repo::AgentProvider;
+        match runtime.agent_provider.as_ref() {
+            Some(AgentProvider::Codex) => {
+                let card = repo
+                    .card_get(&runtime.card_id)
+                    .await?
+                    .ok_or_else(|| crate::error::CalmError::NotFound("conversation card".into()))?;
+                let _track = lock_key(track_delete_locks, card.track_id.as_str()).await;
+                let track = repo
+                    .track_get(card.track_id.as_str())
+                    .await?
+                    .ok_or_else(|| {
+                        crate::error::CalmError::NotFound("conversation track".into())
+                    })?;
+                if !workspace_runtime::recycle::workspace_allows_runtime_recovery(&track) {
+                    return Err(crate::error::CalmError::Conflict(
+                        "Restore this conversation's workspace before resuming".into(),
+                    ));
+                }
+                self.resume_active_conversation(repo, runtime, source)
+                    .await?;
+            }
+            Some(
+                provider @ (AgentProvider::Claude | AgentProvider::OpenCode | AgentProvider::Grok),
+            ) => {
+                self.ready(provider, super::ReadinessFor::RestoreOrSend)
+                    .await?;
+            }
+            None => {
+                return Err(crate::error::CalmError::Conflict(
+                    "conversation provider is missing".into(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Select the eligible native target and readiness together. Local recovery is not
+    /// authorized by the existence of shared restore plumbing.
+    pub(crate) async fn system_error_recovery_target(
+        &self,
+        runtime: &WorkerSessionProjection,
+    ) -> Result<RecoveryTarget> {
+        use crate::session_projection_repo::AgentProvider;
+        match runtime.agent_provider.as_ref() {
+            Some(AgentProvider::Codex) => {
+                self.ready(&AgentProvider::Codex, super::ReadinessFor::RestoreOrSend)
+                    .await?;
+                RecoveryTarget::failed(runtime)
+            }
+            Some(AgentProvider::Claude | AgentProvider::OpenCode | AgentProvider::Grok) | None => {
+                Err(CalmError::Conflict(
+                    "card is not a Codex harness conversation".into(),
+                ))
+            }
+        }
+    }
+
     pub(crate) async fn resume_active_conversation(
         &self,
         repo: &dyn crate::db::Repo,
@@ -181,10 +260,10 @@ impl PlannerFactory<'_> {
         repo: &dyn crate::db::Repo,
         runtime: &WorkerSessionProjection,
         source: Option<crate::conversation_inputs::HistoricalHumanSource>,
+        target: RecoveryTarget,
         settle: impl AsyncFnOnce() -> Result<()>,
     ) -> Result<Option<(i64, String)>> {
-        // Refuse a missing original thread before quiescing the route-owned harness.
-        let target = RecoveryTarget::failed(runtime)?;
+        // The eligible exact target was selected before quiescing the route-owned harness.
         settle().await?;
         // Quiescence may have restored dropped steers. Refetch the same session's
         // settled queue without changing its original native target.

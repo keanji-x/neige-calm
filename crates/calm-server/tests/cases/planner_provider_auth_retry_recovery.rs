@@ -101,3 +101,62 @@ async fn owner_auth_retry_reports_unresumable_carrier_and_preserves_every_durabl
             .is_empty()
     );
 }
+
+async fn assert_planner_recovery_ineligible(provider: &str) {
+    let boot = boot_fake_running().await;
+    let (card, runtime, _, _) = failed_conversation(&boot).await;
+    sqlx::query("UPDATE worker_sessions SET provider=?,contract=? WHERE id=?")
+        .bind(provider)
+        .bind(if provider == "terminal" {
+            "executor"
+        } else {
+            "planner"
+        })
+        .bind(&runtime)
+        .execute(boot.repo.pool())
+        .await
+        .unwrap();
+    let before = runtime_by_id_tx_snapshot(&boot.repo, &runtime)
+        .await
+        .unwrap();
+    let history = conversation_rows(&boot, &card).await;
+    let (status, body) = retry(&boot).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        body["recovery_notices"],
+        json!([]),
+        "ineligible providers are skipped, not attempted"
+    );
+    assert_eq!(
+        runtime_by_id_tx_snapshot(&boot.repo, &runtime)
+            .await
+            .unwrap(),
+        before
+    );
+    assert_eq!(conversation_rows(&boot, &card).await, history);
+    assert!(
+        boot.state
+            .shared_codex_appserver
+            .resumed_threads_for_test()
+            .is_empty()
+    );
+    assert!(boot.state.harness.get(&runtime).is_none());
+}
+
+#[tokio::test]
+async fn planner_recovery_eligibility_excludes_claude() {
+    assert_planner_recovery_ineligible("claude").await;
+}
+#[tokio::test]
+async fn planner_recovery_eligibility_excludes_opencode() {
+    assert_planner_recovery_ineligible("opencode").await;
+}
+#[tokio::test]
+async fn planner_recovery_eligibility_excludes_grok() {
+    assert_planner_recovery_ineligible("grok").await;
+}
+#[tokio::test]
+async fn planner_recovery_eligibility_excludes_missing_agent_provider() {
+    // Terminal is the persisted provider whose projection has no agent provider.
+    assert_planner_recovery_ineligible("terminal").await;
+}

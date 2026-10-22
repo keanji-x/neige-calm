@@ -197,6 +197,40 @@ impl<'a> PlannerFactory<'a> {
         }
     }
 
+    /// Read-only detached cleanup eligibility; never reopen a session to release it.
+    pub(crate) fn has_detached_hibernation_resources(
+        &self,
+        runtime: &crate::session_projection_repo::WorkerSessionProjection,
+    ) -> bool {
+        match runtime.agent_provider.as_ref().map(AgentProvider::protocol) {
+            Some(AgentProtocol::Codex) => crate::harness::effective_runtime_thread_id(runtime)
+                .as_deref()
+                .is_some_and(|thread| {
+                    self.daemon
+                        .upgrade()
+                        .is_some_and(|daemon| daemon.cached_card_for_thread(thread).is_some())
+                }),
+            Some(AgentProtocol::Claude | AgentProtocol::Acp) | None => false,
+        }
+    }
+
+    /// Called after checkpoint commit, registry removal and the drive guard's release.
+    /// Detached native cleanup only unsubscribes; it never interrupts or stops the daemon.
+    pub(crate) async fn release_detached_hibernation_resources(
+        &self,
+        runtime: &crate::session_projection_repo::WorkerSessionProjection,
+    ) -> Result<()> {
+        match runtime.agent_provider.as_ref().map(AgentProvider::protocol) {
+            Some(AgentProtocol::Codex) => {
+                if let Some(thread) = crate::harness::effective_runtime_thread_id(runtime) {
+                    self.daemon()?.release_hibernating_thread(&thread).await;
+                }
+                Ok(())
+            }
+            Some(AgentProtocol::Claude | AgentProtocol::Acp) | None => Ok(()),
+        }
+    }
+
     /// Registry-miss cleanup uses persisted ownership facts, never a reopened session.
     pub(crate) async fn shutdown_replay(
         &self,
