@@ -660,7 +660,32 @@ async fn objective_budget_live_slot_projects_stage_usage_and_exhaustion() {
         let cell = &cells(resolved(&report, &created["id"]))[2];
         assert_eq!(cell["status"], "ok", "{cell}");
         assert_eq!(cell["source"], "neige://plugin/kernel/objective.budget");
-        let row = &cell["data"]["cell"]["table"]["rows"][0];
+        let table = &cell["data"]["cell"];
+        assert_eq!(table["title"], "阶段预算");
+        let columns: Vec<_> = table["table"]["columns"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|column| {
+                (
+                    column["key"].as_str().unwrap(),
+                    column["label"].as_str().unwrap(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            columns,
+            vec![
+                ("key", "标识"),
+                ("title", "标题"),
+                ("status", "状态"),
+                ("budget", "预算"),
+                ("used", "已用"),
+                ("turns", "回合"),
+                ("exceeded", "超预算"),
+            ]
+        );
+        let row = &table["table"]["rows"][0];
         assert_eq!(row["key"], "stage-1");
         assert_eq!(row["status"], "open");
         assert_eq!(row["used"], used);

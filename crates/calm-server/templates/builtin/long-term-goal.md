@@ -54,7 +54,7 @@ instructions = """
 
 ```neige-block view
 {
-  "description": "上下文保留最近观测；任务按 status/kind 计本 track 全部 attempt；提交去重且不计无变化交付。",
+  "description": "上下文保留最近观测；任务按状态和类型统计当前轨道全部执行尝试；提交去重且不计无变化交付。",
   "rows": [
     {
       "cells": [

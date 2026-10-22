@@ -5,7 +5,8 @@ use calm_truth::objective_host::{TurnUsage, record_turn_usage};
 #[derive(Default)]
 pub(super) struct TurnMeter {
     start: Option<(Option<i64>, Instant)>,
-    turn: Option<String>,
+    maintenance: bool,
+    settled: Option<String>,
 }
 
 impl TurnMeter {
@@ -19,24 +20,31 @@ impl TurnMeter {
             HarnessPhaseTag::IssuingTurn => {
                 if self.start.is_none() {
                     self.start = Some((reading, Instant::now()));
-                    self.turn = None;
+                    self.maintenance = false;
                 }
             }
             HarnessPhaseTag::TurnRunning => {
                 // A recovered in-flight turn has no visible initial endpoint.
                 self.start.get_or_insert((None, Instant::now()));
-                self.turn = turn.map(str::to_owned);
+                self.maintenance = false;
             }
-            HarnessPhaseTag::Idle | HarnessPhaseTag::TurnCompleted => {
+            HarnessPhaseTag::TurnCompleted => {
+                // The committed END owns the identity. Running is optional, e.g.
+                // when END arrives before the scheduler publishes the native ACK.
                 let start = self.start.take();
-                let turn = self.turn.take();
-                if let (Some((initial, at)), Some(turn)) = (start, turn) {
+                if !self.maintenance
+                    && let Some(turn) = turn
+                    && self.settled.as_deref() != Some(turn)
+                {
+                    // Re-publishing a completed frame must not repeatedly request a write.
+                    self.settled = Some(turn.to_owned());
+                    let (initial, at) = start.unwrap_or((None, Instant::now()));
                     let context_growth = match (initial, reading) {
                         (Some(initial), Some(end)) => end.saturating_sub(initial).max(0) as u64,
                         _ => 0,
                     };
                     return Some((
-                        turn,
+                        turn.to_owned(),
                         TurnUsage {
                             context_growth,
                             secs: at.elapsed().as_secs(),
@@ -44,9 +52,10 @@ impl TurnMeter {
                     ));
                 }
             }
+            HarnessPhaseTag::Idle => self.start = None,
             HarnessPhaseTag::Compacting => {
                 self.start = None;
-                self.turn = None;
+                self.maintenance = true;
             }
             _ => {}
         }
@@ -159,12 +168,15 @@ pub(super) async fn exercise_objective_usage(inner: &Arc<Inner>) {
         }
     }
     for (turn, start, end, invalid, expected) in [
-        ("normal", 40000, 50000, false, 10000),
-        ("after-compact", 50000, 20000, true, 10000),
-        ("falling", 20000, 10000, false, 10000),
+        ("direct-end", 30000, 40000, false, 10000),
+        ("normal", 40000, 50000, false, 20000),
+        ("after-compact", 50000, 20000, true, 20000),
+        ("falling", 20000, 10000, false, 20000),
     ] {
         checkpoint(inner, HarnessPhaseTag::IssuingTurn, turn, start, invalid).await;
-        checkpoint(inner, HarnessPhaseTag::TurnRunning, turn, start, invalid).await;
+        if turn != "direct-end" {
+            checkpoint(inner, HarnessPhaseTag::TurnRunning, turn, start, invalid).await;
+        }
         checkpoint(inner, HarnessPhaseTag::TurnCompleted, turn, end, false).await;
         let (_, state) = calm_truth::objective_host::read_state(db.read_pool(), &inner.track_id)
             .await
@@ -190,7 +202,7 @@ pub(super) async fn exercise_objective_usage(inner: &Arc<Inner>) {
     let (_, state) = calm_truth::objective_host::read_state(db.read_pool(), &inner.track_id)
         .await
         .unwrap();
-    assert_eq!(state.usage.turns, 3, "maintenance must not report");
+    assert_eq!(state.usage.turns, 4, "maintenance must not report");
 }
 
 #[cfg(all(test, feature = "fixtures"))]
@@ -198,4 +210,68 @@ pub(super) async fn exercise_objective_usage(inner: &Arc<Inner>) {
 async fn objective_historical_usage_endpoints_and_maintenance() {
     let fixture = super::completed_commit_tests::Fixture::new().await;
     exercise_objective_usage(&fixture.harness.inner).await;
+}
+
+#[cfg(test)]
+#[test]
+fn objective_completion_without_running_or_initial_reading() {
+    for intermediate in [HarnessPhaseTag::IssuingInterrupt, HarnessPhaseTag::Wedged] {
+        let mut meter = TurnMeter::default();
+        meter.observe(HarnessPhaseTag::IssuingTurn, Some("previous"), None);
+        meter.start.as_mut().unwrap().1 = Instant::now() - Duration::from_secs(3);
+        assert!(meter.observe(intermediate, Some("actual"), None).is_none());
+        let (turn, usage) = meter
+            .observe(HarnessPhaseTag::TurnCompleted, Some("actual"), Some(50000))
+            .expect("END settles even without Running or a visible initial endpoint");
+        assert_eq!(turn, "actual");
+        assert_eq!(usage.context_growth, 0);
+        assert!(usage.secs >= 3);
+    }
+    let mut meter = TurnMeter::default();
+    let (_, usage) = meter
+        .observe(
+            HarnessPhaseTag::TurnCompleted,
+            Some("recovered"),
+            Some(50000),
+        )
+        .expect("a recovered END still counts a turn");
+    assert_eq!(usage.context_growth, 0);
+    assert_eq!(usage.secs, 0);
+    assert!(
+        meter
+            .observe(
+                HarnessPhaseTag::TurnCompleted,
+                Some("recovered"),
+                Some(50000)
+            )
+            .is_none()
+    );
+    meter.observe(HarnessPhaseTag::IssuingTurn, None, Some(40000));
+    assert!(
+        meter
+            .observe(HarnessPhaseTag::Idle, Some("previous"), Some(50000))
+            .is_none()
+    );
+    meter.observe(HarnessPhaseTag::Compacting, Some("previous"), None);
+    for _ in 0..2 {
+        assert!(
+            meter
+                .observe(
+                    HarnessPhaseTag::TurnCompleted,
+                    Some("maintenance"),
+                    Some(50000)
+                )
+                .is_none()
+        );
+    }
+    meter.observe(HarnessPhaseTag::IssuingTurn, None, Some(40000));
+    assert!(
+        meter
+            .observe(
+                HarnessPhaseTag::TurnCompleted,
+                Some("next-user"),
+                Some(50000)
+            )
+            .is_some()
+    );
 }

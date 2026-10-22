@@ -64,16 +64,16 @@ pub(super) async fn build(pool: &sqlx::SqlitePool, track: &str) -> Result<Option
         },
         cell: Component::Table {
             id: KIND.into(),
-            title: "Objective budgets".into(),
+            title: "阶段预算".into(),
             table: serde_json::to_value(InlineTable {
                 columns: [
-                    ("key", "Key"),
+                    ("key", "标识"),
                     ("title", "标题"),
                     ("status", "状态"),
                     ("budget", "预算"),
                     ("used", "已用"),
                     ("turns", "回合"),
-                    ("exceeded", "Over budget"),
+                    ("exceeded", "超预算"),
                 ]
                 .into_iter()
                 .map(|(key, label)| TableColumn {

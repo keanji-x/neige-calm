@@ -140,8 +140,17 @@ async fn stop(fx: &Fixture, peer: &mut Peer) {
 }
 
 #[tokio::test]
-async fn canonical_reply_and_end_before_start_ack_persist_without_accepting_echo() {
+async fn objective_canonical_reply_and_end_before_start_ack_persist_without_accepting_echo() {
     let fx = Fixture::new().await;
+    let mut tx = begin_immediate_tx(fx.original.repo.db()).await.unwrap();
+    crate::db::sqlite::track_capabilities::stamp_tx(
+        &mut tx,
+        &fx.harness.inner.track_id,
+        &[calm_types::track_capability::TrackCapability::Objectives],
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
     let (_client, mut peer) = connect(&fx.daemon).await;
     fx.harness
         .observe_canonical_source(fx.message.clone(), fx.source.clone())
@@ -188,6 +197,23 @@ async fn canonical_reply_and_end_before_start_ack_persist_without_accepting_echo
     )
     .await;
     let done = fx.wait_phase(HarnessPhaseTag::TurnCompleted).await;
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let (_, state) = calm_truth::objective_host::read_state(
+                fx.original.repo.pool(),
+                &fx.harness.inner.track_id,
+            )
+            .await
+            .unwrap();
+            assert_eq!(state.usage.context_tokens, 0, "no initial endpoint");
+            if state.usage.turns == 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("committed early END must count with no visible initial endpoint");
     let row = wait_item(&fx, "early-reply").await;
     let presentation: i64 = sqlx::query_scalar("SELECT native_item_row_id FROM conversation_presentations WHERE card_id=?1 AND source_kind='native_item'")
         .bind(fx.harness.inner.card_id.as_str()).fetch_one(fx.original.repo.pool()).await.unwrap();

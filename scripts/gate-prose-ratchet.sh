@@ -15,6 +15,12 @@
 # Only changes to that contract require updating these assertions and this
 # existing baseline. No new scan or CI invocation is added.
 
+# Objective budget localization adds two CJK matches: the native table title
+# "阶段预算" in track_planner_context/objective_budget.rs and its independent
+# expectation in tests/cases/mcp_track_report_live_slots.rs. These are visible UI
+# copy and a contract assertion, not agent-facing instructions. Only a title
+# contract change edits these two sites; this keeps the existing single scan.
+
 set -uo pipefail
 
 cd "$(git rev-parse --show-toplevel)" || exit 1
