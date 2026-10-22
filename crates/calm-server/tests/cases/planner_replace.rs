@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use axum::http::StatusCode;
 use calm_server::codex_appserver::Notification;
 use calm_server::db::prelude::*;
-use calm_server::harness::{HarnessState, Observation, SendKey};
+use calm_server::harness::{HarnessSnapshot, HarnessState, Observation, QueueEntry, SendKey};
 use serde_json::{Value, json};
 
 use super::planner_harness_live_replies::ITEM_TABLE;
@@ -115,6 +115,33 @@ async fn stored_snapshot(boot: &Boot) -> Value {
         .expect("the worker session row")
         .handle_state_json
         .expect("a persisted snapshot")
+}
+
+// A refusal counter is visible before its result checkpoint commits. Return the exact
+// committed snapshot that owns both the applied rewind and the original queued edit.
+async fn wait_for_committed_refusal_snapshot(boot: &Boot, entry_id: &str) -> Value {
+    let committed = std::sync::OnceLock::new();
+    wait_for("the committed revert refusal snapshot", || async {
+        let snapshot = stored_snapshot(boot).await;
+        let entries = HarnessSnapshot::from_value_strict(snapshot.clone()).pending_entries();
+        let matches = snapshot["pending_rewind"]
+            == json!({ "provider": "codex", "before_turn_id": TURN_B, "reverted": true })
+            && snapshot["phase"] == "turn_completed"
+            && snapshot["last_turn_id"] == TURN_A
+            && matches!(
+                entries.as_slice(),
+                [QueueEntry::User { id, text, rev: 0, .. }]
+                    if id.as_str() == entry_id && text == "edited"
+            );
+        if matches {
+            committed.set(snapshot).expect("one matching snapshot");
+        }
+        matches
+    })
+    .await;
+    committed
+        .into_inner()
+        .expect("the matching committed snapshot")
 }
 
 // The run loop publishes its in-memory phase before committing the snapshot. Tests that
@@ -320,12 +347,11 @@ async fn a_turn_start_that_fails_after_the_revert_retries_without_reverting_agai
     boot.daemon.fail_turn_start_for_test();
     let (status, body) = replace(&boot, TURN_B, "edited").await;
     assert_eq!(status, StatusCode::OK, "body={body}");
-    wait_for("the refusal", || async {
-        boot.harness.refused_issuances_for_test() == 1
-    })
-    .await;
+    let stored =
+        wait_for_committed_refusal_snapshot(&boot, body["entry_id"].as_str().unwrap()).await;
+    assert_eq!(boot.harness.refused_issuances_for_test(), 1);
     assert_eq!(
-        stored_snapshot(&boot).await["pending_rewind"],
+        stored["pending_rewind"],
         json!({ "provider": "codex", "before_turn_id": TURN_B, "reverted": true })
     );
     boot.daemon.clear_turn_start_failure_for_test();
@@ -349,11 +375,9 @@ async fn a_recorded_revert_survives_a_restart() {
     boot.daemon.fail_turn_start_for_test();
     let (status, body) = replace(&boot, TURN_B, "edited").await;
     assert_eq!(status, StatusCode::OK, "body={body}");
-    wait_for("the refusal", || async {
-        boot.harness.refused_issuances_for_test() == 1
-    })
-    .await;
-    let stored = stored_snapshot(&boot).await;
+    let stored =
+        wait_for_committed_refusal_snapshot(&boot, body["entry_id"].as_str().unwrap()).await;
+    assert_eq!(boot.harness.refused_issuances_for_test(), 1);
     let restarted = boot_with_issuance(
         calm_server::harness::HarnessSnapshot::from_value_strict(stored),
         Issuance::Live,
