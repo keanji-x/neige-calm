@@ -6,6 +6,15 @@
 # `LC_ALL=C.UTF-8` is load-bearing: `\x{4e00}` needs PCRE2 UTF mode (else git grep exits 128) and `long_literal` counts BYTES outside it.
 # The `:(glob)` pathspec magic is load-bearing: without it `crates/**/*.rs` misses a `crates/foo.rs`.
 
+# long-term-goal adds eight CJK matches in independent test expectations, not
+# agent-facing Rust prose: two title assertions (templates/tests.rs and the
+# track_template_tracks.rs roster), two KR heading assertions (templates/tests.rs),
+# and two matches each in the auto-merge assertions (builtin_plugins/tests.rs
+# and track_template_tracks.rs). Keeping these literals independent pins the
+# supplied template contract; importing expectations from it would mask drift.
+# Only changes to that contract require updating these assertions and this
+# existing baseline. No new scan or CI invocation is added.
+
 set -uo pipefail
 
 cd "$(git rev-parse --show-toplevel)" || exit 1

@@ -53,11 +53,11 @@ fn shipped_git_forge_templates_are_id_only() {
     let value: Value = serde_json::from_str(&raw).expect("manifest json");
     assert_eq!(
         value["templates"],
-        json!([{ "id": "dev" }]),
+        json!([{ "id": "dev" }, { "id": "long-term-goal" }]),
         "S5 git-forge templates[] must be id-only"
     );
     let manifest = Manifest::parse(&raw).expect("production manifest parses");
-    assert_eq!(manifest.templates.len(), 1);
+    assert_eq!(manifest.templates.len(), 2);
     assert_eq!(manifest.templates[0].id, "dev");
 }
 

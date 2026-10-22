@@ -36,6 +36,7 @@ fn the_key_constants_are_exactly_the_builtin_file_ids() {
         [
             DAILY_PLANNER,
             DEV,
+            LONG_TERM_GOAL,
             SMALL_CHANGE,
             INVESTIGATION,
             INVESTMENT_RESEARCH,
@@ -318,4 +319,34 @@ fn body_prose_and_foreign_fences_are_skipped_not_parsed() {
     body.push_str("```neige-block table\n{\n  \"rows\": []\n}\n```\n");
     body.push_str("```neige-block task\nnot json\n```\n");
     assert_eq!(template_task_payloads_from_body(&body).len(), before);
+}
+
+#[test]
+fn long_term_goal_roster_loads_its_contract_sections() {
+    let template = roster()
+        .get(LONG_TERM_GOAL)
+        .expect("long-term-goal on roster");
+    assert!(template.user_creatable());
+    assert_eq!(template.title(), "长期目标");
+    let compiled = crate::routes::tracks::compile_template(template).unwrap();
+    let contract = check_document(compiled.body()).unwrap().unwrap();
+    assert_eq!(
+        contract
+            .sections
+            .iter()
+            .map(|s| s.h1.as_str())
+            .collect::<Vec<_>>(),
+        ["规范", "需要你", "目标", "关键结果", "Roadmap", "已交付"]
+    );
+    assert!(contract.sections[1].omit_if_empty);
+    assert_eq!(
+        compiled
+            .body()
+            .lines()
+            .filter(|line| line.starts_with("# "))
+            .collect::<Vec<_>>(),
+        ["# 规范", "# 目标", "# 关键结果", "# Roadmap", "# 已交付"]
+    );
+    assert!(template_task_payloads_from_body(compiled.body()).is_empty());
+    assert!(!compiled.body().contains("neige:input-form"));
 }

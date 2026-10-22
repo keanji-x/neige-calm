@@ -88,3 +88,14 @@ pub fn required_owner(template: &str) -> Option<&'static str> {
         })
         .map(|entry| entry.manifest.id.as_str())
 }
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn required_owner_long_term_goal_is_gitforge() {
+        assert_eq!(
+            super::required_owner("long-term-goal"),
+            Some(super::gitforge::PLUGIN_ID)
+        );
+    }
+}

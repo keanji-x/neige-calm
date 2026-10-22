@@ -14,6 +14,7 @@ pub mod front_matter;
 
 // Protocol, not data: other code names these ids.
 pub const DEV: &str = "dev";
+pub const LONG_TERM_GOAL: &str = "long-term-goal";
 pub const SMALL_CHANGE: &str = "small-change";
 pub const INVESTIGATION: &str = "investigation";
 /// A report-only template: no pre-set `task` blocks.
@@ -27,9 +28,10 @@ pub const SITE_PREFIX: &str = "site/";
 
 /// The builtin template files, in picker order. Parsed at first use; a file that does not
 /// parse is a panic there, deliberately.
-static BUILTIN_SOURCES: [&str; 6] = [
+static BUILTIN_SOURCES: [&str; 7] = [
     include_str!("../templates/builtin/daily-planner.md"),
     include_str!("../templates/builtin/dev.md"),
+    include_str!("../templates/builtin/long-term-goal.md"),
     include_str!("../templates/builtin/small-change.md"),
     include_str!("../templates/builtin/investigation.md"),
     include_str!("../templates/builtin/investment-research.md"),

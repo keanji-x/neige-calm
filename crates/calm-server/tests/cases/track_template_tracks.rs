@@ -36,6 +36,7 @@ const HISTORY_REBUILD: &str = "opencode-history-rebuild";
 /// Growth updates this table once; recipe bytes come from the named source, not roster lookup.
 pub(crate) const TEMPLATE_ANCHORS: &[(&str, &str, &[&str])] = &[
     (DEV, "Development", &[]),
+    ("long-term-goal", "长期目标", &[]),
     (SMALL_CHANGE, "Small change", &[]),
     (INVESTIGATION, "Investigation", &[]),
     (INVESTMENT_RESEARCH, "Investment research", &[]),
@@ -1633,4 +1634,30 @@ async fn optional_history_template_reports_setup_and_ready_through_owner_lifecyc
             assert_eq!(db_snapshot(&boot.repo).await, before);
         }
     }
+}
+
+#[tokio::test]
+async fn long_term_goal_creates_without_template_input_bound_to_gitforge() {
+    let boot = boot().await;
+    let (status, body) = post(
+        boot.app.clone(),
+        "/api/tracks",
+        create_body(
+            &boot.area_id,
+            "Long term goal",
+            json!({"template_id": "long-term-goal"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    assert_eq!(body["template_id"], "long-term-goal");
+    assert_eq!(body["plugin_scope"], "gitforge");
+    assert!(body["template_input"].is_null(), "{body}");
+    let track_id = body["id"].as_str().unwrap();
+    let (status, detail) = get(boot.app.clone(), &format!("/api/tracks/{track_id}")).await;
+    assert_eq!(status, StatusCode::OK);
+    let payload = report_card_payload(&detail);
+    assert_eq!(payload.body, instantiated_recipe("long-term-goal").1);
+    assert!(payload.body.contains("直接合并，不再问用户。"));
+    assert!(!payload.body.contains("neige:input-form"));
 }

@@ -555,3 +555,69 @@ fn native_tool_names_are_every_compiled_built_in_tool() {
         .collect();
     assert_eq!(names, registered);
 }
+
+#[tokio::test]
+async fn long_term_goal_startup_keeps_auto_merge_and_tools_without_input() {
+    let fx = Fixture::new().await;
+    let area = fx
+        .repo
+        .area_create(
+            calm_types::organization::LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "Long term goal".into(),
+                color: "#112233".into(),
+                sort: None,
+            },
+        )
+        .await
+        .unwrap();
+    let track = fx
+        .repo
+        .track_create(NewTrack {
+            area_id: area.id,
+            title: "Long term goal".into(),
+            sort: None,
+            cwd: String::new(),
+            template_id: Some(crate::templates::LONG_TERM_GOAL.into()),
+            template_input: None,
+            plugin_scope: Some(ID.into()),
+            attach_folder: false,
+            theme: crate::routes::theme::RequestTheme::default_dark(),
+        })
+        .await
+        .unwrap();
+    let bound = crate::operation::planner_harness_start_adapter::bound_template(
+        fx.repo.as_ref(),
+        &fx.host,
+        track.id.as_str(),
+    )
+    .await
+    .unwrap()
+    .expect("template contract honored without input");
+    assert_eq!(bound.descriptor.id, crate::templates::LONG_TERM_GOAL);
+    assert!(bound.input.is_none());
+    let template = crate::templates::TemplateRoster::builtin()
+        .get(crate::templates::LONG_TERM_GOAL)
+        .unwrap();
+    let card = fx.repo.card_create(NewCard {
+        track_id: track.id.clone(), kind: "codex".into(), sort: None, title: None,
+        payload: json!({"template_context": crate::template_context::TemplateContext::new(template.title().to_string(), template.recipe().body)}),
+    }).await.unwrap();
+    let prompt = crate::operation::planner_harness_start_adapter::planner_instructions(
+        fx.repo.as_ref(),
+        &fx.host,
+        track.id.as_str(),
+        card.id.as_str(),
+    )
+    .await
+    .unwrap();
+    assert!(prompt.contains("gh_pr_merge（expected_head_sha）直接合并，不再问用户。"));
+    assert!(prompt.contains("## Development capability"));
+    assert!(!prompt.contains("## Bound Template Input"));
+    assert!(!prompt.contains("neige:input-form"));
+    let names = fx.tool_names(&fx.identity(&track)).await;
+    for name in NATIVE {
+        assert!(names.iter().any(|n| n == name), "missing {name}");
+    }
+    assert!(names.iter().any(|n| n == "plugin_gitforge_gh_pr_merge"));
+}

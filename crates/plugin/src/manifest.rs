@@ -1921,7 +1921,13 @@ mod tests {
             .iter()
             .find(|template| template.id == "dev")
             .expect("dev template");
-        assert_eq!(m.templates.len(), 1);
+        assert_eq!(
+            m.templates
+                .iter()
+                .map(|t| t.id.as_str())
+                .collect::<Vec<_>>(),
+            ["dev", "long-term-goal"]
+        );
         assert_eq!(template.id, "dev");
 
         let schema = m

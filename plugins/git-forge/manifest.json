@@ -483,6 +483,9 @@
   "templates": [
     {
       "id": "dev"
+    },
+    {
+      "id": "long-term-goal"
     }
   ],
   "permissions": {},
