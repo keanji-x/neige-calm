@@ -57,7 +57,6 @@ use axum::{
     routing::get,
 };
 use calm_truth::db::sqlite::track_get_tx;
-use calm_types::runtime::AgentProtocol;
 use futures::FutureExt;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -795,14 +794,14 @@ pub(crate) async fn create_track(
             let (plan, advice) = match plan {
                 create::KeyedPlan::Mint(plan) => {
                     let (provider, model, effort) = selection;
-                    let advice = super::planner_model::creation_catalog_advice(
-                        &s,
+                    let advice = crate::planner_model::acquisition::CatalogAccess::new(
+                        &s.provider_availability,
+                        &s.claude_planner,
+                        &s.acp_planner,
                         &codex.shared_codex_appserver,
-                        &provider,
-                        model.as_deref(),
-                        effort.as_deref(),
                     )
-                    .await;
+                    .canonical_mint(&provider, model.as_deref(), effort.as_deref())
+                    .await?;
                     (plan, advice)
                 }
                 create::KeyedPlan::Resume(plan) => (
@@ -895,23 +894,13 @@ pub(crate) async fn create_track(
     // #1817: a Claude create's availability (the cached check, at most `TTL` old, or a new check
     // of up to ~28 s) is read before the area lock below, which it must not hold; it and the
     // model list it caches (#1822) gate only a new mint, after the replay arms.
-    let claude_availability = if request.planner_provider == AgentProvider::Claude {
-        Some(
-            s.provider_availability
-                .claude(crate::agent_providers::Freshness::Cached, &s.claude_planner)
-                .await,
-        )
-    } else {
-        None
-    };
-    let acp_availability = s
-        .provider_availability
-        .acp_create_gate(
-            &request.planner_provider,
-            crate::agent_providers::Freshness::Cached,
-            &s.acp_planner,
-        )
-        .await;
+    let readiness = crate::harness::backend::factory::PlannerFactory::new(
+        std::sync::Arc::downgrade(&codex.shared_codex_appserver),
+        &s.claude_planner,
+        &s.acp_planner,
+    )
+    .catalog_readiness(&request.planner_provider, &s.provider_availability)
+    .await;
     // Common area lifecycle fence for legacy mint, first-message mint, and
     // idempotent replay. Holding it through workspace materialization and
     // operation submission makes area deletion snapshot a closed member set.
@@ -981,32 +970,24 @@ pub(crate) async fn create_track(
     // Historical Claude creation needs its provider ready, which also puts the CLI's model list
     // in hand (#1822); fresh blank managed creation and replays are handled above. A Codex create
     // is not gated: without a first message it still answers 201 during a daemon outage (#293).
-    let claude_catalog = match &claude_availability {
-        Some(checked) => Some(checked.catalog().map_err(|refusal| {
-            CalmError::BadRequest(format!("track create: `planner_provider` {refusal}"))
-        })?),
-        None => None,
-    };
-    if let Some(checked) = &acp_availability {
-        checked
-            .require_ready()
-            .map_err(|reason| CalmError::BadRequest(format!("track create: {reason}")))?;
-    }
     let allow_cross_area_cwd = request.allow_cross_area_cwd.clone();
     // Resolve mutable catalog advice only for a new mint, never on replay; one advice for both
     // providers (#1822 6′), only the catalog's source differs.
     let model = request.model.take();
     let reasoning_effort = request.reasoning_effort.take();
-    let source = match &claude_catalog {
-        Some(catalog) => super::planner_model::CatalogSource::Claude(catalog),
-        None if request.planner_provider.protocol() == AgentProtocol::Acp => {
-            super::planner_model::CatalogSource::Acp
-        }
-        None => super::planner_model::CatalogSource::Codex(&codex.shared_codex_appserver),
-    };
-    let advice =
-        super::planner_model::catalog_advice(source, model.as_deref(), reasoning_effort.as_deref())
-            .await;
+    let advice = crate::planner_model::acquisition::CatalogAccess::new(
+        &s.provider_availability,
+        &s.claude_planner,
+        &s.acp_planner,
+        &codex.shared_codex_appserver,
+    )
+    .historical_mint(
+        &request.planner_provider,
+        &readiness,
+        model.as_deref(),
+        reasoning_effort.as_deref(),
+    )
+    .await?;
     advice.require_create_selection(model.as_deref(), reasoning_effort.as_deref())?;
     let planner_provider = request.planner_provider.clone();
     let (p, named_source, _cwd_omitted) = request.into_parts()?;

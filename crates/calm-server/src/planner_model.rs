@@ -1,6 +1,7 @@
 //! Which model a planner conversation's turns run with: the card payload keys and the pure rule turning a stored selection into `turn/start`'s `model` / `effort`.
 //! Codex's `turn/start` model override is sticky, so "follow the default" after an explicit choice must send the default explicitly; the monotone `*_ever_set` markers are the predicate for that and nothing clears them.
 
+pub(crate) mod acquisition;
 pub mod catalog;
 
 use serde_json::Value;

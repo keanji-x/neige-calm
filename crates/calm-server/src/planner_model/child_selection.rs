@@ -1,13 +1,9 @@
 //! Creation-time provider admission, shared catalog policy and explicit override merge.
-use super::{
-    CardModelSelection,
-    selection_advice::{CatalogSource, catalog_advice},
-};
-use crate::agent_providers::{Freshness, ProviderAvailabilityCache};
+use super::CardModelSelection;
+use crate::agent_providers::ProviderAvailabilityCache;
 use crate::error::{CalmError, Result};
 use crate::session_projection_repo::AgentProvider;
 use calm_types::report_blocks::tasks::ChildTrackConfig;
-use calm_types::runtime::AgentProtocol;
 use std::sync::Arc;
 
 #[derive(Clone)]
@@ -54,37 +50,14 @@ impl ChildSelectionContext {
         // Readiness uses the same cache and refusal contracts as independent creation.
         let model = selection.model.as_deref();
         let effort = selection.reasoning_effort.as_deref();
-        let advice = match provider.protocol() {
-            AgentProtocol::Claude => {
-                let checked = self
-                    .availability
-                    .claude(Freshness::Cached, &self.claude)
-                    .await;
-                let catalog = checked
-                    .catalog()
-                    .map_err(|e| CalmError::BadRequest(format!("child_track.provider: {e}")))?;
-                catalog_advice(CatalogSource::Claude(&catalog), model, effort).await
-            }
-            AgentProtocol::Acp => {
-                if let Some(checked) = self
-                    .availability
-                    .acp_create_gate(provider, Freshness::Cached, &self.acp)
-                    .await
-                {
-                    checked
-                        .require_ready()
-                        .map_err(|e| CalmError::BadRequest(format!("child_track.provider: {e}")))?;
-                }
-                let catalog = self
-                    .acp
-                    .discover_catalog(provider, Some(std::path::Path::new(cwd)))
-                    .await;
-                catalog_advice(CatalogSource::Discovered(&catalog), model, effort).await
-            }
-            AgentProtocol::Codex => {
-                catalog_advice(CatalogSource::Codex(&self.codex), model, effort).await
-            }
-        };
+        let advice = super::acquisition::CatalogAccess::new(
+            &self.availability,
+            &self.claude,
+            &self.acp,
+            &self.codex,
+        )
+        .child(provider, cwd, model, effort)
+        .await?;
         if declared.model.is_some() {
             advice.require_child_selection(model, effort)
         } else if declared.reasoning_effort.is_some() {

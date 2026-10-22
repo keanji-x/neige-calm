@@ -5,47 +5,21 @@
 
 use crate::extract::{Json, Query};
 use crate::harness::profile::HarnessProfileExt;
-use crate::planner_model::catalog::{
-    CatalogModel, DefaultSource, ModelDefaults, ModelSource, ModelsResponse, ReasoningEffortOption,
-};
+use crate::planner_model::catalog::ModelsResponse;
 
 use axum::extract::State;
 use axum::{Router, routing::get};
 use serde::Deserialize;
 use utoipa::IntoParams;
 
-use crate::codex_appserver::{CodexConfig, CodexModel};
 use crate::error::{CalmError, ErrorBody, Result};
 use crate::session_projection_repo::AgentProvider;
 use crate::state::{AppState, CodexShellState, RouteState};
-use calm_types::runtime::AgentProtocol;
 
 /// Budget for the whole request, not each codex read. Passed down into
 /// `request_until` rather than wrapped in `tokio::time::timeout`: cancelling from
 /// outside leaks the pending-map entry.
 pub use crate::planner_model::catalog::CODEX_READ_TIMEOUT;
-
-impl From<CodexModel> for CatalogModel {
-    fn from(m: CodexModel) -> Self {
-        Self {
-            id: m.id,
-            model: m.model,
-            resolved_model: None,
-            display_name: m.display_name,
-            description: m.description,
-            is_default: m.is_default,
-            supported_reasoning_efforts: m
-                .supported_reasoning_efforts
-                .into_iter()
-                .map(|o| ReasoningEffortOption {
-                    reasoning_effort: o.reasoning_effort,
-                    description: Some(o.description),
-                })
-                .collect(),
-            default_reasoning_effort: Some(m.default_reasoning_effort),
-        }
-    }
-}
 
 #[derive(Debug, Deserialize, IntoParams)]
 pub struct ModelsQuery {
@@ -103,108 +77,20 @@ pub(crate) async fn list_models(
         .map(|card| card.provider.clone())
         .or(q.provider.clone())
         .unwrap_or(AgentProvider::Codex);
-    let catalog = crate::harness::backend::PlannerBackend::metadata(&provider).catalog;
-    match catalog {
-        AgentProtocol::Acp => {
-            let cached = q
-                .card_id
-                .as_deref()
-                .and_then(|id| s.acp_planner.cached_catalog(id));
-            let response = match cached {
-                Some(response) => response,
-                None => {
-                    s.acp_planner
-                        .discover_catalog(
-                            &provider,
-                            card.as_ref()
-                                .map(|card| std::path::Path::new(&card.workspace)),
-                        )
-                        .await
-                }
-            };
-            return Ok(Json(response));
-        }
-        // #1822: a Claude Planner's catalog is the CLI's own list, cached by its availability
-        // check, and Codex is not asked. A Claude that is not ready has no list to offer.
-        AgentProtocol::Claude => {
-            return Ok(Json(
-                crate::claude_planner::catalog::cached_catalog(
-                    &s.provider_availability,
-                    &s.claude_planner,
-                )
-                .await,
-            ));
-        }
-        AgentProtocol::Codex => {}
-    }
-    let cwd = card.map(|card| card.workspace);
-    let daemon = &codex.shared_codex_appserver;
-    let deadline = tokio::time::Instant::now() + CODEX_READ_TIMEOUT;
-
-    let listed = match daemon.model_list(deadline).await {
-        Ok(models) => Some(models),
-        Err(e) => {
-            tracing::warn!(error = %e, "GET /api/models: model/list unavailable");
-            None
-        }
-    };
-
-    let (models, source, fetched_at_ms) = match listed {
-        Some(models) => (
-            models.into_iter().map(CatalogModel::from).collect(),
-            ModelSource::Live,
-            Some(crate::model::now_ms()),
-        ),
-        None => (Vec::new(), ModelSource::Unavailable, None),
-    };
-
-    // Chosen by whether a CONNECTION exists, not by whether `model/list` succeeded: a
-    // live daemon whose catalog failed must not fall back to `config.toml`.
-    let connected = daemon.has_connection().await;
-    let (default, default_source) = if connected {
-        match cwd.as_deref() {
-            Some(cwd) => match daemon.config_read(Some(cwd), deadline).await {
-                Ok(config) => (defaults_from_config_read(config), DefaultSource::ConfigRead),
-                Err(e) => {
-                    tracing::warn!(error = %e, "GET /api/models: config/read failed");
-                    (ModelDefaults::default(), DefaultSource::Unknown)
-                }
-            },
-            None => (ModelDefaults::default(), DefaultSource::Unknown),
-        }
-    } else {
-        match daemon.shared_home().read_default_model_settings() {
-            Ok(toml) => (
-                ModelDefaults {
-                    model: toml.model,
-                    reasoning_effort: toml.reasoning_effort,
-                    supported_reasoning_efforts: None,
-                },
-                DefaultSource::ConfigToml,
-            ),
-            Err(e) => {
-                tracing::warn!(error = %e, "GET /api/models: shared config.toml unreadable");
-                (ModelDefaults::default(), DefaultSource::Unknown)
-            }
-        }
-    };
-
-    Ok(Json(ModelsResponse {
-        models,
-        default,
-        default_source,
-        source,
-        fetched_at_ms,
-    }))
-}
-
-/// A complete `config/read` whose `model` is unset is `config_read` + `null`, not `unknown`.
-fn defaults_from_config_read(config: CodexConfig) -> ModelDefaults {
-    ModelDefaults {
-        model: config.model,
-        reasoning_effort: config.model_reasoning_effort,
-        supported_reasoning_efforts: None,
-    }
+    Ok(Json(
+        crate::planner_model::acquisition::CatalogAccess::new(
+            &s.provider_availability,
+            &s.claude_planner,
+            &s.acp_planner,
+            &codex.shared_codex_appserver,
+        )
+        .read(
+            &provider,
+            q.card_id.as_deref(),
+            card.as_ref().map(|c| c.workspace.as_str()),
+        )
+        .await?,
+    ))
 }
 
 /// A card's workspace and whether it is a Claude Planner card.

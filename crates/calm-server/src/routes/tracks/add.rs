@@ -12,7 +12,6 @@ use crate::mcp_server::tools::track_add::{
 };
 use crate::model::{NewTrack, RequestTheme, Track};
 use crate::routes::codex_cards::default_cwd;
-use crate::session_projection_repo::AgentProvider;
 use crate::state::RouteState;
 
 use super::create::{self, KeyedActor, KeyedCreate, KeyedPlan, SendPath, TRACK_ADD_KEY_PREFIX};
@@ -117,23 +116,13 @@ impl TrackCreator for RouteTrackCreator {
         } = request;
         // The same gate as `POST /api/tracks` (#1817): read before the area lock, applied to a
         // mint only; a replay mints nothing.
-        let claude_availability = if planner_provider == AgentProvider::Claude {
-            Some(
-                s.provider_availability
-                    .claude(crate::agent_providers::Freshness::Cached, &s.claude_planner)
-                    .await,
-            )
-        } else {
-            None
-        };
-        let acp_availability = s
-            .provider_availability
-            .acp_create_gate(
-                &planner_provider,
-                crate::agent_providers::Freshness::Cached,
-                &s.acp_planner,
-            )
-            .await;
+        let readiness = crate::harness::backend::factory::PlannerFactory::new(
+            std::sync::Weak::new(),
+            &s.claude_planner,
+            &s.acp_planner,
+        )
+        .catalog_readiness(&planner_provider, &s.provider_availability)
+        .await;
         let _area_delete_guard =
             crate::per_card_lock::lock_key(&s.area_delete_locks, area_id.as_str()).await;
         let plan = create::plan_keyed_create(
@@ -164,18 +153,9 @@ impl TrackCreator for RouteTrackCreator {
         };
         // A dependency unavailable now, not a bad argument: the same call succeeds once the
         // provider is ready.
-        if let Some(checked) = &acp_availability {
-            checked
-                .require_ready()
-                .map_err(TrackAddRefusal::ProviderUnavailable)?;
-        }
-        if let Some(checked) = &claude_availability
-            && let Err(refusal) = checked.catalog()
-        {
-            return Err(TrackAddRefusal::ProviderUnavailable(format!(
-                "the creator's Planner provider {refusal}"
-            )));
-        }
+        readiness
+            .require_added_track()
+            .map_err(TrackAddRefusal::ProviderUnavailable)?;
         let cwd_omitted = args.cwd.is_none();
         let cwd = args.cwd.clone().unwrap_or_else(default_cwd);
         let refused = Arc::new(OnceLock::new());

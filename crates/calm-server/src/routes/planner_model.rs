@@ -28,7 +28,6 @@ use crate::routes::cards::card_scope;
 use crate::routes::planner_cards::card_runs_headless_harness;
 use crate::routes::track_report_blocks::require_rest_user_actor_for;
 use crate::state::{CodexShellState, RouteState, WorkerState};
-use calm_types::runtime::AgentProtocol;
 
 const ACTOR_SUBJECT: &str = "planner model selection";
 const ACTOR_REDIRECT: &str = "Which model a person's conversation runs with is their own choice; agents have no write \
@@ -128,45 +127,19 @@ pub(crate) async fn set_planner_model(
         model,
         reasoning_effort,
     } = body;
-    let advice = match crate::harness::PlannerBackend::metadata(&provider).catalog {
-        AgentProtocol::Acp => {
-            s.acp_planner.configured(&provider)?;
-            catalog_advice(
-                CatalogSource::Acp,
-                model.as_deref(),
-                reasoning_effort.as_deref(),
-            )
-            .await
-        }
-        AgentProtocol::Claude => {
-            // #1822 6′: Claude PUT retains readiness 400, so the list is in hand: an effort is
-            // judged against the chosen entry, and dropped for a model the list does not carry
-            // (the CLI would ignore it). Fresh blank managed creation uses creation_catalog_advice
-            // below and tolerates unavailable Claude. Codex is not asked.
-            let catalog = s
-                .provider_availability
-                .claude(crate::agent_providers::Freshness::Cached, &s.claude_planner)
-                .await
-                .catalog()
-                .map_err(|refusal| {
-                    CalmError::BadRequest(format!("card {id}: `planner_provider` {refusal}"))
-                })?;
-            catalog_advice(
-                CatalogSource::Claude(&catalog),
-                model.as_deref(),
-                reasoning_effort.as_deref(),
-            )
-            .await
-        }
-        AgentProtocol::Codex => {
-            catalog_advice(
-                CatalogSource::Codex(&codex.shared_codex_appserver),
-                model.as_deref(),
-                reasoning_effort.as_deref(),
-            )
-            .await
-        }
-    };
+    let advice = crate::planner_model::acquisition::CatalogAccess::new(
+        &s.provider_availability,
+        &s.claude_planner,
+        &s.acp_planner,
+        &codex.shared_codex_appserver,
+    )
+    .model_write(
+        &provider,
+        &id,
+        model.as_deref(),
+        reasoning_effort.as_deref(),
+    )
+    .await?;
     let stored_effort = match &advice.adjustment {
         Some(adjustment) => adjustment.to.clone(),
         None => reasoning_effort.clone(),
@@ -249,35 +222,4 @@ pub(crate) async fn set_planner_model(
             unknown_model: advice.unknown_model,
         }),
     ))
-}
-
-pub(crate) use crate::planner_model::selection_advice::{CatalogSource, catalog_advice};
-
-/// Storage acceptance uses the actual provider's advisory catalog. Missing
-/// readiness supplies no advice and cannot select a historical storage path.
-pub(super) async fn creation_catalog_advice(
-    s: &RouteState,
-    codex: &crate::shared_codex_appserver::SharedCodexAppServer,
-    provider: &crate::session_projection_repo::AgentProvider,
-    model: Option<&str>,
-    effort: Option<&str>,
-) -> crate::planner_model::selection_advice::CatalogAdvice {
-    match crate::harness::PlannerBackend::metadata(provider).catalog {
-        AgentProtocol::Codex => catalog_advice(CatalogSource::Codex(codex), model, effort).await,
-        AgentProtocol::Claude => {
-            match s
-                .provider_availability
-                .claude(crate::agent_providers::Freshness::Cached, &s.claude_planner)
-                .await
-                .catalog()
-            {
-                Ok(catalog) => catalog_advice(CatalogSource::Claude(&catalog), model, effort).await,
-                Err(_) => crate::planner_model::selection_advice::CatalogAdvice::default(),
-            }
-        }
-        AgentProtocol::Acp => {
-            let catalog = s.acp_planner.discover_catalog(provider, None).await;
-            catalog_advice(CatalogSource::Discovered(&catalog), model, effort).await
-        }
-    }
 }

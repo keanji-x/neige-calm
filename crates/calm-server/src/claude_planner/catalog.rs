@@ -1,28 +1,9 @@
 //! Claude's model API projection, read from the authoritative availability cache.
-use super::{config::ClaudePlannerHost, models::ClaudeCatalog};
-use crate::agent_providers::{Freshness, ProviderAvailabilityCache};
+use super::models::ClaudeCatalog;
 use crate::planner_model::catalog::{
     CatalogModel, DefaultSource, ModelDefaults, ModelSource, ModelsResponse, ReasoningEffortOption,
 };
 use provider::claude::discovery::ClaudeModel;
-
-/// Read cached readiness with its existing TTL policy; keep no separate projection cache.
-pub(crate) async fn cached_catalog(
-    availability: &ProviderAvailabilityCache,
-    host: &ClaudePlannerHost,
-) -> ModelsResponse {
-    let checked = availability.claude(Freshness::Cached, host).await;
-    match checked.catalog() {
-        Ok(catalog) => claude_catalog(&catalog),
-        Err(_) => ModelsResponse {
-            models: Vec::new(),
-            default: ModelDefaults::default(),
-            default_source: DefaultSource::Unknown,
-            source: ModelSource::Unavailable,
-            fetched_at_ms: None,
-        },
-    }
-}
 
 impl From<&ClaudeModel> for CatalogModel {
     fn from(m: &ClaudeModel) -> Self {
@@ -51,7 +32,7 @@ fn claude_efforts(m: &ClaudeModel) -> Vec<ReasoningEffortOption> {
 
 /// The answer for a Claude Planner: every listed entry, and the CLI's `default` entry as the
 /// default (what it resolves to, and its effort levels).
-fn claude_catalog(catalog: &ClaudeCatalog) -> ModelsResponse {
+pub(crate) fn claude_catalog(catalog: &ClaudeCatalog) -> ModelsResponse {
     ModelsResponse {
         models: catalog.models.iter().map(CatalogModel::from).collect(),
         default: ModelDefaults {

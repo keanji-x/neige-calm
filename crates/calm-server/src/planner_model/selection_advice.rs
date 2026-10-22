@@ -70,8 +70,6 @@ pub(crate) struct EffortAdjustment {
 
 /// Where a write's catalog comes from; the advice itself is the same for both.
 pub(crate) enum CatalogSource<'a> {
-    /// ACP choices are checked against the agent's fresh setup metadata at issuance.
-    Acp,
     Discovered(&'a super::catalog::ModelsResponse),
     /// Codex's `model/list`, asked now. A catalog that cannot be read advises nothing: the
     /// selection is stored unjudged (#293).
@@ -95,7 +93,6 @@ pub(crate) async fn catalog_advice(
     reasoning_effort: Option<&str>,
 ) -> CatalogAdvice {
     match source {
-        CatalogSource::Acp => CatalogAdvice::default(),
         CatalogSource::Discovered(catalog) => {
             let entries: Vec<AdviceEntry<'_>> = catalog
                 .models

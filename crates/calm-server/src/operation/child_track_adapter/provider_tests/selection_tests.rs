@@ -114,6 +114,10 @@ async fn child_track_config_invalid_provider_or_model_refuses_creation() {
             "unknown model",
         ),
         (json!({"provider":"grok"}), "child_track.provider"),
+        (
+            json!({"provider":"codex", "model":"unavailable-model"}),
+            "catalog unavailable",
+        ),
     ] {
         let repo = std::sync::Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
         let parent = seed_parent(&repo, false).await;

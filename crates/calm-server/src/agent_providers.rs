@@ -256,19 +256,6 @@ impl ProviderAvailabilityCache {
         }
     }
 
-    /// A create's ACP gate: the check of `provider` when it speaks ACP, `None` when it does not.
-    pub async fn acp_create_gate(
-        &self,
-        provider: &AgentProvider,
-        freshness: Freshness,
-        host: &crate::acp_planner::config::AcpPlannerHost,
-    ) -> Option<Checked> {
-        match provider.protocol() {
-            AgentProtocol::Acp => Some(self.acp(provider, freshness, host).await),
-            AgentProtocol::Codex | AgentProtocol::Claude => None,
-        }
-    }
-
     /// The check of an ACP `provider`: its registration, then its readiness. The one reader of
     /// ACP availability; a provider that does not speak ACP has no slot and is not configured.
     pub async fn acp(
@@ -394,30 +381,4 @@ pub fn spawn_boot_check(state: &crate::state::AppState) -> tokio::task::JoinHand
             }
         }
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Both create routes read this one gate: an ACP provider gets its check, another gets none.
-    #[tokio::test]
-    async fn only_a_provider_speaking_acp_meets_the_create_gate() {
-        let cache = ProviderAvailabilityCache::default();
-        let host = crate::acp_planner::config::AcpPlannerHost::unconfigured_scratch().unwrap();
-        let gate = cache
-            .acp_create_gate(&AgentProvider::OpenCode, Freshness::Cached, &host)
-            .await;
-        assert!(
-            matches!(&gate, Some(checked) if checked.provider == AgentProvider::OpenCode
-                && matches!(checked.verdict, Verdict::NotConfigured(_))),
-            "{gate:?}"
-        );
-        for provider in [AgentProvider::Codex, AgentProvider::Claude] {
-            let gate = cache
-                .acp_create_gate(&provider, Freshness::Cached, &host)
-                .await;
-            assert!(gate.is_none(), "{provider:?}: {gate:?}");
-        }
-    }
 }

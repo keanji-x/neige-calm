@@ -115,3 +115,30 @@ async fn track_add_admin_retry_while_a_start_is_in_flight_is_unavailable() {
     assert_eq!(error.code, -32503, "{error:?}");
     assert_eq!(starts().await, before, "no start was submitted");
 }
+
+/// Replays select the durable receipt before applying the creator's current
+/// readiness. The derived provider does not participate in the request fingerprint.
+#[tokio::test]
+async fn track_add_admin_replay_wins_over_current_provider_unavailability() {
+    let boot = boot(16).await;
+    let (creator, planner) = boot.user_track("portfolio").await;
+    let created = boot
+        .add(&planner, boot.args("readiness-replay"))
+        .await
+        .unwrap();
+    let before = boot.track_count().await;
+    sqlx::query("UPDATE cards SET payload=json_set(payload,'$.planner_provider','claude') WHERE track_id=?1 AND role='planner'")
+        .bind(&creator).execute(boot.repo.pool()).await.unwrap();
+    let replay = boot
+        .add(&planner, boot.args("readiness-replay"))
+        .await
+        .unwrap();
+    assert_eq!(replay, created);
+    assert_eq!(boot.track_count().await, before);
+    let error = boot
+        .add(&planner, boot.args("readiness-mint"))
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, -32503, "{error:?}");
+    assert_eq!(boot.track_count().await, before);
+}

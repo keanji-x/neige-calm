@@ -1,6 +1,7 @@
 //! Public creation, retained wake and reopen use the real ACP spy process.
 use super::*;
 use axum::extract::FromRef;
+use calm_truth::db::RepoRead;
 
 async fn body(app: &axum::Router, cookie: &str) -> Value {
     let area = post(
@@ -198,14 +199,20 @@ async fn canonical_opencode_creation_catalog_uses_acp_owner() {
     let mut fixture = Fixture::new().await;
     configure(&mut fixture);
     let (state, _, _) = fixture.application().await;
-    let advice = crate::routes::planner_model::creation_catalog_advice(
-        &crate::state::RouteState::from_ref(&state),
+    let route = crate::state::RouteState::from_ref(&state);
+    let advice = crate::planner_model::acquisition::CatalogAccess::new(
+        &route.provider_availability,
+        &route.claude_planner,
+        &route.acp_planner,
         &state.shared_codex_appserver,
+    )
+    .canonical_mint(
         &calm_types::runtime::AgentProvider::OpenCode,
         Some("fixture/model-a"),
         Some("unsupported"),
     )
-    .await;
+    .await
+    .unwrap();
     assert!(
         advice.adjustment.is_some(),
         "ACP setup catalog judges efforts"
@@ -230,14 +237,19 @@ async fn canonical_opencode_creation_catalog_does_not_reuse_another_registration
         grok.source,
         crate::planner_model::catalog::ModelSource::Unavailable
     );
-    let advice = crate::routes::planner_model::creation_catalog_advice(
-        &crate::state::RouteState::from_ref(&state),
+    let advice = crate::planner_model::acquisition::CatalogAccess::new(
+        &route.provider_availability,
+        &route.claude_planner,
+        &route.acp_planner,
         &state.shared_codex_appserver,
+    )
+    .canonical_mint(
         &calm_types::runtime::AgentProvider::OpenCode,
         Some("fixture/model-a"),
         Some("unsupported"),
     )
-    .await;
+    .await
+    .unwrap();
     assert!(!advice.catalog_unavailable);
     assert!(advice.adjustment.is_some());
     fixture.shutdown_process(&state).await;
@@ -353,5 +365,63 @@ async fn canonical_opencode_creation_historical_template_key_replays_through_htt
     if let Some(worker) = worker {
         state.harness.shutdown_and_remove(&worker).await.unwrap();
     }
+    fixture.shutdown_process(&state).await;
+}
+
+/// Catalog GETs for dormant cards discover in each bound workspace, even when
+/// another cwd has a fresh discovery-cache entry for the same registration.
+#[tokio::test]
+async fn canonical_opencode_creation_catalog_get_keeps_workspace_scope() {
+    let mut fixture = Fixture::new().await;
+    configure(&mut fixture);
+    let (state, app, cookie) = fixture.application().await;
+    let mut request = body(&app, &cookie).await;
+    request.as_object_mut().unwrap().remove("first_message");
+    let mut workspaces = Vec::new();
+    for key in ["scope-a", "scope-b"] {
+        let created = post(&app, &cookie, "/api/tracks", key, request.clone()).await;
+        let track = created["id"].as_str().unwrap();
+        let (card, _, _) = fixture.carrier(track).await;
+        let workspace = fixture
+            .repo
+            .track_get(track)
+            .await
+            .unwrap()
+            .unwrap()
+            .workspace
+            .agent_cwd()
+            .to_owned();
+        // Dormant acceptance has not materialized its managed workspace. Supply
+        // the directory so this test isolates discovery's cwd contract.
+        std::fs::create_dir_all(&workspace).unwrap();
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/models?card_id={card}"))
+                    .header(header::COOKIE, &cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let catalog: Value =
+            serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+        assert_eq!(catalog["source"], "live", "{catalog}");
+        let requests = std::fs::read_to_string(fixture.root.path().join("requests.jsonl")).unwrap();
+        assert!(
+            requests
+                .lines()
+                .map(|line| serde_json::from_str::<Value>(line).unwrap())
+                .any(|call| call["method"] == "session/new" && call["params"]["cwd"] == workspace),
+            "GET did not discover in {workspace}"
+        );
+        workspaces.push(workspace);
+    }
+    assert_ne!(workspaces[0], workspaces[1]);
+    assert_eq!(prompts(&fixture), 0);
+    assert!(!state.shared_codex_appserver.is_running());
     fixture.shutdown_process(&state).await;
 }

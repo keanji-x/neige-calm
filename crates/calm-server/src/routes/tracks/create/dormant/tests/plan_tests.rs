@@ -185,14 +185,15 @@ async fn canonical_claude_creation_selection_uses_actual_provider_catalog() {
         })
         .await;
     let codex = crate::shared_codex_appserver::SharedCodexAppServer::new_stub(fx.repo.clone());
-    let advice = crate::routes::planner_model::creation_catalog_advice(
-        &fx.route,
+    let advice = crate::planner_model::acquisition::CatalogAccess::new(
+        &fx.route.provider_availability,
+        &fx.route.claude_planner,
+        &fx.route.acp_planner,
         &codex,
-        &AgentProvider::Claude,
-        Some("claude-choice"),
-        Some("low"),
     )
-    .await;
+    .canonical_mint(&AgentProvider::Claude, Some("claude-choice"), Some("low"))
+    .await
+    .unwrap();
     assert!(
         matches!(
             advice.require_create_selection(Some("claude-choice"), Some("low")),
@@ -200,14 +201,15 @@ async fn canonical_claude_creation_selection_uses_actual_provider_catalog() {
         ),
         "Claude effort refusal must come from Claude's catalog even with Codex down"
     );
-    let advice = crate::routes::planner_model::creation_catalog_advice(
-        &fx.route,
+    let advice = crate::planner_model::acquisition::CatalogAccess::new(
+        &fx.route.provider_availability,
+        &fx.route.claude_planner,
+        &fx.route.acp_planner,
         &codex,
-        &AgentProvider::Claude,
-        Some("claude-choice"),
-        Some("high"),
     )
-    .await;
+    .canonical_mint(&AgentProvider::Claude, Some("claude-choice"), Some("high"))
+    .await
+    .unwrap();
     advice
         .require_create_selection(Some("claude-choice"), Some("high"))
         .unwrap();
