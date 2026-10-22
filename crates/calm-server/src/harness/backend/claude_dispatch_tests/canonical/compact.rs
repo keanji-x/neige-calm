@@ -511,3 +511,55 @@ async fn canonical_claude_compact_rejects_other_session_owner() {
     assert_eq!(fx.frame().await, before);
     harness.shutdown().await.unwrap();
 }
+
+#[tokio::test]
+async fn canonical_claude_compact_start_without_end_expires() {
+    let (fx, harness, before) = ready().await;
+    std::fs::write(fx.dir.path().join("scenario"), "compact-hang").unwrap();
+    harness.compact_canonical(fx.source.clone()).await.unwrap();
+    let turn = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if let crate::harness::HarnessState::CompactionRunning { turn_id, .. } =
+                harness.state_for_test().await
+            {
+                break turn_id;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    let mut tx = begin_immediate_tx(fx.owner.repo.db()).await.unwrap();
+    let mut carrier = current_input_carrier_tx(&mut tx, &fx.owner.card, &fx.owner.worker)
+        .await
+        .unwrap();
+    crate::conversation_inputs::accept_human_tx(
+        &mut tx,
+        &fx.source.current_principal().unwrap(),
+        &mut carrier,
+        HumanPayload {
+            text: "later input".into(),
+            bound_attachments: vec![],
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    let pending = fx.frame().await;
+    harness
+        .set_state_for_test(crate::harness::HarnessState::CompactionRunning {
+            turn_id: turn,
+            started_at: std::time::Instant::now()
+                - crate::harness::HarnessConfig::default().max_turn_duration,
+        })
+        .await;
+    let after = tokio::time::timeout(Duration::from_secs(5), fx.phase("wedged"))
+        .await
+        .unwrap();
+    assert_eq!(after["compact_outcome"]["status"], "unconfirmed");
+    assert_eq!(after["last_turn_id"], before["last_turn_id"]);
+    assert_eq!(after["canonical_inputs"], pending["canonical_inputs"]);
+    assert!(harness.compact_canonical(fx.source.clone()).await.is_err());
+    assert_eq!(fx.session.user_line_writes_for_test(), 2);
+    harness.shutdown().await.unwrap();
+}

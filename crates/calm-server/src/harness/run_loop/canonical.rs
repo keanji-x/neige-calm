@@ -173,7 +173,9 @@ pub(super) async fn publish(inner: &Inner, next: CommittedFrame) {
         if header.phase == HarnessPhaseTag::TurnRunning && header.last_turn_id.as_ref() == Some(turn_id));
     let same_interrupt = matches!(&*state, HarnessState::Issuing {kind:IssuingKind::Interrupt {target_turn_id,..},..}
         if header.phase == HarnessPhaseTag::IssuingInterrupt && header.last_turn_id.as_ref() == Some(target_turn_id));
-    if !same_running && !same_interrupt {
+    let same_maintenance =
+        compact_command::canonical::preserves_observation(inner, &state, header).await;
+    if !same_running && !same_interrupt && !same_maintenance {
         *state = if header.phase == HarnessPhaseTag::TurnRunning {
             match &header.last_turn_id {
                 Some(turn) => HarnessState::turn_running(turn.clone(), Instant::now()),

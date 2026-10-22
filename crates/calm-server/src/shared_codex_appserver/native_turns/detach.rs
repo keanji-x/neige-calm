@@ -107,7 +107,12 @@ impl State {
         for slot in self.slots.values_mut() {
             slot.settled_activity = None;
             slot.unresolved_candidates.clear();
-            slot.retired.clear();
+            // Retired maintenance is still evidence of an uncertain operation,
+            // never current control authority. Keep it across source loss too.
+            slot.retired.retain(|_, execution| match execution.input {
+                NativeInput::Maintenance(_) => true,
+                NativeInput::Legacy | NativeInput::Canonical(_) => false,
+            });
             if let Some(current) = &mut slot.current {
                 match current.input {
                     NativeInput::Legacy | NativeInput::Canonical(_) => {

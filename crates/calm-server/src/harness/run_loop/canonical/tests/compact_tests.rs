@@ -335,3 +335,181 @@ async fn canonical_codex_compact_refused_native_activity_cannot_become_maintenan
     assert_no_request(&mut peer).await;
     shutdown(&fx.harness, &mut peer).await;
 }
+
+async fn accept_during_compact(fx: &Fixture) -> CanonicalHarnessSnapshot {
+    let mut tx = begin_immediate_tx(fx.original.repo.db()).await.unwrap();
+    let mut carrier = current_input_carrier_tx(
+        &mut tx,
+        fx.harness.inner.card_id.as_str(),
+        &fx.harness.inner.worker_session_id,
+    )
+    .await
+    .unwrap();
+    crate::conversation_inputs::accept_human_tx(
+        &mut tx,
+        &fx.source.current_principal().unwrap(),
+        &mut carrier,
+        HumanPayload {
+            text: "pending during maintenance".into(),
+            bound_attachments: vec![],
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    fx.frame().await
+}
+
+#[tokio::test]
+async fn canonical_codex_compact_displaced_then_source_loss_wedges() {
+    let fx = Fixture::new().await;
+    let (client, mut peer, forwarder) =
+        crate::shared_codex_appserver::native_owner_tests::connect_with_reader(&fx.daemon).await;
+    let thread = super::content_tests::start(&fx, &mut peer, fx.message.clone(), "user").await;
+    super::content_tests::complete(&fx, &mut peer, &thread, "user").await;
+    let before = fx.frame().await;
+    let thread = before.header.last_thread_id.as_deref().unwrap();
+    let task = compact(&fx);
+    let call = request(&mut peer).await;
+    send(&mut peer, json!({"id":call["id"],"result":{}})).await;
+    task.await.unwrap().unwrap();
+    notify_thread(
+        &fx.daemon,
+        &mut peer,
+        thread,
+        "turn/started",
+        json!({"id":"maintenance"}),
+    )
+    .await;
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while fx
+            .frame()
+            .await
+            .header
+            .compact_outcome
+            .unwrap()
+            .turn_id
+            .as_deref()
+            != Some("maintenance")
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    // Stop canonical observation while the independent native reader displaces
+    // the maintenance execution and invalidates its source.
+    let issuance = fx.harness.inner.issuance.lock().await;
+    let pending = accept_during_compact(&fx).await;
+    notify_thread(
+        &fx.daemon,
+        &mut peer,
+        thread,
+        "turn/started",
+        json!({"id":"foreign"}),
+    )
+    .await;
+    peer.close(None).await.unwrap();
+    crate::shared_codex_appserver::native_owner_tests::reader_finished(&client).await;
+    tokio::time::timeout(Duration::from_secs(5), forwarder)
+        .await
+        .unwrap()
+        .unwrap();
+    let outcome = pending.header.compact_outcome.as_ref().unwrap();
+    let target = crate::harness::backend::MaintenanceTarget {
+        card_id: fx.harness.inner.card_id.to_string(),
+        track_id: fx.harness.inner.track_id.to_string(),
+        worker_session_id: fx.harness.inner.worker_session_id.clone(),
+        thread_id: thread.into(),
+        operation_id: outcome.operation_id.clone(),
+    };
+    assert!(matches!(
+        fx.harness
+            .inner
+            .backend
+            .observe_maintenance(&target)
+            .await
+            .unwrap(),
+        Some(crate::harness::backend::MaintenanceObservation::Unconfirmed)
+    ));
+    drop(issuance);
+    let held = fx.wait_phase(HarnessPhaseTag::Wedged).await;
+    assert_eq!(
+        held.header.compact_outcome.unwrap().status,
+        CompactStatus::Unconfirmed
+    );
+    assert_eq!(held.header.last_turn_id, before.header.last_turn_id);
+    assert_eq!(held.canonical_inputs, pending.canonical_inputs);
+    fx.harness.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn canonical_codex_compact_ack_without_start_expires() {
+    assert_observation_expires(false).await;
+}
+
+#[tokio::test]
+async fn canonical_codex_compact_start_without_end_expires() {
+    assert_observation_expires(true).await;
+}
+
+async fn assert_observation_expires(started: bool) {
+    let (fx, _client, mut peer) = ready().await;
+    let before = fx.frame().await;
+    let task = compact(&fx);
+    let call = request(&mut peer).await;
+    send(&mut peer, json!({"id":call["id"],"result":{}})).await;
+    task.await.unwrap().unwrap();
+    if started {
+        notify_thread(
+            &fx.daemon,
+            &mut peer,
+            before.header.last_thread_id.as_deref().unwrap(),
+            "turn/started",
+            json!({"id":"maintenance"}),
+        )
+        .await;
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while fx
+                .frame()
+                .await
+                .header
+                .compact_outcome
+                .unwrap()
+                .turn_id
+                .is_none()
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+    }
+    let issuance = fx.harness.inner.issuance.lock().await;
+    let pending = accept_during_compact(&fx).await;
+    let inner = &fx.harness.inner;
+    let aged = if started {
+        HarnessState::CompactionRunning {
+            turn_id: "maintenance".into(),
+            started_at: Instant::now() - inner.config.max_turn_duration,
+        }
+    } else {
+        HarnessState::Compacting {
+            since: Instant::now() - inner.config.interrupt_completion_budget,
+        }
+    };
+    *inner.state.lock().await = aged;
+    // Publishing an unrelated input refresh must not renew the same operation's budget.
+    publish(inner, read_current(inner).await.unwrap()).await;
+    drop(issuance);
+    let held = fx.wait_phase(HarnessPhaseTag::Wedged).await;
+    assert_eq!(
+        held.header.compact_outcome.unwrap().status,
+        CompactStatus::Unconfirmed
+    );
+    assert_eq!(held.header.last_turn_id, before.header.last_turn_id);
+    assert_eq!(held.canonical_inputs, pending.canonical_inputs);
+    assert!(held.canonical_inputs.active.is_none());
+    assert_no_request(&mut peer).await;
+    shutdown(&fx.harness, &mut peer).await;
+}

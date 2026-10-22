@@ -376,12 +376,13 @@ PY
     fi
     cat > /dev/null
     exit 0 ;;
-  compact|compact-no-boundary|compact-usage|compact-boundary-failed)
+  compact|compact-no-boundary|compact-usage|compact-boundary-failed|compact-hang)
     # A manual compaction: the one line must be `/compact`; the CLI answers with its boundary
     # (left out by `compact-no-boundary`), its own command output, and a result without usage
     # (`compact-usage`: with the summary's usage).
     [ "$(jq -c '.message.content' <<< "$LINE")" = '[{"type":"text","text":"/compact"}]' ] || {
       echo "fake claude: expected the /compact line" >&2; exit 7; }
+    if [ "$SCENARIO" = compact-hang ]; then exec sleep 300; fi
     echo '{"type":"system","subtype":"status","status":"compacting","session_id":"'"$SID"'"}'
     if [ "$SCENARIO" != compact-no-boundary ]; then
       echo '{"type":"system","subtype":"compact_boundary","session_id":"'"$SID"'","uuid":"'"$(cat /proc/sys/kernel/random/uuid)"'","compact_metadata":{"trigger":"manual","pre_tokens":1234}}'

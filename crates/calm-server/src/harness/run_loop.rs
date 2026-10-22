@@ -3694,9 +3694,8 @@ async fn watchdog_tick(inner: &Arc<Inner>) -> Result<()> {
     #[cfg(feature = "fixtures")]
     crate::test_seams::pause_point("conversation-watchdog-tick", inner.card_id.as_str()).await;
     held::pause_watchdog_while_held(inner).await;
-    let compact_timed_out = matches!(&*inner.state.lock().await,
-        HarnessState::Compacting { since } if since.elapsed() >= inner.config.interrupt_completion_budget)
-        || matches!(&*inner.state.lock().await, HarnessState::CompactionRunning { started_at, .. } if started_at.elapsed() >= inner.config.max_turn_duration);
+    let compact_timed_out =
+        compact_command::observation_expired(&*inner.state.lock().await, &inner.config);
     if compact_timed_out && inner.inputs.canonical().is_none() {
         compact_command::settle(
             inner,

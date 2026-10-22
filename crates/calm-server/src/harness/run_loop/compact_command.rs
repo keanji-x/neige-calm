@@ -4,6 +4,14 @@ use provider::control::CompactSubmission;
 
 pub(super) mod canonical;
 
+/// Both maintenance owners use the same existing start and completion budgets.
+pub(super) fn observation_expired(state: &HarnessState, config: &HarnessConfig) -> bool {
+    matches!(state, HarnessState::Compacting { since }
+        if since.elapsed() >= config.interrupt_completion_budget)
+        || matches!(state, HarnessState::CompactionRunning { started_at, .. }
+            if started_at.elapsed() >= config.max_turn_duration)
+}
+
 pub(super) enum Source {
     Historical,
     Canonical(crate::auth::HumanInputSource),

@@ -263,6 +263,27 @@ pub(in crate::harness::run_loop) fn wedge(snapshot: &mut CanonicalHarnessSnapsho
     }
 }
 
+/// A refresh of the same operation must not renew its observation budget.
+pub(in crate::harness::run_loop) async fn preserves_observation(
+    inner: &Inner,
+    state: &HarnessState,
+    next: &calm_types::harness::snapshot::HarnessRuntimeHeader,
+) -> bool {
+    let prior = inner
+        .inputs
+        .canonical()
+        .expect("canonical consumer")
+        .committed()
+        .await;
+    prior.snapshot.header.phase == HarnessPhaseTag::Compacting
+        && next.phase == HarnessPhaseTag::Compacting
+        && prior.snapshot.header.compact_outcome == next.compact_outcome
+        && (matches!(state, HarnessState::Compacting { .. }
+            if next.compact_outcome.as_ref().is_some_and(|outcome| outcome.turn_id.is_none()))
+            || matches!(state, HarnessState::CompactionRunning { turn_id, .. }
+                if next.compact_outcome.as_ref().and_then(|outcome| outcome.turn_id.as_ref()) == Some(turn_id)))
+}
+
 /// Poll the exact installed maintenance driver. Native notifications are wakeups, never proof.
 pub(in crate::harness::run_loop) async fn observe(inner: &Arc<Inner>) -> Result<bool> {
     let current = canonical::read_current(inner).await?;
@@ -282,13 +303,11 @@ pub(in crate::harness::run_loop) async fn observe(inner: &Arc<Inner>) -> Result<
         .backend
         .observe_maintenance(&target(inner, outcome))
         .await?;
-    let Some(observed) = observed else {
-        return Ok(true);
-    };
     let mut next = current.snapshot.clone();
     match observed {
-        MaintenanceObservation::Unconfirmed => wedge(&mut next),
-        MaintenanceObservation::Turn { turn_id, settled } => {
+        None => {}
+        Some(MaintenanceObservation::Unconfirmed) => wedge(&mut next),
+        Some(MaintenanceObservation::Turn { turn_id, settled }) => {
             if outcome
                 .turn_id
                 .as_ref()
@@ -312,6 +331,11 @@ pub(in crate::harness::run_loop) async fn observe(inner: &Arc<Inner>) -> Result<
                 }
             }
         }
+    }
+    if next.header.phase == HarnessPhaseTag::Compacting
+        && super::observation_expired(&*inner.state.lock().await, &inner.config)
+    {
+        wedge(&mut next);
     }
     if next != current.snapshot {
         let committed = write(inner, &current, next, TransitionAdmission::Settlement).await?;
