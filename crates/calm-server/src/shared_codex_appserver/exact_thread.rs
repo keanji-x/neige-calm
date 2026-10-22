@@ -196,7 +196,7 @@ impl RecoveryThread<'_> {
         let expected = self
             .daemon
             .native_turns
-            .settlement_fence(&client, self.thread_id)?;
+            .settlement_fence(client, self.thread_id)?;
         let thread = admit
             .finish(
                 client

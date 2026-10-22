@@ -146,12 +146,11 @@ impl SharedCodexAppServer {
                     replay,
                     ..
                 } = &mut core.state
+                    && Arc::ptr_eq(current, &client)
                 {
-                    if Arc::ptr_eq(current, &client) {
-                        // Drop raw credentials and exclusions together at completion.
-                        *replay = ConnectionReplay::Complete;
-                        return Ok(());
-                    }
+                    // Drop raw credentials and exclusions together at completion.
+                    *replay = ConnectionReplay::Complete;
+                    return Ok(());
                 }
                 return Err(CalmError::Conflict("Codex replay source changed".into()));
             }
