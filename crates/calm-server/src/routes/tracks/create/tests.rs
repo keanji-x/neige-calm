@@ -1,5 +1,5 @@
-//! The keyed create's pure decisions: the request digest, the operation-key namespace, the arm
-//! table and the outcome mapping.
+//! The keyed create's pure decisions: the request digest, operation-key namespace
+//! and outcome mapping.
 
 use super::delivery::response_for;
 use super::*;
@@ -62,25 +62,6 @@ fn the_track_create_namespace_never_collides_with_a_conversation_key() {
     let create = derive_track_create_operation_key("id-1", "key-a");
     let track = crate::conversation_keys::derive_track_conversation_keys("id-1", "key-a");
     assert_ne!(create, track.operation_key);
-}
-
-/// [`SelectedArm`]'s table, cell by cell.
-#[test]
-fn the_arm_is_decided_by_the_binding_then_by_what_sits_on_the_chosen_key() {
-    let table = [
-        // (binding_hit, chosen_is_occupied, expected)
-        (false, false, SelectedArm::Mint),
-        (false, true, SelectedArm::BindingLost),
-        (true, true, SelectedArm::Replay),
-        (true, false, SelectedArm::GenuineRetry),
-    ];
-    for (binding_hit, occupied, want) in table {
-        assert_eq!(
-            select_arm(binding_hit, occupied),
-            want,
-            "binding_hit={binding_hit} occupied={occupied}"
-        );
-    }
 }
 
 /// A collision outcome is a success only on a resuming arm. Constructed directly: the

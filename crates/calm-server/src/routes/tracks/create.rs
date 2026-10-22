@@ -25,33 +25,12 @@ use crate::state::RouteState;
 use super::{CreateTrackOptions, TrackCreateIdempotencyClaim, create_track_structure};
 
 mod creation_plan;
-pub(super) use creation_plan::{
-    CreationStorage, creation_storage_contract, prepare_canonical_creation,
-};
+pub(super) use creation_plan::creation_plan;
+mod historical_plan;
+pub(super) use historical_plan::{plan_first_message, plan_historical_receipt, plan_keyed_create};
 mod delivery;
 pub(super) mod dormant;
 use delivery::{SubmitArm, start_planner_harness_with_first_message};
-
-/// Which arm this request takes: binding miss + vacant key → `Mint`; hit + occupied →
-/// `Replay`; hit + vacant → `GenuineRetry`; miss + occupied → `BindingLost` (unreachable;
-/// 500, fail closed — minting there would leave an orphan track behind a 409).
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum SelectedArm {
-    Mint,
-    Replay,
-    GenuineRetry,
-    BindingLost,
-}
-
-/// `chosen_is_occupied` is the state of the selected key, not the shape of its name.
-fn select_arm(binding_hit: bool, chosen_is_occupied: bool) -> SelectedArm {
-    match (binding_hit, chosen_is_occupied) {
-        (false, false) => SelectedArm::Mint,
-        (false, true) => SelectedArm::BindingLost,
-        (true, true) => SelectedArm::Replay,
-        (true, false) => SelectedArm::GenuineRetry,
-    }
-}
 
 /// Whether the payload this request submits must be frozen to what the predecessor
 /// submitted or re-derived from current state.
@@ -78,26 +57,21 @@ struct PriorAttempt {
     cwd: Option<String>,
 }
 
-/// What `POST /api/tracks` decided before it validated any of the create path. A type,
-/// not an `Option<PriorAttempt>`: the minting arms cannot carry a prior attempt and the
-/// resuming arms always do.
+/// Creation ownership is decided before historical preparation. Only excluded
+/// shapes may mint historically; a historical replay carries the actual receipt.
+type CanonicalCreation =
+    CreateShape<creation_plan::HumanTrackCreationPlan, creation_plan::EmptyTrackCreationPlan>;
+
 pub(super) enum CreatePlan {
-    /// No `first_message` and no `Idempotency-Key`: no lookup, no binding row; a retry
-    /// mints a second track.
-    Legacy,
-    /// No `first_message`, but a key with no binding to adopt; the binding row is written
-    /// inside the mint transaction.
-    MessageLessMint(MessageLessPlan),
-    /// No `first_message`, and a key a prior create already minted under. Mints nothing.
-    MessageLessResume(MessageLessResume),
-    /// A `first_message` on a key with no binding to adopt; this request mints.
-    Mint(FirstMessagePlan),
-    /// A `first_message` on a key a prior attempt already minted under; the create path,
-    /// validation included, is skipped.
-    Resume(ResumeFirstMessage),
+    Canonical(KeyedPlan<CanonicalCreation, CanonicalCreation>),
+    HistoricalReceipt {
+        binding: crate::db::sqlite::TrackCreateBinding,
+        request: super::CreateTrackRequest,
+    },
+    Excluded(super::CreateTrackRequest),
 }
 
-/// A [`CreatePlan::Resume`]'s payload: the shared plan plus the prior attempt
+/// A [`KeyedPlan::Resume`]'s payload: the shared plan plus the prior attempt
 /// that makes it a resume.
 pub(super) struct ResumeFirstMessage {
     plan: FirstMessagePlan,
@@ -148,7 +122,7 @@ impl MessageLessPlan {
     }
 }
 
-/// A [`CreatePlan::MessageLessResume`]'s payload; carries no `NewTrack`, so this arm
+/// A message-less resume's payload; carries no `NewTrack`, so this arm
 /// cannot mint.
 pub(super) struct MessageLessResume {
     track_id: String,
@@ -233,9 +207,9 @@ pub(super) struct KeyedCreate {
 }
 
 /// What [`plan_keyed_create`] decided: mint under a vacant key, or resume what it minted.
-pub(super) enum KeyedPlan {
-    Mint(FirstMessagePlan),
-    Resume(ResumeFirstMessage),
+pub(super) enum KeyedPlan<Mint = FirstMessagePlan, Resume = ResumeFirstMessage> {
+    Mint(Mint),
+    Resume(Resume),
 }
 
 /// `SHA-256("track-create:{area_id}:{key}")`, prefixed `track-create-`: its own
@@ -260,90 +234,19 @@ fn track_create_key(headers: &HeaderMap) -> Result<Option<String>> {
     Ok(idempotency_key)
 }
 
-/// Parse and validate the first-message half of the request, and pick the arm — before
-/// `create_track` validates, let alone mints, anything.
-pub(super) async fn plan_first_message(
+async fn first_message_attempt(
     s: &RouteState,
-    headers: &HeaderMap,
-    first_message: Option<String>,
-    area_id: &str,
-    shape: CreateRequestShape,
-) -> Result<CreatePlan> {
-    // The header is parsed BEFORE the `first_message` fork because it decides the
-    // message-less fork too; a malformed key on a message-less create is a 400.
-    let idempotency_key = track_create_key(headers)?;
-    let Some(text) = first_message else {
-        // No key means the legacy path verbatim; a key opts this shape into the same binding
-        // row the `first_message` path uses.
-        let Some(idempotency_key) = idempotency_key else {
-            return Ok(CreatePlan::Legacy);
-        };
-        return plan_message_less(s, area_id, shape, idempotency_key).await;
-    };
-    let idempotency_key = idempotency_key.ok_or_else(|| {
-        CalmError::BadRequest(
-            "Idempotency-Key header is required when `first_message` is present, so a retried create cannot mint a second track or deliver the message twice"
-                .into(),
-        )
-    })?;
-    let create_request_sha256 = create_request_digest(&shape)?;
-    Ok(
-        match plan_keyed_create(
-            s,
-            KeyedCreate {
-                area_id: area_id.to_string(),
-                idempotency_key,
-                create_request_sha256,
-                text,
-            },
-        )
-        .await?
-        {
-            KeyedPlan::Mint(plan) => CreatePlan::Mint(plan),
-            KeyedPlan::Resume(resume) => CreatePlan::Resume(resume),
-        },
-    )
-}
-
-/// The keyed create's decision, before anything is validated or minted: the binding lookup,
-/// the fingerprint check and the arm. `POST /api/tracks` and `neige_track_add` both run it.
-pub(super) async fn plan_keyed_create(s: &RouteState, request: KeyedCreate) -> Result<KeyedPlan> {
+    request: KeyedCreate,
+    same_key_claim: crate::per_card_lock::PerCardLockGuard,
+) -> Result<(FirstMessagePlan, Option<crate::operation::Operation>)> {
     let KeyedCreate {
         area_id,
         idempotency_key,
         create_request_sha256,
         text,
     } = request;
-    let area_id = area_id.as_str();
-    // Run before the folder claim, the track row, the cards and `materialize_workspace`,
-    // so a rejected message leaves no track behind.
-    validate_first_message(&text)?;
-
     let first_message_sha256 = first_message_digest(&text);
-    let base_key = derive_track_create_operation_key(area_id, &idempotency_key);
-    // Taken before either lookup, released when the plan is dropped at the end of the request.
-    let same_key_claim = lock_card(&s.conversation_first_message_locks, &base_key).await;
-
-    // Lookup 1 — a row that committed with the id, so it is still answered after every
-    // failure that leaves no operation row behind.
-    let binding = s
-        .repo
-        .track_create_idempotency_get(area_id, &idempotency_key)
-        .await?;
-    if let Some(binding) = binding.as_ref() {
-        crate::conversation_inputs::require_historical_storage(
-            s.repo.as_ref(),
-            &binding.planner_card_id,
-        )
-        .await?;
-        ensure_binding_create_matches(
-            binding,
-            &create_request_sha256,
-            &idempotency_key,
-            CreateShape::WithFirstMessage(()),
-        )?;
-    }
-
+    let base_key = derive_track_create_operation_key(&area_id, &idempotency_key);
     // Lookup 2 — which harness-start attempt this request joins. May 409
     // `idempotency_key_exhausted`; deliberately before any mint.
     let operation_key = retryable_operation_key(s, &base_key).await?;
@@ -361,91 +264,7 @@ pub(super) async fn plan_keyed_create(s: &RouteState, request: KeyedCreate) -> R
         _same_key_claim: same_key_claim,
     };
 
-    let selected_arm = select_arm(binding.is_some(), chosen_existing.is_some());
-    match selected_arm {
-        SelectedArm::Mint => Ok(KeyedPlan::Mint(plan)),
-        SelectedArm::BindingLost => Err(CalmError::Internal(format!(
-            "operation {operation_key} exists under this Idempotency-Key but no \
-             track_create_idempotency row does. The binding commits inside the transaction that \
-             mints the track, strictly before the operation is submitted, so this state is not \
-             reachable from POST /api/tracks. Refusing rather than minting: a mint here would \
-             commit a track and then collide on the operation's unique key, leaving an orphan \
-             track behind a 409."
-        ))),
-        arm => {
-            let binding = binding.expect("both resuming arms are selected by a binding hit");
-            // Consume the chosen operation once so both the message criterion and the replayed
-            // cwd come from the exact attempt this request is joining.
-            let (prior_arm, cwd) = match arm {
-                SelectedArm::Replay => {
-                    let op = chosen_existing
-                        .expect("the Replay arm is selected by an occupied chosen key");
-                    let payload: PlannerHarnessStartOperationPayload =
-                        serde_json::from_value(op.payload)?;
-                    ensure_replay_message_matches(&payload, &plan)?;
-                    (PriorArm::Replay, Some(payload.cwd))
-                }
-                SelectedArm::GenuineRetry => {
-                    let allow_edited_message = operation_key != base_key;
-                    ensure_binding_message_matches(&binding, &plan, allow_edited_message)?;
-                    (PriorArm::GenuineRetry, None)
-                }
-                _ => unreachable!("mint and binding-lost arms returned above"),
-            };
-            let prior = PriorAttempt {
-                arm: prior_arm,
-                track_id: binding.track_id,
-                planner_card_id: binding.planner_card_id,
-                report_card_id: binding.report_card_id,
-                cwd,
-            };
-            Ok(KeyedPlan::Resume(ResumeFirstMessage { plan, prior }))
-        }
-    }
-}
-
-/// The message-less twin of [`plan_first_message`]'s keyed half: one lookup, a two-cell
-/// table. The lock is taken on the SAME derived key, so the two shapes serialize
-/// against each other on the one binding row.
-async fn plan_message_less(
-    s: &RouteState,
-    area_id: &str,
-    shape: CreateRequestShape,
-    idempotency_key: String,
-) -> Result<CreatePlan> {
-    let create_request_sha256 = create_request_digest(&shape)?;
-    let base_key = derive_track_create_operation_key(area_id, &idempotency_key);
-    let same_key_claim = lock_card(&s.conversation_first_message_locks, &base_key).await;
-    let binding = s
-        .repo
-        .track_create_idempotency_get(area_id, &idempotency_key)
-        .await?;
-    let Some(binding) = binding else {
-        return Ok(CreatePlan::MessageLessMint(MessageLessPlan {
-            idempotency_key,
-            create_request_sha256,
-            _same_key_claim: same_key_claim,
-        }));
-    };
-    crate::conversation_inputs::require_historical_storage(
-        s.repo.as_ref(),
-        &binding.planner_card_id,
-    )
-    .await?;
-    // The create shape is permanent once its track commits, so a mismatching request is a
-    // conflict rather than something to act on.
-    ensure_binding_create_matches(
-        &binding,
-        &create_request_sha256,
-        &idempotency_key,
-        CreateShape::MessageLess(()),
-    )?;
-    Ok(CreatePlan::MessageLessResume(MessageLessResume {
-        track_id: binding.track_id,
-        planner_card_id: binding.planner_card_id,
-        report_card_id: binding.report_card_id,
-        _same_key_claim: same_key_claim,
-    }))
+    Ok((plan, chosen_existing))
 }
 
 /// The create-shape digest, in one place so both plans agree about whether one key

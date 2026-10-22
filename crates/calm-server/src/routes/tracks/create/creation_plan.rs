@@ -6,20 +6,24 @@ use super::*;
 use crate::db::sqlite::TrackWorkspacePlan;
 use std::path::PathBuf;
 
-pub(in crate::routes::tracks) enum CreationStorage {
-    FreshCanonical,
-    CanonicalReplay,
-    Historical,
-}
-
 /// Permanent receipts decide first; a new key uses the creation owner's static
 /// capability. Runtime readiness and execution permission never choose storage.
-pub(in crate::routes::tracks) async fn creation_storage_contract(
+pub(in crate::routes::tracks) async fn creation_plan(
     state: &RouteState,
-    source: &crate::auth::HumanInputSource,
+    source: Option<&crate::auth::HumanInputSource>,
     headers: &HeaderMap,
-    request: &CreateTrackRequest,
-) -> Result<CreationStorage> {
+    request: CreateTrackRequest,
+) -> Result<CreatePlan> {
+    let Some(source) = source else {
+        if request.first_message.is_some() {
+            return Err(CalmError::Unauthorized);
+        }
+        let shape = CreateRequestShape::from_request(&request)?;
+        if canonical_creation_supported(&shape, CreateShape::MessageLess(())) {
+            return Err(CalmError::Unauthorized);
+        }
+        return Ok(CreatePlan::Excluded(request));
+    };
     let key = track_create_key(headers)?;
     if let Some(text) = &request.first_message {
         if key.is_none() {
@@ -29,13 +33,15 @@ pub(in crate::routes::tracks) async fn creation_storage_contract(
         }
         validate_first_message(text)?;
     }
+    let shape = CreateRequestShape::from_request(&request)?;
     let source = source.clone();
     let area_id = request.area_id.to_string();
-    let shape = CreateRequestShape::from_request(request)?;
     let input = match &request.first_message {
         Some(_) => CreateShape::WithFirstMessage(()),
         None => CreateShape::MessageLess(()),
     };
+    let workspace_root = state.workspace_root.clone();
+    let headers = headers.clone();
     crate::db::write_in_tx_typed(state.repo.as_ref(), move |tx| {
         Box::pin(async move {
             let principal = source.current_principal()?;
@@ -44,7 +50,7 @@ pub(in crate::routes::tracks) async fn creation_storage_contract(
                     .await?
                     .is_some()
                 {
-                    return Ok(CreationStorage::CanonicalReplay);
+                    return Ok(CreatePlan::Canonical(KeyedPlan::Resume(prepare_canonical_creation(request, &headers, workspace_root)?)));
                 }
                 if let Some(binding) =
                     crate::db::sqlite::track_create_idempotency_get_tx(tx, &area_id, key).await?
@@ -56,21 +62,25 @@ pub(in crate::routes::tracks) async fn creation_storage_contract(
                         )
                         .await?
                         {
-                            CreationStorage::CanonicalReplay
+                            CreatePlan::Canonical(KeyedPlan::Resume(prepare_canonical_creation(request, &headers, workspace_root)?))
                         } else {
-                            CreationStorage::Historical
+                            CreatePlan::HistoricalReceipt { binding, request }
                         },
                     );
                 }
-                if super::dormant::prior_start_attempt_tx(tx, &area_id, key).await? {
-                    return Ok(CreationStorage::Historical);
+                if canonical_creation_supported(&shape, input)
+                    && super::dormant::prior_start_attempt_tx(tx, &area_id, key).await?
+                {
+                    return Err(CalmError::IdempotencyKeyReused(
+                        "this Idempotency-Key has a historical start attempt without a creation receipt".into(),
+                    ));
                 }
             }
             // A storage decision grants no resource access. The immutable
             // replay and historical owners recheck their own admission; fresh
             // excluded shapes must retain that owner's error ordering too.
             if !canonical_creation_supported(&shape, input) {
-                return Ok(CreationStorage::Historical);
+                return Ok(CreatePlan::Excluded(request));
             }
             let area = crate::organization_access::require_area_access_tx(
                 tx,
@@ -80,18 +90,17 @@ pub(in crate::routes::tracks) async fn creation_storage_contract(
             )
             .await?;
             Ok(if area.kind == crate::model::AreaKind::User {
-                CreationStorage::FreshCanonical
+                CreatePlan::Canonical(KeyedPlan::Mint(prepare_canonical_creation(request, &headers, workspace_root)?))
             } else {
-                CreationStorage::Historical
+                CreatePlan::Excluded(request)
             })
         })
     })
     .await
 }
 
-// The one creation-owned capability rule; both dispatch and allocation consume
-// it. Historical compatibility stops creating these variants when their full
-// canonical preparation/start path is implemented.
+// The creation owner admits blank managed canonical shapes here. Excluded
+// creation kinds retain historical preparation; receipts retain their own storage.
 fn canonical_creation_supported(request: &CreateRequestShape, input: CreateShape) -> bool {
     use calm_types::runtime::AgentProtocol;
     let supported = match (request.planner_provider.protocol(), input) {

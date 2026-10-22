@@ -681,15 +681,15 @@ async fn canonical_claude_creation_old_key_replays_historical_without_new_mint()
     .await
     .unwrap();
     assert!(matches!(
-        crate::routes::tracks::create::creation_storage_contract(
+        crate::routes::tracks::create::creation_plan(
             &fx.route,
-            &fx.source,
+            Some(&fx.source),
             &headers,
-            &fx.request(FIRST)
+            fx.request(FIRST)
         )
         .await
         .unwrap(),
-        crate::routes::tracks::create::CreationStorage::Historical
+        crate::routes::tracks::create::CreatePlan::HistoricalReceipt { .. }
     ));
     let before = fx.counts().await;
     assert!(matches!(

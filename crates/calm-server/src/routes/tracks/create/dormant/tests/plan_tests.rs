@@ -131,7 +131,7 @@ async fn original_selection_replays_despite_changed_catalog_advice() {
 
 #[tokio::test]
 async fn canonical_claude_creation_unsupported_shapes_keep_explicit_coverage() {
-    use crate::routes::tracks::create::{CreationStorage, creation_storage_contract};
+    use crate::routes::tracks::create::{CreatePlan, creation_plan};
     let fx = Fixture::new().await;
     let original = serde_json::json!({"area_id":fx.area,"title":"new blank Track","planner_provider":"claude","first_message":FIRST,"theme":{"fg":[255,255,255],"bg":[0,0,0]}});
     for (field, value) in [
@@ -155,10 +155,10 @@ async fn canonical_claude_creation_unsupported_shapes_keep_explicit_coverage() {
         headers.insert("idempotency-key", "excluded".parse().unwrap());
         assert!(
             matches!(
-                creation_storage_contract(&fx.route, &fx.source, &headers, &request)
+                creation_plan(&fx.route, Some(&fx.source), &headers, request)
                     .await
                     .unwrap(),
-                CreationStorage::Historical
+                CreatePlan::Excluded(_)
             ),
             "{field}"
         );
@@ -169,10 +169,10 @@ async fn canonical_claude_creation_unsupported_shapes_keep_explicit_coverage() {
         let mut headers = HeaderMap::new();
         headers.insert("idempotency-key", "acp".parse().unwrap());
         assert!(matches!(
-            creation_storage_contract(&fx.route, &fx.source, &headers, &request)
+            creation_plan(&fx.route, Some(&fx.source), &headers, request)
                 .await
                 .unwrap(),
-            CreationStorage::Historical
+            CreatePlan::Excluded(_)
         ));
     }
     assert_eq!(fx.counts().await, (0, 0, 0, 0, 0, 0));

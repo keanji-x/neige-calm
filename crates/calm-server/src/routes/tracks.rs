@@ -774,79 +774,82 @@ pub(crate) async fn create_track(
     actor: Actor,
     headers: HeaderMap,
     State(codex): State<CodexShellState>,
-    JsonBody(mut request): JsonBody<CreateTrackRequest>,
+    JsonBody(request): JsonBody<CreateTrackRequest>,
 ) -> Result<Response> {
     let source = source.map(|source| source.0);
-    let storage = if request.first_message.is_some() || source.is_some() {
-        create::creation_storage_contract(
-            &s,
-            source.as_ref().ok_or(CalmError::Unauthorized)?,
-            &headers,
-            &request,
-        )
-        .await?
-    } else {
-        create::CreationStorage::Historical
-    };
-    if matches!(
-        storage,
-        create::CreationStorage::FreshCanonical | create::CreationStorage::CanonicalReplay
-    ) {
-        // Area lifecycle precedes allocation/receipt transactions, just as on
-        // the historical path below. Deletion must snapshot a closed member set.
-        let _area_delete_guard =
-            crate::per_card_lock::lock_key(&s.area_delete_locks, request.area_id.as_str()).await;
-        let source = source.ok_or(CalmError::Unauthorized)?;
-        // Catalog unavailability advises nothing; it is never an execution-readiness gate.
-        // The acceptance owner applies this only to a fresh mint, after immutable replay.
-        let advice = match storage {
-            create::CreationStorage::FreshCanonical => {
-                super::planner_model::creation_catalog_advice(
-                    &s,
-                    &codex.shared_codex_appserver,
-                    &request.planner_provider,
-                    request.model.as_deref(),
-                    request.reasoning_effort.as_deref(),
-                )
-                .await
-            }
-            create::CreationStorage::CanonicalReplay | create::CreationStorage::Historical => {
-                crate::planner_model::selection_advice::CatalogAdvice::default()
-            }
-        };
-        let accepted = match create::prepare_canonical_creation(
-            request,
-            &headers,
-            s.workspace_root.clone(),
-        )? {
-            create::CreateShape::MessageLess(plan) => {
-                let track =
-                    create::dormant::allocate_dormant_empty_track(s, source, plan, advice).await?;
-                return Ok((
-                    StatusCode::CREATED,
-                    Json(calm_types::track_wire::TrackWire(track)),
-                )
-                    .into_response());
-            }
-            create::CreateShape::WithFirstMessage(plan) => {
-                create::dormant::accept_dormant_human_track(s.clone(), source.clone(), plan, advice)
+    let area_id = request.area_id.clone();
+    let selection = (
+        request.planner_provider.clone(),
+        request.model.clone(),
+        request.reasoning_effort.clone(),
+    );
+    let plan = create::creation_plan(&s, source.as_ref(), &headers, request).await?;
+    let historical = match plan {
+        create::CreatePlan::HistoricalReceipt { binding, request } => {
+            create::KeyedPlan::Resume((binding, request))
+        }
+        create::CreatePlan::Excluded(request) => create::KeyedPlan::Mint(request),
+        create::CreatePlan::Canonical(plan) => {
+            let _area_delete_guard =
+                crate::per_card_lock::lock_key(&s.area_delete_locks, area_id.as_str()).await;
+            let (plan, advice) = match plan {
+                create::KeyedPlan::Mint(plan) => {
+                    let (provider, model, effort) = selection;
+                    let advice = super::planner_model::creation_catalog_advice(
+                        &s,
+                        &codex.shared_codex_appserver,
+                        &provider,
+                        model.as_deref(),
+                        effort.as_deref(),
+                    )
+                    .await;
+                    (plan, advice)
+                }
+                create::KeyedPlan::Resume(plan) => (
+                    plan,
+                    crate::planner_model::selection_advice::CatalogAdvice::default(),
+                ),
+            };
+            let source = source.ok_or(CalmError::Unauthorized)?;
+            let accepted = match plan {
+                create::CreateShape::MessageLess(plan) => {
+                    let track =
+                        create::dormant::allocate_dormant_empty_track(s, source, plan, advice)
+                            .await?;
+                    return Ok((
+                        StatusCode::CREATED,
+                        Json(calm_types::track_wire::TrackWire(track)),
+                    )
+                        .into_response());
+                }
+                create::CreateShape::WithFirstMessage(plan) => {
+                    create::dormant::accept_dormant_human_track(
+                        s.clone(),
+                        source.clone(),
+                        plan,
+                        advice,
+                    )
                     .await?
-            }
-        };
-        let crate::db::sqlite::conversation::HumanTrackCreationAck::V1 {
-            planner_card_id, ..
-        } = accepted.ack;
-        crate::operation::planner_start_fence::wake_canonical_human(
-            s,
-            CardId::from(planner_card_id),
-            source,
-        );
-        return Ok((
-            StatusCode::CREATED,
-            Json(calm_types::track_wire::TrackWire(accepted.track)),
-        )
-            .into_response());
-    }
+                }
+            };
+            let crate::db::sqlite::conversation::HumanTrackCreationAck::V1 {
+                planner_card_id, ..
+            } = accepted.ack;
+            crate::operation::planner_start_fence::wake_canonical_human(
+                s,
+                CardId::from(planner_card_id),
+                source,
+            );
+            return Ok((
+                StatusCode::CREATED,
+                Json(calm_types::track_wire::TrackWire(accepted.track)),
+            )
+                .into_response());
+        }
+    };
+    let request = match &historical {
+        create::KeyedPlan::Mint(request) | create::KeyedPlan::Resume((_, request)) => request,
+    };
     let isolation = CreateIsolation::decode(&request.cwd, request.isolation)?;
     let historical_source = source.map(crate::conversation_inputs::HistoricalHumanSource::new);
     if let Some(source) = &historical_source
@@ -917,21 +920,46 @@ pub(crate) async fn create_track(
         crate::per_card_lock::lock_key(&s.area_delete_locks, create_area_id.as_str()).await;
     // First, before every other check: a rejected first message must leave no track,
     // no cards, no folder claim and no materialized workspace behind.
-    let plan = create::plan_first_message(
-        &s,
-        &headers,
-        request.first_message.take(),
-        request.area_id.as_str(),
-        // The caller's raw strings, cloned here before `into_parts()` moves them; the binding
-        // must not depend on `admit_template`, so a replay whose template left the roster still replays.
-        create::CreateRequestShape::from_request(&request)?,
-    )
-    .await?;
+    let (mut request, plan) = match historical {
+        create::KeyedPlan::Mint(mut request) => {
+            let plan = create::plan_first_message(
+                &s,
+                &headers,
+                request.first_message.take(),
+                request.area_id.as_str(),
+                // The caller's raw strings, cloned here before `into_parts()` moves them; the binding
+                // must not depend on `admit_template`, so a replay whose template left the roster still replays.
+                create::CreateRequestShape::from_request(&request)?,
+            )
+            .await?;
+            (request, plan)
+        }
+        create::KeyedPlan::Resume((binding, request)) => {
+            match create::plan_historical_receipt(&s, &headers, &request, binding).await? {
+                create::CreateShape::WithFirstMessage(resume) => {
+                    let track = create::resume_prior_attempt(
+                        s,
+                        &create::KeyedActor::rest(&actor, historical_source),
+                        resume,
+                    )
+                    .await?;
+                    return Ok((
+                        StatusCode::CREATED,
+                        Json(calm_types::track_wire::TrackWire(track)),
+                    )
+                        .into_response());
+                }
+                create::CreateShape::MessageLess(resume) => {
+                    return create::resume_message_less(s, actor, resume, historical_source).await;
+                }
+            }
+        }
+    };
     // The arm decision comes BEFORE the create path's request validation: the resuming arms
     // mint nothing, and re-running checks against mutable state would fail a byte-identical replay.
     // `message_less` carries the per-key claim guard that must be held until after the mint.
     let (plan, message_less) = match plan {
-        create::CreatePlan::Resume(resume) => {
+        create::CreateShape::WithFirstMessage(create::KeyedPlan::Resume(resume)) => {
             let track = create::resume_prior_attempt(
                 s,
                 &create::KeyedActor::rest(&actor, historical_source.clone()),
@@ -944,12 +972,11 @@ pub(crate) async fn create_track(
             )
                 .into_response());
         }
-        create::CreatePlan::MessageLessResume(resume) => {
+        create::CreateShape::MessageLess(create::KeyedPlan::Resume(resume)) => {
             return create::resume_message_less(s, actor, resume, historical_source).await;
         }
-        create::CreatePlan::Legacy => (None, None),
-        create::CreatePlan::Mint(plan) => (Some(plan), None),
-        create::CreatePlan::MessageLessMint(plan) => (None, Some(plan)),
+        create::CreateShape::WithFirstMessage(create::KeyedPlan::Mint(plan)) => (Some(plan), None),
+        create::CreateShape::MessageLess(create::KeyedPlan::Mint(plan)) => (None, plan),
     };
     // Historical Claude creation needs its provider ready, which also puts the CLI's model list
     // in hand (#1822); fresh blank managed creation and replays are handled above. A Codex create
