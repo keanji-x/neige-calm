@@ -6,7 +6,7 @@
 import { z } from 'zod';
 
 import type { ApiOperation } from '../api/types.js';
-import type { FailureTable, WriteClass, WriteText } from './failure-class.js';
+import type { FailureTable, WriteClass } from './failure-class.js';
 import { trackConversationCardId, type Conversation } from './conversation.js';
 
 export const todayLaunchpadSchema = z.object({
@@ -49,10 +49,6 @@ export const LAUNCHPAD_ENSURE_FAILURES: FailureTable<WriteClass> = Object.freeze
   otherwise: 'unknown',
 });
 
-export const LAUNCHPAD_ENSURE_TEXT: WriteText = Object.freeze({
-  refused: 'Today assistant was not started.', unknown: 'Starting Today assistant is unconfirmed.',
-});
-
 export const todayReportResetSchema = z.object({
   /** The launchpad track whose report was restored. */
   track_id: z.string(),
@@ -86,10 +82,6 @@ export const REPORT_RESET_FAILURES: FailureTable<WriteClass> = Object.freeze({
   rules: Object.freeze([Object.freeze({ status: Object.freeze([400, 403, 404]), is: 'refused' as const })]),
   unauthorized: 'refused',
   otherwise: 'unknown',
-});
-
-export const REPORT_RESET_TEXT: WriteText = Object.freeze({
-  refused: 'Today’s report was not reset.', unknown: 'The report reset is unconfirmed.',
 });
 
 /**

@@ -26,10 +26,3 @@ export function deleteAreaCopy(areaName: string, trackCount: number | undefined)
     confirmLabel: 'Delete area',
   });
 }
-
-export const RESET_TODAY_REPORT_COPY = Object.freeze({
-  trigger: 'Reset',
-  title: 'Reset today’s report?',
-  description: 'Today’s report goes back to empty and what it says now is discarded. This cannot be undone. Conversations are not affected.',
-  confirmLabel: 'Reset report',
-});

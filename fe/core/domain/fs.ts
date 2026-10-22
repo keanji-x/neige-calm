@@ -10,7 +10,6 @@ const directoryEntryWireSchema = z.object({
   name: z.string(),
   is_dir: z.boolean(),
 });
-export type DirectoryEntryWire = z.infer<typeof directoryEntryWireSchema>;
 
 /** `parent` is `null` at the filesystem root and only there. */
 export const directoryListingWireSchema = z.object({

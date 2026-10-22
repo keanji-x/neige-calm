@@ -1,5 +1,5 @@
 import { ListText } from '../list-typography/public.tsx';
-import type { ReactElement, ReactNode } from 'react';
+import type { ReactNode } from 'react';
 
 import { Icon, type IconName } from '../icon/public.tsx';
 import styles from './panel-card.module.css';
@@ -42,24 +42,5 @@ export function PanelModule({ title, icon, action, children, bare = false, revea
       </div>
       <div className={styles.body}>{children}</div>
     </section>
-  );
-}
-
-export function PanelAction({ label, onClick, children }: {
-  label: string;
-  onClick: () => void;
-  children: ReactElement;
-}) {
-  return (
-    <button
-      type="button"
-      data-nc-role="icon"
-      className={styles.action}
-      aria-label={label}
-      title={label}
-      onClick={onClick}
-    >
-      {children}
-    </button>
   );
 }

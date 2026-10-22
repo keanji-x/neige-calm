@@ -8,7 +8,7 @@ the existing tiny duration, including vendor lifecycles that require `transition
 
 ## Physical motion
 
-This is the default for new or changed interactive position, size and presence motion. Consumers reuse `SizeMotion`, `useSpringPresence` or the shared playback adapter and declare targets/geometry; they do not add local response frequencies, duration formulas, curves or spring solvers. The UI owner calibrates the shared response. Declared color-feedback, direct-manipulation and decorative-loop contracts remain intentional exceptions.
+This is the default for new or changed interactive position, size and presence motion. Consumers reuse `SizeMotion`, [`useSurfacePresence`](surface-presence.ts) or the shared playback adapter and declare targets/geometry; they do not add local response frequencies, duration formulas, curves or spring solvers. The UI owner calibrates the shared response. Declared color-feedback, direct-manipulation and decorative-loop contracts remain intentional exceptions.
 
 `spring.ts` uses Motion 14's `spring` solver and its analytical velocity and rest criteria. One response frequency (20/s), one damping ratio (0.72) and normalized mass define a lightly perceptible rebound. There are no per-component durations, reference distances, distance multipliers or duration bounds. Motion decides settlement.
 

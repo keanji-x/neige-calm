@@ -45,7 +45,7 @@ Astryx 通过 `styles/astryx-theme.css` 映射到同一套强调色和交互反�
 ## 交互动效
 
 新增或修改的位移、尺寸及浮层进出统一使用 `ui/motion/spring.ts` 的 Motion
-物理弹簧。组件声明目标状态与几何，复用 `SizeMotion`、`useSpringPresence`
+物理弹簧。组件声明目标状态与几何，复用 `SizeMotion`、`ui/motion/surface-presence.ts` 的 `useSurfacePresence`
 或共享播放适配器；响应与阻尼由 UI owner 统一维护，不单独调时长、曲线或
 距离倍率。中途反向继承当前位置与速度。统一深度由 `ui/motion/depth.ts` 维护：
 静止为 0，按压向里缩小下沉，松开回到 0；短暂按压允许按钮文字图标

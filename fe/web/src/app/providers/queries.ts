@@ -49,7 +49,7 @@ import {
   putSettingsOperation, settingsOperation, type SettingsBag, type SettingsPatch,
 } from '../../../../core/domain/settings.ts';
 import {
-  todayLaunchpadEnsureOperation, todayLaunchpadOperation, todayReportResetOperation,
+  todayLaunchpadEnsureOperation, todayReportResetOperation,
   type TodayLaunchpadEnsureWire, type TodayLaunchpadWire, type TodayReportResetWire,
 } from '../../../../core/domain/today.ts';
 import {
@@ -526,18 +526,6 @@ export function taskVerdictsRefetchInterval(blocks: readonly ReportBlock[] | nul
     return errorUpdateCount > 0 && errorUpdateCount <= TASK_VERDICT_RECOVERY_ATTEMPTS
       ? TASK_VERDICT_RECOVERY_POLL_MS
       : false;
-  };
-}
-
-/**
- * The Today page load's resolve, a pure read. `null` is data ("no launchpad yet"); any failure is an
- * error — folding them would make an unreachable server look like a fresh workspace.
- */
-export function todayLaunchpadQueryOptions(transport: ApiTransportPort, unauthorized: UnauthorizedChannel) {
-  return {
-    queryKey: queryKeys.todayLaunchpad(),
-    queryFn: (): Promise<TodayLaunchpadWire | null> =>
-      runOperation(transport, todayLaunchpadOperation(), unauthorized),
   };
 }
 
