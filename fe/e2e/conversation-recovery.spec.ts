@@ -136,7 +136,8 @@ test('offers a fresh session for a dormant send and keeps the history and the wo
     await composer.fill('History that must stay');
     await composer.press('Enter');
     await expect(transcript.getByText('History that must stay', { exact: true })).toBeVisible();
-    expect(inputs).toEqual([200]);
+    // The transcript is optimistic; wait for the real HTTP acknowledgement before the next send.
+    await expect.poll(() => inputs).toEqual([200]);
 
     refuseNext = true;
     await composer.fill('Words a dormant session must not eat');

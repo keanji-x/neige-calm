@@ -12349,7 +12349,7 @@
         "tags": [
           "tracks"
         ],
-        "summary": "Mint a track assistant conversation and deliver its first message, folded into one\n`planner-harness-start` operation. Nothing on this path may read the\n`harness.user_message.enqueued` row back: a failed attempt's row survives compensation\nwhile the retry re-derives the same card id, so the row means \"attempted\", never \"delivered\".",
+        "summary": "Accept Codex Human creation before wake; other entries retain historical mint.\nEnqueue observations never establish original acceptance or permission to resend.",
         "operationId": "create_track_conversation",
         "parameters": [
           {
@@ -12364,7 +12364,7 @@
           {
             "name": "Idempotency-Key",
             "in": "header",
-            "description": "**Required.** Scopes the derived card id and the operation dedup key, so retrying the same request can never mint a second conversation. A missing or blank header is 400.\n\n**This is NOT standard HTTP idempotency — it is \"same key = the same retryable draft\"**: a success replays without re-sending; a terminal failure retries under a `#N` operation key; a stuck attempt stays failed closed; 64 failed attempts exhaust the key; and the same key with different text is 409 `idempotency_key_reused`. A key longer than 128 bytes, blank or not visible ASCII is 400 `idempotency_key_invalid`. The derived card id never carries the retry suffix.",
+            "description": "Required original creation key. Codex accepts durably before activation; replay returns the original acceptance and never resends it. A changed request conflicts. Historical providers retain their existing retry contract.",
             "required": true,
             "schema": {
               "type": "string"
@@ -12473,7 +12473,7 @@
             }
           },
           "500": {
-            "description": "Internal error, including a shared Codex app-server that is not running. The message rides inside the mint operation, so the card and the delivery fail together: a terminally failed attempt is compensated (no card, no session) and the same `Idempotency-Key` retries under a `#N` operation key, re-deriving the same card id and delivering the message again. The `harness.user_message.enqueued` row a failed attempt already committed is NOT rolled back — `events` is append-only — and records only that a delivery was attempted, never that one happened. A previous attempt left `Stuck` also answers 500 under the same key until an operator clears it; there the card survives with the message still queued on a runtime that never started.",
+            "description": "Storage or historical start error; reconcile uncertain acceptance with the original key. Codex provider outage preserves accepted input.",
             "content": {
               "application/json": {
                 "schema": {
@@ -13814,7 +13814,7 @@
               "object",
               "null"
             ],
-            "description": "Replaces the stored payload. A payload carrying a server-owned key is refused with 400:\n`terminal_signals`, `terminal_presentation`, `template_context`, `planner_provider`, `assistant_provider`, `side_source_card_id`, `permission_mode`, `owner_created`, `settings_path`, `claude_session_id`. Every kernel-minted server-owned value the card already carries is kept."
+            "description": "Replaces the stored payload. A payload carrying a server-owned key is refused with 400:\n`terminal_signals`, `terminal_presentation`, `template_context`, `planner_provider`, `assistant_provider`, `side_source_card_id`, `assistant_opening_context`, `permission_mode`, `owner_created`, `settings_path`, `claude_session_id`. Every kernel-minted server-owned value the card already carries is kept."
           },
           "sort": {
             "type": [
@@ -18786,7 +18786,7 @@
             "items": {
               "$ref": "#/components/schemas/AttachmentId"
             },
-            "description": "Historical conversations retain attachment binding. Canonical attachment\ninput requires its owning admission and is currently refused."
+            "description": "Uploaded image IDs. Assistant canonical input binds them before acceptance;\ncanonical Planner attachment input retains its existing refusal."
           },
           "replaces_turn": {
             "type": [

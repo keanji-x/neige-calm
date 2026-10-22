@@ -184,6 +184,25 @@ pub(super) async fn save_input_carrier_tx(
     carrier: &mut CurrentInputCarrier,
 ) -> Result<()> {
     carrier.checkpoint.validate().map_err(CalmError::Conflict)?;
+    // This private writer owns every canonical enqueue, including System input,
+    // explicit Retry successors and confirmed non-delivery restoration. Check
+    // additions against the last saved queue, not a caller's mutable snapshot;
+    // factual updates/removals and receipt replay remain valid after archive.
+    let original: CanonicalHarnessSnapshot = serde_json::from_str(&carrier.original_snapshot)?;
+    let original_pending: std::collections::HashSet<_> = original
+        .canonical_inputs
+        .pending
+        .iter()
+        .map(|input| input.identity())
+        .collect();
+    if carrier
+        .checkpoint
+        .pending
+        .iter()
+        .any(|input| !original_pending.contains(&input.identity()))
+    {
+        super::super::require_conversation_unarchived_tx(tx, &carrier.card_id).await?;
+    }
     carrier.snapshot[CONVERSATION_INPUT_CHECKPOINT_KEY] =
         serde_json::to_value(&carrier.checkpoint)?;
     let _: CanonicalHarnessSnapshot = serde_json::from_value(carrier.snapshot.clone())?;

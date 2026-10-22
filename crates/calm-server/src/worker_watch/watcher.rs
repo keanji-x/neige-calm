@@ -76,6 +76,7 @@ impl WorkerWatcher {
             },
             // Each watch message carries what the watcher needs; no activity briefing.
             OpeningBriefing::CallerSuppliesItsOwn,
+            crate::routes::track_conversations::AssistantCreationEntry::InternalHistorical,
         )
         .await;
         if let Err(error) = created {

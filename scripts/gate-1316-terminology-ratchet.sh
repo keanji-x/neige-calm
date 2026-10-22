@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+# U3 bounded receipt exception: runtime_id/crates 1136 -> 1145 adds nine
+# references to the existing original-carrier receipt field/column and its HTTP assertions.
+# CI handoff regression: runtime_id/fe 36 -> 37 is one required
+# initialRuntimeId field in the canonical first-input receipt fixture.
+# No new runtime naming contract, scan exemption or test/file roster is introduced.
 # Retiring-vocabulary ratchet: occurrence counts per (term, scope) against a
 # committed baseline tsv. Both directions fail: a rise is new retiring vocabulary,
 # a fall means tighten the ratchet (`--update-baseline`, commit the tsv).

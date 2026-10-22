@@ -1,3 +1,4 @@
+//! Historical Assistant lifecycle and journal coverage uses the explicit internal entry.
 use super::*;
 use calm_truth::db::RepoRead;
 
@@ -185,7 +186,9 @@ async fn archived_conversation_refuses_new_input_and_session_replacement() {
 async fn archive_refuses_a_live_reply_or_pending_first_message() {
     let b = boot().await;
     let track = b.create_track("Busy archive").await;
-    let (status, row) = b.create_conversation(&track, "busy", "in progress").await;
+    let (status, row) = b
+        .create_internal_conversation(&track, "busy", "in progress")
+        .await;
     assert_eq!(status, StatusCode::CREATED, "{row}");
     let card = row["id"].as_str().unwrap();
     let (status, body) = archive(&b, &track, card, true).await;
@@ -242,7 +245,7 @@ async fn archive_keeps_session_history_and_replays_an_accepted_input_receipt() {
     let b = boot().await;
     let track = b.create_track("Preserve context").await;
     let (status, row) = b
-        .create_conversation(&track, "preserved", "first turn")
+        .create_internal_conversation(&track, "preserved", "first turn")
         .await;
     assert_eq!(status, StatusCode::CREATED, "{row}");
     let card = row["id"].as_str().unwrap();
@@ -293,7 +296,7 @@ async fn archive_keeps_session_history_and_replays_an_accepted_input_receipt() {
     assert_eq!(b.request("GET", &history_path, None, None).await.1, history);
     // A create retry still identifies its original archived card, without minting a successor.
     let (status, retried) = b
-        .create_conversation(&track, "preserved", "first turn")
+        .create_internal_conversation(&track, "preserved", "first turn")
         .await;
     assert_eq!(status, StatusCode::CREATED, "{retried}");
     assert_eq!(retried["id"], card);
@@ -342,7 +345,7 @@ async fn automatic_recovery_does_not_install_an_archived_assistant() {
     let b = boot().await;
     let track = b.create_track("Archive at boot").await;
     let (status, row) = b
-        .create_conversation(&track, "boot-archive", "saved turn")
+        .create_internal_conversation(&track, "boot-archive", "saved turn")
         .await;
     assert_eq!(status, StatusCode::CREATED, "{row}");
     let card = row["id"].as_str().unwrap().to_string();
@@ -392,7 +395,9 @@ async fn archive_refuses_an_unconfirmed_wedged_provider() {
     use calm_server::harness::HarnessPhaseTag;
     let b = boot().await;
     let track = b.create_track("Unconfirmed provider state").await;
-    let (status, row) = b.create_conversation(&track, "wedged", "saved turn").await;
+    let (status, row) = b
+        .create_internal_conversation(&track, "wedged", "saved turn")
+        .await;
     assert_eq!(status, StatusCode::CREATED, "{row}");
     let card = row["id"].as_str().unwrap().to_string();
     finish_turn(&b, &card).await;
@@ -434,7 +439,7 @@ async fn archive_refuses_native_activity_even_when_the_snapshot_is_idle() {
     let b = boot().await;
     let track = b.create_track("Native activity").await;
     let (status, row) = b
-        .create_conversation(&track, "native-busy", "saved turn")
+        .create_internal_conversation(&track, "native-busy", "saved turn")
         .await;
     assert_eq!(status, StatusCode::CREATED, "{row}");
     let card = row["id"].as_str().unwrap().to_string();
@@ -467,7 +472,7 @@ async fn cancelled_dequeued_command_cannot_cross_archive(action: &str) {
     let b = boot().await;
     let track = b.create_track("Cancelled command archive").await;
     let (status, row) = b
-        .create_conversation(&track, action, "original prompt")
+        .create_internal_conversation(&track, action, "original prompt")
         .await;
     assert_eq!(status, StatusCode::CREATED, "{row}");
     let card = row["id"].as_str().unwrap();
@@ -705,7 +710,7 @@ async fn repeated_archive_stays_idempotent_with_buffered_observations() {
     let b = boot().await;
     let track = b.create_track("Archived observations").await;
     let (_, row) = b
-        .create_conversation(&track, "observation-archive", "first")
+        .create_internal_conversation(&track, "observation-archive", "first")
         .await;
     let card = row["id"].as_str().unwrap();
     finish_turn(&b, card).await;

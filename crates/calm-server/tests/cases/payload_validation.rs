@@ -107,8 +107,10 @@ async fn body_to_json(resp: axum::http::Response<Body>) -> Value {
     serde_json::from_slice(&bytes).unwrap_or(Value::Null)
 }
 
-async fn collect_envelopes(events: EventBus, n: usize) -> Vec<BroadcastEnvelope> {
-    let mut rx = events.subscribe();
+async fn collect_envelopes(
+    mut rx: tokio::sync::broadcast::Receiver<BroadcastEnvelope>,
+    n: usize,
+) -> Vec<BroadcastEnvelope> {
     let mut out = Vec::with_capacity(n);
     let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
     while out.len() < n {
@@ -298,6 +300,7 @@ async fn post_card_with_a_server_owned_key_is_rejected_for_every_kind() {
             "planner_provider",
             "assistant_provider",
             "side_source_card_id",
+            "assistant_opening_context",
             "permission_mode",
             "owner_created",
             "settings_path",
@@ -665,9 +668,8 @@ async fn post_overlay_routes_registered_entity_kinds_to_expected_scope() {
     ];
 
     for (entity_kind, entity_id, expected_scope) in cases {
-        let events = state.events.clone();
-        let subscription = tokio::spawn(async move { collect_envelopes(events, 1).await });
-        tokio::time::sleep(Duration::from_millis(20)).await;
+        let rx = state.events.subscribe();
+        let subscription = tokio::spawn(collect_envelopes(rx, 1));
 
         let resp = post_overlay(
             app(state.clone()),

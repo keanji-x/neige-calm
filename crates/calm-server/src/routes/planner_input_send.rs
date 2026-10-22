@@ -32,8 +32,8 @@ mod human;
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct SendPlannerInputRequest {
     pub text: String,
-    /// Historical conversations retain attachment binding. Canonical attachment
-    /// input requires its owning admission and is currently refused.
+    /// Uploaded image IDs. Assistant canonical input binds them before acceptance;
+    /// canonical Planner attachment input retains its existing refusal.
     #[serde(default)]
     pub attachments: Vec<AttachmentId>,
     /// Historical replacement intent. Canonical history replacement requires

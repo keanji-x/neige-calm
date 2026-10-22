@@ -1365,8 +1365,9 @@ async fn resetting_todays_report_restores_the_empty_state_without_touching_conve
     let messages_before = count(
         &b,
         &format!(
-            "SELECT COUNT(*) FROM events WHERE kind='harness.user_message.enqueued' \
-             AND scope_card='{conversation_card}'"
+            "SELECT COUNT(*) FROM conversation_message_revisions r \
+             JOIN conversation_messages m ON m.id=r.message_id WHERE m.card_id='{conversation_card}' \
+             AND json_extract(r.payload_json,'$.state')='present'"
         ),
     )
     .await;
@@ -1428,8 +1429,9 @@ async fn resetting_todays_report_restores_the_empty_state_without_touching_conve
         count(
             &b,
             &format!(
-                "SELECT COUNT(*) FROM events WHERE kind='harness.user_message.enqueued' \
-                 AND scope_card='{conversation_card}'"
+                "SELECT COUNT(*) FROM conversation_message_revisions r \
+                 JOIN conversation_messages m ON m.id=r.message_id WHERE m.card_id='{conversation_card}' \
+                 AND json_extract(r.payload_json,'$.state')='present'"
             )
         )
         .await,

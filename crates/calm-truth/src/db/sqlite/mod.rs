@@ -30,7 +30,7 @@ mod card_composite;
 pub mod conversation;
 mod conversation_archive;
 mod conversation_read;
-pub use conversation_archive::conversation_archive_set_tx;
+pub use conversation_archive::{conversation_archive_set_tx, require_conversation_unarchived_tx};
 mod conversation_title;
 mod database_identity;
 pub mod event_inputs;

@@ -107,7 +107,7 @@ async fn assistant_provider_codex_failed_carrier_send_preserves_thread_and_queue
     let b = boot().await;
     let track = b.create_track("failed Assistant carrier").await;
     let (status, body) = b
-        .create_conversation(&track, "failed-carrier", "initial")
+        .create_internal_conversation(&track, "failed-carrier", "initial")
         .await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
     let card = body["id"].as_str().unwrap().to_owned();
@@ -206,7 +206,9 @@ async fn assistant_provider_explicit_null_and_unknown_are_not_legacy_codex() {
 async fn assistant_provider_current_row_mismatch_refuses_catalog_model_and_reset() {
     let b = boot().await;
     let track = b.create_track("binding corruption").await;
-    let (status, row) = b.create_conversation(&track, "mismatch", "hello").await;
+    let (status, row) = b
+        .create_internal_conversation(&track, "mismatch", "hello")
+        .await;
     assert_eq!(status, StatusCode::CREATED, "{row}");
     let card = row["id"].as_str().unwrap();
     sqlx::query(

@@ -159,6 +159,9 @@ pub(crate) async fn set_conversation_archive(
                     crate::track_access::require_detail_access_tx(tx, &track_id, &principal)
                         .await?;
                 crate::track_access::require_same_area(&track.area_id, &current)?;
+                if body.archived {
+                    crate::conversation_archive::require_canonical_idle_tx(tx, &card_id).await?;
+                }
                 conversation_archive_set_tx(tx, &card_id, body.archived).await?;
                 let card = card_update_tx(tx, &card_id, CardPatch::default()).await?;
                 Ok(((), Event::CardUpdated(card)))

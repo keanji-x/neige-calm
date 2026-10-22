@@ -79,7 +79,10 @@ impl PlannerHarnessStartAdapter {
         crate::conversation_inputs::authorize_resource_tx(tx, source, &carrier).await?;
         let (binding, row) =
             crate::harness::profile::input_carrier_binding_tx(tx, &carrier).await?;
-        if binding.profile != HarnessProfile::Planner {
+        if !matches!(
+            binding.profile,
+            HarnessProfile::Planner | HarnessProfile::Assistant
+        ) {
             return Err(CalmError::Conflict(
                 "retained activation is unavailable for this provider/profile".into(),
             ));
@@ -359,7 +362,11 @@ impl PlannerHarnessStartAdapter {
         )
         .prepare_codex_thread(
             &wire.card_id,
-            crate::model::CardRole::Planner,
+            target
+                .binding
+                .profile
+                .mcp_role()
+                .ok_or_else(|| CalmError::Conflict("retained profile has no role".into()))?,
             &target.track_id,
             track.workspace.agent_cwd().to_string(),
             Some(instructions),

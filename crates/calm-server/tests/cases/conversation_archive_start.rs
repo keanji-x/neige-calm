@@ -7,7 +7,7 @@ async fn cancelled_start(action: &str, prepared: bool) {
     let b = boot().await;
     let track = b.create_track("Pending start archive").await;
     let (status, row) = b
-        .create_conversation(&track, "initial", "original prompt")
+        .create_internal_conversation(&track, "initial", "original prompt")
         .await;
     assert_eq!(status, StatusCode::CREATED, "{row}");
     let card = row["id"].as_str().unwrap().to_string();

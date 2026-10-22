@@ -531,8 +531,7 @@ const BRIEFING_MARKER: &str = "Context from the server before you start";
 /// The briefing's empty-day sentence, which has no counts in it at all.
 const EMPTY_DAY_MARKER: &str = "nothing has been recorded in this workspace today";
 
-/// Only the user's words produce a `harness.user_message.enqueued` audit row: kernel context must not
-/// masquerade as something the user typed.
+/// Only the user's words become a canonical Human message; briefing is frozen system context.
 #[tokio::test]
 async fn a_launchpad_conversation_opens_with_todays_activity_before_the_users_message() {
     let b = boot().await;
@@ -546,10 +545,15 @@ async fn a_launchpad_conversation_opens_with_todays_activity_before_the_users_me
     assert_eq!(status, StatusCode::CREATED, "created={created}");
     let card_id = created["id"].as_str().unwrap().to_string();
 
+    let accepted: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM conversation_messages WHERE card_id=?1")
+            .bind(&card_id)
+            .fetch_one(b.repo.pool())
+            .await
+            .unwrap();
     assert_eq!(
-        b.enqueued_char_counts(&card_id).await,
-        vec!["What happened today?".chars().count() as i64],
-        "the server briefing is typed system context, not a second user message"
+        accepted, 1,
+        "the briefing is system context, not a second Human message"
     );
 
     assert_eq!(
@@ -625,14 +629,24 @@ async fn the_launchpad_assistant_starts_under_the_launchpad_identity_and_others_
     let launchpad = b.ensure_launchpad().await;
 
     let (status, created) = b
-        .create_conversation(&launchpad, "identity-launchpad", "hi")
+        .create_conversation(
+            &launchpad,
+            "identity-launchpad",
+            "launchpad identity question",
+        )
         .await;
     assert_eq!(status, StatusCode::CREATED, "created={created}");
     let (status, created) = b
-        .create_conversation(&ordinary, "identity-ordinary", "hi")
+        .create_conversation(&ordinary, "identity-ordinary", "ordinary identity question")
         .await;
     assert_eq!(status, StatusCode::CREATED, "created={created}");
 
+    b.delivered(
+        created["id"].as_str().unwrap(),
+        &["launchpad identity question", "ordinary identity question"],
+        2,
+    )
+    .await;
     let instructions: Vec<String> = b
         .state
         .shared_codex_appserver
@@ -1341,26 +1355,19 @@ async fn a_create_that_loses_the_key_race_resolves_the_card_and_still_sends() {
     }
     let launchpad = b.launchpad_track_id().await.expect("ensure minted it");
 
-    // The interloper, through the production route, same key, different text.
-    let response = b
-        .app
-        .clone()
-        .oneshot(
-            Request::post(format!("/api/tracks/{launchpad}/conversations"))
-                .header("content-type", "application/json")
-                // The SAME fixed key the endpoint derives from — that is what
-                // makes both submissions aim at one card and one operation key.
-                .header(
-                    "idempotency-key",
-                    calm_server::routes::today_summary::TODAY_SUMMARY_CONVERSATION_KEY,
-                )
-                .body(Body::from(
-                    json!({ "text": "a different first message" }).to_string(),
-                ))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
+    // Another internal creator uses the same historical namespace, with different text.
+    use axum::response::IntoResponse;
+    let mut headers = axum::http::HeaderMap::new();
+    headers.insert(
+        "Idempotency-Key",
+        routes::today_summary::TODAY_SUMMARY_CONVERSATION_KEY
+            .parse()
+            .unwrap(),
+    );
+    let response = routes::track_conversations::create_internal_conversation_for_test(
+        &b.state, headers, launchpad.clone(), serde_json::from_value(json!({"text":"a different first message"})).unwrap(),
+        calm_server::operation::planner_harness_start_adapter::OpeningBriefing::TodaysActivityOnTheLaunchpad,
+    ).await.into_response();
     let status = response.status();
     let bytes = response.into_body().collect().await.unwrap().to_bytes();
     let planted: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);

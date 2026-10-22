@@ -309,6 +309,11 @@ async fn template_startup_does_not_inject_into_blank_tracks_or_assistants() {
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "{response}");
+    assert!(
+        b.started_turn_text("Explain the findings")
+            .await
+            .contains("Explain the findings")
+    );
     let starts = b
         .state
         .shared_codex_appserver

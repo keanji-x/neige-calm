@@ -125,8 +125,10 @@ async fn post(app: axum::Router, uri: &str, body: Value) -> (StatusCode, Value) 
 }
 
 /// Drain at least `n` envelopes from a broadcast subscriber, panicking if the deadline elapses.
-async fn collect_envelopes(events: &EventBus, n: usize) -> Vec<BroadcastEnvelope> {
-    let mut rx = events.subscribe_filtered();
+async fn collect_envelopes(
+    mut rx: tokio::sync::broadcast::Receiver<BroadcastEnvelope>,
+    n: usize,
+) -> Vec<BroadcastEnvelope> {
     let mut out = Vec::with_capacity(n);
     let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
     while out.len() < n {
@@ -153,11 +155,8 @@ async fn post_api_tracks_mints_planner_card_atomically() {
 
     // Subscribe before firing: the daemon spawn fails *after* the events already broadcast. The two CardAdded
     // envelopes are distinguishable by `card.kind` ("codex" vs "track-report").
-    let subscription = {
-        let events = boot.events.clone();
-        tokio::spawn(async move { collect_envelopes(&events, 4).await })
-    };
-    tokio::time::sleep(Duration::from_millis(20)).await;
+    let rx = boot.events.subscribe_filtered();
+    let subscription = tokio::spawn(collect_envelopes(rx, 4));
 
     let (status, body) = post(
         boot.app.clone(),

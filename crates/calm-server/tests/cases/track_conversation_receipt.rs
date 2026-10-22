@@ -1,3 +1,4 @@
+//! Historical Assistant lifecycle and journal coverage uses the explicit internal entry.
 //! Receipt binding is immutable; observation is separate, read-only, and scoped.
 use super::boot;
 use axum::http::StatusCode;
@@ -9,7 +10,7 @@ async fn initial_input_receipt_lookup_is_scoped_and_shutdown_is_not_absence() {
     let b = boot().await;
     let track = b.create_track("receipt-observation").await;
     let (status, created) = b
-        .create_conversation(&track, "original", "original words")
+        .create_internal_conversation(&track, "original", "original words")
         .await;
     assert_eq!(status, StatusCode::CREATED, "{created}");
     let card = created["id"].as_str().unwrap();
@@ -55,7 +56,7 @@ async fn initial_input_receipt_legacy_and_corrupt_journals_never_manufacture_acc
     let b = boot().await;
     let track = b.create_track("receipt-journal").await;
     let (status, created) = b
-        .create_conversation(&track, "journal", "journal words")
+        .create_internal_conversation(&track, "journal", "journal words")
         .await;
     assert_eq!(status, StatusCode::CREATED, "{created}");
     let key = derive_track_conversation_operation_key_for_test(&track, "journal");
@@ -72,7 +73,7 @@ async fn initial_input_receipt_legacy_and_corrupt_journals_never_manufacture_acc
     .await
     .unwrap();
     let (status, replay) = b
-        .create_conversation(&track, "journal", "journal words")
+        .create_internal_conversation(&track, "journal", "journal words")
         .await;
     assert_eq!(status, StatusCode::CREATED, "{replay}");
     assert_eq!(replay["initialInput"], json!({"kind":"legacy-unavailable"}));
@@ -140,7 +141,7 @@ async fn initial_input_receipt_observation_waits_for_the_entire_issuance_command
             release: release.clone(),
         });
     let (status, created) = b
-        .create_conversation(&track, "held-issue", "held inside real turn start")
+        .create_internal_conversation(&track, "held-issue", "held inside real turn start")
         .await;
     assert_eq!(status, StatusCode::CREATED, "{created}");
     tokio::time::timeout(Duration::from_secs(5), entered.notified())
@@ -194,7 +195,7 @@ async fn initial_input_receipt_observation_waits_for_the_entire_issuance_command
     .expect("provider completion certifies the exact original receipt");
     assert_eq!(confirmed["receipt"], created["initialInput"]["receipt"]);
     let (_, replay) = b
-        .create_conversation(&track, "held-issue", "held inside real turn start")
+        .create_internal_conversation(&track, "held-issue", "held inside real turn start")
         .await;
     assert_eq!(replay["initialInput"], created["initialInput"]);
     assert_eq!(

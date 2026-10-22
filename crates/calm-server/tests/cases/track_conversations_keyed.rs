@@ -1,3 +1,4 @@
+//! Historical operation-key/fence coverage selects the explicit internal entry.
 //! #2068: the keyed-write answers of `POST /api/tracks/{id}/conversations` — a malformed or
 //! over-long key, the same key with a different body, and a concurrent duplicate, which waits on
 //! the conversation card's start fence (#2252) and joins the stored conversation.
@@ -19,8 +20,12 @@ async fn initial_input_receipt_is_the_minted_entry_and_survives_success_replay()
     let b = boot().await;
     let track_id = b.create_track("initial-input-receipt").await;
     let text = "  The actual first receipt sentence. 👋\n";
-    let (status, first) = b.create_conversation(&track_id, "receipt-key", text).await;
-    let (replay_status, replay) = b.create_conversation(&track_id, "receipt-key", text).await;
+    let (status, first) = b
+        .create_internal_conversation(&track_id, "receipt-key", text)
+        .await;
+    let (replay_status, replay) = b
+        .create_internal_conversation(&track_id, "receipt-key", text)
+        .await;
     let key = derive_track_conversation_operation_key_for_test(&track_id, "receipt-key");
     let journal: String =
         sqlx::query_scalar("SELECT tx_output_json FROM operations WHERE idempotency_key = ?1")
@@ -61,7 +66,7 @@ async fn an_over_long_key_is_invalid_and_mints_nothing() {
     let b = boot().await;
     let track_id = b.create_track("keyed-too-long").await;
     let (status, body) = b
-        .create_conversation(&track_id, &"k".repeat(129), "hello")
+        .create_internal_conversation(&track_id, &"k".repeat(129), "hello")
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
     assert_eq!(body["code"], "idempotency_key_invalid", "{body}");
@@ -79,9 +84,13 @@ async fn an_over_long_key_is_invalid_and_mints_nothing() {
 async fn the_same_key_with_other_text_is_reused_and_final() {
     let b = boot().await;
     let track_id = b.create_track("keyed-reused").await;
-    let (status, body) = b.create_conversation(&track_id, "k-1", "first").await;
+    let (status, body) = b
+        .create_internal_conversation(&track_id, "k-1", "first")
+        .await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
-    let (status, body) = b.create_conversation(&track_id, "k-1", "second").await;
+    let (status, body) = b
+        .create_internal_conversation(&track_id, "k-1", "second")
+        .await;
     assert_eq!(status, StatusCode::CONFLICT, "{body}");
     assert_eq!(body["code"], "idempotency_key_reused", "{body}");
     assert_eq!(b.copies_in_harness("second", 1).await, 0);
@@ -106,7 +115,7 @@ async fn a_concurrent_duplicate_waits_on_the_fence_and_joins_the_stored_conversa
     let card_id = derive_track_conversation_card_id_for_test(&track_id, "k-race");
     install_pause_for_test(OPERATION_DEDUP_MISSED, &operation_key, paused.clone());
     let (first, second) = tokio::join!(
-        b.create_conversation(&track_id, "k-race", "only once"),
+        b.create_internal_conversation(&track_id, "k-race", "only once"),
         async {
             tokio::time::timeout(Duration::from_secs(10), paused.entered.notified())
                 .await
@@ -117,7 +126,7 @@ async fn a_concurrent_duplicate_waits_on_the_fence_and_joins_the_stored_conversa
                 "premise: the paused first request holds the conversation card's start fence"
             );
             let mut second =
-                std::pin::pin!(b.create_conversation(&track_id, "k-race", "only once"));
+                std::pin::pin!(b.create_internal_conversation(&track_id, "k-race", "only once"));
             let deadline = Instant::now() + Duration::from_secs(10);
             while b.state.planner_recovery_lock_handles_for_test(&card_id) <= held {
                 assert!(

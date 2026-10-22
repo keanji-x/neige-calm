@@ -558,8 +558,10 @@ async fn backlinks_returns_source_track_and_unknown_track_is_not_found() {
 }
 
 /// Collect up to `n` envelopes from the bus; a missing event surfaces as a length mismatch instead of a hang.
-async fn collect_n(events: &EventBus, n: usize) -> Vec<calm_server::event::BroadcastEnvelope> {
-    let mut sub = events.subscribe();
+async fn collect_n(
+    mut sub: tokio::sync::broadcast::Receiver<calm_server::event::BroadcastEnvelope>,
+    n: usize,
+) -> Vec<calm_server::event::BroadcastEnvelope> {
     let mut out = Vec::with_capacity(n);
     while out.len() < n {
         match tokio::time::timeout(Duration::from_secs(2), sub.recv()).await {
@@ -590,10 +592,8 @@ async fn happy_path_user_edit_returns_payload_and_emits_user_authored_event() {
     let cookie = login(&app).await;
 
     // Subscribe BEFORE issuing the write.
-    let bus_clone = events.clone();
-    let collector = tokio::spawn(async move { collect_n(&bus_clone, 2).await });
-    // Small yield so the collector subscribes before the persist emit completes.
-    tokio::time::sleep(Duration::from_millis(20)).await;
+    let rx = events.subscribe();
+    let collector = tokio::spawn(collect_n(rx, 2));
 
     let body = serde_json::to_vec(&json!({
         "summary": "user wrote this",

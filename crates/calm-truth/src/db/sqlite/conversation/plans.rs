@@ -65,6 +65,20 @@ pub async fn pending_plan_for_prefix_tx(
                 "expected human input after system observation",
             ));
         };
+        if let Some(text) = super::assistant_creation::creation_context_tx(
+            tx,
+            carrier.card_id(),
+            message.message_id.as_str(),
+        )
+        .await?
+        {
+            let context =
+                SystemRenderContext::new(calm_types::model::HarnessInputPresentation::System, text)
+                    .map_err(|error| CalmError::Internal(error.into()))?;
+            segments.push(SubmissionRenderSegment::Context {
+                payload: PrivateHistoryPayload::Present { value: context },
+            });
+        }
         let identity = super::message_tx(tx, &message.message_id).await?;
         let MessageAuthor::AuthenticatedHuman { registered_user_id } = identity.author;
         let display_name: Option<String> =

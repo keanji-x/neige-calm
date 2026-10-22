@@ -44,6 +44,7 @@ const THREAD: &str = "http-canonical-original-thread";
 const TURN: &str = "http-canonical-original-turn";
 
 mod archive_start_inventory_tests;
+mod assistant_canonical;
 mod claude_creation_tests;
 mod control_tests;
 mod dispatcher_inputs_tests;

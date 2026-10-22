@@ -2,12 +2,16 @@
 //! acceptance/claim owner must commit the sole harness queue, authority checks,
 //! receipts and events with these facts. They neither enqueue nor drive a retry.
 mod acceptance;
+mod assistant_creation;
 mod attempts;
 mod carrier;
 mod claim_storage;
 mod claim_validation;
 mod claims;
 mod creation;
+pub use assistant_creation::{
+    AssistantCreationRecord, assistant_creation_get_tx, assistant_creation_insert_tx,
+};
 pub(super) mod messages;
 mod plans;
 pub(super) mod presentation;

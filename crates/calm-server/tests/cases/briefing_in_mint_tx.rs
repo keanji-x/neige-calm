@@ -11,17 +11,14 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use axum::Extension;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use calm_server::auth::Principal;
 use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::EventBus;
 use calm_server::model::{NewArea, now_ms};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
-use calm_server::routes;
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_server::state::{AppState, CodexClient, DaemonClient};
 use calm_server::track_area_cache::TrackAreaCache;
@@ -90,17 +87,7 @@ async fn boot() -> Boot {
     .with_shared_codex_appserver(SharedCodexAppServer::new_fake_running_with_pending(
         repo_dyn, None,
     ));
-    let app = routes::router()
-        .layer(Extension(Principal {
-            user_id: "owner".into(),
-            display_name: "owner".into(),
-            role: "owner".into(),
-            session_id: "test".into(),
-        }))
-        .layer(axum::middleware::from_fn(
-            calm_server::actor::actor_middleware,
-        ))
-        .with_state(state.clone());
+    let app = crate::support::authenticated_router::application(state.clone()).await;
     Boot {
         app,
         state,

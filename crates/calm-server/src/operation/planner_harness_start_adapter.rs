@@ -16,7 +16,6 @@ use calm_types::runtime::AgentProtocol;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::activity_window::launchpad_opening_briefing;
 use crate::card_role_cache::CardRoleCache;
 use crate::claude_planner::config::ClaudePlannerHost;
 use crate::db::sqlite::{
@@ -55,7 +54,6 @@ use crate::operation::planner_plugin_instructions::{
 use crate::per_card_lock::{PerCardLockGuard, PerCardLocks, lock_card, new_per_card_locks};
 use crate::plugin_host::{PluginHost, manifest::TemplateDescriptor};
 use crate::routes::cards::{card_scope, card_scope_tx};
-use crate::routes::planner_cards::MAX_PLANNER_INPUT_CHARS;
 use crate::session_projection_repo::{
     AgentProvider, ThreadAttribution, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
 };
@@ -758,25 +756,13 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
             .create_card
             .as_ref()
             .and_then(|seed| seed.side.as_ref());
-        let opening_briefing = if let Some(side) = side {
-            side.validate(self.repo.as_ref(), &track_id).await?;
-            Some(side.opening_context())
-        } else {
-            match payload.opening_briefing {
-                Some(OpeningBriefing::TodaysActivityOnTheLaunchpad) => {
-                    launchpad_opening_briefing(self.repo.as_ref(), track_id.as_str()).await?
-                }
-                Some(OpeningBriefing::CallerSuppliesItsOwn) | None => None,
-            }
-        };
-        if let Some(briefing) = opening_briefing.as_deref() {
-            // `Internal`, not `BadRequest`: nothing the caller sent can make this fire.
-            if briefing.chars().count() > MAX_PLANNER_INPUT_CHARS {
-                return Err(CalmError::Internal(format!(
-                    "opening briefing must be at most {MAX_PLANNER_INPUT_CHARS} characters",
-                )));
-            }
-        }
+        let opening_briefing = crate::side_conversation::opening_material(
+            self.repo.as_ref(),
+            &track_id,
+            side,
+            payload.opening_briefing,
+        )
+        .await?;
         self.admit_historical_tx(tx, card_id.as_str()).await?;
         // Mint the chat card in this very transaction, so the card and its session row commit together and compensation can undo both.
         let mut post_commit_events = Vec::new();

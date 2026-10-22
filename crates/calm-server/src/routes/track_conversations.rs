@@ -1,8 +1,41 @@
 //! `/api/tracks/{track_id}/conversations` — a track's assistant conversations and its
-//! "mint on first message" creation endpoint. A conversation created on Today's
+//! first-input creation endpoint. A conversation created on Today's
 //! launchpad track is opened with the day's activity window ahead of the first message.
 
 use calm_types::conversation_receipt::TrackConversationCreated;
+mod canonical;
+
+/// The rollout belongs to the entry, independently of runtime availability.
+pub(crate) enum AssistantCreationEntry {
+    Human(crate::auth::HumanInputSource),
+    InternalHistorical,
+}
+impl AssistantCreationEntry {
+    fn canonical_binding(
+        &self,
+        provider: &AssistantProviderRequest,
+    ) -> Option<(
+        crate::auth::HumanInputSource,
+        crate::harness::profile::PlannerBinding,
+    )> {
+        match (self, provider) {
+            (
+                Self::Human(source),
+                AssistantProviderRequest::LegacyCodex
+                | AssistantProviderRequest::Explicit(
+                    crate::session_projection_repo::AgentProvider::Codex,
+                ),
+            ) => Some((
+                source.clone(),
+                crate::harness::profile::PlannerBinding {
+                    profile: HarnessProfile::Assistant,
+                    provider: crate::session_projection_repo::AgentProvider::Codex,
+                },
+            )),
+            _ => None,
+        }
+    }
+}
 
 use axum::{
     Router,
@@ -111,7 +144,7 @@ pub(crate) async fn list_track_conversations(
     tag = "tracks",
     params(
         ("track_id" = String, Path, description = "Track id"),
-        ("Idempotency-Key" = String, Header, description = "**Required.** Scopes the derived card id and the operation dedup key, so retrying the same request can never mint a second conversation. A missing or blank header is 400.\n\n**This is NOT standard HTTP idempotency — it is \"same key = the same retryable draft\"**: a success replays without re-sending; a terminal failure retries under a `#N` operation key; a stuck attempt stays failed closed; 64 failed attempts exhaust the key; and the same key with different text is 409 `idempotency_key_reused`. A key longer than 128 bytes, blank or not visible ASCII is 400 `idempotency_key_invalid`. The derived card id never carries the retry suffix."),
+        ("Idempotency-Key" = String, Header, description = "Required original creation key. Codex accepts durably before activation; replay returns the original acceptance and never resends it. A changed request conflicts. Historical providers retain their existing retry contract."),
     ),
     request_body = NewTrackConversationBody,
     responses(
@@ -120,17 +153,16 @@ pub(crate) async fn list_track_conversations(
         (status = 403, description = "The track is retired hidden Area-chat scaffolding and cannot accept Track conversations.", body = ErrorBody),
         (status = 404, description = "Track not found", body = ErrorBody),
         (status = 409, description = "Distinguished by the body's `code`:\n* `conflict` — the derived card already exists, or the conversation's provider cannot start now (Claude not configured, or its version cannot be confirmed).\n* `idempotency_key_reused` — this `Idempotency-Key` was already used for a request whose first-message text differed (the text is bound into the operation payload, and its hash is what `submit` compares); final for this key.\n* `idempotency_key_exhausted` — the key used up its 64 retry slots; retry under a NEW `Idempotency-Key`.", body = ErrorBody),
-        (status = 500, description = "Internal error, including a shared Codex app-server that is not running. The message rides inside the mint operation, so the card and the delivery fail together: a terminally failed attempt is compensated (no card, no session) and the same `Idempotency-Key` retries under a `#N` operation key, re-deriving the same card id and delivering the message again. The `harness.user_message.enqueued` row a failed attempt already committed is NOT rolled back — `events` is append-only — and records only that a delivery was attempted, never that one happened. A previous attempt left `Stuck` also answers 500 under the same key until an operator clears it; there the card survives with the message still queued on a runtime that never started.", body = ErrorBody),
+        (status = 500, description = "Storage or historical start error; reconcile uncertain acceptance with the original key. Codex provider outage preserves accepted input.", body = ErrorBody),
     ),
 )]
-/// Mint a track assistant conversation and deliver its first message, folded into one
-/// `planner-harness-start` operation. Nothing on this path may read the
-/// `harness.user_message.enqueued` row back: a failed attempt's row survives compensation
-/// while the retry re-derives the same card id, so the row means "attempted", never "delivered".
+/// Accept Codex Human creation before wake; other entries retain historical mint.
+/// Enqueue observations never establish original acceptance or permission to resend.
 pub(crate) async fn create_track_conversation(
     State(s): State<RouteState>,
     State(w): State<WorkerState>,
     actor: Actor,
+    source: crate::auth::HumanInputSource,
     headers: HeaderMap,
     Path(track_id): Path<String>,
     JsonBody(body): JsonBody<NewTrackConversationBody>,
@@ -143,12 +175,15 @@ pub(crate) async fn create_track_conversation(
         track_id,
         body,
         OpeningBriefing::TodaysActivityOnTheLaunchpad,
+        AssistantCreationEntry::Human(source),
     )
     .await
 }
 
 /// `create_track_conversation`, plus the caller's ruling on opening material; the only
-/// thing that varies for server-internal callers is [`OpeningBriefing`].
+/// entry explicitly retains its format; opening material remains caller-owned.
+// Entry qualification is required alongside the caller-owned opening ruling.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn create_track_conversation_inner(
     s: RouteState,
     w: WorkerState,
@@ -157,6 +192,7 @@ pub(crate) async fn create_track_conversation_inner(
     track_id: String,
     body: NewTrackConversationBody,
     briefing: OpeningBriefing,
+    entry: AssistantCreationEntry,
 ) -> Result<(StatusCode, Json<TrackConversationCreated>)> {
     // Required, not optional: the card id and the operation idempotency key are both
     // derived from this header; without it a retried POST would mint a second conversation.
@@ -174,6 +210,13 @@ pub(crate) async fn create_track_conversation_inner(
             &actor,
             "Assistant provider selection",
             "The person starting the conversation chooses its provider.",
+        )?;
+    }
+    if body.side.is_some() {
+        super::track_report_blocks::require_rest_user_actor_for(
+            &actor,
+            "Assistant discussion branch",
+            "Only the person opens a discussion branch.",
         )?;
     }
     if body.model.is_some() || body.reasoning_effort.is_some() {
@@ -196,6 +239,7 @@ pub(crate) async fn create_track_conversation_inner(
             }
         }
     }
+    let canonical = entry.canonical_binding(&body.provider);
     let text = body.text;
     validate_first_message(&text)?;
 
@@ -263,6 +307,31 @@ pub(crate) async fn create_track_conversation_inner(
         None => serde_json::to_value(&payload)?,
     };
     let payload_hash = stable_payload_hash(&serialized)?;
+    if let Some((source, binding)) = canonical {
+        let initial_input =
+            canonical::accept(&s, &w, source, binding, &payload, payload_hash).await?;
+        let summary =
+            load_track_conversation_summaries(&w, track.id.as_str(), Some(&derived.card_id))
+                .await?
+                .pop()
+                .ok_or_else(|| CalmError::Internal("accepted Assistant is missing".into()))?;
+        return Ok((
+            StatusCode::CREATED,
+            Json(TrackConversationCreated {
+                conversation: summary,
+                initial_input,
+            }),
+        ));
+    }
+    if let AssistantCreationEntry::Human(source) = entry {
+        canonical::require_unused_historical_key(
+            &s,
+            source,
+            track.id.to_string(),
+            derived.card_id.clone(),
+        )
+        .await?;
+    }
     let operation_key = retryable_operation_key(&s, &derived.operation_key).await?;
     // The operation mints the card, so the fence is on the id it derives: a send or reset of
     // that card waits for the mint's start to settle.
@@ -436,4 +505,28 @@ impl TryFrom<TrackConversationRow> for TrackConversationSummary {
             last_turn_completed_at: row.last_turn_completed_at,
         })
     }
+}
+
+/// Exercise the supported internal historical entry from integration tests.
+#[cfg(feature = "fixtures")]
+#[doc(hidden)]
+pub async fn create_internal_conversation_for_test(
+    state: &AppState,
+    headers: HeaderMap,
+    track_id: String,
+    body: NewTrackConversationBody,
+    briefing: OpeningBriefing,
+) -> Result<(StatusCode, Json<TrackConversationCreated>)> {
+    use axum::extract::FromRef;
+    create_track_conversation_inner(
+        RouteState::from_ref(state),
+        WorkerState::from_ref(state),
+        Actor::server_send(),
+        headers,
+        track_id,
+        body,
+        briefing,
+        AssistantCreationEntry::InternalHistorical,
+    )
+    .await
 }

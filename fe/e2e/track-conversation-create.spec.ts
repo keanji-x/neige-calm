@@ -114,27 +114,22 @@ test('starts a conversation from a track page and sends the first message to tha
       && new URL(pending.url()).searchParams.get('contract') === 'conversation_v1'))
     .toBe(true);
 
-  /* The kernel writes the sentence to the transcript when the queue drains it, before `turn/start`;
-   * the fixture emits no items, so the row read back is the kernel's own (`turn_id` still null). */
-  // Historical raw input proves visibility, not authenticated authorship. The canonical
-  // Track-create test independently checks Human.author against /api/auth/whoami.
+  // The saved Human identity replaces the creation echo without relying on a provider echo.
   await expect(drawer.locator('[data-nc-thread]').getByText(message, { exact: true })).toHaveCount(1);
   await expect(drawer.locator('[data-nc-thread]').getByText(message, { exact: true })).toBeVisible();
   await expect(drawer.locator('[data-nc-thread-empty]')).toHaveCount(0);
+  await expect(drawer.getByText('The first message’s current status could not be checked.', { exact: true })).toHaveCount(0);
+  const identityResponse = await request.get('/api/auth/whoami');
+  expect(identityResponse.ok()).toBe(true);
+  const identity = await identityResponse.json() as { userId: string; displayName: string };
   const items = await request.get(`/api/cards/${conversation.id}/harness/items?contract=conversation_v1`);
   expect(items.ok()).toBe(true);
   const conversationPage = await items.json() as ConversationPage;
-  expect(conversationPage).toMatchObject({ contract: 'conversation_v1', source: 'historical_raw' });
-  const rows = conversationPage.items.map(({ source }) => {
-    if (source.kind !== 'historical_raw') throw new Error('Expected explicit historical Assistant fixture');
-    return source.item;
-  });
-  expect(
-    rows.map((row) => [row.item_type, row.method, row.turn_id]),
-    'the sentence is readable as the kernel\'s own row before any echo — that is the whole point (#1625 P2)',
-  ).toEqual([['userMessage', 'item/completed', null]]);
-  expect(rows[0]?.input_segments?.[0]?.text).toContain(message);
-  expect((JSON.parse(rows[0]?.params ?? '{}') as { _projection?: unknown })._projection).toBe(true);
+  expect(conversationPage).toMatchObject({ contract: 'conversation_v1', source: 'presentation' });
+  const humans = conversationPage.items.filter(item => item.source.kind === 'human');
+  expect(humans).toHaveLength(1);
+  expect(humans[0].source).toMatchObject({ kind: 'human', message_id: expect.stringMatching(/\S/), revision: 1,
+    author: { user_id: identity.userId, display_name: identity.displayName }, text: message, attachments: [] });
 
   await page.getByRole('button', { name: 'Close conversation' }).click();
   await expect(conversationRows(page)).toHaveCount(2);
@@ -183,13 +178,16 @@ test('archives and restores the original Assistant through real HTTP and query i
   });
   expect(created.status(), await created.text()).toBe(201);
   const row = await created.json() as { id: string };
-  const runPath = `/api/cards/${row.id}/planner/run`;
+  const runPath = `/api/cards/${row.id}/planner/run?contract=conversation_v1`;
   await expect.poll(async () => (await (await request.get(runPath)).json() as { phase: string }).phase)
-    .toMatch(/idle|turn_completed/);
+    .toBe('turn_completed');
   const before = await (await request.get(runPath)).json() as { worker_session_id: string };
-  const historyPath = `/api/cards/${row.id}/harness/items`;
-  const history = await (await request.get(historyPath)).json() as unknown[];
-  expect(history.length).toBeGreaterThan(0);
+  const historyPath = `/api/cards/${row.id}/harness/items?contract=conversation_v1`;
+  const historyResponse = await request.get(historyPath);
+  expect(historyResponse.ok()).toBe(true);
+  const history = await historyResponse.json() as ConversationPage;
+  expect(history).toMatchObject({ contract: 'conversation_v1', source: 'presentation' });
+  expect(history.items.length).toBeGreaterThan(0);
   await page.goto(`/next/track/${track.id}`);
   const actions = page.getByRole('button', { name: `Actions for conversation: ${message}`, exact: true });
   await actions.click();

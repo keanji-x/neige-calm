@@ -209,6 +209,7 @@ pub(crate) async fn write_today_summary(
                 reasoning_effort: None,
             },
             OpeningBriefing::CallerSuppliesItsOwn,
+            crate::routes::track_conversations::AssistantCreationEntry::InternalHistorical,
         )
         .await;
         // The create-409 fallback: conflict ⇒ resolve the derived card ⇒ carry on to the

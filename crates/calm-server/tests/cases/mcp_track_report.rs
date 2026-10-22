@@ -535,10 +535,9 @@ pub(crate) fn worker_identity(boot: &Boot) -> ToolCallIdentity {
 }
 
 pub(crate) async fn collect_n(
-    events: &EventBus,
+    mut sub: tokio::sync::broadcast::Receiver<calm_server::event::BroadcastEnvelope>,
     n: usize,
 ) -> Vec<calm_server::event::BroadcastEnvelope> {
-    let mut sub = events.subscribe();
     let mut out = Vec::with_capacity(n);
     while out.len() < n {
         match tokio::time::timeout(Duration::from_secs(2), sub.recv()).await {
@@ -660,8 +659,8 @@ async fn write_markdown_replaces_body_and_emits_card_updated() {
     let events = boot.ctx.events.clone();
     let report_id = boot.report_card_id.clone();
     let track_id = boot.track_id.clone();
-    let sub = tokio::spawn(async move { collect_n(&events, 2).await });
-    tokio::time::sleep(Duration::from_millis(20)).await;
+    let rx = events.subscribe();
+    let sub = tokio::spawn(collect_n(rx, 2));
 
     let out = read_then_write_markdown(
         &boot,
@@ -913,8 +912,8 @@ async fn commit_emits_track_report_edited_alongside_card_updated() {
     let events = boot.ctx.events.clone();
     let report_id = boot.report_card_id.clone();
     let track_id = boot.track_id.clone();
-    let sub = tokio::spawn(async move { collect_n(&events, 2).await });
-    tokio::time::sleep(Duration::from_millis(20)).await;
+    let rx = events.subscribe();
+    let sub = tokio::spawn(collect_n(rx, 2));
 
     let args = commit_replacing_only_block(&boot, "before ABC after\n", "edit report").await;
     call_tool(&boot, TOOL_REPORT_COMMIT, planner_identity(&boot), args)
@@ -989,8 +988,8 @@ async fn write_markdown_with_unchanged_content_still_emits_track_report_edited()
         .collect();
 
     let events = boot.ctx.events.clone();
-    let sub = tokio::spawn(async move { collect_n(&events, 2).await });
-    tokio::time::sleep(Duration::from_millis(20)).await;
+    let rx = events.subscribe();
+    let sub = tokio::spawn(collect_n(rx, 2));
 
     read_then_write_markdown(
         &boot,

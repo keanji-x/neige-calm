@@ -29,7 +29,37 @@ pub(crate) async fn receipt_for_create(
     if derived.card_id != card_id {
         return Err(CalmError::NotFound("conversation creation".into()));
     }
-    let (_, op) = retryable_operation(s, &derived.operation_key).await?;
+    let canonical_card = card_id.to_owned();
+    let canonical = crate::db::write_in_tx_typed(s.repo.as_ref(), move |tx| {
+        Box::pin(async move {
+            Ok(
+                crate::db::sqlite::conversation::assistant_creation_get_tx(tx, &canonical_card)
+                    .await?,
+            )
+        })
+    })
+    .await?;
+    if let Some(original) = canonical {
+        if original.track_id != track_id {
+            return Ok(Err(Reason::Integrity));
+        }
+        return Ok(Ok(ReceiptResult::Known {
+            receipt: original.receipt,
+        }));
+    }
+    receipt_from_historical_operation(s, track_id, card_id, key, &derived.operation_key).await
+}
+
+/// Read-only journal interpretation. The caller already qualified the derived
+/// scope; this reader can be reused inside the creation owner's transaction.
+pub(crate) async fn receipt_from_historical_operation(
+    s: &RouteState,
+    track_id: &str,
+    card_id: &str,
+    key: &str,
+    operation_key: &str,
+) -> Result<std::result::Result<ReceiptResult, Reason>> {
+    let (_, op) = retryable_operation(s, operation_key).await?;
     let Some(op) = op else {
         return Ok(Err(Reason::CreationIncomplete));
     };
@@ -135,6 +165,12 @@ pub(crate) async fn get_conversation_initial_input(
             }));
         }
     };
+    if crate::conversation_inputs::has_canonical_storage(s.repo.as_ref(), &card_id).await? {
+        return Ok(Json(Observation::Unavailable {
+            reason: Reason::RuntimeUnavailable,
+            receipt: Some(receipt),
+        }));
+    }
     let Some(runtime) = w.repo.session_projection_active_for_card(&card_id).await? else {
         return Ok(Json(Observation::Unavailable {
             reason: Reason::RuntimeUnavailable,

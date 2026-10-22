@@ -528,8 +528,8 @@ async fn read_with_markers_injects_marker_lines_but_never_stores_them() {
 async fn upsert_new_block_appends_and_emits_both_events() {
     let boot = boot().await;
     let events = boot.ctx.events.clone();
-    let sub = tokio::spawn(async move { collect_n(&events, 2).await });
-    tokio::time::sleep(Duration::from_millis(20)).await;
+    let rx = events.subscribe();
+    let sub = tokio::spawn(collect_n(rx, 2));
 
     let out = upsert_block(
         &boot,
@@ -955,8 +955,8 @@ async fn write_markdown_with_markers_reuses_ids_and_strips_them() {
     let ids = seed_two_blocks(&boot).await;
 
     let events = boot.ctx.events.clone();
-    let sub = tokio::spawn(async move { collect_n(&events, 2).await });
-    tokio::time::sleep(Duration::from_millis(20)).await;
+    let rx = events.subscribe();
+    let sub = tokio::spawn(collect_n(rx, 2));
 
     let body = format!(
         "<!-- neige:{} -->\n# A\n\nalpha\n\n<!-- neige:{} -->\n# B\n\nbeta edited\n",
@@ -1067,8 +1067,8 @@ async fn upsert_identical_content_keeps_rev_and_still_emits_events() {
     let (id, rev) = ids[0].clone();
 
     let events = boot.ctx.events.clone();
-    let sub = tokio::spawn(async move { collect_n(&events, 2).await });
-    tokio::time::sleep(Duration::from_millis(20)).await;
+    let rx = events.subscribe();
+    let sub = tokio::spawn(collect_n(rx, 2));
 
     let out = upsert_block(
         &boot,

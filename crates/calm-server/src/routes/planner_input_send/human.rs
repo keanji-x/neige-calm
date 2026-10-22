@@ -18,6 +18,78 @@ pub(super) async fn accept(
 ) -> Result<SendPlannerInputResponse> {
     let char_count = validate_planner_input(&request.text, !request.attachments.is_empty())?;
     let source_for_wake = source.clone();
+    let (bound_attachments, bound_target) = if request.attachments.is_empty() {
+        (vec![], None)
+    } else {
+        let (card, admission, key) = (card_id.clone(), source.clone(), raw_key.clone());
+        let target = crate::db::write_in_tx_typed(state.repo.as_ref(), move |tx| {
+            Box::pin(async move {
+                crate::conversation_inputs::authorize_human_tx(
+                    tx,
+                    &admission.current_principal()?,
+                    &card,
+                )
+                .await?;
+                if planner_input_binding_get(&mut **tx, &card, &key)
+                    .await?
+                    .is_some()
+                {
+                    return Ok(None);
+                }
+                let shape = crate::db::sqlite::card_execution_shape_tx(tx, &card).await?;
+                let binding = crate::harness::profile::PlannerBinding::from_shape(
+                    &shape.kind,
+                    shape.role,
+                    &shape.payload,
+                )
+                .filter(|b| b.profile == crate::harness::profile::HarnessProfile::Assistant)
+                .ok_or_else(|| {
+                    CalmError::Conflict("canonical attachments require the Assistant entry".into())
+                })?;
+                let track: String = sqlx::query_scalar("SELECT track_id FROM cards WHERE id=?1")
+                    .bind(&card)
+                    .fetch_one(&mut **tx)
+                    .await?;
+                Ok(Some((
+                    binding,
+                    crate::db::sqlite::track_get_tx(tx, &track.into()).await?,
+                )))
+            })
+        })
+        .await?;
+        if let Some((binding, track)) = target {
+            let root = crate::planner_attachments::image_input_root(
+                &binding.provider,
+                &track.workspace,
+                &state.workspace_root,
+            )?;
+            let attachments = crate::planner_attachments::bind::bind_attachments_admitted(
+                &root,
+                &CardId::from(card_id.clone()),
+                &request.attachments,
+                &state.planner_attachment_locks,
+                || async {
+                    let (source, card) = (source.clone(), card_id.clone());
+                    crate::db::write_in_tx_typed(state.repo.as_ref(), move |tx| {
+                        Box::pin(async move {
+                            crate::conversation_inputs::authorize_human_tx(
+                                tx,
+                                &source.current_principal()?,
+                                &card,
+                            )
+                            .await?;
+                            Ok(())
+                        })
+                    })
+                    .await
+                },
+            )
+            .await?;
+            (attachments, Some((binding, track.workspace)))
+        } else {
+            (vec![], None)
+        }
+    };
     let result = crate::db::write_in_tx_typed(state.repo.as_ref(), move |tx| {
         Box::pin(async move {
             let principal = source.current_principal()?;
@@ -75,11 +147,11 @@ pub(super) async fn accept(
             // A replay above retains its original acknowledgement. Fresh input
             // requires a statically valid Planner, independently of native readiness.
             let shape = crate::db::sqlite::card_execution_shape_tx(tx, &card_id).await?;
-            crate::harness::profile::PlannerBinding::from_shape(
+            let binding = crate::harness::profile::PlannerBinding::from_shape(
                 &shape.kind, shape.role, &shape.payload,
-            ).filter(|binding| binding.profile == crate::harness::profile::HarnessProfile::Planner)
+            ).filter(|binding| matches!(binding.profile, crate::harness::profile::HarnessProfile::Planner | crate::harness::profile::HarnessProfile::Assistant))
                 .ok_or_else(|| CalmError::Conflict("Planner provider binding is invalid".into()))?;
-            if request.replaces_turn.is_some() || !request.attachments.is_empty() {
+            if request.replaces_turn.is_some() {
                 return Err(CalmError::Conflict(
                     "canonical input currently accepts ordinary text; attachment and history operations require their owning admission"
                         .into(),
@@ -92,6 +164,12 @@ pub(super) async fn accept(
             )
             .await?
             .ok_or_else(|| CalmError::Conflict("conversation carrier disappeared".into()))?;
+            if let Some((expected, workspace)) = bound_target {
+                let track = crate::db::sqlite::track_get_tx(tx, &current_session.track_id).await?;
+                if binding != expected || track.workspace != workspace {
+                    return Err(CalmError::Conflict("attachment target changed before acceptance".into()));
+                }
+            }
             let current = source.current_principal()?;
             let accepted = crate::conversation_inputs::accept_human_tx(
                 tx,
@@ -99,7 +177,7 @@ pub(super) async fn accept(
                 &mut carrier,
                 HumanPayload {
                     text: request.text,
-                    bound_attachments: vec![],
+                    bound_attachments,
                 },
             )
             .await?;

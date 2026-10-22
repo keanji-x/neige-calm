@@ -203,7 +203,7 @@ async fn conversation_title_assistant_create_replay_pending_and_no_live_session(
     let b = boot().await;
     let track = b.create_track("Track title").await;
     let (status, first) = b
-        .create_conversation(&track, "title-replay", "Pending first input\nsecond")
+        .create_internal_conversation(&track, "title-replay", "Pending first input\nsecond")
         .await;
     assert_eq!(status, StatusCode::CREATED, "{first}");
     assert_eq!(first["title"], "Pending first input");
@@ -263,7 +263,7 @@ async fn conversation_title_assistant_create_replay_pending_and_no_live_session(
         "only the two invisible records exist; the title comes from the pending snapshot"
     );
     let (status, replay) = b
-        .create_conversation(&track, "title-replay", "Pending first input\nsecond")
+        .create_internal_conversation(&track, "title-replay", "Pending first input\nsecond")
         .await;
     assert_eq!(status, StatusCode::CREATED, "{replay}");
     assert_eq!(replay["id"], first["id"]);

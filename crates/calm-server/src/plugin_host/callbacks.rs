@@ -1192,6 +1192,7 @@ mod tests {
                 "planner_provider",
                 "assistant_provider",
                 "side_source_card_id",
+                "assistant_opening_context",
                 "permission_mode",
                 "owner_created",
                 "settings_path",

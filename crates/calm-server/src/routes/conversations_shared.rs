@@ -53,10 +53,7 @@ pub(crate) async fn retryable_operation(
     // Reads absence as "nothing has happened under this key yet", so this is only
     // correct while keyed `operations` rows are permanent.
     for key in operation_key_attempts(base) {
-        let existing = s
-            .operation_runtime
-            .find_by_kind_and_idempotency(PLANNER_HARNESS_START, &key)
-            .await?;
+        let existing = lookup_start_operation(s, &key).await?;
         match existing {
             None => return Ok((key, None)),
             Some(op) if op.phase != Phase::Failed => return Ok((key, Some(op))),
@@ -66,6 +63,13 @@ pub(crate) async fn retryable_operation(
     Err(CalmError::IdempotencyKeyExhausted(format!(
         "this Idempotency-Key exhausted its {MAX_OPERATION_KEY_ATTEMPTS} retry slots ({MAX_OPERATION_KEY_ATTEMPTS} failed attempts); retry under a new Idempotency-Key",
     )))
+}
+
+/// Factual lookup in the permanent start journal; this never submits or wakes.
+pub(crate) async fn lookup_start_operation(s: &RouteState, key: &str) -> Result<Option<Operation>> {
+    s.operation_runtime
+        .find_by_kind_and_idempotency(PLANNER_HARNESS_START, key)
+        .await
 }
 
 /// Has a user message been enqueued onto this card's currently ACTIVE runtime?

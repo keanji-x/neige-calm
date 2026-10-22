@@ -28,6 +28,8 @@ pub const PLANNER_PROVIDER_PAYLOAD_KEY: &str = "planner_provider";
 pub const ASSISTANT_PROVIDER_PAYLOAD_KEY: &str = "assistant_provider";
 /// Creation-owned origin of an assistant discussion branch.
 pub const SIDE_SOURCE_CARD_PAYLOAD_KEY: &str = "side_source_card_id";
+/// Frozen opening material; the first canonical render plan consumes this context.
+pub const ASSISTANT_OPENING_CONTEXT_PAYLOAD_KEY: &str = "assistant_opening_context";
 /// A Planner card's `PlannerPermissionMode` (#2348): minted `"never"` at creation and changed only
 /// by its own writer, `planner_permission_mode_set_tx`, which the User-only route calls.
 pub const PLANNER_PERMISSION_MODE_PAYLOAD_KEY: &str = "permission_mode";
@@ -48,13 +50,14 @@ pub use calm_types::card_presentation::TERMINAL_PRESENTATION_PAYLOAD_KEY;
 
 /// Kernel-owned card fields, refused at client boundaries and preserved by
 /// `card_update_tx` even when a replacement payload omits them.
-pub const SERVER_OWNED_CARD_PAYLOAD_KEYS: [&str; 10] = [
+pub const SERVER_OWNED_CARD_PAYLOAD_KEYS: [&str; 11] = [
     TERMINAL_SIGNALS_PAYLOAD_KEY,
     TERMINAL_PRESENTATION_PAYLOAD_KEY,
     PLANNER_TEMPLATE_CONTEXT_PAYLOAD_KEY,
     PLANNER_PROVIDER_PAYLOAD_KEY,
     ASSISTANT_PROVIDER_PAYLOAD_KEY,
     SIDE_SOURCE_CARD_PAYLOAD_KEY,
+    ASSISTANT_OPENING_CONTEXT_PAYLOAD_KEY,
     PLANNER_PERMISSION_MODE_PAYLOAD_KEY,
     OWNER_CREATED_PAYLOAD_KEY,
     CLAUDE_SETTINGS_PATH_PAYLOAD_KEY,
@@ -71,7 +74,8 @@ pub fn server_owned_value_is_sticky(key: &str, value: &Value) -> bool {
         // Creation-owned identity stays immutable, including a corrupt stored value.
         PLANNER_PROVIDER_PAYLOAD_KEY
         | ASSISTANT_PROVIDER_PAYLOAD_KEY
-        | SIDE_SOURCE_CARD_PAYLOAD_KEY => true,
+        | SIDE_SOURCE_CARD_PAYLOAD_KEY
+        | ASSISTANT_OPENING_CONTEXT_PAYLOAD_KEY => true,
         // Only its own writer changes it; a replacement can neither drop nor "repair" a stored value.
         PLANNER_PERMISSION_MODE_PAYLOAD_KEY | TERMINAL_PRESENTATION_PAYLOAD_KEY => true,
         TERMINAL_SIGNALS_PAYLOAD_KEY | OWNER_CREATED_PAYLOAD_KEY => value.as_bool() == Some(true),

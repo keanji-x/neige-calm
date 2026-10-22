@@ -1,6 +1,6 @@
 import { describe,it,expect } from 'vitest';
 import { keepConversationInputOperation, retryConversationInputOperation, buildConversationTranscript, conversationPageSchema, conversationRunMetadataSchema, orderedPendingInputs, removedHumanIds } from './conversation-display.js';
-import { outboxFactsWithRemovedInputs, matchSendOps, type SendOp } from './conversation-outbox.js';
+import { outboxFactsWithRemovedInputs, matchSendOps, reportedInputSource, withInitialInputFacts, initialInputNeedsObservation, type AcceptedInitialInput, type SendOp } from './conversation-outbox.js';
 import type { ConversationDisplayItem, HarnessItem } from '../api/generated/wire.js';
 import { isConversationMessage, SYSTEM_PRESENTATION_LABELS } from './conversation.js';
 const cursor = (position:number) => ({ contract:'conversation_v1',source:'presentation',card_id:'card',position } as const);
@@ -23,6 +23,26 @@ describe('canonical conversation display',()=>{
       displayPosition:3}]);
     expect(matchSendOps(entries.filter(isConversationMessage),[op],[],'card').size).toBe(0);
     expect(removedHumanIds([{cursor:cursor(4),source:{kind:'removed',identity:{kind:'system',observation_id:'message-a'}}}]).size).toBe(0);
+  });
+  it('hands an accepted first input to its exact canonical Human identity and revision',()=>{
+    const accepted:AcceptedInitialInput={phase:'initial-accepted',key:'create',trackId:'track',submitted:{text:'same words',atMs:1},
+      localWrite:null,inputFact:null,sourceWitness:null,receipt:{version:'initial-input-v1',entryId:'message-a',entryRev:1,
+        queuedAtMs:1,textSha256:'a'.repeat(64),initialRuntimeId:'runtime'}};
+    const entries=buildConversationTranscript([human('message-a','jian',1)],'jian');
+    const facts=outboxFactsWithRemovedInputs({cardId:'card',serverEntries:entries,serverTurns:entries.filter(isConversationMessage),
+      queuedEntryIds:new Set(),stalled:false,ops:[accepted],spent:[],landed:{transcript:1,run:1}},new Set());
+    expect(facts.shown).toEqual([]);
+    expect(facts.initialInputs).toEqual([]);
+    expect(facts.checkingInitialInput).toBe(false);
+    const report=reportedInputSource(entries[0]);
+    expect(report).toEqual({kind:'source',entryId:'message-a',rev:1,text:'same words'});
+    expect(initialInputNeedsObservation(withInitialInputFacts(accepted,[report!]))).toBe(false);
+    for(const [id,uid] of [['other','jian'],['message-a','alice']] as const){
+      const turns=buildConversationTranscript([human(id,uid,1)],'jian').filter(isConversationMessage);
+      expect(matchSendOps(turns,[accepted],[],'card').size).toBe(0);
+    }
+    const newer={...accepted,receipt:{...accepted.receipt,entryRev:2}};
+    expect(matchSendOps(entries.filter(isConversationMessage),[newer],[],'card').size).toBe(0);
   });
   it('accepts only the owning non-Human System presentation and required frozen facts',()=>{
     const source={kind:'system',observation_id:'observation',presentation:'system',text:'System fact',created_at_ms:12};

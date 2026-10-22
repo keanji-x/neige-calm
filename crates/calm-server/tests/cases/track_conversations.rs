@@ -157,6 +157,38 @@ impl Boot {
         .await
     }
 
+    /// These callers specifically exercise the bounded internal V1 entry.
+    async fn create_internal_conversation(
+        &self,
+        track: &str,
+        key: &str,
+        text: &str,
+    ) -> (StatusCode, Value) {
+        self.create_internal_body(track, key, json!({"text":text}))
+            .await
+    }
+
+    async fn create_internal_body(
+        &self,
+        track: &str,
+        key: &str,
+        body: Value,
+    ) -> (StatusCode, Value) {
+        use axum::response::IntoResponse;
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert("Idempotency-Key", key.parse().unwrap());
+        let response = routes::track_conversations::create_internal_conversation_for_test(
+            &self.state, headers, track.to_owned(), serde_json::from_value(body).unwrap(),
+            calm_server::operation::planner_harness_start_adapter::OpeningBriefing::TodaysActivityOnTheLaunchpad,
+        ).await.into_response();
+        let status = response.status();
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        (
+            status,
+            serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+        )
+    }
+
     async fn list_conversations(&self, track_id: &str) -> (StatusCode, Value) {
         self.request(
             "GET",
@@ -308,7 +340,7 @@ async fn the_first_message_mints_an_assistant_card_with_its_own_marker_and_mcp_t
     let track_id = b.create_track("assistant-mint").await;
 
     let (status, body) = b
-        .create_conversation(&track_id, "idem-mint", "hello assistant")
+        .create_internal_conversation(&track_id, "idem-mint", "hello assistant")
         .await;
     assert_eq!(status, StatusCode::CREATED, "body={body}");
     let card_id = body["id"].as_str().unwrap().to_string();
@@ -437,7 +469,7 @@ async fn a_retry_after_a_failed_attempt_still_delivers_the_message() {
         .shared_codex_appserver
         .fail_next_thread_start_for_test();
     let (status, body) = b
-        .create_conversation(&track_id, "idem-redeliver", NEEDLE)
+        .create_internal_conversation(&track_id, "idem-redeliver", NEEDLE)
         .await;
     assert!(
         status.is_server_error(),
@@ -477,7 +509,7 @@ async fn a_retry_after_a_failed_attempt_still_delivers_the_message() {
 
     // The retry: same key, same text.
     let (status, retried) = b
-        .create_conversation(&track_id, "idem-redeliver", NEEDLE)
+        .create_internal_conversation(&track_id, "idem-redeliver", NEEDLE)
         .await;
     assert_eq!(status, StatusCode::CREATED, "body={retried}");
     assert_eq!(
@@ -797,7 +829,7 @@ async fn resetting_an_assistant_conversation_restarts_it_under_its_own_profile()
     let b = boot().await;
     let track_id = b.create_track("assistant-reset").await;
     let (status, created) = b
-        .create_conversation(&track_id, "idem-reset", "hello assistant")
+        .create_internal_conversation(&track_id, "idem-reset", "hello assistant")
         .await;
     assert_eq!(status, StatusCode::CREATED, "body={created}");
     let card_id = created["id"].as_str().unwrap().to_string();
@@ -1074,9 +1106,8 @@ async fn side_conversation_has_its_own_identity_and_frozen_context() {
     let body = json!({"text": "side-question-unique", "side": {
         "source_card_id": planner, "context": "snapshot-unique-text"
     }});
-    let path = format!("/api/tracks/{track}/conversations");
     let (status, created) = b
-        .request("POST", &path, Some("side-key"), Some(body.clone()))
+        .create_internal_body(&track, "side-key", body.clone())
         .await;
     assert_eq!(status, StatusCode::CREATED, "{created}");
     let id = created["id"].as_str().unwrap();
@@ -1095,15 +1126,13 @@ async fn side_conversation_has_its_own_identity_and_frozen_context() {
     let (_, rows) = b.list_conversations(&track).await;
     assert_eq!(rows[0]["sourceCardId"], planner);
     let (status, replay) = b
-        .request("POST", &path, Some("side-key"), Some(body.clone()))
+        .create_internal_body(&track, "side-key", body.clone())
         .await;
     assert_eq!(status, StatusCode::CREATED, "{replay}");
     assert_eq!(replay["id"], id);
     let mut changed = body;
     changed["side"]["context"] = json!("changed-snapshot");
-    let (status, response) = b
-        .request("POST", &path, Some("side-key"), Some(changed))
-        .await;
+    let (status, response) = b.create_internal_body(&track, "side-key", changed).await;
     assert_eq!(status, StatusCode::CONFLICT, "{response}");
     assert_eq!(b.copies_in_harness("snapshot-unique-text", 1).await, 1);
     b.shutdown_harnesses().await;

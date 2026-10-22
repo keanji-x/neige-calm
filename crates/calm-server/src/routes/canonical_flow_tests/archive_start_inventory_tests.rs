@@ -88,20 +88,18 @@ async fn finished_assistant(
     .await;
     assert!(!started, "an empty historical Planner has no first input");
     let track = track["id"].as_str().unwrap().to_owned();
-    let uri = format!("/api/tracks/{track}/conversations");
-    let (assistant, mut started) = post_with_historical_peer(
-        state,
-        peer,
-        ASSISTANT_B_THREAD,
-        post(
-            app,
-            cookie,
-            &uri,
-            "assistant-b",
-            json!({"provider":"codex","text":ASSISTANT_TEXT}),
-        ),
-    )
-    .await;
+    // This inventory fixture deliberately retains the supported historical entry.
+    let create = async {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert("Idempotency-Key", "assistant-b".parse().unwrap());
+        let (_, crate::extract::Json(value)) = crate::routes::track_conversations::create_internal_conversation_for_test(
+            state, headers, track.clone(), serde_json::from_value(json!({"provider":"codex","text":ASSISTANT_TEXT})).unwrap(),
+            crate::operation::planner_harness_start_adapter::OpeningBriefing::TodaysActivityOnTheLaunchpad,
+        ).await.unwrap();
+        serde_json::to_value(value).unwrap()
+    };
+    let (assistant, mut started) =
+        post_with_historical_peer(state, peer, ASSISTANT_B_THREAD, create).await;
     let card = assistant["id"].as_str().unwrap().to_owned();
     assert_eq!(
         fixture.repo.card_role_get(&card).await.unwrap(),

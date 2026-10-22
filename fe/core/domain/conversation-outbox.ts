@@ -182,16 +182,20 @@ export function initialInputNeedsObservation(op: AcceptedInitialInput): boolean 
 
 function isCurrentInitialInputSource(op: AcceptedInitialInput, entry: TranscriptEntry): entry is ConversationTurn {
   const current = currentInitialInput(op);
-  return isUserConversationTurn(entry) && entry.queueEntryId === op.receipt.entryId && entry.inputSource !== undefined
-    && entry.inputSource.entryRev === current.rev && current.text !== null;
+  if (!isUserConversationTurn(entry) || current.text === null) return false;
+  if (entry.human !== undefined) return entry.author === 'you' && entry.human.messageId === op.receipt.entryId
+    && entry.human.revision === current.rev;
+  return entry.queueEntryId === op.receipt.entryId && entry.inputSource?.entryRev === current.rev;
 }
 
 function initialInputSource(op: AcceptedInitialInput, entries: readonly TranscriptEntry[]): ConversationTurn | undefined {
   return entries.find(entry => isCurrentInitialInputSource(op, entry));
 }
 
-/** Only a real paired raw source can report a canonical input version. */
+/** Published Human identities and paired historical sources report actual input versions. */
 export function reportedInputSource(entry: TranscriptEntry): ReportedInput | null {
+  if (isUserConversationTurn(entry) && entry.human !== undefined) return { kind: 'source',
+    entryId: entry.human.messageId, rev: entry.human.revision, text: entry.text };
   return isUserConversationTurn(entry) && entry.queueEntryId != null && entry.inputSource?.entryRev != null
     ? { kind: 'source', entryId: entry.queueEntryId, rev: entry.inputSource.entryRev, text: entry.text } : null;
 }
@@ -282,7 +286,7 @@ export function matchSendOps(
   for (const op of ops) {
     if (op.phase === 'initial-accepted') {
       const row = initialInputSource(op, rows);
-      if (row?.inputSource?.cardId === cardId) matched.set(op.key, row.id);
+      if (row !== undefined && (row.human !== undefined || row.inputSource?.cardId === cardId)) matched.set(op.key, row.id);
       continue;
     }
     if (op.echo.entryId === null) continue;
