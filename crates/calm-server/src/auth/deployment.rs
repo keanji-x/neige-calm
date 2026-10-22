@@ -25,9 +25,14 @@ pub(crate) struct ValidatedApplicationAuth {
 impl ValidatedApplicationAuth {
     pub(crate) fn from_config(cfg: &Config) -> anyhow::Result<Self> {
         let state = AuthState::from_config(cfg)?;
+        Self::from_state(state)
+    }
+
+    pub(crate) fn from_state(state: AuthState) -> anyhow::Result<Self> {
         let execution = LegacyPrivateExecution {
             issuer: Arc::downgrade(&state.config),
         };
+        execution.current_owner()?;
         Ok(Self { state, execution })
     }
 }

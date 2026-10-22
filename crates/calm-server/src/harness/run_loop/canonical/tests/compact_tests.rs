@@ -3,7 +3,7 @@ use super::*;
 use crate::harness::compact_outcome::CompactStatus;
 use crate::shared_codex_appserver::native_owner_tests::{Peer, assert_no_request};
 
-async fn ready() -> (Fixture, Arc<crate::codex_appserver::CodexAppServer>, Peer) {
+pub(super) async fn ready() -> (Fixture, Arc<crate::codex_appserver::CodexAppServer>, Peer) {
     let fx = Fixture::new().await;
     let (client, mut peer) = connect(&fx.daemon).await;
     let thread = super::content_tests::start(&fx, &mut peer, fx.message.clone(), "user").await;
@@ -17,7 +17,7 @@ fn compact(fx: &Fixture) -> tokio::task::JoinHandle<Result<()>> {
     tokio::spawn(async move { harness.compact_canonical(source).await })
 }
 
-async fn shutdown(harness: &PlannerHarness, peer: &mut Peer) {
+pub(super) async fn shutdown(harness: &PlannerHarness, peer: &mut Peer) {
     let handle = harness.clone();
     let mut task = tokio::spawn(async move { handle.shutdown().await });
     loop {
@@ -336,7 +336,7 @@ async fn canonical_codex_compact_refused_native_activity_cannot_become_maintenan
     shutdown(&fx.harness, &mut peer).await;
 }
 
-async fn accept_during_compact(fx: &Fixture) -> CanonicalHarnessSnapshot {
+pub(super) async fn accept_during_compact(fx: &Fixture) -> CanonicalHarnessSnapshot {
     let mut tx = begin_immediate_tx(fx.original.repo.db()).await.unwrap();
     let mut carrier = current_input_carrier_tx(
         &mut tx,
@@ -511,5 +511,111 @@ async fn assert_observation_expires(started: bool) {
     assert_eq!(held.canonical_inputs, pending.canonical_inputs);
     assert!(held.canonical_inputs.active.is_none());
     assert_no_request(&mut peer).await;
+    shutdown(&fx.harness, &mut peer).await;
+}
+
+pub(super) async fn wait_turn(fx: &Fixture, turn: &str) {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while fx
+            .frame()
+            .await
+            .header
+            .compact_outcome
+            .as_ref()
+            .and_then(|outcome| outcome.turn_id.as_deref())
+            != Some(turn)
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn canonical_codex_compact_healthy_started_uses_completion_budget() {
+    let (fx, _client, mut peer) = ready().await;
+    let task = compact(&fx);
+    let call = request(&mut peer).await;
+    send(&mut peer, json!({"id":call["id"],"result":{}})).await;
+    task.await.unwrap().unwrap();
+    let thread = fx.frame().await.header.last_thread_id.unwrap();
+    notify_thread(
+        &fx.daemon,
+        &mut peer,
+        &thread,
+        "turn/started",
+        json!({"id":"healthy"}),
+    )
+    .await;
+    wait_turn(&fx, "healthy").await;
+    let inner = &fx.harness.inner;
+    let issuance = inner.issuance.lock().await;
+    let age = inner.config.interrupt_completion_budget + Duration::from_secs(1);
+    assert!(age < inner.config.max_turn_duration);
+    *inner.state.lock().await = HarnessState::CompactionRunning {
+        turn_id: "healthy".into(),
+        started_at: Instant::now() - age,
+    };
+    super::super::super::compact_command::canonical::observe(inner)
+        .await
+        .unwrap();
+    assert_eq!(fx.frame().await.header.phase, HarnessPhaseTag::Compacting);
+    drop(issuance);
+    notify_thread(
+        &fx.daemon,
+        &mut peer,
+        &thread,
+        "turn/completed",
+        json!({"id":"healthy","status":"completed"}),
+    )
+    .await;
+    fx.wait_phase(HarnessPhaseTag::TurnCompleted).await;
+    shutdown(&fx.harness, &mut peer).await;
+}
+
+#[tokio::test]
+async fn canonical_codex_compact_second_operation_has_fresh_timer() {
+    let (fx, _client, mut peer) = ready().await;
+    let mut ids = Vec::new();
+    for turn in ["first", "second"] {
+        let task = compact(&fx);
+        let call = request(&mut peer).await;
+        send(&mut peer, json!({"id":call["id"],"result":{}})).await;
+        task.await.unwrap().unwrap();
+        let frame = fx.frame().await;
+        ids.push(frame.header.compact_outcome.unwrap().operation_id);
+        assert!(
+            matches!(&*fx.harness.inner.state.lock().await, HarnessState::Compacting {since} if since.elapsed() < Duration::from_secs(5))
+        );
+        let thread = frame.header.last_thread_id.unwrap();
+        notify_thread(
+            &fx.daemon,
+            &mut peer,
+            &thread,
+            "turn/started",
+            json!({"id":turn}),
+        )
+        .await;
+        // Age the first operation; successful completion must not carry this timer forward.
+        if turn == "first" {
+            let issuance = fx.harness.inner.issuance.lock().await;
+            *fx.harness.inner.state.lock().await = HarnessState::CompactionRunning {
+                turn_id: turn.into(),
+                started_at: Instant::now() - fx.harness.inner.config.interrupt_completion_budget,
+            };
+            drop(issuance);
+        }
+        notify_thread(
+            &fx.daemon,
+            &mut peer,
+            &thread,
+            "turn/completed",
+            json!({"id":turn,"status":"completed"}),
+        )
+        .await;
+        fx.wait_phase(HarnessPhaseTag::TurnCompleted).await;
+    }
+    assert_ne!(ids[0], ids[1]);
     shutdown(&fx.harness, &mut peer).await;
 }

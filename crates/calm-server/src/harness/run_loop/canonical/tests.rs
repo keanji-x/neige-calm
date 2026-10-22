@@ -17,6 +17,7 @@ mod compact_tests;
 mod content_tests;
 mod control_tests;
 mod objective_tests;
+mod planner_compact_tests;
 mod selection_authority_tests;
 
 pub(super) struct Fixture {
@@ -135,6 +136,10 @@ impl Fixture {
         )
         .unwrap();
         let registry = crate::harness::registry::HarnessRegistry::default();
+        let application = crate::auth::ValidatedApplicationAuth::from_state(auth.clone()).unwrap();
+        registry
+            .activate_maintenance_execution(application.execution)
+            .unwrap();
         let harness = PlannerHarness::run(PlannerHarnessParams {
             track_delete_locks: Default::default(),
             worker_session_id: inner.worker_session_id.clone(),

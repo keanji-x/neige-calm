@@ -563,3 +563,58 @@ async fn canonical_claude_compact_start_without_end_expires() {
     assert_eq!(fx.session.user_line_writes_for_test(), 2);
     harness.shutdown().await.unwrap();
 }
+
+#[tokio::test]
+async fn canonical_planner_compact_claude_positive() {
+    use calm_truth::db::RepoEventWrite;
+    use calm_truth::db::RepoRead;
+    let (fx, harness, before) = ready().await;
+    fx.auth.sessions.remove(&fx.login).unwrap();
+    let daemon =
+        crate::shared_codex_appserver::SharedCodexAppServer::new_stub(fx.owner.repo.clone());
+    let (scheduler, _) = crate::harness::run_loop::compact_task_tests::declared_for(
+        fx.owner.repo.clone(),
+        &harness,
+        daemon,
+    )
+    .await;
+    let id = format!("{}:compact", fx.owner.track);
+    assert_ne!(
+        fx.owner.repo.task_get(&id).await.unwrap().unwrap().status,
+        crate::model::TaskStatus::Failed
+    );
+    let after = tokio::time::timeout(Duration::from_secs(25), async {
+        loop {
+            let frame = fx.frame().await;
+            if frame["compact_outcome"]["status"] == "completed" {
+                break frame;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(after["compact_outcome"]["operation_id"], id);
+    assert_eq!(after["canonical_inputs"], before["canonical_inputs"]);
+    assert_eq!(after["last_turn_id"], before["last_turn_id"]);
+    assert_eq!(lines(&fx), 2, "one original input and one maintenance line");
+    assert_eq!(
+        fx.owner.repo.task_get(&id).await.unwrap().unwrap().status,
+        crate::model::TaskStatus::Done
+    );
+    scheduler.sweep_all().await;
+    let events = fx.owner.repo.events_since(0, 1000).await.unwrap();
+    let wakes: Vec<_> = events
+        .iter()
+        .filter_map(|event| {
+            if let crate::event::Event::TrackWakeRequested { text, .. } = &event.3 {
+                Some(text)
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert_eq!(wakes.len(), 1);
+    assert!(wakes[0].ends_with(crate::harness::run_loop::compact_task_tests::HANDOFF));
+    harness.shutdown().await.unwrap();
+}

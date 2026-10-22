@@ -10,6 +10,11 @@ impl Fixture {
         registry: crate::harness::registry::HarnessRegistry,
     ) -> crate::harness::PlannerHarness {
         use crate::harness::{HarnessRuntimeSnapshot, PlannerHarness, PlannerHarnessParams};
+        let application =
+            crate::auth::ValidatedApplicationAuth::from_state(self.auth.clone()).unwrap();
+        registry
+            .activate_maintenance_execution(application.execution)
+            .unwrap();
         let mut tx = begin_immediate_tx(self.owner.repo.db()).await.unwrap();
         let carrier = current_input_carrier_tx(&mut tx, &self.owner.card, &self.owner.worker)
             .await

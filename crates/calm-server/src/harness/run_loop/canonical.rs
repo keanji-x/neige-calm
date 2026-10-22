@@ -10,7 +10,6 @@ use crate::db::sqlite::conversation::{
     RuntimeExecutionFence, current_input_carrier_tx, current_input_fact_carrier_tx,
 };
 use crate::harness::profile::input_carrier_binding_tx;
-use crate::harness::registry::CanonicalSourceIndex;
 use crate::harness::snapshot::{
     CanonicalHarnessSnapshot, canonical_runtime_header_value as header_value,
 };
@@ -21,6 +20,8 @@ use calm_types::conversation::{
 use provider::TurnModelSelection;
 
 mod content;
+mod inputs;
+pub(super) use inputs::CanonicalInputs;
 mod load;
 pub(super) use load::load_current;
 mod resume;
@@ -119,38 +120,6 @@ impl PublicFeedback {
                 .then(|| h.last_turn_id.clone())
                 .flatten(),
         }
-    }
-}
-
-pub(super) struct CanonicalInputs {
-    // This is an identity index, not an ordered queue or an admission cache.
-    // Every claim/crossing still revalidates its actual issuer and current scope.
-    sources: Arc<CanonicalSourceIndex>,
-    projection: Mutex<CommittedFrame>,
-}
-
-impl CanonicalInputs {
-    pub fn new(frame: CommittedFrame, sources: Arc<CanonicalSourceIndex>) -> Self {
-        Self {
-            sources,
-            projection: Mutex::new(frame),
-        }
-    }
-
-    pub async fn observe_source(&self, input: CanonicalPendingIdentity, source: InputSource) {
-        self.sources.observe(input, source);
-    }
-
-    pub async fn source(&self, input: &CanonicalPendingIdentity) -> Option<InputSource> {
-        self.sources.source(input)
-    }
-
-    pub async fn committed(&self) -> CommittedFrame {
-        self.projection.lock().await.clone()
-    }
-
-    pub async fn publish_committed(&self, frame: CommittedFrame) {
-        *self.projection.lock().await = frame;
     }
 }
 
@@ -286,7 +255,13 @@ pub(super) async fn publish_issuance_error(inner: &Inner, error: &CalmError) {
 
 /// Consume the one persisted pending order in the existing scheduler. Live
 /// source entries carry no body, queue order, or reusable execution grant.
-pub(super) async fn tick(inner: &Arc<Inner>) -> Result<()> {
+pub(super) async fn tick(inner: &Arc<Inner>, ingress_empty: bool) -> Result<()> {
+    if inner.parked.is_parked() || inner.shutting_down.load(Ordering::SeqCst) {
+        return Ok(());
+    }
+    if ingress_empty {
+        super::compact_command::canonical::planner::tick(inner).await?;
+    }
     let _issuance = inner.issuance.lock().await;
     if inner.parked.is_parked() {
         return Ok(());

@@ -12,7 +12,15 @@ pub(in crate::harness::run_loop) async fn load_current(
     let runtime = params.worker_session_id.clone();
     let supplied_thread = params.thread_id.clone();
     let provider = params.backend.provider();
-    write_in_tx_typed(params.repo.as_ref(), move |tx| {
+    let scope = match params.track_area_cache.area_of(&params.track_id) {
+        Some(area) => EventScope::Card {
+            card: params.card_id.clone(),
+            track: params.track_id.clone(),
+            area,
+        },
+        None => EventScope::System,
+    };
+    let (committed, events) = write_in_tx_typed(params.repo.as_ref(), move |tx| {
         Box::pin(async move {
             let carrier = current_input_carrier_tx(tx, &card, &runtime).await?;
             let snapshot = checked_snapshot(carrier.snapshot().clone()).map_err(|_| {
@@ -50,9 +58,19 @@ pub(in crate::harness::run_loop) async fn load_current(
                         outcome.status == crate::harness::compact_outcome::CompactStatus::Started
                     })
             {
+                let previous = snapshot.header.clone();
                 let mut snapshot = snapshot;
                 super::compact_command::canonical::wedge(&mut snapshot);
-                return written(
+                let events = super::compact_command::canonical::planner::append_transition_tx(
+                    tx,
+                    &TrackId(track),
+                    &scope,
+                    &previous,
+                    &snapshot.header,
+                    false,
+                )
+                .await?;
+                let committed = written(
                     persist_runtime_frame_tx(
                         tx,
                         &card,
@@ -61,13 +79,21 @@ pub(in crate::harness::run_loop) async fn load_current(
                         header_value(&snapshot)?,
                     )
                     .await?,
-                );
+                )?;
+                return Ok((committed, events));
             }
-            Ok(CommittedFrame {
-                snapshot,
-                fence: RuntimeExecutionFence::from_carrier(&carrier),
-            })
+            Ok((
+                CommittedFrame {
+                    snapshot,
+                    fence: RuntimeExecutionFence::from_carrier(&carrier),
+                },
+                vec![],
+            ))
         })
     })
-    .await
+    .await?;
+    for event in events {
+        params.events.emit_envelope(event);
+    }
+    Ok(committed)
 }

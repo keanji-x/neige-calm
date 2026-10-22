@@ -91,6 +91,9 @@ impl BootedApplication {
             .dispatcher
             .activate_legacy_execution(application.execution.clone())
             .await?;
+        state
+            .harness
+            .activate_maintenance_execution(application.execution.clone())?;
         Ok(application)
     }
 }

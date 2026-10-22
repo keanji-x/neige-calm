@@ -37,10 +37,15 @@ impl WorkerEntry {
     }
 }
 
+/// Shared live issuer storage has no reference back to the registry's harness map.
+pub(crate) type MaintenanceExecutionCell =
+    Arc<std::sync::RwLock<Option<crate::auth::LegacyPrivateExecution>>>;
+
 struct RegistryInner {
     map: DashMap<String, WorkerEntry>,
     next_reservation: AtomicU64,
     live_replies: Arc<LiveReplies>,
+    maintenance_execution: MaintenanceExecutionCell,
 }
 
 #[derive(Clone)]
@@ -52,6 +57,7 @@ impl Default for HarnessRegistry {
             map: DashMap::new(),
             next_reservation: AtomicU64::new(0),
             live_replies: Arc::new(LiveReplies::new()),
+            maintenance_execution: Default::default(),
         }))
     }
 }
@@ -116,6 +122,24 @@ impl Drop for HarnessReservation {
 }
 
 impl HarnessRegistry {
+    /// Bound only by the validated post-recovery application composition.
+    pub(crate) fn activate_maintenance_execution(
+        &self,
+        execution: crate::auth::LegacyPrivateExecution,
+    ) -> crate::error::Result<()> {
+        execution.current_owner()?;
+        *self
+            .0
+            .maintenance_execution
+            .write()
+            .expect("maintenance issuer") = Some(execution);
+        Ok(())
+    }
+
+    pub(crate) fn maintenance_execution_cell(&self) -> MaintenanceExecutionCell {
+        self.0.maintenance_execution.clone()
+    }
+
     /// Missing/dormant/reserved is not positive native-idle evidence.
     /// Caller holds the card start fence and drive lock while acquiring the owner proof.
     pub fn carrier_quiescence_owner(&self, worker: &str) -> crate::error::Result<PlannerHarness> {

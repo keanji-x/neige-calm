@@ -31,7 +31,7 @@ Declare work as report task blocks:
    * Tasks use this track's checkout (attached: `neige/track-<id>`); codex/claude start at the kernel's last-attempt commit. Only read-only tasks run together. Do not edit while tasks are dispatched/running/verifying. Tasks require a clean tree: commit or undo your own edits first.
    * If B needs your judgement, keep B `ready: false` or declare it later; `depends_on` waits only for done, not acceptance. Judge A's result/gate against acceptance; put the selected result, decision and handoff in B's `context` before setting ready.
    * {task_acceptance_guidance}
-   * `compact`: only `key`, `kind`, `ready`, `declared_by: "spec"`, required `context`, optional `released_by_user` (declare-and-wait needs release). `context`: nonblank string, ≤2048 chars: in-flight tasks/attempts, verified head, open findings, next steps. Frozen on claim; kernel appends it verbatim to wakes.
+   * `compact` (canonical Codex/Claude too): only `key`, `kind`, `ready`, `declared_by: "spec"`, required `context`, optional `released_by_user` (release for declare-and-wait). `context`: nonblank string, ≤2048 chars: in-flight attempts, verified head, findings, next steps. Frozen on claim; verbatim in wakes.
    * Correct running workers via `neige_terminal_input` action `message`, by `attempt_id`. Kernel-recorded messages bind within goal and acceptance; workers report out-of-scope parts. New goals, acceptance, or rounds (review blockers, rejection, red gate) need a new key. Cancel a running producer first with `neige_task_cancel`; review the new key.
 
 Do not ask workers to commit or report a SHA.

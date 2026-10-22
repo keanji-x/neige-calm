@@ -90,11 +90,14 @@ async fn transition(inner: &Arc<Inner>, change: Change) -> Result<CommittedFrame
         inner.worker_session_id.clone(),
         inner.backend.provider(),
     );
-    let next = write_in_tx_typed(inner.repo.as_ref(), move |tx| {
+    let track = inner.track_id.clone();
+    let scope = harness_event_scope(inner, "track.wake_requested");
+    let (next, events) = write_in_tx_typed(inner.repo.as_ref(), move |tx| {
         Box::pin(async move {
             let carrier = current_input_fact_carrier_tx(tx, &card, &worker).await?;
             let mut next: CanonicalHarnessSnapshot =
                 serde_json::from_value(carrier.snapshot().clone())?;
+            let previous = next.header.clone();
             match change {
                 Change::Warning { target, start } => {
                     require_running(&carrier, &next, &target)?;
@@ -145,10 +148,24 @@ async fn transition(inner: &Arc<Inner>, change: Change) -> Result<CommittedFrame
                     next.header.interruption_intent = Some(intent);
                 }
                 Change::Failed { reason } => {
+                    if next.header.compact_outcome.as_ref().is_some_and(|outcome| {
+                        outcome.status == crate::harness::compact_outcome::CompactStatus::Started
+                    }) {
+                        super::compact_command::canonical::wedge(&mut next);
+                    }
                     next.header.phase = HarnessPhaseTag::Wedged;
                     next.header.wedged_reason = Some(reason);
                 }
             }
+            let events = super::compact_command::canonical::planner::append_transition_tx(
+                tx,
+                &track,
+                &scope,
+                &previous,
+                &next.header,
+                false,
+            )
+            .await?;
             let persisted = persist_runtime_frame_tx(
                 tx,
                 &card,
@@ -174,10 +191,13 @@ async fn transition(inner: &Arc<Inner>, change: Change) -> Result<CommittedFrame
                 next.header.last_turn_id.as_deref(),
             )
             .await?;
-            written(persisted)
+            Ok((written(persisted)?, events))
         })
     })
     .await?;
+    for event in events {
+        inner.events.emit_envelope(event);
+    }
     publish(inner, next.clone()).await;
     Ok(next)
 }

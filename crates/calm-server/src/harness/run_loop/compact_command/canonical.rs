@@ -1,6 +1,8 @@
 //! Canonical maintenance transitions use the existing runtime frame and compact outcome.
 use super::*;
 use crate::auth::HumanInputSource;
+
+pub(in crate::harness::run_loop) mod planner;
 use crate::db::sqlite::conversation::{
     RuntimeExecutionFence, current_input_carrier_tx, persist_runtime_frame_tx,
 };
@@ -9,6 +11,7 @@ use crate::harness::compact_outcome::{CompactOutcome, CompactStatus};
 use crate::harness::native_admission::NativePromptAdmission;
 use crate::harness::run_loop::canonical::{self, CommittedFrame};
 use crate::harness::snapshot::{CanonicalHarnessSnapshot, canonical_runtime_header_value};
+use planner::Issuer;
 
 fn target(inner: &Inner, outcome: &CompactOutcome) -> MaintenanceTarget {
     MaintenanceTarget {
@@ -49,7 +52,7 @@ fn require_idle(snapshot: &CanonicalHarnessSnapshot) -> Result<()> {
 
 enum TransitionAdmission {
     Start {
-        source: HumanInputSource,
+        source: Issuer,
         target: MaintenanceTarget,
     },
     Settlement,
@@ -62,6 +65,8 @@ async fn write(
     next: CanonicalHarnessSnapshot,
     admission: TransitionAdmission,
 ) -> Result<CommittedFrame> {
+    let previous_header = expected.snapshot.header.clone();
+    let scope = harness_event_scope(inner, "track.wake_requested");
     let (card, worker, fence, provider, track) = (
         inner.card_id.to_string(),
         inner.worker_session_id.clone(),
@@ -69,8 +74,15 @@ async fn write(
         inner.backend.provider(),
         inner.track_id.to_string(),
     );
-    write_in_tx_typed(inner.repo.as_ref(), move |tx| {
+    let (committed, events) = write_in_tx_typed(inner.repo.as_ref(), move |tx| {
         Box::pin(async move {
+            let compact_start = matches!(
+                &admission,
+                TransitionAdmission::Start {
+                    source: Issuer::Automation(_),
+                    ..
+                }
+            );
             match admission {
                 TransitionAdmission::Start { source, target } => {
                     let carrier = current_input_carrier_tx(tx, &card, &worker).await?;
@@ -78,17 +90,21 @@ async fn write(
                         serde_json::from_value(carrier.snapshot().clone())?;
                     require_idle(&current)?;
                     require_binding(tx, &carrier, &provider, &track, &target.thread_id).await?;
-                    crate::conversation_inputs::authorize_human_resource_tx(
-                        tx,
-                        &source,
-                        carrier.card_id(),
-                    )
-                    .await?;
+                    source.authorize_tx(tx, &carrier).await?;
                     crate::conversation_archive::require_unarchived_tx(tx, &card).await?;
                 }
                 TransitionAdmission::Settlement => {}
             }
-            canonical::written(
+            let events = planner::append_transition_tx(
+                tx,
+                &TrackId(track),
+                &scope,
+                &previous_header,
+                &next.header,
+                compact_start,
+            )
+            .await?;
+            let committed = canonical::written(
                 persist_runtime_frame_tx(
                     tx,
                     &card,
@@ -97,15 +113,20 @@ async fn write(
                     canonical_runtime_header_value(&next)?,
                 )
                 .await?,
-            )
+            )?;
+            Ok((committed, events))
         })
     })
-    .await
+    .await?;
+    for event in events {
+        inner.events.emit_envelope(event);
+    }
+    Ok(committed)
 }
 
 async fn current_payload(
     inner: &Inner,
-    source: HumanInputSource,
+    source: Issuer,
     expected: CommittedFrame,
     target: MaintenanceTarget,
 ) -> Result<Value> {
@@ -118,8 +139,7 @@ async fn current_payload(
         Box::pin(async move {
             let carrier = current_input_carrier_tx(tx, &card, &worker).await?;
             require_binding(tx, &carrier, &provider, &target.track_id, &target.thread_id).await?;
-            crate::conversation_inputs::authorize_human_resource_tx(tx, &source, carrier.card_id())
-                .await?;
+            source.authorize_tx(tx, &carrier).await?;
             crate::conversation_archive::require_unarchived_tx(tx, &card).await?;
             let frame: CanonicalHarnessSnapshot =
                 serde_json::from_value(carrier.snapshot().clone())?;
@@ -154,6 +174,10 @@ pub(in crate::harness::run_loop) async fn start(
     inner: &Arc<Inner>,
     source: HumanInputSource,
 ) -> Result<()> {
+    start_with_issuer(inner, Issuer::Human(source), crate::model::new_id()).await
+}
+
+async fn start_with_issuer(inner: &Arc<Inner>, source: Issuer, operation_id: String) -> Result<()> {
     let track = match super::super::issuance::lock_track_for_issuance(inner).await? {
         super::super::issuance::TrackIssuance::Acquired(guard) => guard,
         super::super::issuance::TrackIssuance::Busy
@@ -192,7 +216,7 @@ pub(in crate::harness::run_loop) async fn start(
         return Err(CalmError::Conflict("conversation is busy or sealed".into()));
     }
     let outcome = CompactOutcome {
-        operation_id: crate::model::new_id(),
+        operation_id,
         thread_id: thread.clone(),
         turn_id: None,
         status: CompactStatus::Started,
@@ -421,11 +445,11 @@ async fn require_binding(
     Ok(())
 }
 
-/// Borrow the one committed maintenance guard and actual Human issuer. This
+/// Borrow the committed maintenance guard and its live issuer. This
 /// supplies metadata and writer admission without entering historical selection.
 struct MaintenanceAdmission<'a> {
     inner: &'a Inner,
-    source: &'a HumanInputSource,
+    source: &'a Issuer,
     frame: &'a CommittedFrame,
     target: &'a MaintenanceTarget,
 }
@@ -444,7 +468,7 @@ impl MaintenanceAdmission<'_> {
 
 impl SelectionSource for MaintenanceAdmission<'_> {
     fn check_current(&self) -> Result<()> {
-        self.source.current_principal()?;
+        self.source.check_current()?;
         if self.inner.backend.thread_sealed(&self.target.thread_id)
             || self.inner.shutting_down.load(Ordering::SeqCst)
             || self.inner.backend.issuance_hold().is_some()

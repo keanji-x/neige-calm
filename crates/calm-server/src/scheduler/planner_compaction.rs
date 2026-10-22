@@ -48,33 +48,36 @@ impl Scheduler {
         if card != current_card {
             return self.refuse_compact(task, track, "superseded").await;
         }
-        if crate::conversation_inputs::has_canonical_storage(self.repo.as_ref(), card.as_str())
-            .await?
-        {
-            return self
-                .refuse_compact(
-                    task,
-                    track,
-                    if task.status == TaskStatus::Running {
-                        "superseded"
-                    } else {
-                        "unsupported_conversation"
-                    },
-                )
-                .await;
-        }
-        let Some(session) =
+        let canonical =
+            crate::conversation_inputs::has_canonical_storage(self.repo.as_ref(), card.as_str())
+                .await?;
+        let session = if canonical {
+            self.repo
+                .session_projection_active_for_card(&card.to_string())
+                .await?
+        } else {
             crate::planner_session::historical_session(self.repo.as_ref(), &card).await?
-        else {
+        };
+        let Some(session) = session else {
             return self.refuse_compact(task, track, unavailable_reason).await;
         };
-        let recorded = session
-            .handle_state_json
-            .as_ref()
-            .and_then(|value| value.get("planner_compaction"))
-            .and_then(|value| value.get("request_id"))
-            .and_then(Value::as_str)
-            == Some(task.id.as_str());
+        let recorded = if canonical {
+            session
+                .handle_state_json
+                .as_ref()
+                .and_then(|value| value.get("compact_outcome"))
+                .and_then(|value| value.get("operation_id"))
+                .and_then(Value::as_str)
+                == Some(task.id.as_str())
+        } else {
+            session
+                .handle_state_json
+                .as_ref()
+                .and_then(|value| value.get("planner_compaction"))
+                .and_then(|value| value.get("request_id"))
+                .and_then(Value::as_str)
+                == Some(task.id.as_str())
+        };
         // Persisted intent, rather than registry presence, owns restart recovery.
         if recorded {
             return Ok(());
@@ -99,7 +102,6 @@ impl Scheduler {
                 Ok(CompactionAnswer::AlreadyPending { .. }) => "already_pending",
                 Ok(CompactionAnswer::Refused(reason)) => match reason {
                     CompactionRefusal::UnsupportedProvider => "unsupported_provider",
-                    CompactionRefusal::UnsupportedConversation => "unsupported_conversation",
                     CompactionRefusal::ConversationUnavailable => "conversation_unavailable",
                     CompactionRefusal::CompactionInProgress => "compaction_in_progress",
                     CompactionRefusal::NotCurrentSession => "not_current_session",

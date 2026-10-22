@@ -1,7 +1,6 @@
 //! Controls exercise the real loop and protocol owner; no fixture creates a claim or END.
 use super::*;
 use calm_truth::db::RepoOutOfDomain as _;
-use calm_truth::db::RepoRead;
 
 async fn running(fx: &Fixture, peer: &mut crate::shared_codex_appserver::native_owner_tests::Peer) {
     fx.original
@@ -507,27 +506,8 @@ async fn canonical_qualified_end_records_closed_facts_without_private_native_ext
 }
 
 #[tokio::test]
-async fn compact_planner_request_refuses_canonical_conversation() {
-    let f = Fixture::new().await;
-    let result = f
-        .harness
-        .request_compaction("request".into())
-        .await
-        .unwrap();
-    assert_eq!(
-        result,
-        crate::harness::compact_outcome::CompactionAnswer::Refused(
-            crate::harness::compact_outcome::CompactionRefusal::UnsupportedConversation
-        )
-    );
-    crate::harness::run_loop::compact_task_tests::declared(&f.original).await;
-    let id = format!("{}:compact", f.original.harness.inner.track_id);
-    let task = f.original.repo.task_get(&id).await.unwrap().unwrap();
-    assert_eq!(task.status, crate::model::TaskStatus::Failed);
-    assert_eq!(
-        task.status_detail.as_deref(),
-        Some("compaction-refused: unsupported_conversation")
-    );
+async fn compact_planner_request_accepts_canonical_conversation() {
+    super::planner_compact_tests::positive().await;
 }
 
 #[tokio::test]

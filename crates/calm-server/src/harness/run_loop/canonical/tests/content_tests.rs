@@ -723,7 +723,7 @@ async fn carrier_quiescence_parked_tick_skips_sql_and_issuance() {
         .await
         .unwrap();
     let tx = begin_immediate_tx(fx.original.repo.db()).await.unwrap();
-    tokio::time::timeout(Duration::from_millis(200), tick(&fx.harness.inner))
+    tokio::time::timeout(Duration::from_millis(200), tick(&fx.harness.inner, true))
         .await
         .expect("parked tick must skip SQL entirely")
         .unwrap();

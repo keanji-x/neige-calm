@@ -58,7 +58,6 @@ pub enum CompactionAnswer {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CompactionRefusal {
     UnsupportedProvider,
-    UnsupportedConversation,
     ConversationUnavailable,
     CompactionInProgress,
     NotCurrentSession,

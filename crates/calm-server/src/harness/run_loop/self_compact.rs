@@ -1,15 +1,22 @@
-//! Planner requests use the historical maintenance executor, only at the idle tick.
+//! Planner requests select their runtime maintenance owner at idle admission.
 use super::*;
 use crate::harness::compact_outcome::{CompactStatus, PlannerCompaction, PlannerCompactionPhase};
 use crate::harness::compact_outcome::{CompactionAnswer, CompactionRefusal};
 
 impl PlannerHarness {
-    /// Persist maintenance intent for this harness's session. The caller owns
-    /// authorization and request identity; guarded persistence rejects supersession.
+    /// Acknowledge maintenance intent for this session. Canonical task rows already
+    /// own durable intent; historical sessions persist it under their snapshot guard.
+    /// The caller owns authorization and request identity.
     /// The same ID is answered idempotently while its record is retained. Durable
     /// once-per-ID execution belongs to the task layer: settlement terminalizes
     /// the task row before this record can be cleared.
     pub async fn request_compaction(&self, request_id: String) -> Result<CompactionAnswer> {
+        // Canonical intent is already durable in the dispatched task row. Its
+        // read-only acknowledgement must not queue behind the native RPC or a
+        // track fence that the scheduler itself may be waiting to release.
+        if self.inner.inputs.canonical().is_some() {
+            return request(&self.inner, request_id).await;
+        }
         match &self.inner.observations {
             ObservationIngress::Running(sender) => {
                 let (answer, result) = oneshot::channel();
@@ -32,11 +39,6 @@ pub(super) async fn request(inner: &Arc<Inner>, request_id: String) -> Result<Co
             CompactionRefusal::UnsupportedProvider,
         ));
     }
-    if inner.inputs.canonical().is_some() {
-        return Ok(CompactionAnswer::Refused(
-            CompactionRefusal::UnsupportedConversation,
-        ));
-    }
     if inner.shutting_down.load(Ordering::SeqCst)
         || matches!(*inner.state.lock().await, HarnessState::Wedged { .. })
         || crate::conversation_archive::require_unarchived(
@@ -49,6 +51,9 @@ pub(super) async fn request(inner: &Arc<Inner>, request_id: String) -> Result<Co
         return Ok(CompactionAnswer::Refused(
             CompactionRefusal::ConversationUnavailable,
         ));
+    }
+    if inner.inputs.canonical().is_some() {
+        return compact_command::canonical::planner::request(inner, &request_id).await;
     }
     if let Some(request) = inner.planner_compaction.lock().await.as_ref() {
         if request.request_id == request_id {
@@ -172,31 +177,52 @@ pub(super) fn prepare_wake(
     if request.wake_enqueued {
         return None;
     }
+    let wake = prepare_request_wake(
+        &inner.track_id,
+        harness_event_scope(inner, "track.wake_requested"),
+        &request.request_id,
+        status,
+    );
+    request.wake_enqueued = true;
+    Some(wake)
+}
+
+pub(super) fn prepare_request_wake(
+    track: &TrackId,
+    scope: EventScope,
+    request_id: &str,
+    status: &CompactStatus,
+) -> (EventScope, Event) {
     let text = match status {
         CompactStatus::Completed => {
             include_str!("../../../prompts/planner_compaction_completed.md")
                 .trim_end()
-                .replace("{request_id}", &request.request_id)
+                .replace("{request_id}", request_id)
         }
-        _ => include_str!("../../../prompts/planner_compaction_incomplete.md")
-            .trim_end()
-            .replace("{request_id}", &request.request_id)
-            .replace(
-                "{status}",
-                serde_json::to_value(status)
-                    .expect("compact status")
-                    .as_str()
-                    .expect("status string"),
-            ),
+        CompactStatus::Started
+        | CompactStatus::Interrupted
+        | CompactStatus::Failed
+        | CompactStatus::Refused
+        | CompactStatus::Unconfirmed => {
+            include_str!("../../../prompts/planner_compaction_incomplete.md")
+                .trim_end()
+                .replace("{request_id}", request_id)
+                .replace(
+                    "{status}",
+                    serde_json::to_value(status)
+                        .expect("compact status")
+                        .as_str()
+                        .expect("status string"),
+                )
+        }
     };
-    request.wake_enqueued = true;
     let event = Event::TrackWakeRequested {
-        track_id: inner.track_id.clone(),
+        track_id: track.clone(),
         source: "planner_compaction".into(),
-        key: request.request_id.clone(),
+        key: request_id.to_owned(),
         text,
     };
-    Some((harness_event_scope(inner, event.kind_tag()), event))
+    (scope, event)
 }
 
 /// Task facts and the wake share the session snapshot's active-row guard and commit.
@@ -207,21 +233,40 @@ pub(super) async fn append_task_lifecycle(
     scope: &EventScope,
     compact_start: bool,
 ) -> Result<Vec<crate::event::BroadcastEnvelope>> {
+    let Some(request) = request else {
+        return Ok(vec![]);
+    };
+    append_lifecycle(
+        tx,
+        track,
+        &request.request_id,
+        &request.phase,
+        scope,
+        compact_start,
+    )
+    .await
+}
+
+pub(super) async fn append_lifecycle(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    track: &TrackId,
+    request_id: &str,
+    phase: &PlannerCompactionPhase,
+    scope: &EventScope,
+    compact_start: bool,
+) -> Result<Vec<crate::event::BroadcastEnvelope>> {
     use crate::db::sqlite::{
         TaskReporter, status_detail_with_reason, task_complete_from_worker_tx,
         task_fail_from_worker_tx, task_get_tx, task_mark_compact_running_tx,
     };
-    let Some(request) = request else {
-        return Ok(vec![]);
-    };
-    let Some(task) = task_get_tx(tx, &request.request_id).await? else {
+    let Some(task) = task_get_tx(tx, request_id).await? else {
         return Ok(vec![]);
     };
     if task.kind != crate::model::TaskKind::Compact || task.track_id != track.as_str() {
         return Err(CalmError::Conflict("compaction task owner mismatch".into()));
     }
     let now = crate::model::now_ms();
-    let event = match &request.phase {
+    let event = match phase {
         PlannerCompactionPhase::Requested => return Ok(vec![]),
         PlannerCompactionPhase::Submitted { .. } => {
             // Only Start consumes dispatched. Later Submitted checkpoints merely

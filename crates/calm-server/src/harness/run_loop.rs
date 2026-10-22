@@ -54,7 +54,7 @@ use provider::events::{ItemPhase, PlannerEvent, PlannerEventKind};
 
 mod canonical;
 #[cfg(test)]
-mod compact_task_tests;
+pub(in crate::harness) mod compact_task_tests;
 mod content_observer;
 mod input_contract;
 mod self_compact;
@@ -1516,6 +1516,7 @@ fn inner_from_params(
                 params
                     .registry
                     .canonical_sources(&params.worker_session_id, &params.track_id),
+                params.registry.maintenance_execution_cell(),
             ))),
             Vec::new(),
             DebounceState::default(),
@@ -1814,7 +1815,7 @@ async fn run_loop(
             }
             _ = tick.tick() => {
                 if inner.inputs.canonical().is_some() {
-                    if let Err(error) = canonical::tick(&inner).await {
+                    if let Err(error) = canonical::tick(&inner, observations.is_empty()).await {
                         canonical::publish_issuance_error(&inner, &error).await;
                         tracing::warn!(%error, "canonical harness tick did not advance");
                     }
@@ -4675,7 +4676,7 @@ use interrupt::issue_interrupt_for_turn;
 
 async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
     if inner.inputs.canonical().is_some() {
-        canonical::tick(inner).await
+        canonical::tick(inner, false).await
     } else {
         issuance::maybe_issue_turn(inner).await
     }

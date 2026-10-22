@@ -10,34 +10,41 @@ use calm_truth::db::RepoRead;
 use provider::events::PlannerEventKind;
 use serde_json::json;
 
-const HANDOFF: &str =
+pub(in crate::harness) const HANDOFF: &str =
     "在飞 attempt: c2\n已核实 head: abc\n发现: {request_id} {status}\n```text\n下一步：继续\n```\n";
 
 pub(super) async fn declared(
     f: &Fixture,
+) -> (Arc<crate::scheduler::Scheduler>, crate::state::WriteContext) {
+    declared_for(f.repo.clone(), &f.harness, f.daemon.clone()).await
+}
+
+pub(in crate::harness) async fn declared_for(
+    repo: Arc<crate::db::sqlite::SqlxRepo>,
+    harness: &PlannerHarness,
+    daemon: Arc<crate::shared_codex_appserver::SharedCodexAppServer>,
 ) -> (Arc<crate::scheduler::Scheduler>, crate::state::WriteContext) {
     use crate::event::EditAuthor;
     use crate::model::NewCard;
     use crate::state::WriteContext;
     use crate::track_report::TrackReportPayload;
     use crate::track_report::{persist_report, resolve_report_for_track};
-    let inner = &f.harness.inner;
+    let inner = &harness.inner;
     *inner.last_turn_id.lock().await = Some("old-turn".into());
-    f.repo
-        .card_create(NewCard {
-            track_id: inner.track_id.clone(),
-            kind: "track-report".into(),
-            sort: None,
-            title: None,
-            payload: serde_json::to_value(TrackReportPayload::initial()).unwrap(),
-        })
-        .await
-        .unwrap();
+    repo.card_create(NewCard {
+        track_id: inner.track_id.clone(),
+        kind: "track-report".into(),
+        sort: None,
+        title: None,
+        payload: serde_json::to_value(TrackReportPayload::initial()).unwrap(),
+    })
+    .await
+    .unwrap();
     let write = WriteContext::new(
         inner.card_role_cache.clone(),
         inner.track_area_cache.clone(),
     );
-    let (track, card, current) = resolve_report_for_track(f.repo.as_ref(), inner.track_id.as_str())
+    let (track, card, current) = resolve_report_for_track(repo.as_ref(), inner.track_id.as_str())
         .await
         .unwrap();
     let body = format!(
@@ -51,7 +58,7 @@ pub(super) async fn declared(
         )
     );
     persist_report(
-        f.repo.as_ref(),
+        repo.as_ref(),
         &inner.events,
         &write,
         ActorId::KernelDispatcher,
@@ -66,7 +73,7 @@ pub(super) async fn declared(
     .await
     .unwrap();
     let scheduler = crate::scheduler::Scheduler::new(
-        f.repo.clone(),
+        repo.clone(),
         inner.events.clone(),
         write.clone(),
         std::sync::Weak::new(),
@@ -75,13 +82,13 @@ pub(super) async fn declared(
         std::path::PathBuf::from("/tmp"),
         crate::scheduler::WorkerLiveness::DEFAULT,
         crate::scheduler::WorkerIdleWake::new(
-            f.daemon.clone(),
+            daemon,
             Duration::from_secs(60),
             Duration::from_secs(1),
         ),
     );
     let registry = crate::harness::HarnessRegistry::new();
-    registry.insert(inner.worker_session_id.clone(), f.harness.clone());
+    registry.insert(inner.worker_session_id.clone(), harness.clone());
     scheduler.bind_compaction_harness(registry);
     scheduler.mark_boot_sweep_complete();
     scheduler.mark_context_sweep_boot_complete();
