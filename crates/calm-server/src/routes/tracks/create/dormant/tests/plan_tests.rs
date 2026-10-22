@@ -163,18 +163,6 @@ async fn canonical_claude_creation_unsupported_shapes_keep_explicit_coverage() {
             "{field}"
         );
     }
-    for provider in [AgentProvider::OpenCode, AgentProvider::Grok] {
-        let mut request = fx.request(FIRST);
-        request.planner_provider = provider;
-        let mut headers = HeaderMap::new();
-        headers.insert("idempotency-key", "acp".parse().unwrap());
-        assert!(matches!(
-            creation_plan(&fx.route, Some(&fx.source), &headers, request)
-                .await
-                .unwrap(),
-            CreatePlan::Historical(_)
-        ));
-    }
     assert_eq!(fx.counts().await, (0, 0, 0, 0, 0, 0));
 }
 
@@ -225,4 +213,39 @@ async fn canonical_claude_creation_selection_uses_actual_provider_catalog() {
         .unwrap();
     assert!(!codex.is_running());
     assert_eq!(fx.counts().await, (0, 0, 0, 0, 0, 0));
+}
+
+#[tokio::test]
+async fn canonical_acp_creation_shapes_follow_registration_capability() {
+    use crate::routes::tracks::create::{CreatePlan, creation_plan};
+    let fx = Fixture::new().await;
+    let mut headers = HeaderMap::new();
+    headers.insert("idempotency-key", "capability".parse().unwrap());
+    for provider in crate::harness::PlannerBackend::registered_providers()
+        .filter(|provider| provider.protocol() == calm_types::runtime::AgentProtocol::Acp)
+    {
+        for first in [true, false] {
+            let mut request = fx.request(FIRST);
+            request.planner_provider = provider.clone();
+            request.first_message = first.then(|| FIRST.to_owned());
+            let plan = creation_plan(&fx.route, Some(&fx.source), &headers, request)
+                .await
+                .unwrap();
+            assert_eq!(
+                matches!(plan, CreatePlan::Canonical(_)),
+                crate::acp_planner::wiring::canonical_planner_inputs(&provider),
+                "{provider:?}, first={first}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn canonical_claude_creation_old_key_replays_historical_without_new_mint() {
+    super::old_key_replays_historical(AgentProvider::Claude).await;
+}
+
+#[tokio::test]
+async fn canonical_opencode_creation_old_key_replays_historical_without_new_mint() {
+    super::old_key_replays_historical(AgentProvider::OpenCode).await;
 }

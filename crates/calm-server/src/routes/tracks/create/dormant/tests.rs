@@ -602,10 +602,9 @@ async fn a_shared_area_member_can_accept_content_without_an_execution_grant() {
     }
 }
 
-#[tokio::test]
-async fn canonical_claude_creation_old_key_replays_historical_without_new_mint() {
+async fn old_key_replays_historical(provider: AgentProvider) {
     let mut fx = Fixture::new().await;
-    fx.provider = AgentProvider::Claude;
+    fx.provider = provider.clone();
     let mut headers = HeaderMap::new();
     headers.insert("idempotency-key", "historical".parse().unwrap());
     // Pre-cutover blank historical data is allocated by the same production
@@ -631,7 +630,7 @@ async fn canonical_claude_creation_old_key_replays_historical_without_new_mint()
         managed_identity: None,
         creator: None,
         creation_message: None,
-        planner_provider: AgentProvider::Claude,
+        planner_provider: provider,
         model: None,
         reasoning_effort: None,
         folder_claim: super::super::super::FolderClaim::Skip,

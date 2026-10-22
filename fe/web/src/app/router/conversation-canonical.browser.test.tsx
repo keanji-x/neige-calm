@@ -359,3 +359,21 @@ it.each([1280,390])('retry keep-only reason remains visible at width %s',async w
   expect(f.retries).toHaveLength(0);
   f.client.clear();
 });
+
+it('canonical OpenCode Unknown offers Keep and the server reason without Retry', async () => {
+  await page.viewport(1280,800);
+  const input:ConversationActiveInput={current_execution_id:null,submissions:[{
+    carrier_id:'original-retained',logical_turn_id:'logical',submission_id:'opencode-submission',attempt:{
+      attempt_id:'attempt',revision:'1',delivery:'unknown',target:{provider:'opencode',thread_id:'local',native_session_id:'native',native_turn_id:null,local_turn_id:'turn',rpc_request_id:null},
+      invocation:{kind:'recorded',configuration:{model:'fixture/model-a',effort:'normal',permission:'never'}},resolution:null,
+      actions:{keep:{kind:'available'},retry:{kind:'unavailable',reason:'unsupported_binding'}},
+    },
+  }]};
+  const f=fixture([human('opencode-message','jian','Jian',1,'Saved ACP input')],{state:'failed',phase:'wedged',blockedReason:'Execution is held.',terminalTimeout:null,pendingInputs:[],activeInput:input});
+  await page.getByRole('button',{name:/Conversation Daily Planner conversation/}).click();
+  await expect.element(page.getByRole('button',{name:'Keep as delivered',exact:true})).toBeVisible();
+  await expect.element(page.getByText('Retry is unavailable for this conversation binding.',{exact:true})).toBeVisible();
+  expect(screen.queryByRole('button',{name:/Retry/})).toBeNull();
+  await page.screenshot({path:'./__screenshots__/canonical-opencode-unknown.png'});
+  f.client.clear();
+});

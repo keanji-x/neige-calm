@@ -4,6 +4,7 @@
 use super::super::{CreateTrackRequest, FolderClaim, TrackInit};
 use super::*;
 use crate::db::sqlite::TrackWorkspacePlan;
+use crate::harness::backend::factory::{PlannerFactory, RetainedIdentityPreparation};
 use std::path::PathBuf;
 
 /// Permanent receipts decide first; a new key uses the creation owner's static
@@ -78,17 +79,16 @@ pub(in crate::routes::tracks) async fn creation_plan(
                     && super::dormant::prior_start_attempt_tx(tx, &area_id, key).await?
                 {
                     // Preserve the historical owner's retry selection and error
-                    // ordering for other providers. Claude cannot mint through
-                    // that owner, but a lost binding is the same server error.
-                    return match shape.planner_provider.protocol() {
-                        calm_types::runtime::AgentProtocol::Claude => {
+                    // ordering for native-thread creation. Local canonical creation
+                    // cannot mint through that owner; a lost binding is a server error.
+                    return match PlannerFactory::retained_identity(&shape.planner_provider)? {
+                        RetainedIdentityPreparation::NativeThread => {
+                            Ok(CreatePlan::Historical(request))
+                        }
+                        RetainedIdentityPreparation::LocalSession => {
                             Err(super::historical_plan::binding_lost(
                                 &derive_track_create_operation_key(&area_id, key),
                             ))
-                        }
-                        calm_types::runtime::AgentProtocol::Codex
-                        | calm_types::runtime::AgentProtocol::Acp => {
-                            Ok(CreatePlan::Historical(request))
                         }
                     };
                 }
@@ -123,17 +123,15 @@ pub(in crate::routes::tracks) async fn creation_plan(
 // The creation owner admits blank managed canonical shapes here. Excluded
 // creation kinds retain historical preparation; receipts retain their own storage.
 fn canonical_creation_supported(request: &CreateRequestShape, input: CreateShape) -> bool {
-    use calm_types::runtime::AgentProtocol;
-    let supported = match (request.planner_provider.protocol(), input) {
-        (AgentProtocol::Codex, CreateShape::WithFirstMessage(()))
-        | (
-            AgentProtocol::Claude,
-            CreateShape::WithFirstMessage(()) | CreateShape::MessageLess(()),
-        ) => true,
-        (AgentProtocol::Codex, CreateShape::MessageLess(()))
-        | (AgentProtocol::Acp, CreateShape::WithFirstMessage(()) | CreateShape::MessageLess(())) => {
-            false
+    // The activation owner queries ACP registration policy. Local bindings are
+    // process-free: native session/new waits for the first prompt, so an empty
+    // conversation is valid. Native-thread creation still requires first input.
+    let supported = match PlannerFactory::retained_identity(&request.planner_provider) {
+        Ok(RetainedIdentityPreparation::NativeThread) => {
+            matches!(input, CreateShape::WithFirstMessage(()))
         }
+        Ok(RetainedIdentityPreparation::LocalSession) => true,
+        Err(_) => false,
     };
     supported
         && !request.admin

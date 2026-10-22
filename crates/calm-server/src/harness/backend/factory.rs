@@ -23,11 +23,11 @@ pub(crate) enum ReadinessFor {
     RestoreOrSend,
 }
 
-/// Preparation at the existing retained operation checkpoint. A local identity
-/// is Neige-owned; it does not assert a native session or start a process.
+/// Identity strategy at the existing retained operation checkpoint. Querying it
+/// allocates no identity and starts no process. Local bindings are Neige-owned.
 pub(crate) enum RetainedIdentityPreparation {
     NativeThread,
-    LocalSession(uuid::Uuid),
+    LocalSession,
 }
 
 pub(crate) struct PlannerFactory<'a> {
@@ -49,23 +49,20 @@ impl<'a> PlannerFactory<'a> {
         }
     }
 
+    /// Pure canonical support query: unsupported profiles refuse independently of readiness.
     pub(crate) fn retained_identity(
         provider: &AgentProvider,
     ) -> Result<RetainedIdentityPreparation> {
         match provider.protocol() {
             AgentProtocol::Codex => Ok(RetainedIdentityPreparation::NativeThread),
-            AgentProtocol::Claude => Ok(RetainedIdentityPreparation::LocalSession(
-                uuid::Uuid::new_v4(),
-            )),
+            AgentProtocol::Claude => Ok(RetainedIdentityPreparation::LocalSession),
             AgentProtocol::Acp => {
                 if !crate::acp_planner::wiring::canonical_planner_inputs(provider) {
                     return Err(CalmError::Conflict(
                         "ACP registration does not support canonical Planner inputs".into(),
                     ));
                 }
-                Ok(RetainedIdentityPreparation::LocalSession(
-                    uuid::Uuid::new_v4(),
-                ))
+                Ok(RetainedIdentityPreparation::LocalSession)
             }
         }
     }

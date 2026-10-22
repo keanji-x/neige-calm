@@ -48,6 +48,8 @@ mod claude_creation_tests;
 mod control_tests;
 mod dispatcher_inputs_tests;
 mod dispatcher_report_edit_tests;
+#[cfg(feature = "fixtures")]
+mod opencode_creation_tests;
 mod presentation_capability_tests;
 mod presentation_read_feedback_tests;
 mod resolution_tests;
@@ -57,6 +59,7 @@ struct Fixture {
     root: tempfile::TempDir,
     url: String,
     claude_config: Option<std::path::PathBuf>,
+    acp_config: Option<std::path::PathBuf>,
 }
 
 impl Fixture {
@@ -71,6 +74,7 @@ impl Fixture {
             root,
             url,
             claude_config: None,
+            acp_config: None,
         }
     }
 
@@ -97,6 +101,7 @@ impl Fixture {
             let mut cfg = crate::config::Config::parse_from(["calm-server"]);
             cfg.db_url = self.url.clone();
             cfg.claude_planner_config = self.claude_config.clone();
+            cfg.acp_planner_config = self.acp_config.clone();
             cfg.data_dir = Some(self.root.path().join("data"));
             cfg.workspace_root = Some(self.root.path().join("workspaces"));
             cfg.plugins_dir = Some(self.root.path().join("plugins"));

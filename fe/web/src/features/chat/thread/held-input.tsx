@@ -26,7 +26,7 @@ function unavailable(reason: ConversationActionUnavailableReason): string {
     case 'invocation_not_fully_frozen': return 'Retry requires an explicitly recorded model and effort.';
     case 'attachments_not_frozen': return 'Retry is unavailable for inputs with attachments.';
     case 'erased_or_withdrawn': return 'Retry is unavailable because original input was erased or withdrawn.';
-    case 'unsupported_binding': return 'Retry requires the original Codex binding and exact native thread.';
+    case 'unsupported_binding': return 'Retry is unavailable for this conversation binding.';
     case 'unsupported_source': return 'Retry is unavailable for this input source.';
   }
 }

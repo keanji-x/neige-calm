@@ -275,6 +275,9 @@ pub(super) async fn creation_catalog_advice(
                 Err(_) => crate::planner_model::selection_advice::CatalogAdvice::default(),
             }
         }
-        AgentProtocol::Acp => catalog_advice(CatalogSource::Acp, model, effort).await,
+        AgentProtocol::Acp => {
+            let catalog = s.acp_planner.discover_catalog(provider, None).await;
+            catalog_advice(CatalogSource::Discovered(&catalog), model, effort).await
+        }
     }
 }
