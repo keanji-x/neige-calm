@@ -119,6 +119,78 @@ not a workspace-wide suite. Kernel alone owns text/lint/build and its declared
 browser replay; its exact committed range-diff and verdict are delivered with
 the task result. No source change follows the final mutation restoration.
 
+## Entry observation correction after gate 558847
+
+The complete original `sheet-signed-gate-finish` failed event 558847 was read
+through its track run JSON, including the full reason, not a preview. Its raw
+`/tmp/sheet-finish-gate-r1.log` (SHA-256
+`03210125902501f8fc298cf527bf7050b01ed6506684a763a60a06b154a36f6c`),
+`/tmp/sheet-finish-gate-result.json` and failure trace show 270/271 passing:
+phase 0.15 failed before grab because the deferred entry lookup was undefined.
+This is an unsecured test observation window, not a production grab defect.
+The earlier hang and coarse missed tap remain unexplained historical results.
+
+Only the production-entry motion test and this documentation change here.
+The existing browser ESM spring spy calls `vi.importActual`'s real `playSpring`
+with the original arguments and returns its Playback unchanged. In that same
+production layout-effect task it captures the marked panel's returned Animation
+and pauses it, before any asynchronous locator/frame observation. A finally
+restores the real implementation immediately after render; suite cleanup restores
+mocks and viewport even if React cleanup throws. No production seam, alternate
+solver, animation stub, global animation scan, timeout or retry is added.
+The other fixtures and signed playback tests remain byte-identical. Both original
+entry names, phases 0.15/0.3, native mouse admission, independent actual-rect ruler,
+nonterminal >10px and continuity <1px assertions remain unchanged.
+
+A fixed-order reproduction first captured the real native entry, explicitly
+finished it, awaited its real completion and then performed the old locator plus
+two RAFs. The old defined-entry assertion failed with undefined, reproducing the
+lifetime gap independently of wall-clock load (`/tmp/sheet-entry-causal-red.json`,
+`.log`). The retained regression checks that expired control, then verifies that
+synchronous freeze survives the same deferred observation and native ready:
+Playback identity, native Animation identity/type, effect target, panel-local
+attachment and paused/nonpending state all agree. The two phase cases additionally
+seek and measure actual paint and perform native acquisition. These checks do not
+claim to reconstruct the exact scheduler history of gate 558847.
+
+Commands actually run (repository root unless `cwd=fe`):
+
+- `cwd=fe`: `npx vitest run --project browser web/src/app/router/mobile-conversation-motion.browser.test.tsx -t 'reproduces an expired entry' --passWithNoTests=false --reporter=default --reporter=json --outputFile=/tmp/sheet-entry-causal-red.json` — one expected reproduction red.
+- `cwd=fe`: `npx vitest run --project browser web/src/app/router/mobile-conversation-motion.browser.test.tsx --passWithNoTests=false --reporter=default --reporter=json --outputFile=/tmp/sheet-entry-second-green.json` — whole target 15/15 green.
+- `python3 /tmp/sheet-entry-mutate.py grab-target` — all 16 observable targets / 266 tests: exact predeclared 17 reds, then restored 266/266 green.
+- `python3 /tmp/sheet-entry-mutate.py zero-velocity` — same whole targets: exact predeclared 41 reds, then restored 266/266 green.
+
+The two mutation declarations retain every original red name and are written
+before the single production replacement. Full argv (including every whole
+target), complete red/restored JSON/logs and byte-hash comparisons use
+`/tmp/sheet-entry-{grab-target,zero-velocity}-{declaration,result,red,restored}`
+with `.json`/`.log` as applicable; command summaries end in `-summary.log`.
+The script asserts the replacement occurred, restores original bytes in finally,
+and replays the complete selection. Gesture restores SHA-256
+`c714738ee79d02d624b38a8c96ea5e9b1c0811f354b3066a7a5293b658bd6983`;
+motion restores `034db91d995c2c5b6d16db79f373a6ce87d9820c11b3012068f68c653a058bf4`.
+No concurrent mutation writer/reviewer was launched. The new lifecycle regression
+neither acquires a handle nor introduces inherited velocity; it adds no mutant
+red. This revalidates the changed entry observers rather than copying certificates.
+Active/endpoint and earlier focus/cap/cancel evidence above remains bounded to
+its original branches: the new regression only mounts, finishes and cleans up,
+without rebase, dismiss, external focus choice or qualified input.
+
+Two invalid tooling trials remain explicit: an accidental repository-root Vitest
+command failed npm EROFS before tests (no dependencies installed), and an initial
+observer used browser spy `getMockImplementation`, which was undefined; its three
+fixture errors are in `sheet-entry-first-green`, not production reds or green
+evidence. The corrected observer uses the actual module implementation.
+
+The existing full range-diff and cumulative integrity audit are retained without
+replay (`/tmp/sheet-finish-full-range-diff.txt`, `/tmp/sheet-finish-audit.json`).
+The observation delta and complete current net diff are saved separately under
+`/tmp/sheet-entry-integrity.json` and `/tmp/sheet-entry-full-net.diff`.
+No permanent test roster or extra CI invocation is introduced; ordinary added
+cases edit their own target only. Kernel alone owns text/lint/build and its exact
+focused replay; its verdict is reported with this attempt. This narrow test fix
+does not supply fresh dual L2 reviews, original-page/Tier1/E2E or exact-head CI.
+
 ## Executable owner contract (design 518614)
 
 L2: native host, retained interaction and focus authority. Only `ui/sheet` owns native `dialog.show()/close()`, unanimated frame, painted panel, opaque pointer lease, one stable portal/footer host, retained permissions and final-exit identity. App supplies intent, refs, viewport-derived frame and business content. Desktop stays Drawer. This migrates only one info/nonmodal/no-scrim/no-snap caller; vendor Switcher/detents and other callers remain untouched.

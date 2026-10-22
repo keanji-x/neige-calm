@@ -26,17 +26,62 @@ async function mount() {
   const handle = document.querySelector<HTMLElement>('[data-nc-mobile-chat-panel] > [aria-hidden="true"]:first-child')!;
   return { dialog, panel, handle };
 }
-afterEach(async () => { cleanup(); vi.restoreAllMocks(); await page.viewport(1280, 800); });
+// Observe only this fixture's real panel playback while its layout effect is
+// still on the stack. The spy always returns the original Playback unchanged.
+async function renderEntry(freeze: boolean) {
+  const calls = vi.mocked(spring.playSpring);
+  const { playSpring: original } = await vi.importActual<typeof spring>('../../ui/motion/spring.ts');
+  let count = 0;
+  let captured: { panel: HTMLElement; playback: spring.SpringPlayback; entry: Animation } | undefined;
+  calls.mockImplementation((...args) => {
+    const playback = original(...args);
+    const panel = args[0][0];
+    if (panel instanceof HTMLElement && panel.matches('[data-nc-mobile-chat-panel]')) {
+      count++;
+      const entry = playback.animations[0];
+      captured = { panel, playback, entry };
+      if (freeze) entry.pause();
+    }
+    return playback;
+  });
+  try { render(<Fixture />); } finally { calls.mockImplementation(original); }
+  expect(count, 'one production entry').toBe(1);
+  expect(captured, 'real production entry playback captured synchronously').toBeDefined();
+  return captured!;
+}
+afterEach(async () => {
+  try { cleanup(); } finally { vi.restoreAllMocks(); await page.viewport(1280, 800); }
+});
+
+it('captures the same native entry across ready while deferred lookup can miss completed paint', async () => {
+  await page.viewport(390, 844);
+  const expired = await renderEntry(false);
+  expect(expired.panel.getAnimations()).toContain(expired.entry);
+  expired.entry.finish(); // Fixed schedule: completion precedes the old async observation.
+  await expired.playback.finished;
+  await page.getByRole('dialog', { name: 'Motion handoff' }).findElement();
+  await frames(2);
+  expect(expired.panel.getAnimations()[0]).toBeUndefined();
+  cleanup();
+
+  const { panel, playback, entry } = await renderEntry(true);
+  await page.getByRole('dialog', { name: 'Motion handoff' }).findElement();
+  await frames(2);
+  await entry.ready;
+  expect(playback.animations[0]).toBe(entry);
+  expect(entry).toBeInstanceOf(Animation);
+  expect((entry.effect as KeyframeEffect).target).toBe(panel);
+  expect(panel.getAnimations()).toContain(entry);
+  expect(entry.playState).toBe('paused');
+  expect(entry.pending).toBe(false);
+});
 
 it.each([0.15, 0.3])('grabs the painted conversation sheet during entry without a position jump at phase %s', async phase => {
-  const { panel } = await mount();
-  // Resolve the real production entry effect, using native playback timing.
-  panel.getBoundingClientRect();
-  await frames(2);
-  const entry = panel.getAnimations()[0];
-  expect(entry, 'real production entry playback').toBeDefined();
-  entry.pause();
+  await page.viewport(390, 844);
+  const { panel, entry } = await renderEntry(true);
+  await page.getByRole('dialog', { name: 'Motion handoff' }).findElement();
   await entry.ready;
+  expect(panel.getAnimations()).toContain(entry);
   const duration = Number(entry.effect!.getComputedTiming().duration);
   expect(duration).toBeGreaterThan(0);
   try {
