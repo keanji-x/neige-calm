@@ -1432,6 +1432,7 @@ impl AppState {
         let terminal_renderer = TerminalRendererRegistry::new_with_repo(route_repo.clone());
         terminal_renderer.set_hook_settings_dir(codex.terminal_hook_settings_dir.clone());
         let harness = HarnessRegistry::new();
+        crate::track_planner_context::spawn(repo.clone(), events.clone(), write.clone());
         let activity_wake = crate::track_activity::spawn(
             repo.clone(),
             events.clone(),

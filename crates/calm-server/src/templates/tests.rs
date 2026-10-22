@@ -322,7 +322,7 @@ fn body_prose_and_foreign_fences_are_skipped_not_parsed() {
 }
 
 #[test]
-fn long_term_goal_roster_loads_its_contract_sections() {
+fn long_term_goal_planner_context_roster_loads_its_contract_sections() {
     let template = roster()
         .get(LONG_TERM_GOAL)
         .expect("long-term-goal on roster");
@@ -349,4 +349,9 @@ fn long_term_goal_roster_loads_its_contract_sections() {
     );
     assert!(template_task_payloads_from_body(compiled.body()).is_empty());
     assert!(!compiled.body().contains("neige:input-form"));
+    assert!(
+        compiled
+            .body()
+            .contains("neige://plugin/kernel/planner.context")
+    );
 }

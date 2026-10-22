@@ -1637,7 +1637,7 @@ async fn optional_history_template_reports_setup_and_ready_through_owner_lifecyc
 }
 
 #[tokio::test]
-async fn long_term_goal_creates_without_template_input_bound_to_gitforge() {
+async fn long_term_goal_planner_context_creates_without_template_input_bound_to_gitforge() {
     let boot = boot().await;
     let (status, body) = post(
         boot.app.clone(),
@@ -1659,5 +1659,10 @@ async fn long_term_goal_creates_without_template_input_bound_to_gitforge() {
     let payload = report_card_payload(&detail);
     assert_eq!(payload.body, instantiated_recipe("long-term-goal").1);
     assert!(payload.body.contains("直接合并，不再问用户。"));
+    assert!(
+        payload
+            .body
+            .contains("neige://plugin/kernel/planner.context")
+    );
     assert!(!payload.body.contains("neige:input-form"));
 }

@@ -114,6 +114,8 @@ mod track_delete_thread_cache;
 mod track_notification_dismissals;
 #[path = "cases/track_notifications.rs"]
 mod track_notifications;
+#[path = "cases/track_planner_context.rs"]
+mod track_planner_context;
 #[path = "cases/track_projection_policy_patch.rs"]
 mod track_projection_policy_patch;
 #[path = "cases/track_workspace_materialize.rs"]

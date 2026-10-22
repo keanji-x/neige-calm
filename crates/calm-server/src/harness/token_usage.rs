@@ -78,6 +78,48 @@ impl TokenUsageExt for TokenUsage {
     }
 }
 
+/// Shared route/projector reading. Lifetime billing totals never leave this boundary.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct PlannerContextUsage {
+    pub used_tokens: i64,
+    pub context_window: Option<i64>,
+    pub percent: Option<f64>,
+    pub at_ms: i64,
+}
+
+pub(crate) fn planner_context_usage(
+    snapshot: &super::HarnessSnapshot,
+) -> Option<PlannerContextUsage> {
+    snapshot
+        .visible_context_usage()
+        .map(|usage| PlannerContextUsage {
+            used_tokens: usage.used_tokens,
+            context_window: usage.context_window,
+            percent: usage.percent(),
+            at_ms: usage.at_ms,
+        })
+}
+
+pub(crate) fn planner_context_usage_from_header(
+    header: calm_types::harness::snapshot::HarnessRuntimeHeader,
+) -> Option<PlannerContextUsage> {
+    planner_context_usage(&super::HarnessSnapshot::from_runtime_header(header, vec![]))
+}
+
+/// Decode either supported storage contract before applying the same visibility policy.
+pub(crate) fn persisted_context_snapshot(value: Value) -> Option<super::HarnessSnapshot> {
+    if value.get("schema_version").and_then(Value::as_u64) == Some(5) {
+        let snapshot: super::snapshot::CanonicalHarnessSnapshot =
+            serde_json::from_value(value).ok()?;
+        Some(super::HarnessSnapshot::from_runtime_header(
+            snapshot.header,
+            vec![],
+        ))
+    } else {
+        super::HarnessSnapshot::parse_known(value)
+    }
+}
+
 /// Render only an honest occupancy reading. Invalidation wins over retained billing metadata.
 pub(crate) fn planner_context_input(usage: Option<&TokenUsage>, invalidated: bool) -> String {
     let reason = if invalidated {

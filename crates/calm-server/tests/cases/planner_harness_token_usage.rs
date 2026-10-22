@@ -277,7 +277,7 @@ async fn emit_and_wait(boot: &Boot, params: Value, expect_used: i64) -> TokenUsa
 
 /// The captured frame's `total.totalTokens` is 253.8x the window; the response must report the `last`-derived occupancy and must not ship `total_tokens` at all.
 #[tokio::test]
-async fn planner_run_reports_percent_derived_from_last_not_the_lifetime_total() {
+async fn planner_run_planner_context_reports_percent_derived_from_last_not_the_lifetime_total() {
     let boot = boot().await;
     wait_for_notification_receiver(&boot.daemon).await;
 
@@ -328,6 +328,42 @@ async fn planner_run_reports_percent_derived_from_last_not_the_lifetime_total() 
          numbers is a client that can pick the wrong one; got {wire}"
     );
 
+    // Historical readings become durable at the existing harness persistence boundary.
+    boot.harness.persist_snapshot().await.unwrap();
+    let roles = CardRoleCache::new();
+    let areas = TrackAreaCache::new();
+    boot.repo.seed_card_role_cache(&roles).await.unwrap();
+    boot.repo.seed_track_area_cache(&areas).await.unwrap();
+    let projector = calm_server::track_planner_context::TrackPlannerContextProjector::new(
+        boot.repo.clone(),
+        EventBus::new(),
+        calm_server::state::WriteContext::new(roles, areas),
+    )
+    .unwrap();
+    let track = boot.planner_card.track_id.as_str();
+    assert!(projector.recompute_track(track).await.unwrap());
+    let overlay = boot
+        .repo
+        .overlays_for("track", track)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|o| o.kind == "planner.context")
+        .unwrap();
+    let items = &overlay.payload["cell"]["items"];
+    assert_eq!(items[0]["value"]["amount"], wire["percent"]);
+    assert_eq!(
+        items[1]["value"]["amount"].as_f64(),
+        wire["used_tokens"].as_f64()
+    );
+    assert_eq!(
+        items[2]["value"]["amount"].as_f64(),
+        wire["context_window"].as_f64()
+    );
+    assert_eq!(
+        overlay.payload["snapshot"]["observedAt"].as_f64(),
+        wire["at_ms"].as_f64()
+    );
     boot.harness.shutdown().await.unwrap();
 }
 

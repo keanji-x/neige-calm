@@ -7,8 +7,8 @@ use crate::actor::Actor;
 use crate::db::RouteRepo;
 use crate::error::{CalmError, ErrorBody, Result};
 use crate::extract::{Json, Path};
-use crate::harness::token_usage::TokenUsageExt;
-use crate::harness::{HarnessPhaseTag, QueueEntry, RunningTurn, TokenUsage};
+use crate::harness::token_usage::{PlannerContextUsage, planner_context_usage};
+use crate::harness::{HarnessPhaseTag, QueueEntry, RunningTurn};
 use crate::ids::CardId;
 use crate::model::{Card, CardRole, Track, new_id};
 use crate::operation::planner_harness_interrupt_adapter::PlannerHarnessInterruptOperationPayload;
@@ -270,12 +270,12 @@ pub struct PlannerRunTokenUsage {
     pub at_ms: i64,
 }
 
-impl From<&TokenUsage> for PlannerRunTokenUsage {
-    fn from(usage: &TokenUsage) -> Self {
+impl From<PlannerContextUsage> for PlannerRunTokenUsage {
+    fn from(usage: PlannerContextUsage) -> Self {
         Self {
             used_tokens: usage.used_tokens,
             context_window: usage.context_window,
-            percent: usage.percent(),
+            percent: usage.percent,
             at_ms: usage.at_ms,
         }
     }
@@ -554,9 +554,7 @@ pub(super) async fn historical_planner_run(
             Some(snapshot.phase),
         )
         .await?,
-        token_usage: snapshot
-            .visible_context_usage()
-            .map(PlannerRunTokenUsage::from),
+        token_usage: planner_context_usage(&snapshot).map(PlannerRunTokenUsage::from),
         compact_outcome: snapshot.compact_outcome.clone(),
         context_usage_invalidated: snapshot.context_usage_invalidated,
         pending,
@@ -570,9 +568,7 @@ fn apply_context_snapshot(
     snapshot: &crate::harness::HarnessSnapshot,
 ) {
     response.context_usage_invalidated = snapshot.context_usage_invalidated;
-    response.token_usage = snapshot
-        .visible_context_usage()
-        .map(PlannerRunTokenUsage::from);
+    response.token_usage = planner_context_usage(snapshot).map(PlannerRunTokenUsage::from);
     let mut restored = snapshot.clone();
     restored.restore_context_feedback();
     response.compact_outcome = restored.compact_outcome;

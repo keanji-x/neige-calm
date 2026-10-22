@@ -1,11 +1,11 @@
 //! Authoritative, domain-free presentation DTOs.
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
 use ts_rs::TS;
 use utoipa::ToSchema;
 
-#[derive(Deserialize, ToSchema, TS)]
+#[derive(Serialize, Deserialize, ToSchema, TS)]
 #[serde(deny_unknown_fields)]
 pub struct NativeView {
     #[schema(value_type = i64, minimum = 1, maximum = 1)]
@@ -21,7 +21,7 @@ pub struct NativeView {
     #[schema(min_items = 1, max_items = 6)]
     pub rows: Vec<Row>,
 }
-#[derive(Deserialize, ToSchema, TS)]
+#[derive(Serialize, Deserialize, ToSchema, TS)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct Snapshot {
     #[schema(min_length = 1, max_length = 100, pattern = "^[A-Za-z0-9._-]+$")]
@@ -33,7 +33,7 @@ pub struct Snapshot {
     #[schema(required = true, value_type = Option<i64>, minimum = 0, maximum = 253402300799999.0)]
     pub produced_at: Option<f64>,
 }
-#[derive(Deserialize, ToSchema, TS)]
+#[derive(Serialize, Deserialize, ToSchema, TS)]
 #[serde(deny_unknown_fields)]
 pub struct Row {
     #[schema(min_length = 1, max_length = 100, pattern = "^[A-Za-z0-9._-]+$")]
@@ -45,7 +45,7 @@ pub struct Row {
     pub cells: Vec<RowCell>,
 }
 // One template cell: a live slot the read side resolves, or an inline component.
-#[derive(ToSchema, TS)]
+#[derive(Serialize, ToSchema, TS)]
 #[serde(untagged)]
 pub enum RowCell {
     Live(LiveSlot),
@@ -68,7 +68,7 @@ impl<'de> Deserialize<'de> for RowCell {
     }
 }
 // A template's reference to one plugin data unit; the unit supplies the cell.
-#[derive(Deserialize, ToSchema, TS)]
+#[derive(Serialize, Deserialize, ToSchema, TS)]
 #[serde(deny_unknown_fields)]
 pub struct LiveSlot {
     pub kind: LiveTag,
@@ -82,12 +82,12 @@ pub struct LiveSlot {
     pub source: String,
     pub expects: ComponentKind,
 }
-#[derive(Deserialize, ToSchema, TS)]
+#[derive(Serialize, Deserialize, ToSchema, TS)]
 #[serde(rename_all = "lowercase")]
 pub enum LiveTag {
     Live,
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, ToSchema, TS)]
+#[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq, Deserialize, ToSchema, TS)]
 #[serde(rename_all = "kebab-case")]
 pub enum ComponentKind {
     Metrics,
@@ -100,13 +100,13 @@ pub enum ComponentKind {
 }
 // The overlay payload a live slot resolves to: one cell with its own provenance.
 // `cell` is a `Component`, so a unit cannot nest another live slot.
-#[derive(Deserialize, ToSchema, TS)]
+#[derive(Serialize, Deserialize, ToSchema, TS)]
 #[serde(deny_unknown_fields)]
 pub struct DataUnit {
     pub snapshot: Snapshot,
     pub cell: Component,
 }
-#[derive(Deserialize, ToSchema, TS)]
+#[derive(Serialize, Deserialize, ToSchema, TS)]
 #[serde(rename_all = "lowercase")]
 pub enum Layout {
     One,
@@ -117,7 +117,7 @@ pub enum Layout {
     #[serde(rename = "two-wide-end")]
     TwoWideEnd,
 }
-#[derive(Deserialize, ToSchema, TS)]
+#[derive(Serialize, Deserialize, ToSchema, TS)]
 #[serde(rename_all = "lowercase")]
 pub enum Tone {
     Neutral,
@@ -125,19 +125,19 @@ pub enum Tone {
     Warning,
     Negative,
 }
-#[derive(Deserialize, ToSchema, TS)]
+#[derive(Serialize, Deserialize, ToSchema, TS)]
 #[serde(rename_all = "lowercase")]
 pub enum Emphasis {
     Primary,
     Normal,
 }
-#[derive(Deserialize, ToSchema, TS)]
+#[derive(Serialize, Deserialize, ToSchema, TS)]
 #[serde(rename_all = "lowercase")]
 pub enum Placement {
     Prefix,
     Suffix,
 }
-#[derive(Deserialize, ToSchema, TS)]
+#[derive(Serialize, Deserialize, ToSchema, TS)]
 #[serde(tag = "state", rename_all = "lowercase", deny_unknown_fields)]
 pub enum MetricValue {
     Known {
@@ -159,7 +159,7 @@ pub enum MetricValue {
         reason: String,
     },
 }
-#[derive(Deserialize, ToSchema, TS)]
+#[derive(Serialize, Deserialize, ToSchema, TS)]
 #[serde(deny_unknown_fields)]
 pub struct Metric {
     #[schema(min_length = 1, max_length = 100, pattern = "^[A-Za-z0-9._-]+$")]
@@ -172,7 +172,7 @@ pub struct Metric {
     pub tone: Tone,
     pub emphasis: Emphasis,
 }
-#[derive(Deserialize, ToSchema, TS)]
+#[derive(Serialize, Deserialize, ToSchema, TS)]
 #[serde(deny_unknown_fields)]
 pub struct Field {
     #[schema(max_length = 120)]
@@ -180,7 +180,7 @@ pub struct Field {
     #[schema(max_length = 2048)]
     pub value: String,
 }
-#[derive(Deserialize, ToSchema, TS)]
+#[derive(Serialize, Deserialize, ToSchema, TS)]
 #[serde(deny_unknown_fields)]
 pub struct Badge {
     #[schema(max_length = 120)]
@@ -189,7 +189,7 @@ pub struct Badge {
     pub value: String,
     pub tone: Tone,
 }
-#[derive(Deserialize, ToSchema, TS)]
+#[derive(Serialize, Deserialize, ToSchema, TS)]
 #[serde(deny_unknown_fields)]
 pub struct Section {
     #[schema(max_length = 120)]
@@ -197,7 +197,7 @@ pub struct Section {
     #[schema(max_length = 8000)]
     pub body: String,
 }
-#[derive(Deserialize, ToSchema, TS)]
+#[derive(Serialize, Deserialize, ToSchema, TS)]
 #[serde(deny_unknown_fields)]
 pub struct Disclosure {
     #[schema(min_length = 1, max_length = 100, pattern = "^[A-Za-z0-9._-]+$")]
@@ -210,7 +210,7 @@ pub struct Disclosure {
     pub note: String,
     pub tone: Tone,
 }
-#[derive(Deserialize, ToSchema, TS)]
+#[derive(Serialize, Deserialize, ToSchema, TS)]
 #[serde(deny_unknown_fields)]
 pub struct ViewRecord {
     #[schema(min_length = 1, max_length = 100, pattern = "^[A-Za-z0-9._-]+$")]
@@ -230,7 +230,7 @@ pub struct ViewRecord {
     #[schema(min_items = 0, max_items = 20)]
     pub disclosures: Vec<Disclosure>,
 }
-#[derive(Deserialize, ToSchema, TS)]
+#[derive(Serialize, Deserialize, ToSchema, TS)]
 #[serde(deny_unknown_fields)]
 pub struct RecordSet {
     #[schema(min_length = 1, max_length = 100, pattern = "^[A-Za-z0-9._-]+$")]
@@ -243,7 +243,7 @@ pub struct RecordSet {
     #[schema(min_items = 0, max_items = 100)]
     pub items: Vec<ViewRecord>,
 }
-#[derive(Deserialize, ToSchema, TS)]
+#[derive(Serialize, Deserialize, ToSchema, TS)]
 #[serde(deny_unknown_fields)]
 pub struct Series {
     #[schema(min_length = 1, max_length = 100, pattern = "^[A-Za-z0-9._-]+$")]
@@ -254,7 +254,7 @@ pub struct Series {
     pub palette: f64,
 }
 const OBSERVATION_ABS_LIMIT: f64 = 1e15;
-#[derive(Clone, Copy, Deserialize, TS)]
+#[derive(Serialize, Clone, Copy, Deserialize, TS)]
 #[serde(transparent)]
 pub struct ObservationValue(#[serde(deserialize_with = "bounded_observation")] pub f64);
 fn bounded_observation<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<f64, D::Error> {
@@ -277,7 +277,7 @@ impl utoipa::PartialSchema for ObservationValue {
     }
 }
 impl utoipa::ToSchema for ObservationValue {}
-#[derive(Deserialize, ToSchema, TS)]
+#[derive(Serialize, Deserialize, ToSchema, TS)]
 #[serde(deny_unknown_fields)]
 pub struct Point {
     #[schema(
@@ -290,13 +290,13 @@ pub struct Point {
     #[schema(min_items = 1, max_items = 6)]
     pub values: Vec<Option<ObservationValue>>,
 }
-#[derive(Deserialize, ToSchema, TS)]
+#[derive(Serialize, Deserialize, ToSchema, TS)]
 #[serde(rename_all = "lowercase")]
 pub enum PlotStyle {
     Line,
     Stacked,
 }
-#[derive(Deserialize, ToSchema, TS)]
+#[derive(Serialize, Deserialize, ToSchema, TS)]
 #[serde(deny_unknown_fields)]
 pub struct Dataset {
     #[schema(min_length = 1, max_length = 100, pattern = "^[A-Za-z0-9._-]+$")]
@@ -311,7 +311,7 @@ pub struct Dataset {
     #[schema(min_items = 0, max_items = 500)]
     pub points: Vec<Point>,
 }
-#[derive(Deserialize, ToSchema, TS)]
+#[derive(Serialize, Deserialize, ToSchema, TS)]
 #[serde(deny_unknown_fields)]
 pub struct Slice {
     #[schema(min_length = 1, max_length = 100, pattern = "^[A-Za-z0-9._-]+$")]
@@ -323,7 +323,7 @@ pub struct Slice {
     #[schema(value_type = i64, minimum = 1, maximum = 7)]
     pub palette: f64,
 }
-#[derive(Deserialize, ToSchema, TS)]
+#[derive(Serialize, Deserialize, ToSchema, TS)]
 #[serde(
     tag = "kind",
     rename_all = "kebab-case",
@@ -426,7 +426,7 @@ pub enum Component {
     },
 }
 
-#[derive(Deserialize, ToSchema, TS)]
+#[derive(Serialize, Deserialize, ToSchema, TS)]
 #[serde(deny_unknown_fields)]
 pub struct BarPoint {
     #[schema(max_length = 120)]
@@ -435,7 +435,7 @@ pub struct BarPoint {
     pub value: f64,
     pub tone: Tone,
 }
-#[derive(Deserialize, ToSchema, TS)]
+#[derive(Serialize, Deserialize, ToSchema, TS)]
 #[serde(deny_unknown_fields)]
 pub struct InlineTable {
     #[schema(min_items = 1, max_items = 32)]
@@ -449,7 +449,7 @@ pub struct InlineTable {
     #[ts(optional = nullable)]
     pub highlight: Option<String>,
 }
-#[derive(Deserialize, ToSchema, TS)]
+#[derive(Serialize, Deserialize, ToSchema, TS)]
 #[serde(deny_unknown_fields)]
 pub struct TableColumn {
     #[schema(min_length = 1, max_length = 2048)]
@@ -459,13 +459,13 @@ pub struct TableColumn {
     #[ts(optional = nullable)]
     pub align: Option<TableAlign>,
 }
-#[derive(Deserialize, ToSchema, TS)]
+#[derive(Serialize, Deserialize, ToSchema, TS)]
 #[serde(rename_all = "lowercase")]
 pub enum TableAlign {
     Left,
     Right,
 }
-#[derive(Deserialize, ToSchema, TS)]
+#[derive(Serialize, Deserialize, ToSchema, TS)]
 #[serde(untagged)]
 pub enum TableScalar {
     Text(TableText),
@@ -478,7 +478,7 @@ fn required_nullable<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
     Option::<T>::deserialize(deserializer)
 }
 
-#[derive(Deserialize, TS)]
+#[derive(Serialize, Deserialize, TS)]
 #[serde(transparent)]
 pub struct TableText(pub String);
 impl utoipa::PartialSchema for TableText {
@@ -492,7 +492,7 @@ impl utoipa::PartialSchema for TableText {
 impl utoipa::ToSchema for TableText {}
 
 /// Explicit null primitive: utoipa's unit schema only supplies a default value.
-#[derive(Deserialize, TS)]
+#[derive(Serialize, Deserialize, TS)]
 #[serde(transparent)]
 pub struct TableNull(pub ());
 impl utoipa::PartialSchema for TableNull {

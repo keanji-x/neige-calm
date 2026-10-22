@@ -17,13 +17,13 @@ instructions = """
   KR 是交付门槛：阶段交付前后按「怎么测」重新测量，测量由独立 Codex worker
   （只读任务）或命令完成，「当前」只引用测量结果；使任一 KR 变差的交付不合并。
 · Roadmap：阶段一个接一个，每个阶段固定写：
-  交付物（PR 等）/ 推动（哪个 KR）/ 上下文 预算 Xk · 已用 Yk / 现在。
+  交付物（PR 等）/ 推动（哪个 KR）/ 上下文 预算 Xk（已用读下方运行数据） / 现在。
   状态用 `进行中` `待开始` `未开始`，做完移到「已交付」。
 · 压缩检查点：阶段之间写「⏸ 压缩检查点」。到这里先更新本文档；若剩余上下文 <
   下一阶段的上下文预算，就声明一个 compact 任务块（key 唯一、kind compact、
   ready true）压缩自己；被压缩完成通知叫醒后先读本文档和任务列表，不要再压缩。
-· 已交付：每个做完的阶段一行「名称 · 交付物链接 · 推动 KR · 上下文 预算Xk/实际Yk」，
-  最多 8 行。实际值用来校准后面的预算。
+· 已交付：每个做完的阶段一行「名称 · 交付物链接 · 推动 KR · 上下文 预算Xk（运行数据见观测时间）」，
+  最多 8 行。上下文读数与压缩任务数引用运行数据，不手写；预算仍手写。
 · 不写过程；全文控制在一屏内。
 
 工作方法
@@ -45,5 +45,29 @@ instructions = """
 # 关键结果
 
 # Roadmap
+
+```neige-block view
+{
+  "description": "上下文占用保留最近观测时间；压缩数只计本 track 已完成的 compact 任务。",
+  "rows": [
+    {
+      "cells": [
+        {
+          "expects": "metrics",
+          "id": "planner-context",
+          "kind": "live",
+          "source": "neige://plugin/kernel/planner.context"
+        }
+      ],
+      "id": "planner-runtime",
+      "layout": "one",
+      "title": ""
+    }
+  ],
+  "snapshot": null,
+  "title": "Planner 运行数据",
+  "version": 1
+}
+```
 
 # 已交付

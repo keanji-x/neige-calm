@@ -4,7 +4,7 @@ use super::planner_cards::GetPlannerRunResponse;
 use crate::auth::Principal;
 use crate::error::{CalmError, Result};
 use crate::extract::Json;
-use crate::harness::token_usage::TokenUsageExt;
+use crate::harness::token_usage::planner_context_usage_from_header;
 use crate::state::RouteState;
 use axum::response::{IntoResponse, Response};
 use calm_types::conversation::{InputDeliveryFact, PendingInput};
@@ -174,19 +174,8 @@ pub(super) async fn read(
                         )
                 })
             });
-        let usage = if header.context_usage_invalidated {
-            None
-        } else {
-            header
-                .token_usage
-                .as_ref()
-                .map(|usage| super::planner_cards::PlannerRunTokenUsage {
-                    used_tokens: usage.used_tokens,
-                    context_window: usage.context_window,
-                    percent: usage.percent(),
-                    at_ms: usage.at_ms,
-                })
-        };
+        let usage = planner_context_usage_from_header(header.clone())
+            .map(super::planner_cards::PlannerRunTokenUsage::from);
         let resolved_waiting = snapshot
             .canonical_inputs
             .resolved_execution_without_target();

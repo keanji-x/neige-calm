@@ -510,3 +510,62 @@ async fn live_slot_template_write_read_and_stale_cas() {
     .await;
     assert_eq!(read(&boot, json!({})).await["text"], after["text"]);
 }
+
+#[tokio::test]
+async fn planner_context_live_slot_resolves_kernel_projector_data() {
+    let boot = boot().await;
+    // Use the shipped template, through the production Report write/read tools.
+    let source = include_str!("../../templates/builtin/long-term-goal.md");
+    let start = source.find("```neige-block view\n").unwrap() + "```neige-block view\n".len();
+    let end = source[start..].find("\n```").unwrap() + start;
+    let view: Value = serde_json::from_str(&source[start..end]).unwrap();
+    let created = create(&boot, "view", view).await;
+    let projector = calm_server::track_planner_context::TrackPlannerContextProjector::new(
+        boot.repo.clone(),
+        boot.ctx.events.clone(),
+        boot.ctx.write.clone(),
+    )
+    .unwrap();
+    let mut snapshot = calm_server::harness::HarnessSnapshot::initial(0, vec![]);
+    snapshot.token_usage = Some(calm_server::harness::TokenUsage {
+        used_tokens: 62000,
+        context_window: Some(112000),
+        total_tokens: 65000000,
+        at_ms: 1790035200000_i64,
+    });
+    let db = boot.repo.sqlite_db().unwrap();
+    let mut tx = calm_server::db::sqlite::begin_immediate_tx(&db)
+        .await
+        .unwrap();
+    assert!(
+        calm_server::db::sqlite::session_set_handle_state_tx(
+            &mut tx,
+            &"planner-session".to_string(),
+            Some(serde_json::to_value(snapshot).unwrap())
+        )
+        .await
+        .unwrap()
+    );
+    tx.commit().await.unwrap();
+    assert!(
+        projector
+            .recompute_track(boot.track_id.as_str())
+            .await
+            .unwrap()
+    );
+    let report = read_full(&boot, &created["id"]).await;
+    let cell = &cells(resolved(&report, &created["id"]))[0];
+    assert_eq!(cell["status"], "ok", "{cell}");
+    assert_eq!(cell["source"], "neige://plugin/kernel/planner.context");
+    let unit = &cell["data"];
+    assert_eq!(
+        unit["snapshot"]["observedAt"].as_f64(),
+        Some(1790035200000.0)
+    );
+    let items = &unit["cell"]["items"];
+    assert_eq!(items[0]["value"]["amount"], 50.0);
+    assert_eq!(items[1]["value"]["amount"], 62000.0);
+    assert_eq!(items[2]["value"]["amount"], 112000.0);
+    assert_eq!(items[3]["value"]["text"], "false");
+    assert_eq!(items[4]["value"]["amount"], 0.0);
+}

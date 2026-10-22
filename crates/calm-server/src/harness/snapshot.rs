@@ -242,7 +242,10 @@ impl HarnessSnapshot {
 
     /// Explicit V1 wire adapter. Keep its field order/lenient decoders and queue
     /// codec unchanged while both frame versions share the runtime initializer.
-    fn from_runtime_header(header: HarnessRuntimeHeader, entries: Vec<QueueEntry>) -> Self {
+    pub(crate) fn from_runtime_header(
+        header: HarnessRuntimeHeader,
+        entries: Vec<QueueEntry>,
+    ) -> Self {
         let HarnessRuntimeHeader {
             phase,
             turn_budget,
