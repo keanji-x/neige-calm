@@ -1,6 +1,25 @@
--- #2836 C2: no backfill. Absence means the receipt still fences its worker.
+-- #2836 C2: remove the hidden identity so conflict handling has only logical keys.
+-- Preserve the 0163 schema and every stored value before adding cleanup evidence.
+CREATE TABLE acp_submissions_without_rowid (
+  worker_session_id TEXT NOT NULL REFERENCES worker_sessions(id) ON DELETE CASCADE,
+  client_id TEXT NOT NULL,
+  turn_id TEXT NOT NULL UNIQUE,
+  thread_id TEXT NOT NULL,
+  native_session_id TEXT NOT NULL,
+  input_json TEXT NOT NULL CHECK(json_valid(input_json)),
+  state TEXT NOT NULL CHECK(state IN ('sending','completed','unknown')),
+  outcome_json TEXT CHECK(outcome_json IS NULL OR json_valid(outcome_json)),
+  created_at_ms INTEGER NOT NULL,
+  PRIMARY KEY(worker_session_id, client_id),
+  CHECK((state = 'completed') = (outcome_json IS NOT NULL))
+) WITHOUT ROWID;
+INSERT INTO acp_submissions_without_rowid
+  SELECT * FROM acp_submissions;
+DROP TABLE acp_submissions;
+ALTER TABLE acp_submissions_without_rowid RENAME TO acp_submissions;
+
+-- No backfill. Absence means the receipt still fences its worker.
 ALTER TABLE acp_submissions ADD COLUMN kept_cleanup_json TEXT;
-DROP INDEX acp_one_unresolved_submission;
 CREATE UNIQUE INDEX acp_one_unresolved_submission ON acp_submissions(worker_session_id)
   WHERE state = 'sending' OR (state = 'unknown' AND kept_cleanup_json IS NULL);
 
@@ -25,7 +44,8 @@ END;
 -- An unreleased source row must not evict a released target with UPDATE OR REPLACE.
 CREATE TRIGGER acp_cleanup_no_update_collision BEFORE UPDATE ON acp_submissions
 WHEN EXISTS(SELECT 1 FROM acp_submissions
-  WHERE kept_cleanup_json IS NOT NULL AND rowid != OLD.rowid AND (
+  WHERE kept_cleanup_json IS NOT NULL
+    AND NOT (worker_session_id = OLD.worker_session_id AND client_id = OLD.client_id) AND (
     (worker_session_id = NEW.worker_session_id AND client_id = NEW.client_id)
     OR turn_id = NEW.turn_id))
 BEGIN
