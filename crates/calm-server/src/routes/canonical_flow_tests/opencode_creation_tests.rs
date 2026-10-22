@@ -216,6 +216,34 @@ async fn canonical_opencode_creation_catalog_uses_acp_owner() {
 }
 
 #[tokio::test]
+async fn canonical_opencode_creation_catalog_does_not_reuse_another_registration() {
+    let mut fixture = Fixture::new().await;
+    configure(&mut fixture);
+    std::fs::write(fixture.root.path().join("grok/scenario"), "catalog_error").unwrap();
+    let (state, _, _) = fixture.application().await;
+    let route = crate::state::RouteState::from_ref(&state);
+    let grok = route
+        .acp_planner
+        .discover_catalog(&calm_types::runtime::AgentProvider::Grok, None)
+        .await;
+    assert_eq!(
+        grok.source,
+        crate::planner_model::catalog::ModelSource::Unavailable
+    );
+    let advice = crate::routes::planner_model::creation_catalog_advice(
+        &crate::state::RouteState::from_ref(&state),
+        &state.shared_codex_appserver,
+        &calm_types::runtime::AgentProvider::OpenCode,
+        Some("fixture/model-a"),
+        Some("unsupported"),
+    )
+    .await;
+    assert!(!advice.catalog_unavailable);
+    assert!(advice.adjustment.is_some());
+    fixture.shutdown_process(&state).await;
+}
+
+#[tokio::test]
 async fn canonical_opencode_creation_unknown_projects_keep_and_server_retry_reason() {
     let mut fixture = Fixture::new().await;
     configure(&mut fixture);

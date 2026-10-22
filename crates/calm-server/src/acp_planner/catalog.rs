@@ -19,6 +19,7 @@ pub(super) type DiscoveryCache = tokio::sync::Mutex<Option<Entry>>;
 
 #[derive(Debug)]
 pub(super) struct Entry {
+    provider: AgentProvider,
     cwd: Option<PathBuf>,
     started: Instant,
     catalog: Option<Catalog>,
@@ -51,6 +52,7 @@ impl AcpPlannerHost {
         let key = cwd.map(Path::to_path_buf);
         let mut cache = self.discovery.lock().await;
         if let Some(entry) = cache.as_ref()
+            && entry.provider == *provider
             && entry.cwd == key
             && entry.started.elapsed() < TTL
         {
@@ -106,6 +108,7 @@ impl AcpPlannerHost {
             }
         };
         *cache = Some(Entry {
+            provider: provider.clone(),
             cwd: key,
             started,
             catalog: catalog.clone(),
