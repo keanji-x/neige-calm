@@ -230,14 +230,41 @@ impl OperationRuntime {
             ));
         }
         Self::require_submission_key(invocation.as_ref(), &key)?;
-        let _drive = self.drive_mutex.lock().await;
+        // A live invocation cannot hand a Busy preparation to the registered
+        // adapter: that adapter does not hold this request's authority. Wait
+        // before inserting/claiming its operation, retaining the invocation.
+        // Never wait for track while holding drive (clean takes drive -> track).
+        let (_drive, mut preparation_fence) = loop {
+            let drive = self.drive_mutex.lock().await;
+            match self.keyed_replay(invocation.kind(), &key).await? {
+                Some(id) => {
+                    if let Some(result) = self.repo.operation_result(&id).await? {
+                        return Ok(result);
+                    }
+                }
+                None => invocation.validate(&payload).await?,
+            }
+            let Some(track) = invocation
+                .preparation_track(&payload, &self.spawn_ctx)
+                .await?
+            else {
+                break (drive, None);
+            };
+            if let Some(fence) =
+                crate::per_card_lock::try_lock_key(self.track_delete_locks(), &track)
+            {
+                break (drive, Some(fence));
+            }
+            drop(drive);
+            let fence = crate::per_card_lock::lock_key(self.track_delete_locks(), &track).await;
+            drop(fence);
+        };
         // Like submit, an original keyed receipt precedes mutable validation.
         // The invocation owner still re-admits every fresh effect while driving
         // this exact operation; a completed result needs no new native start.
         let op_id = match self.keyed_replay(invocation.kind(), &key).await? {
             Some(op_id) => op_id,
             None => {
-                invocation.validate(&payload).await?;
                 self.repo
                     .insert_operation(invocation.kind(), key, payload)
                     .await?
@@ -252,7 +279,12 @@ impl OperationRuntime {
                 .claim_drive_operation(&op_id)
                 .await?
                 .ok_or_else(|| CalmError::Conflict("operation is held by another driver".into()))?;
-            self.drive_claimed(invocation.clone(), op).await?;
+            self.drive_claimed_with_preparation_fence(
+                invocation.clone(),
+                op,
+                preparation_fence.take(),
+            )
+            .await?;
         }
     }
 
@@ -529,8 +561,21 @@ impl OperationRuntime {
         adapter: Arc<dyn ProviderAdapter>,
         op: Operation,
     ) -> Result<()> {
+        self.drive_claimed_with_preparation_fence(adapter, op, None)
+            .await
+    }
+
+    async fn drive_claimed_with_preparation_fence(
+        &self,
+        adapter: Arc<dyn ProviderAdapter>,
+        op: Operation,
+        preparation_fence: Option<crate::per_card_lock::KeyedLockGuard>,
+    ) -> Result<()> {
         let from_phase = op.phase.tag();
-        if let Err(error) = self.drive_one(adapter.clone(), op.clone()).await {
+        if let Err(error) = self
+            .drive_one(adapter.clone(), op.clone(), preparation_fence)
+            .await
+        {
             if let Some(result) = self.leave_write(
                 &op,
                 self.repo
@@ -655,22 +700,31 @@ impl OperationRuntime {
         }
     }
 
-    async fn drive_one(&self, adapter: Arc<dyn ProviderAdapter>, op: Operation) -> Result<()> {
+    async fn drive_one(
+        &self,
+        adapter: Arc<dyn ProviderAdapter>,
+        op: Operation,
+        preparation_fence: Option<crate::per_card_lock::KeyedLockGuard>,
+    ) -> Result<()> {
         match op.phase.clone() {
             Phase::Pending => {
-                let _track = match adapter
-                    .preparation_track(&op.payload, &self.spawn_ctx)
-                    .await?
-                {
-                    Some(track) => match self.try_launch_fence(&track) {
-                        Ok(guard) => Some(guard),
-                        Err(CalmError::WorkspaceBusy(_)) => {
-                            self.retry_after_track(&op.id, track);
-                            return Ok(());
-                        }
-                        Err(error) => return Err(error),
-                    },
-                    None => None,
+                let _track = if preparation_fence.is_some() {
+                    preparation_fence
+                } else {
+                    match adapter
+                        .preparation_track(&op.payload, &self.spawn_ctx)
+                        .await?
+                    {
+                        Some(track) => match self.try_launch_fence(&track) {
+                            Ok(guard) => Some(guard),
+                            Err(CalmError::WorkspaceBusy(_)) => {
+                                self.retry_after_track(&op.id, track);
+                                return Ok(());
+                            }
+                            Err(error) => return Err(error),
+                        },
+                        None => None,
+                    }
                 };
                 // Facts may change during external I/O. Retry boundedly under this exact
                 // claim; after that leave Pending leased, so wait()'s drive retries on expiry.
@@ -1483,7 +1537,7 @@ impl OperationRuntime {
                 // The phase the row was claimed at, not the one it was planned at: an earlier item's
                 // drive may have moved it on, and a row stuck from `pending` must have written nothing.
                 let from_phase = op.phase.tag();
-                if let Err(e) = self.drive_one(adapter.clone(), op.clone()).await {
+                if let Err(e) = self.drive_one(adapter.clone(), op.clone(), None).await {
                     if let Some(result) = self.leave_write(
                         &op,
                         self.repo

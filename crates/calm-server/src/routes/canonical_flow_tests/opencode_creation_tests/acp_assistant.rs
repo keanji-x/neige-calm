@@ -11,7 +11,8 @@ fn requests(fixture: &Fixture) -> Vec<Value> {
 }
 
 async fn wait_idle(fixture: &Fixture, card: &str, attempts: usize) -> CanonicalHarnessSnapshot {
-    tokio::time::timeout(Duration::from_secs(30), async {
+    let mut last_snapshot = None;
+    let result = tokio::time::timeout(Duration::from_secs(30), async {
         loop {
             let (_, snapshot) = carrier(fixture, card).await;
             if snapshot.idle_for_lifecycle()
@@ -20,11 +21,25 @@ async fn wait_idle(fixture: &Fixture, card: &str, attempts: usize) -> CanonicalH
             {
                 return snapshot;
             }
+            last_snapshot = Some(snapshot);
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
     })
-    .await
-    .expect("the original ACP driver must produce real END")
+    .await;
+    match result {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            panic!(
+                "ACP END timeout: {error}; snapshot={last_snapshot:?}; requests={:?}; MCP={:?}; permission={:?}",
+                requests(fixture),
+                (
+                    std::fs::read_to_string(fixture.root.path().join("assistant-mcp-progress")),
+                    std::fs::read_to_string(fixture.root.path().join("assistant-mcp-results.json"))
+                ),
+                std::fs::read_to_string(fixture.root.path().join("permission-reply.json"))
+            );
+        }
+    }
 }
 
 #[tokio::test]
@@ -138,6 +153,39 @@ async fn acp_assistant_outage_acceptance_replay_and_retained_activation() {
             .count(),
         1,
         "accepted first input was not resent"
+    );
+    fixture.shutdown_process(&state).await;
+}
+
+#[tokio::test]
+async fn acp_assistant_activation_retains_source_across_busy_track() {
+    let mut fixture = Fixture::new().await;
+    configure(&mut fixture);
+    let (state, app, cookie) = fixture.application().await;
+    let track = track(&app, &cookie).await;
+    let locks = state.operation_runtime.track_locks_for_test();
+    let guard = crate::per_card_lock::lock_key(locks, &track).await;
+    let waiting = crate::test_seams::PausePoint::default();
+    crate::test_seams::install_pause_for_test("key-lock-waiting", &track, waiting.clone());
+    let created = post(
+        &app,
+        &cookie,
+        &format!("/api/tracks/{track}/conversations"),
+        "busy",
+        json!({"provider":"opencode","text":FIRST_BODY}),
+    )
+    .await;
+    tokio::time::timeout(Duration::from_secs(30), waiting.entered.notified())
+        .await
+        .expect("activation must wait for the held track");
+    drop(guard);
+    waiting.release.notify_one();
+    let card = created["id"].as_str().unwrap();
+    wait_idle(&fixture, card, 1).await;
+    assert_eq!(
+        prompts(&fixture),
+        1,
+        "the original accepted input runs once"
     );
     fixture.shutdown_process(&state).await;
 }
@@ -298,6 +346,7 @@ async fn acp_assistant_lost_response_cold_restart_never_resends() {
                 .attempts
                 .first()
                 .is_some_and(|a| matches!(a.delivery, InputDeliveryFact::Unknown))
+                && prompts(&fixture) == 1
             {
                 break facts;
             }
