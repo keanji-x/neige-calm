@@ -11,6 +11,7 @@ mod macos_process;
 pub(crate) mod exact_thread;
 use crate::harness::profile::HarnessProfileExt;
 use control::ControlError;
+mod maintenance;
 mod metadata_reads;
 mod native_turns;
 mod prompt_attempt;

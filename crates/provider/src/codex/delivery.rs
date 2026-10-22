@@ -209,8 +209,24 @@ impl CodexAppServer {
 
     /// Compact's RPC acknowledgement does not establish compaction completion.
     pub async fn compact_delivery(&self, thread_id: &str) -> CompactDelivery<RpcAttemptFailure> {
+        self.compact_delivery_gated(
+            thread_id,
+            &crate::send_boundary::PreSendGate::new(super::gated_requests::allow_send),
+        )
+        .await
+    }
+
+    pub async fn compact_delivery_gated(
+        &self,
+        thread_id: &str,
+        gate: &crate::send_boundary::PreSendGate<'_>,
+    ) -> CompactDelivery<RpcAttemptFailure> {
         match self
-            .request_attempt::<Value>("thread/compact/start", json!({ "threadId": thread_id }))
+            .request_attempt_gated::<Value>(
+                "thread/compact/start",
+                json!({ "threadId": thread_id }),
+                gate,
+            )
             .await
         {
             Ok(result) if result.is_object() => CompactDelivery::NativeAck,

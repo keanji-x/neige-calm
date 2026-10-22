@@ -7,6 +7,7 @@
 use super::*;
 mod detach;
 mod history;
+mod maintenance;
 mod settlement;
 use crate::harness::backend::{ExecutionEndScope, ExecutionEndTarget, ExecutionInput};
 pub(crate) use detach::IdleDetachGuard;
@@ -59,6 +60,7 @@ impl CodexHarnessBinding {
 #[derive(Clone)]
 pub(crate) enum NativeInput {
     Legacy,
+    Maintenance(crate::harness::backend::MaintenanceTarget),
     Canonical(Arc<CanonicalNativeInput>),
 }
 
@@ -361,11 +363,13 @@ impl NativeTurns {
                 "exact-thread idle observation expired before native issue".into(),
             ));
         }
-        if matches!(&input, NativeInput::Canonical(_))
-            && slot
-                .current
-                .as_ref()
-                .is_some_and(NativeExecution::needs_control)
+        if matches!(
+            &input,
+            NativeInput::Canonical(_) | NativeInput::Maintenance(_)
+        ) && slot
+            .current
+            .as_ref()
+            .is_some_and(NativeExecution::needs_control)
         {
             return Err(CalmError::Conflict(
                 "Codex has a different live native execution".into(),
@@ -404,15 +408,14 @@ impl NativeTurns {
         let matched = slot.current.as_ref().is_some_and(|current| {
             current.turn == turn
                 && current.needs_control()
-                && match (input, &current.input) {
-                    (NativeSteer::BudgetControl, _) => true,
-                    (NativeSteer::CanonicalControl(target), _) => {
+                && match input {
+                    NativeSteer::BudgetControl => true,
+                    NativeSteer::CanonicalControl(target) => {
                         current.input.matches(target)
                             && matches!(&target.scope, ExecutionEndScope::NativeTurn {thread_id,native_turn_id}
                                 if thread_id == thread && native_turn_id == turn)
                     }
-                    (NativeSteer::Legacy, NativeInput::Legacy) => true,
-                    _ => false,
+                    NativeSteer::Legacy => matches!(&current.input, NativeInput::Legacy),
                 }
         });
         if !matched || slot.pending.is_some() || slot.steering.is_some() || slot.unresolved {
@@ -467,10 +470,17 @@ impl NativeTurns {
         let Some(slot) = state.slots.get_mut(thread) else {
             return true;
         };
-        if let Some(pending) = &slot.pending
+        if let Some(pending) = &mut slot.pending
             && Arc::ptr_eq(&pending.ticket, ticket)
         {
             if pending.candidate.is_some() {
+                if matches!(&pending.ticket.input, NativeInput::Maintenance(_)) {
+                    // A turn preceding a proven unwritten request is foreign activity.
+                    pending.ticket = Arc::new(StartTicket {
+                        input: NativeInput::Legacy,
+                        activity: pending.ticket.activity.clone(),
+                    });
+                }
                 return false;
             }
             slot.pending = None;

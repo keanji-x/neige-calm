@@ -733,3 +733,44 @@ async fn h2_remote_start_error_holds_input_but_cleans_unstarted_native_slot() {
 }
 
 mod h2_delivery;
+
+#[tokio::test]
+async fn canonical_codex_compact_native_boundary_refuses_before_bytes() {
+    let fx = Fixture::new().await;
+    let (_client, mut peer) = connect(&fx.daemon).await;
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let seen = calls.clone();
+    let admission = crate::harness::native_admission::NativePromptAdmission::new(
+        || Ok(()),
+        move || {
+            seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Box::pin(async { Err(CalmError::Conflict("native boundary refused".into())) })
+        },
+    );
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        fx.backend.compact_canonical(
+            MaintenanceTarget {
+                card_id: fx.owner.card.clone(),
+                track_id: fx.owner.track.clone(),
+                worker_session_id: fx.owner.worker.clone(),
+                thread_id: fx.owner.thread.clone(),
+                operation_id: "compact-boundary".into(),
+            },
+            CompactRequest {
+                selection: TurnModelSelection::inherit(),
+            },
+            &admission,
+        ),
+    )
+    .await
+    .expect("boundary refusal must finish without a peer response")
+    .unwrap();
+    assert!(matches!(result, CompactSubmission::NotSubmitted { .. }));
+    assert_eq!(
+        calls.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "the transport must consume native admission"
+    );
+    crate::shared_codex_appserver::native_owner_tests::assert_no_request(&mut peer).await;
+}

@@ -94,6 +94,10 @@ pub(super) async fn read(
                 "canonical conversation requires contract=conversation_v1".into(),
             ));
         }
+        let binding =
+            crate::harness::profile::PlannerBinding::from_card(&card, role).ok_or_else(|| {
+                CalmError::Forbidden(format!("card {id} is not a Planner conversation"))
+            })?;
         let runtime = frame.runtime.as_ref().ok_or_else(|| {
             CalmError::Internal("canonical conversation has no current runtime fact".into())
         })?;
@@ -212,8 +216,10 @@ pub(super) async fn read(
                     context_usage_invalidated: header.context_usage_invalidated,
                     pending: vec![],
                     pending_overflow: 0,
+                    // Canonical HTTP input admits ordinary text only (planner_input_send::human).
                     attachments_supported: false,
-                    manual_compact_supported: false,
+                    manual_compact_supported:
+                        crate::harness::PlannerBackend::manual_compact_supported(&binding.provider),
                     // Persisted native identity does not prove a monotonic running clock after reopen.
                     running_turn: None,
                 },

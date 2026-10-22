@@ -165,10 +165,12 @@ impl ClaudePlannerSession {
         } else {
             None
         };
-        Ok(Some(crate::harness::backend::MaintenanceObservation {
-            turn_id: driver.turn.to_string(),
-            settled,
-        }))
+        Ok(Some(
+            crate::harness::backend::MaintenanceObservation::Turn {
+                turn_id: driver.turn.to_string(),
+                settled,
+            },
+        ))
     }
 
     pub(crate) async fn owns_local_execution(

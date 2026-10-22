@@ -226,3 +226,60 @@ async fn canonical_run_reads_only_the_exact_current_terminal_timeout_and_still_s
         "read never manufactures a live runtime"
     );
 }
+
+#[tokio::test]
+async fn canonical_run_manual_compact_uses_bound_provider_capability() {
+    let fixture = Fixture::new().await;
+    let (state, app, cookie) = fixture.application().await;
+    let area = post(
+        &app,
+        &cookie,
+        "/api/areas",
+        "compact-area",
+        json!({"name":"Compact capability","color":"#123456"}),
+    )
+    .await;
+    let created = post(
+        &app,
+        &cookie,
+        "/api/tracks",
+        "compact-track",
+        json!({
+            "area_id":area["id"], "planner_provider":"codex", "title":"",
+            "theme":{"fg":[255,255,255],"bg":[0,0,0]},"first_message":FIRST_BODY
+        }),
+    )
+    .await;
+    let (card, worker, _) = fixture.carrier(created["id"].as_str().unwrap()).await;
+    for (provider, supported) in [
+        ("codex", true),
+        ("claude", true),
+        ("opencode", false),
+        ("grok", false),
+    ] {
+        sqlx::query(
+            "UPDATE cards SET payload=json_set(payload,'$.planner_provider',?1) WHERE id=?2",
+        )
+        .bind(provider)
+        .bind(&card)
+        .execute(fixture.repo.pool())
+        .await
+        .unwrap();
+        sqlx::query("UPDATE worker_sessions SET provider=?1 WHERE id=?2")
+            .bind(provider)
+            .bind(&worker)
+            .execute(fixture.repo.pool())
+            .await
+            .unwrap();
+        let run = read_run(&app, &cookie, &card).await;
+        assert_eq!(
+            run["manual_compact_supported"], supported,
+            "{provider}: {run}"
+        );
+        assert_eq!(
+            run["attachments_supported"], false,
+            "canonical send admits only text"
+        );
+    }
+    fixture.shutdown_process(&state).await;
+}

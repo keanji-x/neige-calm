@@ -15,7 +15,7 @@ async fn next_start(peer: &mut Peer) -> Value {
     }
 }
 
-async fn notify(fx: &Fixture, peer: &mut Peer, method: &str, params: Value) {
+pub(super) async fn notify(fx: &Fixture, peer: &mut Peer, method: &str, params: Value) {
     let mut notifications = fx.daemon.subscribe_notifications();
     send(peer, json!({"method":method,"params":params})).await;
     let barrier = format!("fixture/content-barrier/{}", uuid::Uuid::new_v4());
@@ -43,7 +43,7 @@ async fn item(fx: &Fixture, peer: &mut Peer, thread: &str, turn: &str, id: &str,
     .await;
 }
 
-async fn wait_item(fx: &Fixture, id: &str) -> i64 {
+pub(super) async fn wait_item(fx: &Fixture, id: &str) -> i64 {
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {
             let row: Option<i64> = sqlx::query_scalar(
@@ -64,7 +64,12 @@ async fn wait_item(fx: &Fixture, id: &str) -> i64 {
     .expect("the actual canonical loop must persist the native reply")
 }
 
-async fn start(fx: &Fixture, peer: &mut Peer, message: MessageRevisionRef, turn: &str) -> String {
+pub(super) async fn start(
+    fx: &Fixture,
+    peer: &mut Peer,
+    message: MessageRevisionRef,
+    turn: &str,
+) -> String {
     fx.harness
         .observe_canonical_source(message, fx.source.clone())
         .await
@@ -85,7 +90,7 @@ async fn start(fx: &Fixture, peer: &mut Peer, message: MessageRevisionRef, turn:
     thread
 }
 
-async fn complete(fx: &Fixture, peer: &mut Peer, thread: &str, turn: &str) {
+pub(super) async fn complete(fx: &Fixture, peer: &mut Peer, thread: &str, turn: &str) {
     notify_thread(
         &fx.daemon,
         peer,

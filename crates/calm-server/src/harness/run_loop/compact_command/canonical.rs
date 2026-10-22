@@ -4,7 +4,7 @@ use crate::auth::HumanInputSource;
 use crate::db::sqlite::conversation::{
     RuntimeExecutionFence, current_input_carrier_tx, persist_runtime_frame_tx,
 };
-use crate::harness::backend::MaintenanceTarget;
+use crate::harness::backend::{MaintenanceObservation, MaintenanceTarget};
 use crate::harness::compact_outcome::{CompactOutcome, CompactStatus};
 use crate::harness::native_admission::NativePromptAdmission;
 use crate::harness::run_loop::canonical::{self, CommittedFrame};
@@ -286,26 +286,31 @@ pub(in crate::harness::run_loop) async fn observe(inner: &Arc<Inner>) -> Result<
         return Ok(true);
     };
     let mut next = current.snapshot.clone();
-    if outcome
-        .turn_id
-        .as_ref()
-        .is_some_and(|turn| turn != &observed.turn_id)
-    {
-        wedge(&mut next);
-    } else {
-        if let Some(outcome) = next.header.compact_outcome.as_mut() {
-            outcome.turn_id = Some(observed.turn_id);
-        }
-        match observed.settled {
-            Some(true) => {
-                next.header.phase = HarnessPhaseTag::TurnCompleted;
+    match observed {
+        MaintenanceObservation::Unconfirmed => wedge(&mut next),
+        MaintenanceObservation::Turn { turn_id, settled } => {
+            if outcome
+                .turn_id
+                .as_ref()
+                .is_some_and(|turn| turn != &turn_id)
+            {
+                wedge(&mut next);
+            } else {
                 if let Some(outcome) = next.header.compact_outcome.as_mut() {
-                    outcome.status = CompactStatus::Completed;
+                    outcome.turn_id = Some(turn_id);
                 }
-                canonical::invalidate_context_usage(&mut next.header);
+                match settled {
+                    Some(true) => {
+                        next.header.phase = HarnessPhaseTag::TurnCompleted;
+                        if let Some(outcome) = next.header.compact_outcome.as_mut() {
+                            outcome.status = CompactStatus::Completed;
+                        }
+                        canonical::invalidate_context_usage(&mut next.header);
+                    }
+                    Some(false) => wedge(&mut next),
+                    None => {}
+                }
             }
-            Some(false) => wedge(&mut next),
-            None => {}
         }
     }
     if next != current.snapshot {
@@ -339,14 +344,14 @@ pub(in crate::harness::run_loop) async fn boundary(inner: &Arc<Inner>, turn: &st
     else {
         return Ok(false);
     };
-    let Some(observed) = inner
+    let Some(MaintenanceObservation::Turn { turn_id, .. }) = inner
         .backend
         .observe_maintenance(&target(inner, outcome))
         .await?
     else {
         return Ok(false);
     };
-    if observed.turn_id != turn
+    if turn_id != turn
         || outcome
             .turn_id
             .as_deref()

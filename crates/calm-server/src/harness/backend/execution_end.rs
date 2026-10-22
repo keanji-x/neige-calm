@@ -198,9 +198,12 @@ pub(crate) struct MaintenanceTarget {
     pub(crate) operation_id: String,
 }
 
-pub(crate) struct MaintenanceObservation {
-    pub(crate) turn_id: String,
-    pub(crate) settled: Option<bool>,
+pub(crate) enum MaintenanceObservation {
+    Turn {
+        turn_id: String,
+        settled: Option<bool>,
+    },
+    Unconfirmed,
 }
 
 impl PlannerBackend {
@@ -214,7 +217,17 @@ impl PlannerBackend {
             Arm::Claude(session) => Ok(session
                 .compact_canonical(target, &request.selection, admission)
                 .await),
-            Arm::Codex(..) | Arm::Acp(_) => Err(CalmError::BadRequest(
+            Arm::Codex(daemon, owner) => {
+                if !owner.binding.matches_maintenance(&target) {
+                    return Err(CalmError::Conflict("maintenance owner changed".into()));
+                }
+                Ok(super::control::compact_delivery(
+                    daemon
+                        .thread_compact_delivery_admitted(target, admission)
+                        .await,
+                ))
+            }
+            Arm::Acp(_) => Err(CalmError::BadRequest(
                 "canonical maintenance is unavailable for this provider".into(),
             )),
         }
@@ -226,7 +239,13 @@ impl PlannerBackend {
     ) -> Result<Option<MaintenanceObservation>> {
         match &self.0 {
             Arm::Claude(session) => session.observe_maintenance(target).await,
-            Arm::Codex(..) | Arm::Acp(_) => Ok(None),
+            Arm::Codex(daemon, owner) => {
+                if !owner.binding.matches_maintenance(target) {
+                    return Ok(None);
+                }
+                Ok(daemon.observe_maintenance(target))
+            }
+            Arm::Acp(_) => Ok(None),
         }
     }
 }

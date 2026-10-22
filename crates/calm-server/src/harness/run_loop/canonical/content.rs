@@ -27,8 +27,12 @@ pub(in crate::harness::run_loop) async fn on_notification(
             if !super::super::compact_command::canonical::boundary(inner, &turn_id).await? {
                 observe_metadata(inner, Metadata::ContextBoundary(turn_id)).await?;
             }
+            super::super::compact_command::canonical::observe(inner).await?;
         }
         PlannerEventKind::TurnStarted { turn_id } => {
+            if super::super::compact_command::canonical::observe(inner).await? {
+                return Ok(());
+            }
             let current = read_current(inner).await?;
             // This only opens the installed ephemeral reply writer. The actual
             // report owner has already selected the current native execution;
@@ -43,6 +47,9 @@ pub(in crate::harness::run_loop) async fn on_notification(
             consume_end(inner).await?;
         }
         PlannerEventKind::TurnCompleted { turn } => {
+            if super::super::compact_command::canonical::observe(inner).await? {
+                return Ok(());
+            }
             if let Some(turn_id) = turn.get("id").and_then(Value::as_str) {
                 live_reply::settle(inner, live, turn_id, &turn).await;
             }
@@ -54,7 +61,10 @@ pub(in crate::harness::run_loop) async fn on_notification(
         PlannerEventKind::ThreadSystemError => {
             super::control::failed(inner, HARNESS_SYSTEM_ERROR_REASON).await?;
         }
-        _ => {}
+        PlannerEventKind::ThreadStarted
+        | PlannerEventKind::PlanUpdated { .. }
+        | PlannerEventKind::Approval { .. }
+        | PlannerEventKind::Ignored => {}
     }
     Ok(())
 }

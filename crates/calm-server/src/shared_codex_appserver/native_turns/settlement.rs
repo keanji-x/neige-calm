@@ -22,7 +22,7 @@ impl NativeTurns {
                     && !pending.ambiguous
             });
         let require_settled = match &ticket.input {
-            NativeInput::Legacy => false,
+            NativeInput::Legacy | NativeInput::Maintenance(_) => false,
             NativeInput::Canonical(input) => input.require_settled,
         };
         if (require_settled
@@ -34,11 +34,13 @@ impl NativeTurns {
             || !exact
             || slot.unresolved
             || slot.steering.is_some()
-            || (matches!(&ticket.input, NativeInput::Canonical(_))
-                && slot
-                    .current
-                    .as_ref()
-                    .is_some_and(NativeExecution::needs_control))
+            || (matches!(
+                &ticket.input,
+                NativeInput::Canonical(_) | NativeInput::Maintenance(_)
+            ) && slot
+                .current
+                .as_ref()
+                .is_some_and(NativeExecution::needs_control))
         {
             return Err(CalmError::Conflict(
                 "native source or exact-thread activity changed before send".into(),
