@@ -248,11 +248,9 @@ pub(super) async fn publish(inner: &Inner, next: CommittedFrame) {
         )),
     );
     let phase = header.phase;
-    let reading = crate::harness::token_usage::planner_context_usage_from_header(header.clone())
-        .map(|r| r.used_tokens);
-    let turn = header.last_turn_id.clone();
+    let usage_header = header.clone();
     inputs.publish_committed(next).await;
-    objective_usage::observe(inner, phase, turn.as_deref(), reading).await;
+    objective_usage::observe_canonical(inner, usage_header).await;
     emit_phase_refresh(inner, phase, emitted).await;
 }
 

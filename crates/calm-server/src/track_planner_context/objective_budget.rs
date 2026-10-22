@@ -24,9 +24,9 @@ pub(super) async fn build(pool: &sqlx::SqlitePool, track: &str) -> Result<Option
             let used = objective.used(&state.usage);
             let definition = &objective.definition;
             let status = match objective.status {
-                Status::Open => "open",
-                Status::Done => "done",
-                Status::Closed => "closed",
+                Status::Open => "进行中",
+                Status::Done => "已完成",
+                Status::Closed => "已关闭",
             };
             [
                 (
@@ -47,7 +47,12 @@ pub(super) async fn build(pool: &sqlx::SqlitePool, track: &str) -> Result<Option
                 (
                     "exceeded",
                     TableScalar::Text(TableText(
-                        (!definition.budget.exhausted(&used).is_empty()).to_string(),
+                        if definition.budget.exhausted(&used).is_empty() {
+                            "否"
+                        } else {
+                            "是"
+                        }
+                        .into(),
                     )),
                 ),
             ]

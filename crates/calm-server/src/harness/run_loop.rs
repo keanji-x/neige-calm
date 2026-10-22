@@ -2755,6 +2755,14 @@ async fn on_notification(
                 let item = persist_turn_outcome(inner, &turn_id, &turn).await;
                 let restored = restore_steered_entries_codex_dropped(inner, &turn_id).await?;
                 persist_failed_system_error_snapshot(inner).await?;
+                objective_usage::observe(
+                    inner,
+                    HarnessPhaseTag::TurnCompleted,
+                    Some(&turn_id),
+                    None,
+                    true,
+                )
+                .await;
                 announce_restored_entries(inner, restored).await;
                 if let Some(item_id) = item {
                     emit_item_added(
@@ -4254,6 +4262,7 @@ async fn persist_guarded_snapshot(
         new_phase,
         snapshot.last_turn_id.as_deref(),
         crate::harness::token_usage::planner_context_usage(&snapshot).map(|r| r.used_tokens),
+        false,
     )
     .await;
     emit_phase_refresh(

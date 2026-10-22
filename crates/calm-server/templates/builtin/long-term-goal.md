@@ -22,7 +22,7 @@ instructions = """
   每个进行中阶段写一个 objective 块：key stage-N、mode converge、compact none；
   checks 只放一个 role goal 的 fact task_accepted 检查，subject 为阶段收尾任务 key。
   budget.tokens 为阶段预算，turns=1000000、wall_secs=315360000（宽松上限）。
-  「已用」由 objective.budget 自动累计，不手写。
+  「已用」由 objective.budget 自动累计，不手写；失败回合不计入已用。
   状态用 `进行中` `待开始` `未开始`，做完移到「已交付」。
 · 压缩检查点：阶段之间只留一行「⏸ 压缩检查点 → compact 任务 <key>」。若剩余上下文 <
   下一阶段的上下文预算，就在当回合最后声明 compact 任务（key 唯一、ready true）；

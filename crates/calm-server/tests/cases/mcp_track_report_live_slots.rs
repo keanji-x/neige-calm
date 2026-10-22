@@ -635,8 +635,8 @@ async fn objective_budget_live_slot_projects_stage_usage_and_exhaustion() {
     )
     .unwrap();
     for (turn, growth, used, exceeded) in [
-        ("after", 30000, 30000.0, "false"),
-        ("over", 130000, 160000.0, "true"),
+        ("after", 30000, 30000.0, "否"),
+        ("over", 130000, 160000.0, "是"),
     ] {
         record_turn_usage(
             &db,
@@ -687,7 +687,7 @@ async fn objective_budget_live_slot_projects_stage_usage_and_exhaustion() {
         );
         let row = &table["table"]["rows"][0];
         assert_eq!(row["key"], "stage-1");
-        assert_eq!(row["status"], "open");
+        assert_eq!(row["status"], "进行中");
         assert_eq!(row["used"], used);
         assert_eq!(row["budget"], 150000.0);
         assert_eq!(row["exceeded"], exceeded);

@@ -529,3 +529,98 @@ async fn compact_planner_request_refuses_canonical_conversation() {
         Some("compaction-refused: unsupported_conversation")
     );
 }
+
+#[tokio::test]
+async fn objective_canonical_failed_end_is_explicitly_skipped() {
+    let logs = objective_usage::ObjectiveUsageLogs::install();
+    let fx = Fixture::new().await;
+    objective_usage::enable_objectives(&fx.harness.inner).await;
+    let (_client, mut peer) = connect(&fx.daemon).await;
+    running(&fx, &mut peer).await;
+    let original = fx.frame().await;
+    send(
+        &mut peer,
+        json!({"method":"thread/status/changed","params":{
+            "threadId":original.header.last_thread_id,"status":{"type":"systemError"}
+        }}),
+    )
+    .await;
+    fx.wait_phase(HarnessPhaseTag::Wedged).await;
+    notify_thread(
+        &fx.daemon,
+        &mut peer,
+        original.header.last_thread_id.as_deref().unwrap(),
+        "turn/completed",
+        json!({"id":original.header.last_turn_id,"status":"failed"}),
+    )
+    .await;
+    fx.wait_phase(HarnessPhaseTag::TurnCompleted).await;
+    // Wait for publish after the SQL checkpoint (phase alone can race it).
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let frame = fx
+                .harness
+                .inner
+                .inputs
+                .canonical()
+                .unwrap()
+                .committed()
+                .await;
+            if frame.snapshot.header.phase == HarnessPhaseTag::TurnCompleted {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    peer.close(None).await.unwrap();
+    fx.harness.shutdown().await.unwrap();
+    let row = fx
+        .original
+        .repo
+        .session_get(&calm_types::worker::WorkerSessionId(
+            fx.harness.inner.worker_session_id.clone(),
+        ))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.state, calm_types::worker::WorkerSessionState::Failed);
+    objective_usage::assert_objective_failed_end_skipped(
+        &fx.harness.inner,
+        original.header.last_turn_id.as_deref().unwrap(),
+    )
+    .await;
+    let next = Fixture::new().await;
+    objective_usage::enable_objectives(&next.harness.inner).await;
+    let (_client, mut peer) = connect(&next.daemon).await;
+    running(&next, &mut peer).await;
+    let frame = next.frame().await;
+    notify_thread(
+        &next.daemon,
+        &mut peer,
+        frame.header.last_thread_id.as_deref().unwrap(),
+        "turn/completed",
+        json!({"id":frame.header.last_turn_id,"status":"completed"}),
+    )
+    .await;
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let (_, state) = calm_truth::objective_host::read_state(
+                next.original.repo.pool(),
+                &next.harness.inner.track_id,
+            )
+            .await
+            .unwrap();
+            if state.usage.turns == 1 {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the next normal canonical user END must count");
+    peer.close(None).await.unwrap();
+    next.harness.shutdown().await.unwrap();
+    logs.assert_no_recording_error();
+}

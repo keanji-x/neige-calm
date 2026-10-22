@@ -68,6 +68,7 @@ pub enum BudgetLimit {
 /// Cumulative user-turn usage. Context tokens sum positive end-minus-start visible
 /// occupancy deltas; either endpoint missing or invalidated contributes zero.
 /// Turns count user turns, elapsed seconds sum their wall time. The engine reads no clock.
+/// Failed executions (END on a session that remains Failed) do not contribute to used usage.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Usage {
     pub turns: u32,
