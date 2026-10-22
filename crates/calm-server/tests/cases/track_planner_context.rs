@@ -256,3 +256,134 @@ async fn planner_context_boot_and_event_wake_publish_without_reconcile_delay() {
     assert_eq!(newer["cell"]["items"][0]["value"]["amount"], 70.0);
     task.abort();
 }
+
+async fn run_stats_payload(fx: &Fx, track: &str) -> Value {
+    let overlay = fx
+        .repo_dyn
+        .overlays_for("track", track)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|o| o.plugin_id == "kernel" && o.kind == "run.stats")
+        .unwrap();
+    calm_types::report_blocks::native_view::validate_unit(
+        calm_types::report_blocks::native_view::ComponentKind::Table,
+        &overlay.payload,
+    )
+    .unwrap();
+    let _: calm_types::report_blocks::native_view::DataUnit =
+        serde_json::from_value(overlay.payload.clone()).unwrap();
+    overlay.payload
+}
+
+fn run_stats_amount(payload: &Value, id: &str) -> f64 {
+    let (dimension, value) = id.split_once('.').unwrap();
+    payload["cell"]["table"]["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["dimension"] == dimension && row["value"] == value)
+        .unwrap()["count"]
+        .as_f64()
+        .unwrap()
+}
+
+#[tokio::test]
+async fn run_stats_track_isolation_and_change_only_writes() {
+    let fx = fx().await;
+    let track = fx.track("stats").await;
+    let other = fx.track("other-stats").await;
+    let route = calm_types::task_recovery::TASK_IN_TRACK_ROUTE;
+    fx.plan_tasks(
+        &track,
+        &[("one", "codex", route, None), ("two", "codex", route, None)],
+    )
+    .await;
+    fx.plan_tasks(&other, &[("foreign", "claude", route, None)])
+        .await;
+    let projector = projector(&fx);
+    assert!(projector.recompute_track(&track).await.unwrap());
+    let first = run_stats_payload(&fx, &track).await;
+    assert_eq!(run_stats_amount(&first, "status.pending"), 2.0);
+    assert_eq!(run_stats_amount(&first, "kind.codex"), 2.0);
+    assert!(
+        !first["cell"]["table"]["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["value"] == "claude")
+    );
+    assert_eq!(run_stats_amount(&first, "commits.delivered"), 0.0);
+    let mut events = fx.events.subscribe();
+    assert!(!projector.recompute_track(&track).await.unwrap());
+    assert!(events.try_recv().is_err());
+    fx.claim(&other, "foreign", 10).await;
+    assert!(!projector.recompute_track(&track).await.unwrap());
+    assert_eq!(run_stats_payload(&fx, &track).await, first);
+    fx.claim(&track, "one", 10).await;
+    assert!(projector.recompute_track(&track).await.unwrap());
+    let next = run_stats_payload(&fx, &track).await;
+    assert_eq!(run_stats_amount(&next, "status.pending"), 1.0);
+    assert_eq!(run_stats_amount(&next, "status.dispatched"), 1.0);
+    let published = events.try_recv().unwrap();
+    assert!(
+        matches!(published.event, calm_server::event::Event::OverlaySet(o) if o.kind == "run.stats")
+    );
+    assert!(
+        events.try_recv().is_err(),
+        "only the changed unit is published"
+    );
+    assert!(!projector.recompute_track(&track).await.unwrap());
+}
+
+#[tokio::test]
+async fn run_stats_boot_and_task_event_wake_before_reconciliation() {
+    use calm_server::event::Event;
+    let fx = fx().await;
+    let track = fx.track("stats-wake").await;
+    fx.plan_tasks(
+        &track,
+        &[(
+            "task",
+            "codex",
+            calm_types::task_recovery::TASK_IN_TRACK_ROUTE,
+            None,
+        )],
+    )
+    .await;
+    let mut events = fx.events.subscribe();
+    let task = tokio::spawn(projector(&fx).run());
+    async fn next_stats(
+        events: &mut tokio::sync::broadcast::Receiver<calm_server::event::BroadcastEnvelope>,
+    ) -> Value {
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if let Event::OverlaySet(o) = events.recv().await.unwrap().event
+                    && o.kind == "run.stats"
+                {
+                    break o.payload;
+                }
+            }
+        })
+        .await
+        .expect("stats wake must beat 30 s reconciliation")
+    }
+    assert_eq!(
+        run_stats_amount(&next_stats(&mut events).await, "status.pending"),
+        1.0
+    );
+    fx.claim(&track, "task", 10).await;
+    fx.events.emit_envelope(Fx::envelope(
+        fx.track_scope(&track),
+        Event::PlanUpdated {
+            track_id: track.clone().into(),
+            changed_keys: vec!["task".into()],
+            agent_message: None,
+        },
+    ));
+    assert_eq!(
+        run_stats_amount(&next_stats(&mut events).await, "status.dispatched"),
+        1.0
+    );
+    task.abort();
+}

@@ -512,8 +512,13 @@ async fn live_slot_template_write_read_and_stale_cas() {
 }
 
 #[tokio::test]
-async fn planner_context_live_slot_resolves_kernel_projector_data() {
+async fn run_stats_and_planner_context_live_slot_resolve_kernel_projector_data() {
     let boot = boot().await;
+    crate::task_recovery::declare(
+        &boot,
+        crate::task_recovery::declaration("stats-pending", &[]),
+    )
+    .await;
     // Use the shipped template, through the production Report write/read tools.
     let source = include_str!("../../templates/builtin/long-term-goal.md");
     let start = source.find("```neige-block view\n").unwrap() + "```neige-block view\n".len();
@@ -568,4 +573,15 @@ async fn planner_context_live_slot_resolves_kernel_projector_data() {
     assert_eq!(items[2]["value"]["amount"], 112000.0);
     assert_eq!(items[3]["value"]["text"], "false");
     assert_eq!(items[4]["value"]["amount"], 0.0);
+    let stats = &cells(resolved(&report, &created["id"]))[1];
+    assert_eq!(stats["status"], "ok", "{stats}");
+    assert_eq!(stats["source"], "neige://plugin/kernel/run.stats");
+    assert_eq!(
+        stats["data"]["cell"]["table"]["rows"],
+        json!([
+            {"dimension":"commits", "value":"delivered", "count":0.0},
+            {"dimension":"kind", "value":"terminal", "count":1.0},
+            {"dimension":"status", "value":"pending", "count":1.0}
+        ])
+    );
 }

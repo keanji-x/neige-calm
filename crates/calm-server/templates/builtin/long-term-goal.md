@@ -49,7 +49,7 @@ instructions = """
 
 ```neige-block view
 {
-  "description": "上下文占用保留最近观测时间；压缩数只计本 track 已完成的 compact 任务。",
+  "description": "上下文保留最近观测；任务按 status/kind 计本 track 全部 attempt；提交去重且不计无变化交付。",
   "rows": [
     {
       "cells": [
@@ -61,6 +61,19 @@ instructions = """
         }
       ],
       "id": "planner-runtime",
+      "layout": "one",
+      "title": ""
+    },
+    {
+      "cells": [
+        {
+          "expects": "table",
+          "id": "run-stats",
+          "kind": "live",
+          "source": "neige://plugin/kernel/run.stats"
+        }
+      ],
+      "id": "run-statistics",
       "layout": "one",
       "title": ""
     }

@@ -1,4 +1,4 @@
-//! Kernel-owned Planner context data for native Report live slots.
+//! Kernel-owned Planner context and task statistics for native Report live slots.
 //! Events wake the serial projector; a boot sweep and 30 s reconciliation cover quiet writes.
 use std::{sync::Arc, time::Duration};
 
@@ -18,6 +18,8 @@ use crate::{
     model::NewOverlay,
     state::WriteContext,
 };
+
+pub const RUN_STATS_OVERLAY_KIND: &str = "run.stats";
 
 pub const PLANNER_CONTEXT_OVERLAY_KIND: &str = "planner.context";
 
@@ -132,15 +134,13 @@ impl TrackPlannerContextProjector {
 
     /// Returns true only when a changed data unit was published.
     pub async fn recompute_track(&self, track_id: &str) -> Result<bool> {
-        let previous = self
-            .repo
-            .overlays_for("track", track_id)
-            .await?
-            .into_iter()
+        let overlays = self.repo.overlays_for("track", track_id).await?;
+        let previous = overlays
+            .iter()
             .find(|o| {
                 o.plugin_id == KERNEL_OVERLAY_PLUGIN_ID && o.kind == PLANNER_CONTEXT_OVERLAY_KIND
             })
-            .map(|o| o.payload);
+            .map(|o| o.payload.clone());
         let card: Option<String> =
             sqlx::query_scalar("SELECT id FROM cards WHERE track_id = ?1 AND role = 'planner'")
                 .bind(track_id)
@@ -178,14 +178,98 @@ impl TrackPlannerContextProjector {
             unit(snapshot.as_ref(), completed)
         };
         let payload = serde_json::to_value(next)?;
-        if previous.as_ref() == Some(&payload) {
+        let context_changed = self
+            .publish(
+                track_id,
+                PLANNER_CONTEXT_OVERLAY_KIND,
+                previous.as_ref(),
+                payload,
+            )
+            .await?;
+        let stats = self.run_stats(track_id).await?;
+        let previous = overlays
+            .iter()
+            .find(|o| o.plugin_id == KERNEL_OVERLAY_PLUGIN_ID && o.kind == RUN_STATS_OVERLAY_KIND);
+        let stats_changed = self
+            .publish(
+                track_id,
+                RUN_STATS_OVERLAY_KIND,
+                previous.map(|o| &o.payload),
+                serde_json::to_value(stats)?,
+            )
+            .await?;
+        Ok(context_changed || stats_changed)
+    }
+
+    async fn run_stats(&self, track_id: &str) -> Result<DataUnit> {
+        // All durable attempts count, including historical recovery attempts. Candidate rows
+        // survive event retention. A no-change delivery does not create a commit.
+        let rows: Vec<(String, String, i64)> = sqlx::query_as(
+            "SELECT 'status', status, COUNT(*) FROM tasks WHERE track_id = ?1 GROUP BY status
+             UNION ALL SELECT 'kind', kind, COUNT(*) FROM tasks WHERE track_id = ?1 GROUP BY kind
+             UNION ALL SELECT 'commits', 'delivered', COUNT(DISTINCT commit_sha)
+             FROM task_candidates WHERE track_id = ?1 AND commit_sha <> base_sha
+             ORDER BY 1, 2",
+        )
+        .bind(track_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(DataUnit {
+            snapshot: Snapshot {
+                id: RUN_STATS_OVERLAY_KIND.into(),
+                observed_at: None,
+                produced_at: None,
+            },
+            cell: Component::Table {
+                id: RUN_STATS_OVERLAY_KIND.into(),
+                title: "Track task statistics".into(),
+                table: serde_json::to_value(InlineTable {
+                    columns: [
+                        ("dimension", "Group"),
+                        ("value", "Category"),
+                        ("count", "Count"),
+                    ]
+                    .into_iter()
+                    .map(|(key, label)| TableColumn {
+                        key: key.into(),
+                        label: label.into(),
+                        align: None,
+                    })
+                    .collect(),
+                    rows: rows
+                        .into_iter()
+                        .map(|(dimension, value, count)| {
+                            [
+                                ("dimension".into(), TableScalar::Text(TableText(dimension))),
+                                ("value".into(), TableScalar::Text(TableText(value))),
+                                ("count".into(), TableScalar::Number(count as f64)),
+                            ]
+                            .into_iter()
+                            .collect()
+                        })
+                        .collect(),
+                    caption: None,
+                    highlight: None,
+                })?,
+            },
+        })
+    }
+
+    async fn publish(
+        &self,
+        track_id: &str,
+        kind: &str,
+        previous: Option<&serde_json::Value>,
+        payload: serde_json::Value,
+    ) -> Result<bool> {
+        if previous == Some(&payload) {
             return Ok(false);
         }
         let overlay = NewOverlay {
             plugin_id: KERNEL_OVERLAY_PLUGIN_ID.into(),
             entity_kind: "track".into(),
             entity_id: track_id.into(),
-            kind: PLANNER_CONTEXT_OVERLAY_KIND.into(),
+            kind: kind.into(),
             payload,
         };
         let track_id = TrackId::from(track_id.to_string());
@@ -232,9 +316,13 @@ impl TrackPlannerContextProjector {
                 .ok()
                 .flatten()
                 .map(|c| c.track_id.to_string()),
-            Event::TaskCompleted { .. } | Event::TaskFailed { .. } => {
-                envelope.scope.track_id().map(ToString::to_string)
-            }
+            Event::TaskCompleted { .. }
+            | Event::TaskFailed { .. }
+            | Event::TaskDispatched { .. }
+            | Event::TaskGateResult { .. }
+            | Event::TaskRegateRequested { .. }
+            | Event::TaskGitDeliverySettled { .. }
+            | Event::PlanUpdated { .. } => envelope.scope.track_id().map(ToString::to_string),
             Event::TrackUpdated(payload) => Some(payload.track.id.to_string()),
             _ => None,
         }
@@ -257,11 +345,11 @@ impl TrackPlannerContextProjector {
                 Ok(tracks) => {
                     for track in tracks {
                         if let Err(error) = self.recompute_track(&track).await {
-                            tracing::warn!(%track, %error, "planner context projection failed");
+                            tracing::warn!(%track, %error, "track runtime projection failed");
                         }
                     }
                 }
-                Err(error) => tracing::warn!(%error, "planner context enumeration failed"),
+                Err(error) => tracing::warn!(%error, "track runtime enumeration failed"),
             }
         }
     }
