@@ -535,3 +535,24 @@ mod tests {
         assert!(error.to_string().contains("codex-appserver.sock"));
     }
 }
+
+#[cfg(test)]
+mod quote_contract_tests {
+    #[test]
+    fn posix_quote_preserves_command_bytes() {
+        for (input, expected) in [
+            ("", "''"),
+            ("plain", "'plain'"),
+            ("two words", "'two words'"),
+            ("a'b", "'a'\\''b'"),
+            ("''", "''\\'''\\'''"),
+            ("$`\\\n", "'$`\\\n'"),
+        ] {
+            assert_eq!(
+                super::shell_quote(std::path::Path::new(input)),
+                expected,
+                "{input:?}"
+            );
+        }
+    }
+}

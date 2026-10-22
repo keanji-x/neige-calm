@@ -1,3 +1,4 @@
+use super::sh_single_quote as shell_quote;
 use super::*;
 use crate::event::EventBus;
 use crate::operation::OperationCompletionBus;
@@ -729,10 +730,6 @@ fn git_commit_probe_script() -> String {
 
 fn shell_probe(script: &str) -> Vec<String> {
     vec!["/bin/sh".into(), "-c".into(), script.into()]
-}
-
-fn shell_quote(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "'\\''"))
 }
 
 async fn submit_and_wait(

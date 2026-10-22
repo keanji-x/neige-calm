@@ -1,11 +1,8 @@
 //! Shared host gate process machinery. Admission and completion belong to adapters.
 use super::gate_lifecycle::{GateStep, GateVerdict};
+use super::shell_command::sh_single_quote;
 use std::path::{Path, PathBuf};
 const LOG_TAIL_BYTES: u64 = 8 * 1024;
-/// POSIX single-quote escaping: `'` → `'\''`.
-pub(crate) fn sh_single_quote(s: &str) -> String {
-    format!("'{}'", s.replace('\'', "'\\''"))
-}
 
 /// First action is the release handshake (kernel death before release EOFs the pipe and the held child exits 75 having executed nothing);
 /// the exit code is written via tmp + `rename(2)` last, the exit and step paths are `unset` before any step runs, and each step runs in a subshell so a top-level `exit`/`exec`/`set -e` ends the STEP, never bypasses the finish handler.

@@ -416,15 +416,9 @@ fn db_migration_policy() -> anyhow::Result<DbMigrationPolicy> {
 }
 
 fn parse_db_migration_policy(value: &str) -> Result<DbMigrationPolicy, String> {
-    match value {
-        "none" => Ok(DbMigrationPolicy::None),
-        "additive" => Ok(DbMigrationPolicy::Additive),
-        "forwardOnly" => Ok(DbMigrationPolicy::ForwardOnly),
-        "destructive" => Ok(DbMigrationPolicy::Destructive),
-        other => Err(format!(
-            "expected one of none, additive, forwardOnly, destructive; got {other:?}"
-        )),
-    }
+    DbMigrationPolicy::from_manifest_str(value).ok_or_else(|| {
+        format!("expected one of none, additive, forwardOnly, destructive; got {value:?}")
+    })
 }
 
 #[derive(Deserialize)]
@@ -592,3 +586,36 @@ fn hex_lower(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod migration_policy_contract_tests {
+    use super::*;
+    use crate::manifest::DbMigrationPolicy;
+
+    #[test]
+    fn migration_policy_mapping_and_error_bytes() {
+        for (input, expected) in [
+            ("none", Some(DbMigrationPolicy::None)),
+            ("additive", Some(DbMigrationPolicy::Additive)),
+            ("forwardOnly", Some(DbMigrationPolicy::ForwardOnly)),
+            ("destructive", Some(DbMigrationPolicy::Destructive)),
+            ("None", None),
+            ("ADDITIVE", None),
+            ("forwardonly", None),
+            ("Destructive", None),
+            ("", None),
+            ("unknown", None),
+        ] {
+            let result = parse_db_migration_policy(input);
+            assert_eq!(result.as_ref().ok().copied(), expected, "{input:?}");
+            if expected.is_none() {
+                assert_eq!(
+                    result.unwrap_err().to_string(),
+                    format!(
+                        "expected one of none, additive, forwardOnly, destructive; got {input:?}"
+                    )
+                );
+            }
+        }
+    }
+}

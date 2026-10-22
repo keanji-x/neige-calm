@@ -1,6 +1,7 @@
 //! Forge's Engine consumer. Only a claimed post-park observer releases the credential
 //! payload; the durable owner record retains action and probe execution ownership.
 
+use super::shell_command::sh_single_quote;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -160,11 +161,6 @@ enum ProbeVerdict {
 enum ForgeEventBuildError {
     ActionFailed { reason: String },
     ExtractionFailed { reason: String },
-}
-
-/// POSIX single-quote escaping: `'` -> `'\''`.
-fn sh_single_quote(s: &str) -> String {
-    format!("'{}'", s.replace('\'', "'\\''"))
 }
 
 #[doc(hidden)]
@@ -670,4 +666,25 @@ fn operation_key_matches_payload_idem(
     }
     let scoped_suffix = format!(":{track_id}:{card_id}:{payload_idem_key}");
     op_idem_key.ends_with(&scoped_suffix)
+}
+
+#[cfg(test)]
+mod quote_contract_tests {
+    #[test]
+    fn posix_quote_preserves_command_bytes() {
+        for (input, expected) in [
+            ("", "''"),
+            ("plain", "'plain'"),
+            ("two words", "'two words'"),
+            ("a'b", "'a'\\''b'"),
+            ("''", "''\\'''\\'''"),
+            ("$`\\\n", "'$`\\\n'"),
+        ] {
+            let script = super::render_forge_wrapper(&[input.to_owned()]).unwrap();
+            assert!(
+                script.contains(&format!("  exec {expected}\n")),
+                "{input:?}"
+            );
+        }
+    }
 }

@@ -202,6 +202,19 @@ pub(crate) enum DbMigrationPolicy {
     Destructive,
 }
 
+impl DbMigrationPolicy {
+    /// Parse the exact manifest spelling; callers own their error contracts.
+    pub(crate) fn from_manifest_str(value: &str) -> Option<Self> {
+        match value {
+            "none" => Some(Self::None),
+            "additive" => Some(Self::Additive),
+            "forwardOnly" => Some(Self::ForwardOnly),
+            "destructive" => Some(Self::Destructive),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct FileManifest {
@@ -297,6 +310,30 @@ mod tests {
                 assert_eq!(v2.product_major, 0);
                 assert!(v2.units.contains_key(&UnitName::CalmServer));
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod migration_policy_contract_tests {
+    use super::DbMigrationPolicy;
+
+    #[test]
+    fn migration_policy_mapping_and_error_bytes() {
+        for (input, expected) in [
+            ("none", Some(DbMigrationPolicy::None)),
+            ("additive", Some(DbMigrationPolicy::Additive)),
+            ("forwardOnly", Some(DbMigrationPolicy::ForwardOnly)),
+            ("destructive", Some(DbMigrationPolicy::Destructive)),
+            ("None", None),
+            ("ADDITIVE", None),
+            ("forwardonly", None),
+            ("Destructive", None),
+            ("", None),
+            ("unknown", None),
+        ] {
+            let result = DbMigrationPolicy::from_manifest_str(input);
+            assert_eq!(result, expected, "{input:?}");
         }
     }
 }

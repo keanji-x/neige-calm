@@ -870,15 +870,8 @@ fn parse_systemd_scope(value: &str) -> anyhow::Result<SystemdScope> {
 }
 
 fn parse_db_migration_policy(value: &str) -> anyhow::Result<crate::manifest::DbMigrationPolicy> {
-    match value {
-        "none" => Ok(crate::manifest::DbMigrationPolicy::None),
-        "additive" => Ok(crate::manifest::DbMigrationPolicy::Additive),
-        "forwardOnly" => Ok(crate::manifest::DbMigrationPolicy::ForwardOnly),
-        "destructive" => Ok(crate::manifest::DbMigrationPolicy::Destructive),
-        _ => Err(anyhow!(
-            "expected one of: none, additive, forwardOnly, destructive"
-        )),
-    }
+    crate::manifest::DbMigrationPolicy::from_manifest_str(value)
+        .ok_or_else(|| anyhow!("expected one of: none, additive, forwardOnly, destructive"))
 }
 
 fn parse_source_mode(value: &str) -> anyhow::Result<crate::preflight::PreflightMode> {
@@ -1202,3 +1195,34 @@ db_migration_policy = "additive"
 #[cfg(test)]
 #[path = "config_plugin_tests.rs"]
 mod plugin_tests;
+
+#[cfg(test)]
+mod migration_policy_contract_tests {
+    use super::*;
+    use crate::manifest::DbMigrationPolicy;
+
+    #[test]
+    fn migration_policy_mapping_and_error_bytes() {
+        for (input, expected) in [
+            ("none", Some(DbMigrationPolicy::None)),
+            ("additive", Some(DbMigrationPolicy::Additive)),
+            ("forwardOnly", Some(DbMigrationPolicy::ForwardOnly)),
+            ("destructive", Some(DbMigrationPolicy::Destructive)),
+            ("None", None),
+            ("ADDITIVE", None),
+            ("forwardonly", None),
+            ("Destructive", None),
+            ("", None),
+            ("unknown", None),
+        ] {
+            let result = parse_db_migration_policy(input);
+            assert_eq!(result.as_ref().ok().copied(), expected, "{input:?}");
+            if expected.is_none() {
+                assert_eq!(
+                    result.unwrap_err().to_string(),
+                    "expected one of: none, additive, forwardOnly, destructive"
+                );
+            }
+        }
+    }
+}

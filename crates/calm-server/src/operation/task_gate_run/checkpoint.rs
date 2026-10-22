@@ -16,7 +16,7 @@ use sha2::{Digest, Sha256};
 use super::FrozenRun;
 use crate::operation::forge_action_adapter::forge_base_env;
 use crate::operation::gate_lifecycle::GateStep;
-use crate::operation::gate_process::sh_single_quote;
+use crate::operation::shell_command::sh_single_quote;
 use crate::operation::task_verify_adapter::SAMPLE_TIMEOUT;
 use crate::plugin_host::child_process::run_bounded;
 
