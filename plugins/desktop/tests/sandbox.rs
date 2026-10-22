@@ -55,6 +55,7 @@ fn the_browser_sees_only_its_sandbox() {
     let list: String = expected.keys().map(|p| format!("{p}\n")).collect();
     std::fs::write(plugin.home().join("probe-paths"), list).unwrap();
 
+    std::fs::write(plugin.home().join("hold-window"), b"").unwrap();
     let fake = launch_fake(&mut plugin);
     let seen: BTreeMap<String, &str> = std::fs::read_to_string(plugin.home().join("probe-result"))
         .unwrap()

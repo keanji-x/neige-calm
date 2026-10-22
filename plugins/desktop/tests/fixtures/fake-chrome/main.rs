@@ -16,6 +16,8 @@
 //!   maps a second toplevel, "Fake Popup", solid red, and `close-second`
 //!   closes it again. While `hang-cdp` exists, `Target.getTargets` is never
 //!   answered (a hung browser).
+//!   While `hold-window` exists, the first window is not created; PID and
+//!   CDP readiness are unaffected. Removing it releases window publication.
 #[cfg(target_os = "linux")]
 fn main() {
     fake::main();
@@ -79,7 +81,8 @@ mod fake {
                 .open(home.join("fake-chrome.log"))
                 .unwrap(),
         };
-        client.open(&compositor, &wm_base, "Fake Chrome", BLUE);
+        let hold_window = home.join("hold-window");
+        let mut main_opened = false;
         let (close, open_second, close_second) = (
             home.join("close"),
             home.join("open-second"),
@@ -87,6 +90,10 @@ mod fake {
         );
         let mut second_opened = false;
         loop {
+            if !main_opened && !hold_window.exists() {
+                client.open(&compositor, &wm_base, "Fake Chrome", BLUE);
+                main_opened = true;
+            }
             queue.dispatch_pending(&mut client).unwrap();
             for window in &mut client.windows {
                 if let Some(serial) = window.configure.take() {
