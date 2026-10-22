@@ -425,3 +425,5 @@ async fn canonical_opencode_creation_catalog_get_keeps_workspace_scope() {
     assert!(!state.shared_codex_appserver.is_running());
     fixture.shutdown_process(&state).await;
 }
+
+mod acp_assistant;

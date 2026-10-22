@@ -267,10 +267,9 @@ impl AcpPlannerSession {
             InputContract::Canonical { .. } => {}
         }
         if let InputContract::Canonical { .. } = &input
-            && (row.contract != WorkerContract::Planner
-                || !super::wiring::canonical_planner_inputs(&params.provider))
+            && !super::wiring::canonical_inputs(&params.provider, row.contract)
         {
-            return Err(refused("ACP canonical input requires an eligible Planner"));
+            return Err(refused("ACP canonical input requires an eligible binding"));
         }
         if let Some(receipt) = existing {
             let issued = crate::db::sqlite::AcpSubmissionInput::decode(&receipt.input_json)

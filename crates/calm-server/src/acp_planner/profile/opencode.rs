@@ -25,6 +25,7 @@ const FULL_PERMISSION: (&str, &str) = (
 
 pub(super) const PROFILE: AcpAgentProfile = AcpAgentProfile {
     canonical_planner_inputs: true,
+    canonical_assistant_inputs: true,
     entry: AgentEntry {
         before_options: &[],
         after_options: &["acp"],

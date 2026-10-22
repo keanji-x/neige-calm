@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# ACP END settlement bounded exception: harness_item/crates 294 -> 297 is
+# three SQL references to the frozen transcript table: the storage owner's
+# idempotent observation query and the regression's row join/failure trigger.
+# No domain name, scan rule, excluded path or test inventory is introduced.
 # U3 bounded receipt exception: runtime_id/crates 1136 -> 1145 adds nine
 # references to the existing original-carrier receipt field/column and its HTTP assertions.
 # CI handoff regression: runtime_id/fe 36 -> 37 is one required

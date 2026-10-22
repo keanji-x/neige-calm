@@ -18,22 +18,21 @@ impl AssistantCreationEntry {
         crate::auth::HumanInputSource,
         crate::harness::profile::PlannerBinding,
     )> {
-        match (self, provider) {
-            (
-                Self::Human(source),
-                AssistantProviderRequest::LegacyCodex
-                | AssistantProviderRequest::Explicit(
-                    crate::session_projection_repo::AgentProvider::Codex,
-                ),
-            ) => Some((
-                source.clone(),
-                crate::harness::profile::PlannerBinding {
-                    profile: HarnessProfile::Assistant,
-                    provider: crate::session_projection_repo::AgentProvider::Codex,
-                },
-            )),
-            _ => None,
-        }
+        let Self::Human(source) = self else {
+            return None;
+        };
+        let provider = match provider {
+            AssistantProviderRequest::LegacyCodex => {
+                crate::session_projection_repo::AgentProvider::Codex
+            }
+            AssistantProviderRequest::Explicit(provider) => provider.clone(),
+        };
+        let binding = crate::harness::profile::PlannerBinding {
+            profile: HarnessProfile::Assistant,
+            provider,
+        };
+        crate::harness::backend::factory::PlannerFactory::canonical_inputs(&binding)
+            .then(|| (source.clone(), binding))
     }
 }
 

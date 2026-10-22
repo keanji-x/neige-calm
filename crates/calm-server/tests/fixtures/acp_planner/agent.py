@@ -161,7 +161,7 @@ def check_mcp(servers):
                   'token_rotated': rotated}
         with (root / 'cli-results.jsonl').open('a') as output:
             output.write(json.dumps(record) + '\n')
-    if not servers or (root / 'scenario').read_text().strip() not in ['mcp', 'assistant-mcp']:
+    if not servers or (root / 'scenario').read_text().strip() not in ['mcp', 'assistant-mcp', 'assistant-canonical']:
         return
     server = servers[0]
     env = dict(os.environ)
@@ -173,7 +173,7 @@ def check_mcp(servers):
             'protocolVersion': '2024-11-05', 'capabilities': {}, 'clientInfo': {'name': 'fixture', 'version': '1'}}}) + '\n')
         child.stdin.flush()
         (root / 'mcp-reply.json').write_text(child.stdout.readline())
-        if (root / 'scenario').read_text().strip() == 'assistant-mcp':
+        if (root / 'scenario').read_text().strip() in ['assistant-mcp', 'assistant-canonical']:
             replies = []
             for number, name, arguments in [
                 (2, 'neige_report_read', {'with_markers': True}),
@@ -308,7 +308,7 @@ for line in sys.stdin:
                 ask_shell(permission)
             else:
                 ask_mcp_tool(permission, 'neige_task_done' if scenario == 'grok-mcp-unlisted' else 'neige_report_commit')
-        elif scenario == 'permission':
+        elif scenario in ['permission', 'assistant-canonical']:
             pending, permission = request, 'native-permission'
             emit({'jsonrpc': '2.0', 'id': permission, 'method': 'session/request_permission', 'params': {
                 'sessionId': current, 'toolCall': {'toolCallId': 'one', 'title': 'Fixture operation'},

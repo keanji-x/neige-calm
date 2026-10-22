@@ -291,7 +291,7 @@ impl PlannerHarnessStartAdapter {
         self.retained_target(wire).await?;
         #[cfg(feature = "fixtures")]
         crate::test_seams::pause_point("retained-workspace-ready", &wire.card_id).await;
-        match PlannerFactory::retained_identity(&target.binding.provider)? {
+        match PlannerFactory::retained_identity(&target.binding)? {
             crate::harness::backend::factory::RetainedIdentityPreparation::LocalSession => {
                 return self
                     .retained_bind_local(wire, output, op, &target.binding, uuid::Uuid::new_v4())

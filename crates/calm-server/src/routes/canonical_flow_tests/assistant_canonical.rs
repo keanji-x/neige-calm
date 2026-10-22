@@ -3,7 +3,7 @@
 use super::*;
 use calm_truth::db::RepoRead;
 
-async fn track(app: &axum::Router, cookie: &str) -> String {
+pub(super) async fn track(app: &axum::Router, cookie: &str) -> String {
     let area = post(
         app,
         cookie,
@@ -26,7 +26,7 @@ async fn track(app: &axum::Router, cookie: &str) -> String {
     created["id"].as_str().unwrap().to_owned()
 }
 
-async fn carrier(fixture: &Fixture, card: &str) -> (String, CanonicalHarnessSnapshot) {
+pub(super) async fn carrier(fixture: &Fixture, card: &str) -> (String, CanonicalHarnessSnapshot) {
     let (worker, snapshot): (String, String) = sqlx::query_as(
         "SELECT ws.id,ws.handle_state_json FROM cards c JOIN worker_sessions ws ON c.session_id=ws.id WHERE c.id=?1",
     ).bind(card).fetch_one(fixture.repo.pool()).await.unwrap();
@@ -35,7 +35,13 @@ async fn carrier(fixture: &Fixture, card: &str) -> (String, CanonicalHarnessSnap
     (worker, serde_json::from_value(value).unwrap())
 }
 
-async fn initial(app: &axum::Router, cookie: &str, track: &str, card: &str, key: &str) -> Value {
+pub(super) async fn initial(
+    app: &axum::Router,
+    cookie: &str,
+    track: &str,
+    card: &str,
+    key: &str,
+) -> Value {
     let response = app
         .clone()
         .oneshot(

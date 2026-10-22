@@ -379,12 +379,30 @@ impl AcpPlannerSession {
         {
             return Ok(None);
         }
-        receipt
+        let outcome: Option<Value> = receipt
             .outcome_json
             .as_deref()
             .map(serde_json::from_str)
             .transpose()
-            .map_err(Into::into)
+            .map_err(CalmError::from)?;
+        // The scheduler can observe this joined receipt before the live event
+        // consumer drains its items. END must not expose an unsettled history.
+        if let Some(items) = outcome
+            .as_ref()
+            .and_then(|turn| turn.get("items"))
+            .and_then(Value::as_array)
+        {
+            crate::harness::transcript_receipt::settle_canonical(
+                params.repo.as_ref(),
+                &params.worker_session_id,
+                &params.card_id,
+                &receipt.thread_id,
+                &receipt.turn_id,
+                items,
+            )
+            .await?;
+        }
+        Ok(outcome)
     }
     pub(crate) async fn interrupt_execution(
         &self,

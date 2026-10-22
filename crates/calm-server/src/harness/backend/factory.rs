@@ -52,22 +52,37 @@ impl<'a> PlannerFactory<'a> {
         }
     }
 
-    /// Pure canonical support query: unsupported profiles refuse independently of readiness.
-    pub(crate) fn retained_identity(
-        provider: &AgentProvider,
-    ) -> Result<RetainedIdentityPreparation> {
-        match provider.protocol() {
-            AgentProtocol::Codex => Ok(RetainedIdentityPreparation::NativeThread),
-            AgentProtocol::Claude => Ok(RetainedIdentityPreparation::LocalSession),
+    /// Static storage capability for this exact binding; no readiness probe.
+    pub(crate) fn canonical_inputs(binding: &crate::harness::profile::PlannerBinding) -> bool {
+        use crate::harness::profile::HarnessProfile;
+        use calm_types::worker::WorkerContract;
+        let contract = match binding.profile {
+            HarnessProfile::Planner => WorkerContract::Planner,
+            HarnessProfile::Assistant => WorkerContract::Assistant,
+            HarnessProfile::PlainChat => return false,
+        };
+        match binding.provider.protocol() {
+            AgentProtocol::Codex => true,
+            AgentProtocol::Claude => binding.profile == HarnessProfile::Planner,
             AgentProtocol::Acp => {
-                if !crate::acp_planner::wiring::canonical_planner_inputs(provider) {
-                    return Err(CalmError::Conflict(
-                        "ACP registration does not support canonical Planner inputs".into(),
-                    ));
-                }
-                Ok(RetainedIdentityPreparation::LocalSession)
+                crate::acp_planner::wiring::canonical_inputs(&binding.provider, contract)
             }
         }
+    }
+
+    /// Unsupported profiles refuse independently of runtime readiness.
+    pub(crate) fn retained_identity(
+        binding: &crate::harness::profile::PlannerBinding,
+    ) -> Result<RetainedIdentityPreparation> {
+        if !Self::canonical_inputs(binding) {
+            return Err(CalmError::Conflict(
+                "registration does not support canonical inputs for this profile".into(),
+            ));
+        }
+        Ok(match binding.provider.protocol() {
+            AgentProtocol::Codex => RetainedIdentityPreparation::NativeThread,
+            AgentProtocol::Claude | AgentProtocol::Acp => RetainedIdentityPreparation::LocalSession,
+        })
     }
 
     /// Codex recovery must observe an idle native thread. Local recovery can

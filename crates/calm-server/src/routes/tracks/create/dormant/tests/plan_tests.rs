@@ -235,7 +235,10 @@ async fn canonical_acp_creation_shapes_follow_registration_capability() {
                 .unwrap();
             assert_eq!(
                 matches!(plan, CreatePlan::Canonical(_)),
-                crate::acp_planner::wiring::canonical_planner_inputs(&provider),
+                crate::acp_planner::wiring::canonical_inputs(
+                    &provider,
+                    calm_types::worker::WorkerContract::Planner
+                ),
                 "{provider:?}, first={first}"
             );
         }

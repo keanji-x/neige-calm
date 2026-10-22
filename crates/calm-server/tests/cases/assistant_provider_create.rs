@@ -124,8 +124,69 @@ fn requests(root: &Root, method: &str) -> Vec<Value> {
         .filter(|row| row["method"] == method)
         .collect()
 }
+async fn acp_assistant_frame(
+    stack: &Stack,
+    card: &str,
+) -> calm_types::harness::snapshot::CanonicalHarnessSnapshot {
+    serde_json::from_value(
+        stack
+            .runtime(card)
+            .await
+            .handle_state_json
+            .expect("persisted canonical carrier"),
+    )
+    .unwrap()
+}
+
+async fn wait_acp_assistant_idle(stack: &Stack, card: &str) {
+    tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        while !acp_assistant_frame(stack, card).await.idle_for_lifecycle() {
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("original canonical ACP driver must reach END");
+}
+
+async fn acp_assistant_lifecycle(stack: &Stack, card: &str) {
+    wait_acp_assistant_idle(stack, card).await;
+    let before = stack.runtime(card).await;
+    let count = stack.outcomes(card).await.len();
+    stack
+        .state
+        .harness
+        .remove(&before.id)
+        .unwrap()
+        .shutdown()
+        .await
+        .unwrap();
+    let (status, response) = stack.post_input(card, "lazy recovery").await;
+    assert_eq!(status, StatusCode::OK, "{response}");
+    stack.wait_outcomes(card, count + 1).await;
+    wait_acp_assistant_idle(stack, card).await;
+    assert_eq!(stack.runtime(card).await.id, before.id);
+    assert_eq!(stack.runtime(card).await.session_id, before.session_id);
+    let (status, response) = stack.reset(card).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{response}");
+    assert_eq!(
+        stack.runtime(card).await.id,
+        before.id,
+        "historical reset cannot replace a canonical carrier"
+    );
+    let (status, response) = stack.post_input(card, "after refused reset").await;
+    assert_eq!(status, StatusCode::OK, "{response}");
+    stack.wait_outcomes(card, count + 2).await;
+    wait_acp_assistant_idle(stack, card).await;
+    assert_eq!(stack.runtime(card).await.id, before.id);
+    assert_eq!(stack.runtime(card).await.session_id, before.session_id);
+    assert!(
+        stack.row_hash(&before.id).await.is_none(),
+        "ACP revokes after its exact driver exits"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn assistant_provider_opencode_first_turn_model_prompt_and_restart() {
+async fn acp_assistant_first_turn_model_prompt_and_restart() {
     let root = Root::new("unused");
     let stack = boot_acp(&root).await;
     let (track, planner) = stack
@@ -209,7 +270,7 @@ async fn assistant_provider_opencode_first_turn_model_prompt_and_restart() {
             .unwrap();
     assert_eq!(permission["result"]["outcome"]["outcome"], "cancelled");
     std::fs::write(root.path().join("scenario"), "reply").unwrap();
-    managed_lifecycle(&stack, card, &track).await;
+    acp_assistant_lifecycle(&stack, card).await;
     let root_after: Option<String> =
         sqlx::query_scalar("SELECT root_session_id FROM tracks WHERE id=?1")
             .bind(&track)
@@ -221,7 +282,7 @@ async fn assistant_provider_opencode_first_turn_model_prompt_and_restart() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn run_recovery_assistant_provider_opencode_unknown_receipt_is_not_resent_after_boot() {
+async fn acp_assistant_unknown_receipt_is_not_resent_after_boot() {
     use std::time::Duration;
     let root = Root::new("unused");
     let stack = boot_acp(&root).await;
@@ -259,39 +320,53 @@ async fn run_recovery_assistant_provider_opencode_unknown_receipt_is_not_resent_
         .unwrap()
     );
     assert_eq!(requests(&root, "session/prompt").len(), 2);
-    let recovery = json!({"cause":"unknown_outcome","action":"restart_session"});
-    let run_uri = format!("/api/cards/{card}/planner/run");
-    let (_, run) = stack.send("GET", &run_uri, None).await;
-    assert_eq!(run["recovery"], recovery, "{run}");
-    assert_eq!(run["pending"], json!([]));
-    let handle = stack.state.harness.remove(&worker).unwrap();
-    handle.shutdown().await.unwrap();
-    let (_, run) = stack.send("GET", &run_uri, None).await;
-    assert_eq!(run["recovery"], recovery, "no live harness: {run}");
+    let native = stack.runtime(card).await.session_id;
+    let run_uri = format!("/api/cards/{card}/planner/run?contract=conversation_v1");
+    let (status, run) = stack.send("GET", &run_uri, None).await;
+    assert_eq!(status, StatusCode::OK, "{run}");
+    assert_eq!(run["input_contract"], "canonical");
+    assert_eq!(
+        run["recovery"],
+        Value::Null,
+        "no historical restart affordance: {run}"
+    );
+    assert_eq!(run["history_replacement_supported"], false);
+    let before = acp_assistant_frame(&stack, card).await;
+    assert!(matches!(
+        before.canonical_inputs.attempts.last().unwrap().delivery,
+        calm_types::conversation::InputDeliveryFact::Unknown
+    ));
+    stack
+        .state
+        .harness
+        .remove(&worker)
+        .unwrap()
+        .shutdown()
+        .await
+        .unwrap();
     stack.shutdown().await;
     let stack = boot_acp(&root).await;
-    let (_, run) = stack.send("GET", &run_uri, None).await;
-    assert_eq!(
-        run["recovery"], recovery,
-        "after boot, before any new input: {run}"
-    );
+    let (status, run) = stack.send("GET", &run_uri, None).await;
+    assert_eq!(status, StatusCode::OK, "{run}");
+    assert_eq!(run["input_contract"], "canonical");
+    assert_eq!(run["history_replacement_supported"], false);
     let (status, response) = stack.post_input(card, "queued after unknown").await;
     assert_eq!(status, StatusCode::OK, "{response}");
-    let handle = stack.state.harness.get(&worker).unwrap();
-    tokio::time::timeout(Duration::from_secs(20), async {
-        while handle.refused_issuances_for_test() == 0 {
-            tokio::time::sleep(Duration::from_millis(25)).await;
-        }
-    })
-    .await
-    .unwrap();
+    tokio::time::sleep(Duration::from_millis(200)).await;
     assert_eq!(
         requests(&root, "session/prompt").len(),
         2,
-        "unknown receipt cannot authorize native resend"
+        "Unknown receipt cannot authorize native resend"
     );
-    std::fs::write(root.path().join("scenario"), "reply").unwrap();
-    let before = stack.outcomes(card).await.len();
+    let after = acp_assistant_frame(&stack, card).await;
+    assert_eq!(
+        after.canonical_inputs.attempts,
+        before.canonical_inputs.attempts
+    );
+    assert_eq!(
+        after.canonical_inputs.pending.len(),
+        before.canonical_inputs.pending.len() + 1
+    );
     let (status, response) = stack
         .send(
             "POST",
@@ -299,36 +374,21 @@ async fn run_recovery_assistant_provider_opencode_unknown_receipt_is_not_resent_
             Some(json!({})),
         )
         .await;
-    assert_eq!(status, StatusCode::OK, "{response}");
-    stack.wait_outcomes(card, before + 1).await;
-    assert_ne!(stack.runtime(card).await.id, worker);
-    let (_, run) = stack.send("GET", &run_uri, None).await;
-    assert_eq!(
-        run["recovery"],
-        Value::Null,
-        "old worker's receipt must not fence its replacement: {run}"
-    );
-    assert_eq!(
-        requests(&root, "session/prompt").len(),
-        3,
-        "only still-owed input transfers"
-    );
-    let prompts = requests(&root, "session/prompt");
-    let last_prompt = prompts.last().unwrap()["params"]["prompt"].to_string();
-    assert!(
-        last_prompt.contains("queued after unknown"),
-        "{last_prompt}"
-    );
-    assert!(
-        !last_prompt.contains("perform once"),
-        "the fenced dispatch must never transfer: {last_prompt}"
-    );
-    let (_, history) = stack
-        .send("GET", &format!("/api/cards/{card}/harness/items"), None)
+    assert_eq!(status, StatusCode::CONFLICT, "{response}");
+    assert_eq!(stack.runtime(card).await.id, worker);
+    assert_eq!(stack.runtime(card).await.session_id, native);
+    assert_eq!(requests(&root, "session/prompt").len(), 2);
+    let (status, history) = stack
+        .send(
+            "GET",
+            &format!("/api/cards/{card}/harness/items?contract=conversation_v1"),
+            None,
+        )
         .await;
+    assert_eq!(status, StatusCode::OK, "{history}");
     assert!(
         history.to_string().contains("perform once"),
-        "history is kept: {history}"
+        "original history is kept: {history}"
     );
     stack.shutdown().await;
 }
@@ -543,12 +603,12 @@ async fn assistant_provider_shutdown_replay_stops_native_orphans_without_a_regis
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn assistant_provider_images_false_refuses_run_and_upload() {
+async fn acp_assistant_images_false_refuses_run_and_upload() {
     images_false_refuses(true).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn assistant_provider_images_false_refuses_before_binding_or_queue() {
+async fn acp_assistant_images_false_refuses_before_binding_or_queue() {
     images_false_refuses(false).await;
 }
 
@@ -596,7 +656,11 @@ async fn images_false_refuses(check_upload: bool) {
     let before = stack.runtime(card).await;
     if check_upload {
         let (_, run) = stack
-            .send("GET", &format!("/api/cards/{card}/planner/run"), None)
+            .send(
+                "GET",
+                &format!("/api/cards/{card}/planner/run?contract=conversation_v1"),
+                None,
+            )
             .await;
         assert_eq!(run["attachments_supported"], false, "{run}");
         let response = stack
@@ -640,7 +704,7 @@ async fn images_false_refuses(check_upload: bool) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn assistant_archive_survives_cold_boot_and_restores_the_same_native_context() {
+async fn acp_assistant_archive_survives_cold_boot_and_restores_the_same_native_context() {
     let root = Root::new("exit");
     let stack = boot_acp(&root).await;
     let (track, _) = stack
@@ -657,7 +721,7 @@ async fn assistant_archive_survives_cold_boot_and_restores_the_same_native_conte
     let card = row["id"].as_str().unwrap();
     stack.wait_outcomes(card, 1).await;
     let original = stack.runtime(card).await;
-    stack.wait_phase(&original.id, "turn_completed").await;
+    wait_acp_assistant_idle(&stack, card).await;
     let path = format!("/api/tracks/{track}/conversations/{card}/archive");
     assert_eq!(
         stack
@@ -667,7 +731,11 @@ async fn assistant_archive_survives_cold_boot_and_restores_the_same_native_conte
         StatusCode::NO_CONTENT
     );
     let history = stack
-        .send("GET", &format!("/api/cards/{card}/harness/items"), None)
+        .send(
+            "GET",
+            &format!("/api/cards/{card}/harness/items?contract=conversation_v1"),
+            None,
+        )
         .await
         .1;
     let prompts = requests(&root, "session/prompt").len();
@@ -696,7 +764,11 @@ async fn assistant_archive_survives_cold_boot_and_restores_the_same_native_conte
     );
     assert_eq!(
         stack
-            .send("GET", &format!("/api/cards/{card}/harness/items"), None)
+            .send(
+                "GET",
+                &format!("/api/cards/{card}/harness/items?contract=conversation_v1"),
+                None
+            )
             .await
             .1,
         history

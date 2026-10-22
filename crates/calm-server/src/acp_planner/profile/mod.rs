@@ -17,6 +17,8 @@ mod opencode;
 pub(crate) struct AcpAgentProfile {
     /// Supports receipt-owned canonical Planner input; activation is independently gated.
     pub(crate) canonical_planner_inputs: bool,
+    /// Supports receipt-owned canonical Assistant input, independently of Planner policy.
+    pub(crate) canonical_assistant_inputs: bool,
     /// The agent CLI's ACP entry: the arguments around a Planner turn's agent options.
     pub(crate) entry: AgentEntry,
     /// Where the agent's `initialize` answer reports who it is.
@@ -74,6 +76,15 @@ const NOTHING: ModeLaunch = ModeLaunch {
 };
 
 impl AcpAgentProfile {
+    pub(crate) fn canonical_inputs(&self, contract: calm_types::worker::WorkerContract) -> bool {
+        use calm_types::worker::WorkerContract;
+        match contract {
+            WorkerContract::Planner => self.canonical_planner_inputs,
+            WorkerContract::Assistant => self.canonical_assistant_inputs,
+            WorkerContract::Executor | WorkerContract::Validator => false,
+        }
+    }
+
     /// The profile of `provider`; `None` for one that does not speak ACP.
     pub(crate) fn of(provider: &AgentProvider) -> Option<&'static Self> {
         match provider {
@@ -163,6 +174,27 @@ mod tests {
     use super::*;
     use calm_types::runtime::AgentProtocol;
     use serde_json::json;
+
+    #[test]
+    fn acp_assistant_capability_is_independent_of_planner_contract() {
+        use calm_types::worker::WorkerContract;
+        for planner in [false, true] {
+            for assistant in [false, true] {
+                let profile = AcpAgentProfile {
+                    canonical_planner_inputs: planner,
+                    canonical_assistant_inputs: assistant,
+                    ..opencode::PROFILE
+                };
+                assert_eq!(profile.canonical_inputs(WorkerContract::Planner), planner);
+                assert_eq!(
+                    profile.canonical_inputs(WorkerContract::Assistant),
+                    assistant
+                );
+                assert!(!profile.canonical_inputs(WorkerContract::Executor));
+                assert!(!profile.canonical_inputs(WorkerContract::Validator));
+            }
+        }
+    }
 
     #[test]
     fn a_profile_exists_exactly_for_each_acp_provider() {

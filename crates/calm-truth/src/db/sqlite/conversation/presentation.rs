@@ -63,20 +63,41 @@ pub async fn observe_native_item_tx(
     if erased {
         return Ok(None);
     }
-    let mut proof =
-        super::current_native_fact_tx(tx, carrier.card_id(), carrier.worker_session_id(), true)
-            .await?;
-    let row = super::super::transcript_projection::insert_transcript_row(
-        &mut proof,
-        thread,
-        turn,
-        item,
-        kind,
-        method,
-        &serde_json::to_string(params)?,
-        None,
+    // Receipt settlement can overtake queued live notifications. Replaying an
+    // identical frame or a start after its completion must not replace the
+    // settled presentation's raw row (including its id and creation time).
+    let params_json = serde_json::to_string(params)?;
+    let existing: Option<i64> = sqlx::query_scalar(
+        "SELECT id FROM harness_items WHERE card_id=?1 AND thread_id=?2
+         AND item_uuid=?3 AND ((method=?4 AND params=?5)
+         OR (method='item/completed' AND ?4='item/started'))
+         ORDER BY (method='item/completed') DESC,id DESC LIMIT 1",
     )
+    .bind(carrier.card_id())
+    .bind(thread)
+    .bind(item)
+    .bind(method)
+    .bind(&params_json)
+    .fetch_optional(&mut **tx)
     .await?;
+    let row = if let Some(row) = existing {
+        row
+    } else {
+        let mut proof =
+            super::current_native_fact_tx(tx, carrier.card_id(), carrier.worker_session_id(), true)
+                .await?;
+        super::super::transcript_projection::insert_transcript_row(
+            &mut proof,
+            thread,
+            turn,
+            item,
+            kind,
+            method,
+            &params_json,
+            None,
+        )
+        .await?
+    };
     let sequence = allocate_presentation_tx(
         tx,
         carrier.card_id(),

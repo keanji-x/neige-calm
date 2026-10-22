@@ -149,11 +149,18 @@ impl PlannerFactory<'_> {
                 validate_active_recovery(repo, runtime, target.thread_id(), admission).await
             }
             calm_types::runtime::AgentProtocol::Acp => {
-                if !crate::acp_planner::wiring::canonical_planner_inputs(provider) {
-                    return Err(CalmError::Conflict(
-                        "ACP registration does not support canonical Planner inputs".into(),
-                    ));
-                }
+                let row = repo
+                    .session_get(&calm_types::worker::WorkerSessionId(runtime.id.clone()))
+                    .await?
+                    .ok_or_else(|| {
+                        CalmError::Conflict("canonical recovery owner is missing".into())
+                    })?;
+                let binding = crate::harness::profile::live_binding(repo, &row)
+                    .await?
+                    .ok_or_else(|| {
+                        CalmError::Conflict("canonical recovery binding changed".into())
+                    })?;
+                Self::retained_identity(&binding)?;
                 let target = RecoveryTarget::active(runtime)?;
                 // ACP receipt/cleanup recovery runs only after the retained
                 // install reservation. Validation alone cannot stop a winner.

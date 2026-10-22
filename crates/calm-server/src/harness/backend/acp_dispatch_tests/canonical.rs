@@ -8,6 +8,7 @@ mod failures;
 mod recovery;
 mod recovery_windows;
 mod resolution;
+mod settlement;
 mod transport;
 use super::*;
 use crate::auth::{AuthConfig, AuthState, SessionAuthority, SessionIdentity};

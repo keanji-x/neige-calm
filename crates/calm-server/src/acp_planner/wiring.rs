@@ -41,8 +41,11 @@ pub(crate) async fn open_session(
     })))
 }
 
-/// Canonical support is registration policy owned by the ACP profile.
-pub(crate) fn canonical_planner_inputs(provider: &calm_types::runtime::AgentProvider) -> bool {
+/// Canonical support is registration policy owned by the ACP profile and contract.
+pub(crate) fn canonical_inputs(
+    provider: &calm_types::runtime::AgentProvider,
+    contract: calm_types::worker::WorkerContract,
+) -> bool {
     super::profile::AcpAgentProfile::of(provider)
-        .is_some_and(|profile| profile.canonical_planner_inputs)
+        .is_some_and(|profile| profile.canonical_inputs(contract))
 }
