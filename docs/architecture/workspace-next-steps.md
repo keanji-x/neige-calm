@@ -566,7 +566,7 @@ R5-B1 续租前被取消泄漏预约、R6-B1 tokio 的 spawn 在 OS spawn 之后
 结论先行：(1) **row C4 的前提要改**：Claude/ACP Planner 今天是“每个 turn 一个原生子进程”（`server/claude_planner/session.rs:1-2` 的模块说明，
 ACP `server/acp_planner/session/driver.rs:73` turn 末停进程），不是长寿会话；task worker 都**不是** kernel 原生子进程，而是经 Legacy
 `EnsureProc` 由 calm-proc-supervisor 托管的 PTY（`server/terminal_renderer/mod.rs:819-831`）；isolated Codex worker 已由 #1908 删除，
-`calm-worker-runtime` 的 bwrap launcher 未接入任何生产启动。(2) C4.0a–C4.0d 与 C4.1–C4.4 不需要改 Engine 合同；三类入口需要改合同才能成为消费者，
+`calm-worker-runtime` 的 bwrap launcher 未接入任何生产启动，现已退役。(2) C4.0a–C4.0d 与 C4.1–C4.4 不需要改 Engine 合同；三类入口需要改合同才能成为消费者，
 本设计**不迁移**它们并给出更窄保证：共享 Codex app-server（需要无 track 的宿主级 execution 与原地重启）、Claude/ACP readiness 类
 一次性命令（无 track）、以及同宿主 supervisor 崩溃后的 Unknown 排空（需要 executor 同宿主正向排空，workspace-execution.md §6.4、§11 E3）。
 (3) 两项待用户决定（见“开放问题”Q1、Q2，两支都已定规模）：executor 不可用时（macOS 有限构建、升级前 supervisor）Planner turn
@@ -600,7 +600,7 @@ C4 各片不依赖 W，也不为 worker 预置只有 worker 需要的东西；�
   不在 row C4 内、但走同一 Legacy PTY 管线的 owner 自建 card：`claude-create`（`claude_adapter/mod.rs:584`）、`codex-create`（`codex_adapter/mod.rs:547`）、
   Legacy 模式的 `terminal-create`（`terminal_adapter.rs:378`；typed 替代已由 E2b opt-in 交付）、`claude-restart`（`claude_restart_adapter.rs:389` → `:461`/`:465`）与 boot 的
   `claude_auto_resume`（`application_boot.rs:70`）。已不存在、不设切片：isolated Codex worker（#1908 删除，只剩 `truth/migrations/0174_parked_artifacts_in_rust.sql:60-71`
-  的 CHECK 支）；`calm-worker-runtime` 的 bwrap `Runtime`（`crates/calm-worker-runtime/src/runtime.rs:132-140`、`launcher.rs:109`）未接生产，若重启用，provider 的父进程必须是
+  的 CHECK 支）；`calm-worker-runtime` 的 bwrap `Runtime` 未接生产，现已退役；`proc_entry_vanished` 已归属 calm-server 的 `proc_identity.rs`，进程 fixture 仅供测试。若将来重新设计此边界，provider 的父进程必须是
   bwrap 内的 init，不能是 supervisor 的直接子进程。W1–W3 的行留作盘点证据，但它们已不在 C4：迁移移到 W（§3.3），在 W 之前照今天的 Legacy 管线运行。
 
 - **不能成为消费者的入口与更窄保证。** Engine 每个 execution 必有 `track: TrackId`、Private root 与 operation 形状的 owner

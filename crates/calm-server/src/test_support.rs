@@ -1,3 +1,6 @@
+#[cfg(target_os = "linux")]
+pub(crate) mod proc;
+
 use calm_truth::error::Result;
 use calm_truth::model::Task;
 use sqlx::{Sqlite, Transaction};

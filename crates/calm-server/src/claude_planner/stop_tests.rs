@@ -311,7 +311,7 @@ fn a_fake_proc_root_pins_the_per_pid_rules() {
 #[cfg(target_os = "linux")]
 #[test]
 fn a_marked_pid_reaped_before_its_stat_read_is_skipped() {
-    let reaped = calm_worker_runtime::test_support::ReapedProcDir::new();
+    let reaped = crate::test_support::proc::ReapedProcDir::new();
     let pid = reaped.pid;
     let markers = HashSet::from([format!("{MARKER_KEY}=inst:ws")]);
     let root = fake_proc(pid, None, "PATH=/bin\0NEIGE_CLAUDE_PLANNER=inst:ws\0");

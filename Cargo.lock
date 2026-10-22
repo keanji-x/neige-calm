@@ -529,7 +529,6 @@ dependencies = [
  "calm-truth",
  "calm-truth-test-harness",
  "calm-types",
- "calm-worker-runtime",
  "chrono",
  "chrono-tz",
  "clap",
@@ -702,19 +701,6 @@ dependencies = [
  "thiserror 1.0.69",
  "ts-rs",
  "utoipa",
- "uuid",
-]
-
-[[package]]
-name = "calm-worker-runtime"
-version = "0.1.0"
-dependencies = [
- "libc",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "tempfile",
- "thiserror 1.0.69",
  "uuid",
 ]
 

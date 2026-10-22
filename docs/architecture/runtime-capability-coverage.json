@@ -379,7 +379,7 @@
     "oar_current": "默认全权限；宿主可提供额外约束，能力不统一",
     "neige_current": "已有显式权限模式、进程边界、环境允许列表和工作区准入",
     "current_gap": "宿主职责",
-    "evidence": "claude_planner/spawn.rs；calm-worker-runtime；workspace",
+    "evidence": "claude_planner/spawn.rs；proc_identity.rs；workspace；calm-worker-runtime 已退役（未接入生产的 bwrap 边界）",
     "phase": "R1",
     "owner": "原有安全 owner",
     "decision": "不改变权限模式、环境、进程身份与工作区准入"

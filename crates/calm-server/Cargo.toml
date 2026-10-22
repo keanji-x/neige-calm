@@ -281,7 +281,6 @@ calm-truth = { path = "../calm-truth" }
 provider = { path = "../provider" }
 calm-session = { path = "../calm-session" }
 calm-proc-supervisor = { path = "../calm-proc-supervisor" }
-calm-worker-runtime = { path = "../calm-worker-runtime" }
 blake3 = "1.8"
 
 # Streaming request bodies. `http_body_util::Limited` is the planner attachment
@@ -323,8 +322,6 @@ libc = "0.2"
 workspace-runtime = { path = "../workspace-runtime", features = ["test-support"] }
 plugin = { path = "../plugin", features = ["test-support"] }
 calm-test-sockets = { path = "../calm-test-sockets" }
-# `test_support::{ChildGuard, ReapedProcDir}` for the /proc-scan unit tests (#1793).
-calm-worker-runtime = { path = "../calm-worker-runtime", features = ["test-support"] }
 # Self-loop to auto-enable the `fixtures` feature when building
 # integration tests (`tests/*.rs`). Each integration test is its own
 # crate that depends on `calm-server`; this dev-dep entry tells Cargo to

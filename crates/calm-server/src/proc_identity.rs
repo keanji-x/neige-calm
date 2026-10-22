@@ -4,6 +4,14 @@ pub use plugin::proc_identity::{
     ProcStatFields, parse_proc_stat_fields, parse_starttime_from_stat, read_proc_start_time,
 };
 
+/// Did a `/proc/<pid>/…` read fail only because the process is gone? A process reaped after the
+/// `/proc` listing fails the path lookup with `ENOENT`, but one reaped between the open and the
+/// read of its file (or while its directory is held) fails with `ESRCH`. Either way it is not a
+/// live process, so a scan skips it rather than failing.
+pub(crate) fn proc_entry_vanished(error: &std::io::Error) -> bool {
+    error.kind() == std::io::ErrorKind::NotFound || error.raw_os_error() == Some(libc::ESRCH)
+}
+
 /// Read Linux's per-boot UUID from `/proc/sys/kernel/random/boot_id`.
 /// A read failure cannot prove identity, so callers skip the kill.
 #[cfg(target_os = "linux")]
@@ -192,7 +200,7 @@ fn proc_env_marker_in(proc_root: &std::path::Path, pid: i32, key: &str, value: &
         }
         // The process left between the scan and this read (`ENOENT`, or `ESRCH` once it is reaped
         // mid-open): not a live member to wait for and not a live process to kill — `Foreign`.
-        Err(error) if calm_worker_runtime::proc_entry_vanished(&error) => MarkerAuth::Foreign,
+        Err(error) if proc_entry_vanished(&error) => MarkerAuth::Foreign,
         // Live but unreadable (EACCES from `PR_SET_DUMPABLE=0`, etc.): membership cannot be proven
         // OR disproven — cleanup-uncertain.
         Err(_) => MarkerAuth::Unreadable,
@@ -482,7 +490,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn a_reaped_process_environ_is_foreign_not_unreadable() {
-        let reaped = calm_worker_runtime::test_support::ReapedProcDir::new();
+        let reaped = crate::test_support::proc::ReapedProcDir::new();
         let pid = reaped.pid;
         let root = tempfile::tempdir().expect("tempdir");
         std::os::unix::fs::symlink(reaped.path(), root.path().join(pid.to_string()))

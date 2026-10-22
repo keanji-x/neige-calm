@@ -1,4 +1,4 @@
-//! Process fixtures for tests of `/proc` readers, here and in dependent crates (`test-support`).
+//! Linux process fixtures for tests of `/proc` readers.
 use std::fs::File;
 use std::os::fd::AsRawFd as _;
 use std::process::{Child, Command, Stdio};
