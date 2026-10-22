@@ -9,7 +9,7 @@ async fn fork_elides_compact_tasks_and_refuses_user_activation() {
     )
     .await
     .unwrap();
-    let compact = json!({"key":"compact", "kind":"compact", "ready":false, "declared_by":calm_types::report_blocks::tasks::PLANNER_DECLARATION_AUTHOR});
+    let compact = json!({"key":"compact", "kind":"compact", "context":"Continue from verified task evidence.", "ready":false, "declared_by":calm_types::report_blocks::tasks::PLANNER_DECLARATION_AUTHOR});
     let next = TrackReportPayload::new(
         "compact source",
         format!("{}{}", current.body, render_fence("task", &compact)),

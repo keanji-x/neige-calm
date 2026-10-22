@@ -89,9 +89,17 @@ pub(super) fn validate_task(map: &Map<String, Value>, errors: &mut Vec<String>) 
         }
     };
     if task_kind == Some("compact") {
+        required_non_empty_string(map, "context", errors);
         reject_unknown(
             map,
-            &["key", "kind", "ready", "released_by_user", "declared_by"],
+            &[
+                "key",
+                "kind",
+                "ready",
+                "released_by_user",
+                "declared_by",
+                "context",
+            ],
             errors,
         );
         required_enum(

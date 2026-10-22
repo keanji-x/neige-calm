@@ -85,7 +85,7 @@ it('renders a compact declaration and refusal without worker-only fields', async
     id: 'report', track_id: 't', kind: 'track-report', title: null, sort: 0,
     deletable: false, created_at: 0, updated_at: 0,
     payload: { body: '', blocks: [{ id: 'b-compact', kind: 'task', payload: {
-      key: 'compact-planner', kind: 'compact', ready: true, declared_by: 'spec',
+      key: 'compact-planner', kind: 'compact', context: 'Continue from verified task evidence.', ready: true, declared_by: 'spec',
     } }] },
   }]);
   const tasks = deriveReportTasks(report?.blocks ?? null, [{

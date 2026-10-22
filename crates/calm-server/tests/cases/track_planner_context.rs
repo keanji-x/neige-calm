@@ -165,7 +165,7 @@ async fn planner_context_counts_only_completed_compact_tasks_on_this_track() {
             body.push_str(&calm_types::report_blocks::render_fence(
                 "task",
                 &json!({
-                    "key": key, "kind": "compact", "ready": true,
+                    "key": key, "kind": "compact", "context":"Continue from verified task evidence.", "ready": true,
                     "declared_by": calm_types::report_blocks::tasks::PLANNER_DECLARATION_AUTHOR,
                 }),
             ));

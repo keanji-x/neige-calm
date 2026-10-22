@@ -587,7 +587,7 @@ async fn compact_planner_task_claude_historical_wakes_once_without_user_turn() {
         calm_types::report_blocks::render_fence(
             "task",
             &json!({
-                "key":"compact", "kind":"compact", "ready":true,"declared_by":"spec"
+                "key":"compact", "kind":"compact", "context":"Continue from verified task evidence.", "ready":true,"declared_by":"spec"
             })
         )
     );

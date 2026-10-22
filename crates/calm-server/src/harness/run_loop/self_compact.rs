@@ -299,9 +299,39 @@ pub(super) async fn append_wake(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     wake: Option<(EventScope, Event)>,
 ) -> Result<Option<crate::event::BroadcastEnvelope>> {
-    let Some((scope, event)) = wake else {
+    let Some((scope, mut event)) = wake else {
         return Ok(None);
     };
+    if let Event::TrackWakeRequested {
+        track_id,
+        key,
+        text,
+        ..
+    } = &mut event
+        && let Some(task) = crate::db::sqlite::task_get_tx(tx, key).await?
+    {
+        if task.kind != crate::model::TaskKind::Compact || task.track_id != track_id.as_str() {
+            return Err(CalmError::Conflict("compaction task owner mismatch".into()));
+        }
+        // Read the claim-frozen row in the same transaction as settlement and wake.
+        // Template substitutions have already finished in prepare_wake; never render
+        // the handoff as a template or trim its original whitespace.
+        match serde_json::from_str::<serde_json::Value>(&task.context_json)? {
+            serde_json::Value::String(handoff) => {
+                text.push_str(include_str!(
+                    "../../../prompts/planner_compaction_handoff.md"
+                ));
+                text.push_str(&handoff);
+            }
+            // Explicit historical branch: compact rows claimed before handoffs.
+            serde_json::Value::Object(context) if context.is_empty() => {}
+            _ => {
+                return Err(CalmError::Conflict(
+                    "invalid persisted compaction context".into(),
+                ));
+            }
+        }
+    }
     let id =
         crate::db::sqlite::append_decision_event_in_tx(tx, &ActorId::Kernel, &scope, None, &event)
             .await?;

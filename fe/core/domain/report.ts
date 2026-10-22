@@ -174,6 +174,7 @@ const legacyTerminalTaskBlockPayloadSchema = z.strictObject({
 const compactTaskBlockPayloadSchema = z.strictObject({
   key: z.string(),
   kind: z.literal('compact'),
+  context: z.string(),
   ready: z.boolean(),
   declared_by: z.literal('spec'),
   released_by_user: z.boolean().nullish(),

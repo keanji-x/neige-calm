@@ -215,7 +215,7 @@ fn minimal_gate_task_payload_matches_published_task_schema_field_by_field() {
 fn compact_task_kind_published_contract_matches_validator() {
     let table = kinds_table();
     let schema = task_schema(&table);
-    let minimal = json!({"key":"compact", "kind":"compact", "ready":true,"declared_by":"spec"});
+    let minimal = json!({"key":"compact", "kind":"compact", "context":"Continue from verified task evidence.", "ready":true,"declared_by":"spec"});
     let check = |value: &Value, expected| {
         assert_eq!(
             super::schema_checks::accepts(schema, value, schema),
@@ -248,7 +248,20 @@ fn compact_task_kind_published_contract_matches_validator() {
         payload[field] = value;
         check(&payload, expected);
     }
-    for field in ["key", "kind", "ready", "declared_by"] {
+    for value in [
+        json!(""),
+        json!("  \n\t"),
+        json!({}),
+        json!("x".repeat(2049)),
+    ] {
+        let mut payload = minimal.clone();
+        payload["context"] = value;
+        check(&payload, false);
+    }
+    let mut boundary = minimal.clone();
+    boundary["context"] = json!("中".repeat(2048));
+    check(&boundary, true);
+    for field in ["key", "kind", "ready", "declared_by", "context"] {
         let mut payload = minimal.clone();
         payload.as_object_mut().unwrap().remove(field);
         check(&payload, false);

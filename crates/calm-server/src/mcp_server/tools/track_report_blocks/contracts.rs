@@ -350,10 +350,11 @@ fn task_kind() -> Value {
                     "description": "Planner compaction task",
                     "type": "object",
                     "additionalProperties": false,
-                    "required": ["key", "kind", "ready", "declared_by"],
+                    "required": ["key", "kind", "ready", "declared_by", "context"],
                     "properties": {
                         "key": {},
                         "kind": { "const": "compact" },
+                        "context": { "type": "string", "minLength": 1, "pattern": "\\S", "maxLength": report_blocks::MAX_STRING_CHARS },
                         "ready": {},
                         "released_by_user": {},
                         "declared_by": { "const": "spec" }

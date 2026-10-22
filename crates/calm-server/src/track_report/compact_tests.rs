@@ -123,7 +123,7 @@ impl Fixture {
 }
 
 fn compact() -> Value {
-    json!({"key":"compact", "kind":"compact", "ready":false, "declared_by":"spec"})
+    json!({"key":"compact", "kind":"compact", "context":"Continue from verified task evidence.", "ready":false, "declared_by":"spec"})
 }
 
 #[tokio::test]
@@ -316,4 +316,23 @@ async fn compact_structural_init_refuses_live_blocks_before_writing() {
         target.report_card.payload
     );
     tx.rollback().await.unwrap();
+}
+
+#[tokio::test]
+async fn compact_task_submission_refuses_missing_handoff() {
+    let f = fixture().await;
+    let mut payload = compact();
+    payload.as_object_mut().unwrap().remove("context");
+    let error = f
+        .upsert(EditAuthor::Planner, None, payload)
+        .await
+        .unwrap_err();
+    assert!(matches!(error, CalmError::BadRequest(_)), "{error:?}");
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM tasks")
+            .fetch_one(f.repo.pool())
+            .await
+            .unwrap(),
+        0
+    );
 }

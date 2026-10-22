@@ -23,7 +23,7 @@ async fn compact_task_is_admitted_beside_writer_and_waits_without_worker_or_leas
         render_fence(
             "task",
             &json!({
-                "key":"compact", "kind":"compact", "ready":true,"declared_by":"spec"
+                "key":"compact", "kind":"compact", "context":"Continue from verified task evidence.", "ready":true,"declared_by":"spec"
             })
         )
     );

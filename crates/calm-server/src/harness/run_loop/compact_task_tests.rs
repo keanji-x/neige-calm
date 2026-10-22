@@ -8,6 +8,9 @@ use crate::track_report::{TrackReportPayload, persist_report, resolve_report_for
 use provider::events::PlannerEventKind;
 use serde_json::json;
 
+const HANDOFF: &str =
+    "在飞 attempt: c2\n已核实 head: abc\n发现: {request_id} {status}\n```text\n下一步：继续\n```\n";
+
 pub(super) async fn declared(
     f: &Fixture,
 ) -> (Arc<crate::scheduler::Scheduler>, crate::state::WriteContext) {
@@ -41,7 +44,7 @@ pub(super) async fn declared(
         calm_types::report_blocks::render_fence(
             "task",
             &json!({
-                "key":"compact", "kind":"compact", "ready":true, "declared_by":"spec"
+                "key":"compact", "kind":"compact", "context":HANDOFF, "ready":true, "declared_by":"spec"
             })
         )
     );
@@ -129,88 +132,103 @@ async fn redeclare(f: &Fixture, write: &crate::state::WriteContext) {
     .unwrap();
 }
 
-#[tokio::test]
-async fn compact_task_closed_loop_one_wake_and_no_redeclare() {
-    for status in ["completed", "interrupted", "failed", "unconfirmed"] {
-        let f = Fixture::new().await;
-        let (scheduler, write) = declared(&f).await;
-        let inner = &f.harness.inner;
-        let id = format!("{}:compact", inner.track_id);
-        // A queued input and a running turn both precede compaction.
-        *inner.state.lock().await = HarnessState::turn_running("old-turn".into(), Instant::now());
-        self_compact::tick(inner, true).await.unwrap();
-        assert!(f.daemon.compacted_threads_for_test().is_empty());
-        *inner.state.lock().await = HarnessState::Idle;
-        self_compact::tick(inner, false).await.unwrap();
-        assert!(f.daemon.compacted_threads_for_test().is_empty());
-        scheduler.sweep_all().await;
-        self_compact::tick(inner, true).await.unwrap();
-        let running = f.repo.task_get(&id).await.unwrap().unwrap();
-        assert_eq!(running.status, TaskStatus::Running);
-        assert!(running.worker_card_id.is_none() && running.running_deadline_ms.is_none());
-        finish(&f, status).await.unwrap();
-        let terminal = f.repo.task_get(&id).await.unwrap().unwrap();
-        assert_eq!(
-            terminal.status,
-            if status == "completed" {
-                TaskStatus::Done
-            } else {
-                TaskStatus::Failed
-            }
-        );
-        if status != "completed" {
-            assert_eq!(
-                terminal.status_detail,
-                Some(format!("compaction-incomplete: {status}"))
-            );
+async fn closed_loop(status: &str) {
+    let f = Fixture::new().await;
+    let (scheduler, write) = declared(&f).await;
+    let inner = &f.harness.inner;
+    let id = format!("{}:compact", inner.track_id);
+    // A queued input and a running turn both precede compaction.
+    *inner.state.lock().await = HarnessState::turn_running("old-turn".into(), Instant::now());
+    self_compact::tick(inner, true).await.unwrap();
+    assert!(f.daemon.compacted_threads_for_test().is_empty());
+    *inner.state.lock().await = HarnessState::Idle;
+    self_compact::tick(inner, false).await.unwrap();
+    assert!(f.daemon.compacted_threads_for_test().is_empty());
+    scheduler.sweep_all().await;
+    self_compact::tick(inner, true).await.unwrap();
+    let running = f.repo.task_get(&id).await.unwrap().unwrap();
+    assert_eq!(running.status, TaskStatus::Running);
+    assert!(running.worker_card_id.is_none() && running.running_deadline_ms.is_none());
+    finish(&f, status).await.unwrap();
+    let terminal = f.repo.task_get(&id).await.unwrap().unwrap();
+    assert_eq!(
+        terminal.status,
+        if status == "completed" {
+            TaskStatus::Done
+        } else {
+            TaskStatus::Failed
         }
-        let events = f.repo.events_since(0, 1000).await.unwrap();
-        let mut pushes = 0;
-        let mut wakes = 0;
-        for (_, _, _, event) in &events {
-            if matches!(
-                event,
-                Event::TaskCompleted { .. }
-                    | Event::TaskFailed { .. }
-                    | Event::TrackWakeRequested { .. }
-            ) && crate::dispatcher::task_event_pushes_planner_for_test(
-                f.repo.as_ref(),
-                &write,
-                event,
-                &ActorId::Kernel,
-            )
-            .await
-            {
-                pushes += 1;
-            }
-            if let Event::TrackWakeRequested { key, text, .. } = event {
-                assert_eq!(key, &id);
-                assert!(text.contains("neige_report_read") && text.contains("neige_task_ls"));
-                wakes += 1;
-            }
-        }
-        assert_eq!((pushes, wakes), (1, 1), "exactly one qualified wake");
-        self_compact::clear_settled(inner).await;
-        redeclare(&f, &write).await;
-        scheduler.schedule_track(inner.track_id.clone()).await;
-        scheduler.sweep_all().await;
-        self_compact::tick(inner, true).await.unwrap();
+    );
+    if status != "completed" {
         assert_eq!(
-            f.repo.task_get(&id).await.unwrap().unwrap().status,
-            terminal.status,
-            "terminal key stays frozen"
+            terminal.status_detail,
+            Some(format!("compaction-incomplete: {status}"))
         );
-        assert_eq!(f.daemon.compacted_threads_for_test().len(), 1);
-        assert!(
-            inner.planner_compaction.lock().await.is_none(),
-            "redeclare never requests again"
-        );
-        let after = f.repo.task_get(&id).await.unwrap().unwrap();
-        assert_eq!(after.finished_at_ms, terminal.finished_at_ms);
-        assert_eq!(after.status_detail, terminal.status_detail);
-        let events = f.repo.events_since(0, 1000).await.unwrap();
-        assert_eq!(events.iter().filter(|event| matches!(&event.3, Event::TaskDispatched { idempotency_key, .. } if idempotency_key == &id)).count(), 1);
     }
+    let events = f.repo.events_since(0, 1000).await.unwrap();
+    let mut pushes = 0;
+    let mut wakes = 0;
+    for (_, _, _, event) in &events {
+        if matches!(
+            event,
+            Event::TaskCompleted { .. }
+                | Event::TaskFailed { .. }
+                | Event::TrackWakeRequested { .. }
+        ) && crate::dispatcher::task_event_pushes_planner_for_test(
+            f.repo.as_ref(),
+            &write,
+            event,
+            &ActorId::Kernel,
+        )
+        .await
+        {
+            pushes += 1;
+        }
+        if let Event::TrackWakeRequested { key, text, .. } = event {
+            assert_eq!(key, &id);
+            assert!(text.contains("neige_report_read") && text.contains("neige_task_ls"));
+            assert!(text.ends_with(HANDOFF), "handoff changed: {text:?}");
+            wakes += 1;
+        }
+    }
+    assert_eq!((pushes, wakes), (1, 1), "exactly one qualified wake");
+    self_compact::clear_settled(inner).await;
+    redeclare(&f, &write).await;
+    scheduler.schedule_track(inner.track_id.clone()).await;
+    scheduler.sweep_all().await;
+    self_compact::tick(inner, true).await.unwrap();
+    assert_eq!(
+        f.repo.task_get(&id).await.unwrap().unwrap().status,
+        terminal.status,
+        "terminal key stays frozen"
+    );
+    assert_eq!(f.daemon.compacted_threads_for_test().len(), 1);
+    assert!(
+        inner.planner_compaction.lock().await.is_none(),
+        "redeclare never requests again"
+    );
+    let after = f.repo.task_get(&id).await.unwrap().unwrap();
+    assert_eq!(after.finished_at_ms, terminal.finished_at_ms);
+    assert_eq!(after.status_detail, terminal.status_detail);
+    let events = f.repo.events_since(0, 1000).await.unwrap();
+    assert_eq!(events.iter().filter(|event| matches!(&event.3, Event::TaskDispatched { idempotency_key, .. } if idempotency_key == &id)).count(), 1);
+}
+
+#[tokio::test]
+async fn compact_task_handoff_completed() {
+    closed_loop("completed").await;
+}
+#[tokio::test]
+async fn compact_task_handoff_interrupted() {
+    closed_loop("interrupted").await;
+}
+#[tokio::test]
+async fn compact_task_handoff_failed() {
+    closed_loop("failed").await;
+}
+#[tokio::test]
+async fn compact_task_handoff_unconfirmed() {
+    closed_loop("unconfirmed").await;
 }
 
 #[tokio::test]
@@ -231,6 +249,17 @@ async fn compact_task_restart_settles_without_resend() {
     );
     assert_eq!(f.daemon.compacted_threads_for_test().len(), 1);
     let events = f.repo.events_since(0, 1000).await.unwrap();
+    let text = events
+        .iter()
+        .find_map(|event| match &event.3 {
+            Event::TrackWakeRequested { text, .. } => Some(text),
+            _ => None,
+        })
+        .unwrap();
+    assert!(
+        text.contains("unconfirmed") && text.ends_with(HANDOFF),
+        "{text:?}"
+    );
     assert_eq!(
         events
             .iter()
@@ -332,7 +361,7 @@ async fn compact_task_second_key_refuses_already_pending_and_pushes() {
         calm_types::report_blocks::render_fence(
             "task",
             &json!({
-                "key":"compact-second", "kind":"compact", "ready":true, "declared_by":"spec"
+                "key":"compact-second", "kind":"compact", "context":HANDOFF, "ready":true, "declared_by":"spec"
             })
         )
     );
@@ -468,5 +497,137 @@ async fn compact_task_start_lost_guard_rolls_back() {
             .unwrap()
             .iter()
             .any(|event| matches!(event.3, Event::TrackWakeRequested { .. }))
+    );
+}
+
+#[tokio::test]
+async fn compact_task_handoff_uses_claim_frozen_context() {
+    let f = Fixture::new().await;
+    let (_, write) = declared(&f).await;
+    let inner = &f.harness.inner;
+    let id = format!("{}:compact", inner.track_id);
+    assert_eq!(
+        f.repo.task_get(&id).await.unwrap().unwrap().status,
+        TaskStatus::Dispatched
+    );
+    let target =
+        crate::track_report::ReportEditTarget::resolve(f.repo.as_ref(), inner.track_id.as_str())
+            .await
+            .unwrap();
+    let (_, _, current) = resolve_report_for_track(f.repo.as_ref(), inner.track_id.as_str())
+        .await
+        .unwrap();
+    let block = current
+        .blocks
+        .as_ref()
+        .unwrap()
+        .iter()
+        .find(|block| block.kind == "task")
+        .unwrap();
+    let mut payload = block.payload.clone();
+    payload["context"] = json!("new declaration must not replace frozen handoff");
+    let op = crate::track_report::ReportDocOp::UpsertBlock {
+        id: Some(block.id.clone()),
+        kind: "task".into(),
+        content: calm_types::report_blocks::render_fence("task", &payload),
+        if_rev: Some(block.rev),
+        if_doc_rev: None,
+        position: None,
+    };
+    let (updated, _) = crate::track_report::write::rest_user_block_op(
+        f.repo.as_ref(),
+        &inner.events,
+        &write,
+        target,
+        op,
+    )
+    .await
+    .unwrap();
+    let updated: TrackReportPayload = serde_json::from_value(updated.payload).unwrap();
+    assert_eq!(
+        updated
+            .blocks
+            .unwrap()
+            .iter()
+            .find(|block| block.kind == "task")
+            .unwrap()
+            .payload["context"],
+        payload["context"]
+    );
+    assert_eq!(
+        f.repo.task_get(&id).await.unwrap().unwrap().context_json,
+        serde_json::to_string(HANDOFF).unwrap()
+    );
+    self_compact::tick(inner, true).await.unwrap();
+    finish(&f, "completed").await.unwrap();
+    let events = f.repo.events_since(0, 1000).await.unwrap();
+    let wakes: Vec<_> = events
+        .iter()
+        .filter_map(|event| match &event.3 {
+            Event::TrackWakeRequested { text, .. } => Some(text),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(wakes.len(), 1);
+    assert!(wakes[0].ends_with(HANDOFF), "{:?}", wakes[0]);
+}
+
+#[tokio::test]
+async fn compact_task_handoff_historical_empty_object_keeps_old_wake() {
+    let f = Fixture::new().await;
+    declared(&f).await;
+    let inner = &f.harness.inner;
+    let id = format!("{}:compact", inner.track_id);
+    // Simulate an already-claimed pre-handoff row, not a newly admitted declaration.
+    sqlx::query("UPDATE tasks SET context_json='{}' WHERE id=?")
+        .bind(&id)
+        .execute(f.repo.pool())
+        .await
+        .unwrap();
+    self_compact::tick(inner, true).await.unwrap();
+    finish(&f, "completed").await.unwrap();
+    let events = f.repo.events_since(0, 1000).await.unwrap();
+    let wakes: Vec<_> = events
+        .iter()
+        .filter_map(|event| match &event.3 {
+            Event::TrackWakeRequested { text, .. } => Some(text),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(wakes.len(), 1);
+    assert_eq!(
+        wakes[0],
+        &include_str!("../../../tests/goldens/planner_compaction_historical_wake.txt")
+            .trim_end()
+            .replace("{request_id}", &id)
+    );
+}
+
+#[tokio::test]
+async fn compact_task_handoff_refused_after_start() {
+    let f = Fixture::new().await;
+    declared(&f).await;
+    let inner = &f.harness.inner;
+    self_compact::tick(inner, true).await.unwrap();
+    compact_command::settle(
+        inner,
+        crate::harness::compact_outcome::CompactStatus::Refused,
+    )
+    .await;
+    persist_snapshot(inner).await.unwrap();
+    persist_snapshot(inner).await.unwrap();
+    let events = f.repo.events_since(0, 1000).await.unwrap();
+    let wakes: Vec<_> = events
+        .iter()
+        .filter_map(|event| match &event.3 {
+            Event::TrackWakeRequested { text, .. } => Some(text),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(wakes.len(), 1);
+    assert!(
+        wakes[0].contains("refused") && wakes[0].ends_with(HANDOFF),
+        "{:?}",
+        wakes[0]
     );
 }
