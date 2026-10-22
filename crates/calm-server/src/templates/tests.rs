@@ -4,11 +4,17 @@ use calm_types::track_report::{research_header, work_brief_header};
 use std::collections::BTreeSet;
 
 #[test]
-fn capability_builtin_templates_remain_disabled_including_roster_copies() {
+fn capability_only_long_term_goal_declares_objectives_including_roster_copies() {
     let roster = TemplateRoster::builtin();
     for roster in [roster, &roster.copy_of_entries()] {
         for template in roster.entries() {
-            assert!(template.capabilities().is_empty(), "{}", template.key());
+            let expected: &[calm_types::track_capability::TrackCapability] =
+                if template.key() == LONG_TERM_GOAL {
+                    &[calm_types::track_capability::TrackCapability::Objectives]
+                } else {
+                    &[]
+                };
+            assert_eq!(template.capabilities(), expected, "{}", template.key());
         }
     }
 }
