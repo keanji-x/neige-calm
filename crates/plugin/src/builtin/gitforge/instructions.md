@@ -46,3 +46,12 @@ records and parks the write before running gh. A pending receipt is not proof
 that the comment was posted: read its outcome with `neige op show <op_id>`. A
 hidden marker supports recovery without confusing an existing human comment
 with this write.
+
+`gh_pr_checks` reports success only for a head-consistent, count-validated check
+snapshot with completed check suites and merge state `CLEAN`. `wait_for_all`
+waits for failed heads' remaining checks too; it does not make incomplete evidence
+successful. Empty checks, unknown merge state and running suites cannot authorize
+merge. A truncated suite snapshot (more than 100 suites) is rejected explicitly.
+`gh_pr_merge` refreshes this evidence immediately before writing and always pins
+that head with `--match-head-commit`; pass `expected_head_sha` to also bind your
+own reviewed head. New requests do not reuse historical, weaker checks results.

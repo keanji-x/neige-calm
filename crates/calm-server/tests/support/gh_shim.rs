@@ -225,8 +225,11 @@ case "$area:$verb" in
       fi | jq --arg head "$head_sha" --arg mergeable "$mergeable" '
         (.statusCheckRollup // [] | to_entries | map(.value + {id: (.value.__typename + "-" + (.key|tostring))})) as $nodes |
         [range(0; ([($nodes|length), 1]|max); 100) as $offset |
-          {data: {repository: {pullRequest: {headRefOid: $head, mergeable: $mergeable,
-            commits: {nodes: [{commit: {oid: $head, statusCheckRollup: {contexts: {
+          {data: {repository: {pullRequest: {headRefOid: $head, mergeable: $mergeable, mergeStateStatus: "CLEAN",
+            commits: {nodes: [{commit: {oid: $head,
+              checkSuites: {totalCount: 1, nodes: [{id:"suite",status:"COMPLETED"}], suitePageInfo: {hasNextPage:false}},
+              statusCheckRollup: {contexts: {
+              totalCount: ($nodes|length),
               nodes: $nodes[$offset:$offset+100], pageInfo: {hasNextPage: ($offset+100 < ($nodes|length)), endCursor: (($offset+100)|tostring)}
             }}}}]}}}}}]
       '
@@ -357,6 +360,9 @@ case "$area:$verb" in
     head_sha=$(live_head_sha "$pr_dir" "$repo")
     merged=$(cat "$pr_dir/merged")
     case "$json_fields" in
+      headRefOid,mergeStateStatus)
+        printf '{"headRefOid":"%s","mergeStateStatus":"CLEAN"}\n' "$head_sha"
+        ;;
       headRefOid)
         printf '%s\n' "$head_sha"
         ;;

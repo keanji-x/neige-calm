@@ -408,11 +408,11 @@ fn lowers_gh_pr_checks() {
     };
     assert_eq!(
         payload,
-        expected_payload(r#"gh_pr_checks:v2:["owner/repo",42,null]"#)
+        expected_payload(r#"gh_pr_checks:v3:["owner/repo",42,null]"#)
     );
     assert_eq!(
         attempt_payload,
-        expected_payload(r#"gh_pr_checks:v2:["owner/repo",42,"7"]"#)
+        expected_payload(r#"gh_pr_checks:v3:["owner/repo",42,"7"]"#)
     );
     assert!(
         payload["argv"][8] == PR_CHECKS_READ_SCRIPT,
@@ -441,17 +441,13 @@ fn lowers_gh_pr_merge() {
     assert_eq!(
         payload,
         json!({
-            "argv": [
-                "gh",
-                "pr",
-                "merge",
-                "42",
-                "--repo",
-                "owner/repo",
-                "--squash",
-                "--delete-branch"
-            ],
-            "idem_key": "gh.pr.merge:owner/repo:42",
+            "argv": ({
+                let read = lower_gh_pr_checks(&json!({"repo":"owner/repo","pr":42})).unwrap();
+                let mut argv = vec![json!("sh"), json!("-c"), json!(PR_MERGE_CHECKED_SCRIPT), json!("sh"), json!("42"), json!("owner/repo"), json!("")];
+                argv.extend(read["probe"]["output_probe_argv"].as_array().unwrap().clone());
+                argv
+            }),
+            "idem_key": json!(format!("gh.pr.merge:v2:{}", json!(["owner/repo",42,null]))),
             "event_spec": {
                 "event_kind": "forge.pr.merged",
                 "fields": {
@@ -501,19 +497,13 @@ fn lowers_gh_pr_merge() {
     assert_eq!(
         payload,
         json!({
-            "argv": [
-                "gh",
-                "pr",
-                "merge",
-                "42",
-                "--repo",
-                "owner/repo",
-                "--squash",
-                "--delete-branch",
-                "--match-head-commit",
-                "abc123"
-            ],
-            "idem_key": "gh.pr.merge:owner/repo:42:abc123",
+            "argv": ({
+                let read = lower_gh_pr_checks(&json!({"repo":"owner/repo","pr":42})).unwrap();
+                let mut argv = vec![json!("sh"), json!("-c"), json!(PR_MERGE_CHECKED_SCRIPT), json!("sh"), json!("42"), json!("owner/repo"), json!("abc123")];
+                argv.extend(read["probe"]["output_probe_argv"].as_array().unwrap().clone());
+                argv
+            }),
+            "idem_key": json!(format!("gh.pr.merge:v2:{}", json!(["owner/repo",42,"abc123"]))),
             "event_spec": {
                 "event_kind": "forge.pr.merged",
                 "fields": {

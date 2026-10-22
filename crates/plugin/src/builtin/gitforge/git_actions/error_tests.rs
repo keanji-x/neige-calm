@@ -84,7 +84,7 @@ fn gh_pr_checks_identity_encodes_parameters_without_delimiter_collisions() {
         if let Some(attempt) = attempt {
             args["attempt"] = json!(attempt);
         }
-        for (wait_for_all, prefix) in [(true, "gh_pr_checks_all:v2:"), (false, "gh_pr_checks:v2:")]
+        for (wait_for_all, prefix) in [(true, "gh_pr_checks_all:v3:"), (false, "gh_pr_checks:v3:")]
         {
             args["wait_for_all"] = json!(wait_for_all);
             let payload = lower("gh_pr_checks", &args).unwrap();

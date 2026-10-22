@@ -246,23 +246,21 @@ fn lower_gh_pr_merge(args: &Value) -> Result<Value, String> {
     let repo = required_string(args, "repo")?;
     let pr = required_u64(args, "pr")?;
     let expected_head_sha = optional_string(args, "expected_head_sha")?;
+    // Reuse the owning checks reader so merge cannot drift from the wait's policy.
+    let checks = lower_gh_pr_checks(&json!({"repo": repo, "pr": pr}))?;
+    let read: Vec<String> = serde_json::from_value(checks["probe"]["output_probe_argv"].clone())
+        .map_err(|e| format!("decode merge checks reader: {e}"))?;
     let mut argv = vec![
-        "gh".into(),
-        "pr".into(),
-        "merge".into(),
+        "sh".into(),
+        "-c".into(),
+        PR_MERGE_CHECKED_SCRIPT.into(),
+        "sh".into(),
         pr.to_string(),
-        "--repo".into(),
         repo.clone(),
-        "--squash".into(),
-        "--delete-branch".into(),
+        expected_head_sha.clone().unwrap_or_default(),
     ];
-    let idem_key = if let Some(expected_head_sha) = expected_head_sha.as_deref() {
-        argv.push("--match-head-commit".into());
-        argv.push(expected_head_sha.to_string());
-        format!("gh.pr.merge:{repo}:{pr}:{expected_head_sha}")
-    } else {
-        format!("gh.pr.merge:{repo}:{pr}")
-    };
+    argv.extend(read);
+    let idem_key = format!("gh.pr.merge:v2:{}", json!([repo, pr, expected_head_sha]));
     let probe_argv = if let Some(expected_head_sha) = expected_head_sha.as_deref() {
         json!([
             "sh",
@@ -349,6 +347,15 @@ fn lower_gh_issue_view(args: &Value) -> Result<Value, String> {
 
 const ISSUE_CLOSE_PROBE_SCRIPT: &str = "out=$(gh issue view \"$1\" --repo \"$2\" --json state 2>/dev/null) || exit 3; \
      case \"$out\" in *'\"state\":\"CLOSED\"'*) exit 0 ;; *) exit 1 ;; esac";
+const PR_MERGE_CHECKED_SCRIPT: &str = concat!(
+    "pr=$1 repo=$2 expected=$3; shift 3\n",
+    "evidence=$(\"$@\") || exit 1\n",
+    "printf '%s' \"$evidence\" | jq -e '.conclusion == \"success\" and .snapshot.all_checks_completed == true' >/dev/null || { ",
+    "echo 'PR checks are incomplete or merge state is not CLEAN' >&2; exit 1; }\n",
+    "head=$(printf '%s' \"$evidence\" | jq -er '.head_sha | select(type == \"string\" and length > 0)') || exit 1\n",
+    "[ -z \"$expected\" ] || [ \"$head\" = \"$expected\" ] || { echo 'PR head changed before merge' >&2; exit 1; }\n",
+    "exec gh pr merge \"$pr\" --repo \"$repo\" --squash --delete-branch --match-head-commit \"$head\"\n",
+);
 const PR_MERGE_PROBE_SCRIPT: &str = "out=$(gh pr view \"$1\" --repo \"$2\" --json state 2>/dev/null) || exit 3; \
      case \"$out\" in *'\"state\":\"MERGED\"'*) exit 0 ;; *) exit 1 ;; esac";
 const PR_MERGE_HEAD_MATCH_PROBE_SCRIPT: &str = "out=$(gh pr view \"$1\" --repo \"$2\" --json state,headRefOid 2>/dev/null) || exit 3; \
@@ -496,3 +503,6 @@ mod checks_rerun_tests;
 
 #[cfg(test)]
 mod test_helpers;
+
+#[cfg(all(test, unix))]
+mod completeness_tests;

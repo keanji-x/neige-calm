@@ -259,7 +259,7 @@ fn gh_pr_checks_reports_no_checks_and_mergeability() {
             "conflicting-green",
             json!([success("lint")]),
             "CONFLICTING",
-            "success",
+            "pending",
             "conflicting",
         ),
     ];

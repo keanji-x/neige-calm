@@ -62,7 +62,27 @@ fn released_rows(fx: &ForgeRuntimeFixture) -> Vec<(PluginForgePayload, Value)> {
     let mut released_all = edited_program(lowered(all_args.clone()));
     released_all.idem_key = r#"gh_pr_checks_all:["owner/repo",42,"upgrade"]"#.into();
     released_all.argv = release_argv(fx, CURRENT_OUTPUT);
+    // The immediately preceding readers lacked complete suite/CLEAN evidence.
+    let args = json!({"repo":"owner/repo","pr":42,"attempt":"upgrade"});
+    let mut previous = edited_program(lowered(args.clone()));
+    previous.idem_key = format!("gh_pr_checks:v2:{}", json!(["owner/repo", 42, "upgrade"]));
+    previous.argv = release_argv(fx, CURRENT_OUTPUT);
+    let mut previous_all = previous.clone();
+    previous_all.idem_key = format!(
+        "gh_pr_checks_all:v2:{}",
+        json!(["owner/repo", 42, "upgrade"])
+    );
+    let rerun_args = json!({"repo":"owner/repo","pr":42,"attempt":"upgrade","after_rerun":{"run_id":100,"run_attempt":1}});
+    let mut previous_rerun = edited_program(lowered(rerun_args.clone()));
+    previous_rerun.idem_key = format!(
+        "gh_pr_checks_rerun:v1:{}",
+        json!(["owner/repo", 42, 100, 1, false, "upgrade"])
+    );
+    previous_rerun.argv = release_argv(fx, CURRENT_OUTPUT);
     vec![
+        (previous, args),
+        (previous_all, all_args.clone()),
+        (previous_rerun, rerun_args),
         (
             colon_repo,
             json!({"repo": "owner/repo", "pr": 42, "attempt": 43}),
@@ -202,10 +222,10 @@ async fn upgraded_checks(completed: bool) {
 /// when the current call's arguments would spell that released key. The current call starts a
 /// new operation and the stored row is left as it was.
 async fn released_rows_start_a_new_operation(completed: bool) {
-    for index in 0..3 {
+    for index in 0..6 {
         let fx = forge_runtime_fixture().await;
         let mut rows = released_rows(&fx);
-        assert_eq!(rows.len(), 3);
+        assert_eq!(rows.len(), 6);
         let (stored, args) = rows.swap_remove(index);
         let released_key = stored.idem_key.clone();
         let stored_op = submit(&fx, stored).await;

@@ -176,8 +176,10 @@ async fn assert_merge_crash(probe_window: Option<bool>) {
     )
     .await;
     let merge_idem_key = format!(
-        "{PLUGIN_ID}:{}:{}:gh.pr.merge:{repo_arg}:{pr_number}",
-        seeded.track_id, seeded.card_id
+        "{PLUGIN_ID}:{}:{}:gh.pr.merge:v2:{}",
+        seeded.track_id,
+        seeded.card_id,
+        serde_json::json!([repo_arg, pr_number, null])
     );
     let op_id = wait_for_operation_id(repo.pool(), &merge_idem_key, ORACLE_TIMEOUT).await;
 
@@ -395,8 +397,10 @@ async fn kernel_abort_pre_go_token_then_reboot_never_runs_action() {
     )
     .await;
     let merge_idem_key = format!(
-        "{PLUGIN_ID}:{}:{}:gh.pr.merge:{repo_arg}:{pr_number}",
-        seeded.track_id, seeded.card_id
+        "{PLUGIN_ID}:{}:{}:gh.pr.merge:v2:{}",
+        seeded.track_id,
+        seeded.card_id,
+        serde_json::json!([repo_arg, pr_number, null])
     );
     let op_id = wait_for_operation_id(repo.pool(), &merge_idem_key, ORACLE_TIMEOUT).await;
 

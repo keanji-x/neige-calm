@@ -45,7 +45,7 @@ fn gh_pr_checks_after_rerun_passes_the_fence_to_the_wait_and_the_deadline_read()
     assert_eq!(without_fence, unfenced);
     assert_eq!(
         payload["idem_key"],
-        r#"gh_pr_checks_rerun:v1:["owner/repo",42,100,1,false,null]"#
+        r#"gh_pr_checks_rerun:v2:["owner/repo",42,100,1,false,null]"#
     );
     assert_eq!(payload["replay_any_version"], true);
 }
@@ -74,7 +74,7 @@ fn gh_pr_checks_after_rerun_key_namespace_is_distinct() {
                 args["after_rerun"] = json!({ "run_id": run_id, "run_attempt": run_attempt });
                 let key = key(args);
                 let encoded = key
-                    .strip_prefix("gh_pr_checks_rerun:v1:")
+                    .strip_prefix("gh_pr_checks_rerun:v2:")
                     .unwrap_or_else(|| panic!("fenced namespace: {key}"));
                 assert_eq!(
                     serde_json::from_str::<Value>(encoded).unwrap(),

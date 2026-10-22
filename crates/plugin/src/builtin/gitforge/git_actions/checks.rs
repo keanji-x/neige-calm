@@ -3,24 +3,17 @@ use super::*;
 /// Query IDs directly: gh pr view's rollup exporter drops both node IDs and database IDs.
 pub(super) const PR_CHECKS_QUERY: &str = concat!(
     "query($owner:String!,$name:String!,$pr:Int!,$endCursor:String){",
-    "repository(owner:$owner,name:$name){pullRequest(number:$pr){headRefOid mergeable ",
-    "commits(last:1){nodes{commit{oid statusCheckRollup{",
-    "contexts(first:100,after:$endCursor){nodes{__typename ",
+    "repository(owner:$owner,name:$name){pullRequest(number:$pr){headRefOid mergeable mergeStateStatus ",
+    "commits(last:1){nodes{commit{oid ",
+    "checkSuites(first:100){totalCount nodes{id status} suitePageInfo:pageInfo{hasNextPage}} statusCheckRollup{",
+    "contexts(first:100,after:$endCursor){totalCount nodes{__typename ",
     "... on CheckRun{id name status conclusion detailsUrl databaseId checkSuite{databaseId workflowRun{databaseId}}} ",
     "... on StatusContext{id context state targetUrl}} pageInfo{hasNextPage endCursor}}}}}}}}}",
 );
 
 /// Every page must still describe the first head, including the commit whose checks we read.
 /// gh --paginate follows contexts.pageInfo; --slurp allows validation before the shared fold.
-pub(super) const PR_CHECKS_PAGES_JQ: &str = concat!(
-    "map(.data.repository.pullRequest) as $pages | $pages[0] as $first | ",
-    "if ($first.headRefOid == null or $first.headRefOid == \"\") or ",
-    "any($pages[]; .headRefOid != $first.headRefOid or ",
-    ".commits.nodes[0].commit.oid != $first.headRefOid) then error(\"PR head moved during checks pagination\") else ",
-    "{headRefOid: $first.headRefOid, mergeable: $first.mergeable, ",
-    "statusCheckRollup: [$pages[].commits.nodes[0].commit.statusCheckRollup.contexts.nodes[]?]} end | ",
-    ".headRefOid, (",
-);
+pub(super) const PR_CHECKS_PAGES_JQ: &str = include_str!("checks_snapshot.jq");
 
 /// $1 PR, $2 repository selector, $3 fold, $4 query, $5 page normalization, $6 enrichment,
 /// $7 sanitizer, $8 wait_for_all, $9 the after_rerun request or `null`. A fenced read reads the
@@ -46,8 +39,9 @@ pub(super) const PR_CHECKS_READ_SCRIPT: &str = concat!(
     "{ prefix=; case \"$original\" in settle*) prefix=${original%%\n*}; original=${original#*\n};; esac; ",
     "rest=$(printf '%s\\n' \"$original\" | jq -c \"$7 .failed_checks |= map(clean_check + {diagnostics:{status:\\\"unavailable\\\",reason:\\\"diagnostic enrichment failed\\\"}})\") || exit 1; ",
     "body=$(if [ -n \"$prefix\" ]; then printf '%s\\n' \"$prefix\"; fi; printf '%s' \"$rest\"); };; esac\n",
-    "current=$(timeout --foreground 3 gh pr view \"$1\" --repo \"$2\" --json headRefOid --jq .headRefOid) || exit 1\n",
-    "[ \"$head\" = \"$current\" ] || exit 1\n",
+    "current=$(timeout --foreground 3 gh pr view \"$1\" --repo \"$2\" --json headRefOid,mergeStateStatus) || exit 1\n",
+    "state=$(printf '%s' \"$pages\" | jq -r '.[0].data.repository.pullRequest.mergeStateStatus') || exit 1\n",
+    "printf '%s' \"$current\" | jq -e --arg head \"$head\" --arg state \"$state\" '.headRefOid == $head and .mergeStateStatus == $state' >/dev/null || exit 1\n",
     "[ \"$(printf '%s' \"$body\" | wc -c)\" -le 4194304 ] || exit 1\n",
     "printf '%s\\n' \"$body\"\n",
 );
@@ -83,14 +77,14 @@ macro_rules! pr_checks_fold {
             "elif .state == \"SUCCESS\" then \"success\" ",
             "elif .state == \"PENDING\" or .state == \"EXPECTED\" then \"pending\" ",
             "else \"failure\" end | {check: $check, verdict: .}] as $checks | ",
-            "{conclusion: ($checks | map(.verdict) | ",
+            ". as $pr | {conclusion: ($checks | map(.verdict) | ",
             "if any(. == \"failure\") then \"failure\" ",
             "elif any(. == \"pending\") then \"pending\" ",
             "elif length == 0 then \"no_checks\" ",
-            "else \"success\" end), ",
+            "elif $pr.suites_completed != true or $pr.mergeStateStatus != \"CLEAN\" or $pr.mergeable != \"MERGEABLE\" then \"pending\" else \"success\" end), ",
             "mergeable: (.mergeable | ascii_downcase), head_sha: .headRefOid, ",
             "snapshot: {head_sha: .headRefOid, mergeable: (.mergeable | ascii_downcase), ",
-            "all_checks_completed: ($checks | length > 0 and all(.verdict != \"pending\"))}, ",
+            "all_checks_completed: (($checks | length > 0 and all(.verdict != \"pending\")) and $pr.suites_completed)}, ",
             "failed_checks: [$checks[] | select(.verdict == \"failure\") | .check | ",
             "{name: (.name // .context), _source: .} + ",
             "((.detailsUrl // .targetUrl) as $url | ",
@@ -123,7 +117,7 @@ pub(super) const PR_CHECKS_WAIT_JQ: &str = concat!(
     pr_checks_fold!(),
     ") as $r | \"\\(if $fence != null and $fence.head_sha != $r.head_sha then \"refuse\" ",
     "elif $r.conclusion == \"success\" or ",
-    "($wait_for_all and $r.snapshot.all_checks_completed) or ",
+    "($wait_for_all and $r.snapshot.all_checks_completed and $r.conclusion == \"failure\") or ",
     "($wait_for_all == false and $r.conclusion == \"failure\") ",
     "or $r.mergeable == \"conflicting\" then \"settle\" else \"wait\" end) ",
     "\\($r.head_sha // \"\")\", ($r | tojson)",
@@ -171,19 +165,20 @@ pub(super) fn lower_gh_pr_checks(args: &Value) -> Result<Value, String> {
     // injectively in a versioned namespace no released version wrote. A row stored under a
     // released key (`gh.pr.checks:{repo}:{pr}[:{attempt}]`, which is ambiguous, or
     // `gh_pr_checks_all:[…]`) is never replayed. A fenced wait has its own namespace, so it never
-    // replays an unfenced read of the attempt it waits past.
+    // replays an unfenced read of the attempt it waits past. Completeness validation
+    // uses new namespaces so results recorded before the stronger fence are never replayed.
     let idem_key = match after_rerun {
         Some((run_id, run_attempt)) => {
             let arguments =
                 json!([repo, pr, run_id, run_attempt, wait_for_all, attempt]).to_string();
-            format!("gh_pr_checks_rerun:v1:{arguments}")
+            format!("gh_pr_checks_rerun:v2:{arguments}")
         }
         None => {
             let arguments = json!([repo, pr, attempt]).to_string();
             if wait_for_all {
-                format!("gh_pr_checks_all:v2:{arguments}")
+                format!("gh_pr_checks_all:v3:{arguments}")
             } else {
-                format!("gh_pr_checks:v2:{arguments}")
+                format!("gh_pr_checks:v3:{arguments}")
             }
         }
     };
