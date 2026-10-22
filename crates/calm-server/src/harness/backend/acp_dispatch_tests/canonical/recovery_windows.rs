@@ -1,13 +1,11 @@
 //! Crash images come only from production dispatch/recovery, before teardown.
+use super::super::super::dispatch_fixture::fail_terminal_outcome;
 use super::*;
 use crate::db::ServerRepoOutOfDomainExt;
 
 type Owner = super::super::super::dispatch_fixture::Owner;
 type Rows = Vec<(i64, String, String)>;
 type Receipt = (String, String, Option<String>);
-
-const REFUSE_TERMINAL: &str = "CREATE TRIGGER refuse_terminal BEFORE INSERT ON harness_items
-    WHEN NEW.method='turn/completed' BEGIN SELECT RAISE(ABORT,'terminal crash window'); END";
 
 async fn rows(owner: &Owner) -> Rows {
     owner
@@ -87,10 +85,7 @@ async fn canonical_acp_completed_crash_recovery_preserves_receipt_and_projection
     for window in ["receipt", "lost-report", "restored-items", "projected"] {
         let fx = Fixture::with_storage("reply", true).await;
         if window != "projected" {
-            sqlx::query(REFUSE_TERMINAL)
-                .execute(fx.owner.repo.pool())
-                .await
-                .unwrap();
+            fail_terminal_outcome(fx.owner.repo.as_ref()).await;
         }
         if window == "lost-report" {
             sqlx::query("CREATE TRIGGER refuse_report BEFORE UPDATE OF handle_state_json ON worker_sessions
@@ -150,10 +145,7 @@ async fn canonical_acp_completed_crash_recovery_preserves_receipt_and_projection
             let (backend, session, _held) = session_for(&owner, &fx.dir);
             let before = rows(&owner).await;
             let error = backend.recover_retained().await.unwrap_err();
-            assert!(
-                error.to_string().contains("terminal crash window"),
-                "{error}"
-            );
+            assert!(error.to_string().contains("outcome failed"), "{error}");
             assert!(
                 !complete(&owner, &backend).await,
                 "partial recovery installed a certificate"
@@ -168,7 +160,7 @@ async fn canonical_acp_completed_crash_recovery_preserves_receipt_and_projection
             session.shutdown().await.unwrap();
         }
         if window != "projected" {
-            sqlx::query("DROP TRIGGER refuse_terminal")
+            sqlx::query("DROP TRIGGER fail_outcome")
                 .execute(owner.repo.pool())
                 .await
                 .unwrap();

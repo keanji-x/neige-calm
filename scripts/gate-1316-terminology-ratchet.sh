@@ -1,8 +1,4 @@
 #!/usr/bin/env bash
-# #2836 ACP C1 recovery bounded exception: harness_item/crates 304 -> 305
-# is one test-only terminal-write failure trigger on the frozen transcript table.
-# No domain identifier, scan rule, exclusion or test inventory changes; this
-# counted baseline still runs once per ratchet gate target.
 # Retiring-vocabulary ratchet: occurrence counts per (term, scope) against a
 # committed baseline tsv. Both directions fail: a rise is new retiring vocabulary,
 # a fall means tighten the ratchet (`--update-baseline`, commit the tsv).

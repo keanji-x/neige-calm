@@ -90,3 +90,13 @@ pub(super) async fn seed_with_url(
         thread,
     }
 }
+
+pub(super) async fn fail_terminal_outcome(repo: &crate::db::sqlite::SqlxRepo) {
+    sqlx::query(
+        "CREATE TRIGGER fail_outcome BEFORE INSERT ON harness_items
+        WHEN NEW.method='turn/completed' BEGIN SELECT RAISE(ABORT,'outcome failed'); END",
+    )
+    .execute(repo.pool())
+    .await
+    .unwrap();
+}

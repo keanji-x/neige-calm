@@ -5,6 +5,7 @@ mod loop_fixture;
 mod recovery;
 mod retry;
 mod settled;
+use super::super::dispatch_fixture::fail_terminal_outcome;
 use super::*;
 use crate::auth::{AuthConfig, AuthState, SessionAuthority, SessionIdentity};
 use crate::db::sqlite::begin_immediate_tx;
@@ -754,14 +755,4 @@ async fn canonical_claude_cancelled_local_start_holds_crossing_after_driver_inst
     assert!(fx.complete().await.is_none());
     assert_eq!(fx.session.user_line_writes_for_test(), 1);
     fx.session.shutdown().await.unwrap();
-}
-
-async fn fail_terminal_outcome(repo: &crate::db::sqlite::SqlxRepo) {
-    sqlx::query(
-        "CREATE TRIGGER fail_outcome BEFORE INSERT ON harness_items
-        WHEN NEW.method='turn/completed' BEGIN SELECT RAISE(ABORT,'outcome failed'); END",
-    )
-    .execute(repo.pool())
-    .await
-    .unwrap();
 }
