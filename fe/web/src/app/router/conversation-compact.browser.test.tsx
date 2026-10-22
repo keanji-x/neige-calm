@@ -14,6 +14,7 @@ it.each(['claude', 'codex'] as const)('compact in the real %s router composer po
   await page.getByRole('combobox', { name: 'Message' }).fill('/compact');
   await expect.element(page.getByRole('option', { name: /^compact/ })).toBeVisible();
   await userEvent.keyboard('{Enter}');
+  await userEvent.keyboard('{Enter}');
   await expect.poll(() => fixture.requests.filter(request => request.method === 'POST' && request.path.endsWith('/planner/compact')).length).toBe(1);
   expect(fixture.requests.filter(request => request.method === 'POST' && request.path.endsWith('/planner/input'))).toHaveLength(0);
 });

@@ -257,10 +257,16 @@ it('offers @ in the new-track sentence, lets Enter pick, and creates with the in
 it('includes plugin documentation in a new conversation first message without report reads', async () => {
   const { requests, mentionReads } = mount('/track/w1');
   await openConversation(/Conversation Side chat/);
+  const writesBeforeCompletion = requests.filter(request => ['POST', 'PATCH', 'PUT', 'DELETE'].includes(request.method));
   await userEvent.keyboard('/new');
   await expect.element(page.getByRole('listbox', { name: 'Commands' }).getByRole('option')).toBeVisible();
   await userEvent.keyboard('{Enter}');
   const field = page.getByRole('combobox', { name: 'Message' });
+  await expect.element(field).toHaveTextContent('/new');
+  await expect.element(page.getByRole('complementary', { name: 'Untitled', exact: true })).not.toBeInTheDocument();
+  expect(requests.filter(request => ['POST', 'PATCH', 'PUT', 'DELETE'].includes(request.method))).toEqual(writesBeforeCompletion);
+  await userEvent.keyboard('{Enter}');
+  await expect.element(page.getByRole('complementary', { name: 'Untitled', exact: true })).toBeVisible();
   await field.click();
   await userEvent.keyboard('@development');
   await expect.element(menu().getByRole('option', { name: /development/ })).toBeVisible();

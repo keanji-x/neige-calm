@@ -17,7 +17,7 @@ export function ConversationComposer({ target, changeText, ...props }: Omit<Comp
   changeText: Dispatch<SetStateAction<string>>;
 }) {
   const text = useText(target);
-  return <ChatComposer {...props} draft={{ text, onChange: changeText }} />;
+  return <ChatComposer {...props} commandScope={`${target.kind}:${target.id}`} draft={{ text, onChange: changeText }} />;
 }
 
 export function ConversationDock({ target, ...props }: Omit<ComponentProps<typeof ChatDock>, 'text'> & { target: TextTarget }) {

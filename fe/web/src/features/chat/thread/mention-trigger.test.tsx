@@ -1,3 +1,4 @@
+import { conversationCommands } from './composer-command.ts';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -135,7 +136,7 @@ function MentionComposer({ search, onSend, onNewConversation }: {
   onNewConversation?: () => void;
 }) {
   const trigger = useMentionTrigger(search);
-  return <ChatComposer onSend={onSend} mentionTrigger={trigger} {...(onNewConversation === undefined ? {} : { onNewConversation })} />;
+  return <ChatComposer onSend={onSend} mentionTrigger={trigger} commands={conversationCommands({ newConversation: onNewConversation })} />;
 }
 
 function field(): HTMLElement {
@@ -333,8 +334,14 @@ describe('the @ menu in the real composer', () => {
 
     await userEvent.type(field(), '/');
     await screen.findByRole('option', { name: /^new/ });
+    const sendsBeforeCompletion = onSend.mock.calls.length;
+    await userEvent.keyboard('{Enter}');
+    expect(onNewConversation).not.toHaveBeenCalled();
+    expect(onSend).toHaveBeenCalledTimes(sendsBeforeCompletion);
+    expect(field().textContent).toBe('/new');
     await userEvent.keyboard('{Enter}');
     expect(onNewConversation).toHaveBeenCalledOnce();
+    expect(onSend).toHaveBeenCalledTimes(sendsBeforeCompletion);
     expect(field().textContent).toBe('');
   });
 
@@ -364,8 +371,14 @@ describe('the @ menu in the real composer', () => {
     expect(onNewConversation).not.toHaveBeenCalled();
 
     await userEvent.type(field(), '/new');
+    const sendsBeforeCompletion = onSend.mock.calls.length;
+    await userEvent.keyboard('{Enter}');
+    expect(onNewConversation).not.toHaveBeenCalled();
+    expect(onSend).toHaveBeenCalledTimes(sendsBeforeCompletion);
+    expect(field().textContent).toBe('/new');
     await userEvent.keyboard('{Enter}');
     expect(onNewConversation).toHaveBeenCalledOnce();
+    expect(onSend).toHaveBeenCalledTimes(sendsBeforeCompletion);
   });
 
   it('shows the empty text when the search fails', async () => {
@@ -376,11 +389,18 @@ describe('the @ menu in the real composer', () => {
 
   it('keeps the / command beside it', async () => {
     const onNewConversation = vi.fn();
-    render(<MentionComposer search={vi.fn<MentionSearch>(() => Promise.resolve([]))} onSend={vi.fn()} onNewConversation={onNewConversation} />);
+    const onSend = vi.fn();
+    render(<MentionComposer search={vi.fn<MentionSearch>(() => Promise.resolve([]))} onSend={onSend} onNewConversation={onNewConversation} />);
     await userEvent.type(field(), '/');
     expect(screen.getByRole('option', { name: /^new/ })).toBeTruthy();
+    const sendsBeforeCompletion = onSend.mock.calls.length;
+    await userEvent.keyboard('{Enter}');
+    expect(onNewConversation).not.toHaveBeenCalled();
+    expect(onSend).toHaveBeenCalledTimes(sendsBeforeCompletion);
+    expect(field().textContent).toBe('/new');
     await userEvent.keyboard('{Enter}');
     expect(onNewConversation).toHaveBeenCalledOnce();
+    expect(onSend).toHaveBeenCalledTimes(sendsBeforeCompletion);
   });
 
   it('is not there without a search: the field stays a plain textbox', () => {

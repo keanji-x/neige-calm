@@ -1,3 +1,4 @@
+import { conversationCommands } from './composer-command.ts';
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -1128,7 +1129,7 @@ describe('ChatComposer', () => {
     const onNewConversation = vi.fn();
     const { rerender } = render(<ChatComposer onSend={onSend} />);
     expect(screen.getByRole('textbox', { name: 'Message' }).getAttribute('aria-multiline')).toBe('true');
-    rerender(<ChatComposer onSend={onSend} onNewConversation={onNewConversation} />);
+    rerender(<ChatComposer commands={conversationCommands({ newConversation: onNewConversation })} onSend={onSend} />);
     expect(screen.getByRole('combobox', { name: 'Message' }).hasAttribute('aria-multiline')).toBe(false);
     rerender(<ChatComposer onSend={onSend} />);
     expect(screen.getByRole('textbox', { name: 'Message' }).getAttribute('aria-multiline')).toBe('true');
@@ -1146,16 +1147,13 @@ describe('ChatComposer', () => {
     expect(fieldText(messageField())).toBe('Keep these words');
   });
 
-  it('leaves edit mode on Esc or ✕, but not on the Esc that closes an open / menu', async () => {
+  it('leaves edit mode on Esc or ✕ without offering slash commands', async () => {
     const onCancel = vi.fn();
-    render(<ChatComposer onSend={vi.fn()} onNewConversation={vi.fn()} editing={{ preview: 'Original prompt', onCancel }} />);
+    render(<ChatComposer commands={conversationCommands({ newConversation: vi.fn() })} onSend={vi.fn()} editing={{ preview: 'Original prompt', onCancel }} />);
     expect(screen.getByText('Editing message')).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Replace message' })).toBeTruthy();
     await userEvent.type(messageField(), '/');
-    expect(screen.getByRole('option', { name: /^new/ })).toBeTruthy();
-    await userEvent.keyboard('{Escape}');
-    expect(screen.queryByRole('option', { name: /^new/ })).toBeNull();
-    expect(onCancel).not.toHaveBeenCalled();
+    expect(screen.queryByRole('listbox', { name: 'Commands' })).toBeNull();
     await userEvent.keyboard('{Escape}');
     expect(onCancel).toHaveBeenCalledOnce();
     fireEvent.click(screen.getByRole('button', { name: 'Cancel edit' }));
@@ -1164,11 +1162,17 @@ describe('ChatComposer', () => {
 
   it('still selects the new-conversation command with Enter while Stop is shown', async () => {
     const onNewConversation = vi.fn();
-    render(<ChatComposer onSend={vi.fn()} onStop={vi.fn()} onNewConversation={onNewConversation} />);
+    const onSend = vi.fn();
+    render(<ChatComposer commands={conversationCommands({ newConversation: onNewConversation })} onSend={onSend} onStop={vi.fn()} />);
     await userEvent.type(messageField(), '/');
     expect(screen.getByRole('option', { name: /^new/ })).toBeTruthy();
     await userEvent.keyboard('{Enter}');
+    expect(onNewConversation).not.toHaveBeenCalled();
+    expect(onSend).not.toHaveBeenCalled();
+    expect(fieldText(messageField())).toBe('/new');
+    await userEvent.keyboard('{Enter}');
     expect(onNewConversation).toHaveBeenCalledOnce();
+    expect(onSend).not.toHaveBeenCalled();
   });
 
   /* Astryx's own empty-text refusal is inside the vendor's `onSubmit` handler, so Enter (via the wrapper's `keyDownCapture`) is the gesture under test rather than the button. */
@@ -1418,9 +1422,13 @@ it('shows a paused runtime with the same disclosure and separator, even without 
 it('selects compact as an operation, without sending a chat message', async () => {
   const onCompact = vi.fn();
   const onSend = vi.fn();
-  render(<ChatComposer onSend={onSend} onCompact={onCompact} />);
+  render(<ChatComposer commands={conversationCommands({ compact: onCompact })} onSend={onSend} />);
   await userEvent.type(messageField(), '/compact');
   expect(screen.getByRole('option', { name: /^compact/ })).toBeTruthy();
+  await userEvent.keyboard('{Enter}');
+  expect(onCompact).not.toHaveBeenCalled();
+  expect(onSend).not.toHaveBeenCalled();
+  expect(fieldText(messageField())).toBe('/compact');
   await userEvent.keyboard('{Enter}');
   expect(onCompact).toHaveBeenCalledOnce();
   expect(onSend).not.toHaveBeenCalled();

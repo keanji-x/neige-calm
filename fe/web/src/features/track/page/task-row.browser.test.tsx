@@ -44,8 +44,7 @@ function renderTasks(
         canReopenTrack={false}
         canCloseTrack={false} adminGrantedAt={null}
         onRenameTrack={vi.fn()}
-        onReopenTrack={vi.fn()}
-        onCloseTrack={vi.fn()}
+        closedControl={{ pending: false, setClosed: () => Promise.resolve(true), feedback: { error: null, clear: () => undefined, run: () => Promise.resolve(true) } }}
         onDeleteTrack={vi.fn()} onTrackDeleted={vi.fn()}
       />
     </div>,

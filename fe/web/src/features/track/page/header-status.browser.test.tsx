@@ -1,3 +1,4 @@
+import { useTrackClosedControl } from './closed-control.ts';
 import { page as browserPage, userEvent } from 'vitest/browser';
 import { cleanup, render, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -325,6 +326,8 @@ describe('the track closed status in the page header', () => {
   /* The server offers one of Close and Reopen; the harness flips `closedAt` and both capabilities together. */
   function ClosedStateHarness({ initiallyClosed }: { initiallyClosed: boolean }) {
     const [closed, setClosed] = useState(initiallyClosed);
+    const closedControl = useTrackClosedControl({ trackId: 'w1', canReopen: closed, canClose: !closed,
+      patch: value => { setClosed(value); return Promise.resolve(); } });
     return (
       <TrackPage
         mobilePanelObscured={false}
@@ -335,8 +338,7 @@ describe('the track closed status in the page header', () => {
         canReopenTrack={closed}
         canCloseTrack={!closed} adminGrantedAt={null}
         onRenameTrack={vi.fn()}
-        onReopenTrack={() => { setClosed(false); }}
-        onCloseTrack={() => { setClosed(true); }}
+        closedControl={closedControl}
         onDeleteTrack={vi.fn()} onTrackDeleted={vi.fn()}
       />
     );

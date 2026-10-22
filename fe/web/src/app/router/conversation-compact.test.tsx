@@ -29,6 +29,7 @@ it.each(['claude', 'codex', 'opencode'] as const)('compact uses the declared cap
   await userEvent.type(screen.getByRole('combobox', { name: 'Message' }), '/compact');
   await screen.findByRole('option', { name: /^compact/ });
   await userEvent.keyboard('{Enter}');
+  await userEvent.keyboard('{Enter}');
   await waitFor(() => expect(fixture.requests.filter(request => request.method === 'POST' && request.path.endsWith('/planner/compact'))).toHaveLength(1));
   expect(fixture.requests.filter(request => request.method === 'POST' && request.path.endsWith('/planner/input'))).toHaveLength(0);
 });
@@ -85,6 +86,7 @@ it('compact POST started and idle phase never imply success', async () => {
   await userEvent.type(screen.getByRole('combobox', { name: 'Message' }), '/compact');
   await screen.findByRole('option', { name: /^compact/ });
   await userEvent.keyboard('{Enter}');
+  await userEvent.keyboard('{Enter}');
   await waitFor(() => expect(fixture.requests.some(request => request.path.endsWith('/planner/compact'))).toBe(true));
   expect(screen.queryByText('已压缩')).toBeNull();
 });
@@ -96,6 +98,7 @@ it('compact refusal surfaces an error and keeps the old valid reading', async ()
   await screen.findByText('Earlier reply.');
   await userEvent.type(screen.getByRole('combobox', { name: 'Message' }), '/compact');
   await screen.findByRole('option', { name: /^compact/ });
+  await userEvent.keyboard('{Enter}');
   await userEvent.keyboard('{Enter}');
   await screen.findByText('Wait for pending messages and edits to finish before compacting.');
   expect(screen.queryByText('已压缩')).toBeNull();

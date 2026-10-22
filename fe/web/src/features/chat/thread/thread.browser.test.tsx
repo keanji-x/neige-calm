@@ -1,3 +1,4 @@
+import { conversationCommands } from './composer-command.ts';
 import { ChatComposer as SdkComposer, ChatComposerInput as SdkComposerInput } from '@astryxdesign/core/Chat';
 import { withFontRoleProbe } from '../../../../../tools/styles/font-role-fixture.ts';
 /* The composer, the exchange rail and the reply's type, measured against a real rendering engine. */
@@ -49,7 +50,7 @@ function Card() {
           ['--nc-card-radius' as string]: '16px',
         }}
       >
-        <ChatComposer onSend={vi.fn()} onNewConversation={vi.fn()} />
+        <ChatComposer commands={conversationCommands({ newConversation: vi.fn() })} onSend={vi.fn()} />
       </div>
     </div>
   );
@@ -66,7 +67,7 @@ function ImageOnlyCard({ sendWaiting = false, disabled = sendWaiting }: { sendWa
           ['--nc-card-radius' as string]: '16px',
         }}
       >
-        <ChatComposer onSend={vi.fn()} allowEmptyText onNewConversation={vi.fn()} disabled={disabled} sendWaiting={sendWaiting} />
+        <ChatComposer commands={conversationCommands({ newConversation: vi.fn() })} onSend={vi.fn()} allowEmptyText disabled={disabled} sendWaiting={sendWaiting} />
       </div>
     </div>
   );
@@ -217,7 +218,7 @@ describe('the / command menu, as the engine lays it out', () => {
     unmount();
     render(<div style={{ position: 'absolute', insetBlock: 20, insetInlineEnd: 24, inlineSize: 396 }}>
       <div style={{ ['--nc-card-inset' as string]: '8px', ['--nc-card-radius' as string]: '16px' }}>
-        <ChatComposer onSend={vi.fn()} allowEmptyText onNewConversation={vi.fn()} disabled
+        <ChatComposer commands={conversationCommands({ newConversation: vi.fn() })} onSend={vi.fn()} allowEmptyText disabled
           editing={{ preview: 'Draft the changelog entry from this screenshot of the diff, and keep it short.', onCancel: vi.fn() }} />
       </div>
     </div>);
@@ -417,7 +418,7 @@ describe('the caret a just-created track lands with', () => {
     await page.viewport(1400, 900);
     render(
       <div style={{ inlineSize: 396 }}>
-        <ChatComposer focusOnMount onSend={vi.fn()} onNewConversation={vi.fn()} />
+        <ChatComposer commands={conversationCommands({ newConversation: vi.fn() })} focusOnMount onSend={vi.fn()} />
       </div>,
     );
 
@@ -1871,7 +1872,7 @@ function contrast(a: string, b: string): number {
 describe('Send and Stop circular contours', () => {
   it.each(['Send', 'Stop'] as const)('keeps %s full even inside the concentric composer radius', async (label) => {
     await page.viewport(1180, 800);
-    render(label === 'Send' ? <Card /> : <ChatComposer onSend={vi.fn()} onStop={vi.fn()} onNewConversation={vi.fn()} />);
+    render(label === 'Send' ? <Card /> : <ChatComposer commands={conversationCommands({ newConversation: vi.fn() })} onSend={vi.fn()} onStop={vi.fn()} />);
     const button = await page.getByRole('button', { name: label, exact: true }).findElement();
     const box = button.getBoundingClientRect();
     expect(box.width).toBe(box.height);
@@ -1943,7 +1944,7 @@ it('keeps long mention pills inside a narrow transcript', async () => {
 it('renders three distinct command icons and runs compact by keyboard', async () => {
   const compact = vi.fn();
   const send = vi.fn();
-  render(<ChatComposer onSend={send} onCompact={compact} onNewConversation={vi.fn()} onSideConversation={vi.fn()} />);
+  render(<ChatComposer commands={conversationCommands({ newConversation: vi.fn(), compact: compact, side: vi.fn() })} onSend={send} />);
   const field = page.getByRole('combobox', { name: 'Message' });
   await field.fill('/');
   const options = screen.getAllByRole('option');
@@ -1952,6 +1953,10 @@ it('renders three distinct command icons and runs compact by keyboard', async ()
   expect(new Set(glyphs).size).toBe(3);
   expect(options.every((option) => option.querySelector('svg')?.getAttribute('aria-hidden') === 'true')).toBe(true);
   await field.fill('/compact');
+  await userEvent.keyboard('{Enter}');
+  expect(compact).not.toHaveBeenCalled();
+  expect(send).not.toHaveBeenCalled();
+  await expect.element(field).toHaveTextContent('/compact');
   await userEvent.keyboard('{Enter}');
   expect(compact).toHaveBeenCalledOnce();
   expect(send).not.toHaveBeenCalled();

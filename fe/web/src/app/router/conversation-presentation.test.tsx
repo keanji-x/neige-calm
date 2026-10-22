@@ -48,6 +48,10 @@ it('offers the side menu only after the source mounts, while keeping the trigger
     await screen.findByText('Source ready for presentation.');
     await userEvent.type(field, 's');
     await userEvent.click(await screen.findByRole('option', { name: /^side/ }));
+    expect(field.textContent).toBe('/side ');
+    expect(screen.queryByRole('region', { name: 'Side conversation · Codex' })).toBeNull();
+    expect(fixture.requests.filter(request => ['POST', 'PATCH', 'PUT', 'DELETE'].includes(request.method))).toHaveLength(0);
+    await userEvent.keyboard('{Enter}');
     await screen.findByRole('region', { name: 'Side conversation · Codex' });
     expect(fixture.requests.filter(request => request.method === 'POST'
       && request.path.endsWith('/planner/input'))).toHaveLength(0);

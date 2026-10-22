@@ -1,3 +1,4 @@
+import type { TrackClosedControl } from './closed-control.ts';
 import { NO_ISOLATION_LABEL, NO_ISOLATION_EXPLANATION } from '../../../../../core/domain/workspace-isolation.ts';
 import { ExplanationBadge } from '../../../ui/explanation-badge/public.tsx';
 import type { DialogOrigin } from '../../../ui/dialog/public.tsx';
@@ -163,8 +164,7 @@ export type TrackPageProps = Readonly<{
   /** The server's `admin_granted_at`: the Admin badge. The role is changed in the Planner conversation's composer. */
   adminGrantedAt: number | null;
   onRenameTrack: (title: string) => void | Promise<void>;
-  onReopenTrack: () => void | Promise<void>;
-  onCloseTrack: () => void | Promise<void>;
+  closedControl: TrackClosedControl;
   onDeleteTrack: (signal: AbortSignal) => void | Promise<void>;
   /** After a delete that holds, the server's answer or a 404 to a retry alike. */
   onTrackDeleted: () => void;
@@ -183,7 +183,7 @@ export function TrackPage({ mobileReportIntro, mobileChatComposer,
   cardsAction, recentFiles, onOpenCard, onDeleteCard, onSetWorkbench, onOpenTask, onOpenOutline, board, onCloseBoard,
   panel = null, onOpenPanel, onClosePanel,
   mobileBackLabel = 'Pages', onMobileBack, mobileHeaderActionsHost = null, mobileHeaderTitleHost = null, mobileTitleReadView,
-  canReopenTrack, canCloseTrack, adminGrantedAt, onRenameTrack, onReopenTrack, onCloseTrack, onDeleteTrack, onTrackDeleted,
+  canReopenTrack, canCloseTrack, adminGrantedAt, onRenameTrack, closedControl, onDeleteTrack, onTrackDeleted,
 }: TrackPageProps) {
   const compactViewport = useCompactViewport();
   const headerActionsHost = compactViewport ? mobileHeaderActionsHost : null;
@@ -224,27 +224,15 @@ export function TrackPage({ mobileReportIntro, mobileChatComposer,
   }, [mobileHeaderTitleHost, titleContainer, titleInHeader]);
 
   const deletion = useDeleteConfirm((_id, signal) => onDeleteTrack(signal), writeFailureText(DELETE_FAILURES, DELETE_TEXT), onTrackDeleted);
-  const closedFeedback = useOperationFeedback();
   const dismissFeedback = useOperationFeedback();
-  const [closedPending, setClosedPending] = useState(false);
   const notificationSignature = inputNotifications.map(({ key }) => key).join('|');
   const hasTurnTimeout = inputNotifications.some(({ kind }) => kind === 'planner-turn-timeout');
   const [noticeExpanded, setNoticeExpanded] = useState(inputNotifications.length > 0 && !conversationOpen);
   const [notificationAnnouncement, setNotificationAnnouncement] = useState('');
   const offeredClosedAction = canReopenTrack ? 'reopen' : (canCloseTrack ? 'close' : null);
-  const closedPendingRef = useRef<'close' | 'reopen' | null>(null);
   const previousNotificationSignatureRef = useRef('');
   const previousNotificationCountRef = useRef(0);
   const previousConversationOpenRef = useRef(conversationOpen);
-  useEffect(() => {
-    // The PATCH promise settles before its invalidation refetch. Keep Close and
-    // Reopen fenced after a successful response until the authoritative
-    // capability that offered it disappears; otherwise the stale detail can
-    // launch a second PATCH.
-    if (closedPendingRef.current === null || closedPendingRef.current === offeredClosedAction) return;
-    closedPendingRef.current = null;
-    setClosedPending(false);
-  }, [offeredClosedAction]);
   useEffect(() => {
     if (notificationSignature === previousNotificationSignatureRef.current) return;
     const count = inputNotifications.length;
@@ -263,26 +251,12 @@ export function TrackPage({ mobileReportIntro, mobileChatComposer,
   const mobilePanelOpen = panel !== null;
   const noticePanelOpen = noticeExpanded;
   const mobilePanelKind: MobilePanelKind = panel ?? 'cards';
-  const setTrackClosed = async (action: 'close' | 'reopen'): Promise<boolean> => {
-    if (offeredClosedAction !== action || closedPendingRef.current !== null) return false;
-    closedPendingRef.current = action;
-    setClosedPending(true);
-    const done = await closedFeedback.run(
-      Promise.resolve().then(() => (action === 'close' ? onCloseTrack() : onReopenTrack())),
-      writeFailureText(TRACK_PATCH_FAILURES, TRACK_PATCH_TEXT[action]),
-    );
-    if (!done) {
-      closedPendingRef.current = null;
-      setClosedPending(false);
-    }
-    return done;
-  };
   const trackWorkActions = [
     ...(offeredClosedAction === 'reopen' ? [
-      { label: 'Reopen', isDisabled: closedPending, onClick: () => setTrackClosed('reopen') },
+      { label: 'Reopen', isDisabled: closedControl.pending, onClick: () => closedControl.setClosed('reopen').catch(() => false) },
     ] : []),
     ...(offeredClosedAction === 'close' ? [
-      { label: 'Close', isDisabled: closedPending, onClick: () => setTrackClosed('close') },
+      { label: 'Close', isDisabled: closedControl.pending, onClick: () => closedControl.setClosed('close').catch(() => false) },
     ] : []),
   ];
   const desktopSourceRef = useRef<HTMLSpanElement | null>(null);
@@ -713,7 +687,7 @@ export function TrackPage({ mobileReportIntro, mobileChatComposer,
         onCancel={deletion.cancel}
       />
       <OperationFeedback feedback={deletion.feedback} />
-      <OperationFeedback feedback={closedFeedback} />
+      <OperationFeedback feedback={closedControl.feedback} />
       <OperationFeedback feedback={dismissFeedback} />
     </section>
   );

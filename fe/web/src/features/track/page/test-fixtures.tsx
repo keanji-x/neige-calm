@@ -1,3 +1,4 @@
+import { useTrackClosedControl } from './closed-control.ts';
 // Shared fixtures for the TrackPage behaviour and contract suites.
 
 import { render, type RenderResult } from '@testing-library/react';
@@ -8,6 +9,7 @@ import { NEUTRAL_ACTIVITY, type CardWire, type Track } from '../../../../../core
 import { useState } from '../../../ui/state/public.ts';
 import { TrackPage, type TrackPageProps } from './public.tsx';
 
+type LegacyActions = { onReopenTrack?: () => void | Promise<void>; onCloseTrack?: () => void | Promise<void> };
 type Panel = NonNullable<TrackPageProps['panel']>;
 
 export function track(overrides: Partial<Track> = {}): Track {
@@ -39,11 +41,15 @@ export function openableCardsOf(cards: readonly CardWire[], tasks: readonly Repo
 }
 
 /* Only a holder for the `panel` prop; a test that passes `panel` explicitly opts out and gets the fixed value it asked for. */
-function PanelHost({ props }: { props: TrackPageProps }) {
+function PanelHost({ props }: { props: TrackPageProps & LegacyActions }) {
+  const closedControl = useTrackClosedControl({ trackId: props.track.id,
+    canReopen: props.canReopenTrack, canClose: props.canCloseTrack,
+    patch: async closed => { await (closed ? props.onCloseTrack?.() : props.onReopenTrack?.()); } });
   const [panel, setPanel] = useState<Panel | null>(props.panel ?? null);
   return (
     <TrackPage
       {...props}
+      closedControl={closedControl}
       panel={panel}
       onOpenPanel={(next) => { setPanel(next); props.onOpenPanel?.(next); }}
       onClosePanel={() => { setPanel(null); props.onClosePanel?.(); }}
@@ -51,10 +57,10 @@ function PanelHost({ props }: { props: TrackPageProps }) {
   );
 }
 
-export function renderPage(overrides: Partial<TrackPageProps> = {}): RenderResult {
+export function renderPage(overrides: Partial<TrackPageProps> & LegacyActions = {}): RenderResult {
   const cards = overrides.cards ?? [];
   const tasks = overrides.tasks ?? [];
-  const props: TrackPageProps = {
+  const props: TrackPageProps & LegacyActions = {
     mobilePanelObscured: false,
     track: track(),
     cards,
@@ -64,8 +70,7 @@ export function renderPage(overrides: Partial<TrackPageProps> = {}): RenderResul
     canCloseTrack: false,
     adminGrantedAt: null,
     onRenameTrack: vi.fn(),
-    onReopenTrack: vi.fn(),
-    onCloseTrack: vi.fn(),
+    closedControl: { pending: false, setClosed: () => Promise.resolve(true), feedback: { error: null, clear: () => undefined, run: () => Promise.resolve(true) } },
     onDeleteTrack: vi.fn(),
     onTrackDeleted: vi.fn(),
     ...overrides,

@@ -291,6 +291,14 @@ async function write(text: string) {
   await submit();
 }
 
+/** A bare command first completes the open menu; only the following Enter submits. */
+async function completeAndSubmit(name: string) {
+  await typeInto(messageField(), `/${name}`);
+  await screen.findByRole('option', { name: new RegExp(`^${name}`) });
+  await submit();
+  await submit();
+}
+
 /** Send by Enter, the only door while a turn runs: Astryx's `handleSubmit` never consulted `isStopShown`. */
 async function submit() {
   await act(async () => {
@@ -4390,7 +4398,7 @@ describe('side conversations', () => {
       && request.path === `/api/cards/${ASSISTANT_CARD.id}/planner/input`)).toEqual([]);
     fireEvent.click(within(branch).getByRole('button', { name: 'Close side conversation' }));
     await waitFor(() => expect(screen.queryByRole('region', { name: 'Side conversation · Codex' })).toBeNull());
-    await write('/side');
+    await completeAndSubmit('side');
     await screen.findByRole('region', { name: 'Side conversation · Codex' });
     expect(creates(requests, CONVERSATIONS)).toHaveLength(1);
   });
@@ -4406,7 +4414,7 @@ describe('side conversations', () => {
     fireEvent.click(within(branch).getByRole('button', { name: 'Close side conversation' }));
     await waitFor(() => expect(screen.queryByRole('region', { name: 'Side conversation · Codex' })).toBeNull());
     expect(messageField().textContent).toBe('');
-    await write('/side');
+    await completeAndSubmit('side');
     const reopened = await screen.findByRole('region', { name: 'Side conversation · Codex' });
     expect(within(reopened).getByRole('combobox', { name: 'Message' }).textContent).toBe('Unsent side words');
   });
@@ -4513,7 +4521,7 @@ it('sends /compact to the selected conversation compaction endpoint without a ch
   fireEvent.click(await screen.findByRole('button', { name: 'Conversation Assistant' }));
   await screen.findByRole('complementary', { name: 'Assistant' });
   await waitFor(() => expect(messageField().getAttribute('contenteditable')).toBe('true'));
-  await write('/compact');
+  await completeAndSubmit('compact');
   await waitFor(() => expect(creates(requests, `/api/cards/${ASSISTANT_CARD.id}/planner/compact`)).toHaveLength(1));
   expect(creates(requests, `/api/cards/${ASSISTANT_CARD.id}/planner/input`)).toHaveLength(0);
 });
@@ -4532,13 +4540,13 @@ it('compacts each selected conversation while another compaction request is pend
   fireEvent.click(await screen.findByRole('button', { name: 'Conversation Compact A' }));
   await screen.findByRole('complementary', { name: 'Compact A' });
   await waitFor(() => expect(messageField().getAttribute('contenteditable')).toBe('true'));
-  await write('/compact');
+  await completeAndSubmit('compact');
   await waitFor(() => expect(creates(requests, `/api/cards/${a.id}/planner/compact`)).toHaveLength(1));
   fireEvent.click(screen.getByRole('button', { name: 'Close conversation' }));
   fireEvent.click(await screen.findByRole('button', { name: 'Conversation Compact B' }));
   await screen.findByRole('complementary', { name: 'Compact B' });
   await waitFor(() => expect(messageField().getAttribute('contenteditable')).toBe('true'));
-  await write('/compact');
+  await completeAndSubmit('compact');
   await waitFor(() => expect(creates(requests, `/api/cards/${b.id}/planner/compact`)).toHaveLength(1));
   act(() => { answers.get(a.id)?.(ok({ card_id: a.id, worker_session_id: 'r-a', started: true })); });
   await screen.findByText('Compacting conversation context…');

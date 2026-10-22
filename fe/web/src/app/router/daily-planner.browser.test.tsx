@@ -215,7 +215,7 @@ it.each([1000, 768, 600])('keeps the composer inside its conversation card with 
 
 it.each([1000, 768, 600])('keeps both conversation composers reachable with a side draft at height %s', async (height) => {
   await page.viewport(1440, height);
-  renderDailyFixture({ reply: (request) => request.path === '/api/version' ? { status: 200, statusText: 'OK', body: {
+  const fixture = renderDailyFixture({ reply: (request) => request.path === '/api/version' ? { status: 200, statusText: 'OK', body: {
     areaCreateIdempotency: true, conversationCreateModel: true, conversationSide: true, kernelVersion: '0.1.0',
     apiVersion: '23', syncEventVersion: 26, mcpProtocolVersion: '2024-11-05', pluginMcpProtocolVersion: '2025-11-25',
     webCompatVersion: 44, minWebCompatVersion: 44, supervisorControlVersion: 1, buildSha: 'fixture',
@@ -229,6 +229,10 @@ it.each([1000, 768, 600])('keeps both conversation composers reachable with a si
   await main.getByRole('combobox', { name: 'Message', exact: true }).fill('/side');
   await userEvent.keyboard('{Enter}');
   const side = page.getByRole('region', { name: 'Side conversation · Codex' });
+  await expect.poll(() => main.getByRole('combobox', { name: 'Message', exact: true }).element().textContent).toBe('/side ');
+  await expect.element(side).not.toBeInTheDocument();
+  expect(fixture.requests.filter(request => ['POST', 'PATCH', 'PUT', 'DELETE'].includes(request.method))).toHaveLength(0);
+  await userEvent.keyboard('{Enter}');
   await expect.element(side).toBeVisible();
   const stack = main.element().closest('[data-nc-drawer-stack]')!;
   const clip = stack.closest('main')!;
@@ -270,6 +274,10 @@ it.each([768, 600])('keeps both inputs inside their cards when the parent footer
   await main.getByRole('combobox', { name: 'Message', exact: true }).fill('/side');
   await userEvent.keyboard('{Enter}');
   const side = page.getByRole('region', { name: 'Side conversation · Codex' });
+  await expect.poll(() => main.getByRole('combobox', { name: 'Message', exact: true }).element().textContent).toBe('/side ');
+  await expect.element(side).not.toBeInTheDocument();
+  expect(fixture.requests.filter(request => ['POST', 'PATCH', 'PUT', 'DELETE'].includes(request.method))).toHaveLength(0);
+  await userEvent.keyboard('{Enter}');
   await expect.element(side).toBeVisible();
   await main.getByRole('combobox', { name: 'Message', exact: true }).fill(Array.from({ length: 12 }, (_, index) => `Draft ${index + 1}`).join('\n'));
   await side.getByRole('combobox', { name: 'Message', exact: true }).fill(Array.from({ length: 12 }, (_, index) => `Side draft ${index + 1}`).join('\n'));

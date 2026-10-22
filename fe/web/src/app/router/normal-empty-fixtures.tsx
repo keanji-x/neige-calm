@@ -1,3 +1,4 @@
+import { conversationCommands } from '../../features/chat/thread/composer-command.ts';
 import { ReportSourcePanel } from '../../features/report/source/public.tsx';
 import { ReportSeriesBlock } from '../../features/report/series/public.tsx';
 import { InlineTable } from '../../features/report/table/inline.tsx';
@@ -30,7 +31,7 @@ export function mount(node: ReactNode, padded = false) {
 }
 export function EmptySearchComposer() {
   const trigger = useMentionTrigger(() => Promise.resolve([]));
-  return <ChatComposer mentionTrigger={trigger} onSend={noop} onNewConversation={noop} />;
+  return <ChatComposer commands={conversationCommands({ newConversation: noop })} mentionTrigger={trigger} onSend={noop} />;
 }
 
 

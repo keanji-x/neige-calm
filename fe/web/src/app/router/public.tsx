@@ -1,3 +1,6 @@
+import { composerCommands, conversationCommands, conversationCommandBindings, type CommandBindings } from '../../features/chat/thread/composer-command.ts';
+import { trackCommandBindings } from './track-composer-command.ts';
+import { useTrackClosedControl } from '../../features/track/page/closed-control.ts';
 import { TodayReportEmpty } from '../../features/today/public.tsx';
 import type { DialogOrigin } from '../../ui/dialog/public.tsx';
 import { PendingQueue, QueueWriteNotice } from '../../features/chat/thread/pending-queue.tsx';
@@ -167,6 +170,7 @@ type ConversationPanelSource = ConversationCreationSource & Readonly<{
       cardId: string; areaId: string; asks: readonly OpenAsk[];
       answerAsk: (askId: number, answers: readonly AskAnswer[]) => Promise<void>;
       role: PlannerRoleControl;
+      commands?: (stop: (() => void) | undefined) => CommandBindings;
     }> | null;
   }>;
 
@@ -666,6 +670,8 @@ function useConversationPane(
   const replacing = edit.replacing || edit.queuedSaving;
   const editingQueue = edit.queued !== null;
   const changeComposer = edit.onComposerChange;
+  const composerStop = !editingQueue && !composerView.compacting && (composerView.working || composerView.stopping) ? composerView.interrupt : undefined;
+  const plannerCommands = plannerRow?.commands;
   const composerNode = useMemo(() => existingId === null ? null : (
             <ConversationComposer target={{ kind: 'card', id: existingId }} layout={compactComposer ? 'mobile' : 'standard'}
               /* Read at mount only, which is what makes it one-shot; the flag is dropped
@@ -674,12 +680,19 @@ function useConversationPane(
               focusRequest={composerFocusRequest}
               changeText={changeComposer}
               disabled={composerView.sendBlocked || !composerView.historyReady || replacing}
-              onCompact={composerView.manualCompactSupported && composerView.historyReady && editingBar === undefined ? composerView.compact : undefined}
               sendWaiting={composerView.sending || edit.queuedSaving} {...(editingBar === undefined ? {} : { editing: editingBar })}
               /* The images stay with the composer until the store reports them delivered; the press waits out its Edit. */
-              showSideCommand={(options?.showSideCommand ?? true) && sideSourceReady}
-              onSideConversation={!hasSideConversation || !composerView.historyReady ? undefined : sideQuestion}
-              onTerminal={onTerminal}
+              commands={composerCommands({
+                ...conversationCommandBindings({
+                  newConversation: options?.inline === true ? undefined : newConversation,
+                  compact: composerView.manualCompactSupported && composerView.historyReady ? composerView.compact : undefined,
+                  side: !hasSideConversation || !composerView.historyReady ? undefined : sideQuestion,
+                  sideHidden: options?.showSideCommand === false,
+                  sideUnavailableReason: sideSourceReady ? undefined : 'Side conversations are not available here yet.',
+                  terminal: onTerminal, compactViewport: compactComposer,
+                }),
+                ...plannerCommands?.(composerStop),
+              })}
               onSend={sendText}
               allowEmptyText={!editingQueue && composerAttachments.items.length > 0}
               onFiles={editingQueue || !composerView.attachmentsSupported || composerAttachments.busy || composerAttachments.atCapacity ? undefined : (files) => {
@@ -697,8 +710,7 @@ function useConversationPane(
               sendAdornment={compactComposer ? undefined : <ContextRing usage={composerView.contextUsage} />}
               /* `stopping` keeps Stop shown while the interrupt is in flight; `interrupt()`
                                already refuses a second one. */
-              onStop={!editingQueue && !composerView.compacting && (composerView.working || composerView.stopping) ? composerView.interrupt : undefined}
-              onNewConversation={options?.inline === true ? undefined : newConversation}
+              onStop={composerStop}
               mentionTrigger={mentionTrigger}
               /* The kernel reads the selection when it hands a batch to codex, so a change
                                lands on the next turn not yet issued; a REFUSED turn is re-issued and
@@ -739,7 +751,7 @@ function useConversationPane(
               )}
             />
   ), [existingId, compactComposer, panePresented, composerFocusFor, composerFocusRequest, changeComposer, composerView,
-    replacing, editingQueue, edit.queuedSaving, editingBar, options?.showSideCommand, options?.inline, onTerminal, hasSideConversation, sideQuestion, sideSourceReady,
+    composerStop, plannerCommands, replacing, editingQueue, edit.queuedSaving, editingBar, options?.showSideCommand, options?.inline, onTerminal, hasSideConversation, sideQuestion, sideSourceReady,
     sendText, composerAttachments, newConversation, mentionTrigger, scopeProvider, plannerAsks, answerAsk,
     roleValue, roleDisabled, roleDisabledReason, roleChange]);
 
@@ -780,7 +792,7 @@ function useConversationPane(
               </ChatFooterNotice>
             )}
             {/* Initial submit hands words to the held draft, including refusal; only recovery uses the takeover boolean. */}
-            <ConversationComposer onTerminal={onTerminal} target={{ kind: 'scope', id: sourceScopeId }} layout={compactComposer ? 'mobile' : 'standard'} disabled={creating} sendWaiting={creating} onSend={text => { sendDraft(text); }} onNewConversation={options?.inline === true ? undefined : startAnother}
+            <ConversationComposer commands={conversationCommands({ terminal: onTerminal, compactViewport: compactComposer, newConversation: options?.inline === true ? undefined : startAnother })} target={{ kind: 'scope', id: sourceScopeId }} layout={compactComposer ? 'mobile' : 'standard'} disabled={creating} sendWaiting={creating} onSend={text => { sendDraft(text); }}
               focusRequest={composerFocusRequest} focusHandle={draftFocus.handle}
               mentionTrigger={mentionTrigger}
               changeText={setNewConversationText}
@@ -1084,6 +1096,12 @@ function TrackRouteBody({
   const trackMutations = useTrackMutations(transport, unauthorized);
   const plannerRole = usePlannerRoleControl({ trackId: track.id, adminGrantedAt, canAdmin: canAdminTrack,
     setAdmin: (admin) => trackMutations.patch(track.id, track.areaId, { admin }) });
+  const closedControl = useTrackClosedControl({ trackId: track.id, canReopen: canReopenTrack, canClose: canCloseTrack,
+    patch: closed => trackMutations.patch(track.id, track.areaId, { closed }) });
+  const { pending: closedPending, setClosed } = closedControl;
+  const plannerCommands = useCallback((stop: (() => void) | undefined) => trackCommandBindings({
+    canReopen: canReopenTrack, canClose: canCloseTrack, closed: { pending: closedPending, setClosed }, stop,
+  }), [canReopenTrack, canCloseTrack, closedPending, setClosed]);
   const conversationMutations = useTrackConversationMutations(transport, track.id, unauthorized);
   const openMobileSection = useOpenMobileSection();
   const mobileHeaderActionsHost = useMobileHeaderActionsHost();
@@ -1243,6 +1261,7 @@ function TrackRouteBody({
         cardId: plannerCard.id, areaId: track.areaId, asks: openAsks,
         answerAsk: (askId, answers) => trackMutations.answerAsk(track.id, askId, answers),
         role: plannerRole,
+        commands: plannerCommands,
       },
     },
     { onArchive: conversationMutations.archive, terminal: { workbench, render: () => <TerminalWorkbenchView workbench={workbench} host={cardRuntime.host}
@@ -1596,8 +1615,7 @@ function TrackRouteBody({
       }}
       onDismiss={(key) => trackMutations.dismissActivityItem(track.id, key)}
       onRenameTrack={(title) => trackMutations.patch(track.id, track.areaId, { title }).then(() => undefined)}
-      onReopenTrack={() => trackMutations.patch(track.id, track.areaId, { closed: false }).then(() => undefined)}
-      onCloseTrack={() => trackMutations.patch(track.id, track.areaId, { closed: true }).then(() => undefined)}
+      closedControl={closedControl}
       onDeleteTrack={(signal) => trackMutations.remove(track.id, track.areaId, signal)}
       onTrackDeleted={() => go({ name: 'today' })}
     />
