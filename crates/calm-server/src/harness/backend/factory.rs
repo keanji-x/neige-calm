@@ -57,9 +57,16 @@ impl<'a> PlannerFactory<'a> {
             AgentProtocol::Claude => Ok(RetainedIdentityPreparation::LocalSession(
                 uuid::Uuid::new_v4(),
             )),
-            AgentProtocol::Acp => Err(CalmError::Conflict(
-                "canonical ACP activation is unavailable".into(),
-            )),
+            AgentProtocol::Acp => {
+                if !crate::acp_planner::wiring::canonical_planner_inputs(provider) {
+                    return Err(CalmError::Conflict(
+                        "ACP registration does not support canonical Planner inputs".into(),
+                    ));
+                }
+                Ok(RetainedIdentityPreparation::LocalSession(
+                    uuid::Uuid::new_v4(),
+                ))
+            }
         }
     }
 
@@ -67,8 +74,8 @@ impl<'a> PlannerFactory<'a> {
     /// reopen control for a held checkpoint after exact predecessor quiescence.
     pub(crate) fn canonical_recovery_requires_idle(provider: &AgentProvider) -> bool {
         match provider.protocol() {
-            AgentProtocol::Codex | AgentProtocol::Acp => true,
-            AgentProtocol::Claude => false,
+            AgentProtocol::Codex => true,
+            AgentProtocol::Claude | AgentProtocol::Acp => false,
         }
     }
 
@@ -89,6 +96,17 @@ impl<'a> PlannerFactory<'a> {
             }
             AgentProtocol::Claude => self.claude.check_ready().await,
             AgentProtocol::Acp => self.acp.check_ready(provider).await,
+        }
+    }
+
+    /// Local canonical activation validates configuration without probing a
+    /// native process. Native negotiation belongs to the installed first issue.
+    pub(crate) async fn ready_retained(&self, provider: &AgentProvider) -> Result<()> {
+        match provider.protocol() {
+            AgentProtocol::Acp => self.acp.configured(provider).map(|_| ()),
+            AgentProtocol::Codex | AgentProtocol::Claude => {
+                self.ready(provider, ReadinessFor::StartOperation).await
+            }
         }
     }
 

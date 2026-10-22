@@ -22,14 +22,36 @@ struct CanonicalDriver {
     receipt: AcpSubmission,
     association: AcpCanonicalInput,
 }
+enum Completion {
+    Driver(RetainedJoin<Settlement>),
+    /// A durable Completed receipt plus confirmed recovery cleanup, established
+    /// under the retained installation reservation. No synthetic task/join.
+    RecoveredCompleted,
+}
+impl Completion {
+    fn is_finished(&self) -> bool {
+        match self {
+            Self::Driver(driver) => driver.is_finished(),
+            Self::RecoveredCompleted => true,
+        }
+    }
+    async fn finish(&mut self) -> Result<Settlement> {
+        match self {
+            Self::Driver(driver) => driver.finish().await.copied().map_err(|()| {
+                CalmError::Conflict("ACP receipt writer did not finish normally".into())
+            }),
+            Self::RecoveredCompleted => Ok(Settlement::Completed),
+        }
+    }
+}
 pub(super) struct DriverSlot {
-    completion: RetainedJoin<Settlement>,
+    completion: Completion,
     input: DriverInput,
 }
 impl DriverSlot {
     pub(super) fn cleanup(driver: tokio::task::JoinHandle<Settlement>) -> Self {
         Self {
-            completion: RetainedJoin::new(driver),
+            completion: Completion::Driver(RetainedJoin::new(driver)),
             input: DriverInput::Cleanup,
         }
     }
@@ -48,9 +70,35 @@ impl DriverSlot {
             }
         };
         Self {
-            completion: RetainedJoin::new(driver),
+            completion: Completion::Driver(RetainedJoin::new(driver)),
             input,
         }
+    }
+    pub(super) fn recovered(receipt: AcpSubmission, association: AcpCanonicalInput) -> Self {
+        Self {
+            completion: Completion::RecoveredCompleted,
+            input: DriverInput::Canonical(Box::new(CanonicalDriver {
+                receipt,
+                association,
+            })),
+        }
+    }
+    fn target(&self, params: &SessionParams) -> Option<ExecutionEndTarget> {
+        let DriverInput::Canonical(input) = &self.input else {
+            return None;
+        };
+        Some(ExecutionEndTarget {
+            card_id: params.card_id.clone(),
+            track_id: params.track_id.clone(),
+            worker_session_id: params.worker_session_id.clone(),
+            logical_turn_id: input.association.logical_turn_id.clone(),
+            proof: input.association.proof.clone(),
+            scope: crate::harness::backend::ExecutionEndScope::ReceiptProcess {
+                thread_id: uuid::Uuid::parse_str(&input.receipt.thread_id).ok()?,
+                local_turn_id: uuid::Uuid::parse_str(&input.receipt.turn_id).ok()?,
+                native_session_id: input.receipt.native_session_id.clone(),
+            },
+        })
     }
     fn matches(&self, target: &ExecutionEndTarget) -> bool {
         let DriverInput::Canonical(input) = &self.input else {
@@ -75,11 +123,7 @@ impl DriverSlot {
         }
     }
     async fn finish(&mut self) -> Result<Settlement> {
-        self.completion
-            .finish()
-            .await
-            .copied()
-            .map_err(|()| CalmError::Conflict("ACP receipt writer did not finish normally".into()))
+        self.completion.finish().await
     }
 }
 fn slot(shared: &Shared) -> Option<Arc<tokio::sync::Mutex<DriverSlot>>> {
@@ -108,6 +152,42 @@ pub(super) async fn join_driver(shared: &Shared) -> Result<()> {
     Ok(())
 }
 impl AcpPlannerSession {
+    /// ACP has no native idle query. Settlement is the exact completed receipt
+    /// and its qualified cleanup, observed under issuance exclusion.
+    pub(crate) async fn read_settled(
+        &self,
+        card: &str,
+        thread: &str,
+        admission: &crate::harness::native_admission::NativePromptAdmission<'_>,
+    ) -> Result<bool> {
+        let shared = &self.shared;
+        let _issue = shared.issue.lock().await;
+        if card != shared.params.card_id
+            || shared.installed.get().is_none()
+            || shared.params.seals.is_sealed(thread)
+        {
+            return Ok(false);
+        }
+        {
+            let state = shared.state.lock().expect("ACP state");
+            if state.closed || state.active.is_some() {
+                return Ok(false);
+            }
+        }
+        let Some(driver) = slot(shared) else {
+            return Ok(false);
+        };
+        let Some(target) = driver.lock().await.target(&shared.params) else {
+            return Ok(false);
+        };
+        if target.scope.thread_and_turn().0 != thread
+            || self.qualify_execution_end(&target).await?.is_none()
+        {
+            return Ok(false);
+        }
+        admission.check_local().await?;
+        Ok(true)
+    }
     pub(crate) async fn owns_local_execution(&self, target: &ExecutionEndTarget) -> bool {
         let params = &self.shared.params;
         if !target.matches_owner(&params.card_id, &params.track_id, &params.worker_session_id) {

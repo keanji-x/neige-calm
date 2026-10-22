@@ -31,7 +31,10 @@ impl PlannerBackend {
                 Ok(true) => SettledActivity::Settled,
                 Ok(false) | Err(_) => SettledActivity::Held,
             }),
-            Arm::Acp(_) => Ok(SettledActivity::Held),
+            Arm::Acp(session) => Ok(match session.read_settled(card, thread, admission).await {
+                Ok(true) => SettledActivity::Settled,
+                Ok(false) | Err(_) => SettledActivity::Held,
+            }),
         }
     }
 }

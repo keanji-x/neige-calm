@@ -793,3 +793,5 @@ async fn retained_native_refusal_preserves_original_unknown_without_private_erro
 
 #[cfg(feature = "fixtures")]
 mod claude_recovery;
+
+mod acp_recovery;

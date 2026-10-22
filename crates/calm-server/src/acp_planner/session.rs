@@ -3,6 +3,7 @@ mod admission;
 mod cancellation;
 mod driver;
 mod input;
+mod recovery;
 use cancellation::IssueGuard;
 use driver::drive;
 use input::InputContract;
@@ -267,8 +268,7 @@ impl AcpPlannerSession {
         }
         if let InputContract::Canonical { .. } = &input
             && (row.contract != WorkerContract::Planner
-                || !super::profile::AcpAgentProfile::of(&params.provider)
-                    .is_some_and(|profile| profile.canonical_planner_inputs))
+                || !super::wiring::canonical_planner_inputs(&params.provider))
         {
             return Err(refused("ACP canonical input requires an eligible Planner"));
         }

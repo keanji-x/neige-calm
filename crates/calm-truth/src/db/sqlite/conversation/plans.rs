@@ -183,13 +183,12 @@ impl OriginalInputExecution {
     }
 }
 
-/// Follows the actual Turn->Initial back-reference. Missing/unsettled reports
-/// hold the complete active logical execution so its real report/release owner
-/// can still settle. Array order, latest native slots and text are not evidence.
-pub async fn original_input_execution_tx(
+/// Resolve the original Initial through its owning Turn and exact carrier.
+/// This identity lookup grants neither native delivery nor execution closure.
+pub async fn original_initial_submission_tx(
     tx: &mut Transaction<'_, Sqlite>,
     carrier: &super::CurrentInputCarrier,
-) -> Result<Option<OriginalInputExecution>> {
+) -> Result<Option<InputSubmissionId>> {
     let Some(active) = carrier.checkpoint().active.as_ref() else {
         return Ok(None);
     };
@@ -215,6 +214,22 @@ pub async fn original_input_execution_tx(
             "active execution lost its Original Initial",
         ));
     }
+    Ok(Some(original_id))
+}
+
+/// Follows the actual Turn->Initial back-reference. Missing/unsettled reports
+/// hold the complete active logical execution so its real report/release owner
+/// can still settle. Array order, latest native slots and text are not evidence.
+pub async fn original_input_execution_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    carrier: &super::CurrentInputCarrier,
+) -> Result<Option<OriginalInputExecution>> {
+    let Some(active) = carrier.checkpoint().active.as_ref() else {
+        return Ok(None);
+    };
+    let Some(original_id) = original_initial_submission_tx(tx, carrier).await? else {
+        return Ok(None);
+    };
     let Some(initial) = carrier.checkpoint().attempt(&original_id) else {
         return Ok(None);
     };

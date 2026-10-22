@@ -75,12 +75,15 @@ pub async fn acp_registration_claim(
     tx.commit().await?;
     Ok(())
 }
-pub async fn acp_submission_get(
-    pool: &SqlitePool,
+pub async fn acp_submission_get<'e, E>(
+    executor: E,
     worker: &str,
     client: &str,
-) -> Result<Option<AcpSubmission>> {
-    Ok(sqlx::query_as(concat!("SELECT ","worker_session_id,client_id,turn_id,thread_id,native_session_id,input_json,state,outcome_j","son FROM acp_submissions WHERE worker_session_id=?1 AND client_id=?2")).bind(worker).bind(client).fetch_optional(pool).await?)
+) -> Result<Option<AcpSubmission>>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
+{
+    Ok(sqlx::query_as(concat!("SELECT ","worker_session_id,client_id,turn_id,thread_id,native_session_id,input_json,state,outcome_j","son FROM acp_submissions WHERE worker_session_id=?1 AND client_id=?2")).bind(worker).bind(client).fetch_optional(executor).await?)
 }
 pub async fn acp_submission_unresolved(pool: &SqlitePool, worker: &str) -> Result<bool> {
     let mut connection = pool.acquire().await?;

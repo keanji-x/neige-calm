@@ -179,7 +179,7 @@ impl PlannerHarnessStartAdapter {
                     &bound.claude_host,
                     &bound.acp_host,
                 )
-                .ready(&target.binding.provider, ReadinessFor::StartOperation)
+                .ready_retained(&target.binding.provider)
                 .await?;
                 let payload = serde_json::to_value(&wire)?;
                 let key = super::super::OperationKey {
@@ -270,7 +270,7 @@ impl PlannerHarnessStartAdapter {
             &self.claude_host,
             &self.acp_host,
         )
-        .ready(&target.binding.provider, ReadinessFor::StartOperation)
+        .ready_retained(&target.binding.provider)
         .await?;
         let (_, root) = self.retained_source()?;
         let track = self
@@ -561,7 +561,10 @@ impl PlannerHarnessStartAdapter {
             },
         )
         .await?;
-        self.retained_target(wire).await?;
+        backend.recover_retained().await?;
+        // Recovery may refine a lost private report. Load the committed frame,
+        // retaining the same source, worker and workspace fences.
+        let target = self.retained_target(wire).await?;
         let handle = PlannerHarness::run(PlannerHarnessParams {
             track_delete_locks: track_delete_locks.clone(),
             worker_session_id: wire.worker_session_id.clone(),

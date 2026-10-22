@@ -4,6 +4,7 @@ mod carrier;
 mod cleanup;
 mod control;
 mod failures;
+mod recovery;
 mod resolution;
 mod transport;
 use super::*;
@@ -365,6 +366,17 @@ async fn canonical_acp_fake_completed_receipt_does_not_replace_join_and_cleanup(
     .await
     .unwrap();
     assert!(fx.complete().await.is_none());
+    let admission = crate::harness::native_admission::NativePromptAdmission::new(
+        || Ok(()),
+        || Box::pin(async { Ok(()) }),
+    );
+    assert!(matches!(
+        fx.backend
+            .settled_activity(&fx.owner.card, &fx.owner.thread, &admission)
+            .await
+            .unwrap(),
+        SettledActivity::Held
+    ));
     pause.release.notify_one();
     fx.session.shutdown().await.unwrap();
 }

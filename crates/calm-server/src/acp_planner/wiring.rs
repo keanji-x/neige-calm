@@ -40,3 +40,9 @@ pub(crate) async fn open_session(
         instructions,
     })))
 }
+
+/// Canonical support is registration policy owned by the ACP profile.
+pub(crate) fn canonical_planner_inputs(provider: &calm_types::runtime::AgentProvider) -> bool {
+    super::profile::AcpAgentProfile::of(provider)
+        .is_some_and(|profile| profile.canonical_planner_inputs)
+}

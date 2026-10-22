@@ -148,9 +148,17 @@ impl PlannerFactory<'_> {
                     .await?;
                 validate_active_recovery(repo, runtime, target.thread_id(), admission).await
             }
-            calm_types::runtime::AgentProtocol::Acp => Err(CalmError::Conflict(
-                "canonical ACP recovery is unavailable".into(),
-            )),
+            calm_types::runtime::AgentProtocol::Acp => {
+                if !crate::acp_planner::wiring::canonical_planner_inputs(provider) {
+                    return Err(CalmError::Conflict(
+                        "ACP registration does not support canonical Planner inputs".into(),
+                    ));
+                }
+                let target = RecoveryTarget::active(runtime)?;
+                // ACP receipt/cleanup recovery runs only after the retained
+                // install reservation. Validation alone cannot stop a winner.
+                validate_active_recovery(repo, runtime, target.thread_id(), admission).await
+            }
         }
     }
 
@@ -526,4 +534,16 @@ async fn validate_active_recovery(
         })
     })
     .await
+}
+
+impl crate::harness::backend::PlannerBackend {
+    /// The caller owns the retained install reservation and has no live predecessor.
+    pub(crate) async fn recover_retained(&self) -> Result<()> {
+        match &self.0 {
+            crate::harness::backend::Arm::Acp(session) => session.recover_retained().await,
+            crate::harness::backend::Arm::Claude(_) | crate::harness::backend::Arm::Codex(..) => {
+                Ok(())
+            }
+        }
+    }
 }
