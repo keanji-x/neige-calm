@@ -263,10 +263,19 @@ async fn c3_probe_admission_is_durably_exclusive() {
     for output in [false, true] {
         for steal_boot in [false, true] {
             let boot = TestBoot::new().await;
-            let id = if output {
+            let (id, pause) = if output {
                 super::c3_probe::output_admission_ready(&boot).await
             } else {
-                c3_probe_ready(&boot, "exclusive", "exit 0").await
+                // Dropping this cold observer does not start it. The first winner
+                // recovery below attaches one, so arm its pause before admission.
+                let id = c3_probe_ready(&boot, "exclusive", "exit 0").await;
+                let pause = calm_server::test_seams::PausePoint::default();
+                calm_server::test_seams::install_pause_for_test(
+                    "forge-observer-before-read",
+                    &id,
+                    pause.clone(),
+                );
+                (id, pause)
             };
             let baseline = if output { 2 } else { 1 };
             let stale = boot
@@ -314,6 +323,11 @@ async fn c3_probe_admission_is_durably_exclusive() {
                     .unwrap(),
                 ParkedRecovery::LeaveParked
             ));
+            if !output {
+                tokio::time::timeout(Duration::from_secs(10), pause.entered.notified())
+                    .await
+                    .unwrap();
+            }
             assert_eq!(c3_count(&boot, &id).await, baseline + 1);
             assert!(
                 adapter
@@ -350,6 +364,11 @@ async fn c3_probe_admission_is_durably_exclusive() {
                     .is_err()
             );
             tx.rollback().await.unwrap();
+            // Keep the accelerator out of every admission/alias assertion, then
+            // let it finish after relinquishing the test's winning claim.
+            c3_rewrite(&boot, &id, &c3_record(&c3_op(&boot, &id).await)).await;
+            pause.release.notify_one();
+            c3_result(&boot, &id).await;
         }
     }
 }

@@ -236,7 +236,9 @@ async fn c3_park_write_failure_retains_owned_execution() {
     c3_all_retired(&boot, &op.id).await;
 }
 
-pub(super) async fn output_admission_ready(boot: &TestBoot) -> String {
+pub(super) async fn output_admission_ready(
+    boot: &TestBoot,
+) -> (String, calm_server::test_seams::PausePoint) {
     use workspace_runtime::execution::*;
     let mut input = c3_merge_input(boot, "exclusive-output", "exit 7");
     input["probe"] = json!({"probe_argv":["/bin/true"],"output_probe_argv":["/bin/true"]});
@@ -266,8 +268,19 @@ pub(super) async fn output_admission_ready(boot: &TestBoot) -> String {
         .await
         .unwrap()
         .unwrap();
+    // Recovery attaches a background observer; hold it before its first read
+    // throughout fixture staging and the caller's exclusive-admission assertions.
+    let pause = calm_server::test_seams::PausePoint::default();
+    calm_server::test_seams::install_pause_for_test(
+        "forge-observer-before-read",
+        &id,
+        pause.clone(),
+    );
     ForgeActionAdapter::new()
         .recover_owned_parked(&claimed, RecoveryMode::PreDeadlineProbe, &boot.spawn_ctx)
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(10), pause.entered.notified())
         .await
         .unwrap();
     let mut record = c3_record(&c3_op(boot, &id).await);
@@ -302,7 +315,7 @@ pub(super) async fn output_admission_ready(boot: &TestBoot) -> String {
         "",
     );
     c3_rewrite(boot, &id, &record).await;
-    id
+    (id, pause)
 }
 
 #[tokio::test]
