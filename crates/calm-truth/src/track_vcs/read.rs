@@ -1,5 +1,6 @@
 use crate::error::{CalmError, Result};
 use crate::ids::{ActorId, CardId, TrackId};
+use crate::track_path::normalize_path;
 use calm_types::worker::WorkerSessionId;
 use similar::TextDiff;
 use sqlx::SqlitePool;
@@ -7,7 +8,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use super::store::{
     commit_records_for_track_pool, commit_records_for_track_prefix_pool, load_blob_bytes_pool,
-    load_commit_record_pool, load_tree_object_pool, normalize_path,
+    load_commit_record_pool, load_tree_object_pool,
 };
 use super::{
     CommitHash, CommitLog, CommitLogEntry, CommitRecord, DEFAULT_PATCH_MAX_LINES, DiffEntry,

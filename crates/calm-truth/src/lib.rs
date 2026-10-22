@@ -31,6 +31,7 @@ pub mod test_helpers;
 pub mod test_seam;
 pub mod track_area_cache;
 pub mod track_fs_view;
+pub mod track_path;
 pub mod track_vcs;
 pub mod track_vcs_repo;
 pub mod validation;

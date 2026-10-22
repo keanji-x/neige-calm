@@ -2,6 +2,7 @@ use crate::error::Result;
 use crate::event::Event;
 use crate::ids::{CardId, TrackId};
 use crate::track_fs_view::{self, RunProjection};
+use crate::track_path::normalize_path;
 use serde_json::Value;
 use sqlx::{Row, Sqlite, Transaction};
 use std::collections::{BTreeMap, BTreeSet};
@@ -14,7 +15,7 @@ use super::snapshot::{
     load_track_optional_tx, project_runtime_into_cards_tx, report_markdown, run_json, run_markdown,
     runs_index_json, track_json,
 };
-use super::store::{load_blob_bytes_tx, normalize_path, put_rendered_entry};
+use super::store::{load_blob_bytes_tx, put_rendered_entry};
 use super::transcripts::HookInputs;
 use super::types::{BlobContent, CardVisibility};
 use super::{ManifestEntry, TreeManifest};

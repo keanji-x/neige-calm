@@ -14,6 +14,7 @@ use crate::track_fs_dto::{
     TrackFsCardMeta, TrackFsHookEvent, TrackFsRunDetail, TrackFsRunEventRef, TrackFsRunEvents,
     TrackFsRunIndexEntry, TrackFsRunStatus, TrackFsRunVerdict, TrackFsRunVerdictSummary,
 };
+pub use crate::track_path::normalize_path;
 use crate::track_report::TrackReportPayload;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -439,17 +440,6 @@ impl From<TrackFsError> for CalmError {
             TrackFsError::Internal(message) => CalmError::Internal(message),
         }
     }
-}
-
-pub fn normalize_path(path: &str) -> String {
-    let trimmed = path.trim();
-    if trimmed == "/" {
-        return String::new();
-    }
-    trimmed
-        .trim_start_matches('/')
-        .trim_end_matches('/')
-        .to_string()
 }
 
 fn cards_updated_at(track: &Track, cards: &[Card]) -> i64 {

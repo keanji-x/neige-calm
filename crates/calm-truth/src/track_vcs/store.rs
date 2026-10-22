@@ -504,14 +504,3 @@ fn hash_bytes(kind: &str, bytes: &[u8]) -> ObjectHash {
     hasher.update(bytes);
     hasher.finalize().to_hex().to_string()
 }
-
-pub(super) fn normalize_path(path: &str) -> String {
-    let trimmed = path.trim();
-    if trimmed == "/" {
-        return String::new();
-    }
-    trimmed
-        .trim_start_matches('/')
-        .trim_end_matches('/')
-        .to_string()
-}
