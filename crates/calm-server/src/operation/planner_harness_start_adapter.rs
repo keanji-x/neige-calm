@@ -3366,27 +3366,45 @@ mod tests {
         reason: &str,
         create_card: bool,
     ) -> CompensationStateVersioned {
-        let payload = serde_json::to_value(PlannerHarnessStartOperationPayload {
-            actor: ActorId::User,
-            track_id: "track-1".into(),
-            planner_card_id: CardId::from("conv-1"),
-            report_card_id: None,
-            sort: None,
-            cwd: "/tmp".into(),
-            goal: None,
-            reset_harness_items: false,
-            force_new_thread: false,
-            profile: HarnessProfile::PlainChat,
-            create_card: create_card.then(LazyMintCardSeed::default),
-            opening_briefing: None,
-            first_message: None,
-            create_request_sha256: None,
-        })
+        let payload = serde_json::to_value(historical_start_payload(
+            ActorId::User,
+            "track-1".into(),
+            CardId::from("conv-1"),
+            HarnessProfile::PlainChat,
+            false,
+            create_card.then(LazyMintCardSeed::default),
+        ))
         .expect("payload serializes");
         adapter
             .plan_compensation(from_phase, reason, output, &operation_with_payload(payload))
             .await
             .expect("plan compensation")
+    }
+
+    pub(super) fn historical_start_payload(
+        actor: ActorId,
+        track_id: String,
+        planner_card_id: CardId,
+        profile: HarnessProfile,
+        force_new_thread: bool,
+        create_card: Option<LazyMintCardSeed>,
+    ) -> PlannerHarnessStartOperationPayload {
+        PlannerHarnessStartOperationPayload {
+            actor,
+            track_id,
+            planner_card_id,
+            report_card_id: None,
+            sort: None,
+            cwd: "/tmp".into(),
+            goal: None,
+            reset_harness_items: false,
+            force_new_thread,
+            profile,
+            create_card,
+            opening_briefing: None,
+            first_message: None,
+            create_request_sha256: None,
+        }
     }
 
     fn operation_with_payload(payload: Value) -> Operation {

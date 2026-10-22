@@ -1,7 +1,4 @@
 #!/usr/bin/env bash
-# #2836 historical start test exception: harness_item/crates 294 -> 295 is one
-# initializer of the frozen reset-transcript wire field in the start-phase fixture.
-# No new domain name, scan exemption or test inventory is introduced.
 # U3 bounded receipt exception: runtime_id/crates 1136 -> 1145 adds nine
 # references to the existing original-carrier receipt field/column and its HTTP assertions.
 # CI handoff regression: runtime_id/fe 36 -> 37 is one required

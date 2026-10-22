@@ -44,22 +44,14 @@ impl Fixture {
         ));
         let adapter = super::tests::adapter_for(repo.clone(), plugin);
         let operations = Arc::new(SqlxOperationRepo::new(repo.db().clone()));
-        let payload = serde_json::to_value(PlannerHarnessStartOperationPayload {
-            actor: ActorId::Kernel,
-            track_id: track.id.to_string(),
-            planner_card_id: card.id,
-            report_card_id: None,
-            sort: None,
-            cwd: "/tmp".into(),
-            goal: None,
-            reset_harness_items: false,
-            force_new_thread: deferred,
-            profile: HarnessProfile::Planner,
-            create_card: None,
-            opening_briefing: None,
-            first_message: None,
-            create_request_sha256: None,
-        })
+        let payload = serde_json::to_value(super::tests::historical_start_payload(
+            ActorId::Kernel,
+            track.id.to_string(),
+            card.id,
+            HarnessProfile::Planner,
+            deferred,
+            None,
+        ))
         .unwrap();
         let id = operations
             .insert_operation(
