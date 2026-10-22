@@ -2,7 +2,7 @@
 // `admin_granted_at`, `can_admin` decides whether it may change, and a pick is `PATCH /api/tracks/{id} {admin}`
 // through the track patch mutation. The Track page shows only the Admin badge.
 
-import { useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 
 import { writeFailureText } from '../../../../core/domain/failure-class.ts';
 import { TRACK_PATCH_FAILURES, TRACK_PATCH_TEXT } from '../../../../core/domain/track.ts';
@@ -37,16 +37,22 @@ export function usePlannerRoleControl({ trackId, adminGrantedAt, canAdmin, setAd
   const offered = canAdmin ? value : null;
   const feedback = useOperationFeedback();
   const [pending, setPending] = useState(false);
-  const pendingFrom = useRef<PlannerRole | null>(null);
-  useEffect(() => {
-    // The Close and Reopen fence: held after a successful PATCH until the refetched detail offers something else.
-    if (pendingFrom.current === null || pendingFrom.current === offered) return;
+  const pendingFrom = useRef<Readonly<{ from: PlannerRole }> | null>(null);
+  const release = useCallback((token: NonNullable<typeof pendingFrom.current>) => {
+    if (pendingFrom.current !== token) return;
     pendingFrom.current = null;
     setPending(false);
-  }, [offered]);
+  }, [setPending]);
+  useEffect(() => {
+    // The Close and Reopen fence: held after a successful PATCH until the refetched detail offers something else.
+    const token = pendingFrom.current;
+    if (token === null || token.from === offered) return;
+    release(token);
+  }, [offered, release]);
   const onChange = useCommittedCallback(trackId, (role: PlannerRole) => {
     if (offered === null || role === offered || pendingFrom.current !== null) return;
-    pendingFrom.current = offered;
+    const token = { from: offered };
+    pendingFrom.current = token;
     setPending(true);
     const admin = role === 'admin';
     void feedback.run(
@@ -54,8 +60,7 @@ export function usePlannerRoleControl({ trackId, adminGrantedAt, canAdmin, setAd
       writeFailureText(TRACK_PATCH_FAILURES, TRACK_PATCH_TEXT[admin ? 'grantAdmin' : 'revokeAdmin']),
     ).then((done) => {
       if (done) return;
-      pendingFrom.current = null;
-      setPending(false);
+      release(token);
     });
   });
   return {
