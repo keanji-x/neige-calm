@@ -1,3 +1,4 @@
+use super::parse_timestamp_ms;
 use calm_types::worker::{WorkerProviderKind, WorkerSessionId};
 use calm_types::worker_flow::{
     CommandAction, ExecSource, ExecStatus, FileChangeKind, FileEdit, FlowEnvelope, MessageBlock,
@@ -537,12 +538,6 @@ fn response_item_type(item: &ResponseItem) -> &'static str {
         ResponseItem::WebSearchCall { .. } => "web_search_call",
         ResponseItem::Other => "response_item",
     }
-}
-
-fn parse_timestamp_ms(timestamp: &str) -> Option<i64> {
-    chrono::DateTime::parse_from_rfc3339(timestamp)
-        .ok()
-        .map(|dt| dt.timestamp_millis())
 }
 
 const UNRECOGNIZED_MESSAGE_CONTENT: &str = "[message with unrecognized content]";

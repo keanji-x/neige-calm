@@ -63,8 +63,8 @@ pub async fn resolve_claude_session_for_card(
     let runtime = repo
         .session_projection_projectable_for_card(&card_id.to_string())
         .await?;
-    if let Some(session_id) = claude_session_of_runtime(runtime.as_ref()) {
-        return Ok(Some(session_id));
+    if let Some(agent_session_id) = claude_session_of_runtime(runtime.as_ref()) {
+        return Ok(Some(agent_session_id));
     }
     let card = repo.card_get(card_id).await?;
     Ok(legacy_claude_session_of_card(
@@ -93,7 +93,7 @@ pub fn legacy_claude_session_of_card(
             .get("claude_session_id")
             .and_then(serde_json::Value::as_str)
             .map(str::trim)
-            .filter(|session_id| !session_id.is_empty())
+            .filter(|agent_session_id| !agent_session_id.is_empty())
             .map(ToOwned::to_owned)
     });
     tracing::warn!(
@@ -171,7 +171,7 @@ pub async fn project_runtime_into_event_payload<R: WorkerSessionProjectionRepo +
 pub(crate) fn project_runtime_fields(card: &mut Card, runtime: &WorkerSessionProjection) {
     let terminal_id = non_empty(runtime.terminal_run_id.as_deref()).map(ToOwned::to_owned);
     let thread_id = non_empty(runtime.thread_id.as_deref()).map(ToOwned::to_owned);
-    let session_id = non_empty(runtime.session_id.as_deref()).map(ToOwned::to_owned);
+    let agent_session_id = non_empty(runtime.session_id.as_deref()).map(ToOwned::to_owned);
     let source = projected_shared_codex_source(runtime).map(ToOwned::to_owned);
     let thread_status = projected_thread_status(runtime).map(ToOwned::to_owned);
 
@@ -186,9 +186,9 @@ pub(crate) fn project_runtime_fields(card: &mut Card, runtime: &WorkerSessionPro
     }
 
     if runtime.kind == WorkerSessionKind::ClaudeCard
-        && let Some(session_id) = session_id
+        && let Some(agent_session_id) = agent_session_id
     {
-        map.insert("claude_session_id".into(), Value::String(session_id));
+        map.insert("claude_session_id".into(), Value::String(agent_session_id));
     }
 
     if runtime_uses_codex(runtime)

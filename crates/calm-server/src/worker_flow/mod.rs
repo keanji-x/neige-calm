@@ -31,6 +31,12 @@ use crate::state::AppState;
 use self::claude_transcript::{ClaudeTranscriptFlowSource, ClaudeTranscriptFlowSourceOptions};
 use self::codex_rollout::{CodexRolloutFlowSource, CodexRolloutFlowSourceOptions};
 
+fn parse_timestamp_ms(timestamp: &str) -> Option<i64> {
+    chrono::DateTime::parse_from_rfc3339(timestamp)
+        .ok()
+        .map(|dt| dt.timestamp_millis())
+}
+
 pub struct WorkerFlowDriver {
     repo: Arc<dyn Repo>,
     shared_codex_appserver: Arc<SharedCodexAppServer>,

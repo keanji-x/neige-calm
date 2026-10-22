@@ -227,7 +227,7 @@ impl ProviderAdapter for ClaudeRestartAdapter {
         // Read in this transaction: a SessionStart hook moves the session id under the same write
         // lock (#2516), so the restart resumes exactly what the card last started.
         let projectable = session_projection_projectable_for_card_tx(tx, &card_id).await?;
-        let claude_session_id = claude_session_of_runtime(projectable.as_ref())
+        let agent_session_id = claude_session_of_runtime(projectable.as_ref())
             .or_else(|| legacy_claude_session_of_card(&card_id, projectable.as_ref(), Some(&card)))
             .ok_or_else(|| {
                 CalmError::Forbidden("Claude card has no resumable session id".into())
@@ -269,7 +269,7 @@ impl ProviderAdapter for ClaudeRestartAdapter {
                 CLAUDE_CARD_PERMISSION_FLAGS
             },
             shell_single_quote(&settings_path),
-            shell_single_quote(&claude_session_id),
+            shell_single_quote(&agent_session_id),
         );
         let mcp_config = if is_worker {
             let path = worker_mcp::mcp_config_path(Path::new(&settings_path))?;
@@ -318,7 +318,7 @@ impl ProviderAdapter for ClaudeRestartAdapter {
                 status: WorkerSessionState::Starting,
                 terminal_run_id: Some(term.id.clone()),
                 thread_id: None,
-                session_id: Some(claude_session_id.clone()),
+                session_id: Some(agent_session_id.clone()),
                 active_turn_id: None,
                 handle_state_json: None,
                 spawn_op_id: None,
@@ -355,7 +355,7 @@ impl ProviderAdapter for ClaudeRestartAdapter {
             "track_id": scope.track_id().map(|id| id.as_str().to_string()),
             "terminal_id": term.id,
             "settings_path": settings_path,
-            "claude_session_id": claude_session_id,
+            "claude_session_id": agent_session_id,
             "claude_bin": claude_bin,
             "command_line": command_line,
             "mcp_config_path": mcp_config,

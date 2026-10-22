@@ -1,4 +1,5 @@
 use super::codex_normalizer::{parse_command_actions, summary};
+use super::parse_timestamp_ms;
 
 use std::collections::HashMap;
 
@@ -767,12 +768,6 @@ fn env_for(
         provider_extra: None,
         raw_ref: Some(raw_ref),
     }
-}
-
-fn parse_timestamp_ms(timestamp: &str) -> Option<i64> {
-    chrono::DateTime::parse_from_rfc3339(timestamp)
-        .ok()
-        .map(|dt| dt.timestamp_millis())
 }
 
 fn content_type(item: &Value) -> Option<&str> {

@@ -32,7 +32,7 @@ pub(super) struct HookTranscriptPath {
     repo: Arc<dyn Repo>,
     track_id: String,
     card_id: String,
-    session_id: String,
+    agent_session_id: String,
     since_id: Option<i64>,
     reported: Option<PathBuf>,
 }
@@ -55,13 +55,13 @@ impl TranscriptLookup {
         repo: Arc<dyn Repo>,
         track_id: String,
         card_id: String,
-        session_id: String,
+        agent_session_id: String,
     ) -> Self {
         Self::Hook(HookTranscriptPath {
             repo,
             track_id,
             card_id,
-            session_id,
+            agent_session_id,
             since_id: None,
             reported: None,
         })
@@ -120,7 +120,7 @@ impl HookTranscriptPath {
             };
             if card_id.as_str() != self.card_id
                 || payload.get("session_id").and_then(Value::as_str)
-                    != Some(self.session_id.as_str())
+                    != Some(self.agent_session_id.as_str())
             {
                 continue;
             }
@@ -136,7 +136,7 @@ impl HookTranscriptPath {
                 Some(reported) if *reported != path => {
                     tracing::warn!(
                         card_id = %self.card_id,
-                        session_id = %self.session_id,
+                        session_id = %self.agent_session_id,
                         first_path = %reported.display(),
                         conflicting_path = %path.display(),
                         "claude hooks report conflicting transcript paths for one session; exiting source"

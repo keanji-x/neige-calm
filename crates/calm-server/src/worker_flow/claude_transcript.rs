@@ -97,7 +97,7 @@ impl ClaudeTranscriptFlowSource {
         let mut lookup = if let Some(path) = &self.options.path_override {
             TranscriptLookup::Fixed(path.clone())
         } else {
-            let Some(session_id) = self.runtime.session_id.clone() else {
+            let Some(agent_session_id) = self.runtime.session_id.clone() else {
                 tracing::warn!(
                     card_id = %self.runtime.card_id,
                     runtime_id = %self.runtime.id,
@@ -109,7 +109,7 @@ impl ClaudeTranscriptFlowSource {
                 self.repo.clone(),
                 session.track_id.as_str().to_string(),
                 self.runtime.card_id.clone(),
-                session_id,
+                agent_session_id,
             )
         };
         let mut runtime_alive = RepoRuntimeAlive(self);

@@ -194,11 +194,11 @@ fn active_by_session_sql() -> String {
 pub(super) async fn runtime_get_active_by_session_from_pool(
     pool: &SqlitePool,
     provider: AgentProvider,
-    session_id: &str,
+    agent_session_id: &str,
 ) -> WorkerSessionProjectionResult<Option<WorkerSessionProjection>> {
     let row = sqlx::query(&active_by_session_sql())
         .bind(agent_provider_to_db(&provider))
-        .bind(session_id)
+        .bind(agent_session_id)
         .fetch_optional(pool)
         .await?;
     row.as_ref().map(card_runtime_from_ws_join_row).transpose()
@@ -209,11 +209,11 @@ pub(super) async fn runtime_get_active_by_session_from_pool(
 pub async fn session_projection_active_by_session_tx(
     tx: &mut WorkerSessionProjectionTx<'_>,
     provider: AgentProvider,
-    session_id: &str,
+    agent_session_id: &str,
 ) -> WorkerSessionProjectionResult<Option<WorkerSessionProjection>> {
     let row = sqlx::query(&active_by_session_sql())
         .bind(agent_provider_to_db(&provider))
-        .bind(session_id)
+        .bind(agent_session_id)
         .fetch_optional(&mut **tx)
         .await?;
     row.as_ref().map(card_runtime_from_ws_join_row).transpose()
@@ -731,9 +731,10 @@ impl WorkerSessionProjectionRepo for SqlxRepo {
     async fn session_projection_active_by_session(
         &self,
         provider: AgentProvider,
-        session_id: &str,
+        agent_session_id: &str,
     ) -> WorkerSessionProjectionResult<Option<WorkerSessionProjection>> {
-        runtime_get_active_by_session_from_pool(self.db.read_pool(), provider, session_id).await
+        runtime_get_active_by_session_from_pool(self.db.read_pool(), provider, agent_session_id)
+            .await
     }
 
     async fn session_projection_active_for_card(

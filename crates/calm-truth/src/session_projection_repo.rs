@@ -151,7 +151,7 @@ pub trait WorkerSessionProjectionRepo {
     async fn session_projection_active_by_session(
         &self,
         provider: AgentProvider,
-        session_id: &str,
+        agent_session_id: &str,
     ) -> Result<Option<WorkerSessionProjection>>;
 
     async fn session_projection_active_for_card(
