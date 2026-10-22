@@ -20,8 +20,10 @@ that provider.
 **Settings → Planners** shows **Ready**, **Unavailable**, or **Not configured**
 with the server's reason when a provider is not ready. Choose **Recheck** after
 fixing installation, version, or login problems. This pane reports readiness;
-it does not install a CLI or sign in for you. Claude Track creation is refused
-until Claude is ready. Codex creation can still succeed while unavailable,
+it does not install a CLI or sign in for you. Fresh blank managed Claude Track
+creation is durably accepted while unavailable; execution waits for readiness.
+Template, attached, admin, fork, recipe, `template_input`, and cross-area creation
+retain the readiness refusal (400). Codex creation can still succeed while unavailable,
 but its Planner cannot run until the provider is ready.
 See [Claude Planner setup](neige-app-config.md#enable-a-claude-planner).
 

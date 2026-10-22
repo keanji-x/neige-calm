@@ -49,8 +49,9 @@ function NewTrackEditor({ transport, unauthorized, workspace, session, store }: 
   const compactViewport = useCompactViewport();
   const areaId = session.area.id;
   /* One group per provider, each following its provider's availability (#1817): `not_configured` leaves it
-     out; `unavailable` shows the server's reason, and disables the group only where create refuses it
-     (`CREATE_REFUSED_WHEN_UNAVAILABLE`: Claude). */
+     out; `unavailable` shows the server's reason. The picker conservatively disables Claude even
+     though fresh blank managed creation is durably accepted and execution waits; template, attached,
+     admin, fork, recipe, template_input, and cross-area creation retain the readiness refusal. */
   const codexCatalog = useQuery(modelCatalogQueryOptions(transport, { kind: 'provider', provider: 'codex' }, unauthorized));
   const claudeCatalog = useQuery(modelCatalogQueryOptions(transport, { kind: 'provider', provider: 'claude' }, unauthorized));
   const opencodeCatalog = useQuery(modelCatalogQueryOptions(transport, { kind: 'provider', provider: 'opencode' }, unauthorized));

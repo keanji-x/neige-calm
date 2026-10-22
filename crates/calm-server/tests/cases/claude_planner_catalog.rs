@@ -219,9 +219,8 @@ async fn the_boot_check_fetches_the_list() {
     );
 }
 
-/// A list that cannot be read is `unavailable` with the reason and no list; create and PUT are
-/// refused with it, nothing is spawned, and once the CLI lists its models again the next check
-/// after the TTL fetches the list (none is cached).
+/// A list that cannot be read is `unavailable` with the reason and no list; once the CLI lists
+/// its models again the next check after the TTL fetches the list (none is cached).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_malformed_or_empty_list_is_unavailable_with_a_reason_and_no_list() {
     for answer in ["malformed", "empty-list", "empty"] {
@@ -243,25 +242,6 @@ async fn a_malformed_or_empty_list_is_unavailable_with_a_reason_and_no_list() {
                 "default_source": "unknown", "source": "unavailable", "fetched_at_ms": null
             }),
             "{answer}"
-        );
-
-        let (status, refusal) = stack
-            .send(
-                "POST",
-                "/api/tracks",
-                Some(json!({
-                    "planner_provider": "claude",
-                    "area_id": stack.area().await,
-                    "title": "refused",
-                    "theme": {"fg": [216, 219, 226], "bg": [15, 20, 24]},
-                })),
-            )
-            .await;
-        assert_eq!(status, StatusCode::BAD_REQUEST, "{answer}: {refusal}");
-        assert!(refusal.to_string().contains(reason), "{answer}: {refusal}");
-        assert!(
-            root.read_fake("spawns").is_none(),
-            "{answer}: nothing spawned"
         );
 
         std::fs::write(root.fake_dir().join("catalog"), "ok").expect("fix the CLI");

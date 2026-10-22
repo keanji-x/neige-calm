@@ -34,8 +34,9 @@ pub struct Config {
     pub workspace_root: Option<PathBuf>,
 
     /// Typed configuration of the Claude Planner backend (a JSON `ClaudePlannerConfig`).
-    /// Missing keeps it unavailable: a Claude Planner create is refused and an existing Claude
-    /// Planner keeps its queue without issuing turns.
+    /// Missing keeps it unavailable: fresh blank managed Claude creation is durably accepted,
+    /// but execution waits. Template, attached, admin, fork, recipe, template_input, and cross-area
+    /// creation retain the readiness refusal; existing Claude Planners keep their queues.
     #[arg(long)]
     pub claude_planner_config: Option<PathBuf>,
 

@@ -334,8 +334,10 @@ pub struct CreateTrackRequest {
     #[serde(default)]
     pub reasoning_effort: Option<String>,
     /// The backend of the track's Planner, stamped on its card as the server-owned
-    /// `planner_provider` and never changed afterwards. `claude` is refused with 400 when Claude
-    /// is not ready (`GET /api/agent-providers`).
+    /// `planner_provider` and never changed afterwards. Fresh blank managed `claude` creation
+    /// is durably accepted while Claude is not ready; execution waits for readiness
+    /// (`GET /api/agent-providers`). Template, attached, admin, fork, recipe, `template_input`,
+    /// and cross-area creation retain the readiness refusal (400).
     pub planner_provider: AgentProvider,
 }
 
@@ -775,16 +777,21 @@ pub(crate) async fn create_track(
     JsonBody(mut request): JsonBody<CreateTrackRequest>,
 ) -> Result<Response> {
     let source = source.map(|source| source.0);
-    if request.first_message.is_some()
-        && create::first_message_storage_contract(
+    let storage = if request.first_message.is_some() || source.is_some() {
+        create::creation_storage_contract(
             &s,
             source.as_ref().ok_or(CalmError::Unauthorized)?,
             &headers,
             &request,
         )
         .await?
-            == crate::conversation_inputs::InputStorageContract::Canonical
-    {
+    } else {
+        create::CreationStorage::Historical
+    };
+    if matches!(
+        storage,
+        create::CreationStorage::FreshCanonical | create::CreationStorage::CanonicalReplay
+    ) {
         // Area lifecycle precedes allocation/receipt transactions, just as on
         // the historical path below. Deletion must snapshot a closed member set.
         let _area_delete_guard =
@@ -792,20 +799,40 @@ pub(crate) async fn create_track(
         let source = source.ok_or(CalmError::Unauthorized)?;
         // Catalog unavailability advises nothing; it is never an execution-readiness gate.
         // The acceptance owner applies this only to a fresh mint, after immutable replay.
-        let advice = super::planner_model::catalog_advice(
-            super::planner_model::CatalogSource::Codex(&codex.shared_codex_appserver),
-            request.model.as_deref(),
-            request.reasoning_effort.as_deref(),
-        )
-        .await;
-        let accepted = create::dormant::accept_dormant_human_track(
-            s.clone(),
-            source.clone(),
-            headers,
+        let advice = match storage {
+            create::CreationStorage::FreshCanonical => {
+                super::planner_model::creation_catalog_advice(
+                    &s,
+                    &codex.shared_codex_appserver,
+                    &request.planner_provider,
+                    request.model.as_deref(),
+                    request.reasoning_effort.as_deref(),
+                )
+                .await
+            }
+            create::CreationStorage::CanonicalReplay | create::CreationStorage::Historical => {
+                crate::planner_model::selection_advice::CatalogAdvice::default()
+            }
+        };
+        let accepted = match create::prepare_canonical_creation(
             request,
-            advice,
-        )
-        .await?;
+            &headers,
+            s.workspace_root.clone(),
+        )? {
+            create::CreateShape::MessageLess(plan) => {
+                let track =
+                    create::dormant::allocate_dormant_empty_track(s, source, plan, advice).await?;
+                return Ok((
+                    StatusCode::CREATED,
+                    Json(calm_types::track_wire::TrackWire(track)),
+                )
+                    .into_response());
+            }
+            create::CreateShape::WithFirstMessage(plan) => {
+                create::dormant::accept_dormant_human_track(s.clone(), source.clone(), plan, advice)
+                    .await?
+            }
+        };
         let crate::db::sqlite::conversation::HumanTrackCreationAck::V1 {
             planner_card_id, ..
         } = accepted.ack;
@@ -924,8 +951,8 @@ pub(crate) async fn create_track(
         create::CreatePlan::Mint(plan) => (Some(plan), None),
         create::CreatePlan::MessageLessMint(plan) => (None, Some(plan)),
     };
-    // #1817: a new Claude mint needs its provider ready, which also puts the CLI's model list in
-    // hand (#1822); a replay mints nothing and is answered from its binding above. A Codex create
+    // Historical Claude creation needs its provider ready, which also puts the CLI's model list
+    // in hand (#1822); fresh blank managed creation and replays are handled above. A Codex create
     // is not gated: without a first message it still answers 201 during a daemon outage (#293).
     let claude_catalog = match &claude_availability {
         Some(checked) => Some(checked.catalog().map_err(|refusal| {

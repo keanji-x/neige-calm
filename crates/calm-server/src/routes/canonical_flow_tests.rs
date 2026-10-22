@@ -44,6 +44,7 @@ const THREAD: &str = "http-canonical-original-thread";
 const TURN: &str = "http-canonical-original-turn";
 
 mod archive_start_inventory_tests;
+mod claude_creation_tests;
 mod control_tests;
 mod dispatcher_inputs_tests;
 mod dispatcher_report_edit_tests;
@@ -55,6 +56,7 @@ struct Fixture {
     repo: Arc<SqlxRepo>,
     root: tempfile::TempDir,
     url: String,
+    claude_config: Option<std::path::PathBuf>,
 }
 
 impl Fixture {
@@ -68,6 +70,7 @@ impl Fixture {
             repo: Arc::new(SqlxRepo::open(&url).await.unwrap()),
             root,
             url,
+            claude_config: None,
         }
     }
 
@@ -93,6 +96,7 @@ impl Fixture {
             use clap::Parser;
             let mut cfg = crate::config::Config::parse_from(["calm-server"]);
             cfg.db_url = self.url.clone();
+            cfg.claude_planner_config = self.claude_config.clone();
             cfg.data_dir = Some(self.root.path().join("data"));
             cfg.workspace_root = Some(self.root.path().join("workspaces"));
             cfg.plugins_dir = Some(self.root.path().join("plugins"));
@@ -527,3 +531,30 @@ async fn production_http_retry_after_native_unavailability_resumes_original_head
 }
 
 mod carrier_replacement_tests;
+async fn shutdown(fixture: &Fixture, state: &AppState) {
+    let ids: Vec<String> = sqlx::query_scalar("SELECT id FROM worker_sessions")
+        .fetch_all(fixture.repo.pool())
+        .await
+        .unwrap();
+    for id in ids {
+        if let Some(handle) = state.harness.remove(&id) {
+            handle.shutdown().await.unwrap();
+        }
+    }
+    fixture.shutdown_process(state).await;
+}
+
+async fn status(app: &axum::Router, cookie: &str, uri: &str, key: &str, body: Value) -> StatusCode {
+    app.clone()
+        .oneshot(
+            Request::post(uri)
+                .header(header::COOKIE, cookie)
+                .header(header::CONTENT_TYPE, "application/json")
+                .header("Idempotency-Key", key)
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+        .status()
+}

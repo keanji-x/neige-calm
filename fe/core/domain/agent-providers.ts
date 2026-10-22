@@ -41,8 +41,10 @@ export function agentProvidersOperation(recheck: boolean): ApiOperation<Provider
 export const RECHECK_TEXT: ProbeText = Object.freeze({ answered: 'The recheck failed.', unfinished: 'The recheck did not complete. Try again.' });
 
 /**
- * Whether track create refuses `provider` while it is not `ready` (#1817), and so whether a picker may
- * offer it then. Claude: refused with the reason. Codex: never refused — its create answers 201 during a
+ * Conservative picker policy while `provider` is not `ready` (#1817).
+ * Fresh blank managed Claude creation is durably accepted and execution waits; template, attached,
+ * admin, fork, recipe, `template_input`, and cross-area creation retain the readiness refusal (400).
+ * Codex: never refused — its create answers 201 during a
  * daemon outage (#293), and the Planner runs once Codex is back.
  * Total over AgentProvider: adding a backend must explicitly declare its Planner create policy.
  */

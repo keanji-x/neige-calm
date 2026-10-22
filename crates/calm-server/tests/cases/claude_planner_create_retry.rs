@@ -30,6 +30,8 @@ fn create_operation_key(area_id: &str, key: &str) -> String {
 fn create_body(area_id: &str, first_message: Option<&str>) -> Value {
     let mut body = json!({
         "planner_provider": "claude",
+        // This suite pins historical start compensation and retry semantics.
+        "template_id": "small-change",
         "area_id": area_id,
         "title": "claude planner",
         "theme": {"fg": [216, 219, 226], "bg": [15, 20, 24]},

@@ -16,6 +16,7 @@ use calm_types::organization::LEGACY_OWNER_USER_ID;
 
 mod binding_tests;
 mod plan_tests;
+use plan_tests::accept_dormant_human_track;
 
 const FIRST: &str = "original accepted human body, never a start envelope";
 
@@ -29,6 +30,7 @@ struct Fixture {
     session: String,
     source: HumanInputSource,
     root: std::path::PathBuf,
+    provider: AgentProvider,
 }
 
 impl Fixture {
@@ -71,6 +73,7 @@ impl Fixture {
             session,
             source,
             root,
+            provider: AgentProvider::Codex,
         }
     }
 
@@ -105,7 +108,7 @@ impl Fixture {
             first_message: Some(text.into()),
             model: None,
             reasoning_effort: None,
-            planner_provider: AgentProvider::Codex,
+            planner_provider: self.provider.clone(),
         }
     }
 
@@ -154,111 +157,119 @@ fn assert_replayed(result: HumanTrackCreationResult, expected: &HumanTrackCreati
 
 #[tokio::test]
 async fn actual_allocation_accepts_once_without_native_or_workspace_effects() {
-    let fx = Fixture::new().await;
-    let result = fx.accept("fresh", FIRST).await.unwrap();
-    let ack = result.ack;
-    let (track, card, _report, runtime, message) = ids(&ack);
-    let count = fx.counts().await;
-    assert_eq!(count, (1, 2, 1, 1, 1, 0));
-    assert!(!fx.root.exists());
-    assert!(!fx.state.shared_codex_appserver.is_running());
-    let mut tx = begin_immediate_tx(fx.repo.db()).await.unwrap();
-    let carrier = current_input_carrier_tx(&mut tx, card, runtime)
-        .await
-        .unwrap();
-    let formal: CanonicalHarnessSnapshot =
-        serde_json::from_value(carrier.snapshot().clone()).unwrap();
-    assert_eq!(
-        formal.header.phase,
-        crate::harness::snapshot::HarnessPhaseTag::Idle
-    );
-    assert!(formal.header.last_thread_id.is_none());
-    assert_eq!(formal.canonical_inputs.pending.len(), 1);
-    assert_eq!(
-        formal.canonical_inputs.pending[0]
-            .accepted_input_ref()
-            .unwrap(),
-        AcceptedInputRef::Human {
-            message: message.clone()
-        }
-    );
-    assert_eq!(formal.canonical_inputs.next_queue_position, 1);
-    assert!(formal.canonical_inputs.active.is_none());
-    assert!(formal.canonical_inputs.attempts.is_empty());
-    let revision = revision_tx(&mut tx, message).await.unwrap();
-    assert!(matches!(revision.payload,PrivateHistoryPayload::Present {value} if value.text==FIRST));
-    let stored = human_track_creation_get_tx(&mut tx, &fx.area, "fresh")
-        .await
-        .unwrap()
-        .unwrap();
-    let bodyfree = serde_json::to_string(&stored.acknowledgement).unwrap();
-    assert!(!bodyfree.contains(FIRST));
-    assert!(
-        !serde_json::to_string(carrier.snapshot())
+    for provider in [AgentProvider::Codex, AgentProvider::Claude] {
+        let mut fx = Fixture::new().await;
+        fx.provider = provider;
+        let result = fx.accept("fresh", FIRST).await.unwrap();
+        let ack = result.ack;
+        let (track, card, _report, runtime, message) = ids(&ack);
+        let count = fx.counts().await;
+        assert_eq!(count, (1, 2, 1, 1, 1, 0));
+        assert!(!fx.root.exists());
+        assert!(!fx.state.shared_codex_appserver.is_running());
+        let mut tx = begin_immediate_tx(fx.repo.db()).await.unwrap();
+        let carrier = current_input_carrier_tx(&mut tx, card, runtime)
+            .await
+            .unwrap();
+        let formal: CanonicalHarnessSnapshot =
+            serde_json::from_value(carrier.snapshot().clone()).unwrap();
+        assert_eq!(
+            formal.header.phase,
+            crate::harness::snapshot::HarnessPhaseTag::Idle
+        );
+        assert!(formal.header.last_thread_id.is_none());
+        assert_eq!(formal.canonical_inputs.pending.len(), 1);
+        assert_eq!(
+            formal.canonical_inputs.pending[0]
+                .accepted_input_ref()
+                .unwrap(),
+            AcceptedInputRef::Human {
+                message: message.clone()
+            }
+        );
+        assert_eq!(formal.canonical_inputs.next_queue_position, 1);
+        assert!(formal.canonical_inputs.active.is_none());
+        assert!(formal.canonical_inputs.attempts.is_empty());
+        let revision = revision_tx(&mut tx, message).await.unwrap();
+        assert!(
+            matches!(revision.payload,PrivateHistoryPayload::Present {value} if value.text==FIRST)
+        );
+        let stored = human_track_creation_get_tx(&mut tx, &fx.area, "fresh")
+            .await
             .unwrap()
-            .contains(FIRST)
-    );
-    let resource = track_create_idempotency_get_tx(&mut tx, &fx.area, "fresh")
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(resource.track_id, track);
-    tx.commit().await.unwrap();
-    let events: i64 = sqlx::query_scalar("SELECT count(*) FROM events")
-        .fetch_one(fx.repo.pool())
-        .await
-        .unwrap();
-    assert_replayed(fx.accept("fresh", FIRST).await.unwrap(), &ack);
-    assert_eq!(fx.counts().await, count);
-    assert_eq!(
-        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM events")
+            .unwrap();
+        let bodyfree = serde_json::to_string(&stored.acknowledgement).unwrap();
+        assert!(!bodyfree.contains(FIRST));
+        assert!(
+            !serde_json::to_string(carrier.snapshot())
+                .unwrap()
+                .contains(FIRST)
+        );
+        let resource = track_create_idempotency_get_tx(&mut tx, &fx.area, "fresh")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(resource.track_id, track);
+        tx.commit().await.unwrap();
+        let events: i64 = sqlx::query_scalar("SELECT count(*) FROM events")
             .fetch_one(fx.repo.pool())
             .await
-            .unwrap(),
-        events
-    );
-    assert!(!fx.root.exists());
+            .unwrap();
+        assert_replayed(fx.accept("fresh", FIRST).await.unwrap(), &ack);
+        assert_eq!(fx.counts().await, count);
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT count(*) FROM events")
+                .fetch_one(fx.repo.pool())
+                .await
+                .unwrap(),
+            events
+        );
+        assert!(!fx.root.exists());
+    }
 }
 
 #[tokio::test]
 async fn original_ack_replays_after_claim_without_readopting_a_body() {
-    let fx = Fixture::new().await;
-    let ack = fx.accept("original", FIRST).await.unwrap().ack;
-    let (_, card, _, runtime, _) = ids(&ack);
-    let mut tx = begin_immediate_tx(fx.repo.db()).await.unwrap();
-    let mut carrier = current_input_carrier_tx(&mut tx, card, runtime)
-        .await
-        .unwrap();
-    let plan =
-        human_plan_for_pending_prefix_tx(&mut tx, &carrier, std::num::NonZeroU32::MIN, vec![])
+    for provider in [AgentProvider::Codex, AgentProvider::Claude] {
+        let mut fx = Fixture::new().await;
+        fx.provider = provider;
+        let ack = fx.accept("original", FIRST).await.unwrap().ack;
+        let (_, card, _, runtime, _) = ids(&ack);
+        let mut tx = begin_immediate_tx(fx.repo.db()).await.unwrap();
+        let mut carrier = current_input_carrier_tx(&mut tx, card, runtime)
             .await
             .unwrap();
-    claim_initial_submission_tx(
-        &mut tx,
-        &mut carrier,
-        plan,
-        &ConversationExecutionProvenance::LegacySingleUserDeployment {
-            deployment_owner_user_id: LEGACY_OWNER_USER_ID.into(),
-            provider: AgentProvider::Codex,
-            profile: HarnessProfile::Planner,
-        },
-    )
-    .await
-    .unwrap();
-    let expected = carrier.checkpoint().clone();
-    tx.commit().await.unwrap();
-    assert_replayed(fx.accept("original", FIRST).await.unwrap(), &ack);
-    assert!(matches!(
-        fx.accept("original", "different body").await,
-        Err(CalmError::IdempotencyKeyReused(_))
-    ));
-    let mut tx = begin_immediate_tx(fx.repo.db()).await.unwrap();
-    let carrier = current_input_carrier_tx(&mut tx, card, runtime)
+        let plan =
+            human_plan_for_pending_prefix_tx(&mut tx, &carrier, std::num::NonZeroU32::MIN, vec![])
+                .await
+                .unwrap();
+        claim_initial_submission_tx(
+            &mut tx,
+            &mut carrier,
+            plan,
+            &ConversationExecutionProvenance::LegacySingleUserDeployment {
+                deployment_owner_user_id: LEGACY_OWNER_USER_ID.into(),
+                provider: fx.provider.clone(),
+                profile: HarnessProfile::Planner,
+            },
+        )
         .await
         .unwrap();
-    assert_eq!(carrier.checkpoint(), &expected);
-    assert!(carrier.checkpoint().pending.is_empty());
-    tx.commit().await.unwrap();
+        let expected = carrier.checkpoint().clone();
+        tx.commit().await.unwrap();
+        assert_replayed(fx.accept("original", FIRST).await.unwrap(), &ack);
+        assert!(matches!(
+            fx.accept("original", "different body").await,
+            Err(CalmError::IdempotencyKeyReused(_))
+        ));
+        let mut tx = begin_immediate_tx(fx.repo.db()).await.unwrap();
+        let carrier = current_input_carrier_tx(&mut tx, card, runtime)
+            .await
+            .unwrap();
+        assert_eq!(carrier.checkpoint(), &expected);
+        assert!(carrier.checkpoint().pending.is_empty());
+        tx.commit().await.unwrap();
+    }
 }
 
 #[tokio::test]
@@ -514,91 +525,126 @@ async fn separate_database_owners_race_to_the_same_original_ack() {
 
 #[tokio::test]
 async fn a_shared_area_member_can_accept_content_without_an_execution_grant() {
-    let fx = Fixture::new().await;
-    let mut tx = begin_immediate_tx(fx.repo.db()).await.unwrap();
-    area_membership::application_user_register(&mut tx, "alice", "Owner")
-        .await
-        .unwrap();
-    sqlx::query(
+    for provider in [AgentProvider::Codex, AgentProvider::Claude] {
+        let mut fx = Fixture::new().await;
+        fx.provider = provider;
+        let mut tx = begin_immediate_tx(fx.repo.db()).await.unwrap();
+        area_membership::application_user_register(&mut tx, "alice", "Owner")
+            .await
+            .unwrap();
+        sqlx::query(
         "INSERT INTO area_members(area_id,user_id,role,joined_at) VALUES(?1,'alice','member',0)",
     )
     .bind(&fx.area)
     .execute(&mut **tx)
     .await
     .unwrap();
-    sqlx::query("UPDATE areas SET conversation_history_contract='shared_history' WHERE id=?1")
-        .bind(&fx.area)
-        .execute(&mut **tx)
-        .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    let token = fx.auth.sessions.create(
-        SessionIdentity {
-            user_id: "alice".into(),
-            display_name: "Owner".into(),
-            role: "owner".into(),
-        },
-        SessionAuthority::PasswordLogin,
-    );
-    let source = actual_source(&fx.auth, &token).await;
-    let mut headers = HeaderMap::new();
-    headers.insert("idempotency-key", "member-content".parse().unwrap());
-    let ack = accept_dormant_human_track(
-        fx.route.clone(),
-        source.clone(),
-        headers,
-        fx.request(FIRST),
-        crate::planner_model::selection_advice::CatalogAdvice::default(),
-    )
-    .await
-    .unwrap()
-    .ack;
-    let (_, card, _, runtime, message) = ids(&ack);
-    let mut tx = begin_immediate_tx(fx.repo.db()).await.unwrap();
-    let stored = message_tx(&mut tx, &message.message_id).await.unwrap();
-    assert_eq!(
-        stored.author,
-        MessageAuthor::AuthenticatedHuman {
-            registered_user_id: "alice".into()
-        }
-    );
-    let mut carrier = current_input_carrier_tx(&mut tx, card, runtime)
-        .await
-        .unwrap();
-    let plan = SubmissionRenderPlan::V1 {
-        segments: vec![SubmissionRenderSegment::Input {
-            input_position: 0,
-            input: SubmissionRenderInput::Human {
-                message: message.clone(),
-                author: FrozenHumanAttribution {
-                    registered_user_id: "alice".into(),
-                    display_name: "Owner".into(),
-                },
+        sqlx::query("UPDATE areas SET conversation_history_contract='shared_history' WHERE id=?1")
+            .bind(&fx.area)
+            .execute(&mut **tx)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        let token = fx.auth.sessions.create(
+            SessionIdentity {
+                user_id: "alice".into(),
+                display_name: "Owner".into(),
+                role: "owner".into(),
             },
-        }],
-    };
-    assert!(matches!(
-        crate::conversation_inputs::claim_initial_tx(&mut tx, &source, &mut carrier, plan).await,
-        Err(CalmError::Forbidden(_))
-    ));
-    assert!(carrier.checkpoint().active.is_none());
-    assert_eq!(carrier.checkpoint().pending.len(), 1);
-    tx.commit().await.unwrap();
-    assert!(!fx.state.shared_codex_appserver.is_running());
+            SessionAuthority::PasswordLogin,
+        );
+        let source = actual_source(&fx.auth, &token).await;
+        let mut headers = HeaderMap::new();
+        headers.insert("idempotency-key", "member-content".parse().unwrap());
+        let ack = accept_dormant_human_track(
+            fx.route.clone(),
+            source.clone(),
+            headers,
+            fx.request(FIRST),
+            crate::planner_model::selection_advice::CatalogAdvice::default(),
+        )
+        .await
+        .unwrap()
+        .ack;
+        let (_, card, _, runtime, message) = ids(&ack);
+        let mut tx = begin_immediate_tx(fx.repo.db()).await.unwrap();
+        let stored = message_tx(&mut tx, &message.message_id).await.unwrap();
+        assert_eq!(
+            stored.author,
+            MessageAuthor::AuthenticatedHuman {
+                registered_user_id: "alice".into()
+            }
+        );
+        let mut carrier = current_input_carrier_tx(&mut tx, card, runtime)
+            .await
+            .unwrap();
+        let plan = SubmissionRenderPlan::V1 {
+            segments: vec![SubmissionRenderSegment::Input {
+                input_position: 0,
+                input: SubmissionRenderInput::Human {
+                    message: message.clone(),
+                    author: FrozenHumanAttribution {
+                        registered_user_id: "alice".into(),
+                        display_name: "Owner".into(),
+                    },
+                },
+            }],
+        };
+        assert!(matches!(
+            crate::conversation_inputs::claim_initial_tx(&mut tx, &source, &mut carrier, plan)
+                .await,
+            Err(CalmError::Forbidden(_))
+        ));
+        assert!(carrier.checkpoint().active.is_none());
+        assert_eq!(carrier.checkpoint().pending.len(), 1);
+        tx.commit().await.unwrap();
+        assert!(!fx.state.shared_codex_appserver.is_running());
+    }
 }
 
 #[tokio::test]
-async fn historical_resource_binding_cannot_be_adopted_as_first_human_acceptance() {
-    let fx = Fixture::new().await;
+async fn canonical_claude_creation_old_key_replays_historical_without_new_mint() {
+    let mut fx = Fixture::new().await;
+    fx.provider = AgentProvider::Claude;
     let mut headers = HeaderMap::new();
     headers.insert("idempotency-key", "historical".parse().unwrap());
-    let plan = HumanTrackCreationPlan::prepare(
-        fx.request(FIRST),
-        &headers,
-        fx.route.workspace_root.clone(),
-    )
-    .unwrap();
-    let (p, options, _) = plan.into_allocation().unwrap();
+    // Pre-cutover blank historical data is allocated by the same production
+    // transaction, without invoking today's canonical capability or minting a
+    // canonical runtime/receipt. These are fixture data, not a second allocator.
+    let request = fx.request(FIRST);
+    let create_sha =
+        create_request_digest(&CreateRequestShape::from_request(&request).unwrap()).unwrap();
+    let p = NewTrack {
+        area_id: fx.area.clone().into(),
+        title: request.title,
+        sort: request.sort,
+        cwd: fx.root.to_string_lossy().into_owned(),
+        template_id: None,
+        plugin_scope: None,
+        template_input: None,
+        attach_folder: false,
+        theme: request.theme,
+    };
+    let options = CreateTrackOptions {
+        human_source: None,
+        admin: false,
+        managed_identity: None,
+        creator: None,
+        creation_message: None,
+        planner_provider: AgentProvider::Claude,
+        model: None,
+        reasoning_effort: None,
+        folder_claim: super::super::super::FolderClaim::Skip,
+        body_area_id: fx.area.clone(),
+        normalized_cwd: fx.root.to_string_lossy().into_owned(),
+        init: super::super::super::TrackInit::Blank,
+        workspace_plan: crate::db::sqlite::TrackWorkspacePlan::ManagedUnder(fx.root.clone()),
+        idempotency_claim: Some(TrackCreateIdempotencyClaim {
+            key: "historical".into(),
+            create_request_sha256: create_sha,
+            first_message_sha256: Some(first_message_digest(FIRST)),
+        }),
+    };
     let write = fx.route.write.clone();
     let templates = fx.route.templates;
     let teardown_targets = fx.route.teardown_targets.clone();
@@ -634,6 +680,17 @@ async fn historical_resource_binding_cannot_be_adopted_as_first_human_acceptance
     )
     .await
     .unwrap();
+    assert!(matches!(
+        crate::routes::tracks::create::creation_storage_contract(
+            &fx.route,
+            &fx.source,
+            &headers,
+            &fx.request(FIRST)
+        )
+        .await
+        .unwrap(),
+        crate::routes::tracks::create::CreationStorage::Historical
+    ));
     let before = fx.counts().await;
     assert!(matches!(
         fx.accept("historical", FIRST).await,

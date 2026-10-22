@@ -84,43 +84,6 @@ async fn a_codex_create_stamps_the_planner_card_and_its_session_row() {
 }
 
 #[tokio::test]
-async fn a_claude_create_is_refused_before_anything_is_minted() {
-    let b = boot().await;
-    let before = (
-        b.track_count().await,
-        b.card_count().await,
-        b.binding_count().await,
-    );
-    for (key, first_message) in [(None, None), (Some("claude-keyed"), Some("hello"))] {
-        let mut body = json!({
-            "planner_provider": "claude",
-            "area_id": b.area_id,
-            "theme": {"fg": [255, 255, 255], "bg": [0, 0, 0]},
-        });
-        if let Some(text) = first_message {
-            body["first_message"] = json!(text);
-        }
-        let (status, response) = b.post_create(key, body).await;
-        assert_eq!(status, StatusCode::BAD_REQUEST, "{response}");
-        assert!(
-            response["error"]
-                .as_str()
-                .is_some_and(|error| error.contains("planner_provider")),
-            "{response}"
-        );
-    }
-    assert_eq!(
-        (
-            b.track_count().await,
-            b.card_count().await,
-            b.binding_count().await
-        ),
-        before,
-        "a refused create mints nothing"
-    );
-}
-
-#[tokio::test]
 async fn a_create_without_planner_provider_is_refused() {
     let b = boot().await;
     let (status, response) = b

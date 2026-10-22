@@ -2,9 +2,11 @@
 //! runs with. Both keys are required and `null` is a value; an unknown slug is
 //! reported, not refused; an unsupported effort is moved to the model's default. One advice for
 //! both providers (#1822 6′): only the catalog's source differs, Codex's `model/list` asked now or
-//! the Claude CLI's list the availability check cached. A Claude write needs Claude ready (400
-//! with the reason otherwise); a Claude entry declares no default effort, so an unsupported one
-//! is dropped, and so is any effort sent with a model the Claude list does not carry.
+//! the Claude CLI's list the availability check cached. Claude PUT and excluded historical creation
+//! need readiness (400 otherwise); fresh blank managed creation is durably accepted and execution
+//! waits. Without a catalog it stores model/effort unjudged (unknown_model=false, no adjustment).
+//! With a catalog, a Claude entry declares no default effort, so an unsupported one is dropped,
+//! and so is any effort sent with a model the Claude list does not carry.
 
 use axum::extract::State;
 use axum::http::StatusCode;
@@ -137,9 +139,10 @@ pub(crate) async fn set_planner_model(
             .await
         }
         AgentProtocol::Claude => {
-            // #1822 6′: a Claude write needs Claude ready, as its create does (#1817), so the list is
-            // in hand: an effort is judged against the chosen entry, and dropped for a model the list
-            // does not carry (the CLI would ignore it). Codex is not asked.
+            // #1822 6′: Claude PUT retains readiness 400, so the list is in hand: an effort is
+            // judged against the chosen entry, and dropped for a model the list does not carry
+            // (the CLI would ignore it). Fresh blank managed creation uses creation_catalog_advice
+            // below and tolerates unavailable Claude. Codex is not asked.
             let catalog = s
                 .provider_availability
                 .claude(crate::agent_providers::Freshness::Cached, &s.claude_planner)
@@ -249,3 +252,29 @@ pub(crate) async fn set_planner_model(
 }
 
 pub(crate) use crate::planner_model::selection_advice::{CatalogSource, catalog_advice};
+
+/// Storage acceptance uses the actual provider's advisory catalog. Missing
+/// readiness supplies no advice and cannot select a historical storage path.
+pub(super) async fn creation_catalog_advice(
+    s: &RouteState,
+    codex: &crate::shared_codex_appserver::SharedCodexAppServer,
+    provider: &crate::session_projection_repo::AgentProvider,
+    model: Option<&str>,
+    effort: Option<&str>,
+) -> crate::planner_model::selection_advice::CatalogAdvice {
+    match crate::harness::PlannerBackend::metadata(provider).catalog {
+        AgentProtocol::Codex => catalog_advice(CatalogSource::Codex(codex), model, effort).await,
+        AgentProtocol::Claude => {
+            match s
+                .provider_availability
+                .claude(crate::agent_providers::Freshness::Cached, &s.claude_planner)
+                .await
+                .catalog()
+            {
+                Ok(catalog) => catalog_advice(CatalogSource::Claude(&catalog), model, effort).await,
+                Err(_) => crate::planner_model::selection_advice::CatalogAdvice::default(),
+            }
+        }
+        AgentProtocol::Acp => catalog_advice(CatalogSource::Acp, model, effort).await,
+    }
+}

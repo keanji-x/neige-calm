@@ -162,8 +162,10 @@ extra_args = ["--claude-planner-config", "/home/owner/.config/neige-app/claude-p
 Preserve any other child arguments. Restart the `neige-app` service after
 editing its configuration, then open **Settings → Planners → Recheck**.
 The server checks configuration, binary version, and `auth status --json`;
-Claude creation is refused unless these checks pass. Without the flag, Claude
-is **Not configured**. Kernel-launched Claude Planners and workers have automatic
+fresh blank managed Claude creation is durably accepted while these checks fail,
+but execution waits for readiness. Template, attached, admin, fork, recipe,
+`template_input`, and cross-area creation retain the readiness refusal (400).
+Without the flag, Claude is **Not configured**. Kernel-launched Claude Planners and workers have automatic
 memory disabled; their durable work context belongs in the Track and Report.
 
 ## Enable Report previews

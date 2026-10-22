@@ -13,34 +13,6 @@ async fn area(app: &axum::Router, cookie: &str) -> Value {
     .await
 }
 
-async fn shutdown(fixture: &Fixture, state: &AppState) {
-    let ids: Vec<String> = sqlx::query_scalar("SELECT id FROM worker_sessions")
-        .fetch_all(fixture.repo.pool())
-        .await
-        .unwrap();
-    for id in ids {
-        if let Some(handle) = state.harness.remove(&id) {
-            handle.shutdown().await.unwrap();
-        }
-    }
-    fixture.shutdown_process(state).await;
-}
-
-async fn status(app: &axum::Router, cookie: &str, uri: &str, key: &str, body: Value) -> StatusCode {
-    app.clone()
-        .oneshot(
-            Request::post(uri)
-                .header(header::COOKIE, cookie)
-                .header(header::CONTENT_TYPE, "application/json")
-                .header("Idempotency-Key", key)
-                .body(Body::from(body.to_string()))
-                .unwrap(),
-        )
-        .await
-        .unwrap()
-        .status()
-}
-
 #[tokio::test]
 async fn historical_template_first_message_keeps_its_original_creation_and_replay() {
     let fixture = Fixture::new().await;

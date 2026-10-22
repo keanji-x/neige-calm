@@ -61,13 +61,18 @@ fn a_codex_create_keeps_every_pre_provider_binding_and_another_provider_conflict
         create_request_sha256: PRE_PROVIDER_DIGEST.into(),
         first_message_sha256: "message".into(),
     });
-    ensure_binding_create_matches(&fingerprinted, &codex, "key", CreateShape::WithFirstMessage)
-        .expect("the identical Codex create replays its binding");
+    ensure_binding_create_matches(
+        &fingerprinted,
+        &codex,
+        "key",
+        CreateShape::WithFirstMessage(()),
+    )
+    .expect("the identical Codex create replays its binding");
     let conflict = ensure_binding_create_matches(
         &fingerprinted,
         &claude,
         "key",
-        CreateShape::WithFirstMessage,
+        CreateShape::WithFirstMessage(()),
     )
     .expect_err("another provider under the same key");
     assert!(
@@ -77,9 +82,13 @@ fn a_codex_create_keeps_every_pre_provider_binding_and_another_provider_conflict
 
     let legacy = binding(TrackCreateRequestFingerprint::LegacyUnknown);
     for digest in [&codex, &claude] {
-        let refused =
-            ensure_binding_create_matches(&legacy, digest, "key", CreateShape::WithFirstMessage)
-                .expect_err("a legacy binding fails closed");
+        let refused = ensure_binding_create_matches(
+            &legacy,
+            digest,
+            "key",
+            CreateShape::WithFirstMessage(()),
+        )
+        .expect_err("a legacy binding fails closed");
         assert!(
             matches!(&refused, CalmError::IdempotencyKeyReused(message)
                 if message.contains("predates durable request fingerprints")),

@@ -1,7 +1,6 @@
-//! Human-only first-input acceptance. This private DB composition never starts
+//! Human-only dormant allocation and first-input acceptance. This DB composition never starts
 //! or wakes a provider; later execution needs its own owning authorization.
-use super::super::CreateTrackRequest;
-use super::creation_plan::HumanTrackCreationPlan;
+use super::creation_plan::{EmptyTrackCreationPlan, HumanTrackCreationPlan};
 use super::*;
 use crate::auth::HumanInputSource;
 use crate::db::sqlite::conversation::{
@@ -33,13 +32,9 @@ pub(in crate::routes::tracks) struct HumanTrackCreationResult {
 pub(in crate::routes::tracks) async fn accept_dormant_human_track(
     s: RouteState,
     source: HumanInputSource,
-    headers: HeaderMap,
-    request: CreateTrackRequest,
+    plan: HumanTrackCreationPlan,
     advice: crate::planner_model::selection_advice::CatalogAdvice,
 ) -> Result<HumanTrackCreationResult> {
-    let model = request.model.clone();
-    let effort = request.reasoning_effort.clone();
-    let plan = HumanTrackCreationPlan::prepare(request, &headers, s.workspace_root.clone())?;
     let raw_key = plan.key().to_owned();
     let create_sha = plan.create_sha().to_owned();
     let first_sha = plan.first_sha().to_owned();
@@ -99,66 +94,11 @@ pub(in crate::routes::tracks) async fn accept_dormant_human_track(
                             .into(),
                     ));
                 }
-                advice.require_create_selection(model.as_deref(), effort.as_deref())?;
+                let (model, effort) = plan.selection();
+                advice.require_create_selection(model, effort)?;
                 let (p, options, text) = plan.into_allocation()?;
-                let provider = options.planner_provider.clone();
-                let planner = crate::model::new_id();
-                let report = crate::model::new_id();
-                // Audit attribution is not permission. The actual live source and
-                // current organization decision above authorize content acceptance.
-                let ((_, created), mut events) = super::super::allocation::allocate_track_structure_tx(
-                    tx,
-                    ActorId::User,
-                    p,
-                    options,
-                    (planner.clone(), report.clone()),
-                    super::super::allocation::TrackAllocationOwners { acp_planner, write, templates, teardown_targets, admission_root },
-                    Arc::new(OnceLock::new()),
-                )
-                .await?;
-                if !created {
-                    return Err(CalmError::Conflict(
-                        "Human acceptance requires its fresh allocation".into(),
-                    ));
-                }
-                let shape = crate::db::sqlite::card_execution_shape_tx(tx, &planner).await?;
-                let actual = PlannerBinding::from_shape(&shape.kind, shape.role, &shape.payload)
-                    .ok_or_else(|| {
-                        CalmError::Conflict("fresh Planner binding is invalid".into())
-                    })?;
-                if actual.profile != HarnessProfile::Planner || actual.provider != provider {
-                    return Err(CalmError::Conflict(
-                        "fresh Planner differs from its requested binding".into(),
-                    ));
-                }
-                let already_owned: bool = sqlx::query_scalar(
-                    "SELECT EXISTS(SELECT 1 FROM cards WHERE id=?1 AND session_id IS NOT NULL)",
-                )
-                .bind(&planner)
-                .fetch_one(&mut **tx)
-                .await?;
-                if already_owned {
-                    return Err(CalmError::Conflict(
-                        "fresh Planner already has an execution owner".into(),
-                    ));
-                }
-                let watermark: i64 = sqlx::query_scalar("SELECT COALESCE(MAX(id),0) FROM events")
-                    .fetch_one(&mut **tx)
-                    .await?;
-                let runtime = crate::model::new_id();
-                crate::db::sqlite::session_start_runtime_tx(
-                    tx,
-                    WorkerSessionInit::shared_planner(
-                        runtime.clone(),
-                        planner.clone(),
-                        provider,
-                        WorkerSessionState::Idle,
-                        None,
-                        serde_json::to_value(CanonicalHarnessSnapshot::dormant(watermark))?,
-                        crate::model::now_ms(),
-                    ),
-                )
-                .await?;
+                let CanonicalAllocation { planner, runtime, track, mut events } = allocate_canonical_tx(tx, p, options,
+                    super::super::allocation::TrackAllocationOwners { acp_planner, write, templates, teardown_targets, admission_root }).await?;
                 let mut carrier = current_input_carrier_tx(tx, &planner, &runtime).await?;
                 let current = source.current_principal()?;
                 let accepted = crate::conversation_inputs::accept_human_tx(
@@ -188,7 +128,6 @@ pub(in crate::routes::tracks) async fn accept_dormant_human_track(
                     },
                 )
                 .await?;
-                let track = response_track_tx(tx, &stored.acknowledgement).await?;
                 events.push((ActorId::User, crate::event::EventScope::Card {
                     card:planner.clone().into(),track:track.id.clone(),area:track.area_id.clone(),
                 }, crate::event::Event::HarnessPresentationChanged {
@@ -232,6 +171,16 @@ async fn require_surviving_allocation_tx(
         report_card_id,
         ..
     } = ack;
+    require_allocation_resources_tx(tx, area_id, track_id, planner_card_id, report_card_id).await
+}
+
+async fn require_allocation_resources_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    area_id: &str,
+    track_id: &str,
+    planner_card_id: &str,
+    report_card_id: &str,
+) -> Result<()> {
     // Roles, the initial revision and the origin runtime were proved when the
     // receipt was minted. Replay authorizes the surviving resources; it does
     // not re-prove their initial graph or turn the old runtime into a ticket.
@@ -272,4 +221,186 @@ pub(super) async fn prior_start_attempt_tx(
         .build_query_scalar::<bool>()
         .fetch_one(&mut **tx)
         .await?)
+}
+
+struct CanonicalAllocation {
+    planner: String,
+    runtime: String,
+    track: crate::model::Track,
+    events: Vec<(ActorId, crate::event::EventScope, crate::event::Event)>,
+}
+
+/// The existing allocation transaction and WorkerSessionInit are shared by
+/// FirstHuman and Empty creation; neither allocation starts a provider.
+async fn allocate_canonical_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    p: NewTrack,
+    options: CreateTrackOptions,
+    owners: super::super::allocation::TrackAllocationOwners,
+) -> Result<CanonicalAllocation> {
+    let provider = options.planner_provider.clone();
+    let planner = crate::model::new_id();
+    let report = crate::model::new_id();
+    // Audit attribution is not permission. The actual live source and
+    // current organization decision above authorize content acceptance.
+    let ((track, created), events) = super::super::allocation::allocate_track_structure_tx(
+        tx,
+        ActorId::User,
+        p,
+        options,
+        (planner.clone(), report.clone()),
+        owners,
+        Arc::new(OnceLock::new()),
+    )
+    .await?;
+    if !created {
+        return Err(CalmError::Conflict(
+            "Human acceptance requires its fresh allocation".into(),
+        ));
+    }
+    let shape = crate::db::sqlite::card_execution_shape_tx(tx, &planner).await?;
+    let actual = PlannerBinding::from_shape(&shape.kind, shape.role, &shape.payload)
+        .ok_or_else(|| CalmError::Conflict("fresh Planner binding is invalid".into()))?;
+    if actual.profile != HarnessProfile::Planner || actual.provider != provider {
+        return Err(CalmError::Conflict(
+            "fresh Planner differs from its requested binding".into(),
+        ));
+    }
+    let already_owned: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM cards WHERE id=?1 AND session_id IS NOT NULL)",
+    )
+    .bind(&planner)
+    .fetch_one(&mut **tx)
+    .await?;
+    if already_owned {
+        return Err(CalmError::Conflict(
+            "fresh Planner already has an execution owner".into(),
+        ));
+    }
+    let watermark: i64 = sqlx::query_scalar("SELECT COALESCE(MAX(id),0) FROM events")
+        .fetch_one(&mut **tx)
+        .await?;
+    let runtime = crate::model::new_id();
+    crate::db::sqlite::session_start_runtime_tx(
+        tx,
+        WorkerSessionInit::shared_planner(
+            runtime.clone(),
+            planner.clone(),
+            provider,
+            WorkerSessionState::Idle,
+            None,
+            serde_json::to_value(CanonicalHarnessSnapshot::dormant(watermark))?,
+            crate::model::now_ms(),
+        ),
+    )
+    .await?;
+    Ok(CanonicalAllocation {
+        planner,
+        runtime,
+        track,
+        events,
+    })
+}
+
+/// Empty is an allocation intent, never an accepted Human message. Its optional
+/// binding is the existing message-less fingerprint, with unkeyed mint unchanged.
+pub(in crate::routes::tracks) async fn allocate_dormant_empty_track(
+    s: RouteState,
+    source: HumanInputSource,
+    plan: EmptyTrackCreationPlan,
+    advice: crate::planner_model::selection_advice::CatalogAdvice,
+) -> Result<crate::model::Track> {
+    let binding = plan
+        .binding()
+        .map(|(key, sha)| (key.to_owned(), sha.to_owned()));
+    let area_id = plan.area_id().to_owned();
+    let owners = super::super::allocation::TrackAllocationOwners {
+        acp_planner: s.acp_planner.clone(),
+        write: s.write.clone(),
+        templates: s.templates,
+        teardown_targets: s.teardown_targets.clone(),
+        admission_root: s.workspace_root.clone(),
+    };
+    let (replay_tx, mut replay_rx) = tokio::sync::oneshot::channel();
+    let result = crate::db::write_with_actor_events_typed(
+        s.repo.as_ref(),
+        None,
+        &s.events,
+        &s.write,
+        move |tx| {
+            Box::pin(async move {
+                let principal = source.current_principal()?;
+                let area = crate::organization_access::require_area_access_tx(
+                    tx,
+                    &area_id,
+                    &principal,
+                    AreaAccess::Collaborate,
+                )
+                .await?;
+                if area.kind != crate::model::AreaKind::User {
+                    return Err(CalmError::Forbidden(
+                        "Human Track creation does not accept System targets".into(),
+                    ));
+                }
+                if let Some((key, create_sha)) = &binding {
+                    if let Some(binding) =
+                        track_create_idempotency_get_tx(tx, &area_id, key).await?
+                    {
+                        if !crate::db::sqlite::conversation::card_has_canonical_storage(
+                            tx,
+                            &binding.planner_card_id,
+                        )
+                        .await?
+                        {
+                            return Err(CalmError::IdempotencyKeyReused(
+                                "a historical allocation cannot become canonical empty creation"
+                                    .into(),
+                            ));
+                        }
+                        super::ensure_binding_create_matches(
+                            &binding,
+                            create_sha,
+                            key,
+                            super::CreateShape::MessageLess(()),
+                        )?;
+                        // The immutable binding proves the original shape. Replay
+                        // still requires all surviving resources in this Area.
+                        require_allocation_resources_tx(
+                            tx,
+                            &area_id,
+                            &binding.track_id,
+                            &binding.planner_card_id,
+                            &binding.report_card_id,
+                        )
+                        .await?;
+                        let track =
+                            crate::db::sqlite::track_get_tx(tx, &binding.track_id.into()).await?;
+                        let _ = replay_tx.send(track);
+                        return Err(CalmError::Conflict(
+                            "empty Track allocation already committed".into(),
+                        ));
+                    }
+                    if prior_start_attempt_tx(tx, &area_id, key).await? {
+                        return Err(CalmError::IdempotencyKeyReused(
+                            "a historical start cannot be adopted as empty canonical creation"
+                                .into(),
+                        ));
+                    }
+                }
+                let (model, effort) = plan.selection();
+                advice.require_create_selection(model, effort)?;
+                let (allocation, options) = plan.into_allocation()?;
+                let CanonicalAllocation { track, events, .. } =
+                    allocate_canonical_tx(tx, allocation, options, owners).await?;
+                source.current_principal()?;
+                Ok((track, events))
+            })
+        },
+    )
+    .await;
+    match result {
+        Ok((track, _)) => Ok(track),
+        Err(error @ CalmError::Conflict(_)) => replay_rx.try_recv().map_err(|_| error),
+        Err(error) => Err(error),
+    }
 }

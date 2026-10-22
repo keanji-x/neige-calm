@@ -25,7 +25,9 @@ use crate::state::RouteState;
 use super::{CreateTrackOptions, TrackCreateIdempotencyClaim, create_track_structure};
 
 mod creation_plan;
-pub(super) use creation_plan::first_message_storage_contract;
+pub(super) use creation_plan::{
+    CreationStorage, creation_storage_contract, prepare_canonical_creation,
+};
 mod delivery;
 pub(super) mod dormant;
 use delivery::{SubmitArm, start_planner_harness_with_first_message};
@@ -338,7 +340,7 @@ pub(super) async fn plan_keyed_create(s: &RouteState, request: KeyedCreate) -> R
             binding,
             &create_request_sha256,
             &idempotency_key,
-            CreateShape::WithFirstMessage,
+            CreateShape::WithFirstMessage(()),
         )?;
     }
 
@@ -436,7 +438,7 @@ async fn plan_message_less(
         &binding,
         &create_request_sha256,
         &idempotency_key,
-        CreateShape::MessageLess,
+        CreateShape::MessageLess(()),
     )?;
     Ok(CreatePlan::MessageLessResume(MessageLessResume {
         track_id: binding.track_id,
@@ -496,9 +498,9 @@ fn create_request_digest(shape: &CreateRequestShape) -> Result<String> {
 /// without this a message-carrying create could resume onto a message-less binding and
 /// answer 201 for a delivery that never happened.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum CreateShape {
-    WithFirstMessage,
-    MessageLess,
+pub(super) enum CreateShape<First = (), Empty = ()> {
+    WithFirstMessage(First),
+    MessageLess(Empty),
 }
 
 /// `None` means "that create sent no message", never "the digest is unavailable" —
@@ -540,8 +542,8 @@ fn ensure_binding_create_matches(
     // Checked first, because the digest below omits `first_message`: a create that added
     // or dropped the sentence hashes to the same value.
     let bound_shape = match bound_first_message_sha256 {
-        Some(_) => CreateShape::WithFirstMessage,
-        None => CreateShape::MessageLess,
+        Some(_) => CreateShape::WithFirstMessage(()),
+        None => CreateShape::MessageLess(()),
     };
     if bound_shape != shape {
         return Err(crate::operation::idempotency_payload_conflict(Some(

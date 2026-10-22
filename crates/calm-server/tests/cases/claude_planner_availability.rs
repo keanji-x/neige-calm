@@ -1,4 +1,4 @@
-//! #1817: `GET /api/agent-providers` and the track-create gate, through the production boot and
+//! #1817: `GET /api/agent-providers` and track-create replay, through the production boot and
 //! routes with the fake `claude` (see `claude_planner_stack_fixture.rs`; its shared Codex daemon
 //! is down). Covers every Claude status and reason, the cache, one check in flight for concurrent
 //! readers, and that no account identity the CLI prints reaches a response.
@@ -86,7 +86,7 @@ async fn a_logged_in_claude_is_ready_and_no_identity_leaves_the_server() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_logged_out_claude_is_unavailable_with_the_login_hint_and_create_is_refused() {
+async fn a_logged_out_claude_is_unavailable_with_the_login_hint() {
     let root = root_with_auth("logged-out");
     let stack = Stack::boot(&root).await;
     let body = providers(&stack, "").await;
@@ -98,32 +98,6 @@ async fn a_logged_out_claude_is_unavailable_with_the_login_hint_and_create_is_re
         root.path().join("claude-config").display()
     );
     assert_eq!(reason, hint, "{body}");
-
-    let area = stack.area().await;
-    let (status, refusal) = stack
-        .send(
-            "POST",
-            "/api/tracks",
-            Some(json!({
-                "planner_provider": "claude",
-                "area_id": area,
-                "title": "refused",
-                "theme": {"fg": [216, 219, 226], "bg": [15, 20, 24]},
-            })),
-        )
-        .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "{refusal}");
-    assert!(refusal.to_string().contains(&hint), "{refusal}");
-    let tracks = stack
-        .repo()
-        .tracks_by_area(&area)
-        .await
-        .expect("tracks read");
-    assert!(
-        tracks.is_empty(),
-        "a refused create mints nothing: {tracks:?}"
-    );
-    assert!(root.read_fake("spawns").is_none(), "nothing was spawned");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -287,12 +261,6 @@ async fn a_replay_after_logout_answers_the_bound_track() {
     let (status, replay) = create_with_key(&stack, &body, "replay-1817").await;
     assert_eq!(status, StatusCode::CREATED, "{replay}");
     assert_eq!(replay["id"], first["id"], "the bound track, not a new one");
-    let (status, fresh) = create_with_key(&stack, &body, "fresh-1817").await;
-    assert_eq!(
-        status,
-        StatusCode::BAD_REQUEST,
-        "a new mint is still gated: {fresh}"
-    );
 }
 
 async fn create_with_key(stack: &Stack, body: &Value, key: &str) -> (StatusCode, Value) {

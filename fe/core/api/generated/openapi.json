@@ -15251,7 +15251,7 @@
           },
           "planner_provider": {
             "$ref": "#/components/schemas/AgentProvider",
-            "description": "The backend of the track's Planner, stamped on its card as the server-owned\n`planner_provider` and never changed afterwards. `claude` is refused with 400 when Claude\nis not ready (`GET /api/agent-providers`)."
+            "description": "The backend of the track's Planner, stamped on its card as the server-owned\n`planner_provider` and never changed afterwards. Fresh blank managed `claude` creation\nis durably accepted while Claude is not ready; execution waits for readiness\n(`GET /api/agent-providers`). Template, attached, admin, fork, recipe, `template_input`,\nand cross-area creation retain the readiness refusal (400)."
           },
           "reasoning_effort": {
             "type": [

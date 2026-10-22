@@ -446,27 +446,6 @@ describe('New track model selection', () => {
     expect(body).not.toHaveProperty('model');
   });
 
-  it('shows a refused Claude create readably and lets the reader create on Codex instead', async () => {
-    const refusal = 'track create: `planner_provider` `claude` is unavailable: '
-      + 'calm-server was started without --claude-planner-config';
-    const { sent } = harness({ templates: [], claudePlanner: true, trackCreateSequence: [
-      { status: 400, statusText: 'Bad Request', body: { error: refusal, code: 'bad_request' } },
-    ] });
-    await userEvent.click(await screen.findByRole('button', { name: 'New track in Work' }));
-    await findComposer();
-    await pick('Model: Codex Default', 'Claude', /^Default/);
-    await userEvent.type(screen.getByLabelText(TASK_LABEL), 'Try Claude first');
-    await userEvent.click(screen.getByRole('button', { name: 'Create track' }));
-    expect((await within(await screen.findByRole('main')).findByRole('alert')).textContent).toContain('--claude-planner-config');
-    expect(composerText()).toBe('Try Claude first');
-    await pick(CLAUDE_DEFAULT_TRIGGER, 'Codex', /^Default/);
-    await userEvent.click(screen.getByRole('button', { name: 'Create track' }));
-    await waitFor(() => expect(createdTrackRequests(sent)).toHaveLength(2));
-    expect(createdTrackRequests(sent).map((request) => (request.body as { planner_provider: string }).planner_provider))
-      .toEqual(['claude', 'codex']);
-    await waitFor(() => expect(window.location.pathname).toBe(`${APP_BASEPATH}/track/w-new`));
-  });
-
   it('keeps the choice per Area draft and resets it once the track is created', async () => {
     harness({ templates: [], claudePlanner: true });
     await userEvent.click(await screen.findByRole('button', { name: 'New track in Work' }));

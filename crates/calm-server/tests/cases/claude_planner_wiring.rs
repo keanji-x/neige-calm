@@ -215,6 +215,7 @@ async fn without_the_flag_create_is_refused_and_a_recovered_harness_refuses() {
                 "planner_provider": "claude",
                 "area_id": area,
                 "title": "refused",
+                "template_id": "small-change",
                 "theme": {"fg": [216, 219, 226], "bg": [15, 20, 24]},
             })),
         )
