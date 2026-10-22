@@ -2026,6 +2026,7 @@ async fn terminal_exit_beats_running_stamp() {
                     now + 7_200_000,
                 )
                 .await
+                .map_err(calm_server::error::CalmError::from)
             })
         }
     })

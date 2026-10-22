@@ -1253,6 +1253,7 @@ async fn terminal_create_recovery_from_tx_committed_replays_spawn_once() {
                 calm_types::card_presentation::CardCreationSource::Manual,
             )
             .await
+            .map_err(CalmError::from)
         })
     })
     .await
@@ -1376,6 +1377,7 @@ async fn codex_create_recovery_from_tx_committed_reaches_terminal_phase() {
                 calm_server::routes::theme::RequestTheme::default_dark(),
             )
             .await
+            .map_err(CalmError::from)
         })
     })
     .await
@@ -1501,6 +1503,7 @@ async fn claude_create_recovery_from_tx_committed_reaches_terminal_phase_and_wri
                 calm_server::routes::theme::RequestTheme::default_dark(),
             )
             .await
+            .map_err(CalmError::from)
         })
     })
     .await
@@ -2238,6 +2241,7 @@ async fn terminal_create_recovery_spawn_failure_clears_stale_pid_before_compensa
                 calm_types::card_presentation::CardCreationSource::Manual,
             )
             .await
+            .map_err(CalmError::from)
         })
     })
     .await
@@ -2736,6 +2740,7 @@ async fn apply_recovery_continues_after_drive_error_between_items() {
                 calm_types::card_presentation::CardCreationSource::Manual,
             )
             .await
+            .map_err(CalmError::from)
         })
     })
     .await
@@ -3361,6 +3366,7 @@ async fn seed_codex_card_for_operation(
                 calm_server::routes::theme::RequestTheme::default_dark(),
             )
             .await
+            .map_err(CalmError::from)
         })
     })
     .await

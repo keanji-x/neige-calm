@@ -48,7 +48,7 @@ pub(super) async fn allocate_track_structure_tx(
             source
                 .require_track_tx(tx, source_track_id)
                 .await
-                .map_err(|error| fork_source_error(error.into(), source_track_id))?;
+                .map_err(|error| fork_source_error(error, source_track_id))?;
         }
         if let FolderClaim::Enforce {
             allow_cross_area_cwd: Some(cross),

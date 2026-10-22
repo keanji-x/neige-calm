@@ -2996,6 +2996,7 @@ async fn minted_terminal_card(
                     calm_types::card_presentation::CardCreationSource::Manual,
                 )
                 .await
+                .map_err(calm_server::error::CalmError::from)
             })
         })
         .await
