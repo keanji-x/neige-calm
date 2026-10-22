@@ -139,3 +139,61 @@ async fn canonical_acp_completed_receipt_cannot_bypass_failed_canonical_report_c
     assert_eq!(fx.prompts(), 1);
     fx.session.shutdown().await.unwrap();
 }
+
+#[tokio::test]
+async fn canonical_acp_invalid_receipted_turn_is_unknown_with_original_correlation() {
+    let fx = Fixture::new("reply").await;
+    let original = fx.dispatch().await.unwrap();
+    fx.wait_idle().await;
+    let receipt = crate::db::sqlite::acp_submission_get(
+        fx.owner.repo.pool(),
+        &fx.owner.worker,
+        fx.submission.as_str(),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let input: serde_json::Value = serde_json::from_str(&receipt.input_json).unwrap();
+    let logical: LogicalTurnId =
+        serde_json::from_value(input["association"]["logical_turn_id"].clone()).unwrap();
+    let proof: SubmissionDispatchProof =
+        serde_json::from_value(input["association"]["proof"].clone()).unwrap();
+    sqlx::query("UPDATE acp_submissions SET turn_id='not-a-local-uuid' WHERE worker_session_id=?1 AND client_id=?2")
+        .bind(&fx.owner.worker).bind(fx.submission.as_str()).execute(fx.owner.repo.pool()).await.unwrap();
+    let report = fx
+        .backend
+        .dispatch_input(
+            None,
+            &logical,
+            proof.attempt(),
+            &fx.owner.thread,
+            &proof,
+            vec![InputItem::text("must never be resent")],
+            &TurnModelSelection::inherit(),
+            PlannerPermissionMode::Never,
+            &crate::harness::native_admission::NativePromptAdmission::new(
+                || Ok(()),
+                || Box::pin(async { Ok(()) }),
+            ),
+        )
+        .await;
+    assert!(matches!(report.delivery(), InputDelivery::Unknown(_)));
+    let correlation = report.delivery().correlation();
+    assert_eq!(correlation.attempt(), original.report.attempt());
+    assert_eq!(correlation.provider(), &AgentProvider::OpenCode);
+    assert_eq!(correlation.thread_id(), fx.owner.thread);
+    assert_eq!(correlation.client_id(), fx.submission.as_str());
+    assert_eq!(
+        correlation.native_session_id(),
+        Some(receipt.native_session_id.as_str())
+    );
+    assert_eq!(correlation.local_turn_id(), None);
+    assert_eq!(correlation.native_turn_id(), None);
+    assert_eq!(correlation.rpc_request_id(), None);
+    let Err(TurnStartFailure::Transient(CalmError::Conflict(error))) = report.outcome() else {
+        panic!("invalid receipt must return a conflict");
+    };
+    assert!(error.starts_with("ACP local receipt identity is invalid:"));
+    assert_eq!(fx.prompts(), 1);
+    fx.session.shutdown().await.unwrap();
+}

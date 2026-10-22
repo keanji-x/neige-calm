@@ -89,10 +89,10 @@ impl PlannerBackend {
                     )
                     .await
                 {
-                    Ok(turn) => InputAttemptReport {
-                        delivery: InputDelivery::Unknown(correlation.with_local_turn(turn)),
-                        outcome: Ok(ExecutionIdentity::Local(turn)),
-                    },
+                    Ok(turn) => InputAttemptReport::unknown(
+                        correlation.with_local_turn(turn),
+                        Ok(ExecutionIdentity::Local(turn)),
+                    ),
                     Err(SpawnFailure::BeforeWrite(failure)) => not_dispatched(
                         correlation,
                         NonDispatchBasis::TransportBeforeSend,
@@ -101,10 +101,12 @@ impl PlannerBackend {
                             BeforeWriteFailure::Failed(error) => error.into(),
                         },
                     ),
-                    Err(SpawnFailure::CrossedWrite { error, local_turn }) => InputAttemptReport {
-                        delivery: InputDelivery::Unknown(correlation.with_local_turn(local_turn)),
-                        outcome: Err(error.into()),
-                    },
+                    Err(SpawnFailure::CrossedWrite { error, local_turn }) => {
+                        InputAttemptReport::unknown(
+                            correlation.with_local_turn(local_turn),
+                            Err(error.into()),
+                        )
+                    }
                 }
             }
             Arm::Acp(session) => {
@@ -121,10 +123,9 @@ impl PlannerBackend {
                     )
                     .await
                 {
-                    CanonicalStart::UncertainReceipt(error) => InputAttemptReport {
-                        delivery: InputDelivery::Unknown(correlation),
-                        outcome: Err(error.into()),
-                    },
+                    CanonicalStart::UncertainReceipt(error) => {
+                        InputAttemptReport::unknown(correlation, Err(error.into()))
+                    }
                     CanonicalStart::BeforeReceipt(error) => {
                         not_dispatched(correlation, NonDispatchBasis::LocalPreflight, error)
                     }
@@ -132,19 +133,19 @@ impl PlannerBackend {
                         let correlation =
                             correlation.with_native_session(receipt.native_session_id);
                         match uuid::Uuid::parse_str(&receipt.turn) {
-                            Ok(turn) => InputAttemptReport {
-                                delivery: InputDelivery::Unknown(correlation.with_local_turn(turn)),
-                                outcome: outcome
+                            Ok(turn) => InputAttemptReport::unknown(
+                                correlation.with_local_turn(turn),
+                                outcome
                                     .map(|()| ExecutionIdentity::Local(turn))
                                     .map_err(Into::into),
-                            },
-                            Err(error) => InputAttemptReport {
-                                delivery: InputDelivery::Unknown(correlation),
-                                outcome: Err(CalmError::Conflict(format!(
+                            ),
+                            Err(error) => InputAttemptReport::unknown(
+                                correlation,
+                                Err(CalmError::Conflict(format!(
                                     "ACP local receipt identity is invalid: {error}"
                                 ))
                                 .into()),
-                            },
+                            ),
                         }
                     }
                 }

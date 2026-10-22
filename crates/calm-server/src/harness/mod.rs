@@ -55,7 +55,7 @@ use crate::session_projection_repo::{
 use crate::shared_codex_appserver::SharedCodexAppServer;
 use crate::thread_seals::ThreadSeals;
 use crate::track_area_cache::TrackAreaCache;
-use calm_types::runtime::AgentProtocol;
+use backend::factory::PlannerFactory;
 
 pub use backend::PlannerBackend;
 pub use config::HarnessConfig;
@@ -268,7 +268,7 @@ pub(crate) async fn spawn_recovered_harness_admitted(
     let mut snapshot = HarnessSnapshot::from_value_strict(state_json);
     // Catch-up is a PLANNER-push catch-up: replaying it into a conversation harness would inject
     // a backlog it was never meant to see. Unknown/absent role falls into the no-replay arm (fail-closed).
-    if role == Some(CardRole::Planner) && provider.protocol() != AgentProtocol::Acp {
+    if role == Some(CardRole::Planner) && PlannerFactory::historical_replay_eligible(&provider) {
         let catch_up_watermark = snapshot.push_watermark;
         replay_harness_events_since(
             repo.clone(),
@@ -370,7 +370,7 @@ pub(crate) async fn spawn_recovered_harness_admitted(
     if let Some(source) = &source {
         source.require_card(repo.as_ref(), &runtime.card_id).await?;
     }
-    let factory = backend::factory::PlannerFactory::new(
+    let factory = PlannerFactory::new(
         std::sync::Arc::downgrade(&daemon),
         &claude.claude,
         &claude.acp,

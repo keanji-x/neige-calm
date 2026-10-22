@@ -143,6 +143,16 @@ impl<'a> PlannerFactory<'a> {
         })
     }
 
+    /// Conventional historical catch-up must not run before ACP receipt retirement.
+    /// ACP restores its quiesced checkpoint first; the harness then folds later events.
+    /// Planner role admission and queue/watermark updates remain in the harness.
+    pub(crate) fn historical_replay_eligible(provider: &AgentProvider) -> bool {
+        match provider.protocol() {
+            AgentProtocol::Codex | AgentProtocol::Claude => true,
+            AgentProtocol::Acp => false,
+        }
+    }
+
     /// Restore-only policy, at the original post-reservation/pre-open point. Operation replay
     /// deliberately uses prepare_checkpoint alone.
     pub(crate) async fn prepare_restore(
@@ -211,5 +221,26 @@ impl<'a> PlannerFactory<'a> {
                 self.shutdown_codex_replay(runtime).await
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn factory_historical_replay_waits_for_acp_receipt_recovery() {
+        assert!(PlannerFactory::historical_replay_eligible(
+            &AgentProvider::Codex
+        ));
+        assert!(PlannerFactory::historical_replay_eligible(
+            &AgentProvider::Claude
+        ));
+        assert!(!PlannerFactory::historical_replay_eligible(
+            &AgentProvider::OpenCode
+        ));
+        assert!(!PlannerFactory::historical_replay_eligible(
+            &AgentProvider::Grok
+        ));
     }
 }

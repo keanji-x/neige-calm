@@ -181,6 +181,17 @@ pub(crate) struct InputAttemptReport {
 }
 
 impl InputAttemptReport {
+    /// Local evidence can identify execution without proving native acceptance.
+    pub(super) fn unknown(
+        correlation: AttemptCorrelation,
+        outcome: Result<ExecutionIdentity, TurnStartFailure>,
+    ) -> Self {
+        Self {
+            delivery: InputDelivery::Unknown(correlation),
+            outcome,
+        }
+    }
+
     pub(crate) fn attempt(&self) -> &InputAttempt {
         self.delivery.correlation().attempt()
     }
