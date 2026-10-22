@@ -156,3 +156,62 @@ export function calendarEntryIncludesDate(entry: CalendarListedEntry, day: strin
   const schedule = entry.task.schedule;
   return schedule.kind === 'all_day' ? schedule.date === day : calendarOccurrenceOn(entry, day, timezone) !== undefined;
 }
+
+export type CalendarDayGroup = Readonly<{
+  title: string; entries: readonly CalendarListedEntry[]; intervalMinutes: number | null;
+}>;
+
+/** Presentation groups only. Keep original IDs and schedules for inspection and individual edits.
+ * Weekly entries must share source, instructions and recurrence bounds. A title's own scheduled
+ * HH:MM may differ, but arbitrary numbers or other title differences never establish a series.
+ */
+export function calendarDayGroups(entries: readonly CalendarListedEntry[], day: string, timezone: string): CalendarDayGroup[] {
+  const buckets = new Map<string, { title: string; entries: CalendarListedEntry[] }>();
+  for (const entry of entries) {
+    if (!calendarEntryIncludesDate(entry, day, timezone)) continue;
+    const schedule = entry.task.schedule;
+    let title = entry.task.title;
+    let key = JSON.stringify(['entry', entry.id]);
+    if (schedule.kind === 'weekly' && entry.source_track_id !== null) {
+      const time = new RegExp(`(?<![\\d:])${schedule.start}(?![\\d:])`, 'g');
+      // Only a single, exact schedule time is a removable title annotation.
+      if ([...title.matchAll(time)].length === 1) title = title.replace(time, '').replace(/\s+([（(])/g, '$1').trim();
+      key = JSON.stringify(['weekly', entry.source_track_id, entry.created_by, title, entry.task.description,
+        schedule.timezone, [...schedule.weekdays].sort(), schedule.from, schedule.until]);
+    }
+    const bucket = buckets.get(key);
+    if (bucket) bucket.entries.push(entry);
+    else buckets.set(key, { title, entries: [entry] });
+  }
+  const start = (entry: CalendarListedEntry) => {
+    const span = calendarOccurrenceOn(entry, day, timezone);
+    return span ? Date.parse(span.start) : -Infinity;
+  };
+  return [...buckets.values()].flatMap((bucket): CalendarDayGroup[] => {
+    const sorted = bucket.entries.toSorted((a, b) => start(a) - start(b));
+    // Coincident tasks are not successive runs of a series.
+    if (sorted.some((entry, index) => index > 0 && start(entry) === start(sorted[index - 1]))) {
+      return sorted.map((entry) => ({ title: entry.task.title, entries: [entry], intervalMinutes: null }));
+    }
+    const interval = sorted.length > 1 ? (start(sorted[1]) - start(sorted[0])) / 60000 : 0;
+    const regular = interval > 0 && Number.isInteger(interval)
+      && sorted.every((entry, index) => index === 0 || start(entry) - start(sorted[index - 1]) === interval * 60000);
+    return [{ title: sorted.length === 1 ? sorted[0].task.title : bucket.title, entries: sorted, intervalMinutes: regular ? interval : null }];
+  }).sort((a, b) => start(a.entries[0]) - start(b.entries[0]));
+}
+
+/** Short recurrence wording shared by Calendar list presentations; full bounds belong in details. */
+export function calendarRepeatLabel(group: CalendarDayGroup): string | null {
+  if (group.entries.length > 1 && group.intervalMinutes !== null) {
+    const minutes = group.intervalMinutes;
+    return minutes % 60 === 0 ? `每 ${minutes / 60} 小时` : `每 ${minutes} 分钟`;
+  }
+  const schedule = group.entries[0].task.schedule;
+  if (schedule.kind !== 'weekly') return null;
+  const days = CALENDAR_WEEKDAYS.filter((day) => schedule.weekdays.includes(day));
+  const names = Object.freeze({ mon: '一', tue: '二', wed: '三', thu: '四', fri: '五', sat: '六', sun: '日' });
+  const frequency = days.length === 7 ? '每天'
+    : days.length === 5 && days.every((day, index) => day === CALENDAR_WEEKDAYS[index]) ? '工作日'
+      : `周${days.map((day) => names[day]).join('、')}`;
+  return group.entries.length > 1 ? `${frequency} ${group.entries.length} 次` : `${frequency} ${schedule.start}`;
+}

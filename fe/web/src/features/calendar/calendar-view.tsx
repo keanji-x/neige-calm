@@ -4,7 +4,7 @@ import FullCalendar, { type CalendarRef } from '@fullcalendar/react';
 import dayGridPlugin from '@fullcalendar/react/daygrid';
 import interactionPlugin from '@fullcalendar/react/interaction';
 import themePlugin from '@fullcalendar/react/themes/monarch';
-import { calendarDate, calendarEntryIncludesDate, type CalendarListedEntry, type CalendarWindow } from '../../../../core/domain/calendar.ts';
+import { calendarDate, calendarDayGroups, type CalendarListedEntry, type CalendarWindow } from '../../../../core/domain/calendar.ts';
 import styles from './calendar.module.css';
 
 export type CalendarGridHandle = Readonly<{ changeMode: (mode: string) => void }>;
@@ -29,7 +29,7 @@ export function TaskCalendar({ date, timezone, entries, mode, controls, trackCou
   const countsOn = (value: Date) => {
     const day = calendarDate(value.getTime(), timezone);
     const tracks = trackCountOn?.(day);
-    const tasks = entries.filter((entry) => calendarEntryIncludesDate(entry, day, timezone)).length;
+    const tasks = calendarDayGroups(entries, day, timezone).length;
     return { day, tracks, tasks };
   };
   const dateBadge = (value: Date) => {

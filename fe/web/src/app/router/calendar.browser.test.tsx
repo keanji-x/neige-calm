@@ -12,6 +12,32 @@ afterEach(async () => {
 });
 const ready = (entries: CalendarListedEntry[]): CalendarEntriesView => ({ entries, loading: false, error: null });
 
+it('collapses a day of half-hour checks, counts the group, and opens each original task', async () => {
+  await page.viewport(1440, 1000);
+  const entries: CalendarListedEntry[] = Array.from({ length: 48 }, (_, index) => {
+    const start = `${String(Math.floor(index / 2)).padStart(2, '0')}:${index % 2 ? '30' : '00'}`;
+    const end = index === 47 ? '23:59' : `${String(Math.floor((index + 1) / 2)).padStart(2, '0')}:${index % 2 ? '00' : '30'}`;
+    return { id: `check-${index}`, version: 1, cancelled: false, source_track_id: 'check-track', created_by: 'planner', created_at: 1, updated_at: 1,
+      task: { title: `巡检 ${start}（消息）`, description: 'Check messages.', schedule: { kind: 'weekly', weekdays: ['thu'], start, end, timezone: 'Asia/Shanghai', from: '2026-10-01' } },
+      occurrences: [{ start: `2026-10-22T${start}:00+08:00`, end: `2026-10-22T${end}:00+08:00` }] };
+  });
+  const onOpenTrack = () => undefined;
+  render(<CalendarTasks date="2026-10-22" timezone="Asia/Shanghai" enabled pending={false} onDateChange={() => undefined} onWindowChange={() => undefined}
+    onRetry={() => undefined} onReload={() => undefined} onSettings={() => undefined} onOpenTrack={onOpenTrack} onSave={() => Promise.resolve()} month={ready(entries)} day={ready(entries)} />);
+  const list = page.getByRole('region', { name: 'Task list' });
+  await expect.element(list.getByRole('button')).toHaveLength(1);
+  await expect.element(page.getByRole('link', { name: /October 22, 2026, selected, 1 tasks/ })).toBeVisible();
+  await expect.element(list).not.toHaveTextContent('48 runs');
+  await expect.element(list).not.toHaveTextContent('23:30');
+  await list.getByRole('button', { name: /巡检（消息）.*每 30 分钟/ }).click();
+  const details = page.getByRole('dialog', { name: '巡检（消息）' });
+  await expect.element(details).toHaveTextContent('00:00 – 23:30 · Every 30 min · 48 runs');
+  await expect.element(details.getByRole('button', { name: /巡检 23:30（消息）/ })).toBeVisible();
+  await details.getByRole('button', { name: /巡检 23:30（消息）/ }).click();
+  await expect.element(page.getByRole('dialog', { name: 'Weekly task' })).toBeVisible();
+  await expect.element(page.getByRole('button', { name: 'Source track', exact: true })).toBeVisible();
+});
+
 it('queries the visible month and selected day separately through the real adapter', async () => {
   const errors: string[] = [];
   const noteError = (event: ErrorEvent) => { errors.push(event.message); };
@@ -122,7 +148,7 @@ it('counts a weekly entry on each projected occurrence in Week and Month and sho
   await expect.element(page.getByRole('link', { name: /September 30, 2026, 0 tasks/ })).toBeVisible();
   await expect.element(page.getByRole('link', { name: /October 2, 2026, selected, 1 tasks/ })).toBeVisible();
   await expect.element(page.getByRole('link', { name: /October 3, 2026, 0 tasks/ })).toBeVisible();
-  await expect.element(page.getByRole('region', { name: 'Task list' }).getByRole('button', { name: /Open review.*09:30 – 10:00 · Weekly/ })).toBeVisible();
+  await expect.element(page.getByRole('region', { name: 'Task list' }).getByRole('button', { name: /Open review.*周一、三、五 09:30/ })).toBeVisible();
   await page.screenshot({ path: '../../../../test-results/calendar-weekly-week.png' });
   await page.getByRole('radio', { name: 'Month', exact: true }).click();
   for (const day of [5, 7, 9, 30]) await expect.element(page.getByRole('link', { name: new RegExp(`October ${day}, 2026, 1 tasks`) })).toBeVisible();

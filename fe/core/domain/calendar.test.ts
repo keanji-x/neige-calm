@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { calendarDate, calendarEntryIncludesDate, calendarInstant, calendarListOperation, calendarListedEntrySchema, calendarOccurrenceOn, calendarWriteOperation, shiftCalendarDate, type CalendarListedEntry } from './calendar.js';
+import { calendarDate, calendarDayGroups, calendarRepeatLabel, calendarEntryIncludesDate, calendarInstant, calendarListOperation, calendarListedEntrySchema, calendarOccurrenceOn, calendarWriteOperation, shiftCalendarDate, type CalendarListedEntry } from './calendar.js';
 
 describe('calendar time contracts', () => {
   it('uses the selected timezone across midnight and calendar boundaries', () => {
@@ -49,4 +49,55 @@ it('decodes a listed weekly entry and places each projected occurrence on its di
   expect(calendarOccurrenceOn(entry, '2026-10-04', 'America/Los_Angeles')?.start).toBe('2026-10-05T09:30:00+08:00');
   expect(calendarListedEntrySchema.safeParse({ ...wire, task: { ...wire.task, schedule: { ...wire.task.schedule, weekdays: ['monday'] } } }).success).toBe(false);
   expect(calendarListedEntrySchema.safeParse({ ...wire, occurrences: undefined }).success).toBe(false);
+});
+
+function repeatEntry(hour: string, overrides: Partial<CalendarListedEntry> = {}): CalendarListedEntry {
+  const span = { start: `2026-10-22T${hour}:00+08:00`, end: `2026-10-22T${hour}:30+08:00` };
+  return { ...listed({ kind: 'weekly', weekdays: ['thu'], start: hour, end: '23:59', timezone: 'Asia/Shanghai', from: '2026-10-01' }, [span]),
+    id: hour, source_track_id: 'track', ...overrides,
+    task: overrides.task ?? { title: `Check ${hour}（messages）`, description: 'Read messages.', schedule: { kind: 'weekly', weekdays: ['thu'], start: hour, end: '23:59', timezone: 'Asia/Shanghai', from: '2026-10-01' } } };
+}
+
+it('groups only matching weekly commitments on the selected display day and preserves every original ID', () => {
+  const entries = ['09:00', '09:30', '10:00'].map((hour) => repeatEntry(hour));
+  const groups = calendarDayGroups(entries.toReversed(), '2026-10-22', 'Asia/Shanghai');
+  expect(groups).toHaveLength(1);
+  expect(groups[0]).toMatchObject({ title: 'Check（messages）', intervalMinutes: 30 });
+  expect(groups[0].entries.map((entry) => entry.id)).toEqual(['09:00', '09:30', '10:00']);
+  expect(entries[0].task.title).toBe('Check 09:00（messages）');
+  expect(calendarDayGroups(entries, '2026-10-23', 'Asia/Shanghai')).toEqual([]);
+  expect(calendarDayGroups(entries, '2026-10-21', 'America/Los_Angeles')).toHaveLength(1);
+  const irregular = calendarDayGroups([entries[0], entries[1], repeatEntry('11:00')], '2026-10-22', 'Asia/Shanghai');
+  expect(irregular[0].intervalMinutes).toBeNull();
+});
+
+it('keeps different sources, instructions, titles, recurrence bounds, and coincident entries separate', () => {
+  const first = repeatEntry('09:00');
+  const next = repeatEntry('09:30');
+  const separate = (entry: CalendarListedEntry) => expect(calendarDayGroups([first, entry], '2026-10-22', 'Asia/Shanghai')).toHaveLength(2);
+  separate({ ...next, source_track_id: 'other' });
+  separate({ ...next, created_by: 'other' });
+  separate({ ...next, task: { ...next.task, description: 'Different instructions.' } });
+  separate({ ...next, task: { ...next.task, title: 'Other check 09:30（messages）' } });
+  separate({ ...next, task: { ...next.task, schedule: { ...next.task.schedule, kind: 'weekly', weekdays: ['thu'], start: '09:30', end: '23:59', timezone: 'Asia/Shanghai', from: '2026-10-02' } } });
+  separate({ ...first, id: 'duplicate' });
+  expect(calendarDayGroups([first, next].map((entry) => ({ ...entry, source_track_id: null })), '2026-10-22', 'Asia/Shanghai')).toHaveLength(2);
+  const timed = [first, next].map((entry) => ({ ...entry, task: { ...entry.task, schedule: { kind: 'timed' as const, ...entry.occurrences[0], timezone: 'Asia/Shanghai' } } }));
+  expect(calendarDayGroups(timed, '2026-10-22', 'Asia/Shanghai')).toHaveLength(2);
+});
+
+
+it('uses short recurrence wording for minutes, hours, daily and weekday schedules', () => {
+  const group = (entries: CalendarListedEntry[], intervalMinutes: number | null = null) => ({ title: 'Check', entries, intervalMinutes });
+  expect(calendarRepeatLabel(group([repeatEntry('09:00'), repeatEntry('09:30')], 30))).toBe('每 30 分钟');
+  expect(calendarRepeatLabel(group([repeatEntry('09:00'), repeatEntry('11:00')], 120))).toBe('每 2 小时');
+  expect(calendarRepeatLabel(group([repeatEntry('09:00'), repeatEntry('10:30')], 90))).toBe('每 90 分钟');
+  const entry = repeatEntry('09:00');
+  expect(calendarRepeatLabel(group([entry]))).toBe('周四 09:00');
+  const weekly = (weekdays: ('mon' | 'tue' | 'wed' | 'thu' | 'fri' | 'sat' | 'sun')[]) => ({ ...entry, task: { ...entry.task, schedule: { kind: 'weekly' as const, weekdays, start: '09:00', end: '10:00', timezone: 'Asia/Shanghai', from: '2026-10-01' } } });
+  expect(calendarRepeatLabel(group([weekly(['sun', 'sat', 'fri', 'thu', 'wed', 'tue', 'mon'])]))).toBe('每天 09:00');
+  expect(calendarRepeatLabel(group([weekly(['mon', 'tue', 'wed', 'thu', 'fri'])]))).toBe('工作日 09:00');
+  expect(calendarRepeatLabel(group([weekly(['fri', 'mon', 'wed'])]))).toBe('周一、三、五 09:00');
+  expect(calendarRepeatLabel(group([entry, repeatEntry('11:00'), repeatEntry('14:00')]))).toBe('周四 3 次');
+  expect(calendarRepeatLabel(group([listed({ kind: 'all_day', date: '2026-10-22' }, [])]))).toBeNull();
 });
