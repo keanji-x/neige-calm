@@ -3,6 +3,7 @@ use super::*;
 use crate::event::EventBus;
 use crate::operation::OperationCompletionBus;
 mod executor;
+#[cfg(test)]
 mod failure_wake_tests;
 use calm_types::forge_git::{FORGE_SHELL_PRELUDE, GIT_COMMIT_PROBE_SCRIPT};
 use std::process::Command;
