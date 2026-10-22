@@ -145,7 +145,6 @@ async fn boot(start_daemon: bool, scripted: impl FnOnce(&PathBuf)) -> Boot {
 
     let home = Arc::new(SharedCodexHome::new(
         cfg.data_dir_resolved().join("codex-home"),
-        cfg.data_dir_resolved().join("codex-homes"),
     ));
     home.seed_from(None).unwrap();
 

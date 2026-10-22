@@ -222,7 +222,6 @@ async fn worker_completes_with_channel3_stripped() {
     let cfg = cfg(root.path(), &codex_bin);
     let home = Arc::new(SharedCodexHome::new(
         cfg.data_dir_resolved().join("codex-home"),
-        cfg.data_dir_resolved().join("codex-homes"),
     ));
     seed_auth_only(&home);
     // Channel 2 ONLY — home-wide daemon MCP config for every codex thread.

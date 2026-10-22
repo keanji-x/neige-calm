@@ -79,7 +79,6 @@ async fn user_prompt_card_first_turn_true_binary() {
     let cfg = cfg(&tmp, &codex_bin);
     let home = calm_server::shared_codex_home::SharedCodexHome::new(
         cfg.data_dir_resolved().join("codex-home"),
-        cfg.data_dir_resolved().join("codex-homes"),
     );
     home.seed().unwrap();
     let shared = SharedCodexAppServer::new(&cfg, Arc::new(home), repo.clone());

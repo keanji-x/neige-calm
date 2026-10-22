@@ -67,7 +67,6 @@ async fn server(root: &tempfile::TempDir, repo: Arc<dyn Repo>) -> Arc<SharedCode
     let cfg = cfg(root);
     let home = calm_server::shared_codex_home::SharedCodexHome::new(
         cfg.data_dir_resolved().join("codex-home"),
-        cfg.data_dir_resolved().join("codex-homes"),
     );
     home.seed().unwrap();
     SharedCodexAppServer::new(&cfg, Arc::new(home), repo)
@@ -106,7 +105,6 @@ async fn start_new_process_passes_ingest_url_and_proxy_env_without_card_id() {
     cfg.codex_ingest_url = Some("http://127.0.0.1:8765".into());
     let home = calm_server::shared_codex_home::SharedCodexHome::new(
         cfg.data_dir_resolved().join("codex-home"),
-        cfg.data_dir_resolved().join("codex-homes"),
     );
     home.seed().unwrap();
 
@@ -135,7 +133,6 @@ async fn start_new_process_strips_per_card_env_keys() {
     cfg.codex_ingest_url = Some("http://expected".into());
     let home = calm_server::shared_codex_home::SharedCodexHome::new(
         cfg.data_dir_resolved().join("codex-home"),
-        cfg.data_dir_resolved().join("codex-homes"),
     );
     home.seed().unwrap();
 
@@ -175,7 +172,6 @@ async fn spawn_env_explicit_keys_stay_within_allow_list_and_computed_keys() {
     cfg.codex_ingest_url = Some("http://127.0.0.1:8765".into());
     let home = calm_server::shared_codex_home::SharedCodexHome::new(
         cfg.data_dir_resolved().join("codex-home"),
-        cfg.data_dir_resolved().join("codex-homes"),
     );
     home.seed().unwrap();
 
@@ -359,7 +355,6 @@ async fn boot_rejects_codex_home_with_unexpected_mcp_server_entry() {
     let cfg = cfg(&root);
     let home = calm_server::shared_codex_home::SharedCodexHome::new(
         cfg.data_dir_resolved().join("codex-home"),
-        cfg.data_dir_resolved().join("codex-homes"),
     );
     home.seed_from(None).unwrap();
     // Legitimate `calm` entry, as boot wiring (state.rs) writes it.
@@ -432,7 +427,6 @@ fn polluted_home(root: &tempfile::TempDir) -> calm_server::shared_codex_home::Sh
     let cfg = cfg(root);
     let home = calm_server::shared_codex_home::SharedCodexHome::new(
         cfg.data_dir_resolved().join("codex-home"),
-        cfg.data_dir_resolved().join("codex-homes"),
     );
     home.seed_from(None).unwrap();
     let shim = McpShimConfig {
@@ -2059,7 +2053,6 @@ async fn respawn_failure_then_retry_succeeds() {
     cfg.codex_bin = codex_link.display().to_string();
     let home = calm_server::shared_codex_home::SharedCodexHome::new(
         cfg.data_dir_resolved().join("codex-home"),
-        cfg.data_dir_resolved().join("codex-homes"),
     );
     home.seed().unwrap();
     let daemon = SharedCodexAppServer::new(&cfg, Arc::new(home), repo);
@@ -2432,7 +2425,6 @@ async fn cold_start_deadline_miss_reaps_child_gracefully() {
     cfg.shared_codex_appserver_restart_max_delay_ms = 120_000;
     let home = calm_server::shared_codex_home::SharedCodexHome::new(
         cfg.data_dir_resolved().join("codex-home"),
-        cfg.data_dir_resolved().join("codex-homes"),
     );
     home.seed().unwrap();
     let daemon = SharedCodexAppServer::new(&cfg, Arc::new(home), repo.clone());
@@ -2836,7 +2828,6 @@ async fn cold_start_reaps_never_binding_child_at_configured_deadline() {
     cfg.shared_codex_appserver_restart_max_delay_ms = 120_000;
     let home = calm_server::shared_codex_home::SharedCodexHome::new(
         cfg.data_dir_resolved().join("codex-home"),
-        cfg.data_dir_resolved().join("codex-homes"),
     );
     home.seed().unwrap();
     let daemon = SharedCodexAppServer::new(&cfg, Arc::new(home), repo.clone());
@@ -2924,7 +2915,6 @@ async fn cold_start_deadline_caps_in_flight_hanging_initialize() {
     cfg.shared_codex_appserver_restart_max_delay_ms = 120_000;
     let home = calm_server::shared_codex_home::SharedCodexHome::new(
         cfg.data_dir_resolved().join("codex-home"),
-        cfg.data_dir_resolved().join("codex-homes"),
     );
     home.seed().unwrap();
     let daemon = SharedCodexAppServer::new(&cfg, Arc::new(home), repo.clone());
@@ -3025,7 +3015,6 @@ fn daemon_with_codex_symlink_cfg(
     cfg.codex_bin = codex_link.display().to_string();
     let home = calm_server::shared_codex_home::SharedCodexHome::new(
         cfg.data_dir_resolved().join("codex-home"),
-        cfg.data_dir_resolved().join("codex-homes"),
     );
     home.seed().unwrap();
     (
@@ -3065,7 +3054,6 @@ async fn spawn_failure_after_persist_starting_persists_failed_row() {
     cfg.shared_codex_appserver_restart_max_delay_ms = 120_000;
     let home = calm_server::shared_codex_home::SharedCodexHome::new(
         cfg.data_dir_resolved().join("codex-home"),
-        cfg.data_dir_resolved().join("codex-homes"),
     );
     home.seed().unwrap();
     let daemon = SharedCodexAppServer::new(&cfg, Arc::new(home), repo.clone());
@@ -3497,10 +3485,8 @@ async fn unreconciled_classification_survives_supervisor_restart() {
     drop(instance_a);
 
     repair_polluted_home(&root);
-    let home_b = calm_server::shared_codex_home::SharedCodexHome::new(
-        root.path().join("codex-home"),
-        root.path().join("codex-homes"),
-    );
+    let home_b =
+        calm_server::shared_codex_home::SharedCodexHome::new(root.path().join("codex-home"));
     let instance_b = SharedCodexAppServer::new(&cfg(&root), Arc::new(home_b), repo.clone());
     let err = instance_b
         .start_or_takeover()
@@ -3975,7 +3961,6 @@ async fn readiness_window_never_rearms_for_same_child() {
     cfg.shared_codex_appserver_start_timeout_secs = 8;
     let home = calm_server::shared_codex_home::SharedCodexHome::new(
         cfg.data_dir_resolved().join("codex-home"),
-        cfg.data_dir_resolved().join("codex-homes"),
     );
     home.seed().unwrap();
     let daemon = SharedCodexAppServer::new(&cfg, Arc::new(home), repo.clone());
@@ -4444,7 +4429,6 @@ async fn grace_ceiling_escalates_to_sigkill_for_sigterm_ignoring_daemon() {
     cfg.shared_codex_appserver_stop_grace_secs = 1;
     let home = calm_server::shared_codex_home::SharedCodexHome::new(
         cfg.data_dir_resolved().join("codex-home"),
-        cfg.data_dir_resolved().join("codex-homes"),
     );
     home.seed().unwrap();
     let daemon = SharedCodexAppServer::new(&cfg, Arc::new(home), repo.clone());
@@ -4929,7 +4913,6 @@ async fn forced_running_persist_error_reaps_gracefully_and_terminalizes_failed()
     cfg.shared_codex_appserver_restart_max_delay_ms = 120_000;
     let home = calm_server::shared_codex_home::SharedCodexHome::new(
         cfg.data_dir_resolved().join("codex-home"),
-        cfg.data_dir_resolved().join("codex-homes"),
     );
     home.seed().unwrap();
     let daemon = SharedCodexAppServer::new(&cfg, Arc::new(home), repo.clone());

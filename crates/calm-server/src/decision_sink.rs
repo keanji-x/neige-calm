@@ -1,4 +1,4 @@
-//! MCP identity decision-write sink for the MCP tool paths; the principal-based `DecisionSink::commit` entry is still inert.
+//! MCP identity decision-write sink for the MCP tool paths.
 
 mod planner_message;
 mod worker_report;
@@ -10,7 +10,7 @@ use crate::db::{RouteRepo, write_with_actor_events_typed};
 use crate::error::CalmError;
 use crate::event::{EditAuthor, Event, EventBus, EventScope};
 pub use crate::git_candidate::commit_message::{CommitMessage, DeliveryMessage};
-use crate::ids::{AreaId, CardId, TrackId};
+use crate::ids::{CardId, TrackId};
 use crate::mcp_server::registry::{AppContext, ToolCallIdentity};
 use crate::model::{Card, CardRole, Track};
 use crate::operation::workspace_lease::release_workspace_lease_for_card_tx;
@@ -23,11 +23,8 @@ use crate::track_report::{
     self, BlockOpOutcome, ReportBlock, ReportDocOp, ReportEditTarget, TrackReportPayload,
 };
 use async_trait::async_trait;
-use calm_exec::{AgentReactor, DecisionIntent, DecisionSink};
 use calm_truth::decision_gate::{GateDecision, PrincipalDecisionGate};
-use calm_types::error::CoreError;
-use calm_types::observation::Observation;
-use calm_types::worker::{Principal, WorkerSessionId};
+use calm_types::worker::Principal;
 use sqlx::{Sqlite, Transaction};
 use std::sync::Arc;
 
@@ -453,53 +450,6 @@ impl RecorderShadowProbe for CardDecisionSinkRecorderShadowProbe {
     }
 }
 
-#[async_trait]
-impl DecisionSink for CardDecisionSink {
-    async fn commit(
-        &self,
-        _principal: &Principal,
-        _intent: DecisionIntent,
-    ) -> Result<(), CoreError> {
-        Err(CoreError::Internal(
-            "CardDecisionSink production path uses the card-aware methods; principal commit lands with PR7"
-                .into(),
-        ))
-    }
-}
-
-/// Structural-only planner-harness reactor: no `worker_sessions` row backs a planner harness yet, and the live run loop is deliberately not wired to this stub.
-#[derive(Clone, Debug)]
-pub struct PlannerHarnessAgentReactor {
-    worker_session_id: String,
-    track_id: TrackId,
-    area_id: AreaId,
-}
-
-impl PlannerHarnessAgentReactor {
-    pub fn new(runtime_id: String, track_id: TrackId, area_id: AreaId) -> Self {
-        Self {
-            worker_session_id: runtime_id,
-            track_id,
-            area_id,
-        }
-    }
-}
-
-#[async_trait]
-impl AgentReactor for PlannerHarnessAgentReactor {
-    fn principal(&self) -> Principal {
-        Principal::Agent {
-            session_id: WorkerSessionId::from(self.worker_session_id.clone()),
-            track_id: self.track_id.clone(),
-            area_id: self.area_id.clone(),
-        }
-    }
-
-    async fn react(&self, _observation: &Observation) -> Result<Vec<DecisionIntent>, CoreError> {
-        Ok(vec![])
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -514,6 +464,7 @@ mod tests {
     use crate::track_area_cache::TrackAreaCache;
     use calm_truth::db::RepoEventWrite as _;
     use calm_truth::db::RepoRead;
+    use calm_types::worker::WorkerSessionId;
     use calm_types::worker::WorkerSessionState;
     use serde_json::{Value, json};
     use std::path::Path;
@@ -1022,32 +973,6 @@ mod tests {
                 .iter()
                 .any(|(_, _, _, event)| matches!(event, Event::TrackReportEdited { .. }))
         );
-    }
-
-    #[tokio::test]
-    async fn planner_harness_agent_reactor_is_inert_and_shapes_principal() {
-        let reactor = PlannerHarnessAgentReactor::new(
-            "runtime-1".to_string(),
-            TrackId::from("track-1"),
-            AreaId::from("area-1"),
-        );
-
-        assert_eq!(
-            reactor.principal(),
-            Principal::Agent {
-                session_id: WorkerSessionId::from("runtime-1"),
-                track_id: TrackId::from("track-1"),
-                area_id: AreaId::from("area-1"),
-            }
-        );
-
-        let intents = reactor
-            .react(&Observation::TrackGoal {
-                text: "goal".into(),
-            })
-            .await
-            .expect("react succeeds");
-        assert!(intents.is_empty());
     }
 
     fn init_git_repo(path: &Path) {

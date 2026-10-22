@@ -211,10 +211,7 @@ async fn fixture_requiring(plugins: &[(&str, &[(&str, bool)])], too_new: &[&str]
         Arc::new(OnceCell::new()),
         data_dir.join("gate-logs"),
     );
-    let home = Arc::new(SharedCodexHome::new(
-        tmp.path().join("codex-home"),
-        tmp.path().join("codex-homes"),
-    ));
+    let home = Arc::new(SharedCodexHome::new(tmp.path().join("codex-home")));
     let shim = McpShimConfig {
         shim_bin: tmp.path().join("bin/neige-mcp-stdio-shim"),
         socket_path: tmp.path().join("mcp/kernel.sock"),

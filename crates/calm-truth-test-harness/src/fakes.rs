@@ -5,15 +5,13 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use async_trait::async_trait;
-use calm_exec::{
-    AgentReactor, DecisionIntent, DecisionSink, ObservationSink, SpawnCtx, WorkerProvider,
-};
+use calm_exec::{ObservationSink, SpawnCtx, WorkerProvider};
 use calm_types::error::CoreError;
-use calm_types::ids::{AreaId, TrackId};
+use calm_types::ids::TrackId;
 use calm_types::observation::Observation;
 use calm_types::runtime::TimestampMs;
 use calm_types::worker::{
-    DeathVerdict, ExitEvidence, ExitInterpretation, ExitSource, Liveness, Principal, SessionMode,
+    DeathVerdict, ExitEvidence, ExitInterpretation, ExitSource, Liveness, SessionMode,
     WorkerSession, WorkerSessionId,
 };
 use serde_json::json;
@@ -137,96 +135,6 @@ impl WorkerProvider for FakeProvider {
     ) -> DeathVerdict {
         self.death_verdict_calls.fetch_add(1, Ordering::SeqCst);
         self.death_verdict.unwrap_or(DeathVerdict::Unknown)
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum ObsMatcher {
-    TaskCompleted,
-    TaskFailed,
-    Any,
-}
-
-impl ObsMatcher {
-    fn matches(&self, observation: &Observation) -> bool {
-        matches!(
-            (self, observation),
-            (Self::TaskCompleted, Observation::TaskCompleted { .. })
-                | (Self::TaskFailed, Observation::TaskFailed { .. })
-                | (Self::Any, _)
-        )
-    }
-}
-
-#[derive(Debug)]
-pub struct FakeRoot {
-    session_id: WorkerSessionId,
-    track_id: TrackId,
-    area_id: AreaId,
-    script: Vec<(ObsMatcher, Vec<DecisionIntent>)>,
-}
-
-impl FakeRoot {
-    pub fn for_track(session_id: WorkerSessionId, track_id: TrackId, area_id: AreaId) -> Self {
-        Self {
-            session_id,
-            track_id,
-            area_id,
-            script: Vec::new(),
-        }
-    }
-
-    pub fn on<I>(mut self, matcher: ObsMatcher, intents: I) -> Self
-    where
-        I: IntoIterator<Item = DecisionIntent>,
-    {
-        self.script.push((matcher, intents.into_iter().collect()));
-        self
-    }
-}
-
-#[async_trait]
-impl AgentReactor for FakeRoot {
-    fn principal(&self) -> Principal {
-        Principal::Agent {
-            session_id: self.session_id.clone(),
-            track_id: self.track_id.clone(),
-            area_id: self.area_id.clone(),
-        }
-    }
-
-    async fn react(&self, observation: &Observation) -> Result<Vec<DecisionIntent>, CoreError> {
-        Ok(self
-            .script
-            .iter()
-            .find_map(|(matcher, intents)| matcher.matches(observation).then(|| intents.clone()))
-            .unwrap_or_default())
-    }
-}
-
-#[derive(Debug, Default)]
-pub struct RecordingDecisionSink {
-    committed: Mutex<Vec<(Principal, DecisionIntent)>>,
-}
-
-impl RecordingDecisionSink {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn committed(&self) -> Vec<(Principal, DecisionIntent)> {
-        self.committed.lock().expect("committed lock").clone()
-    }
-}
-
-#[async_trait]
-impl DecisionSink for RecordingDecisionSink {
-    async fn commit(&self, principal: &Principal, intent: DecisionIntent) -> Result<(), CoreError> {
-        self.committed
-            .lock()
-            .expect("committed lock")
-            .push((principal.clone(), intent));
-        Ok(())
     }
 }
 
@@ -360,60 +268,6 @@ pub async fn fake_provider_contract() {
             Ok(ExitInterpretation::Failed { .. })
         ),
         "signal exit must fail"
-    );
-}
-
-pub async fn fake_root_contract() {
-    let track_id = TrackId::from("fake-root-track");
-    let area_id = AreaId::from("fake-root-area");
-    let session_id = WorkerSessionId::from("fake-root-session");
-    let done = DecisionIntent::ReportWrite {
-        track_id: track_id.clone(),
-        summary: Some("done".into()),
-        body: None,
-        agent_message: Some("first".into()),
-    };
-    let fallback = DecisionIntent::ReportWrite {
-        track_id: track_id.clone(),
-        summary: Some("fallback".into()),
-        body: None,
-        agent_message: Some("fallback".into()),
-    };
-    let root = FakeRoot::for_track(session_id.clone(), track_id.clone(), area_id.clone())
-        .on(ObsMatcher::TaskCompleted, [done.clone()])
-        .on(ObsMatcher::Any, [fallback]);
-
-    assert_eq!(
-        root.principal(),
-        Principal::Agent {
-            session_id,
-            track_id,
-            area_id,
-        }
-    );
-    assert_eq!(
-        root.react(&Observation::TaskCompleted {
-            idempotency_key: "t-1".into(),
-            result: json!({}),
-            result_contract: None,
-        })
-        .await
-        .expect("matched reaction"),
-        vec![done],
-        "first matching script entry must win"
-    );
-
-    let empty = FakeRoot::for_track(
-        WorkerSessionId::from("empty-root-session"),
-        TrackId::from("empty-track"),
-        AreaId::from("empty-area"),
-    );
-    assert!(
-        empty
-            .react(&Observation::TrackGoal { text: "go".into() })
-            .await
-            .expect("no match reaction")
-            .is_empty()
     );
 }
 

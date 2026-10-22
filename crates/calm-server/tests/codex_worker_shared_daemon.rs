@@ -218,7 +218,6 @@ async fn boot(start_shared: bool) -> Boot {
     ]);
     let home = calm_server::shared_codex_home::SharedCodexHome::new(
         cfg.data_dir_resolved().join("codex-home"),
-        cfg.data_dir_resolved().join("codex-homes"),
     );
     home.seed_from(None).unwrap();
     let shared = SharedCodexAppServer::new_with_pending(&cfg, Arc::new(home), repo.clone(), None);

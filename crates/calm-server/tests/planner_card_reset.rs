@@ -297,7 +297,6 @@ async fn boot_shared() -> Boot {
     ]);
     let home = calm_server::shared_codex_home::SharedCodexHome::new(
         cfg.data_dir_resolved().join("codex-home"),
-        cfg.data_dir_resolved().join("codex-homes"),
     );
     home.seed_from(None).unwrap();
     let pending = Arc::new(PendingThreadStartRegistry::new(repo.clone(), events));

@@ -694,8 +694,7 @@ impl SharedCodexAppServer {
             "neige-shared-codex-appserver-stub-{}",
             uuid::Uuid::new_v4()
         ));
-        let legacy = root.join("codex-homes");
-        let home = Arc::new(SharedCodexHome::new(root.join("codex-home"), legacy));
+        let home = Arc::new(SharedCodexHome::new(root.join("codex-home")));
         let (tx, _) = broadcast::channel(16);
         Arc::new(Self {
             sock: calm_types::runtime_paths::shared_codex_appserver_socket(&root),
@@ -4516,7 +4515,6 @@ mod tests {
         ]);
         let home = crate::shared_codex_home::SharedCodexHome::new(
             cfg.data_dir_resolved().join("codex-home"),
-            cfg.data_dir_resolved().join("codex-homes"),
         );
         home.seed().unwrap();
         let daemon = SharedCodexAppServer::new(&cfg, Arc::new(home), repo.clone());

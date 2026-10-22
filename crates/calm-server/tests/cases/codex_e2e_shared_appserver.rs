@@ -91,7 +91,6 @@ async fn daemon(
     let cfg = cfg(root, codex_bin);
     let home = calm_server::shared_codex_home::SharedCodexHome::new(
         cfg.data_dir_resolved().join("codex-home"),
-        cfg.data_dir_resolved().join("codex-homes"),
     );
     home.seed().unwrap();
     SharedCodexAppServer::new(&cfg, Arc::new(home), repo)

@@ -3,7 +3,6 @@
 pub mod flow;
 pub mod observation;
 pub mod provider;
-pub mod reaction;
 
 pub use flow::{
     CaptureBatch, CaptureCheckpoint, CaptureOutcome, CapturePosition, FlowRowCtx,
@@ -11,4 +10,3 @@ pub use flow::{
 };
 pub use observation::ObservationSink;
 pub use provider::{BoundKeys, MessageReady, SpawnCtx, SpawnHandle, TuiInput, WorkerProvider};
-pub use reaction::{AgentReactor, DecisionIntent, DecisionSink};

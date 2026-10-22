@@ -148,8 +148,9 @@ async fn boot_with_shared_daemon(start_appserver: bool) -> Boot {
         }),
     });
     let events = EventBus::new();
+    let cfg = cfg(&tmp);
     let codex = Arc::new(CodexClient::new_stub());
-    let codex_homes_dir = codex.codex_homes_dir.clone();
+    let codex_homes_dir = cfg.data_dir_resolved().join("codex-homes");
     let mut state = AppState::from_parts(
         repo.clone(),
         events.clone(),
@@ -171,10 +172,8 @@ async fn boot_with_shared_daemon(start_appserver: bool) -> Boot {
         None,
     );
 
-    let cfg = cfg(&tmp);
     let home = calm_server::shared_codex_home::SharedCodexHome::new(
         cfg.data_dir_resolved().join("codex-home"),
-        cfg.data_dir_resolved().join("codex-homes"),
     );
     home.seed_from(None).unwrap();
     let pending = Arc::new(PendingThreadStartRegistry::new(

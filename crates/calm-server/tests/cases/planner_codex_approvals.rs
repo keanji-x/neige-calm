@@ -55,7 +55,6 @@ async fn live(tmp: &TempDir, permission_mode: &str) -> Rig {
     ]);
     let home = calm_server::shared_codex_home::SharedCodexHome::new(
         cfg.data_dir_resolved().join("codex-home"),
-        cfg.data_dir_resolved().join("codex-homes"),
     );
     home.seed_from(None).unwrap();
     let daemon = SharedCodexAppServer::new(&cfg, Arc::new(home), repo.clone());

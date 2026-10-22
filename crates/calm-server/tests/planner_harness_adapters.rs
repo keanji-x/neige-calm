@@ -134,7 +134,6 @@ async fn state_with_live_daemon(tmp: &TempDir) -> (AppState, Arc<SqlxRepo>, Card
     ]);
     let home = calm_server::shared_codex_home::SharedCodexHome::new(
         cfg.data_dir_resolved().join("codex-home"),
-        cfg.data_dir_resolved().join("codex-homes"),
     );
     home.seed_from(None).unwrap();
     let pending = Arc::new(PendingThreadStartRegistry::new(repo.clone(), events));

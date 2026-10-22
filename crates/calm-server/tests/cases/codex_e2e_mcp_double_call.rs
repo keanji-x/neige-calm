@@ -241,7 +241,6 @@ async fn codex_mcp_double_call_both_complete() {
     let cfg = cfg(root.path(), &codex_bin);
     let home = Arc::new(SharedCodexHome::new(
         cfg.data_dir_resolved().join("codex-home"),
-        cfg.data_dir_resolved().join("codex-homes"),
     ));
     seed_auth_only(&home);
     home.ensure_daemon_mcp_config(&mcp_server.shim_config, &daemon_token)

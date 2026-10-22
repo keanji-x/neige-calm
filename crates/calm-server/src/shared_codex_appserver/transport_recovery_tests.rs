@@ -32,10 +32,7 @@ async fn fixture() -> Fixture {
             .unwrap(),
     );
     let cfg = Config::parse_from(["calm-server", "--data-dir", root.path().to_str().unwrap()]);
-    let home = Arc::new(SharedCodexHome::new(
-        root.path().join("codex-home"),
-        root.path().join("codex-homes"),
-    ));
+    let home = Arc::new(SharedCodexHome::new(root.path().join("codex-home")));
     let daemon = SharedCodexAppServer::new(&cfg, home, repo);
     std::fs::create_dir_all(daemon.sock.parent().unwrap()).unwrap();
     let socket = UnixListener::bind(&daemon.sock).unwrap();

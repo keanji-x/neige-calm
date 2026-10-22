@@ -15,11 +15,8 @@ impl Deref for SharedCodexHome {
     }
 }
 impl SharedCodexHome {
-    pub fn new(home: PathBuf, legacy_homes_parent: PathBuf) -> Self {
-        Self(provider::codex::shared::home::SharedCodexHome::new(
-            home,
-            legacy_homes_parent,
-        ))
+    pub fn new(home: PathBuf) -> Self {
+        Self(provider::codex::shared::home::SharedCodexHome::new(home))
     }
     pub fn ensure_daemon_mcp_config(
         &self,

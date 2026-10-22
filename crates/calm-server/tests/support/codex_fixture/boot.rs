@@ -276,7 +276,6 @@ pub async fn boot_forge_e2e_fixture(
     ]);
     let home = Arc::new(SharedCodexHome::new(
         cfg.data_dir_resolved().join("codex-home"),
-        cfg.data_dir_resolved().join("codex-homes"),
     ));
     seed_auth_only(home.as_ref());
     home.ensure_daemon_mcp_config(&server.shim_config, &daemon_token)

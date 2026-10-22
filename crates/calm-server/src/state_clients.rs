@@ -101,23 +101,19 @@ pub struct CodexClient {
     pub bridge_bin: PathBuf,
     /// Loopback URL the bridge POSTs to (`http://127.0.0.1:<port>`).
     pub ingest_url: String,
-    /// Per-card CODEX_HOME parent under `data_dir/codex-homes/`; bind-mounted so it survives container recreates.
-    pub codex_homes_dir: PathBuf,
     /// Single shared CODEX_HOME for the shared Codex app-server.
     pub shared_codex_home: Arc<SharedCodexHome>,
     /// Parent directory for generated per-Claude-card `settings.json` (a hook settings sidecar, not a Claude home).
     pub claude_settings_dir: PathBuf,
     /// Parent directory for generated Planner terminal hook settings; server-owned.
     pub terminal_hook_settings_dir: PathBuf,
-    /// Test-only handle: `new_stub()` stows its `TempDir` here so per-card `$CODEX_HOME`
-    /// subdirs are removed when the test drops its `AppState`. `None` in production.
+    /// Test-only owner of the shared CODEX_HOME and hook sidecar directories.
     _codex_homes_tempdir: Option<tempfile::TempDir>,
 }
 
 impl CodexClient {
     pub fn new(cfg: &Config) -> Self {
         let data_dir = cfg.data_dir_resolved();
-        let legacy_homes_parent = data_dir.join("codex-homes");
         Self {
             codex_bin: cfg.codex_bin.clone(),
             claude_bin: cfg.claude_bin.clone(),
@@ -126,11 +122,7 @@ impl CodexClient {
                 .clone()
                 .unwrap_or_else(resolve_codex_bridge_bin),
             ingest_url: cfg.codex_ingest_url_resolved(),
-            codex_homes_dir: legacy_homes_parent.clone(),
-            shared_codex_home: Arc::new(SharedCodexHome::new(
-                data_dir.join("codex-home"),
-                legacy_homes_parent,
-            )),
+            shared_codex_home: Arc::new(SharedCodexHome::new(data_dir.join("codex-home"))),
             claude_settings_dir: data_dir.join("claude-settings"),
             terminal_hook_settings_dir: data_dir.join("terminal-hooks"),
             _codex_homes_tempdir: None,
@@ -156,15 +148,12 @@ impl CodexClient {
                 (std::env::temp_dir().join("neige-codex-homes-stub"), None)
             }
         };
-        let codex_homes_dir = temp_root.join("codex-homes");
-        let shared_codex_home = Arc::new(SharedCodexHome::new(
-            temp_root.join("codex-home"),
-            codex_homes_dir.clone(),
-        ));
-        if let Err(e) = std::fs::create_dir_all(&codex_homes_dir) {
+        let sidecar_root = temp_root.join("codex-homes");
+        let shared_codex_home = Arc::new(SharedCodexHome::new(temp_root.join("codex-home")));
+        if let Err(e) = std::fs::create_dir_all(&sidecar_root) {
             tracing::error!(
                 error = %e,
-                path = %codex_homes_dir.display(),
+                path = %sidecar_root.display(),
                 "failed to create stub codex_homes_dir"
             );
         }
@@ -173,9 +162,8 @@ impl CodexClient {
             claude_bin: "claude".into(),
             bridge_bin: PathBuf::from("neige-codex-bridge"),
             ingest_url: "http://127.0.0.1:0".into(),
-            claude_settings_dir: codex_homes_dir.join("claude-settings"),
-            terminal_hook_settings_dir: codex_homes_dir.join("terminal-hooks"),
-            codex_homes_dir,
+            claude_settings_dir: sidecar_root.join("claude-settings"),
+            terminal_hook_settings_dir: sidecar_root.join("terminal-hooks"),
             shared_codex_home,
             _codex_homes_tempdir: tmp,
         }

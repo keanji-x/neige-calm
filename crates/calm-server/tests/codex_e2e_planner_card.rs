@@ -258,7 +258,7 @@ async fn planner_card_codex_daemon_env_contains_mcp_vars() {
         serde_json::from_slice::<Value>(&bytes).unwrap_or(Value::Null)
     };
     // The planner card is the only kernel-owned (`deletable = false`) card on a fresh track; `role` is not on the wire.
-    let planner_card_id = planner_cards_body
+    let _planner_card_id = planner_cards_body
         .as_array()
         .and_then(|cards| {
             cards.iter().find_map(|c| {
@@ -274,7 +274,7 @@ async fn planner_card_codex_daemon_env_contains_mcp_vars() {
                 "planner card present on freshly created track; cards body: {planner_cards_body}"
             )
         });
-    let codex_home = state.codex.codex_homes_dir.join(&planner_card_id);
+    let codex_home = state.codex.codex_home_dir();
     let cfg_path = codex_home.join("config.toml");
     let cfg_text =
         std::fs::read_to_string(&cfg_path).unwrap_or_else(|e| panic!("read {cfg_path:?}: {e}"));

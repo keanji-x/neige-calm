@@ -31,16 +31,11 @@ pub fn host_codex_home() -> Option<PathBuf> {
 /// Layout: <data_dir>/codex-home/ — the shared daemon's single CODEX_HOME, no per-card subdir.
 pub struct SharedCodexHome {
     home: PathBuf,
-    #[allow(dead_code)]
-    legacy_homes_parent: PathBuf,
 }
 
 impl SharedCodexHome {
-    pub fn new(home: PathBuf, legacy_homes_parent: PathBuf) -> Self {
-        Self {
-            home,
-            legacy_homes_parent,
-        }
+    pub fn new(home: PathBuf) -> Self {
+        Self { home }
     }
 
     pub fn path(&self) -> &Path {
@@ -550,7 +545,7 @@ mod tests {
                 std::env::set_var("CODEX_HOME", codex_home_value);
                 std::env::set_var("HOME", &user_home);
             }
-            let home = SharedCodexHome::new(root.path().join(name), root.path().join("legacy"));
+            let home = SharedCodexHome::new(root.path().join(name));
             home.seed().unwrap();
             fs::read_to_string(home.path().join("auth.json")).unwrap()
         };
@@ -563,7 +558,7 @@ mod tests {
 
     /// A home whose `svc` entry carries keys of its own besides the writer's.
     fn home_with_entry(root: &Path) -> SharedCodexHome {
-        let home = SharedCodexHome::new(root.join("home"), root.join("legacy"));
+        let home = SharedCodexHome::new(root.join("home"));
         let env = vec![("SVC_TOKEN".to_owned(), "secret".to_owned())];
         home.ensure_config(Some(&McpServerConfig {
             key: "svc",
@@ -664,7 +659,7 @@ mod tests {
     #[test]
     fn declared_mcp_identity_and_generation_keys_are_authoritative() {
         let root = tempfile::tempdir().unwrap();
-        let home = SharedCodexHome::new(root.path().join("home"), root.path().join("legacy"));
+        let home = SharedCodexHome::new(root.path().join("home"));
         let env = vec![("CUSTOM_GENERATION".to_owned(), "7".to_owned())];
         home.ensure_config(Some(&McpServerConfig {
             key: "custom_service",

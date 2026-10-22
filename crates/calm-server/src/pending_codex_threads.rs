@@ -40,8 +40,6 @@ pub struct PendingEntry {
     /// PTY pid (best-effort, for debug logs). Not used for attribution.
     pub pty_pid: Option<i32>,
     pub registered_at: Instant,
-    /// Opt-in bit only; tools/call attribution is not implemented.
-    pub belt_and_suspenders_attribution_via_tools_call: bool,
 }
 
 impl PendingEntry {
@@ -59,7 +57,6 @@ impl PendingEntry {
             worker_session_id: runtime_id,
             pty_pid: None,
             registered_at: Instant::now(),
-            belt_and_suspenders_attribution_via_tools_call: false,
         }
     }
 
