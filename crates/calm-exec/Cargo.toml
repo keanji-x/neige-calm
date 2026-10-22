@@ -1,9 +1,7 @@
 # calm-exec — execution contracts (issue #679, PR1).
 #
-# Traits ONLY: WorkerProvider, the reaction seam (agent→truth decision
-# writes), the observation sink (kernel→agent delivery). No implementations
-# — FakeProvider/FakeRoot are PR5, the real providers move in behind these
-# traits in PR6.
+# IO-free contracts: WorkerProvider, the observation sink (kernel→agent
+# delivery), and passive worker-flow capture into the read model.
 #
 # HARD RULE: depends only on calm-types (+ async-trait for runtime-agnostic
 # async traits). NO sqlx, NO axum, NO tokio — this is the compile firewall
@@ -24,9 +22,6 @@ calm-types = { path = "../calm-types" }
 # Runtime-agnostic async trait methods. async-trait boxes the futures and
 # carries no executor — the issue's "no tokio" rule explicitly allows it.
 async-trait = "0.1"
-
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
 
 [dev-dependencies]
 calm-truth-test-harness = { path = "../calm-truth-test-harness" }

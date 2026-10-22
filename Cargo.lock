@@ -472,8 +472,6 @@ dependencies = [
  "async-trait",
  "calm-truth-test-harness",
  "calm-types",
- "serde",
- "serde_json",
  "tokio",
 ]
 
