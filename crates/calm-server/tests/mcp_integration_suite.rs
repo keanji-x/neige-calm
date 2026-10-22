@@ -129,3 +129,6 @@ mod opencode_history_host;
 
 #[path = "cases/retired_carrier_authority.rs"]
 mod retired_carrier_authority;
+
+#[path = "cases/objective_dispatch.rs"]
+mod objective_dispatch;

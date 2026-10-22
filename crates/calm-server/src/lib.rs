@@ -1061,3 +1061,5 @@ pub(crate) mod git_candidate;
 pub mod codex_authentication;
 
 pub mod github_preview;
+
+mod objective_dispatch;
