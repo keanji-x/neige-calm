@@ -1581,9 +1581,7 @@ impl Scheduler {
         if let Some(runtime) = self.operation_runtime.upgrade() {
             // A terminal transaction can roll back before an adapter owns a parked
             // resource. Retry expired drivable claims too; never rearm AwaitingRetry.
-            if let Err(error) = runtime.drive().await {
-                tracing::warn!(%error, "scheduler sweep: operation drive failed; next tick retries");
-            }
+            runtime.reconcile_drivable();
             if let Err(error) = runtime.sweep_parked().await {
                 tracing::warn!(%error, "scheduler sweep: sweep_parked failed; next tick retries");
             }

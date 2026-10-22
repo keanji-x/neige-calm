@@ -511,7 +511,28 @@ impl OperationRuntime {
     }
 
     pub async fn drive(&self) -> Result<()> {
-        let _g = self.drive_mutex.lock().await;
+        self.drive_under_lock(self.drive_mutex.clone().lock_owned().await)
+            .await
+    }
+
+    /// Periodic recovery must not wait behind a native lifecycle RPC holding
+    /// the drive fence. Busy ticks coalesce instead of queuing background waiters.
+    pub(crate) fn reconcile_drivable(&self) {
+        let Ok(guard) = self.drive_mutex.clone().try_lock_owned() else {
+            return;
+        };
+        let runtime = self.clone();
+        tokio::spawn(async move {
+            if let Err(error) = runtime.drive_under_lock(guard).await {
+                tracing::warn!(%error, "operation reconcile failed; next tick retries");
+            }
+        });
+    }
+
+    async fn drive_under_lock(
+        &self,
+        _guard: tokio::sync::OwnedMutexGuard<HashSet<String>>,
+    ) -> Result<()> {
         loop {
             let batch = self.repo.claim_drive_batch(32).await?;
             if batch.is_empty() {

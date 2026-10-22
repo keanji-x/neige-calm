@@ -149,9 +149,33 @@ async fn preownership_notification_write_failure_recovers_on_periodic_reconcile(
         .await
         .unwrap();
     pause.release.notify_one();
-    for _ in 0..3 {
-        flow.state.dispatcher.reconcile_tick_for_test().await;
-    }
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            flow.state.dispatcher.reconcile_tick_for_test().await;
+            if flow
+                .state
+                .operation_runtime
+                .operation_result(&id)
+                .await
+                .unwrap()
+                .is_some()
+                && flow
+                    .fixture
+                    .carrier(&flow.track)
+                    .await
+                    .2
+                    .canonical_inputs
+                    .pending
+                    .len()
+                    == 1
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("periodic recovery must finish and admit its result without a new request");
     let settled = flow
         .state
         .operation_runtime
