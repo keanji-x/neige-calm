@@ -944,8 +944,8 @@ struct Inner {
     /// at-least-once broadcast delivery.
     push_cursor: EventCursorCache,
     /// Serialize cursor/enqueue updates. Lock acquisition does not order
-    /// separately spawned handlers by event ID. Settlement catches up its
-    /// persisted prefix before advancing past a delayed failure handler.
+    /// separately spawned handlers by event ID. Settlement and generic wake
+    /// catch up their persisted prefix before advancing past delayed handlers.
     push_locks: DashMap<TrackId, Arc<tokio::sync::Mutex<()>>>,
     #[cfg(any(test, feature = "fixtures"))]
     failure_push_hook: std::sync::Mutex<Option<TaskFailurePushTestHook>>,
@@ -1326,7 +1326,13 @@ impl Inner {
         if envelope_id <= cursor {
             return;
         }
-        if matches!(event, Event::TaskGitDeliverySettled { .. }) {
+        // A wake may overtake another wake (objective, calendar, mail, etc.).
+        // Accept the same filtered durable prefix as restart recovery before
+        // advancing the watermark, just as for Git delivery settlement.
+        if matches!(
+            event,
+            Event::TaskGitDeliverySettled { .. } | Event::TrackWakeRequested { .. }
+        ) {
             let preceding = match crate::harness::catch_up::observations_since(
                 self.repo.as_ref(),
                 &track_id,
@@ -1337,13 +1343,13 @@ impl Inner {
             {
                 Ok(observations) => observations,
                 Err(error) => {
-                    tracing::warn!(%track_id, %error, "settlement prefix lookup failed; preserving cursor for replay");
+                    tracing::warn!(%track_id, %error, "Planner prefix lookup failed; preserving cursor for replay");
                     return;
                 }
             };
             for (id, observation) in preceding {
                 if let Err(error) = harness.observe_envelope(observation, id) {
-                    tracing::warn!(%track_id, %error, "settlement prefix enqueue failed; preserving cursor for replay");
+                    tracing::warn!(%track_id, %error, "Planner prefix enqueue failed; preserving cursor for replay");
                     return;
                 }
                 self.push_cursor.bump(planner_card_id.clone(), id);

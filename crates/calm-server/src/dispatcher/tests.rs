@@ -4491,3 +4491,6 @@ async fn dispatcher_card_lookup_survives_session_projection_failure() {
         Some(card.id)
     );
 }
+
+#[cfg(test)]
+mod historical_wake_tests;

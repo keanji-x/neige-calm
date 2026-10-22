@@ -202,8 +202,12 @@ impl TrackPlannerContextProjector {
             .await?;
         let mut objective_changed = false;
         if let Some(unit) = objective_budget::build(&self.pool, track_id).await? {
-            crate::objective_dispatch::dispatch_track(self.repo.as_ref(), &self.bus, track_id)
-                .await?;
+            if let Err(error) =
+                crate::objective_dispatch::dispatch_track(self.repo.as_ref(), &self.bus, track_id)
+                    .await
+            {
+                tracing::warn!(%track_id, %error, "objective dispatch failed; continuing overlay publication");
+            }
             let previous = overlays.iter().find(|o| {
                 o.plugin_id == KERNEL_OVERLAY_PLUGIN_ID && o.kind == objective_budget::KIND
             });

@@ -67,7 +67,7 @@ async fn objective_dispatch_budget_once_and_restart() {
     let calm_server::event::Event::TrackWakeRequested { text, .. } = &events[0].event else {
         panic!()
     };
-    for expected in ["stage", "阶段一", "预算", "10", "已用", "11"] {
+    for expected in ["stage", "阶段一", "预算", "tokens；已用 11"] {
         assert!(text.contains(expected), "{text}");
     }
     // New executor instance, same persisted database: boot recovery must not redeliver.
@@ -121,11 +121,18 @@ async fn objective_dispatch_atomic_restart_after_delivery_before_settle() {
     .execute(db.read_pool())
     .await
     .unwrap();
+    projector(&boot)
+        .recompute_track(boot.track_id.as_str())
+        .await
+        .unwrap();
     assert!(
-        projector(&boot)
-            .recompute_track(boot.track_id.as_str())
+        boot.repo
+            .overlays_for("track", boot.track_id.as_str())
             .await
-            .is_err()
+            .unwrap()
+            .iter()
+            .any(|o| o.kind == "objective.budget"),
+        "dispatch errors must not suppress the objective overlay"
     );
     assert!(wakes(&boot).await.is_empty());
     let remaining = objective_host::unsettled_intents(&db).await.unwrap();
@@ -174,7 +181,10 @@ async fn objective_dispatch_done_from_dispatched_backlog() {
     else {
         panic!()
     };
-    assert!(text.contains("已完成"), "{text}");
+    assert!(
+        text.contains("已完成：预算 10 tokens / 1000 回合 / 10000 秒；已用 0"),
+        "{text}"
+    );
     assert!(
         objective_host::unsettled_intents(&db)
             .await
@@ -197,4 +207,43 @@ async fn objective_dispatch_without_capability_does_not_scan_intents() {
         .await
         .unwrap();
     assert!(wakes(&boot).await.is_empty());
+}
+
+#[tokio::test]
+async fn objective_dispatch_budget_raised_before_consumption_is_superseded() {
+    let boot = setup().await;
+    usage(&boot).await;
+    let card = boot
+        .repo
+        .card_get(boot.report_card_id.as_str())
+        .await
+        .unwrap()
+        .unwrap();
+    let blocks = card.payload["blocks"].as_array().unwrap();
+    let id = &blocks.iter().find(|b| b["kind"] == "objective").unwrap()["id"];
+    upsert_block(&boot, planner_identity(&boot), json!({"id":id,"kind":"objective", "payload":{
+        "key":"stage", "title":"阶段一", "mode":"converge",
+        "checks":[{"id":"accepted","role":"goal","config":{"kind":"fact","params":{"fact":"task_accepted","subject":"finish"}}}],
+        "constraints":[],"budget":{"tokens":100,"turns":1000,"wall_secs":10000},"compact":"none"
+    }})).await.unwrap();
+    projector(&boot)
+        .recompute_track(boot.track_id.as_str())
+        .await
+        .unwrap();
+    assert!(
+        wakes(&boot).await.is_empty(),
+        "an obsolete budget notice must not wake Planner"
+    );
+    let db = boot.repo.sqlite_db().unwrap();
+    let settlements: Vec<String> = sqlx::query_scalar("SELECT settlement_json FROM objective_intents WHERE json_extract(intent_json,'$.notice.notice')='budget_exhausted'")
+        .fetch_all(db.read_pool()).await.unwrap();
+    assert_eq!(settlements.len(), 1);
+    let value: serde_json::Value = serde_json::from_str(&settlements[0]).unwrap();
+    assert_eq!(value["settlement"], "superseded");
+    assert!(
+        value["reason"]
+            .as_str()
+            .unwrap()
+            .contains("no longer exhausted")
+    );
 }

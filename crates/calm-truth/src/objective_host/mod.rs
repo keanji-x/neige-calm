@@ -191,9 +191,18 @@ async fn apply_tx(
 /// Use writer admission for a stable multi-query view without a deferred-lock cycle.
 pub async fn load_state(db: &SqliteDb, track: &TrackId) -> Result<(LogSeq, State)> {
     let mut tx = begin_immediate_tx(db).await?;
-    let result = snapshot::load_tx(&mut tx, track).await?;
+    let result = load_state_tx(&mut tx, track).await?;
     tx.commit().await?;
     Ok(result)
+}
+
+/// Read the engine state under the caller's writer admission, so an executor
+/// can validate a notice and settle it atomically with respect to Report edits.
+pub async fn load_state_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    track: &TrackId,
+) -> Result<(LogSeq, State)> {
+    snapshot::load_tx(tx, track).await
 }
 
 /// Audit replay returns deterministic intent positions, without executing or inserting them.

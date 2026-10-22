@@ -11,7 +11,7 @@ use crate::{
     },
     error::{CalmError, Result},
     event::{BroadcastEnvelope, Event, EventBus, EventScope, SYNC_EVENT_VERSION},
-    ids::{ActorId, TrackId},
+    ids::ActorId,
 };
 
 fn disposition(notice: &Notice, state: &State) -> Result<std::result::Result<String, String>> {
@@ -51,9 +51,24 @@ fn disposition(notice: &Notice, state: &State) -> Result<std::result::Result<Str
         .get(key)
         .ok_or_else(|| CalmError::Conflict(format!("notify objective {key} is missing")))?;
     let used = objective.used(&state.usage);
+    let limit = if let Notice::BudgetExhausted { limit, .. } = notice {
+        if !objective.budget_notified.contains(limit) {
+            return Ok(Err(format!(
+                "BudgetExhausted {limit:?} is no longer exhausted in engine state"
+            )));
+        }
+        match limit {
+            objective::definition::BudgetLimit::Tokens => "tokens",
+            objective::definition::BudgetLimit::Turns => "回合",
+            objective::definition::BudgetLimit::WallSecs => "秒",
+        }
+    } else {
+        ""
+    };
     let budget = &objective.definition.budget;
     Ok(Ok(template
         .trim_end()
+        .replace("{limit}", limit)
         .replace("{budget_tokens}", &budget.tokens.to_string())
         .replace("{budget_turns}", &budget.turns.to_string())
         .replace("{budget_secs}", &budget.wall_secs.to_string())
@@ -80,12 +95,7 @@ pub(crate) async fn dispatch_track(repo: &dyn Repo, bus: &EventBus, track: &str)
     if pending.is_empty() {
         return Ok(());
     }
-    let (_, state) = objective_host::read_state(db.read_pool(), &TrackId::from(track)).await?;
     for row in pending {
-        let Intent::Notify { notice } = &row.intent else {
-            unreachable!()
-        };
-        let disposition = disposition(notice, &state)?;
         let envelope = write_in_tx_typed(repo, move |tx| Box::pin(async move {
             // Another invocation may have consumed this boot view. Recheck under
             // writer admission instead of weakening the lifecycle's strict transitions.
@@ -96,7 +106,9 @@ pub(crate) async fn dispatch_track(repo: &dyn Repo, bus: &EventBus, track: &str)
             if status.as_deref() == Some("pending") {
                 objective_host::intent_mark_dispatched_tx(tx, &row.id).await?;
             }
-            let (envelope, settlement) = match disposition {
+            let Intent::Notify { notice } = &row.intent else { unreachable!() };
+            let (_, state) = objective_host::load_state_tx(tx, &row.id.track_id).await?;
+            let (envelope, settlement) = match disposition(notice, &state)? {
                 Ok(text) => {
                     let track = track_get_tx(tx, &row.id.track_id).await?;
                     let event = Event::TrackWakeRequested {
