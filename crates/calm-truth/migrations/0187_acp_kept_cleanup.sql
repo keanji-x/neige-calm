@@ -11,6 +11,28 @@ BEGIN
   SELECT RAISE(ABORT, 'ACP cleanup requires an existing Unknown receipt');
 END;
 
+-- REPLACE deletes conflicts without UPDATE (or recursive DELETE) triggers.
+-- Guard both receipt keys before conflict handling, including UPSERT/IGNORE.
+CREATE TRIGGER acp_cleanup_no_insert_collision BEFORE INSERT ON acp_submissions
+WHEN EXISTS(SELECT 1 FROM acp_submissions
+  WHERE kept_cleanup_json IS NOT NULL AND (
+    (worker_session_id = NEW.worker_session_id AND client_id = NEW.client_id)
+    OR turn_id = NEW.turn_id))
+BEGIN
+  SELECT RAISE(ABORT, 'ACP released Unknown receipt is immutable');
+END;
+
+-- An unreleased source row must not evict a released target with UPDATE OR REPLACE.
+CREATE TRIGGER acp_cleanup_no_update_collision BEFORE UPDATE ON acp_submissions
+WHEN EXISTS(SELECT 1 FROM acp_submissions
+  WHERE kept_cleanup_json IS NOT NULL AND rowid != OLD.rowid AND (
+    (worker_session_id = NEW.worker_session_id AND client_id = NEW.client_id)
+    OR turn_id = NEW.turn_id))
+BEGIN
+  SELECT RAISE(ABORT, 'ACP released Unknown receipt is immutable');
+END;
+-- Plain DELETE and worker ON DELETE CASCADE intentionally remain allowed.
+
 CREATE TRIGGER acp_cleanup_scope BEFORE UPDATE ON acp_submissions
 WHEN NEW.kept_cleanup_json IS NOT NULL
 BEGIN

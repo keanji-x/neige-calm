@@ -1,9 +1,13 @@
 //! Real upgrade from 0186: no retrospective cleanup inference or historical release.
-use sqlx::migrate::Migrate;
 
 #[tokio::test]
 async fn acp_cleanup_migration_preserves_0186_receipts_and_historical_fences() {
-    let pool = super::SqliteDb::connect("sqlite::memory:").await.unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let url = format!(
+        "sqlite://{}?mode=rwc",
+        dir.path().join("upgrade.db").display()
+    );
+    let pool = super::SqliteDb::connect(&url).await.unwrap();
     let old = sqlx::migrate::Migrator {
         migrations: std::borrow::Cow::Owned(
             crate::MIGRATOR
@@ -21,7 +25,7 @@ async fn acp_cleanup_migration_preserves_0186_receipts_and_historical_fences() {
         track_area_cache: super::TrackAreaCache::new(),
         database_id: std::sync::Arc::new("acp-upgrade".into()),
     };
-    for state in ["sending", "unknown"] {
+    for state in ["sending", "unknown", "released"] {
         let mut tx = super::begin_immediate_tx(repo.db()).await.unwrap();
         let card = super::runtime_read_flip_support::create_card_in_tx(&repo, &mut tx, state, "codex", serde_json::json!({"schemaVersion":1,"planner_harness":true,"planner_provider":"opencode"})).await;
         let mut init = crate::session_projection_repo::WorkerSessionInit::shared_planner(
@@ -72,11 +76,12 @@ async fn acp_cleanup_migration_preserves_0186_receipts_and_historical_fences() {
         i64,
     );
     let before: Vec<Row> = sqlx::query_as(select).fetch_all(&mut *db).await.unwrap();
-    let migration = crate::MIGRATOR
-        .iter()
-        .find(|m| m.version == 187)
-        .expect("C2 needs a forward migration after 0186");
-    db.apply(migration).await.unwrap();
+    drop(db);
+    repo.db().writer_pool().close().await;
+    repo.db().read_pool().close().await;
+    drop(repo);
+    let repo = super::SqlxRepo::open(&url).await.unwrap();
+    let mut db = repo.db().writer_pool().acquire().await.unwrap();
     let after: Vec<Row> = sqlx::query_as(select).fetch_all(&mut *db).await.unwrap();
     assert_eq!(before, after);
     let count: i64 = sqlx::query_scalar(
@@ -106,6 +111,21 @@ async fn acp_cleanup_migration_preserves_0186_receipts_and_historical_fences() {
             );
         }
     }
+    // A newly observed canonical cleanup must release admission on the upgraded
+    // index; historical Sending/Unknown rows above must continue fencing.
+    sqlx::raw_sql(r#"
+        INSERT INTO acp_submissions(worker_session_id,client_id,turn_id,thread_id,native_session_id,input_json,state,created_at_ms)
+        VALUES('released','released','released','thread','native-released','{"version":"canonical_v1","association":{}}','unknown',8);
+        UPDATE acp_submissions SET kept_cleanup_json=json_object(
+          'version','v1','worker_session_id',worker_session_id,'client_id',client_id,
+          'turn_id',turn_id,'thread_id',thread_id,'native_session_id',native_session_id,
+          'association',json('{}'),'registration_digest','historical-registration',
+          'keep_key','keep','keep_principal','owner','keep_fingerprint','fingerprint',
+          'observation','stopped_revoked_normally_joined')
+        WHERE worker_session_id='released';
+        INSERT INTO acp_submissions(worker_session_id,client_id,turn_id,thread_id,native_session_id,input_json,state,created_at_ms)
+        VALUES('released','successor','released-next','thread','native-released','{}','sending',9);
+    "#).execute(&mut *db).await.unwrap();
     assert!(
         sqlx::query("PRAGMA foreign_key_check")
             .fetch_all(&mut *db)
