@@ -20,9 +20,6 @@ use std::time::Duration;
 use async_trait::async_trait;
 use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
-use calm_server::db::sqlite::{
-    SqlxRepo, card_with_codex_create_tx, session_start_runtime_tx, status_detail_class,
-};
 use calm_server::dispatcher::Dispatcher;
 use calm_server::error::Result as CalmResult;
 use calm_server::event::{EditAuthor, Event, EventBus};
@@ -64,6 +61,9 @@ use calm_server::task_context::{ResolveError, TaskContextMonitor};
 use calm_server::terminal_renderer::TerminalRendererRegistry;
 use calm_server::track_area_cache::TrackAreaCache;
 use calm_server::track_report::{persist_report, resolve_report_for_track, tasks_rebuild_tx};
+use calm_truth::db::sqlite::{
+    SqlxRepo, card_with_codex_create_tx, session_start_runtime_tx, status_detail_class,
+};
 use calm_types::event::TaskContextRef;
 use calm_types::report_blocks::render_fence;
 use calm_types::track_report::{ReportBlock, TrackReportPayload};
@@ -2018,7 +2018,7 @@ async fn terminal_exit_beats_running_stamp() {
         move |tx| {
             Box::pin(async move {
                 let now = now_ms();
-                calm_server::db::sqlite::task_mark_running_tx(
+                calm_truth::db::sqlite::task_mark_running_tx(
                     tx,
                     &task_id,
                     Some("late"),

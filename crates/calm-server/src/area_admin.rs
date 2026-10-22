@@ -48,7 +48,7 @@ pub async fn set_tx(tx: &mut Transaction<'_, Sqlite>, track: &Track, admin: bool
         .bind(crate::model::now_ms())
         .execute(&mut **tx)
         .await?;
-    crate::db::sqlite::track_get_tx(tx, &track.id).await
+    Ok(calm_truth::db::sqlite::track_get_tx(tx, &track.id).await?)
 }
 
 /// Discovery only: callers still reach each handler's transactional authority check by name.

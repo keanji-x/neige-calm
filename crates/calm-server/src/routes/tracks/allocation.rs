@@ -48,7 +48,7 @@ pub(super) async fn allocate_track_structure_tx(
             source
                 .require_track_tx(tx, source_track_id)
                 .await
-                .map_err(|error| fork_source_error(error, source_track_id))?;
+                .map_err(|error| fork_source_error(error.into(), source_track_id))?;
         }
         if let FolderClaim::Enforce {
             allow_cross_area_cwd: Some(cross),
@@ -212,7 +212,7 @@ pub(super) async fn allocate_track_structure_tx(
             let source_id = TrackId::from(source_track_id.to_string());
             let source_track = track_get_tx(tx, &source_id)
                 .await
-                .map_err(|error| fork_source_error(error, source_track_id))?;
+                .map_err(|error| fork_source_error(error.into(), source_track_id))?;
             let source_area_kind: String = sqlx::query_scalar("SELECT kind FROM areas WHERE id=?1")
                 .bind(source_track.area_id.as_str())
                 .fetch_one(&mut **tx)

@@ -29,13 +29,6 @@ use dashmap::DashMap;
 use serde_json::{Value, json};
 use tokio::sync::{Notify, Semaphore};
 
-use crate::db::sqlite::{
-    RunningLivenessFacts, SuccessReportFlip, TaskReporter, begin_immediate_tx,
-    status_detail_with_reason, task_claim_pending_tx, task_fail_from_worker_tx, task_get_tx,
-    task_mark_running_tx, task_mark_sub_track_running_tx, task_report_success_from_worker_tx,
-    task_running_liveness_tx, task_stamp_missing_running_liveness_tx, tasks_by_track_tx,
-    track_find_tx,
-};
 use crate::db::{Repo, RouteRepo, write_with_actor_events_typed};
 use crate::error::{CalmError, Result};
 use crate::event::{Event, EventBus, EventScope};
@@ -59,6 +52,13 @@ use crate::per_card_lock::PerCardLocks;
 use crate::routes::idempotency_key::stable_payload_hash;
 use crate::state::WriteContext;
 use crate::task_context::{ContextMetrics, TaskContextMonitor, context_ref};
+use calm_truth::db::sqlite::{
+    RunningLivenessFacts, SuccessReportFlip, TaskReporter, begin_immediate_tx,
+    status_detail_with_reason, task_claim_pending_tx, task_fail_from_worker_tx, task_get_tx,
+    task_mark_running_tx, task_mark_sub_track_running_tx, task_report_success_from_worker_tx,
+    task_running_liveness_tx, task_stamp_missing_running_liveness_tx, tasks_by_track_tx,
+    track_find_tx,
+};
 
 /// Default reconcile-tick period (liveness backstop).
 pub const DEFAULT_RECONCILE_SECS: u64 = 300;
@@ -1373,7 +1373,8 @@ impl Scheduler {
                     let mut events = Vec::new();
                     if let Some(child_id) = child_id {
                         let child_track_id = TrackId::from(child_id);
-                        let current = crate::db::sqlite::track_get_tx(tx, &child_track_id).await?;
+                        let current =
+                            calm_truth::db::sqlite::track_get_tx(tx, &child_track_id).await?;
                         if current.is_open() {
                             let updated = crate::db::sqlite::track_update_tx(
                                 tx,
@@ -2281,14 +2282,14 @@ pub(crate) async fn mark_acknowledged_running_tx(
     timeout_ms: i64,
 ) -> Result<u64> {
     let now = now_ms();
-    task_mark_running_tx(
+    Ok(task_mark_running_tx(
         tx,
         task_id,
         worker_card_id,
         now,
         now.saturating_add(timeout_ms),
     )
-    .await
+    .await?)
 }
 
 #[cfg(test)]

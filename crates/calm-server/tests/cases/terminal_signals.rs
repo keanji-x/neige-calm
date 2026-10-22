@@ -1749,7 +1749,7 @@ async fn codex_worker_card_hooks_are_still_persisted() {
     let h = Harness::start().await;
     let card_id = new_id();
     let mut tx = h.sql.pool().begin().await.unwrap();
-    let (card, term, _token) = calm_server::db::sqlite::card_with_codex_create_tx(
+    let (card, term, _token) = calm_truth::db::sqlite::card_with_codex_create_tx(
         &mut tx,
         card_id.clone(),
         &new_id(),
@@ -1825,7 +1825,7 @@ async fn claude_worker_card_hooks_are_still_persisted() {
     let h = Harness::start().await;
     let card_id = new_id();
     let mut tx = h.sql.pool().begin().await.unwrap();
-    let (card, term) = calm_server::db::sqlite::card_with_claude_create_tx(
+    let (card, term) = calm_truth::db::sqlite::card_with_claude_create_tx(
         &mut tx,
         card_id.clone(),
         &new_id(),
@@ -2967,9 +2967,9 @@ async fn minted_terminal_card(
     calm_server::model::Terminal,
     calm_server::terminal_renderer::RendererConfig,
 ) {
-    use calm_server::db::sqlite::card_with_terminal_create_tx;
     use calm_server::db::write_in_tx_typed;
     use calm_server::terminal_renderer::RendererConfig;
+    use calm_truth::db::sqlite::card_with_terminal_create_tx;
     let cwd = h.root.path().to_str().unwrap().to_owned();
     let (card, term) = {
         let track_id = h.track.clone();

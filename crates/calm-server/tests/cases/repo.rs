@@ -1036,7 +1036,7 @@ async fn card_with_terminal_create_tx_atomic_writes_card_terminal_and_runtime() 
     let w = make_track(&repo, c.id.as_str(), "W").await;
 
     let mut tx = repo.pool().begin().await.unwrap();
-    let (card, term) = calm_server::db::sqlite::card_with_terminal_create_tx(
+    let (card, term) = calm_truth::db::sqlite::card_with_terminal_create_tx(
         &mut tx,
         calm_server::model::new_id(),
         &calm_server::model::new_id(),
@@ -1107,7 +1107,7 @@ async fn card_with_terminal_create_tx_rolls_back_on_invalid_track() {
     assert!(repo.cards_by_track(w.id.as_str()).await.unwrap().is_empty());
 
     let mut tx = repo.pool().begin().await.unwrap();
-    let err = calm_server::db::sqlite::card_with_terminal_create_tx(
+    let err = calm_truth::db::sqlite::card_with_terminal_create_tx(
         &mut tx,
         calm_server::model::new_id(),
         &calm_server::model::new_id(),
@@ -1150,7 +1150,7 @@ async fn card_with_terminal_create_tx_uses_caller_supplied_sort() {
     let w = make_track(&repo, c.id.as_str(), "W").await;
 
     let mut tx = repo.pool().begin().await.unwrap();
-    let (card, _term) = calm_server::db::sqlite::card_with_terminal_create_tx(
+    let (card, _term) = calm_truth::db::sqlite::card_with_terminal_create_tx(
         &mut tx,
         calm_server::model::new_id(),
         &calm_server::model::new_id(),
@@ -1187,7 +1187,7 @@ async fn card_with_terminal_create_tx_defaults_sort_when_none() {
     let _c2 = make_card(&repo, w.id.as_str(), "terminal", json!({"hello":"world","terminal_presentation":{"source":"unrecorded","in_workbench":false}})).await;
 
     let mut tx = repo.pool().begin().await.unwrap();
-    let (card, _term) = calm_server::db::sqlite::card_with_terminal_create_tx(
+    let (card, _term) = calm_truth::db::sqlite::card_with_terminal_create_tx(
         &mut tx,
         calm_server::model::new_id(),
         &calm_server::model::new_id(),
@@ -1221,7 +1221,7 @@ async fn terminal_create_tx_enforces_unique_card_id() {
     let _seeded = make_terminal(&repo, card.id.as_str()).await;
 
     let mut tx = repo.pool().begin().await.unwrap();
-    let err = calm_server::db::sqlite::terminal_create_tx(
+    let err = calm_truth::db::sqlite::terminal_create_tx(
         &mut tx,
         NewTerminal {
             card_id: card.id.clone(),
@@ -1243,7 +1243,7 @@ async fn terminal_create_tx_rejects_unknown_card_id() {
     let repo = fresh_repo().await;
 
     let mut tx = repo.pool().begin().await.unwrap();
-    let err = calm_server::db::sqlite::terminal_create_tx(
+    let err = calm_truth::db::sqlite::terminal_create_tx(
         &mut tx,
         NewTerminal {
             card_id: "no-such-card".into(),
@@ -1268,7 +1268,7 @@ async fn card_with_codex_create_tx_atomic_writes_card_terminal_and_runtime() {
 
     let card_id = calm_server::model::new_id();
     let mut tx = repo.pool().begin().await.unwrap();
-    let (card, term, mcp_token) = calm_server::db::sqlite::card_with_codex_create_tx(
+    let (card, term, mcp_token) = calm_truth::db::sqlite::card_with_codex_create_tx(
         &mut tx,
         card_id.clone(),
         &calm_server::model::new_id(),
@@ -1343,7 +1343,7 @@ async fn card_with_codex_create_tx_rolls_back_on_invalid_track() {
 
     let card_id = calm_server::model::new_id();
     let mut tx = repo.pool().begin().await.unwrap();
-    let err = calm_server::db::sqlite::card_with_codex_create_tx(
+    let err = calm_truth::db::sqlite::card_with_codex_create_tx(
         &mut tx,
         card_id,
         &calm_server::model::new_id(),
@@ -1387,7 +1387,7 @@ async fn card_with_codex_create_tx_uses_caller_supplied_sort() {
 
     let card_id = calm_server::model::new_id();
     let mut tx = repo.pool().begin().await.unwrap();
-    let (card, _term, _mcp_token) = calm_server::db::sqlite::card_with_codex_create_tx(
+    let (card, _term, _mcp_token) = calm_truth::db::sqlite::card_with_codex_create_tx(
         &mut tx,
         card_id,
         &calm_server::model::new_id(),

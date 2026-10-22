@@ -9,11 +9,6 @@ use tokio::sync::Mutex;
 
 use crate::card_role_cache::CardRoleCache;
 use crate::codex_appserver::TurnApprovals;
-use crate::db::sqlite::{
-    append_decision_event_in_tx, card_update_tx, card_with_codex_create_tx,
-    session_bind_attribution_tx, session_projection_active_for_card_tx,
-    session_projection_by_id_tx, session_set_status_tx,
-};
 use crate::db::{write_in_tx_typed, write_with_events_typed};
 use crate::error::{CalmError, Result};
 use crate::event::{BroadcastEnvelope, Event, SYNC_EVENT_VERSION};
@@ -47,6 +42,11 @@ use crate::shared_codex_appserver::{
 use crate::state::{CodexClient, WriteContext};
 use crate::terminal_sweeper::try_reap_terminal_artifacts_with_renderer;
 use crate::track_area_cache::TrackAreaCache;
+use calm_truth::db::sqlite::{
+    append_decision_event_in_tx, card_update_tx, card_with_codex_create_tx,
+    session_bind_attribution_tx, session_projection_active_for_card_tx,
+    session_projection_by_id_tx, session_set_status_tx,
+};
 use provider::InputItem;
 use provider::TurnModelSelection;
 

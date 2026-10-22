@@ -140,7 +140,7 @@ impl Harness {
         )
         .await
         .unwrap();
-        calm_server::db::sqlite::terminal_create_tx(
+        calm_truth::db::sqlite::terminal_create_tx(
             &mut tx,
             calm_server::model::NewTerminal {
                 card_id: card_id.clone().into(),

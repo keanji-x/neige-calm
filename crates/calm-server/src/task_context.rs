@@ -1219,9 +1219,10 @@ mod tests {
     use super::*;
     use calm_types::report_blocks::{TASK_FIELDS, flat_text};
 
+    use crate::db::Repo;
     use crate::db::sqlite::{SqlxRepo, begin_immediate_tx};
-    use crate::db::{Repo, ServerRepoSyncDomainRawExt};
     use crate::model::{NewArea, NewCard, NewTrack, RequestTheme};
+    use calm_truth::db::RepoSyncDomainRaw;
     use calm_types::track_report::TrackReportPayload;
 
     async fn seed_restore_transaction_fixture(

@@ -226,7 +226,7 @@ async fn check_input_and_target(
             "model read execution provenance changed".into(),
         ));
     }
-    let track = crate::db::sqlite::track_get_tx(tx, &session.track_id).await?;
+    let track = calm_truth::db::sqlite::track_get_tx(tx, &session.track_id).await?;
     Ok(ReadTarget {
         track: track.id,
         area: track.area_id,

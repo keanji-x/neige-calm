@@ -1,7 +1,6 @@
 //! `neige_track_rename`, the planner agent's naming write. Name-once: succeeds only while the track's title is empty;
 //! refusals are values (`{"ok": false, "refused": …}`), not errors, and the write is attributed to the planner session, never the user.
 
-use crate::db::sqlite::track_get_tx;
 use crate::db::sqlite::track_update_tx;
 use crate::db::write_with_actor_events_typed;
 use crate::error::CalmError;
@@ -12,6 +11,7 @@ use crate::mcp_server::registry::{
     role_gated_write_annotations,
 };
 use crate::model::{CardRole, TrackPatch};
+use calm_truth::db::sqlite::track_get_tx;
 use serde_json::{Value, json};
 use std::sync::Arc;
 

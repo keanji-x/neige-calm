@@ -10,11 +10,6 @@ use std::time::Duration;
 
 use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
-use calm_server::db::sqlite::{
-    SqlxRepo, begin_immediate_tx, card_with_codex_create_tx, session_bind_attribution_tx,
-    session_projection_active_for_card_tx, session_start_runtime_tx,
-    session_supersede_and_start_tx,
-};
 use calm_server::event::EventBus;
 use calm_server::ids::ActorId;
 use calm_server::mcp_server::handshake::handle_initialize;
@@ -26,6 +21,11 @@ use calm_server::model::{CardRole, NewArea, NewTrack, now_ms};
 use calm_server::plugin_host::mcp::RpcError;
 use calm_server::session_projection_repo::{
     AgentProvider, ThreadAttribution, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
+};
+use calm_truth::db::sqlite::{
+    SqlxRepo, begin_immediate_tx, card_with_codex_create_tx, session_bind_attribution_tx,
+    session_projection_active_for_card_tx, session_start_runtime_tx,
+    session_supersede_and_start_tx,
 };
 use calm_types::worker::{Principal, WorkerSessionId};
 use serde_json::{Value, json};

@@ -5,7 +5,6 @@ use workspace_runtime::sweep::{WorkspaceTrackSweep, sweep_workspace_worktrees_fo
 use crate::AREA_CHAT_PURPOSE;
 use crate::actor::Actor;
 use crate::auth::Principal;
-use crate::db::sqlite::track_get_tx;
 use crate::db::sqlite::{
     MAX_TRACK_TREE_DEPTH, MAX_TREE_TASK_BUDGET, TRACK_TREE_MEMBERS_SQL, TrackRecipeOrigin,
     TrackTreeTerm, TrackWorkspacePlan, area_folder_create_tx, area_folders_list_all_tx,
@@ -57,6 +56,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::get,
 };
+use calm_truth::db::sqlite::track_get_tx;
 use calm_types::runtime::AgentProtocol;
 use futures::FutureExt;
 use serde::{Deserialize, Serialize};
@@ -2593,7 +2593,7 @@ pub(crate) async fn update_track(
             Box::pin(async move {
                 let mut patch = p_for_tx;
                 let admin = patch.admin.take();
-                let live = crate::db::sqlite::track_get_tx(tx, &id.clone().into()).await?;
+                let live = calm_truth::db::sqlite::track_get_tx(tx, &id.clone().into()).await?;
                 if admin == Some(true)
                     && live.admin_granted_at.is_none()
                     && !crate::area_admin::eligible_tx(&mut **tx, &live).await?

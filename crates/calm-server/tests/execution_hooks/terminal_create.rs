@@ -189,7 +189,7 @@ pub(super) async fn projection(f: &Fixture) -> (Terminal, ExecutionId) {
         .await
         .unwrap();
     let mut tx = sqlite::begin_immediate_tx(f.repo.db()).await.unwrap();
-    let (_, term) = sqlite::card_with_terminal_create_tx(
+    let (_, term) = calm_truth::db::sqlite::card_with_terminal_create_tx(
         &mut tx,
         new_id(),
         &new_id(),

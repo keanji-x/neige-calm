@@ -35,7 +35,7 @@ async fn seed_worker_started_at(boot: &Boot, label: &str, started_ms: i64) -> Li
         .await
         .unwrap();
     let deadline = started_ms + WorkerLiveness::DEFAULT.cap.as_millis() as i64;
-    let rows = calm_server::db::sqlite::task_mark_running_tx(
+    let rows = calm_truth::db::sqlite::task_mark_running_tx(
         &mut tx,
         &task_id,
         Some(&card_id),

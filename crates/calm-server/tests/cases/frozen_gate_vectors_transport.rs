@@ -10,11 +10,6 @@ use std::time::Duration;
 
 use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
-use calm_server::db::sqlite::{
-    SqlxRepo, begin_immediate_tx, card_with_codex_create_tx, session_bind_attribution_tx,
-    session_insert_tx, session_mark_track_root_tx, session_projection_active_for_card_tx,
-    session_start_runtime_tx, session_supersede_and_start_tx,
-};
 use calm_server::event::{Event, EventBus, EventScope};
 use calm_server::ids::{ActorId, AreaId, CardId, TrackId};
 use calm_server::mcp_server::registry::{ToolCallIdentity, ToolHandler, ToolHandlerFuture};
@@ -26,6 +21,11 @@ use calm_server::session_projection_repo::{
     AgentProvider, ThreadAttribution, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
 };
 use calm_server::track_area_cache::TrackAreaCache;
+use calm_truth::db::sqlite::{
+    SqlxRepo, begin_immediate_tx, card_with_codex_create_tx, session_bind_attribution_tx,
+    session_insert_tx, session_mark_track_root_tx, session_projection_active_for_card_tx,
+    session_start_runtime_tx, session_supersede_and_start_tx,
+};
 use calm_truth::decision_gate::PrincipalDecisionGate;
 use calm_types::worker::{
     LivenessTag, Principal, SessionMode, WorkerContract, WorkerProviderKind, WorkerSession,

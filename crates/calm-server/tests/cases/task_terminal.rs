@@ -2,13 +2,13 @@
 use super::terminal_support::{Harness, assert_text_observation};
 use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
-use calm_server::db::sqlite::{
-    card_with_claude_create_tx, card_with_claude_worker_create_tx, card_with_codex_create_tx,
-    card_with_terminal_create_tx,
-};
 use calm_server::model::{CardRole, NewTrack, new_id, now_ms};
 use calm_server::operation::{OperationKey, OperationRepo, SqlxOperationRepo};
 use calm_server::terminal_renderer::RendererConfig;
+use calm_truth::db::sqlite::{
+    card_with_claude_create_tx, card_with_claude_worker_create_tx, card_with_codex_create_tx,
+    card_with_terminal_create_tx,
+};
 use serde_json::{Value, json};
 
 pub(crate) struct Worker {

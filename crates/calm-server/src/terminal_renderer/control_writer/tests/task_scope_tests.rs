@@ -2,7 +2,6 @@
 use super::*;
 use crate::card_role_cache::CardRoleCache;
 use crate::db::prelude::*;
-use crate::db::sqlite::{SqlxRepo, card_with_codex_create_tx, card_with_terminal_create_tx};
 use crate::mcp_server::registry::ToolCallIdentity;
 use crate::model::{CardRole, NewArea, NewTrack, new_id, now_ms};
 use crate::operation::{OperationKey, OperationRepo, SqlxOperationRepo};
@@ -10,6 +9,7 @@ use crate::session_projection_repo::{
     AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
 };
 use crate::terminal_interaction::{Binding, TaskBinding, TerminalInteraction};
+use calm_truth::db::sqlite::{SqlxRepo, card_with_codex_create_tx, card_with_terminal_create_tx};
 use calm_types::organization::LEGACY_OWNER_USER_ID;
 use serde_json::json;
 

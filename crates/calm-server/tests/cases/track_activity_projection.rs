@@ -2,10 +2,6 @@
 //! it reads and asserted on the payload it writes. The interactive PTY card's `working` needs a
 //! real PTY and the renderer registry: those cases live in `terminal_signals.rs`.
 
-use calm_server::db::sqlite::{
-    begin_immediate_tx, task_complete_from_worker_tx, task_mark_running_tx,
-    task_mark_sub_track_running_tx,
-};
 use calm_server::db::write_with_event_typed;
 use calm_server::event::{EditAuthor, Event, EventScope, TrackUpdatedPayload};
 use calm_server::ids::{ActorId, AreaId, CardId, TrackId};
@@ -18,6 +14,10 @@ use calm_server::track_activity::sql::{
 use calm_server::track_activity::{
     ActivityPayload, Attention, CardActivity, CardState, NotificationSource, Recompute,
     TrackActivityProjector, WriteOutcome, fold,
+};
+use calm_truth::db::sqlite::{
+    begin_immediate_tx, task_complete_from_worker_tx, task_mark_running_tx,
+    task_mark_sub_track_running_tx,
 };
 use calm_truth::validation::OVERLAY_KIND_REGISTRY;
 use calm_types::harness::HarnessPhaseTag;

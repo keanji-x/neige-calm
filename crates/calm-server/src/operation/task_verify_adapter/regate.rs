@@ -18,10 +18,6 @@ use super::target::{
     GATE_INFRA, GATE_RED, GATE_TARGET_MISMATCH, GATE_TIMEOUT, TaskGateResult, VerifyIdentity,
     verify_target_identity,
 };
-use crate::db::sqlite::{
-    CheckoutOccupancy, checkout_occupancy, status_detail_class, task_attempt_current_tx,
-    task_get_tx, task_regate_tx, track_get_tx,
-};
 use crate::error::{CalmError, Result};
 use crate::event::Event;
 use crate::ids::TrackId;
@@ -30,6 +26,10 @@ use crate::operation::gate_ops::{
     AttemptGateOps, GateOp, GateOpKind, classify_gate_ops, gate_ops_of_attempt_tx,
 };
 use crate::operation::{PhaseTag, Tx};
+use calm_truth::db::sqlite::{
+    CheckoutOccupancy, checkout_occupancy, status_detail_class, task_attempt_current_tx,
+    task_get_tx, task_regate_tx, track_get_tx,
+};
 
 /// The `status_detail` classes a gate verdict writes on failure; a row failed with any other
 /// class (a worker failure, `delivery-failed`) never ran its gate on a candidate.

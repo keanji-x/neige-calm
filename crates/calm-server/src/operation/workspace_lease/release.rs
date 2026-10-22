@@ -311,7 +311,7 @@ async fn fail_lease_attempt_tx(
         return Ok(Vec::new());
     }
     let track_id = TrackId::from(lease.track_id.clone());
-    let track = crate::db::sqlite::track_get_tx(tx, &track_id).await?;
+    let track = calm_truth::db::sqlite::track_get_tx(tx, &track_id).await?;
     let scope = EventScope::Track {
         track: track.id,
         area: track.area_id,

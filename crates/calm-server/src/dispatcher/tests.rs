@@ -4084,12 +4084,13 @@ async fn per_track_push_lock_serializes_same_track_runs_in_parallel_across_track
 
 mod report_edit_block_refs {
     use super::*;
-    use crate::db::{ServerRepoSyncDomainRawExt, sqlite::SqlxRepo};
+    use crate::db::sqlite::SqlxRepo;
     use crate::model::{NewArea, NewTrack};
     use crate::routes::theme::RequestTheme;
     use crate::state::WriteContext;
     use crate::track_area_cache::TrackAreaCache;
     use crate::track_report::{TrackReportPayload, persist_report, resolve_report_for_track};
+    use calm_truth::db::RepoSyncDomainRaw;
     use calm_types::report_edit_diff::ReportBlockRef;
 
     struct Fixture {

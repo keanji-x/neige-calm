@@ -7,11 +7,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::card_role_cache::CardRoleCache;
-use crate::db::sqlite::{
-    append_decision_event_in_tx, card_update_tx, card_with_claude_create_tx,
-    card_with_claude_worker_create_tx, session_projection_active_for_card_tx,
-    session_set_status_tx,
-};
 use crate::db::{write_in_tx_typed, write_with_events_typed};
 use crate::error::{CalmError, Result};
 use crate::event::{BroadcastEnvelope, Event, SYNC_EVENT_VERSION};
@@ -38,6 +33,11 @@ use crate::session_projection_repo::{AgentProvider, WorkerSessionKind, WorkerSes
 use crate::state::{CodexClient, WriteContext};
 use crate::terminal_sweeper::try_reap_terminal_artifacts_with_renderer;
 use crate::track_area_cache::TrackAreaCache;
+use calm_truth::db::sqlite::{
+    append_decision_event_in_tx, card_update_tx, card_with_claude_create_tx,
+    card_with_claude_worker_create_tx, session_projection_active_for_card_tx,
+    session_set_status_tx,
+};
 
 use super::{
     AppServerInteractOutcome, CompensationStateVersioned, CompensationStep, Operation, PhaseTag,

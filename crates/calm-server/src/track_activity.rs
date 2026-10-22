@@ -16,7 +16,6 @@ use serde_json::Value;
 use tokio::sync::broadcast::error::RecvError;
 
 use crate::db::sqlite::overlay_upsert_tx;
-use crate::db::sqlite::track_get_tx;
 use crate::db::{Repo, write_with_events_typed};
 use crate::error::CalmError;
 use crate::event::{BroadcastEnvelope, Event, EventBus, EventScope};
@@ -25,6 +24,7 @@ use crate::ids::{ActorId, TrackId};
 use crate::model::NewOverlay;
 use crate::state::WriteContext;
 use crate::terminal_renderer::TerminalRendererRegistry;
+use calm_truth::db::sqlite::track_get_tx;
 use calm_truth::validation::{KERNEL_OVERLAY_PLUGIN_ID, OVERLAY_ACTIVITY_SCHEMA_VERSION};
 pub use notifications::{ActivityItem, NotificationSource};
 use notifications::{NotificationRows, notifications};
@@ -489,7 +489,7 @@ impl TrackActivityProjector {
             &self.write,
             move |tx| {
                 Box::pin(async move {
-                    let row = match track_get_tx(tx, &track).await {
+                    let row = match track_get_tx(tx, &track).await.map_err(CalmError::from) {
                         Ok(row) => row,
                         Err(CalmError::NotFound(m)) => {
                             gone_in_tx.store(true, Ordering::SeqCst);

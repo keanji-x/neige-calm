@@ -461,7 +461,9 @@ async fn close_authorized_tx(
     recorder
         .record(tx, RecorderShadowDecisionKind::TrackClose)
         .await?;
-    let target = crate::db::sqlite::track_get_tx(tx, &target_id).await;
+    let target = calm_truth::db::sqlite::track_get_tx(tx, &target_id)
+        .await
+        .map_err(CalmError::from);
     let target = if other {
         match target {
             Ok(target) if added_by(&target, &caller) => target,

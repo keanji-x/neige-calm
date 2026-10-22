@@ -31,7 +31,8 @@ impl crate::harness::backend::factory::ActiveRecoveryAdmission for RetainedRecov
             ));
         }
         let track =
-            crate::db::sqlite::track_get_tx(tx, &TrackId::from(current.track_id.clone())).await?;
+            calm_truth::db::sqlite::track_get_tx(tx, &TrackId::from(current.track_id.clone()))
+                .await?;
         if track.workspace != self.workspace {
             return Err(CalmError::Conflict(
                 "retained recovery workspace changed".into(),

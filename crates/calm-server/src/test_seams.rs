@@ -162,9 +162,11 @@ pub async fn ensure_track_worktree_for_test(
     track_id: &str,
 ) -> crate::error::Result<std::path::PathBuf> {
     let mut tx = crate::db::sqlite::begin_immediate_tx(pool).await?;
-    let track =
-        crate::db::sqlite::track_get_tx(&mut tx, &crate::ids::TrackId::from(track_id.to_string()))
-            .await?;
+    let track = calm_truth::db::sqlite::track_get_tx(
+        &mut tx,
+        &crate::ids::TrackId::from(track_id.to_string()),
+    )
+    .await?;
     tx.commit().await?;
     let path = track.workspace.worktree.as_deref().ok_or_else(|| {
         crate::error::CalmError::BadRequest("track creation did not declare a worktree".into())

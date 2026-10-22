@@ -7,7 +7,6 @@ use calm_truth::decision_gate::WriteTx;
 use calm_types::observation::WORKER_WATCH_WAKE_SOURCE;
 
 use super::{Verdict, report_line};
-use crate::db::sqlite::track_get_tx;
 use crate::db::write_with_events_typed;
 use crate::error::CalmError;
 use crate::event::{Event, EventScope};
@@ -16,6 +15,7 @@ use crate::mcp_server::framing::{RpcError, calm_error};
 use crate::mcp_server::registry::{AppContext, ToolCallIdentity};
 use crate::model::new_id;
 use crate::terminal_interaction::{Target, TerminalInteraction};
+use calm_truth::db::sqlite::track_get_tx;
 
 /// Where a report has passed its caller check and resolved its attempt, before the transaction
 /// that writes the wake; keyed by the caller's session id.

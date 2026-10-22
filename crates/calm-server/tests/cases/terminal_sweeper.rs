@@ -6,9 +6,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use calm_server::db::prelude::*;
-use calm_server::db::sqlite::{
-    SqlxRepo, card_with_codex_create_tx, session_complete_for_card_tx, session_start_runtime_tx,
-};
 use calm_server::event::{Event, EventBus};
 use calm_server::model::{
     CardPatch, CardRole, NewArea, NewCard, NewTerminal, NewTrack, new_id, now_ms,
@@ -19,6 +16,9 @@ use calm_server::session_projection_repo::{
 };
 use calm_server::state::{AppState, CodexClient, DaemonClient};
 use calm_server::terminal_sweeper;
+use calm_truth::db::sqlite::{
+    SqlxRepo, card_with_codex_create_tx, session_complete_for_card_tx, session_start_runtime_tx,
+};
 use serde_json::json;
 
 /// A fresh in-memory `AppState` (stub daemon / codex) plus the concrete `SqlxRepo` for direct `SELECT`s.

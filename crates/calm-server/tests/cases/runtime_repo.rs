@@ -3,7 +3,14 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use calm_server::db::prelude::*;
-use calm_server::db::sqlite::{
+use calm_server::ids::CardId;
+use calm_server::model::{Card, CardRole, NewArea, NewCard, NewTrack, new_id, now_ms};
+use calm_server::session_projection_lookup::project_runtime_into_card_payload;
+use calm_server::session_projection_repo::{
+    AgentProvider, ThreadAttribution, WorkerSessionInit, WorkerSessionKind,
+    WorkerSessionProjectionRepo, WorkerSessionProjectionRepoError, WorkerSessionState,
+};
+use calm_truth::db::sqlite::{
     HarvestOutcome, HarvestedMessage, SqlxRepo, card_with_claude_create_tx,
     card_with_codex_create_tx, card_with_terminal_create_tx, harvest_pending_user_messages_tx,
     session_bind_attribution_tx, session_clear_queue_harvested_tx, session_commit_exit_tx,
@@ -15,13 +22,6 @@ use calm_server::db::sqlite::{
     session_set_handle_state_tx, session_set_harness_observation_runtime_tx,
     session_set_status_for_card_tx, session_set_status_tx, session_start_runtime_tx,
     session_supersede_and_start_tx,
-};
-use calm_server::ids::CardId;
-use calm_server::model::{Card, CardRole, NewArea, NewCard, NewTrack, new_id, now_ms};
-use calm_server::session_projection_lookup::project_runtime_into_card_payload;
-use calm_server::session_projection_repo::{
-    AgentProvider, ThreadAttribution, WorkerSessionInit, WorkerSessionKind,
-    WorkerSessionProjectionRepo, WorkerSessionProjectionRepoError, WorkerSessionState,
 };
 use calm_types::worker::{
     ExitInterpretation, LivenessTag, SessionMode, WorkerContract, WorkerProviderKind,

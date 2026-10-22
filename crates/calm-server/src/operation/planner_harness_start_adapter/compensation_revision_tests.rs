@@ -1,9 +1,9 @@
 use super::*;
-use crate::db::prelude::ServerRepoSyncDomainRawExt;
 use crate::db::sqlite::SqlxRepo;
 use crate::harness::queue::{QueueMutation, apply_mutation};
 use crate::model::{NewArea, NewTrack};
 use crate::routes::theme::RequestTheme;
+use calm_truth::db::RepoSyncDomainRaw;
 
 fn edit(entry: QueueEntry, text: &str) -> QueueEntry {
     let actual = entry.user_ref().unwrap();

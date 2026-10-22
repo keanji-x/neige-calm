@@ -157,7 +157,10 @@ async fn response_track_tx(
     ack: &HumanTrackCreationAck,
 ) -> Result<crate::model::Track> {
     let HumanTrackCreationAck::V1 { track_id, .. } = ack;
-    crate::db::sqlite::track_get_tx(tx, &crate::ids::TrackId::from(track_id.clone())).await
+    Ok(
+        calm_truth::db::sqlite::track_get_tx(tx, &crate::ids::TrackId::from(track_id.clone()))
+            .await?,
+    )
 }
 
 async fn require_surviving_allocation_tx(
@@ -374,7 +377,8 @@ pub(in crate::routes::tracks) async fn allocate_dormant_empty_track(
                         )
                         .await?;
                         let track =
-                            crate::db::sqlite::track_get_tx(tx, &binding.track_id.into()).await?;
+                            calm_truth::db::sqlite::track_get_tx(tx, &binding.track_id.into())
+                                .await?;
                         let _ = replay_tx.send(track);
                         return Err(CalmError::Conflict(
                             "empty Track allocation already committed".into(),

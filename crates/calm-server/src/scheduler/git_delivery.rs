@@ -363,9 +363,11 @@ impl Scheduler {
                             delivery.delivery_id, delivery.producer_attempt_id
                         ))
                     })?;
-                let track =
-                    crate::db::sqlite::track_get_tx(tx, &TrackId::from(delivery.track_id.clone()))
-                        .await?;
+                let track = calm_truth::db::sqlite::track_get_tx(
+                    tx,
+                    &TrackId::from(delivery.track_id.clone()),
+                )
+                .await?;
                 let (result, wake_reason) = match &settlement {
                     Settlement::Candidate(candidate) => (
                         DeliverySettlement::Candidate {

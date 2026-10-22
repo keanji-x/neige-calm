@@ -259,7 +259,7 @@ async fn tasks_rebuild_tree_with_policy_tx(
             })
         );
         let track =
-            crate::db::sqlite::track_get_tx(tx, &crate::ids::TrackId::from(member_id.clone()))
+            calm_truth::db::sqlite::track_get_tx(tx, &crate::ids::TrackId::from(member_id.clone()))
                 .await?;
         let projection = tasks_rebuild_with_tree_term_tx(tx, member_id, Some(tree_term)).await?;
         tree_cte_queries = tree_cte_queries.saturating_add(projection.tree_cte_queries);

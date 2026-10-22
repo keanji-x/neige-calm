@@ -27,7 +27,7 @@ pub async fn ask_reopen_requested_tx(
         ));
     }
     let track_id = super::card_track_tx(tx, card).await?;
-    let track = crate::db::sqlite::track_get_tx(tx, &track_id).await?;
+    let track = calm_truth::db::sqlite::track_get_tx(tx, &track_id).await?;
     let closed_at = track
         .closed_at
         .ok_or_else(|| CalmError::Conflict("reopening requires a closed track".into()))?;

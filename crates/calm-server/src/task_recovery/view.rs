@@ -50,7 +50,7 @@ pub(crate) async fn task_recovery_view_tx(
     track_id: &TrackId,
     key: &str,
 ) -> Result<TaskRecoveryView> {
-    let track = crate::db::sqlite::track_get_tx(tx, track_id).await?;
+    let track = calm_truth::db::sqlite::track_get_tx(tx, track_id).await?;
     let Some(mut allocation) = task_attempt_current_tx(tx, track_id.as_str(), key).await? else {
         // A valid authored task can await release/admission before its first row.
         let (declarations, diagnostics) =

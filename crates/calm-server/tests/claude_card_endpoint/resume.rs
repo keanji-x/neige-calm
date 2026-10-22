@@ -123,7 +123,7 @@ async fn seed_task_worker_card(boot: &Boot) -> String {
     .execute(&mut *tx)
     .await
     .unwrap();
-    calm_server::db::sqlite::card_with_claude_worker_create_tx(
+    calm_truth::db::sqlite::card_with_claude_worker_create_tx(
         &mut tx,
         card_id.clone(),
         &new_id(),

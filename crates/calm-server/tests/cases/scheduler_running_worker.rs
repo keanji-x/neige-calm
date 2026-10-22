@@ -576,7 +576,7 @@ async fn cancel_running_claude_task_cancels_and_reaps_worker() {
     let session_row_id = format!("runtime-claude-cancel-{}", new_id());
     let pool = boot.repo.sqlite_db().unwrap();
     let mut tx = pool.writer_pool().begin().await.unwrap();
-    calm_server::db::sqlite::card_with_claude_worker_create_tx(
+    calm_truth::db::sqlite::card_with_claude_worker_create_tx(
         &mut tx,
         card_id.clone(),
         &session_row_id,

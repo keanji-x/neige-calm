@@ -2,14 +2,14 @@
 //! characterization for `runtime_status_transition_allowed`. Any diff to the golden is a semantic change.
 
 use calm_server::db::prelude::*;
-use calm_server::db::sqlite::{
-    SqlxRepo, card_with_codex_create_tx, session_complete_for_card_tx,
-    session_complete_for_terminal_tx, session_complete_tx, session_projection_active_for_card_tx,
-    session_set_status_for_card_tx, session_set_status_tx, session_start_runtime_tx,
-};
 use calm_server::model::{CardRole, NewArea, NewCard, NewTrack, new_id, now_ms};
 use calm_server::session_projection_repo::{
     WorkerSessionInit, WorkerSessionKind, WorkerSessionProjectionRepoError, WorkerSessionState,
+};
+use calm_truth::db::sqlite::{
+    SqlxRepo, card_with_codex_create_tx, session_complete_for_card_tx,
+    session_complete_for_terminal_tx, session_complete_tx, session_projection_active_for_card_tx,
+    session_set_status_for_card_tx, session_set_status_tx, session_start_runtime_tx,
 };
 use calm_types::organization::LEGACY_OWNER_USER_ID;
 use serde_json::{Value, json};

@@ -37,7 +37,7 @@ pub(crate) async fn require_detail_access_tx(
     track_id: &str,
     principal: &Principal,
 ) -> Result<AreaId> {
-    let track = crate::db::sqlite::track_get_tx(tx, &track_id.to_string().into()).await?;
+    let track = calm_truth::db::sqlite::track_get_tx(tx, &track_id.to_string().into()).await?;
     crate::organization_access::require_area_access_tx(
         tx,
         track.area_id.as_str(),

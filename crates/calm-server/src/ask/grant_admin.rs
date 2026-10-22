@@ -26,7 +26,7 @@ pub async fn ask_grant_admin_requested_tx(
         ));
     }
     let track_id = super::card_track_tx(tx, card).await?;
-    let track = crate::db::sqlite::track_get_tx(tx, &track_id).await?;
+    let track = calm_truth::db::sqlite::track_get_tx(tx, &track_id).await?;
     require_grantable_tx(tx, &track).await?;
     let pending: bool = sqlx::query_scalar(concat!(
         "SELECT EXISTS (SELECT 1 FROM events r WHERE r.scope_track = ?1 \

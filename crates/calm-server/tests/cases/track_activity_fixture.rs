@@ -7,11 +7,6 @@ use std::time::Duration;
 
 use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
-use calm_server::db::sqlite::{
-    SqlxRepo, begin_immediate_tx, card_create_with_id_tx, overlay_upsert_tx,
-    session_start_runtime_tx, task_claim_pending_tx, task_complete_from_worker_tx,
-    task_fail_from_worker_tx, task_mark_running_tx,
-};
 use calm_server::db::write_with_event_typed;
 use calm_server::event::{
     BroadcastEnvelope, EditAuthor, Event, EventBus, EventScope, SYNC_EVENT_VERSION,
@@ -37,6 +32,11 @@ use calm_server::terminal_renderer::TerminalRendererRegistry;
 use calm_server::track_activity::{ActivityPayload, Recompute, TrackActivityProjector};
 use calm_server::track_area_cache::TrackAreaCache;
 use calm_server::track_report::{persist_report, resolve_report_for_track, tasks_rebuild_tx};
+use calm_truth::db::sqlite::{
+    SqlxRepo, begin_immediate_tx, card_create_with_id_tx, overlay_upsert_tx,
+    session_start_runtime_tx, task_claim_pending_tx, task_complete_from_worker_tx,
+    task_fail_from_worker_tx, task_mark_running_tx,
+};
 use calm_types::report_blocks::render_fence;
 use calm_types::task_recovery::{TASK_IN_TRACK_ROUTE, TaskAttemptOrigin, TaskRecoveryConstraint};
 use calm_types::track_report::TrackReportPayload;

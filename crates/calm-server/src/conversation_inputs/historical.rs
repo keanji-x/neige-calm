@@ -48,7 +48,7 @@ impl HistoricalHumanSource {
     ) -> Result<()> {
         self.0.current_principal()?;
         let track =
-            crate::db::sqlite::track_get_tx(tx, &crate::ids::TrackId::from(track_id)).await?;
+            calm_truth::db::sqlite::track_get_tx(tx, &crate::ids::TrackId::from(track_id)).await?;
         self.require_area_tx(tx, track.area_id.as_str()).await
     }
 
