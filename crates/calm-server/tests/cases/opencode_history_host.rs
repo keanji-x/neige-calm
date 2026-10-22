@@ -1,9 +1,10 @@
 #![cfg(unix)]
 use crate::support::opencode_history as fixture;
 use calm_server::{
-    card_role_cache::CardRoleCache, db::prelude::*, db::sqlite::SqlxRepo, event::EventBus,
-    state::WriteContext, track_area_cache::TrackAreaCache,
+    card_role_cache::CardRoleCache, db::sqlite::SqlxRepo, event::EventBus, state::WriteContext,
+    track_area_cache::TrackAreaCache,
 };
+use calm_truth::db::RepoOutOfDomain as _;
 use serde_json::{Value, json};
 use std::sync::Arc;
 

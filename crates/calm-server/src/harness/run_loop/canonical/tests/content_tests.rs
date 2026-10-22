@@ -2,6 +2,7 @@
 use super::*;
 use crate::codex_appserver::Notification;
 use crate::shared_codex_appserver::native_owner_tests::Peer;
+use calm_truth::db::RepoEventWrite as _;
 
 async fn next_start(peer: &mut Peer) -> Value {
     loop {

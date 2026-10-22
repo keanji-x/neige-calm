@@ -197,7 +197,7 @@ impl TrackPlannerContextProjector {
             &self.write,
             move |tx| {
                 Box::pin(async move {
-                    let track = match track_get_tx(tx, &track_id).await {
+                    let track = match track_get_tx(tx, &track_id).await.map_err(CalmError::from) {
                         Ok(track) => track,
                         Err(CalmError::NotFound(_)) => return Ok((false, vec![])),
                         Err(error) => return Err(error),

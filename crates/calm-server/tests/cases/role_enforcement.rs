@@ -1,6 +1,7 @@
 //! End-to-end role-gate coverage: `enforce_role` from the public write surface
 //! (`Repo::write_with_event` / `Repo::log_pure_event`).
 
+use calm_truth::db::RepoEventWrite as _;
 use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::sync::Arc;
 
@@ -249,7 +250,8 @@ async fn empty_codex_card_id_rejected() {
                 last_error: None,
             },
         )
-        .await;
+        .await
+        .map_err(calm_server::error::CalmError::from);
     assert!(
         matches!(
             res,

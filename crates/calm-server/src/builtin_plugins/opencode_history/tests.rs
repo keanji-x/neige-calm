@@ -9,6 +9,7 @@ use crate::{
     state::WriteContext,
     track_area_cache::TrackAreaCache,
 };
+use calm_truth::db::RepoOutOfDomain as _;
 struct Fixture {
     repo: Arc<SqlxRepo>,
     host: Arc<PluginHost>,

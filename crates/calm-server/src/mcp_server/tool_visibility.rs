@@ -171,6 +171,7 @@ mod tests {
     use crate::routes::theme::RequestTheme;
     use crate::state::WriteContext;
     use crate::track_area_cache::TrackAreaCache;
+    use calm_truth::db::RepoOutOfDomain as _;
     use serde_json::json;
     use std::path::PathBuf;
     use std::time::Duration;

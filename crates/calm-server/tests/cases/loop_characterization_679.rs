@@ -2,6 +2,7 @@
 //! harness is `run_unstarted_for_test`, so deliveries are read deterministically from the
 //! observation channel.
 
+use calm_truth::db::RepoEventWrite as _;
 use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::path::PathBuf;
 use std::sync::Arc;

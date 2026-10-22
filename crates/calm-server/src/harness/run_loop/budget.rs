@@ -273,9 +273,9 @@ fn sampling_refusal(error: LoadError) -> super::IssuanceRefusal {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::prelude::*;
     use crate::harness::run_loop::completed_commit_tests::Fixture;
     use crate::planner_model::FailureKind;
+    use calm_truth::db::RepoOutOfDomain as _;
 
     #[tokio::test]
     async fn planner_turn_budget_storage_failure_is_retryable_without_reset_advice() {

@@ -3,6 +3,7 @@
 //! characterization: changing any file under `tests/vectors/` requires a commit message carrying
 //! `FROZEN-VECTOR-CHANGE:` + rationale (CI-enforced).
 
+use calm_truth::db::RepoEventWrite as _;
 use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -347,7 +348,8 @@ async fn run_vector(fx: &Fixture, v: &Vector) -> Result<(), String> {
     let res = fx
         .repo
         .log_pure_event(actor, scope, None, &fx.bus, &fx.cache, &fx.wcc, event)
-        .await;
+        .await
+        .map_err(calm_server::error::CalmError::from);
 
     let after = total_events(&fx.repo).await;
 

@@ -1,5 +1,6 @@
 //! Controls exercise the real loop and protocol owner; no fixture creates a claim or END.
 use super::*;
+use calm_truth::db::RepoOutOfDomain as _;
 
 async fn running(fx: &Fixture, peer: &mut crate::shared_codex_appserver::native_owner_tests::Peer) {
     fx.original

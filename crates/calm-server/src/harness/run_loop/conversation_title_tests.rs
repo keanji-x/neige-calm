@@ -3,8 +3,8 @@ use super::completed_commit_tests::Fixture;
 use super::*;
 use crate::codex_appserver::Notification;
 use crate::db::RepoRead;
-use crate::db::prelude::*;
 use crate::harness::codex_events::planner_event;
+use calm_truth::db::RepoOutOfDomain as _;
 use serde_json::json;
 
 async fn first_visible_steer() -> (Fixture, QueueEntryId, String) {

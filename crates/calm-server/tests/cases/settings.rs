@@ -1,5 +1,6 @@
 //! Settings persistence + REST end-to-end: the `Repo` KV surface and `GET`/`PUT /api/settings`.
 
+use calm_truth::db::RepoOutOfDomain as _;
 use std::sync::Arc;
 
 use axum::body::Body;

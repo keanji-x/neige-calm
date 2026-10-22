@@ -1,6 +1,6 @@
 use super::completed_commit_tests::Fixture;
 use super::*;
-use crate::db::prelude::*;
+use calm_truth::db::RepoOutOfDomain as _;
 
 const UNKNOWN: &str = "[Trusted Planner context usage]\nContext usage is unknown (no reading yet).";
 const KNOWN: &str = "[Trusted Planner context usage]\nContext window: 50% used (142000 of 272000 tokens) as of the latest response before this turn. Record important state in the Report before compacting; conversation text after compaction is not guaranteed to survive.";

@@ -1,7 +1,7 @@
 //! Crash images come only from production dispatch/recovery, before teardown.
 use super::super::super::dispatch_fixture::fail_terminal_outcome;
 use super::*;
-use crate::db::ServerRepoOutOfDomainExt;
+use calm_truth::db::RepoOutOfDomain;
 
 type Owner = super::super::super::dispatch_fixture::Owner;
 type Rows = Vec<(i64, String, String)>;

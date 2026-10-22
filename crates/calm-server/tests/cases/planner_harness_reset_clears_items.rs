@@ -1,3 +1,4 @@
+use calm_truth::db::RepoEventWrite as _;
 use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::path::PathBuf;
 use std::sync::Arc;

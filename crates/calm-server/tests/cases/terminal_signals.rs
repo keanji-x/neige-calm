@@ -9,6 +9,7 @@ use calm_server::track_activity::{
     ActivityPayload, Attention, CardState, INTERACTIVE_OUTPUT_WINDOW, Recompute,
     TrackActivityProjector,
 };
+use calm_truth::db::RepoOutOfDomain as _;
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
 use std::sync::Arc;

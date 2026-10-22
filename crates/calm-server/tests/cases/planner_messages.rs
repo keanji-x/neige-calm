@@ -5,6 +5,7 @@ use super::worker_message::{message, running, set_status, written};
 use calm_server::db::prelude::*;
 use calm_server::event::{Event, EventScope};
 use calm_server::ids::ActorId;
+use calm_truth::db::RepoEventWrite as _;
 use serde_json::{Value, json};
 
 async fn token(h: &Harness, worker: &Worker) -> String {

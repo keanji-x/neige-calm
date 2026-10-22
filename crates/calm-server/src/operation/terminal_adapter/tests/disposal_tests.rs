@@ -12,6 +12,7 @@ use axum::{
 };
 use calm_session::control::{ControlMsg, ControlReply};
 use calm_session::{read_frame, write_frame};
+use calm_truth::db::RepoOutOfDomain as _;
 use http_body_util::BodyExt;
 use std::{
     path::{Path, PathBuf},

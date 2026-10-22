@@ -2,6 +2,7 @@
 
 mod support;
 
+use calm_truth::db::RepoOutOfDomain as _;
 use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::collections::BTreeMap;
 use std::ffi::OsString;

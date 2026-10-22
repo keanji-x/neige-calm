@@ -1,6 +1,7 @@
 //! A system-only turn can accept multiple steers before a provider system error.
 use super::*;
 use calm_server::harness::QueueEntry;
+use calm_truth::db::RepoOutOfDomain as _;
 
 async fn failed_restored_pair() -> (Boot, String, String) {
     restored_pair(false).await

@@ -11,6 +11,8 @@ use calm_server::session_projection_lookup::project_runtime_into_card_payload;
 use calm_server::session_projection_repo::{
     AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
 };
+use calm_truth::db::RepoEventWrite as _;
+use calm_truth::db::RepoOutOfDomain as _;
 use calm_types::organization::LEGACY_OWNER_USER_ID;
 use serde_json::{Value, json};
 
@@ -1018,7 +1020,7 @@ async fn terminal_create_rejects_duplicate_card_id() {
         })
         .await
         .unwrap_err();
-    assert!(matches!(err, CalmError::Conflict(_)));
+    assert!(matches!(CalmError::from(err), CalmError::Conflict(_)));
 
     let by_card = repo
         .terminal_get_by_card(card.id.as_str())
@@ -1483,12 +1485,12 @@ async fn plugin_install_get_list_round_trip() {
         .plugin_update_enabled("missing", true)
         .await
         .unwrap_err();
-    assert!(matches!(err, CalmError::NotFound(_)));
+    assert!(matches!(CalmError::from(err), CalmError::NotFound(_)));
 
     repo.plugin_delete("p.one").await.unwrap();
     assert!(repo.plugin_get_by_id("p.one").await.unwrap().is_none());
     let err = repo.plugin_delete("p.one").await.unwrap_err();
-    assert!(matches!(err, CalmError::NotFound(_)));
+    assert!(matches!(CalmError::from(err), CalmError::NotFound(_)));
 }
 
 /// `plugin_install`'s `ON CONFLICT DO UPDATE` set leaves `user_config` alone; everything else in that set still updates.
@@ -1743,7 +1745,7 @@ async fn terminal_set_exit_round_trip_all_branches() {
         .terminal_set_exit("no-such-id", Some(0), false)
         .await
         .unwrap_err();
-    assert!(matches!(err, CalmError::NotFound(_)));
+    assert!(matches!(CalmError::from(err), CalmError::NotFound(_)));
 }
 
 #[tokio::test]

@@ -1,5 +1,6 @@
 //! Cross-layer role-gate + scope coverage for the track-as-actor dispatcher pathway.
 
+use calm_truth::db::RepoEventWrite as _;
 use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::sync::Arc;
 
@@ -132,7 +133,8 @@ async fn worker_emitting_track_scope_is_rejected() {
             &wcc,
             task_completed("worker-track-1"),
         )
-        .await;
+        .await
+        .map_err(calm_server::error::CalmError::from);
 
     assert!(
         matches!(
@@ -174,7 +176,8 @@ async fn worker_emitting_own_card_scope_is_accepted() {
             &wcc,
             task_completed("worker-own-1"),
         )
-        .await;
+        .await
+        .map_err(calm_server::error::CalmError::from);
     assert!(
         res.is_ok(),
         "Worker emitting its own card scope must succeed: {res:?}",
@@ -226,7 +229,8 @@ async fn worker_emitting_other_card_scope_is_rejected() {
             &wcc,
             task_completed("worker-cross-card"),
         )
-        .await;
+        .await
+        .map_err(calm_server::error::CalmError::from);
     assert!(
         matches!(
             res,
@@ -314,7 +318,8 @@ async fn worker_with_mismatched_track_in_card_scope_is_rejected() {
             &wcc,
             task_completed("worker-a-into-track-b"),
         )
-        .await;
+        .await
+        .map_err(calm_server::error::CalmError::from);
     assert!(
         matches!(
             res,
@@ -373,7 +378,8 @@ async fn worker_with_mismatched_area_in_card_scope_is_rejected() {
             &wcc,
             task_completed("worker-a-into-area-b"),
         )
-        .await;
+        .await
+        .map_err(calm_server::error::CalmError::from);
     assert!(
         matches!(
             res,
@@ -474,7 +480,8 @@ async fn planner_emitting_track_scope_is_accepted() {
                 agent_message: None,
             },
         )
-        .await;
+        .await
+        .map_err(calm_server::error::CalmError::from);
     assert!(
         res.is_ok(),
         "Planner card emitting Track-scoped CodexWorkerRequested must be accepted: {res:?}",

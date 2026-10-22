@@ -1,6 +1,6 @@
 //! Retained C1 recovery must observe durable receipts, never replay a prompt.
 use super::*;
-use crate::db::ServerRepoOutOfDomainExt;
+use calm_truth::db::RepoOutOfDomain;
 use serde_json::Value;
 
 #[tokio::test]

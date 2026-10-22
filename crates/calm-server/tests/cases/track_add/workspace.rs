@@ -1,4 +1,5 @@
 use super::*;
+use calm_truth::db::RepoOutOfDomain as _;
 
 #[tokio::test]
 async fn rebuild_explicit_workspace_claims_and_materialized_agent_cwd() {

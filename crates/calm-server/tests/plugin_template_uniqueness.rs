@@ -4,6 +4,7 @@
 
 mod support;
 
+use calm_truth::db::RepoOutOfDomain as _;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;

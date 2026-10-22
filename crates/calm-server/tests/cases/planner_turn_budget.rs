@@ -2,6 +2,7 @@ use crate::support::planner_queue_fixture::{
     Boot, Issuance, boot_with_issuance, idle_snapshot, post_input, send_json,
 };
 use calm_server::harness::{HarnessState, IssuingKind, PlannerHarness};
+use calm_truth::db::RepoOutOfDomain as _;
 use serde_json::json;
 use std::time::{Duration, Instant};
 
@@ -137,7 +138,6 @@ async fn planner_turn_budget_current_freezes_next_samples_and_snapshot_roundtrip
 
 #[tokio::test]
 async fn planner_turn_budget_corrupt_storage_leaves_input_queued_until_reset() {
-    use calm_server::db::prelude::*;
     let boot = boot_with_issuance(idle_snapshot(vec![]), Issuance::Live).await;
     boot.repo
         .settings_upsert("planner_max_turn_duration_minutes", "broken")
@@ -308,7 +308,6 @@ async fn planner_turn_budget_hold_pauses_warning_and_hard_stop() {
 
 #[tokio::test]
 async fn planner_turn_budget_only_real_planner_role_and_profile() {
-    use calm_server::db::prelude::*;
     for (role, marker) in [
         ("assistant", "assistant"),
         ("worker", "plain_chat"),

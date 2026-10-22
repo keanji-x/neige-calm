@@ -4,6 +4,7 @@
 #[path = "planner_transcript_projection/entry_identity.rs"]
 mod entry_identity;
 
+use calm_truth::db::RepoOutOfDomain as _;
 use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::path::PathBuf;
 use std::sync::Arc;

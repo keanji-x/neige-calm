@@ -2,9 +2,9 @@
 use super::completed_commit_tests::Fixture;
 use super::*;
 use crate::codex_appserver::Notification;
-use crate::db::prelude::*;
 use crate::harness::codex_events::planner_event;
 use crate::model::CardRole;
+use calm_truth::db::RepoOutOfDomain as _;
 use serde_json::json;
 
 async fn deliver(f: &Fixture, method: &str, params: Value) {

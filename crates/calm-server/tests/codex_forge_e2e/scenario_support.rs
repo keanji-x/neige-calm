@@ -1,6 +1,7 @@
 //! Shared steps for the scripted and autonomous planner scenarios: goals, seeded task pairs,
 //! planner-turn waits, forge-event waits and shim counters.
 
+use calm_truth::db::RepoEventWrite as _;
 use std::path::Path;
 use std::time::Duration;
 

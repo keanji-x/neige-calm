@@ -4,6 +4,7 @@ use super::*;
 use crate::db::prelude::*;
 use crate::harness::compact_outcome::{CompactionAnswer, CompactionRefusal};
 use crate::session_projection_repo::AgentProvider;
+use calm_truth::db::RepoEventWrite as _;
 use serde_json::json;
 
 async fn request(f: &Fixture) -> CompactionAnswer {

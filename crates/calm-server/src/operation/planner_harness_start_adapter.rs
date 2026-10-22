@@ -2842,7 +2842,6 @@ mod tests {
     use std::path::PathBuf;
     use std::time::Duration;
 
-    use crate::db::prelude::ServerRepoOutOfDomainExt;
     use crate::db::sqlite::SqlxRepo;
     use crate::event::EventBus;
     use crate::forge_trust::trusted_forge_plugin;
@@ -2850,6 +2849,7 @@ mod tests {
     use crate::operation::Phase;
     use crate::plugin_host::{Manifest, PluginRegistry, PluginRuntimeStatus};
     use crate::routes::theme::RequestTheme;
+    use calm_truth::db::RepoOutOfDomain;
     use calm_truth::db::RepoSyncDomainRaw;
     use tokio::time::{Instant, sleep};
 

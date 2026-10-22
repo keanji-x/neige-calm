@@ -2,6 +2,7 @@ use super::planner_turn_budget::{setting, start, wait_for_state};
 use crate::support::planner_queue_fixture::{Issuance, boot_with_issuance, idle_snapshot};
 use calm_server::db::RepoRead;
 use calm_server::harness::{HarnessState, IssuingKind};
+use calm_truth::db::RepoOutOfDomain as _;
 use serde_json::json;
 use std::time::Duration;
 
@@ -264,7 +265,6 @@ async fn planner_timeout_assistant_still_receives_previous_timeout() {
 async fn planner_timeout_queries_do_not_truncate_history_or_cross_identity() {
     use crate::support::planner_queue_fixture::SEED_THREAD_ID;
     use crate::support::planner_timeout_fixture::{finish, request};
-    use calm_server::db::prelude::*;
     let boot = boot_with_issuance(idle_snapshot(vec![]), Issuance::Live).await;
     let turn = request(&boot).await;
     let row = finish(&boot, &turn, "interrupted").await;
@@ -489,7 +489,6 @@ async fn planner_timeout_legacy_provider_payload_does_not_become_trusted_evidenc
 async fn planner_timeout_terminal_causality_survives_utc_rollback_and_ties() {
     use crate::support::planner_queue_fixture::SEED_THREAD_ID;
     use crate::support::planner_timeout_fixture::{finish, request};
-    use calm_server::db::prelude::*;
     for later_utc in [90_000_i64, 100_000] {
         for status in ["failed", "interrupted", "completed"] {
             let boot = boot_with_issuance(idle_snapshot(vec![]), Issuance::Live).await;
