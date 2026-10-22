@@ -93,8 +93,8 @@ function mount({ persistSent = false, running = false, message = text }: { persi
 async function open(view: ReturnType<typeof mount>, draft = false, message = text, compact = false) {
   if (draft) {
     if (compact) {
-      fireEvent.click(await screen.findByRole('button', { name: 'Open conversation history' }));
-      fireEvent.click(await screen.findByRole('button', { name: '发起新对话' }));
+      await page.getByRole('button', { name: 'Open conversation history' }).click();
+      await page.getByRole('dialog', { name: '历史对话' }).getByRole('button', { name: '发起新对话' }).click();
     } else fireEvent.click(await screen.findByRole('button', { name: 'New conversation' }));
     await waitFor(() => expect(view.client.getQueryData(['server-version'])).toMatchObject({ assistantProviders: true }));
     await waitFor(() => expect(view.client.getQueryData(['managed-providers'])).toHaveLength(1));
