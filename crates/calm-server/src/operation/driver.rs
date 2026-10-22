@@ -551,6 +551,7 @@ impl OperationRuntime {
                         format!("operation drive failed: {error}"),
                         from_phase,
                         self.adapter(&op.kind)?.owns_parked_resource(),
+                        self.adapter(&op.kind)?.as_ref(),
                     )
                     .await?,
             ) {
@@ -731,6 +732,7 @@ impl OperationRuntime {
                                             PhaseTag::Pending,
                                             Some(last_error_class.to_string()),
                                             self.adapter(&op.kind)?.owns_parked_resource(),
+                                            self.adapter(&op.kind)?.as_ref(),
                                         )
                                         .await?,
                                 ) {
@@ -1091,6 +1093,7 @@ impl OperationRuntime {
                         from_phase,
                         Some("internal".into()),
                         self.adapter(&op.kind)?.owns_parked_resource(),
+                        self.adapter(&op.kind)?.as_ref(),
                     )
                     .await?,
             )),
@@ -1102,6 +1105,7 @@ impl OperationRuntime {
                         format!("compensation failed: {e}"),
                         PhaseTag::Compensating,
                         self.adapter(&op.kind)?.owns_parked_resource(),
+                        self.adapter(&op.kind)?.as_ref(),
                     )
                     .await?,
             )),
@@ -1419,6 +1423,7 @@ impl OperationRuntime {
                     PhaseTag::Parked,
                     last_error_class,
                     self.adapter(&op.kind)?.owns_parked_resource(),
+                    self.adapter(&op.kind)?.as_ref(),
                 )
                 .await?,
         ) {
@@ -1444,6 +1449,7 @@ impl OperationRuntime {
                     PhaseTag::Parked,
                     last_error_class,
                     self.adapter(&op.kind)?.owns_parked_resource(),
+                    self.adapter(&op.kind)?.as_ref(),
                 )
                 .await?,
         ) {
@@ -1513,6 +1519,7 @@ impl OperationRuntime {
                                 format!("operation recovery apply failed: {e}"),
                                 from_phase,
                                 self.adapter(&op.kind)?.owns_parked_resource(),
+                                self.adapter(&op.kind)?.as_ref(),
                             )
                             .await?,
                     ) {
@@ -1541,6 +1548,7 @@ impl OperationRuntime {
                                     format!("operation compensation recovery failed: {e}"),
                                     PhaseTag::Compensating,
                                     self.adapter(&op.kind)?.owns_parked_resource(),
+                                    self.adapter(&op.kind)?.as_ref(),
                                 )
                                 .await?,
                         ) {

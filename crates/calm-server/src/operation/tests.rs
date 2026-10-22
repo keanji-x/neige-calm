@@ -670,6 +670,11 @@ async fn a_committed_prepare_leaves_no_lease_to_mark_the_row_stuck_from_pending(
             "operation drive failed: after the commit".into(),
             PhaseTag::Pending,
             None,
+            &TestParkingAdapter {
+                observer_runs: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                record_artifacts: false,
+                steal_lease_after_artifacts: false,
+            },
         )
         .await
         .unwrap()
@@ -922,7 +927,12 @@ async fn completion_clears_lease_so_claimed_deadline_write_loses_ordering_b() {
             "deadline".into(),
             PhaseTag::Parked,
             Some("parked_deadline".into()),
-            None
+            None,
+            &TestParkingAdapter {
+                observer_runs: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                record_artifacts: false,
+                steal_lease_after_artifacts: false
+            }
         )
         .await
         .unwrap()

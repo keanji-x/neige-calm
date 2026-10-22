@@ -505,6 +505,7 @@ impl OperationRepo for SqlxOperationRepo {
         from_phase: PhaseTag,
         last_error_class: Option<String>,
         owner_key: Option<&'static str>,
+        adapter: &dyn ProviderAdapter,
     ) -> Result<super::LeaveWrite<OperationResult>> {
         let mut tx = begin_immediate_tx(&self.pool).await?;
         if !has_live_claim_tx(&mut tx, op).await? {
@@ -540,6 +541,11 @@ impl OperationRepo for SqlxOperationRepo {
         if result.rows_affected() == 0 {
             return Ok(super::LeaveWrite::ClaimLost);
         }
+        if let Some(event) = adapter.failure_event_tx(&mut tx, op, &last_error).await? {
+            // The canonical Dispatcher's persisted-prefix reconciliation delivers even
+            // when no live observer exists for this pre-ownership failure.
+            super::owned_parked::append_owner_event_tx(&mut tx, event).await?;
+        }
         tx.commit().await?;
         Ok(super::LeaveWrite::Applied(OperationResult {
             op_id: op.id.clone(),
@@ -557,6 +563,7 @@ impl OperationRepo for SqlxOperationRepo {
         reason: String,
         from_phase: PhaseTag,
         owner_key: Option<&'static str>,
+        adapter: &dyn ProviderAdapter,
     ) -> Result<super::LeaveWrite<OperationResult>> {
         let mut tx = begin_immediate_tx(&self.pool).await?;
         if !has_live_claim_tx(&mut tx, op).await? {
@@ -592,6 +599,11 @@ impl OperationRepo for SqlxOperationRepo {
         .await?;
         if result.rows_affected() == 0 {
             return Ok(super::LeaveWrite::ClaimLost);
+        }
+        if let Some(event) = adapter.failure_event_tx(&mut tx, op, &reason).await? {
+            // The canonical Dispatcher's persisted-prefix reconciliation delivers even
+            // when no live observer exists for this pre-ownership failure.
+            super::owned_parked::append_owner_event_tx(&mut tx, event).await?;
         }
         tx.commit().await?;
         Ok(super::LeaveWrite::Applied(OperationResult {

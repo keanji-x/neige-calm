@@ -16,6 +16,26 @@ pub struct OwnerEvent {
     pub event: Event,
 }
 
+pub(crate) async fn append_owner_event_tx(
+    tx: &mut super::Tx<'_>,
+    owner: OwnerEvent,
+) -> Result<BroadcastEnvelope> {
+    let OwnerEvent {
+        actor,
+        scope,
+        event,
+    } = owner;
+    let id =
+        crate::db::sqlite::append_decision_event_in_tx(tx, &actor, &scope, None, &event).await?;
+    Ok(BroadcastEnvelope {
+        id,
+        event_version: SYNC_EVENT_VERSION,
+        actor,
+        scope,
+        event,
+    })
+}
+
 /// Both live observer and the existing boot/sweep loop use this one lease fence.
 /// The adapter must retain ownership until it has real stop/quiescence evidence.
 // Keep event storage out of callers' recovery futures, including native recovery branches.
@@ -44,24 +64,16 @@ pub(crate) fn reconcile<'a>(
                     } else {
                         Vec::new()
                     };
-                    if matches!(completion, ParkedCompletion::Completed(_))
-                        && let Some(OwnerEvent {
-                            actor,
-                            scope,
-                            event,
-                        }) = owner_event
-                    {
-                        let id = crate::db::sqlite::append_decision_event_in_tx(
-                            &mut tx, &actor, &scope, None, &event,
-                        )
-                        .await?;
-                        events.push(BroadcastEnvelope {
-                            id,
-                            event_version: SYNC_EVENT_VERSION,
-                            actor,
-                            scope,
-                            event,
-                        });
+                    if matches!(completion, ParkedCompletion::Completed(_)) {
+                        let owner_event = match (&outcome, owner_event) {
+                            (super::ParkedOutcome::Failed { last_error, .. }, None) => {
+                                adapter.failure_event_tx(&mut tx, op, last_error).await?
+                            }
+                            (_, event) => event,
+                        };
+                        if let Some(event) = owner_event {
+                            events.push(append_owner_event_tx(&mut tx, event).await?);
+                        }
                     }
                     tx.commit().await?;
                     for event in events {

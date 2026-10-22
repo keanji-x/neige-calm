@@ -772,6 +772,17 @@ pub trait ProviderAdapter: Send + Sync {
 
     async fn validate(&self, input: &Value) -> Result<()>;
 
+    /// Domain-owned failure notification, appended in the winning terminal transaction.
+    /// This hook must only read transaction-local facts; it never performs external effects.
+    async fn failure_event_tx(
+        &self,
+        _tx: &mut Tx<'_>,
+        _op: &Operation,
+        _reason: &str,
+    ) -> Result<Option<OwnerEvent>> {
+        Ok(None)
+    }
+
     /// Adapter declares the track whose checkout preparation must exclude clean.
     /// The driver holds its existing track guard through the occupancy commit,
     /// including boot recovery.
@@ -1087,6 +1098,7 @@ pub trait OperationRepo: Send + Sync {
         from_phase: PhaseTag,
         last_error_class: Option<String>,
         owner_key: Option<&'static str>,
+        adapter: &dyn ProviderAdapter,
     ) -> Result<LeaveWrite<OperationResult>>;
     async fn mark_stuck(
         &self,
@@ -1094,6 +1106,7 @@ pub trait OperationRepo: Send + Sync {
         reason: String,
         from_phase: PhaseTag,
         owner_key: Option<&'static str>,
+        adapter: &dyn ProviderAdapter,
     ) -> Result<LeaveWrite<OperationResult>>;
 }
 

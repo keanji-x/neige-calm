@@ -8,6 +8,7 @@ use calm_types::conversation::PendingInput;
 mod planner_switch_tests;
 mod qualification;
 mod recovery;
+mod reliable_results;
 mod retry_read;
 
 const SYSTEM_BODY: &str = "System report work queued during the original Human turn";

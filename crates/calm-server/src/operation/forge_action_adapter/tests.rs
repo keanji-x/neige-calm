@@ -3,9 +3,11 @@ use super::*;
 use crate::event::EventBus;
 use crate::operation::OperationCompletionBus;
 mod executor;
+mod failure_wake_tests;
 use calm_types::forge_git::{FORGE_SHELL_PRELUDE, GIT_COMMIT_PROBE_SCRIPT};
 use std::process::Command;
 use std::sync::Arc;
+use std::time::Duration;
 
 use crate::db::prelude::*;
 use crate::db::sqlite::SqlxRepo;
@@ -159,7 +161,17 @@ async fn forge_action_nonzero_merge_probe_not_landed_fails_without_merge_event()
         },
     );
 
-    let result = submit_and_wait(&fx, payload, "merge-open-hash").await;
+    let op_id = submit_forge(&fx, payload, "merge-open-hash").await.unwrap();
+    let result = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if let Some(result) = fx.runtime.operation_result(&op_id).await.unwrap() {
+                break result;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the observer must settle without wait driving recovery");
 
     match result.outcome {
         OperationOutcome::Failed {
@@ -170,6 +182,14 @@ async fn forge_action_nonzero_merge_probe_not_landed_fails_without_merge_event()
         other => panic!("merge should fail when probe reports open: {other:?}"),
     }
     assert_eq!(event_count(&fx.repo, "forge.pr.merged").await, 0);
+    let wakes = event_payloads(&fx.repo, "track.wake_requested").await;
+    assert_eq!(
+        wakes.len(),
+        1,
+        "a failed background merge must durably wake its Planner"
+    );
+    assert_eq!(wakes[0]["key"], result.op_id);
+    assert!(wakes[0]["text"].as_str().unwrap().contains("not landed"));
 }
 
 #[tokio::test]

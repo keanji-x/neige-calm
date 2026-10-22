@@ -18,6 +18,7 @@ use crate::db::RouteRepo;
 use crate::error::{CalmError, Result};
 use crate::event::{Event, EventScope, FieldSource, ForgeEventSpec, ForgeMergeSubject};
 use crate::ids::{ActorId, AreaId, CardId, TrackId};
+mod failure_wake;
 mod lifecycle;
 mod observers;
 
@@ -440,6 +441,15 @@ fn verdict_from_exit_code(exit_code: Option<i32>) -> ProbeVerdict {
 
 #[async_trait]
 impl ProviderAdapter for ForgeActionAdapter {
+    async fn failure_event_tx(
+        &self,
+        tx: &mut Tx<'_>,
+        op: &Operation,
+        reason: &str,
+    ) -> Result<Option<OwnerEvent>> {
+        failure_wake::event_tx(tx, op, reason).await
+    }
+
     async fn preparation_track(&self, input: &Value, _ctx: &SpawnCtx) -> Result<Option<String>> {
         Ok(Some(
             serde_json::from_value::<ForgeActionPayload>(input.clone())?.track_id,

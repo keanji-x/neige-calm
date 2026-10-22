@@ -106,18 +106,31 @@ async fn expired_claim_rejects_compensation_and_failure_writers() {
             .is_none()
     );
     assert!(
-        repo.mark_failed(&op, "stale".into(), op.phase.tag(), None, None)
-            .await
-            .unwrap()
-            .applied()
-            .is_none()
+        repo.mark_failed(
+            &op,
+            "stale".into(),
+            op.phase.tag(),
+            None,
+            None,
+            &TxOnlyClaimAdapter
+        )
+        .await
+        .unwrap()
+        .applied()
+        .is_none()
     );
     assert!(
-        repo.mark_stuck(&op, "stale".into(), op.phase.tag(), None)
-            .await
-            .unwrap()
-            .applied()
-            .is_none()
+        repo.mark_stuck(
+            &op,
+            "stale".into(),
+            op.phase.tag(),
+            None,
+            &TxOnlyClaimAdapter
+        )
+        .await
+        .unwrap()
+        .applied()
+        .is_none()
     );
     let stored = repo.get_operation(&op.id).await.unwrap().unwrap();
     assert_eq!(stored.phase.tag(), PhaseTag::AppServerInteract);
@@ -602,16 +615,23 @@ async fn owned_key_retains_terminal_writes() {
                 "failure".into(),
                 PhaseTag::SpawnStarted,
                 None,
-                key
+                key,
+                &TxOnlyClaimAdapter
             )
             .await
             .unwrap(),
             super::super::LeaveWrite::Retained
         ));
         assert!(matches!(
-            repo.mark_stuck(&stale_snapshot, "stuck".into(), PhaseTag::SpawnStarted, key)
-                .await
-                .unwrap(),
+            repo.mark_stuck(
+                &stale_snapshot,
+                "stuck".into(),
+                PhaseTag::SpawnStarted,
+                key,
+                &TxOnlyClaimAdapter
+            )
+            .await
+            .unwrap(),
             super::super::LeaveWrite::Retained
         ));
         let after: String = sqlx::query_scalar("SELECT \

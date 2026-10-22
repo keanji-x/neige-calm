@@ -231,9 +231,17 @@ impl OperationRepo for ReverseSpawnClaimRepo {
         from_phase: calm_server::operation::PhaseTag,
         last_error_class: Option<String>,
         owner_key: Option<&'static str>,
+        adapter: &dyn ProviderAdapter,
     ) -> CalmResult<calm_server::operation::LeaveWrite<OperationResult>> {
         self.inner
-            .mark_failed(op, last_error, from_phase, last_error_class, owner_key)
+            .mark_failed(
+                op,
+                last_error,
+                from_phase,
+                last_error_class,
+                owner_key,
+                adapter,
+            )
             .await
     }
 
@@ -243,9 +251,10 @@ impl OperationRepo for ReverseSpawnClaimRepo {
         reason: String,
         from_phase: calm_server::operation::PhaseTag,
         owner_key: Option<&'static str>,
+        adapter: &dyn ProviderAdapter,
     ) -> CalmResult<calm_server::operation::LeaveWrite<OperationResult>> {
         self.inner
-            .mark_stuck(op, reason, from_phase, owner_key)
+            .mark_stuck(op, reason, from_phase, owner_key, adapter)
             .await
     }
 }
@@ -373,9 +382,17 @@ impl OperationRepo for DriveErrorOnceRepo {
         from_phase: calm_server::operation::PhaseTag,
         last_error_class: Option<String>,
         owner_key: Option<&'static str>,
+        adapter: &dyn ProviderAdapter,
     ) -> CalmResult<calm_server::operation::LeaveWrite<OperationResult>> {
         self.inner
-            .mark_failed(op, last_error, from_phase, last_error_class, owner_key)
+            .mark_failed(
+                op,
+                last_error,
+                from_phase,
+                last_error_class,
+                owner_key,
+                adapter,
+            )
             .await
     }
 
@@ -385,9 +402,10 @@ impl OperationRepo for DriveErrorOnceRepo {
         reason: String,
         from_phase: calm_server::operation::PhaseTag,
         owner_key: Option<&'static str>,
+        adapter: &dyn ProviderAdapter,
     ) -> CalmResult<calm_server::operation::LeaveWrite<OperationResult>> {
         self.inner
-            .mark_stuck(op, reason, from_phase, owner_key)
+            .mark_stuck(op, reason, from_phase, owner_key, adapter)
             .await
     }
 }
