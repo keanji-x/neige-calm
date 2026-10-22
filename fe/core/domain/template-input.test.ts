@@ -18,7 +18,7 @@ it('uses declared aliases, groups and defaults without dev field names', () => {
   const { body, schema } = contract();
   const result = compileTemplateInputs(body, schema, { ticket: 'https://github.com/owner/repo/issues/12' });
   expect(result.status).toBe('ready');
-  if (result.status === 'unsupported') throw new Error('Unexpected unsupported contract');
+  if (result.form === null) throw new Error('Unexpected unsupported contract');
   expect(result.input).toEqual({ ticket: 'https://github.com/owner/repo/issues/12', project: 'owner/repo', number: 12, action: 'hold' });
   expect(result.form.groups.map((group) => group.title)).toEqual(['Source', 'Delivery']);
 });
@@ -27,7 +27,7 @@ it('retains the specific URL failure when derived required fields are missing', 
   const { body, schema } = contract();
   const result = compileTemplateInputs(body, schema, { ticket: 'not a url' });
   expect(result.status).toBe('incomplete');
-  if (result.status === 'unsupported') throw new Error('Unexpected unsupported contract');
+  if (result.form === null) throw new Error('Unexpected unsupported contract');
   expect(result.errors.ticket).toContain('Not a GitHub issue URL');
   expect(Object.hasOwn(result.input, 'number')).toBe(false);
 });
@@ -80,7 +80,7 @@ it('accepts an explicit canonical URL identity mapping', () => {
   }] }, form.groups[1]] })} -->`;
   const result = compileTemplateInputs(body, schema, { ticket: 'https://github.com/owner/repo/issues/12' });
   expect(result.status).toBe('ready');
-  if (result.status === 'unsupported') throw new Error('Identity mapping was refused');
+  if (result.form === null) throw new Error('Identity mapping was refused');
   expect(result.input.ticket).toBe('https://github.com/owner/repo/issues/12');
 });
 
@@ -95,12 +95,12 @@ it('omits blank optional formatted inputs and their derived outputs', () => {
   for (const ticket of ['', '   ']) {
     const result = compileTemplateInputs(body, optionalSchema, { ticket });
     expect(result.status).toBe('ready');
-    if (result.status === 'unsupported') throw new Error('Optional contract was refused');
+    if (result.form === null) throw new Error('Optional contract was refused');
     expect(result.input).toEqual({ action: 'hold' });
   }
   const invalid = compileTemplateInputs(body, optionalSchema, { ticket: 'not a url' });
   expect(invalid.status).toBe('incomplete');
-  if (invalid.status === 'unsupported') throw new Error('Optional contract was refused');
+  if (invalid.form === null) throw new Error('Optional contract was refused');
   expect(invalid.errors.ticket).toContain('Not a GitHub issue URL');
 });
 
@@ -113,8 +113,26 @@ it('validates formatted declarations and required derived fields even when optio
   const body = `<!-- neige:input-form ${JSON.stringify(form)} -->`;
   const result = compileTemplateInputs(body, schema, {});
   expect(result.status).toBe('incomplete');
-  if (result.status === 'unsupported') throw new Error('Required contract was refused');
+  if (result.form === null) throw new Error('Required contract was refused');
   expect(result.errors.ticket).toBe('Complete this field.');
   const wrongType = { ...schema, required: [], properties: { ...schema.properties, number: { type: 'string' } } };
   expect(compileTemplateInputs(body, wrongType, {}).status).toBe('unsupported');
+});
+
+it('does not skip required inputs or malformed declarations', () => {
+  const schema = { type: 'object', properties: { ticket: { type: 'string' } }, required: ['ticket'] };
+  expect(compileTemplateInputs('# No form', schema, {}).status).toBe('unsupported');
+  for (const body of ['<!-- neige:input-form {invalid} -->', '<!-- neige:input-form']) {
+    expect(compileTemplateInputs(body, { ...schema, required: [] }, {}).status).toBe('unsupported');
+  }
+});
+
+it.each([{}, { required: [] }])('omits input for a form-free optional schema: %j', (required) => {
+  expect(compileTemplateInputs('# Any template', { type: 'object', properties: {}, ...required }, {}))
+    .toEqual({ status: 'no-input', form: null });
+});
+
+it('omits input when an optional schema has no properties declaration', () => {
+  expect(compileTemplateInputs('# No fields', { type: 'object', additionalProperties: false }, {}))
+    .toEqual({ status: 'no-input', form: null });
 });

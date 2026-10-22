@@ -286,7 +286,7 @@ it('the shipped template form binds to its plugin and keeps merge approval by de
   const plugin = JSON.parse(readFileSync(new URL('../../../plugins/git-forge/manifest.json', import.meta.url), 'utf8')) as { input_schema: unknown };
   const result = compileTemplateInputs(body, plugin.input_schema, { issue_url: 'https://github.com/owner/repo/issues/12' });
   expect(result.status).toBe('ready');
-  if (result.status === 'unsupported') throw new Error('Shipped form is unsupported');
+  if (result.form === null) throw new Error('Shipped form is unsupported');
   expect(result.input).toEqual({ issue_url: 'https://github.com/owner/repo/issues/12', repo: 'owner/repo', issue_number: 12, merge_policy: 'ask' });
 });
 
@@ -296,6 +296,13 @@ it('the shipped development template accepts no issue while preserving merge hol
   const plugin = JSON.parse(readFileSync(new URL('../../../plugins/git-forge/manifest.json', import.meta.url), 'utf8')) as { input_schema: unknown };
   const result = compileTemplateInputs(body, plugin.input_schema, {});
   expect(result.status).toBe('ready');
-  if (result.status === 'unsupported') throw new Error('Shipped form is unsupported');
+  if (result.form === null) throw new Error('Shipped form is unsupported');
   expect(result.input).toEqual({ merge_policy: 'ask' });
+});
+
+
+it('the domain needs no input for the shipped long-term-goal body and gitforge schema', () => {
+  const body = readFileSync(new URL('../../../crates/calm-server/templates/builtin/long-term-goal.md', import.meta.url), 'utf8');
+  const plugin = JSON.parse(readFileSync(new URL('../../../plugins/git-forge/manifest.json', import.meta.url), 'utf8')) as { input_schema: unknown };
+  expect(compileTemplateInputs(body, plugin.input_schema, {})).toEqual({ status: 'no-input', form: null });
 });

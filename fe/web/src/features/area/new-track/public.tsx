@@ -116,8 +116,8 @@ export type NewTrackFormState = Readonly<{
   isolation: 'worktree' | 'none';
 }>;
 
-/** A template takes input iff a running trusted plugin is bound to it, i.e. the read returned an `input_schema`; with the plugin stopped the kernel would reject the fields. */
-function needsInput(template: TrackTemplate | undefined): boolean {
+/** A bound plugin schema needs the body read before the domain can decide whether to collect input. */
+function hasInputSchema(template: TrackTemplate | undefined): boolean {
   return template?.input_schema != null;
 }
 
@@ -187,15 +187,15 @@ export function NewTrackForm({
     ? selected
     : NO_STARTING_POINT;
   const preview = chosen ?? chosenRecipe;
-  const wantsInput = needsInput(chosen);
+  const hasSchema = hasInputSchema(chosen);
   const currentDetails = templateDetails?.source === loadTemplate && templateDetails.detail.id === chosen?.id ? templateDetails.detail : null;
   const fieldValues = chosen === undefined ? {} : templateValues[chosen.id] ?? {};
-  const compiledInputs = wantsInput && currentDetails !== null
+  const compiledInputs = hasSchema && currentDetails !== null
     ? compileTemplateInputs(currentDetails.body, chosen?.input_schema, fieldValues) : null;
   const templatePending = unresolvedAreaDefault && !templatesLoaded && templatesError === null;
   const missingPlugin = chosen?.availability.status === 'requires_plugin' ? chosen.availability : null;
   const unsupportedInput = compiledInputs?.status === 'unsupported';
-  const inputBlocker = missingPlugin !== null || unresolvedAreaDefault || (wantsInput && compiledInputs?.status !== 'ready');
+  const inputBlocker = missingPlugin !== null || unresolvedAreaDefault || (hasSchema && compiledInputs?.status !== 'ready' && compiledInputs?.status !== 'no-input');
   /* Blank by the kernel's rule, not JS `trim()`: the two disagree on a code point. */
   const valid = !isBlankForKernel(message) && (locked || !inputBlocker);
   /* One status slot; `templatesError` means the list is empty, so it never coexists
@@ -230,7 +230,7 @@ export function NewTrackForm({
     }
     return {
       ...base, template_id: effectiveSelection.id,
-      ...(wantsInput && compiledInputs !== null && compiledInputs.status !== 'unsupported'
+      ...(compiledInputs?.form != null
         ? { template_input: compiledInputs.input } : {}),
     };
   }
@@ -384,7 +384,7 @@ export function NewTrackForm({
             id={preview.id} title={preview.title}
             recipeBody={chosenRecipe?.body} loadTemplate={loadTemplate}
             onDetail={receiveTemplateDetails}>
-            {compiledInputs !== null && compiledInputs.status !== 'unsupported' ? <TemplateInputs
+            {compiledInputs?.form != null ? <TemplateInputs
               form={compiledInputs.form} values={fieldValues} errors={compiledInputs.errors}
               disabled={submitting || locked}
               onChange={(key, value) => {

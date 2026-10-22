@@ -45,23 +45,29 @@ export function readTemplateInputForm(body: string): TemplateInputForm | null {
 
 const inputSchema = z.object({
   type: z.literal('object'),
-  properties: z.record(z.string(), z.object({ type: z.enum(['string', 'integer', 'number', 'boolean']), enum: z.array(z.unknown()).optional() }).passthrough()),
+  properties: z.record(z.string(), z.object({ type: z.enum(['string', 'integer', 'number', 'boolean']), enum: z.array(z.unknown()).optional() }).passthrough()).optional(),
   required: z.array(z.string()).optional(),
 }).passthrough();
 
 type CompiledInputs =
-  | Readonly<{ status: 'unsupported'; form: null }>
+  | Readonly<{ status: 'unsupported' | 'no-input'; form: null }>
   | Readonly<{ status: 'ready' | 'incomplete'; form: TemplateInputForm; input: Readonly<Record<string, unknown>>; errors: Readonly<Record<string, string>> }>;
 
 /** Fixed converters produce data only. Form declarations never run code or grant tools. */
 export function compileTemplateInputs(body: string, schemaValue: unknown, values: TemplateInputValues): CompiledInputs {
   const form = readTemplateInputForm(body);
   const schema = inputSchema.safeParse(schemaValue);
-  if (form === null || !schema.success) return { status: 'unsupported', form: null };
+  if (!schema.success) return { status: 'unsupported', form: null };
+  // Absence is different from an invalid declaration: only optional plugin inputs can be omitted.
+  if (!/<!--\s*neige:input-form\b/.test(body) && (schema.data.required ?? []).length === 0) {
+    return { status: 'no-input', form: null };
+  }
+  const properties = schema.data.properties;
+  if (form === null || properties === undefined) return { status: 'unsupported', form: null };
   const owners = new Map<string, Readonly<{ source: string; output: string }>>();
   const declare = (target: string, source: string, type: string, output: string) => {
-    const property = schema.data.properties[target];
-    if (!Object.hasOwn(schema.data.properties, target)) return false;
+    const property = properties[target];
+    if (!Object.hasOwn(properties, target)) return false;
     if (property.type !== type && !(type === 'integer' && property.type === 'number')) return false;
     const prior = owners.get(target);
     if (prior !== undefined && (prior.source !== source || prior.output !== output)) return false;
@@ -76,7 +82,7 @@ export function compileTemplateInputs(body: string, schemaValue: unknown, values
     input[field.key] = value;
     if (field.kind === 'toggle') {
       if (![field.on_value, field.off_value].includes(value)) errors[field.key] = 'Choose a declared option.';
-      const allowed = schema.data.properties[field.key].enum;
+      const allowed = properties[field.key].enum;
       if (allowed !== undefined && ![field.on_value, field.off_value].every((choice) => allowed.includes(choice))) return { status: 'unsupported', form: null };
     } else {
       if (field.required && value.trim() === '') errors[field.key] = `${field.label} is required.`;
@@ -102,7 +108,7 @@ export function compileTemplateInputs(body: string, schemaValue: unknown, values
     if (!Object.hasOwn(input, required)) errors[owners.get(required)!.source] ??= 'Complete this field.';
   }
   for (const [key, value] of Object.entries(input)) {
-    const property = schema.data.properties[key];
+    const property = properties[key];
     if (property.enum !== undefined && !property.enum.includes(value)) errors[owners.get(key)!.source] = 'Choose a value allowed by this template.';
   }
   return { status: Object.keys(errors).length === 0 ? 'ready' : 'incomplete', form, input, errors };

@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { readFileSync } from 'node:fs';
 import { act, cleanup, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { createStaticSource } from '@astryxdesign/core/Typeahead';
@@ -635,7 +636,7 @@ describe('Start from — issue development expands under the group', () => {
       templates: [{
         id: 'future-template',
         title: 'Future template',
-        input_schema: { type: 'object' },
+        input_schema: { type: 'object', properties: { ticket: { type: 'string' } }, required: ['ticket'] },
         description: null, availability: { status: 'ready' as const }, tasks: [{ key: 'do-it', goal: 'Do the future thing.' }],
       }],
     });
@@ -843,4 +844,20 @@ describe('The folder is optional, and its absence is the managed default', () =>
       message: 'Ship the thing', template_id: 'small-change', cwd: '/srv/app',
     });
   });
+});
+
+it('creates long-term-goal without template_input or an input step', async () => {
+  const body = readFileSync('../crates/calm-server/templates/builtin/long-term-goal.md', 'utf8');
+  const plugin = JSON.parse(readFileSync('../plugins/git-forge/manifest.json', 'utf8')) as { input_schema: unknown };
+  const { onSubmit } = renderForm({
+    templates: [{ id: 'long-term-goal', title: 'Long-term goal', description: null, availability: { status: 'ready' }, tasks: [], input_schema: plugin.input_schema }],
+    initialTemplateId: 'long-term-goal',
+    loadTemplate: (id) => Promise.resolve({ id, title: 'Long-term goal', description: null, instructions: '', body }),
+  });
+  await fillMessage();
+  expect(submitButton().disabled).toBe(false);
+  expect(screen.queryByText('This template needs input this version cannot collect yet.')).toBeNull();
+  expect(screen.queryByLabelText('Issue URL')).toBeNull();
+  await userEvent.click(submitButton());
+  expect(onSubmit).toHaveBeenCalledExactlyOnceWith({ message: 'Ship the thing', template_id: 'long-term-goal' });
 });
