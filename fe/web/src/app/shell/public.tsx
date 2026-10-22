@@ -62,11 +62,12 @@ type Scope = Readonly<{
   conversationOpen: boolean;
   onArchive?: (cardId: string, archived: boolean) => Promise<void>;
 }>;
-const ScopeContext = createContext<Readonly<{ current: Scope | null; register: (scope: Scope | null) => void }> | null>(null);
+type RegisteredScope = Scope & Readonly<{ owner: object }>;
+const ScopeContext = createContext<Readonly<{ current: RegisteredScope | null; register: (scope: RegisteredScope | null) => void }> | null>(null);
 
 export function MobileConversationProvider({ children }: Readonly<{ children: ReactNode }>) {
-  const [current, setCurrent] = useState<Scope | null>(null);
-  const register = useCallback((scope: Scope | null) => { setCurrent(scope); }, []);
+  const [current, setCurrent] = useState<RegisteredScope | null>(null);
+  const register = useCallback((scope: RegisteredScope | null) => { setCurrent(scope); }, []);
   const value = useMemo(() => ({ current, register }), [current, register]);
   return <ScopeContext.Provider value={value}>{children}</ScopeContext.Provider>;
 }
@@ -77,15 +78,18 @@ export function useMobileConversationScope() { return useContext(ScopeContext)?.
 export function useMobileConversationOwner(owner: Scope) {
   const register = useContext(ScopeContext)?.register;
   const { track, conversations, selectedConversationId, conversationOpen } = owner;
+  // One registration lifetime, including a fresh mount at the same pathname.
+  const [identity, setIdentity] = useState(() => ({ trackId: track.id, token: {} }));
+  if (identity.trackId !== track.id) setIdentity({ trackId: track.id, token: {} });
   const onNew = useCommittedCallback(track.id, owner.onNew);
   const onClose = useCommittedCallback(track.id, owner.onClose);
   const onOpen = useCommittedCallback(track.id, owner.onOpen);
   const onArchive = useCommittedCallback(track.id, async (cardId: string, archived: boolean) => { await owner.onArchive?.(cardId, archived); });
   const canArchive = owner.onArchive !== undefined;
-  const scope = useMemo<Scope>(() => ({
-    track: { id: track.id, areaId: track.areaId, title: track.title }, conversations, selectedConversationId, conversationOpen,
+  const scope = useMemo<RegisteredScope>(() => ({
+    owner: identity.token, track: { id: track.id, areaId: track.areaId, title: track.title }, conversations, selectedConversationId, conversationOpen,
     onNew, onClose, onOpen, onArchive: canArchive ? onArchive : undefined,
-  }), [track.id, track.areaId, track.title, conversations, selectedConversationId, conversationOpen, onNew, onClose, onOpen, canArchive, onArchive]);
+  }), [identity.token, track.id, track.areaId, track.title, conversations, selectedConversationId, conversationOpen, onNew, onClose, onOpen, canArchive, onArchive]);
   useLayoutEffect(() => {
     register?.(scope);
     return () => { register?.(null); };
@@ -184,6 +188,11 @@ export function AppShell({
   const mobileNavOpen = mobileSection !== null;
   const [historyOpen, setHistoryOpen] = useState(false);
   const conversationScope = useMobileConversationScope();
+  const scopeOwner = conversationScope?.owner ?? null;
+  const [historyOwner, setHistoryOwner] = useState(() => ({ path: currentPath, scopeOwner, token: {} }));
+  if (historyOwner.path !== currentPath || historyOwner.scopeOwner !== scopeOwner) {
+    setHistoryOwner({ path: currentPath, scopeOwner, token: {} });
+  }
   const historyTracks = conversationScope === null ? [] : [conversationScope.track];
   const receipts = useReadReceipts();
   const readUnread = receipts.isUnread;
@@ -411,7 +420,7 @@ export function AppShell({
         style={{ bottom: `calc(${visibleViewport.bottomInset}px + var(--space-4) + env(safe-area-inset-bottom))` }}
         onClick={() => openMobileSection({ kind: 'areas', areaId: activeArea?.id })}><Icon name="folder" /></button>}
       <EdgeSwipe enabled={narrowRail && !settingsOpen && !mobileOverlayRoute && !mobileNavOpen && !historyOpen} onSwipe={() => setHistoryOpen(true)} />
-      {narrowRail && <MobileHistory open={historyOpen} onOpenChange={setHistoryOpen}
+      {narrowRail && <MobileHistory owner={historyOwner.token} open={historyOpen} onOpenChange={setHistoryOpen}
         selectedConversationId={conversationScope?.selectedConversationId ?? null}
         trackGroups={trackGroups} currentTrackId={conversationScope?.track.id}
         isUnread={isUnread} tracksLoading={readLoading || workspace.overlaysLoading} tracksError={readError ?? workspaceActivityErrorText(workspace)} onRetryTracks={retryRead}

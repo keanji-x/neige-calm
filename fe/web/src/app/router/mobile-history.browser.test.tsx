@@ -32,6 +32,7 @@ it('closes history before opening a new conversation and Settings', async () => 
   await page.getByRole('button', { name: 'Open conversation history', exact: true }).click();
   await page.getByRole('button', { name: '发起新对话', exact: true }).click();
   await expect.element(page.getByRole('dialog', { name: 'Untitled', exact: true })).toBeVisible();
+  await expect.poll(() => document.activeElement).toBe(page.getByRole('combobox', { name: 'Message', exact: true }).element());
   expect(document.querySelector('dialog[open][aria-label="历史对话"]')).toBeNull();
   await page.getByRole('button', { name: 'Close conversation', exact: true }).click();
   await page.getByRole('button', { name: 'Open conversation history', exact: true }).click();

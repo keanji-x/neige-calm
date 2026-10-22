@@ -3,7 +3,7 @@ import { ConversationArchiveAction } from '../../features/chat/list/public.tsx';
 import { trackEmptyContent } from './track-empty-content.tsx';
 import { EmptyState } from '../../ui/empty-state/public.tsx';
 import { mobileFontClassName } from '../../ui/mobile-font/public.ts';
-import { useCallback, useRef } from 'react';
+import { useCallback, useLayoutEffect, useMemo, useRef } from 'react';
 import { useState } from '../../ui/state/public.ts';
 import type { Track } from '../../../../core/domain/track.ts';
 import { MobileTrackList } from './mobile-track-list.tsx';
@@ -37,8 +37,10 @@ function groupName(at: number, now: number): string {
   return at >= today.getTime() ? '今天' : at >= yesterday.getTime() ? '昨天' : '更早';
 }
 
-export function MobileHistory({ open, onOpenChange, conversations, loading, failed, onRetry, onNew, onSelect, onArchive,
+export function MobileHistory({ owner, open, onOpenChange, conversations, loading, failed, onRetry, onNew, onSelect, onArchive,
   onOpenSettings, accountLabel, accountInitial, onSignOut, now, scopeLabel, selectedConversationId, trackGroups, currentTrackId, onOpenTrack, isUnread, tracksLoading, tracksError, onRetryTracks }: Readonly<{
+  /** Shell route/registration lifetime, not a label or callback identity. */
+  owner: object;
   selectedConversationId: string | null;
   trackGroups: Pick<SidebarTrackGroups, 'pinned' | 'unread' | 'waiting'>;
   currentTrackId: string | undefined;
@@ -67,19 +69,55 @@ export function MobileHistory({ open, onOpenChange, conversations, loading, fail
   const wasOpen = useRef(open);
   if (wasOpen.current !== open) { wasOpen.current = open; if (open) setView('current'); }
   const list = useRef<HTMLDivElement | null>(null);
-  const afterClose = useRef<(() => void) | null>(null);
-  const dialog = useRef<HTMLDialogElement | null>(null);
-  const didClose = useCallback(() => { const action = afterClose.current; afterClose.current = null; action?.(); }, []);
+  const scrollTop = useRef(0);
+  const captureList = useCallback((node: HTMLDivElement | null) => {
+    if (list.current !== null) scrollTop.current = list.current.scrollTop;
+    list.current = node;
+    if (node !== null) node.scrollTop = scrollTop.current;
+  }, []);
+  const content = useRef<HTMLDivElement | null>(null);
+  const [presentation, setPresentation] = useState(() => ({ owner, open, key: 0, blocked: false }));
+  if (presentation.owner !== owner || presentation.open !== open) {
+    const fresh = presentation.owner !== owner || open;
+    setPresentation({ owner, open, key: presentation.key + (fresh ? 1 : 0), blocked: fresh ? false : presentation.blocked });
+  }
+  // A native close event has no generation. A fresh public MobileNav node on
+  // reopen/owner replacement isolates queued old-node events, without keying
+  // this History owner (view/selection/scroll state stays here).
+  const session = useMemo(() => ({ key: presentation.key, node: null as HTMLDialogElement | null, open: false,
+    admitted: false, action: null as (() => void) | null }), [presentation.key]);
+  const didClose = useCallback(() => {
+    const action = session.action;
+    session.action = null; // Consume before invoke, including reentrant close.
+    if (!session.open && session.node?.isConnected && !session.node.open) action?.();
+  }, [session]);
   const captureDialog = useCallback((node: HTMLDialogElement | null) => {
-    dialog.current?.removeEventListener('close', didClose);
-    dialog.current = node;
+    session.node?.removeEventListener('close', didClose);
+    session.action = null;
+    session.node = node;
     node?.addEventListener('close', didClose);
-  }, [didClose]);
-  const leave = (action: () => void) => { afterClose.current = action; onOpenChange(false); };
-  return <MobileNav id="mobile-conversation-history" ref={captureDialog} isOpen={open} onOpenChange={onOpenChange} side="start" width={320}
+  }, [session, didClose]);
+  useLayoutEffect(() => { session.open = open; }, [session, open]);
+  useLayoutEffect(() => () => {
+    session.action = null;
+    session.node?.removeEventListener('close', didClose);
+  }, [session, didClose]);
+  const leave = (action: () => void) => {
+    if (!session.open || session.admitted || !session.node?.open || !session.node.isConnected) return;
+    session.admitted = true;
+    session.action = action;
+    // Revoke the app content in this event, even before the parent commits close.
+    if (content.current !== null) content.current.inert = true;
+    setPresentation(previous => ({ ...previous, blocked: true }));
+    onOpenChange(false);
+  };
+  return <MobileNav key={session.key} id="mobile-conversation-history" ref={captureDialog} isOpen={open} onOpenChange={onOpenChange} side="start" width={320}
     label={view === 'current' ? '历史对话' : VIEW_LABELS[view]} header={<span className={styles.drawerHeading}>{view === 'current' ? '历史对话' : VIEW_LABELS[view]}</span>} className={`${styles.drawer} ${mobileFontClassName}`}
     >
-    <div className={styles.layout}>
+    <div ref={content} className={styles.layout} inert={presentation.blocked || !open}
+      onClickCapture={event => {
+        if (session.admitted || !session.open) { event.preventDefault(); event.stopPropagation(); }
+      }}>
       <nav className={styles.views} aria-label="侧边栏视图">
         {VIEWS.map((candidate) => {
           const count = candidate === 'current' ? conversations.length : trackGroups[candidate].length;
@@ -95,7 +133,7 @@ export function MobileHistory({ open, onOpenChange, conversations, loading, fail
         <div className={styles.searchWrap}><span className={styles.searchIcon}><Icon icon="search" color="inherit" /></span><input className={styles.search} type="search" name="history-search" aria-label="搜索对话内容（暂未开放）"
           placeholder="搜索对话内容（暂未开放）" disabled /></div>
       </div>}
-      <div ref={list} className={styles.list}>
+      <div ref={captureList} className={styles.list}>
         {view === 'current' ? <>
         <p className={styles.scope}>{scopeLabel}</p>
         {failed && <ErrorBox message="部分历史对话未能加载。" actionLabel="重试" onRetry={onRetry} />}
