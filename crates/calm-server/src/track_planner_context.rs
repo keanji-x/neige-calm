@@ -208,7 +208,9 @@ impl TrackPlannerContextProjector {
             "SELECT 'status', status, COUNT(*) FROM tasks WHERE track_id = ?1 GROUP BY status
              UNION ALL SELECT 'kind', kind, COUNT(*) FROM tasks WHERE track_id = ?1 GROUP BY kind
              UNION ALL SELECT 'commits', 'delivered', COUNT(DISTINCT commit_sha)
-             FROM task_candidates WHERE track_id = ?1 AND commit_sha <> base_sha
+             FROM tasks JOIN task_candidates ON task_candidates.producer_attempt_id = tasks.id
+             WHERE tasks.track_id = ?1 AND task_candidates.track_id = ?1
+               AND commit_sha <> base_sha
              ORDER BY 1, 2",
         )
         .bind(track_id)
