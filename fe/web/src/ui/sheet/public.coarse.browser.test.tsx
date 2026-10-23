@@ -57,5 +57,6 @@ it.each([
   const external = page.getByRole('button', { name: 'External touch focus' }).element() as HTMLElement;
   external.focus(); expect(document.activeElement).toBe(external); expect(dialog.open).toBe(true);
   await expect.poll(() => dialog.open).toBe(false);
-  expect(document.activeElement).toBe(external); expect(panel.textContent).toBe('');
+  await expect.poll(() => panel.textContent).toBe('');
+  expect(document.activeElement).toBe(external);
 });
