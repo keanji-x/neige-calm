@@ -1,5 +1,5 @@
 import { conversationCommands, dispatchComposerCommand, executeComposerCommand, type ComposerCommand } from '../thread/composer-command.ts';
-import { useLayoutEffect, useRef } from 'react';
+import type { Dispatch, SetStateAction } from 'react';
 import { useState } from '../../../ui/state/public.ts';
 import { floatingControlClassName } from '../../../ui/floating-control/public.ts';
 import { Icon } from '../../../ui/icon/public.tsx';
@@ -9,20 +9,18 @@ import styles from './dock.module.css';
 export function ChatDock({ text, onChange, onSend, disabled, onBeginInput, commands = conversationCommands({ compactViewport: true }) }: Readonly<{
   commands?: readonly ComposerCommand[];
   text: string;
-  onChange: (text: string) => void;
+  onChange: Dispatch<SetStateAction<string>>;
   onSend: (text: string) => void;
   onBeginInput: () => void;
   disabled: boolean;
 }>) {
-  const currentText = useRef(text);
-  useLayoutEffect(() => { currentText.current = text; }, [text]);
   const [commandError, setCommandError] = useState<string | null>(null);
   return <form className={`${styles.bar} ${floatingControlClassName}`} aria-label="Quick chat" data-nc-chat-dock="" tabIndex={-1} onSubmit={(event) => {
     event.preventDefault();
     if (disabled || text.trim() === '') return;
     setCommandError(null);
     if (dispatchComposerCommand(commands, text, (command, argument) => {
-      void executeComposerCommand(command, argument).then(() => { if (currentText.current === text) onChange(''); }, (reason: unknown) => {
+      void executeComposerCommand(command, argument).then(() => { onChange(current => current === text ? '' : current); }, (reason: unknown) => {
         setCommandError(reason instanceof Error ? reason.message : 'Command failed.');
       });
     })) return;

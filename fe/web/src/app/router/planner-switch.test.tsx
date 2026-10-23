@@ -1,7 +1,7 @@
 import { ChatComposer } from '../../features/chat/thread/public.tsx';
 import { conversationCommands } from '../../features/chat/thread/composer-command.ts';
 import { PLANNER_CONVERSATION_KIND, type Conversation } from '../../../../core/domain/conversation.ts';
-import { onlineManager, QueryClientProvider } from '@tanstack/react-query';
+import { onlineManager, QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { ReactNode } from 'react';
 import type { ApiRequest, ApiTransportPort } from '../../../../core/api/types.ts';
 import type { TrackDetailWire } from '../../../../core/domain/track.ts';
@@ -12,6 +12,8 @@ import { act, cleanup, fireEvent, render, renderHook, screen, waitFor } from '@t
 import userEvent from '@testing-library/user-event';
 import { afterEach, expect, it, vi } from 'vitest';
 import { renderPlannerSwitchFixture } from './planner-switch-fixture.tsx';
+import { renderAssistantProviderFixture } from './assistant-provider-fixture.tsx';
+import { trackConversationRows } from '../conversations/planner-row.ts';
 import { queryKeys } from '../providers/query-keys.ts';
 
 async function open(name = 'Other conversation') {
@@ -253,4 +255,69 @@ it.each(['detail-first', 'list-first'])('history projects both cards throughout 
   current = [{ provider: 'codex', id: 'daily-planner', trackId: 'daily', title: 'Daily Planner conversation',
     kind: PLANNER_CONVERSATION_KIND, state: null, updatedAt: 2, lastTurnCompletedAt: null }];
   hook.rerender(); assertPair('second-planner');
+});
+
+
+it.each(['pending', 'failed'] as const)('keeps detail-only Assistant provider through model, capabilities and side with list %s', async listRead => {
+  const fixture = renderAssistantProviderFixture({ existingProvider: 'claude', listRead, runAttachmentsSupported: true, answers: [{
+    availability: { provider: 'claude', status: 'ready', reason: null, checked_at_ms: 1, authentication_notice: null },
+    accepts_unavailable_blank_track: true, capabilities: { managed_conversation: true, steer: false, images: false,
+      manual_compact: false, history_replacement: false, requires_ready_availability: true },
+  }] });
+  await userEvent.click(await screen.findByRole('button', { name: 'Conversation Saved Assistant' }));
+  const input = await screen.findByRole('combobox', { name: 'Message' });
+  await screen.findByText('Saved reply');
+  await userEvent.click(screen.getByRole('button', { name: /^Model:/ }));
+  await screen.findByRole('menuitem', { name: 'Selected model' });
+  expect(fixture.requests.filter(request => request.path.startsWith('/api/models')).map(request => request.path)).toContain('/api/models?card_id=dormant');
+  expect(screen.queryByRole('group', { name: 'Codex' })).toBeNull();
+  await userEvent.click(screen.getByRole('menuitem', { name: 'Selected model' }));
+  await waitFor(() => expect(fixture.requests.some(request => request.path === '/api/cards/dormant/planner/model')).toBe(true));
+  expect(screen.getByRole('button', { name: 'Attach an image' }).getAttribute('aria-disabled')).toBe('true');
+  expect(screen.queryByRole('button', { name: /Compact/ })).toBeNull();
+  await submit(input, '/side Keep this backend');
+  await waitFor(() => expect(fixture.requests.find(request => request.method === 'POST' && request.path.endsWith('/conversations'))?.body)
+    .toMatchObject({ provider: 'claude', side: { source_card_id: 'dormant' } }));
+});
+
+it('keeps Planner first when unchanged rows have equal update times', async () => {
+  const fixture = renderPlannerSwitchFixture();
+  await screen.findByRole('button', { name: /Conversation Other conversation/ });
+  const detail = fixture.client.getQueryData<TrackDetailWire>(queryKeys.trackDetail('daily'))!;
+  const cards = detail.cards.map(card => card.id === 'second-planner'
+    ? { ...card, payload: { ...card.payload as object, side_source_card_id: 'parent' } } : card);
+  const rows = trackConversationRows('daily', 'Track', cards, fixture.list().map(row => ({ ...row, title: 'Stale title', sourceCardId: 'stale-parent', archivedAt: 123 })));
+  expect(rows.map(row => row.id)).toEqual(['daily-planner', 'second-planner']);
+  expect(rows[1]).toMatchObject({ title: 'Other conversation', sourceCardId: 'parent', archivedAt: 123, state: 'idle' });
+});
+
+it('history supplies display titles without detail and preserves the current fallback', () => {
+  const client = new QueryClient();
+  client.setQueryData(queryKeys.trackConversations('daily'), [
+    { provider: 'codex', id: 'a', trackId: 'daily', title: null, kind: 'track-assistant', state: null, updatedAt: 2 },
+    { provider: 'codex', id: 'b', trackId: 'daily', title: null, kind: 'track-assistant', state: null, updatedAt: 2 },
+  ]);
+  const current: Conversation = { provider: 'claude', id: 'a', trackId: 'daily', trackTitle: 'Current display',
+    title: 'Current fallback', kind: 'track-assistant', state: null, updatedAt: 3 };
+  const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={client}>{children}</QueryClientProvider>;
+  const hook = renderHook(() => useMobileHistoryData({ send: () => Promise.reject(new Error('No read')) },
+    createUnauthorizedChannel({ enqueue: task => task() }), [{ id: 'daily', areaId: 'area', title: '' }], [current], false), { wrapper });
+  expect(hook.result.current.conversations.find(row => row.id === 'a')).toEqual(current);
+  expect(hook.result.current.conversations.find(row => row.id === 'b')?.trackTitle).toBe('Untitled track');
+});
+
+it.each(['mounted', 'reopened'] as const)('full composer preserves edits after pending command success (%s)', async mode => {
+  let finish!: () => void;
+  const fixture = renderPlannerSwitchFixture({ switch: (_request, commit) => new Promise(resolve => {
+    finish = () => { commit(); resolve(fixture.receipt()); };
+  }) });
+  let input = await open(); await submit(input);
+  await waitFor(() => expect(finish).toBeTypeOf('function'));
+  if (mode === 'reopened') {
+    await userEvent.click(screen.getByRole('button', { name: 'Close conversation' })); input = await open();
+  }
+  await type(input, 'New full draft');
+  act(() => { finish(); });
+  await waitFor(() => expect(fixture.client.getQueryData<TrackDetailWire>(queryKeys.trackDetail('daily'))?.planner_revision).toBe(8));
+  expect(input.textContent).toBe('New full draft');
 });

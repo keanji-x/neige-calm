@@ -1,3 +1,4 @@
+import type { Conversation } from '../../../../core/domain/conversation.ts';
 import type { ApiRequest, ApiTransportResponse } from '../../../../core/api/types.ts';
 import { renderDailyFixture } from './daily-planner-fixture.tsx';
 import { conversationCardId, historicalConversationPage, historicalConversationRun } from './conversation-read-data.ts';
@@ -14,9 +15,9 @@ export function renderPlannerSwitchFixture(options: Readonly<{
   const ok = (body: unknown): ApiTransportResponse => ({ status: 200, statusText: 'OK', body });
   const cards = () => ['daily-planner', 'second-planner'].map((id, index) => ({ id, track_id: 'daily', kind: 'codex',
     title: index === 0 ? 'Daily Planner conversation' : 'Other conversation', sort: index,
-    payload: (switched ? index === 1 : index === 0) ? { planner_harness: true } : { harness_profile: 'assistant' },
+    payload: (switched ? index === 1 : index === 0) ? { planner_harness: true } : { harness_profile: 'assistant', assistant_provider: 'codex' },
     deletable: false, created_at: 1, updated_at: 2 }));
-  const list = () => [{ id: switched ? 'daily-planner' : 'second-planner', trackId: 'daily',
+  const list = (): Conversation[] => [{ id: switched ? 'daily-planner' : 'second-planner', trackId: 'daily',
     title: switched ? 'Daily Planner conversation' : 'Other conversation', kind: 'track-assistant',
     provider: 'codex', state: 'idle', updatedAt: 2, archivedAt: null, lastTurnCompletedAt: null }];
   const receipt = () => ok({ track_id: 'daily', planner_card_id: 'second-planner', demoted_card_id: 'daily-planner', planner_revision: 8 });

@@ -20,10 +20,10 @@ export function useMobileHistoryData(transport: ApiTransportPort, unauthorized: 
     const listed = lists[index].data ?? [];
     const projected = detail !== undefined && detail.track.id === track.id
       ? trackConversationRows(track.id, trackDisplayTitle(track.title), detail.cards, listed)
-      : listed;
+      : listed.map(row => ({ ...row, trackTitle: trackDisplayTitle(track.title) }));
     // Current rows are a fallback only while detail is unavailable, never a second role authority.
     if (detail !== undefined) for (const [id, row] of rows) if (row.trackId === track.id) rows.delete(id);
-    for (const row of projected) if (row.trackId === track.id) rows.set(row.id, row);
+    for (const row of projected) if (row.trackId === track.id && (detail !== undefined || !rows.has(row.id))) rows.set(row.id, row);
   });
   const reads = [...details, ...lists];
   return {

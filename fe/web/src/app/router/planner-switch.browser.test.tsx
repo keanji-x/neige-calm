@@ -79,3 +79,34 @@ it('dispatches a direct mobile dock submission and retains a refused command dra
   await expect.element(page.getByRole('textbox', { name: 'Chat message', exact: true })).toHaveValue('/planner');
   expect(posts(fixture).map(request => request.path)).toEqual(['/api/tracks/daily/planner/switch']);
 });
+
+it.each(['mounted', 'remounted', 'unchanged'] as const)('dock clears only its owned draft after pending success (%s)', async mode => {
+  await page.viewport(390, 844);
+  let finish!: () => void;
+  const fixture = renderPlannerSwitchFixture({ switch: (_request, commit) => new Promise(resolve => {
+    finish = () => { commit(); resolve(fixture.receipt()); };
+  }) });
+  const input = await open(); await input.fill('/planner');
+  await page.getByRole('button', { name: 'Close conversation' }).click();
+  await page.getByRole('button', { name: 'Back to Report', exact: true }).click();
+  const dock = page.getByRole('textbox', { name: 'Chat message', exact: true });
+  const oldDock = dock.element();
+  await page.getByRole('button', { name: 'Send chat message' }).click();
+  await expect.poll(() => posts(fixture).length).toBe(1);
+  if (mode === 'mounted') {
+    // Update through the textarea without focusing it (focus opens the full composer).
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(oldDock, 'New draft');
+    oldDock.dispatchEvent(new Event('input', { bubbles: true }));
+    await expect.element(dock).toHaveValue('New draft');
+  }
+  if (mode === 'remounted') {
+    await fixture.router.navigate({ to: '/track/$trackId', params: { trackId: 'project' } });
+    expect(oldDock.isConnected).toBe(false);
+    await fixture.router.navigate({ to: '/track/$trackId', params: { trackId: 'daily' }, search: { panel: 'conversations' } });
+    await (await open()).fill('New draft');
+  }
+  finish();
+  await expect.poll(() => fixture.client.getQueryData<{ planner_revision: number }>(['track', 'daily'])?.planner_revision).toBe(8);
+  if (mode === 'remounted') await expect.element(page.getByRole('combobox', { name: 'Message' })).toHaveTextContent('New draft');
+  else await expect.element(dock).toHaveValue(mode === 'mounted' ? 'New draft' : '');
+});

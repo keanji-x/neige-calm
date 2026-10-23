@@ -967,7 +967,7 @@ function useConversationPane(
       setOpenTarget({ kind: 'row', id: dockRowId });
     } else start();
   });
-  const setDockText = useCommittedCallback(dockViewId, (text: string) => {
+  const setDockText = useCommittedCallback(dockViewId, (text: SetStateAction<string>) => {
     if (dockRowId === null) setNewConversationText(text);
     else setComposerText(text);
   });

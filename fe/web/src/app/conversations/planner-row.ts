@@ -1,4 +1,4 @@
-import { PLANNER_CONVERSATION_KIND, type Conversation } from '../../../../core/domain/conversation.ts';
+import { assistantConversationPayloadSchema, PLANNER_CONVERSATION_KIND, type Conversation } from '../../../../core/domain/conversation.ts';
 import { isAssistantHarnessPayload, isPlannerHarnessPayload } from '../../systems/cards/public.ts';
 import { plannerProviderOf, type TrackDetailWire } from '../../../../core/domain/track.ts';
 
@@ -23,13 +23,24 @@ export function trackConversationRows(trackId: string, trackTitle: string,
   const rows = new Map<string, Conversation>(listed.filter(row => row.trackId === trackId).map(row => [row.id, { ...row, trackTitle }]));
   for (const card of cards) {
     if (card.kind !== 'codex') continue;
-    const planner = plannerConversationRow(trackId, trackTitle, card);
-    if (planner === null) continue;
-    if (isAssistantHarnessPayload(card.payload)) rows.set(card.id, {
-      ...planner, ...metadata.get(card.id), id: card.id, trackId, trackTitle, kind: 'track-assistant',
-    } satisfies Conversation);
+    if (isAssistantHarnessPayload(card.payload)) {
+      const payload = assistantConversationPayloadSchema.parse(card.payload);
+      // Session/archive metadata comes from the list; identity, title and provider belong to the card.
+      rows.set(card.id, {
+        state: card.runtime?.status ?? null,
+        updatedAt: card.runtime?.updated_at_ms ?? card.updated_at,
+        lastTurnCompletedAt: card.runtime?.last_turn_completed_ms ?? null,
+        ...metadata.get(card.id),
+        id: card.id, trackId, trackTitle, title: card.title, kind: 'track-assistant',
+        provider: payload.assistant_provider,
+        sourceCardId: payload.side_source_card_id ?? undefined,
+      });
+    }
     // Use the same owner predicate as the Planner entry, not every non-Assistant card.
-    else if (isPlannerHarnessPayload(card.payload)) rows.set(card.id, planner);
+    else if (isPlannerHarnessPayload(card.payload)) {
+      const planner = plannerConversationRow(trackId, trackTitle, card);
+      if (planner !== null) rows.set(card.id, planner);
+    }
   }
-  return [...rows.values()];
+  return [...rows.values()].toSorted((a, b) => Number(b.kind === PLANNER_CONVERSATION_KIND) - Number(a.kind === PLANNER_CONVERSATION_KIND));
 }

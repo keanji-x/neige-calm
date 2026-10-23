@@ -23,6 +23,12 @@ export type SideConversation = Readonly<{ source_card_id: string; context: strin
 
 export const PLANNER_CONVERSATION_KIND = 'shared-spec' as const;
 
+/** Server-owned Assistant payload fields used by the Track conversation read contract. */
+export const assistantConversationPayloadSchema = z.object({
+  assistant_provider: agentProviderSchema,
+  side_source_card_id: z.string().nullish(),
+});
+
 /** What kind of thing the conversation is; `'track-assistant'` is derived server-side from the card's own marker. */
 export type ConversationKind =
   | 'terminal' | 'codex' | 'claude' | 'shared-spec' | 'track-assistant';

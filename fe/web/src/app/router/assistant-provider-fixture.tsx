@@ -17,6 +17,7 @@ import { ThemeProvider } from '../theme/public.tsx';
 /** Real router/query/draft/store over explicit server declarations, without CLI credentials. */
 export function renderAssistantProviderFixture(options: {
   answers: ManagedProviderAvailability[];
+  listRead?: 'pending' | 'failed';
   failFirstCreate?: boolean;
   landFirstCreate?: boolean;
   hideLanded?: boolean;
@@ -70,7 +71,11 @@ export function renderAssistantProviderFixture(options: {
           ...(input.side === undefined ? {} : { sourceCardId: input.side.source_card_id }) };
         rows.push(created); body = { ...created, initialInput: { kind: 'known', receipt: initialReceiptFor(request, 'first-entry', 0) } }; status = 201;
         if (options.landFirstCreate && attempts === 1) return { status: 503, statusText: 'Unavailable', body: { code: 'service_unavailable', error: 'Unconfirmed' } };
-      } else body = options.hideLanded ? [] : rows.map(row => ({ ...row }));
+      } else {
+        if (options.listRead === 'pending') return new Promise(() => {});
+        if (options.listRead === 'failed') throw new Error('List unavailable');
+        body = options.hideLanded ? [] : rows.map(row => ({ ...row }));
+      }
     }
     if (request.method === 'PATCH' && request.path === `/api/tracks/${track.id}/conversations/dormant/archive`) {
       const index = rows.findIndex(row => row.id === 'dormant');
