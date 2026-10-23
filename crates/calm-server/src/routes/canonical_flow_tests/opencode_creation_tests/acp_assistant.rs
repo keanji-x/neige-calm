@@ -29,8 +29,8 @@ async fn wait_idle(fixture: &Fixture, card: &str, attempts: usize) -> CanonicalH
     match result {
         Ok(snapshot) => snapshot,
         Err(error) => {
-            panic!(
-                "ACP END timeout: {error}; snapshot={last_snapshot:?}; requests={:?}; MCP={:?}; permission={:?}",
+            let diagnostic = format!(
+                "snapshot={last_snapshot:#?}\nrequests={:#?}\nMCP={:#?}\npermission={:#?}",
                 requests(fixture),
                 (
                     std::fs::read_to_string(fixture.root.path().join("assistant-mcp-progress")),
@@ -38,6 +38,15 @@ async fn wait_idle(fixture: &Fixture, card: &str, attempts: usize) -> CanonicalH
                 ),
                 std::fs::read_to_string(fixture.root.path().join("permission-reply.json"))
             );
+            // CI drops lines over 4096 bytes. Pretty Debug still leaves prompt strings on
+            // one line, so bound each emitted chunk to at most 800 Unicode scalars (3200 bytes).
+            for line in diagnostic.lines() {
+                let chars: Vec<_> = line.chars().collect();
+                for chunk in chars.chunks(800) {
+                    eprintln!("{}", chunk.iter().collect::<String>());
+                }
+            }
+            panic!("ACP END timeout: {error}");
         }
     }
 }

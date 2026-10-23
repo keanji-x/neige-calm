@@ -105,6 +105,22 @@ impl Fixture {
             cfg.db_url = self.url.clone();
             cfg.claude_planner_config = self.claude_config.clone();
             cfg.acp_planner_config = self.acp_config.clone();
+            if self.acp_config.is_some() {
+                // Test binaries live in deps/, not beside the workspace's production shim.
+                // Match the ACP stack fixture: never depend on a host-installed shim on PATH.
+                let exe = std::env::current_exe().unwrap();
+                let shim = exe
+                    .parent()
+                    .unwrap()
+                    .parent()
+                    .unwrap()
+                    .join("neige-mcp-stdio-shim");
+                assert!(
+                    shim.is_file(),
+                    "build neige-mcp-stdio-shim before ACP tests"
+                );
+                cfg.mcp_stdio_shim_bin = Some(shim);
+            }
             cfg.data_dir = Some(self.root.path().join("data"));
             cfg.workspace_root = Some(self.root.path().join("workspaces"));
             cfg.plugins_dir = Some(self.root.path().join("plugins"));
