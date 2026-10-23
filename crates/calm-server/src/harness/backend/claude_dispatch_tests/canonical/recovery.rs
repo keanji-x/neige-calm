@@ -168,7 +168,9 @@ async fn canonical_claude_recovery_synthetic_outcome_holds_until_owner_sweep_the
         crate::harness::turn_outcome::Confirmation::Unconfirmed,
     ).await.unwrap();
     // A synthetic outcome cannot clear the retained provider execution claim.
-    let (reopened, session) = reopen_session(&fx, fx.owner.repo.clone()).await;
+    let seals = Arc::new(ThreadSeals::new());
+    let (reopened, session) =
+        reopen_session_with_boot(&fx, fx.owner.repo.clone(), true, seals.clone()).await;
     assert!(
         reopened
             .qualify_execution_end(&target)
@@ -219,6 +221,21 @@ async fn canonical_claude_recovery_synthetic_outcome_holds_until_owner_sweep_the
             .unwrap()
             .is_some()
     );
+    seals.seal_for_deletion(&fx.owner.thread);
+    assert!(
+        crate::harness::input_dispatch::complete_once(
+            fx.owner.repo.as_ref(),
+            &reopened,
+            &fx.owner.card,
+            &fx.owner.worker,
+        )
+        .await
+        .unwrap()
+        .is_none(),
+        "sealed pre-boot target must not consume END"
+    );
+    assert_eq!(fx.checkpoint().await, before);
+    seals.unseal_after_rollback(&fx.owner.thread);
     fx.backend = reopened;
     fx.session = session;
     std::fs::write(fx.dir.path().join("scenario"), "exit").unwrap();
@@ -335,13 +352,14 @@ pub(super) async fn reopen_session(
     fx: &Fixture,
     repo: Arc<crate::db::sqlite::SqlxRepo>,
 ) -> (PlannerBackend, Arc<ClaudePlannerSession>) {
-    reopen_session_with_boot(fx, repo, true).await
+    reopen_session_with_boot(fx, repo, true, Arc::new(ThreadSeals::new())).await
 }
 
 async fn reopen_session_with_boot(
     fx: &Fixture,
     repo: Arc<crate::db::sqlite::SqlxRepo>,
     boot: bool,
+    seals: Arc<ThreadSeals>,
 ) -> (PlannerBackend, Arc<ClaudePlannerSession>) {
     fx.session.abort_driver_for_test().await;
     let old = fx.session.host();
@@ -375,7 +393,7 @@ async fn reopen_session_with_boot(
             proxy: vec![],
             prior_total_tokens: 0,
             repo,
-            seals: Arc::new(ThreadSeals::new()),
+            seals,
         })
         .await
         .unwrap(),
@@ -421,7 +439,13 @@ async fn canonical_claude_recovery_without_boot_proof_holds_but_live_provenance_
             .unwrap(),
         SettledActivity::Held
     ));
-    let (backend, session) = reopen_session_with_boot(&fx, fx.owner.repo.clone(), false).await;
+    let (backend, session) = reopen_session_with_boot(
+        &fx,
+        fx.owner.repo.clone(),
+        false,
+        Arc::new(ThreadSeals::new()),
+    )
+    .await;
     assert!(
         backend
             .qualify_execution_end(&target)

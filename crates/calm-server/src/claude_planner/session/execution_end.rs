@@ -82,6 +82,22 @@ impl ClaudePlannerSession {
         let shared = &self.shared;
         let params = &shared.params;
         let _issue = shared.issue.lock().await;
+        if !self.settlement_binding_matches(card, thread).await? {
+            return Ok(false);
+        }
+        if !self.registered_execution_absent().await?
+            || !params.host.pre_boot_absent(&params.worker_session_id)
+        {
+            return Ok(false);
+        }
+        admission.check_local().await?;
+        Ok(true)
+    }
+
+    /// Caller holds `issue`; recovery without a retained driver needs a live local owner.
+    async fn settlement_binding_matches(&self, card: &str, thread: &str) -> Result<bool> {
+        let shared = &self.shared;
+        let params = &shared.params;
         if card != params.card_id
             || shared.installed.get().is_none()
             || shared.state().shutting_down
@@ -109,12 +125,6 @@ impl ClaudePlannerSession {
         {
             return Ok(false);
         }
-        if !self.registered_execution_absent().await?
-            || !params.host.pre_boot_absent(&params.worker_session_id)
-        {
-            return Ok(false);
-        }
-        admission.check_local().await?;
         Ok(true)
     }
 
@@ -184,11 +194,13 @@ impl ClaudePlannerSession {
         if !target.matches_owner(&params.card_id, &params.track_id, &params.worker_session_id) {
             return Ok(false);
         }
-        match &target.scope {
-            crate::harness::backend::ExecutionEndScope::LocalProcess { .. } => {}
+        let thread = match &target.scope {
+            crate::harness::backend::ExecutionEndScope::LocalProcess { thread_id, .. } => {
+                thread_id.to_string()
+            }
             crate::harness::backend::ExecutionEndScope::ReceiptProcess { .. }
             | crate::harness::backend::ExecutionEndScope::NativeTurn { .. } => return Ok(false),
-        }
+        };
         let _issue = self.shared.issue.lock().await;
         if !self.registered_execution_absent().await? {
             return Ok(false);
@@ -200,7 +212,16 @@ impl ClaudePlannerSession {
             .await
             .as_ref()
             .is_some_and(|driver| driver.matches(target));
-        Ok(spawned_here || params.host.pre_boot_absent(&params.worker_session_id))
+        if spawned_here {
+            return Ok(true);
+        }
+        if !self
+            .settlement_binding_matches(&target.card_id, &thread)
+            .await?
+        {
+            return Ok(false);
+        }
+        Ok(params.host.pre_boot_absent(&params.worker_session_id))
     }
 
     /// Caller holds `issue`: no admitted execution or locally active turn remains.
