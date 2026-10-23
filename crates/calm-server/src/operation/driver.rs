@@ -571,7 +571,7 @@ impl OperationRuntime {
                         &op,
                         crate::operation::TerminalOutcome::Stuck {
                             reason: format!("operation drive failed: {error}"),
-                            from_phase: from_phase,
+                            from_phase,
                         },
                         self.adapter(&op.kind)?.as_ref(),
                     )
@@ -753,7 +753,7 @@ impl OperationRuntime {
                                         .settle_claimed(
                                             &op,
                                             crate::operation::TerminalOutcome::Failed {
-                                                last_error: last_error,
+                                                last_error,
                                                 from_phase: PhaseTag::Pending,
                                                 last_error_class: Some(
                                                     last_error_class.to_string(),
@@ -1110,7 +1110,7 @@ impl OperationRuntime {
                         &op,
                         crate::operation::TerminalOutcome::Failed {
                             last_error: reason,
-                            from_phase: from_phase,
+                            from_phase,
                             last_error_class: Some("internal".into()),
                         },
                         self.adapter(&op.kind)?.as_ref(),
@@ -1443,7 +1443,7 @@ impl OperationRuntime {
                     crate::operation::TerminalOutcome::Failed {
                         last_error: reason,
                         from_phase: PhaseTag::Parked,
-                        last_error_class: last_error_class,
+                        last_error_class,
                     },
                     self.adapter(&op.kind)?.as_ref(),
                 )
@@ -1470,7 +1470,7 @@ impl OperationRuntime {
                     crate::operation::TerminalOutcome::Failed {
                         last_error: reason,
                         from_phase: PhaseTag::Parked,
-                        last_error_class: last_error_class,
+                        last_error_class,
                     },
                     self.adapter(&op.kind)?.as_ref(),
                 )
@@ -1541,7 +1541,7 @@ impl OperationRuntime {
                                 &op,
                                 crate::operation::TerminalOutcome::Stuck {
                                     reason: format!("operation recovery apply failed: {e}"),
-                                    from_phase: from_phase,
+                                    from_phase,
                                 },
                                 self.adapter(&op.kind)?.as_ref(),
                             )

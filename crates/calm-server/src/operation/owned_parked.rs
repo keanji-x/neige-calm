@@ -29,12 +29,9 @@ pub(crate) fn reconcile<'a>(
                     let mut tx = begin_immediate_tx(&pool).await?;
                     super::repo_sqlite::require_live_claim_tx(&mut tx, op).await?;
                     let completion = complete_parked_tx(&mut tx, &op.id, &outcome).await?;
-                    let mut events = if matches!(completion, ParkedCompletion::Completed(_)) {
-                        adapter.complete_owned_parked_tx(&mut tx, op).await?
-                    } else {
-                        Vec::new()
-                    };
+                    let mut events = Vec::new();
                     if matches!(completion, ParkedCompletion::Completed(_)) {
+                        events = adapter.complete_owned_parked_tx(&mut tx, op).await?;
                         if let Some(event) = super::settlement::append_result_event_tx(
                             &mut tx,
                             op,
