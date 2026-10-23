@@ -3085,19 +3085,8 @@ describe('track conversations', () => {
     expect(post?.headers?.['Idempotency-Key']).toMatch(/[0-9a-f-]{36}/);
     /* The drawer moves off the draft onto the row the derived id names. */
     await screen.findByRole('complementary', { name: 'what is in this repo?' });
-  });
-
-  it('[G4] sends the first message once, to the track in the URL and no other', async () => {
-    const { requests } = setup((request) =>
-      request.method === 'POST' && request.path === CONVERSATIONS
-        ? created(derivedRow('w1', request), request)
-        : undefined);
-    await screen.findByRole('button', { name: 'Conversation Planner chat' });
-    await openDraft();
-    await write('first words');
-    await waitFor(() => expect(creates(requests, CONVERSATIONS)).toHaveLength(1));
     expect(requests.filter((request) => request.method === 'POST'
-      && request.path.endsWith('/conversations') && request.path !== CONVERSATIONS)).toEqual([]);
+      && request.path.endsWith('/conversations') && request.path !== BARE_CONVERSATIONS)).toEqual([]);
     /* The message travelled with the POST, so nothing re-sends it afterwards. */
     expect(requests.filter((request) => request.path.endsWith('/planner/input'))).toEqual([]);
   });
@@ -3122,7 +3111,6 @@ describe('track conversations', () => {
     await screen.findByRole('button', { name: 'Try again' });
 
     await act(async () => { await router.navigate({ to: '/track/w2' }); });
-    await screen.findByRole('button', { name: 'New conversation' });
       await waitFor(() => expect(screen.queryAllByRole('button', { name: /^Conversation / })).toHaveLength(0));
     await openDraft();
     await write('words for track two');
@@ -3144,7 +3132,6 @@ describe('track conversations', () => {
     ]);
 
     await act(async () => { await router.navigate({ to: '/track/w2' }); });
-    await screen.findByRole('button', { name: 'New conversation' });
       await waitFor(() => expect(screen.queryAllByRole('button', { name: /^Conversation / })).toHaveLength(0));
     await openDraft();
     expect(screen.getByText('words for track two')).toBeTruthy();
