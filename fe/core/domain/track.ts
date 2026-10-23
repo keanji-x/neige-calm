@@ -320,8 +320,8 @@ export function limitAreaTracks(
 }
 
 /** HTTP readers normalize an omitted title to null; event readers retain the optional wire title. */
-// eslint-disable-next-line architecture/no-module-runtime-state -- Zod extend creates a schema; the rule only recognizes local Zod bindings, not imported schemas.
-export const cardWireSchema = cardSchema.extend({
+export const cardWireSchema = z.object({
+  ...cardSchema.shape,
   title: z.string().nullable().default(null),
 });
 export type CardWire = z.infer<typeof cardWireSchema>;
