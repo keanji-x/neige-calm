@@ -10,6 +10,7 @@ use objective::ledger::Decision;
 use objective::standard::{Approval, standard_hash};
 
 mod approval;
+mod check_jobs;
 mod lifecycle;
 mod refusal;
 mod replay;

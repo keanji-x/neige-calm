@@ -23,7 +23,9 @@ pub(super) async fn define(boot: &Boot, id: Option<Value>, payload: Value) -> Va
         .clone()
 }
 pub(super) async fn setup() -> (Boot, Value) {
-    let boot = boot().await;
+    setup_on(boot().await).await
+}
+pub(super) async fn setup_on(boot: Boot) -> (Boot, Value) {
     let db = boot.repo.sqlite_db().unwrap();
     let mut tx = calm_server::db::sqlite::begin_immediate_tx(&db)
         .await

@@ -27,6 +27,11 @@
 # projection and this existing baseline; adding an objective edits neither.
 # No new scan, list of objective keys or CI invocation is added.
 
+# Evaluator binding adds seven long_literal matches: three persistence queries
+# and four crash-fixture trigger statements. Agent instructions live in prompts/.
+# They use the existing 120-character shape and baseline; there is no new
+# exemption, identity list or CI invocation to maintain.
+
 set -uo pipefail
 
 cd "$(git rev-parse --show-toplevel)" || exit 1

@@ -363,6 +363,13 @@ async fn persist(
             // 3. Apply the op; `if_rev` checks happen in here against the CRDT truth, a conflict aborts the tx.
             let before_rev = doc.doc_rev().map_err(block_op_internal)?;
             let before_blocks = doc.blocks_snapshot().map_err(block_op_internal)?;
+            crate::objective_dispatch::evaluator::guard_create_tx(
+                tx,
+                &track_id,
+                &before_blocks,
+                &op,
+            )
+            .await?;
             let (mut trace, doc_rev) = apply_persisted_report_op(&mut doc, &op, author)?;
             if let Some(before) = tasks_before {
                 let after = doc
@@ -576,6 +583,8 @@ async fn write_report_row_and_project_tx(
     })?;
     let updated = card_update_with_crdt_tx(tx, report_card_id, patch, doc.to_bytes()).await?;
     let projection = project_tasks_tx(tx, track_id, declarations, diagnostics).await?;
+    calm_truth::objective_host::check_jobs::guard_report_tx(tx, &track_id.into(), before, after)
+        .await?;
     calm_truth::objective_host::report::project_report_tx(
         tx,
         calm_truth::objective_host::report::ReportObjectiveWrite {

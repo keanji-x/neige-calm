@@ -5,16 +5,6 @@ use objective::engine::Evaluation;
 use objective::standard::standard_hash;
 use sqlx::{Row, Sqlite, Transaction};
 
-pub(crate) fn supports(config: &CheckConfig) -> bool {
-    match config {
-        CheckConfig::Fact(params) => match params.fact {
-            Fact::TaskAccepted | Fact::AskAnswered => true,
-            Fact::PrMerged => false,
-        },
-        CheckConfig::Command(_) | CheckConfig::Metric(_) | CheckConfig::Evaluator(_) => false,
-    }
-}
-
 /// Caller owns the one writer transaction, including claim, measurement and report.
 pub(super) async fn run_tx(
     tx: &mut Transaction<'_, Sqlite>,
@@ -61,7 +51,9 @@ pub(super) async fn run_tx(
         ));
     }
     let CheckConfig::Fact(params) = config else {
-        unreachable!()
+        return Err(CalmError::Conflict(
+            "evaluator request needs a bound Report task; retry neige_objective_evaluate".into(),
+        ));
     };
     if pending {
         objective_host::intent_mark_dispatched_tx(tx, &row.id).await?;

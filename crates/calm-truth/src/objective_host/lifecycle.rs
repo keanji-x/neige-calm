@@ -108,7 +108,10 @@ fn decode(row: &sqlx::sqlite::SqliteRow) -> Result<StoredIntent> {
     })
 }
 
-async fn find_tx(tx: &mut Transaction<'_, Sqlite>, id: &IntentId) -> Result<Option<StoredIntent>> {
+pub(super) async fn find_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    id: &IntentId,
+) -> Result<Option<StoredIntent>> {
     let row = sqlx::query(
         "SELECT * FROM objective_intents WHERE track_id=? AND event_seq=? AND ordinal=?",
     )

@@ -1,9 +1,14 @@
 //! Objective fact and Notify executors. The durable wake uses the same event log and
 //! Dispatcher replay as compact settlement; event append and settlement are atomic.
+pub(crate) mod evaluator;
 pub(crate) mod fact;
 
 use calm_truth::objective_host::{self, ExecutorSettlement};
-use objective::{Intent, State, engine::Notice};
+use objective::{
+    Intent, State,
+    check::{CheckConfig, Fact},
+    engine::Notice,
+};
 
 use crate::{
     db::{
@@ -15,6 +20,17 @@ use crate::{
     event::{BroadcastEnvelope, Event, EventBus, EventScope, SYNC_EVENT_VERSION},
     ids::ActorId,
 };
+
+pub(crate) fn supports(config: &CheckConfig) -> bool {
+    match config {
+        CheckConfig::Fact(params) => match params.fact {
+            Fact::TaskAccepted | Fact::AskAnswered => true,
+            Fact::PrMerged => false,
+        },
+        CheckConfig::Evaluator(_) => true,
+        CheckConfig::Command(_) | CheckConfig::Metric(_) => false,
+    }
+}
 
 fn disposition(notice: &Notice, state: &State) -> Result<std::result::Result<String, String>> {
     let (key, template) = match notice {
@@ -110,11 +126,27 @@ pub(crate) async fn dispatch_track(
     bus: &EventBus,
     track: &str,
 ) -> Result<()> {
+    let track_for_tx = track.to_owned();
+    let envelopes = write_in_tx_typed(repo, move |tx| {
+        Box::pin(async move { evaluator::missing_tx(tx, &track_for_tx).await })
+    })
+    .await?;
+    for envelope in envelopes {
+        bus.emit_envelope(envelope);
+    }
     loop {
+        let bound: std::collections::BTreeSet<(i64, i64)> =
+            sqlx::query_as("SELECT event_seq,ordinal FROM objective_check_jobs WHERE track_id=?")
+                .bind(track)
+                .fetch_all(db.read_pool())
+                .await?
+                .into_iter()
+                .collect();
         let pending: Vec<_> =
             objective_host::unsettled_intents_for_track(db, &track.to_owned().into())
                 .await?
                 .into_iter()
+                .filter(|row| !bound.contains(&(row.id.seq.0 as i64, i64::from(row.id.ordinal))))
                 .filter(|row| match &row.intent {
                     Intent::RunCheck { .. } | Intent::Notify { .. } => true,
                     Intent::Execute { .. } => false,

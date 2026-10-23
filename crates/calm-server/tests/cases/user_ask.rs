@@ -78,6 +78,10 @@ async fn seed_track_root_session(
 }
 
 async fn boot() -> Boot {
+    boot_with_task_dispatch(true).await
+}
+
+async fn boot_with_task_dispatch(task_dispatch: bool) -> Boot {
     let repo: Arc<dyn Repo> = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let area = repo
         .area_create(
@@ -154,6 +158,10 @@ async fn boot() -> Boot {
         Some(card_role_cache.clone()),
         Some(track_area_cache.clone()),
     );
+    if !task_dispatch {
+        // Evaluator acceptance substitutes workers; prevent background claims racing them.
+        state.dispatcher.abort_event_listener_for_test();
+    }
     let app = calm_server::routes::router()
         .layer(axum::middleware::from_fn(
             calm_server::actor::actor_middleware,
@@ -704,3 +712,6 @@ mod objective_approval;
 
 #[path = "user_ask/objective_evaluation.rs"]
 mod objective_evaluation;
+
+#[path = "user_ask/objective_evaluator.rs"]
+mod objective_evaluator;

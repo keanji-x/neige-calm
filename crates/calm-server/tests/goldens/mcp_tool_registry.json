@@ -330,7 +330,7 @@
   },
   {
     "name": "neige_objective_evaluate",
-    "description_sha256": "49fa90f8b3e680e0c7bf8739033a53d86f0be80906cace7e2c40eb6340a9c79a",
+    "description_sha256": "54e1a685c8f02db9ecc62902c75ad5b3776c58124100de777f35cbe50256551c",
     "input_schema": {
       "additionalProperties": false,
       "properties": {

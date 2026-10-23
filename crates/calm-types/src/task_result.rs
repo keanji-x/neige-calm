@@ -113,6 +113,13 @@ fn evaluation_v1_schema() -> Value {
         .expect("evaluation-v1.schema.json is valid JSON")
 }
 
+/// Parse a complete evaluation-v1 result using the registered contract. The returned
+/// sample excludes receipt-only summary text; malformed results never reach the engine.
+pub fn evaluation_v1_sample(result: &Value) -> Result<objective::check::EvaluatorSample, String> {
+    EVALUATION_V1.check(result)?;
+    evaluation_sample(result.as_object().expect("validated evaluation object"))
+}
+
 /// Summary is kernel receipt vocabulary; the sample's wire semantics belong to objective.
 fn evaluation_sample(
     map: &Map<String, Value>,

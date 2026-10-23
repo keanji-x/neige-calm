@@ -253,7 +253,6 @@ async fn objective_evaluation_refusals_and_unsupported_checks_write_nothing() {
     for config in [
         json!({"kind":"command","params":{"command":"true"}}),
         json!({"kind":"metric","params":{"command":"true","direction":"lower"}}),
-        json!({"kind":"evaluator","params":{"rubric":[{"id":"a","criterion":"c"}],"samples":1,"aggregate":"majority"}}),
         json!({"kind":"fact","params":{"fact":"pr_merged","subject":"#1"}}),
     ] {
         let (boot, block) = setup().await;

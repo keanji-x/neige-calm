@@ -187,6 +187,10 @@ impl CardDecisionSink {
                             "task {task_id}: admitted report did not advance the task"
                         )));
                     }
+                    if let WorkerTaskReport::Completed { result, .. } = &report
+                        && let Some(task) = crate::db::sqlite::task_get_tx(tx, &task_id).await? {
+                        calm_truth::objective_host::check_jobs::report_done_tx(tx, &track_id, &task.key, result).await?;
+                    }
                     // #1830 S2 D7: the lease is released in this transaction, and the first delivery row
                     // (commit the track's checkout as this attempt ended, with the worker's message on a
                     // completion that carries one) lands with it when the card's lease is a

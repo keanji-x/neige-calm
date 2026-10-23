@@ -292,3 +292,21 @@ fn evaluation_result_contract_refuses_malformed_fields() {
         assert!(contract.check(&result).unwrap_err().contains("result:"));
     }
 }
+
+#[test]
+fn task_result_evaluation_v1_sample_uses_complete_contract() {
+    let result = evaluation_result();
+    let sample = evaluation_v1_sample(&result).unwrap();
+    assert_eq!(
+        serde_json::to_value(sample).unwrap()["judgements"],
+        result["judgements"]
+    );
+    let mut missing = result;
+    missing.as_object_mut().unwrap().remove("summary");
+    assert!(
+        evaluation_v1_sample(&missing)
+            .unwrap_err()
+            .contains("summary")
+    );
+    assert!(evaluation_v1_sample(&json!([])).is_err());
+}

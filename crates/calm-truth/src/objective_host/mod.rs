@@ -5,6 +5,7 @@
 mod approval;
 mod authorize;
 pub mod capability;
+pub mod check_jobs;
 mod intents;
 mod lifecycle;
 mod log;

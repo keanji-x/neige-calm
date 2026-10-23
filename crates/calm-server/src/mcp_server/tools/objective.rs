@@ -270,7 +270,7 @@ async fn measure(
         .as_ref()
         .ok_or_else(|| RpcError::internal("objective storage unavailable"))?;
     let track_for_tx = track.clone();
-    let (result, dispatch) = crate::db::write_in_tx_typed(ctx.repo.as_ref(), move |tx| Box::pin(async move {
+    let (result, dispatch, payloads) = crate::db::write_in_tx_typed(ctx.repo.as_ref(), move |tx| Box::pin(async move {
         use crate::error::CalmError;
         use objective::engine::Evaluation;
         // Registry roles are the first fence; persistently recheck the current Planner.
@@ -284,16 +284,21 @@ async fn measure(
             let o = state.objectives.get(&key).ok_or(CalmError::NotFound("objective does not exist in this track; read objective.kr and choose an existing key".into()))?;
             if !o.is_approved() { return Err(CalmError::Conflict("approval_required: call neige_objective_ask".into())); }
             if o.status != objective::engine::Status::Open { return Err(CalmError::Conflict("objective is not open; read objective.kr and choose an open objective".into())); }
-            if !o.definition.checks.iter().all(|c| crate::objective_dispatch::fact::supports(&c.config)) {
-                return Err(CalmError::Conflict("objective contains a check without an executor; supported: fact TaskAccepted, AskAnswered".into()));
+            if !o.definition.checks.iter().all(|c| crate::objective_dispatch::supports(&c.config)) {
+                return Err(CalmError::Conflict("objective contains a check without an executor; supported: fact TaskAccepted, AskAnswered, evaluator".into()));
             }
             let event = objective::Event::Requested { objective: key.clone(), revision: revision.clone() };
             if let Some(current) = o.evaluation.as_ref().filter(|e| e.revision() == &revision) {
                 // Reuse this round's identity, never the next round's counter. The host
                 // still checks the selected session before returning existing state.
-                objective_host::replay_request_tx(tx, &input(event, format!("evaluate:{key}:{}:{revision}", current.id()))).await?;
+                let replay = objective_host::replay_request_tx(tx, &input(event, format!("evaluate:{key}:{}:{revision}", current.id()))).await?;
+                let payloads = if let Some(Reaction::Duplicate {seq}) = replay {
+                    crate::objective_dispatch::evaluator::bind_request_tx(tx,&track_for_tx,seq).await?
+                } else if let Some(seq) = objective_host::check_jobs::evaluation_request_tx(tx,&track_for_tx,&key,current.id()).await? {
+                    crate::objective_dispatch::evaluator::bind_request_tx(tx,&track_for_tx,seq).await?
+                } else {vec![]};
                 let status = match current { Evaluation::Running { .. } => "Running", Evaluation::Ready { .. } => "Ready" };
-                return Ok((json!({"status":status, "evaluation":current.id()}), false));
+                return Ok((json!({"status":status, "evaluation":current.id()}), true, payloads));
             }
             input(event, format!("evaluate:{key}:{}:{revision}", o.evaluations))
         } else {
@@ -302,7 +307,7 @@ async fn measure(
             // A settled retry remains valid after state/approval changes. A conflicting
             // payload must conflict before the new-request admission below.
             if let Some(Reaction::Duplicate { seq }) = objective_host::replay_request_tx(tx, &input).await? {
-                return Ok((json!({"status":"Duplicate", "seq":seq}), false));
+                return Ok((json!({"status":"Duplicate", "seq":seq}), false, vec![]));
             }
             let (_, state) = objective_host::load_state_tx(tx, &track_for_tx).await?;
             let o = state.objectives.get(&key).ok_or(CalmError::NotFound("objective does not exist in this track; read objective.kr and choose an existing key".into()))?;
@@ -320,6 +325,8 @@ async fn measure(
             input
         };
         let reaction = objective_host::react_tx(tx, &input, crate::model::now_ms()).await?;
+        let seq = match &reaction { Reaction::Appended {seq,..} | Reaction::Duplicate {seq} => *seq };
+        let payloads = if evaluate { crate::objective_dispatch::evaluator::bind_request_tx(tx,&track_for_tx,seq).await? } else {vec![]};
         let mut result = match reaction {
             Reaction::Appended { seq, .. } => json!({"status":"Appended", "seq":seq}),
             Reaction::Duplicate { seq } => json!({"status":"Duplicate", "seq":seq}),
@@ -327,8 +334,11 @@ async fn measure(
         if evaluate && let Some(evaluation) = objective_host::load_state_tx(tx, &track_for_tx).await?.1.objectives.get(&key).and_then(|o| o.evaluation.as_ref()).map(|e| e.id()) {
             result["evaluation"] = json!(evaluation);
         }
-        Ok::<_, CalmError>((result, true))
+        Ok::<_, CalmError>((result, true, payloads))
     })).await.map_err(calm_error)?;
+    crate::objective_dispatch::evaluator::declare(&ctx, &identity, &track, payloads)
+        .await
+        .map_err(calm_error)?;
     // Persisted requests remain recoverable by the projector if immediate dispatch fails.
     if dispatch
         && let Err(error) = crate::objective_dispatch::dispatch_track(
