@@ -80,7 +80,7 @@ async fn measure(boot: &Boot, revision: &str, changed: bool) {
                 json!({"kind":"metric","output":{"value":if changed {3.5} else {5.0}}})
             }
             "majority" | "median" => {
-                json!({"kind":"evaluator","output":{"judgements":[{"item":"quality","trend":if changed {"worse"} else {"same"},"evidence":[{"path":"src/lib.rs","line":1}]}],"findings":{"blocking":0,"major":if changed {1} else {0},"minor":0}}})
+                json!({"kind":"evaluator","output":{"judgements":[{"item":"quality","trend":if sample > 0 {"better"} else if changed {"worse"} else {"same"},"evidence":[{"path":"src/lib.rs","line":1}]}],"findings":{"blocking":if sample > 0 {if changed {3} else {2}} else {0},"major":if sample > 0 {if changed {4} else {3}} else if changed {1} else {0},"minor":if sample > 0 {if changed {5} else {4}} else {0}}}})
             }
             _ => json!({"kind":"fact","output":{"holds":!changed}}),
         };
@@ -113,6 +113,14 @@ async fn measure(boot: &Boot, revision: &str, changed: bool) {
 }
 
 async fn fixture(measurement: bool) -> Boot {
+    fixture_with_evaluator(measurement, 1, "Quality").await
+}
+
+async fn fixture_with_evaluator(measurement: bool, samples: u32, criterion: &str) -> Boot {
+    fixture_with_block(measurement, samples, criterion).await.0
+}
+
+async fn fixture_with_block(measurement: bool, samples: u32, criterion: &str) -> (Boot, Value) {
     let (boot, block) = setup().await;
     let mut d = definition();
     d["mode"] = json!({"loop":{"plateau":10}});
@@ -128,11 +136,11 @@ async fn fixture(measurement: bool) -> Boot {
         ),
         (
             "majority",
-            json!({"kind":"evaluator","params":{"rubric":[{"id":"quality","criterion":"Quality"}],"samples":1,"aggregate":"majority"}}),
+            json!({"kind":"evaluator","params":{"rubric":[{"id":"quality","criterion":criterion}],"samples":samples,"aggregate":"majority"}}),
         ),
         (
             "median",
-            json!({"kind":"evaluator","params":{"rubric":[{"id":"quality","criterion":"Quality"}],"samples":1,"aggregate":"median"}}),
+            json!({"kind":"evaluator","params":{"rubric":[{"id":"quality","criterion":criterion}],"samples":samples,"aggregate":"median"}}),
         ),
         (
             "task",
@@ -152,7 +160,7 @@ async fn fixture(measurement: bool) -> Boot {
         .filter(|(id, _)| !measurement || !matches!(*id, "higher" | "median"))
         .map(|(id, config)| json!({"id":id,"role":"ratchet","config":config}))
         .collect();
-    define(&boot, Some(block), d).await;
+    let block = define(&boot, Some(block), d).await;
     if measurement {
         let id = request(&boot).await["ask_id"].as_i64().unwrap();
         assert_eq!(
@@ -160,7 +168,7 @@ async fn fixture(measurement: bool) -> Boot {
             StatusCode::NO_CONTENT
         );
     }
-    boot
+    (boot, block)
 }
 
 #[tokio::test]
@@ -181,7 +189,8 @@ async fn objective_kr_no_data_and_targets_for_every_check_kind() {
         table["rows"][0]["target"],
         concat!(
             "cmd: 退出码 0；lower: ↓ 不劣于基线（±0.2）；higher: ↑ 不劣于基线；",
-            "majority: rubric 1 项 · 多数；median: rubric 1 项 · 中位；",
+            "majority: quality: Quality · 趋势：多数（平票持平）；findings：各严重级别取下中位；通过：有样本且聚合后 blocking 为 0；",
+            "median: quality: Quality · 趋势：下中位；findings：各严重级别取下中位；通过：有样本且聚合后 blocking 为 0；",
             "task: 任务 finish 已被接受；pr: PR #42 已合并；ask: 问询 123 已回答"
         )
     );
@@ -272,4 +281,71 @@ async fn objective_kr_latest_ledger_including_discard_and_running_fallback() {
     )
     .await;
     assert_eq!(table(&boot).await["rows"][0]["current"], CHANGED);
+}
+
+#[tokio::test]
+async fn objective_kr_evaluator_preserves_each_samples_findings_and_baseline() {
+    let boot = fixture_with_evaluator(true, 2, "Quality").await;
+    keep_first(&boot).await;
+    measure(&boot, NEXT, true).await;
+    let current = table(&boot).await["rows"][0]["current"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_eq!(
+        current.split('；').nth(2).unwrap(),
+        concat!(
+            "majority: 样本1 quality:退步 · blocking 0/major 1/minor 0 / ",
+            "样本2 quality:改善 · blocking 3/major 4/minor 5（基线：",
+            "样本1 quality:持平 · blocking 0/major 0/minor 0 / ",
+            "样本2 quality:改善 · blocking 2/major 3/minor 4）",
+        )
+    );
+}
+
+#[tokio::test]
+async fn objective_kr_targets_preserve_full_criteria_and_distinguish_standards() {
+    let criterion = concat!(
+        "Every public operation must preserve the documented authority boundary, ",
+        "including all nested invocations, and cite evidence for each exceptional path ",
+        "without omitting the final clause.",
+    );
+    let first = fixture_with_evaluator(false, 1, criterion).await;
+    let second = fixture_with_evaluator(false, 1, "Preserve replay equality").await;
+    let first = table(&first).await["rows"][0]["target"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let second = table(&second).await["rows"][0]["target"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_ne!(first, second);
+    assert!(first.contains(&format!("majority: quality: {criterion} ·")));
+    assert!(first.contains(&format!("median: quality: {criterion} ·")));
+    assert!(second.contains("quality: Preserve replay equality ·"));
+}
+
+#[tokio::test]
+async fn objective_kr_standard_change_shows_missing_baseline_check() {
+    let (boot, block) = fixture_with_block(true, 1, "Quality").await;
+    keep_first(&boot).await;
+    let (_, state) = objective_host::load_state(&boot.repo.sqlite_db().unwrap(), &boot.track_id)
+        .await
+        .unwrap();
+    let mut definition = state.objectives[&objective::ids::ObjectiveKey::new("kr")]
+        .definition
+        .clone();
+    definition.checks[0].id = objective::ids::CheckId::new("new-command");
+    define(
+        &boot,
+        Some(block),
+        serde_json::to_value(definition).unwrap(),
+    )
+    .await;
+    let current = table(&boot).await["rows"][0]["current"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(current.starts_with("new-command: —（基线：—）；lower: 5（基线：5）；"));
 }

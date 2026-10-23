@@ -32,6 +32,13 @@
 # instructions. A display-contract change edits the projection, its expectations
 # and this existing baseline; adding an objective adds no scan or CI invocation.
 
+# KR evaluator rules add eight CJK matches: three in native display copy
+# (majority ties, per-severity lower median, and the nonempty blocking-free pass
+# condition), and five in independent majority/median target expectations.
+# These describe engine rules without evaluating them. A display-contract change
+# edits the projection, its expectations and this existing baseline; adding a
+# rubric item adds no scan, exemption or CI invocation.
+
 # Evaluator binding adds seven long_literal matches: three persistence queries
 # and four crash-fixture trigger statements. Agent instructions live in prompts/.
 # They use the existing 120-character shape and baseline; there is no new

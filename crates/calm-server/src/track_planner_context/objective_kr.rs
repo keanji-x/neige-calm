@@ -110,35 +110,35 @@ fn output_text(output: &objective::check::CheckOutput) -> String {
         CheckOutput::Command(output) => format!("退出码 {}", output.exit_code),
         CheckOutput::Metric(output) => output.value.to_string(),
         CheckOutput::Fact(output) => if output.holds { "成立" } else { "不成立" }.into(),
-        CheckOutput::Evaluator(output) => {
-            let samples = output
-                .samples
-                .iter()
-                .enumerate()
-                .map(|(index, sample)| {
-                    let judgements = sample
-                        .judgements
-                        .iter()
-                        .map(|judgement| {
-                            let trend = match judgement.trend {
-                                Trend::Worse => "退步",
-                                Trend::Same => "持平",
-                                Trend::Better => "改善",
-                            };
-                            format!("{}:{trend}", judgement.item)
-                        })
-                        .collect::<Vec<_>>()
-                        .join("、");
-                    format!("样本{} {judgements}", index + 1)
-                })
-                .collect::<Vec<_>>()
-                .join(" / ");
-            let findings = output.findings();
-            format!(
-                "{samples} · blocking {}/major {}/minor {}",
-                findings.blocking, findings.major, findings.minor
-            )
-        }
+        CheckOutput::Evaluator(output) => output
+            .samples
+            .iter()
+            .enumerate()
+            .map(|(index, sample)| {
+                let judgements = sample
+                    .judgements
+                    .iter()
+                    .map(|judgement| {
+                        let trend = match judgement.trend {
+                            Trend::Worse => "退步",
+                            Trend::Same => "持平",
+                            Trend::Better => "改善",
+                        };
+                        format!("{}:{trend}", judgement.item)
+                    })
+                    .collect::<Vec<_>>()
+                    .join("、");
+                let findings = &sample.findings;
+                format!(
+                    "样本{} {judgements} · blocking {}/major {}/minor {}",
+                    index + 1,
+                    findings.blocking,
+                    findings.major,
+                    findings.minor
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(" / "),
     }
 }
 
@@ -187,10 +187,18 @@ fn target_text(config: &objective::check::CheckConfig) -> String {
         }
         CheckConfig::Evaluator(params) => {
             let aggregate = match params.aggregate {
-                Aggregate::Majority => "多数",
-                Aggregate::Median => "中位",
+                Aggregate::Majority => "多数（平票持平）",
+                Aggregate::Median => "下中位",
             };
-            format!("rubric {} 项 · {aggregate}", params.rubric.len())
+            let rubric = params
+                .rubric
+                .iter()
+                .map(|item| format!("{}: {}", item.id, item.criterion))
+                .collect::<Vec<_>>()
+                .join("、");
+            format!(
+                "{rubric} · 趋势：{aggregate}；findings：各严重级别取下中位；通过：有样本且聚合后 blocking 为 0"
+            )
         }
         CheckConfig::Fact(params) => match params.fact {
             Fact::TaskAccepted => format!("任务 {} 已被接受", params.subject),
