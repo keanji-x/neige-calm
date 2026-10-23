@@ -10,7 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { ApiRequest, ApiTransportPort, ApiTransportResponse } from '../../../../core/api/types.ts';
 import { createUnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
-import { RECHECK_TEXT, STILL_CREATES_NOTE } from '../../../../core/domain/agent-providers.ts';
+import { RECHECK_TEXT, unavailableCreationNote } from '../../../../core/domain/agent-providers.ts';
 import { ThemeProvider } from '../theme/public.tsx';
 import { createAppRouter } from '../router/public.tsx';
 import { bootTestCardRuntime } from '../router/test-card-runtime.ts';
@@ -37,9 +37,9 @@ afterEach(() => {
 function answer(claude: Readonly<{ status: string; reason: string | null }>) {
   return [
     { availability: { provider: 'codex', status: 'ready', reason: null, authentication_notice: null, checked_at_ms: 1_760_000_000_000 },
-      capabilities: { managed_conversation: true, steer: true, images: true, manual_compact: true, history_replacement: true, requires_ready_availability: false } },
+      accepts_unavailable_blank_track: true, capabilities: { managed_conversation: true, steer: true, images: true, manual_compact: true, history_replacement: true, requires_ready_availability: false } },
     { availability: { provider: 'claude', ...claude, authentication_notice: null, checked_at_ms: 1_760_000_000_000 },
-      capabilities: { managed_conversation: true, steer: false, images: true, manual_compact: true, history_replacement: true, requires_ready_availability: true } },
+      accepts_unavailable_blank_track: true, capabilities: { managed_conversation: true, steer: false, images: true, manual_compact: true, history_replacement: true, requires_ready_availability: true } },
   ];
 }
 
@@ -99,7 +99,7 @@ it('maps the Planners path to its pane', () => {
 it('lists each provider with its status and reason, and Recheck replaces the answer and refreshes the catalogs', async () => {
   const { sent, client } = renderPlanners();
   const claudeCatalog = queryKeys.modelCatalog({ kind: 'provider', provider: 'claude' });
-  await screen.findByText(LOGGED_OUT);
+  await screen.findByText(`${LOGGED_OUT} ${unavailableCreationNote('Claude')}`);
   expect(within(row('Claude')).getByText('Unavailable')).toBeTruthy();
   expect(within(row('Codex')).getByText('Ready')).toBeTruthy();
   expect(sent.filter((request) => request.path === '/api/agent-providers?refresh=true')).toHaveLength(0);
@@ -107,7 +107,7 @@ it('lists each provider with its status and reason, and Recheck replaces the ans
   const readsBeforeRecheck = sent.filter((request) => request.path === '/api/agent-providers/managed').length;
 
   await userEvent.click(screen.getByRole('button', { name: 'Recheck planners' }));
-  await waitFor(() => expect(screen.queryByText(LOGGED_OUT)).toBeNull());
+  await waitFor(() => expect(screen.queryByText(`${LOGGED_OUT} ${unavailableCreationNote('Claude')}`)).toBeNull());
   expect(within(row('Claude')).getByText('Ready')).toBeTruthy();
   expect(sent.filter((request) => request.path === '/api/agent-providers?refresh=true')).toHaveLength(1);
   /* The recheck re-fetched the Claude CLI's model list on the server (#1822). */
@@ -129,11 +129,11 @@ describe('a failed Recheck', () => {
       body: { error: 'must be true or false', code: 'bad_request', field: 'refresh' } }), 'refresh: must be true or false'],
   ] as const)('shows %s as its sentence and keeps the previous answer', async (_name, reply, text) => {
     renderPlanners(reply);
-    await screen.findByText(LOGGED_OUT);
+    await screen.findByText(`${LOGGED_OUT} ${unavailableCreationNote('Claude')}`);
     await userEvent.click(screen.getByRole('button', { name: 'Recheck planners' }));
     expect((await screen.findByRole('alert')).textContent).toBe(text);
     expect(screen.getByRole('alert').textContent).not.toMatch(RAW_OR_CONNECTIVITY);
-    expect(screen.getByText(LOGGED_OUT)).toBeTruthy();
+    expect(screen.getByText(`${LOGGED_OUT} ${unavailableCreationNote('Claude')}`)).toBeTruthy();
   });
 });
 
@@ -214,11 +214,10 @@ it('a same-value fresh GET overrides an obsolete PUT acknowledgement even with a
 });
 
 
-it('injects managed readiness facts through the route without consulting the legacy table', async () => {
+it('injects blank-creation facts through the route without consulting managed-conversation readiness', async () => {
   const entries = answer({ status: 'unavailable', reason: LOGGED_OUT });
-  entries[1].capabilities.requires_ready_availability = false;
   renderPlanners(undefined, undefined, (request) => Promise.resolve(providerResponse(request, entries)));
-  await screen.findByText(`${LOGGED_OUT} ${STILL_CREATES_NOTE}`);
+  await screen.findByText(`${LOGGED_OUT} ${unavailableCreationNote('Claude')}`);
   expect(within(row('Claude')).getByText('Unavailable')).toBeTruthy();
 });
 
@@ -234,12 +233,12 @@ it('retains Checking, first-read retry and pending Recheck states through the ro
   expect(screen.queryByText('Checking providers…')).toBeNull();
   fail = false;
   await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
-  await screen.findByText(LOGGED_OUT);
+  await screen.findByText(`${LOGGED_OUT} ${unavailableCreationNote('Claude')}`);
   await userEvent.click(screen.getByRole('button', { name: 'Recheck planners' }));
   expect(screen.getByRole('button', { name: 'Recheck planners' }).hasAttribute('disabled')).toBe(true);
-  expect(screen.getByText(LOGGED_OUT)).toBeTruthy();
+  expect(screen.getByText(`${LOGGED_OUT} ${unavailableCreationNote('Claude')}`)).toBeTruthy();
   release({ status: 200, statusText: 'OK', body: answer({ status: 'ready', reason: null }).map(({ availability }) => availability) });
-  await waitFor(() => expect(screen.queryByText(LOGGED_OUT)).toBeNull());
+  await waitFor(() => expect(screen.queryByText(`${LOGGED_OUT} ${unavailableCreationNote('Claude')}`)).toBeNull());
   expect(sent.filter((request) => request.path.endsWith('refresh=true'))).toHaveLength(1);
 });
 
@@ -255,12 +254,12 @@ it('keeps fresh Recheck availability when an older managed read resolves later',
     if (hold && request.path === '/api/agent-providers/managed') return new Promise((resolve) => { release = resolve; });
     return Promise.resolve(providerResponse(request, stale));
   });
-  await screen.findByText(LOGGED_OUT);
+  await screen.findByText(`${LOGGED_OUT} ${unavailableCreationNote('Claude')}`);
   hold = true;
   const pending = client.refetchQueries({ queryKey: managedProvidersQueryKey });
   await waitFor(() => expect(release).toBeTypeOf('function'));
   await userEvent.click(screen.getByRole('button', { name: 'Recheck planners' }));
-  await waitFor(() => expect(screen.queryByText(LOGGED_OUT)).toBeNull());
+  await waitFor(() => expect(screen.queryByText(`${LOGGED_OUT} ${unavailableCreationNote('Claude')}`)).toBeNull());
   const checkedAt = `Last checked at ${new Date(fresh[0].availability.checked_at_ms).toLocaleTimeString()}. The server keeps an answer for 30 seconds.`;
   expect(screen.getByText(checkedAt)).toBeTruthy();
   await act(async () => { release({ status: 200, statusText: 'OK', body: stale }); await pending;
@@ -268,7 +267,7 @@ it('keeps fresh Recheck availability when an older managed read resolves later',
     await new Promise((resolve) => setTimeout(resolve, 0));
   });
   expect(within(row('Claude')).getByText('Ready')).toBeTruthy();
-  expect(screen.queryByText(LOGGED_OUT)).toBeNull();
+  expect(screen.queryByText(`${LOGGED_OUT} ${unavailableCreationNote('Claude')}`)).toBeNull();
   expect(screen.getByText(/^Last checked at /).textContent).toBe(checkedAt);
   expect(client.getQueryData(queryKeys.agentProviders())).toEqual(fresh.map(({ availability }) => availability));
 });
@@ -277,14 +276,13 @@ it.each(['/api/agent-providers', '/api/agent-providers/managed'])('keeps Checkin
   let release!: (value: ApiTransportResponse) => void;
   const live = answer({ status: 'unavailable', reason: LOGGED_OUT });
   const managed = answer({ status: 'ready', reason: null }).reverse();
-  managed[0].capabilities.requires_ready_availability = false;
   renderPlanners(undefined, undefined, (request) => request.path === delayedPath
     ? new Promise((resolve) => { release = resolve; })
     : Promise.resolve(providerResponse(request, request.path === '/api/agent-providers' ? live : managed)));
   await screen.findByText('Checking providers…');
   await waitFor(() => expect(release).toBeTypeOf('function'));
   act(() => { release(providerResponse({ path: delayedPath } as ApiRequest, delayedPath === '/api/agent-providers' ? live : managed)); });
-  await screen.findByText(`${LOGGED_OUT} ${STILL_CREATES_NOTE}`);
+  await screen.findByText(`${LOGGED_OUT} ${unavailableCreationNote('Claude')}`);
   expect(within(row('Claude')).getByText('Unavailable')).toBeTruthy();
   expect(screen.getAllByRole('listitem').indexOf(row('Codex'))).toBeLessThan(screen.getAllByRole('listitem').indexOf(row('Claude')));
 });
@@ -296,10 +294,10 @@ it('reports missing managed capabilities explicitly and retries both reads', asy
     return Promise.resolve(providerResponse(request, missing && request.path === '/api/agent-providers/managed' ? entries.slice(0, 1) : entries));
   });
   await screen.findByText('Planner capabilities are unavailable for claude.');
-  expect(screen.queryByText(LOGGED_OUT)).toBeNull();
+  expect(screen.queryByText(`${LOGGED_OUT} ${unavailableCreationNote('Claude')}`)).toBeNull();
   missing = false;
   await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
-  await screen.findByText(LOGGED_OUT);
+  await screen.findByText(`${LOGGED_OUT} ${unavailableCreationNote('Claude')}`);
   expect(sent.filter(({ path }) => path === '/api/agent-providers').length).toBeGreaterThan(1);
   expect(sent.filter(({ path }) => path === '/api/agent-providers/managed').length).toBeGreaterThan(1);
 });

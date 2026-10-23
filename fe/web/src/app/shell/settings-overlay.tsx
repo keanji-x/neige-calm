@@ -172,7 +172,7 @@ function PlannersPaneHost({ transport, unauthorized }: SettingsOverlayProps) {
   const joined = availability.data === undefined || providers.data === undefined || missing !== undefined
     ? undefined : availability.data.map((entry) => ({
       availability: entry,
-      capabilities: { requires_ready_availability: providers.data.find(({ availability: managed }) => managed.provider === entry.provider)!.capabilities.requires_ready_availability },
+      accepts_unavailable_blank_track: providers.data.find(({ availability: managed }) => managed.provider === entry.provider)!.accepts_unavailable_blank_track,
     }));
   const loadError = availability.error ?? providers.error;
   const recheck = useAgentProvidersRecheck(transport, unauthorized);

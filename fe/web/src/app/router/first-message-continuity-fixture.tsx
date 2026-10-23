@@ -56,7 +56,7 @@ export function renderFirstMessageFixture(options: { onCommit?: () => void; capa
         syncEventVersion: 29, dbInstanceId: 'first-message-continuity' });
       if (request.path.startsWith('/api/agent-providers/managed')) return ok([{
         availability: { provider: 'codex', status: 'ready', reason: null, checked_at_ms: 1, authentication_notice: null },
-        capabilities: { managed_conversation: true, steer: true, images: true, manual_compact: true, history_replacement: true, requires_ready_availability: false },
+        accepts_unavailable_blank_track: true, capabilities: { managed_conversation: true, steer: true, images: true, manual_compact: true, history_replacement: true, requires_ready_availability: false },
       }]);
       if (request.path === '/api/tracks/daily/conversations') {
         if (request.method === 'POST') {

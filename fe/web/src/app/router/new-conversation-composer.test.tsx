@@ -48,7 +48,7 @@ function renderApp(managed = false, createdTitle: string | null = null) {
       if (request.path === '/api/version') return Promise.resolve(ok({ webCompatVersion: WEB_COMPAT_VERSION, minWebCompatVersion: WEB_COMPAT_VERSION, syncEventVersion: 20, dbInstanceId: 'test', assistantProviders: true, conversationInitialInput: true, conversationCreateModel: true }));
       if (request.path.startsWith('/api/agent-providers/managed')) return Promise.resolve(ok([{
         availability: { provider: managed ? 'claude' : 'codex', status: 'ready', reason: null, checked_at_ms: 1, authentication_notice: null },
-        capabilities: { managed_conversation: true, steer: !managed, images: true, manual_compact: true, history_replacement: true, requires_ready_availability: false },
+        accepts_unavailable_blank_track: true, capabilities: { managed_conversation: true, steer: !managed, images: true, manual_compact: true, history_replacement: true, requires_ready_availability: false },
       }]));
       if (managed && request.path === '/api/models?provider=claude') return Promise.resolve(ok({ models: [{ id: 'sonnet', model: 'sonnet', display_name: 'Sonnet', resolved_model: null, description: '', is_default: true, default_reasoning_effort: null, supported_reasoning_efforts: [] }], source: 'live', fetched_at_ms: 1, default_source: 'claude_cli', default: { model: 'sonnet', reasoning_effort: null, supported_reasoning_efforts: [] } }));
       const conversations = /^\/api\/tracks\/(\w+)\/conversations$/.exec(request.path);

@@ -133,6 +133,23 @@ async fn original_selection_replays_despite_changed_catalog_advice() {
 async fn canonical_claude_creation_unsupported_shapes_keep_explicit_coverage() {
     use crate::routes::tracks::create::{CreatePlan, creation_plan};
     let fx = Fixture::new().await;
+    let crate::extract::Json(providers) = crate::routes::agent_providers::list_managed_providers(
+        axum::extract::State(fx.route.clone()),
+        axum::extract::State(crate::state::CodexShellState::from_ref(&fx.state)),
+        crate::extract::Query(crate::routes::agent_providers::AgentProvidersQuery {
+            refresh: false,
+        }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(providers.len(), AgentProvider::ALL.len());
+    for provider in providers {
+        let response = serde_json::to_value(provider).unwrap();
+        assert_eq!(
+            response["accepts_unavailable_blank_track"], true,
+            "{response}"
+        );
+    }
     let original = serde_json::json!({"area_id":fx.area,"title":"new blank Track","planner_provider":"claude","first_message":FIRST,"theme":{"fg":[255,255,255],"bg":[0,0,0]}});
     for (field, value) in [
         ("admin", serde_json::json!(true)),

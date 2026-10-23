@@ -150,9 +150,12 @@ pub(crate) async fn retry_codex_authentication(
     Ok(response)
 }
 
-/// Availability and protocol capabilities share the existing backend registration owner.
+/// Availability and backend capabilities, with admission supplied by the Track creation owner.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ManagedProviderAvailability {
+    /// Whether fresh blank managed Track creation accepts this provider while unavailable.
+    /// Excludes templates, attached workspaces, admin, forks and other creation kinds.
+    pub accepts_unavailable_blank_track: bool,
     pub availability: ProviderAvailability,
     pub capabilities: crate::harness::backend_metadata::ManagedCapabilities,
 }
@@ -176,6 +179,9 @@ pub(crate) async fn list_managed_providers(
                     crate::harness::backend::PlannerBackend::metadata(&availability.provider)
                         .capabilities;
                 ManagedProviderAvailability {
+                    accepts_unavailable_blank_track: super::tracks::accepts_unavailable_blank_track(
+                        &availability.provider,
+                    ),
                     availability,
                     capabilities,
                 }

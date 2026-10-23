@@ -166,7 +166,7 @@ function harness(options: {
       }
       /* What `routes/agent_providers.rs` answers (#1817): Codex ready; Claude ready, unavailable with a
          reason, or `not_configured` on a server without the Claude Planner. */
-      if (request.path === '/api/agent-providers') {
+      if (request.path === '/api/agent-providers' || request.path === '/api/agent-providers/managed') {
         const claude = options.claudePlanner !== true
           ? { status: 'not_configured', reason: 'calm-server was started without --claude-planner-config' }
           : options.claudeUnavailable === undefined
@@ -177,13 +177,16 @@ function harness(options: {
             ? { provider: 'codex', status: 'ready', reason: null, authentication_notice: null, checked_at_ms: 1 }
             : { provider: 'codex', status: 'unavailable', reason: options.codexUnavailable, authentication_notice: null, checked_at_ms: 1 },
           { provider: 'claude', ...claude, authentication_notice: null, checked_at_ms: 1 },
-        ] });
+        ].map((availability) => request.path.endsWith('/managed')
+          ? { availability, accepts_unavailable_blank_track: true, capabilities: { managed_conversation: true,
+            steer: false, images: true, manual_compact: true, history_replacement: true, requires_ready_availability: true } }
+          : availability) });
       }
       /* What `routes/models.rs` answers for a Claude Planner (#1822): the Claude CLI's list on a server
          whose Claude is ready, `unavailable` with no catalog on one without Claude Planners. */
       if (request.path === '/api/models?provider=claude') {
         return (options.heldClaudeCatalog ?? Promise.resolve()).then(() => ({ status: 200, statusText: 'OK',
-          body: options.claudePlanner === true ? CLAUDE_CATALOG : NO_CATALOG }));
+          body: options.claudePlanner === true && options.claudeUnavailable === undefined ? CLAUDE_CATALOG : NO_CATALOG }));
       }
       if (request.path === '/api/models?card_id=card-planner' && options.plannerProvider === 'claude') {
         return Promise.resolve({ status: 200, statusText: 'OK', body: CLAUDE_CATALOG });
@@ -357,7 +360,7 @@ describe('New track model selection', () => {
     expect(screen.queryByRole('group', { name: 'Claude' })).toBeNull();
   });
 
-  it('shows a configured Claude that cannot run now disabled, with the server reason (#1817)', async () => {
+  it('creates a fresh blank track with unavailable Claude and its server reason (#3037)', async () => {
     const reason = 'not logged in — run `claude /login` with CLAUDE_CONFIG_DIR=/srv/claude';
     const { sent } = harness({ templates: [], claudePlanner: true, claudeUnavailable: reason });
     await userEvent.click(await screen.findByRole('button', { name: 'New track in Work' }));
@@ -365,9 +368,16 @@ describe('New track model selection', () => {
     (await screen.findByRole('button', { name: 'Model: Codex Default' })).focus();
     await userEvent.keyboard('{ArrowDown}');
     const claude = await screen.findByRole('group', { name: 'Claude' });
-    expect(within(claude).getByRole('note').textContent).toBe(`Claude is unavailable: ${reason}`);
-    const sonnet = within(claude).getByRole('menuitem', { name: /^Sonnet/ });
-    expect(sonnet.getAttribute('aria-disabled') === 'true' || sonnet.hasAttribute('disabled')).toBe(true);
+    expect(within(claude).getByRole('note').textContent).toBe(`Claude is unavailable: ${reason} A track can still be created; it runs once Claude is back.`);
+    const defaultChoice = within(claude).getByRole('menuitem', { name: /^Default/ });
+    expect(defaultChoice.getAttribute('aria-disabled') === 'true' || defaultChoice.hasAttribute('disabled')).toBe(false);
+    await userEvent.click(defaultChoice);
+    await userEvent.type(screen.getByLabelText(TASK_LABEL), 'Plan while Claude is down');
+    await userEvent.click(screen.getByRole('button', { name: 'Create track' }));
+    await waitFor(() => expect(createdTrackRequests(sent)).toHaveLength(1));
+    expect(createdTrackRequests(sent)[0]?.body).toMatchObject({ planner_provider: 'claude' });
+    expect(createdTrackRequests(sent)[0]?.body).not.toHaveProperty('model');
+    expect(createdTrackRequests(sent)[0]?.body).toHaveProperty('first_message', 'Plan while Claude is down');
     expect(sent.some((request) => request.path === '/api/agent-providers')).toBe(true);
   });
 

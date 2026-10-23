@@ -40,27 +40,10 @@ export function agentProvidersOperation(recheck: boolean): ApiOperation<Provider
 /** A failed Recheck, a read-only probe read by `probeFailureText`; the previous answer stays on screen either way. */
 export const RECHECK_TEXT: ProbeText = Object.freeze({ answered: 'The recheck failed.', unfinished: 'The recheck did not complete. Try again.' });
 
-/**
- * Conservative picker policy while `provider` is not `ready` (#1817).
- * Fresh blank managed Claude creation is durably accepted and execution waits; template, attached,
- * admin, fork, recipe, `template_input`, and cross-area creation retain the readiness refusal (400).
- * Codex: never refused — its create answers 201 during a
- * daemon outage (#293), and the Planner runs once Codex is back.
- * Total over AgentProvider: adding a backend must explicitly declare its Planner create policy.
- */
-export const CREATE_REFUSED_WHEN_UNAVAILABLE: Readonly<Record<AgentProvider, boolean>> = Object.freeze({
-  codex: false,
-  claude: true,
-  opencode: true,
-  grok: true,
-});
-
-/**
- * Said beside the reason of an unavailable provider that create still accepts (only Codex). True on both
- * create paths: without a first message the track answers 201; with one, a daemon outage fails the
- * create (500) before the message is queued, so it goes out on a retry once Codex is back.
- */
-export const STILL_CREATES_NOTE = 'A track can still be created, but a first message is only sent once Codex is back.';
+/** Availability advice for fresh blank creation; the server owns admission of every shape. */
+export function unavailableCreationNote(provider: string): string {
+  return `A track can still be created; it runs once ${provider} is back.`;
+}
 
 /** `provider`'s entry, or `null` when the answer is not in yet or does not name it. */
 export function availabilityOf(
@@ -99,6 +82,7 @@ export function authenticationRetryFailureText(error: unknown): string {
 
 /** Backend-owned managed conversation capabilities; availability is the same cached check. */
 export const managedProviderAvailabilitySchema = z.object({
+  accepts_unavailable_blank_track: z.boolean(),
   availability: providerAvailabilitySchema,
   capabilities: z.object({
     managed_conversation: z.boolean(),

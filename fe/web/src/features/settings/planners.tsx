@@ -9,7 +9,7 @@ import { useRef } from 'react';
 
 import type { AgentProvider } from '../../../../core/api/schemas.ts';
 import {
-  STILL_CREATES_NOTE, type ProviderAvailability, type ManagedProviderAvailability, type AuthenticationRetryResponse,
+  unavailableCreationNote, type ProviderAvailability, type ManagedProviderAvailability, type AuthenticationRetryResponse,
 } from '../../../../core/domain/agent-providers.ts';
 import { ErrorBox } from '../../ui/error-box/public.tsx';
 import { useState } from '../../ui/state/public.ts';
@@ -43,7 +43,7 @@ export type PlannersPaneProps = Readonly<{
 /** Availability and the one required capability consumed by Settings. */
 type PlannerProvider = Readonly<{
   availability: ProviderAvailability;
-  capabilities: Pick<ManagedProviderAvailability['capabilities'], 'requires_ready_availability'>;
+  accepts_unavailable_blank_track: ManagedProviderAvailability['accepts_unavailable_blank_track'];
 }>;
 
 /** Only this setting's value and capabilities; app owns the bag, transport and invalidation. */
@@ -170,12 +170,12 @@ const STATUS_BADGES: Readonly<Record<ProviderAvailability['status'], Readonly<{
 
 const READY_DESCRIPTION = 'Passed every check; new tracks can use it.';
 
-/** The server's reason, and for a provider create still accepts (Codex), that it still does (#1817). */
-function describe({ availability: entry, capabilities }: PlannerProvider): string {
+/** The server's reason and its blank-creation advice. */
+function describe({ availability: entry, accepts_unavailable_blank_track }: PlannerProvider): string {
   if (entry.authentication_notice !== null) return entry.authentication_notice.text;
   if (entry.reason === null) return READY_DESCRIPTION;
-  return entry.status === 'unavailable' && !capabilities.requires_ready_availability
-    ? `${entry.reason} ${STILL_CREATES_NOTE}`
+  return entry.status === 'unavailable' && accepts_unavailable_blank_track
+    ? `${entry.reason} ${unavailableCreationNote(PROVIDER_LABELS[entry.provider])}`
     : entry.reason;
 }
 
@@ -201,12 +201,12 @@ export function PlannersPane({
         ? loadError === null && <AstryxText as="p" color="secondary">Checking providers…</AstryxText>
         : (
           <SettingsList>
-            {providers.map(({ availability: entry, capabilities }) => (
+            {providers.map(({ availability: entry, accepts_unavailable_blank_track }) => (
               <SettingRow
                 key={entry.provider}
                 title={PROVIDER_LABELS[entry.provider]}
                 /* A node, not a string: a string description is cut to one line, and a reason is a fix to read whole. */
-                description={<span className={styles.plannerReason}>{describe({ availability: entry, capabilities })}</span>}
+                description={<span className={styles.plannerReason}>{describe({ availability: entry, accepts_unavailable_blank_track })}</span>}
                 control={<>
                   <AstryxBadge className={styles.pluginStateChip}
                     variant={STATUS_BADGES[entry.status].variant} label={STATUS_BADGES[entry.status].label} />

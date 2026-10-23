@@ -68,8 +68,15 @@ function mount(claude: unknown, opencode = false, opencodeCatalog: unknown = NO_
     if (request.path === '/api/models?provider=codex') return Promise.resolve(ok(LIVE_CATALOG));
     if (request.path === '/api/models?provider=claude') return Promise.resolve(ok(claude));
     if (request.path === '/api/models?provider=opencode') return Promise.resolve(ok(opencodeCatalog));
-    if (request.path === '/api/agent-providers') return Promise.resolve(ok([...availability(claude === NO_CLAUDE ? 'not_configured' : 'ready'),
-      { provider: 'opencode', status: opencode ? 'ready' : 'not_configured', reason: opencode ? null : 'Configure the agent', checked_at_ms: 1, authentication_notice: null }]));
+    if (request.path === '/api/agent-providers' || request.path === '/api/agent-providers/managed') {
+      const answers = [...availability(claude === NO_CLAUDE ? 'not_configured' : 'ready'),
+        { provider: 'opencode', status: opencode ? 'ready' : 'not_configured', reason: opencode ? null : 'Configure the agent', checked_at_ms: 1, authentication_notice: null }];
+      return Promise.resolve(ok(request.path.endsWith('/managed') ? answers.map((entry) => ({
+        availability: entry, accepts_unavailable_blank_track: true,
+        capabilities: { managed_conversation: true, steer: false, images: false, manual_compact: false,
+          history_replacement: false, requires_ready_availability: true },
+      })) : answers));
+    }
     if (request.path === '/api/settings') return Promise.resolve(ok({}));
     return Promise.resolve(ok([]));
   } };

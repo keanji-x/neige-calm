@@ -6,9 +6,9 @@ import { page, userEvent } from 'vitest/browser';
 import type { ManagedProviderAvailability } from '../../../../core/domain/agent-providers.ts';
 import { renderAssistantProviderFixture } from './assistant-provider-fixture.tsx';
 
-const CLAUDE: ManagedProviderAvailability = Object.freeze({
+const CLAUDE = Object.freeze<ManagedProviderAvailability>({
   availability: { provider: 'claude', status: 'ready', reason: null, checked_at_ms: 1, authentication_notice: null },
-  capabilities: { managed_conversation: true, steer: false, images: false, manual_compact: false, history_replacement: false, requires_ready_availability: true },
+  accepts_unavailable_blank_track: true, capabilities: { managed_conversation: true, steer: false, images: false, manual_compact: false, history_replacement: false, requires_ready_availability: true },
 });
 afterEach(async () => { cleanup(); document.getElementById('root')?.remove(); await page.viewport(1280, 800); });
 

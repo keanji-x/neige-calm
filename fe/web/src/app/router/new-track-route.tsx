@@ -14,6 +14,7 @@ import { useMentionTrigger } from '../../features/chat/thread/mention-trigger.ts
 import { NewTrackForm, type NewTrackDraft, type NewTrackFormState } from '../../features/area/new-track/public.tsx';
 import { useCompactViewport } from '../../ui/viewport/public.ts';
 import { ErrorBox } from '../../ui/error-box/public.tsx';
+import { managedProvidersQueryOptions } from '../providers/managed-providers.ts';
 import { agentProvidersQueryOptions } from '../providers/agent-providers.ts';
 import { createDirectoryLister } from '../providers/directory.ts';
 import { useMentionSearch } from '../providers/mentions.ts';
@@ -48,15 +49,14 @@ function NewTrackEditor({ transport, unauthorized, workspace, session, store }: 
 }) {
   const compactViewport = useCompactViewport();
   const areaId = session.area.id;
-  /* One group per provider, each following its provider's availability (#1817): `not_configured` leaves it
-     out; `unavailable` shows the server's reason. The picker conservatively disables Claude even
-     though fresh blank managed creation is durably accepted and execution waits; template, attached,
-     admin, fork, recipe, template_input, and cross-area creation retain the readiness refusal. */
+  /* Availability has one cache owner; the managed response supplies only static creation capability.
+     The server admits each submitted shape and renders any refusal through the existing error flow. */
   const codexCatalog = useQuery(modelCatalogQueryOptions(transport, { kind: 'provider', provider: 'codex' }, unauthorized));
   const claudeCatalog = useQuery(modelCatalogQueryOptions(transport, { kind: 'provider', provider: 'claude' }, unauthorized));
   const opencodeCatalog = useQuery(modelCatalogQueryOptions(transport, { kind: 'provider', provider: 'opencode' }, unauthorized));
   const grokCatalog = useQuery(modelCatalogQueryOptions(transport, { kind: 'provider', provider: 'grok' }, unauthorized));
   const availability = useQuery(agentProvidersQueryOptions(transport, unauthorized));
+  const providers = useQuery(managedProvidersQueryOptions(transport, unauthorized));
   const trackMutations = useTrackMutations(transport, unauthorized);
   const templates = useTrackTemplates(transport, unauthorized);
   const recipes = useTrackRecipes(transport, unauthorized);
@@ -166,10 +166,14 @@ function NewTrackEditor({ transport, unauthorized, workspace, session, store }: 
     modelControls={<>
       <ModelPill
         groups={[
-          { provider: 'codex', catalog: codexCatalog.data ?? null, availability: availabilityOf(availability.data, 'codex') },
-          { provider: 'claude', catalog: claudeCatalog.data ?? null, availability: availabilityOf(availability.data, 'claude') },
-          { provider: 'opencode', catalog: opencodeCatalog.data ?? null, availability: availabilityOf(availability.data, 'opencode') },
-          { provider: 'grok', catalog: grokCatalog.data ?? null, availability: availabilityOf(availability.data, 'grok') },
+          { provider: 'codex', catalog: codexCatalog.data ?? null, availability: availabilityOf(availability.data, 'codex'),
+            acceptsUnavailableBlankTrack: providers.data?.find((entry) => entry.availability.provider === 'codex')?.accepts_unavailable_blank_track },
+          { provider: 'claude', catalog: claudeCatalog.data ?? null, availability: availabilityOf(availability.data, 'claude'),
+            acceptsUnavailableBlankTrack: providers.data?.find((entry) => entry.availability.provider === 'claude')?.accepts_unavailable_blank_track },
+          { provider: 'opencode', catalog: opencodeCatalog.data ?? null, availability: availabilityOf(availability.data, 'opencode'),
+            acceptsUnavailableBlankTrack: providers.data?.find((entry) => entry.availability.provider === 'opencode')?.accepts_unavailable_blank_track },
+          { provider: 'grok', catalog: grokCatalog.data ?? null, availability: availabilityOf(availability.data, 'grok'),
+            acceptsUnavailableBlankTrack: providers.data?.find((entry) => entry.availability.provider === 'grok')?.accepts_unavailable_blank_track },
         ]}
         provider={session.provider}
         effortControl={compactViewport ? 'in-menu' : 'separate'}

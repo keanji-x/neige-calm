@@ -75,6 +75,7 @@ use tokio::sync::Notify;
 mod add;
 mod allocation;
 mod create;
+pub(crate) use create::accepts_unavailable_blank_track;
 mod deletion_observation;
 use deletion_observation::{DeletionObservation, Stage};
 mod fork_guard;

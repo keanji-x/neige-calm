@@ -15,7 +15,7 @@ import { Fragment, useRef, type KeyboardEvent, type ReactNode, type RefObject } 
 
 import type { AgentProvider, PlannerPermissionMode } from '../../../../../core/api/generated/wire.ts';
 import {
-  CREATE_REFUSED_WHEN_UNAVAILABLE, STILL_CREATES_NOTE, type ProviderAvailability,
+  unavailableCreationNote, type ProviderAvailability,
 } from '../../../../../core/domain/agent-providers.ts';
 import type { ModelCatalog, ModelSelection } from '../../../../../core/domain/conversation.ts';
 import { useState } from '../../../ui/state/public.ts';
@@ -32,8 +32,7 @@ const SWITCH_NOTE = 'Switching to a model with a smaller context window can make
  * `unavailable` says why that provider's `source: 'unavailable'` catalog is empty. A Claude group waits for
  * its availability and catalog before it joins a menu that offers other providers (`hiddenUntilKnown`); a
  * Codex one stays while the daemon is down, saying so. Only codex compacts (`switchNote`).
- * Whether an unavailable group stays pickable is core's `CREATE_REFUSED_WHEN_UNAVAILABLE` (#1817), the
- * one per-provider flag Settings reads too.
+ * The host supplies the server's blank-creation capability only on the new-track surface.
  */
 const PROVIDERS: Readonly<Record<AgentProvider, Readonly<{
   label: string; unavailable: string; hiddenUntilKnown: boolean; switchNote: boolean;
@@ -64,6 +63,8 @@ export type ModelGroup<Provider extends string = AgentProvider> = Readonly<{
   provider: Provider;
   catalog: ModelCatalog | null;
   availability: ProviderAvailability | null;
+  /** Server-owned blank track creation capability; omitted for live model changes. */
+  acceptsUnavailableBlankTrack?: boolean;
   /** Explicit host admission, independent of the Planner create policy; undefined keeps its existing behavior. */
   selectionProblem?: string | null;
 }>;
@@ -186,7 +187,7 @@ export function ModelPill<Provider extends string = AgentProvider>({
             ),
             variant: effortControl === 'in-menu' ? 'secondary' : 'ghost',
             size: 'sm',
-            isDisabled: isDisabled || (unreachable && !shown.some(group => group.selectionProblem === null)),
+            isDisabled: isDisabled || (unreachable && !shown.some(group => group.selectionProblem === null || group.acceptsUnavailableBlankTrack === true)),
             className: styles.trigger,
           }}
         >
@@ -253,7 +254,7 @@ function GroupChoices<Provider extends string>({ group, selection, onChange }: R
      nothing to pick, and one create still accepts stays pickable under a warning. */
   const reason = group.selectionProblem === undefined
     ? (group.availability?.status === 'unavailable' ? group.availability.reason : null) : group.selectionProblem;
-  const refused = group.selectionProblem !== undefined || Object.entries(CREATE_REFUSED_WHEN_UNAVAILABLE).find(([key]) => key === group.provider)?.[1];
+  const refused = group.selectionProblem !== undefined || group.acceptsUnavailableBlankTrack !== true;
   const blocked = refused ? reason : null;
   return <>
     {group.selectionProblem !== undefined && group.availability?.authentication_notice != null && (
@@ -262,7 +263,7 @@ function GroupChoices<Provider extends string>({ group, selection, onChange }: R
     {reason !== null && (
       <div className={refused ? styles.reason : `${styles.reason} ${styles.warning}`} role="note">
         <Text type="supporting" color={refused ? undefined : 'inherit'}>
-          {`${providerLabel(group, group.provider)} is unavailable: ${reason}${refused ? '' : ` ${STILL_CREATES_NOTE}`}`}
+          {`${providerLabel(group, group.provider)} is unavailable: ${reason}${refused ? '' : ` ${unavailableCreationNote(providerLabel(group, group.provider))}`}`}
         </Text>
       </div>
     )}

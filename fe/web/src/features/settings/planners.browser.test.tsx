@@ -16,8 +16,8 @@ const LOGGED_OUT = 'not logged in — run `claude /login` with '
   + 'CLAUDE_CONFIG_DIR=/home/owner/.local/share/neige-next/claude-planner/config-dir-for-the-dedicated-login';
 
 const PROVIDERS: readonly ManagedProviderAvailability[] = [
-  { availability: { provider: 'codex', status: 'ready', reason: null, authentication_notice: null, checked_at_ms: 1_760_000_000_000 }, capabilities: { managed_conversation: true, steer: true, images: true, manual_compact: true, history_replacement: true, requires_ready_availability: false } },
-  { availability: { provider: 'claude', status: 'unavailable', reason: LOGGED_OUT, authentication_notice: null, checked_at_ms: 1_760_000_000_000 }, capabilities: { managed_conversation: true, steer: false, images: true, manual_compact: true, history_replacement: true, requires_ready_availability: true } },
+  { availability: { provider: 'codex', status: 'ready', reason: null, authentication_notice: null, checked_at_ms: 1_760_000_000_000 }, accepts_unavailable_blank_track: true, capabilities: { managed_conversation: true, steer: true, images: true, manual_compact: true, history_replacement: true, requires_ready_availability: false } },
+  { availability: { provider: 'claude', status: 'unavailable', reason: LOGGED_OUT, authentication_notice: null, checked_at_ms: 1_760_000_000_000 }, accepts_unavailable_blank_track: true, capabilities: { managed_conversation: true, steer: false, images: true, manual_compact: true, history_replacement: true, requires_ready_availability: true } },
 ];
 
 describe('Settings Planners', () => {

@@ -5,6 +5,7 @@ use super::super::{CreateTrackRequest, FolderClaim, TrackInit};
 use super::*;
 use crate::db::sqlite::TrackWorkspacePlan;
 use crate::harness::backend::factory::{PlannerFactory, RetainedIdentityPreparation};
+use crate::session_projection_repo::AgentProvider;
 use std::path::PathBuf;
 
 /// Permanent receipts decide first; a new key uses the creation owner's static
@@ -123,6 +124,22 @@ pub(in crate::routes::tracks) async fn creation_plan(
         })
     })
     .await
+}
+
+/// Fresh blank managed creation accepts unavailable providers with a retained
+/// Planner identity: local sessions allocate canonically without native work;
+/// native threads use historical message-less creation with advisory readiness.
+/// This says nothing about excluded creation shapes or live model writes.
+pub(crate) fn accepts_unavailable_blank_track(provider: &AgentProvider) -> bool {
+    match PlannerFactory::retained_identity(&crate::harness::profile::PlannerBinding {
+        profile: crate::harness::profile::HarnessProfile::Planner,
+        provider: provider.clone(),
+    }) {
+        Ok(
+            RetainedIdentityPreparation::NativeThread | RetainedIdentityPreparation::LocalSession,
+        ) => true,
+        Err(_) => false,
+    }
 }
 
 // The creation owner admits blank managed canonical shapes here. Excluded

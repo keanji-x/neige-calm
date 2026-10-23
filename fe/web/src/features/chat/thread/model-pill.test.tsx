@@ -525,7 +525,7 @@ describe('ModelPill', () => {
   });
 
   describe('following provider availability (#1817)', () => {
-    it('shows an unavailable Claude group with the server reason and nothing in it to pick', () => {
+    it('blocks unavailable Claude model changes without the blank-creation capability', () => {
       const onChange = vi.fn();
       render(<ModelPill groups={both(claudeCatalog(), unavailable('claude', CLAUDE_LOGGED_OUT))} provider="codex"
         selection={FOLLOW_INSTALLATION_DEFAULT} onChange={onChange} />);
@@ -551,13 +551,13 @@ describe('ModelPill', () => {
       const reason = 'codex is not logged in — run `codex login` with CODEX_HOME=/srv/codex';
       const onChange = vi.fn();
       render(<ModelPill groups={[
-        { provider: 'codex', availability: unavailable('codex', reason), catalog: catalog() },
+        { provider: 'codex', availability: unavailable('codex', reason), catalog: catalog(), acceptsUnavailableBlankTrack: true },
         { provider: 'claude', availability: ready('claude'), catalog: claudeCatalog() },
       ]} provider="claude" selection={FOLLOW_INSTALLATION_DEFAULT} onChange={onChange} />);
       const menu = openMenu(/^Model:/);
       const codex = within(menu).getByRole('group', { name: 'Codex' });
       expect(within(codex).getByRole('note').textContent)
-        .toBe(`Codex is unavailable: ${reason} A track can still be created, but a first message is only sent once Codex is back.`);
+        .toBe(`Codex is unavailable: ${reason} A track can still be created; it runs once Codex is back.`);
       for (const name of [/^Default/, 'GPT-5']) {
         expect(isDisabled(within(codex).getByRole('menuitem', { name })), String(name)).toBe(false);
       }

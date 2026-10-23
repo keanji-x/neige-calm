@@ -3,7 +3,7 @@ import { managedProviderProblem, managedProvidersOperation } from './agent-provi
 
 const READY = Object.freeze({
   availability: { provider: 'claude' as const, status: 'ready' as const, reason: null, checked_at_ms: 1, authentication_notice: null },
-  capabilities: { managed_conversation: true, steer: false, images: true, manual_compact: true, history_replacement: true, requires_ready_availability: true },
+  accepts_unavailable_blank_track: true, capabilities: { managed_conversation: true, steer: false, images: true, manual_compact: true, history_replacement: true, requires_ready_availability: true },
 });
 
 it('decodes registered managed capabilities and preserves availability notices', () => {

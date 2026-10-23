@@ -9,9 +9,9 @@ import { PlannersPane, type PlannersPaneProps } from './planners.tsx';
 afterEach(cleanup);
 
 const PROVIDERS: NonNullable<PlannersPaneProps['providers']> = [
-  { availability: { provider: 'codex', status: 'ready', reason: null, authentication_notice: null, checked_at_ms: 1_760_000_000_000 }, capabilities: { requires_ready_availability: false } },
+  { availability: { provider: 'codex', status: 'ready', reason: null, authentication_notice: null, checked_at_ms: 1_760_000_000_000 }, accepts_unavailable_blank_track: true },
   { availability: { provider: 'claude', status: 'not_configured', reason: 'calm-server was started without --claude-planner-config',
-    authentication_notice: null, checked_at_ms: 1_760_000_000_000 }, capabilities: { requires_ready_availability: true } },
+    authentication_notice: null, checked_at_ms: 1_760_000_000_000 }, accepts_unavailable_blank_track: true },
 ];
 
 function pane(overrides: Partial<PlannersPaneProps> = {}) {
@@ -46,25 +46,25 @@ describe('PlannersPane', () => {
     expect(within(row('Claude')).getByText('calm-server was started without --claude-planner-config')).toBeTruthy();
   });
 
-  it('says a Codex outage still lets tracks be created, and says nothing like it for Claude (#1817)', () => {
+  it('describes blank track creation during Codex and Claude outages (#3037)', () => {
     pane({ providers: [
-      { availability: { provider: 'codex', status: 'unavailable', reason: 'shared codex app-server is not running', authentication_notice: null, checked_at_ms: 1 }, capabilities: { requires_ready_availability: false } },
-      { availability: { provider: 'claude', status: 'unavailable', reason: 'not logged in', authentication_notice: null, checked_at_ms: 1 }, capabilities: { requires_ready_availability: true } },
+      { availability: { provider: 'codex', status: 'unavailable', reason: 'shared codex app-server is not running', authentication_notice: null, checked_at_ms: 1 }, accepts_unavailable_blank_track: true },
+      { availability: { provider: 'claude', status: 'unavailable', reason: 'not logged in', authentication_notice: null, checked_at_ms: 1 }, accepts_unavailable_blank_track: true },
     ] });
     expect(within(row('Codex')).getByText(
-      'shared codex app-server is not running A track can still be created, but a first message is only sent once Codex is back.',
+      'shared codex app-server is not running A track can still be created; it runs once Codex is back.',
     )).toBeTruthy();
-    expect(within(row('Claude')).getByText('not logged in')).toBeTruthy();
+    expect(within(row('Claude')).getByText('not logged in A track can still be created; it runs once Claude is back.')).toBeTruthy();
   });
 
-  it.each([false, true])('uses injected readiness %s independently of provider identity', (requiresReady) => {
-    pane({ providers: PROVIDERS.map(({ availability, capabilities }) => ({
+  it.each([false, true])('uses injected blank-creation capability %s independently of provider identity', (acceptsUnavailable) => {
+    pane({ providers: PROVIDERS.map(({ availability }) => ({
       availability: { ...availability, status: 'unavailable', reason: 'server outage' },
-      capabilities: { ...capabilities, requires_ready_availability: requiresReady },
+      accepts_unavailable_blank_track: acceptsUnavailable,
     })) });
     for (const title of ['Codex', 'Claude']) {
-      expect(within(row(title)).getByText(requiresReady ? 'server outage'
-        : 'server outage A track can still be created, but a first message is only sent once Codex is back.')).toBeTruthy();
+      expect(within(row(title)).getByText(acceptsUnavailable
+        ? `server outage A track can still be created; it runs once ${title} is back.` : 'server outage')).toBeTruthy();
     }
   });
 
@@ -85,10 +85,9 @@ describe('PlannersPane', () => {
   it('names Grok and shows its sign-in advice when it is unavailable', () => {
     const reason = 'grok did not authenticate (authenticate `cached_token`: timed out); sign it in with its own CLI under the environment its ACP registration declares, then retry';
     pane({ providers: [
-      { availability: { provider: 'grok', status: 'unavailable', reason, authentication_notice: null, checked_at_ms: 1 }, capabilities: { requires_ready_availability: true } },
+      { availability: { provider: 'grok', status: 'unavailable', reason, authentication_notice: null, checked_at_ms: 1 }, accepts_unavailable_blank_track: true },
     ] });
-    expect(within(row('Grok')).getByText(reason)).toBeTruthy();
-    expect(screen.queryByText(/A track can still be created/)).toBeNull();
+    expect(within(row('Grok')).getByText(`${reason} A track can still be created; it runs once Grok is back.`)).toBeTruthy();
   });
 
   it('rechecks on request and says when a recheck failed', () => {
@@ -110,7 +109,7 @@ it('offers an injected owner retry only for a confirmed failure and passes its e
   pane({
     providers: [{ availability: { provider: 'codex', status: 'unavailable', reason: 'Sign in for the server.', checked_at_ms: 1,
       authentication_notice: { kind: 'sign_in_required', text: 'Sign in for the server.', revision: '7' } },
-      capabilities: { requires_ready_availability: false } }],
+      accepts_unavailable_blank_track: true }],
     authenticationRecovery: { provider: 'codex', pending: false, error: null, notices: [], onRetry, onOpenConversation: vi.fn() },
   });
   await userEvent.click(screen.getByRole('button', { name: 'Retry queued messages after server sign-in' }));

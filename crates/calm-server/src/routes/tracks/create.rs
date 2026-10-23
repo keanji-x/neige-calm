@@ -25,6 +25,7 @@ use crate::state::RouteState;
 use super::{CreateTrackOptions, TrackCreateIdempotencyClaim, create_track_structure};
 
 mod creation_plan;
+pub(crate) use creation_plan::accepts_unavailable_blank_track;
 pub(super) use creation_plan::creation_plan;
 mod historical_plan;
 pub(super) use historical_plan::{plan_first_message, plan_historical_receipt, plan_keyed_create};

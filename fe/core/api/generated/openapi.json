@@ -16666,12 +16666,17 @@
       },
       "ManagedProviderAvailability": {
         "type": "object",
-        "description": "Availability and protocol capabilities share the existing backend registration owner.",
+        "description": "Availability and backend capabilities, with admission supplied by the Track creation owner.",
         "required": [
+          "accepts_unavailable_blank_track",
           "availability",
           "capabilities"
         ],
         "properties": {
+          "accepts_unavailable_blank_track": {
+            "type": "boolean",
+            "description": "Whether fresh blank managed Track creation accepts this provider while unavailable.\nExcludes templates, attached workspaces, admin, forks and other creation kinds."
+          },
           "availability": {
             "$ref": "#/components/schemas/ProviderAvailability"
           },
