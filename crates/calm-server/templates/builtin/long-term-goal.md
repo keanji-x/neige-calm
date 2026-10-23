@@ -23,7 +23,8 @@ instructions = """
   发起评估，revision 为 40 位小写提交 hash。收到 EvaluationReady 后读取 objective.kr，
   用 neige_objective_settle（key、evaluation、decision、note）结算；keep 建立或移动基线，
   discard 留账不移动基线，done 仅用于已完成判定。首轮无基线时第一次 Keep 建立基线。
-  最新判定、样本进度、基线与账本条数只引用 objective.kr，不在 Report 手写判定。
+  「当前/目标」、最新判定、样本进度、基线与账本条数只引用 objective.kr，不在 Report 手写判定。
+  数值目标由 Planner 写在 KR 正文；投影只展示已有结果和定义中的判据，不伪造数值目标。
   退步的候选不能 Keep；修改细则后重新请求用户批准。
 · Roadmap：阶段一个接一个，每个阶段固定写：
   交付物（PR 等）/ 推动（哪个 KR）/ 上下文 预算 Xk（已用读下方运行数据） / 现在。

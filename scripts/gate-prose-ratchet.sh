@@ -27,6 +27,11 @@
 # projection and this existing baseline; adding an objective edits neither.
 # No new scan, list of objective keys or CI invocation is added.
 
+# KR current/target adds six CJK matches in native table display copy and
+# independent production-entry assertions. These are UI labels, not agent
+# instructions. A display-contract change edits the projection, its expectations
+# and this existing baseline; adding an objective adds no scan or CI invocation.
+
 # Evaluator binding adds seven long_literal matches: three persistence queries
 # and four crash-fixture trigger statements. Agent instructions live in prompts/.
 # They use the existing 120-character shape and baseline; there is no new

@@ -715,3 +715,6 @@ mod objective_evaluation;
 
 #[path = "user_ask/objective_evaluator.rs"]
 mod objective_evaluator;
+
+#[path = "user_ask/objective_kr.rs"]
+mod objective_kr;

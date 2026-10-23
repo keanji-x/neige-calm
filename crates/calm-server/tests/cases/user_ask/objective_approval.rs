@@ -121,7 +121,7 @@ async fn objective_approval_rest_click_tool_reuse_and_projection() {
     let kr = overlays.iter().find(|o| o.kind == "objective.kr").unwrap();
     assert_eq!(
         kr.payload["cell"]["table"]["rows"][0],
-        json!({"key":"kr","title":"交付 KR","approval":"已批准","verdict":"—","evaluation":"—","baseline":"—","ledger":"0"})
+        json!({"key":"kr","title":"交付 KR","approval":"已批准","current":"—","target":"accepted: 任务 finish 已被接受","verdict":"—","evaluation":"—","baseline":"—","ledger":"0"})
     );
     // Resolve the shipped template's slot through the production Report tools too.
     let source = include_str!("../../../templates/builtin/long-term-goal.md");
