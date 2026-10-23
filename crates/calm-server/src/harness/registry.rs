@@ -564,19 +564,76 @@ impl HarnessRegistry {
         roles: &crate::card_role_cache::CardRoleCache,
         daemon: Option<&crate::shared_codex_appserver::SharedCodexAppServer>,
     ) -> crate::error::Result<()> {
-        let worker = replacement.old_worker.id.as_str();
-        self.retire_carrier_slot(worker, &expected);
-        self.0
-            .live_replies
-            .retire_carrier(&replacement.card_id.clone().into(), worker);
+        self.retire_and_publish_replacement(replacement, &expected, roles)?;
+        Self::cleanup_replacement(replacement, expected, daemon).await
+    }
+
+    /// Synchronous half of single-card postcommit publication.
+    pub fn retire_and_publish_replacement(
+        &self,
+        replacement: &calm_truth::db::sqlite::conversation::CarrierReplacement,
+        expected: &CarrierRetirementSlot,
+        roles: &crate::card_role_cache::CardRoleCache,
+    ) -> crate::error::Result<()> {
+        self.retire_replacement(replacement, expected);
+        let entry = Self::replacement_role(replacement)?;
+        roles.insert(entry.0, entry.1.role, entry.1.track_id);
+        Ok(())
+    }
+
+    fn replacement_role(
+        replacement: &calm_truth::db::sqlite::conversation::CarrierReplacement,
+    ) -> crate::error::Result<(crate::ids::CardId, crate::card_role_cache::CardCacheEntry)> {
         let (role, _) = replacement
             .new_binding
             .conversation_shape(serde_json::json!({}))?;
-        roles.insert(
+        Ok((
             replacement.card_id.clone().into(),
-            role,
-            replacement.track_id.clone().into(),
-        );
+            crate::card_role_cache::CardCacheEntry {
+                role,
+                track_id: replacement.track_id.clone().into(),
+            },
+        ))
+    }
+
+    fn retire_replacement(
+        &self,
+        replacement: &calm_truth::db::sqlite::conversation::CarrierReplacement,
+        expected: &CarrierRetirementSlot,
+    ) {
+        let worker = replacement.old_worker.id.as_str();
+        self.retire_carrier_slot(worker, expected);
+        self.0
+            .live_replies
+            .retire_carrier(&replacement.card_id.clone().into(), worker);
+    }
+
+    /// Postcommit synchronous publication. Caller retains both captured owners and
+    /// admission fences until this returns; cleanup may await only afterwards.
+    pub fn publish_pair(
+        &self,
+        pair: [(
+            &calm_truth::db::sqlite::conversation::CarrierReplacement,
+            &CarrierRetirementSlot,
+        ); 2],
+        roles: &crate::card_role_cache::CardRoleCache,
+    ) -> crate::error::Result<()> {
+        let old = Self::replacement_role(pair[0].0)?;
+        let new = Self::replacement_role(pair[1].0)?;
+        for (replacement, expected) in pair {
+            self.retire_replacement(replacement, expected);
+        }
+        roles.publish_pair(old, new);
+        Ok(())
+    }
+
+    /// Provider cleanup belongs to each original owner, outside the publication
+    /// barrier and SQL writer. A cleanup error never undoes committed roles.
+    pub async fn cleanup_replacement(
+        replacement: &calm_truth::db::sqlite::conversation::CarrierReplacement,
+        expected: CarrierRetirementSlot,
+        daemon: Option<&crate::shared_codex_appserver::SharedCodexAppServer>,
+    ) -> crate::error::Result<()> {
         let shutdown = if let CarrierRetirementSlot::Live(handle) = &expected {
             handle.shutdown().await
         } else {

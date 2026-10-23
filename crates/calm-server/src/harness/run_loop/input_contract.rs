@@ -58,11 +58,27 @@ impl RuntimeInputs {
     }
 
     pub(super) async fn idle_for_lifecycle(&self, inner: &Inner) -> Result<bool> {
+        Ok(self.lifecycle_refusal(inner).await?.is_none())
+    }
+
+    pub(super) async fn lifecycle_refusal(
+        &self,
+        inner: &Inner,
+    ) -> Result<Option<hibernation::OwnerRefusal>> {
+        use calm_types::harness::snapshot::LifecycleRefusal;
+        use hibernation::OwnerRefusal;
         match self {
-            Self::Historical(queue) => Ok(queue.lock().await.is_empty()),
-            Self::Canonical(_) => Ok(canonical_idle_for_lifecycle(
-                &super::canonical::read_current(inner).await?.snapshot,
-            )),
+            Self::Historical(queue) => {
+                Ok((!queue.lock().await.is_empty()).then_some(OwnerRefusal::PendingMessages))
+            }
+            Self::Canonical(_) => Ok(super::canonical::read_current(inner)
+                .await?
+                .snapshot
+                .lifecycle_refusal()
+                .map(|reason| match reason {
+                    LifecycleRefusal::PendingMessages => OwnerRefusal::PendingMessages,
+                    LifecycleRefusal::TurnInFlight => OwnerRefusal::TurnInFlight,
+                })),
         }
     }
 

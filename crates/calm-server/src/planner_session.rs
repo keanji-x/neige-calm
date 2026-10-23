@@ -11,11 +11,11 @@ pub(crate) async fn resolve_card(
     write: &WriteContext,
     track: &TrackId,
 ) -> Result<Option<CardId>> {
-    let Some(card) = repo
-        .cards_by_track(track.as_str())
-        .await?
+    let cards = repo.cards_by_track(track.as_str()).await?;
+    let roles = write.roles_snapshot(cards.iter().map(|card| &card.id));
+    let Some(card) = cards
         .into_iter()
-        .find(|card| write.verify_role(&card.id) == Some(CardRole::Planner))
+        .find(|card| roles.get(&card.id) == Some(&CardRole::Planner))
     else {
         return Ok(None);
     };

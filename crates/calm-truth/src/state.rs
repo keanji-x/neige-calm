@@ -18,6 +18,14 @@ impl WriteContext {
         }
     }
 
+    /// Read roles for one multi-card decision under the cache publication barrier.
+    pub fn roles_snapshot<'a>(
+        &self,
+        ids: impl IntoIterator<Item = &'a CardId>,
+    ) -> std::collections::HashMap<CardId, CardRole> {
+        self.role_cache.roles_snapshot(ids)
+    }
+
     pub fn verify_role(&self, card_id: &CardId) -> Option<CardRole> {
         self.role_cache.get(card_id)
     }

@@ -3,29 +3,49 @@
 //! make the sleep ineligible or are refused after the observation gate closes.
 use super::*;
 
+/// Owner-local refusal, kept separate from SQL/provider failures and public errors.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum OwnerRefusal {
+    TurnInFlight,
+    OpenAsk,
+    PendingMessages,
+    PendingObservations,
+    PendingSubmission,
+    SessionUnavailable,
+    Changed,
+}
+
+#[derive(Debug)]
+pub enum OwnerProofError {
+    Refused {
+        reason: OwnerRefusal,
+        error: CalmError,
+    },
+    Failed(CalmError),
+}
+impl OwnerProofError {
+    pub fn refused(reason: OwnerRefusal, error: CalmError) -> Self {
+        Self::Refused { reason, error }
+    }
+    pub fn into_error(self) -> CalmError {
+        match self {
+            Self::Refused { error, .. } | Self::Failed(error) => error,
+        }
+    }
+}
+impl From<CalmError> for OwnerProofError {
+    fn from(error: CalmError) -> Self {
+        Self::Failed(error)
+    }
+}
+
 impl PlannerHarness {
     /// Hold the existing turn/compaction issuance fence through a lifecycle write.
     /// Unlike hibernation, this neither stops the owner nor releases native context.
     pub(crate) async fn lock_if_idle(&self) -> Result<tokio::sync::MutexGuard<'_, ()>> {
-        let guard = tokio::time::timeout(Duration::from_secs(5), self.inner.issuance.lock())
+        self.lock_if_idle_typed()
             .await
-            .map_err(|_| {
-                CalmError::ServiceUnavailable(
-                    "Conversation is still settling; try again shortly.".into(),
-                )
-            })?;
-        let ingress_empty = match &self.inner.observations {
-            ObservationIngress::Running(sender) => sender.capacity() == sender.max_capacity(),
-            #[cfg(feature = "fixtures")]
-            ObservationIngress::Unstarted(sender) => sender.capacity() == sender.max_capacity(),
-        };
-        if self.inner.shutting_down.load(Ordering::SeqCst)
-            || self.inner.parked.is_parked()
-            || !idle_for_lifecycle(&self.inner, ingress_empty).await?
-        {
-            return Err(CalmError::Conflict("Wait for the reply and queued messages to finish before archiving this conversation.".into()));
-        }
-        Ok(guard)
+            .map_err(OwnerProofError::into_error)
     }
 
     pub(crate) async fn hibernate_if_idle(&self) -> Result<bool> {
@@ -129,14 +149,16 @@ pub(super) async fn quiesce(
 }
 
 async fn idle_for_lifecycle(inner: &Arc<Inner>, ingress_empty: bool) -> Result<bool> {
-    idle_for_lifecycle_guarded(inner, ingress_empty, false).await
+    Ok(idle_for_lifecycle_guarded(inner, ingress_empty, false)
+        .await?
+        .is_none())
 }
 
 async fn idle_for_lifecycle_guarded(
     inner: &Arc<Inner>,
     ingress_empty: bool,
     native_guarded: bool,
-) -> Result<bool> {
+) -> Result<Option<OwnerRefusal>> {
     let state = inner.state.lock().await.clone();
     if inner
         .planner_compaction
@@ -144,15 +166,23 @@ async fn idle_for_lifecycle_guarded(
         .await
         .as_ref()
         .is_some_and(|r| r.pending())
-        || !ingress_empty
-        || !matches!(
-            state,
-            HarnessState::Idle | HarnessState::TurnCompleted { .. } | HarnessState::Resumed { .. }
-        )
-        || !inner.inputs.idle_for_lifecycle(inner).await?
-        || !inner.steered_into_running_turn.lock().await.is_empty()
     {
-        return Ok(false);
+        return Ok(Some(OwnerRefusal::TurnInFlight));
+    }
+    if !ingress_empty {
+        return Ok(Some(OwnerRefusal::PendingObservations));
+    }
+    if !matches!(
+        state,
+        HarnessState::Idle | HarnessState::TurnCompleted { .. } | HarnessState::Resumed { .. }
+    ) {
+        return Ok(Some(OwnerRefusal::TurnInFlight));
+    }
+    if let Some(reason) = inner.inputs.lifecycle_refusal(inner).await? {
+        return Ok(Some(reason));
+    }
+    if !inner.steered_into_running_turn.lock().await.is_empty() {
+        return Ok(Some(OwnerRefusal::PendingMessages));
     }
     let thread = inner.thread_id.read().await.clone();
     if !native_guarded
@@ -160,9 +190,9 @@ async fn idle_for_lifecycle_guarded(
             .as_deref()
             .is_some_and(|thread| inner.backend.active_turn_id_for_thread(thread).is_some())
     {
-        return Ok(false);
+        return Ok(Some(OwnerRefusal::TurnInFlight));
     }
-    Ok(true)
+    Ok(None)
 }
 
 /// Parks issuance, never ingress. No lock guard crosses the caller's SQL window.
@@ -173,32 +203,50 @@ pub struct IdleCarrierOwner<'a> {
     park: crate::harness::carrier_park::ParkToken<'a>,
 }
 impl IdleCarrierOwner<'_> {
-    pub(crate) fn matches_current(&self, card: &str, worker: &str) -> bool {
+    pub(crate) fn check_current(
+        &self,
+        card: &str,
+        worker: &str,
+    ) -> std::result::Result<(), OwnerRefusal> {
         let inner = &self.handle.inner;
-        inner.card_id.as_str() == card
-            && inner.worker_session_id == worker
-            && self.park.is_current()
-            && self.native.recheck()
-            && !inner.shutting_down.load(Ordering::SeqCst)
-            && inner.held_requests.is_empty()
+        if inner.card_id.as_str() != card
+            || inner.worker_session_id != worker
+            || !self.park.is_current()
+        {
+            return Err(OwnerRefusal::Changed);
+        }
+        if !self.native.recheck() || inner.shutting_down.load(Ordering::SeqCst) {
+            return Err(OwnerRefusal::SessionUnavailable);
+        }
+        if !inner.held_requests.is_empty() {
+            return Err(OwnerRefusal::OpenAsk);
+        }
+        Ok(())
     }
 
     pub async fn recheck(&self) -> Result<()> {
+        self.recheck_typed()
+            .await
+            .map_err(OwnerProofError::into_error)
+    }
+
+    pub async fn recheck_typed(&self) -> std::result::Result<(), OwnerProofError> {
         let inner = &self.handle.inner;
         let _issuance = inner.issuance.lock().await;
-        if !self.park.is_current()
-            || inner.shutting_down.load(Ordering::SeqCst)
-            || !inner.held_requests.is_empty()
-            || !self.native.recheck()
-            || !idle_for_lifecycle_guarded(inner, ingress_empty(inner), true).await?
-        {
-            return Err(CalmError::Conflict(
-                "carrier cannot prove safe detachment".into(),
+        let reason = match self.check_current(inner.card_id.as_str(), &inner.worker_session_id) {
+            Err(reason) => Some(reason),
+            Ok(()) => idle_for_lifecycle_guarded(inner, ingress_empty(inner), true).await?,
+        };
+        if let Some(reason) = reason {
+            return Err(OwnerProofError::refused(
+                reason,
+                CalmError::Conflict("carrier cannot prove safe detachment".into()),
             ));
         }
         Ok(())
     }
 }
+
 fn ingress_empty(inner: &Inner) -> bool {
     match &inner.observations {
         ObservationIngress::Running(sender) => sender.capacity() == sender.max_capacity(),
@@ -208,27 +256,67 @@ fn ingress_empty(inner: &Inner) -> bool {
 }
 impl PlannerHarness {
     pub async fn idle_carrier_owner(&self) -> Result<IdleCarrierOwner<'_>> {
-        let issuance = self.lock_if_idle().await?;
+        self.idle_carrier_owner_typed()
+            .await
+            .map_err(OwnerProofError::into_error)
+    }
+
+    async fn lock_if_idle_typed(
+        &self,
+    ) -> std::result::Result<tokio::sync::MutexGuard<'_, ()>, OwnerProofError> {
+        let guard = tokio::time::timeout(Duration::from_secs(5), self.inner.issuance.lock())
+            .await
+            .map_err(|_| {
+                OwnerProofError::refused(
+                    OwnerRefusal::SessionUnavailable,
+                    CalmError::ServiceUnavailable(
+                        "Conversation is still settling; try again shortly.".into(),
+                    ),
+                )
+            })?;
+        let reason =
+            if self.inner.shutting_down.load(Ordering::SeqCst) || self.inner.parked.is_parked() {
+                Some(OwnerRefusal::SessionUnavailable)
+            } else {
+                idle_for_lifecycle_guarded(&self.inner, ingress_empty(&self.inner), false).await?
+            };
+        if let Some(reason) = reason {
+            return Err(OwnerProofError::refused(reason, CalmError::Conflict("Wait for the reply and queued messages to finish before archiving this conversation.".into())));
+        }
+        Ok(guard)
+    }
+
+    pub async fn idle_carrier_owner_typed(
+        &self,
+    ) -> std::result::Result<IdleCarrierOwner<'_>, OwnerProofError> {
+        let issuance = self.lock_if_idle_typed().await?;
         let thread = self.inner.thread_id.read().await.clone();
         let native = self
             .inner
             .backend
             .carrier_idle_for_detach(thread.as_deref())
             .ok_or_else(|| {
-                CalmError::Conflict("native owner cannot prove safe detachment".into())
+                OwnerProofError::refused(
+                    OwnerRefusal::SessionUnavailable,
+                    CalmError::Conflict("native owner cannot prove safe detachment".into()),
+                )
             })?;
-        let park = self
-            .inner
-            .parked
-            .park()
-            .ok_or_else(|| CalmError::Conflict("carrier is already parked".into()))?;
+        let park = self.inner.parked.park().ok_or_else(|| {
+            OwnerProofError::refused(
+                OwnerRefusal::SessionUnavailable,
+                CalmError::Conflict("carrier is already parked".into()),
+            )
+        })?;
         let proof = IdleCarrierOwner {
             handle: self,
             park,
             native,
         };
         drop(issuance);
-        proof.recheck().await?;
+        proof.recheck_typed().await?;
         Ok(proof)
     }
 }
+
+#[cfg(test)]
+mod planner_switch_tests;

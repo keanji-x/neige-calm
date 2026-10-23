@@ -112,6 +112,34 @@ async fn carrier_replacement_codex_next_send_history_credentials_and_cold_boot()
 
     let idle = handle.idle_carrier_owner().await.unwrap();
     idle.recheck().await.unwrap();
+    {
+        use crate::harness::carrier_replacement::{OwnerProofError, OwnerRefusal};
+        use crate::harness::held_requests::{ConnectionId, HeldResponder, RequestKey};
+        struct Held;
+        impl HeldResponder for Held {
+            fn respond(self: Box<Self>, _: usize) {}
+        }
+        handle.held_requests().insert(
+            1,
+            RequestKey("held".into()),
+            ConnectionId("reader".into()),
+            Box::new(Held),
+        );
+        assert!(matches!(
+            idle.recheck_typed().await,
+            Err(OwnerProofError::Refused {
+                reason: OwnerRefusal::OpenAsk,
+                ..
+            })
+        ));
+        assert!(idle.check_current(&card, &worker).is_err());
+        handle.held_requests().take(1);
+        assert_eq!(
+            idle.check_current("different-card", &worker),
+            Err(OwnerRefusal::Changed)
+        );
+        idle.recheck().await.unwrap();
+    }
     let owner = crate::harness::carrier_replacement::CarrierReplacementOwner {
         idle: &idle,
         calls: &calls,
@@ -160,6 +188,16 @@ async fn carrier_replacement_codex_next_send_history_credentials_and_cold_boot()
             .await
             .unwrap();
         }
+        use crate::harness::carrier_replacement::CarrierOwnerError;
+        use crate::harness::carrier_replacement::OwnerRefusal;
+        let reason = if refusal == "start" {
+            OwnerRefusal::TurnInFlight
+        } else {
+            OwnerRefusal::OpenAsk
+        };
+        assert!(
+            matches!(owner.recheck_typed_tx(&mut tx, &carrier).await, Err(CarrierOwnerError::Refused { reason: actual, .. }) if actual == reason)
+        );
         assert!(
             owner.recheck_tx(&mut tx, &carrier).await.is_err(),
             "{refusal}"
