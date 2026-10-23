@@ -1,7 +1,8 @@
-//! Codex worker native liveness and best-effort settled cleanup integration.
+//! Codex worker native liveness, strict timeout and best-effort settled cleanup integration.
 use super::PlannerFactory;
-use crate::error::Result;
+use crate::error::{CalmError, Result};
 use crate::model::{Task, TaskKind, now_ms};
+use provider::control::NativeInterruptOutcome;
 use provider::worker::{CodexDaemonProbe, CodexLivenessFacts, ThreadStatusLite, TurnStatusLite};
 use std::sync::Arc;
 use std::time::Duration;
@@ -193,6 +194,90 @@ impl PlannerFactory<'_> {
             }
         }
     }
+}
+
+impl PlannerFactory<'_> {
+    /// Strict timeout cleanup: propagate an unconfirmed stop so the product retains its
+    /// cleanup marker and lease for retry. Settled-worker cleanup above is warning-only.
+    pub(crate) async fn stop_timed_out_worker(
+        runtime: &crate::session_projection_repo::WorkerSessionProjection,
+        shared: Option<&crate::shared_codex_appserver::SharedCodexAppServer>,
+    ) -> Result<()> {
+        use crate::operation::TxOutput;
+        use crate::session_projection_repo::AgentProvider;
+        match runtime.agent_provider {
+            Some(AgentProvider::Codex) => {}
+            Some(AgentProvider::Claude | AgentProvider::OpenCode | AgentProvider::Grok) | None => {
+                return Ok(());
+            }
+        }
+        let Some(thread_id) = TxOutput::non_empty_string(runtime.thread_id.as_deref()) else {
+            return Ok(());
+        };
+        let persisted_turn = TxOutput::non_empty_string(runtime.active_turn_id.as_deref());
+        let Some(shared_codex_appserver) = shared else {
+            tracing::warn!(
+                runtime_id = %runtime.id,
+                card_id = %runtime.card_id,
+                thread_id = %thread_id,
+                "timed-out codex worker has no shared appserver handle; cannot interrupt active turn"
+            );
+            return Ok(());
+        };
+        let cached_turn = shared_codex_appserver.active_turn_id_for_thread(&thread_id);
+        // A failed interrupt fails the cleanup (#1830 S2 D7): the marker stays, the lease stays
+        // held, and the next tick retries — unless the worker is proven stopped anyway.
+        let interrupted = shared_codex_appserver
+            .interrupt_active_outcome(&thread_id)
+            .await;
+        codex_interrupt_settled(shared_codex_appserver, &thread_id, interrupted).await?;
+        if cached_turn.is_none()
+            && let Some(persisted_turn) = persisted_turn.as_deref()
+        {
+            let interrupted = shared_codex_appserver
+                .interrupt_outcome(&thread_id, persisted_turn)
+                .await;
+            codex_interrupt_settled(shared_codex_appserver, &thread_id, interrupted).await?;
+        }
+        Ok(())
+    }
+}
+
+/// Whether a Codex interrupt of a timed-out or canceled worker leaves it stopped (#1830 S2 D7).
+/// A daemon that is not Running counts as stopped ("daemon down — brain gone, no turn can run").
+/// A JSON-RPC refusal is told apart from a transport failure, and the daemon's own facts decide
+/// it: a thread that is `NotLoaded` (as after a daemon restart) or whose last turn ended counts as
+/// stopped. Only a transport failure while the daemon is Running, or a thread still active, is an
+/// `Err`, so the cleanup retries until the daemon answers or goes down.
+async fn codex_interrupt_settled(
+    shared: &crate::shared_codex_appserver::SharedCodexAppServer,
+    thread_id: &str,
+    interrupted: NativeInterruptOutcome<CalmError>,
+) -> Result<()> {
+    use provider::worker::{CodexDaemonProbe, ThreadStatusLite, TurnStatusLite};
+    let error = match interrupted {
+        NativeInterruptOutcome::NativeAck | NativeInterruptOutcome::NoTarget => return Ok(()),
+        NativeInterruptOutcome::Unconfirmed { error } => error,
+    };
+    if !shared.is_running_per_readiness() {
+        return Ok(());
+    }
+    if matches!(error, CalmError::CodexRefused(_))
+        && let Some(facts) = CodexDaemonProbe::read_liveness_facts(shared, thread_id).await
+        && (facts.status == ThreadStatusLite::NotLoaded
+            || facts.last_turn.is_some_and(|turn| {
+                matches!(
+                    turn.status,
+                    TurnStatusLite::Completed
+                        | TurnStatusLite::Interrupted
+                        | TurnStatusLite::Failed
+                )
+            }))
+    {
+        return Ok(());
+    }
+    tracing::warn!(thread_id, %error, "codex worker interrupt failed; its cleanup retries");
+    Err(error)
 }
 
 #[cfg(test)]

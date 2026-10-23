@@ -3,6 +3,7 @@ use super::*;
 use futures_util::{SinkExt, StreamExt};
 use provider::codex::RequestCrossing;
 use serde_json::{Value, json};
+use std::collections::HashMap;
 use std::sync::Mutex as StdMutex;
 use std::sync::atomic::AtomicUsize;
 use tokio::net::UnixListener;
@@ -15,6 +16,7 @@ struct Fixture {
     listener: JoinHandle<()>,
     requests: Arc<StdMutex<Vec<Value>>>,
     pause_resume: Arc<AtomicBool>,
+    answers: Arc<StdMutex<HashMap<String, Value>>>,
     resume_release: Arc<tokio::sync::Notify>,
     _root: tempfile::TempDir,
 }
@@ -40,9 +42,11 @@ async fn fixture() -> Fixture {
     let closed = Arc::new(StdMutex::new(HashSet::new()));
     let count = Arc::new(AtomicUsize::new(0));
     let requests = Arc::new(StdMutex::new(Vec::new()));
+    let answers = Arc::new(StdMutex::new(HashMap::<String, Value>::new()));
     let pause_resume = Arc::new(AtomicBool::new(false));
     let resume_release = Arc::new(tokio::sync::Notify::new());
     let listener = tokio::spawn({
+        let answers = answers.clone();
         let seen = seen.clone();
         let closed = closed.clone();
         let requests = requests.clone();
@@ -53,6 +57,7 @@ async fn fixture() -> Fixture {
             loop {
                 let (stream, _) = socket.accept().await.unwrap();
                 let connection = count.fetch_add(1, Ordering::SeqCst);
+                let answers = answers.clone();
                 let seen = seen.clone();
                 let closed = closed.clone();
                 let requests = requests.clone();
@@ -74,9 +79,16 @@ async fn fixture() -> Fixture {
                             let _ = ws.close(None).await; break;
                         }
                         let Some(id) = request.get("id") else { continue; };
+                        let answer = answers.lock().unwrap().get(&method).cloned();
+                        if let Some(mut answer) = answer {
+                            answer["id"] = id.clone();
+                            if ws.send(tokio_tungstenite::tungstenite::Message::Text(answer.to_string())).await.is_err() {break;}
+                            continue;
+                        }
                         let result = match method.as_str() {
                             "initialize" => json!({"userAgent":"fixture"}),
                             "model/list" => json!({"data":[],"nextCursor":null}),
+                            "thread/loaded/list" => json!({"data":[]}),
                             "thread/read" => json!({"thread":{"id":thread,"status":{"type":"idle"},"turns":[]}}),
                             "thread/resume" | "thread/start" => json!({"thread":{"id":if thread.is_empty() {"worker"} else {&thread}}}),
                             "thread/unsubscribe" => json!({"status":"unsubscribed"}),
@@ -107,6 +119,7 @@ async fn fixture() -> Fixture {
         listener,
         requests,
         pause_resume,
+        answers,
         resume_release,
         _root: root,
     }
@@ -550,4 +563,162 @@ async fn fresh_process_discards_cancelled_cold_credentials() {
         hashes[0], hashes[1],
         "a new process must not inherit previous prepared credentials"
     );
+}
+
+fn timeout_runtime() -> crate::session_projection_repo::WorkerSessionProjection {
+    use crate::session_projection_repo::{AgentProvider, WorkerSessionKind, WorkerSessionState};
+    crate::session_projection_repo::WorkerSessionProjection {
+        id: "runtime".into(),
+        card_id: "card".into(),
+        kind: WorkerSessionKind::CodexCard,
+        agent_provider: Some(AgentProvider::Codex),
+        status: WorkerSessionState::Running,
+        terminal_run_id: None,
+        thread_id: Some("thread".into()),
+        session_id: None,
+        active_turn_id: Some("persisted".into()),
+        handle_state_json: None,
+        created_at_ms: 0,
+        updated_at_ms: 0,
+        completed_at_ms: None,
+        last_turn_completed_ms: None,
+    }
+}
+
+#[tokio::test]
+async fn timeout_interrupt_uses_cached_turn_or_persisted_fallback_on_exact_thread() {
+    use crate::harness::backend::factory::PlannerFactory;
+    for cached in [false, true] {
+        let f = fixture().await;
+        f.daemon.set_active_turn_for_test("decoy", "decoy-turn");
+        if cached {
+            f.daemon.set_active_turn_for_test("thread", "cached");
+        }
+        PlannerFactory::stop_timed_out_worker(&timeout_runtime(), Some(&f.daemon))
+            .await
+            .unwrap();
+        let requests = f.requests.lock().unwrap();
+        let interrupts: Vec<_> = requests
+            .iter()
+            .filter(|r| r["method"] == "turn/interrupt")
+            .collect();
+        assert_eq!(interrupts.len(), 1);
+        assert_eq!(interrupts[0]["params"]["threadId"], "thread");
+        assert_eq!(
+            interrupts[0]["params"]["turnId"],
+            if cached { "cached" } else { "persisted" }
+        );
+        assert_eq!(
+            f.daemon.active_turn_id_for_thread("decoy").as_deref(),
+            Some("decoy-turn")
+        );
+    }
+}
+
+#[tokio::test]
+async fn timeout_interrupt_leaves_non_codex_and_missing_provider_untouched() {
+    use crate::harness::backend::factory::PlannerFactory;
+    use crate::session_projection_repo::AgentProvider;
+    let f = fixture().await;
+    for provider in [
+        Some(AgentProvider::Claude),
+        Some(AgentProvider::OpenCode),
+        Some(AgentProvider::Grok),
+        None,
+    ] {
+        let mut runtime = timeout_runtime();
+        runtime.agent_provider = provider;
+        f.daemon.set_active_turn_for_test("thread", "cached");
+        PlannerFactory::stop_timed_out_worker(&runtime, Some(&f.daemon))
+            .await
+            .unwrap();
+        assert_eq!(
+            f.daemon.active_turn_id_for_thread("thread").as_deref(),
+            Some("cached")
+        );
+    }
+    assert!(
+        !f.requests
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|r| r["method"] == "turn/interrupt")
+    );
+}
+
+#[tokio::test]
+async fn timeout_interrupt_refusal_requires_native_stop_evidence() {
+    use crate::harness::backend::factory::PlannerFactory;
+    let f = fixture().await;
+    f.answers.lock().unwrap().insert(
+        "turn/interrupt".into(),
+        json!({"error":{"code":-32600,"message":"turn not found"}}),
+    );
+    let reads = [
+        ("active", json!([]), false),
+        ("idle", json!([]), false),
+        (
+            "idle",
+            json!([{ "status":"completed" }, { "status":"inProgress" }]),
+            false,
+        ),
+        ("idle", json!([{ "status":"unknown" }]), false),
+        ("notLoaded", json!([]), true),
+        ("idle", json!([{"id":"last","status":"completed"}]), true),
+        (
+            "systemError",
+            json!([{"id":"last","status":"failed"}]),
+            true,
+        ),
+        ("idle", json!([{"id":"last","status":"interrupted"}]), true),
+    ];
+    for (status, turns, stopped) in reads {
+        f.answers.lock().unwrap().insert(
+            "thread/read".into(),
+            json!({"result":{"thread":{"id":"thread","status":{"type":status,"activeFlags":[]},"turns":turns}}}),
+        );
+        f.daemon.set_active_turn_for_test("thread", "cached");
+        let result =
+            PlannerFactory::stop_timed_out_worker(&timeout_runtime(), Some(&f.daemon)).await;
+        assert_eq!(result.is_ok(), stopped, "{status}: {result:?}");
+    }
+    f.answers.lock().unwrap().insert(
+        "thread/read".into(),
+        json!({"error":{"code":-32600,"message":"cannot read"}}),
+    );
+    assert!(
+        PlannerFactory::stop_timed_out_worker(&timeout_runtime(), Some(&f.daemon))
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn timeout_interrupt_transport_uncertainty_retries_until_daemon_down() {
+    use crate::harness::backend::factory::PlannerFactory;
+    let f = fixture().await;
+    f.daemon.set_active_turn_for_test("thread", "cached");
+    f.closed.lock().unwrap().insert("turn/interrupt".into());
+    f.answers.lock().unwrap().insert(
+        "thread/read".into(),
+        json!({"result":{"thread":{"status":{"type":"notLoaded"},"turns":[]}}}),
+    );
+    assert!(
+        PlannerFactory::stop_timed_out_worker(&timeout_runtime(), Some(&f.daemon))
+            .await
+            .is_err()
+    );
+    assert!(
+        !f.requests
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|r| r["method"] == "thread/read")
+    );
+    f.daemon.connected_client().await.unwrap();
+    f.daemon.set_active_turn_for_test("thread", "cached");
+    f.daemon.publish_readiness_for_test(1, false);
+    PlannerFactory::stop_timed_out_worker(&timeout_runtime(), Some(&f.daemon))
+        .await
+        .unwrap();
 }

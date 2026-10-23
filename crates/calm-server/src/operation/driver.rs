@@ -1,4 +1,3 @@
-use provider::control::NativeInterruptOutcome;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
@@ -11,7 +10,7 @@ use crate::error::{CalmError, Result};
 use crate::event::EventBus;
 use crate::model::now_ms;
 use crate::proc_identity::signal_process_group;
-use crate::session_projection_repo::{AgentProvider, WorkerSessionState};
+use crate::session_projection_repo::WorkerSessionState;
 use crate::terminal_sweeper::{
     WaitForPidExit, try_reap_terminal_artifacts_with_renderer, wait_for_pid_exit,
 };
@@ -333,7 +332,18 @@ impl OperationRuntime {
     }
 
     pub async fn fail_running_worker_card(&self, card_id: &str) -> Result<()> {
-        self.interrupt_running_codex_turn_for_card(card_id).await?;
+        if let Some(runtime) = self
+            .spawn_ctx
+            .repo
+            .session_projection_active_for_card(&card_id.to_string())
+            .await?
+        {
+            crate::harness::backend::factory::PlannerFactory::stop_timed_out_worker(
+                &runtime,
+                self.spawn_ctx.shared_codex_appserver.as_deref(),
+            )
+            .await?;
+        }
         if let Some(term) = self.spawn_ctx.repo.terminal_get_by_card(card_id).await? {
             try_reap_terminal_artifacts_with_renderer(
                 Some(self.spawn_ctx.terminal_renderer.as_ref()),
@@ -362,49 +372,6 @@ impl OperationRuntime {
             .repo
             .session_projection_complete_for_card(card_id, WorkerSessionState::Failed)
             .await?;
-        Ok(())
-    }
-
-    async fn interrupt_running_codex_turn_for_card(&self, card_id: &str) -> Result<()> {
-        let Some(runtime) = self
-            .spawn_ctx
-            .repo
-            .session_projection_active_for_card(&card_id.to_string())
-            .await?
-        else {
-            return Ok(());
-        };
-        if runtime.agent_provider != Some(AgentProvider::Codex) {
-            return Ok(());
-        }
-        let Some(thread_id) = TxOutput::non_empty_string(runtime.thread_id.as_deref()) else {
-            return Ok(());
-        };
-        let persisted_turn = TxOutput::non_empty_string(runtime.active_turn_id.as_deref());
-        let Some(shared_codex_appserver) = self.spawn_ctx.shared_codex_appserver.as_ref() else {
-            tracing::warn!(
-                runtime_id = %runtime.id,
-                card_id = %card_id,
-                thread_id = %thread_id,
-                "timed-out codex worker has no shared appserver handle; cannot interrupt active turn"
-            );
-            return Ok(());
-        };
-        let cached_turn = shared_codex_appserver.active_turn_id_for_thread(&thread_id);
-        // A failed interrupt fails the cleanup (#1830 S2 D7): the marker stays, the lease stays
-        // held, and the next tick retries — unless the worker is proven stopped anyway.
-        let interrupted = shared_codex_appserver
-            .interrupt_active_outcome(&thread_id)
-            .await;
-        codex_interrupt_settled(shared_codex_appserver, &thread_id, interrupted).await?;
-        if cached_turn.is_none()
-            && let Some(persisted_turn) = persisted_turn.as_deref()
-        {
-            let interrupted = shared_codex_appserver
-                .interrupt_outcome(&thread_id, persisted_turn)
-                .await;
-            codex_interrupt_settled(shared_codex_appserver, &thread_id, interrupted).await?;
-        }
         Ok(())
     }
 
@@ -1631,41 +1598,4 @@ fn kill_parked_group_if_alive(artifacts: &SpawnArtifacts, alive: bool) {
     if parked_artifacts_alive(artifacts) {
         signal_process_group(artifacts.pgid, libc::SIGKILL);
     }
-}
-
-/// Whether a Codex interrupt of a timed-out or canceled worker leaves it stopped (#1830 S2 D7).
-/// A daemon that is not Running counts as stopped ("daemon down — brain gone, no turn can run").
-/// A JSON-RPC refusal is told apart from a transport failure, and the daemon's own facts decide
-/// it: a thread that is `NotLoaded` (as after a daemon restart) or whose last turn ended counts as
-/// stopped. Only a transport failure while the daemon is Running, or a thread still active, is an
-/// `Err`, so the cleanup retries until the daemon answers or goes down.
-async fn codex_interrupt_settled(
-    shared: &crate::shared_codex_appserver::SharedCodexAppServer,
-    thread_id: &str,
-    interrupted: NativeInterruptOutcome<CalmError>,
-) -> Result<()> {
-    use provider::worker::{CodexDaemonProbe, ThreadStatusLite, TurnStatusLite};
-    let error = match interrupted {
-        NativeInterruptOutcome::NativeAck | NativeInterruptOutcome::NoTarget => return Ok(()),
-        NativeInterruptOutcome::Unconfirmed { error } => error,
-    };
-    if !shared.is_running_per_readiness() {
-        return Ok(());
-    }
-    if matches!(error, CalmError::CodexRefused(_))
-        && let Some(facts) = CodexDaemonProbe::read_liveness_facts(shared, thread_id).await
-        && (facts.status == ThreadStatusLite::NotLoaded
-            || facts.last_turn.is_some_and(|turn| {
-                matches!(
-                    turn.status,
-                    TurnStatusLite::Completed
-                        | TurnStatusLite::Interrupted
-                        | TurnStatusLite::Failed
-                )
-            }))
-    {
-        return Ok(());
-    }
-    tracing::warn!(thread_id, %error, "codex worker interrupt failed; its cleanup retries");
-    Err(error)
 }
