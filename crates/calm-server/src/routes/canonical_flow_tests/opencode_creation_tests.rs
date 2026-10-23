@@ -431,7 +431,7 @@ async fn canonical_opencode_creation_catalog_get_keeps_workspace_scope() {
     let mut fixture = Fixture::new().await;
     configure(&mut fixture);
     let (state, app, cookie) = fixture.application().await;
-    let mut request = body(&app, &cookie).await;
+    let mut request = body(&app, &cookie, &AgentProvider::OpenCode).await;
     request.as_object_mut().unwrap().remove("first_message");
     let mut workspaces = Vec::new();
     for key in ["scope-a", "scope-b"] {
@@ -477,7 +477,7 @@ async fn canonical_opencode_creation_catalog_get_keeps_workspace_scope() {
         workspaces.push(workspace);
     }
     assert_ne!(workspaces[0], workspaces[1]);
-    assert_eq!(prompts(&fixture), 0);
+    assert_eq!(prompts(&fixture, &AgentProvider::OpenCode), 0);
     assert!(!state.shared_codex_appserver.is_running());
     fixture.shutdown_process(&state).await;
 }

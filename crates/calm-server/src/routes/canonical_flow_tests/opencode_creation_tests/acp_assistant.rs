@@ -111,7 +111,7 @@ async fn acp_assistant_outage_acceptance_replay_and_retained_activation() {
     replay_wake.release.notify_one();
     assert!(!woke, "creation receipt replay must not schedule a wake");
     assert_eq!(
-        prompts(&fixture),
+        prompts(&fixture, &AgentProvider::OpenCode),
         0,
         "receipt replay cannot wake accepted work"
     );
@@ -125,7 +125,7 @@ async fn acp_assistant_outage_acceptance_replay_and_retained_activation() {
     .await;
     wait_idle(&fixture, card, 2).await;
     assert_eq!(carrier(&fixture, card).await.0, worker);
-    assert_eq!(prompts(&fixture), 2);
+    assert_eq!(prompts(&fixture, &AgentProvider::OpenCode), 2);
     let identity: (String, String) =
         sqlx::query_as("SELECT thread_id,agent_session_id FROM worker_sessions WHERE id=?1")
             .bind(&worker)
@@ -153,7 +153,7 @@ async fn acp_assistant_outage_acceptance_replay_and_retained_activation() {
         post(&app, &cookie, &uri, "assistant", body).await["initialInput"],
         created["initialInput"]
     );
-    assert_eq!(prompts(&fixture), 3);
+    assert_eq!(prompts(&fixture, &AgentProvider::OpenCode), 3);
     assert_eq!(
         requests(&fixture)
             .iter()
@@ -192,7 +192,7 @@ async fn acp_assistant_activation_retains_source_across_busy_track() {
     let card = created["id"].as_str().unwrap();
     wait_idle(&fixture, card, 1).await;
     assert_eq!(
-        prompts(&fixture),
+        prompts(&fixture, &AgentProvider::OpenCode),
         1,
         "the original accepted input runs once"
     );
@@ -355,7 +355,7 @@ async fn acp_assistant_lost_response_cold_restart_never_resends() {
                 .attempts
                 .first()
                 .is_some_and(|a| matches!(a.delivery, InputDeliveryFact::Unknown))
-                && prompts(&fixture) == 1
+                && prompts(&fixture, &AgentProvider::OpenCode) == 1
             {
                 break facts;
             }
@@ -364,7 +364,7 @@ async fn acp_assistant_lost_response_cold_restart_never_resends() {
     })
     .await
     .unwrap();
-    assert_eq!(prompts(&fixture), 1);
+    assert_eq!(prompts(&fixture, &AgentProvider::OpenCode), 1);
     state.harness.shutdown_and_remove(&worker).await.unwrap();
     fixture.shutdown_process(&state).await;
     drop(app);
@@ -387,7 +387,7 @@ async fn acp_assistant_lost_response_cold_restart_never_resends() {
     )
     .await;
     tokio::time::sleep(Duration::from_millis(200)).await;
-    assert_eq!(prompts(&fixture), 1);
+    assert_eq!(prompts(&fixture, &AgentProvider::OpenCode), 1);
     let (current, after) = carrier(&fixture, card).await;
     assert_eq!(current, worker);
     assert_eq!(

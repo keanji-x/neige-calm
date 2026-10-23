@@ -1,4 +1,4 @@
-//! Populated forward upgrade through 0189: the canonical graph survives byte for byte, and the
+//! Populated forward upgrade through 0190: the canonical graph survives byte for byte, and the
 //! Turn provider CHECK admits Grok and nothing else new.
 use super::*;
 
@@ -10,12 +10,12 @@ const TABLES: [&str; 5] = [
     "conversation_input_retry_relations",
 ];
 
-fn before_0189() -> sqlx::migrate::Migrator {
+fn before_0190() -> sqlx::migrate::Migrator {
     sqlx::migrate::Migrator {
         migrations: std::borrow::Cow::Owned(
             crate::MIGRATOR
                 .iter()
-                .filter(|m| m.version < 189)
+                .filter(|m| m.version < 190)
                 .cloned()
                 .collect(),
         ),
@@ -72,12 +72,45 @@ async fn turn_admits(repo: &SqlxRepo, card: &str, provider: &str) -> bool {
     admitted
 }
 
+/// 0188's Assistant receipt trigger reads conversation_presentations, which 0190 drops and
+/// re-creates. A refused raw insert proves the trigger still exists, its body still resolves every
+/// referenced table (a missing one fails at prepare) and its predicate still runs.
+async fn assistant_creation_refusal(repo: &SqlxRepo, card: &str) -> String {
+    let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
+    let error = sqlx::query(
+        "INSERT INTO conversation_assistant_creations
+         VALUES(?1,'track',?2,?3,'carrier','message',1,'{}')",
+    )
+    .bind(card)
+    .bind("a".repeat(64))
+    .bind(LEGACY_OWNER_USER_ID)
+    .execute(&mut **tx)
+    .await
+    .unwrap_err()
+    .to_string();
+    tx.rollback().await.unwrap();
+    error
+}
+
+const ASSISTANT_REFUSAL: &str =
+    "Assistant creation must bind its dormant carrier and original acceptance";
+
+async fn assistant_trigger_sql(repo: &SqlxRepo) -> String {
+    sqlx::query_scalar(
+        "SELECT sql FROM sqlite_master WHERE type='trigger' AND name='assistant_creation_fact_scope'
+         AND tbl_name='conversation_assistant_creations'",
+    )
+    .fetch_one(repo.pool())
+    .await
+    .unwrap()
+}
+
 #[tokio::test]
 async fn canonical_grok_turns_migration_preserves_populated_graph() {
     let dir = tempfile::tempdir().unwrap();
     let url = format!("sqlite://{}/upgrade.db?mode=rwc", dir.path().display());
     let db = super::super::super::SqliteDb::connect(&url).await.unwrap();
-    let old = before_0189();
+    let old = before_0190();
     old.run(db.writer_pool()).await.unwrap();
     let repo = SqlxRepo {
         db,
@@ -94,6 +127,12 @@ async fn canonical_grok_turns_migration_preserves_populated_graph() {
     tx.commit().await.unwrap();
     assert!(turn_admits(&s.repo, &s.card, "codex").await);
     assert!(!turn_admits(&s.repo, &s.card, "grok").await);
+    assert!(
+        assistant_creation_refusal(&s.repo, &s.card)
+            .await
+            .contains(ASSISTANT_REFUSAL)
+    );
+    let assistant_trigger = assistant_trigger_sql(&s.repo).await;
     sqlx::query("UPDATE conversation_presentations SET submission_id=?1")
         .bind(s.root.as_str())
         .execute(s.repo.pool())
@@ -158,6 +197,9 @@ async fn canonical_grok_turns_migration_preserves_populated_graph() {
         })
         .collect();
     assert_eq!(schema(upgraded.pool()).await, expected);
+    assert_eq!(assistant_trigger_sql(&upgraded).await, assistant_trigger);
+    let refusal = assistant_creation_refusal(&upgraded, &card).await;
+    assert!(refusal.contains(ASSISTANT_REFUSAL), "{refusal}");
     assert!(turn_admits(&upgraded, &card, "grok").await);
     assert!(
         !turn_admits(&upgraded, &card, "terminal").await,

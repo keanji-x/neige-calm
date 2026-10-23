@@ -16,8 +16,8 @@
 # assertions reading the frozen initiating-worker column. harness_item/crates
 # 303 -> 304 is the exact-content carrier CAS read of the existing transcript table.
 # No new domain identifiers or scan rules; future storage queries keep this ratchet.
-# 0189 Grok Turn provider bounded exception: spec/crates +2, runtime_id/crates +3 and
-# harness_item/crates +2: migration 0189 re-creates 0184's frozen canonical tables verbatim
+# 0190 Grok Turn provider bounded exception: spec/crates +2, runtime_id/crates +3 and
+# harness_item/crates +2: migration 0190 re-creates 0184's frozen canonical tables verbatim
 # (spec 1, runtime_id 2, harness_item 1), its upgrade test inserts one raw Turn row (spec 1,
 # runtime_id 1), and the Grok decline test reads the transcript's terminal row (harness_item 1).
 # No new domain identifier or scan rule.

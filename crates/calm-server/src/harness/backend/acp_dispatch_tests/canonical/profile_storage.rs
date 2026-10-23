@@ -8,7 +8,12 @@ use super::*;
 async fn canonical_acp_every_claiming_profile_stores_its_turn() {
     let claimants: Vec<_> = AgentProvider::ALL
         .into_iter()
-        .filter(crate::acp_planner::wiring::canonical_planner_inputs)
+        .filter(|provider| {
+            crate::acp_planner::wiring::canonical_inputs(
+                provider,
+                calm_types::worker::WorkerContract::Planner,
+            )
+        })
         .collect();
     assert!(!claimants.is_empty());
     for provider in claimants {
