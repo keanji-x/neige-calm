@@ -188,6 +188,8 @@ pub(super) struct Registration<'a> {
 pub struct AcpPlannerHost {
     /// Shared engine binding, reserved for the Planner execution migration.
     pub execution: crate::execution_quiesce::ExecutionLifecycle,
+    pub provider_execution: crate::provider_execution::ProviderExecution,
+    pub(crate) completion: std::sync::Arc<super::execution::Owner>,
     config: Option<AcpPlannerConfig>,
     pub instance: MarkerInstance,
     pub mcp_shim: PathBuf,
@@ -215,7 +217,11 @@ impl AcpPlannerHost {
         if let Some(config) = &config {
             config.validate()?;
         }
+        let (provider_execution, completion) = super::execution::owner();
+        std::fs::create_dir_all(data_dir.join("acp-agent-logs"))?;
         Ok(Self {
+            provider_execution,
+            completion,
             execution: Default::default(),
             config,
             instance: MarkerInstance::for_data_dir(data_dir, MARKER_KEY)?,
@@ -308,14 +314,9 @@ impl AcpPlannerHost {
     pub async fn check_ready(&self, provider: &AgentProvider) -> Result<()> {
         let _probe = self.readiness.lock().await;
         let registration = self.registration(provider)?;
-        let process = super::process::Process::spawn(
-            self,
-            registration,
-            "readiness",
-            &std::env::temp_dir(),
-            super::process::LaunchContext::Readiness,
-        )
-        .await?;
+        let process =
+            super::process::Process::spawn(self, registration, "readiness", &std::env::temp_dir())
+                .await?;
         process.stop(self, "readiness").await
     }
 }
@@ -324,6 +325,16 @@ impl AcpPlannerHost {
 /// sweep only warns here; every launch still requires its own successful stop before spawning.
 pub async fn boot(repo: &dyn crate::db::RepoEventWrite, host: &AcpPlannerHost) -> Result<()> {
     let ids = revoke_owned(repo, None).await?;
+    let pass_a_ids = ids.clone();
+    if let Err(error) = crate::db::write_in_tx_typed(repo, move |tx| {
+        Box::pin(
+            async move { crate::provider_execution::sweep::boot_pass_a(tx, &pass_a_ids).await },
+        )
+    })
+    .await
+    {
+        tracing::warn!(%error, "ACP boot pass A failed; durable sweep will retry");
+    }
     let mut ids: Vec<&str> = ids.iter().map(String::as_str).collect();
     ids.push(super::catalog::WORKER);
     if let Err(error) = crate::planner_process::sweep(
@@ -347,13 +358,45 @@ pub async fn sweep_track(
     track: &str,
 ) -> Result<()> {
     let ids = revoke_owned(repo, Some(track.to_owned())).await?;
-    let ids: Vec<&str> = ids.iter().map(String::as_str).collect();
-    crate::planner_process::sweep(
-        &host.instance,
-        &ids,
-        crate::planner_process::SeamPolicy::Consult,
-    )
+    let executions = crate::db::write_in_tx_typed(repo, move |tx| {
+        Box::pin(async move {
+            let mut executions = Vec::new();
+            for session in ids {
+                if let Some(claim) =
+                    calm_truth::db::sqlite::provider_execution::load(&mut **tx, &session).await?
+                    && let Some(id) = crate::provider_execution::request_stop_tx(
+                        tx,
+                        &session,
+                        &claim,
+                        crate::provider_execution::StopReason::TrackRetired,
+                    )
+                    .await?
+                {
+                    executions.push(id);
+                }
+            }
+            Ok(executions)
+        })
+    })
+    .await?;
+    if executions.is_empty() {
+        return Ok(());
+    }
+    let engine = crate::provider_execution::engine(host.execution.engine())?;
+    crate::execution_quiesce::drive(Some(engine), executions.iter().cloned());
+    tokio::time::timeout(workspace_runtime::execution::QUIESCE_DEADLINE, async {
+        for id in executions {
+            crate::provider_execution::wait_settled(
+                engine,
+                &id,
+                workspace_runtime::execution::QUIESCE_DEADLINE,
+            )
+            .await?;
+        }
+        Ok::<_, CalmError>(())
+    })
     .await
+    .map_err(crate::provider_execution::conflict)?
 }
 
 async fn revoke_owned(

@@ -37,6 +37,9 @@ async fn body(app: &axum::Router, cookie: &str, provider: &AgentProvider) -> Val
 }
 
 fn configure(fixture: &mut Fixture) {
+    fixture
+        .execution
+        .get_or_insert_with(crate::test_support::execution::Supervisor::new);
     let config = fixture.root.path().join("acp.json");
     std::fs::write(fixture.root.path().join("scenario"), "reply").unwrap();
     let grok = fixture.root.path().join("grok");

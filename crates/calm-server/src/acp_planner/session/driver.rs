@@ -1,6 +1,7 @@
 //! Prompt writer cleanup and durable settlement.
 use super::*;
 
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn drive(
     shared: Arc<Shared>,
     mut process: Process,
@@ -11,6 +12,8 @@ pub(super) async fn drive(
     >,
     mut cancelled: watch::Receiver<CancelRequest>,
     approvals: Arc<Approvals>,
+    claim: crate::provider_execution::Claim,
+    _guard: crate::provider_execution::DriverGuard,
 ) -> super::execution_end::Settlement {
     let params = &shared.params;
     let mut retained = Vec::<Value>::new();
@@ -74,7 +77,33 @@ pub(super) async fn drive(
     if let Err(error) = &revoked {
         tracing::error!(%error,"ACP credential revocation failed");
     }
-    let stopped = process.stop(&params.host, &params.worker_session_id).await;
+    process.connection.client.close();
+    let stopped = async {
+        use crate::provider_execution::{self as execution, StopReason};
+        let pool = params
+            .repo
+            .sqlite_db()
+            .ok_or(CalmError::ExecutionUnavailable)?;
+        let engine = execution::engine(params.engine.as_ref())?;
+        let id = execution::execution_id(claim.record())?;
+        params
+            .host
+            .provider_execution
+            .stop(
+                &pool,
+                Some(engine),
+                &params.worker_session_id,
+                &claim,
+                if outcome.is_ok() {
+                    StopReason::Finished
+                } else {
+                    process.io.stop_reason().unwrap_or(StopReason::Interrupted)
+                },
+            )
+            .await?;
+        execution::wait_settled(engine, &id, Duration::from_secs(12)).await
+    }
+    .await;
     // What leaves the outcome unknown is kept here: the turn only says it is unknown.
     if let Err(error) = &outcome {
         tracing::warn!(%error, worker = %params.worker_session_id, turn = %receipt.turn_id,
@@ -142,24 +171,49 @@ pub(super) async fn drive(
             kind: PlannerEventKind::TurnCompleted { turn: turn.clone() },
         }];
     }
-    if let Err(error) = crate::harness::turn_outcome::record(
-        params.repo.as_ref(),
-        &params.worker_session_id,
-        &params.card_id,
-        &params.track_id,
-        &receipt.thread_id,
-        &receipt.turn_id,
-        &turn,
-        crate::harness::turn_outcome::Confirmation::ProviderTerminal,
-    )
-    .await
-    {
-        tracing::error!(%error,"ACP terminal projection failed; receipt remains authoritative");
+    let completion = async {
+        use crate::provider_execution::{self as execution, CompletionEvidence, KnownEnd};
+        let end = KnownEnd::AcpTurn(Box::new(super::super::execution::End {
+            shared: shared.clone(),
+            receipt: receipt.clone(),
+            events,
+            turn,
+        }));
+        let pool = params
+            .repo
+            .sqlite_db()
+            .ok_or(CalmError::ExecutionUnavailable)?;
+        if stopped.is_ok() {
+            params
+                .host
+                .provider_execution
+                .finish(
+                    &pool,
+                    params.engine.as_ref(),
+                    &params.worker_session_id,
+                    &claim,
+                    Some(end),
+                )
+                .await
+        } else {
+            tokio::time::timeout(
+                Duration::from_secs(10),
+                params.host.provider_execution.owner.complete(
+                    &params.worker_session_id,
+                    claim.record(),
+                    CompletionEvidence::Unconfirmed,
+                    Some(end),
+                ),
+            )
+            .await
+            .map_err(execution::conflict)?
+        }
     }
-    let mut state = shared.state.lock().expect("ACP state");
-    state.active = None;
-    for event in events {
-        let _ = shared.events.send(event);
+    .await;
+    if let Err(error) = completion {
+        tracing::error!(%error, "ACP owner completion pending; retaining execution claim");
+        // The retained task still returns the cleanup/receipt facts it observed.
+        // A failed owner write retains the claim; it does not erase a normal join.
     }
     if known && persisted {
         super::execution_end::Settlement::Completed

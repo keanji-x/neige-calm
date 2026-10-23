@@ -6,7 +6,10 @@ pub(super) struct IssueGuard {
     shared: Arc<Shared>,
     pub(super) process: Option<Process>,
     pub(super) receipt: Option<AcpSubmission>,
+    claim: Option<crate::provider_execution::Claim>,
+    guard: Option<crate::provider_execution::DriverGuard>,
     armed: bool,
+    reason: crate::provider_execution::StopReason,
 }
 impl IssueGuard {
     pub(super) fn new(shared: &Arc<Shared>) -> Self {
@@ -14,14 +17,94 @@ impl IssueGuard {
             shared: shared.clone(),
             process: None,
             receipt: None,
+            claim: None,
+            guard: None,
             armed: true,
+            reason: crate::provider_execution::StopReason::SetupFailed,
         }
     }
-    pub(super) fn handoff(&mut self) -> (Process, AcpSubmission) {
+    pub(super) async fn launch(
+        &mut self,
+        engine: &crate::execution_boot::ExecutionEngine,
+        registration: super::super::config::Registration<'_>,
+        token: &str,
+        permission: PlannerPermissionMode,
+        turn: &str,
+    ) -> Result<()> {
+        use crate::provider_execution::{self as execution, stdio::EngineStdio};
+        let params = &self.shared.params;
+        let pool = params
+            .repo
+            .sqlite_db()
+            .ok_or(CalmError::ExecutionUnavailable)?;
+        let id = workspace_runtime::execution::ExecutionId::fresh().map_err(execution::conflict)?;
+        use std::os::unix::fs::DirBuilderExt;
+        let dir = params
+            .host
+            .agent_logs
+            .join(super::super::process::worker_log_name(
+                &params.worker_session_id,
+            ));
+        if dir.exists() {
+            std::fs::remove_dir_all(&dir)?;
+        }
+        std::fs::DirBuilder::new().mode(0o700).create(&dir)?;
+        let (intent, payload) =
+            super::super::execution::intent(params, registration, token, permission, &id, &dir)
+                .await?;
+        let (claim, guard) = params
+            .host
+            .provider_execution
+            .admit(
+                &pool,
+                engine,
+                &params.worker_session_id,
+                intent,
+                execution::Purpose::Turn {
+                    turn_id: turn.into(),
+                },
+            )
+            .await?;
+        self.claim = Some(claim);
+        self.guard = Some(guard);
+        self.reason = execution::StopReason::ReleaseRefused;
+        execution::release::send(
+            &pool,
+            engine,
+            &params.worker_session_id,
+            self.claim.as_ref().unwrap(),
+            &payload,
+        )
+        .await?;
+        self.reason = execution::StopReason::SetupFailed;
+        let stdin = EngineStdio::new(engine.clone(), id.clone());
+        let io = stdin.write_progress();
+        let stdout = EngineStdio::new(engine.clone(), id).with_progress(io.clone());
+        let connection = provider::acp::Connection::new(stdout, stdin);
+        self.process = Some(Process {
+            connection,
+            capabilities: Default::default(),
+            io,
+        });
+        Ok(())
+    }
+    pub(super) fn handoff(
+        &mut self,
+    ) -> (
+        Process,
+        AcpSubmission,
+        crate::provider_execution::Claim,
+        crate::provider_execution::DriverGuard,
+    ) {
         let process = self.process.take().expect("prepared ACP process");
         let receipt = self.receipt.take().expect("prepared ACP receipt");
         self.armed = false;
-        (process, receipt)
+        (
+            process,
+            receipt,
+            self.claim.take().expect("admitted execution"),
+            self.guard.take().expect("driver guard"),
+        )
     }
     /// An ordinary issuer receives the original cleanup error only after the retained task
     /// joins. Cancelling this await drops the receiver, never the cleanup owner.
@@ -37,31 +120,61 @@ impl IssueGuard {
         self.armed = false;
         let shared = self.shared.clone();
         let process = self.process.take();
+        let reason = process
+            .as_ref()
+            .and_then(|process| process.io.stop_reason())
+            .unwrap_or(self.reason);
         let receipt = self.receipt.take();
+        let claim = self.claim.take();
+        let guard = self.guard.take();
+        let execution_id = claim
+            .as_ref()
+            .map(|claim| crate::provider_execution::execution_id(claim.record()))
+            .transpose()
+            .expect("admitted identity");
         let associated = receipt.clone();
         let driver = tokio::spawn(async move {
             let params = &shared.params;
             let revoked = revoke(params).await;
-            let prepared = process.is_some();
-            let stopped = match process {
-                Some(process) => process.stop(&params.host, &params.worker_session_id).await,
-                None => {
-                    crate::planner_process::stop(&params.host.instance, &params.worker_session_id)
-                        .await
-                }
-            };
-            let confirmed = prepared && revoked.is_ok() && stopped.is_ok();
-            if let Some(receipt) = receipt
-                && let Some(pool) = params.repo.sqlite_db()
-            {
-                let _ = acp_submission_finish(
-                    &pool,
-                    &receipt.worker_session_id,
-                    &receipt.client_id,
-                    None,
-                )
-                .await;
+            let _guard = guard;
+            if let Some(process) = process {
+                process.connection.client.close();
             }
+            let prepared = claim.is_some();
+            let stopped = async {
+                if let Some(claim) = claim {
+                    use crate::provider_execution::{self as execution, KnownEnd};
+                    let pool = params
+                        .repo
+                        .sqlite_db()
+                        .ok_or(CalmError::ExecutionUnavailable)?;
+                    let engine = execution::engine(params.engine.as_ref())?;
+                    let owner = &params.host.provider_execution;
+                    let id = execution::execution_id(claim.record())?;
+                    owner
+                        .stop(
+                            &pool,
+                            Some(engine),
+                            &params.worker_session_id,
+                            &claim,
+                            reason,
+                        )
+                        .await?;
+                    execution::wait_settled(engine, &id, Duration::from_secs(12)).await?;
+                    owner
+                        .finish(
+                            &pool,
+                            Some(engine),
+                            &params.worker_session_id,
+                            &claim,
+                            Some(KnownEnd::AcpRefused),
+                        )
+                        .await?;
+                }
+                Ok(())
+            }
+            .await;
+            let confirmed = prepared && revoked.is_ok() && stopped.is_ok();
             if let Err(error) = &stopped {
                 tracing::error!(%error, "ACP issuer process cleanup unconfirmed");
             }
@@ -107,6 +220,10 @@ impl IssueGuard {
                 }
             }
             None => DriverSlot::cleanup(driver),
+        };
+        let slot = match execution_id {
+            Some(id) => slot.with_execution(id),
+            None => slot,
         };
         install(&self.shared, slot);
     }

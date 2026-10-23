@@ -62,6 +62,9 @@ async fn acp_same_key_replay_checks_exact_claim_without_spawn_setup_or_prompt() 
                 "min_agent_version":"1.0.0"
             }]})).unwrap()), root.path(), root.path().join("unused-shim"), root.path().join("mcp.sock")
         ).unwrap());
+        let execution =
+            crate::test_support::execution::Fixture::new(repo.sqlite_db().unwrap()).await;
+        host.execution.bind(execution.engine.clone());
         let session = AcpPlannerSession::open(SessionParams {
             engine: host.execution.engine().cloned(),
             host,
@@ -213,6 +216,8 @@ async fn carrier_quiescence_acp_issuance_before_active_turn_publication() {
                 "min_agent_version":"1.0.0"
             }]})).unwrap()), root.path(), root.path().join("unused-shim"), root.path().join("mcp.sock")
         ).unwrap());
+    let execution = crate::test_support::execution::Fixture::new(repo.sqlite_db().unwrap()).await;
+    host.execution.bind(execution.engine.clone());
     let session = AcpPlannerSession::open(SessionParams {
         engine: host.execution.engine().cloned(),
         host,

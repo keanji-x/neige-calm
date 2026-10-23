@@ -452,17 +452,15 @@ async fn acp_boot_catalog_refuses_before_spawn() {
 
 #[cfg(target_os = "macos")]
 #[tokio::test]
-async fn acp_boot_turn_refuses_before_spawn_and_revokes_minted_token() {
-    let Some(root) = isolated("acp_boot_turn_refuses_before_spawn_and_revokes_minted_token") else {
+async fn acp_boot_turn_refuses_unavailable_executor_before_mint() {
+    let Some(root) = isolated("acp_boot_turn_refuses_unavailable_executor_before_mint") else {
         return;
     };
     let cfg = config(&root, true);
     let state = AppState::boot(&cfg).await.unwrap().into_parts().0;
     let repo = Arc::new(SqlxRepo::open(&cfg.db_url).await.unwrap());
     let row = owner(&repo, &root, AgentProvider::OpenCode).await;
-    // This test isolates the macOS launch scanner before any child can start. Use the
-    // existing crate-private managed ACP entry: HTTP readiness rejects earlier and
-    // would never exercise managed registration, token minting and revocation here.
+    // Managed issuance refuses an unavailable Engine before registration or mint.
     let session = super::session::AcpPlannerSession::open(super::session::SessionParams {
         engine: host(&state).execution.engine().cloned(),
         host: host(&state),
@@ -497,11 +495,16 @@ async fn acp_boot_turn_refuses_before_spawn_and_revokes_minted_token() {
         !root.join("spawned").exists(),
         "turn must not execute the agent"
     );
-    scan_error(result.expect_err("scan failure must refuse turn"));
+    assert!(matches!(
+        result,
+        Err(crate::harness::backend::TurnStartFailure::Transient(
+            crate::error::CalmError::ExecutionUnavailable
+        ))
+    ));
     assert_eq!(
         token(&repo, &row).await,
         None,
-        "failed launch must revoke its newly minted credential"
+        "an unavailable executor must not mint a credential"
     );
     let owned: bool = sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM acp_managed_sessions WHERE worker_session_id=?1)",
@@ -511,15 +514,16 @@ async fn acp_boot_turn_refuses_before_spawn_and_revokes_minted_token() {
     .await
     .unwrap();
     assert!(
-        owned,
-        "the test must reach managed registration before the launch fence"
+        !owned,
+        "availability is checked before managed registration"
     );
 }
 
 #[cfg(target_os = "macos")]
 #[tokio::test]
-async fn acp_boot_track_sweep_still_propagates_cleanup_error() {
-    let Some(root) = isolated("acp_boot_track_sweep_still_propagates_cleanup_error") else {
+async fn acp_boot_track_sweep_without_execution_revokes_without_native_scan() {
+    let Some(root) = isolated("acp_boot_track_sweep_without_execution_revokes_without_native_scan")
+    else {
         return;
     };
     let cfg = config(&root, false);
@@ -533,13 +537,11 @@ async fn acp_boot_track_sweep_still_propagates_cleanup_error() {
         root.join("mcp.sock"),
     )
     .unwrap();
-    scan_error(
-        super::config::sweep_track(&repo, &host, &row.track)
-            .await
-            .unwrap_err(),
-    );
+    super::config::sweep_track(&repo, &host, &row.track)
+        .await
+        .unwrap();
     assert_eq!(token(&repo, &row).await, None);
-    // Boot alone may degrade; the shared scanner and destructive lifecycle remain strict.
+    // The pre-C4 native scan remains boot-only.
     boot(&repo, &host).await.unwrap();
 }
 

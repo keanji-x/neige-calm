@@ -94,18 +94,15 @@ async fn canonical_acp_private_server_cleanup_and_cancel_drain_remain_unknown() 
     .await
     .unwrap();
     let pid: i32 = std::fs::read_to_string(server).unwrap().parse().unwrap();
-    let marker = fx.session.host().instance.marker(&fx.owner.worker);
-    let marked = || {
-        crate::proc_identity::proc_env_contains(
-            pid,
-            crate::acp_planner::config::MARKER_KEY,
-            &marker,
-        )
+    let start = crate::proc_identity::read_proc_start_time(pid).expect("private server is live");
+    let live = || {
+        crate::proc_identity::read_proc_start_time(pid) == Some(start)
+            && std::fs::read_to_string(format!("/proc/{pid}/stat"))
+                .ok()
+                .and_then(|stat| crate::proc_identity::parse_proc_stat_fields(&stat))
+                .is_some_and(|stat| stat.state != 'Z')
     };
-    assert!(
-        marked(),
-        "private serve child inherits the registered launch marker"
-    );
+    assert!(live(), "private serve child must exist before engine Stop");
     let turn = fx
         .session
         .active_turn_id_for_thread(&fx.owner.thread)
@@ -114,7 +111,7 @@ async fn canonical_acp_private_server_cleanup_and_cancel_drain_remain_unknown() 
     fx.wait_idle().await;
     // shutdown joins the retained receipt driver after revoke and the process-tree sweep.
     fx.session.shutdown().await.unwrap();
-    assert!(!marked(), "private server survived cleanup");
+    assert!(!live(), "private server survived engine cleanup");
     let token: Option<String> =
         sqlx::query_scalar("SELECT mcp_token_hash FROM worker_sessions WHERE id=?1")
             .bind(&fx.owner.worker)
@@ -148,6 +145,15 @@ async fn canonical_acp_resume_does_not_require_load_capability() {
     fx.wait_idle().await;
     assert_eq!(fx.receipt_bytes(&successor).await.2, "completed");
     fx.wait_end().await;
+    let executions: i64 = sqlx::query_scalar(concat!(
+        "SELECT count(*) FROM workspace_executions WHERE ",
+        "json_extract(intent_json,'$.consumer')='acp-planner' ",
+        "AND desired='retire' AND settled_at_ms IS NOT NULL",
+    ))
+    .fetch_one(fx.owner.repo.pool())
+    .await
+    .unwrap();
+    assert_eq!(executions, 2, "new and resume both settle through Engine");
     let calls = fx.requests();
     assert_eq!(
         calls

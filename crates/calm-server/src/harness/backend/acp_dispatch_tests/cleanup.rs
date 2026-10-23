@@ -29,7 +29,7 @@ impl Failure {
     pub(super) fn expected(self) -> &'static str {
         match self {
             Self::SpawnRevoke | Self::PreparedRevoke | Self::PreparedBoth => "refuse revoke",
-            Self::PreparedStop => "failed (fixture)",
+            Self::PreparedStop => "provider Stop blocked",
         }
     }
     pub(super) async fn arm(self, owner: &super::super::dispatch_fixture::Owner) {
@@ -44,7 +44,7 @@ impl Failure {
         }
         match self {
             Self::PreparedStop | Self::PreparedBoth => {
-                crate::planner_process::fail_claude_planner_stop_for_test(&owner.worker);
+                crate::test_support::execution::block_stops(owner.repo.db()).await;
             }
             Self::SpawnRevoke | Self::PreparedRevoke => {}
         }
@@ -59,7 +59,9 @@ impl Failure {
             }
             Self::PreparedStop => {}
         }
-        crate::planner_process::clear_claude_planner_stop_failure_for_test(&owner.worker);
+        if matches!(self, Self::PreparedStop | Self::PreparedBoth) {
+            crate::test_support::execution::unblock_stops(owner.repo.db()).await;
+        }
     }
 }
 async fn historical(failure: Failure) {

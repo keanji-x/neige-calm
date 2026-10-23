@@ -1,6 +1,5 @@
 use super::config::{AcpPlannerHost, MARKER_KEY, Registration};
 use crate::error::{CalmError, Result};
-use crate::planner_permission_mode::PlannerPermissionMode;
 use plugin::child_process::{GroupChild, set_process_group_leader, spawn_within};
 use provider::acp::{Connection, Incoming, approvals::refuse, protocol};
 use serde_json::Value;
@@ -14,24 +13,14 @@ pub(super) struct Process {
     pub connection: Connection,
     pub capabilities: protocol::AgentCapabilities,
 }
-/// Only a registered operational process gets its active card's CLI authority.
-pub(super) enum LaunchContext<'a> {
-    Readiness,
-    /// One Planner turn, under the permission mode the harness resolved for it.
-    Planner {
-        mcp_token: &'a str,
-        permission: PlannerPermissionMode,
-    },
-}
 impl Process {
     pub async fn spawn(
         host: &AcpPlannerHost,
         registration: Registration<'_>,
         worker: &str,
         cwd: &std::path::Path,
-        context: LaunchContext<'_>,
     ) -> Result<Self> {
-        Self::spawn_control(host, registration, worker, cwd, context)
+        Self::spawn_control(host, registration, worker, cwd)
             .await
             .map_err(Into::into)
     }
@@ -44,18 +33,13 @@ impl Process {
         registration: Registration<'_>,
         worker: &str,
         cwd: &std::path::Path,
-        context: LaunchContext<'_>,
     ) -> std::result::Result<Self, StartFailure> {
         let Registration { config, profile } = registration;
         crate::planner_process::stop(&host.instance, worker).await?;
-        let launch = match context {
-            LaunchContext::Planner { permission, .. } => Some(profile.launch(permission)),
-            LaunchContext::Readiness => None,
-        };
         let mut command = Command::new(&config.command);
         command
             .args(&config.args)
-            .args(profile.argv(launch))
+            .args(profile.argv(None))
             .current_dir(cwd)
             .env_clear()
             .envs(&config.env)
@@ -70,15 +54,6 @@ impl Process {
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .kill_on_drop(true);
-        if let LaunchContext::Planner { mcp_token, .. } = context {
-            command.envs(crate::mcp_server::wiring::card_mcp_env(
-                &host.mcp_socket,
-                mcp_token,
-            ));
-        }
-        if let Some(launch) = launch {
-            command.envs(launch.env.iter().copied());
-        }
         set_process_group_leader(&mut command);
         let mut child = spawn_within(
             command,
@@ -128,7 +103,7 @@ const STDERR_LIMIT: usize = 256 * 1024;
 
 /// The file the stderr of `worker`'s agent processes is kept in, under the host's data directory;
 /// each launch overwrites it.
-fn stderr_log(host: &AcpPlannerHost, worker: &str) -> std::path::PathBuf {
+pub(super) fn worker_log_name(worker: &str) -> String {
     let name: String = worker
         .chars()
         .map(|c| {
@@ -139,7 +114,12 @@ fn stderr_log(host: &AcpPlannerHost, worker: &str) -> std::path::PathBuf {
             }
         })
         .collect();
-    host.agent_logs.join(format!("{name}.stderr.log"))
+    if name.is_empty() { "_".into() } else { name }
+}
+
+fn stderr_log(host: &AcpPlannerHost, worker: &str) -> std::path::PathBuf {
+    host.agent_logs
+        .join(format!("{}.stderr.log", worker_log_name(worker)))
 }
 
 /// Copy the first [`STDERR_LIMIT`] bytes of an agent's stderr to `path` (owner-only), and drain the
@@ -187,7 +167,7 @@ async fn open_log(path: &std::path::Path) -> std::io::Result<tokio::fs::File> {
 
 /// `initialize`, then the profile's identity at the registered minimum version, then its
 /// authentication: the agent's capabilities, or why the launch is refused.
-async fn negotiate(
+pub(super) async fn negotiate(
     client: &provider::acp::Client,
     Registration { config, profile }: Registration<'_>,
 ) -> std::result::Result<protocol::AgentCapabilities, String> {
@@ -230,13 +210,12 @@ async fn reap(child: &mut GroupChild) {
 }
 
 pub(super) async fn setup_request(
-    process: &mut Process,
+    connection: &mut Connection,
     method: &str,
     params: Value,
     gate: &provider::send_boundary::PreSendGate<'_>,
 ) -> std::result::Result<Value, StartFailure> {
-    let response = process
-        .connection
+    let response = connection
         .client
         .submit_gated(method, params, gate)
         .await
@@ -245,9 +224,9 @@ pub(super) async fn setup_request(
     tokio::pin!(response);
     loop {
         tokio::select! {
-            result=&mut response=>return finish_setup(&process.connection.client,&mut process.connection.incoming,result).await,
-            incoming=process.connection.incoming.recv()=>match incoming {
-                Some(Incoming::Request{id,method,..})=>refuse(&process.connection.client,id,&method).await.map_err(|error| StartFailure::Failed(CalmError::Conflict(error.to_string())))?,
+            result=&mut response=>return finish_setup(&connection.client,&mut connection.incoming,result).await,
+            incoming=connection.incoming.recv()=>match incoming {
+                Some(Incoming::Request{id,method,..})=>refuse(&connection.client,id,&method).await.map_err(|error| StartFailure::Failed(CalmError::Conflict(error.to_string())))?,
                 Some(Incoming::Notification{..})=>{}, // Loaded replay never represents a fresh native prompt.
                 None=>return Err(StartFailure::Failed(CalmError::Conflict("ACP setup connection closed".into()))),
             }
@@ -356,35 +335,75 @@ mod pump_tests {
     use super::*;
     use serde_json::json;
 
-    // Real child pipes and the production setup pump; the peer controls frame ordering.
-    async fn peer(script: &str) -> Process {
-        let mut command = Command::new("python3");
-        command
-            .args(["-u", "-c", script])
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::inherit())
-            .kill_on_drop(true);
-        set_process_group_leader(&mut command);
-        let mut child = spawn_within(
-            command,
-            tokio::time::Instant::now() + Duration::from_secs(2),
-        )
-        .await
-        .unwrap()
-        .unwrap();
-        let connection = Connection::new(child.stdout().unwrap(), child.stdin().unwrap());
-        Process {
-            child,
+    struct Peer {
+        connection: Connection,
+        execution: crate::test_support::execution::Fixture,
+        repo: crate::db::sqlite::SqlxRepo,
+        id: workspace_runtime::execution::ExecutionId,
+        _root: tempfile::TempDir,
+    }
+    // Real Engine stdin/output and the production setup pump; the peer controls frames.
+    async fn peer(script: &str) -> Peer {
+        use workspace_runtime::execution::test_support;
+        let root = tempfile::tempdir().unwrap();
+        let repo = crate::db::sqlite::SqlxRepo::open("sqlite::memory:")
+            .await
+            .unwrap();
+        let execution = crate::test_support::execution::Fixture::new(repo.db().clone()).await;
+        let mut intent = test_support::intent(root.path().to_owned());
+        intent.metadata.consumer = crate::acp_planner::execution::CONSUMER.into();
+        intent.metadata.program.program = "/usr/bin/python3".into();
+        intent.metadata.program.args = vec!["-u".into(), "-c".into(), script.into()];
+        intent.metadata.program.replay_bytes = 4 * 1024 * 1024;
+        let id = intent.metadata.id.clone();
+        let mut tx = crate::db::sqlite::begin_immediate_tx(repo.db())
+            .await
+            .unwrap();
+        let ticket = execution.engine.admit(&mut tx, intent).await.unwrap();
+        tx.commit().await.unwrap();
+        execution.engine.drive(ticket.committed());
+        crate::provider_execution::release::wait_spawned(&execution.engine, &id)
+            .await
+            .unwrap();
+        let connection = Connection::new(
+            crate::provider_execution::stdio::EngineStdio::new(
+                (*execution.engine).clone(),
+                id.clone(),
+            ),
+            crate::provider_execution::stdio::EngineStdio::new(
+                (*execution.engine).clone(),
+                id.clone(),
+            ),
+        );
+        Peer {
             connection,
-            capabilities: protocol::AgentCapabilities::default(),
+            execution,
+            repo,
+            id,
+            _root: root,
         }
     }
-
-    async fn cleanup(process: &mut Process) {
+    async fn cleanup(process: &mut Peer) {
+        use workspace_runtime::execution::Desired;
         process.connection.client.close();
-        let _ = process.child.start_kill();
-        reap(&mut process.child).await;
+        let mut tx = crate::db::sqlite::begin_immediate_tx(process.repo.db())
+            .await
+            .unwrap();
+        let ticket = process
+            .execution
+            .engine
+            .request(&mut tx, &process.id, Desired::Stop)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        process.execution.engine.drive(ticket.committed());
+        crate::provider_execution::wait_settled(
+            &process.execution.engine,
+            &process.id,
+            Duration::from_secs(12),
+        )
+        .await
+        .unwrap();
     }
 
     #[tokio::test]
@@ -399,7 +418,7 @@ print(json.dumps({'jsonrpc':'2.0','id':request['id'],'result':{'sessionId':'nati
 sys.stdin.read()
 "#).await;
         let result = setup_request(
-            &mut process,
+            &mut process.connection,
             "session/new",
             protocol::encode_new_session(std::path::Path::new("/workspace"), &[]),
             &provider::send_boundary::PreSendGate::new(|| Box::pin(async { Ok(()) })),
@@ -419,7 +438,7 @@ print(json.dumps({'jsonrpc':'2.0','id':request['id'],'result':{}}),flush=True)
 sys.stdin.read()
 "#).await;
         let result = setup_request(
-            &mut process,
+            &mut process.connection,
             "session/load",
             protocol::encode_load_session("native", std::path::Path::new("/workspace"), &[]),
             &provider::send_boundary::PreSendGate::new(|| Box::pin(async { Ok(()) })),
@@ -445,7 +464,7 @@ sys.stdin.read()
         )
         .await;
         let result = setup_request(
-            &mut process,
+            &mut process.connection,
             "session/new",
             protocol::encode_new_session(std::path::Path::new("/workspace"), &[]),
             &provider::send_boundary::PreSendGate::new(|| Box::pin(async { Ok(()) })),
@@ -464,7 +483,7 @@ sys.stdin.read()
     async fn setup_pump_disconnect_keeps_native_failure_classification() {
         let mut process = peer("import sys\nsys.stdin.readline()\n").await;
         let result = setup_request(
-            &mut process,
+            &mut process.connection,
             "session/set_config_option",
             protocol::encode_set_config_option("native", "model", "chosen"),
             &provider::send_boundary::PreSendGate::new(|| Box::pin(async { Ok(()) })),

@@ -1,7 +1,7 @@
 //! Catalog discovery owns no card, submission, MCP credential or prompt.
 use super::{
     config::AcpPlannerHost,
-    process::{LaunchContext, Process, setup_request},
+    process::{Process, setup_request},
 };
 use crate::error::{CalmError, Result};
 use crate::planner_model::catalog::{
@@ -64,11 +64,10 @@ impl AcpPlannerHost {
                 .prefix("neige-acp-catalog-")
                 .tempdir()?;
             let cwd = cwd.unwrap_or(scratch.path());
-            let mut process =
-                Process::spawn(self, registration, WORKER, cwd, LaunchContext::Readiness).await?;
+            let mut process = Process::spawn(self, registration, WORKER, cwd).await?;
             let discovered = async {
                 let result = setup_request(
-                    &mut process,
+                    &mut process.connection,
                     "session/new",
                     protocol::encode_new_session(cwd, &[]),
                     &provider::send_boundary::PreSendGate::new(|| Box::pin(async { Ok(()) })),
@@ -84,7 +83,7 @@ impl AcpPlannerHost {
                 // Close the session even if its catalog is malformed. Stop still runs if close fails.
                 if process.capabilities.session_capabilities.close.is_some() {
                     setup_request(
-                        &mut process,
+                        &mut process.connection,
                         "session/close",
                         protocol::encode_close_session(&native.session_id),
                         &provider::send_boundary::PreSendGate::new(|| Box::pin(async { Ok(()) })),

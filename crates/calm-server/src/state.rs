@@ -847,6 +847,11 @@ impl AppState {
                     crate::mcp_server::build_default_registry(),
                 )),
         );
+        self.route.acp_planner.completion.bind(self.raw.clone());
+        self.route
+            .acp_planner
+            .completion
+            .bind_registry(self.route.harness.clone());
         if let Some(engine) = &self.execution {
             self.route.acp_planner.execution.bind(engine.clone());
         }
@@ -964,6 +969,8 @@ impl AppState {
         );
         claude_planner.completion.bind(repo.clone());
         claude_planner.completion.bind_registry(harness.clone());
+        acp_planner.completion.bind(repo.clone());
+        acp_planner.completion.bind_registry(harness.clone());
         let execution = crate::execution_quiesce::ExecutionLifecycle::default();
         terminal_renderer.set_execution(execution.clone());
         let (adapters, planner_start_adapter) = build_operation_adapters(OperationAdapterInputs {
@@ -1422,6 +1429,7 @@ impl AppState {
                 mcp_registry.clone(),
             )),
         );
+        acp_planner.completion.bind(repo.clone());
         crate::acp_planner::config::boot(repo.as_ref(), &acp_planner).await?;
         let mcp_server = crate::mcp_server::McpServer::spawn_with_context(
             mcp_context.clone(),
@@ -1445,6 +1453,8 @@ impl AppState {
         terminal_renderer.set_hook_settings_dir(codex.terminal_hook_settings_dir.clone());
         let harness = HarnessRegistry::new();
         claude_planner.completion.bind_registry(harness.clone());
+        acp_planner.completion.bind(repo.clone());
+        acp_planner.completion.bind_registry(harness.clone());
         crate::track_planner_context::spawn(repo.clone(), events.clone(), write.clone());
         let activity_wake = crate::track_activity::spawn(
             repo.clone(),
@@ -1667,7 +1677,10 @@ impl AppState {
                 crate::provider_execution::sweep::spawn(
                     pool,
                     engine.as_ref().clone(),
-                    crate::execution_boot::provider_owners(&state.route.claude_planner),
+                    crate::execution_boot::provider_owners(
+                        &state.route.claude_planner,
+                        &state.route.acp_planner,
+                    ),
                 );
             }
         }

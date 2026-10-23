@@ -141,7 +141,10 @@ impl Fixture {
             Some(repo.track_area_cache().clone()),
         )
         .with_shared_codex_appserver(shared);
-        let execution = if provider == AgentProvider::Claude {
+        let execution = if matches!(
+            provider.protocol(),
+            calm_types::runtime::AgentProtocol::Claude | calm_types::runtime::AgentProtocol::Acp
+        ) {
             let execution = crate::test_support::execution::Fixture::new(repo.db().clone()).await;
             state.execution = Some(execution.engine.clone());
             state

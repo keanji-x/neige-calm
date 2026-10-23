@@ -562,6 +562,8 @@ R5-B1 续租前被取消泄漏预约、R6-B1 tokio 的 spawn 在 OS spawn 之后
   PID 恢复要在 claim 下重写，即旧版 C3 设计明确不做的原生 claim 管线；④ 原生代码约 −590 行在切换后没有调用者，clippy 不允许留到下一片。
   PR 按上列文件组说明。
 
+**C4.3 落地决定（#2666，A–D）。** ACP Planner turn 注册为 `acp-planner` owner/projection，经同一 provider admission fence、Held 凭据释放与 `EngineStdio`，运营者环境值只进 stdin 载荷；原生 readiness/catalog 留到 C4.4。A：保留已知结果的 45s receipt-only 持久化预算，driver 先持久化再调用 owner；owner 完成端口幂等、单次 10s，失败保留 claim 供重试。B：沿用已合入 C4.2 的 `KnownEnd`；丢失完成时记录 interrupted/unconfirmed，复用 durable outcome，只有活动 slot 保留现场 session 事实。C：保留 #3044 receipt fence；丢失 driver 只把 receipt 结为 unknown，不制造正常 join 的 cleanup 证据，session 继续 held，绝不重发。D：修正 executor scope helper 的 Pipe stdin 所有权：target spawn 完成后用 `fstat(0)` 识别 pipe/FIFO，以 `/dev/null` `dup2` 替换 helper 的 fd 0；target 关闭 stdin 后写入得到 EPIPE，进入既有 StdinTorn/Transport 路径，不新增 ACP response timeout。PTY、非 pipe stdin 与 stdout/stderr 不变；supervisor 回归用仍存活且已关闭 fd 0 的 target 验证拒写。
+
 **C4 设计决定。** 核实基线 main `c70201bcb`（C3.2c #2983 已合入）；路径前缀同 C2b，`tests/` 指 `crates/calm-server/tests/`。只是设计，不声称已实现。
 结论先行：(1) **row C4 的前提要改**：Claude/ACP Planner 今天是“每个 turn 一个原生子进程”（`server/claude_planner/session.rs:1-2` 的模块说明，
 ACP `server/acp_planner/session/driver.rs:73` turn 末停进程），不是长寿会话；task worker 都**不是** kernel 原生子进程，而是经 Legacy
@@ -707,6 +709,7 @@ C4 各片不依赖 W，也不为 worker 预置只有 worker 需要的东西；�
   按 consumer 解码筛选，每个注册 consumer 每 30s 一次。当前 `ORDER BY execution_id` 的 SQL 计划可沿主键扫描全部保留历史，
   因而 SQL 扫描成本随历史总数增长，JSON 解码成本随全部未 Retire 行数增长，均不只随 Planner 行数增长；实现交付报告须记录实测与此保留成本。
   execution_id 列由 typed writer 写入；损坏身份与 `pending()` 统一：整个扫描返回 Err，下一轮重试，不跳过、不采取生命周期动作。
+- **C4.3 implementation decisions A/B/C.** ACP keeps its existing 45s receipt-only known-result persistence budget in the driver, before calling the completion owner. Owner completion makes one idempotent attempt inside the shared 10s bound; failure retains the claim for retry (A). `KnownEnd` carries the driver's own end; recovery reuses an existing durable outcome and otherwise records unknown/unconfirmed, retaining only live facts the driver actually observed (B). The #3044 receipt fence is unchanged: a lost, aborted, or panicked driver revokes its token, clears the settled execution claim, and settles the receipt unknown without `kept_cleanup` evidence. It is never a `StoppedRevokedNormallyJoined` observation; the session stays held (C).
 - **C4.2 carrier 围栏（R1–R4，收窄合同）。** 持有 `provider_execution_json` 的 worker session 必须保持 conversation 的当前 carrier，且记录清空之前不离开 active/failed。R1：`admit` 在同一 SQL 事务拒绝 terminal-bound session（typed Conflict），因此 typed terminal projection 与 Planner claim 不相交，`terminal_settled_tx` 不改。R2：请求路径的 idle carrier replacement、`cards.session_id` repoint、显式 close/reset 先在旧 session 的 issue 锁内以注册 owner 调 `admission_gate`（已结算 claim 可 inline 完成，否则 Conflict），再在写事务里检查 claim 为空。R3：在其它 writer 事务内运行、不能做 owner I/O 的 writer 只加 SQL 围栏，claim 非空即跳过该行或拒绝；不嵌套 owner 完成，等 30s sweep 后重试。R4：track/card 删行先经 provider `sweep_track` Stop；owner 记录随 worker row 删除，孤儿由 owner sweep 回收。outcome 写入仍走 `harness_turn_outcome_put` 的当前 carrier 检查，不绕过、不跳写。
 - **同 session 的唯一准入规则（自 C4.1 起，修第一轮 adversarial B3）。** 同一 worker session 的每个启动——C4 的 Engine 准入 ① 与仍原生的
   启动（C4.1 时 Claude 的 turn、canonical 与 compaction 都经 `start_spawn`，`claude_planner/session.rs:295`；rewind 经 `prepare_edit`，

@@ -59,6 +59,7 @@ async fn acp_identical_local_turns_keep_two_owner_cancellation_separate() {
         cancel: a_cancel,
         approvals: std::sync::Weak::new(),
         native_session_id: "a".into(),
+        execution_id: workspace_runtime::execution::ExecutionId::fresh().unwrap(),
     });
     b.shared.state.lock().unwrap().active = Some(Active {
         thread: "b".into(),
@@ -66,6 +67,7 @@ async fn acp_identical_local_turns_keep_two_owner_cancellation_separate() {
         cancel: b_cancel,
         approvals: std::sync::Weak::new(),
         native_session_id: "b".into(),
+        execution_id: workspace_runtime::execution::ExecutionId::fresh().unwrap(),
     });
     assert!(matches!(
         a.turn_interrupt("b", "same-local-turn").await,

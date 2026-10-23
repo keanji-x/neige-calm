@@ -39,7 +39,11 @@ async fn reopen(owner: &Owner, url: String) -> Owner {
     }
 }
 
-async fn snapshot(owner: &Owner, dir: &tempfile::TempDir, name: &str) -> Owner {
+async fn snapshot(
+    owner: &Owner,
+    dir: &crate::test_support::execution::Directory,
+    name: &str,
+) -> Owner {
     let path = dir.path().join(name);
     sqlx::query("VACUUM INTO ?1")
         .bind(path.to_str().unwrap())
@@ -104,7 +108,19 @@ async fn canonical_acp_completed_crash_recovery_preserves_receipt_and_projection
         } else {
             fx.dispatch().await.unwrap();
         }
-        fx.wait_idle().await;
+        fx.wait_driver_finished().await;
+        if window != "projected" {
+            assert!(
+                calm_truth::db::sqlite::provider_execution::load(
+                    fx.owner.repo.pool(),
+                    &fx.owner.worker
+                )
+                .await
+                .unwrap()
+                .is_some(),
+                "failed owner confirmation retains the claim"
+            );
+        }
         // Idle is cleared after the receipt and the attempted terminal write. A
         // VACUUM image excludes any subsequent shutdown/cleanup effects.
         let durable = receipt(&fx.owner).await;
@@ -285,4 +301,46 @@ async fn canonical_acp_sending_unknown_crash_recovery_after_authenticated_keep_s
             session.shutdown().await.unwrap();
         }
     }
+}
+
+#[tokio::test]
+async fn c4_acp_owner_retry_preserves_the_normal_drivers_known_receipt() {
+    let fx = Fixture::new("reply").await;
+    fail_terminal_outcome(fx.owner.repo.as_ref()).await;
+    fx.dispatch().await.unwrap();
+    fx.wait_driver_finished().await;
+    let pool = fx.owner.repo.db();
+    let claim =
+        calm_truth::db::sqlite::provider_execution::load(pool.read_pool(), &fx.owner.worker)
+            .await
+            .unwrap()
+            .expect("owner write failure keeps its claim");
+    assert_eq!(receipt(&fx.owner).await.0, "completed");
+    sqlx::query("DROP TRIGGER fail_outcome")
+        .execute(pool.writer_pool())
+        .await
+        .unwrap();
+    fx.session
+        .host()
+        .provider_execution
+        .finish(
+            pool,
+            fx.session.host().execution.engine(),
+            &fx.owner.worker,
+            &claim,
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(
+        calm_truth::db::sqlite::provider_execution::load(pool.read_pool(), &fx.owner.worker)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        fx.complete().await.is_some(),
+        "retry must preserve facts observed by the normally joined driver"
+    );
+    fx.session.shutdown().await.unwrap();
 }

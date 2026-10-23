@@ -183,7 +183,7 @@ impl ProviderExecutionOwner for Owner {
                         return Ok(());
                     }
                     Some(KnownEnd::ClaudeRefused) => {}
-                    Some(KnownEnd::RewindCheck) => {
+                    Some(KnownEnd::RewindCheck | KnownEnd::AcpRefused | KnownEnd::AcpTurn(_)) => {
                         return Err(conflict("wrong Claude completion purpose"));
                     }
                     None => {
@@ -275,11 +275,6 @@ pub(super) async fn intent(
     env: Vec<(String, OsString)>,
     token: Option<String>,
 ) -> Result<(ExecutionIntent, Vec<u8>)> {
-    let text = |value: OsString| {
-        value
-            .into_string()
-            .map_err(|_| CalmError::BadRequest("provider arguments require UTF-8".into()))
-    };
     use crate::execution_environment::{PROXY_KEYS, proxy_value_is_secret};
     use crate::operation::stdin_payload::{KeySource, PayloadKeys};
     let mut secrets = std::collections::HashMap::new();
@@ -314,61 +309,20 @@ pub(super) async fn intent(
     let payload = keys
         .render(|key| secrets.get(key).cloned())
         .map_err(|_| CalmError::BadRequest("invalid Planner release payload".into()))?;
-    let root = tokio::fs::canonicalize(&params.cwd).await?;
-    let mut wrapper_args = vec![
-        "-c".into(),
-        stderr::wrapper(&keys.read_prefix()),
-        "neige-claude".into(),
-        text(dir.as_os_str().to_owned())?,
-        text(root.as_os_str().to_owned())?,
-        text(binary.as_os_str().to_owned())?,
-    ];
-    wrapper_args.extend(args.into_iter().map(text).collect::<Result<Vec<_>>>()?);
-    let environment = env
-        .into_iter()
-        .map(|(key, value)| Ok((key, text(value)?)))
-        .collect::<Result<Vec<_>>>()?;
-    Ok((
-        ExecutionIntent {
-            metadata: ExecutionMetadata {
-                consumer: CONSUMER.into(),
-                id: id.clone(),
-                alias: ProcessAlias(execution::sweep::alias(
-                    &params.worker_session_id,
-                    id.as_str(),
-                )),
-                owner: OperationRef(format!("worker-session:{}", params.worker_session_id)),
-                track: TrackId(params.track_id.clone()),
-                source: PrivateSource {
-                    root,
-                    cwd: workspace::identity::WorkspaceCwd::root(),
-                    registration: ObjectRegistrationId::fresh()?,
-                    nonce: TransferNonce::fresh()?,
-                    directory: ExternalDirectoryId::fresh()?,
-                    incarnation: ExternalDirectoryIncarnationId::fresh()?,
-                    authority: ExecutionAuthority {
-                        grant_id: ExecutionGrantId::fresh()?,
-                        authorization_binding: AuthorizationBindingId::fresh()?,
-                        authorization_version: 1,
-                    },
-                },
-                program: ExecutionSpecification {
-                    program: "/bin/sh".into(),
-                    args: wrapper_args,
-                    environment,
-                    io_mode: calm_session::control::IoMode::Pipe,
-                    replay_bytes: 4 * 1024 * 1024,
-                },
-                specification: SpecificationId::fresh()?,
-                ticket_id: LaunchTicketId::fresh()?,
-            },
-            secrets: ExecutionSecrets {
-                ticket: CapabilityToken::fresh()?,
-                tokens: ExecutionControlTokens::fresh()?,
-            },
-        },
+    execution::launch::intent(
+        CONSUMER,
+        &params.worker_session_id,
+        &params.track_id,
+        &params.cwd,
+        id,
+        dir,
+        binary,
+        args,
+        env,
+        &keys.read_prefix(),
         payload,
-    ))
+    )
+    .await
 }
 
 // Claude runs as a foreground command. This consumer accepts platform-specific

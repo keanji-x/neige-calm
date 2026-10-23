@@ -481,3 +481,120 @@ async fn acp_assistant_historical_creation_key_replays_original_evidence() {
     assert_eq!(fixture.counts(card).await.0, 0);
     fixture.shutdown_process(&state).await;
 }
+
+#[tokio::test]
+async fn c4_acp_planner_switch_next_turns_use_engine_and_inherit_permission() {
+    use crate::planner_switch::{SwitchPlannerRequest, switch_planner};
+    use calm_truth::db::sqlite::track_planner::PlannerRevision;
+    let mut fixture = Fixture::new().await;
+    configure(&mut fixture);
+    let (state, app, cookie, auth) = fixture.application_with_auth(false).await;
+    state.dispatcher.abort_event_listener_for_test();
+    let request = body(&app, &cookie, &AgentProvider::OpenCode).await;
+    let created = post(&app, &cookie, "/api/tracks", "switch-track", request).await;
+    let track = created["id"].as_str().unwrap();
+    let (planner, _, _) = fixture.carrier(track).await;
+    wait_idle(&fixture, &planner, 1).await;
+    let assistant = post(
+        &app,
+        &cookie,
+        &format!("/api/tracks/{track}/conversations"),
+        "switch-assistant",
+        json!({"provider":"opencode","text":"Assistant before switch"}),
+    )
+    .await;
+    let assistant = assistant["id"].as_str().unwrap();
+    wait_idle(&fixture, assistant, 1).await;
+    // The promoted card inherits the outgoing Planner's mode, then its profile
+    // composes the next process environment through the execution owner.
+    sqlx::query("UPDATE cards SET payload=json_set(payload,'$.permission_mode','full') WHERE id=?")
+        .bind(&planner)
+        .execute(fixture.repo.pool())
+        .await
+        .unwrap();
+    for card in [&planner, assistant] {
+        let (worker, frame) = carrier(&fixture, card).await;
+        // ACP delivery remains Unknown even after a qualified END. Preserve the
+        // switch's receipt fence: resolve that delivery through authenticated Keep.
+        let attempt = &frame.canonical_inputs.attempts[0];
+        post(
+            &app,
+            &cookie,
+            &format!("/api/cards/{card}/conversation/input/keep"),
+            &format!("keep-before-switch-{card}"),
+            json!({"carrier_id":worker,"submission_id":attempt.attempt.submission_id,
+                "attempt_id":attempt.attempt.attempt_id,"revision":attempt.revision.to_string()}),
+        )
+        .await;
+        let handle = state.harness.get(&worker).unwrap();
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while handle.idle_carrier_owner().await.is_err() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+    }
+    let mut headers = axum::http::HeaderMap::new();
+    headers.insert(header::COOKIE, cookie.parse().unwrap());
+    let (_, human) = crate::auth::authenticated_source(auth, headers).await;
+    let receipt = switch_planner(
+        &crate::state::RouteState::from_ref(&state),
+        &crate::actor::Actor("user".into()),
+        &human.unwrap(),
+        SwitchPlannerRequest {
+            track_id: track.into(),
+            expected_planner_card_id: planner.clone().into(),
+            target_assistant_card_id: assistant.into(),
+            expected_revision: PlannerRevision(0),
+        },
+    )
+    .await
+    .unwrap();
+    for (card, replacement) in [
+        (planner.as_str(), &receipt.demoted),
+        (assistant, &receipt.promoted),
+    ] {
+        post(
+            &app,
+            &cookie,
+            &format!("/api/cards/{card}/planner/input"),
+            &format!("after-switch-{card}"),
+            json!({"text":"After switch through engine"}),
+        )
+        .await;
+        wait_idle(&fixture, card, 1).await;
+        let metadata: Vec<String> = sqlx::query_scalar(
+            "SELECT intent_json FROM workspace_executions WHERE json_extract(intent_json,'$.owner')=?",
+        )
+        .bind(format!("worker-session:{}", replacement.new_worker.id))
+        .fetch_all(fixture.repo.pool())
+        .await
+        .unwrap();
+        assert_eq!(metadata.len(), 1, "one Engine process for the new carrier");
+        let metadata: workspace_runtime::execution::ExecutionMetadata =
+            serde_json::from_str(&metadata[0]).unwrap();
+        assert_eq!(metadata.consumer, "acp-planner".into());
+        assert!(
+            !metadata
+                .program
+                .environment
+                .iter()
+                .any(|(key, _)| key == "NEIGE_MCP_TOKEN")
+        );
+        let config = metadata
+            .program
+            .environment
+            .iter()
+            .find(|(key, _)| key == "OPENCODE_CONFIG_CONTENT")
+            .unwrap();
+        if card == assistant {
+            assert_eq!(
+                serde_json::from_str::<Value>(&config.1).unwrap()["permissions"][0]["effect"],
+                "allow"
+            );
+        }
+    }
+    assert_eq!(prompts(&fixture, &AgentProvider::OpenCode), 4);
+    fixture.shutdown_process(&state).await;
+}

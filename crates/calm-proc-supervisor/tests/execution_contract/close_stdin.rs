@@ -1,5 +1,40 @@
 use super::*;
 
+#[tokio::test]
+async fn execution_pipe_target_closes_stdin_while_alive_rejects_write() {
+    let h = Harness::start().await;
+    let mut c = h.connect().await;
+    let grant = authority();
+    let (scope, registration) = external(h.root("closed-input", false), &grant);
+    let r = prepare(
+        &c,
+        scope,
+        &registration,
+        grant,
+        "closed-input",
+        IoMode::Pipe,
+        "exec 0<&-; printf stdin-closed; sleep 30",
+    );
+    let receipt = launch(&mut c, &r).await;
+    wait_for(&mut c, &r, &receipt, |state, out| {
+        assert!(!matches!(state, ExecutionState::Drained { .. }));
+        out.contains("stdin-closed")
+    })
+    .await;
+    let reply = action(
+        &mut c,
+        capability(&r, &receipt, ExecutionControlPurpose::Interactive),
+        ProcessAction::WriteStdin {
+            bytes: b"must fail".to_vec(),
+        },
+    )
+    .await;
+    assert!(
+        matches!(&reply, ExecutionReply::Refused { reason } if reason.contains("Broken pipe")),
+        "{reply:?}"
+    );
+}
+
 async fn action(
     client: &mut RegisteredExecutorConnection,
     capability: ExecutionCapability,

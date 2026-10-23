@@ -28,8 +28,9 @@ impl AcpPlannerSession {
         // stop/revoke. Re-establish cleanup for this recovery process before
         // retaining that exact durable result; Sending/Unknown never qualify.
         let revoked = revoke(params).await;
-        let stopped =
-            crate::planner_process::stop(&params.host.instance, &params.worker_session_id).await;
+        let stopped = self
+            .stop_execution(crate::provider_execution::StopReason::Shutdown)
+            .await;
         revoked?;
         stopped?;
         let Some((receipt, association)) = found else {

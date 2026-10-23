@@ -1182,6 +1182,13 @@ impl PlannerHarness {
         Arc::ptr_eq(&self.inner, &other.inner)
     }
 
+    #[cfg(feature = "fixtures")]
+    pub fn acp_session_for_test(
+        &self,
+    ) -> Option<Arc<crate::acp_planner::session::AcpPlannerSession>> {
+        self.inner.backend.acp_session_for_test()
+    }
+
     /// Fixtures only: the Claude session behind this harness, for its interleaving hooks.
     #[cfg(feature = "fixtures")]
     pub fn claude_session_for_test(

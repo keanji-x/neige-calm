@@ -9,8 +9,12 @@ pub type ExecutionEngine = Engine<SqliteExecutionStore, SessionExecutor>;
 /// Host construction owns provider-specific resources; the sweep only consumes ports.
 pub(crate) fn provider_owners(
     claude: &crate::claude_planner::config::ClaudePlannerHost,
+    acp: &crate::acp_planner::config::AcpPlannerHost,
 ) -> Vec<crate::provider_execution::ProviderExecution> {
-    vec![claude.provider_execution.clone()]
+    vec![
+        claude.provider_execution.clone(),
+        acp.provider_execution.clone(),
+    ]
 }
 
 pub async fn recover(
@@ -23,6 +27,10 @@ pub async fn recover(
     let secret = serde_json::from_reader(std::fs::File::open(key_file)?)?;
     let executor = SessionExecutor::new(cfg.proc_supervisor_sock_resolved(), secret);
     let store = SqliteExecutionStore::new(pool)
+        .with_projection(
+            crate::acp_planner::execution::CONSUMER.into(),
+            Arc::new(crate::provider_execution::Projection),
+        )
         .with_projection(
             crate::claude_planner::execution::CONSUMER.into(),
             Arc::new(crate::provider_execution::Projection),

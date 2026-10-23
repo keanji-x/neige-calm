@@ -10,10 +10,23 @@ use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 #[derive(Default)]
 pub struct WriteProgress {
+    output_failed: std::sync::atomic::AtomicBool,
+    stdin_failed: std::sync::atomic::AtomicBool,
     accepted: std::sync::atomic::AtomicUsize,
     uncertain: std::sync::atomic::AtomicBool,
 }
 impl WriteProgress {
+    pub(crate) fn stop_reason(&self) -> Option<StopReason> {
+        use std::sync::atomic::Ordering::SeqCst;
+        if self.output_failed.load(SeqCst) {
+            Some(StopReason::OutputGap)
+        } else if self.stdin_failed.load(SeqCst) {
+            Some(StopReason::StdinTorn)
+        } else {
+            None
+        }
+    }
+
     /// A lost reply cannot certify that zero bytes crossed the transport.
     pub fn crossed(&self) -> bool {
         use std::sync::atomic::Ordering::SeqCst;
@@ -37,6 +50,10 @@ pub struct EngineStdio {
     progress: Arc<WriteProgress>,
 }
 impl EngineStdio {
+    pub(crate) fn with_progress(mut self, progress: Arc<WriteProgress>) -> Self {
+        self.progress = progress;
+        self
+    }
     pub fn write_progress(&self) -> Arc<WriteProgress> {
         self.progress.clone()
     }
@@ -122,6 +139,11 @@ impl AsyncRead for EngineStdio {
                 Poll::Pending => return Poll::Pending,
                 Poll::Ready(result) => {
                     this.pending = None;
+                    if result.is_err() {
+                        this.progress
+                            .output_failed
+                            .store(true, std::sync::atomic::Ordering::SeqCst);
+                    }
                     let (bytes, cursor, end) = result?;
                     this.bytes = std::io::Cursor::new(bytes);
                     this.cursor = cursor;
@@ -198,6 +220,11 @@ impl AsyncWrite for EngineStdio {
             Poll::Ready(result) => {
                 this.write = None;
                 this.torn = result.is_err();
+                if this.torn {
+                    this.progress
+                        .stdin_failed
+                        .store(true, std::sync::atomic::Ordering::SeqCst);
+                }
                 Poll::Ready(result)
             }
         }

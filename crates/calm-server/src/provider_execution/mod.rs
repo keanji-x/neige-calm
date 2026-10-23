@@ -13,6 +13,7 @@ use std::{
 };
 use workspace_runtime::execution::*;
 
+pub(crate) mod launch;
 pub mod release;
 pub mod stderr;
 pub mod stdio;
@@ -28,6 +29,8 @@ pub enum KnownEnd {
     RewindCheck,
     ClaudeTurn(Box<crate::claude_planner::execution::End>),
     ClaudeRefused,
+    AcpTurn(Box<crate::acp_planner::execution::End>),
+    AcpRefused,
 }
 #[async_trait]
 pub trait ProviderExecutionOwner: Send + Sync {

@@ -306,15 +306,18 @@ impl PlannerBackend {
     }
 
     pub(crate) fn bind_provider_registry(&self, registry: crate::harness::HarnessRegistry) {
-        if let Arm::Claude(session) = &self.0 {
-            session.host().completion.bind_registry(registry);
+        match &self.0 {
+            Arm::Claude(session) => session.host().completion.bind_registry(registry),
+            Arm::Acp(session) => session.host().completion.bind_registry(registry),
+            Arm::Codex(..) => {}
         }
     }
 
     pub(crate) async fn provider_transition_gate(&self) -> Result<()> {
         match &self.0 {
             Arm::Claude(session) => session.provider_transition_gate().await,
-            Arm::Codex(..) | Arm::Acp(_) => Ok(()),
+            Arm::Acp(session) => session.provider_transition_gate().await,
+            Arm::Codex(..) => Ok(()),
         }
     }
 
@@ -335,8 +338,10 @@ impl PlannerBackend {
         turn: &str,
         outcome: serde_json::Value,
     ) -> Result<()> {
-        if let Arm::Claude(session) = &self.0 {
-            session.complete_lost_execution(id, turn, outcome).await?;
+        match &self.0 {
+            Arm::Claude(session) => session.complete_lost_execution(id, turn, outcome).await?,
+            Arm::Acp(session) => session.complete_lost_execution(id, turn, outcome).await?,
+            Arm::Codex(..) => {}
         }
         Ok(())
     }
@@ -418,6 +423,16 @@ impl PlannerBackend {
     #[cfg(feature = "fixtures")]
     pub fn claude_for_test(session: Arc<ClaudePlannerSession>) -> Self {
         Self(Arm::Claude(session))
+    }
+
+    #[cfg(feature = "fixtures")]
+    pub fn acp_session_for_test(
+        &self,
+    ) -> Option<Arc<crate::acp_planner::session::AcpPlannerSession>> {
+        match &self.0 {
+            Arm::Acp(session) => Some(session.clone()),
+            _ => None,
+        }
     }
 
     /// Fixtures only: the Claude session, for its interleaving hooks.

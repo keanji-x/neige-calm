@@ -25,8 +25,10 @@ root = pathlib.Path(os.environ['ACP_FIXTURE_ROOT'])
 with (root / 'environment.jsonl').open('a') as output:
     presence = {name: name in os.environ for name in [
         'NEIGE_MCP_DAEMON_TOKEN', 'NEIGE_MCP_TOKEN', 'NEIGE_MCP_SOCKET', 'ACP_AMBIENT_SENTINEL']}
-    presence['catalog'] = os.environ['NEIGE_ACP_PLANNER'].endswith(':catalog')
-    presence['readiness'] = os.environ['NEIGE_ACP_PLANNER'].endswith(':readiness')
+    marker = os.environ.get('NEIGE_ACP_PLANNER', '')
+    presence['catalog'] = marker.endswith(':catalog')
+    presence['readiness'] = marker.endswith(':readiness')
+    presence['probe'] = {key: hashlib.sha256(os.environ.get(key, '').encode()).hexdigest() for key in os.environ.get('ACP_FIXTURE_PROBE_KEYS', '').split(',') if key}
     presence['opencode_config_content'] = os.environ.get('OPENCODE_CONFIG_CONTENT')
     output.write(json.dumps(presence) + '\n')
 with (root / 'argv.jsonl').open('a') as output:
@@ -212,7 +214,7 @@ for line in sys.stdin:
         output.write(json.dumps(logged) + '\n')
     method, params = request.get('method'), request.get('params', {})
     if method == 'initialize':
-        wrong = (root / 'scenario').read_text().strip() == 'wrong-identity' and not os.environ['NEIGE_ACP_PLANNER'].endswith(':readiness')
+        wrong = (root / 'scenario').read_text().strip() == 'wrong-identity' and not os.environ.get('NEIGE_ACP_PLANNER', '').endswith(':readiness')
         if wrong:
             (root / 'wrong-identity.json').write_text(json.dumps({
                 'token_present': 'NEIGE_MCP_TOKEN' in os.environ,
@@ -239,7 +241,7 @@ for line in sys.stdin:
         if methods:
             initialized['authMethods'] = [{'id': m, 'name': m} for m in methods]
         result(request, initialized)
-        if (root / 'scenario').read_text().strip() == 'checkpoint' and not os.environ['NEIGE_ACP_PLANNER'].endswith(':readiness'):
+        if (root / 'scenario').read_text().strip() == 'checkpoint' and not os.environ.get('NEIGE_ACP_PLANNER', '').endswith(':readiness'):
             (root / 'setup-checkpoint').touch()
             while not (root / 'release-setup').exists():
                 time.sleep(0.01)

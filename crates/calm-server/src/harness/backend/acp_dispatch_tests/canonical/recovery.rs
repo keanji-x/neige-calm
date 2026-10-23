@@ -58,9 +58,15 @@ async fn canonical_acp_retained_recovery_reopens_exact_completed_and_holds_unkno
         };
         let (backend, session, _held) = session_for(&owner, &fx.dir);
         let before = fx.prompts();
-        crate::planner_process::fail_claude_planner_stop_for_test(&owner.worker);
+        sqlx::query(concat!(
+    "CREATE TRIGGER refuse_recovery_revoke BEFORE UPDATE OF mcp_token_hash ON worker_sessions ",
+    "BEGIN SELECT RAISE(ABORT,'refuse recovery revoke'); END",
+)).execute(owner.repo.pool()).await.unwrap();
         let refused = backend.recover_retained().await;
-        crate::planner_process::clear_claude_planner_stop_failure_for_test(&owner.worker);
+        sqlx::query("DROP TRIGGER refuse_recovery_revoke")
+            .execute(owner.repo.pool())
+            .await
+            .unwrap();
         assert!(
             refused.is_err(),
             "recovery must qualify predecessor cleanup"

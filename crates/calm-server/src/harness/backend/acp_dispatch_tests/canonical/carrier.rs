@@ -153,7 +153,7 @@ async fn canonical_acp_retirement_at_receipt_and_writer_boundaries_never_resends
             dispatch.await.unwrap().is_err(),
             "retired carrier cannot record a report"
         );
-        fx.wait_idle().await;
+        fx.wait_driver_finished().await;
         assert_eq!(fx.prompts(), 0);
         let receipt = crate::db::sqlite::acp_submission_get(
             fx.owner.repo.pool(),
@@ -306,5 +306,8 @@ async fn c4_canonical_acp_issue_refuses_outstanding_provider_execution() {
         .await
         .unwrap();
     assert_eq!(receipts, 0);
-    fx.session.shutdown().await.unwrap();
+    assert!(
+        fx.session.shutdown().await.is_err(),
+        "an unclassified execution remains fenced"
+    );
 }

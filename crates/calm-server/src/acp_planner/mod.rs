@@ -3,6 +3,7 @@
 mod boot_tests;
 mod catalog;
 pub mod config;
+pub(crate) mod execution;
 mod process;
 mod profile;
 pub(crate) mod recovery;

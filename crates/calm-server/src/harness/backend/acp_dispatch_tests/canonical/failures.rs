@@ -25,16 +25,20 @@ async fn canonical_acp_revoke_stop_and_receipt_failures_never_qualify_end() {
                 ))
                     .execute(fx.owner.repo.pool()).await.unwrap();
             }
-            Failure::Stop => {
-                crate::planner_process::fail_claude_planner_stop_for_test(&fx.owner.worker)
-            }
+            Failure::Stop => crate::test_support::execution::block_stops(fx.owner.repo.db()).await,
             Failure::Receipt => {
                 sqlx::query("CREATE TRIGGER refuse_receipt BEFORE UPDATE ON acp_submissions BEGIN SELECT RAISE(ABORT,'refuse receipt'); END")
                     .execute(fx.owner.repo.pool()).await.unwrap();
             }
         }
         pause.release.notify_one();
-        fx.wait_idle().await;
+        tokio::time::timeout(Duration::from_secs(20), async {
+            while !fx.session.driver_finished_for_test() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
         assert!(fx.complete().await.is_none());
         let state: String = sqlx::query_scalar("SELECT state FROM acp_submissions")
             .fetch_one(fx.owner.repo.pool())
@@ -52,7 +56,7 @@ async fn canonical_acp_revoke_stop_and_receipt_failures_never_qualify_end() {
                     .unwrap();
             }
             Failure::Stop => {
-                crate::planner_process::clear_claude_planner_stop_failure_for_test(&fx.owner.worker)
+                crate::test_support::execution::unblock_stops(fx.owner.repo.db()).await
             }
             Failure::Receipt => {
                 sqlx::query("DROP TRIGGER refuse_receipt")

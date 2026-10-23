@@ -70,6 +70,10 @@ impl Root {
         self.dir.path()
     }
 
+    pub fn assert_execution_journal_excludes(&self, needle: &str) {
+        self.execution.assert_journal_excludes(needle);
+    }
+
     pub fn fake_dir(&self) -> PathBuf {
         self.path().join("fake")
     }

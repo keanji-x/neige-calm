@@ -29,7 +29,7 @@ pub(super) struct HelperReport {
 use std::{
     fs::File,
     io::{BufRead, Write},
-    os::fd::{FromRawFd, RawFd},
+    os::fd::{AsRawFd, FromRawFd, RawFd},
     os::unix::process::CommandExt,
     process::{Command, Stdio},
     sync::atomic::{AtomicI32, Ordering},
@@ -165,6 +165,7 @@ pub(super) fn run_with_command_hook(
             return Ok(());
         }
     };
+    release_pipe_stdin()?;
     send(&mut report, &context, &HelperEvent::Started);
     let mut status = None;
     let mut root_exited = false;
@@ -195,6 +196,29 @@ pub(super) fn run_with_command_hook(
         }
         std::thread::sleep(Duration::from_millis(10));
     }
+}
+
+/// After spawn only the target may retain the pipe reader. Keeping the helper's
+/// copy would hide a target half-close and falsely acknowledge subsequent writes.
+fn release_pipe_stdin() -> anyhow::Result<()> {
+    // SAFETY: fstat initializes this output and only inspects the helper's fd 0.
+    let mut stat: libc::stat = unsafe { std::mem::zeroed() };
+    anyhow::ensure!(
+        unsafe { libc::fstat(libc::STDIN_FILENO, &mut stat) } == 0,
+        "helper stdin inspection failed: {}",
+        std::io::Error::last_os_error()
+    );
+    if stat.st_mode & libc::S_IFMT == libc::S_IFIFO {
+        let null = File::open("/dev/null")?;
+        // SAFETY: target spawn has completed; replace only the helper's stdin.
+        // PTY/non-pipe stdin and both output descriptors retain their ownership.
+        anyhow::ensure!(
+            unsafe { libc::dup2(null.as_raw_fd(), libc::STDIN_FILENO) } >= 0,
+            "helper stdin release failed: {}",
+            std::io::Error::last_os_error()
+        );
+    }
+    Ok(())
 }
 
 enum ChildObservation {

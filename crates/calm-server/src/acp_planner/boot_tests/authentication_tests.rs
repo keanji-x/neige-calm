@@ -4,7 +4,6 @@
 #![cfg(test)]
 use super::*;
 use crate::acp_planner::config::{AcpPlannerConfig, AcpPlannerHost};
-use crate::acp_planner::process::{LaunchContext, Process};
 use crate::acp_planner::session::{AcpPlannerSession, SessionParams};
 use crate::agent_providers::{Freshness, ProviderAvailabilityCache, Verdict};
 use crate::planner_permission_mode::PlannerPermissionMode;
@@ -194,6 +193,8 @@ async fn a_failed_authentication_revokes_the_turns_issued_context() {
         grok(json!({"ACP_FIXTURE_AUTH_METHODS":"cached_token","ACP_FIXTURE_AUTHENTICATE":"error"})),
         "1.0.62",
     ));
+    let execution = crate::test_support::execution::Fixture::new(repo.sqlite_db().unwrap()).await;
+    host.execution.bind(execution.engine.clone());
     let session = AcpPlannerSession::open(SessionParams {
         engine: host.execution.engine().cloned(),
         host,
@@ -249,17 +250,10 @@ async fn a_failed_authentication_revokes_the_turns_issued_context() {
 /// alone; OpenCode's is `acp` under every mode and outside a turn.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_profiles_entry_wraps_the_turns_agent_options_after_the_registered_args() {
-    let planner = |permission| LaunchContext::Planner {
-        mcp_token: "card-context",
-        permission,
-    };
+    let planner = Some;
     let grok_stdio = vec!["prefix", "agent", "--no-leader", "stdio"];
     for (provider, context, argv) in [
-        (
-            AgentProvider::Grok,
-            LaunchContext::Readiness,
-            grok_stdio.clone(),
-        ),
+        (AgentProvider::Grok, None, grok_stdio.clone()),
         (
             AgentProvider::Grok,
             planner(PlannerPermissionMode::Never),
@@ -281,11 +275,7 @@ async fn the_profiles_entry_wraps_the_turns_agent_options_after_the_registered_a
                 "stdio",
             ],
         ),
-        (
-            AgentProvider::OpenCode,
-            LaunchContext::Readiness,
-            vec!["prefix", "acp"],
-        ),
+        (AgentProvider::OpenCode, None, vec!["prefix", "acp"]),
         (
             AgentProvider::OpenCode,
             planner(PlannerPermissionMode::Never),
@@ -309,15 +299,19 @@ async fn the_profiles_entry_wraps_the_turns_agent_options_after_the_registered_a
         };
         let host = host(root.path(), &provider, env, "1.0.0");
         let registration = host.registration(&provider).unwrap();
-        let process = Process::spawn(&host, registration, "options", root.path(), context)
-            .await
-            .unwrap();
-        process.stop(&host, "options").await.unwrap();
-        assert_eq!(
-            lines(root.path(), "argv.jsonl"),
-            [json!(argv)],
-            "{provider:?}"
-        );
+        let args = registration
+            .config
+            .args
+            .iter()
+            .cloned()
+            .chain(
+                registration
+                    .profile
+                    .argv(context.map(|mode| registration.profile.launch(mode)))
+                    .map(str::to_owned),
+            )
+            .collect::<Vec<_>>();
+        assert_eq!(&args[2..], argv, "{provider:?}");
     }
 }
 

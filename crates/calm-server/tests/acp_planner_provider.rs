@@ -23,6 +23,8 @@ mod acp_planner_start;
 mod acp_planner_transcript;
 #[path = "cases/acp_settlement.rs"]
 mod acp_settlement;
+#[path = "cases/c4_acp_execution.rs"]
+mod c4_acp_execution;
 #[allow(dead_code)]
 #[path = "cases/claude_planner_session_fixture.rs"]
 mod claude_planner_session_fixture;
@@ -524,7 +526,7 @@ async fn acp_failed_cleanup_revokes_the_live_mcp_credential() {
         before.is_some(),
         "exercise a minted credential, not an unconfigured path"
     );
-    calm_server::planner_process::fail_claude_planner_stop_for_test(&runtime.id);
+    stack.block_provider_stop().await;
     let (status, body) = stack
         .send(
             "POST",
@@ -534,7 +536,7 @@ async fn acp_failed_cleanup_revokes_the_live_mcp_credential() {
         .await;
     assert!(status.is_success(), "{status}: {body}");
     let outcomes = stack.wait_outcomes(&card, 1).await;
-    calm_server::planner_process::clear_claude_planner_stop_failure_for_test(&runtime.id);
+    stack.clear_provider_fault().await;
     assert_eq!(outcomes[0]["status"], "failed");
     let after: Option<String> =
         sqlx::query_scalar("SELECT mcp_token_hash FROM worker_sessions WHERE id=?1")
@@ -801,5 +803,33 @@ async fn acp_reset_does_not_mirror_the_predecessors_revoked_hash() {
     );
     let active:i64=sqlx::query_scalar("SELECT COUNT(*) FROM worker_sessions WHERE mcp_token_hash=?1 AND state IN ('starting','running','idle','turn_pending')").bind(old).fetch_one(pool.read_pool()).await.unwrap();
     assert_eq!(active, 0);
+    stack.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn c4_consecutive_acp_turns_launch_with_distinct_execution_aliases() {
+    let root = Root::new("unused");
+    let stack = boot(&root).await;
+    let (_, card) = create(&stack).await;
+    for n in 1..=2 {
+        assert_eq!(
+            turn(&stack, &card, "engine turn", n).await["status"],
+            "completed"
+        );
+    }
+    let rows: Vec<(String, String)> = sqlx::query_as(
+        "SELECT execution_id,intent_json FROM workspace_executions WHERE json_extract(intent_json,'$.consumer')='acp-planner'",
+    ).fetch_all(stack.repo().sqlite_db().unwrap().read_pool()).await.unwrap();
+    assert_eq!(rows.len(), 2, "each ACP turn must use the real Engine");
+    let aliases = rows
+        .iter()
+        .map(|(_, json)| {
+            serde_json::from_str::<workspace_runtime::execution::ExecutionMetadata>(json)
+                .unwrap()
+                .alias
+                .0
+        })
+        .collect::<std::collections::HashSet<_>>();
+    assert_eq!(aliases.len(), 2);
     stack.shutdown().await;
 }

@@ -47,12 +47,18 @@ impl Completion {
     }
 }
 pub(super) struct DriverSlot {
+    execution_id: Option<workspace_runtime::execution::ExecutionId>,
     completion: Completion,
     input: DriverInput,
 }
 impl DriverSlot {
+    pub(super) fn with_execution(mut self, id: workspace_runtime::execution::ExecutionId) -> Self {
+        self.execution_id = Some(id);
+        self
+    }
     pub(super) fn cleanup(driver: tokio::task::JoinHandle<Settlement>) -> Self {
         Self {
+            execution_id: None,
             completion: Completion::Driver(RetainedJoin::new(driver)),
             input: DriverInput::Cleanup,
         }
@@ -72,12 +78,14 @@ impl DriverSlot {
             }
         };
         Self {
+            execution_id: None,
             completion: Completion::Driver(RetainedJoin::new(driver)),
             input,
         }
     }
     pub(super) fn recovered(receipt: AcpSubmission, association: AcpCanonicalInput) -> Self {
         Self {
+            execution_id: None,
             completion: Completion::RecoveredCompleted,
             input: DriverInput::Canonical(Box::new(CanonicalDriver {
                 receipt,
@@ -509,5 +517,71 @@ mod tests {
             session.qualify_execution_end(&target).await,
             Ok(None) | Err(_)
         ));
+    }
+}
+
+impl AcpPlannerSession {
+    pub(crate) async fn complete_lost_execution(
+        &self,
+        id: &workspace_runtime::execution::ExecutionId,
+        turn: &str,
+        outcome: Value,
+    ) -> Result<()> {
+        let shared = &self.shared;
+        if let Some(slot) = slot(shared) {
+            let mut driver = slot
+                .try_lock()
+                .map_err(|_| CalmError::Conflict("ACP driver join is pending".into()))?;
+            if driver
+                .execution_id
+                .as_ref()
+                .is_some_and(|expected| expected != id)
+            {
+                return Err(CalmError::Conflict(
+                    "ACP completion identity changed".into(),
+                ));
+            }
+            if !driver.completion.is_finished() {
+                return Err(CalmError::Conflict("ACP driver remains live".into()));
+            }
+            // Joining an aborted/panicked task is never a normal cleanup observation.
+            if driver.finish().await.is_err() {
+                drop(driver);
+                let mut current = shared.driver.lock().expect("ACP driver");
+                if current
+                    .as_ref()
+                    .is_some_and(|current| Arc::ptr_eq(current, &slot))
+                {
+                    *current = None;
+                }
+            }
+        }
+        let thread = {
+            let state = shared.state.lock().expect("ACP state");
+            state
+                .active
+                .as_ref()
+                .filter(|active| active.execution_id == *id && active.turn == turn)
+                .map(|active| active.thread.clone())
+        };
+        if let Some(thread) = thread {
+            shared.finish_execution(id.as_str(), turn, &thread, Vec::new(), outcome);
+        }
+        Ok(())
+    }
+}
+
+#[cfg(feature = "fixtures")]
+impl AcpPlannerSession {
+    pub fn driver_finished_for_test(&self) -> bool {
+        driver_finished(&self.shared)
+    }
+    pub async fn abort_driver_for_test(&self) {
+        if let Some(slot) = slot(&self.shared) {
+            let slot = slot.lock().await;
+            if let Completion::Driver(RetainedJoin::Running(driver)) = &slot.completion {
+                driver.abort();
+            }
+        }
     }
 }

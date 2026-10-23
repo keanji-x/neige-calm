@@ -88,33 +88,46 @@ async fn checkpoint_after_settlement(operation_replay: bool) {
     // after shutdown's snapshot persistence, while the actual receipt writer is paused.
     // The original queue proof/key and the later event watermark are one checkpoint;
     // merging only its queue into an old operation or boot snapshot cannot retire it.
-    checkpoint.push_watermark = sqlx::query_scalar("SELECT MAX(id) FROM events")
-        .fetch_one(pool.read_pool())
-        .await
-        .unwrap();
-    assert!(checkpoint.push_watermark > 0);
-    let later = QueueEntry::system(
-        Observation::ReportEdited {
-            track_id: track.into(),
-            body_sha256: "later".into(),
-            body: "later report".into(),
-            author: Some(calm_server::event::EditAuthor::User),
-            body_before: None,
-            doc_rev_after: None,
-            blocks_after: None,
-        },
-        Some(checkpoint.push_watermark),
-    )
-    .unwrap();
-    let mut entries = checkpoint.pending_entries();
-    entries.push(later.clone());
-    checkpoint.set_pending_entries(entries);
-    sqlx::query("UPDATE worker_sessions SET handle_state_json=?2 WHERE id=?1")
-        .bind(&runtime.id)
-        .bind(serde_json::to_string(&checkpoint).unwrap())
-        .execute(pool.writer_pool())
-        .await
-        .unwrap();
+    // Keep polling recovery while injecting the crash checkpoint. A timed-out
+    // borrowed future may still own the writer connection between SQL awaits;
+    // parking it here would deadlock this write against our own recovery future.
+    let (checkpoint, later) = tokio::select! {
+        biased;
+        _ = recovery.as_mut() => {
+            pause.release.notify_one();
+            panic!("checkpoint recovery returned before the receipt writer settled");
+        }
+        injected = async {
+            checkpoint.push_watermark = sqlx::query_scalar("SELECT MAX(id) FROM events")
+                .fetch_one(pool.read_pool())
+                .await
+                .unwrap();
+            assert!(checkpoint.push_watermark > 0);
+            let later = QueueEntry::system(
+                Observation::ReportEdited {
+                    track_id: track.into(),
+                    body_sha256: "later".into(),
+                    body: "later report".into(),
+                    author: Some(calm_server::event::EditAuthor::User),
+                    body_before: None,
+                    doc_rev_after: None,
+                    blocks_after: None,
+                },
+                Some(checkpoint.push_watermark),
+            )
+            .unwrap();
+            let mut entries = checkpoint.pending_entries();
+            entries.push(later.clone());
+            checkpoint.set_pending_entries(entries);
+            sqlx::query("UPDATE worker_sessions SET handle_state_json=?2 WHERE id=?1")
+                .bind(&runtime.id)
+                .bind(serde_json::to_string(&checkpoint).unwrap())
+                .execute(pool.writer_pool())
+                .await
+                .unwrap();
+            (checkpoint, later)
+        } => injected,
+    };
     pause.release.notify_one();
     tokio::time::timeout(Duration::from_secs(20), recovery)
         .await

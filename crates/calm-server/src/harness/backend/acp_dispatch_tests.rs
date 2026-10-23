@@ -9,7 +9,7 @@ async fn fixture() -> (
     PlannerBackend,
     Arc<AcpPlannerSession>,
     super::dispatch_fixture::Owner,
-    tempfile::TempDir,
+    crate::test_support::execution::Directory,
 ) {
     let (backend, session, owner, dir, _held) = fixture_full().await;
     (backend, session, owner, dir)
@@ -19,7 +19,7 @@ async fn fixture_full() -> (
     PlannerBackend,
     Arc<AcpPlannerSession>,
     super::dispatch_fixture::Owner,
-    tempfile::TempDir,
+    crate::test_support::execution::Directory,
     crate::harness::held_requests::HeldRequestReceiver,
 ) {
     fixture_storage(false).await
@@ -31,7 +31,7 @@ async fn fixture_storage(
     PlannerBackend,
     Arc<AcpPlannerSession>,
     super::dispatch_fixture::Owner,
-    tempfile::TempDir,
+    crate::test_support::execution::Directory,
     crate::harness::held_requests::HeldRequestReceiver,
 ) {
     fixture_storage_for(AgentProvider::OpenCode, persistent).await
@@ -44,7 +44,7 @@ async fn fixture_storage_for(
     PlannerBackend,
     Arc<AcpPlannerSession>,
     super::dispatch_fixture::Owner,
-    tempfile::TempDir,
+    crate::test_support::execution::Directory,
     crate::harness::held_requests::HeldRequestReceiver,
 ) {
     let dir = tempfile::tempdir().unwrap();
@@ -55,13 +55,19 @@ async fn fixture_storage_for(
         "sqlite::memory:".into()
     };
     let owner = super::dispatch_fixture::seed_with_url(dir.path(), provider.clone(), &url).await;
+    let execution =
+        crate::test_support::execution::Fixture::new(owner.repo.sqlite_db().unwrap()).await;
+    let dir = crate::test_support::execution::Directory {
+        _execution: execution,
+        directory: dir,
+    };
     let (backend, session, rx) = session_for_provider(&owner, &dir, provider);
     (backend, session, owner, dir, rx)
 }
 
 fn session_for(
     owner: &super::dispatch_fixture::Owner,
-    dir: &tempfile::TempDir,
+    dir: &crate::test_support::execution::Directory,
 ) -> (
     PlannerBackend,
     Arc<AcpPlannerSession>,
@@ -72,7 +78,7 @@ fn session_for(
 
 fn session_for_provider(
     owner: &super::dispatch_fixture::Owner,
-    dir: &tempfile::TempDir,
+    dir: &crate::test_support::execution::Directory,
     provider: AgentProvider,
 ) -> (
     PlannerBackend,
@@ -84,7 +90,10 @@ fn session_for_provider(
 
 /// The spy peer's environment for `provider`: Grok's answers `initialize` as Grok Build 1.0.62
 /// does (no `agentInfo`, `_meta.agentVersion`, `cached_token`, its `_x.ai/*` traffic).
-fn peer_env(provider: &AgentProvider, dir: &tempfile::TempDir) -> BTreeMap<String, String> {
+fn peer_env(
+    provider: &AgentProvider,
+    dir: &crate::test_support::execution::Directory,
+) -> BTreeMap<String, String> {
     let mut env = BTreeMap::from([(
         "ACP_FIXTURE_ROOT".to_owned(),
         dir.path().to_string_lossy().into_owned(),
@@ -107,7 +116,7 @@ fn peer_env(provider: &AgentProvider, dir: &tempfile::TempDir) -> BTreeMap<Strin
 
 fn session_for_command(
     owner: &super::dispatch_fixture::Owner,
-    dir: &tempfile::TempDir,
+    dir: &crate::test_support::execution::Directory,
     provider: AgentProvider,
     command: &str,
 ) -> (
@@ -140,6 +149,7 @@ fn session_for_command(
         )
         .unwrap(),
     );
+    host.execution.bind(dir._execution.engine.clone());
     let session = Arc::new(AcpPlannerSession::open(SessionParams {
         engine: host.execution.engine().cloned(),
         host,

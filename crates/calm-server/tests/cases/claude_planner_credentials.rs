@@ -165,6 +165,7 @@ async fn an_aborted_deletion_revokes_and_the_reinstalled_harness_mints_on_its_fi
     assert_eq!(stack.post_input(&card_id, "work").await.0, StatusCode::OK);
     super::claude_planner_wiring::wait_file(&root, "stdin").await;
     let token = root.spawned_token();
+    root.assert_execution_journal_excludes(&token);
     let runtime = stack.runtime(&card_id).await;
     stack.block_provider_stop().await;
     let (status, body) = stack
