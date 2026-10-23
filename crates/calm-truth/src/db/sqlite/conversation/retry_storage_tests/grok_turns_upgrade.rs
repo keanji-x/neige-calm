@@ -1,5 +1,5 @@
-//! Populated forward upgrade through 0190: the canonical graph survives byte for byte, and the
-//! Turn provider CHECK admits Grok and nothing else new.
+//! Populated forward upgrade from 0189 to exactly 0190: the canonical graph survives byte for
+//! byte, and the Turn provider CHECK admits Grok and nothing else new.
 use super::*;
 
 const TABLES: [&str; 5] = [
@@ -10,16 +10,26 @@ const TABLES: [&str; 5] = [
     "conversation_input_retry_relations",
 ];
 
-fn before_0190() -> sqlx::migrate::Migrator {
+/// The shipped migrations up to `last`, so later migrations cannot change what this test pins.
+fn through(last: i64) -> sqlx::migrate::Migrator {
     sqlx::migrate::Migrator {
         migrations: std::borrow::Cow::Owned(
             crate::MIGRATOR
                 .iter()
-                .filter(|m| m.version < 190)
+                .filter(|m| m.version <= last)
                 .cloned()
                 .collect(),
         ),
         ..sqlx::migrate::Migrator::DEFAULT
+    }
+}
+
+fn repo_on(db: super::super::super::SqliteDb) -> SqlxRepo {
+    SqlxRepo {
+        db,
+        card_role_cache: super::super::super::CardRoleCache::new(),
+        track_area_cache: super::super::super::TrackAreaCache::new(),
+        database_id: std::sync::Arc::new("grok-upgrade".into()),
     }
 }
 
@@ -110,14 +120,9 @@ async fn canonical_grok_turns_migration_preserves_populated_graph() {
     let dir = tempfile::tempdir().unwrap();
     let url = format!("sqlite://{}/upgrade.db?mode=rwc", dir.path().display());
     let db = super::super::super::SqliteDb::connect(&url).await.unwrap();
-    let old = before_0190();
+    let old = through(189);
     old.run(db.writer_pool()).await.unwrap();
-    let repo = SqlxRepo {
-        db,
-        card_role_cache: super::super::super::CardRoleCache::new(),
-        track_area_cache: super::super::super::TrackAreaCache::new(),
-        database_id: std::sync::Arc::new("grok-upgrade".into()),
-    };
+    let repo = repo_on(db);
     let (_, card) = super::super::tests::fixture_card(&repo).await;
     // The real claim writer, an attempt, a retry relation, a Human retirement and a reference
     // successor: every member and deferred edge of the rebuilt graph holds a row.
@@ -157,7 +162,14 @@ async fn canonical_grok_turns_migration_preserves_populated_graph() {
     let Seed { repo, card, .. } = s;
     drop(repo);
 
-    let upgraded = SqlxRepo::open(&url).await.unwrap();
+    // Apply exactly 0190 through the shipped migrator path, not HEAD with its later migrations.
+    let db = super::super::super::SqliteDb::connect(&url).await.unwrap();
+    let with_0190 = through(190);
+    super::super::super::infra::check_no_unknown_future_migrations(db.read_pool(), &with_0190)
+        .await
+        .unwrap();
+    with_0190.run(db.read_pool()).await.unwrap();
+    let upgraded = repo_on(db);
     assert!(
         sqlx::query("PRAGMA foreign_key_check")
             .fetch_all(upgraded.pool())

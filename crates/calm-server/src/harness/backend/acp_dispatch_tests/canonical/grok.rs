@@ -17,6 +17,11 @@ async fn canonical_grok_unsupported_load_and_registration_drift_refuse_without_n
     .await;
 }
 
+/// The Neige-authored decline the person sees, with the permission-mode advice.
+const DECLINED: &str = "The agent ended the turn because Neige declined `Execute `echo one > \
+                        one.txt`` under the `never` permission mode. Switch the permission mode \
+                        to `ask` to approve such a request, or to `full` to allow it.";
+
 /// Under `never` Neige answers Grok's shell request `cancelled` and Grok ends its turn
 /// `cancelled`: the receipt settles known and failed with the decline, never interrupted, END
 /// qualifies once, and the next input continues the same session.
@@ -33,11 +38,7 @@ async fn canonical_grok_declined_request_ends_failed_and_settles_its_receipt() {
     assert_eq!(state, "completed");
     let outcome: serde_json::Value = serde_json::from_str(&outcome.unwrap()).unwrap();
     assert_eq!(outcome["status"], "failed", "{outcome}");
-    let reason = outcome["error"]["message"].as_str().unwrap();
-    assert!(
-        reason.contains("Neige declined") && reason.contains("`never`"),
-        "{reason}"
-    );
+    assert_eq!(outcome["error"]["message"], DECLINED, "{outcome}");
     let replies: Vec<serde_json::Value> =
         std::fs::read_to_string(fx.dir.path().join("permission-log.jsonl"))
             .unwrap()
@@ -58,8 +59,9 @@ async fn canonical_grok_declined_request_ends_failed_and_settles_its_receipt() {
     // The turn ended: neither interrupted nor wedged, and the next input is admitted.
     assert_eq!(carrier.phase().unwrap(), HarnessPhaseTag::TurnCompleted);
     tx.commit().await.unwrap();
-    // One terminal row, failed. The driver records it before END; END's fixed diagnostic does
-    // not replace an existing row, so its message text is not pinned here (#3091).
+    // One terminal row, failed, carrying the reason the person reads today: the driver records
+    // Neige's decline before END, and END does not replace an existing row. Whether ACP canonical
+    // execution should apply `canonical_diagnostic` to it instead is tracked in #3091.
     let ended: Vec<String> = sqlx::query_scalar(
         "SELECT params FROM harness_items WHERE worker_session_id=?1 AND method='turn/completed'",
     )
@@ -70,7 +72,7 @@ async fn canonical_grok_declined_request_ends_failed_and_settles_its_receipt() {
     assert_eq!(ended.len(), 1, "{ended:?}");
     let ended: serde_json::Value = serde_json::from_str(&ended[0]).unwrap();
     assert_eq!(ended["status"], "failed", "{ended}");
-    assert!(ended["error"]["message"].is_string(), "{ended}");
+    assert_eq!(ended["error"]["message"], DECLINED, "{ended}");
     assert!(
         !crate::db::sqlite::acp_submission_unresolved(fx.owner.repo.pool(), &fx.owner.worker)
             .await

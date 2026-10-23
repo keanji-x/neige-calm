@@ -2,17 +2,40 @@
 #![cfg(test)]
 use super::*;
 
-/// The claimants come from the profile registry, so a profile that turns canonical input on
-/// without storage for its provider fails here before any Planner reaches it.
+use calm_types::worker::WorkerContract;
+
+/// Every worker contract. The match is exhaustive, so a new contract stops this compiling until
+/// it is listed and its canonical claim is covered.
+fn every_contract() -> [WorkerContract; 4] {
+    let all = [
+        WorkerContract::Planner,
+        WorkerContract::Assistant,
+        WorkerContract::Executor,
+        WorkerContract::Validator,
+    ];
+    for contract in all {
+        match contract {
+            WorkerContract::Planner
+            | WorkerContract::Assistant
+            | WorkerContract::Executor
+            | WorkerContract::Validator => {}
+        }
+    }
+    all
+}
+
+/// The claimants come from the profile registry, so a profile that turns canonical input on for
+/// any contract without storage for its provider fails here before any worker reaches it. The
+/// Turn's provider CHECK does not depend on the contract, so one Planner turn per claimant
+/// proves its storage.
 #[tokio::test]
 async fn canonical_acp_every_claiming_profile_stores_its_turn() {
     let claimants: Vec<_> = AgentProvider::ALL
         .into_iter()
         .filter(|provider| {
-            crate::acp_planner::wiring::canonical_inputs(
-                provider,
-                calm_types::worker::WorkerContract::Planner,
-            )
+            every_contract()
+                .into_iter()
+                .any(|contract| crate::acp_planner::wiring::canonical_inputs(provider, contract))
         })
         .collect();
     assert!(!claimants.is_empty());
