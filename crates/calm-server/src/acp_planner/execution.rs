@@ -8,6 +8,7 @@ use crate::{
     provider_execution::*,
 };
 use async_trait::async_trait;
+use calm_truth::db::sqlite::provider_execution as claims;
 use provider::{
     acp::{Connection, protocol},
     events::PlannerEvent,
@@ -67,6 +68,17 @@ impl ProviderExecutionOwner for Owner {
         let Purpose::Turn { turn_id } = &record.purpose else {
             return Err(conflict("wrong ACP purpose"));
         };
+        match &known {
+            Some(KnownEnd::AcpTurn(end)) => {
+                if end.receipt.worker_session_id != session || end.receipt.turn_id != *turn_id {
+                    return Err(conflict("ACP completion identity changed"));
+                }
+            }
+            None | Some(KnownEnd::AcpRefused) => {}
+            Some(KnownEnd::ClaudeTurn(_) | KnownEnd::ClaudeRefused | KnownEnd::RewindCheck) => {
+                return Err(conflict("wrong ACP completion result"));
+            }
+        }
         let repo = self
             .repo
             .get()
@@ -75,49 +87,28 @@ impl ProviderExecutionOwner for Owner {
         // One attempt inside ProviderExecution::finish's 10s budget. The driver's
         // 45s known-result retry has already finished before it enters this port.
         let worker = session.to_owned();
-        crate::db::write_in_tx_typed(repo.as_ref(), move |tx| {
+        let execution = record.execution_id.clone();
+        let owned = crate::db::write_in_tx_typed(repo.as_ref(), move |tx| {
             Box::pin(async move {
-                sqlx::query("UPDATE worker_sessions SET mcp_token_hash=NULL WHERE id=?")
-                    .bind(worker)
-                    .execute(&mut **tx)
-                    .await?;
-                Ok(())
+                Ok(claims::revoke_credential_for_execution(tx, &worker, &execution).await?)
             })
         })
         .await?;
-        let receipt: Option<crate::db::sqlite::AcpSubmission> = sqlx::query_as(
-            concat!(
-    "SELECT worker_session_id,client_id,turn_id,thread_id,native_session_id,input_json,state,",
-    "outcome_json,kept_cleanup_json FROM acp_submissions WHERE worker_session_id=? AND ",
-    "turn_id=?",
-)
-        ).bind(session).bind(turn_id).fetch_optional(pool.read_pool()).await?;
+        if !owned {
+            return Ok(());
+        }
+        let receipt = if matches!(known, None | Some(KnownEnd::AcpRefused)) {
+            crate::db::sqlite::acp_submission_recover_turn(&pool, session, turn_id).await?
+        } else {
+            crate::db::sqlite::acp_submission_for_turn(pool.read_pool(), session, turn_id).await?
+        };
         let Some(receipt) = receipt else {
             // Setup can fail before creating a receipt; it has no prompt outcome.
             return Ok(());
         };
-        // Recovery must reuse a completed CAS winner, never attempt to demote it.
-        if matches!(known, None | Some(KnownEnd::AcpRefused))
-            && !matches!(
-                receipt.state,
-                crate::db::sqlite::AcpSubmissionState::Completed
-            )
-        {
-            crate::db::sqlite::acp_submission_finish(&pool, session, &receipt.client_id, None)
-                .await?;
-        }
-        let receipt =
-            crate::db::sqlite::acp_submission_get(pool.read_pool(), session, &receipt.client_id)
-                .await?
-                .ok_or_else(|| conflict("ACP receipt disappeared"))?;
         let (mut turn, events, shared) = match known {
-            Some(KnownEnd::AcpTurn(end)) => {
-                if end.receipt.worker_session_id != session || end.receipt.turn_id != *turn_id {
-                    return Err(conflict("ACP completion identity changed"));
-                }
-                (end.turn, end.events, Some(end.shared))
-            }
-            None => (
+            Some(KnownEnd::AcpTurn(end)) => (end.turn, end.events, Some(end.shared)),
+            None | Some(KnownEnd::AcpRefused) => (
                 receipt
                     .outcome_json
                     .as_deref()

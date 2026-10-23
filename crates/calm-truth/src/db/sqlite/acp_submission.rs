@@ -107,6 +107,40 @@ where
 {
     Ok(sqlx::query_as(concat!("SELECT ","worker_session_id,client_id,turn_id,thread_id,native_session_id,input_json,state,outcome_j","son,kept_cleanup_json FROM acp_submissions WHERE worker_session_id=?1 AND client_id=?2")).bind(worker).bind(client).fetch_optional(executor).await?)
 }
+pub async fn acp_submission_for_turn<'e, E>(
+    executor: E,
+    worker: &str,
+    turn: &str,
+) -> Result<Option<AcpSubmission>>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
+{
+    Ok(sqlx::query_as(concat!(
+        "SELECT worker_session_id,client_id,turn_id,thread_id,native_session_id,input_json,state,",
+        "outcome_json,kept_cleanup_json FROM acp_submissions WHERE worker_session_id=? AND turn_id=?"
+    )).bind(worker).bind(turn).fetch_optional(executor).await?)
+}
+
+/// Receipt-only completion reuses a durable Completed winner. The read and the
+/// possible Unknown write share a writer transaction, so no winner is demoted.
+pub async fn acp_submission_recover_turn(
+    pool: &crate::db::sqlite::SqliteDb,
+    worker: &str,
+    turn: &str,
+) -> Result<Option<AcpSubmission>> {
+    let mut tx = super::begin_immediate_tx(pool).await?;
+    let Some(mut receipt) = acp_submission_for_turn(&mut **tx, worker, turn).await? else {
+        return Ok(None);
+    };
+    if !matches!(receipt.state, AcpSubmissionState::Completed) {
+        finish_tx(&mut tx, worker, &receipt.client_id, None).await?;
+        receipt.state = AcpSubmissionState::Unknown;
+        receipt.outcome_json = None;
+    }
+    tx.commit().await?;
+    Ok(Some(receipt))
+}
+
 pub async fn acp_submission_unresolved(pool: &SqlitePool, worker: &str) -> Result<bool> {
     let mut connection = pool.acquire().await?;
     acp_submission_unresolved_on(&mut connection, worker).await
@@ -223,6 +257,16 @@ pub async fn acp_submission_finish(
     outcome: Option<&str>,
 ) -> Result<()> {
     let mut tx = super::begin_immediate_tx(pool).await?;
+    finish_tx(&mut tx, worker, client, outcome).await?;
+    tx.commit().await?;
+    Ok(())
+}
+async fn finish_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    worker: &str,
+    client: &str,
+    outcome: Option<&str>,
+) -> Result<()> {
     let state = if outcome.is_some() {
         "completed"
     } else {
@@ -244,6 +288,5 @@ pub async fn acp_submission_finish(
             "ACP submission fence changed before settlement",
         ));
     }
-    tx.commit().await?;
     Ok(())
 }

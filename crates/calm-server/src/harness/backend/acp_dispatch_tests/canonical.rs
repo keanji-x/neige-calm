@@ -3,6 +3,7 @@
 mod attach;
 mod carrier;
 mod cleanup;
+mod completion;
 mod continuation;
 mod control;
 mod failures;

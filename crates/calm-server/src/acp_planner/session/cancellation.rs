@@ -142,8 +142,8 @@ impl IssueGuard {
             }
             let prepared = claim.is_some();
             let stopped = async {
-                if let Some(claim) = claim {
-                    use crate::provider_execution::{self as execution, KnownEnd};
+                if let Some(claim) = &claim {
+                    use crate::provider_execution as execution;
                     let pool = params
                         .repo
                         .sqlite_db()
@@ -156,24 +156,43 @@ impl IssueGuard {
                             &pool,
                             Some(engine),
                             &params.worker_session_id,
-                            &claim,
+                            claim,
                             reason,
                         )
                         .await?;
                     execution::wait_settled(engine, &id, Duration::from_secs(12)).await?;
-                    owner
-                        .finish(
-                            &pool,
-                            Some(engine),
-                            &params.worker_session_id,
-                            &claim,
-                            Some(KnownEnd::AcpRefused),
-                        )
-                        .await?;
                 }
                 Ok(())
             }
             .await;
+            // Owner projection is retryable bookkeeping, not stop/revoke/join
+            // evidence. A failed write retains the claim but not a false Unconfirmed.
+            if stopped.is_ok()
+                && let Some(claim) = &claim
+            {
+                use crate::provider_execution::KnownEnd;
+                let completion = async {
+                    let pool = params
+                        .repo
+                        .sqlite_db()
+                        .ok_or(CalmError::ExecutionUnavailable)?;
+                    params
+                        .host
+                        .provider_execution
+                        .finish(
+                            &pool,
+                            params.engine.as_ref(),
+                            &params.worker_session_id,
+                            claim,
+                            Some(KnownEnd::AcpRefused),
+                        )
+                        .await
+                }
+                .await;
+                if let Err(error) = completion {
+                    tracing::error!(%error, "ACP owner completion pending; retaining execution claim");
+                }
+            }
             let confirmed = prepared && revoked.is_ok() && stopped.is_ok();
             if let Err(error) = &stopped {
                 tracing::error!(%error, "ACP issuer process cleanup unconfirmed");

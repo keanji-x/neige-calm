@@ -73,7 +73,17 @@ impl ProviderExecutionOwner for Owner {
     ) -> Result<()> {
         let id = execution_id(record)?;
         match &record.purpose {
-            Purpose::RewindCheck => {}
+            Purpose::RewindCheck => match known {
+                None | Some(KnownEnd::RewindCheck) => {}
+                Some(
+                    KnownEnd::ClaudeTurn(_)
+                    | KnownEnd::ClaudeRefused
+                    | KnownEnd::AcpTurn(_)
+                    | KnownEnd::AcpRefused,
+                ) => {
+                    return Err(conflict("wrong Claude completion purpose"));
+                }
+            },
             Purpose::Turn { turn_id } | Purpose::Compaction { turn_id } => {
                 let terminal = foreground_settled(&evidence);
                 match known {

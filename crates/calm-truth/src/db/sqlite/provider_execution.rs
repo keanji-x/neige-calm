@@ -269,6 +269,32 @@ async fn compare_exchange(
     })
 }
 
+/// Revoke session-wide authority only while this exact execution still owns it.
+/// Read and write share the writer transaction: a captured sweep claim cannot
+/// revoke a credential minted after its execution was retired and replaced.
+pub async fn revoke_credential_for_execution(
+    tx: &mut Transaction<'_, Sqlite>,
+    session: &str,
+    execution_id: &str,
+) -> Result<bool> {
+    let Some(current) = load(&mut **tx, session)
+        .await?
+        .filter(|claim| claim.record().execution_id == execution_id)
+    else {
+        return Ok(false);
+    };
+    let changed = sqlx::query(
+        "UPDATE worker_sessions SET mcp_token_hash=NULL
+         WHERE id=? AND provider_execution_json=?",
+    )
+    .bind(session)
+    .bind(&current.json)
+    .execute(&mut **tx)
+    .await?
+    .rows_affected();
+    Ok(changed == 1)
+}
+
 /// R2/R3 transaction-local fence. No owner completion or other provider I/O here.
 pub async fn retained(tx: &mut Transaction<'_, Sqlite>, session: &str) -> Result<bool> {
     Ok(sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM worker_sessions WHERE id=? AND provider_execution_json IS NOT NULL)")

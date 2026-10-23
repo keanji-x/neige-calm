@@ -35,6 +35,9 @@ pub enum KnownEnd {
 #[async_trait]
 pub trait ProviderExecutionOwner: Send + Sync {
     fn consumer(&self) -> &'static str;
+    /// A captured record may no longer own the session. Guard session-wide
+    /// writes by exact execution ownership inside their writer transaction;
+    /// scope other effects to this execution or its turn.
     async fn complete(
         &self,
         session: &str,
