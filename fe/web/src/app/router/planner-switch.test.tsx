@@ -15,6 +15,7 @@ import { renderPlannerSwitchFixture } from './planner-switch-fixture.tsx';
 import { renderAssistantProviderFixture } from './assistant-provider-fixture.tsx';
 import { trackConversationRows } from '../conversations/planner-row.ts';
 import { queryKeys } from '../providers/query-keys.ts';
+import { trackDetailQueryOptions } from '../providers/queries.ts';
 
 async function open(name = 'Other conversation') {
   await userEvent.click(await screen.findByRole('button', { name: new RegExp(`Conversation ${name}`) }));
@@ -60,6 +61,63 @@ it('shows the specific refusal and blocking role, preserves draft, and never ret
   const input = await open(); await submit(input);
   await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('Wait for pending messages to finish. (Original Planner: Daily Planner conversation)'));
   expect(input.textContent).toBe('/planner'); expect(writes(fixture)).toHaveLength(1);
+});
+
+it('releases an offline refusal before reconciliation, restores the draft, and never resends', async () => {
+  let finish!: () => void;
+  const releaseReads: (() => void)[] = [];
+  const fixture = renderPlannerSwitchFixture({
+    reply: request => !onlineManager.isOnline() && request.method === 'GET'
+      ? new Promise(resolve => releaseReads.push(() => resolve({ status: 503, statusText: 'Offline', body: {} }))) : undefined,
+    switch: () => new Promise(resolve => {
+      finish = () => resolve({ status: 409, statusText: 'Conflict',
+        body: { error: 'busy', code: 'planner_open_ask', card_id: 'daily-planner' } });
+    }),
+  });
+  const input = await open(); await submit(input);
+  await waitFor(() => expect(finish).toBeTypeOf('function'));
+  onlineManager.setOnline(false);
+  try {
+    act(() => { finish(); });
+    await waitFor(() => expect(screen.getByRole('alert').textContent)
+      .toContain('Resolve the open questions first. (Original Planner: Daily Planner conversation)'));
+    await waitFor(() => expect(input.textContent).toBe('/planner'));
+    expect(writes(fixture)).toHaveLength(1);
+    // A new explicit intent reaches recovery admission: the old pending guard has been released.
+    await submit(input);
+    await screen.findByText('Planner switching was not sent.');
+    expect(input.textContent).toBe('/planner'); expect(writes(fixture)).toHaveLength(1);
+  } finally {
+    act(() => { releaseReads.forEach(release => release()); });
+    onlineManager.setOnline(true);
+  }
+});
+
+it.each(['success', 'response lost'])('settles %s offline as unconfirmed without resending', async mode => {
+  let finish!: () => void;
+  const fixture = renderPlannerSwitchFixture({
+    reply: request => {
+      if (!onlineManager.isOnline() && request.method === 'GET') throw new Error('offline read');
+      return undefined;
+    },
+    switch: (_request, commit) => new Promise((resolve, reject) => {
+      finish = () => { commit(); if (mode === 'success') resolve(fixture.receipt()); else reject(new Error('response lost')); };
+    }),
+  });
+  const input = await open(); await submit(input);
+  await waitFor(() => expect(finish).toBeTypeOf('function'));
+  onlineManager.setOnline(false);
+  try {
+    act(() => { finish(); });
+    await screen.findByText('Planner switching is unconfirmed. Refresh to check.');
+    await waitFor(() => expect(input.textContent).toBe('/planner'));
+    expect(fixture.requests.filter(request => request.method === 'GET' &&
+      (request.path === '/api/tracks/daily' || request.path === '/api/tracks/daily/conversations')).length).toBeGreaterThan(2);
+    expect(writes(fixture)).toHaveLength(1);
+    await submit(input);
+    await screen.findByText('Planner switching was not sent.');
+    expect(writes(fixture)).toHaveLength(1);
+  } finally { onlineManager.setOnline(true); }
 });
 
 it('prevents reentry while a response is pending', async () => {
@@ -154,7 +212,7 @@ it('uses the selected scope rather than the page Track, reads an uncached pair o
   }]);
 });
 
-it('does not write when the detail preflight fails', async () => {
+it('does not pause or write when the uncached detail preflight fails offline', async () => {
   const fixture = renderPlannerSwitchFixture(); const input = await open();
   fixture.client.removeQueries({ queryKey: queryKeys.trackDetail('daily') });
   // The pane already owns a valid selected scope, but its required CAS snapshot is unavailable.
@@ -166,7 +224,17 @@ it('does not write when the detail preflight fails', async () => {
   const hook = renderHook(() => usePlannerSwitchControl(transport, createUnauthorizedChannel({ enqueue: task => task() }), {
     id: 'missing-detail', cardId: 'second-planner', provider: 'codex', kind: 'track-assistant', cardTitle: null, updatedAt: 2,
   }), { wrapper });
-  await act(async () => { await expect(hook.result.current()).rejects.toThrow('Planner switching is unconfirmed.'); });
+  onlineManager.setOnline(false);
+  const paused = fixture.client.fetchQuery(trackDetailQueryOptions(transport, 'missing-detail',
+    createUnauthorizedChannel({ enqueue: task => task() }))).catch(() => undefined);
+  expect(fixture.client.getQueryState(queryKeys.trackDetail('missing-detail'))?.fetchStatus).toBe('paused');
+  let failure: unknown;
+  let outcome!: Promise<void>;
+  act(() => { outcome = hook.result.current().then(() => undefined, error => { failure = error; }); });
+  try {
+    await waitFor(() => expect(failure).toBeInstanceOf(Error));
+    expect((failure as Error).message).toContain('Planner switching is unconfirmed.');
+  } finally { onlineManager.setOnline(true); await act(async () => { await outcome; await paused; }); }
   expect(preflightRequests.map(request => request.method)).toEqual(['GET']);
   expect(writes(fixture)).toHaveLength(0); expect(input.textContent).toBe('');
 });

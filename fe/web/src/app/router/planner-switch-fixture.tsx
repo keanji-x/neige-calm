@@ -5,7 +5,7 @@ import { conversationCardId, historicalConversationPage, historicalConversationR
 
 export function renderPlannerSwitchFixture(options: Readonly<{
   initial?: string;
-  reply?: (request: ApiRequest) => ApiTransportResponse | undefined;
+  reply?: (request: ApiRequest) => ApiTransportResponse | Promise<ApiTransportResponse> | undefined;
   switch?: (request: ApiRequest, commit: () => void) => ApiTransportResponse | Promise<ApiTransportResponse>;
 }> = {}) {
   let switched = false;
@@ -23,7 +23,7 @@ export function renderPlannerSwitchFixture(options: Readonly<{
   const receipt = () => ok({ track_id: 'daily', planner_card_id: 'second-planner', demoted_card_id: 'daily-planner', planner_revision: 8 });
   const fixture = renderDailyFixture({ initial: options.initial ?? '/track/daily?panel=conversations', extraPlanner: true,
     reply: async request => {
-      const custom = options.reply?.(request);
+      const custom = await options.reply?.(request);
       if (custom !== undefined) return custom;
       if (request.path === '/api/tracks/daily/planner/switch') {
         const commit = () => { switched = true; };

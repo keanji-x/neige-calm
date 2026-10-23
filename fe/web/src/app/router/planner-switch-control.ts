@@ -10,7 +10,6 @@ import { plannerCardIn } from '../../systems/cards/public.ts';
 import { useCommittedCallback } from '../../ui/state/committed-callback.ts';
 import { usePlannerSwitchMutation } from '../providers/planner-switch-mutation.ts';
 import { trackConversationsQueryOptions, trackDetailQueryOptions } from '../providers/queries.ts';
-import { cancelThenInvalidate } from '../events/query-refresh.ts';
 import type { PlannerConversationScope } from '../conversations/contracts.ts';
 
 /** Owns one pane's human intent; scope is the selected conversation, never the page Track. */
@@ -24,21 +23,29 @@ export function usePlannerSwitchControl(transport: ApiTransportPort, unauthorize
     const options = trackDetailQueryOptions(transport, scope.id, unauthorized);
     let detail: TrackDetailWire | undefined;
     try {
-      const snapshot: TrackDetailWire = client.getQueryData<TrackDetailWire>(options.queryKey)
-        ?? await client.fetchQuery({ ...options, retry: false });
+      // Intent reads must reach the bounded transport even if Query considers the browser offline.
+      const cached = client.getQueryData<TrackDetailWire>(options.queryKey);
+      if (cached === undefined) await client.cancelQueries({ queryKey: options.queryKey });
+      const snapshot: TrackDetailWire = cached
+        ?? await client.fetchQuery({ ...options, retry: false, networkMode: 'always' });
       detail = snapshot;
       const planner = plannerCardIn(snapshot.cards);
       if (planner === undefined) throw new Error(PLANNER_SWITCH_UNCONFIRMED.en);
       const refresh = async () => {
+        const assistantOptions = trackConversationsQueryOptions(transport, scope.id, unauthorized);
         // Same authoritative CardUpdated plan as the stream; cancel stale reads before replacement.
         const keys = snapshot.cards.filter(card => card.id === planner.id || card.id === scope.cardId).flatMap(card => invalidationPlanFor({
           ev: 'card.updated', data: { ...card, title: card.title ?? undefined },
         }).invalidate);
-        await Promise.all([...new Map(keys.map(key => [JSON.stringify(key), key])).values()]
-          .map(key => cancelThenInvalidate(client, key)));
+        const uniqueKeys = [...new Map(keys.map(key => [JSON.stringify(key), key])).values()];
+        await Promise.all(uniqueKeys.map(queryKey => client.cancelQueries({ queryKey })));
+        // Preserve all stream refreshes, but their online-only retries must not block this intent.
+        for (const queryKey of uniqueKeys) void client.invalidateQueries({ queryKey }).catch(() => undefined);
+        // Invalidation can create online-only paused reads. Replace them before bounded confirmation.
+        await Promise.all([options.queryKey, assistantOptions.queryKey].map(queryKey => client.cancelQueries({ queryKey })));
         return Promise.all([
-          client.fetchQuery({ ...options, retry: false }).catch(() => null),
-          client.fetchQuery({ ...trackConversationsQueryOptions(transport, scope.id, unauthorized), retry: false }).catch(() => null),
+          client.fetchQuery({ ...options, retry: false, networkMode: 'always' }).catch(() => null),
+          client.fetchQuery({ ...assistantOptions, retry: false, networkMode: 'always' }).catch(() => null),
         ]);
       };
       let receipt;
@@ -49,8 +56,12 @@ export function usePlannerSwitchControl(transport: ApiTransportPort, unauthorize
         } });
       } catch (error) {
         const writeFailure = writeFailureOf(error);
-        if (!(writeFailure instanceof NotSentError)) await refresh();
         const failure = plannerSwitchFailure(writeFailure);
+        if (!(writeFailure instanceof NotSentError)) {
+          // A known refusal releases the command and draft without waiting for reconciliation.
+          if (failure.unconfirmed) await refresh();
+          else void refresh().catch(() => undefined);
+        }
         const card = snapshot.cards.find(card => card.id === failure.cardId);
         const role = failure.cardId === planner.id ? 'Original Planner' : failure.cardId === scope.cardId ? 'Target Assistant' : null;
         throw new Error(`${failure.message}${role === null ? '' : ` (${role}: ${card?.title ?? failure.cardId})`}`);
