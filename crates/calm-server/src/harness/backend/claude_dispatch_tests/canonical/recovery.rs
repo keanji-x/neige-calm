@@ -171,7 +171,10 @@ async fn canonical_claude_recovery_synthetic_restart_outcome_never_qualifies_end
     fx.dispatch().await.unwrap();
     let target = fx.target().await;
     let before = fx.checkpoint().await;
-    fx.session.shutdown().await.unwrap();
+    assert!(
+        fx.session.shutdown().await.is_err(),
+        "outcome write failure must retain its claim"
+    );
     sqlx::query("DROP TRIGGER fail_outcome")
         .execute(fx.owner.repo.pool())
         .await
@@ -281,10 +284,26 @@ pub(super) async fn reopen_session(
     fx: &Fixture,
     repo: Arc<crate::db::sqlite::SqlxRepo>,
 ) -> (PlannerBackend, Arc<ClaudePlannerSession>) {
+    fx.session.abort_driver_for_test().await;
+    let old = fx.session.host();
+    let host = Arc::new(
+        ClaudePlannerHost::new(
+            Some(old.configured().unwrap().clone()),
+            old.instructions_dir.parent().unwrap().parent().unwrap(),
+            old.mcp_shim.clone(),
+            old.mcp_socket.clone(),
+        )
+        .unwrap(),
+    );
+    crate::claude_planner::lifecycle::boot(repo.as_ref(), &host)
+        .await
+        .unwrap();
+    host.execution
+        .bind(fx.dir._execution.new_kernel(repo.db().clone()).await);
     let session = Arc::new(
         ClaudePlannerSession::open(ClaudePlannerSessionParams {
-            engine: fx.session.host().execution.engine().cloned(),
-            host: fx.session.host().clone(),
+            engine: host.execution.engine().cloned(),
+            host,
             worker_session_id: fx.owner.worker.clone(),
             card_id: fx.owner.card.clone(),
             track_id: fx.owner.track.clone(),

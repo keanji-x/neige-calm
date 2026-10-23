@@ -295,6 +295,7 @@ impl PlannerHarness {
             .inner
             .backend
             .carrier_idle_for_detach(thread.as_deref())
+            .await
             .ok_or_else(|| {
                 OwnerProofError::refused(
                     OwnerRefusal::SessionUnavailable,

@@ -1,3 +1,5 @@
+#[path = "cases/c4_lost_completion.rs"]
+mod c4_lost_completion;
 #[path = "cases/c4_provider_alias.rs"]
 mod c4_provider_alias;
 #[path = "cases/c4_provider_boot.rs"]
@@ -6,6 +8,8 @@ mod c4_provider_boot;
 mod c4_provider_execution;
 #[path = "cases/c4_provider_stderr.rs"]
 mod c4_provider_stderr;
+#[path = "cases/c4_provider_turn.rs"]
+mod c4_provider_turn;
 mod support;
 
 #[path = "cases/planner_release_commit.rs"]

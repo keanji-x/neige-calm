@@ -114,6 +114,10 @@ async fn the_first_init_binds_the_row_and_a_reopened_session_resumes() {
         Some(rig.thread.as_str())
     );
 
+    rig.session()
+        .shutdown()
+        .await
+        .expect("old owner completed before reopening");
     let reopened = rig.open_session().await;
     let mut rx = reopened.subscribe_events();
     reopened
@@ -266,9 +270,60 @@ async fn an_interrupted_cli_that_stopped_reading_stdin_settles_within_budget() {
     // wait, so this settles just after the timer. Abandonment itself is not pinned: without it the
     // in-flight answer adds a random 0-5 s, which `settle_by` still bounds.
     assert!(elapsed < STOP_TIMER + Duration::from_secs(3), "{elapsed:?}");
-    // The result was already written when the stop fired, so it decides the turn.
-    assert_eq!(completed_turn(&seen)["status"], "completed");
-    assert!(rig.marked_pids().is_empty());
+    // Engine output is not backpressured. A flood can outrun its replay window,
+    // or a torn control write can stop draining before the queued result arrives.
+    let completed = completed_turn(&seen);
+    match completed["status"].as_str().unwrap() {
+        "completed" | "interrupted" => {}
+        "failed" => {
+            let message = completed["error"]["message"].as_str().unwrap();
+            assert!(
+                message.contains("protocol") || message.contains("StdinTorn"),
+                "{message}"
+            );
+        }
+        other => panic!("unexpected terminal status {other}"),
+    }
+    let (settlement, claim): (Option<String>, Option<String>) = sqlx::query_as("SELECT settlement_json, (SELECT provider_execution_json FROM worker_sessions WHERE id=?) FROM workspace_executions")
+        .bind(&rig.worker_session_id).fetch_one(rig.repo.pool()).await.unwrap();
+    if completed["status"] == "completed" {
+        assert!(matches!(
+            serde_json::from_str::<workspace_runtime::execution::Settlement>(
+                &settlement.expect("completion requires settlement")
+            )
+            .unwrap(),
+            workspace_runtime::execution::Settlement::Journal(
+                workspace_runtime::execution::ExecutionState::Drained { .. }
+            )
+        ));
+    } else if settlement.is_none() {
+        assert!(
+            claim.is_some(),
+            "unconfirmed completion must retain its admission fence"
+        );
+    }
+    tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            rig.host
+                .provider_execution
+                .sweep(rig.repo.db(), rig.host.execution.engine())
+                .await
+                .unwrap();
+            if calm_truth::db::sqlite::provider_execution::load(
+                rig.repo.pool(),
+                &rig.worker_session_id,
+            )
+            .await
+            .unwrap()
+            .is_none()
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("owner eventually confirms Stop and completion");
 }
 
 /// A CLI that ignores the interrupt and never stops writing: the drain after the stop timer is

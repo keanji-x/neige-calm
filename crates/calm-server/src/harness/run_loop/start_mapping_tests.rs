@@ -300,6 +300,9 @@ async fn m1_mapping_local_start_admission_and_mismatched_rewind_table() {
         let factory_host = Arc::new(
             crate::claude_planner::config::ClaudePlannerHost::unconfigured_scratch().unwrap(),
         );
+        let execution =
+            crate::test_support::execution::Fixture::new(f.repo.sqlite_db().unwrap()).await;
+        factory_host.execution.bind(execution.engine.clone());
         let backend = crate::harness::backend::factory::PlannerFactory::new(
             std::sync::Arc::downgrade(&f.daemon),
             &factory_host,

@@ -1,8 +1,5 @@
 //! Exercise the shutdown adapter's live and replay entries with Codex unavailable.
 use super::claude_planner_stack_fixture::{Root, Stack};
-use calm_server::claude_planner::stop::{
-    clear_claude_planner_stop_failure_for_test, fail_claude_planner_stop_for_test,
-};
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{SqlxRepo, session_start_runtime_tx};
 use calm_server::event::EventBus;
@@ -18,7 +15,6 @@ use calm_server::session_projection_repo::{
 };
 use serde_json::json;
 use std::sync::Arc;
-use std::time::Duration;
 
 async fn shutdown(
     stack: &Stack,
@@ -88,7 +84,7 @@ async fn shutdown(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn miss_stops_only_managed_claude_and_swallows_stop_failure_without_codex() {
+async fn registry_miss_reads_the_row_without_native_marker_cleanup() {
     let root = Root::new("exit");
     let stack = Stack::boot(&root).await;
     let (_, card) = stack.create_claude_track().await;
@@ -130,29 +126,12 @@ async fn miss_stops_only_managed_claude_and_swallows_stop_failure_without_codex(
         tx.commit().await.unwrap();
         assert_eq!(row.kind, kind);
         root.spawn_marked_orphan(&id);
-        if kind == WorkerSessionKind::ClaudeCard {
-            // Nonmanaged rows retain the Codex fallback (no thread => no RPC).
-            assert!(shutdown(&stack, &root, &id, false).await.is_ok());
-            assert!(
-                !root.marked_pids(&id).is_empty(),
-                "nonmanaged row is not marker-stopped"
-            );
-        } else {
-            fail_claude_planner_stop_for_test(&id);
-            assert!(shutdown(&stack, &root, &id, false).await.is_ok());
-            assert!(
-                !root.marked_pids(&id).is_empty(),
-                "failed stop signals nothing"
-            );
-            clear_claude_planner_stop_failure_for_test(&id);
-            assert!(shutdown(&stack, &root, &id, false).await.is_ok());
-            assert!(
-                root.wait_unmarked(&id, Duration::from_secs(5))
-                    .await
-                    .is_empty(),
-                "managed replay must stop its original marker"
-            );
-        }
+        assert!(shutdown(&stack, &root, &id, false).await.is_ok());
+        assert_eq!(
+            root.marked_pids(&id).len(),
+            1,
+            "runtime shutdown must not use pre-C4 markers"
+        );
         assert!(
             shutdown(&stack, &root, &id, true).await.is_err(),
             "miss still propagates row read errors"
@@ -161,7 +140,7 @@ async fn miss_stops_only_managed_claude_and_swallows_stop_failure_without_codex(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn live_extra_stop_uses_harness_id_even_with_unreadable_row_and_swallows_failure() {
+async fn live_shutdown_uses_its_backend_without_native_marker_cleanup() {
     use calm_server::claude_planner::session::{ClaudePlannerSession, ClaudePlannerSessionParams};
     use calm_server::harness::{
         HarnessConfig, HarnessSnapshot, PlannerBackend, PlannerHarness, PlannerHarnessParams,
@@ -221,20 +200,11 @@ async fn live_extra_stop_uses_harness_id_even_with_unreadable_row_and_swallows_f
         stack.state.harness.insert(harness_id.clone(), handle);
         if failed {
             root.spawn_marked_orphan(&harness_id);
-            fail_claude_planner_stop_for_test(&harness_id);
         }
         assert!(shutdown(&stack, &root, &harness_id, true).await.is_ok());
         assert!(stack.state.harness.get(&harness_id).is_none());
         if failed {
             assert!(!root.marked_pids(&harness_id).is_empty());
-            clear_claude_planner_stop_failure_for_test(&harness_id);
-        } else {
-            assert!(
-                root.wait_unmarked(&harness_id, Duration::from_secs(5))
-                    .await
-                    .is_empty(),
-                "live extra sweep remains after session shutdown"
-            );
         }
     }
 }

@@ -6,9 +6,6 @@
 use std::time::Duration;
 
 use axum::http::StatusCode;
-use calm_server::claude_planner::stop::{
-    clear_claude_planner_stop_failure_for_test, fail_claude_planner_stop_for_test,
-};
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::session_set_handle_state_tx;
 use calm_server::harness::{HarnessPhaseTag, HarnessSnapshot, QueueEntry};
@@ -158,59 +155,54 @@ async fn after_boot_a_reset_without_a_reinstalled_harness_never_accepts_the_old_
     assert!(!stack.token_authenticates(&token).await);
 }
 
-/// §9.1 PR4: an aborted deletion. With the stop seam armed the delete aborts before anything moves
-/// and the harness is reinstalled Live; the old token is rejected with no new input; its first
-/// turn fails until the seam clears; then a queued input mints, the turn succeeds and no marked
-/// process is left.
+/// A failed Engine Stop aborts deletion after credential revocation; completing the
+/// retained owner permits the reinstalled harness to mint for its next turn.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_aborted_deletion_revokes_and_the_reinstalled_harness_mints_on_its_first_turn() {
-    let root = Root::new("exit");
+    let root = Root::new("term-ignore");
     let stack = Stack::boot(&root).await;
     let (track_id, card_id) = stack.create_claude_track().await;
-    let (_, token) = stack.run_turn(&root, &card_id, "exit", "hello").await;
+    assert_eq!(stack.post_input(&card_id, "work").await.0, StatusCode::OK);
+    super::claude_planner_wiring::wait_file(&root, "stdin").await;
+    let token = root.spawned_token();
     let runtime = stack.runtime(&card_id).await;
-
-    fail_claude_planner_stop_for_test(&runtime.id);
+    stack.block_provider_stop().await;
     let (status, body) = stack
         .send("DELETE", &format!("/api/tracks/{track_id}"), None)
         .await;
     assert!(!status.is_success(), "the delete aborts: {status} {body}");
     assert!(stack.repo().track_get(&track_id).await.unwrap().is_some());
-    let reinstalled = stack.state.harness.get(&runtime.id).expect("Live again");
+    assert!(stack.state.harness.get(&runtime.id).is_some(), "Live again");
     assert!(
         !stack.token_authenticates(&token).await,
         "revoked with no new input"
     );
-
-    let spawns_before = root.read_fake("spawns").unwrap_or_default().lines().count();
-    let (status, _) = stack.post_input(&card_id, "after the abort").await;
-    assert_eq!(status, StatusCode::OK);
-    let mut refused = 0;
-    for _ in 0..200 {
-        refused = reinstalled.refused_issuances_for_test();
-        if refused > 0 {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(25)).await;
-    }
-    assert!(
-        refused > 0,
-        "the first turn's setup stop fails under the seam"
-    );
-    assert_eq!(
-        root.read_fake("spawns").unwrap_or_default().lines().count(),
-        spawns_before,
-        "nothing spawned while the seam holds"
-    );
-    assert_eq!(stack.outcomes(&card_id).await.len(), 1);
-
-    clear_claude_planner_stop_failure_for_test(&runtime.id);
-    let outcomes = stack.wait_outcomes(&card_id, 2).await;
-    assert_eq!(outcomes[1]["status"], "completed", "{outcomes:?}");
-    let new_token = root.spawned_token();
+    stack.clear_provider_fault().await;
+    // Retry the owning Stop, preserving the old carrier through its outcome write.
+    let host = stack.state.planner_wiring().claude;
+    let pool = stack.repo().sqlite_db().unwrap();
+    let claim = calm_truth::db::sqlite::provider_execution::load(pool.read_pool(), &runtime.id)
+        .await
+        .unwrap()
+        .expect("failed Stop retained ownership");
+    host.provider_execution
+        .stop(
+            &pool,
+            host.execution.engine(),
+            &runtime.id,
+            &claim,
+            calm_server::provider_execution::StopReason::TrackRetired,
+        )
+        .await
+        .unwrap();
+    stack.wait_provider_clear(&runtime.id).await;
+    let (outcome, new_token) = stack
+        .run_turn(&root, &card_id, "exit", "after the abort")
+        .await;
+    assert_eq!(outcome["status"], "completed");
     assert!(stack.token_authenticates(&new_token).await);
     assert!(!stack.token_authenticates(&token).await);
-    assert!(root.wait_unmarked(&runtime.id, BUDGET).await.is_empty());
+    stack.shutdown().await;
 }
 
 /// §9.1 PR4: a Claude reset whose post-commit step fails (the one-shot spawn failure, held at an

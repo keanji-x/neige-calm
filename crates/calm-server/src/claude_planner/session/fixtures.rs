@@ -85,3 +85,34 @@ impl ClaudePlannerSession {
         self.shared.hooks.lock().expect("hooks").instructions_fault = fault;
     }
 }
+
+impl ClaudePlannerSession {
+    pub fn finish_old_turn_for_test(&self, turn: &str) {
+        let slot = self.shared.state().active.as_ref().map(|a| a.slot.clone());
+        if let Some(slot) = slot {
+            self.shared.finish_turn(turn, &slot, []);
+        }
+    }
+}
+
+impl ClaudePlannerSession {
+    pub async fn write_control_response_for_test(&self) -> Result<()> {
+        let slot = self
+            .shared
+            .state()
+            .active
+            .as_ref()
+            .map(|active| active.slot.clone())
+            .expect("active turn");
+        super::super::approvals::write_response(
+            &slot,
+            &provider::claude::protocol::ControlResponseOut::new(
+                provider::claude::protocol::ControlResponseOutBody::Error {
+                    request_id: "late-control".into(),
+                    error: "unsupported control".into(),
+                },
+            ),
+        )
+        .await
+    }
+}

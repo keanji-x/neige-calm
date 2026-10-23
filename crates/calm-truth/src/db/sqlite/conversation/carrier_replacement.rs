@@ -102,6 +102,7 @@ pub async fn check_idle_carrier_tx(
     if !available {
         return Err(refused(ReplacementRefusal::SessionUnavailable));
     }
+    super::super::provider_execution::require_unclaimed(tx, &expected.worker_session_id).await?;
     let carrier =
         current_input_carrier_tx(tx, &expected.card_id, &expected.worker_session_id).await?;
     let frame: CanonicalHarnessSnapshot = serde_json::from_value(carrier.snapshot().clone())?;

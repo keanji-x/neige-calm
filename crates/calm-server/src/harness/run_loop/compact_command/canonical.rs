@@ -368,6 +368,45 @@ pub(in crate::harness::run_loop) async fn observe(inner: &Arc<Inner>) -> Result<
     Ok(true)
 }
 
+/// A settled owner with a lost driver cannot certify compaction success. Consume
+/// the exact installed target before its failed join slot is released. After a
+/// restart, only an already-bound exact turn can supply the same correlation.
+pub(in crate::harness::run_loop) async fn lost(
+    inner: &Arc<Inner>,
+    expected: Option<&MaintenanceTarget>,
+    turn: &str,
+) -> Result<()> {
+    let current = canonical::read_current(inner).await?;
+    let Some(outcome) = current
+        .snapshot
+        .header
+        .compact_outcome
+        .as_ref()
+        .filter(|outcome| unresolved_maintenance(&outcome.status))
+    else {
+        return Ok(());
+    };
+    if !matches!(
+        current.snapshot.header.phase,
+        HarnessPhaseTag::Compacting | HarnessPhaseTag::Wedged
+    ) || expected.is_some_and(|expected| target(inner, outcome) != *expected)
+        || outcome
+            .turn_id
+            .as_deref()
+            .is_some_and(|current| current != turn)
+        || (expected.is_none() && outcome.turn_id.as_deref() != Some(turn))
+    {
+        return Ok(());
+    }
+    let mut next = current.snapshot.clone();
+    wedge(&mut next);
+    if next != current.snapshot {
+        let committed = write(inner, &current, next, TransitionAdmission::Settlement).await?;
+        canonical::publish(inner, committed).await;
+    }
+    Ok(())
+}
+
 /// A boundary can invalidate retained occupancy even if later cleanup fails.
 /// Only this operation's installed driver/local turn can supply that boundary.
 pub(in crate::harness::run_loop) async fn boundary(inner: &Arc<Inner>, turn: &str) -> Result<bool> {

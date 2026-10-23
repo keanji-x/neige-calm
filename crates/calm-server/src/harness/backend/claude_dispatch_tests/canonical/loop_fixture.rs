@@ -3,7 +3,7 @@ use super::*;
 
 impl Fixture {
     pub(super) async fn start_loop(&self) -> crate::harness::PlannerHarness {
-        self.start_loop_in(Default::default()).await
+        self.start_loop_in(self.registry.clone()).await
     }
     pub(super) async fn start_loop_in(
         &self,

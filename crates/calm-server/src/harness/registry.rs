@@ -51,6 +51,16 @@ struct RegistryInner {
 #[derive(Clone)]
 pub struct HarnessRegistry(Arc<RegistryInner>);
 
+/// Completion owners may find Live handles without keeping the registry (and
+/// all of its backends) alive through a reference cycle.
+#[derive(Clone)]
+pub(crate) struct WeakHarnessRegistry(std::sync::Weak<RegistryInner>);
+impl WeakHarnessRegistry {
+    pub(crate) fn get(&self, runtime: &String) -> Option<PlannerHarness> {
+        HarnessRegistry(self.0.upgrade()?).get(runtime)
+    }
+}
+
 impl Default for HarnessRegistry {
     fn default() -> Self {
         Self(Arc::new(RegistryInner {
@@ -138,6 +148,10 @@ impl HarnessRegistry {
 
     pub(crate) fn maintenance_execution_cell(&self) -> MaintenanceExecutionCell {
         self.0.maintenance_execution.clone()
+    }
+
+    pub(crate) fn downgrade(&self) -> WeakHarnessRegistry {
+        WeakHarnessRegistry(Arc::downgrade(&self.0))
     }
 
     /// Missing/dormant/reserved is not positive native-idle evidence.

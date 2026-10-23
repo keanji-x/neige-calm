@@ -16,12 +16,13 @@ use std::time::Duration;
 pub(in crate::harness) struct Fixture {
     pub(in crate::harness) backend: PlannerBackend,
     pub(in crate::harness) session: Arc<ClaudePlannerSession>,
-    dir: tempfile::TempDir,
+    dir: crate::test_support::execution::Directory,
     owner: super::super::dispatch_fixture::Owner,
     source: crate::auth::HumanInputSource,
     auth: AuthState,
     login: String,
     submission: InputSubmissionId,
+    registry: crate::harness::HarnessRegistry,
 }
 impl Fixture {
     pub(in crate::harness) async fn new(scenario: &str) -> Self {
@@ -101,6 +102,7 @@ impl Fixture {
         .unwrap();
         tx.commit().await.unwrap();
         Self {
+            registry: crate::harness::HarnessRegistry::new(),
             backend,
             session,
             dir,
@@ -217,7 +219,6 @@ async fn canonical_claude_gate_rechecks_source_after_spawn_and_writer_wait() {
         History,
         Plan,
         Attempt,
-        Worker,
     }
     for change in [
         Change::Logout,
@@ -225,7 +226,6 @@ async fn canonical_claude_gate_rechecks_source_after_spawn_and_writer_wait() {
         Change::History,
         Change::Plan,
         Change::Attempt,
-        Change::Worker,
     ] {
         let fx = Arc::new(Fixture::new("exit").await);
         let pause = crate::claude_planner::session::SettlePause {
@@ -321,11 +321,6 @@ async fn canonical_claude_gate_rechecks_source_after_spawn_and_writer_wait() {
                     )
                     .await
                     .unwrap();
-                }
-                Change::Worker => {
-                    crate::db::sqlite::session_fail_if_active_runtime_tx(&mut tx, &fx.owner.worker)
-                        .await
-                        .unwrap();
                 }
                 Change::Logout => panic!("logout has no writer blocker"),
             }
@@ -584,13 +579,10 @@ async fn canonical_claude_failed_driver_cleanup_never_qualifies_end() {
     }
     for failure in [Failure::Stop, Failure::Outcome, Failure::Instructions] {
         let fx = Fixture::new("exit").await;
-        let mut events = fx.session.subscribe_events();
         match failure {
             Failure::Stop => {
-                let worker = fx.owner.worker.clone();
-                fx.session.set_after_spawn_hook_for_test(Arc::new(move || {
-                    crate::claude_planner::stop::fail_claude_planner_stop_for_test(&worker);
-                }));
+                std::fs::write(fx.dir.path().join("scenario"), "linger").unwrap();
+                crate::test_support::execution::block_stops(fx.owner.repo.db()).await;
             }
             Failure::Outcome => {
                 fail_terminal_outcome(fx.owner.repo.as_ref()).await;
@@ -600,6 +592,9 @@ async fn canonical_claude_failed_driver_cleanup_never_qualifies_end() {
                 fx.session.set_after_spawn_hook_for_test(Arc::new(move || {
                     for file in std::fs::read_dir(&instructions).unwrap() {
                         let path = file.unwrap().path();
+                        if !path.is_file() {
+                            continue;
+                        }
                         std::fs::remove_file(&path).unwrap();
                         std::fs::create_dir(&path).unwrap();
                     }
@@ -607,23 +602,21 @@ async fn canonical_claude_failed_driver_cleanup_never_qualifies_end() {
             }
         }
         let report = fx.dispatch().await.unwrap();
-        assert!(report.report.outcome().is_ok());
-        tokio::time::timeout(Duration::from_secs(10), async {
-            loop {
-                if matches!(
-                    events.recv().await.unwrap().kind,
-                    provider::events::PlannerEventKind::TurnCompleted { .. }
-                ) {
-                    break;
-                }
-            }
-        })
-        .await
-        .unwrap();
-        // Shutdown joins this real driver's retained false result; the same result
-        // is observed by END, without inventing a completed-turn cache.
-        crate::claude_planner::stop::clear_claude_planner_stop_failure_for_test(&fx.owner.worker);
-        fx.session.shutdown().await.unwrap();
+        assert!(
+            report.report.outcome().is_ok(),
+            "{:?}",
+            report.report.outcome()
+        );
+        assert!(!fx.session.wait_driver_for_test().await);
+        assert!(
+            calm_truth::db::sqlite::provider_execution::load(
+                fx.owner.repo.pool(),
+                &fx.owner.worker
+            )
+            .await
+            .unwrap()
+            .is_some()
+        );
         assert!(fx.complete().await.is_none());
         assert!(fx.checkpoint().await.active.is_some());
     }

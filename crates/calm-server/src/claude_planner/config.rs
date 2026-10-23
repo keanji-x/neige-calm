@@ -3,6 +3,7 @@
 //! against.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
 use serde::Deserialize;
@@ -115,6 +116,7 @@ pub const CONFIG_FLAG: &str = "--claude-planner-config";
 pub struct ClaudePlannerHost {
     /// Shared Engine binding for registered Planner executions.
     pub execution: crate::execution_quiesce::ExecutionLifecycle,
+    pub(crate) completion: Arc<super::execution::Owner>,
     pub provider_execution: crate::provider_execution::ProviderExecution,
     config: Option<ClaudePlannerConfig>,
     pub instance: MarkerInstance,
@@ -141,9 +143,11 @@ impl ClaudePlannerHost {
                 .map(|descriptor| descriptor.name),
         );
         let instructions_dir = instructions_dir(data_dir)?;
+        let (provider_execution, completion) = super::execution::owner(instructions_dir.clone());
         Ok(Self {
+            completion,
             execution: Default::default(),
-            provider_execution: super::execution::owner(instructions_dir.clone()),
+            provider_execution,
             config,
             instance: MarkerInstance::for_data_dir(
                 data_dir,

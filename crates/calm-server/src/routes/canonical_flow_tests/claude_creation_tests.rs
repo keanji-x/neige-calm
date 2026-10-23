@@ -302,6 +302,7 @@ async fn canonical_claude_creation_first_send_reuses_checkpoint_and_h2_hold() {
         let config = fixture.root.path().join("claude.json");
         std::fs::write(&config,json!({"claude_binary":fake.join("claude"),"claude_version":"2.1.280","config_dir":fixture.root.path().join("claude-config")}).to_string()).unwrap();
         fixture.claude_config = Some(config);
+        fixture.execution = Some(crate::test_support::execution::Supervisor::new());
         let (state, app, cookie) = fixture.application().await;
         // Hold only the actual crossing-marker transaction. The production
         // route must install its retained session and claim the saved input.

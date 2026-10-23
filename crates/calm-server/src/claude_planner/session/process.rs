@@ -1,23 +1,6 @@
 //! Start/abort cleanup keeps settlement in the session's one driver slot.
 use super::*;
 
-/// Temporarily move the sole result out of the slot while stop is uncertain.
-/// Error or cancellation drops it; successful stop restores it before any
-/// process-free preparation, under the same issuance and driver locks.
-pub(super) async fn stop_for_start(
-    shared: &Shared,
-    slot: &mut Option<execution_end::DriverSlot>,
-) -> Result<()> {
-    let previous = slot.take();
-    stop(
-        &shared.params.host.instance,
-        &shared.params.worker_session_id,
-    )
-    .await?;
-    *slot = previous;
-    Ok(())
-}
-
 /// One exit for every process-free preparation step. Only confirmed cleanup
 /// allows the preceding driver's evidence to survive in its existing slot.
 pub(super) fn finish_preparation<T, E>(
@@ -35,35 +18,49 @@ pub(super) fn finish_preparation<T, E>(
 }
 
 impl ClaudePlannerSession {
-    /// Stop the marker (which ends a spawned child and anything it started), reap the child, and
-    /// drop the instructions guard; the caller's error is what `turn_start` returns.
+    /// Refusal still stops and settles the admitted execution before clearing its owner claim.
     pub(super) async fn abort_before_ok(
         &self,
-        child: Option<Child>,
+        claim: &crate::provider_execution::Claim,
         instructions: InstructionsFile,
         error: CalmError,
+        reason: crate::provider_execution::StopReason,
     ) -> (CalmError, bool) {
+        use crate::provider_execution::{self as execution, KnownEnd};
         let params = &self.shared.params;
-        let stopped = stop(&params.host.instance, &params.worker_session_id).await;
-        if let Err(stop_error) = &stopped {
-            tracing::warn!(
-                worker_session_id = %params.worker_session_id,
-                error = %stop_error,
-                "claude planner: stop after a failed turn start did not confirm"
-            );
-        }
-        let reaped = match child {
-            Some(mut child) => {
-                let _ = child.start_kill();
-                matches!(
-                    tokio::time::timeout(Duration::from_secs(5), child.wait()).await,
-                    Ok(Ok(_))
+        let cleanup = async {
+            let pool = params
+                .repo
+                .sqlite_db()
+                .ok_or(CalmError::ExecutionUnavailable)?;
+            let engine = execution::engine(params.engine.as_ref())?;
+            let owner = &params.host.provider_execution;
+            let id = execution::execution_id(claim.record())?;
+            owner
+                .stop(
+                    &pool,
+                    Some(engine),
+                    &params.worker_session_id,
+                    claim,
+                    reason,
                 )
-            }
-            None => true,
-        };
-        let removed = instructions.remove().is_ok();
-        drop(instructions);
-        (error, stopped.is_ok() && reaped && removed)
+                .await?;
+            execution::wait_settled(engine, &id, SETTLE_AFTER_STOP).await?;
+            instructions.remove()?;
+            owner
+                .finish(
+                    &pool,
+                    Some(engine),
+                    &params.worker_session_id,
+                    claim,
+                    Some(KnownEnd::ClaudeRefused),
+                )
+                .await
+        }
+        .await;
+        if let Err(error) = &cleanup {
+            tracing::warn!(%error, "Claude refusal cleanup retained its claim");
+        }
+        (error, cleanup.is_ok())
     }
 }

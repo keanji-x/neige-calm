@@ -5,10 +5,6 @@
 use axum::http::StatusCode;
 use serde_json::{Value, json};
 
-use calm_server::claude_planner::stop::{
-    clear_claude_planner_stop_failure_for_test, fail_claude_planner_stop_for_test,
-};
-
 use super::claude_planner_stack_fixture::{Root, Stack};
 
 async fn compact(stack: &Stack, card_id: &str) -> (StatusCode, Value) {
@@ -280,8 +276,7 @@ async fn phase_and_last_turn(stack: &Stack, card_id: &str) -> (Value, Value) {
     (snapshot["phase"].clone(), snapshot["last_turn_id"].clone())
 }
 
-/// A failure before the compaction's spawn exists (an unanswered `--version`, a setup `stop` that
-/// did not confirm) submitted nothing: the conversation keeps its phase instead of wedging, and
+/// A failure before the compaction's spawn exists (an unanswered `--version`, or refused Engine admission) submitted nothing: the conversation keeps its phase instead of wedging, and
 /// the next compaction runs.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_compact_failing_before_the_spawn_restores_the_phase() {
@@ -306,9 +301,18 @@ async fn a_compact_failing_before_the_spawn_restores_the_phase() {
     assert_eq!(phase_and_last_turn(&stack, &card_id).await, before);
     root.remove_fake("version");
 
-    fail_claude_planner_stop_for_test(&runtime.id);
+    sqlx::query(
+        "CREATE TRIGGER c4_block_admission BEFORE INSERT ON workspace_executions
+         BEGIN SELECT RAISE(FAIL, 'admission blocked'); END",
+    )
+    .execute(stack.repo().sqlite_db().unwrap().writer_pool())
+    .await
+    .unwrap();
     let (status, body) = compact(&stack, &card_id).await;
-    clear_claude_planner_stop_failure_for_test(&runtime.id);
+    sqlx::query("DROP TRIGGER c4_block_admission")
+        .execute(stack.repo().sqlite_db().unwrap().writer_pool())
+        .await
+        .unwrap();
     assert_eq!(status, StatusCode::CONFLICT, "{body}");
     assert_eq!(phase_and_last_turn(&stack, &card_id).await, before);
     assert_eq!(spawns(&root), spawns_before, "nothing spawned");
@@ -516,51 +520,65 @@ async fn compact_boundary_failure_hides_old_reading_and_automatic_boundary_is_no
     }
 }
 
-/// Even a failed small write is conservatively unconfirmed. Compact wedges instead of
-/// restoring its phase or retrying like an ordinary start.
+/// A definitive zero-byte Engine acknowledgement is before submission. The
+/// previous phase is restored, and only a new request can try again.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_compact_with_uncertain_write_wedges_without_retry() {
-    use std::sync::Arc;
-    use std::time::{Duration, Instant};
-
+async fn a_compact_with_zero_accepted_bytes_is_not_submitted() {
+    use calm_server::test_seams::{PausePoint, install_pause_for_test};
+    use std::time::Duration;
     let root = Root::new("exit-trailing");
     let stack = Stack::boot(&root).await;
     let (_track, card) = stack.create_claude_track().await;
     stack.run_turn(&root, &card, "exit-trailing", "first").await;
     let runtime = stack.runtime(&card).await;
-    let before = rows(&stack, &card).await;
-    let spawns_before = spawns(&root);
-    let closed = root.fake_dir().join("stdin-closed");
-    root.set_scenario("closed-stdin");
-    stack
+    let session = stack
         .harness(&runtime.id)
         .claude_session_for_test()
-        .unwrap()
-        .set_after_spawn_hook_for_test(Arc::new(move || {
-            let deadline = Instant::now() + Duration::from_secs(10);
-            while !closed.exists() {
-                assert!(
-                    Instant::now() < deadline,
-                    "the fake must close stdin before the write"
-                );
-                std::thread::sleep(Duration::from_millis(5));
-            }
-        }));
-
-    let (status, body) = compact(&stack, &card).await;
-    assert!(status.is_server_error(), "{status}: {body}");
-    let snapshot = stored_snapshot(&stack, &card).await;
-    assert_eq!(snapshot["compact_outcome"]["status"], "unconfirmed");
-    stack.wait_phase(&runtime.id, "wedged").await;
-    assert_eq!(rows(&stack, &card).await, before);
-    assert_eq!(spawns(&root), spawns_before + 1);
-    let (status, body) = compact(&stack, &card).await;
-    assert_eq!(status, StatusCode::CONFLICT, "{body}");
-    assert_eq!(
-        spawns(&root),
-        spawns_before + 1,
-        "no second submission while wedged"
-    );
+        .unwrap();
+    let before = rows(&stack, &card).await;
+    let spawns_before = spawns(&root);
+    let pool = stack.repo().sqlite_db().unwrap();
+    root.set_scenario("closed-stdin");
+    for attempt in 1..=2 {
+        let pause = PausePoint::default();
+        install_pause_for_test("c4-release-completed", &runtime.id, pause.clone());
+        let close = async {
+            tokio::time::timeout(Duration::from_secs(15), pause.entered.notified())
+                .await
+                .unwrap();
+            super::claude_planner_session_fixture::wait_for_file(
+                &root.fake_dir().join("stdin-closed"),
+            )
+            .await;
+            let claim =
+                calm_truth::db::sqlite::provider_execution::load(pool.read_pool(), &runtime.id)
+                    .await
+                    .unwrap()
+                    .unwrap();
+            let id = calm_server::provider_execution::execution_id(claim.record()).unwrap();
+            session
+                .host()
+                .execution
+                .engine()
+                .unwrap()
+                .close_stdin(&id)
+                .await
+                .unwrap();
+            pause.release.notify_one();
+        };
+        let ((status, body), ()) = tokio::join!(compact(&stack, &card), close);
+        assert!(status.is_server_error(), "{status}: {body}");
+        assert_eq!(
+            stored_snapshot(&stack, &card).await["compact_outcome"]["status"],
+            "refused"
+        );
+        stack.wait_phase(&runtime.id, "turn_completed").await;
+        assert_eq!(rows(&stack, &card).await, before);
+        assert_eq!(spawns(&root), spawns_before + attempt);
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        assert_eq!(spawns(&root), spawns_before + attempt, "no automatic retry");
+        std::fs::remove_file(root.fake_dir().join("stdin-closed")).unwrap();
+    }
     stack.shutdown().await;
 }
 

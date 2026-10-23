@@ -249,6 +249,28 @@ impl<'a> PlannerFactory<'a> {
         }
     }
 
+    /// Request-path preflight before replacing or closing a carrier. Provider
+    /// selection stays beside construction; transaction-local fences remain SQL-only.
+    pub(crate) async fn transition_gate(
+        claude: &ClaudePlannerHost,
+        repo: &dyn Repo,
+        registry: &crate::harness::HarnessRegistry,
+        runtime: &crate::session_projection_repo::WorkerSessionProjection,
+    ) -> Result<()> {
+        match runtime.agent_provider.as_ref().map(AgentProvider::protocol) {
+            Some(AgentProtocol::Claude) => {
+                crate::claude_planner::lifecycle::transition_gate(
+                    repo,
+                    claude,
+                    registry,
+                    &runtime.id,
+                )
+                .await
+            }
+            Some(AgentProtocol::Codex | AgentProtocol::Acp) | None => Ok(()),
+        }
+    }
+
     /// Registry-miss cleanup uses persisted ownership facts, never a reopened session.
     pub(crate) async fn shutdown_replay(
         &self,

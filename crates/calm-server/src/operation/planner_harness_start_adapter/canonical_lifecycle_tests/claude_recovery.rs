@@ -429,13 +429,62 @@ async fn canonical_claude_recovery_exact_predecessor_stop_failure_stays_held() {
     fx.bind_with_lost_response().await;
     let saved = fx.frame().await;
     let (_auth, _token, source) = source().await;
-    crate::claude_planner::stop::fail_claude_planner_stop_for_test(&fx.worker);
+    let host = fx.state.planner_wiring().claude;
+    let binary = fx._dir.path().join("claude");
+    let original = std::fs::read(&binary).unwrap();
+    std::fs::write(
+        &binary,
+        r#"#!/bin/sh
+touch "$0.ready"
+exec sleep 300
+"#,
+    )
+    .unwrap();
+    let thread = fx.row().await.thread_id.unwrap();
+    let session = crate::claude_planner::session::ClaudePlannerSession::open(
+        crate::claude_planner::session::ClaudePlannerSessionParams {
+            engine: host.execution.engine().cloned(),
+            host: host.clone(),
+            worker_session_id: fx.worker.clone(),
+            card_id: fx.card.to_string(),
+            track_id: fx.payload.track_id.clone(),
+            cwd: fx._dir.path().into(),
+            instructions: "predecessor rewind".into(),
+            calm_tools: host.calm_tools.clone(),
+            proxy: vec![],
+            prior_total_tokens: 0,
+            repo: fx.repo.clone(),
+            seals: Arc::new(crate::thread_seals::ThreadSeals::new()),
+        },
+    )
+    .await
+    .unwrap();
+    let check = tokio::spawn(async move { session.prepare_edit_for_test(&thread).await });
+    tokio::time::timeout(std::time::Duration::from_secs(15), async {
+        while !fx._dir.path().join("claude.ready").exists() {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    crate::test_support::execution::block_stops(fx.repo.db()).await;
+    check.abort();
+    let _ = check.await;
+    assert!(
+        crate::claude_planner::recovery::quiesce_canonical(&host, &fx.worker)
+            .await
+            .is_err()
+    );
     let result = wake(&fx, source.clone()).await;
-    crate::claude_planner::stop::clear_claude_planner_stop_failure_for_test(&fx.worker);
+    crate::test_support::execution::unblock_stops(fx.repo.db()).await;
     assert!(result.is_err());
     assert!(fx.state.harness.get(&fx.worker).is_none());
     assert_eq!(fx.frame().await, saved);
     assert_eq!(fx.lines(), 0);
+    crate::claude_planner::recovery::quiesce_canonical(&host, &fx.worker)
+        .await
+        .unwrap();
+    std::fs::write(&binary, original).unwrap();
     wake(&fx, source).await.unwrap();
     fx.attempted().await;
     fx.state

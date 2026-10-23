@@ -2028,6 +2028,24 @@ async fn repoint_track_workspace(
     let mut track_guard =
         Some(crate::per_card_lock::lock_key(&s.track_delete_locks, &track_id).await);
 
+    // R2: finish settled owner claims under each old session's issue lock before
+    // the SQL-only carrier fence. Its transaction check still wins issuance races.
+    for card in s.repo.cards_by_track(&track_id).await? {
+        if let Some(runtime) = w
+            .repo
+            .session_projection_projectable_for_card(&card.id.to_string())
+            .await?
+        {
+            crate::harness::backend::factory::PlannerFactory::transition_gate(
+                &s.claude_planner,
+                w.repo.as_ref(),
+                &w.harness,
+                &runtime,
+            )
+            .await?;
+        }
+    }
+
     let fence_conflict = FolderConflictSlot::default();
     let fence_track_id = track_id.clone();
     let fence_area_id = area_id.clone();
@@ -2097,9 +2115,7 @@ async fn repoint_track_workspace(
             .fetch_all(&mut **tx)
             .await?;
             for runtime_id in &runtime_ids {
-                crate::db::sqlite::session_mark_superseded_runtime_tx(tx, runtime_id)
-                    .await
-                    .map_err(|e| CalmError::Internal(format!("workspace repoint fence: {e}")))?;
+                crate::db::sqlite::session_mark_superseded_runtime_tx(tx, runtime_id).await?;
             }
             Ok(RepointFence {
                 old_workspace,
@@ -3209,7 +3225,7 @@ async fn finish_prepared_track_deletion_owned(
         (status = 204, description = "Track deleted"),
         (status = 404, description = "Track not found", body = ErrorBody),
         (status = 403, description = "Track belongs to the system area and cannot be deleted via REST", body = ErrorBody),
-        (status = 409, description = "Track has a descendant or active forge action", body = ErrorBody),
+        (status = 409, description = "Track has a descendant, an active forge action, or a pending provider Stop", body = ErrorBody),
         (status = 500, description = "Internal error", body = ErrorBody),
     ),
 )]

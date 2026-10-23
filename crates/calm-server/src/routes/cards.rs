@@ -567,6 +567,7 @@ pub(crate) async fn delete_card(
         w.daemon.proc_supervisor_sock.as_deref(),
     )
     .await?;
+    crate::claude_planner::lifecycle::sweep_card(s.repo.as_ref(), &s.claude_planner, &id).await?;
     crate::execution_quiesce::quiesce(
         s.repo.as_ref(),
         s.operation_runtime.execution().engine(),

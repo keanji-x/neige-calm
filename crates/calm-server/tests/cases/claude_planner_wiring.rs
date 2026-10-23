@@ -180,12 +180,18 @@ async fn a_claude_track_runs_through_the_real_routes() {
     assert!(stack.token_authenticates(&new_token).await);
 
     // Delete: nothing of the Planner survives.
-    root.spawn_marked_orphan(&runtime.id);
     let (status, body) = stack
         .send("DELETE", &format!("/api/tracks/{track_id}"), None)
         .await;
     assert!(status.is_success(), "{status} {body}");
-    assert!(root.marked_pids(&runtime.id).is_empty());
+    assert!(
+        stack
+            .repo()
+            .session_projection_by_id(&runtime.id)
+            .await
+            .unwrap()
+            .is_none()
+    );
     assert!(root.instructions_files().is_empty());
 }
 

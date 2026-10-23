@@ -144,6 +144,17 @@ pub async fn admit(
     purpose: Purpose,
     release: InitialRelease,
 ) -> Result<Cas<Claim>> {
+    // Planner owner records and terminal projections are disjoint (C4.2 R1).
+    let terminal: Option<Option<String>> =
+        sqlx::query_scalar("SELECT terminal_run_id FROM worker_sessions WHERE id = ?")
+            .bind(session)
+            .fetch_optional(&mut **tx)
+            .await?;
+    if terminal.flatten().is_some() {
+        return Err(CalmError::Conflict(
+            "terminal-bound session cannot hold a provider execution",
+        ));
+    }
     let claim = Claim::encode(Record {
         version: Version::V1,
         execution_id,
@@ -156,7 +167,10 @@ pub async fn admit(
     })?;
     let changed = sqlx::query(
         "UPDATE worker_sessions SET provider_execution_json = ?
-         WHERE id = ? AND provider_execution_json IS NULL",
+         WHERE id = ? AND provider_execution_json IS NULL
+           AND state IN ('starting','running','idle','turn_pending','failed')
+           AND EXISTS (SELECT 1 FROM cards WHERE cards.id = worker_sessions.card_id
+                       AND cards.session_id = worker_sessions.id)",
     )
     .bind(&claim.json)
     .bind(session)
@@ -253,4 +267,20 @@ async fn compare_exchange(
     } else {
         Cas::LostOwnership
     })
+}
+
+/// R2/R3 transaction-local fence. No owner completion or other provider I/O here.
+pub async fn retained(tx: &mut Transaction<'_, Sqlite>, session: &str) -> Result<bool> {
+    Ok(sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM worker_sessions WHERE id=? AND provider_execution_json IS NOT NULL)")
+        .bind(session).fetch_one(&mut **tx).await?)
+}
+
+pub async fn require_unclaimed(tx: &mut Transaction<'_, Sqlite>, session: &str) -> Result<()> {
+    let present = retained(tx, session).await?;
+    if present {
+        return Err(CalmError::Conflict(
+            "provider execution retains its current carrier",
+        ));
+    }
+    Ok(())
 }

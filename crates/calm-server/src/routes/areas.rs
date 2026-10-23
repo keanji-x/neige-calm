@@ -437,6 +437,16 @@ impl PreparedAreaDeletion {
             worker.daemon.proc_supervisor_sock.as_deref(),
         )
         .await?;
+        // Provider ownership records revoke and record Stop before generic execution
+        // quiescence. All area tracks are already fenced against destructive races.
+        for track in &self.tracks {
+            crate::claude_planner::lifecycle::sweep_track(
+                route.repo.as_ref(),
+                &route.claude_planner,
+                track.id.as_str(),
+            )
+            .await?;
+        }
         crate::execution_quiesce::quiesce(
             route.repo.as_ref(),
             route.operation_runtime.execution().engine(),
@@ -467,15 +477,6 @@ impl PreparedAreaDeletion {
                     terminal_card_ids.push(terminal.card_id.to_string());
                 }
             }
-            // #1791 §5.1 item 4: after the track's threads are sealed and before its harness
-            // shutdowns, revoke then sweep every Claude Planner id of the track in any state;
-            // `Err` aborts before anything moves.
-            crate::claude_planner::lifecycle::sweep_track(
-                route.repo.as_ref(),
-                &route.claude_planner,
-                track.id.as_str(),
-            )
-            .await?;
             crate::acp_planner::config::sweep_track(
                 route.repo.as_ref(),
                 &route.acp_planner,
@@ -836,7 +837,7 @@ async fn finish_prepared_area_deletion_owned(
         (status = 204, description = "Area deleted"),
         (status = 403, description = "Registered Area owner required; system Areas cannot be deleted via REST; cross-origin writes are forbidden", body = ErrorBody),
         (status = 404, description = "Area not found", body = ErrorBody),
-        (status = 409, description = "A child track has an in-flight forge-action, or an unresolved terminal launch (`conflict`); retry after it settles", body = ErrorBody),
+        (status = 409, description = "A child track has an active forge action, unresolved terminal launch, or pending provider Stop; retry after settlement", body = ErrorBody),
         (status = 500, description = "Internal error", body = ErrorBody),
     ),
 )]

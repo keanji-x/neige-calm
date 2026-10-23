@@ -1,38 +1,35 @@
 //! Durable settlement recording; success is separate from display completion.
 use super::session::Shared;
-use super::turn_slot::TurnSlot;
 use crate::error::CalmError;
 use std::time::Duration;
 const RECORD_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Record the turn's outcome durably, bounded like every settlement await.
+/// Owner completion gets its own bounded write even when driver settlement timed out.
 pub(super) async fn record_outcome(
     shared: &Shared,
-    slot: &TurnSlot,
     thread: &str,
     turn_id: &str,
     turn: &serde_json::Value,
     confirmation: crate::harness::turn_outcome::Confirmation,
 ) -> crate::error::Result<()> {
     let params = &shared.params;
-    let recorded = slot
-        .bounded(
-            RECORD_TIMEOUT,
-            crate::harness::turn_outcome::record(
-                params.repo.as_ref(),
-                &params.worker_session_id,
-                &params.card_id,
-                &params.track_id,
-                thread,
-                turn_id,
-                turn,
-                confirmation,
-            ),
-        )
-        .await;
+    let recorded = tokio::time::timeout(
+        RECORD_TIMEOUT,
+        crate::harness::turn_outcome::record(
+            params.repo.as_ref(),
+            &params.worker_session_id,
+            &params.card_id,
+            &params.track_id,
+            thread,
+            turn_id,
+            turn,
+            confirmation,
+        ),
+    )
+    .await;
     match recorded {
-        Some(Ok(_)) => Ok(()),
-        Some(Err(error)) => {
+        Ok(Ok(_)) => Ok(()),
+        Ok(Err(error)) => {
             tracing::warn!(
                 worker_session_id = %params.worker_session_id,
                 turn_id,
@@ -41,7 +38,7 @@ pub(super) async fn record_outcome(
             );
             Err(error)
         }
-        None => {
+        Err(_) => {
             tracing::warn!(
                 worker_session_id = %params.worker_session_id,
                 turn_id,

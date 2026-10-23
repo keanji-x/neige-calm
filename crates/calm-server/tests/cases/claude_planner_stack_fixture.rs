@@ -232,6 +232,50 @@ impl Stack {
         self.state.raw_repo()
     }
 
+    pub async fn block_provider_stop(&self) {
+        sqlx::query(
+            "CREATE TRIGGER c4_provider_fault BEFORE UPDATE OF desired ON workspace_executions
+             WHEN NEW.desired='stop' BEGIN SELECT RAISE(FAIL, 'provider Stop blocked'); END",
+        )
+        .execute(self.repo().sqlite_db().unwrap().writer_pool())
+        .await
+        .unwrap();
+    }
+
+    pub async fn block_provider_admission(&self) {
+        sqlx::query(
+            "CREATE TRIGGER c4_provider_fault BEFORE INSERT ON workspace_executions
+             BEGIN SELECT RAISE(FAIL, 'provider admission blocked'); END",
+        )
+        .execute(self.repo().sqlite_db().unwrap().writer_pool())
+        .await
+        .unwrap();
+    }
+
+    pub async fn clear_provider_fault(&self) {
+        sqlx::query("DROP TRIGGER c4_provider_fault")
+            .execute(self.repo().sqlite_db().unwrap().writer_pool())
+            .await
+            .unwrap();
+    }
+
+    pub async fn wait_provider_clear(&self, session: &str) {
+        tokio::time::timeout(Duration::from_secs(20), async {
+            while calm_truth::db::sqlite::provider_execution::load(
+                self.repo().sqlite_db().unwrap().read_pool(),
+                session,
+            )
+            .await
+            .unwrap()
+            .is_some()
+            {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("provider completion clears its claim");
+    }
+
     /// Shut every live harness down (a graceful stop) so another boot of the same root is the
     /// only one issuing turns.
     pub async fn shutdown(self) {

@@ -52,3 +52,12 @@ pub fn blocking_pause_point(point: &str, key: &str) {
         tokio::runtime::Handle::current().block_on(hook.release.notified());
     }
 }
+
+/// Pause task destruction after a guard releases ownership but before its join resolves.
+/// Only an armed test blocks; callers use a multi-thread runtime for this seam.
+pub fn task_drop_pause_point(point: &str, key: &str) {
+    if let Some(hook) = take(point, key) {
+        hook.entered.notify_one();
+        futures::executor::block_on(hook.release.notified());
+    }
+}

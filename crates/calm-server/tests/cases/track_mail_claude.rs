@@ -3,13 +3,11 @@
 //! a Codex Planner, woken by its reply and reading it. The Claude Planner's tool calls drive the
 //! mail module below the transport: its MCP credential is the one its own first turn mints.
 
-use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use calm_server::claude_planner::config::{ClaudePlannerConfig, ClaudePlannerHost};
 use calm_server::claude_planner::session::{ClaudePlannerSession, ClaudePlannerSessionParams};
-use calm_server::claude_planner::stop::sigkill_verified_for_test;
 use calm_server::harness::backend::PlannerBackend;
 use calm_server::harness::{
     HarnessConfig, HarnessState, Observation, PlannerHarness, PlannerHarnessParams,
@@ -19,24 +17,12 @@ use calm_server::session_projection_repo::AgentProvider;
 use provider::claude::translate::ToolNames;
 use serde_json::json;
 
-use super::claude_planner_session_fixture::marked;
 use super::track_mail_fixture::{World, idle_snapshot};
 
 const FAKE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/tests/fixtures/claude_planner_fake/claude.sh"
 );
-
-/// Every process the host marked for this session, killed on drop.
-struct Marked(String);
-
-impl Drop for Marked {
-    fn drop(&mut self) {
-        for (pid, start_time) in marked(&HashSet::from([self.0.clone()])) {
-            sigkill_verified_for_test(pid, start_time);
-        }
-    }
-}
 
 /// The fake's record of every turn's input line, oldest first.
 fn spawned_inputs(bin: &std::path::Path) -> Vec<String> {
@@ -71,6 +57,7 @@ async fn wait_completed_turn(harness: &PlannerHarness, bin: &std::path::Path, n:
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn mail_trace_reaches_a_claude_planner() {
     let w = World::new(&["NVDA research"]).await;
+    let execution = crate::support::execution::Fixture::new(w.repo.db().clone()).await;
     let n = w.p(0);
     let r = w
         .add_planner_without_harness(&w.area_id, "Weekly review", AgentProvider::Claude)
@@ -93,7 +80,8 @@ async fn mail_trace_reaches_a_claude_planner() {
         )
         .unwrap(),
     );
-    let _marked = Marked(host.instance.marker(&r.session_id));
+    host.execution
+        .bind(Arc::new(execution.lifecycle.engine().unwrap().clone()));
     let cwd = w.dir.path().join("claude-ws");
     std::fs::create_dir_all(&cwd).unwrap();
     let session = ClaudePlannerSession::open(ClaudePlannerSessionParams {

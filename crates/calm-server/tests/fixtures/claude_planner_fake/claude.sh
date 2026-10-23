@@ -275,6 +275,15 @@ PY
     echo "$TEXT"; echo "$SUCCESS"
     cat > /dev/null
     exit 0 ;;
+  term-flush)
+    trap 'trap "" TERM; printf flushed > "$D/term-flushed"; exit 0' TERM
+    touch "$D/term-ready"
+    IFS= read -r CONTROL || :
+    while :; do :; done ;;
+  term-ignore)
+    trap '' TERM
+    touch "$D/term-ready"
+    while :; do sleep 1; done ;;
   linger)
     echo "$TEXT"; echo "$SUCCESS"
     exec sleep 300 ;;
@@ -286,6 +295,13 @@ PY
     echo "$TOOL"
     IFS= read -r CONTROL || exit 4
     printf '%s\n' "$CONTROL" >> "$D/stdin"
+    echo "$ABORTED"
+    cat > /dev/null
+    exit 0 ;;
+  delayed-interrupt)
+    touch "$D/interrupt-ready"
+    IFS= read -r CONTROL || exit 4
+    sleep 8
     echo "$ABORTED"
     cat > /dev/null
     exit 0 ;;
@@ -376,7 +392,7 @@ PY
     fi
     cat > /dev/null
     exit 0 ;;
-  compact|compact-no-boundary|compact-usage|compact-boundary-failed|compact-hang)
+  compact|compact-no-boundary|compact-usage|compact-boundary-failed|compact-hang|compact-linger)
     # A manual compaction: the one line must be `/compact`; the CLI answers with its boundary
     # (left out by `compact-no-boundary`), its own command output, and a result without usage
     # (`compact-usage`: with the summary's usage).
@@ -398,6 +414,7 @@ PY
     else
       echo '{"type":"result","subtype":"success","is_error":false,"result":"","usage":{"input_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":0,"iterations":[]},"modelUsage":{},"terminal_reason":"completed"}'
     fi
+    if [ "$SCENARIO" = compact-linger ]; then exec sleep 300; fi
     cat > /dev/null
     exit 0 ;;
   interrupt-result-line)

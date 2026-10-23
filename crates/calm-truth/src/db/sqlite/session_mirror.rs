@@ -129,6 +129,7 @@ async fn session_refresh_deferred_placeholder_tx(
     existing: WorkerSession,
     desired: WorkerSession,
 ) -> WorkerSessionProjectionResult<WorkerSession> {
+    require_provider_unclaimed_tx(tx, desired.id.as_str()).await?;
     let refreshable_state = existing.state == WorkerSessionState::Starting
         || existing.state == WorkerSessionState::Superseded;
     let refreshable_completed =
@@ -245,6 +246,14 @@ async fn card_session_link_tx(
     card_id: &str,
     session_id: &WorkerSessionId,
 ) -> WorkerSessionProjectionResult<()> {
+    let old: Option<String> = sqlx::query_scalar("SELECT session_id FROM cards WHERE id=?")
+        .bind(card_id)
+        .fetch_optional(&mut **tx)
+        .await?
+        .flatten();
+    if let Some(old) = old.filter(|old| old != session_id.as_str()) {
+        require_provider_unclaimed_tx(tx, &old).await?;
+    }
     let res = sqlx::query("UPDATE cards SET session_id = ?1 WHERE id = ?2")
         .bind(session_id.as_str())
         .bind(card_id)
@@ -381,6 +390,7 @@ pub async fn session_supersede_active_tx(
     id: &String,
     now: i64,
 ) -> WorkerSessionProjectionResult<()> {
+    require_provider_unclaimed_tx(tx, id).await?;
     let res = sqlx::query(
         r#"UPDATE worker_sessions
               SET state = 'superseded',
@@ -427,6 +437,7 @@ pub async fn session_delete_tx(
     tx: &mut WorkerSessionProjectionTx<'_>,
     id: &String,
 ) -> WorkerSessionProjectionResult<()> {
+    require_provider_unclaimed_tx(tx, id).await?;
     sqlx::query("UPDATE tracks SET root_session_id = NULL WHERE root_session_id = ?1")
         .bind(id)
         .execute(&mut **tx)
@@ -456,6 +467,7 @@ pub(super) async fn session_complete_mirror_tx(
     terminal_status: WorkerSessionState,
     now: i64,
 ) -> WorkerSessionProjectionResult<()> {
+    require_provider_unclaimed_tx(tx, id).await?;
     session_state_transition_at_tx(
         tx,
         &WorkerSessionId(id.to_owned()),
@@ -474,6 +486,26 @@ pub(super) async fn session_bind_attribution_mirror_tx(
     attr: &ThreadAttribution,
     now: i64,
 ) -> WorkerSessionProjectionResult<()> {
+    // Initial binding and exact repeats belong to the live driver. Replacing an
+    // established native conversation waits until its execution claim is cleared.
+    let replacing: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM worker_sessions WHERE id=?3
+         AND provider_execution_json IS NOT NULL
+         AND ((thread_id IS NOT NULL AND thread_id IS NOT ?1)
+              OR (agent_session_id IS NOT NULL AND agent_session_id IS NOT ?2)))",
+    )
+    .bind(&attr.thread_id)
+    .bind(&attr.session_id)
+    .bind(id)
+    .fetch_one(&mut **tx)
+    .await?;
+    if replacing {
+        return Err(
+            WorkerSessionProjectionRepoError::ProviderExecutionRetained {
+                session: id.clone(),
+            },
+        );
+    }
     let res = sqlx::query(
         r#"UPDATE worker_sessions
               SET thread_id = ?1,
@@ -577,6 +609,8 @@ pub(super) async fn session_set_harness_observation_tx(
                   active_turn_id = ?3,
                   updated_at_ms = ?4
             WHERE id = ?5
+              AND (provider_execution_json IS NULL OR ?2 IS NULL OR thread_id IS NULL OR thread_id = ?2)
+              AND (provider_execution_json IS NULL OR ?1 IN ('starting','running','idle','turn_pending','failed'))
               AND state IN ('starting', 'running', 'idle', 'turn_pending')"#,
     )
     .bind(status.as_db_str())
@@ -601,6 +635,7 @@ pub(super) async fn session_fail_if_active_tx(
                   updated_at_ms = ?1,
                   completed_at_ms = ?1
             WHERE id = ?2
+              AND provider_execution_json IS NULL
               AND state IN ('starting', 'running', 'idle', 'turn_pending')"#,
     )
     .bind(now)
@@ -615,6 +650,7 @@ pub(super) async fn session_mark_superseded_tx(
     id: &String,
     now: i64,
 ) -> WorkerSessionProjectionResult<()> {
+    require_provider_unclaimed_tx(tx, id).await?;
     sqlx::query(
         r#"UPDATE worker_sessions
               SET state = 'superseded',
@@ -676,6 +712,7 @@ pub(super) async fn session_restore_from_superseded_tx(
     status: WorkerSessionState,
     now: i64,
 ) -> WorkerSessionProjectionResult<WorkerSession> {
+    require_provider_unclaimed_tx(tx, id).await?;
     let state_db = status.as_db_str();
     let res = sqlx::query(
         r#"UPDATE worker_sessions
@@ -722,4 +759,17 @@ pub(super) async fn session_restore_from_superseded_tx(
             "worker session {id} missing while restoring old planner harness session"
         ))),
     }
+}
+
+async fn require_provider_unclaimed_tx(
+    tx: &mut WorkerSessionProjectionTx<'_>,
+    id: &str,
+) -> WorkerSessionProjectionResult<()> {
+    let present = super::provider_execution::retained(tx, id).await?;
+    if present {
+        return Err(
+            WorkerSessionProjectionRepoError::ProviderExecutionRetained { session: id.into() },
+        );
+    }
+    Ok(())
 }

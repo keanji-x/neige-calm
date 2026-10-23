@@ -2,26 +2,24 @@
 //! its control requests or hand its tool approvals to the harness (#2348), and settle exactly once
 //! (design #1791 §5.1 settlement, §6.2).
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
+use crate::provider_execution::{self as execution, stdio::EngineStdio};
 use tokio::io::{AsyncBufReadExt as _, BufReader, Lines};
-use tokio::process::{Child, ChildStderr, ChildStdout};
 use tokio::sync::watch;
 use tokio::time::Instant;
 use uuid::Uuid;
+use workspace_runtime::execution::*;
 
 use super::approvals::{Approvals, NO_APPROVAL_SURFACE, write_response};
-use super::outcome_record::record_outcome;
-use super::session::{FinishedTurn, Shared};
+use super::session::Shared;
 use super::spawn::{InstructionsFile, SpawnPurpose};
-use super::stop::{STOP_BOUND, stop_by};
 use super::turn_slot::{TerminalCause, TurnSlot, deadline_reached};
 use crate::error::CalmError;
 use crate::mcp_server::wiring::MCP_SERVER_KEY;
 use crate::session_projection_repo::{AgentProvider, ThreadAttribution};
 use calm_types::worker::WorkerSessionId;
-use provider::claude::line_writer::WRITE_TIMEOUT;
 use provider::claude::permission::{CanUseTool, PermissionDecision, permission_response};
 use provider::claude::protocol::{
     ControlResponseOut, ControlResponseOutBody, Record, SystemInit, decode,
@@ -35,15 +33,13 @@ const DRAIN_WINDOW: Duration = Duration::from_secs(1);
 const EXIT_WAIT: Duration = Duration::from_secs(5);
 /// Own bounds of the settlement's database writes; `settle_by` caps them further once a stop is armed.
 const BIND_TIMEOUT: Duration = Duration::from_secs(5);
-/// After the final `start_kill`, the direct child is reaped for at most this long.
-const REAP_WAIT: Duration = Duration::from_secs(1);
 /// After the child exited, stdout lines it wrote before exiting are still read this long.
 const DRAIN_AFTER_EXIT: Duration = Duration::from_secs(1);
 
 pub(crate) struct TurnRun {
-    pub(crate) child: Child,
-    pub(crate) stdout: ChildStdout,
-    pub(crate) stderr: ChildStderr,
+    pub(crate) claim: execution::Claim,
+    pub(crate) guard: execution::DriverGuard,
+    pub(crate) stdout: EngineStdio,
     pub(crate) slot: Arc<TurnSlot>,
     pub(crate) translator: TurnTranslator,
     pub(crate) instructions: InstructionsFile,
@@ -182,16 +178,16 @@ enum Ending {
     /// A result record: close stdin and let the CLI exit on its own.
     Result(TerminalEvent),
     /// Stdout ended or the child exited without a result.
-    Exited(Option<std::process::ExitStatus>),
+    Exited,
     /// A recorded cause stops the turn now.
     Stopped,
 }
 
 pub(crate) async fn drive(shared: Arc<Shared>, run: TurnRun) -> bool {
     let TurnRun {
-        mut child,
+        claim,
+        guard,
         stdout,
-        stderr,
         slot,
         mut translator,
         instructions,
@@ -201,8 +197,19 @@ pub(crate) async fn drive(shared: Arc<Shared>, run: TurnRun) -> bool {
         version,
         approvals,
     } = run;
-    let stderr_tail = Arc::new(Mutex::new(String::new()));
-    let stderr_task = tokio::spawn(keep_stderr_tail(stderr, Arc::clone(&stderr_tail)));
+    let params = &shared.params;
+    let engine = params.engine.as_ref().expect("admitted Engine");
+    let pool = params.repo.sqlite_db().expect("admitted database");
+    let id = execution::execution_id(claim.record()).expect("admitted execution id");
+    let mut cancellation = execution::Cancellation {
+        owner: params.host.provider_execution.clone(),
+        pool: pool.clone(),
+        engine: engine.clone(),
+        session: params.worker_session_id.clone(),
+        claim: claim.clone(),
+        armed: true,
+    };
+    let mut ticks = tokio::time::interval(Duration::from_millis(10));
     let mut lines = BufReader::new(stdout).lines();
     let mut stop_rx = slot.stop_at.subscribe();
     let mut reading = Reading {
@@ -217,14 +224,11 @@ pub(crate) async fn drive(shared: Arc<Shared>, run: TurnRun) -> bool {
         version: &version,
         approvals: &approvals,
         compacted: false,
-        bound: false,
-        row_bound: false,
         validated_init: false,
-        total_tokens: None,
     };
-    let mut exited: Option<(std::process::ExitStatus, Instant)> = None;
+    let mut exited: Option<Instant> = None;
     let ending = loop {
-        let drain_until = exited.map(|(_, at)| at + DRAIN_AFTER_EXIT);
+        let drain_until = exited.map(|at| at + DRAIN_AFTER_EXIT);
         // Biased so a stop (the interrupt's timer, or a shutdown) is never starved by a chatty CLI;
         // it first reads, for a bounded window, the lines already written, so a result the CLI
         // finished before the stop still decides the turn (§6.2: finished first ⇒ completed).
@@ -237,20 +241,20 @@ pub(crate) async fn drive(shared: Arc<Shared>, run: TurnRun) -> bool {
                         break ending;
                     }
                 }
-                Ok(None) => break Ending::Exited(exited.map(|(status, _)| status)),
-                Err(error) => break reading.protocol_failure(&error),
+                Ok(None) => break Ending::Exited,
+                Err(error) => {
+                    let ending = reading.protocol_failure(&error);
+                    slot.set_stop_reason(execution::StopReason::OutputGap);
+                    break ending;
+                },
             },
-            status = child.wait(), if exited.is_none() => {
-                // Output written just before the exit is still read, for at most the drain bound: a
-                // `can_use_tool` among it still opens, so the spawn's connection ends with the
-                // read task, never here.
-                match status.ok() {
-                    Some(status) => exited = Some((status, Instant::now())),
-                    None => break Ending::Exited(None),
-                }
+            _ = ticks.tick(), if exited.is_none() => {
+                if matches!(engine.output(&id, None).await, Ok(ExecutionReply::Observation {
+                    state: ExecutionState::Exited { .. } | ExecutionState::Drained { .. } | ExecutionState::NoChild { .. } | ExecutionState::Revoked, ..
+                })) { exited = Some(Instant::now()); }
             }
             _ = sleep_until_opt(drain_until), if drain_until.is_some() => {
-                break Ending::Exited(exited.map(|(status, _)| status));
+                break Ending::Exited;
             }
         }
     };
@@ -260,30 +264,21 @@ pub(crate) async fn drive(shared: Arc<Shared>, run: TurnRun) -> bool {
         }
         (_, ending) => ending,
     };
-    let finished = FinishedTurn {
-        named_session: reading.bound,
-        row_bound: reading.row_bound,
-        total_tokens: reading.total_tokens,
-    };
     let qualified = settle(
         &shared,
         SettleInput {
-            child,
+            claim,
             slot,
             translator,
             instructions,
             thread,
-            purpose,
-            finished,
-            stderr_tail,
+            approvals,
         },
         ending,
     )
     .await;
-    stderr_task.abort();
-    let _ = stderr_task.await;
-    // Every line this spawn wrote has been read: its held requests can go.
-    drop(approvals);
+    cancellation.armed = false;
+    drop(guard);
     qualified
 }
 
@@ -304,13 +299,8 @@ struct Reading<'a> {
     approvals: &'a Approvals,
     /// A `system/compact_boundary` was read.
     compacted: bool,
-    /// A `system/init` named this thread's session.
-    bound: bool,
-    /// The bind of `agent_session_id` was persisted during this turn.
-    row_bound: bool,
     /// Only this process's checked session can supply native input/execution evidence.
     validated_init: bool,
-    total_tokens: Option<i64>,
 }
 
 /// Some CLI records omit session_id; once init qualifies the process they inherit that
@@ -358,19 +348,27 @@ impl Reading<'_> {
                 // The CLI created (or resumed) this thread's session as soon as it names it, even
                 // when a later check fails the turn: bind it, so the next spawn resumes it.
                 if init.session_id == self.thread {
-                    if !self.bound && self.bind {
+                    // Publish before the persistence await: init and a durable bind are
+                    // independent facts, including when this driver is cancelled mid-bind.
+                    let first_init = self.shared.observe_turn(self.slot, |facts| {
+                        !std::mem::replace(&mut facts.named_session, true)
+                    });
+                    if first_init == Some(true) && self.bind {
                         match self
                             .slot
                             .bounded(BIND_TIMEOUT, self.bind_agent_session())
                             .await
                         {
-                            Some(persisted) => self.row_bound = persisted,
+                            Some(persisted) => {
+                                self.shared.observe_turn(self.slot, |facts| {
+                                    facts.row_bound = persisted;
+                                });
+                            }
                             None => tracing::warn!(
                                 "claude planner: agent session bind cut off by its bound; the next turn retries it"
                             ),
                         }
                     }
-                    self.bound = true;
                 }
                 if let Err(check) = init_check(init, self.thread, self.version, self.purpose) {
                     self.slot
@@ -407,7 +405,11 @@ impl Reading<'_> {
         {
             // A compaction's own usage counts nowhere, like the rest of what it reads (`compact`).
             if self.purpose == SpawnPurpose::Turn {
-                self.total_tokens = usage_total(&event).or(self.total_tokens);
+                if let Some(total) = usage_total(&event) {
+                    self.shared.observe_turn(self.slot, |facts| {
+                        facts.total_tokens = Some(total);
+                    });
+                }
                 let _ = self.shared.events.send(event);
             } else if matches!(event.kind, PlannerEventKind::ContextReplaced { .. }) {
                 let _ = self.shared.events.send(event);
@@ -450,13 +452,15 @@ impl Reading<'_> {
         tracing::warn!(%error, "claude planner: undecodable stdout");
         self.slot
             .record(TerminalCause::Failed(format!("protocol: {error}")));
+        self.slot
+            .set_stop_reason(execution::StopReason::SetupFailed);
         Ending::Stopped
     }
 
     /// Read the lines the CLI already wrote, for at most [`DRAIN_WINDOW`] and without answering
     /// control requests (stdin closes next), then let the recorded cause stop the turn unless one
     /// of those lines already ended it.
-    async fn drain_then_stop(&mut self, lines: &mut Lines<BufReader<ChildStdout>>) -> Ending {
+    async fn drain_then_stop(&mut self, lines: &mut Lines<BufReader<EngineStdio>>) -> Ending {
         self.answering = false;
         let slot = self.slot;
         // The window is checked on the clock at every line: lines already buffered are returned
@@ -470,9 +474,9 @@ impl Reading<'_> {
                 {
                     return None;
                 }
-                // `next_line` is cancel-safe; the zero timeout gives up as soon as no complete
-                // line is ready (tokio may poll it again within the next timer tick).
-                match tokio::time::timeout(Duration::ZERO, lines.next_line()).await {
+                // Engine reads may require a transport round trip even for queued output.
+                // Give them the remaining drain window; the outer bound caps the whole loop.
+                match tokio::time::timeout_at(window_ends, lines.next_line()).await {
                     Ok(Ok(Some(line))) => {
                         if let Some(ending) = self.on_line(&line).await {
                             return Some(ending);
@@ -493,6 +497,8 @@ impl Reading<'_> {
     /// the next turn retries the bind.
     async fn bind_agent_session(&self) -> bool {
         let params = &self.shared.params;
+        #[cfg(feature = "fixtures")]
+        crate::test_seams::pause_point("c4-bind-session", &params.worker_session_id).await;
         let id = params.worker_session_id.clone();
         let thread = self.thread.to_string();
         let written = crate::db::write_in_tx_typed(params.repo.as_ref(), move |tx| {
@@ -549,16 +555,6 @@ async fn sleep_until_opt(at: Option<Instant>) {
     }
 }
 
-async fn keep_stderr_tail(stderr: ChildStderr, tail: Arc<Mutex<String>>) {
-    let mut lines = BufReader::new(stderr).lines();
-    while let Ok(Some(line)) = lines.next_line().await {
-        tracing::debug!(line = %line, "claude planner stderr");
-        if !line.trim().is_empty() {
-            *tail.lock().expect("stderr tail poisoned") = line;
-        }
-    }
-}
-
 /// A `can_use_tool` answered here (one under `never` or `full`, where `--permission-prompts none`
 /// should not send it, or one without its recorded shape) is denied. Any other request gets an error response.
 async fn answer_control_request(slot: &TurnSlot, request_id: &str, other_subtype: bool) {
@@ -581,139 +577,144 @@ async fn answer_control_request(slot: &TurnSlot, request_id: &str, other_subtype
 }
 
 struct SettleInput {
-    child: Child,
+    claim: execution::Claim,
     slot: Arc<TurnSlot>,
     translator: TurnTranslator,
     instructions: InstructionsFile,
     thread: Uuid,
-    purpose: SpawnPurpose,
-    finished: FinishedTurn,
-    stderr_tail: Arc<Mutex<String>>,
+    approvals: Approvals,
 }
 
-/// close stdin → bounded wait for the direct child (not on the stop path) → `stop` → record →
-/// remove the instructions file → close open items → `TurnCompleted`. A compaction records no
-/// outcome and closes no items: it is no turn of the transcript.
-/// Every await here is bounded by its own timeout and, once a stop is armed, by the slot's
-/// `settle_by`, so `TurnCompleted` goes out by then whatever the CLI does. A bound that passes
-/// is logged and settlement moves on: an unrecorded outcome is left to boot recovery, and a stop
-/// that did not confirm is left to the next spawn's stop, which fails closed (§5.1).
-async fn settle(shared: &Shared, input: SettleInput, ending: Ending) -> bool {
+/// Every protocol end requests Stop. Only Drained settlement qualifies a known result.
+async fn settle(shared: &Arc<Shared>, input: SettleInput, ending: Ending) -> bool {
     let SettleInput {
-        mut child,
+        claim,
         slot,
-        mut translator,
+        translator,
         instructions,
         thread,
-        purpose,
-        finished,
-        stderr_tail,
+        approvals,
     } = input;
     let params = &shared.params;
-    // A result read while the turn was already stopping gets no graceful exit wait (D29).
-    let (event, wait_for_exit) = match ending {
-        Ending::Result(event) => (event, !slot.stop_armed()),
-        Ending::Exited(status) => {
-            let status = match status {
-                Some(status) => Some(status),
-                None => slot
-                    .bounded(EXIT_WAIT, child.wait())
-                    .await
-                    .and_then(|status| status.ok()),
-            };
-            let tail = stderr_tail.lock().expect("stderr tail poisoned").clone();
-            let mut detail = match status {
-                Some(status) => format!("claude exited ({status})"),
-                None => "claude closed its output and did not exit".to_string(),
-            };
-            if !tail.is_empty() {
-                detail.push_str(": ");
-                detail.push_str(&tail);
-            }
-            (TerminalEvent::Exit { detail }, false)
-        }
-        Ending::Stopped => (TerminalEvent::Stopped, false),
+    let owner = &params.host.provider_execution;
+    let engine = params.engine.as_ref().expect("admitted Engine");
+    let pool = params.repo.sqlite_db().expect("admitted database");
+    let id = execution::execution_id(claim.record()).expect("admitted id");
+    let event = match ending {
+        Ending::Result(event) => event,
+        Ending::Exited => TerminalEvent::Exit {
+            detail: "provider output ended".into(),
+        },
+        Ending::Stopped => TerminalEvent::Stopped,
     };
-    let outcome = decide(slot.cause().as_ref(), &event);
-    let completed = translator.turn_completed(&outcome, crate::model::now_ms());
-    let PlannerEventKind::TurnCompleted { turn } = &completed.kind else {
-        unreachable!("turn_completed builds TurnCompleted");
-    };
-    let turn_id = turn["id"].as_str().unwrap_or_default().to_string();
-    if let Some(mut stdin) = slot.bounded(WRITE_TIMEOUT, slot.stdin.lock()).await {
+    // Freeze the facts observed at protocol end; cleanup must not turn a later
+    // control-write failure or interrupt into an earlier terminal cause.
+    let cause = slot.cause();
+    #[cfg(feature = "fixtures")]
+    crate::test_seams::pause_point("c4-protocol-ended", &params.worker_session_id).await;
+    if let Some(mut stdin) = slot
+        .bounded(Duration::from_secs(5), slot.stdin.lock())
+        .await
+    {
         stdin.take();
     }
-    if wait_for_exit && slot.bounded(EXIT_WAIT, child.wait()).await.is_none() {
-        tracing::debug!(turn_id, "claude planner: the CLI lingered after its result");
+    let _ = slot
+        .bounded(Duration::from_secs(5), engine.close_stdin(&id))
+        .await;
+    if matches!(
+        event,
+        TerminalEvent::ResultSuccess { .. } | TerminalEvent::ResultError { .. }
+    ) && !slot.stop_armed()
+    {
+        let _ = slot
+            .bounded(EXIT_WAIT, async {
+                loop {
+                    if matches!(
+                        engine.output(&id, None).await,
+                        Ok(ExecutionReply::Observation {
+                            state: ExecutionState::Exited { .. }
+                                | ExecutionState::Drained { .. }
+                                | ExecutionState::NoChild { .. }
+                                | ExecutionState::Revoked,
+                            ..
+                        })
+                    ) {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await;
     }
-    let stop_until = match slot.settle_by() {
-        Some(settle_by) => settle_by.min(Instant::now() + STOP_BOUND),
-        None => Instant::now() + STOP_BOUND,
-    };
-    let stopped = slot
-        .bounded(
-            STOP_BOUND,
-            stop_by(&params.host.instance, &params.worker_session_id, stop_until),
+    if let Err(error) = owner
+        .stop(
+            &pool,
+            Some(engine),
+            &params.worker_session_id,
+            &claim,
+            slot.stop_reason(),
         )
         .await
-        .unwrap_or_else(|| {
-            Err(CalmError::Conflict(
-                "claude planner settlement stop cut off at settle_by".into(),
-            ))
-        });
-    let terminal_qualified = match purpose {
-        SpawnPurpose::Turn => {
-            let confirmation = if stopped.is_ok() {
-                crate::harness::turn_outcome::Confirmation::ProviderTerminal
-            } else {
-                crate::harness::turn_outcome::Confirmation::Unconfirmed
-            };
-            record_outcome(
-                shared,
-                &slot,
-                &thread.to_string(),
-                &turn_id,
-                turn,
-                confirmation,
+    {
+        tracing::warn!(%error, "Claude Stop retained claim");
+    }
+    let _ = slot
+        .bounded(
+            super::session::SETTLE_AFTER_STOP,
+            execution::wait_settled(engine, &id, super::session::SETTLE_AFTER_STOP),
+        )
+        .await;
+    let settlement = match execution::settlement(&pool, &id).await {
+        Ok(value) => value,
+        Err(error) => {
+            tracing::warn!(%error, "Claude settlement read failed; completion is unconfirmed");
+            None
+        }
+    };
+    let qualified = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let turn = match &claim.record().purpose {
+        execution::Purpose::Turn { turn_id } | execution::Purpose::Compaction { turn_id } => {
+            turn_id.clone()
+        }
+        _ => unreachable!(),
+    };
+    let known = Some(execution::KnownEnd::ClaudeTurn(Box::new(
+        super::execution::End {
+            shared: shared.clone(),
+            slot,
+            translator,
+            instructions,
+            event,
+            cause,
+            qualified: qualified.clone(),
+            thread: thread.to_string(),
+            turn,
+            approvals,
+        },
+    )));
+    let result = if settlement.is_some() {
+        owner
+            .finish(
+                &pool,
+                Some(engine),
+                &params.worker_session_id,
+                &claim,
+                known,
             )
             .await
-            .is_ok()
-        }
-        SpawnPurpose::Compaction => matches!(outcome, TurnOutcome::Completed),
+    } else {
+        owner
+            .owner
+            .complete(
+                &params.worker_session_id,
+                claim.record(),
+                execution::CompletionEvidence::Unconfirmed,
+                known,
+            )
+            .await
     };
-    let qualified = stopped.is_ok() && terminal_qualified;
-    if let Err(error) = stopped {
-        tracing::warn!(
-            worker_session_id = %params.worker_session_id,
-            turn_id,
-            %error,
-            "claude planner: settlement stop did not confirm; the next spawn's stop fails closed"
-        );
+    if let Err(error) = result {
+        tracing::warn!(%error, "Claude completion retained claim");
     }
-    let _ = child.start_kill();
-    let _ = slot.bounded(REAP_WAIT, child.wait()).await;
-    let instructions_removed = instructions.remove().is_ok();
-    drop(instructions);
-    let closes = match purpose {
-        SpawnPurpose::Turn => translator.close_open(crate::model::now_ms()),
-        SpawnPurpose::Compaction => Vec::new(),
-    };
-    // Fixtures only; like the rest of settlement it runs after `stop`, but it is NOT bounded by
-    // `settle_by`: a test holding it holds `TurnCompleted`.
-    #[cfg(feature = "fixtures")]
-    {
-        let pause = shared
-            .hooks
-            .lock()
-            .expect("hooks")
-            .before_turn_completed
-            .clone();
-        if let Some(pause) = pause {
-            pause.entered.notify_one();
-            pause.release.notified().await;
-        }
-    }
-    shared.finish_turn(finished, closes.into_iter().chain([completed]));
-    slot.settled.send_replace(true);
-    qualified && instructions_removed
+    qualified.load(std::sync::atomic::Ordering::Acquire)
 }

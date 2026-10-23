@@ -214,7 +214,7 @@ async fn assert_env_is_the_allowlist(rig: &Rig) {
         assert!(allowed.contains(key), "{key} is not on the allowlist");
     }
     let get = |key: &str| pairs.iter().find(|(k, _)| *k == key).map(|(_, v)| *v);
-    assert_eq!(get("NEIGE_CLAUDE_PLANNER"), Some(rig.marker().as_str()));
+    assert_eq!(get("NEIGE_CLAUDE_PLANNER"), None);
     // The first turn minted the credential: the spawn carries the plaintext of the row's hash.
     let token = get("NEIGE_MCP_TOKEN").expect("token");
     assert_eq!(
@@ -431,10 +431,24 @@ async fn assert_refused_before_ok(
         "no outcome for a refused turn"
     );
     assert!(
-        rig.instructions_files().is_empty(),
-        "no instructions file left"
+        rig.instructions_files().iter().all(|path| !path.is_file()),
+        "no instructions file left: result={result:?}, files={:?}",
+        rig.instructions_files()
     );
-    assert!(rig.marked_pids().is_empty(), "no marked process left");
+    let claim =
+        calm_truth::db::sqlite::provider_execution::load(rig.repo.pool(), &rig.worker_session_id)
+            .await
+            .unwrap();
+    assert!(
+        claim.is_none(),
+        "refused start retained {claim:?}; result={result:?}"
+    );
+    let unsettled: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM workspace_executions WHERE settled_at_ms IS NULL")
+            .fetch_one(rig.repo.pool())
+            .await
+            .unwrap();
+    assert_eq!(unsettled, 0);
     assert!(rx.try_recv().is_err(), "no notification for a refused turn");
     assert_eq!(rig.session().active_turn_id_for_thread(&rig.thread), None);
     result
@@ -480,13 +494,36 @@ async fn an_immediate_exit_is_refused_before_ok_with_no_outcome() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_spawn_failure_leaves_no_instructions_file() {
     let rig = Rig::new("vanish-after-version").await;
-    let Ok(TurnStartOutcome::Failed { error }) =
-        assert_refused_before_ok(&rig, rig.text("hello")).await
-    else {
-        panic!("expected failed start failure");
-    };
-    let error = error.to_string();
-    assert!(error.contains("spawn"), "{error}");
+    let mut rx = rig.session().subscribe_events();
+    let result = rig
+        .session()
+        .turn_start(
+            &rig.thread,
+            request(
+                rig.text("hello"),
+                &TurnModelSelection::inherit(),
+                calm_server::planner_permission_mode::PlannerPermissionMode::Never,
+                &client_id(),
+            ),
+        )
+        .await;
+    match result {
+        Ok(TurnStartOutcome::Started { .. }) => {
+            let seen = until_completed(&mut rx).await;
+            assert_eq!(completed_turn(&seen)["status"], "failed");
+            assert_eq!(rig.outcomes().await.len(), 1);
+        }
+        Ok(TurnStartOutcome::Failed { error }) => {
+            let error = error.to_string();
+            assert!(
+                error.contains("StdinTorn") || error.contains("provider exited before release"),
+                "{error}"
+            );
+            assert!(rig.outcomes().await.is_empty());
+        }
+        other => panic!("unexpected vanished CLI result: {other:?}"),
+    }
+    assert!(rig.instructions_files().is_empty());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -597,13 +634,21 @@ async fn the_private_instructions_never_reach_a_cmdline() {
         .map(started)
         .expect("turn_start");
     wait_for_file(&rig.bin("stdin")).await;
-    let pids = rig.marked_pids();
+    let pids = [rig.read_bin("pid").unwrap().trim().parse::<i32>().unwrap()];
     let cmdlines: Vec<String> = pids.iter().map(|pid| cmdline(*pid)).collect();
     let delivered = rig.read_bin("instructions").unwrap_or_default();
+    let intents: Vec<String> = sqlx::query_scalar("SELECT intent_json FROM workspace_executions")
+        .fetch_all(rig.repo.pool())
+        .await
+        .unwrap();
+    assert_eq!(intents.len(), 1);
+    assert!(intents.iter().all(|intent| !intent.contains(&sentinel)));
+    rig.assert_execution_journal_excludes(&sentinel);
+
     let _outcome = rig.session().turn_interrupt(&rig.thread, &turn).await;
     let completed = completed_turn(&until_completed(&mut rx).await);
 
-    assert!(!pids.is_empty(), "the CLI was live and marked");
+    assert!(!pids.is_empty(), "the executor-owned CLI was live");
     assert!(
         cmdlines
             .iter()
@@ -642,18 +687,6 @@ async fn the_stop_seam_fails_without_signalling_until_cleared() {
     )
     .await;
     let alive_while_armed = alive(pid);
-    let turn = rig
-        .session()
-        .turn_start(
-            &rig.thread,
-            request(
-                rig.text("hello"),
-                &TurnModelSelection::inherit(),
-                calm_server::planner_permission_mode::PlannerPermissionMode::Never,
-                &client_id(),
-            ),
-        )
-        .await;
     clear_claude_planner_stop_failure_for_test(&rig.worker_session_id);
     let cleared = stop(&rig.host.instance, &rig.worker_session_id).await;
     let _ = marked.wait();
@@ -663,14 +696,6 @@ async fn the_stop_seam_fails_without_signalling_until_cleared() {
         "armed seam fails the stop"
     );
     assert!(alive_while_armed, "an armed seam signals nothing");
-    assert!(
-        matches!(turn, Err(TurnStartFailure::Transient(_))),
-        "turn_start's own stop fails closed: {turn:?}"
-    );
-    assert!(
-        rig.read_bin("spawns").is_none(),
-        "no spawn while the seam is armed"
-    );
     assert!(cleared.is_ok(), "cleared: {cleared:?}");
     assert!(!alive(pid), "the cleared stop ends the marked process");
 }

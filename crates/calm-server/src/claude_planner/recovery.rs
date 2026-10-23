@@ -53,5 +53,10 @@ pub(crate) async fn quiesce_canonical(
     host: &super::config::ClaudePlannerHost,
     worker_session_id: &str,
 ) -> Result<()> {
-    super::stop::stop(&host.instance, worker_session_id).await
+    super::lifecycle::stop_session(
+        host,
+        worker_session_id,
+        crate::provider_execution::StopReason::KernelRestarted,
+    )
+    .await
 }

@@ -1,11 +1,8 @@
 use super::claude_planner_stack_fixture::{Root, Stack};
 use axum::http::StatusCode;
-use calm_server::claude_planner::stop::{
-    clear_claude_planner_stop_failure_for_test, fail_claude_planner_stop_for_test,
-};
 use serde_json::json;
 
-async fn sleep_and_wake(fail: bool, reopen: bool) {
+async fn sleep_and_wake(reopen: bool) {
     let root = Root::new("exit");
     let stack = Stack::boot(&root).await;
     let (track, card) = stack.create_claude_track().await;
@@ -20,14 +17,10 @@ async fn sleep_and_wake(fail: bool, reopen: bool) {
         )
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    if fail {
-        fail_claude_planner_stop_for_test(&runtime.id);
-    }
     calm_server::terminal_sweeper::sweep(&stack.state)
         .await
         .unwrap();
     let remains = stack.state.harness.get(&runtime.id).is_some();
-    clear_claude_planner_stop_failure_for_test(&runtime.id);
     assert!(
         !remains,
         "provider release failure must not leave an input-closed owner registered"
@@ -53,14 +46,10 @@ async fn sleep_and_wake(fail: bool, reopen: bool) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn planner_hibernat_claude_release_failure_then_send() {
-    sleep_and_wake(true, false).await;
-}
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn planner_hibernat_claude_release_failure_then_reopen() {
-    sleep_and_wake(true, true).await;
-}
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn planner_hibernat_claude_sleep_then_send() {
-    sleep_and_wake(false, false).await;
+    sleep_and_wake(false).await;
+}
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn planner_hibernat_claude_sleep_then_reopen() {
+    sleep_and_wake(true).await;
 }

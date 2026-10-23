@@ -6,11 +6,11 @@ use std::task::{Context, Poll};
 use tokio::io::AsyncWrite;
 
 pub(crate) struct LineStdin {
-    child: ChildStdin,
+    child: BaseStdin,
     pub(crate) flush_failure: Option<BoxFuture<'static, std::io::Result<()>>>,
 }
-impl From<ChildStdin> for LineStdin {
-    fn from(child: ChildStdin) -> Self {
+impl From<BaseStdin> for LineStdin {
+    fn from(child: BaseStdin) -> Self {
         Self {
             child,
             flush_failure: None,

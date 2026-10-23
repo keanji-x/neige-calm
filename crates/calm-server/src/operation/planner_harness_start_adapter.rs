@@ -116,6 +116,23 @@ mod target;
 pub(super) use target::operation_card_id;
 
 impl PlannerHarnessStartAdapter {
+    async fn gate_current_provider(&self, card: &str) -> Result<()> {
+        if let Some(runtime) = self
+            .repo
+            .session_projection_projectable_for_card(&card.to_owned())
+            .await?
+        {
+            PlannerFactory::transition_gate(
+                &self.claude_host,
+                self.repo.as_ref(),
+                &self.harness_registry,
+                &runtime,
+            )
+            .await?;
+        }
+        Ok(())
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         repo: Arc<dyn Repo>,
@@ -542,7 +559,8 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
 
     async fn validate(&self, input: &Value) -> Result<()> {
         if let Some(wire) = RetainedPayload::decode(input)? {
-            return self.retained_validate(&wire).await;
+            self.retained_validate(&wire).await?;
+            return self.gate_current_provider(wire.card_id()).await;
         }
         let decoded = super::assistant_start_wire::StartInput::decode(input)?;
         let payload = decoded.payload;
@@ -731,6 +749,8 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
         .ready(&provider, ReadinessFor::StartOperation)
         .await?;
         self.admit_historical(payload.planner_card_id.as_str())
+            .await?;
+        self.gate_current_provider(payload.planner_card_id.as_str())
             .await
     }
 
@@ -1762,9 +1782,10 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
                 {
                     tracing::warn!(worker_session_id,%error,"ACP compensation cleanup did not confirm");
                 }
-                if let Err(e) = crate::claude_planner::stop::stop(
-                    &self.claude_host.instance,
+                if let Err(e) = crate::claude_planner::lifecycle::stop_session(
+                    &self.claude_host,
                     &worker_session_id,
+                    crate::provider_execution::StopReason::Shutdown,
                 )
                 .await
                 {
@@ -1814,6 +1835,12 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
                 if ctx.repo.card_get(&card_id).await?.is_none() {
                     return Ok(());
                 }
+                crate::claude_planner::lifecycle::sweep_card(
+                    ctx.repo.as_ref(),
+                    &self.claude_host,
+                    &card_id,
+                )
+                .await?;
                 let card_id = CardId::from(card_id);
                 let track_id = TrackId::from(track_id);
                 let scope =

@@ -1,23 +1,13 @@
-//! One Claude Planner session: one `claude -p` process per turn, at most one at a time (design
-//! #1791 §5.1, §5.2, §5.6, §6.2).
-//!
-//! Submission contract (`ClaudePlannerSession::start_turn`): refuse until the harness is
-//! installed, mint the turn id, check the seal, run `--version` (before any user input), on the
-//! harness's first turn mint its MCP credential (§5.1 item 2), `stop` whatever still carries this session's marker, write the instructions file under a
-//! per-spawn guard, spawn, re-check the seal, write the one `user` line (bounded), and return
-//! `Ok(turn_id)`. Every exit before `Ok` stops the marker, removes the file and returns `Err`; no
-//! outcome is recorded, because no turn id was handed out. A manual compaction
-//! ([`ClaudePlannerSession::compact_start`], `compact`) is a spawn through the same path.
-//!
-//! Settlement (`driver`): one [`TurnSlot`] (`turn_slot`) per turn holds the first recorded
-//! [`TerminalCause`]; the outcome is recorded durably, stdin is closed, the direct child gets a
-//! bounded wait, `stop` runs, the instructions file goes, and only then is `TurnCompleted` emitted.
+//! One Claude Planner session admits one Engine execution per turn or compaction.
+//! The session issue lock and durable provider owner claim serialize admission and
+//! carrier detachment. Credentials are released over Held stdin before the first
+//! user line; protocol decoding remains in provider. The registered owner completes
+//! outcomes and session state after settlement, including recovery after driver loss.
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
-use tokio::process::{Child, Command};
 use tokio::sync::broadcast;
 use uuid::Uuid;
 
@@ -25,12 +15,12 @@ use super::approvals::Approvals;
 use super::config::{ClaudePlannerHost, needs_an_operator, unavailable_message};
 use super::driver::{TurnRun, drive};
 use super::spawn::{self, InstructionsFile, ResumeTruncation, SessionStart, SpawnPurpose};
-use super::stop::stop;
 use super::turn_slot::{TerminalCause, TurnSlot};
 use crate::db::Repo;
 use crate::error::{CalmError, Result};
 use crate::harness::held_requests::HeldRequestSender;
 use crate::planner_permission_mode::PlannerPermissionMode;
+use crate::provider_execution::StopReason;
 use crate::thread_seals::ThreadSeals;
 use calm_types::worker::WorkerSessionId;
 use provider::InputItem;
@@ -55,7 +45,7 @@ const SHUTDOWN_SETTLE_WAIT: Duration = Duration::from_secs(20);
 /// Everything one Claude Planner harness is built from; the caller (the start adapter and
 /// recovery) supplies every field.
 pub struct ClaudePlannerSessionParams {
-    /// Rewind uses the registered Engine; turn and compaction migrate in C4.2.
+    /// All provider executions use the registered Engine; there is no native fallback.
     pub engine: Option<crate::execution_boot::ExecutionEngine>,
     pub host: Arc<ClaudePlannerHost>,
     pub worker_session_id: String,
@@ -80,6 +70,8 @@ struct ActiveTurn {
     thread_id: String,
     turn_id: String,
     slot: Arc<TurnSlot>,
+    /// Live observations survive abort or failure of the completion write.
+    finished: FinishedTurn,
 }
 
 struct State {
@@ -98,7 +90,7 @@ pub(crate) struct Shared {
     pub(crate) params: ClaudePlannerSessionParams,
     pub(crate) events: broadcast::Sender<PlannerEvent>,
     state: Mutex<State>,
-    /// Serializes `turn_start` and `shutdown`, so no spawn outlives a shutdown.
+    /// Serializes provider admission, carrier detachment and shutdown.
     issue: tokio::sync::Mutex<()>,
     parked: crate::harness::carrier_park::ParkState,
     driver: tokio::sync::Mutex<Option<execution_end::DriverSlot>>,
@@ -117,16 +109,36 @@ impl Shared {
             .expect("claude planner session state poisoned")
     }
 
+    /// Only the exact active slot can publish facts consumed by either completion path.
+    pub(crate) fn observe_turn<R>(
+        &self,
+        slot: &TurnSlot,
+        observe: impl FnOnce(&mut FinishedTurn) -> R,
+    ) -> Option<R> {
+        self.state()
+            .active
+            .as_mut()
+            .filter(|active| std::ptr::eq(active.slot.as_ref(), slot))
+            .map(|active| observe(&mut active.finished))
+    }
+
     /// The driver's last step: the session's facts move forward, the slot is freed and the turn's
     /// last events go out under one state lock, the same lock under which `turn_start`
     /// registers the next turn and sends its `TurnStarted`, so a subscriber never sees the next
     /// turn start before this one completed.
     pub(crate) fn finish_turn(
         &self,
-        ended: FinishedTurn,
+        turn: &str,
+        slot: &TurnSlot,
         events: impl IntoIterator<Item = PlannerEvent>,
     ) {
         let mut state = self.state();
+        if !state.active.as_ref().is_some_and(|active| {
+            active.turn_id == turn && std::ptr::eq(active.slot.as_ref(), slot)
+        }) {
+            return;
+        }
+        let ended = state.active.take().expect("checked active slot").finished;
         if ended.named_session {
             state.start = SessionStart::Resume;
         }
@@ -136,7 +148,6 @@ impl Shared {
         if let Some(total_tokens) = ended.total_tokens {
             state.total_tokens = total_tokens;
         }
-        state.active = None;
         for event in events {
             let _ = self.events.send(event);
         }
@@ -144,6 +155,7 @@ impl Shared {
 }
 
 /// What a settled turn tells the session.
+#[derive(Default)]
 pub(crate) struct FinishedTurn {
     /// A `system/init` named this thread's session: later spawns resume it.
     pub(crate) named_session: bool,
@@ -208,6 +220,7 @@ pub(super) fn historical_admission()
 #[cfg(feature = "fixtures")]
 mod fixtures;
 mod invocation;
+mod launch;
 mod start;
 pub(crate) use start::{BeforeWriteFailure, SpawnFailure};
 impl ClaudePlannerSession {
@@ -240,7 +253,7 @@ impl ClaudePlannerSession {
             shutting_down: false,
             active: None,
         };
-        Ok(Self {
+        let session = Self {
             shared: Arc::new(Shared {
                 params,
                 events,
@@ -252,7 +265,12 @@ impl ClaudePlannerSession {
                 #[cfg(feature = "fixtures")]
                 hooks: Mutex::new(TestHooks::default()),
             }),
-        })
+        };
+        session
+            .host()
+            .completion
+            .bind(session.shared.params.repo.clone());
+        Ok(session)
     }
 
     pub fn subscribe_events(&self) -> broadcast::Receiver<PlannerEvent> {
@@ -275,10 +293,11 @@ impl ClaudePlannerSession {
         self.shared.params.seals.is_sealed(thread)
     }
 
-    pub(crate) fn carrier_idle_for_detach(
+    pub(crate) async fn carrier_idle_for_detach(
         &self,
     ) -> Option<crate::harness::carrier_park::ParkToken<'_>> {
         let _issue = self.shared.issue.try_lock().ok()?;
+        self.provider_admission_gate().await.ok()?;
         if !self.carrier_idle() {
             return None;
         }
@@ -309,351 +328,6 @@ impl ClaudePlannerSession {
         crate::harness::backend::TurnStartFailure,
     > {
         self.start_turn(thread, request).await
-    }
-
-    /// The submission contract for either kind of spawn; see the module docs.
-    pub(super) async fn start_spawn(
-        &self,
-        thread: &str,
-        input: SpawnInput<'_>,
-        selection: &TurnModelSelection,
-        mode: PlannerPermissionMode,
-        admission: &crate::harness::native_admission::NativePromptAdmission<'_>,
-    ) -> Result<Uuid, SpawnFailure> {
-        let purpose = match &input {
-            SpawnInput::Turn { .. } | SpawnInput::Canonical { .. } => SpawnPurpose::Turn,
-            SpawnInput::Compaction | SpawnInput::CanonicalCompaction(_) => SpawnPurpose::Compaction,
-        };
-        let shared = &self.shared;
-        let params = &shared.params;
-        let _issue = shared.issue.lock().await;
-        self.provider_admission_gate().await?;
-        if shared.parked.is_parked() {
-            return Err(CalmError::Conflict("Claude carrier is parked".into()).into());
-        }
-        let Some(held) = shared.installed.get() else {
-            return Err(
-                CalmError::Conflict("claude planner harness is not installed yet".into()).into(),
-            );
-        };
-        let (start, row_bound, token, prior_total_tokens, settle_after_stop) = {
-            let state = shared.state();
-            if state.shutting_down {
-                return Err(
-                    CalmError::Conflict("claude planner session is shutting down".into()).into(),
-                );
-            }
-            if state.active.is_some() {
-                return Err(
-                    CalmError::Conflict("a claude planner turn is still running".into()).into(),
-                );
-            }
-            (
-                state.start,
-                state.row_bound,
-                state.mcp_token.clone(),
-                state.total_tokens,
-                state.settle_after_stop,
-            )
-        };
-        execution_end::join_driver(shared).await?;
-        if purpose == SpawnPurpose::Compaction && start == SessionStart::New {
-            return Err(CalmError::BadRequest(
-                "this Claude conversation has no session to compact yet".into(),
-            )
-            .into());
-        }
-        let thread_uuid = Uuid::try_parse(thread).map_err(|_| {
-            CalmError::BadRequest(format!("claude planner thread {thread} is not a UUID"))
-        })?;
-        let local_turn = Uuid::new_v4();
-        let turn_id = local_turn.to_string();
-        if params.seals.is_sealed(thread) {
-            return Err(sealed(thread).into());
-        }
-        let live = params
-            .repo
-            .session_get(&WorkerSessionId(params.worker_session_id.clone()))
-            .await
-            .map_err(CalmError::from)?
-            .ok_or_else(|| CalmError::Conflict("Claude owner is missing".into()))?;
-        let binding = crate::harness::profile::local_binding(
-            params.repo.as_ref(),
-            &live,
-            &calm_types::runtime::AgentProvider::Claude,
-            &params.card_id,
-            &params.track_id,
-            thread,
-        )
-        .await?
-        .ok_or_else(|| CalmError::Conflict("Claude live owner identity changed".into()))?;
-        if binding.profile == crate::harness::profile::HarnessProfile::Assistant
-            && mode != PlannerPermissionMode::Never
-        {
-            return Err(CalmError::Conflict("Claude live owner identity changed".into()).into());
-        }
-        let host = &params.host;
-        let config = host
-            .configured()
-            .map_err(|_| needs_an_operator(unavailable_message()))?;
-        let env = spawn::session_env(params, &config.config_dir)?;
-        match config.version_problem(&env).await {
-            None => {}
-            Some(super::config::VersionProblem::NotPinned(problem)) => {
-                return Err(needs_an_operator(problem).into());
-            }
-            Some(super::config::VersionProblem::NoAnswer(problem)) => {
-                return Err(SpawnFailure::failed(CalmError::Conflict(problem)));
-            }
-        }
-        // A shutdown or a deletion seal may have landed while `--version` ran; nothing is minted
-        // for a session that can no longer start a turn.
-        if shared.state().shutting_down {
-            return Err(
-                CalmError::Conflict("claude planner session is shutting down".into()).into(),
-            );
-        }
-        if params.seals.is_sealed(thread) {
-            return Err(sealed(thread).into());
-        }
-        // A revocation under a live harness (e.g. one an aborted deletion's recovery could not
-        // replace, §5.1 item 4) nulls the row's hash; the next spawn must not carry a credential that
-        // no longer authenticates.
-        let token = match token {
-            Some(token) if self.row_hash_present().await? => token,
-            _ => self.mint_mcp_token().await?,
-        };
-        let mut driver_slot = shared.driver.lock().await;
-        process::stop_for_start(shared, &mut driver_slot).await?;
-
-        let prepared = async {
-            let (line, client_id, items, truncation, execution) = match input {
-                SpawnInput::Turn {
-                    items,
-                    client_id,
-                    truncation,
-                } => {
-                    let line = invocation::user_line(thread_uuid, client_id, &items).await?;
-                    (
-                        line,
-                        client_id.to_string(),
-                        items,
-                        truncation,
-                        execution_end::Association::Historical,
-                    )
-                }
-                SpawnInput::Canonical {
-                    items,
-                    client_id,
-                    execution,
-                } => {
-                    let line = invocation::user_line(thread_uuid, client_id, &items).await?;
-                    (
-                        line,
-                        client_id.to_string(),
-                        items,
-                        None,
-                        execution_end::Association::Work(execution),
-                    )
-                }
-                // No client sent this line: its uuid is fresh, and nothing of it is stored.
-                SpawnInput::Compaction => {
-                    let uuid = Uuid::new_v4();
-                    let line = UserLine::compact(thread_uuid, uuid);
-                    (
-                        line,
-                        uuid.simple().to_string(),
-                        Vec::new(),
-                        None,
-                        execution_end::Association::Historical,
-                    )
-                }
-                SpawnInput::CanonicalCompaction(target) => {
-                    let uuid = Uuid::new_v4();
-                    let line = UserLine::compact(thread_uuid, uuid);
-                    (
-                        line,
-                        uuid.simple().to_string(),
-                        Vec::new(),
-                        None,
-                        execution_end::Association::Maintenance(target),
-                    )
-                }
-            };
-            let line = serde_json::to_string(&line).map_err(|e| SpawnFailure::failed(e.into()))?;
-            let translator = TurnTranslator::new(
-                TurnContext {
-                    thread_id: thread.to_string(),
-                    turn_id: turn_id.clone(),
-                    client_id,
-                    input: items,
-                    cwd: params.cwd.to_string_lossy().into_owned(),
-                    prior_total_tokens,
-                },
-                params.calm_tools.clone(),
-            )
-            .map_err(|e| SpawnFailure::failed(CalmError::BadRequest(e.to_string())))?;
-            let instructions = InstructionsFile::write(
-                &host.instructions_dir,
-                &params.worker_session_id,
-                &turn_id,
-                &params.instructions,
-                #[cfg(feature = "fixtures")]
-                shared
-                    .hooks
-                    .lock()
-                    .expect("hooks")
-                    .instructions_fault
-                    .clone(),
-            )
-            .map_err(|failure| failure.map_error(SpawnFailure::from))?;
-            let argv = spawn::argv(
-                thread_uuid,
-                purpose,
-                start,
-                truncation,
-                selection,
-                mode,
-                &params.cwd,
-                &host.mcp_shim,
-                instructions.path(),
-            );
-            let argv = match argv {
-                Ok(argv) => argv,
-                Err(error) => {
-                    return Err(instructions.abort(error).map_error(SpawnFailure::failed));
-                }
-            };
-            Ok((line, translator, instructions, argv, execution))
-        }
-        .await;
-        let (line, mut translator, instructions, argv, execution) =
-            process::finish_preparation(&mut driver_slot, prepared)?;
-        // From this boundary a process may exist. Cancellation or uncertain
-        // cleanup must never expose the preceding driver's result.
-        let previous = driver_slot.take();
-        let spawned = Command::new(&config.claude_binary)
-            .args(argv)
-            .env_clear()
-            .envs(env)
-            .env("NEIGE_MCP_TOKEN", token)
-            .current_dir(&params.cwd)
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .kill_on_drop(true)
-            .spawn();
-        let mut child = match spawned {
-            Ok(child) => child,
-            Err(error) => {
-                let error = CalmError::Conflict(format!(
-                    "claude planner spawn of {} failed: {error}",
-                    config.claude_binary.display()
-                ));
-                let (failure, cleaned) = self.abort_before_ok(None, instructions, error).await;
-                if cleaned {
-                    *driver_slot = previous;
-                }
-                return Err(SpawnFailure::failed(failure));
-            }
-        };
-        drop(previous);
-        #[cfg(feature = "fixtures")]
-        {
-            let hook = shared.hooks.lock().expect("hooks").after_spawn.clone();
-            if let Some(hook) = hook {
-                hook();
-            }
-        }
-        if params.seals.is_sealed(thread) {
-            return Err(self
-                .abort_before_ok(Some(child), instructions, sealed(thread))
-                .await
-                .0
-                .into());
-        }
-        let (Some(stdin), Some(stdout), Some(stderr)) =
-            (child.stdin.take(), child.stdout.take(), child.stderr.take())
-        else {
-            let error = CalmError::Internal("claude planner child has no piped stdio".into());
-            return Err(self
-                .abort_before_ok(Some(child), instructions, error)
-                .await
-                .0
-                .into());
-        };
-        let slot = Arc::new(TurnSlot::new(stdin, settle_after_stop));
-        #[cfg(feature = "fixtures")]
-        {
-            shared.hooks.lock().expect("hooks").user_line_writes += 1;
-        }
-        #[cfg(feature = "fixtures")]
-        fixtures::prepare_writer(shared, &slot).await;
-        if let Err(error) = slot.write_line(&line, admission.gate()).await {
-            use provider::claude::line_writer::LineWriteError;
-            return Err(match error {
-                LineWriteError::BeforeWrite(message) => {
-                    let error = admission
-                        .take_refusal()
-                        .unwrap_or(CalmError::Conflict(message));
-                    SpawnFailure::failed(
-                        self.abort_before_ok(Some(child), instructions, error)
-                            .await
-                            .0,
-                    )
-                }
-                LineWriteError::CrossedWrite(error) => {
-                    let error = super::turn_slot::write_error(LineWriteError::CrossedWrite(error));
-                    SpawnFailure::CrossedWrite {
-                        error: self
-                            .abort_before_ok(Some(child), instructions, error)
-                            .await
-                            .0,
-                        local_turn,
-                    }
-                }
-            });
-        }
-
-        {
-            // One lock with `finish_turn`'s emit, so this `TurnStarted` never overtakes the
-            // previous turn's `TurnCompleted`.
-            let mut state = shared.state();
-            state.active = Some(ActiveTurn {
-                thread_id: thread.to_string(),
-                turn_id: turn_id.clone(),
-                slot: Arc::clone(&slot),
-            });
-            let _ = shared
-                .events
-                .send(translator.turn_started(crate::model::now_ms()));
-        }
-        let driver = tokio::spawn(drive(
-            Arc::clone(shared),
-            TurnRun {
-                child,
-                stdout,
-                stderr,
-                slot,
-                translator,
-                instructions,
-                thread: thread_uuid,
-                purpose,
-                bind: !row_bound,
-                version: config.claude_version.clone(),
-                approvals: Approvals::for_spawn(mode, held, &turn_id),
-            },
-        ));
-        *driver_slot = Some(execution_end::DriverSlot::new(
-            driver,
-            thread_uuid,
-            local_turn,
-            execution,
-        ));
-        drop(driver_slot);
-        #[cfg(feature = "fixtures")]
-        fixtures::after_install(shared).await;
-        Ok(local_turn)
     }
 
     /// Whether the worker-session row still carries an MCP hash.
@@ -759,6 +433,7 @@ async fn interrupt(
 
 fn arm_interrupt(slot: &TurnSlot) {
     slot.record(TerminalCause::Interrupted);
+    slot.set_stop_reason(StopReason::Interrupted);
     slot.arm_stop(tokio::time::Instant::now() + STOP_TIMER);
 }
 
@@ -787,6 +462,7 @@ async fn interrupt_after_admission(
                     SubmissionEvidence::NotWritten
                 }
                 provider::claude::line_writer::LineWriteError::CrossedWrite(_) => {
+                    slot.stdin_failed(&error);
                     SubmissionEvidence::WriteMayHaveReachedPeer
                 }
             };

@@ -408,15 +408,17 @@ async fn planner_timeout_claude_confirmed_stop_and_restart_notice() {
 }
 
 #[tokio::test]
-async fn planner_timeout_claude_unconfirmed_stop_does_not_acquire_trusted_evidence() {
+async fn c4_unconfirmed_owner_completion_records_without_trusted_timeout_evidence() {
     use super::claude_planner_stack_fixture::{Root, Stack};
-    use calm_server::claude_planner::stop::{
-        clear_claude_planner_stop_failure_for_test, fail_claude_planner_stop_for_test,
-    };
-    let root = Root::new("hold");
+    let root = Root::new("term-ignore");
     let stack = Stack::boot(&root).await;
     let (_, card) = stack.create_claude_track().await;
     let session = stack.runtime(&card).await;
+    stack
+        .harness(&session.id)
+        .claude_session_for_test()
+        .unwrap()
+        .set_settle_after_stop_for_test(Duration::from_millis(100));
     assert_eq!(
         stack
             .send(
@@ -430,7 +432,7 @@ async fn planner_timeout_claude_unconfirmed_stop_does_not_acquire_trusted_eviden
     );
     assert_eq!(stack.post_input(&card, "start").await.0, 200);
     stack.wait_phase(&session.id, "turn_running").await;
-    fail_claude_planner_stop_for_test(&session.id);
+    stack.block_provider_stop().await;
     stack
         .harness(&session.id)
         .rewind_turn_clock_for_test(Duration::from_secs(61))
@@ -443,7 +445,17 @@ async fn planner_timeout_claude_unconfirmed_stop_does_not_acquire_trusted_eviden
         params.get("harness_interruption_reason").is_none(),
         "{params}"
     );
-    clear_claude_planner_stop_failure_for_test(&session.id);
+    assert!(
+        calm_truth::db::sqlite::provider_execution::load(
+            stack.repo().sqlite_db().unwrap().read_pool(),
+            &session.id,
+        )
+        .await
+        .unwrap()
+        .is_some(),
+        "unconfirmed completion must retain admission ownership"
+    );
+    stack.clear_provider_fault().await;
     stack.shutdown().await;
 }
 

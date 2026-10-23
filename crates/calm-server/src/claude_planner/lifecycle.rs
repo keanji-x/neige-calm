@@ -1,7 +1,5 @@
-//! The Claude Planner process and credential lifecycle's revoke-then-sweep steps (design #1791
-//! §5.1 items 1 and 4): null the MCP hashes of every Claude Planner row in scope, then one marker
-//! sweep over their ids. After the revocation an old token no longer completes a handshake until
-//! that row's next first-turn mint.
+//! Claude credential revocation and provider-owned Stop/settlement.
+//! Only boot retains the pre-C4 marker sweep for processes from older kernels.
 
 use super::config::ClaudePlannerHost;
 use super::stop::{SeamPolicy, sweep};
@@ -21,8 +19,7 @@ async fn revoke(
 
 /// Boot, before the MCP listener starts: revoke every Claude Planner credential (an `Err` fails
 /// the boot: the listener must not open while an old token authenticates), then sweep every
-/// Claude Planner marker and empty the instructions directory; those two only log, because right
-/// after boot nothing can retry them and the next spawn's own `stop` fails closed. The boot sweep
+/// Claude Planner marker and empty the instructions directory; those two only log, because they clean only pre-C4 resources; registered executions reconcile durably. The boot sweep
 /// never consults the fixtures stop-failure seam.
 pub async fn boot(repo: &dyn RepoEventWrite, host: &ClaudePlannerHost) -> Result<()> {
     let ids = revoke(repo, ClaudePlannerScope::All).await?;
@@ -52,7 +49,7 @@ pub async fn boot(repo: &dyn RepoEventWrite, host: &ClaudePlannerHost) -> Result
     if let Err(error) = sweep(&host.instance, &ids, SeamPolicy::Ignore).await {
         tracing::warn!(
             %error,
-            "claude planner boot sweep did not confirm; each first turn stops its own id again"
+            "claude planner boot pre-C4 sweep did not confirm"
         );
     }
     match std::fs::read_dir(&host.instructions_dir) {
@@ -81,31 +78,160 @@ pub async fn boot(repo: &dyn RepoEventWrite, host: &ClaudePlannerHost) -> Result
 }
 
 /// Before a destructive step on a track (its deletion, its area's deletion, a workspace repoint):
-/// revoke then sweep every Claude Planner id of the track, in any state. `Err` aborts the step
+/// revoke then Stop and settle every Claude provider execution of the track, in any state. `Err` aborts the step
 /// before anything moves.
 pub async fn sweep_track(
     repo: &dyn RepoEventWrite,
     host: &ClaudePlannerHost,
     track_id: &str,
 ) -> Result<()> {
-    let track_id = track_id.to_string();
-    let ids = write_in_tx_typed(repo, move |tx| {
+    sweep_scope(repo, host, ClaudePlannerScope::Track(track_id)).await
+}
+
+/// Card deletion uses the same owner sweep with a narrower scope.
+pub(crate) async fn sweep_card(
+    repo: &dyn RepoEventWrite,
+    host: &ClaudePlannerHost,
+    card: &str,
+) -> Result<()> {
+    sweep_scope(repo, host, ClaudePlannerScope::Card(card)).await
+}
+async fn sweep_scope(
+    repo: &dyn RepoEventWrite,
+    host: &ClaudePlannerHost,
+    scope: ClaudePlannerScope<'_>,
+) -> Result<()> {
+    enum Scope {
+        All,
+        Track(String),
+        Card(String),
+    }
+    let scope = match scope {
+        ClaudePlannerScope::All => Scope::All,
+        ClaudePlannerScope::Track(id) => Scope::Track(id.into()),
+        ClaudePlannerScope::Card(id) => Scope::Card(id.into()),
+    };
+    let sessions = write_in_tx_typed(repo, move |tx| {
         Box::pin(async move {
-            Ok(claude_planner_revoke_tx(tx, ClaudePlannerScope::Track(&track_id)).await?)
+            let scope = match &scope {
+                Scope::All => ClaudePlannerScope::All,
+                Scope::Track(id) => ClaudePlannerScope::Track(id),
+                Scope::Card(id) => ClaudePlannerScope::Card(id),
+            };
+            let ids = claude_planner_revoke_tx(tx, scope).await?;
+            let mut retained = Vec::new();
+            for id in ids {
+                if calm_truth::db::sqlite::provider_execution::retained(tx, &id).await? {
+                    retained.push(id);
+                }
+            }
+            Ok(retained)
         })
     })
     .await?;
-    let ids: Vec<&str> = ids.iter().map(String::as_str).collect();
-    sweep(&host.instance, &ids, SeamPolicy::Consult).await
+    let executions = write_in_tx_typed(repo, move |tx| {
+        Box::pin(async move {
+            let mut executions = Vec::new();
+            for session in sessions {
+                if let Some(claim) =
+                    calm_truth::db::sqlite::provider_execution::load(&mut **tx, &session).await?
+                    && let Some(id) = crate::provider_execution::request_stop_tx(
+                        tx,
+                        &session,
+                        &claim,
+                        crate::provider_execution::StopReason::TrackRetired,
+                    )
+                    .await?
+                {
+                    executions.push(id);
+                }
+            }
+            Ok(executions)
+        })
+    })
+    .await?;
+    if executions.is_empty() {
+        return Ok(());
+    }
+    let engine = crate::provider_execution::engine(host.execution.engine())?;
+    crate::execution_quiesce::drive(Some(engine), executions.iter().cloned());
+    tokio::time::timeout(workspace_runtime::execution::QUIESCE_DEADLINE, async {
+        for id in executions {
+            crate::provider_execution::wait_settled(
+                engine,
+                &id,
+                workspace_runtime::execution::QUIESCE_DEADLINE,
+            )
+            .await?;
+        }
+        Ok::<_, crate::error::CalmError>(())
+    })
+    .await
+    .map_err(crate::provider_execution::conflict)??;
+    Ok(())
 }
 
-/// Operation shutdown's extra marker sweep, for both a live return and registry-miss replay.
+/// Operation shutdown's durable provider cleanup, including registry-miss replay.
 /// Failure remains log-only; strict deletion uses the session's separate shutdown result.
 pub(crate) async fn shutdown_replay(host: &ClaudePlannerHost, worker_session_id: &str) {
-    if let Err(error) = super::stop::stop(&host.instance, worker_session_id).await {
-        tracing::warn!(%worker_session_id, %error,
-            "planner harness shutdown: the Claude Planner stop did not confirm");
+    if let Err(error) = stop_session(
+        host,
+        worker_session_id,
+        crate::provider_execution::StopReason::Shutdown,
+    )
+    .await
+    {
+        tracing::warn!(%worker_session_id, %error, "Claude shutdown retained its execution claim");
     }
+}
+
+/// Durable Stop followed by owner completion; never a marker/PID inference.
+pub(crate) async fn stop_session(
+    host: &ClaudePlannerHost,
+    session: &str,
+    reason: crate::provider_execution::StopReason,
+) -> Result<()> {
+    use crate::provider_execution::{self as execution, execution_id};
+    let repo = host.completion.repo()?;
+    let pool = repo
+        .sqlite_db()
+        .ok_or(crate::error::CalmError::ExecutionUnavailable)?;
+    let Some(claim) =
+        calm_truth::db::sqlite::provider_execution::load(pool.read_pool(), session).await?
+    else {
+        return Ok(());
+    };
+    let owner = &host.provider_execution;
+    let engine = host.execution.engine();
+    let id = execution_id(claim.record())?;
+    owner.stop(&pool, engine, session, &claim, reason).await?;
+    let engine = execution::engine(engine)?;
+    execution::wait_settled(engine, &id, super::session::SETTLE_AFTER_STOP).await?;
+    if !owner.drivers.contains(&id) {
+        owner
+            .finish(&pool, Some(engine), session, &claim, None)
+            .await?;
+    }
+    Ok(())
+}
+
+/// R2 preflight outside SQL. A Live handle supplies the old session's issue lock;
+/// without a Live handle there is no issuer, and the registered owner reconciles it.
+pub(crate) async fn transition_gate(
+    repo: &dyn crate::db::Repo,
+    host: &ClaudePlannerHost,
+    registry: &crate::harness::HarnessRegistry,
+    session: &String,
+) -> Result<()> {
+    if let Some(handle) = registry.get(session) {
+        return handle.provider_transition_gate().await;
+    }
+    let pool = repo
+        .sqlite_db()
+        .ok_or(crate::error::CalmError::ExecutionUnavailable)?;
+    host.provider_execution
+        .admission_gate(&pool, host.execution.engine(), session)
+        .await
 }
 
 /// A reset stops the predecessor by id even on registry-miss replay. Failure is
@@ -115,7 +241,13 @@ pub(crate) async fn stop_historical_predecessor(
     card_id: &str,
     old_worker_session_id: &str,
 ) {
-    if let Err(error) = super::stop::stop(&host.instance, old_worker_session_id).await {
+    if let Err(error) = stop_session(
+        host,
+        old_worker_session_id,
+        crate::provider_execution::StopReason::Shutdown,
+    )
+    .await
+    {
         tracing::warn!(
             card_id, old_worker_session_id, %error,
             "planner harness reset: the Claude Planner predecessor's stop did not confirm"

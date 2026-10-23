@@ -21,6 +21,7 @@ struct Fixture {
     card: CardId,
     worker: String,
     payload: PlannerHarnessStartOperationPayload,
+    _execution: Option<crate::test_support::execution::Fixture>,
     _dir: tempfile::TempDir,
 }
 
@@ -84,7 +85,7 @@ impl Fixture {
             WorkerSessionInit::shared_planner(
                 worker.clone(),
                 card.to_string(),
-                provider,
+                provider.clone(),
                 WorkerSessionState::Idle,
                 None,
                 serde_json::to_value(CanonicalHarnessSnapshot::dormant(0)).unwrap(),
@@ -130,7 +131,7 @@ impl Fixture {
         } else {
             SharedCodexAppServer::new_stub(repo.clone())
         };
-        let state = AppState::from_parts(
+        let mut state = AppState::from_parts(
             repo.clone(),
             events,
             Arc::new(DaemonClient::new_stub()),
@@ -140,6 +141,18 @@ impl Fixture {
             Some(repo.track_area_cache().clone()),
         )
         .with_shared_codex_appserver(shared);
+        let execution = if provider == AgentProvider::Claude {
+            let execution = crate::test_support::execution::Fixture::new(repo.db().clone()).await;
+            state.execution = Some(execution.engine.clone());
+            state
+                .operation_runtime
+                .execution()
+                .bind(execution.engine.clone());
+            state.plugin.execution.bind(execution.engine.clone());
+            Some(execution)
+        } else {
+            None
+        };
         let payload = PlannerHarnessStartOperationPayload {
             actor: ActorId::Kernel,
             track_id: track.id.to_string(),
@@ -162,6 +175,7 @@ impl Fixture {
             card,
             worker,
             payload,
+            _execution: execution,
             _dir: dir,
         }
     }

@@ -73,6 +73,19 @@ impl ProviderAdapter for PlannerHarnessShutdownAdapter {
         if payload.worker_session_id.trim().is_empty() {
             return Err(CalmError::BadRequest("runtime_id is required".into()));
         }
+        if let Some(runtime) = self
+            .repo
+            .session_projection_by_id(&payload.worker_session_id)
+            .await?
+        {
+            PlannerFactory::transition_gate(
+                &self.claude_host,
+                self.repo.as_ref(),
+                &self.harness_registry,
+                &runtime,
+            )
+            .await?;
+        }
         Ok(())
     }
 

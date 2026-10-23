@@ -279,7 +279,7 @@ impl PlannerBackend {
         }
     }
 
-    pub(crate) fn carrier_idle_for_detach(
+    pub(crate) async fn carrier_idle_for_detach(
         &self,
         thread: Option<&str>,
     ) -> Option<CarrierIdleGuard<'_>> {
@@ -289,6 +289,7 @@ impl PlannerBackend {
                 .map(CarrierIdleGuard::Codex),
             Arm::Claude(session) => session
                 .carrier_idle_for_detach()
+                .await
                 .map(|park| CarrierIdleGuard::Claude(session, park)),
             Arm::Acp(session) => session
                 .carrier_idle_for_detach()
@@ -302,6 +303,42 @@ impl PlannerBackend {
             Arm::Codex(daemon, _) => daemon.active_turn_id_for_thread(thread_id),
             Arm::Claude(session) => session.active_turn_id_for_thread(thread_id),
         }
+    }
+
+    pub(crate) fn bind_provider_registry(&self, registry: crate::harness::HarnessRegistry) {
+        if let Arm::Claude(session) = &self.0 {
+            session.host().completion.bind_registry(registry);
+        }
+    }
+
+    pub(crate) async fn provider_transition_gate(&self) -> Result<()> {
+        match &self.0 {
+            Arm::Claude(session) => session.provider_transition_gate().await,
+            Arm::Codex(..) | Arm::Acp(_) => Ok(()),
+        }
+    }
+
+    pub(crate) async fn lost_maintenance_target(
+        &self,
+        id: &workspace_runtime::execution::ExecutionId,
+        turn: &str,
+    ) -> Option<MaintenanceTarget> {
+        match &self.0 {
+            Arm::Claude(session) => session.lost_maintenance_target(id, turn).await,
+            Arm::Codex(..) | Arm::Acp(_) => None,
+        }
+    }
+
+    pub(crate) async fn complete_provider_execution(
+        &self,
+        id: &workspace_runtime::execution::ExecutionId,
+        turn: &str,
+        outcome: serde_json::Value,
+    ) -> Result<()> {
+        if let Arm::Claude(session) = &self.0 {
+            session.complete_lost_execution(id, turn, outcome).await?;
+        }
+        Ok(())
     }
 
     pub(crate) async fn post_registry_shutdown_cleanup(&self, worker_session_id: &str) {

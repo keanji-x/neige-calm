@@ -1069,7 +1069,7 @@
             }
           },
           "409": {
-            "description": "A child track has an in-flight forge-action, or an unresolved terminal launch (`conflict`); retry after it settles",
+            "description": "A child track has an active forge action, unresolved terminal launch, or pending provider Stop; retry after settlement",
             "content": {
               "application/json": {
                 "schema": {
@@ -9935,7 +9935,7 @@
             }
           },
           "409": {
-            "description": "Track has a descendant or active forge action",
+            "description": "Track has a descendant, an active forge action, or a pending provider Stop",
             "content": {
               "application/json": {
                 "schema": {

@@ -59,28 +59,37 @@ impl Drop for Fixture {
 }
 impl Fixture {
     pub fn assert_journal_excludes(&self, needle: &str) {
-        fn visit(dir: &Path, needle: &[u8], journals: &mut usize) {
+        assert!(
+            !self.journal_contains(needle),
+            "credential entered an execution journal"
+        );
+    }
+    pub fn journal_contains(&self, needle: &str) -> bool {
+        fn visit(dir: &Path, needle: &[u8], journals: &mut usize, found: &mut bool) {
             for entry in std::fs::read_dir(dir).unwrap() {
                 let path = entry.unwrap().path();
                 if path.is_dir() {
-                    visit(&path, needle, journals);
+                    visit(&path, needle, journals, found);
                 } else if path
                     .extension()
                     .is_some_and(|extension| extension == "execution")
                 {
                     *journals += 1;
                     let bytes = std::fs::read(path).unwrap();
-                    assert!(!bytes.windows(needle.len()).any(|window| window == needle));
+                    *found |= bytes.windows(needle.len()).any(|window| window == needle);
                 }
             }
         }
         let mut journals = 0;
+        let mut found = false;
         visit(
             &self._root.path().join("journal"),
             needle.as_bytes(),
             &mut journals,
+            &mut found,
         );
         assert!(journals > 0, "secrecy assertion inspected a live journal");
+        found
     }
 
     pub fn kernel_args(&self) -> Vec<std::ffi::OsString> {

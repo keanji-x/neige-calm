@@ -474,3 +474,88 @@ async fn carrier_replacement_refuses_unresolved_native_and_retry_work() {
     );
     tx.rollback().await.unwrap();
 }
+
+#[tokio::test]
+async fn c4_carrier_replacement_refuses_retained_claim_then_allows_completion() {
+    use super::super::provider_execution as owner;
+    let (repo, _, card) = fixture().await;
+    let worker = runtime(&repo, &card).await;
+    let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
+    let owner::Cas::Applied(claim) = owner::admit(
+        &mut tx,
+        &worker,
+        "c4-execution".into(),
+        owner::Purpose::RewindCheck,
+        owner::InitialRelease::Held,
+    )
+    .await
+    .unwrap() else {
+        panic!("admission lost")
+    };
+    super::super::session_fail_if_active_runtime_tx(&mut tx, &worker)
+        .await
+        .unwrap();
+    let current = session_get_tx(&mut tx, &WorkerSessionId(worker.clone()))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        current.state.is_active_authority(),
+        "R3 skips a terminal projection while its claim is retained"
+    );
+    assert!(
+        super::super::session_mark_superseded_runtime_tx(&mut tx, &worker)
+            .await
+            .is_err()
+    );
+    assert!(
+        super::super::session_complete_tx(&mut tx, &worker, WorkerSessionState::Exited)
+            .await
+            .is_err()
+    );
+    let before = expected(&mut tx, &card, &worker, &Protected).await;
+    assert!(matches!(
+        replace_idle_carrier_tx(&mut tx, before, binding()).await,
+        Err(crate::error::CalmError::Core(
+            calm_types::error::CoreError::Conflict(_)
+        ))
+    ));
+    assert!(matches!(
+        owner::clear_on_completion(&mut tx, &worker, &claim)
+            .await
+            .unwrap(),
+        owner::Cas::Applied(())
+    ));
+    let before = expected(&mut tx, &card, &worker, &Protected).await;
+    let replacement = replace_idle_carrier_tx(&mut tx, before, binding())
+        .await
+        .unwrap();
+    assert_ne!(replacement.new_worker.id.as_str(), worker);
+}
+
+#[tokio::test]
+async fn c4_admission_cannot_attach_to_a_replaced_carrier() {
+    use super::super::provider_execution as owner;
+    let (repo, _, card) = fixture().await;
+    let worker = runtime(&repo, &card).await;
+    let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
+    let before = expected(&mut tx, &card, &worker, &Protected).await;
+    replace_idle_carrier_tx(&mut tx, before, binding())
+        .await
+        .unwrap();
+    // A transaction-local replacement may win after the request's last owner read,
+    // before its admission transaction acquires the writer reservation.
+    assert!(matches!(
+        owner::admit(
+            &mut tx,
+            &worker,
+            "late-execution".into(),
+            owner::Purpose::RewindCheck,
+            owner::InitialRelease::Held
+        )
+        .await
+        .unwrap(),
+        owner::Cas::LostOwnership
+    ));
+    assert!(owner::load(&mut **tx, &worker).await.unwrap().is_none());
+}

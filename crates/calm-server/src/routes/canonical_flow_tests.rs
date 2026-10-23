@@ -63,6 +63,7 @@ struct Fixture {
     url: String,
     claude_config: Option<std::path::PathBuf>,
     acp_config: Option<std::path::PathBuf>,
+    execution: Option<crate::test_support::execution::Supervisor>,
 }
 
 impl Fixture {
@@ -78,6 +79,7 @@ impl Fixture {
             url,
             claude_config: None,
             acp_config: None,
+            execution: None,
         }
     }
 
@@ -120,6 +122,9 @@ impl Fixture {
                     "build neige-mcp-stdio-shim before ACP tests"
                 );
                 cfg.mcp_stdio_shim_bin = Some(shim);
+            }
+            if let Some(execution) = &self.execution {
+                execution.configure(&mut cfg);
             }
             cfg.data_dir = Some(self.root.path().join("data"));
             cfg.workspace_root = Some(self.root.path().join("workspaces"));

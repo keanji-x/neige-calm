@@ -588,7 +588,11 @@ async fn canonical_claude_settled_failed_new_start_discards_prior_evidence() {
 
 #[tokio::test]
 async fn canonical_claude_settled_live_and_failed_compact_hold() {
-    for scenario in ["compact-no-boundary", "compact-boundary-failed", "compact"] {
+    for scenario in [
+        "compact-no-boundary",
+        "compact-boundary-failed",
+        "compact-linger",
+    ] {
         let fx = Fixture::new("exit").await;
         let harness = fx.start_loop().await;
         fx.phase("turn_completed").await;
@@ -599,14 +603,11 @@ async fn canonical_claude_settled_live_and_failed_compact_hold() {
         };
         fx.session
             .set_before_turn_completed_pause_for_test(pause.clone());
-        if scenario == "compact" {
-            let worker = fx.owner.worker.clone();
-            fx.session.set_after_spawn_hook_for_test(Arc::new(move || {
-                crate::claude_planner::stop::fail_claude_planner_stop_for_test(&worker);
-            }));
+        if scenario == "compact-linger" {
+            crate::test_support::execution::block_stops(fx.owner.repo.db()).await;
         }
         harness.compact_canonical(fx.source.clone()).await.unwrap();
-        tokio::time::timeout(Duration::from_secs(15), pause.entered.notified())
+        tokio::time::timeout(Duration::from_secs(20), pause.entered.notified())
             .await
             .unwrap();
         assert!(!settled(&fx).await, "live maintenance holds: {scenario}");
@@ -616,7 +617,9 @@ async fn canonical_claude_settled_live_and_failed_compact_hold() {
             !settled(&fx).await,
             "unqualified maintenance holds: {scenario}"
         );
-        crate::claude_planner::stop::clear_claude_planner_stop_failure_for_test(&fx.owner.worker);
+        if scenario == "compact-linger" {
+            crate::test_support::execution::unblock_stops(fx.owner.repo.db()).await;
+        }
         harness.shutdown().await.unwrap();
     }
 }

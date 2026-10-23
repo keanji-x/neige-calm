@@ -707,6 +707,7 @@ C4 各片不依赖 W，也不为 worker 预置只有 worker 需要的东西；�
   按 consumer 解码筛选，每个注册 consumer 每 30s 一次。当前 `ORDER BY execution_id` 的 SQL 计划可沿主键扫描全部保留历史，
   因而 SQL 扫描成本随历史总数增长，JSON 解码成本随全部未 Retire 行数增长，均不只随 Planner 行数增长；实现交付报告须记录实测与此保留成本。
   execution_id 列由 typed writer 写入；损坏身份与 `pending()` 统一：整个扫描返回 Err，下一轮重试，不跳过、不采取生命周期动作。
+- **C4.2 carrier 围栏（R1–R4，收窄合同）。** 持有 `provider_execution_json` 的 worker session 必须保持 conversation 的当前 carrier，且记录清空之前不离开 active/failed。R1：`admit` 在同一 SQL 事务拒绝 terminal-bound session（typed Conflict），因此 typed terminal projection 与 Planner claim 不相交，`terminal_settled_tx` 不改。R2：请求路径的 idle carrier replacement、`cards.session_id` repoint、显式 close/reset 先在旧 session 的 issue 锁内以注册 owner 调 `admission_gate`（已结算 claim 可 inline 完成，否则 Conflict），再在写事务里检查 claim 为空。R3：在其它 writer 事务内运行、不能做 owner I/O 的 writer 只加 SQL 围栏，claim 非空即跳过该行或拒绝；不嵌套 owner 完成，等 30s sweep 后重试。R4：track/card 删行先经 provider `sweep_track` Stop；owner 记录随 worker row 删除，孤儿由 owner sweep 回收。outcome 写入仍走 `harness_turn_outcome_put` 的当前 carrier 检查，不绕过、不跳写。
 - **同 session 的唯一准入规则（自 C4.1 起，修第一轮 adversarial B3）。** 同一 worker session 的每个启动——C4 的 Engine 准入 ① 与仍原生的
   启动（C4.1 时 Claude 的 turn、canonical 与 compaction 都经 `start_spawn`，`claude_planner/session.rs:295`；rewind 经 `prepare_edit`，
   `session/invocation.rs:63-80`）——都在既有 `issue` 锁内（`session.rs:309`）先调用同一个 `provider_execution::admission_gate(worker_session_id)`：

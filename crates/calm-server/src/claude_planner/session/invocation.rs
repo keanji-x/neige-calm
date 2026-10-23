@@ -83,6 +83,10 @@ impl ClaudePlannerSession {
 
     /// All starts call this while holding this session's issue lock.
     pub(super) async fn provider_admission_gate(&self) -> Result<()> {
+        let inactive = self.shared.state().active.is_none();
+        if inactive {
+            let _ = super::execution_end::join_driver(&self.shared).await;
+        }
         let params = &self.shared.params;
         let pool = params
             .repo

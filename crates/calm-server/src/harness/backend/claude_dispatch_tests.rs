@@ -9,7 +9,7 @@ async fn fixture(
 ) -> (
     PlannerBackend,
     Arc<ClaudePlannerSession>,
-    tempfile::TempDir,
+    crate::test_support::execution::Directory,
     String,
 ) {
     let (backend, session, dir, owner, _held) = fixture_full(scenario).await;
@@ -26,7 +26,7 @@ async fn fixture_full(
 ) -> (
     PlannerBackend,
     Arc<ClaudePlannerSession>,
-    tempfile::TempDir,
+    crate::test_support::execution::Directory,
     super::dispatch_fixture::Owner,
     crate::harness::held_requests::HeldRequestReceiver,
 ) {
@@ -39,7 +39,7 @@ async fn fixture_full_with_storage(
 ) -> (
     PlannerBackend,
     Arc<ClaudePlannerSession>,
-    tempfile::TempDir,
+    crate::test_support::execution::Directory,
     super::dispatch_fixture::Owner,
     crate::harness::held_requests::HeldRequestReceiver,
 ) {
@@ -76,6 +76,9 @@ async fn fixture_full_with_storage(
         )
         .unwrap(),
     );
+    let execution =
+        crate::test_support::execution::Fixture::new(owner.repo.sqlite_db().unwrap()).await;
+    host.execution.bind(execution.engine.clone());
     let session = Arc::new(
         ClaudePlannerSession::open(ClaudePlannerSessionParams {
             engine: host.execution.engine().cloned(),
@@ -99,7 +102,10 @@ async fn fixture_full_with_storage(
     (
         PlannerBackend::claude_for_test(session.clone()),
         session,
-        dir,
+        crate::test_support::execution::Directory {
+            _execution: execution,
+            directory: dir,
+        },
         owner,
         rx,
     )

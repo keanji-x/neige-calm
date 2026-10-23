@@ -187,6 +187,15 @@ pub async fn reset_from_fixture(
     let pool = repo.db();
     // Writing transactions always BEGIN IMMEDIATE.
     let mut tx = begin_immediate_tx(pool).await?;
+    let retained: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM worker_sessions WHERE provider_execution_json IS NOT NULL)",
+    )
+    .fetch_one(&mut **tx)
+    .await?;
+    anyhow::ensure!(
+        !retained,
+        "provider execution retains a carrier; finish shutdown before resetting fixtures"
+    );
     for stmt in [
         "DELETE FROM events",
         // A stale `events_prune_watermark` above the re-seeded ids would strand every WS client in a `_snapshot_required` loop.

@@ -4,13 +4,13 @@
 use std::sync::Mutex;
 use std::time::Duration;
 
-use tokio::process::ChildStdin;
+type BaseStdin = std::pin::Pin<Box<dyn tokio::io::AsyncWrite + Send + Unpin>>;
 #[cfg(feature = "fixtures")]
 mod fixtures;
 #[cfg(feature = "fixtures")]
 use fixtures::LineStdin;
 #[cfg(not(feature = "fixtures"))]
-type LineStdin = ChildStdin;
+type LineStdin = BaseStdin;
 use tokio::sync::watch;
 
 use crate::error::CalmError;
@@ -29,6 +29,7 @@ pub enum TerminalCause {
 /// The live turn's shared state.
 pub(crate) struct TurnSlot {
     cause: Mutex<Option<TerminalCause>>,
+    stop_reason: Mutex<crate::provider_execution::StopReason>,
     pub(crate) stdin: tokio::sync::Mutex<Option<LineStdin>>,
     /// When the turn is stopped whatever the CLI does: armed by an interrupt (now + the stop
     /// timer) or a shutdown (now); the earliest arming wins.
@@ -39,11 +40,16 @@ pub(crate) struct TurnSlot {
 }
 
 impl TurnSlot {
-    pub(super) fn new(stdin: ChildStdin, settle_after_stop: Duration) -> Self {
+    pub(super) fn new(
+        stdin: impl tokio::io::AsyncWrite + Send + Unpin + 'static,
+        settle_after_stop: Duration,
+    ) -> Self {
+        let stdin: BaseStdin = Box::pin(stdin);
         #[cfg(feature = "fixtures")]
         let stdin = stdin.into();
         Self {
             cause: Mutex::new(None),
+            stop_reason: Mutex::new(crate::provider_execution::StopReason::Finished),
             stdin: tokio::sync::Mutex::new(Some(stdin)),
             stop_at: watch::Sender::new(None),
             settle_after_stop,
@@ -56,6 +62,18 @@ impl TurnSlot {
         if slot.is_none() {
             *slot = Some(cause);
         }
+    }
+
+    pub(crate) fn set_stop_reason(&self, reason: crate::provider_execution::StopReason) {
+        *self.stop_reason.lock().expect("stop reason") = reason;
+    }
+    pub(crate) fn stop_reason(&self) -> crate::provider_execution::StopReason {
+        *self.stop_reason.lock().expect("stop reason")
+    }
+    pub(crate) fn stdin_failed(&self, error: &LineWriteError) {
+        self.record(TerminalCause::Failed(format!("StdinTorn: {error}")));
+        self.set_stop_reason(crate::provider_execution::StopReason::StdinTorn);
+        self.arm_stop(tokio::time::Instant::now());
     }
 
     /// Arm the stop at `at` unless an earlier one is armed.
@@ -116,7 +134,11 @@ impl TurnSlot {
         let gate = match kind {
             InternalLine::ControlReply => PreSendGate::new(|| Box::pin(async { Ok(()) })),
         };
-        self.write_line(line, &gate).await
+        let result = self.write_line(line, &gate).await;
+        if let Err(error) = &result {
+            self.stdin_failed(error);
+        }
+        result
     }
 }
 
@@ -170,12 +192,7 @@ mod tests {
     /// ahead of the future's own bound (the settle_by arm, #1791 PR2b follow-up).
     #[tokio::test(start_paused = true)]
     async fn bounded_gives_up_at_settle_by_armed_while_pending() {
-        let mut child = tokio::process::Command::new("cat")
-            .stdin(std::process::Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()
-            .expect("spawn cat");
-        let slot = TurnSlot::new(child.stdin.take().expect("stdin"), Duration::from_secs(2));
+        let slot = TurnSlot::new(tokio::io::sink(), Duration::from_secs(2));
         let started = tokio::time::Instant::now();
         let arm = async {
             tokio::time::sleep(Duration::from_secs(1)).await;

@@ -1477,6 +1477,9 @@ fn inner_from_params(
     shutdown: broadcast::Sender<()>,
     held_request_sender: HeldRequestSender,
 ) -> (Arc<Inner>, bool) {
+    params
+        .backend
+        .bind_provider_registry(params.registry.clone());
     let mut planner_compaction = None;
     let (
         header,
@@ -4622,7 +4625,7 @@ mod compact_command;
 mod compact_tests;
 mod durable_command;
 mod held;
-pub(super) mod hibernation;
+pub(crate) mod hibernation;
 mod input_commit;
 pub(crate) mod input_inspection;
 #[cfg(test)]
@@ -4633,6 +4636,7 @@ mod input_inspection_tests;
 mod input_version_tests;
 mod live_reply;
 mod native_ask;
+pub(super) mod provider_execution;
 mod replace_command;
 mod timeout_notice;
 mod turn_permission;

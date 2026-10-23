@@ -5,7 +5,10 @@ use sqlx::{Sqlite, Transaction};
 
 async fn fixture() -> SqliteDb {
     let db = SqliteDb::connect("sqlite::memory:").await.unwrap();
-    sqlx::raw_sql("CREATE TABLE worker_sessions(id TEXT PRIMARY KEY); INSERT INTO worker_sessions VALUES ('worker'), ('empty');")
+    sqlx::raw_sql("CREATE TABLE worker_sessions(id TEXT PRIMARY KEY, terminal_run_id TEXT, state TEXT NOT NULL, card_id TEXT);
+        CREATE TABLE cards(id TEXT PRIMARY KEY, session_id TEXT);
+        INSERT INTO worker_sessions(id, card_id, state) VALUES ('worker','worker-card','idle'), ('empty','empty-card','idle');
+        INSERT INTO cards VALUES ('worker-card','worker'), ('empty-card','empty');")
         .execute(db.writer_pool()).await.unwrap();
     sqlx::raw_sql(include_str!(
         "../../../migrations/0185_provider_execution.sql"
@@ -416,7 +419,16 @@ async fn provider_execution_sweep_inventory_finds_orphans_including_settled() {
             false,
         ),
     ] {
-        sqlx::query("INSERT OR IGNORE INTO worker_sessions(id) VALUES (?)")
+        sqlx::query(
+            "INSERT OR IGNORE INTO worker_sessions(id, card_id, state) VALUES (?, ?, 'idle')",
+        )
+        .bind(session)
+        .bind(format!("{session}-card"))
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+        sqlx::query("INSERT OR IGNORE INTO cards(id, session_id) VALUES (?, ?)")
+            .bind(format!("{session}-card"))
             .bind(session)
             .execute(&mut *tx)
             .await
@@ -547,8 +559,8 @@ async fn provider_execution_column_decode_errors_are_isolated() {
     let mut tx = db.writer_pool().begin().await.unwrap();
     let healthy = applied(admission(&mut tx, "healthy").await);
     sqlx::raw_sql(
-        "INSERT INTO worker_sessions(id, provider_execution_json) VALUES
-        ('blob', x'FF'), ('text', CAST(x'FF' AS TEXT));",
+        "INSERT INTO worker_sessions(id, provider_execution_json, state) VALUES
+        ('blob', x'FF', 'idle'), ('text', CAST(x'FF' AS TEXT), 'idle');",
     )
     .execute(&mut *tx)
     .await
@@ -625,4 +637,27 @@ async fn provider_execution_consumer_inventory_isolates_corrupt_rows() {
         executions::consumer_inventory(db.read_pool(), "selected").await,
         Err(sqlx::Error::Database(_))
     ));
+}
+
+#[tokio::test]
+async fn c4_admission_refuses_terminal_bound_session() {
+    let db = fixture().await;
+    let mut tx = super::begin_immediate_tx(&db).await.unwrap();
+    sqlx::query("UPDATE worker_sessions SET terminal_run_id='terminal' WHERE id='worker'")
+        .execute(&mut **tx)
+        .await
+        .unwrap();
+    let result = admit(
+        &mut tx,
+        "worker",
+        "exec".into(),
+        Purpose::RewindCheck,
+        InitialRelease::Held,
+    )
+    .await;
+    assert!(matches!(
+        result,
+        Err(CalmError::Core(calm_types::error::CoreError::Conflict(_)))
+    ));
+    assert!(load(&mut **tx, "worker").await.unwrap().is_none());
 }

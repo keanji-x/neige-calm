@@ -813,6 +813,11 @@ impl AppState {
             )
             .expect("claude planner host"),
         );
+        self.route.claude_planner.completion.bind(self.raw.clone());
+        self.route
+            .claude_planner
+            .completion
+            .bind_registry(self.route.harness.clone());
         if let Some(engine) = &self.execution {
             self.route.claude_planner.execution.bind(engine.clone());
         }
@@ -953,6 +958,8 @@ impl AppState {
             ClaudePlannerHost::unconfigured_scratch()
                 .expect("a scratch Claude Planner host for AppState::from_parts"),
         );
+        claude_planner.completion.bind(repo.clone());
+        claude_planner.completion.bind_registry(harness.clone());
         let execution = crate::execution_quiesce::ExecutionLifecycle::default();
         terminal_renderer.set_execution(execution.clone());
         let (adapters, planner_start_adapter) = build_operation_adapters(OperationAdapterInputs {
@@ -1393,6 +1400,7 @@ impl AppState {
             mcp_shim_bin.clone(),
             mcp_socket_path.clone(),
         )?);
+        claude_planner.completion.bind(repo.clone());
         crate::claude_planner::lifecycle::boot(repo.as_ref(), &claude_planner).await?;
         let acp_planner = Arc::new(
             AcpPlannerHost::new(
@@ -1432,6 +1440,7 @@ impl AppState {
         let terminal_renderer = TerminalRendererRegistry::new_with_repo(route_repo.clone());
         terminal_renderer.set_hook_settings_dir(codex.terminal_hook_settings_dir.clone());
         let harness = HarnessRegistry::new();
+        claude_planner.completion.bind_registry(harness.clone());
         crate::track_planner_context::spawn(repo.clone(), events.clone(), write.clone());
         let activity_wake = crate::track_activity::spawn(
             repo.clone(),

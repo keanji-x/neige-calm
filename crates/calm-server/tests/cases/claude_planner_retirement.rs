@@ -6,9 +6,6 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
 use axum::http::StatusCode;
-use calm_server::claude_planner::stop::{
-    clear_claude_planner_stop_failure_for_test, fail_claude_planner_stop_for_test,
-};
 use calm_server::db::prelude::*;
 use calm_server::harness::{
     HarnessConfig, HarnessPhaseTag, HarnessSnapshot, PlannerBackend, PlannerHarness,
@@ -18,7 +15,7 @@ use provider::InputItem;
 use provider::TurnModelSelection;
 use serde_json::json;
 
-use super::claude_planner_session_fixture::request;
+use super::claude_planner_session_fixture::{alive, request};
 use super::claude_planner_stack_fixture::{Root, Stack};
 use super::claude_planner_wiring::wait_file;
 
@@ -77,15 +74,12 @@ async fn repoint(stack: &Stack, track_id: &str, target: &std::path::Path) -> (St
     (status, body.to_string())
 }
 
-/// §9.1 PR4: a repoint of a Claude track whose marked `setsid` child lives leaves no marked
-/// process by the recycle; with `stop` forced to fail it takes the Dirty branch with its own 409
-/// and moves nothing; a retried repoint after the seam clears leaves none before the recycle.
+/// Repoint refuses a retained live execution, then succeeds after owner completion.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_repoint_sweeps_the_tracks_claude_planner_processes_or_refuses() {
-    let root = Root::new("exit");
+async fn a_repoint_refuses_the_live_execution_until_owner_completion() {
+    let root = Root::new("hold");
     let stack = Stack::boot(&root).await;
     let (track_id, card_id) = stack.create_claude_track().await;
-    let runtime = stack.runtime(&card_id).await;
     let before = stack
         .repo()
         .track_get(&track_id)
@@ -93,16 +87,13 @@ async fn a_repoint_sweeps_the_tracks_claude_planner_processes_or_refuses() {
         .unwrap()
         .unwrap()
         .workspace;
-
-    root.spawn_marked_orphan(&runtime.id);
-    fail_claude_planner_stop_for_test(&runtime.id);
+    assert_eq!(stack.post_input(&card_id, "work").await.0, StatusCode::OK);
+    wait_file(&root, "stdin").await;
+    let pid = fake_pid(&root);
+    assert!(alive(pid));
     let target = user_repo(&root.path().join("user-repo"));
     let (status, body) = repoint(&stack, &track_id, &target).await;
     assert_eq!(status, StatusCode::CONFLICT, "{body}");
-    assert!(
-        body.contains("a previous Claude Planner process of this track could not be stopped"),
-        "{body}"
-    );
     assert_eq!(
         stack
             .repo()
@@ -111,19 +102,54 @@ async fn a_repoint_sweeps_the_tracks_claude_planner_processes_or_refuses() {
             .unwrap()
             .unwrap()
             .workspace,
-        before,
-        "nothing moved"
+        before
     );
-    assert_eq!(
-        root.marked_pids(&runtime.id).len(),
-        1,
-        "the seam signalled nothing"
+    assert!(alive(pid), "the retained carrier is still live");
+    let runtime = stack.runtime(&card_id).await;
+    let host = stack.state.planner_wiring().claude;
+    let session = stack
+        .harness(&runtime.id)
+        .claude_session_for_test()
+        .unwrap();
+    session.abort_driver_for_test().await;
+    let pool = stack.repo().sqlite_db().unwrap();
+    let claim = calm_truth::db::sqlite::provider_execution::load(pool.read_pool(), &runtime.id)
+        .await
+        .unwrap()
+        .unwrap();
+    let id = calm_server::provider_execution::execution_id(claim.record()).unwrap();
+    host.provider_execution
+        .stop(
+            &pool,
+            host.execution.engine(),
+            &runtime.id,
+            &claim,
+            calm_server::provider_execution::StopReason::DriverLost,
+        )
+        .await
+        .unwrap();
+    calm_server::provider_execution::wait_settled(
+        host.execution.engine().unwrap(),
+        &id,
+        Duration::from_secs(5),
+    )
+    .await
+    .unwrap();
+    assert!(
+        calm_truth::db::sqlite::provider_execution::load(pool.read_pool(), &runtime.id)
+            .await
+            .unwrap()
+            .is_some(),
+        "settled execution still needs owner completion"
     );
-
-    clear_claude_planner_stop_failure_for_test(&runtime.id);
     let (status, body) = repoint(&stack, &track_id, &target).await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    assert!(root.marked_pids(&runtime.id).is_empty());
+    assert!(!alive(pid), "Engine settled before repoint");
+    assert_eq!(
+        stack.outcomes(&card_id).await.len(),
+        1,
+        "preflight recorded the lost turn before replacement"
+    );
     assert_eq!(
         stack
             .repo()
@@ -135,72 +161,82 @@ async fn a_repoint_sweeps_the_tracks_claude_planner_processes_or_refuses() {
             .path,
         target.to_string_lossy()
     );
+    stack.shutdown().await;
 }
 
-/// §9.1 PR4: after a reset during a running turn no old-marker process is alive when the reset
-/// returns, and the reset leaves no instructions file.
+/// R2 keeps a live owner current through completion; reset succeeds only after claim clearance.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_reset_during_a_running_turn_returns_with_the_old_processes_gone() {
-    let root = Root::new("hold-orphan");
+async fn a_reset_refuses_a_running_owner_then_succeeds_after_completion() {
+    let root = Root::new("hold");
     let stack = Stack::boot(&root).await;
-    let (_track, card_id) = stack.create_claude_track().await;
+    let (_, card_id) = stack.create_claude_track().await;
     let old = stack.runtime(&card_id).await;
-    let (status, _) = stack.post_input(&card_id, "work").await;
-    assert_eq!(status, StatusCode::OK);
-    wait_file(&root, "orphan").await;
+    assert_eq!(stack.post_input(&card_id, "work").await.0, StatusCode::OK);
     wait_file(&root, "stdin").await;
-    assert!(!root.marked_pids(&old.id).is_empty());
+    let pid = fake_pid(&root);
+    assert!(alive(pid));
     assert!(!root.instructions_files().is_empty());
-
+    let (status, body) = stack.reset(&card_id).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(stack.runtime(&card_id).await.id, old.id);
+    assert!(alive(pid), "R2 retains the live carrier");
+    stack
+        .harness(&old.id)
+        .interrupt("finish before reset".into())
+        .await
+        .unwrap();
+    stack.wait_outcomes(&card_id, 1).await;
+    stack.wait_provider_clear(&old.id).await;
     let (status, body) = stack.reset(&card_id).await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    assert!(
-        root.marked_pids(&old.id).is_empty(),
-        "no old-marker process when the reset returns"
-    );
+    assert!(!alive(pid));
     assert!(root.instructions_files().is_empty());
+    stack.shutdown().await;
 }
 
-/// §9.1 PR4: a reset whose `stop` of the old id fails (the seam), then a delete with no boot in
-/// between: the delete's scoped sweep leaves no old-id marked process before the move.
+/// R4 deletion settles the retained execution after R2 refused a live reset.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_seam_failed_reset_then_delete_leaves_no_old_process() {
-    let root = Root::new("exit");
+async fn a_refused_reset_then_delete_settles_the_retained_execution() {
+    let root = Root::new("hold");
     let stack = Stack::boot(&root).await;
     let (track_id, card_id) = stack.create_claude_track().await;
-    stack.run_turn(&root, &card_id, "exit", "hello").await;
+    assert_eq!(stack.post_input(&card_id, "work").await.0, StatusCode::OK);
+    wait_file(&root, "stdin").await;
+    let pid = fake_pid(&root);
     let old = stack.runtime(&card_id).await;
-    root.spawn_marked_orphan(&old.id);
-
-    fail_claude_planner_stop_for_test(&old.id);
     let (status, body) = stack.reset(&card_id).await;
-    assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(
-        root.marked_pids(&old.id).len(),
-        1,
-        "the failed stop is left behind"
-    );
-    clear_claude_planner_stop_failure_for_test(&old.id);
-
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(stack.runtime(&card_id).await.id, old.id);
+    assert!(alive(pid));
     let (status, body) = stack
         .send("DELETE", &format!("/api/tracks/{track_id}"), None)
         .await;
     assert!(status.is_success(), "{status} {body}");
-    assert!(root.marked_pids(&old.id).is_empty());
+    assert!(
+        !alive(pid),
+        "R4 settles the retained execution before deleting its row"
+    );
+    assert!(
+        stack
+            .repo()
+            .session_get(&calm_types::worker::WorkerSessionId(old.id))
+            .await
+            .unwrap()
+            .is_none()
+    );
+    stack.shutdown().await;
 }
 
-/// §9.1 PR4: with the stop seam armed on a fresh harness, its first turn's setup `stop` fails:
-/// `turn_start` answers within a bound, the input stays queued, nothing is spawned, and the input
-/// is issued once the seam clears (the harness is not a dead handle).
+/// Failed Engine admission submits nothing and keeps the input queued for retry.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_seam_failed_first_turn_keeps_the_input_queued_until_the_seam_clears() {
+async fn a_refused_engine_admission_keeps_the_input_queued_until_retry() {
     let root = Root::new("exit");
     let stack = Stack::boot(&root).await;
     let (_track, card_id) = stack.create_claude_track().await;
     let runtime = stack.runtime(&card_id).await;
     let harness = stack.harness(&runtime.id);
 
-    fail_claude_planner_stop_for_test(&runtime.id);
+    stack.block_provider_admission().await;
     let (status, _) = stack.post_input(&card_id, "queued").await;
     assert_eq!(status, StatusCode::OK);
     let asked = std::time::Instant::now();
@@ -220,10 +256,10 @@ async fn a_seam_failed_first_turn_keeps_the_input_queued_until_the_seam_clears()
     );
     assert!(
         stack.row_hash(&runtime.id).await.is_some(),
-        "the credential was minted once, before the failing setup stop"
+        "the credential was minted before the failed Engine admission"
     );
 
-    clear_claude_planner_stop_failure_for_test(&runtime.id);
+    stack.clear_provider_fault().await;
     let outcomes = stack.wait_outcomes(&card_id, 1).await;
     assert_eq!(outcomes[0]["status"], "completed");
     assert!(root.wait_unmarked(&runtime.id, BUDGET).await.is_empty());
@@ -381,10 +417,10 @@ async fn card_token_hash(stack: &Stack, card_id: &str) -> Option<String> {
 }
 
 /// §9.1 PR4: a delete that arrives while a spawn is held (after it passed the seal check) does not
-/// complete while the held turn can still leave a marked process: the delete seals, sweeps, and
+/// complete while the held turn can still launch: the delete seals, sweeps, and
 /// its harness shutdown waits for the held issuance, which then sees the seal and stops.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_delete_during_a_held_spawn_does_not_complete_while_a_marked_process_lives() {
+async fn a_delete_during_a_held_spawn_waits_for_issuance_and_settlement() {
     let root = Root::new("exit");
     let stack = Stack::boot(&root).await;
     let (track_id, card_id) = stack.create_claude_track().await;
@@ -446,17 +482,20 @@ async fn a_delete_during_a_held_spawn_does_not_complete_while_a_marked_process_l
         .expect("the delete completes once released")
         .expect("delete task");
     assert!(status.is_success(), "{status}");
-    assert!(root.marked_pids(&runtime.id).is_empty());
+    let unsettled: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM workspace_executions WHERE settlement_json IS NULL",
+    )
+    .fetch_one(stack.repo().sqlite_db().unwrap().read_pool())
+    .await
+    .unwrap();
+    assert_eq!(unsettled, 0);
     assert!(stack.repo().track_get(&track_id).await.unwrap().is_none());
 }
 
-/// #1791 PR4 review: an area deletion revokes then sweeps the Claude Planner ids of its tracks, in
-/// any state, before anything moves: with the stop seam armed it aborts with the credentials
-/// revoked and the harness reinstalled (which mints on its next turn); retried, it leaves no
-/// marked process of a superseded row behind.
+/// Area deletion revokes before durable Stop; failure preserves the track, retry settles its child.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_area_deletion_revokes_and_sweeps_its_tracks_claude_planners() {
-    let root = Root::new("exit");
+    let root = Root::new("term-ignore");
     let stack = Stack::boot(&root).await;
     let (track_id, card_id) = stack.create_claude_track().await;
     let area_id = stack
@@ -466,48 +505,41 @@ async fn an_area_deletion_revokes_and_sweeps_its_tracks_claude_planners() {
         .unwrap()
         .unwrap()
         .area_id;
-    let old = stack.runtime(&card_id).await;
-    let (status, body) = stack.reset(&card_id).await;
-    assert_eq!(status, StatusCode::OK, "{body}");
-    let (_, token) = stack.run_turn(&root, &card_id, "exit", "hello").await;
-    let current = stack.runtime(&card_id).await;
-    root.spawn_marked_orphan(&old.id);
-
-    fail_claude_planner_stop_for_test(&current.id);
+    assert_eq!(stack.post_input(&card_id, "work").await.0, StatusCode::OK);
+    wait_file(&root, "stdin").await;
+    let token = root.spawned_token();
+    let pid = fake_pid(&root);
+    stack.block_provider_stop().await;
     let (status, body) = stack
         .send("DELETE", &format!("/api/areas/{area_id}"), None)
         .await;
-    assert!(
-        !status.is_success(),
-        "the area delete aborts: {status} {body}"
-    );
+    assert!(!status.is_success(), "{status} {body}");
     assert!(stack.repo().track_get(&track_id).await.unwrap().is_some());
     assert!(
         !stack.token_authenticates(&token).await,
-        "revoked before the abort"
+        "revoked before Stop refusal"
     );
-    assert!(
-        stack.state.harness.get(&current.id).is_some(),
-        "reinstalled"
-    );
-    assert_eq!(
-        root.marked_pids(&old.id).len(),
-        1,
-        "the seam signalled nothing"
-    );
-
-    clear_claude_planner_stop_failure_for_test(&current.id);
-    let (outcome, new_token) = stack.run_turn(&root, &card_id, "exit", "again").await;
-    assert_eq!(outcome["status"], "completed");
-    assert!(stack.token_authenticates(&new_token).await);
-
-    let (status, body) = stack
-        .send("DELETE", &format!("/api/areas/{area_id}"), None)
-        .await;
-    assert!(status.is_success(), "{status} {body}");
-    assert!(
-        root.marked_pids(&old.id).is_empty(),
-        "the superseded row's process is gone"
-    );
-    assert!(root.marked_pids(&current.id).is_empty());
+    assert!(alive(pid));
+    stack.clear_provider_fault().await;
+    // Each request has the production quiesce deadline. Under suite load Stop
+    // can outlive that request; its durable intent continues and a later retry
+    // succeeds. A refusal must keep the track until settlement is confirmed.
+    tokio::time::timeout(BUDGET, async {
+        loop {
+            let (status, body) = stack
+                .send("DELETE", &format!("/api/areas/{area_id}"), None)
+                .await;
+            if status.is_success() {
+                break;
+            }
+            assert_eq!(status, StatusCode::CONFLICT, "{body}");
+            assert!(stack.repo().track_get(&track_id).await.unwrap().is_some());
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("area deletion succeeds after durable Stop settles");
+    assert!(!alive(pid));
+    assert!(stack.repo().track_get(&track_id).await.unwrap().is_none());
+    stack.shutdown().await;
 }

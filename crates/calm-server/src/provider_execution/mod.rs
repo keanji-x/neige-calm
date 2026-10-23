@@ -26,6 +26,8 @@ pub enum CompletionEvidence {
 /// Protocol results remain provider-owned; rewind has no durable outcome.
 pub enum KnownEnd {
     RewindCheck,
+    ClaudeTurn(Box<crate::claude_planner::execution::End>),
+    ClaudeRefused,
 }
 #[async_trait]
 pub trait ProviderExecutionOwner: Send + Sync {
@@ -60,6 +62,8 @@ pub struct DriverGuard {
 impl Drop for DriverGuard {
     fn drop(&mut self) {
         self.drivers.0.lock().unwrap().remove(&self.id);
+        #[cfg(feature = "fixtures")]
+        calm_truth::test_seam::task_drop_pause_point("c4-driver-dropped", self.id.as_str());
     }
 }
 
@@ -94,6 +98,26 @@ pub async fn settlement(pool: &SqliteDb, id: &ExecutionId) -> Result<Option<Sett
         .map(|json| serde_json::from_str(&json).map_err(Into::into))
         .transpose()
 }
+/// Wait within the owner's settlement budget. Engine's individual wait deadline
+/// bounds each observation; its timeout is not evidence that Stop failed.
+pub async fn wait_settled(
+    engine: &ExecutionEngine,
+    id: &ExecutionId,
+    budget: Duration,
+) -> Result<()> {
+    tokio::time::timeout(budget, async {
+        loop {
+            match engine.wait_settled(id).await {
+                Ok(()) => return Ok(()),
+                Err(DriveError::Timeout) => tokio::time::sleep(Duration::from_millis(10)).await,
+                Err(error) => return Err(conflict(error)),
+            }
+        }
+    })
+    .await
+    .map_err(conflict)?
+}
+
 /// Caller holds the session issue lock. Native consumers have no completion port yet:
 /// they must retain any outstanding claim rather than complete another provider's work.
 pub(crate) async fn admission_gate(
@@ -116,6 +140,32 @@ pub(crate) async fn admission_gate(
     }
     Err(conflict("the previous provider execution is not complete"))
 }
+/// Compose an exact owner-claim Stop with the caller's writer transaction. This
+/// performs no owner I/O; batch lifecycle callers commit once before driving.
+pub(crate) async fn request_stop_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    session: &str,
+    claimed: &Claim,
+    reason: StopReason,
+) -> Result<Option<ExecutionId>> {
+    let id = execution_id(claimed.record())?;
+    let current = sql::load(&mut **tx, session).await?;
+    let Some(current) =
+        current.filter(|c| c.record().execution_id == claimed.record().execution_id)
+    else {
+        return Ok(None);
+    };
+    if current.record().decision == Decision::Observing {
+        let sql::Cas::Applied(_) =
+            sql::stop(tx, session, &current, reason, crate::model::now_ms()).await?
+        else {
+            return Ok(None);
+        };
+    }
+    executions::request(tx, id.as_str(), "stop").await?;
+    Ok(Some(id))
+}
+
 impl ProviderExecution {
     /// Caller holds its session issue lock. SQL errors are never absence.
     pub async fn admission_gate(
@@ -164,22 +214,10 @@ impl ProviderExecution {
         claimed: &Claim,
         reason: StopReason,
     ) -> Result<()> {
-        let id = execution_id(claimed.record())?;
         let mut tx = calm_truth::db::sqlite::begin_immediate_tx(pool).await?;
-        let current = sql::load(&mut **tx, session).await?;
-        let Some(current) =
-            current.filter(|c| c.record().execution_id == claimed.record().execution_id)
-        else {
+        let Some(id) = request_stop_tx(&mut tx, session, claimed, reason).await? else {
             return Ok(());
         };
-        if current.record().decision == Decision::Observing {
-            let sql::Cas::Applied(_) =
-                sql::stop(&mut tx, session, &current, reason, crate::model::now_ms()).await?
-            else {
-                return Ok(());
-            };
-        }
-        executions::request(&mut tx, id.as_str(), "stop").await?;
         tx.commit().await?;
         #[cfg(feature = "fixtures")]
         crate::test_seams::pause_point("c4-stop-committed", id.as_str()).await;
@@ -254,5 +292,40 @@ impl crate::execution_store::ExecutionProjection for Projection {
         _: i64,
     ) -> std::result::Result<(), sqlx::Error> {
         Ok(())
+    }
+}
+
+pub(crate) struct Cancellation {
+    pub(crate) owner: ProviderExecution,
+    pub(crate) pool: crate::db::sqlite::SqliteDb,
+    pub(crate) engine: crate::execution_boot::ExecutionEngine,
+    pub(crate) session: String,
+    pub(crate) claim: Claim,
+    pub(crate) armed: bool,
+}
+impl Drop for Cancellation {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        let owner = self.owner.clone();
+        let pool = self.pool.clone();
+        let engine = self.engine.clone();
+        let session = self.session.clone();
+        let claim = self.claim.clone();
+        tokio::spawn(async move {
+            if let Err(error) = owner
+                .stop(
+                    &pool,
+                    Some(&engine),
+                    &session,
+                    &claim,
+                    StopReason::DriverLost,
+                )
+                .await
+            {
+                tracing::warn!(%error, "provider cancellation Stop failed; durable sweep will retry");
+            }
+        });
     }
 }

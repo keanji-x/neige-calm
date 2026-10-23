@@ -40,7 +40,11 @@ async fn canonical_acp_cancel_before_publication_refuses_park_until_cleanup_fini
         // Observe completion without closing the session or joining away the retained slot.
         tokio::time::timeout(Duration::from_secs(20), async {
             loop {
-                if let Some(guard) = fx.backend.carrier_idle_for_detach(Some(&fx.owner.thread)) {
+                if let Some(guard) = fx
+                    .backend
+                    .carrier_idle_for_detach(Some(&fx.owner.thread))
+                    .await
+                {
                     assert!(guard.recheck());
                     break;
                 }

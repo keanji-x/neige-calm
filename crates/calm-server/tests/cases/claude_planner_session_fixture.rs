@@ -148,6 +148,10 @@ impl Rig {
         self._execution.assert_journal_excludes(needle);
     }
 
+    pub fn execution_journal_contains(&self, needle: &str) -> bool {
+        self._execution.journal_contains(needle)
+    }
+
     pub fn session(&self) -> &Arc<ClaudePlannerSession> {
         self.session.as_ref().expect("opened in the constructor")
     }

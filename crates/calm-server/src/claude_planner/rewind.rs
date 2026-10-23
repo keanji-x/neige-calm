@@ -1,8 +1,6 @@
 //! A Claude conversation's half of a rewind (#1923): where the session is cut, and whether the
 //! pinned CLI accepts that cut, both decided before anything is removed.
 
-use std::ffi::OsString;
-use std::path::Path;
 use std::time::Duration;
 
 use crate::provider_execution::{
@@ -104,13 +102,14 @@ pub(crate) async fn check(
     let owner = &params.host.provider_execution;
     let id = ExecutionId::fresh()?;
     let dir = stderr::create(&params.host.instructions_dir, id.as_str())?;
-    let prepared = intent(
+    let prepared = super::execution::intent(
         params,
         &id,
         &dir,
         &config.claude_binary,
         spawn::truncation_check_argv(thread, cut),
         env,
+        None,
     )
     .await;
     let (intent, payload) = match prepared {
@@ -136,7 +135,7 @@ pub(crate) async fn check(
             return Err(error);
         }
     };
-    let mut cancellation = Cancellation {
+    let mut cancellation = execution::Cancellation {
         owner: owner.clone(),
         pool: pool.clone(),
         engine: engine.clone(),
@@ -206,10 +205,7 @@ pub(crate) async fn check(
             reason,
         )
         .await?;
-    tokio::time::timeout(super::session::SETTLE_AFTER_STOP, engine.wait_settled(&id))
-        .await
-        .map_err(execution::conflict)?
-        .map_err(execution::conflict)?;
+    execution::wait_settled(engine, &id, super::session::SETTLE_AFTER_STOP).await?;
     let settled = execution::settlement(&pool, &id)
         .await?
         .ok_or_else(|| execution::conflict("not settled"))?;
@@ -272,142 +268,6 @@ impl super::session::ClaudePlannerSession {
         )
         .await
     }
-}
-
-struct Cancellation {
-    owner: execution::ProviderExecution,
-    pool: crate::db::sqlite::SqliteDb,
-    engine: crate::execution_boot::ExecutionEngine,
-    session: String,
-    claim: execution::Claim,
-    armed: bool,
-}
-impl Drop for Cancellation {
-    fn drop(&mut self) {
-        if !self.armed {
-            return;
-        }
-        let owner = self.owner.clone();
-        let pool = self.pool.clone();
-        let engine = self.engine.clone();
-        let session = self.session.clone();
-        let claim = self.claim.clone();
-        tokio::spawn(async move {
-            if let Err(error) = owner
-                .stop(
-                    &pool,
-                    Some(&engine),
-                    &session,
-                    &claim,
-                    StopReason::DriverLost,
-                )
-                .await
-            {
-                tracing::warn!(%error, "rewind cancellation Stop failed; durable sweep will retry");
-            }
-        });
-    }
-}
-
-/// The sole rewind intent constructor. Per-execution aliases survive old tombstones.
-async fn intent(
-    params: &ClaudePlannerSessionParams,
-    id: &ExecutionId,
-    dir: &Path,
-    binary: &Path,
-    args: Vec<OsString>,
-    env: Vec<(String, OsString)>,
-) -> Result<(ExecutionIntent, Vec<u8>)> {
-    let text = |value: OsString| {
-        value
-            .into_string()
-            .map_err(|_| CalmError::BadRequest("provider arguments require UTF-8".into()))
-    };
-    use crate::execution_environment::{PROXY_KEYS, proxy_value_is_secret};
-    use crate::operation::stdin_payload::{KeySource, PayloadKeys};
-    let mut secrets = std::collections::HashMap::new();
-    // Command::envs resolves duplicate names with the last value winning.
-    // Resolve that final environment before classifying either side of the payload.
-    let env = env
-        .into_iter()
-        .filter(|(key, _)| key != super::stop::MARKER_KEY)
-        .collect::<std::collections::BTreeMap<_, _>>()
-        .into_iter()
-        .filter_map(|(key, value)| {
-            if PROXY_KEYS.contains(&key.as_str()) && proxy_value_is_secret(&key, &value) {
-                secrets.insert(key, value);
-                None
-            } else {
-                Some((key, value))
-            }
-        })
-        .collect::<Vec<_>>();
-    // Only classified secret keys belong in the read prefix: non-secret proxy
-    // values must retain their environment values rather than be unset.
-    let present = PROXY_KEYS
-        .iter()
-        .copied()
-        .filter(|key| secrets.contains_key(*key))
-        .collect::<Vec<_>>();
-    let keys = PayloadKeys::new(&present, KeySource::Kernel)?;
-    let payload = keys
-        .render(|key| secrets.get(key).cloned())
-        .map_err(|_| CalmError::BadRequest("invalid Planner release payload".into()))?;
-    let root = tokio::fs::canonicalize(&params.cwd).await?;
-    let mut wrapper_args = vec![
-        "-c".into(),
-        stderr::wrapper(&keys.read_prefix()),
-        "neige-rewind".into(),
-        text(dir.as_os_str().to_owned())?,
-        text(root.as_os_str().to_owned())?,
-        text(binary.as_os_str().to_owned())?,
-    ];
-    wrapper_args.extend(args.into_iter().map(text).collect::<Result<Vec<_>>>()?);
-    let environment = env
-        .into_iter()
-        .map(|(key, value)| Ok((key, text(value)?)))
-        .collect::<Result<Vec<_>>>()?;
-    Ok((
-        ExecutionIntent {
-            metadata: ExecutionMetadata {
-                consumer: super::execution::CONSUMER.into(),
-                id: id.clone(),
-                alias: ProcessAlias(execution::sweep::alias(
-                    &params.worker_session_id,
-                    id.as_str(),
-                )),
-                owner: OperationRef(format!("worker-session:{}", params.worker_session_id)),
-                track: TrackId(params.track_id.clone()),
-                source: PrivateSource {
-                    root,
-                    cwd: workspace::identity::WorkspaceCwd::root(),
-                    registration: ObjectRegistrationId::fresh()?,
-                    nonce: TransferNonce::fresh()?,
-                    directory: ExternalDirectoryId::fresh()?,
-                    incarnation: ExternalDirectoryIncarnationId::fresh()?,
-                    authority: ExecutionAuthority {
-                        grant_id: ExecutionGrantId::fresh()?,
-                        authorization_binding: AuthorizationBindingId::fresh()?,
-                        authorization_version: 1,
-                    },
-                },
-                program: ExecutionSpecification {
-                    program: "/bin/sh".into(),
-                    args: wrapper_args,
-                    environment,
-                    io_mode: calm_session::control::IoMode::Pipe,
-                    replay_bytes: 4 * 1024 * 1024,
-                },
-                specification: SpecificationId::fresh()?,
-                ticket_id: LaunchTicketId::fresh()?,
-            },
-            secrets: ExecutionSecrets {
-                ticket: CapabilityToken::fresh()?,
-                tokens: ExecutionControlTokens::fresh()?,
-            },
-        },
-        payload,
-    ))
 }
 
 fn verdict(

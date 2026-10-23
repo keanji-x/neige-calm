@@ -14,6 +14,7 @@ pub(super) struct DriverSlot {
     thread: Uuid,
     turn: Uuid,
     execution: Association,
+    provider_execution_id: workspace_runtime::execution::ExecutionId,
 }
 
 impl DriverSlot {
@@ -22,12 +23,14 @@ impl DriverSlot {
         thread: Uuid,
         turn: Uuid,
         execution: Association,
+        provider_execution_id: workspace_runtime::execution::ExecutionId,
     ) -> Self {
         Self {
             completion: RetainedJoin::new(driver),
             thread,
             turn,
             execution,
+            provider_execution_id,
         }
     }
 
@@ -124,6 +127,19 @@ impl ClaudePlannerSession {
         // Association addresses END/maintenance, not process liveness. Every
         // exact driver uses the same joined, successfully cleaned-up result.
         if !driver.qualified().await? || shared.state().active.is_some() {
+            return Ok(false);
+        }
+        let pool = params
+            .repo
+            .sqlite_db()
+            .ok_or(CalmError::ExecutionUnavailable)?;
+        if calm_truth::db::sqlite::provider_execution::load(
+            pool.read_pool(),
+            &params.worker_session_id,
+        )
+        .await?
+        .is_some()
+        {
             return Ok(false);
         }
         admission.check_local().await?;
@@ -227,13 +243,22 @@ impl ClaudePlannerSession {
             .map_err(|(error, _evidence)| admission.take_refusal().unwrap_or(error))
     }
 
-    /// Harness shutdown: refuse new turns, end the live one as `Interrupted`, and stop the marker
+    /// Harness shutdown: refuse new turns, end the live one as `Interrupted`, and Stop its execution
     /// whether or not a turn runs. The `stop` result is returned for strict callers. A session that
     /// was never installed (an install-race loser) minted and spawned nothing, so it signals nothing:
     /// its id may belong to the winner's live turn.
     pub async fn shutdown(&self) -> Result<()> {
+        self.shared.state().shutting_down = true;
+        tokio::time::timeout(SHUTDOWN_SETTLE_WAIT, self.shutdown_issued())
+            .await
+            .map_err(|_| {
+                CalmError::Conflict(
+                    "Claude shutdown did not finish within its settlement budget".into(),
+                )
+            })?
+    }
+    async fn shutdown_issued(&self) -> Result<()> {
         let shared = &self.shared;
-        shared.state().shutting_down = true;
         let _issue = shared.issue.lock().await;
         if shared.installed.get().is_none() {
             return Ok(());
@@ -248,23 +273,171 @@ impl ClaudePlannerSession {
             slot.arm_stop(tokio::time::Instant::now());
         }
         let params = &shared.params;
-        let stopped = stop(&params.host.instance, &params.worker_session_id).await;
-        if let Some(slot) = slot {
-            let mut settled = slot.settled.subscribe();
-            if tokio::time::timeout(SHUTDOWN_SETTLE_WAIT, settled.wait_for(|done| *done))
-                .await
-                .is_err()
-            {
-                tracing::warn!(
-                    worker_session_id = %params.worker_session_id,
-                    "claude planner: the running turn did not settle during shutdown"
-                );
+        let stopped = super::super::lifecycle::stop_session(
+            &params.host,
+            &params.worker_session_id,
+            crate::provider_execution::StopReason::Shutdown,
+        )
+        .await;
+        let id = shared
+            .driver
+            .lock()
+            .await
+            .as_ref()
+            .map(|driver| driver.provider_execution_id.clone());
+        let joined = join_driver(shared).await;
+        stopped?;
+        self.provider_admission_gate().await?;
+        if let Some(id) = id {
+            shared.clear_failed_driver(&id).await?;
+        }
+        // Owner reconciliation may have removed this exact failed join. Recheck
+        // that slot instead of returning an error cached before completion.
+        if joined.is_err() {
+            join_driver(shared).await?;
+        }
+        Ok(())
+    }
+}
+
+impl Shared {
+    /// Await the exact retained handle before acknowledging owner completion.
+    /// The caller's completion/shutdown budget bounds this cancellation-safe join.
+    pub(crate) async fn clear_failed_driver(
+        &self,
+        id: &workspace_runtime::execution::ExecutionId,
+    ) -> Result<()> {
+        let mut slot = self.driver.lock().await;
+        if let Some(driver) = slot.as_mut() {
+            if driver.provider_execution_id != *id {
+                return Err(CalmError::Conflict(
+                    "Claude completion names another driver".into(),
+                ));
+            }
+            if driver.finish().await.is_err() {
+                *slot = None;
             }
         }
-        let joined = tokio::time::timeout(SHUTDOWN_SETTLE_WAIT, join_driver(shared)).await;
-        stopped?;
-        joined
-            .map_err(|_| CalmError::Conflict("Claude driver cleanup did not finish".into()))??;
         Ok(())
+    }
+    pub(crate) fn finish_lost(&self, turn_id: &str, turn: serde_json::Value) {
+        let active = self
+            .state()
+            .active
+            .as_ref()
+            .filter(|a| a.turn_id == turn_id)
+            .map(|a| (a.thread_id.clone(), a.slot.clone()));
+        if let Some((thread, slot)) = active {
+            self.finish_turn(
+                turn_id,
+                &slot,
+                [PlannerEvent {
+                    thread_id: Some(thread),
+                    kind: provider::events::PlannerEventKind::TurnCompleted { turn },
+                }],
+            );
+            slot.settled.send_replace(true);
+        }
+    }
+}
+
+impl ClaudePlannerSession {
+    pub(crate) async fn complete_lost_execution(
+        &self,
+        id: &workspace_runtime::execution::ExecutionId,
+        turn: &str,
+        outcome: serde_json::Value,
+    ) -> Result<()> {
+        let shared = &self.shared;
+        {
+            let slot = shared.driver.lock().await;
+            if slot.as_ref().is_some_and(|driver| {
+                driver.provider_execution_id != *id || driver.turn.to_string() != turn
+            }) {
+                return Err(CalmError::Conflict(
+                    "Claude completion identity changed".into(),
+                ));
+            }
+        }
+        shared.clear_failed_driver(id).await?;
+        let params = &shared.params;
+        let row = params
+            .repo
+            .session_get(&WorkerSessionId(params.worker_session_id.clone()))
+            .await?
+            .ok_or_else(|| CalmError::Conflict("Claude completion session missing".into()))?;
+        let thread = row
+            .thread_id
+            .as_deref()
+            .ok_or_else(|| CalmError::Conflict("Claude completion thread missing".into()))?;
+        // Completion reconciles the retained owner's identity even after its
+        // authority is revoked; it does not perform a fresh issuance admission.
+        if row.provider != calm_types::worker::WorkerProviderKind::Claude
+            || row.card_id.as_ref().map(|id| id.as_str()) != Some(params.card_id.as_str())
+            || row.track_id.as_str() != params.track_id
+            || shared
+                .state()
+                .active
+                .as_ref()
+                .is_some_and(|active| active.turn_id == turn && active.thread_id != thread)
+            || row
+                .agent_session_id
+                .as_deref()
+                .is_some_and(|id| id != thread)
+        {
+            return Err(CalmError::Conflict(
+                "Claude completion binding changed".into(),
+            ));
+        }
+        shared.finish_lost(turn, outcome);
+        Ok(())
+    }
+}
+
+#[cfg(feature = "fixtures")]
+impl ClaudePlannerSession {
+    pub async fn abort_driver_for_test(&self) {
+        let slot = self.shared.driver.lock().await;
+        if let Some(DriverSlot {
+            completion: RetainedJoin::Running(driver),
+            ..
+        }) = slot.as_ref()
+        {
+            driver.abort();
+        }
+    }
+}
+
+impl ClaudePlannerSession {
+    pub(crate) async fn provider_transition_gate(&self) -> Result<()> {
+        let _issue = self.shared.issue.lock().await;
+        self.provider_admission_gate().await
+    }
+}
+
+impl ClaudePlannerSession {
+    pub(crate) async fn lost_maintenance_target(
+        &self,
+        id: &workspace_runtime::execution::ExecutionId,
+        turn: &str,
+    ) -> Option<crate::harness::backend::MaintenanceTarget> {
+        let slot = self.shared.driver.lock().await;
+        let driver = slot.as_ref().filter(|driver| {
+            driver.provider_execution_id == *id && driver.turn.to_string() == turn
+        })?;
+        match &driver.execution {
+            Association::Maintenance(target) => Some(target.clone()),
+            Association::Historical | Association::Work(_) => None,
+        }
+    }
+}
+
+#[cfg(feature = "fixtures")]
+impl ClaudePlannerSession {
+    pub async fn wait_driver_for_test(&self) -> bool {
+        match self.shared.driver.lock().await.as_mut() {
+            Some(driver) => driver.finish().await.unwrap_or(false),
+            None => false,
+        }
     }
 }

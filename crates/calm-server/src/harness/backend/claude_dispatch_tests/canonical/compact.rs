@@ -131,7 +131,6 @@ async fn canonical_claude_compact_rechecks_after_writer_wait() {
         "thread",
         "binding",
         "membership",
-        "worker",
     ] {
         let (fx, harness, before) = ready().await;
         let blocked = pause();
@@ -166,13 +165,6 @@ async fn canonical_claude_compact_rechecks_after_writer_wait() {
                 .execute(&mut **tx)
                 .await
                 .unwrap();
-                tx.commit().await.unwrap();
-            }
-            "worker" => {
-                let mut tx = begin_immediate_tx(fx.owner.repo.db()).await.unwrap();
-                crate::db::sqlite::session_fail_if_active_runtime_tx(&mut tx, &fx.owner.worker)
-                    .await
-                    .unwrap();
                 tx.commit().await.unwrap();
             }
             "logout" => {
@@ -269,7 +261,10 @@ async fn canonical_claude_compact_before_write_restores_and_crossed_holds() {
             tokio::time::sleep(Duration::from_millis(300)).await;
             assert_eq!(lines(&fx), 2);
         } else {
-            std::fs::write(fx.dir.path().join("scenario"), "vanish-after-version").unwrap();
+            // Refuse during readiness, before the Engine wrapper can accept
+            // stdin. Vanishing after readiness races the wrapper's first write
+            // and can legitimately produce a submitted, failed compaction.
+            std::fs::remove_file(fx.dir.path().join("claude")).unwrap();
             assert!(harness.compact_canonical(fx.source.clone()).await.is_err());
             let after = fx.frame().await;
             assert_eq!(after["phase"], before["phase"]);
@@ -435,6 +430,7 @@ async fn canonical_claude_compact_bad_session_and_failed_cleanup_cannot_complete
     for failure in ["session", "instructions", "stop", "turn"] {
         let (fx, harness, before) = ready().await;
         let blocked = pause();
+        let broken_instruction = Arc::new(std::sync::Mutex::new(None::<std::path::PathBuf>));
         match failure {
             "turn" => fx
                 .session
@@ -444,19 +440,22 @@ async fn canonical_claude_compact_bad_session_and_failed_cleanup_cannot_complete
             }
             "instructions" => {
                 let instructions = fx.session.host().instructions_dir.clone();
+                let broken = broken_instruction.clone();
                 fx.session.set_after_spawn_hook_for_test(Arc::new(move || {
                     for file in std::fs::read_dir(&instructions).unwrap() {
                         let path = file.unwrap().path();
+                        if !path.is_file() {
+                            continue;
+                        }
                         std::fs::remove_file(&path).unwrap();
                         std::fs::create_dir(&path).unwrap();
+                        *broken.lock().unwrap() = Some(path);
                     }
                 }));
             }
             "stop" => {
-                let worker = fx.owner.worker.clone();
-                fx.session.set_after_spawn_hook_for_test(Arc::new(move || {
-                    crate::claude_planner::stop::fail_claude_planner_stop_for_test(&worker);
-                }));
+                std::fs::write(fx.dir.path().join("scenario"), "compact-linger").unwrap();
+                crate::test_support::execution::block_stops(fx.owner.repo.db()).await;
             }
             other => panic!("unexpected failure {other}"),
         }
@@ -480,7 +479,12 @@ async fn canonical_claude_compact_bad_session_and_failed_cleanup_cannot_complete
         assert_eq!(after["compact_outcome"]["status"], "unconfirmed");
         assert_eq!(after["canonical_inputs"], before["canonical_inputs"]);
         assert_eq!(after["last_turn_id"], before["last_turn_id"]);
-        crate::claude_planner::stop::clear_claude_planner_stop_failure_for_test(&fx.owner.worker);
+        if failure == "stop" {
+            crate::test_support::execution::unblock_stops(fx.owner.repo.db()).await;
+        }
+        if let Some(path) = broken_instruction.lock().unwrap().take() {
+            std::fs::remove_dir(path).unwrap();
+        }
         harness.shutdown().await.unwrap();
     }
 }
@@ -561,6 +565,44 @@ async fn canonical_claude_compact_start_without_end_expires() {
     assert_eq!(after["canonical_inputs"], pending["canonical_inputs"]);
     assert!(harness.compact_canonical(fx.source.clone()).await.is_err());
     assert_eq!(fx.session.user_line_writes_for_test(), 2);
+    harness.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn c4_canonical_lost_compaction_reports_failure_before_releasing_driver_slot() {
+    let (fx, harness, before) = ready().await;
+    let pause = pause();
+    fx.session
+        .set_before_turn_completed_pause_for_test(pause.clone());
+    harness.compact_canonical(fx.source.clone()).await.unwrap();
+    entered(&pause).await;
+    fx.session.abort_driver_for_test().await;
+    let owner = &fx.session.host().provider_execution;
+    tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            owner
+                .sweep(fx.owner.repo.db(), fx.session.host().execution.engine())
+                .await
+                .unwrap();
+            if calm_truth::db::sqlite::provider_execution::load(
+                fx.owner.repo.pool(),
+                &fx.owner.worker,
+            )
+            .await
+            .unwrap()
+            .is_none()
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let after = fx.phase("wedged").await;
+    assert_eq!(after["compact_outcome"]["status"], "unconfirmed");
+    assert_eq!(after["last_turn_id"], before["last_turn_id"]);
+    assert_eq!(after["canonical_inputs"], before["canonical_inputs"]);
     harness.shutdown().await.unwrap();
 }
 

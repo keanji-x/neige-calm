@@ -507,7 +507,7 @@ impl From<calm_truth::TruthError> for CalmError {
 
 impl From<calm_truth::session_projection_repo::WorkerSessionProjectionRepoError> for CalmError {
     fn from(err: calm_truth::session_projection_repo::WorkerSessionProjectionRepoError) -> Self {
-        CalmError::Internal(err.to_string())
+        calm_truth::error::CalmError::from(err).into()
     }
 }
 

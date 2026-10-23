@@ -286,7 +286,11 @@ async fn c4_dropped_rewind_request_is_stopped_by_sweep() {
 #[tokio::test]
 async fn c4_canceled_rewind_blocks_native_turn_and_compaction_until_settled() {
     let rig = Rig::new("exit").await;
-    script(&rig, "touch ready; exec sleep 120");
+    script(
+        &rig,
+        r#"if [ "$1" = --version ]; then echo 2.1.280; exit 0; fi
+touch ready; exec sleep 120"#,
+    );
     let task = {
         let session = rig.session().clone();
         let thread = rig.thread.clone();
@@ -311,7 +315,7 @@ async fn c4_canceled_rewind_blocks_native_turn_and_compaction_until_settled() {
             .turn_start(
                 &rig.thread,
                 request(
-                    vec![],
+                    rig.text("must not mint while the old claim is retained"),
                     &provider::TurnModelSelection::default(),
                     calm_server::planner_permission_mode::PlannerPermissionMode::Never,
                     &uuid::Uuid::new_v4().to_string()
@@ -326,6 +330,11 @@ async fn c4_canceled_rewind_blocks_native_turn_and_compaction_until_settled() {
             .await,
         CompactSubmission::NotSubmitted { .. }
     ));
+    assert_eq!(
+        rig.mcp_token_hash().await,
+        None,
+        "admission refusal precedes credential mint"
+    );
     assert!(
         owner::settlement(rig.repo.db(), &id)
             .await

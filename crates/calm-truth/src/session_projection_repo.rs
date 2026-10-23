@@ -18,6 +18,9 @@ pub type Result<T> = std::result::Result<T, WorkerSessionProjectionRepoError>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WorkerSessionProjectionRepoError {
+    ProviderExecutionRetained {
+        session: String,
+    },
     Message {
         message: String,
     },
@@ -30,6 +33,9 @@ pub enum WorkerSessionProjectionRepoError {
 impl fmt::Display for WorkerSessionProjectionRepoError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::ProviderExecutionRetained { session } => {
+                write!(formatter, "provider execution retains carrier {session}")
+            }
             Self::Message { message } => formatter.write_str(message),
             Self::IllegalStatusTransition { id, attempted } => {
                 write!(
@@ -266,6 +272,13 @@ impl From<crate::error::CalmError> for WorkerSessionProjectionRepoError {
 
 impl From<WorkerSessionProjectionRepoError> for crate::error::CalmError {
     fn from(err: WorkerSessionProjectionRepoError) -> Self {
-        crate::error::CalmError::Internal(err.to_string())
+        if matches!(
+            err,
+            WorkerSessionProjectionRepoError::ProviderExecutionRetained { .. }
+        ) {
+            crate::error::CalmError::Conflict(err.to_string())
+        } else {
+            crate::error::CalmError::Internal(err.to_string())
+        }
     }
 }

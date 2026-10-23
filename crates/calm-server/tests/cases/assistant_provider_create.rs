@@ -427,11 +427,20 @@ async fn managed_lifecycle(stack: &Stack, card: &str, track: &str) {
         reset.agent_provider == Some(calm_types::runtime::AgentProvider::Claude),
         "ACP revokes when its process exits; Claude retains its session credential"
     );
-    calm_server::claude_planner::stop::fail_claude_planner_stop_for_test(&reset.id);
+    sqlx::query(
+        "CREATE TRIGGER assistant_block_delete BEFORE DELETE ON tracks
+         BEGIN SELECT RAISE(FAIL, 'delete blocked'); END",
+    )
+    .execute(stack.repo().sqlite_db().unwrap().writer_pool())
+    .await
+    .unwrap();
     let (status, response) = stack
         .send("DELETE", &format!("/api/tracks/{track}"), None)
         .await;
-    calm_server::claude_planner::stop::clear_claude_planner_stop_failure_for_test(&reset.id);
+    sqlx::query("DROP TRIGGER assistant_block_delete")
+        .execute(stack.repo().sqlite_db().unwrap().writer_pool())
+        .await
+        .unwrap();
     assert!(!status.is_success(), "{response}");
     assert!(stack.repo().track_get(track).await.unwrap().is_some());
     assert!(
@@ -485,7 +494,7 @@ async fn wait_runtime_outcomes(stack: &Stack, worker: &str, count: usize) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn assistant_provider_shutdown_replay_stops_native_orphans_without_a_registered_harness() {
+async fn assistant_provider_shutdown_replay_preserves_each_provider_cleanup_contract() {
     use calm_types::runtime::{AgentProtocol, AgentProvider};
     use std::os::unix::process::CommandExt;
     for provider in [AgentProvider::Claude, AgentProvider::OpenCode] {
@@ -588,9 +597,10 @@ async fn assistant_provider_shutdown_replay_stops_native_orphans_without_a_regis
         }
         child.wait().await.unwrap();
         assert!(outcome.is_ok(), "{outcome:?}");
-        assert!(
+        assert_eq!(
             stopped,
-            "{provider:?} shutdown replay left its own native orphan alive"
+            provider == AgentProvider::OpenCode,
+            "Claude runtime cleanup uses Engine ownership; ACP retains its native marker until C4.3"
         );
         assert_eq!(
             ["session/new", "session/load", "session/prompt"]

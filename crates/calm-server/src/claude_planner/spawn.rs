@@ -351,13 +351,7 @@ pub(crate) struct InstructionsFile {
 }
 
 impl InstructionsFile {
-    pub(crate) fn write(
-        dir: &Path,
-        worker_session_id: &str,
-        turn_id: &str,
-        text: &str,
-        #[cfg(feature = "fixtures")] fault: Option<InstructionsFault>,
-    ) -> std::result::Result<Self, PreparationFailure<CalmError>> {
+    fn named_path(dir: &Path, worker_session_id: &str, turn_id: &str) -> Result<PathBuf> {
         for part in [worker_session_id, turn_id] {
             if part.is_empty()
                 || !part
@@ -366,11 +360,33 @@ impl InstructionsFile {
             {
                 return Err(CalmError::BadRequest(format!(
                     "{part:?} cannot name a claude planner instructions file"
-                ))
-                .into());
+                )));
             }
         }
-        let path = dir.join(format!("{worker_session_id}-{turn_id}.md"));
+        Ok(dir.join(format!("{worker_session_id}-{turn_id}.md")))
+    }
+    pub(crate) fn remove_for_turn(
+        dir: &Path,
+        worker_session_id: &str,
+        turn_id: &str,
+    ) -> Result<()> {
+        let path = Self::named_path(dir, worker_session_id, turn_id)?;
+        Self::remove_path(&path).map_err(Into::into)
+    }
+    fn remove_path(path: &Path) -> std::io::Result<()> {
+        match std::fs::remove_file(path) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            result => result,
+        }
+    }
+    pub(crate) fn write(
+        dir: &Path,
+        worker_session_id: &str,
+        turn_id: &str,
+        text: &str,
+        #[cfg(feature = "fixtures")] fault: Option<InstructionsFault>,
+    ) -> std::result::Result<Self, PreparationFailure<CalmError>> {
+        let path = Self::named_path(dir, worker_session_id, turn_id)?;
         let mut file = std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -409,10 +425,7 @@ impl InstructionsFile {
     }
 
     pub(crate) fn remove(&self) -> std::io::Result<()> {
-        match std::fs::remove_file(&self.path) {
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            result => result,
-        }
+        Self::remove_path(&self.path)
     }
 }
 

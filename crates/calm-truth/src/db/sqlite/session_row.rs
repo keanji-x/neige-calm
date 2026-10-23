@@ -109,6 +109,8 @@ pub enum ClaudePlannerScope<'a> {
     All,
     /// Every row of one track: before a destructive step on it.
     Track(&'a str),
+    /// Every row owned by one card before deleting it.
+    Card(&'a str),
 }
 
 /// Null the MCP hash of every `(claude, planner)` row in `scope`, in any state, and return their
@@ -118,25 +120,30 @@ pub async fn claude_planner_revoke_tx(
     tx: &mut Transaction<'_, Sqlite>,
     scope: ClaudePlannerScope<'_>,
 ) -> Result<Vec<String>> {
-    let track = match scope {
-        ClaudePlannerScope::All => None,
-        ClaudePlannerScope::Track(track_id) => Some(track_id),
+    let (track, card) = match scope {
+        ClaudePlannerScope::All => (None, None),
+        ClaudePlannerScope::Track(track_id) => (Some(track_id), None),
+        ClaudePlannerScope::Card(card_id) => (None, Some(card_id)),
     };
     let ids: Vec<String> = sqlx::query_scalar(
         r#"SELECT id FROM worker_sessions
             WHERE provider = 'claude' AND contract IN ('planner','assistant')
               AND (?1 IS NULL OR track_id = ?1)
+              AND (?2 IS NULL OR card_id = ?2)
             ORDER BY id"#,
     )
     .bind(track)
+    .bind(card)
     .fetch_all(&mut **tx)
     .await?;
     sqlx::query(
         r#"UPDATE worker_sessions SET mcp_token_hash = NULL
             WHERE provider = 'claude' AND contract IN ('planner','assistant')
-              AND (?1 IS NULL OR track_id = ?1)"#,
+              AND (?1 IS NULL OR track_id = ?1)
+              AND (?2 IS NULL OR card_id = ?2)"#,
     )
     .bind(track)
+    .bind(card)
     .execute(&mut **tx)
     .await?;
     Ok(ids)
@@ -619,6 +626,7 @@ pub async fn session_commit_exit_tx(
     exit_code: Option<i32>,
     exit_interpretation: &str,
 ) -> Result<WorkerSession> {
+    super::provider_execution::require_unclaimed(tx, id.as_str()).await?;
     let from = worker_session_current_state_tx(tx, id).await?;
     if !worker_session_status_transition_allowed(from, to) {
         return Err(CalmError::Conflict(format!(
@@ -666,6 +674,9 @@ pub(super) async fn session_state_transition_at_tx(
     now: i64,
     completed_at_ms: Option<i64>,
 ) -> Result<WorkerSession> {
+    if to.is_terminal() || completed_at_ms.is_some() {
+        super::provider_execution::require_unclaimed(tx, id.as_str()).await?;
+    }
     let from = worker_session_current_state_tx(tx, id).await?;
     if !worker_session_status_transition_allowed(from, to) {
         return Err(CalmError::Conflict(format!(
