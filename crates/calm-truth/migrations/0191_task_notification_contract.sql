@@ -1,0 +1,4 @@
+-- event-wire-version: 31
+-- Task result notification is required for new events. Old rows keep their raw
+-- payload and version because accepted canonical input identities bind both.
+-- This forward-only protocol checkpoint deliberately performs no SQL writes.

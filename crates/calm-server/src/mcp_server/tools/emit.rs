@@ -188,7 +188,10 @@ async fn commit_worker_task_report_for_identity(
     identity: &ToolCallIdentity,
     report: WorkerTaskReport,
 ) -> Result<(), RpcError> {
-    let kind_tag = report.event().kind_tag();
+    let kind_tag = match &report {
+        WorkerTaskReport::Completed { .. } => "task.completed",
+        WorkerTaskReport::Failed { .. } => "task.failed",
+    };
     let result = CardDecisionSink::from_app_context(ctx)
         .commit_worker_task_report(identity, report)
         .await;

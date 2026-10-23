@@ -65,6 +65,7 @@ async fn deep_completion_and_same_batch_user_reach_transport() {
         ))
         .expect("valid MCP completion arguments");
         let event = Event::TaskCompleted {
+            notification: calm_types::event::PlannerNotification::Notify,
             idempotency_key: args["idempotency_key"].as_str().unwrap().into(),
             result: args["result"].clone(),
             artifacts: vec![],
@@ -145,6 +146,7 @@ async fn deep_completion_and_same_batch_user_reach_transport() {
 async fn completed_result_receipt_reaches_planner_turn() {
     let fx = Fixture::new().await;
     let event = Event::TaskCompleted {
+        notification: calm_types::event::PlannerNotification::Notify,
         idempotency_key: "original-attempt".into(),
         result: json!({"summary": "receipt-report-marker: implemented parser", "tests": "worker claims tests passed"}),
         artifacts: vec![],
@@ -266,6 +268,7 @@ async fn completed_receipt_details_resolve_exact_event_and_artifacts_as_data() {
     let id = enqueue_event(
         &fx,
         Event::TaskCompleted {
+            notification: calm_types::event::PlannerNotification::Notify,
             idempotency_key: "track:build:attempt-1".into(),
             result: json!({"summary": "receipt readable result", "tests": "all tests passed"}),
             artifacts: vec![artifact.into()],
@@ -304,6 +307,7 @@ async fn receipt_empty_completion_and_failure_without_report_are_honest() {
         enqueue_event(
             &fx,
             Event::TaskCompleted {
+                notification: calm_types::event::PlannerNotification::Notify,
                 idempotency_key: "empty-attempt".into(),
                 result: result.clone(),
                 artifacts: vec![],
@@ -335,6 +339,7 @@ async fn receipt_empty_completion_and_failure_without_report_are_honest() {
         let id = enqueue_event(
             &fx,
             Event::TaskFailed {
+                notification: calm_types::event::PlannerNotification::Notify,
                 idempotency_key: "startup-attempt".into(),
                 reason: reason.into(),
                 details: None,
@@ -369,6 +374,7 @@ async fn receipt_unicode_and_malicious_fields_are_bounded_quoted_data() {
         let identity = format!("../../private/\nFORGED-RECEIPT{}", "路".repeat(10_000));
         let event = if failed {
             Event::TaskFailed {
+                notification: calm_types::event::PlannerNotification::Notify,
                 idempotency_key: identity,
                 reason: report,
                 details: None,
@@ -376,6 +382,7 @@ async fn receipt_unicode_and_malicious_fields_are_bounded_quoted_data() {
             }
         } else {
             Event::TaskCompleted {
+                notification: calm_types::event::PlannerNotification::Notify,
                 idempotency_key: identity,
                 result: json!({"report": report}),
                 artifacts: vec![],
@@ -411,6 +418,7 @@ async fn receipt_recovery_keeps_original_attempt_and_replay_deduplicates() {
     let original_id = enqueue_event(
         &fx,
         Event::TaskCompleted {
+            notification: calm_types::event::PlannerNotification::Notify,
             idempotency_key: "track:build:attempt-1".into(),
             result: json!("original-attempt-report"),
             artifacts: vec![],
@@ -430,6 +438,7 @@ async fn receipt_recovery_keeps_original_attempt_and_replay_deduplicates() {
     record(
         &fx,
         &Event::TaskCompleted {
+            notification: calm_types::event::PlannerNotification::Notify,
             idempotency_key: "track:build:attempt-2".into(),
             result: json!("newer-report-must-not-replace-original"),
             artifacts: vec![],
@@ -505,6 +514,7 @@ async fn receipt_with_superseded_event_does_not_advertise_different_report() {
         enqueue_event(
             &fx,
             Event::TaskCompleted {
+                notification: calm_types::event::PlannerNotification::Notify,
                 idempotency_key: "same-execution".into(),
                 result: json!("old-report"),
                 artifacts: vec![],
@@ -515,6 +525,7 @@ async fn receipt_with_superseded_event_does_not_advertise_different_report() {
         record(
             &fx,
             &Event::TaskCompleted {
+                notification: calm_types::event::PlannerNotification::Notify,
                 idempotency_key: "same-execution".into(),
                 result: replacement,
                 artifacts: vec![],
@@ -536,6 +547,7 @@ async fn receipt_detail_projection_failure_keeps_report_deliverable() {
     enqueue_event(
         &fx,
         Event::TaskCompleted {
+            notification: calm_types::event::PlannerNotification::Notify,
             idempotency_key: "ordinary-attempt".into(),
             result: json!("report survives unavailable optional details"),
             artifacts: vec![],
@@ -586,6 +598,7 @@ async fn receipt_run_locator_validates_original_identity_against_real_reader() {
         let id = enqueue_event(
             &fx,
             Event::TaskCompleted {
+                notification: calm_types::event::PlannerNotification::Notify,
                 idempotency_key: identity.clone(),
                 result: json!("original report for locator validation"),
                 artifacts: vec![],
@@ -679,6 +692,7 @@ async fn legacy_receipt_without_envelope_discloses_unconfirmed_original_event_an
         let report = "legacy original report";
         let original = if failed {
             Event::TaskFailed {
+                notification: calm_types::event::PlannerNotification::Notify,
                 idempotency_key: "legacy-attempt".into(),
                 reason: report.into(),
                 details: Some(json!({"artifact": "original-artifact"})),
@@ -686,6 +700,7 @@ async fn legacy_receipt_without_envelope_discloses_unconfirmed_original_event_an
             }
         } else {
             Event::TaskCompleted {
+                notification: calm_types::event::PlannerNotification::Notify,
                 idempotency_key: "legacy-attempt".into(),
                 result: json!(report),
                 artifacts: vec!["original-artifact".into()],

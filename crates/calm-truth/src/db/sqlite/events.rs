@@ -53,6 +53,15 @@ mod gated {
         }
     }
 
+    fn require_current_notification(event: &Event) -> Result<()> {
+        if event.task_notification() == Some(calm_types::event::PlannerNotification::Legacy) {
+            return Err(CalmError::Forbidden(
+                "legacy task notification is read-only".into(),
+            ));
+        }
+        Ok(())
+    }
+
     /// Run the role gate with `card → {role, home track}` and `track → area` read live from `tx`, and mint the capability on success.
     pub(in crate::db::sqlite::events) async fn authorize<'a, T>(
         tx: &mut T,
@@ -63,6 +72,7 @@ mod gated {
     where
         T: crate::decision_gate::WriteTx + ?Sized + Send,
     {
+        require_current_notification(event)?;
         crate::decision_gate::enforce_role_resolving_session_from_tx(tx, actor, event, scope)
             .await
             .map_err(|violation| CalmError::Forbidden(violation.to_string()))?;
@@ -82,6 +92,7 @@ mod gated {
         card_role_cache: &crate::card_role_cache::CardRoleCache,
         track_area_cache: &crate::track_area_cache::TrackAreaCache,
     ) -> Result<Authorized<'a>> {
+        require_current_notification(event)?;
         crate::decision_gate::enforce_role_resolving_session(
             tx,
             actor,
@@ -718,7 +729,7 @@ impl RepoEventWrite for SqlxRepo {
                 sw.as_deref(),
                 scard.as_deref(),
             );
-            match Event::from_kind_and_payload(&kind, payload) {
+            match Event::from_stored_kind_and_payload(&kind, payload, event_version) {
                 Ok(ev) => out.push((id, event_version, scope, ev)),
                 Err(e) => {
                     tracing::error!(
@@ -791,11 +802,12 @@ impl RepoEventWrite for SqlxRepo {
             Option<String>, // scope_area
             Option<String>, // scope_track
             Option<String>, // scope_card
+            u32,            // event_version
         );
 
         let mut query = QueryBuilder::<Sqlite>::new(
             r#"SELECT id, kind, payload, actor, at,
-                      scope_kind, scope_area, scope_track, scope_card
+                      scope_kind, scope_area, scope_track, scope_card, event_version
                FROM events
                WHERE scope_track = "#,
         );
@@ -817,7 +829,7 @@ impl RepoEventWrite for SqlxRepo {
             .await?;
 
         let mut out = Vec::with_capacity(rows.len());
-        for (id, kind, payload_text, actor_text, at, sk, sc, sw, scard) in rows {
+        for (id, kind, payload_text, actor_text, at, sk, sc, sw, scard, event_version) in rows {
             // Retired rows remain in raw history and are skipped before decoding.
             if RETIRED_EVENT_KINDS.contains(&kind.as_str()) {
                 continue;
@@ -848,7 +860,7 @@ impl RepoEventWrite for SqlxRepo {
                 sw.as_deref(),
                 scard.as_deref(),
             );
-            match Event::from_kind_and_payload(&kind, payload) {
+            match Event::from_stored_kind_and_payload(&kind, payload, event_version) {
                 Ok(event) => out.push(TrackEvent {
                     id,
                     at,

@@ -8,6 +8,7 @@ fn result(details: &str) -> serde_json::Value {
 
 fn completed(identity: &str, result: serde_json::Value) -> Event {
     Event::TaskCompleted {
+        notification: calm_types::event::PlannerNotification::Notify,
         idempotency_key: identity.into(),
         result,
         artifacts: vec![],

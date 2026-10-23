@@ -46,6 +46,7 @@ fn origin(observation: &str, event_id: Option<i64>) -> Option<HarnessInputOrigin
 
 fn completed(key: &str) -> Event {
     Event::TaskCompleted {
+        notification: calm_types::event::PlannerNotification::Notify,
         idempotency_key: key.into(),
         result: serde_json::json!({"summary": "done"}),
         artifacts: vec![],

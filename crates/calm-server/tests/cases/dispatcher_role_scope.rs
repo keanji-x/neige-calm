@@ -96,6 +96,7 @@ async fn seed_worker_in_track(
 
 fn task_completed(idem: &str) -> Event {
     Event::TaskCompleted {
+        notification: calm_types::event::PlannerNotification::Notify,
         idempotency_key: idem.into(),
         result: serde_json::Value::Null,
         artifacts: Vec::new(),

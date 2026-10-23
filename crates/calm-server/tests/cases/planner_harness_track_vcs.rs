@@ -1696,6 +1696,7 @@ async fn ai_actor_attribution_flows_into_diff_block() {
             Box::new(move |_tx| {
                 Box::pin(async move {
                     Ok(Event::TaskCompleted {
+                        notification: calm_types::event::PlannerNotification::Notify,
                         idempotency_key: "ai-attribution".into(),
                         result: json!({"ok": true}),
                         artifacts: vec![],

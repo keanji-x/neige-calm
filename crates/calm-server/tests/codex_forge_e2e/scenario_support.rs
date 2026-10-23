@@ -103,6 +103,7 @@ pub(super) async fn seed_completed_task_pair(
             &fx.cache,
             &fx.track_area_cache,
             Event::TaskCompleted {
+                notification: calm_types::event::PlannerNotification::Notify,
                 idempotency_key: task_id.clone(),
                 result,
                 artifacts: Vec::new(),

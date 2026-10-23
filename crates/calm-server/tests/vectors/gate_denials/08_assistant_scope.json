@@ -3,7 +3,7 @@
     "description": "Assistant may write in its OWN card scope (#1189 enforce_assistant_scope, self-target arm)",
     "note": "The event kind mirrors 03_worker_scope so the two arms are directly comparable; what the vector pins is the scope decision, not that an assistant is a sensible source of task.completed (it is not dispatched, so the dispatcher's is_worker check drops it).",
     "actor": { "kind": "AiCodex", "id": "$ASSISTANT_CARD" },
-    "event": { "ev": "task.completed", "data": { "idempotency_key": "vec-a-60", "result": null, "artifacts": [], "agent_message": null } },
+    "event": { "ev": "task.completed", "data": { "notification": "notify", "idempotency_key": "vec-a-60", "result": null, "artifacts": [], "agent_message": null } },
     "scope": { "kind": "Card", "id": { "card": "$ASSISTANT_CARD", "track": "$HOME_TRACK", "area": "$HOME_AREA" } },
     "expected": { "decision": "allow" }
   },
@@ -25,35 +25,35 @@
   {
     "description": "Assistant emitting a Track-scoped event is DENIED — this is what pins 'an assistant cannot advance the lifecycle or dispatch'",
     "actor": { "kind": "AiCodex", "id": "$ASSISTANT_CARD" },
-    "event": { "ev": "task.completed", "data": { "idempotency_key": "vec-a-63", "result": null, "artifacts": [], "agent_message": null } },
+    "event": { "ev": "task.completed", "data": { "notification": "notify", "idempotency_key": "vec-a-63", "result": null, "artifacts": [], "agent_message": null } },
     "scope": { "kind": "Track", "id": { "track": "$HOME_TRACK", "area": "$HOME_AREA" } },
     "expected": { "decision": "deny", "error_contains": "assistant card" }
   },
   {
     "description": "Assistant emitting an Area-scoped event is DENIED",
     "actor": { "kind": "AiCodex", "id": "$ASSISTANT_CARD" },
-    "event": { "ev": "task.completed", "data": { "idempotency_key": "vec-a-64", "result": null, "artifacts": [], "agent_message": null } },
+    "event": { "ev": "task.completed", "data": { "notification": "notify", "idempotency_key": "vec-a-64", "result": null, "artifacts": [], "agent_message": null } },
     "scope": { "kind": "Area", "id": { "area": "$HOME_AREA" } },
     "expected": { "decision": "deny", "error_contains": "assistant card" }
   },
   {
     "description": "Assistant emitting a System-scoped event is DENIED",
     "actor": { "kind": "AiCodex", "id": "$ASSISTANT_CARD" },
-    "event": { "ev": "task.completed", "data": { "idempotency_key": "vec-a-65", "result": null, "artifacts": [], "agent_message": null } },
+    "event": { "ev": "task.completed", "data": { "notification": "notify", "idempotency_key": "vec-a-65", "result": null, "artifacts": [], "agent_message": null } },
     "scope": { "kind": "System" },
     "expected": { "decision": "deny", "error_contains": "assistant card" }
   },
   {
     "description": "Assistant writing into another WORKER card's scope (same track) is DENIED — only self + home report card are reachable",
     "actor": { "kind": "AiCodex", "id": "$ASSISTANT_CARD" },
-    "event": { "ev": "task.completed", "data": { "idempotency_key": "vec-a-66", "result": null, "artifacts": [], "agent_message": null } },
+    "event": { "ev": "task.completed", "data": { "notification": "notify", "idempotency_key": "vec-a-66", "result": null, "artifacts": [], "agent_message": null } },
     "scope": { "kind": "Card", "id": { "card": "$OTHER_CARD", "track": "$HOME_TRACK", "area": "$HOME_AREA" } },
     "expected": { "decision": "deny", "error_contains": "assistant card" }
   },
   {
     "description": "Assistant forging scope.track (own card id, foreign track) is DENIED — the #232 anti-spoof check applies to the Assistant arm too",
     "actor": { "kind": "AiCodex", "id": "$ASSISTANT_CARD" },
-    "event": { "ev": "task.completed", "data": { "idempotency_key": "vec-a-67", "result": null, "artifacts": [], "agent_message": null } },
+    "event": { "ev": "task.completed", "data": { "notification": "notify", "idempotency_key": "vec-a-67", "result": null, "artifacts": [], "agent_message": null } },
     "scope": { "kind": "Card", "id": { "card": "$ASSISTANT_CARD", "track": "$OTHER_TRACK", "area": "$HOME_AREA" } },
     "expected": { "decision": "deny", "error_contains": "out of scope scope.track mismatch" }
   },
@@ -61,7 +61,7 @@
     "description": "Assistant forging scope.area (own card, own home track, foreign area) is DENIED — the #234 anti-spoof check applies to the Assistant arm too",
     "note": "scope.track deliberately stays $HOME_TRACK so the track cross-check passes and the area check is the only thing left standing. Without this vector the whole Assistant file stays green even if the arm stopped comparing scope.area against the home track's persisted area.",
     "actor": { "kind": "AiCodex", "id": "$ASSISTANT_CARD" },
-    "event": { "ev": "task.completed", "data": { "idempotency_key": "vec-a-68", "result": null, "artifacts": [], "agent_message": null } },
+    "event": { "ev": "task.completed", "data": { "notification": "notify", "idempotency_key": "vec-a-68", "result": null, "artifacts": [], "agent_message": null } },
     "scope": { "kind": "Card", "id": { "card": "$ASSISTANT_CARD", "track": "$HOME_TRACK", "area": "$OTHER_AREA" } },
     "expected": { "decision": "deny", "error_contains": "out of scope scope.area mismatch" }
   }

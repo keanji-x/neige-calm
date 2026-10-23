@@ -400,7 +400,7 @@ describe('PR4 of #136: dispatcher + task-lifecycle variants', () => {
     // `ArtifactRef` is `#[serde(transparent)]` around `String`, so each element is a bare string.
     const parsed = wireEventSchema.parse({
       ev: 'task.completed',
-      data: {
+      data: { notification: 'notify',
         idempotency_key: 'idem-3',
         result: { summary: 'ok', lines: 42 },
         artifacts: ['a-1', 'a-2'],
@@ -417,7 +417,7 @@ describe('PR4 of #136: dispatcher + task-lifecycle variants', () => {
   it('rejects task.completed missing artifacts array', () => {
     const result = wireEventSchema.safeParse({
       ev: 'task.completed',
-      data: { idempotency_key: 'idem-3', result: {} },
+      data: { notification: 'notify', idempotency_key: 'idem-3', result: {} },
     });
     expect(result.success).toBe(false);
   });
@@ -425,7 +425,7 @@ describe('PR4 of #136: dispatcher + task-lifecycle variants', () => {
   it('parses a valid task.failed', () => {
     const parsed = wireEventSchema.parse({
       ev: 'task.failed',
-      data: {
+      data: { notification: 'notify',
         idempotency_key: 'idem-4',
         reason: 'process exited with code 137',
         details: { pty_output: 'failure\n', pty_output_truncated: false },
@@ -445,9 +445,20 @@ describe('PR4 of #136: dispatcher + task-lifecycle variants', () => {
   it('rejects task.failed missing reason', () => {
     const result = wireEventSchema.safeParse({
       ev: 'task.failed',
-      data: { idempotency_key: 'idem-4' },
+      data: { notification: 'notify', idempotency_key: 'idem-4' },
     });
     expect(result.success).toBe(false);
+  });
+
+  it('requires an explicit task notification declaration', () => {
+    expect(wireEventSchema.safeParse({ ev: 'task.failed', data: {
+      idempotency_key: 'attempt', reason: 'failed',
+    } }).success).toBe(false);
+    for (const notification of ['notify', 'suppress', 'legacy']) {
+      expect(wireEventSchema.safeParse({ ev: 'task.failed', data: {
+        notification, idempotency_key: 'attempt', reason: 'failed',
+      } }).success).toBe(true);
+    }
   });
 
   it('parses a valid plan.updated (#644)', () => {

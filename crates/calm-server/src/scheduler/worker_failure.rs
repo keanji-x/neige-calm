@@ -34,6 +34,7 @@ pub(crate) async fn fail_worker_task_tx(
         ActorId::KernelDispatcher,
         scope,
         Event::TaskFailed {
+            notification: calm_types::event::PlannerNotification::Notify,
             idempotency_key: task.id.clone(),
             reason,
             details: None,

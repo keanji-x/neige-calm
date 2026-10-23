@@ -4,7 +4,8 @@
 # touched permanently invisible to the client's eventVersion gate, and nothing else goes red.
 # R1: no literal exceeds the constant. R2: EVERY literal in the newest stamping migration
 # equals it (not merely the maximum). R3: an `UPDATE events` assigning `kind` must stamp a
-# version strictly above every earlier migration's. Parsing is textual (`--` stripped, `;` splits).
+# version strictly above every earlier migration's. Explicit comment-only
+# event-wire-version checkpoints publish forward-only wire changes without rewriting rows. Parsing is textual (`--` stripped, `;` splits).
 
 set -euo pipefail
 
@@ -22,6 +23,7 @@ exec_statements() { # <file>
 }
 
 file_literals() { # <file>
+  sed -nE 's/^-- event-wire-version: ([0-9]+)$/\1/p' "$1"
   exec_sql "$1" | grep -oP '(?<![\w])event_version\s*=\s*\K[0-9]+' || true
 }
 
@@ -55,6 +57,14 @@ check() { # <rust-file> <migrations-dir>
   local f lits stmt setc s_lits l
 
   for f in "${files[@]}"; do
+    if grep -q 'event-wire-version:' "$f"; then
+      local declarations
+      declarations="$(grep -cE '^-- event-wire-version: [0-9]+$' "$f" || true)"
+      if [ "$declarations" -ne 1 ] || [ "$(grep -c 'event-wire-version:' "$f")" -ne 1 ] || [ -n "$(exec_sql "$f")" ]; then
+        echo "::error::$f: a forward-only wire checkpoint requires one exact declaration and no executable SQL" >&2
+        return 1
+      fi
+    fi
     lits="$(file_literals "$f")"
 
     # R3: every `UPDATE events ... SET ... kind = ...` must stamp, and the
@@ -220,7 +230,8 @@ selftest() {
 
   # 2. Bump ONE migration literal alone, upward. R1 (and R2).
   base="$(fresh_migrations m2)"
-  newest="$(newest_stamping_file "$base")"
+  newest="$base/$(next_migration_prefix "$base")_selftest_stamps.sql"
+  printf 'UPDATE events SET event_version = %s;\n' "$const_v" > "$newest"
   mutate_one_literal "$newest" "$const_v" "$bumped"
   expect_reject "one migration literal bumped alone ($const_v -> $bumped in $(basename "$newest"))" \
     "$tmp/event.rs" "$base" \
@@ -256,13 +267,27 @@ EOF
 
   # 6. Lower exactly ONE literal in the newest stamping migration so the file's MAXIMUM is unchanged; R2, not R3, is under test.
   base="$(fresh_migrations m6)"
-  newest="$(newest_stamping_file "$base")"
+  newest="$base/$(next_migration_prefix "$base")_selftest_stamps.sql"
+  printf 'UPDATE events SET event_version = %s;\nUPDATE events SET event_version = %s;\n' "$const_v" "$const_v" > "$newest"
   mutate_last_literal "$newest" "$const_v" "$lowered"
   expect_reject "one literal lowered in $(basename "$newest") ($const_v -> $lowered), maximum unchanged" \
     "$tmp/event.rs" "$base" \
     "max-equality hides a single decoupled statement; the rows it stamps are not at the version the constant promises"
 
-  echo "OK: selftest — all six single-edit mutations were rejected"
+  # Forward-only checkpoints publish a version without changing source identities.
+  base="$(fresh_migrations m7)"
+  fixture="$base/$(next_migration_prefix "$base")_selftest_forward.sql"
+  printf '%s\n' "-- event-wire-version: $bumped" > "$fixture"
+  check "$tmp/event_bumped.rs" "$base" >/dev/null
+  printf '%s\n' "-- event-wire-version: $bumped" >> "$fixture"
+  expect_reject "duplicate wire declaration" "$tmp/event_bumped.rs" "$base" "ambiguous checkpoint"
+  printf '%s\n' "-- event-wire-version: $bumped" 'SELECT 1;' > "$fixture"
+  expect_reject "wire declaration mixed with SQL" "$tmp/event_bumped.rs" "$base" "checkpoint is forward-only"
+  printf '%s\n' "-- event-wire-version: $bumped" > "$fixture"
+  fixture="$base/$(next_migration_prefix "$base")_selftest_rewrite.sql"
+  printf "UPDATE events SET kind = 'selftest.new', event_version = %s;\n" "$bumped" > "$fixture"
+  expect_reject "kind rewrite reuses forward-only version" "$tmp/event_bumped.rs" "$base" "published wire floor includes checkpoints"
+  echo "OK: selftest — stamping and forward-only version contracts hold"
 }
 
 if [ "${1:-}" = "--selftest" ]; then

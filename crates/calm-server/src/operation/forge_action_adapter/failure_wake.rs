@@ -48,16 +48,7 @@ pub(super) async fn event_tx(
 }
 
 fn wakes_on_failure(kind: Option<&str>) -> bool {
-    matches!(
-        kind,
-        Some(
-            "forge.scan.completed"
-                | "forge.pr.opened"
-                | "forge.pr.checks"
-                | "forge.issue.closed"
-                | "forge.pr.merged"
-        )
-    )
+    kind.is_some_and(calm_types::forge_action::notifies_planner)
 }
 
 #[test]

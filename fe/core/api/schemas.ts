@@ -469,6 +469,7 @@ export const terminalWorkerRequestedSchema = z.object({
 export const taskCompletedSchema = z.object({
   ev: z.literal('task.completed'),
   data: z.object({
+    notification: z.enum(['notify', 'suppress', 'legacy']),
     idempotency_key: z.string(),
     result: z.unknown(),
     artifacts: z.array(z.string()),
@@ -480,6 +481,7 @@ export const taskCompletedSchema = z.object({
 export const taskFailedSchema = z.object({
   ev: z.literal('task.failed'),
   data: z.object({
+    notification: z.enum(['notify', 'suppress', 'legacy']),
     idempotency_key: z.string(),
     reason: z.string(),
     details: z.unknown().optional(),

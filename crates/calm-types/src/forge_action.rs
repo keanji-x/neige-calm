@@ -108,3 +108,17 @@ pub const SUPPORTED_FORGE_EVENT_KINDS: &[&str] = &[
     "worktree.committed",
     "worktree.removed",
 ];
+
+/// Forge results whose lifecycle continues in the Planner. Receipt-only calls
+/// return directly to their caller and do not create another Planner turn.
+pub const PLANNER_RESULT_KINDS: &[&str] = &[
+    "forge.scan.completed",
+    "forge.pr.opened",
+    "forge.pr.checks",
+    "forge.issue.closed",
+    "forge.pr.merged",
+];
+
+pub fn notifies_planner(kind: &str) -> bool {
+    PLANNER_RESULT_KINDS.contains(&kind)
+}

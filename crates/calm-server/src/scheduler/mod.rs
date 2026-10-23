@@ -703,6 +703,7 @@ impl Scheduler {
                             return Err(race_lost_err());
                         }
                         let event = Event::TaskCompleted {
+ notification: if target_status == "done" { calm_types::event::PlannerNotification::Notify } else { calm_types::event::PlannerNotification::Suppress },
                             idempotency_key: snapshot.task_id,
                             result: json!({
                                 "source": "child-track",
@@ -730,6 +731,7 @@ impl Scheduler {
                             return Err(race_lost_err());
                         }
                         let event = Event::TaskFailed {
+ notification: calm_types::event::PlannerNotification::Notify,
                             idempotency_key: snapshot.task_id,
                             reason: format!(
                                 "child-track-incomplete: {} pending task(s) remain",
@@ -756,6 +758,7 @@ impl Scheduler {
                         return Err(race_lost_err());
                     }
                     let event = Event::TaskFailed {
+ notification: calm_types::event::PlannerNotification::Notify,
                         idempotency_key: snapshot.task_id,
                         reason: "child-track-deleted: child track was deleted".into(),
                         details: None,
@@ -1397,6 +1400,7 @@ impl Scheduler {
                     events.push((
                         scope,
                         Event::TaskFailed {
+                            notification: calm_types::event::PlannerNotification::Notify,
                             idempotency_key: task_id,
                             reason,
                             details: None,
@@ -2203,6 +2207,11 @@ pub async fn complete_terminal_task(
                         1
                     },
                     Event::TaskCompleted {
+                        notification: if flip == SuccessReportFlip::Done {
+                            calm_types::event::PlannerNotification::Notify
+                        } else {
+                            calm_types::event::PlannerNotification::Suppress
+                        },
                         idempotency_key: task_id.clone(),
                         result: json!({
                             "exit_code": 0,
@@ -2239,6 +2248,7 @@ pub async fn complete_terminal_task(
                     )
                     .await?,
                     Event::TaskFailed {
+                        notification: calm_types::event::PlannerNotification::Notify,
                         idempotency_key: task_id.clone(),
                         reason,
                         details: Some(json!({

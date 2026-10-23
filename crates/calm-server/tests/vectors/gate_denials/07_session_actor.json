@@ -2,14 +2,14 @@
   {
     "description": "AiCodexSession(worker session) may report task.completed in its resolved worker card scope",
     "actor": { "kind": "AiCodexSession", "id": "$WORKER_SESSION" },
-    "event": { "ev": "task.completed", "data": { "idempotency_key": "vec-s-52", "result": null, "artifacts": [], "agent_message": null } },
+    "event": { "ev": "task.completed", "data": { "notification": "notify", "idempotency_key": "vec-s-52", "result": null, "artifacts": [], "agent_message": null } },
     "scope": { "kind": "Card", "id": { "card": "$WORKER_CARD", "track": "$HOME_TRACK", "area": "$HOME_AREA" } },
     "expected": { "decision": "allow" }
   },
   {
     "description": "AiCodexSession(worker session) writing into another card and track scope is refused after session resolution",
     "actor": { "kind": "AiCodexSession", "id": "$WORKER_SESSION" },
-    "event": { "ev": "task.completed", "data": { "idempotency_key": "vec-s-53", "result": null, "artifacts": [], "agent_message": null } },
+    "event": { "ev": "task.completed", "data": { "notification": "notify", "idempotency_key": "vec-s-53", "result": null, "artifacts": [], "agent_message": null } },
     "scope": { "kind": "Card", "id": { "card": "$OTHER_CARD", "track": "$OTHER_TRACK", "area": "$OTHER_AREA" } },
     "expected": { "decision": "deny", "error_contains": "scope.card mismatch" }
   },
@@ -30,28 +30,28 @@
   {
     "description": "AiCodexSession(unknown session) is refused before card authority is inferred",
     "actor": { "kind": "AiCodexSession", "id": "$UNKNOWN_SESSION" },
-    "event": { "ev": "task.completed", "data": { "idempotency_key": "vec-s-56", "result": null, "artifacts": [], "agent_message": null } },
+    "event": { "ev": "task.completed", "data": { "notification": "notify", "idempotency_key": "vec-s-56", "result": null, "artifacts": [], "agent_message": null } },
     "scope": { "kind": "System" },
     "expected": { "decision": "deny", "error_contains": "has no live worker_sessions row" }
   },
   {
     "description": "AiCodexSession(terminal session) is refused because terminal states carry no active authority",
     "actor": { "kind": "AiCodexSession", "id": "$TERMINAL_SESSION" },
-    "event": { "ev": "task.completed", "data": { "idempotency_key": "vec-s-57", "result": null, "artifacts": [], "agent_message": null } },
+    "event": { "ev": "task.completed", "data": { "notification": "notify", "idempotency_key": "vec-s-57", "result": null, "artifacts": [], "agent_message": null } },
     "scope": { "kind": "System" },
     "expected": { "decision": "deny", "error_contains": "not in an active-authority state" }
   },
   {
     "description": "AiCodexSession(cardless session) is refused before synthetic card actor delegation",
     "actor": { "kind": "AiCodexSession", "id": "$CARDLESS_SESSION" },
-    "event": { "ev": "task.completed", "data": { "idempotency_key": "vec-s-58", "result": null, "artifacts": [], "agent_message": null } },
+    "event": { "ev": "task.completed", "data": { "notification": "notify", "idempotency_key": "vec-s-58", "result": null, "artifacts": [], "agent_message": null } },
     "scope": { "kind": "System" },
     "expected": { "decision": "deny", "error_contains": "has no live worker_sessions row" }
   },
   {
     "description": "AiPlannerSession over a Worker-roled session is refused before ordinary card-scoped writes",
     "actor": { "kind": "AiPlannerSession", "id": "$WORKER_SESSION" },
-    "event": { "ev": "task.completed", "data": { "idempotency_key": "vec-s-59", "result": null, "artifacts": [], "agent_message": null } },
+    "event": { "ev": "task.completed", "data": { "notification": "notify", "idempotency_key": "vec-s-59", "result": null, "artifacts": [], "agent_message": null } },
     "scope": { "kind": "Card", "id": { "card": "$WORKER_CARD", "track": "$HOME_TRACK", "area": "$HOME_AREA" } },
     "expected": { "decision": "deny", "error_contains": "claims planner authority" }
   }

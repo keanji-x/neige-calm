@@ -18,7 +18,7 @@ pub(crate) async fn observations_since(
     let rows = repo
         .events_for_track(
             track_id.as_str(),
-            dispatcher::PLANNER_CATCH_UP_KINDS,
+            &dispatcher::PLANNER_CATCH_UP_KINDS,
             Some(watermark),
         )
         .await?;

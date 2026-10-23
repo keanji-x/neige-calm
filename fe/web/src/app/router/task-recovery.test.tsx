@@ -88,7 +88,7 @@ function setup(mode: 'awaiting' | 'dispatched' | 'event-advance' | 'dependency' 
   }, advance: (status: string) => {
     current = { ...next, status, worker_card_id: 'new-worker' };
     const event = wireEventSchema.parse(status === 'done'
-      ? { ev: 'task.completed', data: { idempotency_key: current.attempt_id, result: {}, artifacts: [] } }
+      ? { ev: 'task.completed', data: { notification: 'notify', idempotency_key: current.attempt_id, result: {}, artifacts: [] } }
       : { ev: 'task.dispatched', data: { idempotency_key: current.attempt_id, kind: 'codex' } });
     applyEventEffects(client, reduceEventFrame(initialEventState(null), {
       type: 'event', event, meta: { id: requests.length + 1, eventVersion: 1 },

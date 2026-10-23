@@ -200,12 +200,14 @@ mod tests {
         use crate::event::Event;
 
         let completed = Event::TaskCompleted {
+            notification: calm_types::event::PlannerNotification::Notify,
             idempotency_key: "k".into(),
             result: serde_json::Value::Null,
             artifacts: Vec::new(),
             agent_message: None,
         };
         let failed = Event::TaskFailed {
+            notification: calm_types::event::PlannerNotification::Notify,
             idempotency_key: "k".into(),
             reason: "e".into(),
             details: None,

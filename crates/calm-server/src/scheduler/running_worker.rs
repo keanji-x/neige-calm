@@ -298,6 +298,7 @@ impl Scheduler {
                         ActorId::KernelDispatcher,
                         scope.clone(),
                         Event::TaskFailed {
+ notification: calm_types::event::PlannerNotification::Notify,
                             idempotency_key: task_id.clone(),
                             reason,
                             details: None,

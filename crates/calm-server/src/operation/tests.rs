@@ -665,11 +665,12 @@ async fn a_committed_prepare_leaves_no_lease_to_mark_the_row_stuck_from_pending(
     assert_eq!(prepared.phase, Phase::TxCommitted);
 
     let stuck = repo
-        .mark_stuck(
+        .settle_claimed(
             &op,
-            "operation drive failed: after the commit".into(),
-            PhaseTag::Pending,
-            None,
+            crate::operation::TerminalOutcome::Stuck {
+                reason: "operation drive failed: after the commit".into(),
+                from_phase: PhaseTag::Pending,
+            },
             &TestParkingAdapter {
                 observer_runs: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
                 record_artifacts: false,
@@ -773,6 +774,7 @@ async fn stale_driver_cannot_win_final_transition_after_reclaim() {
     sqlx::query(
         r#"UPDATE operations
                SET phase = 'spawn_succeeded',
+                   tx_output_json = ?4,
                    lease_owner = 'driver-a',
                    lease_until_ms = ?1,
                    updated_at_ms = ?2
@@ -781,6 +783,9 @@ async fn stale_driver_cannot_win_final_transition_after_reclaim() {
     .bind(now - 1)
     .bind(now)
     .bind(&op_id)
+    .bind(
+        serde_json::to_string(&TxOutput::new("unknown", None, json!({"completed":true}))).unwrap(),
+    )
     .execute(sqlx_repo.pool())
     .await
     .unwrap();
@@ -793,18 +798,34 @@ async fn stale_driver_cannot_win_final_transition_after_reclaim() {
     assert_ne!(driver_b.lease_owner, stale_driver.lease_owner);
 
     let stale = repo
-        .set_phase(&stale_driver, Phase::Succeeded, None)
+        .settle_claimed(
+            &stale_driver,
+            TerminalOutcome::Succeeded,
+            &TestParkingAdapter {
+                observer_runs: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                record_artifacts: false,
+                steal_lease_after_artifacts: false,
+            },
+        )
         .await
         .unwrap()
         .applied();
     assert!(stale.is_none(), "driver A's stale final transition loses");
     let winner = repo
-        .set_phase(&driver_b, Phase::Succeeded, None)
+        .settle_claimed(
+            &driver_b,
+            TerminalOutcome::Succeeded,
+            &TestParkingAdapter {
+                observer_runs: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                record_artifacts: false,
+                steal_lease_after_artifacts: false,
+            },
+        )
         .await
         .unwrap()
         .applied()
         .expect("driver B owns the final transition");
-    assert_eq!(winner.phase, Phase::Succeeded);
+    assert!(matches!(winner.outcome, OperationOutcome::Succeeded { .. }));
 
     let stored = repo.get_operation(&op_id).await.unwrap().unwrap();
     assert_eq!(stored.phase, Phase::Succeeded);
@@ -922,12 +943,13 @@ async fn completion_clears_lease_so_claimed_deadline_write_loses_ordering_b() {
     tx.commit().await.unwrap();
 
     assert!(
-        repo.mark_failed(
+        repo.settle_claimed(
             &claimed,
-            "deadline".into(),
-            PhaseTag::Parked,
-            Some("parked_deadline".into()),
-            None,
+            crate::operation::TerminalOutcome::Failed {
+                last_error: "deadline".into(),
+                from_phase: PhaseTag::Parked,
+                last_error_class: Some("parked_deadline".into())
+            },
             &TestParkingAdapter {
                 observer_runs: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
                 record_artifacts: false,

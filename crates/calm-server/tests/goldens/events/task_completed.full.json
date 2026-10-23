@@ -11,7 +11,8 @@
         "artifact://report.md",
         "artifact://diff.patch"
       ],
-      "agent_message": "worker finished"
+      "agent_message": "worker finished",
+      "notification": "notify"
     }
   }
 }

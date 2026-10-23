@@ -224,38 +224,13 @@ impl OperationRepo for ReverseSpawnClaimRepo {
         self.inner.update_compensation_state(op, state).await
     }
 
-    async fn mark_failed(
+    async fn settle_claimed(
         &self,
         op: &Operation,
-        last_error: String,
-        from_phase: calm_server::operation::PhaseTag,
-        last_error_class: Option<String>,
-        owner_key: Option<&'static str>,
+        outcome: calm_server::operation::TerminalOutcome,
         adapter: &dyn ProviderAdapter,
     ) -> CalmResult<calm_server::operation::LeaveWrite<OperationResult>> {
-        self.inner
-            .mark_failed(
-                op,
-                last_error,
-                from_phase,
-                last_error_class,
-                owner_key,
-                adapter,
-            )
-            .await
-    }
-
-    async fn mark_stuck(
-        &self,
-        op: &Operation,
-        reason: String,
-        from_phase: calm_server::operation::PhaseTag,
-        owner_key: Option<&'static str>,
-        adapter: &dyn ProviderAdapter,
-    ) -> CalmResult<calm_server::operation::LeaveWrite<OperationResult>> {
-        self.inner
-            .mark_stuck(op, reason, from_phase, owner_key, adapter)
-            .await
+        self.inner.settle_claimed(op, outcome, adapter).await
     }
 }
 
@@ -375,38 +350,13 @@ impl OperationRepo for DriveErrorOnceRepo {
         self.inner.update_compensation_state(op, state).await
     }
 
-    async fn mark_failed(
+    async fn settle_claimed(
         &self,
         op: &Operation,
-        last_error: String,
-        from_phase: calm_server::operation::PhaseTag,
-        last_error_class: Option<String>,
-        owner_key: Option<&'static str>,
+        outcome: calm_server::operation::TerminalOutcome,
         adapter: &dyn ProviderAdapter,
     ) -> CalmResult<calm_server::operation::LeaveWrite<OperationResult>> {
-        self.inner
-            .mark_failed(
-                op,
-                last_error,
-                from_phase,
-                last_error_class,
-                owner_key,
-                adapter,
-            )
-            .await
-    }
-
-    async fn mark_stuck(
-        &self,
-        op: &Operation,
-        reason: String,
-        from_phase: calm_server::operation::PhaseTag,
-        owner_key: Option<&'static str>,
-        adapter: &dyn ProviderAdapter,
-    ) -> CalmResult<calm_server::operation::LeaveWrite<OperationResult>> {
-        self.inner
-            .mark_stuck(op, reason, from_phase, owner_key, adapter)
-            .await
+        self.inner.settle_claimed(op, outcome, adapter).await
     }
 }
 

@@ -53,22 +53,27 @@ pub(crate) const PLANNER_WAKE_AUTHORS: &[EditAuthor] =
 
 /// The event kinds `event_warrants_planner_push_with_role` can answer `true` for — exactly the
 /// rows the boot catch-up reads back from the events table.
-pub(crate) const PLANNER_CATCH_UP_KINDS: &[&str] = &[
-    "task.completed",
-    "task.failed",
-    "task.git_delivery_settled",
-    "task.gate_result",
-    "track.report_edited",
-    "track.wake_requested",
-    "forge.scan.completed",
-    "forge.pr.opened",
-    "forge.pr.checks",
-    "forge.issue.closed",
-    "forge.pr.merged",
-    "ask.answered",
-    "codex.hook",
-    "claude.hook",
-];
+pub(crate) static PLANNER_CATCH_UP_KINDS: std::sync::LazyLock<Vec<&'static str>> =
+    std::sync::LazyLock::new(|| {
+        [
+            "task.completed",
+            "task.failed",
+            "task.git_delivery_settled",
+            "task.gate_result",
+            "track.report_edited",
+            "track.wake_requested",
+            "ask.answered",
+            "codex.hook",
+            "claude.hook",
+        ]
+        .into_iter()
+        .chain(
+            calm_types::forge_action::PLANNER_RESULT_KINDS
+                .iter()
+                .copied(),
+        )
+        .collect()
+    });
 
 /// Subscribed kinds that only poke the plan scheduler or the task-context monitor;
 /// disjoint from `PLANNER_CATCH_UP_KINDS`.
@@ -103,6 +108,9 @@ pub(crate) fn event_warrants_planner_push_with_role(
     actor: &ActorId,
     mut role_for_card: impl FnMut(&CardId) -> Option<CardRole>,
 ) -> bool {
+    if calm_types::forge_action::notifies_planner(event.kind_tag()) {
+        return true;
+    }
     match event {
         Event::TaskCompleted { .. } | Event::TaskFailed { .. } => {
             // Not a planner author, whether card-keyed or session-keyed.
@@ -122,18 +130,19 @@ pub(crate) fn event_warrants_planner_push_with_role(
         Event::TrackReportEdited { author, .. } => PLANNER_WAKE_AUTHORS.contains(author),
         // Kernel-only at the role gate; waking the Planner is the event's only purpose.
         Event::TrackWakeRequested { .. } => true,
-        Event::ForgePrMerged { .. }
-        | Event::ForgeScanCompleted { .. }
-        | Event::ForgePrOpened { .. }
-        | Event::ForgePrChecks { .. }
-        | Event::ForgeIssueClosed { .. } => true,
         // User-only at the role gate: the user's answer is the wake the question waits for.
         // A `hold` ask's answer resolves to no observation (`ask_answered::observation`), so the
         // turn it paused is not woken twice; live push and boot catch-up share that reading.
         Event::AskAnswered { .. } => true,
         // These tools wait for their result: the caller already has the receipt. Keep the
         // events for the timeline/notifications, but do not schedule another Planner turn.
-        Event::AskRequested { .. } | Event::ForgePrPublished { .. } => false,
+        Event::AskRequested { .. }
+        | Event::ForgePrPublished { .. }
+        | Event::ForgePrMerged { .. }
+        | Event::ForgeScanCompleted { .. }
+        | Event::ForgePrOpened { .. }
+        | Event::ForgePrChecks { .. }
+        | Event::ForgeIssueClosed { .. } => false,
         // The harness that withdrew the ask is the one it would wake.
         Event::AskWithdrawn { .. } => false,
         // Planner-only at the role gate: the Planner asked for the re-run, and the gate result

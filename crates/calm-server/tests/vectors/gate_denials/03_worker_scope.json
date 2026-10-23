@@ -2,63 +2,63 @@
   {
     "description": "AiCodex worker may report task.completed in its own card scope (dispatcher push delivery path)",
     "actor": { "kind": "AiCodex", "id": "$WORKER_CARD" },
-    "event": { "ev": "task.completed", "data": { "idempotency_key": "vec-w-21", "result": null, "artifacts": [], "agent_message": null } },
+    "event": { "ev": "task.completed", "data": { "notification": "notify", "idempotency_key": "vec-w-21", "result": null, "artifacts": [], "agent_message": null } },
     "scope": { "kind": "Card", "id": { "card": "$WORKER_CARD", "track": "$HOME_TRACK", "area": "$HOME_AREA" } },
     "expected": { "decision": "allow" }
   },
   {
     "description": "AiClaude worker may report task.completed in its own card scope",
     "actor": { "kind": "AiClaude", "id": "$CLAUDE_WORKER_CARD" },
-    "event": { "ev": "task.completed", "data": { "idempotency_key": "vec-w-22", "result": null, "artifacts": [], "agent_message": null } },
+    "event": { "ev": "task.completed", "data": { "notification": "notify", "idempotency_key": "vec-w-22", "result": null, "artifacts": [], "agent_message": null } },
     "scope": { "kind": "Card", "id": { "card": "$CLAUDE_WORKER_CARD", "track": "$HOME_TRACK", "area": "$HOME_AREA" } },
     "expected": { "decision": "allow" }
   },
   {
     "description": "AiCodex worker emitting a Track-scoped event is refused (scope broader than own card)",
     "actor": { "kind": "AiCodex", "id": "$WORKER_CARD" },
-    "event": { "ev": "task.completed", "data": { "idempotency_key": "vec-w-23", "result": null, "artifacts": [], "agent_message": null } },
+    "event": { "ev": "task.completed", "data": { "notification": "notify", "idempotency_key": "vec-w-23", "result": null, "artifacts": [], "agent_message": null } },
     "scope": { "kind": "Track", "id": { "track": "$HOME_TRACK", "area": "$HOME_AREA" } },
     "expected": { "decision": "deny", "error_contains": "is out of scope" }
   },
   {
     "description": "AiCodex worker emitting an Area-scoped event is refused",
     "actor": { "kind": "AiCodex", "id": "$WORKER_CARD" },
-    "event": { "ev": "task.completed", "data": { "idempotency_key": "vec-w-24", "result": null, "artifacts": [], "agent_message": null } },
+    "event": { "ev": "task.completed", "data": { "notification": "notify", "idempotency_key": "vec-w-24", "result": null, "artifacts": [], "agent_message": null } },
     "scope": { "kind": "Area", "id": { "area": "$HOME_AREA" } },
     "expected": { "decision": "deny", "error_contains": "is out of scope" }
   },
   {
     "description": "AiCodex worker emitting a System-scoped event is refused",
     "actor": { "kind": "AiCodex", "id": "$WORKER_CARD" },
-    "event": { "ev": "task.completed", "data": { "idempotency_key": "vec-w-25", "result": null, "artifacts": [], "agent_message": null } },
+    "event": { "ev": "task.completed", "data": { "notification": "notify", "idempotency_key": "vec-w-25", "result": null, "artifacts": [], "agent_message": null } },
     "scope": { "kind": "System" },
     "expected": { "decision": "deny", "error_contains": "is out of scope" }
   },
   {
     "description": "AiCodex worker writing into ANOTHER card's scope (same track) is refused — per-card-id strict",
     "actor": { "kind": "AiCodex", "id": "$WORKER_CARD" },
-    "event": { "ev": "task.completed", "data": { "idempotency_key": "vec-w-26", "result": null, "artifacts": [], "agent_message": null } },
+    "event": { "ev": "task.completed", "data": { "notification": "notify", "idempotency_key": "vec-w-26", "result": null, "artifacts": [], "agent_message": null } },
     "scope": { "kind": "Card", "id": { "card": "$OTHER_CARD", "track": "$HOME_TRACK", "area": "$HOME_AREA" } },
     "expected": { "decision": "deny", "error_contains": "is out of scope" }
   },
   {
     "description": "AiCodex worker forging scope.track (own card id, foreign track) is refused (#232 fan-out spoof)",
     "actor": { "kind": "AiCodex", "id": "$WORKER_CARD" },
-    "event": { "ev": "task.completed", "data": { "idempotency_key": "vec-w-27", "result": null, "artifacts": [], "agent_message": null } },
+    "event": { "ev": "task.completed", "data": { "notification": "notify", "idempotency_key": "vec-w-27", "result": null, "artifacts": [], "agent_message": null } },
     "scope": { "kind": "Card", "id": { "card": "$WORKER_CARD", "track": "$OTHER_TRACK", "area": "$HOME_AREA" } },
     "expected": { "decision": "deny", "error_contains": "scope.track mismatch" }
   },
   {
     "description": "AiCodex worker forging scope.area (own card id + home track, foreign area) is refused (#234 cross-area spoof)",
     "actor": { "kind": "AiCodex", "id": "$WORKER_CARD" },
-    "event": { "ev": "task.completed", "data": { "idempotency_key": "vec-w-28", "result": null, "artifacts": [], "agent_message": null } },
+    "event": { "ev": "task.completed", "data": { "notification": "notify", "idempotency_key": "vec-w-28", "result": null, "artifacts": [], "agent_message": null } },
     "scope": { "kind": "Card", "id": { "card": "$WORKER_CARD", "track": "$HOME_TRACK", "area": "$OTHER_AREA" } },
     "expected": { "decision": "deny", "error_contains": "scope.area mismatch" }
   },
   {
     "description": "AiClaude worker emitting a Track-scoped event is refused (scope rule is actor-variant agnostic for workers)",
     "actor": { "kind": "AiClaude", "id": "$CLAUDE_WORKER_CARD" },
-    "event": { "ev": "task.completed", "data": { "idempotency_key": "vec-w-29", "result": null, "artifacts": [], "agent_message": null } },
+    "event": { "ev": "task.completed", "data": { "notification": "notify", "idempotency_key": "vec-w-29", "result": null, "artifacts": [], "agent_message": null } },
     "scope": { "kind": "Track", "id": { "track": "$HOME_TRACK", "area": "$HOME_AREA" } },
     "expected": { "decision": "deny", "error_contains": "is out of scope" }
   }

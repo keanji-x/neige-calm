@@ -321,6 +321,7 @@ async fn fail_lease_attempt_tx(
         actor,
         scope,
         Event::TaskFailed {
+            notification: calm_types::event::PlannerNotification::Notify,
             idempotency_key: attempt_id,
             reason: BOOT_RECLAIM_REASON.to_string(),
             details: None,

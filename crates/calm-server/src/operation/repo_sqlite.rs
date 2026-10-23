@@ -11,9 +11,8 @@ use crate::model::{new_id, now_ms};
 
 use super::{
     CompensationStateVersioned, OPERATION_LEASE_MS, Operation, OperationId, OperationKey,
-    OperationOutcome, OperationRepo, OperationResult, Phase, PhaseTag, ProviderAdapter,
-    SpawnArtifacts, TxOutput, idempotency_payload_conflict, operation_result_from,
-    required_lease_owner,
+    OperationRepo, OperationResult, Phase, ProviderAdapter, SpawnArtifacts, TxOutput,
+    idempotency_payload_conflict, operation_result_from, required_lease_owner,
 };
 
 #[cfg(any(test, feature = "fixtures"))]
@@ -344,6 +343,14 @@ impl OperationRepo for SqlxOperationRepo {
         phase: Phase,
         owner_key: Option<&'static str>,
     ) -> Result<super::LeaveWrite<Operation>> {
+        if matches!(
+            phase,
+            Phase::Succeeded | Phase::Failed | Phase::Stuck { .. }
+        ) {
+            return Err(CalmError::Internal(
+                "terminal phase requires settlement".into(),
+            ));
+        }
         if matches!(phase, Phase::AwaitingRetry { .. })
             && !matches!(op.phase, Phase::AppServerInteract { .. })
         {
@@ -359,25 +366,18 @@ impl OperationRepo for SqlxOperationRepo {
         }
         let (tag, detail) = phase.serialize_split();
         let detail_text = optional_json_text(detail.as_ref())?;
-        let completed_at = matches!(
-            phase,
-            Phase::Succeeded | Phase::Failed | Phase::Stuck { .. }
-        )
-        .then(now_ms);
         let result = sqlx::query(
             r#"UPDATE operations
                SET phase = ?1,
                    phase_detail_json = ?2,
                    lease_owner = NULL,
                    lease_until_ms = NULL,
-                   completed_at_ms = COALESCE(?3, completed_at_ms),
-                   updated_at_ms = ?4
-               WHERE id = ?5
-                 AND lease_owner = ?6"#,
+                   updated_at_ms = ?3
+               WHERE id = ?4
+                 AND lease_owner = ?5"#,
         )
         .bind(tag.as_str())
         .bind(detail_text)
-        .bind(completed_at)
         .bind(now_ms())
         .bind(&op.id)
         .bind(required_lease_owner(op)?)
@@ -498,118 +498,24 @@ impl OperationRepo for SqlxOperationRepo {
             .ok_or_else(|| CalmError::Internal(format!("operation {} vanished", op.id)))
     }
 
-    async fn mark_failed(
+    async fn settle_claimed(
         &self,
         op: &Operation,
-        last_error: String,
-        from_phase: PhaseTag,
-        last_error_class: Option<String>,
-        owner_key: Option<&'static str>,
+        outcome: super::TerminalOutcome,
         adapter: &dyn ProviderAdapter,
     ) -> Result<super::LeaveWrite<OperationResult>> {
         let mut tx = begin_immediate_tx(&self.pool).await?;
         if !has_live_claim_tx(&mut tx, op).await? {
             return Ok(super::LeaveWrite::ClaimLost);
         }
-        if writes::retain_owned_tx(&mut tx, op, owner_key).await? {
+        if writes::retain_owned_tx(&mut tx, op, adapter.owns_parked_resource()).await? {
             tx.commit().await?;
             return Ok(super::LeaveWrite::Retained);
         }
-        let now = now_ms();
-        let result = sqlx::query(
-            r#"UPDATE operations
-               SET phase = 'failed',
-                   phase_detail_json = ?1,
-                   last_error = ?2,
-                   lease_owner = NULL,
-                   lease_until_ms = NULL,
-                   completed_at_ms = ?3,
-                   updated_at_ms = ?3
-               WHERE id = ?4
-                 AND lease_owner = ?5"#,
-        )
-        .bind(serde_json::to_string(&json!({
-            "from_phase": from_phase,
-            "last_error_class": last_error_class,
-        }))?)
-        .bind(&last_error)
-        .bind(now)
-        .bind(&op.id)
-        .bind(required_lease_owner(op)?)
-        .execute(&mut **tx)
-        .await?;
-        if result.rows_affected() == 0 {
-            return Ok(super::LeaveWrite::ClaimLost);
-        }
-        if let Some(event) = adapter.failure_event_tx(&mut tx, op, &last_error).await? {
-            // The canonical Dispatcher's persisted-prefix reconciliation delivers even
-            // when no live observer exists for this pre-ownership failure.
-            super::owned_parked::append_owner_event_tx(&mut tx, event).await?;
-        }
+        let result = super::settlement::write_terminal_tx(&mut tx, op, &outcome).await?;
+        super::settlement::append_result_event_tx(&mut tx, op, adapter, &outcome, None).await?;
         tx.commit().await?;
-        Ok(super::LeaveWrite::Applied(OperationResult {
-            op_id: op.id.clone(),
-            outcome: OperationOutcome::Failed {
-                last_error,
-                from_phase,
-                last_error_class,
-            },
-        }))
-    }
-
-    async fn mark_stuck(
-        &self,
-        op: &Operation,
-        reason: String,
-        from_phase: PhaseTag,
-        owner_key: Option<&'static str>,
-        adapter: &dyn ProviderAdapter,
-    ) -> Result<super::LeaveWrite<OperationResult>> {
-        let mut tx = begin_immediate_tx(&self.pool).await?;
-        if !has_live_claim_tx(&mut tx, op).await? {
-            return Ok(super::LeaveWrite::ClaimLost);
-        }
-        if writes::retain_owned_tx(&mut tx, op, owner_key).await? {
-            tx.commit().await?;
-            return Ok(super::LeaveWrite::Retained);
-        }
-        let now = now_ms();
-        let result = sqlx::query(
-            r#"UPDATE operations
-               SET phase = 'stuck',
-                   phase_detail_json = ?1,
-                   last_error = ?2,
-                   lease_owner = NULL,
-                   lease_until_ms = NULL,
-                   completed_at_ms = ?3,
-                   updated_at_ms = ?3
-               WHERE id = ?4
-                 AND lease_owner = ?5"#,
-        )
-        .bind(serde_json::to_string(&json!({
-            "reason": reason,
-            "since": now,
-            "from_phase": from_phase,
-        }))?)
-        .bind(&reason)
-        .bind(now)
-        .bind(&op.id)
-        .bind(required_lease_owner(op)?)
-        .execute(&mut **tx)
-        .await?;
-        if result.rows_affected() == 0 {
-            return Ok(super::LeaveWrite::ClaimLost);
-        }
-        if let Some(event) = adapter.failure_event_tx(&mut tx, op, &reason).await? {
-            // The canonical Dispatcher's persisted-prefix reconciliation delivers even
-            // when no live observer exists for this pre-ownership failure.
-            super::owned_parked::append_owner_event_tx(&mut tx, event).await?;
-        }
-        tx.commit().await?;
-        Ok(super::LeaveWrite::Applied(OperationResult {
-            op_id: op.id.clone(),
-            outcome: OperationOutcome::Stuck { reason, from_phase },
-        }))
+        Ok(super::LeaveWrite::Applied(result))
     }
 }
 

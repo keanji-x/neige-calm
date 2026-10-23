@@ -1,4 +1,6 @@
 use super::*;
+use crate::event::{Event, EventScope};
+use crate::ids::ActorId;
 use crate::operation::*;
 use async_trait::async_trait;
 use serde_json::{Value, json};

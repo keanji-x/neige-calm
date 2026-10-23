@@ -39,7 +39,7 @@
     "description": "root planner AiPlanner to task.completed remains allowed by the role gate (vec-r-47 deferred)",
     "principal": { "session_id": "$ROOT_SESSION", "track_id": "$HOME_TRACK", "area_id": "$HOME_AREA" },
     "actor": { "kind": "AiPlanner", "id": "$PLANNER_CARD" },
-    "event": { "ev": "task.completed", "data": { "idempotency_key": "pd-root-complete", "result": null, "artifacts": [], "agent_message": null } },
+    "event": { "ev": "task.completed", "data": { "notification": "notify", "idempotency_key": "pd-root-complete", "result": null, "artifacts": [], "agent_message": null } },
     "scope": { "kind": "Track", "id": { "track": "$HOME_TRACK", "area": "$HOME_AREA" } },
     "recorder_gate": false,
     "expected": { "decision": "allow", "recorder": "skip", "role": "allow" }
@@ -48,7 +48,7 @@
     "description": "root planner AiPlanner to task.failed remains allowed by the role gate",
     "principal": { "session_id": "$ROOT_SESSION", "track_id": "$HOME_TRACK", "area_id": "$HOME_AREA" },
     "actor": { "kind": "AiPlanner", "id": "$PLANNER_CARD" },
-    "event": { "ev": "task.failed", "data": { "idempotency_key": "pd-root-fail", "reason": "not accepted", "agent_message": null } },
+    "event": { "ev": "task.failed", "data": { "notification": "notify", "idempotency_key": "pd-root-fail", "reason": "not accepted", "agent_message": null } },
     "scope": { "kind": "Track", "id": { "track": "$HOME_TRACK", "area": "$HOME_AREA" } },
     "recorder_gate": false,
     "expected": { "decision": "allow", "recorder": "skip", "role": "allow" }

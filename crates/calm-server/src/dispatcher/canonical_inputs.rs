@@ -305,7 +305,7 @@ impl Inner {
             let actual = event_inputs::track_prefix(
                 pool.read_pool(),
                 track.as_str(),
-                PLANNER_CATCH_UP_KINDS,
+                &PLANNER_CATCH_UP_KINDS,
                 id - 1,
                 Some(id),
             )
@@ -323,7 +323,7 @@ impl Inner {
         for fact in event_inputs::track_prefix(
             pool.read_pool(),
             track.as_str(),
-            PLANNER_CATCH_UP_KINDS,
+            &PLANNER_CATCH_UP_KINDS,
             floor,
             through,
         )
@@ -379,7 +379,7 @@ impl Inner {
             let facts = event_inputs::track_prefix(
                 pool.read_pool(),
                 track.as_str(),
-                PLANNER_CATCH_UP_KINDS,
+                &PLANNER_CATCH_UP_KINDS,
                 stored.envelope - 1,
                 Some(stored.envelope),
             )
@@ -456,7 +456,7 @@ impl Dispatcher {
         after: i64,
     ) -> Result<Vec<EventInputFact>> {
         Ok(
-            event_inputs::track_prefix_tx(tx, track.as_str(), PLANNER_CATCH_UP_KINDS, after, None)
+            event_inputs::track_prefix_tx(tx, track.as_str(), &PLANNER_CATCH_UP_KINDS, after, None)
                 .await?,
         )
     }

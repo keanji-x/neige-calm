@@ -225,11 +225,22 @@ impl EventScope {
     }
 }
 
-/// Sync-engine event envelope version. Bump together with a migration default whenever clients
-/// must gate on a new persisted wire shape.
+/// Sync-engine event envelope version. Record each change in a stamping migration
+/// or an explicit forward-only protocol checkpoint; never rewrite bound source identities.
 // 29: provider-neutral managed Assistant session actors.
 // 30: canonical presentation cursors; old raw item IDs retain their original meaning.
-pub const SYNC_EVENT_VERSION: u32 = 30;
+// 31: owner-declared task notification; pre-v31 source bytes remain immutable.
+pub const SYNC_EVENT_VERSION: u32 = 31;
+
+/// Declared by the task owner; Legacy exists only for reading earlier stored events.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
+pub enum PlannerNotification {
+    Notify,
+    Suppress,
+    Legacy,
+}
 
 mod forge_checks;
 pub use forge_checks::{
@@ -578,6 +589,7 @@ pub enum Event {
     /// Worker card reports task completion; `idempotency_key` echoes the matching `*.worker_requested` event.
     #[serde(rename = "task.completed")]
     TaskCompleted {
+        notification: PlannerNotification,
         idempotency_key: String,
         #[ts(type = "unknown")]
         result: Value,
@@ -590,6 +602,7 @@ pub enum Event {
     /// Worker card reports task failure; `reason` is free-form and never parsed by the kernel.
     #[serde(rename = "task.failed")]
     TaskFailed {
+        notification: PlannerNotification,
         idempotency_key: String,
         reason: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1270,13 +1283,45 @@ impl Event {
         }
     }
 
+    /// Explicit compatibility for immutable persisted rows, never for new input.
+    pub fn from_stored_kind_and_payload(
+        kind: &str,
+        mut payload: serde_json::Value,
+        event_version: u32,
+    ) -> Result<Self, serde_json::Error> {
+        if event_version < 31
+            && matches!(kind, "task.completed" | "task.failed")
+            && let Some(fields) = payload.as_object_mut()
+            && !fields.contains_key("notification")
+        {
+            fields.insert("notification".into(), serde_json::json!("legacy"));
+            return serde_json::from_value(serde_json::json!({"ev":kind,"data":payload}));
+        }
+        Self::from_kind_and_payload(kind, payload)
+    }
+
+    pub fn task_notification(&self) -> Option<PlannerNotification> {
+        match self {
+            Self::TaskCompleted { notification, .. } | Self::TaskFailed { notification, .. } => {
+                Some(*notification)
+            }
+            _ => None,
+        }
+    }
+
     /// Rebuild a typed `Event` from the `(kind, payload)` pair stored in the `events` table.
     pub fn from_kind_and_payload(
         kind: &str,
         payload: serde_json::Value,
     ) -> Result<Self, serde_json::Error> {
         let envelope = serde_json::json!({ "ev": kind, "data": payload });
-        serde_json::from_value(envelope)
+        let event: Self = serde_json::from_value(envelope)?;
+        if event.task_notification() == Some(PlannerNotification::Legacy) {
+            return Err(<serde_json::Error as serde::de::Error>::custom(
+                "legacy notification is only valid for an older stored row without a declaration",
+            ));
+        }
+        Ok(event)
     }
 }
 
@@ -1700,6 +1745,7 @@ mod scope_tests {
         assert_eq!(term_req.kind_tag(), "terminal.worker_requested");
 
         let done = Event::TaskCompleted {
+            notification: crate::event::PlannerNotification::Notify,
             idempotency_key: "k".into(),
             result: serde_json::Value::Null,
             artifacts: vec![],
@@ -1708,6 +1754,7 @@ mod scope_tests {
         assert_eq!(done.kind_tag(), "task.completed");
 
         let failed = Event::TaskFailed {
+            notification: crate::event::PlannerNotification::Notify,
             idempotency_key: "k".into(),
             reason: "boom".into(),
             details: None,
@@ -2209,6 +2256,7 @@ mod scope_tests {
     #[test]
     fn task_completed_serde_round_trip() {
         let ev = Event::TaskCompleted {
+            notification: crate::event::PlannerNotification::Notify,
             idempotency_key: "idem-3".into(),
             result: serde_json::json!({ "summary": "ok", "lines": 42 }),
             artifacts: vec![ArtifactRef::from("a-1"), ArtifactRef::from("a-2")],
@@ -2229,6 +2277,7 @@ mod scope_tests {
     #[test]
     fn task_failed_serde_round_trip() {
         let ev = Event::TaskFailed {
+            notification: crate::event::PlannerNotification::Notify,
             idempotency_key: "idem-4".into(),
             reason: "process exited with code 137".into(),
             details: Some(
@@ -2773,12 +2822,14 @@ mod scope_tests {
                 agent_message: None,
             },
             Event::TaskCompleted {
+                notification: crate::event::PlannerNotification::Notify,
                 idempotency_key: "k".into(),
                 result: serde_json::Value::Null,
                 artifacts: vec![],
                 agent_message: None,
             },
             Event::TaskFailed {
+                notification: crate::event::PlannerNotification::Notify,
                 idempotency_key: "k".into(),
                 reason: "boom".into(),
                 details: None,
@@ -3031,6 +3082,7 @@ mod scope_tests {
                 "task.completed",
                 "task.completed",
                 serde_json::json!({
+                    "notification": "notify",
                     "idempotency_key": "k",
                     "result": {},
                     "artifacts": [],
@@ -3039,7 +3091,7 @@ mod scope_tests {
             (
                 "task.failed",
                 "task.failed",
-                serde_json::json!({ "idempotency_key": "k", "reason": "r" }),
+                serde_json::json!({ "notification":"notify", "idempotency_key": "k", "reason": "r" }),
             ),
             (
                 "worker_session.started",
@@ -3237,6 +3289,28 @@ mod scope_tests {
                 }
                 _ => {}
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod task_notification_protocol_tests {
+    use super::*;
+    #[test]
+    fn task_notification_is_required_except_for_old_stored_rows() {
+        let payload = serde_json::json!({"idempotency_key":"attempt", "reason":"failed"});
+        assert!(Event::from_kind_and_payload("task.failed", payload.clone()).is_err());
+        assert!(Event::from_stored_kind_and_payload("task.failed", payload.clone(), 31).is_err());
+        let old = Event::from_stored_kind_and_payload("task.failed", payload.clone(), 30).unwrap();
+        assert_eq!(old.task_notification(), Some(PlannerNotification::Legacy));
+        for invalid in [
+            serde_json::Value::Null,
+            serde_json::json!("unknown"),
+            serde_json::json!("legacy"),
+        ] {
+            let mut explicit = payload.clone();
+            explicit["notification"] = invalid;
+            assert!(Event::from_stored_kind_and_payload("task.failed", explicit, 30).is_err());
         }
     }
 }

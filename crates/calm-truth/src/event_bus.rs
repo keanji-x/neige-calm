@@ -200,6 +200,7 @@ mod filter_tests {
 
     fn task_failed() -> Event {
         Event::TaskFailed {
+            notification: calm_types::event::PlannerNotification::Notify,
             idempotency_key: "k".into(),
             reason: "boom".into(),
             details: None,

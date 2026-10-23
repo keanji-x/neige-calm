@@ -6,13 +6,14 @@ use calm_truth::db::RepoEventWrite as _;
 use calm_truth::db::RepoRead;
 
 #[tokio::test]
-async fn failed_required_task_lookup_keeps_the_real_event_prefix_unaccepted() {
+async fn legacy_failed_required_task_lookup_keeps_the_real_event_prefix_unaccepted() {
     let mut flow = Flow::running().await;
     flow.state.dispatcher.abort_event_listener_for_test();
     let before = flow.fixture.carrier(&flow.track).await.2;
     let card = CardId::from(flow.card.clone());
     let cursor_before = flow.state.dispatcher.push_cursor_for_test(&card);
     let event = Event::TaskFailed {
+        notification: calm_types::event::PlannerNotification::Notify,
         idempotency_key: "qualified-task-lookup-failure".into(),
         reason: "The actual stored failure still needs its task qualification".into(),
         details: None,
@@ -35,6 +36,12 @@ async fn failed_required_task_lookup_keeps_the_real_event_prefix_unaccepted() {
         )
         .await
         .unwrap();
+    // Seed an actual pre-v31 stored report without altering the new writer contract.
+    sqlx::query("UPDATE events SET event_version=30,payload=json_remove(payload, '$.notification') WHERE id=?1")
+        .bind(id).execute(flow.fixture.repo.pool()).await.unwrap();
+    let mut old_payload = event.payload_value();
+    old_payload.as_object_mut().unwrap().remove("notification");
+    let event = Event::from_stored_kind_and_payload(event.kind_tag(), old_payload, 30).unwrap();
     assert!(id > before.header.push_watermark);
     // SQL read faults cannot be expressed with a SQLite SELECT trigger. Move only
     // the required tasks relation; event, carrier and checkpoint reads stay real.

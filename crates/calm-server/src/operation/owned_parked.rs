@@ -5,36 +5,6 @@ use super::{
 };
 use crate::db::sqlite::begin_immediate_tx;
 use crate::error::{CalmError, Result};
-use crate::event::{BroadcastEnvelope, Event, EventScope, SYNC_EVENT_VERSION};
-use crate::ids::ActorId;
-
-/// The owner supplies every event fact; generic completion infers neither actor nor scope.
-#[derive(Clone, Debug)]
-pub struct OwnerEvent {
-    pub actor: ActorId,
-    pub scope: EventScope,
-    pub event: Event,
-}
-
-pub(crate) async fn append_owner_event_tx(
-    tx: &mut super::Tx<'_>,
-    owner: OwnerEvent,
-) -> Result<BroadcastEnvelope> {
-    let OwnerEvent {
-        actor,
-        scope,
-        event,
-    } = owner;
-    let id =
-        crate::db::sqlite::append_decision_event_in_tx(tx, &actor, &scope, None, &event).await?;
-    Ok(BroadcastEnvelope {
-        id,
-        event_version: SYNC_EVENT_VERSION,
-        actor,
-        scope,
-        event,
-    })
-}
 
 /// Both live observer and the existing boot/sweep loop use this one lease fence.
 /// The adapter must retain ownership until it has real stop/quiescence evidence.
@@ -65,14 +35,16 @@ pub(crate) fn reconcile<'a>(
                         Vec::new()
                     };
                     if matches!(completion, ParkedCompletion::Completed(_)) {
-                        let owner_event = match (&outcome, owner_event) {
-                            (super::ParkedOutcome::Failed { last_error, .. }, None) => {
-                                adapter.failure_event_tx(&mut tx, op, last_error).await?
-                            }
-                            (_, event) => event,
-                        };
-                        if let Some(event) = owner_event {
-                            events.push(append_owner_event_tx(&mut tx, event).await?);
+                        if let Some(event) = super::settlement::append_result_event_tx(
+                            &mut tx,
+                            op,
+                            adapter,
+                            &super::TerminalOutcome::from(&outcome),
+                            owner_event,
+                        )
+                        .await?
+                        {
+                            events.push(event);
                         }
                     }
                     tx.commit().await?;

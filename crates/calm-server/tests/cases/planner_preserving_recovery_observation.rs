@@ -63,6 +63,7 @@ async fn recovery_cannot_commit_an_observation_watermark_without_its_queue_entry
             &boot.state.card_role_cache,
             &boot.state.track_area_cache,
             Event::TaskCompleted {
+                notification: calm_types::event::PlannerNotification::Notify,
                 idempotency_key: task_key.clone(),
                 result: result.clone(),
                 artifacts: vec![],

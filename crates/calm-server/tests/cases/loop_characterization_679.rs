@@ -298,6 +298,7 @@ impl LoopFixture {
 
 fn task_completed(idem: &str, result: Value) -> Event {
     Event::TaskCompleted {
+        notification: calm_types::event::PlannerNotification::Notify,
         idempotency_key: idem.into(),
         result,
         artifacts: Vec::new(),
@@ -307,6 +308,7 @@ fn task_completed(idem: &str, result: Value) -> Event {
 
 fn task_failed(idem: &str, reason: &str) -> Event {
     Event::TaskFailed {
+        notification: calm_types::event::PlannerNotification::Notify,
         idempotency_key: idem.into(),
         reason: reason.into(),
         details: None,

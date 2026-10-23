@@ -355,6 +355,7 @@ fn project_runs_self_report_outranks_a_canceled_row() {
         600,
         ActorId::KernelDispatcher,
         Event::TaskFailed {
+            notification: calm_types::event::PlannerNotification::Notify,
             idempotency_key: "w:k".into(),
             reason: "boom".into(),
             details: None,
@@ -380,6 +381,7 @@ fn project_runs_dispatched_then_completed_resolves_terminal_status() {
         // Actor KernelDispatcher means NOT a planner verdict.
         ActorId::KernelDispatcher,
         Event::TaskCompleted {
+            notification: calm_types::event::PlannerNotification::Notify,
             idempotency_key: "w:k".into(),
             result: json!({"exit_code": 0}),
             artifacts: vec![],
@@ -412,6 +414,7 @@ fn failed_run_markdown_retains_structured_terminal_output_evidence() {
         600,
         ActorId::KernelDispatcher,
         Event::TaskFailed {
+            notification: calm_types::event::PlannerNotification::Notify,
             idempotency_key: "w:k".into(),
             reason: "terminal worker exited with code 2".into(),
             details: Some(json!({

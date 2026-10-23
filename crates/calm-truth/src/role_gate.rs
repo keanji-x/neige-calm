@@ -1304,6 +1304,7 @@ mod tests {
 
     fn task_completed() -> Event {
         Event::TaskCompleted {
+            notification: calm_types::event::PlannerNotification::Notify,
             idempotency_key: "idem-1".into(),
             result: serde_json::Value::Null,
             artifacts: vec![ArtifactRef::from("a-1")],

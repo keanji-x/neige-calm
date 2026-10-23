@@ -76,7 +76,7 @@ it('navigates prior evidence from the task disclosure at desktop and phone width
   expect(disclosure.open).toBe(false);
   current = { ...second, status: 'done' };
   await act(() => {
-    const event = wireEventSchema.parse({ ev: 'task.completed', data: {
+    const event = wireEventSchema.parse({ ev: 'task.completed', data: { notification: 'notify',
       idempotency_key: second.attempt_id, result: {}, artifacts: [],
     } });
     applyEventEffects(client, reduceEventFrame(initialEventState(null), {

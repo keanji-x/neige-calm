@@ -2,14 +2,14 @@
   {
     "description": "AiCodex with empty card id is rejected outright (legacy X-Calm-Actor: ai:codex header path)",
     "actor": { "kind": "AiCodex", "id": "" },
-    "event": { "ev": "task.completed", "data": { "idempotency_key": "vec-i-30", "result": null, "artifacts": [], "agent_message": null } },
+    "event": { "ev": "task.completed", "data": { "notification": "notify", "idempotency_key": "vec-i-30", "result": null, "artifacts": [], "agent_message": null } },
     "scope": { "kind": "System" },
     "expected": { "decision": "deny", "error_contains": "empty card id" }
   },
   {
     "description": "AiClaude with empty card id is rejected outright",
     "actor": { "kind": "AiClaude", "id": "" },
-    "event": { "ev": "task.completed", "data": { "idempotency_key": "vec-i-31", "result": null, "artifacts": [], "agent_message": null } },
+    "event": { "ev": "task.completed", "data": { "notification": "notify", "idempotency_key": "vec-i-31", "result": null, "artifacts": [], "agent_message": null } },
     "scope": { "kind": "System" },
     "expected": { "decision": "deny", "error_contains": "empty card id" }
   },
@@ -30,14 +30,14 @@
   {
     "description": "AiCodex naming a card the role cache does not know is denied (deleted-or-fabricated card id), even with a self-consistent claimed scope",
     "actor": { "kind": "AiCodex", "id": "$UNKNOWN_CARD" },
-    "event": { "ev": "task.completed", "data": { "idempotency_key": "vec-i-34", "result": null, "artifacts": [], "agent_message": null } },
+    "event": { "ev": "task.completed", "data": { "notification": "notify", "idempotency_key": "vec-i-34", "result": null, "artifacts": [], "agent_message": null } },
     "scope": { "kind": "Card", "id": { "card": "$UNKNOWN_CARD", "track": "$HOME_TRACK", "area": "$HOME_AREA" } },
     "expected": { "decision": "deny", "error_contains": "role cache does not know" }
   },
   {
     "description": "AiCodex with an unknown card id is denied on System scope too — the unknown-card check precedes any scope reasoning",
     "actor": { "kind": "AiCodex", "id": "$UNKNOWN_CARD" },
-    "event": { "ev": "task.completed", "data": { "idempotency_key": "vec-i-35", "result": null, "artifacts": [], "agent_message": null } },
+    "event": { "ev": "task.completed", "data": { "notification": "notify", "idempotency_key": "vec-i-35", "result": null, "artifacts": [], "agent_message": null } },
     "scope": { "kind": "System" },
     "expected": { "decision": "deny", "error_contains": "role cache does not know" }
   }

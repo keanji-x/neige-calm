@@ -1035,6 +1035,7 @@ async fn commit_hook_rolls_back_event_when_vcs_commit_fails() {
             Box::new(|_tx| {
                 Box::pin(async {
                     Ok(Event::TaskCompleted {
+                        notification: calm_types::event::PlannerNotification::Notify,
                         idempotency_key: "rollback".into(),
                         result: json!({"status": "accepted"}),
                         artifacts: vec![],
@@ -1111,6 +1112,7 @@ async fn actor_event_batch_writes_track_vcs_commit_with_close_and_verdict() {
                         planner_actor,
                         scope,
                         Event::TaskCompleted {
+                            notification: calm_types::event::PlannerNotification::Notify,
                             idempotency_key: "actor-batch-verdict".into(),
                             result: json!({
                                 "status": "accepted",
@@ -1489,6 +1491,7 @@ async fn concurrent_same_track_writes_form_linear_history() {
                 &roles,
                 &areas,
                 Event::TaskCompleted {
+                    notification: calm_types::event::PlannerNotification::Notify,
                     idempotency_key: key.into(),
                     result: json!({"status": "accepted"}),
                     artifacts: vec![],
@@ -1653,6 +1656,7 @@ async fn batch_write_creates_one_commit_at_last_track_event() {
                                 area: area_id,
                             },
                             Event::TaskCompleted {
+                                notification: calm_types::event::PlannerNotification::Notify,
                                 idempotency_key: "batch".into(),
                                 result: json!({"status": "accepted"}),
                                 artifacts: vec![],
@@ -1739,6 +1743,7 @@ async fn mixed_actor_batch_commit_is_unattributed_in_diff_block() {
                             area: area_id,
                         },
                         Event::TaskCompleted {
+                            notification: calm_types::event::PlannerNotification::Notify,
                             idempotency_key: "mixed-actor-batch".into(),
                             result: json!({"status": "accepted"}),
                             artifacts: vec![],
@@ -2368,6 +2373,7 @@ async fn manifest_blob_bytes_match_track_fs_view_for_populated_track() {
         &roles,
         &areas,
         Event::TaskCompleted {
+            notification: calm_types::event::PlannerNotification::Notify,
             idempotency_key: "run-a".into(),
             result: json!({"summary": "done"}),
             artifacts: vec![],
@@ -3501,6 +3507,7 @@ async fn task_completion_updates_only_the_affected_run_paths() {
         &roles,
         &areas,
         Event::TaskCompleted {
+            notification: calm_types::event::PlannerNotification::Notify,
             idempotency_key: "one".into(),
             result: json!({"summary": "done"}),
             artifacts: vec![],
@@ -3678,6 +3685,7 @@ async fn reserved_run_key_does_not_clobber_runs_index() {
         &roles,
         &areas,
         Event::TaskCompleted {
+            notification: calm_types::event::PlannerNotification::Notify,
             idempotency_key: "index".into(),
             result: json!({"summary": "reserved"}),
             artifacts: vec![],

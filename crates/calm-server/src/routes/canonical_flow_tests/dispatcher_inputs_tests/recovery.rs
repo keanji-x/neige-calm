@@ -20,15 +20,52 @@ async fn original(
     (identity, plan)
 }
 
+async fn legacy_task_report(flow: &Flow, reason: &str) -> i64 {
+    use crate::event::{Event, EventScope};
+    let mut tx = crate::db::sqlite::begin_immediate_tx(flow.fixture.repo.db())
+        .await
+        .unwrap();
+    let event = Event::TaskFailed {
+        notification: calm_types::event::PlannerNotification::Notify,
+        idempotency_key: "legacy-recovery-task".into(),
+        reason: reason.into(),
+        details: None,
+        agent_message: None,
+    };
+    let id = crate::db::sqlite::append_decision_event_in_tx(
+        &mut tx,
+        &crate::ids::ActorId::KernelDispatcher,
+        &EventScope::Track {
+            track: flow.track.clone().into(),
+            area: flow.area.clone().into(),
+        },
+        None,
+        &event,
+    )
+    .await
+    .unwrap();
+    // Historical row fixture; production acceptance sees only the original old wire.
+    sqlx::query("UPDATE events SET event_version=30,payload=json_remove(payload,'$.notification') WHERE id=?1")
+            .bind(id).execute(&mut **tx).await.unwrap();
+    tx.commit().await.unwrap();
+    flow.state.dispatcher.reconcile_tick_for_test().await;
+    id
+}
+
 enum ColdInput {
     FrozenEnrichment,
+    LegacyTask,
+    ChangedLegacyTask,
     ChangedOriginalEvent,
     HumanTail,
     RevokedHumanTail,
 }
 
 async fn cold_system_claim(case: ColdInput) {
-    let change_original_row = matches!(case, ColdInput::ChangedOriginalEvent);
+    let change_original_row = matches!(
+        case,
+        ColdInput::ChangedOriginalEvent | ColdInput::ChangedLegacyTask
+    );
     let cold_human_tail = matches!(case, ColdInput::HumanTail | ColdInput::RevokedHumanTail);
     let revoke_human = matches!(case, ColdInput::RevokedHumanTail);
     let mut flow = Flow::running().await;
@@ -42,7 +79,11 @@ async fn cold_system_claim(case: ColdInput) {
         WHEN NEW.id='{}' AND json_array_length(NEW.handle_state_json,'$.canonical_inputs.attempts')>1
         BEGIN SELECT RAISE(ABORT,'hold original System crossing marker'); END", flow.worker))
         .execute(flow.fixture.repo.pool()).await.unwrap();
-    let event = flow.report(SYSTEM_BODY).await;
+    let event_id = if matches!(case, ColdInput::LegacyTask | ColdInput::ChangedLegacyTask) {
+        legacy_task_report(&flow, SYSTEM_BODY).await
+    } else {
+        flow.report(SYSTEM_BODY).await.id
+    };
     let claimed = tokio::time::timeout(Duration::from_secs(5), async {
         loop {
             let frame = flow.fixture.carrier(&flow.track).await.2;
@@ -64,7 +105,11 @@ async fn cold_system_claim(case: ColdInput) {
     let immutable = original(&flow, &id).await;
     let receipt = flow.fixture.receipt(&flow.area).await;
     if !change_original_row && !cold_human_tail {
-        flow.report(LATER_ENRICHMENT).await;
+        if matches!(case, ColdInput::LegacyTask) {
+            legacy_task_report(&flow, LATER_ENRICHMENT).await;
+        } else {
+            flow.report(LATER_ENRICHMENT).await;
+        }
     }
     assert_eq!(immutable.1.plan.input_refs().unwrap().len(), 1);
     flow.close().await;
@@ -83,7 +128,7 @@ async fn cold_system_claim(case: ColdInput) {
         // accepted original content. This is a source-integrity negative, not
         // a replacement observation or a manually advanced worker state.
         sqlx::query("UPDATE events SET payload=json_set(payload,'$.body_after','changed original event after acceptance') WHERE id=?1")
-            .bind(event.id).execute(flow.fixture.repo.pool()).await.unwrap();
+            .bind(event_id).execute(flow.fixture.repo.pool()).await.unwrap();
     }
     let Flow {
         mut fixture,
@@ -312,4 +357,13 @@ async fn human_tail_accepted_while_cold_system_native_is_down_continues_after_re
 #[tokio::test]
 async fn revoked_human_tail_stays_pending_when_cold_system_recovers_and_ends() {
     cold_system_claim(ColdInput::RevokedHumanTail).await;
+}
+
+#[tokio::test]
+async fn legacy_task_notification_preserves_accepted_identity_across_cold_recovery() {
+    cold_system_claim(ColdInput::LegacyTask).await;
+}
+#[tokio::test]
+async fn legacy_task_notification_rejects_changed_source_after_cold_recovery() {
+    cold_system_claim(ColdInput::ChangedLegacyTask).await;
 }

@@ -44,8 +44,13 @@ fn decode(row: Stored) -> Result<EventInputFact> {
         ))?)
     );
     let actor: ActorId = serde_json::from_str(&row.actor)?;
-    let event = Event::from_kind_and_payload(&row.kind, serde_json::from_str(&row.payload)?)
-        .map_err(|error| CalmError::Internal(format!("event {}: {error}", row.id)))?;
+    let event = Event::from_stored_kind_and_payload(
+        &row.kind,
+        serde_json::from_str(&row.payload)?,
+        u32::try_from(row.event_version)
+            .map_err(|_| CalmError::Internal("invalid stored event version".into()))?,
+    )
+    .map_err(|error| CalmError::Internal(format!("event {}: {error}", row.id)))?;
     let scope = EventScope::from_row(
         row.scope_kind.as_deref(),
         row.scope_area.as_deref(),

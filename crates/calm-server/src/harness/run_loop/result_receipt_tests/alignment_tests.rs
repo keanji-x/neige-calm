@@ -86,6 +86,7 @@ async fn mixed_batch(with_timeout: bool) {
     let completed = enqueue_event(
         &fx,
         Event::TaskCompleted {
+            notification: calm_types::event::PlannerNotification::Notify,
             idempotency_key: "mixed-completed".into(),
             result: json!("completion"),
             artifacts: vec![],
@@ -96,6 +97,7 @@ async fn mixed_batch(with_timeout: bool) {
     let failed = enqueue_event(
         &fx,
         Event::TaskFailed {
+            notification: calm_types::event::PlannerNotification::Notify,
             idempotency_key: "mixed-failed".into(),
             reason: "failure".into(),
             details: None,

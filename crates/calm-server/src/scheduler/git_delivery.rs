@@ -464,6 +464,7 @@ impl Scheduler {
                 if fails_task {
                     let actor = ActorId::KernelDispatcher;
                     let event = Event::TaskFailed {
+                        notification: calm_types::event::PlannerNotification::Suppress,
                         idempotency_key: task.id.clone(),
                         reason: TASK_STATUS_DETAIL_DELIVERY_FAILED.to_string(),
                         details: None,

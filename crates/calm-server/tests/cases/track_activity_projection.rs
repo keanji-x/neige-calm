@@ -1319,6 +1319,7 @@ async fn wakeup_table_resolves_every_row_of_the_design() {
         (
             "task.completed",
             Event::TaskCompleted {
+                notification: calm_types::event::PlannerNotification::Notify,
                 idempotency_key: format!("{t}:build"),
                 result: json!({}),
                 artifacts: vec![],
@@ -1328,6 +1329,7 @@ async fn wakeup_table_resolves_every_row_of_the_design() {
         (
             "task.failed",
             Event::TaskFailed {
+                notification: calm_types::event::PlannerNotification::Notify,
                 idempotency_key: format!("{t}:build"),
                 reason: "fixture".into(),
                 details: None,

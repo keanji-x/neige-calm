@@ -36,6 +36,7 @@ mod tests {
 
     fn completed(attempt: &str) -> Event {
         Event::TaskCompleted {
+            notification: calm_types::event::PlannerNotification::Notify,
             idempotency_key: attempt.into(),
             result: serde_json::json!({"verdict": "pass"}),
             artifacts: Vec::new(),

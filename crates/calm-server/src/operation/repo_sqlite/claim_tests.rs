@@ -1,5 +1,6 @@
 use super::super::{AppServerInteractKind, Tx};
 use super::*;
+use crate::operation::PhaseTag;
 
 async fn claimed_operation() -> (crate::db::sqlite::SqlxRepo, SqlxOperationRepo, Operation) {
     let db = crate::db::sqlite::SqlxRepo::open("sqlite::memory:")
@@ -44,11 +45,15 @@ async fn expired_claim_cannot_set_phase_without_reclaim() {
     let (db, repo, op) = claimed_operation().await;
     expire(&db, &op).await;
     assert!(
-        repo.set_phase(&op, Phase::Succeeded, None)
-            .await
-            .unwrap()
-            .applied()
-            .is_none(),
+        repo.settle_claimed(
+            &op,
+            crate::operation::TerminalOutcome::Succeeded,
+            &TxOnlyClaimAdapter
+        )
+        .await
+        .unwrap()
+        .applied()
+        .is_none(),
         "an unchanged owner token does not authorize settlement after its lease expires"
     );
     let stored = repo.get_operation(&op.id).await.unwrap().unwrap();
@@ -106,12 +111,13 @@ async fn expired_claim_rejects_compensation_and_failure_writers() {
             .is_none()
     );
     assert!(
-        repo.mark_failed(
+        repo.settle_claimed(
             &op,
-            "stale".into(),
-            op.phase.tag(),
-            None,
-            None,
+            crate::operation::TerminalOutcome::Failed {
+                last_error: "stale".into(),
+                from_phase: op.phase.tag(),
+                last_error_class: None
+            },
             &TxOnlyClaimAdapter
         )
         .await
@@ -120,11 +126,12 @@ async fn expired_claim_rejects_compensation_and_failure_writers() {
         .is_none()
     );
     assert!(
-        repo.mark_stuck(
+        repo.settle_claimed(
             &op,
-            "stale".into(),
-            op.phase.tag(),
-            None,
+            crate::operation::TerminalOutcome::Stuck {
+                reason: "stale".into(),
+                from_phase: op.phase.tag()
+            },
             &TxOnlyClaimAdapter
         )
         .await
@@ -216,11 +223,15 @@ async fn original_identity_phase_owner_and_completion_are_claim_fences() {
             .await
             .unwrap();
         assert!(
-            repo.set_phase(&op, Phase::Succeeded, None)
-                .await
-                .unwrap()
-                .applied()
-                .is_none(),
+            repo.settle_claimed(
+                &op,
+                crate::operation::TerminalOutcome::Succeeded,
+                &TxOnlyClaimAdapter
+            )
+            .await
+            .unwrap()
+            .applied()
+            .is_none(),
             "{changed}"
         );
         assert!(
@@ -330,12 +341,21 @@ async fn phase_only_settlement_preserves_a_provider_checkpoint() {
     .unwrap();
     tx.commit().await.unwrap();
     let settled = repo
-        .set_phase(&op, Phase::Succeeded, None)
+        .settle_claimed(
+            &op,
+            crate::operation::TerminalOutcome::Succeeded,
+            &TxOnlyClaimAdapter,
+        )
         .await
         .unwrap()
         .applied()
         .unwrap();
-    assert_eq!(settled.tx_output.unwrap().result, output.result);
+    assert_eq!(
+        settled.outcome,
+        crate::operation::OperationOutcome::Succeeded {
+            result: output.result
+        }
+    );
 }
 
 #[tokio::test]
@@ -595,9 +615,19 @@ async fn owned_key_retains_terminal_writes() {
                 .data["terminal_launch"],
             record
         );
+        assert!(matches!(
+            repo.settle_claimed(
+                &stale_snapshot,
+                crate::operation::TerminalOutcome::Succeeded,
+                &OwnedClaimAdapter
+            )
+            .await
+            .unwrap(),
+            super::super::LeaveWrite::Retained
+        ));
         let key = Some("terminal_launch");
         let outcomes = [
-            repo.set_phase(&stale_snapshot, Phase::Succeeded, key)
+            repo.set_phase(&stale_snapshot, Phase::SpawnSucceeded, key)
                 .await
                 .unwrap(),
             repo.set_compensating(&stale_snapshot, &compensation(), key)
@@ -610,25 +640,27 @@ async fn owned_key_retains_terminal_writes() {
                 .all(|v| matches!(v, super::super::LeaveWrite::Retained))
         );
         assert!(matches!(
-            repo.mark_failed(
+            repo.settle_claimed(
                 &stale_snapshot,
-                "failure".into(),
-                PhaseTag::SpawnStarted,
-                None,
-                key,
-                &TxOnlyClaimAdapter
+                crate::operation::TerminalOutcome::Failed {
+                    last_error: "failure".into(),
+                    from_phase: PhaseTag::SpawnStarted,
+                    last_error_class: None
+                },
+                &OwnedClaimAdapter
             )
             .await
             .unwrap(),
             super::super::LeaveWrite::Retained
         ));
         assert!(matches!(
-            repo.mark_stuck(
+            repo.settle_claimed(
                 &stale_snapshot,
-                "stuck".into(),
-                PhaseTag::SpawnStarted,
-                key,
-                &TxOnlyClaimAdapter
+                crate::operation::TerminalOutcome::Stuck {
+                    reason: "stuck".into(),
+                    from_phase: PhaseTag::SpawnStarted
+                },
+                &OwnedClaimAdapter
             )
             .await
             .unwrap(),
@@ -652,4 +684,76 @@ async fn owned_key_retains_terminal_writes() {
         );
         assert!(repo.claim_drive_batch(1).await.unwrap().is_empty());
     }
+}
+
+struct OwnedClaimAdapter;
+#[async_trait]
+impl ProviderAdapter for OwnedClaimAdapter {
+    fn kind(&self) -> &'static str {
+        "claim-test"
+    }
+    fn phases(&self) -> &'static [PhaseTag] {
+        &[]
+    }
+    fn owns_parked_resource(&self) -> Option<&'static str> {
+        Some("terminal_launch")
+    }
+    async fn validate(&self, _: &Value) -> Result<()> {
+        Ok(())
+    }
+    async fn prepare_tx<'tx>(&self, _: &mut Tx<'tx>, _: &Value, _: &Operation) -> Result<TxOutput> {
+        unreachable!()
+    }
+    async fn app_server_interact(
+        &self,
+        _: &mut TxOutput,
+        _: &Operation,
+        _: &crate::operation::SpawnCtx,
+    ) -> Result<crate::operation::AppServerInteractOutcome> {
+        unreachable!()
+    }
+    async fn plan_compensation(
+        &self,
+        _: PhaseTag,
+        _: &str,
+        _: &TxOutput,
+        _: &Operation,
+    ) -> Result<CompensationStateVersioned> {
+        unreachable!()
+    }
+    async fn compensate_step(
+        &self,
+        _: &crate::operation::CompensationStep,
+        _: &TxOutput,
+        _: &Operation,
+        _: &crate::operation::SpawnCtx,
+    ) -> Result<()> {
+        unreachable!()
+    }
+
+    async fn spawn_side_effect(
+        &self,
+        _: &TxOutput,
+        _: &Operation,
+        _: &super::super::SpawnCtx,
+    ) -> Result<super::super::SpawnOutcome> {
+        unreachable!()
+    }
+}
+
+#[tokio::test]
+async fn claimed_checkpoint_cannot_bypass_terminal_settlement() {
+    let (_, repo, op) = claimed_operation().await;
+    for phase in [Phase::Succeeded, Phase::Failed] {
+        assert!(
+            repo.set_phase_and_tx_output(&op, phase.clone(), op.tx_output.as_ref().unwrap())
+                .await
+                .is_err()
+        );
+        assert!(repo.set_phase(&op, phase, None).await.is_err());
+    }
+    assert_eq!(
+        repo.get_operation(&op.id).await.unwrap().unwrap().phase,
+        op.phase
+    );
 }

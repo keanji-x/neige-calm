@@ -39,7 +39,7 @@
     "description": "executor may report task.completed in own card scope",
     "principal": { "session_id": "$EXECUTOR_SESSION", "track_id": "$HOME_TRACK", "area_id": "$HOME_AREA" },
     "actor": { "kind": "AiCodex", "id": "$EXECUTOR_CARD" },
-    "event": { "ev": "task.completed", "data": { "idempotency_key": "pd-executor-complete", "result": null, "artifacts": [], "agent_message": null } },
+    "event": { "ev": "task.completed", "data": { "notification": "notify", "idempotency_key": "pd-executor-complete", "result": null, "artifacts": [], "agent_message": null } },
     "scope": { "kind": "Card", "id": { "card": "$EXECUTOR_CARD", "track": "$HOME_TRACK", "area": "$HOME_AREA" } },
     "recorder_gate": false,
     "expected": { "decision": "allow", "recorder": "skip", "role": "allow" }
@@ -48,7 +48,7 @@
     "description": "executor may report task.failed in own card scope",
     "principal": { "session_id": "$EXECUTOR_SESSION", "track_id": "$HOME_TRACK", "area_id": "$HOME_AREA" },
     "actor": { "kind": "AiCodex", "id": "$EXECUTOR_CARD" },
-    "event": { "ev": "task.failed", "data": { "idempotency_key": "pd-executor-fail", "reason": "failed", "agent_message": null } },
+    "event": { "ev": "task.failed", "data": { "notification": "notify", "idempotency_key": "pd-executor-fail", "reason": "failed", "agent_message": null } },
     "scope": { "kind": "Card", "id": { "card": "$EXECUTOR_CARD", "track": "$HOME_TRACK", "area": "$HOME_AREA" } },
     "recorder_gate": false,
     "expected": { "decision": "allow", "recorder": "skip", "role": "allow" }

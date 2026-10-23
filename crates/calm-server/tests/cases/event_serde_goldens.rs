@@ -696,6 +696,7 @@ golden_test!(
     task_completed_full,
     "task_completed.full.json",
     Event::TaskCompleted {
+        notification: calm_types::event::PlannerNotification::Notify,
         idempotency_key: "idem-01".into(),
         result: json!({"summary": "done"}),
         artifacts: vec![
@@ -710,6 +711,7 @@ golden_test!(
     task_completed_min,
     "task_completed.min.json",
     Event::TaskCompleted {
+        notification: calm_types::event::PlannerNotification::Notify,
         idempotency_key: "idem-01".into(),
         result: Value::Null,
         artifacts: vec![],
@@ -721,6 +723,7 @@ golden_test!(
     task_failed_full,
     "task_failed.full.json",
     Event::TaskFailed {
+        notification: calm_types::event::PlannerNotification::Notify,
         idempotency_key: "idem-01".into(),
         reason: "compile error".into(),
         details: Some(json!({
@@ -737,6 +740,7 @@ golden_test!(
     task_failed_min,
     "task_failed.min.json",
     Event::TaskFailed {
+        notification: calm_types::event::PlannerNotification::Notify,
         idempotency_key: "idem-01".into(),
         reason: "compile error".into(),
         details: None,

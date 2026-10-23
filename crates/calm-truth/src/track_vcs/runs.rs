@@ -22,6 +22,7 @@ pub(super) type EventRow = (
     Option<String>,
     Option<String>,
     Option<String>,
+    u32,
 );
 
 async fn run_events_for_track_tx(
@@ -30,7 +31,7 @@ async fn run_events_for_track_tx(
 ) -> Result<Vec<TrackEvent>> {
     let rows: Vec<EventRow> = sqlx::query_as(
         r#"SELECT id, kind, payload, actor, at,
-                  scope_kind, scope_area, scope_track, scope_card
+                  scope_kind, scope_area, scope_track, scope_card, event_version
            FROM events
            WHERE scope_track = ?1
              AND kind IN (
@@ -50,7 +51,7 @@ async fn run_events_for_track_tx(
 }
 
 pub(super) fn track_event_from_row(row: EventRow) -> Result<TrackEvent> {
-    let (id, kind, payload_text, actor_text, at, sk, sc, sw, scard) = row;
+    let (id, kind, payload_text, actor_text, at, sk, sc, sw, scard, event_version) = row;
     let payload = serde_json::from_str(&payload_text)?;
     let actor = serde_json::from_str::<ActorId>(&actor_text)?;
     let scope = EventScope::from_row(
@@ -59,7 +60,7 @@ pub(super) fn track_event_from_row(row: EventRow) -> Result<TrackEvent> {
         sw.as_deref(),
         scard.as_deref(),
     );
-    let event = Event::from_kind_and_payload(&kind, payload)?;
+    let event = Event::from_stored_kind_and_payload(&kind, payload, event_version)?;
     Ok(TrackEvent {
         id,
         at,
@@ -421,10 +422,11 @@ async fn run_events_for_key_tx(
         Option<String>,
         Option<String>,
         Option<String>,
+        u32,
     );
     let rows: Vec<EventRow> = sqlx::query_as(
         r#"SELECT id, kind, payload, actor, at,
-                  scope_kind, scope_area, scope_track, scope_card
+                  scope_kind, scope_area, scope_track, scope_card, event_version
            FROM events
            WHERE scope_track = ?1
              AND kind IN (
@@ -443,7 +445,7 @@ async fn run_events_for_key_tx(
     .await?;
 
     let mut out = Vec::with_capacity(rows.len());
-    for (id, kind, payload_text, actor_text, at, sk, sc, sw, scard) in rows {
+    for (id, kind, payload_text, actor_text, at, sk, sc, sw, scard, event_version) in rows {
         let payload = serde_json::from_str(&payload_text)?;
         let actor = serde_json::from_str::<ActorId>(&actor_text)?;
         let scope = EventScope::from_row(
@@ -452,7 +454,7 @@ async fn run_events_for_key_tx(
             sw.as_deref(),
             scard.as_deref(),
         );
-        let event = Event::from_kind_and_payload(&kind, payload)?;
+        let event = Event::from_stored_kind_and_payload(&kind, payload, event_version)?;
         out.push(TrackEvent {
             id,
             at,

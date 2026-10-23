@@ -320,6 +320,7 @@ async fn subscribe_filtered_delivers_only_matching_kinds() {
     events.emit(
         ActorId::User,
         Event::TaskFailed {
+            notification: calm_types::event::PlannerNotification::Notify,
             idempotency_key: "k2".into(),
             reason: "x".into(),
             details: None,

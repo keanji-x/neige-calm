@@ -481,3 +481,5 @@ pub mod track_planner;
 
 #[cfg(test)]
 mod planner_switch_projection_tests;
+#[cfg(test)]
+mod task_notification_tests;

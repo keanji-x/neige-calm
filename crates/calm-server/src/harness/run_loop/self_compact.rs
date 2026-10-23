@@ -295,6 +295,7 @@ pub(super) async fn append_lifecycle(
                     return Ok(vec![]);
                 }
                 Event::TaskCompleted {
+                    notification: calm_types::event::PlannerNotification::Suppress,
                     idempotency_key: task.id,
                     result: serde_json::Value::Null,
                     artifacts: vec![],
@@ -320,6 +321,7 @@ pub(super) async fn append_lifecycle(
                     return Ok(vec![]);
                 }
                 Event::TaskFailed {
+                    notification: calm_types::event::PlannerNotification::Suppress,
                     idempotency_key: task.id,
                     reason: detail,
                     details: None,

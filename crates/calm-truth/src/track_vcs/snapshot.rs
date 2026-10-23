@@ -387,7 +387,7 @@ pub(super) async fn hook_rows_for_card<'e>(
     card_id: &CardId,
 ) -> Result<Vec<EventRow>> {
     Ok(sqlx::query_as(&format!(
-        "SELECT id, kind, payload, actor, at, scope_kind, scope_area, scope_track, scope_card \
+        "SELECT id, kind, payload, actor, at, scope_kind, scope_area, scope_track, scope_card, event_version \
          FROM events WHERE id IN ({}) ORDER BY id ASC",
         hook_ids_query(),
     ))

@@ -8,9 +8,8 @@ use crate::{
     error::{CalmError, Result},
     model::now_ms,
     operation::{
-        AppServerInteractKind, Operation, OperationId, OperationOutcome, OperationResult,
-        ParkedCompletion, ParkedOutcome, Phase, PhaseTag, SpawnArtifacts, TimestampMs, Tx,
-        TxOutput, required_lease_owner, required_output,
+        AppServerInteractKind, Operation, OperationId, ParkedCompletion, ParkedOutcome, Phase,
+        SpawnArtifacts, TimestampMs, Tx, TxOutput, required_lease_owner, required_output,
     },
 };
 
@@ -238,6 +237,17 @@ pub(in crate::operation) async fn write_phase_and_tx_output(
     phase: &Phase,
     output: &TxOutput,
 ) -> Result<bool> {
+    if matches!(
+        phase,
+        Phase::Succeeded | Phase::Failed | Phase::Stuck { .. }
+    ) && !matches!(
+        (&authority, phase),
+        (PhaseWrite::Inserted(_), Phase::Succeeded)
+    ) {
+        return Err(CalmError::Internal(
+            "terminal phase requires settlement".into(),
+        ));
+    }
     let op = match authority {
         PhaseWrite::Claimed(op) => {
             if !has_live_claim_tx(tx, op).await?
@@ -372,77 +382,12 @@ pub(crate) async fn complete_parked_tx(
         });
     }
 
-    let mut output = required_output(&op)?.clone();
-    output.post_commit_events.clear();
-    let (phase, phase_detail, last_error) = match outcome {
-        ParkedOutcome::Succeeded { result } => {
-            output.result = result.clone();
-            ("succeeded", None, None)
-        }
-        ParkedOutcome::Failed {
-            last_error,
-            last_error_class,
-        } => (
-            "failed",
-            Some(serde_json::to_string(&json!({
-                "from_phase": PhaseTag::Parked,
-                "last_error_class": last_error_class,
-            }))?),
-            Some(last_error.clone()),
-        ),
-    };
-    let output_text = serde_json::to_string(&output)?;
-    let now = now_ms();
-    let result = sqlx::query(
-        r#"UPDATE operations
-           SET phase = ?1,
-               phase_detail_json = ?2,
-               tx_output_json = ?3,
-               last_error = ?4,
-               lease_owner = NULL,
-               lease_until_ms = NULL,
-               parked_deadline_ms = NULL,
-               completed_at_ms = ?5,
-               updated_at_ms = ?5
-           WHERE id = ?6
-             AND phase = 'parked'"#,
+    required_output(&op)?;
+    let completed = crate::operation::settlement::write_terminal_tx(
+        tx,
+        &op,
+        &crate::operation::TerminalOutcome::from(outcome),
     )
-    .bind(phase)
-    .bind(phase_detail)
-    .bind(output_text)
-    .bind(last_error.clone())
-    .bind(now)
-    .bind(op_id)
-    .execute(&mut **tx)
     .await?;
-    if result.rows_affected() == 0 {
-        let phase = sqlx::query_scalar::<_, String>("SELECT phase FROM operations WHERE id = ?1")
-            .bind(op_id)
-            .fetch_one(&mut **tx)
-            .await?;
-        return Ok(ParkedCompletion::AlreadyResolved {
-            phase: PhaseTag::from_db_str(&phase)?,
-        });
-    }
-
-    let completed = match outcome {
-        ParkedOutcome::Succeeded { result } => OperationResult {
-            op_id: op_id.clone(),
-            outcome: OperationOutcome::Succeeded {
-                result: result.clone(),
-            },
-        },
-        ParkedOutcome::Failed {
-            last_error,
-            last_error_class,
-        } => OperationResult {
-            op_id: op_id.clone(),
-            outcome: OperationOutcome::Failed {
-                last_error: last_error.clone(),
-                from_phase: PhaseTag::Parked,
-                last_error_class: last_error_class.clone(),
-            },
-        },
-    };
     Ok(ParkedCompletion::Completed(completed))
 }

@@ -329,12 +329,14 @@ fn dispatcher_filter_matches_push_kinds() {
         agent_message: None,
     })));
     assert!(filter.matches(&env(Event::TaskCompleted {
+        notification: calm_types::event::PlannerNotification::Notify,
         idempotency_key: "k".into(),
         result: serde_json::Value::Null,
         artifacts: Vec::<ArtifactRef>::new(),
         agent_message: None,
     })));
     assert!(filter.matches(&env(Event::TaskFailed {
+        notification: calm_types::event::PlannerNotification::Notify,
         idempotency_key: "k".into(),
         reason: "boom".into(),
         details: None,
@@ -762,12 +764,14 @@ async fn gated_self_report_predicate() {
     .expect("seed tasks");
 
     let completed = |key: &str| Event::TaskCompleted {
+        notification: calm_types::event::PlannerNotification::Legacy,
         idempotency_key: format!("w:{key}"),
         result: serde_json::Value::Null,
         artifacts: Vec::new(),
         agent_message: None,
     };
     let failed = |key: &str| Event::TaskFailed {
+        notification: calm_types::event::PlannerNotification::Legacy,
         idempotency_key: format!("w:{key}"),
         reason: "boom".into(),
         details: None,
@@ -972,6 +976,7 @@ async fn stale_worker_stop_hook_consultation_per_task_status() {
         !is_stale_worker_stop_hook(
             &repo,
             &Event::TaskCompleted {
+                notification: calm_types::event::PlannerNotification::Notify,
                 idempotency_key: "w:verifying".into(),
                 result: serde_json::Value::Null,
                 artifacts: Vec::new(),
@@ -1357,6 +1362,7 @@ fn event_warrants_planner_push_covers_push_allowlist() {
     let write = WriteContext::new(cache, crate::track_area_cache::TrackAreaCache::new());
 
     let completed = Event::TaskCompleted {
+        notification: calm_types::event::PlannerNotification::Notify,
         idempotency_key: "done".into(),
         result: serde_json::Value::Null,
         artifacts: Vec::new(),
@@ -1374,6 +1380,7 @@ fn event_warrants_planner_push_covers_push_allowlist() {
     ));
 
     let failed = Event::TaskFailed {
+        notification: calm_types::event::PlannerNotification::Notify,
         idempotency_key: "fail".into(),
         reason: "boom".into(),
         details: None,
@@ -1649,12 +1656,14 @@ fn event_warrants_planner_push_task_actor_matrix_and_request_kinds_pin() {
     let write = WriteContext::new(cache, crate::track_area_cache::TrackAreaCache::new());
 
     let completed = Event::TaskCompleted {
+        notification: calm_types::event::PlannerNotification::Notify,
         idempotency_key: "done".into(),
         result: serde_json::Value::Null,
         artifacts: Vec::new(),
         agent_message: None,
     };
     let failed = Event::TaskFailed {
+        notification: calm_types::event::PlannerNotification::Notify,
         idempotency_key: "fail".into(),
         reason: "boom".into(),
         details: None,
@@ -1735,6 +1744,7 @@ fn harness_observation_from_event_mapping_pin() {
         harness_observation_from_event(
             &track,
             &Event::TaskCompleted {
+                notification: calm_types::event::PlannerNotification::Notify,
                 idempotency_key: "map-a".into(),
                 result: serde_json::json!({"ok": true, "n": 7}),
                 artifacts: vec![ArtifactRef::from("art-1")],
@@ -1754,6 +1764,7 @@ fn harness_observation_from_event_mapping_pin() {
         harness_observation_from_event(
             &track,
             &Event::TaskFailed {
+                notification: calm_types::event::PlannerNotification::Notify,
                 idempotency_key: "map-b".into(),
                 reason: "boom".into(),
                 details: None,
@@ -2350,12 +2361,14 @@ async fn planner_push_wiring_table() -> PlannerPushWiringTable {
         agent_message: None,
     };
     let task_completed = || Event::TaskCompleted {
+        notification: calm_types::event::PlannerNotification::Notify,
         idempotency_key: "w:k".into(),
         result: serde_json::Value::Null,
         artifacts: Vec::new(),
         agent_message: None,
     };
     let task_failed = || Event::TaskFailed {
+        notification: calm_types::event::PlannerNotification::Notify,
         idempotency_key: "w:k".into(),
         reason: "boom".into(),
         details: None,
@@ -3589,6 +3602,7 @@ async fn delivery_failed_task_failed_is_not_a_wake() {
     .await
     .expect("seed tasks");
     let failed = |key: &str, reason: &str| Event::TaskFailed {
+        notification: calm_types::event::PlannerNotification::Notify,
         idempotency_key: format!("w:{key}"),
         reason: reason.into(),
         details: None,
@@ -4494,3 +4508,26 @@ async fn dispatcher_card_lookup_survives_session_projection_failure() {
 
 #[cfg(test)]
 mod historical_wake_tests;
+#[tokio::test]
+async fn declared_task_notification_never_reads_mutable_task_facts() {
+    let repo = crate::db::sqlite::SqlxRepo::open("sqlite::memory:")
+        .await
+        .unwrap();
+    sqlx::query("ALTER TABLE tasks RENAME TO hidden_tasks")
+        .execute(repo.pool())
+        .await
+        .unwrap();
+    for (notification, deferred) in [
+        (calm_types::event::PlannerNotification::Notify, false),
+        (calm_types::event::PlannerNotification::Suppress, true),
+    ] {
+        let event = Event::TaskFailed {
+            notification,
+            idempotency_key: "gone".into(),
+            reason: "any owner failure".into(),
+            details: None,
+            agent_message: None,
+        };
+        assert_eq!(is_deferred_self_report(&repo, &event).await, deferred);
+    }
+}

@@ -323,6 +323,7 @@ async fn events_for_track_filters_since_in_query() {
             &role_cache,
             &area_cache,
             Event::TaskFailed {
+                notification: calm_types::event::PlannerNotification::Notify,
                 idempotency_key: "before-watermark".into(),
                 reason: "before".into(),
                 details: None,
@@ -339,6 +340,7 @@ async fn events_for_track_filters_since_in_query() {
         &role_cache,
         &area_cache,
         Event::TaskFailed {
+            notification: calm_types::event::PlannerNotification::Notify,
             idempotency_key: "other-track".into(),
             reason: "other".into(),
             details: None,
@@ -356,6 +358,7 @@ async fn events_for_track_filters_since_in_query() {
             &role_cache,
             &area_cache,
             Event::TaskFailed {
+                notification: calm_types::event::PlannerNotification::Notify,
                 idempotency_key: "after-watermark".into(),
                 reason: "after".into(),
                 details: None,

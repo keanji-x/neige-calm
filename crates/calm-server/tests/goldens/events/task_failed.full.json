@@ -11,7 +11,8 @@
         "pty_output_truncated": false,
         "source": "terminal-exit"
       },
-      "agent_message": "giving up"
+      "agent_message": "giving up",
+      "notification": "notify"
     }
   }
 }

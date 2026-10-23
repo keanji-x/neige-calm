@@ -444,6 +444,7 @@ async fn dispatch_wake(settlement: bool) {
     assert!(boot.state.harness.get(&runtime).is_none());
     let event = if settlement {
         calm_server::event::Event::TaskCompleted {
+            notification: calm_types::event::PlannerNotification::Notify,
             idempotency_key: new_id(),
             result: json!({"done":true}),
             artifacts: vec![],

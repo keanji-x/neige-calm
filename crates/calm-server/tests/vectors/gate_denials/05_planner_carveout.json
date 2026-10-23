@@ -52,7 +52,7 @@
     "description": "Hook carveout boundary: AiCodex(planner card) emitting a NON-lifecycle event (task.completed) is refused, even in its own card scope — write authority for planner-roled cards lives with AiPlanner",
     "note": "Characterization surprise: the denial surfaces as the NotPlannerForTrack variant ('may emit track.updated') even though the event is task.completed — the Planner arm reuses that error shape for any non-carveout event. Pinned as-is; do not 'fix' the message without a FROZEN-VECTOR-CHANGE.",
     "actor": { "kind": "AiCodex", "id": "$PLANNER_CARD" },
-    "event": { "ev": "task.completed", "data": { "idempotency_key": "vec-c-43", "result": null, "artifacts": [], "agent_message": null } },
+    "event": { "ev": "task.completed", "data": { "notification": "notify", "idempotency_key": "vec-c-43", "result": null, "artifacts": [], "agent_message": null } },
     "scope": { "kind": "Card", "id": { "card": "$PLANNER_CARD", "track": "$HOME_TRACK", "area": "$HOME_AREA" } },
     "expected": { "decision": "deny", "error_contains": "card is Planner-roled but actor variant is not AiPlanner" }
   },

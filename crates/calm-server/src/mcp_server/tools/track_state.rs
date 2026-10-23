@@ -237,6 +237,7 @@ async fn task_verdict(
 
     let event = match verdict {
         Verdict::Accept => Event::TaskCompleted {
+            notification: calm_types::event::PlannerNotification::Suppress,
             idempotency_key: attempt_id,
             // Structured `{status}` so a consumer can tell planner verdicts (`result.status == "accepted"`) apart from workers' free-form self-reports; the rationale is the `message`.
             result: json!({ "status": "accepted" }),
@@ -244,6 +245,7 @@ async fn task_verdict(
             agent_message: Some(message.clone()),
         },
         Verdict::Reject => Event::TaskFailed {
+            notification: calm_types::event::PlannerNotification::Suppress,
             idempotency_key: attempt_id,
             reason: args
                 .get("reason")

@@ -266,6 +266,7 @@ async fn conversation_title_owner_release_cancelled_wait_finishes_observation_be
     .unwrap();
     let (event_id, _) = f
         .event_entry(&Event::TaskCompleted {
+            notification: calm_types::event::PlannerNotification::Notify,
             idempotency_key: "release-observation".into(),
             result: json!({"summary":"retained completion"}),
             artifacts: vec![],

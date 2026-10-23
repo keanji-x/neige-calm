@@ -465,6 +465,7 @@ async fn complete_run_with_result(boot: &Boot, key: &str, result: Value) -> i64 
     log_worker_card_event(
         boot,
         Event::TaskCompleted {
+            notification: calm_types::event::PlannerNotification::Notify,
             idempotency_key: key.into(),
             result,
             artifacts: vec![],
@@ -522,6 +523,7 @@ async fn worker_fail_run(boot: &Boot, key: &str, reason: &str) -> i64 {
     log_worker_card_event(
         boot,
         Event::TaskFailed {
+            notification: calm_types::event::PlannerNotification::Notify,
             idempotency_key: key.into(),
             reason: reason.into(),
             details: None,
@@ -1494,6 +1496,7 @@ async fn run_listing_updated_at_uses_latest_verdict_timestamp() {
         &boot.track_id,
         &boot.area_id,
         Event::TaskCompleted {
+            notification: calm_types::event::PlannerNotification::Notify,
             idempotency_key: "verdict-mtime".into(),
             result: json!({ "status": "accepted", "reason": "checked later" }),
             artifacts: vec![],
@@ -1579,6 +1582,7 @@ async fn worker_failure_without_planner_verdict_stays_failed() {
     log_worker_card_event(
         &boot,
         Event::TaskFailed {
+            notification: calm_types::event::PlannerNotification::Notify,
             idempotency_key: "worker-failed".into(),
             reason: "stub failure".into(),
             details: Some(json!({
@@ -1652,6 +1656,7 @@ async fn track_scoped_dispatcher_failure_is_not_planner_verdict() {
         &boot.track_id,
         &boot.area_id,
         Event::TaskFailed {
+            notification: calm_types::event::PlannerNotification::Notify,
             idempotency_key: "dispatcher-track-failed".into(),
             reason: "spawn failed".into(),
             details: None,
@@ -1926,6 +1931,7 @@ async fn verdict_before_worker_completion_still_preserves_worker_output() {
         &boot.track_id,
         &boot.area_id,
         Event::TaskCompleted {
+            notification: calm_types::event::PlannerNotification::Notify,
             idempotency_key: "out-of-order".into(),
             result: json!({ "status": "accepted", "reason": "early LGTM" }),
             artifacts: vec![],

@@ -148,6 +148,7 @@ impl CardDecisionSink {
                     }
                     worker_report::check_result_contract_tx(tx, &task_id, &report).await?;
                     let delivery = report.release_delivery();
+                    let mut notification = calm_types::event::PlannerNotification::Notify;
                     let rows = if success {
                         match crate::db::sqlite::task_report_success_from_worker_tx(
                             tx,
@@ -160,7 +161,7 @@ impl CardDecisionSink {
                         {
                             crate::db::sqlite::SuccessReportFlip::Done => 1,
                             // Gated row handed to the gate runner.
-                            crate::db::sqlite::SuccessReportFlip::Verifying => 1,
+                            crate::db::sqlite::SuccessReportFlip::Verifying => { notification = calm_types::event::PlannerNotification::Suppress; 1 },
                             crate::db::sqlite::SuccessReportFlip::None => 0,
                         }
                     } else {
@@ -198,7 +199,10 @@ impl CardDecisionSink {
                     )
                     .await?;
 
-                    let mut events = vec![(actor, scope, report.event())];
+                    if success && crate::git_candidate::delivery::delivery_latest_for_attempt_tx(tx, &task_id).await?.is_some() {
+                        notification = calm_types::event::PlannerNotification::Suppress;
+                    }
+                    let mut events = vec![(actor, scope, report.event(notification))];
                     events.extend(released);
                     Ok(((), events))
                 })

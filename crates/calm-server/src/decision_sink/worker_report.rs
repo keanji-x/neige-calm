@@ -120,7 +120,7 @@ impl WorkerTaskReport {
     }
 
     /// The event the report emits: `task.completed` or `task.failed`.
-    pub fn event(&self) -> Event {
+    pub fn event(&self, notification: calm_types::event::PlannerNotification) -> Event {
         match self {
             WorkerTaskReport::Completed {
                 attempt_id,
@@ -128,12 +128,14 @@ impl WorkerTaskReport {
                 artifacts,
                 ..
             } => Event::TaskCompleted {
+                notification,
                 idempotency_key: attempt_id.clone(),
                 result: result.clone(),
                 artifacts: artifacts.clone(),
                 agent_message: None,
             },
             WorkerTaskReport::Failed { attempt_id, reason } => Event::TaskFailed {
+                notification,
                 idempotency_key: attempt_id.clone(),
                 reason: reason.clone(),
                 details: None,

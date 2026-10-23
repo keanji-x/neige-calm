@@ -11,6 +11,7 @@ async fn first_visible_steer() -> (Fixture, QueueEntryId, String) {
     let f = Fixture::new().await;
     let (_, system) = f
         .event_entry(&Event::TaskCompleted {
+            notification: calm_types::event::PlannerNotification::Notify,
             idempotency_key: "title-system-turn".into(),
             result: json!({"summary":"system context"}),
             artifacts: Vec::new(),

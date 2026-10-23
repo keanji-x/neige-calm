@@ -1406,12 +1406,14 @@ async fn boot_replay_suppresses_gated_self_report_and_replays_gate_result() {
     };
     for event in [
         Event::TaskCompleted {
+            notification: calm_types::event::PlannerNotification::Notify,
             idempotency_key: gated_id.clone(),
             result: json!({ "claim": true }),
             artifacts: Vec::new(),
             agent_message: None,
         },
         Event::TaskCompleted {
+            notification: calm_types::event::PlannerNotification::Notify,
             idempotency_key: ungated_id.clone(),
             result: json!({ "ok": true }),
             artifacts: Vec::new(),
@@ -1419,6 +1421,7 @@ async fn boot_replay_suppresses_gated_self_report_and_replays_gate_result() {
         },
         // A stale/retried `task.failed` against the gated row the gate owns (`verifying`): never landed on the row, must NOT replay.
         Event::TaskFailed {
+            notification: calm_types::event::PlannerNotification::Notify,
             idempotency_key: gated_id.clone(),
             reason: "stale worker claim".into(),
             details: None,
@@ -1426,6 +1429,7 @@ async fn boot_replay_suppresses_gated_self_report_and_replays_gate_result() {
         },
         // ... while the genuine pre-gate worker failure replays.
         Event::TaskFailed {
+            notification: calm_types::event::PlannerNotification::Notify,
             idempotency_key: gated_failed_id.clone(),
             reason: "worker said no".into(),
             details: None,
@@ -1759,6 +1763,7 @@ async fn assistant_provider_boot_recovery_registers_the_assistant_without_replay
         &role_cache,
         &area_cache,
         Event::TaskCompleted {
+            notification: calm_types::event::PlannerNotification::Notify,
             idempotency_key: format!("{}:only", track.id.as_str()),
             result: json!({ "ok": true }),
             artifacts: Vec::new(),
