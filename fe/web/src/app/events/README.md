@@ -8,13 +8,13 @@ cache call and who owns the stream lifecycle.
 
 | Layer | Module | Knows about | Never touches |
 | --- | --- | --- | --- |
-| pure | `core/events/{protocol,reducer,invalidation-plan}.ts` | frame decoding, cursor arithmetic, which keys an event makes stale | `QueryClient`, React, WebSocket, storage |
+| pure | `core/events/{protocol,reducer,invalidation-plan,query-keys}.ts` | frame decoding, cursor arithmetic, which keys an event makes stale | `QueryClient`, React, WebSocket, storage |
 | platform | `web/src/systems/events/event-stream.ts` | the typestate + driver port (`configure` → `start`/`stop`) | query keys, cache, React |
 | app glue | `web/src/app/events/*` (this directory) | `QueryClient`, React effects, cursor port | frame decoding, invalidation policy |
 
 `core/events/invalidation-plan.ts` deliberately does not import `QueryClient`;
-`query-invalidation-adapter.ts` is the only module in the tree that does the
-translation, and `event-bridge.tsx` is the only module that owns a stream.
+`query-invalidation-adapter.ts` executes its already-addressed cache effects,
+and `event-bridge.tsx` is the only module that owns a stream.
 
 ### `event-stream.ts` surface consumed here
 
@@ -57,56 +57,58 @@ single `configure({ syncEventVersion, topics })` that returns the
 
 ## Event kind → query key
 
-The reducer emits *planned* keys in legacy shapes; the adapter maps them onto
-`queryKeys` from `app/providers/queries.ts` and drops anything with no query
-behind it. Mapping table (`mapPlannedQueryKey`):
+`core/events/query-keys.ts` owns the named address factories for
+resources reachable by events. The plan uses these factories and app
+`providers/query-keys.ts` references the same functions alongside app-only keys.
+The adapter passes planned keys straight to invalidate/remove/reset; there is
+no translation table or silent rejection of an unknown address.
 
-| Planned key | Mapped key | Note |
-| --- | --- | --- |
-| `['areas']` | `queryKeys.areas()` | |
-| `['tracks','area',id]` | `queryKeys.tracksInArea(id)` = `['tracks', id]` | shape differs; this is the only place that knows |
-| `['track', id]` | `queryKeys.trackDetail(id)` | |
-| `['overlays','track'\|'card']` | `queryKeys.overlaysByKind(kind)` | |
-| `['harness-items', cardId]` | `queryKeys.harnessItems(cardId)` | fe conversation history is query-backed |
-| `['planner-run', cardId]` | `queryKeys.plannerRun(cardId)` | fe current harness phase is query-backed |
-| `['track-files', …]` | — | **no-op**: no track-files query is built yet (stub) |
-| `['track-report', id]` | `queryKeys.trackReport(id)` | the track's task verdicts (TASKS panel) |
-| `['track-report']` | `queryKeys.trackReportPrefix()` | prefix; the four `task.*` events carry no track-id *field* (it is embedded in `idempotency_key`, which the plan does not parse), so this is the plan's only key for them |
-| `['track-conversations', id]` | `queryKeys.trackConversations(id)` | the endpoint is per-track (#1189 §4.1) and the plan names the track whenever `derivedTrackId` resolves one |
-| `['track-conversations']` | `queryKeys.trackConversationsPrefix()` | fallback for a `worker_session.*` event whose card belongs to no cached track detail. The query behind both arities lands in S5; mapping first is harmless (invalidating an unmounted key is a no-op) and the reverse order is what silently breaks a list |
-| `['tracks-range']` | — | **no-op**: the calendar range query is not built yet (stub) |
-| `['track-backlinks']` | `queryKeys.trackBacklinksPrefix()` | all tracks: another report can change their backlinks |
-| `['plugins']` | `queryKeys.plugins()` | runtime state and last error |
-| `['track-templates']` | `queryKeys.trackTemplates()` | running template owner availability and input schema |
-| `['plugin-data', id]` | `queryKeys.pluginDataPrefix(id)` | every cached calendar window for that plugin |
+| Resource | Shared address |
+| --- | --- |
+| areas / tracks in area / track detail | `['areas']` / `['tracks', areaId]` / `['track', trackId]` |
+| overlays | `['overlays', 'track' or 'card']` |
+| task verdicts / backlinks | `['track-report', trackId]` / `['track-backlinks', trackId]`, plus their bare prefixes |
+| conversation list | `['track-conversations', trackId]`, or its bare prefix when ownership is unknown |
+| accepted-input observation | `['conversation-initial-input', trackId, cardId]`, plus track and global prefixes |
+| transcript / planner run | `['harness-items', cardId]` / `['planner-run', cardId]` |
+| plugins / templates / plugin data | `['plugins']` / `['track-templates']` / `['plugin-data', pluginId]` (all windows) |
+| Today resolve / model catalog | `['today-launchpad']` / `['model-catalog', scope]` |
 
-Resulting per-kind behavior on the currently-built surfaces:
+`invalidation-baseline.test.ts` records actual operations through
+`invalidationPlanFor → applyEventEffects` on every wire kind, with resolved and
+unresolved ownership. Its snapshot was captured before this refactor. Prefix
+matching, cancel-before-invalidate, transcript resets and removals are preserved.
+The task events with only opaque task ids use the report **prefix**; ids are
+never parsed. `task.git_delivery_settled` is different: its released payload
+explicitly names a track, so its pre-existing scoped invalidation remains.
 
-| Event kind | Effect on cache | Reason |
-| --- | --- | --- |
-| `area.updated` | invalidate areas | area list is live |
-| `area.deleted` | invalidate areas + track overlays | |
-| `track.updated` | invalidate that area's track list + track detail + all active task verdicts | a root budget/policy change can alter descendant admission; `track-files`/`tracks-range` parts drop (stubs) |
-| `area.deleted` | invalidate area/track overlays + all task verdicts | block/card references from surviving areas change from cross-area to missing |
-| `track.deleted` | invalidate area's track list + track overlays + surviving task verdicts; **remove** track detail and that track's verdict query | neither deleted query can resolve again, while deleting a tree member changes the survivors' B/N shares |
-| `card.added` | invalidate track detail + both conversation lists + all task verdicts | card existence may satisfy a cross-track `neige://card/*` reference |
-| `card.updated` | invalidate track detail + both conversation lists | |
-| `card.deleted` | invalidate track detail + all task verdicts | card disappearance may break a cross-track reference; knowingly no conversation-list key (dropping the deleted row is #1140's) |
-| `worker_session.started` / `worker_session.status_changed` / `worker_session.superseded` | invalidate card overlays, plus track detail when the built-in cache lookup resolves; plus the track's task verdicts and both conversation lists | `track-files` remains an adapter stub. These three are what write `worker_sessions.state`, i.e. the dot each conversation row draws |
-| `overlay.set` / `overlay.deleted` | invalidate overlays of that kind, plus the owning track detail | |
-| `track.report_edited` | invalidate all task verdicts and backlinks, the edited track detail and Today resolve | cross-track refs can change dependents; `track-files` remains a stub |
-| `plan.updated` with string `agent_message` | cancel any in-flight initial verdict read, then invalidate that track's task verdicts | standalone pending-task cancellation carries the message and pending rows do not poll; projection companion events omit it and are no-ops here because their paired event already refreshes |
-| `codex.hook`, `claude.hook` | invalidate `track-files` **only** | a hook fires ~twice per tool call per worker and writes no `tasks` row; `track-report` is a live whole-document projection, so it is deliberately excluded (`taskVerdictInvalidatingKinds`) |
-| `terminal.deleted`, `codex.worker_requested`, `terminal.worker_requested`, `task.dispatched`, `task.completed`, `task.failed`, `task.gate_result` | invalidate task verdicts — by track id when the event resolves one, by prefix otherwise | `track-files` is still a stub. The four `task.*` events carry only an idempotency key / task id, so `derivedTrackId` — which reads named fields, never parsing an opaque id — returns null and only the prefix form reaches the cache: that is why the prefix is mapped at all |
-| `harness.item.added` | invalidate harness items | deliberately no conversation key: highest-frequency kind, and it is emitted *before* the `persist_snapshot` that moves the list's ordering column — see the note above `CONVERSATION_LIST_KINDS` in `core/events/invalidation-plan.test.ts` (follow-up tracked in #1216) |
-| `harness.phase.changed` | invalidate planner run + both conversation lists | |
-| `harness.transcript.cleared` | invalidate harness items + planner run | a reset always emits `harness.phase.changed` too, which carries the lists |
-| `harness.user_message.enqueued` | invalidate harness items + planner run + both conversation lists | reset and enqueue cross the transcript/run boundary |
-| `harness.transcript.rewound` | invalidate harness items + planner run + both conversation lists + track detail | what `harness.phase.changed` invalidates: an Edit's replace deletes the turn's rows and persists the snapshot |
-| `plugin.state` | invalidate plugins + track templates | runtime state changes template owner availability and input schema; existing transient-state polling remains |
-| `plugin.data.changed` | invalidate that plugin's data prefix | calendar windows are query-backed |
-| `plugin.tool.registered`, `task.context_*`, `workspace.*`, `forge.*`, `worktree.*`, `ask.*`, `proposal.*` | **no-op** | `core/events` declares these as `noop(reason)` and no query consumes them; open asks arrive in the activity overlay's `overlay.set` |
-| unknown / future kind | ignored, no throw | the plan lookup returns an empty plan |
+Resulting per-kind behavior (all unchanged by the address refactor):
+
+| Event kind | Effect on cache |
+| --- | --- |
+| `area.updated` | write through an existing area, invalidate areas |
+| `area.deleted` | retire that area's child queries, invalidate areas + track overlays + all task verdicts |
+| `track.updated` | invalidate that area's track list + track detail + all task verdicts |
+| `track.deleted` | invalidate area's track list + track overlays + all task verdicts; remove track detail, its verdicts and its accepted-input observations |
+| `card.added` | invalidate track detail + conversation list + all task verdicts |
+| `card.updated` | invalidate track detail + conversation list + card planner run + accepted-input observation |
+| `card.deleted` | invalidate track detail + all task verdicts; remove that card's accepted-input observations |
+| `worker_session.started` / `worker_session.status_changed` / `worker_session.superseded` | invalidate card overlays, resolved track detail, task verdicts, conversation list and accepted-input observations; unresolved ownership uses resource prefixes |
+| `overlay.set` / `overlay.deleted` | invalidate overlays of that kind, plus track detail if ownership resolves |
+| `track.report_edited` | invalidate all task verdicts and backlinks, the edited track detail and Today resolve |
+| `plan.updated` with string `agent_message` | invalidate that track's verdicts; companion projection events without the message are no-ops |
+| `terminal.deleted`, `codex.worker_requested`, `terminal.worker_requested` | invalidate task verdicts by named track or resolved card ownership, with prefix fallback |
+| `task.dispatched`, `task.completed`, `task.failed`, `task.gate_result`, `task.regate_requested` | invalidate task verdicts by prefix only; opaque task ids are never parsed |
+| `task.git_delivery_settled` | invalidate the explicitly named track's verdicts |
+| `harness.item.added` | invalidate transcript + accepted-input observation; a persisted user message also refreshes track detail and conversation list |
+| `harness.presentation.changed` | invalidate transcript + planner run + track detail + conversation list |
+| `harness.phase.changed` | invalidate accepted-input observation + planner run + transcript + track detail + conversation list; `turn_completed` also refreshes the card's model catalog |
+| `harness.transcript.cleared` / `harness.transcript.rewound` | reset transcript; invalidate accepted-input observation + transcript + planner run + track detail + conversation list |
+| `harness.user_message.enqueued` / `harness.queue.changed` | invalidate accepted-input observation + transcript + planner run + track detail + conversation list; restored queue also resets transcript |
+| `plugin.state` | invalidate plugins + track templates; transient-state polling remains |
+| `plugin.data.changed` | invalidate that plugin's data prefix, reaching all cached calendar windows |
+| `codex.hook`, `claude.hook`, other explicit no-op kinds | no cache operations; hooks write no task rows and have no workspace query |
+| unknown / future kind | ignored, no throw |
 
 Control frames: `replay-complete` → invalidate everything (`keys: null`) plus a
 cursor write; `snapshot-required` → clear the cache, drop the cursor, and
@@ -120,16 +122,20 @@ reconnect.
   with `toArea`, then replaces only a matching cached row. Missing rows are not
   inserted: the accompanying invalidation must refetch authoritative data.
 
-## Stubs, stated plainly
+## Resources without event queries
 
-The legacy app maps 40+ kinds. This slice covers only the kinds that keep the
-built surfaces live — areas, tracks in an area, track detail, track overlays.
-Everything routed to `track-files` or `tracks-range` is a stub
-here and becomes real the moment those queries exist: the mapping is one entry
-in `mapPlannedQueryKey`, and the pure plan already emits the key. `track-report`
-was such a stub and is now real — `trackTaskVerdictsQueryOptions` in
-`app/providers/queries.ts` claims exactly the key the plan already emitted, so
-the TASKS panel went live without a line of new invalidation policy.
+No query registers `track-files` or `tracks-range`; their former planned
+addresses always fell out of the adapter. They are now removed from the plan.
+If either resource gains a query, add its address to the core factory and its
+policy to the plan together, with a production-entry-point contract test.
+
+Cancel-first execution remains app policy: track detail, conversations, verdicts,
+accepted-input observations, transcript, planner run, backlinks, plugins,
+templates, plugin data and track overlays cancel before invalidation. Card
+overlays retain ordinary invalidation. A replay boundary resets transcript
+windows and cancels track overlays before invalidating everything. Confirmed
+area deletion still calls `retireAreaQueries`; area updates still replace only
+an existing row and preserve newer cached versions.
 
 **Events are not sufficient for that panel, and the gap is on the kernel side.**
 `scheduler::mark_running` stamps `worker_card_id` with no event at all —

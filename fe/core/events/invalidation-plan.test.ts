@@ -17,7 +17,7 @@ function event(value: unknown): WireEvent {
 }
 
 describe('invalidation plan behavior', () => {
-  it('refreshes the settled track\'s files and report after a git delivery settles', () => {
+  it('refreshes the settled track\'s report after a git delivery settles', () => {
     const settled = wireEventSchema.parse({
       ev: 'task.git_delivery_settled',
       data: {
@@ -28,7 +28,7 @@ describe('invalidation plan behavior', () => {
       },
     });
     expect(invalidationPlanFor(settled)).toEqual({
-      invalidate: [['track-files', 'track-7'], ['track-report', 'track-7']], remove: [], writeThrough: [],
+      invalidate: [['track-report', 'track-7']], remove: [], writeThrough: [],
     });
   });
 
@@ -51,7 +51,7 @@ describe('invalidation plan behavior', () => {
   it('invalidates track projections and pending diagnostics for track updates', () => {
     expect(invalidationPlanFor(event({ ev: 'track.updated', data: { id: 'w1', area_id: 'c1' } }))).toEqual({
       invalidate: [
-        ['tracks', 'area', 'c1'], ['track', 'w1'], ['track-files', 'w1'], ['tracks-range'],
+        ['tracks', 'c1'], ['track', 'w1'],
         ['track-report'],
       ],
       remove: [],
@@ -62,7 +62,7 @@ describe('invalidation plan behavior', () => {
   it('removes deleted track detail after invalidating its remaining projections', () => {
     expect(invalidationPlanFor(event({ ev: 'track.deleted', data: { id: 'w1', area_id: 'c1' } }))).toEqual({
       invalidate: [
-        ['tracks', 'area', 'c1'], ['overlays', 'track'], ['tracks-range'], ['track-report'],
+        ['tracks', 'c1'], ['overlays', 'track'], ['track-report'],
       ],
       remove: [['track', 'w1'], ['track-report', 'w1'], ['conversation-initial-input', 'w1']],
       writeThrough: [],
@@ -94,7 +94,7 @@ describe('invalidation plan behavior', () => {
   it('invalidates card mutations immediately without suppression or debounce state', () => {
     expect(invalidationPlanFor(event({ ev: 'card.added', data: { track_id: 'w1' } }))).toEqual({
       invalidate: [
-        ['track', 'w1'], ['track-files', 'w1'], ['track-report'],
+        ['track', 'w1'], ['track-report'],
         ['track-conversations', 'w1'],
       ],
       remove: [],
@@ -132,7 +132,7 @@ describe('invalidation plan behavior', () => {
       { findTrackOwningCard: () => 'track-1' },
     )).toEqual({
       invalidate: [
-        ['track', 'track-1'], ['overlays', 'card'], ['track-files', 'track-1'], ['track-report', 'track-1'],
+        ['track', 'track-1'], ['overlays', 'card'], ['track-report', 'track-1'],
         ['track-conversations', 'track-1'], ['conversation-initial-input', 'track-1', 'card-1'],
       ],
       remove: [],
@@ -147,7 +147,7 @@ describe('invalidation plan behavior', () => {
       { findTrackOwningCard: () => null },
     )).toEqual({
       invalidate: [
-        ['overlays', 'card'], ['track-files'], ['track-report'],
+        ['overlays', 'card'], ['track-report'],
         ['track-conversations'], ['conversation-initial-input'],
       ],
       remove: [],
@@ -166,32 +166,32 @@ describe('invalidation plan behavior', () => {
     });
   });
 
-  it('uses track_id, then card ownership, then the broad track-files prefix', () => {
+  it('uses track_id, then card ownership, then the broad task-verdict prefix', () => {
     const context = { findTrackOwningCard: (cardId: string) => cardId === 'card-1' ? 'track-1' : null };
     const ev = 'codex.worker_requested';
     expect(invalidationPlanFor(event({ ev, data: { track_id: 'direct' } }), context).invalidate)
-      .toEqual([['track-files', 'direct'], ['track-report', 'direct']]);
+      .toEqual([['track-report', 'direct']]);
     expect(invalidationPlanFor(event({ ev, data: { card_id: 'card-1' } }), context).invalidate)
-      .toEqual([['track-files', 'track-1'], ['track-report', 'track-1']]);
+      .toEqual([['track-report', 'track-1']]);
     expect(invalidationPlanFor(event({ ev, data: {} }), context).invalidate)
-      .toEqual([['track-files'], ['track-report']]);
+      .toEqual([['track-report']]);
   });
 
-  it.each(['codex.hook', 'claude.hook'] as const)('resolves a track for %s but stops at track-files', (ev) => {
+  it.each(['codex.hook', 'claude.hook'] as const)('plans no cache work for %s without a workspace query', (ev) => {
     const context = { findTrackOwningCard: (cardId: string) => cardId === 'card-1' ? 'track-1' : null };
     expect(invalidationPlanFor(event({ ev, data: { track_id: 'direct' } }), context).invalidate)
-      .toEqual([['track-files', 'direct']]);
+      .toEqual([]);
     expect(invalidationPlanFor(event({ ev, data: { card_id: 'card-1' } }), context).invalidate)
-      .toEqual([['track-files', 'track-1']]);
+      .toEqual([]);
     expect(invalidationPlanFor(event({ ev, data: {} }), context).invalidate)
-      .toEqual([['track-files']]);
+      .toEqual([]);
   });
 
   it('invalidates terminal runtime projection through card ownership', () => {
     expect(invalidationPlanFor(
       event({ ev: 'terminal.deleted', data: { card_id: 'card-1' } }),
       { findTrackOwningCard: () => 'track-1' },
-    ).invalidate).toEqual([['track-files', 'track-1'], ['track-report', 'track-1']]);
+    ).invalidate).toEqual([['track-report', 'track-1']]);
   });
 
   it('plans each harness event against the projections it can change', () => {

@@ -9,7 +9,7 @@ import type { EventEffect } from '../../../../core/events/reducer.ts';
 import type { ApiRequest, ApiTransportResponse, ApiTransportPort, ApiAbortSignal } from '../../../../core/api/types.ts';
 import { createUnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import { trackBacklinksQueryOptions, trackDetailQueryOptions, trackConversationsQueryOptions, conversationHistoryQueryOptions, queryKeys } from '../providers/queries.ts';
-import { applyEventEffects, mapPlannedQueryKey, type QueryCachePort } from './query-invalidation-adapter.ts';
+import { applyEventEffects, type QueryCachePort } from './query-invalidation-adapter.ts';
 
 type Call = Readonly<{ op: 'reset' | 'invalidate' | 'remove' | 'set' | 'clear'; queryKey?: readonly unknown[] }>;
 
@@ -98,27 +98,6 @@ describe('query invalidation adapter', () => {
     },
   );
 
-  it('maps every planned key shape onto a queryKeys key and drops the rest', () => {
-    expect(mapPlannedQueryKey(['areas'])).toEqual(queryKeys.areas());
-    expect(mapPlannedQueryKey(['tracks', 'area', 'c1'])).toEqual(queryKeys.tracksInArea('c1'));
-    expect(mapPlannedQueryKey(['track', 'w1'])).toEqual(queryKeys.trackDetail('w1'));
-    expect(mapPlannedQueryKey(['overlays', 'track'])).toEqual(queryKeys.overlaysByKind('track'));
-    expect(mapPlannedQueryKey(['overlays', 'card'])).toEqual(queryKeys.overlaysByKind('card'));
-    expect(mapPlannedQueryKey(['harness-items', 'card-1'])).toEqual(queryKeys.harnessItems('card-1'));
-    expect(mapPlannedQueryKey(['planner-run', 'card-1'])).toEqual(queryKeys.plannerRun('card-1'));
-    expect(mapPlannedQueryKey(['track-report', 'w1'])).toEqual(queryKeys.trackReport('w1'));
-    expect(mapPlannedQueryKey(['track-report'])).toEqual(queryKeys.trackReportPrefix());
-    expect(mapPlannedQueryKey(['track-conversations'])).toEqual(queryKeys.trackConversationsPrefix());
-    expect(mapPlannedQueryKey(['track-conversations', 'w1'])).toEqual(queryKeys.trackConversations('w1'));
-    expect(mapPlannedQueryKey(['conversation-initial-input'])).toEqual(['conversation-initial-input']);
-    expect(mapPlannedQueryKey(['conversation-initial-input', 'w1'])).toEqual(['conversation-initial-input', 'w1']);
-    expect(mapPlannedQueryKey(['conversation-initial-input', 'w1', 'card-1'])).toEqual(queryKeys.initialInput('w1', 'card-1'));
-    expect(mapPlannedQueryKey(['today-launchpad'])).toEqual(queryKeys.todayLaunchpad());
-    for (const dropped of [['conversation-initial-input', undefined], ['conversation-initial-input', 'w1', null], ['conversation-initial-input', 'w1', 'c1', 'extra'], ['track-files'], ['track-files', 'w1'], ['tracks-range'], ['plugin-data'], ['nope']]) {
-      expect(mapPlannedQueryKey(dropped)).toBeNull();
-    }
-  });
-
   it('invalidates backlinks for every cached track after another track report is edited', async () => {
     const client = new QueryClient();
     const keys = [queryKeys.trackBacklinks('target-a'), queryKeys.trackBacklinks('target-b')];
@@ -182,7 +161,7 @@ describe('query invalidation adapter', () => {
     expect(client.getQueryData(third)).toBeUndefined();
   });
 
-  /* Both links are silent when they break: an unmapped key is discarded here without a warning. */
+  /* Both links are silent when they break: an unplanned key is discarded here without a warning. */
   it('turns a report edit into a refresh of the Today document and its resolve', () => {
     const event = wireEventSchema.parse({
       ev: 'track.report_edited',
@@ -191,9 +170,7 @@ describe('query invalidation adapter', () => {
         summary_before: '', summary_after: 'today', body_before: '', body_after: '# today',
       },
     });
-    const mapped = invalidationPlanFor(event).invalidate
-      .map(mapPlannedQueryKey)
-      .filter((key) => key !== null);
+    const mapped = invalidationPlanFor(event).invalidate;
     expect(mapped).toContainEqual(queryKeys.todayLaunchpad());
     expect(mapped).toContainEqual(queryKeys.trackDetail('lp'));
   });
@@ -212,7 +189,7 @@ describe('query invalidation adapter', () => {
     const event = wireEventSchema.parse({ ev, data });
     expect(event.data).toMatchObject({ idempotency_key: 'w-7:alpha' });
     const plan = invalidationPlanFor(event);
-    const mapped = plan.invalidate.map(mapPlannedQueryKey).filter((key) => key !== null);
+    const mapped = plan.invalidate;
     expect(mapped).toContainEqual(queryKeys.trackReportPrefix());
   });
 
@@ -221,22 +198,13 @@ describe('query invalidation adapter', () => {
       ev: 'plan.updated',
       data: { track_id: 'w-7', changed_keys: ['alpha'], agent_message: 'canceled' },
     });
-    const mapped = invalidationPlanFor(event).invalidate
-      .map(mapPlannedQueryKey)
-      .filter((key) => key !== null);
+    const mapped = invalidationPlanFor(event).invalidate;
     expect(mapped).toEqual([queryKeys.trackReport('w-7')]);
   });
 
-  it('never emits a key the built surface does not define', () => {
-    // The mapped area-list key must be the very key the area query registers,
-    // otherwise an invalidation silently refreshes nothing.
-    expect(mapPlannedQueryKey(['areas'])).toEqual(['areas']);
-    expect(mapPlannedQueryKey(['tracks', 'area', 'c1'])).toEqual(['tracks', 'c1']);
-  });
-
-  it('invalidates each mapped key of an invalidate effect', async () => {
+  it('invalidates each planned key of an invalidate effect', async () => {
     const { calls, client } = recordingClient();
-    applyEventEffects(client, [{ type: 'invalidate', keys: [['areas'], ['track', 'w1'], ['track-files', 'w1']] }]);
+    applyEventEffects(client, [{ type: 'invalidate', keys: [['areas'], ['track', 'w1']] }]);
     await settleReads();
     expect(calls).toEqual([
       { op: 'invalidate', queryKey: ['areas'] },
@@ -310,9 +278,9 @@ describe('query invalidation adapter', () => {
     expect(calls).toEqual([{ op: 'clear' }]);
   });
 
-  it('removes mapped keys for a remove effect', () => {
+  it('removes planned keys for a remove effect', () => {
     const { calls, client } = recordingClient();
-    applyEventEffects(client, [{ type: 'remove', keys: [['track', 'w1'], ['tracks-range']] }]);
+    applyEventEffects(client, [{ type: 'remove', keys: [['track', 'w1']] }]);
     expect(calls).toEqual([{ op: 'remove', queryKey: ['track', 'w1'] }]);
   });
 

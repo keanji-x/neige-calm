@@ -28,7 +28,7 @@ describe('invalidation plan contract', () => {
     >;
     expect(invalidationPlanFor(event)).toEqual({
       invalidate: [
-        ['track-files', 'track-7'], ['track-report'], ['track-backlinks'],
+        ['track-report'], ['track-backlinks'],
         ['today-launchpad'], ['track', 'track-7'],
       ],
       remove: [],
@@ -135,12 +135,12 @@ describe('invalidation plan contract', () => {
 
   /* A hook fires roughly twice per tool call per running worker and writes no `tasks` row. */
   it.each(['codex.hook', 'claude.hook'] as const)(
-    'invalidates the workspace but never the task verdicts for %s',
+    'plans no cache work or task verdicts for %s',
     (ev) => {
       const plan = invalidationPlanFor(
         { ev, data: { track_id: 'track-7' } } as unknown as WireEvent,
       );
-      expect(plan.invalidate).toEqual([['track-files', 'track-7']]);
+      expect(plan.invalidate).toEqual([]);
       expect(taskVerdictInvalidatingKinds()).not.toContain(ev);
     },
   );

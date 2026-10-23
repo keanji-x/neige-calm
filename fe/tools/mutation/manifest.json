@@ -796,17 +796,12 @@
       "oracle:CAP-APP-032"
     ],
     "target": "web/src/app/events/query-invalidation-adapter.ts",
-    "patch": "diff --git a/web/src/app/events/query-invalidation-adapter.ts b/web/src/app/events/query-invalidation-adapter.ts\nindex 14d4de9..e1da359 100644\n--- a/web/src/app/events/query-invalidation-adapter.ts\n+++ b/web/src/app/events/query-invalidation-adapter.ts\n@@ -39,6 +39,6 @@ export function mapPlannedQueryKey(key: QueryKey): readonly unknown[] | null {\n   if (head === 'areas' && key.length === 1) return queryKeys.areas();\n   if (head === 'tracks' && first === 'area' && typeof second === 'string') return queryKeys.tracksInArea(second);\n-  if (head === 'track' && typeof first === 'string' && key.length === 2) return queryKeys.trackDetail(first);\n+  if (head === 'track' && typeof first === 'string' && key.length === 2) return null;\n   if (head === 'overlays' && (first === 'track' || first === 'card')) return queryKeys.overlaysByKind(first);\n   if (head === 'harness-items' && typeof first === 'string' && key.length === 2) return queryKeys.harnessItems(first);\n   if (head === 'planner-run' && typeof first === 'string' && key.length === 2) return queryKeys.plannerRun(first);\n",
+    "patch": "diff --git a/web/src/app/events/query-invalidation-adapter.ts b/web/src/app/events/query-invalidation-adapter.ts\n--- a/web/src/app/events/query-invalidation-adapter.ts\n+++ b/web/src/app/events/query-invalidation-adapter.ts\n@@ -53,7 +53,7 @@\n         continue;\n       }\n       for (const key of effect.keys) {\n-        invalidateQuery(client, key);\n+        if (key[0] !== 'track') invalidateQuery(client, key);\n       }\n       continue;\n     }\n",
     "expected_red": [
       "EventBridge contracts resolves a runtime card through cached track detail before invalidating",
       "event composition T-B2 carries a real socket card event through the bridge into track invalidation",
       "query invalidation adapter drives the conversation-list keys all the way onto the query client",
-      "query invalidation adapter invalidates each mapped key of an invalidate effect",
-      "query invalidation adapter maps every planned key shape onto a queryKeys key and drops the rest",
-      "query invalidation adapter preserves effect order across a snapshot-required style batch",
-      "query invalidation adapter removes mapped keys for a remove effect",
-      "query invalidation adapter turns a real track.deleted plan into tree diagnostics refresh plus ordinary cleanup",
-      "query invalidation adapter turns a report edit into a refresh of the Today document and its resolve",
+      "query invalidation adapter invalidates each planned key of an invalidate effect",
       "query invalidation adapter turns each real harness plan into its exact live query invalidations",
       "replaces initial detail metadata for deleted (transport abort=false)",
       "replaces initial detail metadata for edited (transport abort=false)",
@@ -819,10 +814,12 @@
       "replaces initial detail metadata for presentation (transport abort=false)",
       "replaces initial detail metadata for presentation (transport abort=true)",
       "keeps adjacent detail input events scoped and the latest replacement authoritative",
-      "marks inactive detail metadata stale without eagerly reading it"
+      "marks inactive detail metadata stale without eagerly reading it",
+      "preserves the event-to-cache operation baseline through production entry points"
     ],
     "selection_paths": [
-      "web/src/app/composition.test.tsx"
+      "web/src/app/composition.test.tsx",
+      "web/src/app/events/invalidation-baseline.test.ts"
     ],
     "why_more_than_one": "T-B2 follows a decoded socket event through reducer and adapter. The harness-phase contract also fails because Planner activity now requires the same Track-detail invalidation; CI measured this additional witness. The production detail-query witnesses also require this mapping for each input event, adjacent replacement, and inactive staleness; list witnesses remain green because their separate mapping is intact."
   },
@@ -957,13 +954,14 @@
       "oracle:INV-APP-030"
     ],
     "target": "web/src/app/events/query-invalidation-adapter.ts",
-    "patch": "diff --git a/web/src/app/events/query-invalidation-adapter.ts b/web/src/app/events/query-invalidation-adapter.ts\nindex 14d4de9..43c629c 100644\n--- a/web/src/app/events/query-invalidation-adapter.ts\n+++ b/web/src/app/events/query-invalidation-adapter.ts\n@@ -80,9 +80,7 @@ export function applyEventEffects(client: QueryCachePort, effects: readonly Even\n         const existing = client.getQueryData<readonly ReturnType<typeof toArea>[]>(mapped);\n         if (existing === undefined || !existing.some((area) => area.id === write.value.id)) continue;\n         const updated = toArea(write.value);\n-        client.setQueryData(mapped, existing.map((area) => area.id === updated.id\n-          ? newestArea(area, updated)\n-          : area));\n+        client.setQueryData(mapped, [updated]);\n       }\n       continue;\n     }\n",
+    "patch": "diff --git a/web/src/app/events/query-invalidation-adapter.ts b/web/src/app/events/query-invalidation-adapter.ts\n--- a/web/src/app/events/query-invalidation-adapter.ts\n+++ b/web/src/app/events/query-invalidation-adapter.ts\n@@ -70,9 +70,7 @@\n         const existing = client.getQueryData<readonly ReturnType<typeof toArea>[]>(write.key);\n         if (existing === undefined || !existing.some((area) => area.id === write.value.id)) continue;\n         const updated = toArea(write.value);\n-        client.setQueryData(write.key, existing.map((area) => area.id === updated.id\n-          ? newestArea(area, updated)\n-          : area));\n+        client.setQueryData(write.key, [updated]);\n       }\n       continue;\n     }\n",
     "expected_red": [
       "query invalidation adapter write-through replaces one existing area and preserves every other row",
       "query invalidation adapter write-through ignores an older area event that arrives after a newer cache version"
     ],
     "selection_paths": [
-      "web/src/app/events/query-invalidation-adapter.test.ts"
+      "web/src/app/events/query-invalidation-adapter.test.ts",
+      "web/src/app/events/invalidation-baseline.test.ts"
     ],
     "why_more_than_one": "T-G2a observes both properties this whole-list replacement destroys: preserving an independent row and retaining a newer version of the replaced row."
   },
@@ -973,12 +971,13 @@
       "oracle:INV-APP-031"
     ],
     "target": "web/src/app/events/query-invalidation-adapter.ts",
-    "patch": "diff --git a/web/src/app/events/query-invalidation-adapter.ts b/web/src/app/events/query-invalidation-adapter.ts\nindex 14d4de9..45bda9c 100644\n--- a/web/src/app/events/query-invalidation-adapter.ts\n+++ b/web/src/app/events/query-invalidation-adapter.ts\n@@ -78,7 +78,11 @@ export function applyEventEffects(client: QueryCachePort, effects: readonly Even\n         const mapped = mapPlannedQueryKey(write.key);\n         if (mapped === null) continue;\n         const existing = client.getQueryData<readonly ReturnType<typeof toArea>[]>(mapped);\n-        if (existing === undefined || !existing.some((area) => area.id === write.value.id)) continue;\n+        if (existing === undefined) continue;\n+        if (!existing.some((area) => area.id === write.value.id)) {\n+          client.setQueryData(mapped, [toArea(write.value)]);\n+          continue;\n+        }\n         const updated = toArea(write.value);\n         client.setQueryData(mapped, existing.map((area) => area.id === updated.id\n           ? newestArea(area, updated)\n",
+    "patch": "diff --git a/web/src/app/events/query-invalidation-adapter.ts b/web/src/app/events/query-invalidation-adapter.ts\n--- a/web/src/app/events/query-invalidation-adapter.ts\n+++ b/web/src/app/events/query-invalidation-adapter.ts\n@@ -68,7 +68,11 @@\n           continue;\n         }\n         const existing = client.getQueryData<readonly ReturnType<typeof toArea>[]>(write.key);\n-        if (existing === undefined || !existing.some((area) => area.id === write.value.id)) continue;\n+        if (existing === undefined) continue;\n+        if (!existing.some((area) => area.id === write.value.id)) {\n+          client.setQueryData(write.key, [toArea(write.value)]);\n+          continue;\n+        }\n         const updated = toArea(write.value);\n         client.setQueryData(write.key, existing.map((area) => area.id === updated.id\n           ? newestArea(area, updated)\n",
     "expected_red": [
       "query invalidation adapter write-through never creates a phantom area when the row is absent"
     ],
     "selection_paths": [
-      "web/src/app/events/query-invalidation-adapter.test.ts"
+      "web/src/app/events/query-invalidation-adapter.test.ts",
+      "web/src/app/events/invalidation-baseline.test.ts"
     ],
     "why_more_than_one": "T-G2b starts with an unrelated cached row and rejects insertion of the event payload."
   },
@@ -988,12 +987,13 @@
       "oracle:INV-APP-031"
     ],
     "target": "web/src/app/events/query-invalidation-adapter.ts",
-    "patch": "diff --git a/web/src/app/events/query-invalidation-adapter.ts b/web/src/app/events/query-invalidation-adapter.ts\nindex 14d4de9..e40205d 100644\n--- a/web/src/app/events/query-invalidation-adapter.ts\n+++ b/web/src/app/events/query-invalidation-adapter.ts\n@@ -78,7 +78,11 @@ export function applyEventEffects(client: QueryCachePort, effects: readonly Even\n         const mapped = mapPlannedQueryKey(write.key);\n         if (mapped === null) continue;\n         const existing = client.getQueryData<readonly ReturnType<typeof toArea>[]>(mapped);\n-        if (existing === undefined || !existing.some((area) => area.id === write.value.id)) continue;\n+        if (existing === undefined) {\n+          client.setQueryData(mapped, [toArea(write.value)]);\n+          continue;\n+        }\n+        if (!existing.some((area) => area.id === write.value.id)) continue;\n         const updated = toArea(write.value);\n         client.setQueryData(mapped, existing.map((area) => area.id === updated.id\n           ? newestArea(area, updated)\n",
+    "patch": "diff --git a/web/src/app/events/query-invalidation-adapter.ts b/web/src/app/events/query-invalidation-adapter.ts\n--- a/web/src/app/events/query-invalidation-adapter.ts\n+++ b/web/src/app/events/query-invalidation-adapter.ts\n@@ -68,7 +68,11 @@\n           continue;\n         }\n         const existing = client.getQueryData<readonly ReturnType<typeof toArea>[]>(write.key);\n-        if (existing === undefined || !existing.some((area) => area.id === write.value.id)) continue;\n+        if (existing === undefined) {\n+          client.setQueryData(write.key, [toArea(write.value)]);\n+          continue;\n+        }\n+        if (!existing.some((area) => area.id === write.value.id)) continue;\n         const updated = toArea(write.value);\n         client.setQueryData(write.key, existing.map((area) => area.id === updated.id\n           ? newestArea(area, updated)\n",
     "expected_red": [
       "query invalidation adapter write-through leaves an uninitialized area cache absent"
     ],
     "selection_paths": [
-      "web/src/app/events/query-invalidation-adapter.test.ts"
+      "web/src/app/events/query-invalidation-adapter.test.ts",
+      "web/src/app/events/invalidation-baseline.test.ts"
     ],
     "why_more_than_one": "The undefined-cache witness isolates the first arm from the initialized-list missing-row arm."
   },
@@ -1048,7 +1048,7 @@
       "oracle:INV-APP-035"
     ],
     "target": "core/events/invalidation-plan.ts",
-    "patch": "diff --git a/core/events/invalidation-plan.ts b/core/events/invalidation-plan.ts\nindex 3e95af5..ca351d1 100644\n--- a/core/events/invalidation-plan.ts\n+++ b/core/events/invalidation-plan.ts\n@@ -62,7 +62,7 @@ export const TRACK_FILES_DERIVED_KINDS = Object.freeze([\n   'worker_session.started', 'worker_session.status_changed', 'worker_session.superseded',\n   'terminal.deleted', 'codex.hook', 'claude.hook',\n   'codex.worker_requested', 'terminal.worker_requested',\n-  'task.completed', 'task.failed', 'task.git_delivery_settled', 'task.dispatched', 'task.gate_result',\n+  'task.completed', 'task.failed', 'task.git_delivery_settled', 'task.dispatched',\n ] as const);\n \n /**\n",
+    "patch": "diff --git a/core/events/invalidation-plan.ts b/core/events/invalidation-plan.ts\n--- a/core/events/invalidation-plan.ts\n+++ b/core/events/invalidation-plan.ts\n@@ -64,7 +64,7 @@\n   'worker_session.started', 'worker_session.status_changed', 'worker_session.superseded',\n   'terminal.deleted', 'codex.hook', 'claude.hook',\n   'codex.worker_requested', 'terminal.worker_requested',\n-  'task.completed', 'task.failed', 'task.git_delivery_settled', 'task.dispatched', 'task.gate_result',\n+  'task.completed', 'task.failed', 'task.git_delivery_settled', 'task.dispatched',\n ] as const);\n \n /**\n",
     "expected_red": [
       "invalidation plan contract pins track-report invalidation to exactly the task-verdict invalidating kinds"
     ],
@@ -1063,14 +1063,16 @@
       "oracle:INV-APP-035"
     ],
     "target": "core/events/invalidation-plan.ts",
-    "patch": "diff --git a/core/events/invalidation-plan.ts b/core/events/invalidation-plan.ts\n--- a/core/events/invalidation-plan.ts\n+++ b/core/events/invalidation-plan.ts\n@@ -209,5 +209,5 @@\n     return result(keys);\n   }),\n-  'terminal.deleted': plan((event, context) => result(trackFilesDerived(derivedTrackId(event.data, context)))),\n+  'terminal.deleted': plan((event, context) => result([trackFiles(derivedTrackId(event.data, context))])),\n   'plugin.state': plan(() => result([['plugins'], ['track-templates']])),\n   'plugin.data.changed': plan((event) => result([['plugin-data', event.data.plugin_id]])),\n",
+    "patch": "diff --git a/core/events/invalidation-plan.ts b/core/events/invalidation-plan.ts\n--- a/core/events/invalidation-plan.ts\n+++ b/core/events/invalidation-plan.ts\n@@ -232,7 +232,7 @@\n     }\n     return result(keys);\n   }),\n-  'terminal.deleted': plan((event, context) => result(taskVerdicts(derivedTrackId(event.data, context)))),\n+  'terminal.deleted': plan(() => result([])),\n   'plugin.state': plan(() => result([eventKeys.plugins(), eventKeys.trackTemplates()])),\n   'plugin.data.changed': plan((event) => result([eventKeys.pluginDataPrefix(event.data.plugin_id)])),\n   'plugin.tool.registered': noop('No plugin-tool catalog query exists.'),\n",
     "expected_red": [
       "invalidation plan behavior invalidates terminal runtime projection through card ownership",
-      "invalidation plan contract pins track-report invalidation to exactly the task-verdict invalidating kinds"
+      "invalidation plan contract pins track-report invalidation to exactly the task-verdict invalidating kinds",
+      "preserves the event-to-cache operation baseline through production entry points"
     ],
     "selection_paths": [
       "core/events/invalidation-plan.contract.test.ts",
-      "core/events/invalidation-plan.test.ts"
+      "core/events/invalidation-plan.test.ts",
+      "web/src/app/events/invalidation-baseline.test.ts"
     ],
     "why_more_than_one": "T-G3b makes production behavior disagree with the independently fixed expected set."
   },
@@ -1080,13 +1082,15 @@
       "oracle:CAP-APP-037"
     ],
     "target": "core/events/invalidation-plan.ts",
-    "patch": "diff --git a/core/events/invalidation-plan.ts b/core/events/invalidation-plan.ts\nindex 3e95af5..f85e32f 100644\n--- a/core/events/invalidation-plan.ts\n+++ b/core/events/invalidation-plan.ts\n@@ -185,7 +185,7 @@ function policies(): PolicyMap {\n   /* `['today-launchpad']` carries `report_has_noninitial_content` (Today's empty-state predicate) and\n    * `['track', id]` is where the document is read from; nothing generated protects either line. */\n   'track.report_edited': plan((event) => result([\n-    ['track-files', event.data.track_id], ['track-report'], ['track-backlinks'],\n+    ['track-files', event.data.track_id], ['track-backlinks'],\n     ['today-launchpad'], ['track', event.data.track_id],\n   ])),\n   'overlay.set': plan((event, context) => {\n",
+    "patch": "diff --git a/core/events/invalidation-plan.ts b/core/events/invalidation-plan.ts\n--- a/core/events/invalidation-plan.ts\n+++ b/core/events/invalidation-plan.ts\n@@ -209,7 +209,7 @@\n   /* `eventKeys.todayLaunchpad()` carries `report_has_noninitial_content` (Today's empty-state predicate) and\n    * `eventKeys.trackDetail(id)` is where the document is read from; nothing generated protects either line. */\n   'track.report_edited': plan((event) => result([\n-    eventKeys.trackReportPrefix(), eventKeys.trackBacklinksPrefix(),\n+    eventKeys.trackBacklinksPrefix(),\n     eventKeys.todayLaunchpad(), eventKeys.trackDetail(event.data.track_id),\n   ])),\n   'overlay.set': plan((event, context) => {\n",
     "expected_red": [
       "invalidation plan contract pins ordinary query-key literals independently from production definitions",
-      "invalidation plan contract pins track-report invalidation to exactly the task-verdict invalidating kinds"
+      "invalidation plan contract pins track-report invalidation to exactly the task-verdict invalidating kinds",
+      "preserves the event-to-cache operation baseline through production entry points"
     ],
     "selection_paths": [
-      "core/events/invalidation-plan.contract.test.ts"
+      "core/events/invalidation-plan.contract.test.ts",
+      "web/src/app/events/invalidation-baseline.test.ts"
     ],
     "why_more_than_one": "T-G3c independently pins the report-edit plan and the all-kind track-report set."
   },
@@ -1178,7 +1182,7 @@
       "oracle:CAP-APP-117"
     ],
     "target": "core/events/invalidation-plan.ts",
-    "patch": "diff --git a/core/events/invalidation-plan.ts b/core/events/invalidation-plan.ts\n--- a/core/events/invalidation-plan.ts\n+++ b/core/events/invalidation-plan.ts\n@@ -170,11 +170,7 @@\n   'worker_session.started': plan((event, context) => runtimePlan(event.data.card_id, context)),\n   'worker_session.status_changed': plan((event, context) => runtimePlan(event.data.card_id, context)),\n   'worker_session.superseded': plan((event, context) => runtimePlan(event.data.card_id, context)),\n-  'harness.item.added': plan((event) => result([\n-    ['harness-items', event.data.card_id], ['conversation-initial-input', event.data.track_id, event.data.card_id],\n-    // The row is already persisted; only user input can change the first-input title.\n-    ...(event.data.method === 'item/completed' && isUserMessage(event.data.item_type) ? conversationInputMetadata(event.data.track_id) : []),\n-  ])),\n+  'harness.item.added': plan(() => result([])),\n   'harness.presentation.changed': plan((event) => result([\n     ['harness-items',event.data.card_id],['planner-run',event.data.card_id],\n     ...conversationInputMetadata(event.data.track_id),\n",
+    "patch": "diff --git a/core/events/invalidation-plan.ts b/core/events/invalidation-plan.ts\n--- a/core/events/invalidation-plan.ts\n+++ b/core/events/invalidation-plan.ts\n@@ -170,11 +170,7 @@\n   'worker_session.started': plan((event, context) => runtimePlan(event.data.card_id, context)),\n   'worker_session.status_changed': plan((event, context) => runtimePlan(event.data.card_id, context)),\n   'worker_session.superseded': plan((event, context) => runtimePlan(event.data.card_id, context)),\n-  'harness.item.added': plan((event) => result([\n-    eventKeys.transcript(event.data.card_id), eventKeys.initialInput(event.data.track_id, event.data.card_id),\n-    // The row is already persisted; only user input can change the first-input title.\n-    ...(event.data.method === 'item/completed' && isUserMessage(event.data.item_type) ? conversationInputMetadata(event.data.track_id) : []),\n-  ])),\n+  'harness.item.added': plan(() => result([])),\n   'harness.presentation.changed': plan((event) => result([\n     eventKeys.transcript(event.data.card_id), eventKeys.plannerRun(event.data.card_id),\n     ...conversationInputMetadata(event.data.track_id),\n",
     "expected_red": [
       "invalidation plan behavior plans each harness event against the projections it can change",
       "invalidation plan behavior refreshes metadata for persisted user input but not agent/tool/turn items",
@@ -1186,11 +1190,13 @@
       "replaces initial detail metadata for persisted (transport abort=false)",
       "replaces initial detail metadata for persisted (transport abort=true)",
       "replaces initial list metadata for persisted (transport abort=false)",
-      "replaces initial list metadata for persisted (transport abort=true)"
+      "replaces initial list metadata for persisted (transport abort=true)",
+      "preserves the event-to-cache operation baseline through production entry points"
     ],
     "selection_paths": [
       "core/events/invalidation-plan.test.ts",
-      "web/src/app/events/query-invalidation-adapter.test.ts"
+      "web/src/app/events/query-invalidation-adapter.test.ts",
+      "web/src/app/events/invalidation-baseline.test.ts"
     ],
     "why_more_than_one": "T-G4a independently observes the pure plan and its production adapter path. The four initial-read witnesses use production query options and a held transport (both abort behaviors); removing the persisted-user event plan also prevents their replacement metadata read."
   },
@@ -1200,16 +1206,17 @@
       "oracle:CAP-APP-117"
     ],
     "target": "web/src/app/events/query-invalidation-adapter.ts",
-    "patch": "diff --git a/web/src/app/events/query-invalidation-adapter.ts b/web/src/app/events/query-invalidation-adapter.ts\nindex 9486a58..d3a7aaa 100644\n--- a/web/src/app/events/query-invalidation-adapter.ts\n+++ b/web/src/app/events/query-invalidation-adapter.ts\n@@ -41,7 +41,7 @@\n   if (head === 'tracks' && first === 'area' && typeof second === 'string') return queryKeys.tracksInArea(second);\n   if (head === 'track' && typeof first === 'string' && key.length === 2) return queryKeys.trackDetail(first);\n   if (head === 'overlays' && (first === 'track' || first === 'card')) return queryKeys.overlaysByKind(first);\n-  if (head === 'harness-items' && typeof first === 'string' && key.length === 2) return queryKeys.harnessItems(first);\n+  if (head === 'harness-items' && typeof first === 'string' && key.length === 2) return null;\n   if (head === 'planner-run' && typeof first === 'string' && key.length === 2) return queryKeys.plannerRun(first);\n   if (head === 'conversation-initial-input' && key.length === 1) return queryKeys.initialInputPrefix();\n   if (head === 'conversation-initial-input' && typeof first === 'string' && key.length === 2) return queryKeys.initialInputTrack(first);\n",
+    "patch": "diff --git a/web/src/app/events/query-invalidation-adapter.ts b/web/src/app/events/query-invalidation-adapter.ts\n--- a/web/src/app/events/query-invalidation-adapter.ts\n+++ b/web/src/app/events/query-invalidation-adapter.ts\n@@ -53,7 +53,7 @@\n         continue;\n       }\n       for (const key of effect.keys) {\n-        invalidateQuery(client, key);\n+        if (key[0] !== 'harness-items') invalidateQuery(client, key);\n       }\n       continue;\n     }\n",
     "expected_red": [
       "presentation event replaces an in-flight old empty conversation page before its late response",
-      "query invalidation adapter maps every planned key shape onto a queryKeys key and drops the rest",
-      "query invalidation adapter turns each real harness plan into its exact live query invalidations"
+      "query invalidation adapter turns each real harness plan into its exact live query invalidations",
+      "preserves the event-to-cache operation baseline through production entry points"
     ],
     "selection_paths": [
-      "web/src/app/events/query-invalidation-adapter.test.ts"
+      "web/src/app/events/query-invalidation-adapter.test.ts",
+      "web/src/app/events/invalidation-baseline.test.ts"
     ],
-    "why_more_than_one": "T-G4b locks both the literal mapping and the end-to-end harness event path."
+    "why_more_than_one": "The adapter passes shared addresses directly; the production harness plans and held initial transcript read must still reach the query cache."
   },
   {
     "mutation_id": "session-gate-drop-query-cache-clear",

@@ -1,3 +1,4 @@
+import * as eventKeys from './query-keys.js';
 import { isUserMessage } from '../domain/conversation.js';
 import type { Area, WireEvent } from '../api/schemas.js';
 
@@ -46,12 +47,8 @@ function result(
   return { invalidate, remove, writeThrough };
 }
 
-function trackFiles(trackId: string | null): QueryKey {
-  return trackId === null ? ['track-files'] : ['track-files', trackId];
-}
-
-function trackFilesDerived(trackId: string | null): readonly QueryKey[] {
-  return [trackFiles(trackId), trackId === null ? ['track-report'] : ['track-report', trackId]];
+function taskVerdicts(trackId: string | null): readonly QueryKey[] {
+  return [trackId === null ? eventKeys.trackReportPrefix() : eventKeys.trackReport(trackId)];
 }
 
 export type TrackFilesDerivedKind =
@@ -75,7 +72,7 @@ export const TRACK_FILES_DERIVED_KINDS = Object.freeze([
  * active observer only marks entries stale, so that fallback is cheap).
  */
 function trackConversations(trackId: string | null): QueryKey {
-  return trackId === null ? ['track-conversations'] : ['track-conversations', trackId];
+  return trackId === null ? eventKeys.trackConversationsPrefix() : eventKeys.trackConversations(trackId);
 }
 
 /**
@@ -90,7 +87,7 @@ function conversationLists(trackId: string | null): readonly QueryKey[] {
 /** Reads of input-derived titles: Planner metadata lives in track detail, Assistant metadata
  * in the conversation list. A detached store has no track scope and must not fan out globally. */
 export function conversationInputMetadata(trackId: string | null): readonly QueryKey[] {
-  return trackId === null ? [] : [['track', trackId], ['track-conversations', trackId]];
+  return trackId === null ? [] : [eventKeys.trackDetail(trackId), eventKeys.trackConversations(trackId)];
 }
 
 function derivedTrackId(data: unknown, context: InvalidationContext): string | null {
@@ -104,7 +101,7 @@ function derivedTrackId(data: unknown, context: InvalidationContext): string | n
 }
 
 /**
- * The kinds that invalidate a track's task verdicts (`['track-report', …]`): the workspace kinds
+ * The kinds that invalidate a track's task verdicts (`eventKeys.trackReport(…)`): the workspace kinds
  * minus the two hooks (a hook fires ~twice per tool call and writes no `tasks` row, and the report
  * query re-projects the whole document), plus the non-derived events whose effect can reach other tracks.
  * A function because `no-module-runtime-state` rejects a module-level binding initialised by a call.
@@ -121,11 +118,11 @@ export function taskVerdictInvalidatingKinds(): readonly EventKind[] {
 function runtimePlan(cardId: string, context: InvalidationContext): InvalidationPlan {
   const trackId = context.findTrackOwningCard(cardId);
   return result([
-    ...(trackId === null ? [] : [['track', trackId]]),
-    ['overlays', 'card'],
-    ...trackFilesDerived(trackId),
+    ...(trackId === null ? [] : [eventKeys.trackDetail(trackId)]),
+    eventKeys.overlaysByKind('card'),
+    ...taskVerdicts(trackId),
     ...conversationLists(trackId),
-    trackId === null ? ['conversation-initial-input'] : ['conversation-initial-input', trackId, cardId],
+    trackId === null ? eventKeys.initialInputPrefix() : eventKeys.initialInput(trackId, cardId),
   ]);
 }
 
@@ -136,121 +133,121 @@ export function defineInvalidationPolicies<T extends PolicyMap>(value: T): T {
 function policies(): PolicyMap {
   return defineInvalidationPolicies({
   'area.updated': plan((event) => result(
-    [['areas']],
+    [eventKeys.areas()],
     [],
-    [{ key: ['areas'], mode: 'replace-existing-area', value: event.data }],
+    [{ key: eventKeys.areas(), mode: 'replace-existing-area', value: event.data }],
   )),
-  'area.deleted': plan((event) => result([['areas'], ['overlays', 'track'], ['track-report']], [],
+  'area.deleted': plan((event) => result([eventKeys.areas(), eventKeys.overlaysByKind('track'), eventKeys.trackReportPrefix()], [],
     [{ mode: 'area-deleted', areaId: event.data.id }])),
   /* The report key is deliberately broad: a root track's tree budget changes the admission
        diagnosis of its child tracks, but the event carries only the updated root id. */
   'track.updated': plan((event) => result([
-    ['tracks', 'area', event.data.area_id], ['track', event.data.id],
-    ['track-files', event.data.id], ['tracks-range'], ['track-report'],
+    eventKeys.tracksInArea(event.data.area_id), eventKeys.trackDetail(event.data.id),
+    eventKeys.trackReportPrefix(),
   ])),
   'track.deleted': plan((event) => result(
     [
-      ['tracks', 'area', event.data.area_id], ['overlays', 'track'], ['tracks-range'],
-      ['track-report'],
+      eventKeys.tracksInArea(event.data.area_id), eventKeys.overlaysByKind('track'),
+      eventKeys.trackReportPrefix(),
     ],
-    [['track', event.data.id], ['track-report', event.data.id], ['conversation-initial-input', event.data.id]],
+    [eventKeys.trackDetail(event.data.id), eventKeys.trackReport(event.data.id), eventKeys.initialInputTrack(event.data.id)],
   )),
   'card.added': plan((event) => result([
-    ['track', event.data.track_id], ['track-files', event.data.track_id],
-    ['track-report'], ...conversationLists(event.data.track_id),
+    eventKeys.trackDetail(event.data.track_id),
+    eventKeys.trackReportPrefix(), ...conversationLists(event.data.track_id),
   ])),
-  /* `['planner-run', id]` is keyed by the CARD. Without it a second tab's model picker keeps
+  /* `eventKeys.plannerRun(id)` is keyed by the CARD. Without it a second tab's model picker keeps
        showing the previous model and sends under it; the mutation's own invalidation repairs only its tab. */
   'card.updated': plan((event) => result([
-    ['track', event.data.track_id], ['track-files', event.data.track_id],
-    ['planner-run', event.data.id], ['conversation-initial-input', event.data.track_id, event.data.id],
+    eventKeys.trackDetail(event.data.track_id),
+    eventKeys.plannerRun(event.data.id), eventKeys.initialInput(event.data.track_id, event.data.id),
     ...conversationLists(event.data.track_id),
   ])),
   /* The accepted-input observation lease belongs to this card; deleted cards cannot retain it. */
   'card.deleted': plan((event) => result([
-    ['track', event.data.track_id], ['track-files', event.data.track_id], ['track-report'],
-  ], [['conversation-initial-input', event.data.track_id, event.data.id]])),
+    eventKeys.trackDetail(event.data.track_id), eventKeys.trackReportPrefix(),
+  ], [eventKeys.initialInput(event.data.track_id, event.data.id)])),
   'worker_session.started': plan((event, context) => runtimePlan(event.data.card_id, context)),
   'worker_session.status_changed': plan((event, context) => runtimePlan(event.data.card_id, context)),
   'worker_session.superseded': plan((event, context) => runtimePlan(event.data.card_id, context)),
   'harness.item.added': plan((event) => result([
-    ['harness-items', event.data.card_id], ['conversation-initial-input', event.data.track_id, event.data.card_id],
+    eventKeys.transcript(event.data.card_id), eventKeys.initialInput(event.data.track_id, event.data.card_id),
     // The row is already persisted; only user input can change the first-input title.
     ...(event.data.method === 'item/completed' && isUserMessage(event.data.item_type) ? conversationInputMetadata(event.data.track_id) : []),
   ])),
   'harness.presentation.changed': plan((event) => result([
-    ['harness-items',event.data.card_id],['planner-run',event.data.card_id],
+    eventKeys.transcript(event.data.card_id), eventKeys.plannerRun(event.data.card_id),
     ...conversationInputMetadata(event.data.track_id),
   ])),
   /* `harness-items` is here because the phase event IS the delivery signal for the per-turn
    * outcome row: the kernel writes it before the snapshot commit and emits no `harness.item.added`. */
   'harness.phase.changed': plan((event) => result([
-    ['conversation-initial-input', event.data.track_id, event.data.card_id],    ['planner-run', event.data.card_id], ['harness-items', event.data.card_id],
-    ...(event.data.new_phase === 'turn_completed' ? [['model-catalog', { kind: 'card', cardId: event.data.card_id }]] : []),
+    eventKeys.initialInput(event.data.track_id, event.data.card_id), eventKeys.plannerRun(event.data.card_id), eventKeys.transcript(event.data.card_id),
+    ...(event.data.new_phase === 'turn_completed' ? [eventKeys.modelCatalog({ kind: 'card', cardId: event.data.card_id })] : []),
     ...conversationInputMetadata(event.data.track_id),
   ])),
   'harness.transcript.cleared': plan((event) => result([
-    ['conversation-initial-input', event.data.track_id, event.data.card_id], ['harness-items', event.data.card_id], ['planner-run', event.data.card_id],
+    eventKeys.initialInput(event.data.track_id, event.data.card_id), eventKeys.transcript(event.data.card_id), eventKeys.plannerRun(event.data.card_id),
     ...conversationInputMetadata(event.data.track_id),
-  ], [], [{ key: ['harness-items', event.data.card_id], mode: 'reset-query' }])),
+  ], [], [{ key: eventKeys.transcript(event.data.card_id), mode: 'reset-query' }])),
   /* An Edit's replace deletes the turn's rows and may move the phase; it invalidates what a phase change does. */
   'harness.transcript.rewound': plan((event) => result([
-    ['conversation-initial-input', event.data.track_id, event.data.card_id], ['planner-run', event.data.card_id], ['harness-items', event.data.card_id],
+    eventKeys.initialInput(event.data.track_id, event.data.card_id), eventKeys.plannerRun(event.data.card_id), eventKeys.transcript(event.data.card_id),
     ...conversationInputMetadata(event.data.track_id),
-  ], [], [{ key: ['harness-items', event.data.card_id], mode: 'reset-query' }])),
+  ], [], [{ key: eventKeys.transcript(event.data.card_id), mode: 'reset-query' }])),
   'harness.user_message.enqueued': plan((event) => result([
-    ['conversation-initial-input', event.data.track_id, event.data.card_id], ['harness-items', event.data.card_id], ['planner-run', event.data.card_id],
+    eventKeys.initialInput(event.data.track_id, event.data.card_id), eventKeys.transcript(event.data.card_id), eventKeys.plannerRun(event.data.card_id),
     ...conversationInputMetadata(event.data.track_id),
   ])),
   /* `harness-items` is here for `steered` (the kernel writes its transcript row once codex has
    * taken it) and `restored` (whose completion sweep deletes that row again). */
   'harness.queue.changed': plan((event) => result([
-    ['conversation-initial-input', event.data.track_id, event.data.card_id], ['planner-run', event.data.card_id], ['harness-items', event.data.card_id],
+    eventKeys.initialInput(event.data.track_id, event.data.card_id), eventKeys.plannerRun(event.data.card_id), eventKeys.transcript(event.data.card_id),
     ...conversationInputMetadata(event.data.track_id),
   ], [], event.data.change === 'restored'
-    ? [{ key: ['harness-items', event.data.card_id], mode: 'reset-query' }] : [])),
-  /* `['today-launchpad']` carries `report_has_noninitial_content` (Today's empty-state predicate) and
-   * `['track', id]` is where the document is read from; nothing generated protects either line. */
+    ? [{ key: eventKeys.transcript(event.data.card_id), mode: 'reset-query' }] : [])),
+  /* `eventKeys.todayLaunchpad()` carries `report_has_noninitial_content` (Today's empty-state predicate) and
+   * `eventKeys.trackDetail(id)` is where the document is read from; nothing generated protects either line. */
   'track.report_edited': plan((event) => result([
-    ['track-files', event.data.track_id], ['track-report'], ['track-backlinks'],
-    ['today-launchpad'], ['track', event.data.track_id],
+    eventKeys.trackReportPrefix(), eventKeys.trackBacklinksPrefix(),
+    eventKeys.todayLaunchpad(), eventKeys.trackDetail(event.data.track_id),
   ])),
   'overlay.set': plan((event, context) => {
     const keys: QueryKey[] = [];
-    if (event.data.entity_kind === 'track' || event.data.entity_kind === 'card') keys.push(['overlays', event.data.entity_kind]);
-    if (event.data.entity_kind === 'track') keys.push(['track', event.data.entity_id]);
+    if (event.data.entity_kind === 'track' || event.data.entity_kind === 'card') keys.push(eventKeys.overlaysByKind(event.data.entity_kind));
+    if (event.data.entity_kind === 'track') keys.push(eventKeys.trackDetail(event.data.entity_id));
     if (event.data.entity_kind === 'card') {
       const trackId = context.findTrackOwningCard(event.data.entity_id);
-      if (trackId !== null) keys.push(['track', trackId]);
+      if (trackId !== null) keys.push(eventKeys.trackDetail(trackId));
     }
     return result(keys);
   }),
   'overlay.deleted': plan((event, context) => {
     const keys: QueryKey[] = [];
-    if (event.data.entity_kind === 'track' || event.data.entity_kind === 'card') keys.push(['overlays', event.data.entity_kind]);
-    if (event.data.entity_kind === 'track') keys.push(['track', event.data.entity_id]);
+    if (event.data.entity_kind === 'track' || event.data.entity_kind === 'card') keys.push(eventKeys.overlaysByKind(event.data.entity_kind));
+    if (event.data.entity_kind === 'track') keys.push(eventKeys.trackDetail(event.data.entity_id));
     if (event.data.entity_kind === 'card') {
       const trackId = context.findTrackOwningCard(event.data.entity_id);
-      if (trackId !== null) keys.push(['track', trackId]);
+      if (trackId !== null) keys.push(eventKeys.trackDetail(trackId));
     }
     return result(keys);
   }),
-  'terminal.deleted': plan((event, context) => result(trackFilesDerived(derivedTrackId(event.data, context)))),
-  'plugin.state': plan(() => result([['plugins'], ['track-templates']])),
-  'plugin.data.changed': plan((event) => result([['plugin-data', event.data.plugin_id]])),
+  'terminal.deleted': plan((event, context) => result(taskVerdicts(derivedTrackId(event.data, context)))),
+  'plugin.state': plan(() => result([eventKeys.plugins(), eventKeys.trackTemplates()])),
+  'plugin.data.changed': plan((event) => result([eventKeys.pluginDataPrefix(event.data.plugin_id)])),
   'plugin.tool.registered': noop('No plugin-tool catalog query exists.'),
   /* Workspace only — a hook writes no `tasks` row, and it fires per tool call. */
-  'codex.hook': plan((event, context) => result([trackFiles(derivedTrackId(event.data, context))])),
-  'claude.hook': plan((event, context) => result([trackFiles(derivedTrackId(event.data, context))])),
-  'codex.worker_requested': plan((event, context) => result(trackFilesDerived(derivedTrackId(event.data, context)))),
-  'terminal.worker_requested': plan((event, context) => result(trackFilesDerived(derivedTrackId(event.data, context)))),
-  'task.completed': plan((event, context) => result(trackFilesDerived(derivedTrackId(event.data, context)))),
-  'task.failed': plan((event, context) => result(trackFilesDerived(derivedTrackId(event.data, context)))),
-  'task.git_delivery_settled': plan((event, context) => result(trackFilesDerived(derivedTrackId(event.data, context)))),
+  'codex.hook': noop('Hooks change no queried resource; workspace files have no query.'),
+  'claude.hook': noop('Hooks change no queried resource; workspace files have no query.'),
+  'codex.worker_requested': plan((event, context) => result(taskVerdicts(derivedTrackId(event.data, context)))),
+  'terminal.worker_requested': plan((event, context) => result(taskVerdicts(derivedTrackId(event.data, context)))),
+  'task.completed': plan((event, context) => result(taskVerdicts(derivedTrackId(event.data, context)))),
+  'task.failed': plan((event, context) => result(taskVerdicts(derivedTrackId(event.data, context)))),
+  'task.git_delivery_settled': plan((event, context) => result(taskVerdicts(derivedTrackId(event.data, context)))),
   'plan.updated': plan((event) => result(
-    typeof event.data.agent_message === 'string' ? [['track-report', event.data.track_id]] : [],
+    typeof event.data.agent_message === 'string' ? [eventKeys.trackReport(event.data.track_id)] : [],
   )),
-  'task.dispatched': plan((event, context) => result(trackFilesDerived(derivedTrackId(event.data, context)))),
+  'task.dispatched': plan((event, context) => result(taskVerdicts(derivedTrackId(event.data, context)))),
   'task.context_frozen': noop('Frozen task context has no query consumer.'),
   'task.context_advanced': noop('Context advancement has no query consumer.'),
   'workspace.leased': noop('Workspace leases have no query consumer.'),
@@ -275,8 +272,8 @@ function policies(): PolicyMap {
   'worktree.provisioned': noop('Worktree rows have no query consumer.'),
   'worktree.committed': noop('Worktree rows have no query consumer.'),
   'worktree.removed': noop('Worktree rows have no query consumer.'),
-  'task.gate_result': plan((event, context) => result(trackFilesDerived(derivedTrackId(event.data, context)))),
-  'task.regate_requested': plan((event, context) => result(trackFilesDerived(derivedTrackId(event.data, context)))),
+  'task.gate_result': plan((event, context) => result(taskVerdicts(derivedTrackId(event.data, context)))),
+  'task.regate_requested': plan((event, context) => result(taskVerdicts(derivedTrackId(event.data, context)))),
   });
 }
 
