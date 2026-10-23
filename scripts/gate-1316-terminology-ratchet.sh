@@ -12,7 +12,7 @@
 # CI handoff regression: runtime_id/fe 36 -> 37 is one required
 # initialRuntimeId field in the canonical first-input receipt fixture.
 # No new runtime naming contract, scan exemption or test/file roster is introduced.
-# #3050 bounded exception: spec/crates 527 -> 529 adds one read of the existing
+# #3050 bounded exception: spec/crates 529 -> 531 adds one read of the existing
 # event_spec field in Forge failure policy and one matching fixture payload key.
 # No new domain vocabulary; fixture authors and routes use their existing constants.
 # Retiring-vocabulary ratchet: occurrence counts per (term, scope) against a
