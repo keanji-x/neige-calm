@@ -72,6 +72,7 @@ async fn accepted(boot: &Boot, holds: bool) {
                 None,
                 &if holds {
                     Event::TaskCompleted {
+                        notification: calm_types::event::PlannerNotification::Suppress,
                         idempotency_key: "finish".into(),
                         result: json!({"status":"accepted"}),
                         artifacts: vec![],
@@ -79,6 +80,7 @@ async fn accepted(boot: &Boot, holds: bool) {
                     }
                 } else {
                     Event::TaskFailed {
+                        notification: calm_types::event::PlannerNotification::Suppress,
                         idempotency_key: "finish".into(),
                         reason: "rejected".into(),
                         details: None,
