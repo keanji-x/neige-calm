@@ -97,7 +97,7 @@ async fn measure_tx(
     match params.fact {
         Fact::TaskAccepted => {
             let rows = sqlx::query(
-                "SELECT kind,payload,actor,scope_kind,scope_area,scope_track,scope_card \
+                "SELECT kind,payload,actor,event_version,scope_kind,scope_area,scope_track,scope_card \
                 FROM events WHERE scope_track=? \
                 AND kind IN ('task.completed','task.failed') \
                 AND json_extract(payload,'$.idempotency_key')=? ORDER BY id DESC",
@@ -117,9 +117,10 @@ async fn measure_tx(
                 if !calm_truth::track_fs_view::is_planner_verdict_event(&scope, &actor) {
                     continue;
                 }
-                let event = Event::from_kind_and_payload(
+                let event = Event::from_stored_kind_and_payload(
                     row.try_get("kind")?,
                     serde_json::from_str(row.try_get("payload")?)?,
+                    row.try_get("event_version")?,
                 )
                 .map_err(|e| CalmError::Internal(e.to_string()))?;
                 return Ok(

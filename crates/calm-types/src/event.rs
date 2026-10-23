@@ -1309,7 +1309,8 @@ impl Event {
         }
     }
 
-    /// Rebuild a typed `Event` from the `(kind, payload)` pair stored in the `events` table.
+    /// Decode a current event input. Persisted rows must use
+    /// `from_stored_kind_and_payload` with their original stored version.
     pub fn from_kind_and_payload(
         kind: &str,
         payload: serde_json::Value,
