@@ -87,15 +87,14 @@ pub(super) async fn release_twice(
             "Context never becomes Human"
         );
         originals = rows;
-        sqlx::query("DROP TRIGGER revoke_u7_crossing")
-            .execute(fixture.repo.pool())
-            .await
-            .unwrap();
         sqlx::query("INSERT INTO area_members(area_id,user_id,role,joined_at) SELECT ?1,id,'owner',0 FROM application_users")
             .bind(body["area_id"].as_str().unwrap()).execute(fixture.repo.pool()).await.unwrap();
         if round == 1 {
-            hold(fixture).await;
             post(app, cookie, "/api/tracks", "first", body.clone()).await;
         }
     }
+    sqlx::query("DROP TRIGGER revoke_u7_crossing")
+        .execute(fixture.repo.pool())
+        .await
+        .unwrap();
 }

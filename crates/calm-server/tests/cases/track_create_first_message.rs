@@ -9,6 +9,9 @@ mod template_startup_context;
 #[path = "planner_provider_identity.rs"]
 mod planner_provider_identity;
 
+#[path = "track_create_legacy_binding_fixture.rs"]
+mod legacy_binding_fixture;
+
 use calm_truth::db::RepoRead;
 use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::path::PathBuf;
@@ -114,7 +117,7 @@ async fn boot() -> Boot {
     boot_with_daemon(true).await
 }
 
-/// Explicit supported V1 variant: template creation still owns the historical start/harvest path.
+/// Explicit historical Managed entry: attach_folder with omitted cwd claims no folder.
 async fn historical_boot() -> Boot {
     let mut boot = boot().await;
     boot.historical = true;
@@ -290,8 +293,11 @@ impl Boot {
         idempotency_key: Option<&str>,
         mut body: Value,
     ) -> (StatusCode, Value) {
-        if self.historical && body.get("template_id").is_none() {
-            body["template_id"] = json!("investigation");
+        if self.historical {
+            body["attach_folder"] = json!(true);
+            if body.get("template_id").is_none() {
+                body["template_id"] = json!("investigation");
+            }
         }
         let mut builder = Request::builder()
             .method("POST")
@@ -2213,10 +2219,8 @@ async fn an_operationless_binding_rejects_a_different_create_shape() {
 /// effects instead of pretending NULL hashes mean a match.
 #[tokio::test]
 async fn a_legacy_binding_without_a_request_fingerprint_fails_closed() {
-    let b = historical_boot().await;
     let key = "idem-legacy-fingerprint";
-    let (created, body) = b.create_track(Some(key), Some("same sentence")).await;
-    assert_eq!(created, StatusCode::CREATED, "body={body}");
+    let (b, request, _) = legacy_binding_fixture::seed(key, Some("same sentence")).await;
     assert_eq!(
         b.count("SELECT COUNT(*) FROM conversation_human_track_creations")
             .await,
@@ -2236,7 +2240,7 @@ async fn a_legacy_binding_without_a_request_fingerprint_fails_closed() {
     .await
     .unwrap();
 
-    let (status, body) = b.create_track(Some(key), Some("same sentence")).await;
+    let (status, body) = b.post_create(Some(key), request).await;
     assert_eq!(status, StatusCode::CONFLICT, "body={body}");
     assert_eq!(body["code"], "idempotency_key_reused", "body={body}");
     assert!(
@@ -2255,22 +2259,20 @@ async fn a_legacy_binding_without_a_request_fingerprint_fails_closed() {
 #[tokio::test]
 async fn pre_cross_area_bindings_replay_after_upgrade() {
     for message in [None, Some("same sentence")] {
-        let b = historical_boot().await;
         let key = "idem-pre-cross-area";
-        let (created, original) = b.create_track(Some(key), message).await;
-        assert_eq!(created, StatusCode::CREATED, "body={original}");
+        let (b, request, original) = legacy_binding_fixture::seed(key, message).await;
         assert_eq!(
             b.count("SELECT COUNT(*) FROM conversation_human_track_creations")
                 .await,
             0,
             "the pre-canonical upgrade fixture has no immutable canonical receipt"
         );
-        sqlx::query("UPDATE track_create_idempotency SET create_request_sha256 = ?1 WHERE idempotency_key = ?2")
-            .bind("59e6992a2e9d3cb981bcf451d1cfd839cfa685a075a58750ea7e22c73dca151b")
-            .bind(key)
-            .execute(b.repo.pool()).await.unwrap();
+        // Establish the old successful operation through its real HTTP resume owner.
+        let (status, replay) = b.post_create(Some(key), request.clone()).await;
+        assert_eq!(status, StatusCode::CREATED, "body={replay}");
+        assert_eq!(replay["id"], original["id"]);
         let messages_before = b.user_message_event_count().await;
-        let (status, replay) = b.create_track(Some(key), message).await;
+        let (status, replay) = b.post_create(Some(key), request.clone()).await;
         assert_eq!(
             status,
             StatusCode::CREATED,
@@ -2279,6 +2281,20 @@ async fn pre_cross_area_bindings_replay_after_upgrade() {
         assert_eq!(replay["id"], original["id"]);
         assert_eq!(b.track_count().await, 1);
         assert_eq!(b.user_message_event_count().await, messages_before);
+        let operations_before = b.operation_count().await;
+        let mut changed = request;
+        changed["title"] = json!("different title");
+        let (status, body) = b.post_create(Some(key), changed).await;
+        assert_eq!(status, StatusCode::CONFLICT, "body={body}");
+        assert_eq!(body["code"], "idempotency_key_reused", "body={body}");
+        assert_eq!(b.track_count().await, 1);
+        assert_eq!(b.operation_count().await, operations_before);
+        assert_eq!(b.user_message_event_count().await, messages_before);
+        assert_eq!(
+            b.count("SELECT COUNT(*) FROM conversation_human_track_creations")
+                .await,
+            0
+        );
         b.shutdown_harnesses().await;
     }
 }
@@ -2440,6 +2456,7 @@ async fn a_loser_of_the_cross_instance_key_race_writes_nothing_and_retries_onto_
         "theme": {"fg": [255, 255, 255], "bg": [0, 0, 0]},
         "first_message": "one sentence, two instances",
         "template_id": "investigation",
+        "attach_folder": true,
     });
     let loser_request = tokio::spawn({
         let app = loser_app.clone();

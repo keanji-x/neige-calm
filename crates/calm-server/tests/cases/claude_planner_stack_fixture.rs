@@ -364,10 +364,11 @@ impl Stack {
             "theme": {"fg": [216, 219, 226], "bg": [15, 20, 24]},
         });
         // These legacy lifecycle consumers assert eager historical startup,
-        // queue replay and native outcomes. Use an explicitly excluded template
-        // rather than changing those assertions to canonical semantics.
+        // queue replay and native outcomes. With cwd omitted, attach_folder
+        // explicitly selects historical creation while preserving Managed isolation.
         if extra.get("cwd").is_none() {
             request["template_id"] = json!("small-change");
+            request["attach_folder"] = json!(true);
         }
         for (key, value) in extra.as_object().expect("extra is an object") {
             request[key] = value.clone();

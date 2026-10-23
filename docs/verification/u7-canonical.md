@@ -83,3 +83,37 @@ R4 red/focused/nondelivery evidence above remains valid. Replay mutation complet
 Final pre-gate inspection: only test SQL whitespace and this evidence section change in R5; production is byte-identical to the recovered R4 candidate. Complete slice: 1,480 changed lines, 28 intended files against `1b597cb`; forbidden paths have zero diff, no context/replay mutation remains, and `git diff --check` passes. Kernel owns the original five-step gate; its frozen-target verdict/log is returned in the worker result. Formal fresh L2 reviews remain with the Planner. This document is frozen before the gate.
 
 Gate run 1 failed only the text prose ratchet (141→143): two identical OpenCode test SQL queries exceeded its line-length literal pattern. Wrapping SQL whitespace fixes the mechanical issue without changing queries/assertions or the baseline; mutation production bytes and critical assertions remain unchanged. `cargo fmt --all` ran after that fix. Gate run 2 replays the resulting final tree.
+
+## PR #3141 exact-CI fixture correction
+
+Read the complete B313 diagnosis and both failure matrices. The 62 stable reds
+came from historical fixtures selecting canonical creation after U7. Existing
+fixture owners now select `attach_folder: true` with omitted cwd, preserving
+Managed materialization, repoint and poison semantics. The raw cross-instance
+loser uses the same shape. ACP historical readers and operation assertions are
+unchanged. Upgrade fixtures insert the original binding through the DB owner
+before HTTP resume; the frozen pre-cross-area digest is unchanged. NULL identity
+still fails closed. No production code or excluded boundary changed.
+
+The U7 revocation trigger stays installed through both NotDispatched rounds and
+is dropped once after both proofs. Pending/context/plan/digest/attempt and actual
+first-prompt assertions are unchanged for Codex and OpenCode. This delta changes
+only test entry/setup and DDL timing; formal L2 delta confirmation remains with
+the Planner. No production assertion mechanism changed, so prior mutation
+proofs are retained without a redundant mutation run.
+
+The rebuilt CI-profile, codex-e2e nextest archive includes calm-server lib,
+track_suite/runtime_suite, stdio_shim and neige-cli forwarder targets. The first
+narrow archive lacked the CLI binary: 125/126 passed, with the CLI outcome wait
+failing. Adding its real build target restored CI packaging; no assertion or
+wait was relaxed. Final archive replay passed 126/126 in 136.154s. JUnit matching
+confirms all 63 original CI failures ran and passed. Logs and exact-name closure:
+`/tmp/u7-ci-fixtures-archive-r2.log`, `/tmp/u7-ci-fixtures-replay-r2.log`,
+`/tmp/u7-ci-fixtures-replay-r2.junit.xml`, `/tmp/u7-ci-fixtures-closure-r2.json`.
+
+The same archive passed all 21 selected U7, historical compatibility and omitted
+cwd/attach-folder contracts in 71.077s (`/tmp/u7-ci-fixtures-contract-r2.log`).
+Runs unset NEIGE_CODEX_BIN, use jobs 6/threads 8 and only local fake peers. No
+workspace-wide suite or real-provider E2E ran. Formatting and diff checks passed.
+The kernel owns the declared six-step frozen-target gate; its final verdict and
+log are supplied in the task result. This section is frozen before that gate.
