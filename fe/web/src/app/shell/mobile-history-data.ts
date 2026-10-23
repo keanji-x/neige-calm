@@ -13,11 +13,12 @@ export function useMobileHistoryData(transport: ApiTransportPort, unauthorized: 
   const details = useQueries({ queries: tracks.map((track) => ({ ...trackDetailQueryOptions(transport, track.id, unauthorized), enabled })) });
   const lists = useQueries({ queries: tracks.map((track) => ({ ...trackConversationsQueryOptions(transport, track.id, unauthorized), enabled })) });
   const rows = new Map<string, Conversation>();
+  const planners = new Map<string, Conversation>();
   tracks.forEach((track, index) => {
     const detail = details[index].data;
     if (detail !== undefined && detail.track.id === track.id) {
       const planner = plannerConversationRow(track.id, trackDisplayTitle(detail.track.title), plannerCardIn(detail.cards));
-      if (planner !== null) rows.set(planner.id, planner);
+      if (planner !== null) planners.set(planner.id, planner);
     }
     for (const row of lists[index].data ?? []) {
       if (row.trackId === track.id) rows.set(row.id, { ...row, trackTitle: trackDisplayTitle(track.title) });
@@ -26,6 +27,7 @@ export function useMobileHistoryData(transport: ApiTransportPort, unauthorized: 
   for (const row of current) {
     if (tracks.some((track) => track.id === row.trackId)) rows.set(row.id, row);
   }
+  for (const planner of planners.values()) rows.set(planner.id, planner);
   const reads = [...details, ...lists];
   return {
     conversations: [...rows.values()].toSorted(byRecency),

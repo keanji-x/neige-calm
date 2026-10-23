@@ -1,3 +1,4 @@
+import { PLANNER_SWITCH_ARGUMENTS } from '../../../../../core/domain/planner-switch.ts';
 import type { IconName } from '../../../ui/icon/public.tsx';
 import { TERMINAL_ARGUMENTS_MESSAGE, TERMINAL_DESKTOP_MESSAGE } from '../../../../../core/domain/terminal-command.ts';
 
@@ -21,6 +22,7 @@ const COMMANDS = Object.freeze([
   Object.freeze({ id: 'track-stop', name: 'stop', icon: 'status-exited', hint: 'Stop the current turn', arguments: 'none' }),
   Object.freeze({ id: 'new-conversation', name: 'new', icon: 'plus', hint: 'This one stays in the list', arguments: 'none' }),
   Object.freeze({ id: 'side-conversation', name: 'side', icon: 'chat', hint: 'Discuss with a text snapshot', arguments: 'optional' }),
+  Object.freeze({ id: 'planner-switch', name: 'planner', icon: 'chat', hint: 'Promote this Assistant to Planner', arguments: 'none', argumentError: PLANNER_SWITCH_ARGUMENTS }),
   Object.freeze({ id: 'compact-conversation', name: 'compact', icon: 'compact', hint: 'Compress this conversation’s context', arguments: 'none' }),
   Object.freeze({ id: 'terminal-workbench', name: 'terminal', icon: 'terminal', hint: 'Open the Track terminal workbench', arguments: 'none', argumentError: TERMINAL_ARGUMENTS_MESSAGE }),
   Object.freeze({ id: 'track-close', name: 'close', icon: 'status-done', hint: 'Close this Track', arguments: 'none' }),

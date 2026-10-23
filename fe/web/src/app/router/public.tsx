@@ -1,3 +1,4 @@
+import { usePlannerSwitchControl } from './planner-switch-control.ts';
 import { composerCommands, conversationCommands, conversationCommandBindings, type CommandBindings } from '../../features/chat/thread/composer-command.ts';
 import { trackCommandBindings } from './track-composer-command.ts';
 import { useTrackClosedControl } from '../../features/track/page/closed-control.ts';
@@ -672,6 +673,9 @@ function useConversationPane(
   const changeComposer = edit.onComposerChange;
   const composerStop = !editingQueue && !composerView.compacting && (composerView.working || composerView.stopping) ? composerView.interrupt : undefined;
   const plannerCommands = plannerRow?.commands;
+  const switchPlanner = usePlannerSwitchControl(transport, unauthorized, scope);
+  const plannerSwitchBinding = useMemo(() => scope?.kind === 'track-assistant' && plannerRow === null
+    ? { execute: switchPlanner } : undefined, [scope?.kind, plannerRow, switchPlanner]);
   const composerNode = useMemo(() => existingId === null ? null : (
             <ConversationComposer target={{ kind: 'card', id: existingId }} layout={compactComposer ? 'mobile' : 'standard'}
               /* Read at mount only, which is what makes it one-shot; the flag is dropped
@@ -692,6 +696,7 @@ function useConversationPane(
                   terminal: onTerminal, compactViewport: compactComposer,
                 }),
                 ...plannerCommands?.(composerStop),
+                planner: plannerSwitchBinding,
               })}
               onSend={sendText}
               allowEmptyText={!editingQueue && composerAttachments.items.length > 0}
@@ -751,7 +756,7 @@ function useConversationPane(
               )}
             />
   ), [existingId, compactComposer, panePresented, composerFocusFor, composerFocusRequest, changeComposer, composerView,
-    composerStop, plannerCommands, replacing, editingQueue, edit.queuedSaving, editingBar, options?.showSideCommand, options?.inline, onTerminal, hasSideConversation, sideQuestion, sideSourceReady,
+    composerStop, plannerCommands, plannerSwitchBinding, replacing, editingQueue, edit.queuedSaving, editingBar, options?.showSideCommand, options?.inline, onTerminal, hasSideConversation, sideQuestion, sideSourceReady,
     sendText, composerAttachments, newConversation, mentionTrigger, scopeProvider, plannerAsks, answerAsk,
     roleValue, roleDisabled, roleDisabledReason, roleChange]);
 
@@ -1165,8 +1170,8 @@ function TrackRouteBody({
   /* Every row carries the track's title, unconditionally and before the planner
        row is considered. */
   const placedRows = useMemo(
-    () => assistantRows.map((row) => ({ ...row, trackTitle })),
-    [assistantRows, trackTitle],
+    () => assistantRows.filter(row => row.id !== plannerCard?.id).map((row) => ({ ...row, trackTitle })),
+    [assistantRows, trackTitle, plannerCard?.id],
   );
   const rows = useMemo<readonly Conversation[]>(
     () => plannerRow === null ? placedRows : [plannerRow, ...placedRows],
