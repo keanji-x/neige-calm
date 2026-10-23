@@ -757,7 +757,7 @@ pub trait Repo: RouteRepo + RepoSyncDomainRaw + WorkerSessionProjectionRepo + Se
 /// Generic wrapper over `RepoEventWrite::write_with_event` for callers who want a typed row back; the row is captured
 /// in an outer mutex so the trait method stays dyn-compatible. Purely sugar — the invariants come from the trait method.
 #[allow(clippy::too_many_arguments)]
-pub async fn write_with_event_typed<R, F>(
+pub async fn write_with_event_typed<R, E, F>(
     repo: &dyn RepoEventWrite,
     actor: ActorId,
     scope: EventScope,
@@ -765,10 +765,11 @@ pub async fn write_with_event_typed<R, F>(
     bus: &crate::event::EventBus,
     write: &WriteContext,
     f: F,
-) -> Result<(R, i64)>
+) -> Result<(R, i64), E>
 where
     R: Send + 'static,
-    F: for<'tx> FnOnce(&'tx mut Transaction<'_, Sqlite>) -> BoxFuture<'tx, Result<(R, Event)>>
+    E: From<crate::TruthError> + Send + 'static,
+    F: for<'tx> FnOnce(&'tx mut Transaction<'_, Sqlite>) -> BoxFuture<'tx, Result<(R, Event), E>>
         + Send
         + 'static,
 {
@@ -777,11 +778,24 @@ where
 
     let captured: Arc<Mutex<Option<R>>> = Arc::new(Mutex::new(None));
     let captured_inner = Arc::clone(&captured);
+    // The dyn-compatible repo only carries TruthError. Keep the caller's error outside
+    // that boundary, and return a storage error solely to request rollback.
+    let closure_error = Arc::new(Mutex::new(None));
+    let closure_error_inner = Arc::clone(&closure_error);
 
     let boxed: WriteWithEventFn<'_> = Box::new(move |tx| {
         let captured_inner = Arc::clone(&captured_inner);
+        let closure_error_inner = Arc::clone(&closure_error_inner);
         Box::pin(async move {
-            let (row, event) = f(tx).await?;
+            let (row, event) = match f(tx).await {
+                Ok(value) => value,
+                Err(error) => {
+                    *closure_error_inner.lock().await = Some(error);
+                    return Err(crate::TruthError::Internal(
+                        "typed write closure failed".into(),
+                    ));
+                }
+            };
             *captured_inner.lock().await = Some(row);
             Ok(event)
         })
@@ -789,7 +803,11 @@ where
 
     let event_id = repo
         .write_with_event(actor, scope, correlation, bus, write, boxed)
-        .await?;
+        .await;
+    if let Some(error) = closure_error.lock().await.take() {
+        return Err(error);
+    }
+    let event_id = event_id.map_err(E::from)?;
     let row = Arc::try_unwrap(captured)
         .map_err(|_| {
             crate::error::CalmError::Internal(
@@ -806,19 +824,20 @@ where
 }
 
 /// Generic plural counterpart to [`write_with_event_typed`]: one typed row + one or more `(scope, event)` pairs from one tx.
-pub async fn write_with_events_typed<R, F>(
+pub async fn write_with_events_typed<R, E, F>(
     repo: &dyn RepoEventWrite,
     actor: ActorId,
     correlation: Option<&str>,
     bus: &crate::event::EventBus,
     write: &WriteContext,
     f: F,
-) -> Result<(R, Vec<i64>)>
+) -> Result<(R, Vec<i64>), E>
 where
     R: Send + 'static,
+    E: From<crate::TruthError> + Send + 'static,
     F: for<'tx> FnOnce(
             &'tx mut Transaction<'_, Sqlite>,
-        ) -> BoxFuture<'tx, Result<(R, Vec<(EventScope, Event)>)>>
+        ) -> BoxFuture<'tx, Result<(R, Vec<(EventScope, Event)>), E>>
         + Send
         + 'static,
 {
@@ -827,11 +846,24 @@ where
 
     let captured: Arc<Mutex<Option<R>>> = Arc::new(Mutex::new(None));
     let captured_inner = Arc::clone(&captured);
+    // The dyn-compatible repo only carries TruthError. Keep the caller's error outside
+    // that boundary, and return a storage error solely to request rollback.
+    let closure_error = Arc::new(Mutex::new(None));
+    let closure_error_inner = Arc::clone(&closure_error);
 
     let boxed: WriteWithEventsFn<'_> = Box::new(move |tx| {
         let captured_inner = Arc::clone(&captured_inner);
+        let closure_error_inner = Arc::clone(&closure_error_inner);
         Box::pin(async move {
-            let (row, events) = f(tx).await?;
+            let (row, events) = match f(tx).await {
+                Ok(value) => value,
+                Err(error) => {
+                    *closure_error_inner.lock().await = Some(error);
+                    return Err(crate::TruthError::Internal(
+                        "typed write closure failed".into(),
+                    ));
+                }
+            };
             *captured_inner.lock().await = Some(row);
             Ok(events)
         })
@@ -839,7 +871,11 @@ where
 
     let event_ids = repo
         .write_with_events(actor, correlation, bus, write, boxed)
-        .await?;
+        .await;
+    if let Some(error) = closure_error.lock().await.take() {
+        return Err(error);
+    }
+    let event_ids = event_ids.map_err(E::from)?;
     let row = Arc::try_unwrap(captured)
         .map_err(|_| {
             crate::error::CalmError::Internal(
@@ -856,18 +892,20 @@ where
 }
 
 /// Typed counterpart to [`RepoEventWrite::write_with_actor_events`].
-pub async fn write_with_actor_events_typed<R, F>(
+pub async fn write_with_actor_events_typed<R, E, F>(
     repo: &dyn RepoEventWrite,
     correlation: Option<&str>,
     bus: &crate::event::EventBus,
     write: &WriteContext,
     f: F,
-) -> Result<(R, Vec<i64>)>
+) -> Result<(R, Vec<i64>), E>
 where
     R: Send + 'static,
+    E: From<crate::TruthError> + Send + 'static,
     F: for<'tx> FnOnce(
             &'tx mut Transaction<'_, Sqlite>,
-        ) -> BoxFuture<'tx, Result<(R, Vec<(ActorId, EventScope, Event)>)>>
+        )
+            -> BoxFuture<'tx, Result<(R, Vec<(ActorId, EventScope, Event)>), E>>
         + Send
         + 'static,
 {
@@ -876,11 +914,24 @@ where
 
     let captured: Arc<Mutex<Option<R>>> = Arc::new(Mutex::new(None));
     let captured_inner = Arc::clone(&captured);
+    // The dyn-compatible repo only carries TruthError. Keep the caller's error outside
+    // that boundary, and return a storage error solely to request rollback.
+    let closure_error = Arc::new(Mutex::new(None));
+    let closure_error_inner = Arc::clone(&closure_error);
 
     let boxed: WriteWithActorEventsFn<'_> = Box::new(move |tx| {
         let captured_inner = Arc::clone(&captured_inner);
+        let closure_error_inner = Arc::clone(&closure_error_inner);
         Box::pin(async move {
-            let (row, events) = f(tx).await?;
+            let (row, events) = match f(tx).await {
+                Ok(value) => value,
+                Err(error) => {
+                    *closure_error_inner.lock().await = Some(error);
+                    return Err(crate::TruthError::Internal(
+                        "typed write closure failed".into(),
+                    ));
+                }
+            };
             *captured_inner.lock().await = Some(row);
             Ok(events)
         })
@@ -888,7 +939,11 @@ where
 
     let event_ids = repo
         .write_with_actor_events(correlation, bus, write, boxed)
-        .await?;
+        .await;
+    if let Some(error) = closure_error.lock().await.take() {
+        return Err(error);
+    }
+    let event_ids = event_ids.map_err(E::from)?;
     let row = Arc::try_unwrap(captured)
         .map_err(|_| {
             crate::error::CalmError::Internal(
@@ -905,10 +960,11 @@ where
 }
 
 /// Typed counterpart to [`RepoEventWrite::write_in_tx`], with the same row-capture trick as [`write_with_event_typed`].
-pub async fn write_in_tx_typed<R, F>(repo: &dyn RepoEventWrite, f: F) -> Result<R>
+pub async fn write_in_tx_typed<R, E, F>(repo: &dyn RepoEventWrite, f: F) -> Result<R, E>
 where
     R: Send + 'static,
-    F: for<'tx> FnOnce(&'tx mut Transaction<'_, Sqlite>) -> BoxFuture<'tx, Result<R>>
+    E: From<crate::TruthError> + Send + 'static,
+    F: for<'tx> FnOnce(&'tx mut Transaction<'_, Sqlite>) -> BoxFuture<'tx, Result<R, E>>
         + Send
         + 'static,
 {
@@ -917,17 +973,34 @@ where
 
     let captured: Arc<Mutex<Option<R>>> = Arc::new(Mutex::new(None));
     let captured_inner = Arc::clone(&captured);
+    // The dyn-compatible repo only carries TruthError. Keep the caller's error outside
+    // that boundary, and return a storage error solely to request rollback.
+    let closure_error = Arc::new(Mutex::new(None));
+    let closure_error_inner = Arc::clone(&closure_error);
 
     let boxed: WriteInTxFn<'_> = Box::new(move |tx| {
         let captured_inner = Arc::clone(&captured_inner);
+        let closure_error_inner = Arc::clone(&closure_error_inner);
         Box::pin(async move {
-            let row = f(tx).await?;
+            let row = match f(tx).await {
+                Ok(value) => value,
+                Err(error) => {
+                    *closure_error_inner.lock().await = Some(error);
+                    return Err(crate::TruthError::Internal(
+                        "typed write closure failed".into(),
+                    ));
+                }
+            };
             *captured_inner.lock().await = Some(row);
             Ok(())
         })
     });
 
-    repo.write_in_tx(boxed).await?;
+    let outcome = repo.write_in_tx(boxed).await;
+    if let Some(error) = closure_error.lock().await.take() {
+        return Err(error);
+    }
+    outcome.map_err(E::from)?;
     let row = Arc::try_unwrap(captured)
         .map_err(|_| {
             crate::error::CalmError::Internal(

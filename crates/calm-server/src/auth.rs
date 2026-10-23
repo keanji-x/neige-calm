@@ -410,8 +410,7 @@ impl CredentialDigests {
 }
 
 /// The login route's answer when it mints no session. The throttle refusal is not a `CalmError`
-/// variant: only this route raises it, and outside that enum it cannot reach the lossy
-/// `CalmError -> TruthError` bridge, which has no 429 to carry it.
+/// variant: only this route raises it and supplies the `Retry-After` header.
 pub enum LoginError {
     /// 429 `login_throttled`: this peer failed too often; its credentials were not compared.
     Throttled {

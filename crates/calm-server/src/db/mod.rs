@@ -40,11 +40,7 @@ where
         + Send
         + 'static,
 {
-    calm_truth::db::write_with_event_typed(repo, actor, scope, correlation, bus, write, move |tx| {
-        Box::pin(async move { f(tx).await.map_err(Into::into) })
-    })
-    .await
-    .map_err(Into::into)
+    calm_truth::db::write_with_event_typed(repo, actor, scope, correlation, bus, write, f).await
 }
 
 pub async fn write_with_events_typed<R, F>(
@@ -65,11 +61,7 @@ where
         > + Send
         + 'static,
 {
-    calm_truth::db::write_with_events_typed(repo, actor, correlation, bus, write, move |tx| {
-        Box::pin(async move { f(tx).await.map_err(Into::into) })
-    })
-    .await
-    .map_err(Into::into)
+    calm_truth::db::write_with_events_typed(repo, actor, correlation, bus, write, f).await
 }
 
 pub async fn write_with_actor_events_typed<R, F>(
@@ -89,11 +81,7 @@ where
         > + Send
         + 'static,
 {
-    calm_truth::db::write_with_actor_events_typed(repo, correlation, bus, write, move |tx| {
-        Box::pin(async move { f(tx).await.map_err(Into::into) })
-    })
-    .await
-    .map_err(Into::into)
+    calm_truth::db::write_with_actor_events_typed(repo, correlation, bus, write, f).await
 }
 
 pub async fn write_in_tx_typed<R, F>(repo: &dyn RepoEventWrite, f: F) -> Result<R>
@@ -105,9 +93,8 @@ where
         + Send
         + 'static,
 {
-    calm_truth::db::write_in_tx_typed(repo, move |tx| {
-        Box::pin(async move { f(tx).await.map_err(Into::into) })
-    })
-    .await
-    .map_err(Into::into)
+    calm_truth::db::write_in_tx_typed(repo, f).await
 }
+
+#[cfg(test)]
+mod tests;

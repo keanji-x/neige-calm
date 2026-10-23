@@ -523,71 +523,6 @@ impl From<calm_truth::track_fs_view::TrackFsError> for CalmError {
     }
 }
 
-impl From<CalmError> for calm_truth::TruthError {
-    fn from(err: CalmError) -> Self {
-        // Lossy bridge: server-only variants collapse to Internal(500).
-        match err {
-            CalmError::ExecutionUnavailable => {
-                calm_types::error::CoreError::ServiceUnavailable("execution unavailable".into())
-                    .into()
-            }
-            CalmError::NotFound(m) => calm_types::error::CoreError::NotFound(m).into(),
-            CalmError::Conflict(m) => calm_types::error::CoreError::Conflict(m).into(),
-            CalmError::IdempotencyCollision(m) => {
-                calm_types::error::CoreError::IdempotencyCollision(m).into()
-            }
-            CalmError::BadRequest(m) => calm_types::error::CoreError::BadRequest(m).into(),
-            // The storage layer has no field-shaped refusal; the path stays in the text.
-            CalmError::InvalidField { field, reason } => {
-                calm_types::error::CoreError::BadRequest(format!("{field}: {reason}")).into()
-            }
-            CalmError::Unauthorized => calm_types::error::CoreError::Unauthorized.into(),
-            CalmError::Forbidden(m) => calm_truth::TruthError::Forbidden(m),
-            CalmError::ServiceUnavailable(m) => {
-                calm_types::error::CoreError::ServiceUnavailable(m).into()
-            }
-            CalmError::Db(e) => calm_truth::TruthError::Db(e),
-            CalmError::Io(e) => calm_truth::TruthError::Io(e),
-            CalmError::Serde(e) => calm_truth::TruthError::Serde(e),
-            CalmError::IdempotencyKeyReused(m) => calm_truth::TruthError::IdempotencyKeyReused(m),
-            CalmError::IdempotencyKeyExhausted(m) => {
-                calm_truth::TruthError::IdempotencyKeyExhausted(m)
-            }
-            CalmError::IdempotencyKeyConcurrent(m) => {
-                calm_truth::TruthError::IdempotencyKeyConcurrent(m)
-            }
-            CalmError::PlannerTurnNotReplaceable(m) => {
-                calm_truth::TruthError::PlannerTurnNotReplaceable(m)
-            }
-            // Route-only variants with no `CoreError`/`TruthError` twin collapse to Internal.
-            CalmError::IdempotencyKeyInvalid(m)
-            | CalmError::PathNotFound(m)
-            | CalmError::InvalidBody(m)
-            | CalmError::UnsupportedMediaType(m)
-            | CalmError::PluginInstall(m)
-            | CalmError::PluginPermission(m)
-            | CalmError::PluginConflict(m)
-            | CalmError::PluginDirOccupied(m)
-            | CalmError::WorkspaceBusy(m)
-            | CalmError::PluginBusy(m)
-            | CalmError::PluginManifestUnloaded(m)
-            | CalmError::PluginConfigCorrupt(m)
-            | CalmError::PluginConfigTooLarge(m)
-            | CalmError::PluginKernelTooOld(m)
-            | CalmError::PlannerResetUnsupportedInSharedMode(m)
-            | CalmError::PlannerHarnessDormant(m)
-            | CalmError::PlannerHarnessRuntimeSuperseded(m)
-            | CalmError::TodaySummaryNoActivity(m)
-            | CalmError::CodexRefused(m)
-            | CalmError::CodexAppServer(m)
-            | CalmError::PayloadTooLarge(m)
-            | CalmError::OperationFailed(m)
-            | CalmError::OperationStuck(m)
-            | CalmError::Internal(m) => calm_truth::TruthError::Internal(m),
-        }
-    }
-}
-
 pub type Result<T, E = CalmError> = std::result::Result<T, E>;
 
 #[cfg(test)]
@@ -623,21 +558,30 @@ mod core_error_bridge_tests {
 mod truth_error_bridge_tests {
     use super::CalmError;
 
-    /// The typed refusals raised inside a storage transaction must come back out of it with their
-    /// code and message: the write path converts a closure's error to `TruthError` and back.
+    /// Storage refusals retain their public HTTP contract at the forward bridge.
     #[test]
-    fn typed_refusals_survive_the_storage_round_trip() {
+    fn typed_refusals_preserve_code_and_status() {
         let cases = [
-            CalmError::IdempotencyKeyReused("x".into()),
-            CalmError::IdempotencyKeyExhausted("x".into()),
-            CalmError::IdempotencyKeyConcurrent("x".into()),
-            CalmError::PlannerTurnNotReplaceable("x".into()),
+            calm_truth::TruthError::IdempotencyKeyReused("x".into()),
+            calm_truth::TruthError::IdempotencyKeyExhausted("x".into()),
+            calm_truth::TruthError::IdempotencyKeyConcurrent("x".into()),
+            calm_truth::TruthError::PlannerTurnNotReplaceable("x".into()),
         ];
-        for error in cases {
-            let (code, status, message) = (error.code(), error.status(), error.to_string());
-            let back = CalmError::from(calm_truth::TruthError::from(error));
+        let codes = [
+            "idempotency_key_reused",
+            "idempotency_key_exhausted",
+            "idempotency_key_concurrent",
+            "planner_turn_not_replaceable",
+        ];
+        for (error, code) in cases.into_iter().zip(codes) {
+            let message = error.to_string();
+            let back = CalmError::from(error);
             assert_eq!(back.code(), code, "code drift for {back:?}");
-            assert_eq!(back.status(), status, "status drift for {back:?}");
+            assert_eq!(
+                back.status(),
+                axum::http::StatusCode::CONFLICT,
+                "status drift for {back:?}"
+            );
             assert_eq!(back.to_string(), message, "message drift for {back:?}");
         }
     }
