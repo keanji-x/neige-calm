@@ -537,3 +537,58 @@ async fn objective_evaluation_retry_leaves_next_round_available() {
         Some(objective::engine::Evaluation::Ready { .. })
     ));
 }
+
+#[tokio::test]
+async fn objective_evaluation_reads_legacy_task_verdicts_without_rewriting_sources() {
+    for holds in [true, false] {
+        let (boot, _) = setup().await;
+        approve(&boot).await;
+        accepted(&boot, holds).await;
+        let db = boot.repo.sqlite_db().unwrap();
+        // Historical persisted input, before owner-declared notification existed.
+        sqlx::query(
+            "UPDATE events SET event_version=30,payload=json_remove(payload,'$.notification') \
+            WHERE kind IN ('task.completed','task.failed') AND scope_track=?1",
+        )
+        .bind(boot.track_id.as_str())
+        .execute(db.writer_pool())
+        .await
+        .unwrap();
+        let source = sqlx::query_as::<_, (i64, String, i64)>(
+            "SELECT id,payload,event_version FROM events WHERE scope_track=?1 \
+             AND kind IN ('task.completed','task.failed') ORDER BY id",
+        )
+        .bind(boot.track_id.as_str())
+        .fetch_all(db.read_pool())
+        .await
+        .unwrap();
+        assert_eq!(source.len(), 1);
+        evaluate(&boot, REV).await.unwrap();
+        project(&boot).await;
+        let state = state(&boot).await;
+        let objective::engine::Evaluation::Ready { results, .. } = state.objectives
+            [&objective::ids::ObjectiveKey::new("kr")]
+            .evaluation
+            .as_ref()
+            .unwrap()
+        else {
+            panic!("legacy task verdict must finish the real evaluation");
+        };
+        assert_eq!(
+            results[&objective::ids::CheckId::new("accepted")],
+            objective::check::CheckOutput::Fact(objective::check::FactOutput { holds })
+        );
+        let after = sqlx::query_as::<_, (i64, String, i64)>(
+            "SELECT id,payload,event_version FROM events WHERE scope_track=?1 \
+             AND kind IN ('task.completed','task.failed') ORDER BY id",
+        )
+        .bind(boot.track_id.as_str())
+        .fetch_all(db.read_pool())
+        .await
+        .unwrap();
+        assert_eq!(
+            after, source,
+            "reading legacy input must preserve source identity"
+        );
+    }
+}
