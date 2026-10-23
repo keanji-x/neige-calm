@@ -451,7 +451,9 @@ impl Dispatcher {
     }
 
     pub(crate) async fn wake_planner_on_reopen(&self, track: &TrackId) -> crate::error::Result<()> {
-        let Some(card) = self.inner.resolve_planner_card(track).await else {
+        let Some(target) =
+            planner_admission::PlannerAdmission::discover(self.inner.repo.as_ref(), track).await?
+        else {
             return Ok(());
         };
         let wake = self
@@ -461,7 +463,7 @@ impl Dispatcher {
             .expect("Planner wake context")
             .clone();
         if let Some(wake) = wake {
-            let _ = wake.ensure(&card).await?;
+            let _ = wake.ensure_planner_reopen(&target).await?;
         }
         Ok(())
     }
@@ -1200,22 +1202,9 @@ impl Inner {
         envelope_id: i64,
     ) {
         let track_id = guard.track_id().clone();
-        let planner_card_id =
-            match crate::planner_session::resolve_card(self.repo.as_ref(), &self.write, &track_id)
-                .await
-            {
-                Ok(Some(target)) => target,
-                result => {
-                    if let Err(error) = result {
-                        tracing::warn!(%track_id, %error, "dispatcher push: Planner lookup failed");
-                    }
-                    tracing::debug!(
-                        track_id = %track_id,
-                        "dispatcher push: no planner card found for track; skipping"
-                    );
-                    return;
-                }
-            };
+        let Some(planner_card_id) = self.resolve_planner_card(&track_id).await else {
+            return;
+        };
 
         match crate::conversation_inputs::has_canonical_storage(
             self.repo.as_ref(),
@@ -1724,6 +1713,7 @@ fn sha256_hex(text: &str) -> String {
 mod ask_answered;
 pub(crate) mod canonical_inputs;
 mod git_delivery_settled;
+pub(crate) mod planner_admission;
 mod task_completed;
 
 #[cfg(test)]

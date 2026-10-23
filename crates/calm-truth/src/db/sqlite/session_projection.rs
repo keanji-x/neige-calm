@@ -875,7 +875,8 @@ impl WorkerSessionProjectionRepo for SqlxRepo {
                JOIN tracks w ON w.id = c.track_id
                WHERE ((ws.provider = ?1
                  AND (
-                       ws.contract = ?2
+                       (ws.contract = ?2 AND c.role = 'planner' AND c.kind = 'codex'
+                        AND json_extract(c.payload, '$.planner_provider') = ws.provider)
                        -- #1098 — an area chat. Executor contract, worker role,
                        -- `plain_chat` marker.
                        OR (ws.contract = 'executor'

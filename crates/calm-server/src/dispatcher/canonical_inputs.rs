@@ -1,5 +1,6 @@
 //! The actual Dispatcher qualifies persisted event inputs. Its declaration is
 //! installed only after the original production recovery boundary completes.
+use super::planner_admission::PlannerAdmission;
 use super::*;
 use crate::auth::LegacyPrivateExecution;
 use crate::conversation_inputs::InputSource;
@@ -36,6 +37,7 @@ struct EventBinding {
     track: TrackId,
     card: String,
     worker: String,
+    admission: PlannerAdmission,
     event: EventInputFact,
 }
 impl EventBinding {
@@ -45,6 +47,10 @@ impl EventBinding {
         carrier: &CurrentInputCarrier,
     ) -> Result<String> {
         self.producer.current_owner()?;
+        self.admission.authorize_tx(tx).await?;
+        if self.event.envelope.id <= self.admission.baseline {
+            return Err(CalmError::Forbidden("event predates Planner tenure".into()));
+        }
         if self.card != carrier.card_id() || self.worker != carrier.worker_session_id() {
             return Err(CalmError::Forbidden(
                 "event source belongs to another input carrier".into(),
@@ -256,7 +262,14 @@ impl Inner {
                 .await?
                 .ok_or_else(|| CalmError::Conflict("event target lost its Track".into()))?;
             let track = TrackId::from(track);
+            #[cfg(feature = "fixtures")]
+            crate::test_seams::pause_point("planner-reconcile-before-push", card.as_str()).await;
             let _guard = self.acquire_push_lock(&track).await;
+            let Some(current) = PlannerAdmission::discover(self.repo.as_ref(), &track).await?
+            else {
+                continue;
+            };
+            let card = current.card;
             if let Err(error) = self.accept_canonical_events(&card, None).await {
                 tracing::warn!(%card, %error, "Dispatcher canonical input remains held");
             }
@@ -275,28 +288,29 @@ impl Inner {
             .sqlite_db()
             .ok_or_else(|| CalmError::Internal("event admission requires SQLite".into()))?;
         let card_name = card.to_string();
-        let (worker, track, floor) = write_in_tx_typed(self.repo.as_ref(), {
+        let (admission, floor) = write_in_tx_typed(self.repo.as_ref(), {
             let card = card_name.clone();
             move |tx| {
                 Box::pin(async move {
                     let carrier = conversation::current_input_content_carrier_tx(tx, &card).await?;
-                    let track: String =
-                        sqlx::query_scalar("SELECT track_id FROM cards WHERE id=?1")
-                            .bind(&card)
-                            .fetch_one(&mut **tx)
-                            .await?;
+                    let admission = PlannerAdmission::load_tx(tx, &card).await?;
+                    if admission.worker != carrier.worker_session_id() {
+                        return Err(CalmError::Forbidden("event target worker changed".into()));
+                    }
                     let floor = carrier.snapshot()["push_watermark"]
                         .as_i64()
                         .ok_or_else(|| CalmError::Conflict("missing event watermark".into()))?;
-                    Ok((
-                        carrier.worker_session_id().to_owned(),
-                        TrackId::from(track),
-                        floor,
-                    ))
+                    let floor = floor.max(admission.baseline);
+                    Ok((admission, floor))
                 })
             }
         })
         .await?;
+        let worker = admission.worker.clone();
+        let track = admission.track.clone();
+        if incoming.is_some_and(|(_, id)| id > 0 && id <= admission.baseline) {
+            return Ok(());
+        }
         if let Some((event, id)) = incoming {
             if id <= 0 {
                 return Err(CalmError::Forbidden(
@@ -334,14 +348,18 @@ impl Inner {
                 qualified.push(input);
             }
         }
+        #[cfg(feature = "fixtures")]
+        crate::test_seams::pause_point("planner-events-before-accept", card.as_str()).await;
         let database = self.repo.database_id();
         let (floor, stored) = write_in_tx_typed(self.repo.as_ref(), {
             let (card, worker, track, database, producer) = (card_name.clone(), worker.clone(), track.clone(), database.clone(), producer.clone());
+            let admission = admission.clone();
             move |tx| Box::pin(async move {
+                admission.authorize_tx(tx).await?;
                 let mut carrier = conversation::current_input_content_carrier_tx(tx, &card).await?;
                 if carrier.worker_session_id() != worker { return Err(CalmError::Conflict("event target changed".into())); }
                 for input in qualified {
-                    let binding = EventBinding { producer: producer.clone(), database: database.clone(), track: track.clone(), card: card.clone(), worker: worker.clone(), event: input.fact };
+                    let binding = EventBinding { producer: producer.clone(), database: database.clone(), track: track.clone(), card: card.clone(), worker: worker.clone(), admission: admission.clone(), event: input.fact };
                     binding.authorize_tx(tx, &carrier).await?;
                     if binding.event.envelope.id > carrier.snapshot()["push_watermark"].as_i64().unwrap_or(0) {
                         conversation::accept_pending_system_tx(tx, &mut carrier, input.observation, &binding.event).await?;
@@ -396,6 +414,7 @@ impl Inner {
                     track: track.clone(),
                     card: card_name.clone(),
                     worker: worker.clone(),
+                    admission: admission.clone(),
                     event: qualified.fact,
                 },
                 reference: stored.reference.clone(),

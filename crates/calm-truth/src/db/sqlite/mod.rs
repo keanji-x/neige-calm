@@ -478,3 +478,6 @@ mod typed_gate_park_migration_tests;
 pub mod gate_execution;
 
 pub mod track_planner;
+
+#[cfg(test)]
+mod planner_switch_projection_tests;

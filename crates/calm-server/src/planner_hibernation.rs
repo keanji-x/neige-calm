@@ -220,6 +220,23 @@ impl WakeContext {
         &self,
         card: &CardId,
     ) -> Result<Option<(crate::harness::PlannerHarness, CardStartFence)>> {
+        self.ensure_current(card, None).await
+    }
+
+    pub(crate) async fn ensure_planner_reopen(
+        &self,
+        target: &crate::dispatcher::planner_admission::PlannerAdmission,
+    ) -> Result<Option<(crate::harness::PlannerHarness, CardStartFence)>> {
+        #[cfg(feature = "fixtures")]
+        crate::test_seams::pause_point("planner-reopen-before-fence", target.card.as_str()).await;
+        self.ensure_current(&target.card, Some(target)).await
+    }
+
+    async fn ensure_current(
+        &self,
+        card: &CardId,
+        target: Option<&crate::dispatcher::planner_admission::PlannerAdmission>,
+    ) -> Result<Option<(crate::harness::PlannerHarness, CardStartFence)>> {
         let s = self;
         let operation_runtime = s.operation_runtime.upgrade().ok_or_else(|| {
             crate::error::CalmError::ServiceUnavailable("application runtime stopped".into())
@@ -232,6 +249,11 @@ impl WakeContext {
             card,
         )
         .await;
+        if let Some(target) = target
+            && !target.is_current(s.repo.as_ref()).await?
+        {
+            return Ok(None);
+        }
         let Some(runtime) = s
             .repo
             .session_projection_active_for_card(&card.to_string())
