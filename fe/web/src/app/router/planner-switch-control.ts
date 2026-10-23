@@ -3,7 +3,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import type { ApiTransportPort } from '../../../../core/api/types.ts';
 import type { UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import type { TrackDetailWire } from '../../../../core/domain/track.ts';
-import { ApiError } from '../../../../core/domain/failure-class.ts';
+import { NotSentError, writeFailureOf } from '../../../../core/domain/failure-class.ts';
 import { plannerSwitchFailure, PLANNER_SWITCH_UNCONFIRMED } from '../../../../core/domain/planner-switch.ts';
 import { invalidationPlanFor } from '../../../../core/events/invalidation-plan.ts';
 import { isAssistantHarnessPayload, plannerCardIn } from '../../systems/cards/public.ts';
@@ -45,8 +45,9 @@ export function usePlannerSwitchControl(transport: ApiTransportPort, unauthorize
           expected_revision: snapshot.planner_revision,
         } });
       } catch (error) {
-        await refresh();
-        const failure = plannerSwitchFailure(error instanceof ApiError ? error.failure : null);
+        const writeFailure = writeFailureOf(error);
+        if (!(writeFailure instanceof NotSentError)) await refresh();
+        const failure = plannerSwitchFailure(writeFailure);
         const card = snapshot.cards.find(card => card.id === failure.cardId);
         const role = failure.cardId === planner.id ? 'Original Planner' : failure.cardId === scope.cardId ? 'Target Assistant' : null;
         throw new Error(`${failure.message}${role === null ? '' : ` (${role}: ${card?.title ?? failure.cardId})`}`);

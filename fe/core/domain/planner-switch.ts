@@ -1,3 +1,4 @@
+import { NotSentError } from './failure-class.js';
 import { z } from 'zod';
 import type { ApiFailure, ApiOperation } from '../api/types.js';
 
@@ -35,7 +36,8 @@ export const PLANNER_SWITCH_UNCONFIRMED = Object.freeze({
 });
 export const PLANNER_SWITCH_ARGUMENTS = 'Use /planner without arguments.';
 
-export function plannerSwitchFailure(failure: ApiFailure | null): Readonly<{ message: string; cardId: string | null; unconfirmed: boolean }> {
+export function plannerSwitchFailure(failure: ApiFailure | NotSentError | null): Readonly<{ message: string; cardId: string | null; unconfirmed: boolean }> {
+  if (failure instanceof NotSentError) return { message: 'Planner switching was not sent.', cardId: null, unconfirmed: false };
   if (failure?.kind === 'http' && failure.status < 500) {
     const copy = Object.hasOwn(PLANNER_SWITCH_COPY, failure.code)
       ? PLANNER_SWITCH_COPY[failure.code as keyof typeof PLANNER_SWITCH_COPY] : undefined;

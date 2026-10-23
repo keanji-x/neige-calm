@@ -3,8 +3,7 @@ import type { ApiTransportPort } from '../../../../core/api/types.ts';
 import type { UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import { byRecency, type Conversation } from '../../../../core/domain/conversation.ts';
 import { trackDisplayTitle, type Track } from '../../../../core/domain/track.ts';
-import { plannerCardIn } from '../../systems/cards/public.js';
-import { plannerConversationRow } from '../conversations/planner-row.ts';
+import { trackConversationRows } from '../conversations/planner-row.ts';
 import { trackConversationsQueryOptions, trackDetailQueryOptions } from '../providers/queries.ts';
 
 /** Reads only the declared current Track while history is open, using the existing query caches. */
@@ -13,21 +12,19 @@ export function useMobileHistoryData(transport: ApiTransportPort, unauthorized: 
   const details = useQueries({ queries: tracks.map((track) => ({ ...trackDetailQueryOptions(transport, track.id, unauthorized), enabled })) });
   const lists = useQueries({ queries: tracks.map((track) => ({ ...trackConversationsQueryOptions(transport, track.id, unauthorized), enabled })) });
   const rows = new Map<string, Conversation>();
-  const planners = new Map<string, Conversation>();
+  for (const row of current) {
+    if (tracks.some(track => track.id === row.trackId)) rows.set(row.id, row);
+  }
   tracks.forEach((track, index) => {
     const detail = details[index].data;
-    if (detail !== undefined && detail.track.id === track.id) {
-      const planner = plannerConversationRow(track.id, trackDisplayTitle(detail.track.title), plannerCardIn(detail.cards));
-      if (planner !== null) planners.set(planner.id, planner);
-    }
-    for (const row of lists[index].data ?? []) {
-      if (row.trackId === track.id) rows.set(row.id, { ...row, trackTitle: trackDisplayTitle(track.title) });
-    }
+    const listed = lists[index].data ?? [];
+    const projected = detail !== undefined && detail.track.id === track.id
+      ? trackConversationRows(track.id, trackDisplayTitle(track.title), detail.cards, listed)
+      : listed;
+    // Current rows are a fallback only while detail is unavailable, never a second role authority.
+    if (detail !== undefined) for (const [id, row] of rows) if (row.trackId === track.id) rows.delete(id);
+    for (const row of projected) if (row.trackId === track.id) rows.set(row.id, row);
   });
-  for (const row of current) {
-    if (tracks.some((track) => track.id === row.trackId)) rows.set(row.id, row);
-  }
-  for (const planner of planners.values()) rows.set(planner.id, planner);
   const reads = [...details, ...lists];
   return {
     conversations: [...rows.values()].toSorted(byRecency),

@@ -65,3 +65,17 @@ it('blocks another submission while the first request is pending', async () => {
   await expect.element(page.getByRole('button', { name: /Role: Member/ })).toBeVisible();
   expect(posts(fixture)).toHaveLength(1);
 });
+
+it('dispatches a direct mobile dock submission and retains a refused command draft', async () => {
+  await page.viewport(390, 844);
+  const fixture = renderPlannerSwitchFixture({ switch: () => ({ status: 409, statusText: 'Conflict',
+    body: { code: 'planner_open_ask', error: 'open question', card_id: 'second-planner' } }) });
+  const input = await open(); await input.fill('/planner');
+  await page.getByRole('button', { name: 'Close conversation' }).click();
+  await page.getByRole('button', { name: 'Back to Report', exact: true }).click();
+  await expect.element(page.getByRole('textbox', { name: 'Chat message', exact: true })).toHaveValue('/planner');
+  await page.getByRole('button', { name: 'Send chat message' }).click();
+  await expect.element(page.getByRole('alert')).toHaveTextContent('Resolve the open questions first.');
+  await expect.element(page.getByRole('textbox', { name: 'Chat message', exact: true })).toHaveValue('/planner');
+  expect(posts(fixture).map(request => request.path)).toEqual(['/api/tracks/daily/planner/switch']);
+});

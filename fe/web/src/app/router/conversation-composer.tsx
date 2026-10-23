@@ -22,5 +22,5 @@ export function ConversationComposer({ target, changeText, ...props }: Omit<Comp
 
 export function ConversationDock({ target, ...props }: Omit<ComponentProps<typeof ChatDock>, 'text'> & { target: TextTarget }) {
   const text = useText(target);
-  return <ChatDock {...props} text={text} />;
+  return <ChatDock key={`${target.kind}:${target.id}`} {...props} text={text} />;
 }

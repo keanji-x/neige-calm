@@ -121,7 +121,7 @@ import { DailyTodayRoute } from './daily-planner.tsx';
 import { ConversationComposer, ConversationDock } from './conversation-composer.tsx';
 import mobileChatStyles from './mobile-chat.module.css';
 import { ConversationSurface } from './mobile-conversation-surface.tsx';
-import { plannerConversationRow } from '../conversations/planner-row.ts';
+import { trackConversationRows } from '../conversations/planner-row.ts';
 import { NewTrackDraftProvider } from './new-track-drafts.tsx';
 import { RecipesRoute } from './recipes-route.tsx';
 import { createUiPreferences, UiPreferencesProvider, type UiPreferences } from '../providers/ui-preferences.tsx';
@@ -676,6 +676,19 @@ function useConversationPane(
   const switchPlanner = usePlannerSwitchControl(transport, unauthorized, scope);
   const plannerSwitchBinding = useMemo(() => scope?.kind === 'track-assistant' && plannerRow === null
     ? { execute: switchPlanner } : undefined, [scope?.kind, plannerRow, switchPlanner]);
+  const paneCommands = useMemo(() => composerCommands({
+    ...conversationCommandBindings({
+      newConversation: options?.inline === true ? undefined : newConversation,
+      compact: composerView.manualCompactSupported && composerView.historyReady ? composerView.compact : undefined,
+      side: !hasSideConversation || !composerView.historyReady ? undefined : sideQuestion,
+      sideHidden: options?.showSideCommand === false,
+      sideUnavailableReason: sideSourceReady ? undefined : 'Side conversations are not available here yet.',
+      terminal: onTerminal, compactViewport: compactComposer,
+    }),
+    ...plannerCommands?.(composerStop),
+    planner: plannerSwitchBinding,
+  }), [options?.inline, options?.showSideCommand, newConversation, composerView.manualCompactSupported, composerView.historyReady,
+    composerView.compact, hasSideConversation, sideQuestion, sideSourceReady, onTerminal, compactComposer, plannerCommands, composerStop, plannerSwitchBinding]);
   const composerNode = useMemo(() => existingId === null ? null : (
             <ConversationComposer target={{ kind: 'card', id: existingId }} layout={compactComposer ? 'mobile' : 'standard'}
               /* Read at mount only, which is what makes it one-shot; the flag is dropped
@@ -686,18 +699,7 @@ function useConversationPane(
               disabled={composerView.sendBlocked || !composerView.historyReady || replacing}
               sendWaiting={composerView.sending || edit.queuedSaving} {...(editingBar === undefined ? {} : { editing: editingBar })}
               /* The images stay with the composer until the store reports them delivered; the press waits out its Edit. */
-              commands={composerCommands({
-                ...conversationCommandBindings({
-                  newConversation: options?.inline === true ? undefined : newConversation,
-                  compact: composerView.manualCompactSupported && composerView.historyReady ? composerView.compact : undefined,
-                  side: !hasSideConversation || !composerView.historyReady ? undefined : sideQuestion,
-                  sideHidden: options?.showSideCommand === false,
-                  sideUnavailableReason: sideSourceReady ? undefined : 'Side conversations are not available here yet.',
-                  terminal: onTerminal, compactViewport: compactComposer,
-                }),
-                ...plannerCommands?.(composerStop),
-                planner: plannerSwitchBinding,
-              })}
+              commands={paneCommands}
               onSend={sendText}
               allowEmptyText={!editingQueue && composerAttachments.items.length > 0}
               onFiles={editingQueue || !composerView.attachmentsSupported || composerAttachments.busy || composerAttachments.atCapacity ? undefined : (files) => {
@@ -756,8 +758,8 @@ function useConversationPane(
               )}
             />
   ), [existingId, compactComposer, panePresented, composerFocusFor, composerFocusRequest, changeComposer, composerView,
-    composerStop, plannerCommands, plannerSwitchBinding, replacing, editingQueue, edit.queuedSaving, editingBar, options?.showSideCommand, options?.inline, onTerminal, hasSideConversation, sideQuestion, sideSourceReady,
-    sendText, composerAttachments, newConversation, mentionTrigger, scopeProvider, plannerAsks, answerAsk,
+    paneCommands, composerStop, replacing, editingQueue, edit.queuedSaving, editingBar,
+    sendText, composerAttachments, mentionTrigger, scopeProvider, plannerAsks, answerAsk,
     roleValue, roleDisabled, roleDisabledReason, roleChange]);
 
   const renderDrawer = (resizeGroup: PaneResizeGroup | null = null) => (
@@ -979,6 +981,7 @@ function useConversationPane(
 
   return {
     dock: compactComposer ? <ConversationDock target={dockRowId === null ? { kind: 'scope', id: sourceScopeId } : { kind: 'card', id: dockRowId }}
+      commands={dockRowId === null ? conversationCommands({ compactViewport: true }) : paneCommands}
       onChange={setDockText} onSend={sendFromDock} onBeginInput={openDockHistory}
       disabled={archived || options?.reportComposer?.ready === false || (dockRowId !== null && (store.sendBlocked || !store.historyReady || edit.held !== null))} /> : undefined,
     selectedConversationId: draftOpen ? null : open?.id ?? dockRowId,
@@ -1153,9 +1156,6 @@ function TrackRouteBody({
   const conversationsQuery = useQuery(trackConversationsQueryOptions(transport, track.id, unauthorized));
   const assistantRows = useMemo(() => conversationsQuery.data ?? [], [conversationsQuery.data]);
   const trackTitle = trackDisplayTitle(track.title);
-  // Planner is the one conversation projected from a card; its `state` is the
-  // drawer's baseline, not an indicator — the row's dot reads `activity.cards`.
-  const plannerRow = useMemo(() => plannerConversationRow(track.id, trackTitle, plannerCard), [plannerCard, track.id, trackTitle]);
   /* Redeeming the planner-open intent: `armed` is already "this track, this visit",
    * and the planner card's id exists only once the detail has landed. `disarm()`
    * before the open, unconditionally: an intent left armed on this entry would
@@ -1169,14 +1169,8 @@ function TrackRouteBody({
   }, [registry, plannerCard, plannerOpenIntent]);
   /* Every row carries the track's title, unconditionally and before the planner
        row is considered. */
-  const placedRows = useMemo(
-    () => assistantRows.filter(row => row.id !== plannerCard?.id).map((row) => ({ ...row, trackTitle })),
-    [assistantRows, trackTitle, plannerCard?.id],
-  );
-  const rows = useMemo<readonly Conversation[]>(
-    () => plannerRow === null ? placedRows : [plannerRow, ...placedRows],
-    [placedRows, plannerRow],
-  );
+  const rows = useMemo(() => trackConversationRows(track.id, trackTitle, cards, assistantRows),
+    [track.id, trackTitle, cards, assistantRows]);
   const openAsks = useMemo(() => openAsksOf(track.attentionItems), [track.attentionItems]);
   /* The runtime half of the TASKS panel, keyed `['track-report', trackId]`: the key
    * `invalidation-plan` refreshes on every `task.*` event and `track.report_edited`. */

@@ -1,14 +1,16 @@
-import { PLANNER_CONVERSATION_KIND } from '../../../../core/domain/conversation.ts';
-import { QueryClientProvider } from '@tanstack/react-query';
+import { ChatComposer } from '../../features/chat/thread/public.tsx';
+import { conversationCommands } from '../../features/chat/thread/composer-command.ts';
+import { PLANNER_CONVERSATION_KIND, type Conversation } from '../../../../core/domain/conversation.ts';
+import { onlineManager, QueryClientProvider } from '@tanstack/react-query';
 import type { ReactNode } from 'react';
 import type { ApiRequest, ApiTransportPort } from '../../../../core/api/types.ts';
 import type { TrackDetailWire } from '../../../../core/domain/track.ts';
 import { createUnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import { usePlannerSwitchControl } from './planner-switch-control.ts';
 import { useMobileHistoryData } from '../shell/mobile-history-data.ts';
-import { act, cleanup, fireEvent, renderHook, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, renderHook, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { afterEach, expect, it } from 'vitest';
+import { afterEach, expect, it, vi } from 'vitest';
 import { renderPlannerSwitchFixture } from './planner-switch-fixture.tsx';
 import { queryKeys } from '../providers/query-keys.ts';
 
@@ -101,20 +103,56 @@ it('does not offer planner in the current Planner composer', async () => {
   expect(screen.queryByRole('option', { name: /^planner/ })).toBeNull();
 });
 
-it.each(['detail-first', 'list-first'])('never duplicates a card when %s updates arrive', async order => {
+it.each(['/planner', '/planner now'])('never sends unavailable typed %s from the Planner composer', async command => {
+  const fixture = renderPlannerSwitchFixture(); const input = await open('Daily Planner conversation');
+  await submit(input, command);
+  await screen.findByText('Planner switching is not available in this conversation.');
+  expect(input.textContent).toBe(command); expect(writes(fixture)).toHaveLength(0);
+});
+
+it.each(['/planner', '/planner now'])('recognizes unavailable %s without a scope binding', async command => {
+  const send = vi.fn();
+  render(<ChatComposer onSend={send} commands={conversationCommands({})} />);
+  const input = screen.getByRole('textbox', { name: 'Message' }); await submit(input, command);
+  await screen.findByText('Planner switching is not available in this conversation.');
+  expect(input.textContent).toBe(command); expect(send).not.toHaveBeenCalled();
+});
+
+it('reports a definitely unsent switch without a POST', async () => {
+  const fixture = renderPlannerSwitchFixture(); const input = await open();
+  onlineManager.setOnline(false);
+  try {
+    await submit(input);
+    await screen.findByText('Planner switching was not sent.');
+    expect(input.textContent).toBe('/planner'); expect(writes(fixture)).toHaveLength(0);
+  } finally { onlineManager.setOnline(true); }
+});
+
+it.each(['detail-first', 'list-first'])('keeps both cards and selected scope when %s arrives and the other query fails', async order => {
   const fixture = renderPlannerSwitchFixture();
   const input = await open(); await type(input, 'Keep my draft');
   const detailKey = queryKeys.trackDetail('daily'); const listKey = queryKeys.trackConversations('daily');
   const old = fixture.client.getQueryData<Record<string, unknown>>(detailKey)!;
   fixture.commit();
   const detail = { ...old, cards: fixture.cards(), planner_revision: 8 };
-  act(() => {
+  await act(async () => {
     if (order === 'detail-first') fixture.client.setQueryData(detailKey, detail);
     else fixture.client.setQueryData(listKey, fixture.list());
+    await new Promise(resolve => setTimeout(resolve, 0));
   });
   expect(screen.getByRole('combobox', { name: 'Message' }).textContent).toBe('Keep my draft');
-  const labels = screen.getAllByRole('button', { name: /^Conversation / }).map(button => button.getAttribute('aria-label'));
-  expect(new Set(labels).size).toBe(labels.length);
+  const assertPair = () => {
+    expect(screen.getAllByRole('button', { name: /Conversation Other conversation/ })).toHaveLength(1);
+    expect(screen.getAllByRole('button', { name: /Conversation Daily Planner conversation/ })).toHaveLength(1);
+    expect(screen.getByRole('combobox', { name: 'Message' }).textContent).toBe('Keep my draft');
+  };
+  assertPair();
+  await act(async () => {
+    fixture.client.getQueryCache().find({ queryKey: order === 'detail-first' ? listKey : detailKey })!
+      .setState({ status: 'error', error: new Error('other query failed') });
+    await new Promise(resolve => setTimeout(resolve, 0));
+  });
+  assertPair();
   act(() => {
     fixture.client.setQueryData(detailKey, detail); fixture.client.setQueryData(listKey, fixture.list());
   });
@@ -180,13 +218,39 @@ it('accepts events before the mutation response without resubmission', async () 
   expect(screen.queryByRole('alert')).toBeNull(); expect(writes(fixture)).toHaveLength(1);
 });
 
-it('history keeps the latest detail Planner role when the Assistant list is stale', async () => {
+it.each(['detail-first', 'list-first'])('history projects both cards throughout %s and another read failure', async order => {
   const fixture = renderPlannerSwitchFixture(); await screen.findByRole('button', { name: /Conversation Other conversation/ });
-  const detailKey = queryKeys.trackDetail('daily');
+  const detailKey = queryKeys.trackDetail('daily'); const listKey = queryKeys.trackConversations('daily');
   const detail = fixture.client.getQueryData<TrackDetailWire>(detailKey)!;
-  fixture.commit(); act(() => { fixture.client.setQueryData(detailKey, { ...detail, cards: fixture.cards(), planner_revision: 8 }); });
   const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={fixture.client}>{children}</QueryClientProvider>;
+  let current: readonly Conversation[] = [];
   const hook = renderHook(() => useMobileHistoryData({ send: () => Promise.reject(new Error('unexpected read')) },
-    createUnauthorizedChannel({ enqueue: task => task() }), [{ id: 'daily', areaId: 'daily-area', title: 'Switch Track' }], [], false), { wrapper });
-  expect(hook.result.current.conversations.filter(row => row.id === 'second-planner').map(row => row.kind)).toEqual([PLANNER_CONVERSATION_KIND]);
+    createUnauthorizedChannel({ enqueue: task => task() }), [{ id: 'daily', areaId: 'daily-area', title: '2026-10-04' }], current, false), { wrapper });
+  const assertPair = (plannerId: string) => {
+    expect(hook.result.current.conversations.map(row => row.id).sort()).toEqual(['daily-planner', 'second-planner']);
+    expect(hook.result.current.conversations.filter(row => row.kind === PLANNER_CONVERSATION_KIND).map(row => row.id)).toEqual([plannerId]);
+    expect(hook.result.current.conversations.every(row => row.trackTitle === '2026-10-04')).toBe(true);
+  };
+  assertPair('daily-planner'); fixture.commit();
+  await act(async () => {
+    if (order === 'detail-first') fixture.client.setQueryData(detailKey, { ...detail, cards: fixture.cards(), planner_revision: 8 });
+    else fixture.client.setQueryData(listKey, fixture.list());
+    await new Promise(resolve => setTimeout(resolve, 0));
+  });
+  assertPair(order === 'detail-first' ? 'second-planner' : 'daily-planner');
+  await act(async () => {
+    fixture.client.getQueryCache().find({ queryKey: order === 'detail-first' ? listKey : detailKey })!
+      .setState({ status: 'error', error: new Error('other query failed') });
+    await new Promise(resolve => setTimeout(resolve, 0));
+  });
+  assertPair(order === 'detail-first' ? 'second-planner' : 'daily-planner');
+  await act(async () => {
+    fixture.client.setQueryData(detailKey, { ...detail, cards: fixture.cards(), planner_revision: 8 });
+    fixture.client.setQueryData(listKey, fixture.list());
+    await new Promise(resolve => setTimeout(resolve, 0));
+  });
+  assertPair('second-planner');
+  current = [{ provider: 'codex', id: 'daily-planner', trackId: 'daily', title: 'Daily Planner conversation',
+    kind: PLANNER_CONVERSATION_KIND, state: null, updatedAt: 2, lastTurnCompletedAt: null }];
+  hook.rerender(); assertPair('second-planner');
 });

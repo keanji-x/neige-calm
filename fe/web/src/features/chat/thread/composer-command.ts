@@ -1,3 +1,4 @@
+import { parseComposerCommand } from '../../../../../core/domain/composer-command.ts';
 import { PLANNER_SWITCH_ARGUMENTS } from '../../../../../core/domain/planner-switch.ts';
 import type { IconName } from '../../../ui/icon/public.tsx';
 import { TERMINAL_ARGUMENTS_MESSAGE, TERMINAL_DESKTOP_MESSAGE } from '../../../../../core/domain/terminal-command.ts';
@@ -35,7 +36,9 @@ export type CommandBindings = Readonly<Partial<Record<CommandName, CommandBindin
 export function composerCommands(bindings: CommandBindings): readonly ComposerCommand[] {
   return COMMANDS.flatMap(command => {
     const binding = bindings[command.name];
-    return binding === undefined ? [] : [{ ...command, ...binding }];
+    return binding === undefined ? command.name === 'planner'
+      ? [{ ...command, hidden: true, unavailableReason: 'Planner switching is not available in this conversation.', execute: () => false }] : []
+      : [{ ...command, ...binding }];
   });
 }
 
@@ -60,4 +63,21 @@ export function conversationCommandBindings(options: Readonly<{
 
 export function conversationCommands(options: Parameters<typeof conversationCommandBindings>[0]): readonly ComposerCommand[] {
   return composerCommands(conversationCommandBindings(options));
+}
+
+/** All chat send surfaces use the same recognition and binding policy. */
+export function dispatchComposerCommand(commands: readonly ComposerCommand[], text: string,
+  run: (command: ComposerCommand, argument: string) => void): boolean {
+  const parsed = parseComposerCommand(text);
+  const command = parsed === null ? undefined : commands.find(candidate => candidate.name === parsed.name);
+  if (command === undefined || parsed === null) return false;
+  run(command, parsed.argument);
+  return true;
+}
+
+export async function executeComposerCommand(command: ComposerCommand, argument: string): Promise<void> {
+  const error = command.unavailableReason
+    ?? (command.arguments === 'none' && argument !== '' ? command.argumentError ?? `Use /${command.name} without arguments.` : undefined);
+  if (error !== undefined) throw new Error(error);
+  if (await command.execute(argument) === false) throw new Error(`/${command.name} was not accepted. Try again when it is available.`);
 }

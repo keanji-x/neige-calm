@@ -1,6 +1,6 @@
 import { useHistoryPrefetch, type HistoryPrefetch } from './history-prefetch.ts';
 import { PrependReading } from './prepend-reading.tsx';
-import { parseComposerCommand } from '../../../../../core/domain/composer-command.ts';
+import { dispatchComposerCommand, executeComposerCommand } from './composer-command.ts';
 import type { ComposerCommand } from './composer-command.ts';
 import type { RunRecovery } from '../../../../../core/domain/conversation-restart.ts';
 import { withEmptyTrigger } from '../../../ui/empty-state/astryx-trigger.tsx';
@@ -413,28 +413,11 @@ export function ChatComposer({
       reportCommandFailure(message);
       void Promise.resolve().then(() => setDraft(current => current === '' ? original : current));
     };
-    const error = command.unavailableReason
-      ?? (command.arguments === 'none' && argument !== '' ? command.argumentError ?? `Use /${command.name} without arguments.` : undefined);
-    if (error !== undefined) { refuse(error); return; }
     setCommandFailure(null);
     setDraft('');
-    try {
-      const result = command.execute(argument);
-      const accept = (taken: void | boolean) => {
-        if (taken === false) refuse(`/${command.name} was not accepted. Try again when it is available.`);
-      };
-      if (result instanceof Promise) void result.then(taken => {
-        if (taken !== false) return;
-        reportCommandFailure(`/${command.name} was not accepted. Try again when it is available.`);
-        setDraft(current => current === '' ? original : current);
-      }, (reason: unknown) => {
-        reportCommandFailure(reason instanceof Error ? reason.message : `/${command.name} failed.`);
-        setDraft(current => current === '' ? original : current);
-      });
-      else accept(result);
-    } catch (reason) {
+    void executeComposerCommand(command, argument).catch((reason: unknown) => {
       refuse(reason instanceof Error ? reason.message : `/${command.name} failed.`);
-    }
+    });
   };
 
   const rootRef = useRef<HTMLDivElement>(null);
@@ -517,12 +500,7 @@ export function ChatComposer({
     const text = value.trim();
     /* `allowEmptyText` is the caller saying the message carries an image. */
     if ((text === '' && !allowEmptyText) || disabled || editing?.canSubmit === false) return;
-    const parsed = editing === undefined ? parseComposerCommand(text) : null;
-    const command = parsed === null ? undefined : commands.find(command => command.name === parsed.name);
-    if (command !== undefined && parsed !== null) {
-      runCommand(command, parsed.argument, value);
-      return;
-    }
+    if (editing === undefined && dispatchComposerCommand(commands, text, (command, argument) => runCommand(command, argument, value))) return;
     const taken = onSend(text);
     setDraft('');
     /* Astryx clears after calling `onSend`: put an untaken message back after that clear, into an empty field. */
