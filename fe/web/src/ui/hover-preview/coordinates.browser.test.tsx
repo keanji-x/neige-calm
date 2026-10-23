@@ -9,8 +9,8 @@ const physical = ({ left, top, right, bottom, width, height }: DOMRectReadOnly) 
 const frames = async (count: number) => { for (let i = 0; i < count; i++) await new Promise(requestAnimationFrame); };
 afterEach(async () => { cleanup(); vi.restoreAllMocks(); await commands.emulateReducedMotion(false); });
 
-type Case = Readonly<{ layers: number; shift: number; width?: number; gap?: number; scale?: number; zoom?: number; inline?: boolean }>;
-async function checkCoordinates({ layers, shift, width = 1440, gap = 34, scale = 1, zoom = 1, inline = false }: Case) {
+type Case = Readonly<{ layers: number; shift: number; width?: number; gap?: number; scale?: number; zoom?: number; inline?: boolean; rounds?: 1 | 3 }>;
+async function checkCoordinates({ layers, shift, width = 1440, gap = 34, scale = 1, zoom = 1, inline = false, rounds = 1 }: Case) {
   await page.viewport(width, 4000);
   const activate: (() => void)[] = [];
   function Level({ index }: { index: number }) {
@@ -80,7 +80,7 @@ async function checkCoordinates({ layers, shift, width = 1440, gap = 34, scale =
   const samples: DOMRect[][] = [];
   const phases: number[] = [];
 
-  for (let round = 0; round < 3; round++) for (const time of [...Array.from({ length: 21 }, (_, i) => i * 4), 0, 80, 40, 0, 80, 40]) {
+  for (let round = 0; round < rounds; round++) for (const time of [...Array.from({ length: 21 }, (_, i) => i * 4), 0, 80, 40, 0, 80, 40]) {
     phase = [time, ...Array<number>(layers - 1).fill(0)];
     for (const [index, card] of cards().entries()) {
       const effects = card.getAnimations(); expect(effects).toHaveLength(1);
@@ -121,7 +121,7 @@ async function checkCoordinates({ layers, shift, width = 1440, gap = 34, scale =
     });
     return { layer: layer + 1, edges };
   });
-  console.info('coordinate evidence', JSON.stringify({ layers, shift, rounds: 3, samples: samples.length, results }));
+  console.info('coordinate evidence', JSON.stringify({ layers, shift, rounds, samples: samples.length, results }));
   const directEdges = Array.from({ length: layers }, (_, layer) => ({ layer: layer + 1,
     edges: (['left', 'top', 'right', 'bottom'] as const).map((edge, index) => ({ edge,
       errors: (['slot'] as const).map(kind => {
@@ -144,7 +144,7 @@ async function checkCoordinates({ layers, shift, width = 1440, gap = 34, scale =
   }));
   console.info('physical trajectory evidence', JSON.stringify(edgeSamples.filter((_, index) => index < 2 || phases[index] === 80).map((edges, index) => ({ index, edges }))));
   console.info('direct edge evidence', JSON.stringify({ layers, shift, width, gap, scale, zoom, inline,
-    rounds: 3, phases: 21, samples: samples.length, directEdges, totals: results, revisits }));
+    rounds, phases: 21, samples: samples.length, directEdges, totals: results, revisits }));
   for (const result of revisits) for (const { edge, absolute, span } of result.edges) {
     expect.soft(absolute, `${result.layer}:${edge}:revisit`).toBe(0);
     expect.soft(span, `${result.layer}:${edge}:revisit-span`).toBe(0);
@@ -158,11 +158,17 @@ async function checkCoordinates({ layers, shift, width = 1440, gap = 34, scale =
 it('commits three-level visual inputs and revisits phases without drift', () => checkCoordinates({ layers: 3, shift: 0 }), 45_000);
 it('commits five-level fractional visual inputs against independent CSS rulers', () => checkCoordinates({ layers: 5, shift: -1 / 2048 }), 45_000);
 
-it('commits five-level fine CSS visual inputs against independent CSS rulers', () => checkCoordinates({ layers: 5, shift: -3 / 131072 }), 45_000);
+// Keep cross-round compensation history at the finest authored CSS input.
+it('commits five-level fine CSS visual inputs against independent CSS rulers', () => checkCoordinates({ layers: 5, shift: -3 / 131072, rounds: 3 }), 45_000);
 
-for (const width of [390, 1440]) for (const mode of ['scale', 'zoom'] as const) for (const factor of [0.75, 1, 1.125, 1.5]) {
-  it(`commits visual edges at ${width} ${mode} ${factor}`, () => checkCoordinates({ layers: 5,
-    shift: 1 / 2048, width, [mode]: factor, inline: true }), 45_000);
+for (const width of [390, 1440]) {
+  // scale=1 and zoom=1 resolve to the same complete helper parameters.
+  it(`commits visual edges at ${width} identity`, () => checkCoordinates({ layers: 5,
+    shift: 1 / 2048, width, inline: true }), 45_000);
+  for (const mode of ['scale', 'zoom'] as const) for (const factor of [0.75, 1.125, 1.5]) {
+    it(`commits visual edges at ${width} ${mode} ${factor}`, () => checkCoordinates({ layers: 5,
+      shift: 1 / 2048, width, [mode]: factor, inline: true }), 45_000);
+  }
 }
 for (const gap of [33.984375, 33.999, 34.007, 34.015625, 34.03125]) {
   it(`commits visual edges across gap boundary ${gap}`, () => checkCoordinates({ layers: 3, shift: 0, gap }), 45_000);
