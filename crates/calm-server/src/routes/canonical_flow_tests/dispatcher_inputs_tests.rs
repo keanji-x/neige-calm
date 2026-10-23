@@ -4,9 +4,9 @@ use crate::db::TrackEvent;
 use crate::shared_codex_appserver::native_owner_tests::Peer;
 use calm_types::conversation::PendingInput;
 
+mod child_results;
 #[cfg(all(test, feature = "fixtures"))]
 mod planner_switch_tests;
-mod child_results;
 mod qualification;
 mod recovery;
 mod reliable_results;
