@@ -622,7 +622,7 @@
     响应可能在服务端提交后丢失。等待 refetch 可让错误/重试界面先观察最新 Area 列表，并让更新后的
     template/cwd 回到 cache。创建重试另由已协商的服务器幂等能力与稳定操作键保护；
     refetch 不通过同名查找推断某次创建是否提交。
-  source: fe/web/src/app/providers/queries.ts:830-874
+  source: fe/web/src/app/providers/queries.ts:827-828,843-844
   authoritative_test: fe/web/src/app/providers/queries.contract.test.ts:366-411
   owner_slice: app/providers
   runtime_layer: app
@@ -657,7 +657,7 @@
   source: fe/core/domain/activity.ts:19-89; fe/core/domain/track.ts:138-206,213-239,795-815;
     fe/core/domain/conversation-summary.ts:19-39; fe/web/src/app/conversations/store.ts:59-69,171-244;
     fe/web/src/app/router/public.tsx:759-775,826-843,970-987,1121-1130,1229-1246; fe/web/src/features/track/page/public.tsx:7,45-68,90-93,561-611,642;
-    fe/web/src/app/providers/queries.ts:949-954,988-995;
+    fe/web/src/app/providers/queries.ts:986-1001;
     fe/core/domain/read-receipts.ts:41-50; fe/web/src/app/providers/read-receipts.tsx:65-106; fe/web/src/ui/activity-indicator/activity-indicator.module.css:7-8;
     fe/web/src/features/chat/list/public.tsx:32-88; fe/core/view/track-page.ts:14-18,59-61,69-70,90,107,119;
     fe/web/src/systems/cards/builtins/terminal-card.tsx:12-87;
@@ -859,7 +859,7 @@
   why: >
     #2131 类 2：首次保存已落库而应答丢失时，读者重试仍带着旧 revision，服务端只能答 409，于是读者自己的写被报成
     「别处改过」。只有在未知结果之后才读回，首个 409 不多一次读取；真正的并发编辑读回后内容不同，仍是 stale。
-  source: fe/core/domain/failure-class.ts:152-184; fe/core/domain/track.ts:443-472;
+  source: fe/core/domain/failure-class.ts:152-184; fe/core/domain/track.ts:443-446,458-472;
     fe/core/domain/calendar.ts:93-112; fe/web/src/app/providers/queries.ts:613-632; fe/web/src/app/router/calendar.tsx:34-44
   authoritative_test: fe/web/src/app/router/recipes-route.test.tsx:329-388; fe/web/src/app/router/calendar-writes.test.tsx:91-156
   owner_slice: app/providers
