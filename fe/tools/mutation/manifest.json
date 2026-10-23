@@ -1281,7 +1281,7 @@
       "oracle:INV-APP-118"
     ],
     "target": "core/domain/track.ts",
-    "patch": "diff --git a/core/domain/track.ts b/core/domain/track.ts\n--- a/core/domain/track.ts\n+++ b/core/domain/track.ts\n@@ -577,7 +577,7 @@\n \n /** The one indicator state for a track on every surface; `unread` is the reader's receipt, the rest is the overlay's. */\n export function trackActivityState(track: Track, unread: boolean): ActivityState {\n-  return activityStateOf({ working: isWorking(track), attention: track.attention, unread });\n+  return activityStateOf({ working: !isClosed(track), attention: track.attention, unread });\n }\n \n /** A closed track schedules no new work; only the user reopens it. */\n",
+    "patch": "diff --git a/core/domain/track.ts b/core/domain/track.ts\n--- a/core/domain/track.ts\n+++ b/core/domain/track.ts\n@@ -811,7 +811,7 @@\n \n /** The one indicator state for a track on every surface; `unread` is the reader's receipt, the rest is the overlay's. */\n export function trackActivityState(track: Track, unread: boolean): ActivityState {\n-  return activityStateOf({ working: isWorking(track), attention: track.attention, unread });\n+  return activityStateOf({ working: !isClosed(track), attention: track.attention, unread });\n }\n \n /** A closed track schedules no new work; only the user reopens it. */\n",
     "expected_red": [
       "TrackPage header paints one activity indicator beside the title, from the overlay rather than the open/closed state",
       "activity predicates read only the kernel activity overlay (INV-APP-118) does not derive working from an open track",
@@ -1301,7 +1301,7 @@
       "oracle:INV-APP-118"
     ],
     "target": "core/domain/track.ts",
-    "patch": "diff --git a/core/domain/track.ts b/core/domain/track.ts\nindex b3fb6b9b3..13e7ab44f 100644\n--- a/core/domain/track.ts\n+++ b/core/domain/track.ts\n@@ -208,7 +208,7 @@ export function trackActivityFrom(trackId: string, overlays: readonly OverlayWir\n     if (overlay.kind === 'progress' && typeof value === 'number') activity = { ...activity, progress: value };\n     else if (overlay.kind === 'eta' && typeof text === 'string') activity = { ...activity, eta: text };\n     else if (overlay.kind === 'now' && typeof text === 'string') activity = { ...activity, now: text };\n-    else if (overlay.kind === 'activity' && overlay.plugin_id === KERNEL_OVERLAY_PLUGIN_ID) {\n+    else if (overlay.kind === 'activity') {\n       const recentAt = newerFinite(activity.recentAt, overlay.updated_at);\n       const fields = activityOverlayFields(overlay.payload);\n       activity = fields === null ? { ...activity, recentAt } : {\n",
+    "patch": "diff --git a/core/domain/track.ts b/core/domain/track.ts\nindex b3fb6b9b3..13e7ab44f 100644\n--- a/core/domain/track.ts\n+++ b/core/domain/track.ts\n@@ -223,7 +223,7 @@ export function trackActivityFrom(trackId: string, overlays: readonly OverlayWir\n     if (overlay.kind === 'progress' && typeof value === 'number') activity = { ...activity, progress: value };\n     else if (overlay.kind === 'eta' && typeof text === 'string') activity = { ...activity, eta: text };\n     else if (overlay.kind === 'now' && typeof text === 'string') activity = { ...activity, now: text };\n-    else if (overlay.kind === 'activity' && overlay.plugin_id === KERNEL_OVERLAY_PLUGIN_ID) {\n+    else if (overlay.kind === 'activity') {\n       const recentAt = newerFinite(activity.recentAt, overlay.updated_at);\n       const fields = activityOverlayFields(overlay.payload);\n       activity = fields === null ? { ...activity, recentAt } : {\n",
     "expected_red": [
       "trackActivityFrom: the kernel activity overlay applies only the kernel-owned activity row; a plugin-owned one leaves the track quiet",
       "trackActivityFrom: the kernel activity overlay bulk-folds interleaved entities in original order without weakening activity authority"
@@ -1335,7 +1335,7 @@
       "oracle:INV-APP-118"
     ],
     "target": "core/domain/track.ts",
-    "patch": "diff --git a/core/domain/track.ts b/core/domain/track.ts\n--- a/core/domain/track.ts\n+++ b/core/domain/track.ts\n@@ -567,7 +567,7 @@\n \n /** The kernel says a person has to give input somewhere on this track. */\n export function needsUserAttention(track: Track): boolean {\n-  return track.attention === 'input';\n+  return isClosed(track) || track.attention === 'input';\n }\n \n /** The kernel says something on this track is broken and needs repair. */\n",
+    "patch": "diff --git a/core/domain/track.ts b/core/domain/track.ts\n--- a/core/domain/track.ts\n+++ b/core/domain/track.ts\n@@ -801,7 +801,7 @@\n \n /** The kernel says a person has to give input somewhere on this track. */\n export function needsUserAttention(track: Track): boolean {\n-  return track.attention === 'input';\n+  return isClosed(track) || track.attention === 'input';\n }\n \n /** The kernel says something on this track is broken and needs repair. */\n",
     "expected_red": [
       "collapse toggle shows the waiting count as the strip's only figure, with no dot beside it",
       "activity predicates read only the kernel activity overlay (INV-APP-118) does not derive attention or failure from the open/closed state",
@@ -1713,7 +1713,7 @@
       "oracle:INV-APP-118"
     ],
     "target": "core/domain/track.ts",
-    "patch": "diff --git a/core/domain/track.ts b/core/domain/track.ts\n--- a/core/domain/track.ts\n+++ b/core/domain/track.ts\n@@ -162,7 +162,8 @@\n /** Mirrors `calm_truth::validation::KERNEL_OVERLAY_PLUGIN_ID`. */\n const KERNEL_OVERLAY_PLUGIN_ID = 'kernel';\n const activityOverlayWireSchema = z.object({\n-  schemaVersion: z.literal(4),\n+  // MUT-1829-S1-1: a v1 row decodes again\n+  schemaVersion: z.union([z.literal(1), z.literal(4)]),\n   working: z.boolean(),\n   attention: attentionKindSchema,\n   activity_at_ms: z.number().nullable(),\n",
+    "patch": "diff --git a/core/domain/track.ts b/core/domain/track.ts\n--- a/core/domain/track.ts\n+++ b/core/domain/track.ts\n@@ -168,7 +168,8 @@\n /** Mirrors `calm_truth::validation::KERNEL_OVERLAY_PLUGIN_ID`. */\n const KERNEL_OVERLAY_PLUGIN_ID = 'kernel';\n const activityOverlayWireSchema = z.object({\n-  schemaVersion: z.literal(4),\n+  // MUT-1829-S1-1: a v1 row decodes again\n+  schemaVersion: z.union([z.literal(1), z.literal(4)]),\n   working: z.boolean(),\n   attention: attentionKindSchema,\n   activity_at_ms: z.number().nullable(),\n",
     "expected_red": [
       "trackActivityFrom: the kernel activity overlay v1 activity overlay is ignored"
     ],
@@ -1904,7 +1904,7 @@
       "oracle:INV-APP-119"
     ],
     "target": "core/domain/track.ts",
-    "patch": "diff --git a/core/domain/track.ts b/core/domain/track.ts\n--- a/core/domain/track.ts\n+++ b/core/domain/track.ts\n@@ -687,7 +687,6 @@ export function createCardOperation(trackId: string, body: NewCardBody, idempote\n export const CARD_CREATE_FAILURES: FailureTable<KeyedCreateClass> = Object.freeze({\n   rules: Object.freeze([\n     Object.freeze({ code: 'idempotency_key_reused', is: 'refused' as const }),\n-    Object.freeze({ code: 'operation_failed', is: 'refused' as const }),\n     Object.freeze({ code: 'operation_stuck', is: 'stuck' as const }),\n     Object.freeze({ status: Object.freeze([409]), code: 'conflict', is: 'refused' as const }),\n     Object.freeze({ status: Object.freeze([400, 403, 404, 422]), is: 'refused' as const }),\n",
+    "patch": "diff --git a/core/domain/track.ts b/core/domain/track.ts\n--- a/core/domain/track.ts\n+++ b/core/domain/track.ts\n@@ -758,7 +758,6 @@ export function createCardOperation(trackId: string, body: NewCardBody, idempote\n export const CARD_CREATE_FAILURES: FailureTable<KeyedCreateClass> = Object.freeze({\n   rules: Object.freeze([\n     Object.freeze({ code: 'idempotency_key_reused', is: 'refused' as const }),\n-    Object.freeze({ code: 'operation_failed', is: 'refused' as const }),\n     Object.freeze({ code: 'operation_stuck', is: 'stuck' as const }),\n     Object.freeze({ status: Object.freeze([409]), code: 'conflict', is: 'refused' as const }),\n     Object.freeze({ status: Object.freeze([400, 403, 404, 422]), is: 'refused' as const }),\n",
     "expected_red": [
       "a keyed card create reads a create that failed for good under its key as a final refusal with the server’s reason: no Try again, and the next press mints a new key"
     ],
@@ -1919,7 +1919,7 @@
       "oracle:INV-APP-119"
     ],
     "target": "core/domain/track.ts",
-    "patch": "diff --git a/core/domain/track.ts b/core/domain/track.ts\n--- a/core/domain/track.ts\n+++ b/core/domain/track.ts\n@@ -688,7 +688,6 @@ export const CARD_CREATE_FAILURES: FailureTable<KeyedCreateClass> = Object.freez\n   rules: Object.freeze([\n     Object.freeze({ code: 'idempotency_key_reused', is: 'refused' as const }),\n     Object.freeze({ code: 'operation_failed', is: 'refused' as const }),\n-    Object.freeze({ code: 'operation_stuck', is: 'stuck' as const }),\n     Object.freeze({ status: Object.freeze([409]), code: 'conflict', is: 'refused' as const }),\n     Object.freeze({ status: Object.freeze([400, 403, 404, 422]), is: 'refused' as const }),\n   ]),\n",
+    "patch": "diff --git a/core/domain/track.ts b/core/domain/track.ts\n--- a/core/domain/track.ts\n+++ b/core/domain/track.ts\n@@ -759,7 +759,6 @@ export const CARD_CREATE_FAILURES: FailureTable<KeyedCreateClass> = Object.freez\n   rules: Object.freeze([\n     Object.freeze({ code: 'idempotency_key_reused', is: 'refused' as const }),\n     Object.freeze({ code: 'operation_failed', is: 'refused' as const }),\n-    Object.freeze({ code: 'operation_stuck', is: 'stuck' as const }),\n     Object.freeze({ status: Object.freeze([409]), code: 'conflict', is: 'refused' as const }),\n     Object.freeze({ status: Object.freeze([400, 403, 404, 422]), is: 'refused' as const }),\n   ]),\n",
     "expected_red": [
       "a keyed card create reads a create that stopped part way as final: the card may exist, no Try again, and the next press mints a new key"
     ],

@@ -120,7 +120,7 @@
     （Sidebar 的 useAreasQuery）在下一次渲染就看到新名字，不依赖 HTTP。
     朴素的 `setQueryData([updated])` 会静默丢掉其他 area；事件与 HTTP 的到达顺序也不稳定，
     所以"保留其他行"和"保留更高版本"必须一起锁。
-  source: fe/core/domain/area.ts:52-57; fe/web/src/app/events/query-invalidation-adapter.ts:88-98
+  source: fe/core/domain/area.ts:38-44; fe/web/src/app/events/query-invalidation-adapter.ts:110-117
   authoritative_test: fe/web/src/app/events/query-invalidation-adapter.test.ts:221-281
   owner_slice: app/events-glue/invalidation
   intentional_omission: false
@@ -601,9 +601,9 @@
   why: >
     HTTP 响应与事件流没有固定到达顺序。尤其 Area 创建响应返回前，另一窗口可以先更新同一 Area；
     若创建响应无条件替换 cache，编辑后的默认 template/cwd 会在 refetch 前回滚并被 New Track 快照。
-  source: fe/core/domain/area.ts:52-57; fe/web/src/app/providers/queries.ts:845-874
+  source: fe/core/domain/area.ts:38-44; fe/web/src/app/providers/queries.ts:819-841
   authoritative_test: fe/web/src/app/events/query-invalidation-adapter.test.ts:249-281;
-    fe/web/src/app/providers/queries.contract.test.ts:412-457,482-521
+    fe/web/src/app/providers/queries.contract.test.ts:413-458,483-522
   owner_slice: app/providers
   runtime_layer: app
   verification_owner: unit
@@ -623,7 +623,7 @@
     template/cwd 回到 cache。创建重试另由已协商的服务器幂等能力与稳定操作键保护；
     refetch 不通过同名查找推断某次创建是否提交。
   source: fe/web/src/app/providers/queries.ts:830-874
-  authoritative_test: fe/web/src/app/providers/queries.contract.test.ts:365-410
+  authoritative_test: fe/web/src/app/providers/queries.contract.test.ts:366-411
   owner_slice: app/providers
   runtime_layer: app
   verification_owner: unit
@@ -654,7 +654,7 @@
     #1722：rail 里「股票持仓表」`data-nc-activity=working` 而其 planner 已 idle 三天——FE 用 `isRunning(lifecycle)`
     当「在动」、用 lifecycle ∨ `anyCardNeedsInput` 当「等你」，与内核从持久行算出的结论不一致；判定收敛到内核一处
     （`track_activity.rs`），FE 只解码 overlay。第二套推导必然再度分叉。
-  source: fe/core/domain/activity.ts:19-89; fe/core/domain/track.ts:145-190,574-598;
+  source: fe/core/domain/activity.ts:19-89; fe/core/domain/track.ts:138-206,213-239,795-815;
     fe/core/domain/conversation-summary.ts:19-39; fe/web/src/app/conversations/store.ts:59-69,171-244;
     fe/web/src/app/router/public.tsx:759-775,826-843,970-987,1121-1130,1229-1246; fe/web/src/features/track/page/public.tsx:7,45-68,90-93,561-611,642;
     fe/web/src/app/providers/queries.ts:949-954,988-995;
@@ -662,7 +662,7 @@
     fe/web/src/features/chat/list/public.tsx:32-88; fe/core/view/track-page.ts:14-18,59-61,69-70,90,107,119;
     fe/web/src/systems/cards/builtins/terminal-card.tsx:12-87;
     fe/web/src/app/shell/mobile-tracks.tsx:73-89; fe/web/src/app/shell/public.tsx:361
-  authoritative_test: fe/core/domain/activity.test.ts:10-40; fe/core/domain/track.test.ts:186-222,225-287;
+  authoritative_test: fe/core/domain/activity.test.ts:10-40; fe/core/domain/track.test.ts:197-221,223-331;
     fe/web/src/app/router/track-conversation.test.tsx:303-397;
     fe/web/src/features/track/row/public.test.tsx:124-175; fe/core/domain/read-receipts.test.ts:14-31;
     fe/web/src/app/providers/read-receipts.test.tsx:23-107; fe/web/src/app/providers/read-state-refresh.browser.test.tsx:67-120;
@@ -698,7 +698,7 @@
     停在 pending 的操作什么也没写（效果与清除 lease 在同一事务提交，而标记 stuck 要求仍持有 lease），故同样答 `operation_failed`；
     停在之后阶段的卡或行可能已存在，答 500 `operation_stuck`，客户端提示去看轨道（或配方列表）后放弃这个 key（#2175）。
   source: fe/web/src/app/providers/idempotency-key.ts:25-45; fe/web/src/features/track/new-card/create.ts:13-83;
-    fe/core/domain/track.ts:408-486,669-705; fe/web/src/app/router/public.tsx:1375-1419;
+    fe/core/domain/track.ts:448-456,581-593,668-768; fe/web/src/app/router/public.tsx:1375-1419;
     fe/web/src/app/router/recipes-route.tsx:1-70; fe/web/src/app/shell/public.tsx:98-100,247-256;
     fe/web/src/app/router/calendar.tsx:46-59
   authoritative_test: fe/web/src/app/router/new-card.test.tsx:210-414; fe/web/src/app/router/recipes-route.test.tsx:416-530;
@@ -859,7 +859,7 @@
   why: >
     #2131 类 2：首次保存已落库而应答丢失时，读者重试仍带着旧 revision，服务端只能答 409，于是读者自己的写被报成
     「别处改过」。只有在未知结果之后才读回，首个 409 不多一次读取；真正的并发编辑读回后内容不同，仍是 stale。
-  source: fe/core/domain/failure-class.ts:152-184; fe/core/domain/track.ts:472-482;
+  source: fe/core/domain/failure-class.ts:152-184; fe/core/domain/track.ts:443-472;
     fe/core/domain/calendar.ts:93-112; fe/web/src/app/providers/queries.ts:613-632; fe/web/src/app/router/calendar.tsx:34-44
   authoritative_test: fe/web/src/app/router/recipes-route.test.tsx:329-388; fe/web/src/app/router/calendar-writes.test.tsx:91-156
   owner_slice: app/providers
