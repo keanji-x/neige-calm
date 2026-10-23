@@ -38,12 +38,6 @@ pub enum TruthError {
     /// (its result was deleted); only a new key goes anywhere. Final for the key.
     #[error("idempotency key exhausted: {0}")]
     IdempotencyKeyExhausted(String),
-
-    /// A send that replaces a turn was refused inside the transaction that would have removed it,
-    /// which rolled back; nothing changed. Carried here so the refusal keeps its kind through the
-    /// storage write path.
-    #[error("{0}")]
-    PlannerTurnNotReplaceable(String),
 }
 
 /// What a keyed binding insert raises when its UNIQUE wall refuses it: the typed retryable

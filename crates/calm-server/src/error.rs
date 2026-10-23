@@ -500,7 +500,6 @@ impl From<calm_truth::TruthError> for CalmError {
             Truth::IdempotencyKeyReused(m) => CalmError::IdempotencyKeyReused(m),
             Truth::IdempotencyKeyExhausted(m) => CalmError::IdempotencyKeyExhausted(m),
             Truth::IdempotencyKeyConcurrent(m) => CalmError::IdempotencyKeyConcurrent(m),
-            Truth::PlannerTurnNotReplaceable(m) => CalmError::PlannerTurnNotReplaceable(m),
         }
     }
 }
@@ -565,13 +564,11 @@ mod truth_error_bridge_tests {
             calm_truth::TruthError::IdempotencyKeyReused("x".into()),
             calm_truth::TruthError::IdempotencyKeyExhausted("x".into()),
             calm_truth::TruthError::IdempotencyKeyConcurrent("x".into()),
-            calm_truth::TruthError::PlannerTurnNotReplaceable("x".into()),
         ];
         let codes = [
             "idempotency_key_reused",
             "idempotency_key_exhausted",
             "idempotency_key_concurrent",
-            "planner_turn_not_replaceable",
         ];
         for (error, code) in cases.into_iter().zip(codes) {
             let message = error.to_string();
