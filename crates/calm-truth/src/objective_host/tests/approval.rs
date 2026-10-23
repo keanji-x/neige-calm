@@ -1,14 +1,39 @@
 use super::*;
 
-async fn asked(repo: &SqlxRepo, track: &str, actor: &str, action: serde_json::Value) -> i64 {
-    sqlx::query_scalar("INSERT INTO events(kind,scope_track,scope_area,actor,payload,at) VALUES('ask.requested',?,'a',?,?,0) RETURNING id")
-        .bind(track)
-        .bind(serde_json::json!({"kind":"AiPlanner","id":actor}).to_string())
-        .bind(serde_json::json!({"track_id":track,"questions":[{"title":"批准？","options":["批准","不批准"]}],"delivery":"wake","action":action}).to_string())
-        .fetch_one(repo.pool()).await.unwrap()
+use calm_types::event::{
+    AskAction, AskAnswer, AskDelivery, AskQuestion, Event as TrackEvent, EventScope,
+};
+use calm_types::ids::ActorId;
+
+async fn asked(repo: &SqlxRepo, track: &str, actor: &str, action: AskAction) -> i64 {
+    // Replay the exact provenance under test, including invalid role/track bindings that
+    // the live role gate would reject before objective approval can inspect them.
+    repo.event_append_fixture(
+        ActorId::AiPlanner(actor.into()),
+        EventScope::Track {
+            track: track.into(),
+            area: "a".into(),
+        },
+        None,
+        &TrackEvent::AskRequested {
+            track_id: track.into(),
+            questions: vec![AskQuestion {
+                title: "批准？".into(),
+                options: vec!["批准".into(), "不批准".into()],
+            }],
+            delivery: AskDelivery::Wake,
+            action: Some(action),
+            source_item_id: None,
+        },
+    )
+    .await
+    .unwrap()
 }
-fn action() -> serde_json::Value {
-    serde_json::json!({"kind":"objective_approval","objective":"build","standard_hash":standard_hash(&definition())})
+fn action() -> AskAction {
+    AskAction::ObjectiveApproval {
+        objective: "build".into(),
+        standard_hash: standard_hash(&definition()).as_str().into(),
+    }
 }
 fn input(id: i64) -> ObjectiveInput {
     ObjectiveInput {
@@ -41,8 +66,10 @@ async fn objective_approval_accepts_duplicate_and_replays() {
 #[tokio::test]
 async fn objective_approval_hash_mismatch_is_forbidden() {
     let repo = fixture().await;
-    let mut wrong = action();
-    wrong["standard_hash"] = serde_json::json!("different");
+    let wrong = AskAction::ObjectiveApproval {
+        objective: "build".into(),
+        standard_hash: "different".into(),
+    };
     let id = asked(&repo, "t", "p", wrong).await;
     assert!(matches!(
         react(repo.db(), input(id)).await,
@@ -58,12 +85,15 @@ async fn objective_approval_rejects_unbound_sources() {
         (
             "t",
             "p",
-            serde_json::json!({"kind":"objective_approval","objective":"other","standard_hash":standard_hash(&definition())}),
+            AskAction::ObjectiveApproval {
+                objective: "other".into(),
+                standard_hash: standard_hash(&definition()).as_str().into(),
+            },
         ),
         ("other", "foreign", action()),
         ("t", "w", action()),
         ("t", "foreign", action()),
-        ("t", "p", serde_json::json!({"kind":"grant_admin"})),
+        ("t", "p", AskAction::GrantAdmin),
     ] {
         let id = asked(&repo, track, actor, action).await;
         assert!(matches!(
@@ -78,8 +108,21 @@ async fn objective_approval_rejects_unbound_sources() {
         ));
     }
     let id = asked(&repo, "t", "p", action()).await;
-    sqlx::query("INSERT INTO events(kind,scope_track,scope_area,actor,payload,at) VALUES('ask.answered','t','a','{\"kind\":\"User\"}',?,0)")
-        .bind(serde_json::json!({"ask_id":id,"track_id":"t","answers":[{"option":0}]}).to_string()).execute(repo.pool()).await.unwrap();
+    repo.event_append_fixture(
+        ActorId::User,
+        EventScope::Track {
+            track: "t".into(),
+            area: "a".into(),
+        },
+        None,
+        &TrackEvent::AskAnswered {
+            ask_id: id,
+            track_id: "t".into(),
+            answers: vec![AskAnswer::Option(0)],
+        },
+    )
+    .await
+    .unwrap();
     assert!(matches!(
         react(repo.db(), input(id)).await,
         Err(TruthError::Forbidden(_))
