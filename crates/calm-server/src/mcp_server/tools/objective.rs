@@ -11,14 +11,14 @@ use std::sync::Arc;
 pub fn register_into(registry: &mut ToolRegistry) {
     for (name, description, schema, evaluate) in [
         (
-            "neige_objective_gate",
-            include_str!("../../../prompts/tools/neige_objective_gate.md"),
+            "neige_objective_evaluate",
+            include_str!("../../../prompts/tools/neige_objective_evaluate.md"),
             json!({"type":"object","additionalProperties":false,"required":["key","revision"],"properties":{"key":{"type":"string","minLength":1},"revision":{"type":"string","pattern":"^[0-9a-f]{40}$"}}}),
             true,
         ),
         (
-            "neige_objective_report",
-            include_str!("../../../prompts/tools/neige_objective_report.md"),
+            "neige_objective_settle",
+            include_str!("../../../prompts/tools/neige_objective_settle.md"),
             json!({"type":"object","additionalProperties":false,"required":["key","evaluation","decision","note"],"properties":{"key":{"type":"string","minLength":1},"evaluation":{"type":"integer","minimum":0},"decision":{"type":"string","enum":["keep","discard","done"]},"note":{"type":"string"}}}),
             false,
         ),
@@ -270,47 +270,76 @@ async fn measure(
         .as_ref()
         .ok_or_else(|| RpcError::internal("objective storage unavailable"))?;
     let track_for_tx = track.clone();
-    let (reaction, evaluation) = crate::db::write_in_tx_typed(ctx.repo.as_ref(), move |tx| Box::pin(async move {
+    let (result, dispatch) = crate::db::write_in_tx_typed(ctx.repo.as_ref(), move |tx| Box::pin(async move {
         use crate::error::CalmError;
-        // Registry roles are the first fence; persistently recheck the current Planner
-        // before any read of objective state (the host checks its selected session too).
+        use objective::engine::Evaluation;
+        // Registry roles are the first fence; persistently recheck the current Planner.
         calm_truth::decision_gate::PrincipalDecisionGate::new(principal.clone()).decide_planner(tx, &track_for_tx).await?.into_result()?;
-        let (event, request_id) = if let Some(revision) = revision {
+        let input = |event, request_id| ObjectiveInput {
+            track_id: track_for_tx.clone(), event,
+            source: InputSource::Planner { principal: principal.clone(), request_id: PlannerRequestId::new(request_id) },
+        };
+        let input = if let Some(revision) = revision {
             let (_, state) = objective_host::load_state_tx(tx, &track_for_tx).await?;
-            let o = state.objectives.get(&key).ok_or(CalmError::NotFound("objective".into()))?;
+            let o = state.objectives.get(&key).ok_or(CalmError::NotFound("objective does not exist in this track; read objective.kr and choose an existing key".into()))?;
             if !o.is_approved() { return Err(CalmError::Conflict("approval_required: call neige_objective_ask".into())); }
-            if o.status != objective::engine::Status::Open { return Err(CalmError::Conflict("objective is not open".into())); }
+            if o.status != objective::engine::Status::Open { return Err(CalmError::Conflict("objective is not open; read objective.kr and choose an open objective".into())); }
             if !o.definition.checks.iter().all(|c| crate::objective_dispatch::fact::supports(&c.config)) {
                 return Err(CalmError::Conflict("objective contains a check without an executor; supported: fact TaskAccepted, AskAnswered".into()));
             }
-            (objective::Event::Requested { objective: key.clone(), revision: revision.clone() }, format!("evaluate:{key}:{}:{revision}", o.evaluations))
+            let event = objective::Event::Requested { objective: key.clone(), revision: revision.clone() };
+            if let Some(current) = o.evaluation.as_ref().filter(|e| e.revision() == &revision) {
+                // Reuse this round's identity, never the next round's counter. The host
+                // still checks the selected session before returning existing state.
+                objective_host::replay_request_tx(tx, &input(event, format!("evaluate:{key}:{}:{revision}", current.id()))).await?;
+                let status = match current { Evaluation::Running { .. } => "Running", Evaluation::Ready { .. } => "Ready" };
+                return Ok((json!({"status":status, "evaluation":current.id()}), false));
+            }
+            input(event, format!("evaluate:{key}:{}:{revision}", o.evaluations))
         } else {
             let (evaluation, decision, note) = settlement.unwrap();
-            (objective::Event::Settled { objective: key.clone(), evaluation, decision, note }, format!("settle:{key}:{evaluation}"))
+            let input = input(objective::Event::Settled { objective: key.clone(), evaluation, decision, note }, format!("settle:{key}:{evaluation}"));
+            // A settled retry remains valid after state/approval changes. A conflicting
+            // payload must conflict before the new-request admission below.
+            if let Some(Reaction::Duplicate { seq }) = objective_host::replay_request_tx(tx, &input).await? {
+                return Ok((json!({"status":"Duplicate", "seq":seq}), false));
+            }
+            let (_, state) = objective_host::load_state_tx(tx, &track_for_tx).await?;
+            let o = state.objectives.get(&key).ok_or(CalmError::NotFound("objective does not exist in this track; read objective.kr and choose an existing key".into()))?;
+            if !o.is_approved() { return Err(CalmError::Conflict("approval_required: approval is absent or invalidated; call neige_objective_ask".into())); }
+            if !matches!(&o.evaluation, Some(Evaluation::Ready { id, .. }) if *id == evaluation) {
+                let current = match &o.evaluation {
+                    Some(Evaluation::Running { id, .. }) => format!("Running evaluation {id}"),
+                    Some(Evaluation::Ready { id, .. }) => format!("Ready evaluation {id}"),
+                    None => "no current evaluation".into(),
+                };
+                return Err(CalmError::Conflict(format!("objective {key} has {current}, not Ready evaluation {evaluation}; read objective.kr, wait for \
+            EvaluationReady or call neige_objective_evaluate to start an evaluation, then settle the \
+            current Ready id")));
+            }
+            input
         };
-        let reaction = objective_host::react_tx(tx, &ObjectiveInput { track_id: track_for_tx.clone(), event, source: InputSource::Planner { principal, request_id: PlannerRequestId::new(request_id) } }, crate::model::now_ms()).await?;
-        let evaluation = if evaluate {
-            objective_host::load_state_tx(tx, &track_for_tx).await?.1.objectives.get(&key).and_then(|o| o.evaluation.as_ref()).map(|e| e.id())
-        } else { None };
-        Ok::<_, CalmError>((reaction, evaluation))
+        let reaction = objective_host::react_tx(tx, &input, crate::model::now_ms()).await?;
+        let mut result = match reaction {
+            Reaction::Appended { seq, .. } => json!({"status":"Appended", "seq":seq}),
+            Reaction::Duplicate { seq } => json!({"status":"Duplicate", "seq":seq}),
+        };
+        if evaluate && let Some(evaluation) = objective_host::load_state_tx(tx, &track_for_tx).await?.1.objectives.get(&key).and_then(|o| o.evaluation.as_ref()).map(|e| e.id()) {
+            result["evaluation"] = json!(evaluation);
+        }
+        Ok::<_, CalmError>((result, true))
     })).await.map_err(calm_error)?;
     // Persisted requests remain recoverable by the projector if immediate dispatch fails.
-    if let Err(error) = crate::objective_dispatch::dispatch_track(
-        ctx.repo.as_ref(),
-        db,
-        &ctx.events,
-        track.as_str(),
-    )
-    .await
+    if dispatch
+        && let Err(error) = crate::objective_dispatch::dispatch_track(
+            ctx.repo.as_ref(),
+            db,
+            &ctx.events,
+            track.as_str(),
+        )
+        .await
     {
         tracing::warn!(%track, %error, "objective dispatch deferred to reconciliation");
-    }
-    let mut result = match reaction {
-        Reaction::Appended { seq, .. } => json!({"status":"Appended", "seq":seq}),
-        Reaction::Duplicate { seq } => json!({"status":"Duplicate", "seq":seq}),
-    };
-    if let Some(evaluation) = evaluation {
-        result["evaluation"] = json!(evaluation);
     }
     Ok(result)
 }

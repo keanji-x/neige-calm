@@ -169,6 +169,19 @@ pub async fn react_tx(
     apply_tx(tx, authorized, at_ms).await
 }
 
+/// Check an authorized input's recorded identity before admitting a new request.
+/// Caller owns writer admission through this check, state validation and react_tx.
+/// Identical retries return their original sequence; changed payloads conflict.
+pub async fn replay_request_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    input: &ObjectiveInput,
+) -> Result<Option<Reaction>> {
+    let authorized = authorize::authorize(tx, input).await?;
+    Ok(log::dedupe_tx(tx, &authorized)
+        .await?
+        .map(|seq| Reaction::Duplicate { seq }))
+}
+
 async fn apply_tx(
     tx: &mut Transaction<'_, Sqlite>,
     authorized: authorize::AuthorizedInput<'_>,

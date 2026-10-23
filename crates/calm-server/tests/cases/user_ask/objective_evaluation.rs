@@ -10,7 +10,7 @@ async fn evaluate(
 ) -> Result<Value, calm_server::plugin_host::mcp::RpcError> {
     call_tool(
         boot,
-        "neige_objective_gate",
+        "neige_objective_evaluate",
         json!({"key":"kr","revision":revision}),
     )
     .await
@@ -21,7 +21,7 @@ async fn settle(
 ) -> Result<Value, calm_server::plugin_host::mcp::RpcError> {
     call_tool(
         boot,
-        "neige_objective_report",
+        "neige_objective_settle",
         json!({"key":"kr","evaluation":0,"decision":decision,"note":"measured"}),
     )
     .await
@@ -291,7 +291,7 @@ async fn objective_evaluation_regression_refused_and_notified() {
     evaluate(&boot, NEXT).await.unwrap();
     call_tool(
         &boot,
-        "neige_objective_report",
+        "neige_objective_settle",
         json!({"key":"kr","evaluation":1,"decision":"keep","note":"regression"}),
     )
     .await
@@ -425,4 +425,113 @@ async fn objective_evaluation_plateau_and_approval_invalidated_notices_delivered
             .unwrap()
             .contains("ApprovalInvalidated")
     }));
+}
+
+#[tokio::test]
+async fn objective_evaluation_settle_admission_preserves_request_ids() {
+    let (boot, block) = setup().await;
+    let mut d = definition();
+    d["mode"] = json!({"loop":{"plateau":10}});
+    d["checks"][0]["role"] = json!("ratchet");
+    define(&boot, Some(block), d).await;
+    approve(&boot).await;
+    let db = boot.repo.sqlite_db().unwrap();
+    sqlx::query("CREATE TRIGGER pause_settle BEFORE INSERT ON objective_events WHEN NEW.kind='check_finished' \
+            BEGIN SELECT RAISE(ABORT,'pause'); END")
+        .execute(db.read_pool()).await.unwrap();
+    evaluate(&boot, REV).await.unwrap();
+    let n = counts(&boot).await;
+    let error = settle(&boot, "discard").await.unwrap_err();
+    assert_eq!(error.code, -32409);
+    assert!(error.message.starts_with("neige_objective_settle:"));
+    assert!(error.message.contains("Running"));
+    assert_eq!(counts(&boot).await, n);
+    sqlx::query("DROP TRIGGER pause_settle")
+        .execute(db.read_pool())
+        .await
+        .unwrap();
+    project(&boot).await;
+    let n = counts(&boot).await;
+    let future = json!({"key":"kr","evaluation":1,"decision":"discard","note":"future"});
+    assert_eq!(
+        call_tool(&boot, "neige_objective_settle", future.clone())
+            .await
+            .unwrap_err()
+            .code,
+        -32409
+    );
+    assert_eq!(counts(&boot).await, n);
+    settle(&boot, "discard").await.unwrap();
+    let n = counts(&boot).await;
+    assert_eq!(
+        settle(&boot, "discard").await.unwrap()["status"],
+        "Duplicate"
+    );
+    assert_eq!(counts(&boot).await, n);
+    assert_eq!(settle(&boot, "keep").await.unwrap_err().code, -32409);
+    assert_eq!(evaluate(&boot, NEXT).await.unwrap()["evaluation"], 1);
+    project(&boot).await;
+    call_tool(&boot, "neige_objective_settle", future)
+        .await
+        .unwrap();
+    assert_eq!(
+        state(&boot).await.objectives[&objective::ids::ObjectiveKey::new("kr")]
+            .ledger
+            .entries
+            .len(),
+        2
+    );
+}
+
+#[tokio::test]
+async fn objective_evaluation_retry_leaves_next_round_available() {
+    let (boot, block) = setup().await;
+    let mut d = definition();
+    d["mode"] = json!({"loop":{"plateau":10}});
+    d["checks"][0]["role"] = json!("ratchet");
+    define(&boot, Some(block), d).await;
+    approve(&boot).await;
+    let db = boot.repo.sqlite_db().unwrap();
+    sqlx::query("CREATE TRIGGER pause_retry BEFORE INSERT ON objective_events WHEN NEW.kind='check_finished' \
+            BEGIN SELECT RAISE(ABORT,'pause'); END")
+        .execute(db.read_pool()).await.unwrap();
+    let first = evaluate(&boot, REV).await.unwrap();
+    let n = counts(&boot).await;
+    assert_eq!(
+        evaluate(&boot, REV).await.unwrap()["evaluation"],
+        first["evaluation"]
+    );
+    assert_eq!(
+        counts(&boot).await,
+        n,
+        "Running retry must not append Requested"
+    );
+    sqlx::query("DROP TRIGGER pause_retry")
+        .execute(db.read_pool())
+        .await
+        .unwrap();
+    project(&boot).await;
+    let n = counts(&boot).await;
+    assert_eq!(
+        evaluate(&boot, REV).await.unwrap()["evaluation"],
+        first["evaluation"]
+    );
+    assert_eq!(
+        counts(&boot).await,
+        n,
+        "Ready retry must not append Requested"
+    );
+    settle(&boot, "discard").await.unwrap();
+    assert_eq!(evaluate(&boot, REV).await.unwrap()["evaluation"], 1);
+    let runs: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM objective_intents WHERE kind='run_check'")
+            .fetch_one(db.read_pool())
+            .await
+            .unwrap();
+    assert_eq!(runs, 2);
+    project(&boot).await;
+    assert!(matches!(
+        state(&boot).await.objectives[&objective::ids::ObjectiveKey::new("kr")].evaluation,
+        Some(objective::engine::Evaluation::Ready { .. })
+    ));
 }

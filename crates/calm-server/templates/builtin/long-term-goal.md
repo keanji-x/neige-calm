@@ -17,9 +17,9 @@ instructions = """
 · KR 细则需要用户批准时调用 neige_objective_ask；批准状态读取 objective.kr 投影。
 · 关键结果（KR）：3–5 个可测指标，各写一个 Loop（mode 为 {"loop":{"plateau":3}}）
   objective，防退步的检查用 role ratchet；当前只支持 fact task_accepted 与 ask_answered。
-  细则先调用 neige_objective_ask 取得用户批准；每轮以 neige_objective_gate（key、revision）
+  细则先调用 neige_objective_ask 取得用户批准；每轮以 neige_objective_evaluate（key、revision）
   发起评估，revision 为 40 位小写提交 hash。收到 EvaluationReady 后读取 objective.kr，
-  用 neige_objective_report（key、evaluation、decision、note）结算；keep 建立或移动基线，
+  用 neige_objective_settle（key、evaluation、decision、note）结算；keep 建立或移动基线，
   discard 留账不移动基线，done 仅用于已完成判定。首轮无基线时第一次 Keep 建立基线。
   最新判定、样本进度、基线与账本条数只引用 objective.kr，不在 Report 手写判定。
   退步的候选不能 Keep；修改细则后重新请求用户批准。

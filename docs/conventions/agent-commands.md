@@ -91,6 +91,8 @@ Effect classes: **V** view (no state change, no anchor; access metadata excepted
 | `reject` | LC | record that an attempt does not meet the task, with a `reason` | none (plain English) |
 | `regate` | LC | re-run an attempt's failed gate on the same candidate (Planner, #2405) | none (domain) |
 | `rerun` | LC | request a re-run of a CI run attempt's failed jobs, once the user approved that exact request (Planner, #2617) | `gh run rerun --failed` |
+| `evaluate` | LC | start an evaluation of an approved objective at one revision (Planner, #3126) | none (plain English) |
+| `settle` | LC | record the Planner's closed decision on a ready evaluation: keep, discard or done (#3126) | none (plain English) |
 | `gate` | LC | run the attempt's declared gate now, on the Worker's changes committed as the attempt's commit (Worker, #2464) | none (domain) |
 | `done` | LC | the Worker's claim that its attempt met the task (was `report_success`, #2053) | `task <id> done` (Taskwarrior) |
 | `fail` | LC | the Worker's claim that its attempt cannot meet the task, with a `reason` (was `report_failure`) | none (plain English) |
@@ -99,6 +101,8 @@ Effect classes: **V** view (no state change, no anchor; access metadata excepted
 | `vacuum` | M | reclaim database pages | SQLite `VACUUM` |
 
 Decisions, one line each:
+
+- **`evaluate` / `settle` belong to objective measurement** (#3126): start a revision evaluation / decide a ready evaluation; `gate` runs a Worker attempt gate, `report` records the watcher verdict, and `accept` decides whether an attempt meets its task.
 
 - **`ls`, not `list`.** `track_ls` already exists and Unix spells it so; `list`, `outline`,
   `reports` and `backlinks` all become `ls` on the right object. `neige tool list` becomes

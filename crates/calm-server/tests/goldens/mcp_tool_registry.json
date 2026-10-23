@@ -329,8 +329,8 @@
     ]
   },
   {
-    "name": "neige_objective_gate",
-    "description_sha256": "81dbfe28d1ae3c94836a606afca6e492e7726711f9d4b442c7f5aba2a1255b95",
+    "name": "neige_objective_evaluate",
+    "description_sha256": "49fa90f8b3e680e0c7bf8739033a53d86f0be80906cace7e2c40eb6340a9c79a",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -362,7 +362,7 @@
     ]
   },
   {
-    "name": "neige_objective_report",
+    "name": "neige_objective_settle",
     "description_sha256": "a4c3bfe40383579d2fa065b9ce3ddfc03bf5f2c17e42068772ce7b0b88e0f30a",
     "input_schema": {
       "additionalProperties": false,
