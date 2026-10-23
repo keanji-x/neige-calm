@@ -216,24 +216,177 @@ if grep -Fq 'migration replay gate (#679 PR0-D)' "$ci_file"; then
   exit 1
 fi
 
-# Check the single archive producer invocation, including its step boundaries.
+# Execute the producer's real run blocks; do not duplicate its event routing.
 python3 - <<'PYTEST'
+import contextlib
+import importlib.util
+import io
+import json
+import os
 from pathlib import Path
+import re
+import subprocess
+import sys
+import tempfile
+import tomllib
+import unittest
+from unittest.mock import patch
+
+sys.dont_write_bytecode = True
+ROOT = Path.cwd()
 workflow = Path('.github/workflows/ci.yml').read_text()
-call = 'run: env -u NEIGE_CODEX_BIN python3 scripts/ci/check-nextest-overrides.py --archive-file nextest-archive.tar.zst'
-assert workflow.count('scripts/ci/check-nextest-overrides.py') == 1
 producer = workflow.split('  rust-build:\n', 1)[1].split('\n  rust-shards:', 1)[0]
-assert producer.count(call) == 1
-build = producer.index('cargo nextest archive --workspace --locked --features calm-server/codex-e2e --profile ci --archive-file nextest-archive.tar.zst')
-check = producer.index('      - name: check nextest override matches\n        ' + call)
-upload = producer.index('      - name: upload nextest archive')
-assert build < check < upload
-step = producer[check:upload]
-assert step.count('      - name:') == 1
-assert 'if:' not in step and 'continue-on-error:' not in step
-assert 'matrix:' not in producer
-for path in ('scripts/run-rust-nextest.sh', 'scripts/run-ci-rust-nextest.sh'):
-    assert 'check-nextest-overrides' not in Path(path).read_text(), path
+steps = re.split(r'^      - name: ', producer, flags=re.M)[1:]
+selected = [s for s in steps if s.startswith(('cargo nextest ', 'build nextest binary inventory', 'check nextest override matches'))]
+spec = importlib.util.spec_from_file_location('guard', ROOT / 'scripts/ci/check-nextest-overrides.py')
+guard = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(guard)
+source = ['--workspace', '--locked', '--features', 'calm-server/codex-e2e']
+archive = ['--archive-file', 'nextest-archive.tar.zst']
+protocol = json.dumps({'rust-suites': {'sample': {
+    'package-name': 'sample', 'binary-id': 'sample', 'status': 'listed',
+    'testcases': {'example': {'ignored': False, 'filter-match': {'status': 'matches'}}}}}})
+
+
+class ProducerTests(unittest.TestCase):
+    def execute(self, event, *, fail='', zero=False):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / '.config').mkdir()
+            (root / '.config/nextest.toml').write_text(
+                '[profile.ci]\n' if zero else
+                '[[profile.renamed.overrides]]\nfilter = "all()"\n')
+            log = root / 'calls'
+            # All production shell commands are observed with exact argv. The
+            # python3 stub delegates to the real guard main, including zero rows.
+            stub = f'''#!{sys.executable}
+import importlib.util, json, os, pathlib, sys
+sys.dont_write_bytecode = True
+name = pathlib.Path(sys.argv[0]).name
+with open(os.environ['CALLS'], 'a') as out:
+    out.write(json.dumps([name, *sys.argv[1:]]) + '\\n')
+if os.environ['FAIL'] == name:
+    sys.exit(42)
+if name == 'python3':
+    assert 'NEIGE_CODEX_BIN' not in os.environ
+    spec = importlib.util.spec_from_file_location('guard', {str(spec.origin)!r})
+    guard = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(guard)
+    guard.ROOT = pathlib.Path({tmp!r})
+    sys.argv = sys.argv[1:]
+    sys.exit(guard.main())
+if name == 'cargo':
+    print({protocol!r})
+'''
+            for name in ('cargo', 'python3', 'ls'):
+                path = root / name
+                path.write_text(stub)
+                path.chmod(0o755)
+            env = dict(os.environ, PATH=f'{tmp}:' + os.environ['PATH'],
+                       CALLS=str(log), FAIL=fail, GITHUB_EVENT_NAME=event,
+                       NEIGE_CODEX_BIN='/must-not-reach-guard')
+            rc = 0
+            for step in selected:
+                condition = re.search(r'^        if: (.+)$', step, re.M)
+                if condition:
+                    match = re.fullmatch(r"github.event_name == '(pull_request|push)'", condition[1])
+                    self.assertIsNotNone(match, condition[1])
+                    if event != match[1]:
+                        continue
+                self.assertNotIn('continue-on-error:', step)
+                run = re.search(r'^        run: (.+(?:\n.*)*)', step, re.M)[1]
+                script = (''.join(line[10:] + '\n' for line in run.splitlines()[1:])
+                          if run.startswith('|') else run)
+                result = subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', script],
+                                        cwd=root, env=env, capture_output=True, text=True)
+                rc = result.returncode
+                if rc:
+                    break
+            calls = [json.loads(row) for row in log.read_text().splitlines()] if log.exists() else []
+            return rc, calls
+
+    def test_pr_archive(self):
+        rc, calls = self.execute('pull_request')
+        self.assertEqual(rc, 0)
+        self.assertEqual(calls[:3], [
+            ['cargo', 'nextest', 'archive', *source, '--profile', 'ci', *archive],
+            ['ls', '-l', 'nextest-archive.tar.zst'],
+            ['python3', 'scripts/ci/check-nextest-overrides.py', *archive]])
+        self.assertEqual(len(calls), 4)
+        self.assertEqual(calls[3][:4], ['cargo', 'nextest', 'list', '--archive-file'])
+
+    def test_push_inventory(self):
+        rc, calls = self.execute('push')
+        self.assertEqual(rc, 0)
+        self.assertEqual(calls, [
+            ['cargo', 'nextest', 'list', *source, '--profile', 'ci', '--list-type', 'binaries-only'],
+            ['python3', 'scripts/ci/check-nextest-overrides.py'],
+            ['cargo', 'nextest', 'list', *source, '--profile', 'renamed',
+             '--message-format', 'json', '-E', 'all()']])
+
+    def test_push_zero_overrides(self):
+        rc, calls = self.execute('push', zero=True)
+        self.assertEqual(rc, 0)
+        self.assertEqual(calls, [
+            ['cargo', 'nextest', 'list', *source, '--profile', 'ci', '--list-type', 'binaries-only'],
+            ['python3', 'scripts/ci/check-nextest-overrides.py']])
+
+    def test_build_failure(self):
+        for event in ('pull_request', 'push'):
+            with self.subTest(event=event):
+                rc, calls = self.execute(event, fail='cargo')
+                self.assertEqual(rc, 42)
+                self.assertEqual(len(calls), 1, calls)
+
+    def test_guard_failure(self):
+        for event in ('pull_request', 'push'):
+            with self.subTest(event=event):
+                rc, calls = self.execute(event, fail='python3')
+                self.assertEqual(rc, 42)
+                self.assertEqual(calls[-1][0], 'python3')
+                self.assertEqual(sum(c[0] == 'python3' for c in calls), 1)
+
+    def test_unknown_event(self):
+        rc, calls = self.execute('unknown')
+        self.assertNotEqual(rc, 0)
+        self.assertEqual(calls, [])
+
+    def test_shared_guard_boundaries(self):
+        self.assertEqual(workflow.count('scripts/ci/check-nextest-overrides.py'), 1)
+        check = producer.index('      - name: check nextest override matches\n')
+        upload = producer.index('      - name: upload nextest archive')
+        self.assertLess(check, upload)
+        step = producer[check:upload]
+        self.assertEqual(step.count('      - name:'), 1)
+        self.assertNotIn('if:', step)
+        self.assertNotIn('continue-on-error:', step)
+        self.assertNotIn('matrix:', producer)
+        for path in ('scripts/run-rust-nextest.sh', 'scripts/run-ci-rust-nextest.sh'):
+            self.assertNotIn('check-nextest-overrides', Path(path).read_text())
+
+    def test_guard_main_contract(self):
+        config = tomllib.loads((ROOT / '.config/nextest.toml').read_text())
+        rows = [(profile, row['filter']) for profile, settings in config['profile'].items()
+                for row in settings.get('overrides', [])]
+        for args, source_args in (([], source), (archive, [*archive, '--workspace-remap', str(ROOT)])):
+            with self.subTest(args=args), patch.object(sys, 'argv', ['guard', *args]), \
+                    patch.dict(os.environ, NEIGE_CODEX_BIN='must-be-removed'), \
+                    patch.object(guard.subprocess, 'run', return_value=
+                                 subprocess.CompletedProcess([], 0, protocol)) as query, \
+                    contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(guard.main(), 0)
+                self.assertEqual(query.call_count, len(rows))
+                for call, (profile, expression) in zip(query.call_args_list, rows):
+                    self.assertEqual(call.args[0], ['cargo', 'nextest', 'list', *source_args,
+                                     '--profile', profile, '--message-format', 'json', '-E', expression])
+                    self.assertEqual(call.kwargs['cwd'], ROOT)
+                    self.assertIs(call.kwargs['check'], True)
+                    self.assertIs(call.kwargs['text'], True)
+                    self.assertEqual(call.kwargs['stdout'], subprocess.PIPE)
+                    self.assertNotIn('NEIGE_CODEX_BIN', call.kwargs['env'])
+
+
+unittest.main(verbosity=2)
 PYTEST
 
 echo "local Rust gate safety selftest: passed"

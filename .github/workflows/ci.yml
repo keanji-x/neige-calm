@@ -523,13 +523,27 @@ jobs:
           sudo apt-get install -y libxkbcommon-dev libpixman-1-dev
 
       - name: cargo nextest archive --workspace --locked
+        if: github.event_name == 'pull_request'
         run: |
           set -euo pipefail
           cargo nextest archive --workspace --locked --features calm-server/codex-e2e --profile ci --archive-file nextest-archive.tar.zst
           ls -l nextest-archive.tar.zst
 
+      - name: build nextest binary inventory without archiving
+        if: github.event_name == 'push'
+        run: |
+          set -euo pipefail
+          cargo nextest list --workspace --locked --features calm-server/codex-e2e --profile ci --list-type binaries-only > /dev/null
+
       - name: check nextest override matches
-        run: env -u NEIGE_CODEX_BIN python3 scripts/ci/check-nextest-overrides.py --archive-file nextest-archive.tar.zst
+        run: |
+          set -euo pipefail
+          case "$GITHUB_EVENT_NAME" in
+            pull_request) args=(--archive-file nextest-archive.tar.zst) ;;
+            push) args=() ;;
+            *) echo "unsupported nextest build event: $GITHUB_EVENT_NAME" >&2; exit 1 ;;
+          esac
+          env -u NEIGE_CODEX_BIN python3 scripts/ci/check-nextest-overrides.py "${args[@]}"
 
       - name: upload nextest archive
         if: github.event_name == 'pull_request'
