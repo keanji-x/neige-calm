@@ -139,8 +139,13 @@ async fn canonical_claude_local_write_is_unknown_and_running_without_native_id()
             ),
         )
         .await;
-    assert!(matches!(report.delivery(), InputDelivery::Unknown(_)));
-    assert!(report.outcome().is_ok());
+    assert!(
+        matches!(report.delivery(), InputDelivery::Unknown(_)),
+        "delivery: {:?}; outcome: {:?}",
+        report.delivery(),
+        report.outcome()
+    );
+    assert!(report.outcome().is_ok(), "outcome: {:?}", report.outcome());
     let correlation = report.delivery().correlation();
     assert!(correlation.native_turn_id().is_none());
     assert!(correlation.native_session_id().is_none());
