@@ -1,5 +1,4 @@
 import { expect, it } from 'vitest';
-import { assistantConversationPayloadSchema } from './conversation.js';
 import { plannerSwitchOperation, plannerSwitchResponseSchema, plannerSwitchFailure, PLANNER_SWITCH_COPY, PLANNER_SWITCH_UNCONFIRMED } from './planner-switch.js';
 
 it('declares one CAS operation and requires the receipt revision', () => {
@@ -26,13 +25,4 @@ it('keeps unknown refusal text but never mistakes uncertain outcomes for refusal
     { kind: 'http', status: 500, code: 'planner_changed', message: 'server' }] as const) {
     expect(plannerSwitchFailure(failure)).toEqual({ message: PLANNER_SWITCH_UNCONFIRMED.en, cardId: null, unconfirmed: true });
   }
-});
-
-
-it('requires a declared Assistant provider without borrowing the Planner display default', () => {
-  for (const assistant_provider of [undefined, null, 'future', 1]) {
-    expect(assistantConversationPayloadSchema.safeParse({ planner_provider: 'codex', assistant_provider }).success).toBe(false);
-  }
-  expect(assistantConversationPayloadSchema.parse({ assistant_provider: 'claude', side_source_card_id: 'parent' }))
-    .toEqual({ assistant_provider: 'claude', side_source_card_id: 'parent' });
 });

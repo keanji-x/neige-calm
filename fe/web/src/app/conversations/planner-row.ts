@@ -1,5 +1,5 @@
-import { assistantConversationPayloadSchema, PLANNER_CONVERSATION_KIND, type Conversation } from '../../../../core/domain/conversation.ts';
-import { isAssistantHarnessPayload, isPlannerHarnessPayload } from '../../systems/cards/public.ts';
+import { PLANNER_CONVERSATION_KIND, type Conversation } from '../../../../core/domain/conversation.ts';
+import { plannerCardIn } from '../../systems/cards/public.ts';
 import { plannerProviderOf, type TrackDetailWire } from '../../../../core/domain/track.ts';
 
 /** One projection shared by the open conversation and workspace history. */
@@ -14,33 +14,13 @@ export function plannerConversationRow(trackId: string, trackTitle: string,
   };
 }
 
-/** Detail supplies the complete role pair in one snapshot; the list augments rows and metadata.
- * In particular, a list from either side of a role swap cannot remove either card.
+/** Assistants belong to the server list; detail supplies only the current Planner.
+ * A stale list row for that card is replaced, so query arrival order cannot duplicate roles.
  */
 export function trackConversationRows(trackId: string, trackTitle: string,
   cards: TrackDetailWire['cards'], listed: readonly Conversation[]): readonly Conversation[] {
-  const metadata = new Map(listed.map(row => [row.id, row]));
   const rows = new Map<string, Conversation>(listed.filter(row => row.trackId === trackId).map(row => [row.id, { ...row, trackTitle }]));
-  for (const card of cards) {
-    if (card.kind !== 'codex') continue;
-    if (isAssistantHarnessPayload(card.payload)) {
-      const payload = assistantConversationPayloadSchema.parse(card.payload);
-      // Session/archive metadata comes from the list; identity, title and provider belong to the card.
-      rows.set(card.id, {
-        state: card.runtime?.status ?? null,
-        updatedAt: card.runtime?.updated_at_ms ?? card.updated_at,
-        lastTurnCompletedAt: card.runtime?.last_turn_completed_ms ?? null,
-        ...metadata.get(card.id),
-        id: card.id, trackId, trackTitle, title: card.title, kind: 'track-assistant',
-        provider: payload.assistant_provider,
-        sourceCardId: payload.side_source_card_id ?? undefined,
-      });
-    }
-    // Use the same owner predicate as the Planner entry, not every non-Assistant card.
-    else if (isPlannerHarnessPayload(card.payload)) {
-      const planner = plannerConversationRow(trackId, trackTitle, card);
-      if (planner !== null) rows.set(card.id, planner);
-    }
-  }
+  const planner = plannerConversationRow(trackId, trackTitle, plannerCardIn(cards));
+  if (planner !== null) rows.set(planner.id, planner);
   return [...rows.values()].toSorted((a, b) => Number(b.kind === PLANNER_CONVERSATION_KIND) - Number(a.kind === PLANNER_CONVERSATION_KIND));
 }

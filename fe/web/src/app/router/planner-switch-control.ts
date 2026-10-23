@@ -6,10 +6,10 @@ import type { TrackDetailWire } from '../../../../core/domain/track.ts';
 import { NotSentError, writeFailureOf } from '../../../../core/domain/failure-class.ts';
 import { plannerSwitchFailure, PLANNER_SWITCH_UNCONFIRMED } from '../../../../core/domain/planner-switch.ts';
 import { invalidationPlanFor } from '../../../../core/events/invalidation-plan.ts';
-import { isAssistantHarnessPayload, plannerCardIn } from '../../systems/cards/public.ts';
+import { plannerCardIn } from '../../systems/cards/public.ts';
 import { useCommittedCallback } from '../../ui/state/committed-callback.ts';
 import { usePlannerSwitchMutation } from '../providers/planner-switch-mutation.ts';
-import { trackDetailQueryOptions } from '../providers/queries.ts';
+import { trackConversationsQueryOptions, trackDetailQueryOptions } from '../providers/queries.ts';
 import { cancelThenInvalidate } from '../events/query-refresh.ts';
 import type { PlannerConversationScope } from '../conversations/contracts.ts';
 
@@ -36,7 +36,10 @@ export function usePlannerSwitchControl(transport: ApiTransportPort, unauthorize
         }).invalidate);
         await Promise.all([...new Map(keys.map(key => [JSON.stringify(key), key])).values()]
           .map(key => cancelThenInvalidate(client, key)));
-        return client.fetchQuery({ ...options, retry: false }).catch(() => null);
+        return Promise.all([
+          client.fetchQuery({ ...options, retry: false }).catch(() => null),
+          client.fetchQuery({ ...trackConversationsQueryOptions(transport, scope.id, unauthorized), retry: false }).catch(() => null),
+        ]);
       };
       let receipt;
       try {
@@ -52,10 +55,11 @@ export function usePlannerSwitchControl(transport: ApiTransportPort, unauthorize
         const role = failure.cardId === planner.id ? 'Original Planner' : failure.cardId === scope.cardId ? 'Target Assistant' : null;
         throw new Error(`${failure.message}${role === null ? '' : ` (${role}: ${card?.title ?? failure.cardId})`}`);
       }
-      const confirmed = await refresh();
+      const [confirmed, assistants] = await refresh();
       if (confirmed === null || receipt.track_id !== scope.id || receipt.planner_card_id !== scope.cardId || receipt.demoted_card_id !== planner.id
         || confirmed.planner_revision < receipt.planner_revision || plannerCardIn(confirmed.cards)?.id !== scope.cardId
-        || !confirmed.cards.some(card => card.id === planner.id && isAssistantHarnessPayload(card.payload))) {
+        || assistants === null || !assistants.some(row => row.id === planner.id && row.trackId === scope.id && row.kind === 'track-assistant')
+        || assistants.some(row => row.id === scope.cardId)) {
         throw new Error(PLANNER_SWITCH_UNCONFIRMED.en);
       }
       return true;

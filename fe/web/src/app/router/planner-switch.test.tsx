@@ -130,39 +130,6 @@ it('reports a definitely unsent switch without a POST', async () => {
   } finally { onlineManager.setOnline(true); }
 });
 
-it.each(['detail-first', 'list-first'])('keeps both cards and selected scope when %s arrives and the other query fails', async order => {
-  const fixture = renderPlannerSwitchFixture();
-  const input = await open(); await type(input, 'Keep my draft');
-  const detailKey = queryKeys.trackDetail('daily'); const listKey = queryKeys.trackConversations('daily');
-  const old = fixture.client.getQueryData<Record<string, unknown>>(detailKey)!;
-  fixture.commit();
-  const detail = { ...old, cards: fixture.cards(), planner_revision: 8 };
-  await act(async () => {
-    if (order === 'detail-first') fixture.client.setQueryData(detailKey, detail);
-    else fixture.client.setQueryData(listKey, fixture.list());
-    await new Promise(resolve => setTimeout(resolve, 0));
-  });
-  expect(screen.getByRole('combobox', { name: 'Message' }).textContent).toBe('Keep my draft');
-  const assertPair = () => {
-    expect(screen.getAllByRole('button', { name: /Conversation Other conversation/ })).toHaveLength(1);
-    expect(screen.getAllByRole('button', { name: /Conversation Daily Planner conversation/ })).toHaveLength(1);
-    expect(screen.getByRole('combobox', { name: 'Message' }).textContent).toBe('Keep my draft');
-  };
-  assertPair();
-  await act(async () => {
-    fixture.client.getQueryCache().find({ queryKey: order === 'detail-first' ? listKey : detailKey })!
-      .setState({ status: 'error', error: new Error('other query failed') });
-    await new Promise(resolve => setTimeout(resolve, 0));
-  });
-  assertPair();
-  act(() => {
-    fixture.client.setQueryData(detailKey, detail); fixture.client.setQueryData(listKey, fixture.list());
-  });
-  expect(screen.getAllByRole('button', { name: /Conversation Other conversation/ })).toHaveLength(1);
-  expect(screen.getAllByRole('button', { name: /Conversation Daily Planner conversation/ })).toHaveLength(1);
-});
-
-
 it('uses the selected scope rather than the page Track, reads an uncached pair once, and never retries CAS', async () => {
   const fixture = renderPlannerSwitchFixture();
   await screen.findByRole('button', { name: /Conversation Other conversation/ });
@@ -220,7 +187,7 @@ it('accepts events before the mutation response without resubmission', async () 
   expect(screen.queryByRole('alert')).toBeNull(); expect(writes(fixture)).toHaveLength(1);
 });
 
-it.each(['detail-first', 'list-first'])('history projects both cards throughout %s and another read failure', async order => {
+it.each(['detail-first', 'list-first'])('history deduplicates roles through %s and another read failure', async order => {
   const fixture = renderPlannerSwitchFixture(); await screen.findByRole('button', { name: /Conversation Other conversation/ });
   const detailKey = queryKeys.trackDetail('daily'); const listKey = queryKeys.trackConversations('daily');
   const detail = fixture.client.getQueryData<TrackDetailWire>(detailKey)!;
@@ -228,8 +195,8 @@ it.each(['detail-first', 'list-first'])('history projects both cards throughout 
   let current: readonly Conversation[] = [];
   const hook = renderHook(() => useMobileHistoryData({ send: () => Promise.reject(new Error('unexpected read')) },
     createUnauthorizedChannel({ enqueue: task => task() }), [{ id: 'daily', areaId: 'daily-area', title: '2026-10-04' }], current, false), { wrapper });
-  const assertPair = (plannerId: string) => {
-    expect(hook.result.current.conversations.map(row => row.id).sort()).toEqual(['daily-planner', 'second-planner']);
+  const assertPair = (plannerId: string, ids = ['daily-planner', 'second-planner']) => {
+    expect(hook.result.current.conversations.map(row => row.id).sort()).toEqual(ids);
     expect(hook.result.current.conversations.filter(row => row.kind === PLANNER_CONVERSATION_KIND).map(row => row.id)).toEqual([plannerId]);
     expect(hook.result.current.conversations.every(row => row.trackTitle === '2026-10-04')).toBe(true);
   };
@@ -239,13 +206,13 @@ it.each(['detail-first', 'list-first'])('history projects both cards throughout 
     else fixture.client.setQueryData(listKey, fixture.list());
     await new Promise(resolve => setTimeout(resolve, 0));
   });
-  assertPair(order === 'detail-first' ? 'second-planner' : 'daily-planner');
+  assertPair(order === 'detail-first' ? 'second-planner' : 'daily-planner', [order === 'detail-first' ? 'second-planner' : 'daily-planner']);
   await act(async () => {
     fixture.client.getQueryCache().find({ queryKey: order === 'detail-first' ? listKey : detailKey })!
       .setState({ status: 'error', error: new Error('other query failed') });
     await new Promise(resolve => setTimeout(resolve, 0));
   });
-  assertPair(order === 'detail-first' ? 'second-planner' : 'daily-planner');
+  assertPair(order === 'detail-first' ? 'second-planner' : 'daily-planner', [order === 'detail-first' ? 'second-planner' : 'daily-planner']);
   await act(async () => {
     fixture.client.setQueryData(detailKey, { ...detail, cards: fixture.cards(), planner_revision: 8 });
     fixture.client.setQueryData(listKey, fixture.list());
@@ -258,8 +225,8 @@ it.each(['detail-first', 'list-first'])('history projects both cards throughout 
 });
 
 
-it.each(['pending', 'failed'] as const)('keeps detail-only Assistant provider through model, capabilities and side with list %s', async listRead => {
-  const fixture = renderAssistantProviderFixture({ existingProvider: 'claude', listRead, runAttachmentsSupported: true, answers: [{
+it('uses the listed Assistant provider through model, capabilities and side', async () => {
+  const fixture = renderAssistantProviderFixture({ existingProvider: 'claude', runAttachmentsSupported: true, answers: [{
     availability: { provider: 'claude', status: 'ready', reason: null, checked_at_ms: 1, authentication_notice: null },
     accepts_unavailable_blank_track: true, capabilities: { managed_conversation: true, steer: false, images: false,
       manual_compact: false, history_replacement: false, requires_ready_availability: true },
@@ -288,7 +255,7 @@ it('keeps Planner first when unchanged rows have equal update times', async () =
     ? { ...card, payload: { ...card.payload as object, side_source_card_id: 'parent' } } : card);
   const rows = trackConversationRows('daily', 'Track', cards, fixture.list().map(row => ({ ...row, title: 'Stale title', sourceCardId: 'stale-parent', archivedAt: 123 })));
   expect(rows.map(row => row.id)).toEqual(['daily-planner', 'second-planner']);
-  expect(rows[1]).toMatchObject({ title: 'Other conversation', sourceCardId: 'parent', archivedAt: 123, state: 'idle' });
+  expect(rows[1]).toMatchObject({ title: 'Stale title', sourceCardId: 'stale-parent', archivedAt: 123, state: 'idle' });
 });
 
 it('history supplies display titles without detail and preserves the current fallback', () => {
@@ -320,4 +287,64 @@ it.each(['mounted', 'reopened'] as const)('full composer preserves edits after p
   act(() => { finish(); });
   await waitFor(() => expect(fixture.client.getQueryData<TrackDetailWire>(queryKeys.trackDetail('daily'))?.planner_revision).toBe(8));
   expect(input.textContent).toBe('New full draft');
+});
+
+it.each([undefined, null, 'future', 'codex'])('uses only listed Assistant metadata with detail provider %s', assistant_provider => {
+  const cards = [{ id: 'a', track_id: 't', kind: 'codex', title: 'Detail title', sort: 0,
+    payload: { harness_profile: 'assistant', assistant_provider }, deletable: false, created_at: 1, updated_at: 2 }];
+  const listed: Conversation = { id: 'a', trackId: 't', title: 'Listed title', provider: 'claude',
+    sourceCardId: 'parent', kind: 'track-assistant', state: null, updatedAt: 3 };
+  expect(trackConversationRows('t', 'Track', cards, [listed])).toEqual([{ ...listed, trackTitle: 'Track' }]);
+  expect(trackConversationRows('t', 'Track', cards, [])).toEqual([]);
+});
+
+it.each([
+  { order: 'detail-first', list: 'valid' }, { order: 'list-first', list: 'valid' },
+  { order: 'detail-first', list: 'missing' }, { order: 'detail-first', list: 'stale' },
+  { order: 'detail-first', list: 'failed' },
+])('confirms success only after both fresh reads ($order, $list)', async ({ order, list }) => {
+  const fixture = renderPlannerSwitchFixture();
+  await screen.findByRole('button', { name: /Conversation Other conversation/ });
+  const snapshot = fixture.client.getQueryData<TrackDetailWire>(queryKeys.trackDetail('daily'))!;
+  cleanup(); document.getElementById('root')?.remove();
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  client.setQueryData(queryKeys.trackDetail('daily'), snapshot);
+  fixture.commit();
+  const resolvers = new Map<string, () => void>();
+  const transport: ApiTransportPort = { send: request => {
+    if (request.method === 'POST') return Promise.resolve(fixture.receipt());
+    return new Promise(resolve => resolvers.set(request.path.endsWith('/conversations') ? 'list-first' : 'detail-first', () => resolve({
+      status: request.path.endsWith('/conversations') && list === 'failed' ? 503 : 200, statusText: 'OK',
+      body: request.path.endsWith('/conversations')
+        ? list === 'missing' ? [] : list === 'stale' ? [...fixture.list(), { ...fixture.list()[0], id: 'second-planner' }] : fixture.list()
+        : { ...snapshot, cards: fixture.cards(), planner_revision: 8 },
+    })));
+  } };
+  const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={client}>{children}</QueryClientProvider>;
+  const hook = renderHook(() => usePlannerSwitchControl(transport, createUnauthorizedChannel({ enqueue: task => task() }), {
+    id: 'daily', cardId: 'second-planner', provider: 'codex', kind: 'track-assistant', cardTitle: null, updatedAt: 2,
+  }), { wrapper });
+  let settled = false;
+  let outcome!: Promise<boolean>;
+  act(() => { outcome = hook.result.current().finally(() => { settled = true; }); });
+  await waitFor(() => expect(resolvers.size).toBe(2));
+  await act(async () => { resolvers.get(order)!(); await new Promise(resolve => setTimeout(resolve, 0)); });
+  expect(settled).toBe(false);
+  await act(async () => { resolvers.get(order === 'detail-first' ? 'list-first' : 'detail-first')!();
+    if (list === 'valid') expect(await outcome).toBe(true);
+    else await expect(outcome).rejects.toThrow('Planner switching is unconfirmed.'); });
+});
+
+it.each(['detail-first', 'list-first'])('projects one role per card in %s order', order => {
+  const planner = (id: string) => ({ id, track_id: 't', kind: 'codex', title: id, sort: 0,
+    payload: { planner_harness: true }, deletable: false, created_at: 1, updated_at: 2 });
+  const assistant = (id: string): Conversation => ({ id, trackId: 't', title: id, provider: 'claude',
+    kind: 'track-assistant', state: null, updatedAt: 2 });
+  const rows = trackConversationRows('t', 'Track', [planner(order === 'detail-first' ? 'new' : 'old')],
+    [assistant(order === 'detail-first' ? 'new' : 'old')]);
+  expect(rows.map(row => [row.id, row.kind])).toEqual([[order === 'detail-first' ? 'new' : 'old', PLANNER_CONVERSATION_KIND]]);
+  const final = trackConversationRows('t', 'Track', [planner('new')], [assistant('old')]);
+  expect(final.map(row => [row.id, row.kind, row.provider])).toEqual([
+    ['new', PLANNER_CONVERSATION_KIND, 'codex'], ['old', 'track-assistant', 'claude'],
+  ]);
 });
