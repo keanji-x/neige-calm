@@ -21,7 +21,12 @@ async fn canonical_claude_recovery_h2_actions_restart_held_keep_and_retry() {
     retry_sequence(false, true).await;
 }
 
-async fn action(fx: &Fixture, app: &axum::Router, action: &str, key: &str) -> serde_json::Value {
+pub(super) async fn action(
+    fx: &Fixture,
+    app: &axum::Router,
+    action: &str,
+    key: &str,
+) -> serde_json::Value {
     let checkpoint = fx.checkpoint().await;
     let attempt = checkpoint.attempts.last().unwrap();
     let response = app
@@ -114,17 +119,33 @@ async fn retry_sequence(uncertain: bool, recover: bool) {
     let result = action(&fx, &app, "retry", "retry-original").await;
     assert_eq!(result["waiting_for_settlement"], true);
     if recover {
-        // A fresh session has no retained joined driver: resolution is durable,
-        // but registry absence must never manufacture settlement.
-        tokio::time::sleep(Duration::from_millis(2200)).await;
+        tokio::time::timeout(Duration::from_secs(25), async {
+            while fx.checkpoint().await.attempts.len() != 2 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        fx.phase("turn_completed").await;
         let after = fx.checkpoint().await;
-        assert_eq!(after.attempts.len(), 1);
-        assert!(matches!(
-            after.pending.as_slice(),
-            [PendingInput::ExplicitSuccessor { .. }]
-        ));
-        assert_eq!(fx.session.user_line_writes_for_test(), 0);
-        assert!(!fx.dir.path().join("stdin").exists());
+        assert!(after.active.is_none());
+        assert!(after.pending.is_empty());
+        assert_eq!(fx.session.user_line_writes_for_test(), 1);
+        let lines = std::fs::read_to_string(fx.dir.path().join("stdin")).unwrap();
+        assert_eq!(lines.lines().count(), 1);
+        assert!(lines.contains("canonical human"));
+        let argv = std::fs::read_to_string(fx.dir.path().join("argv")).unwrap();
+        assert!(
+            argv.lines()
+                .collect::<Vec<_>>()
+                .windows(2)
+                .any(|args| args == ["--session-id", fx.owner.thread.as_str()])
+        );
+        for _ in 0..10 {
+            harness.refresh_canonical_input().await.unwrap();
+            assert_eq!(fx.checkpoint().await.attempts, after.attempts);
+            tokio::task::yield_now().await;
+        }
         harness.shutdown().await.unwrap();
         state.dispatcher.retire();
         recovered_keep().await;
@@ -191,6 +212,13 @@ async fn retry_sequence(uncertain: bool, recover: bool) {
         .unwrap();
         fx.phase("turn_completed").await;
     }
+    tokio::time::timeout(Duration::from_secs(25), async {
+        while fx.checkpoint().await.active.is_some() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
     let after = fx.checkpoint().await;
     assert_eq!(after.attempts.len(), 2);
     let predecessor = &after.attempts[0];
@@ -209,7 +237,7 @@ async fn retry_sequence(uncertain: bool, recover: bool) {
         "frozen invocation survives retry"
     );
     assert!(matches!(successor.delivery, InputDeliveryFact::Unknown));
-    assert_eq!(after.active.is_some(), uncertain);
+    assert!(after.active.is_none());
     tokio::time::sleep(Duration::from_millis(2200)).await;
     assert_eq!(fx.checkpoint().await.attempts, after.attempts);
     let lines = std::fs::read_to_string(fx.dir.path().join("stdin")).unwrap();
@@ -253,8 +281,15 @@ async fn recovered_keep() {
     let (state, app) = settled::application(&fx).await;
     let harness = fx.start_loop_in(state.harness.clone()).await;
     action(&fx, &app, "keep", "keep-recovered").await;
-    tokio::time::sleep(Duration::from_millis(2200)).await;
+    tokio::time::timeout(Duration::from_secs(25), async {
+        while fx.checkpoint().await.active.is_some() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
     let after = fx.checkpoint().await;
+    assert!(after.active.is_none());
     assert!(after.pending.is_empty());
     assert!(matches!(
         after.receipts.as_slice(),

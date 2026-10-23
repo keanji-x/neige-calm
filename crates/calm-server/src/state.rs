@@ -808,15 +808,15 @@ impl AppState {
             .and_then(std::path::Path::parent)
             .expect("instructions dir sits at <data_dir>/claude-planner/tmp")
             .to_path_buf();
-        self.route.claude_planner = Arc::new(
-            ClaudePlannerHost::new(
-                Some(config),
-                &data_dir,
-                current.mcp_shim.clone(),
-                current.mcp_socket.clone(),
-            )
-            .expect("claude planner host"),
-        );
+        let mut host = ClaudePlannerHost::new(
+            Some(config),
+            &data_dir,
+            current.mcp_shim.clone(),
+            current.mcp_socket.clone(),
+        )
+        .expect("claude planner host");
+        host.pre_c4 = current.pre_c4.clone();
+        self.route.claude_planner = Arc::new(host);
         self.route.claude_planner.completion.bind(self.raw.clone());
         self.route
             .claude_planner
@@ -1394,7 +1394,7 @@ impl AppState {
         .with_preview(preview)
         .with_gate_run_wait(GateRunWait::for_idle(cfg.worker_liveness().idle));
         // #1791 §5.1 item 1: every Claude Planner credential is revoked and every Claude Planner
-        // marker swept BEFORE the listener opens, so no surviving process or old token is served.
+        // marker swept BEFORE the listener opens; unproved pre-C4 absence keeps recovery Held.
         let claude_planner = Arc::new(ClaudePlannerHost::new(
             cfg.claude_planner_config
                 .as_deref()

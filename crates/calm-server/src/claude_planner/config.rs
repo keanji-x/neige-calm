@@ -2,8 +2,9 @@
 //! `--version` check that keeps the pinned binary the one every release-gate result was recorded
 //! against.
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use serde::Deserialize;
@@ -108,10 +109,14 @@ pub enum VersionProblem {
 /// The flag whose absence keeps the Claude Planner unavailable (design #1791 §5.3).
 pub const CONFIG_FLAG: &str = "--claude-planner-config";
 
-/// What every Claude Planner of this server shares: the typed config (absent without
-/// [`CONFIG_FLAG`]), the marker instance and the instructions directory derived from `data_dir`,
-/// the MCP shim and socket, and the calm tools a Planner card sees. The marker instance exists
-/// without the config, so the boot sweep and every retirement `stop` work either way.
+/// Sessions whose pre-C4 process absence was not proved by this boot's sweep.
+#[derive(Clone, Debug)]
+pub(crate) struct PreC4Sweep {
+    pub(super) unproven: BTreeSet<String>,
+}
+
+/// What every Claude Planner of this server shares: configuration, marker instance,
+/// boot sweep proof, instructions directory, MCP transport and tools.
 #[derive(Debug)]
 pub struct ClaudePlannerHost {
     /// Shared Engine binding for registered Planner executions.
@@ -120,6 +125,7 @@ pub struct ClaudePlannerHost {
     pub provider_execution: crate::provider_execution::ProviderExecution,
     config: Option<ClaudePlannerConfig>,
     pub instance: MarkerInstance,
+    pub(crate) pre_c4: OnceLock<PreC4Sweep>,
     pub instructions_dir: PathBuf,
     pub mcp_shim: PathBuf,
     pub mcp_socket: PathBuf,
@@ -153,6 +159,7 @@ impl ClaudePlannerHost {
                 data_dir,
                 crate::claude_planner::stop::MARKER_KEY,
             )?,
+            pre_c4: OnceLock::new(),
             instructions_dir,
             mcp_shim,
             mcp_socket,
@@ -176,6 +183,13 @@ impl ClaudePlannerHost {
         )?;
         host._scratch = Some(scratch);
         Ok(host)
+    }
+
+    /// Boot proved no pre-C4 process can still own this session. Unset is unproven.
+    pub(super) fn pre_boot_absent(&self, session: &str) -> bool {
+        self.pre_c4
+            .get()
+            .is_some_and(|sweep| !sweep.unproven.contains(session))
     }
 
     /// The config, or the refusal that names [`CONFIG_FLAG`].

@@ -384,7 +384,11 @@ async fn canonical_claude_creation_first_send_reuses_checkpoint_and_h2_hold() {
         drop(state);
         let (state, app, cookie) = fixture.application().await;
         let (_, _, recovered) = fixture.carrier(track).await;
-        assert_eq!(recovered.canonical_inputs, held.canonical_inputs);
+        assert_eq!(
+            recovered.canonical_inputs.attempts,
+            held.canonical_inputs.attempts
+        );
+        assert!(recovered.canonical_inputs.pending.is_empty());
         post(
             &app,
             &cookie,
@@ -408,25 +412,65 @@ async fn canonical_claude_creation_first_send_reuses_checkpoint_and_h2_hold() {
             json!({"carrier_id":worker,"submission_id":attempt.attempt.submission_id,"attempt_id":attempt.attempt.attempt_id,"revision":attempt.revision.to_string()})).await;
         assert_eq!(result["waiting_for_settlement"], true);
         if action == "retry" {
-            // Reboot loses the predecessor's joined-driver evidence. H2
-            // records the explicit successor but cannot fabricate settlement
-            // or send beside an execution whose end is unconfirmed.
-            tokio::time::sleep(Duration::from_millis(2200)).await;
-            let (_, _, after) = fixture.carrier(track).await;
-            assert_eq!(after.canonical_inputs.attempts.len(), 1);
-            assert!(matches!(
-                after.canonical_inputs.pending.as_slice(),
-                [calm_types::conversation::PendingInput::ExplicitSuccessor { .. }]
-            ));
+            let after = tokio::time::timeout(Duration::from_secs(30), async {
+                loop {
+                    let (_, _, frame) = fixture.carrier(track).await;
+                    if frame.canonical_inputs.attempts.len() == 2
+                        && frame.canonical_inputs.active.is_none()
+                    {
+                        break frame;
+                    }
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+            assert!(after.canonical_inputs.pending.is_empty());
             assert_eq!(
                 std::fs::read_to_string(fake.join("spawns"))
                     .unwrap()
                     .lines()
                     .count(),
-                1
+                2
             );
+            assert_eq!(
+                std::fs::read_to_string(fake.join("stdin"))
+                    .unwrap()
+                    .lines()
+                    .count(),
+                2
+            );
+            let argv = std::fs::read_to_string(fake.join("argv")).unwrap();
+            assert!(argv.lines().collect::<Vec<_>>().windows(2).any(|args| args
+                == ["--resume", attempt.correlation.thread_id.as_str()]
+                || args == ["--session-id", attempt.correlation.thread_id.as_str()]));
+            for _ in 0..10 {
+                state
+                    .harness
+                    .get(&worker)
+                    .unwrap()
+                    .refresh_canonical_input()
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    fixture.carrier(track).await.2.canonical_inputs,
+                    after.canonical_inputs
+                );
+                tokio::task::yield_now().await;
+            }
         } else {
-            let (_, _, after) = fixture.carrier(track).await;
+            let after = tokio::time::timeout(Duration::from_secs(30), async {
+                loop {
+                    let (_, _, frame) = fixture.carrier(track).await;
+                    if frame.canonical_inputs.active.is_none() {
+                        break frame;
+                    }
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+            assert!(after.canonical_inputs.active.is_none());
             assert_eq!(after.canonical_inputs.receipts.len(), 1);
             assert_eq!(
                 std::fs::read_to_string(fake.join("spawns"))

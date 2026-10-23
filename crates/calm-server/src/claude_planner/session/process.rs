@@ -1,8 +1,8 @@
-//! Start/abort cleanup keeps settlement in the session's one driver slot.
+//! Start/abort cleanup retires retained driver handles and registered owner claims.
 use super::*;
 
-/// One exit for every process-free preparation step. Only confirmed cleanup
-/// allows the preceding driver's evidence to survive in its existing slot.
+/// One exit for process-free preparation. Unconfirmed file cleanup discards the
+/// preceding handle; process settlement is read from the provider claim and boot proof.
 pub(super) fn finish_preparation<T, E>(
     slot: &mut Option<execution_end::DriverSlot>,
     result: std::result::Result<T, spawn::PreparationFailure<E>>,

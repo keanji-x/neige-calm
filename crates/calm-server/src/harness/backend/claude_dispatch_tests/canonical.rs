@@ -26,14 +26,14 @@ pub(in crate::harness) struct Fixture {
 }
 impl Fixture {
     pub(in crate::harness) async fn new(scenario: &str) -> Self {
-        Self::with_storage(scenario, FixtureStorage::Memory).await
+        Self::with_storage(scenario, FixtureStorage::Memory, true).await
     }
     async fn persistent(scenario: &str) -> Self {
-        Self::with_storage(scenario, FixtureStorage::Persistent).await
+        Self::with_storage(scenario, FixtureStorage::Persistent, true).await
     }
-    async fn with_storage(scenario: &str, storage: FixtureStorage) -> Self {
+    async fn with_storage(scenario: &str, storage: FixtureStorage, boot: bool) -> Self {
         let (backend, session, dir, owner, _held) =
-            fixture_full_with_storage(scenario, storage).await;
+            fixture_full_with_storage(scenario, storage, boot).await;
         let auth = AuthState::new(AuthConfig {
             username: Some("Owner".into()),
             password: Some("fixture-password".into()),
@@ -471,18 +471,27 @@ async fn canonical_claude_flush_failure_holds_one_attempt_without_second_spawn()
     })
     .await
     .unwrap();
-    assert_eq!(fx.frame().await["phase"], "issuing_turn");
+    tokio::time::timeout(Duration::from_secs(15), async {
+        while fx.checkpoint().await.active.is_some() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
     let cp = fx.checkpoint().await;
     assert_eq!(cp.attempts.len(), 1);
     assert!(cp.pending.is_empty());
-    assert!(cp.active.is_some());
+    assert!(cp.active.is_none());
     assert!(fx.complete().await.is_none());
-    tokio::time::sleep(Duration::from_millis(2200)).await;
-    assert_eq!(
-        fx.checkpoint().await,
-        cp,
-        "scheduler ticks past pacing cannot release Unknown"
-    );
+    for _ in 0..10 {
+        harness.refresh_canonical_input().await.unwrap();
+        assert_eq!(
+            fx.checkpoint().await,
+            cp,
+            "END does not accept or retry Unknown"
+        );
+        tokio::task::yield_now().await;
+    }
     assert!(fx.dispatch().await.is_err());
     assert_eq!(fx.session.user_line_writes_for_test(), 1);
     harness.shutdown().await.unwrap();
@@ -623,7 +632,7 @@ async fn canonical_claude_failed_driver_cleanup_never_qualifies_end() {
 }
 
 #[tokio::test]
-async fn canonical_claude_resumed_session_keeps_local_identity_and_rejects_prior_end() {
+async fn canonical_claude_resumed_session_keeps_local_identity_and_completes_current_end() {
     let mut fx = Fixture::new("exit").await;
     fx.dispatch().await.unwrap();
     let prior = fx.target().await;
@@ -701,13 +710,6 @@ async fn canonical_claude_resumed_session_keeps_local_identity_and_rejects_prior
     .await
     .unwrap();
     assert_ne!(current.scope, prior.scope);
-    assert!(
-        fx.backend
-            .qualify_execution_end(&prior)
-            .await
-            .unwrap()
-            .is_none()
-    );
     fx.wait_end().await;
     fx.session.shutdown().await.unwrap();
 }

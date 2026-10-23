@@ -443,24 +443,10 @@ async fn claude_assistant_restart_human_resolution_waits_for_predecessor_settlem
         fixture.repo = Arc::new(SqlxRepo::open(&fixture.url).await.unwrap());
         let (state, app, cookie) = fixture.application().await;
         assert_eq!(
-            carrier(&fixture, card).await.1.canonical_inputs,
-            held.canonical_inputs
+            carrier(&fixture, card).await.1.canonical_inputs.attempts,
+            held.canonical_inputs.attempts
         );
-        let run = get(
-            &app,
-            &cookie,
-            &format!("/api/cards/{card}/planner/run?contract=conversation_v1"),
-        )
-        .await;
-        assert!(
-            run["blocked_reason"].as_str().unwrap().contains("held"),
-            "{run}"
-        );
-        let attempt = &run["active_input"]["submissions"][0]["attempt"];
-        assert_eq!(attempt["delivery"], "unknown");
-        assert_eq!(attempt["target"]["thread_id"], thread);
-        assert_eq!(attempt["actions"]["retry"]["kind"], "available", "{run}");
-        assert_eq!(attempt["actions"]["keep"]["kind"], "available");
+        // END may already have cleared active; H2 still resolves the original Unknown attempt.
         assert_eq!(
             post(&app, &cookie, &uri, "held", body).await["initialInput"],
             created["initialInput"]
@@ -470,36 +456,54 @@ async fn claude_assistant_restart_human_resolution_waits_for_predecessor_settlem
         let args = json!({"carrier_id":worker,"submission_id":attempt.attempt.submission_id,
             "attempt_id":attempt.attempt.attempt_id,"revision":attempt.revision.to_string()});
         let action_uri = format!("/api/cards/{card}/conversation/input/{action}");
+        std::fs::write(fixture.root.path().join("fake/scenario"), "exit").unwrap();
         let resolved = post(&app, &cookie, &action_uri, action, args.clone()).await;
         assert_eq!(resolved["waiting_for_settlement"], true);
         assert_eq!(
-            post(&app, &cookie, &action_uri, action, args).await,
+            post(&app, &cookie, &action_uri, action, args.clone()).await,
             resolved
         );
-        // Pin the same no-fabricated-settlement behavior as the Claude Planner
-        // restart regression: without an attached/joined predecessor driver,
-        // Human retry records a successor and waits; it cannot manufacture END
-        // or complete recovery by dispatching beside the predecessor.
-        tokio::time::sleep(Duration::from_millis(2200)).await;
-        let (current, after) = carrier(&fixture, card).await;
+        let after = wait_frame(&fixture, card, |frame| {
+            frame.canonical_inputs.active.is_none()
+                && frame.canonical_inputs.attempts.len() == if action == "retry" { 2 } else { 1 }
+        })
+        .await;
+        let (current, _) = carrier(&fixture, card).await;
         assert_eq!(current, worker);
         assert_eq!(
             after.header.last_thread_id.as_deref(),
             Some(thread.as_str())
         );
-        let mut resolved_attempts = held.canonical_inputs.attempts.clone();
-        // The Human decision advances the attempt CAS once; replay does not.
-        resolved_attempts[0].revision += 1;
-        assert_eq!(after.canonical_inputs.attempts, resolved_attempts);
+        assert!(after.canonical_inputs.active.is_none());
+        assert!(after.canonical_inputs.pending.is_empty());
         assert_eq!(after.canonical_inputs.receipts.len(), 1);
-        assert_eq!(read(&fixture, "spawns").lines().count(), 1);
         if action == "retry" {
-            assert!(matches!(
-                after.canonical_inputs.pending.as_slice(),
-                [calm_types::conversation::PendingInput::ExplicitSuccessor { .. }]
-            ));
+            assert_eq!(read(&fixture, "spawns").lines().count(), 2);
+            assert_eq!(read(&fixture, "stdin").lines().count(), 2);
+            assert!(
+                read(&fixture, "argv")
+                    .lines()
+                    .collect::<Vec<_>>()
+                    .windows(2)
+                    .any(|args| args == ["--resume", thread.as_str()]
+                        || args == ["--session-id", thread.as_str()])
+            );
         } else {
-            assert!(after.canonical_inputs.pending.is_empty());
+            let mut resolved_attempts = held.canonical_inputs.attempts.clone();
+            resolved_attempts[0].revision += 1;
+            assert_eq!(after.canonical_inputs.attempts, resolved_attempts);
+            assert_eq!(read(&fixture, "spawns").lines().count(), 1);
+        }
+        for _ in 0..10 {
+            assert_eq!(
+                post(&app, &cookie, &action_uri, action, args.clone()).await,
+                resolved
+            );
+            assert_eq!(
+                carrier(&fixture, card).await.1.canonical_inputs,
+                after.canonical_inputs
+            );
+            tokio::task::yield_now().await;
         }
         assert_eq!(fixture.counts(card).await.0, 1);
         let row: String = sqlx::query_scalar("SELECT thread_id FROM worker_sessions WHERE id=?1")

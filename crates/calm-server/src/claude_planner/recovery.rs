@@ -47,8 +47,8 @@ pub(crate) async fn record_interrupted_turn(
 }
 
 /// Canonical recovery preserves the original checkpoint, including uncertainty.
-/// A successful exact marker sweep is cleanup evidence only; it neither asserts
-/// acceptance nor synthesizes a terminal outcome. Opening is left to the factory.
+/// Stop and settle the registered provider execution before reopening. This does
+/// not assert input acceptance; opening is left to the factory.
 pub(crate) async fn quiesce_canonical(
     host: &super::config::ClaudePlannerHost,
     worker_session_id: &str,

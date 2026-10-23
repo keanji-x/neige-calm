@@ -1,4 +1,4 @@
-//! The existing session retains one actual driver and its completed result.
+//! Session settlement uses the provider claim and boot proof; retained drivers also route control.
 use super::*;
 
 pub(super) enum Association {
@@ -54,13 +54,6 @@ impl DriverSlot {
         }
     }
 
-    async fn qualified(&mut self) -> Result<bool> {
-        if !self.completion.is_finished() {
-            return Ok(false);
-        }
-        self.finish().await
-    }
-
     async fn finish(&mut self) -> Result<bool> {
         self.completion
             .finish()
@@ -78,9 +71,8 @@ pub(super) async fn join_driver(shared: &Shared) -> Result<()> {
 }
 
 impl ClaudePlannerSession {
-    /// The issuance owner excludes even a start that has not installed its
-    /// driver yet. Only the retained exact driver can certify cleanup; opening
-    /// a session, an absent native id, or a missing slot cannot do so.
+    /// The issuance owner excludes starts not yet installed. A NULL provider claim
+    /// proves registered executions settled; the boot sweep covers pre-C4 processes.
     pub(crate) async fn read_settled(
         &self,
         card: &str,
@@ -117,28 +109,8 @@ impl ClaudePlannerSession {
         {
             return Ok(false);
         }
-        let mut slot = shared.driver.lock().await;
-        let Some(driver) = slot.as_mut() else {
-            return Ok(false);
-        };
-        if Uuid::try_parse(thread).ok() != Some(driver.thread) {
-            return Ok(false);
-        }
-        // Association addresses END/maintenance, not process liveness. Every
-        // exact driver uses the same joined, successfully cleaned-up result.
-        if !driver.qualified().await? || shared.state().active.is_some() {
-            return Ok(false);
-        }
-        let pool = params
-            .repo
-            .sqlite_db()
-            .ok_or(CalmError::ExecutionUnavailable)?;
-        if calm_truth::db::sqlite::provider_execution::load(
-            pool.read_pool(),
-            &params.worker_session_id,
-        )
-        .await?
-        .is_some()
+        if !self.registered_execution_absent().await?
+            || !params.host.pre_boot_absent(&params.worker_session_id)
         {
             return Ok(false);
         }
@@ -212,11 +184,41 @@ impl ClaudePlannerSession {
         if !target.matches_owner(&params.card_id, &params.track_id, &params.worker_session_id) {
             return Ok(false);
         }
-        let mut driver = self.shared.driver.lock().await;
-        match driver.as_mut() {
-            Some(driver) if driver.matches(target) => driver.qualified().await,
-            Some(_) | None => Ok(false),
+        match &target.scope {
+            crate::harness::backend::ExecutionEndScope::LocalProcess { .. } => {}
+            crate::harness::backend::ExecutionEndScope::ReceiptProcess { .. }
+            | crate::harness::backend::ExecutionEndScope::NativeTurn { .. } => return Ok(false),
         }
+        let _issue = self.shared.issue.lock().await;
+        if !self.registered_execution_absent().await? {
+            return Ok(false);
+        }
+        let spawned_here = self
+            .shared
+            .driver
+            .lock()
+            .await
+            .as_ref()
+            .is_some_and(|driver| driver.matches(target));
+        Ok(spawned_here || params.host.pre_boot_absent(&params.worker_session_id))
+    }
+
+    /// Caller holds `issue`: no admitted execution or locally active turn remains.
+    async fn registered_execution_absent(&self) -> Result<bool> {
+        if self.shared.state().active.is_some() {
+            return Ok(false);
+        }
+        let params = &self.shared.params;
+        let pool = params
+            .repo
+            .sqlite_db()
+            .ok_or(CalmError::ExecutionUnavailable)?;
+        Ok(calm_truth::db::sqlite::provider_execution::load(
+            pool.read_pool(),
+            &params.worker_session_id,
+        )
+        .await?
+        .is_none())
     }
 
     pub(crate) async fn interrupt_execution(

@@ -1,5 +1,5 @@
 //! Claude credential revocation and provider-owned Stop/settlement.
-//! Only boot retains the pre-C4 marker sweep for processes from older kernels.
+//! Boot also retains proof of the pre-C4 marker sweep for processes from older kernels.
 
 use super::config::ClaudePlannerHost;
 use super::stop::{SeamPolicy, sweep};
@@ -17,10 +17,10 @@ async fn revoke(
     .await
 }
 
-/// Boot, before the MCP listener starts: revoke every Claude Planner credential (an `Err` fails
-/// the boot: the listener must not open while an old token authenticates), then sweep every
-/// Claude Planner marker and empty the instructions directory; those two only log, because they clean only pre-C4 resources; registered executions reconcile durably. The boot sweep
-/// never consults the fixtures stop-failure seam.
+/// Before the listener starts, revoke every Claude credential (failure aborts boot),
+/// then reconcile registered executions and sweep pre-C4 markers. A failed marker
+/// sweep leaves every existing session unproven for this boot. Instructions purge
+/// failures only log; the purge is not settlement evidence.
 pub async fn boot(repo: &dyn RepoEventWrite, host: &ClaudePlannerHost) -> Result<()> {
     let ids = revoke(repo, ClaudePlannerScope::All).await?;
     #[cfg(feature = "fixtures")]
@@ -45,13 +45,19 @@ pub async fn boot(repo: &dyn RepoEventWrite, host: &ClaudePlannerHost) -> Result
         &host.instructions_dir.display().to_string(),
     )
     .await;
-    let ids: Vec<&str> = ids.iter().map(String::as_str).collect();
-    if let Err(error) = sweep(&host.instance, &ids, SeamPolicy::Ignore).await {
-        tracing::warn!(
-            %error,
-            "claude planner boot pre-C4 sweep did not confirm"
-        );
-    }
+    let markers: Vec<&str> = ids.iter().map(String::as_str).collect();
+    let unproven = match sweep(&host.instance, &markers, SeamPolicy::Ignore).await {
+        Ok(()) => Default::default(),
+        Err(error) => {
+            tracing::warn!(%error, "claude planner boot pre-C4 sweep did not confirm");
+            ids.into_iter().collect()
+        }
+    };
+    host.pre_c4
+        .set(super::config::PreC4Sweep { unproven })
+        .map_err(|_| {
+            crate::error::CalmError::Conflict("Claude boot sweep proof already initialized".into())
+        })?;
     match std::fs::read_dir(&host.instructions_dir) {
         Ok(entries) => {
             for entry in entries.flatten() {

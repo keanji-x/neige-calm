@@ -105,36 +105,13 @@ async fn canonical_claude_recovery_exact_finished_local_target_can_close_once() 
         Card,
         Runtime,
         Track,
-        Proof,
-        Thread,
-        LocalTurn,
     }
-    for wrong in [
-        WrongTarget::Card,
-        WrongTarget::Runtime,
-        WrongTarget::Track,
-        WrongTarget::Proof,
-        WrongTarget::Thread,
-        WrongTarget::LocalTurn,
-    ] {
+    for wrong in [WrongTarget::Card, WrongTarget::Runtime, WrongTarget::Track] {
         let mut other = target.clone();
         match wrong {
             WrongTarget::Card => other.card_id = uuid::Uuid::new_v4().to_string(),
             WrongTarget::Runtime => other.worker_session_id = uuid::Uuid::new_v4().to_string(),
             WrongTarget::Track => other.track_id = uuid::Uuid::new_v4().to_string(),
-            WrongTarget::Proof => other.proof = super::super::super::dispatch_tests::proof(),
-            WrongTarget::Thread => {
-                let ExecutionEndScope::LocalProcess { thread_id, .. } = &mut other.scope else {
-                    panic!("local")
-                };
-                *thread_id = uuid::Uuid::new_v4();
-            }
-            WrongTarget::LocalTurn => {
-                let ExecutionEndScope::LocalProcess { local_turn_id, .. } = &mut other.scope else {
-                    panic!("local")
-                };
-                *local_turn_id = uuid::Uuid::new_v4();
-            }
         }
         assert!(
             fx.backend
@@ -165,10 +142,15 @@ async fn canonical_claude_recovery_exact_finished_local_target_can_close_once() 
 }
 
 #[tokio::test]
-async fn canonical_claude_recovery_synthetic_restart_outcome_never_qualifies_end() {
-    let fx = Fixture::new("stall").await;
+async fn canonical_claude_recovery_synthetic_outcome_holds_until_owner_sweep_then_retries_once() {
+    let mut fx = Fixture::new("stall").await;
     fail_terminal_outcome(fx.owner.repo.as_ref()).await;
-    fx.dispatch().await.unwrap();
+    fx.dispatch_selection(&TurnModelSelection {
+        model: Some("claude-frozen".into()),
+        effort: Some("high".into()),
+    })
+    .await
+    .unwrap();
     let target = fx.target().await;
     let before = fx.checkpoint().await;
     assert!(
@@ -185,8 +167,7 @@ async fn canonical_claude_recovery_synthetic_restart_outcome_never_qualifies_end
         &thread, &turn, &serde_json::json!({"id":turn, "status":"interrupted", "error":{"message":"neige restarted during this turn"}}),
         crate::harness::turn_outcome::Confirmation::Unconfirmed,
     ).await.unwrap();
-    // Reopening the production session consumes only the actual stored native
-    // identity. A new object has no joined driver evidence for this old target.
+    // A synthetic outcome cannot clear the retained provider execution claim.
     let (reopened, session) = reopen_session(&fx, fx.owner.repo.clone()).await;
     assert!(
         reopened
@@ -208,7 +189,77 @@ async fn canonical_claude_recovery_synthetic_restart_outcome_never_qualifies_end
     );
     assert_eq!(fx.checkpoint().await, before);
     assert_eq!(fx.session.user_line_writes_for_test(), 1);
-    session.shutdown().await.unwrap();
+    // The real owner sweep, not the synthetic outcome, completes the settled claim.
+    let host = session.host();
+    tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            host.provider_execution
+                .sweep(fx.owner.repo.db(), host.execution.engine())
+                .await
+                .unwrap();
+            if calm_truth::db::sqlite::provider_execution::load(
+                fx.owner.repo.pool(),
+                &fx.owner.worker,
+            )
+            .await
+            .unwrap()
+            .is_none()
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(
+        reopened
+            .qualify_execution_end(&target)
+            .await
+            .unwrap()
+            .is_some()
+    );
+    fx.backend = reopened;
+    fx.session = session;
+    std::fs::write(fx.dir.path().join("scenario"), "exit").unwrap();
+    let (state, app) = settled::application(&fx).await;
+    let harness = fx.start_loop_in(state.harness.clone()).await;
+    retry::action(&fx, &app, "retry", "retry-lost-driver").await;
+    tokio::time::timeout(Duration::from_secs(25), async {
+        loop {
+            let cp = fx.checkpoint().await;
+            if cp.attempts.len() == 2 && cp.active.is_none() {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    let after = fx.checkpoint().await;
+    assert!(after.pending.is_empty());
+    assert_eq!(fx.session.user_line_writes_for_test(), 1);
+    assert_eq!(
+        std::fs::read_to_string(fx.dir.path().join("stdin"))
+            .unwrap()
+            .lines()
+            .count(),
+        1
+    );
+    let argv = std::fs::read_to_string(fx.dir.path().join("argv")).unwrap();
+    assert!(
+        argv.lines()
+            .collect::<Vec<_>>()
+            .windows(2)
+            .any(|args| args == ["--session-id", fx.owner.thread.as_str()])
+    );
+    for _ in 0..10 {
+        harness.refresh_canonical_input().await.unwrap();
+        assert_eq!(fx.checkpoint().await, after);
+        tokio::task::yield_now().await;
+    }
+    harness.shutdown().await.unwrap();
+    state.dispatcher.retire();
 }
 
 #[tokio::test]
@@ -284,6 +335,14 @@ pub(super) async fn reopen_session(
     fx: &Fixture,
     repo: Arc<crate::db::sqlite::SqlxRepo>,
 ) -> (PlannerBackend, Arc<ClaudePlannerSession>) {
+    reopen_session_with_boot(fx, repo, true).await
+}
+
+async fn reopen_session_with_boot(
+    fx: &Fixture,
+    repo: Arc<crate::db::sqlite::SqlxRepo>,
+    boot: bool,
+) -> (PlannerBackend, Arc<ClaudePlannerSession>) {
     fx.session.abort_driver_for_test().await;
     let old = fx.session.host();
     let host = Arc::new(
@@ -295,9 +354,12 @@ pub(super) async fn reopen_session(
         )
         .unwrap(),
     );
-    crate::claude_planner::lifecycle::boot(repo.as_ref(), &host)
-        .await
-        .unwrap();
+    if boot {
+        crate::claude_planner::lifecycle::boot(repo.as_ref(), &host)
+            .await
+            .unwrap();
+    }
+    host.completion.bind(repo.clone());
     host.execution
         .bind(fx.dir._execution.new_kernel(repo.db().clone()).await);
     let session = Arc::new(
@@ -321,4 +383,70 @@ pub(super) async fn reopen_session(
     let (held, _requests) = tokio::sync::mpsc::unbounded_channel();
     session.mark_installed(held);
     (PlannerBackend::claude_for_test(session.clone()), session)
+}
+
+#[tokio::test]
+async fn canonical_claude_recovery_without_boot_proof_holds_but_live_provenance_ends() {
+    use crate::harness::backend::SettledActivity;
+    use crate::harness::native_admission::NativePromptAdmission;
+    let fx = Fixture::with_storage("exit", FixtureStorage::Memory, false).await;
+    let admission = NativePromptAdmission::new(|| Ok(()), || Box::pin(async { Ok(()) }));
+    assert!(matches!(
+        fx.backend
+            .settled_activity(&fx.owner.card, &fx.owner.thread, &admission)
+            .await
+            .unwrap(),
+        SettledActivity::Held
+    ));
+    fx.dispatch().await.unwrap();
+    let target = fx.target().await;
+    // With no boot proof, a driver spawned by this instance still proves C4 provenance.
+    tokio::time::timeout(Duration::from_secs(15), async {
+        while fx
+            .backend
+            .qualify_execution_end(&target)
+            .await
+            .unwrap()
+            .is_none()
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(matches!(
+        fx.backend
+            .settled_activity(&fx.owner.card, &fx.owner.thread, &admission)
+            .await
+            .unwrap(),
+        SettledActivity::Held
+    ));
+    let (backend, session) = reopen_session_with_boot(&fx, fx.owner.repo.clone(), false).await;
+    assert!(
+        backend
+            .qualify_execution_end(&target)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(matches!(
+        backend
+            .settled_activity(&fx.owner.card, &fx.owner.thread, &admission)
+            .await
+            .unwrap(),
+        SettledActivity::Held
+    ));
+    assert!(
+        crate::harness::input_dispatch::complete_once(
+            fx.owner.repo.as_ref(),
+            &backend,
+            &fx.owner.card,
+            &fx.owner.worker
+        )
+        .await
+        .unwrap()
+        .is_none()
+    );
+    session.shutdown().await.unwrap();
+    fx.session.shutdown().await.unwrap();
 }

@@ -30,12 +30,13 @@ async fn fixture_full(
     super::dispatch_fixture::Owner,
     crate::harness::held_requests::HeldRequestReceiver,
 ) {
-    fixture_full_with_storage(scenario, FixtureStorage::Memory).await
+    fixture_full_with_storage(scenario, FixtureStorage::Memory, true).await
 }
 
 async fn fixture_full_with_storage(
     scenario: &str,
     storage: FixtureStorage,
+    boot: bool,
 ) -> (
     PlannerBackend,
     Arc<ClaudePlannerSession>,
@@ -76,6 +77,11 @@ async fn fixture_full_with_storage(
         )
         .unwrap(),
     );
+    if boot {
+        crate::claude_planner::lifecycle::boot(owner.repo.as_ref(), &host)
+            .await
+            .unwrap();
+    }
     let execution =
         crate::test_support::execution::Fixture::new(owner.repo.sqlite_db().unwrap()).await;
     host.execution.bind(execution.engine.clone());

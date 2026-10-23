@@ -38,12 +38,15 @@ async fn finished(fx: &Fixture) {
 #[tokio::test]
 async fn canonical_claude_settled_exact_exit_and_binding_admission() {
     let fx = Fixture::new("exit").await;
-    assert!(!settled(&fx).await, "absence is not settlement evidence");
+    assert!(
+        settled(&fx).await,
+        "boot proved absence and no execution was admitted"
+    );
     fx.dispatch().await.unwrap();
     finished(&fx).await;
     assert!(
         settled(&fx).await,
-        "exact joined driver and cleanup qualify"
+        "no active turn or provider claim remains after cleanup"
     );
     for (card, thread) in [
         ("other-card", fx.owner.thread.as_str()),
@@ -151,12 +154,12 @@ async fn canonical_claude_settled_keep_successor_compact_next_once() {
 }
 
 #[tokio::test]
-async fn canonical_claude_settled_instructions_write_failed_removal_holds() {
+async fn canonical_claude_settled_process_free_instructions_write_failure() {
     preparation_cleanup_failure(false).await;
 }
 
 #[tokio::test]
-async fn canonical_claude_settled_instructions_sync_failed_removal_holds() {
+async fn canonical_claude_settled_process_free_instructions_sync_failure() {
     preparation_cleanup_failure(true).await;
 }
 
@@ -194,8 +197,8 @@ async fn preparation_cleanup_failure(sync: bool) {
     assert!(report.outcome().is_err());
     assert_eq!(fx.session.user_line_writes_for_test(), 1);
     assert!(
-        !settled(&fx).await,
-        "unconfirmed instructions cleanup must hold"
+        settled(&fx).await,
+        "process-free preparation failure admits no execution"
     );
     fx.session.set_instructions_fault_for_test(None);
     fx.session.shutdown().await.unwrap();
@@ -543,7 +546,7 @@ async fn canonical_claude_settled_serializes_with_driver_start() {
 }
 
 #[tokio::test]
-async fn canonical_claude_settled_failed_new_start_discards_prior_evidence() {
+async fn canonical_claude_settled_refused_new_start_leaves_no_claim() {
     let fx = Fixture::new("exit").await;
     fx.dispatch().await.unwrap();
     finished(&fx).await;
@@ -580,14 +583,14 @@ async fn canonical_claude_settled_failed_new_start_discards_prior_evidence() {
     crate::claude_planner::stop::clear_claude_planner_stop_failure_for_test(&fx.owner.worker);
     assert!(report.outcome().is_err());
     assert!(
-        !settled(&fx).await,
-        "old cleanup cannot certify a newer failed start"
+        settled(&fx).await,
+        "the refused start has no remaining provider claim"
     );
     fx.session.shutdown().await.unwrap();
 }
 
 #[tokio::test]
-async fn canonical_claude_settled_live_and_failed_compact_hold() {
+async fn canonical_claude_settled_compact_absence_is_independent_of_protocol_failure() {
     for scenario in [
         "compact-no-boundary",
         "compact-boundary-failed",
@@ -613,10 +616,17 @@ async fn canonical_claude_settled_live_and_failed_compact_hold() {
         assert!(!settled(&fx).await, "live maintenance holds: {scenario}");
         pause.release.notify_one();
         fx.phase("wedged").await;
-        assert!(
-            !settled(&fx).await,
-            "unqualified maintenance holds: {scenario}"
-        );
+        if scenario == "compact-linger" {
+            assert!(!settled(&fx).await, "the provider claim still holds");
+        } else {
+            tokio::time::timeout(Duration::from_secs(15), async {
+                while !settled(&fx).await {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+        }
         if scenario == "compact-linger" {
             crate::test_support::execution::unblock_stops(fx.owner.repo.db()).await;
         }
