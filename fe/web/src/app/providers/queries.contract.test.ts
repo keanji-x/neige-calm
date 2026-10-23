@@ -10,7 +10,8 @@ import { z } from 'zod';
 
 import type { ApiRequest, ApiTransportPort, ApiTransportResponse } from '../../../../core/api/types.ts';
 import { createUnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
-import { areaWireSchema, toArea } from '../../../../core/domain/area.ts';
+import { areaSchema } from '../../../../core/api/schemas.ts';
+import { toArea } from '../../../../core/domain/area.ts';
 import {
   readTrackReport, TRACK_REPORT_CARD_KIND, type TaskVerdict,
 } from '../../../../core/domain/report.ts';
@@ -338,7 +339,7 @@ describe('delete mutation wiring', () => {
 
   it('writes an Area PATCH response through before its background refetch', async () => {
     const client = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
-    const original = toArea(areaWireSchema.parse(userArea));
+    const original = toArea(areaSchema.parse(userArea));
     client.setQueryData(queryKeys.areas(), [original]);
     const updatedWire = {
       ...userArea,
@@ -365,7 +366,7 @@ describe('delete mutation wiring', () => {
 
   it('invalidates Areas after a failed PATCH', async () => {
     const client = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
-    client.setQueryData(queryKeys.areas(), [toArea(areaWireSchema.parse(userArea))]);
+    client.setQueryData(queryKeys.areas(), [toArea(areaSchema.parse(userArea))]);
     let releaseRefetch!: () => void;
     const refetchHeld = new Promise<void>((resolve) => { releaseRefetch = resolve; });
     const invalidate = vi.spyOn(client, 'invalidateQueries').mockReturnValue(refetchHeld);
@@ -388,7 +389,7 @@ describe('delete mutation wiring', () => {
 
   it('invalidates Areas after a failed POST that may already have committed', async () => {
     const client = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
-    client.setQueryData(queryKeys.areas(), [toArea(areaWireSchema.parse(userArea))]);
+    client.setQueryData(queryKeys.areas(), [toArea(areaSchema.parse(userArea))]);
     let releaseRefetch!: () => void;
     const refetchHeld = new Promise<void>((resolve) => { releaseRefetch = resolve; });
     const invalidate = vi.spyOn(client, 'invalidateQueries').mockReturnValue(refetchHeld);
@@ -412,7 +413,7 @@ describe('delete mutation wiring', () => {
 
   it('does not let a delayed Area PATCH response overwrite a newer event row', async () => {
     const client = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
-    const original = toArea(areaWireSchema.parse(userArea));
+    const original = toArea(areaSchema.parse(userArea));
     client.setQueryData(queryKeys.areas(), [original]);
 
     const responseWire = {
@@ -508,7 +509,7 @@ describe('delete mutation wiring', () => {
     await waitFor(() => expect(send).toHaveBeenCalledTimes(2));
 
     const newerEvent = {
-      ...toArea(areaWireSchema.parse(responseWire)),
+      ...toArea(areaSchema.parse(responseWire)),
       name: 'Reading list',
       defaultTemplateId: 'small-change',
       defaultCwd: '/srv/reading',

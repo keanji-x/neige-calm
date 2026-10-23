@@ -3,7 +3,7 @@
 
 import { z } from 'zod';
 
-import { agentProviderSchema, askActionSchema, cardRuntimeViewSchema, trackWorkspaceSchema } from '../api/schemas.js';
+import { agentProviderSchema, askActionSchema, cardSchema, overlaySchema, trackWorkspaceSchema } from '../api/schemas.js';
 import type { AgentProvider, WorkspaceIsolation } from '../api/generated/wire.js';
 import type { ApiOperation } from '../api/types.js';
 import {
@@ -97,16 +97,7 @@ export function toTrack(wire: TrackWire, activity: TrackActivity = NEUTRAL_ACTIV
   };
 }
 
-export const overlayWireSchema = z.object({
-  id: z.string(),
-  plugin_id: z.string(),
-  entity_kind: z.string(),
-  entity_id: z.string(),
-  kind: z.string(),
-  payload: z.unknown(),
-  updated_at: z.number(),
-});
-export type OverlayWire = z.infer<typeof overlayWireSchema>;
+export type OverlayWire = z.infer<typeof overlaySchema>;
 
 /**
  * Resolves a report's `neige://plugin/<plugin_id>/<kind>` source to at most one overlay's
@@ -328,17 +319,10 @@ export function limitAreaTracks(
   return { rows, hiddenCount: sorted.length - rows.length };
 }
 
-export const cardWireSchema = z.object({
-  id: z.string(),
-  track_id: z.string(),
-  kind: z.string(),
+/** HTTP readers normalize an omitted title to null; event readers retain the optional wire title. */
+// eslint-disable-next-line architecture/no-module-runtime-state -- Zod extend creates a schema; the rule only recognizes local Zod bindings, not imported schemas.
+export const cardWireSchema = cardSchema.extend({
   title: z.string().nullable().default(null),
-  sort: z.number(),
-  payload: z.unknown(),
-  deletable: z.boolean().default(true),
-  runtime: cardRuntimeViewSchema.optional(),
-  created_at: z.number(),
-  updated_at: z.number(),
 });
 export type CardWire = z.infer<typeof cardWireSchema>;
 
@@ -348,7 +332,7 @@ export const trackDetailSchema = z.object({
   can_close: z.boolean(),
   can_admin: z.boolean(),
   cards: z.array(cardWireSchema),
-  overlays: z.array(overlayWireSchema),
+  overlays: z.array(overlaySchema),
 });
 export type TrackDetailWire = z.infer<typeof trackDetailSchema>;
 
@@ -804,7 +788,7 @@ export function overlaysByKindOperation(entityKind: 'track' | 'card'): ApiOperat
   return {
     method: 'GET',
     path: `/api/overlays?entity_kind=${entityKind}`,
-    responseSchema: z.array(overlayWireSchema),
+    responseSchema: z.array(overlaySchema),
   };
 }
 

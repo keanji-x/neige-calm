@@ -2,26 +2,12 @@
 
 import { z } from 'zod';
 
+import { areaSchema } from '../api/schemas.js';
 import type { ApiOperation } from '../api/types.js';
 import type { FailureTable, WriteClass, WriteText } from './failure-class.js';
 
-export const areaKindSchema = z.enum(['user', 'system']);
-export type AreaKind = z.infer<typeof areaKindSchema>;
-
-/** The default belongs to the decoder: the decoded `Area` keeps `kind` required so no consumer re-derives it. */
-export const areaWireSchema = z.object({
-  id: z.string(),
-  name: z.string(),
-  color: z.string(),
-  sort: z.number(),
-  kind: areaKindSchema.default('user'),
-  // Historical `area.updated` payloads predate both creation preferences.
-  default_template_id: z.string().nullable().default(null),
-  default_cwd: z.string().nullable().default(null),
-  created_at: z.number(),
-  updated_at: z.number(),
-});
-export type AreaWire = z.infer<typeof areaWireSchema>;
+export type AreaKind = z.infer<typeof areaSchema>['kind'];
+export type AreaWire = z.infer<typeof areaSchema>;
 
 export type Area = Readonly<{
   id: string;
@@ -58,7 +44,7 @@ export function newestArea(current: Area, incoming: Area): Area {
 }
 
 export function areaListOperation(): ApiOperation<AreaWire[]> {
-  return { method: 'GET', path: '/api/areas', responseSchema: z.array(areaWireSchema) };
+  return { method: 'GET', path: '/api/areas', responseSchema: z.array(areaSchema) };
 }
 
 /** The system area must never reach a user-visible surface; this is the client-side half of the server filter. */
@@ -128,11 +114,11 @@ export const AREA_CREATE_TEXT: WriteText = Object.freeze({
 
 /** One key identifies one exact creation intent, including every retry. */
 export function createAreaOperation(body: NewAreaBody, idempotencyKey: string): ApiOperation<AreaWire> {
-  return { method: 'POST', path: '/api/areas', body, headers: { 'Idempotency-Key': idempotencyKey }, responseSchema: areaWireSchema };
+  return { method: 'POST', path: '/api/areas', body, headers: { 'Idempotency-Key': idempotencyKey }, responseSchema: areaSchema };
 }
 
 export function updateAreaOperation(areaId: string, body: AreaPatchBody): ApiOperation<AreaWire> {
-  return { method: 'PATCH', path: `/api/areas/${encodeURIComponent(areaId)}`, body, responseSchema: areaWireSchema };
+  return { method: 'PATCH', path: `/api/areas/${encodeURIComponent(areaId)}`, body, responseSchema: areaSchema };
 }
 
 /** What a failed `PATCH /api/areas/{id}` says: it sets values, so 400, 404, 413 and 422 store nothing; anything else may have. */

@@ -8,7 +8,7 @@ import {
   trackActivityState, trackDetailSchema, updateTrackOperation,
   NEUTRAL_ACTIVITY, UNTITLED_TRACK_LABEL, trackDisplayTitle, trackWireSchema, tracksInAreaOperation,
   userVisibleTracks, trackOverlayPayload, plannerProviderOf,
-  type Track, type OverlayWire,
+  overlaysByKindOperation, trackDetailOperation, type Track, type OverlayWire,
 } from './track.js';
 import type { Area } from './area.js';
 
@@ -27,6 +27,40 @@ function track(overrides: Partial<Track>): Track {
 }
 
 const DAY = 24 * 60 * 60 * 1000;
+
+describe('card and overlay HTTP decode', () => {
+  const card = {
+    id: 'card', track_id: 'w1', kind: 'note', sort: 0,
+    payload: { arbitrary: ['kept'] }, created_at: 1, updated_at: 2,
+  };
+  const overlay = {
+    id: 'overlay', plugin_id: 'plugin', entity_kind: 'future-entity', entity_id: 'w1',
+    kind: 'future-kind', payload: { arbitrary: ['kept'] }, updated_at: 2,
+  };
+  const detail = (cards: unknown[], overlays: unknown[]) => trackDetailOperation('w1').responseSchema.parse({
+    track: baseWire, can_reopen: false, can_close: true, can_admin: false, cards, overlays,
+  });
+
+  it('defaults the HTTP card title to null and deletable to true, and strips unknown fields', () => {
+    expect(detail([{ ...card, future_field: 'ignored' }], []).cards)
+      .toEqual([{ ...card, title: null, deletable: true }]);
+    expect(createCardOperation('w1', { kind: card.kind, payload: card.payload }, 'key').responseSchema.parse(card))
+      .toEqual({ ...card, title: null, deletable: true });
+  });
+
+  it('preserves explicit card titles, null and deletable false', () => {
+    for (const title of ['Named', null]) {
+      const input = { ...card, title, deletable: false };
+      expect(detail([input], []).cards).toEqual([input]);
+    }
+  });
+
+  it('keeps opaque overlay payloads and open kinds, stripping unknown fields in both HTTP readers', () => {
+    const input = { ...overlay, future_field: 'ignored', deletable: false };
+    expect(detail([], [input]).overlays).toEqual([overlay]);
+    expect(overlaysByKindOperation('track').responseSchema.parse([input])).toEqual([overlay]);
+  });
+});
 
 describe('track wire decode', () => {
   it('fills the kernel serde defaults so the decoded track has no optional fields', () => {

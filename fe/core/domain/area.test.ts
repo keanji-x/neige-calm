@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
+import { areaSchema } from '../api/schemas.js';
+
 import {
   areaCreationCapabilityOperation, createAreaOperation, asFolderConflict, areaFolderWireSchema, areaFoldersOperation, areaListOperation, areaOf,
-  areaWireSchema, folderConflictMessage, newestArea, sortedAreaFolders, sortedAreas, toArea, toAreaFolder,
-  visibleAreas, type Area, type AreaFolder,
+  folderConflictMessage, newestArea, sortedAreaFolders, sortedAreas, toArea, toAreaFolder,
+  updateAreaOperation, visibleAreas, type Area, type AreaFolder,
 } from './area.js';
 
 const baseWire = { id: 'c1', name: 'Work', color: '#5B8DEF', sort: 1, created_at: 1, updated_at: 1 };
@@ -16,27 +18,35 @@ function area(overrides: Partial<Area>): Area {
 }
 
 describe('area wire decode', () => {
+  it('uses the same defaults and strips unknown fields on every HTTP response', () => {
+    const input = { ...baseWire, future_field: 'ignored' };
+    const expected = { ...baseWire, kind: 'user', default_template_id: null, default_cwd: null };
+    expect(areaListOperation().responseSchema.parse([input])).toEqual([expected]);
+    expect(createAreaOperation({ name: 'Work', color: '#5B8DEF' }, 'key').responseSchema.parse(input)).toEqual(expected);
+    expect(updateAreaOperation('c1', {}).responseSchema.parse(input)).toEqual(expected);
+  });
+
   it('defaults a pre-#175 payload without kind to user', () => {
-    expect(areaWireSchema.parse(baseWire)).toMatchObject({
+    expect(areaSchema.parse(baseWire)).toMatchObject({
       kind: 'user', default_template_id: null, default_cwd: null,
     });
   });
 
   it('keeps an explicit system kind', () => {
-    expect(areaWireSchema.parse({ ...baseWire, kind: 'system' }).kind).toBe('system');
+    expect(areaSchema.parse({ ...baseWire, kind: 'system' }).kind).toBe('system');
   });
 
   it('rejects an unknown kind', () => {
-    expect(areaWireSchema.safeParse({ ...baseWire, kind: 'kernel' }).success).toBe(false);
+    expect(areaSchema.safeParse({ ...baseWire, kind: 'kernel' }).success).toBe(false);
   });
 
   it('maps the wire row onto the camelCase domain shape', () => {
-    expect(toArea(areaWireSchema.parse(baseWire)))
+    expect(toArea(areaSchema.parse(baseWire)))
       .toEqual(area({ id: 'c1', name: 'Work', color: '#5B8DEF', createdAt: 1, updatedAt: 1 }));
   });
 
   it('preserves both Area defaults as required nullable domain fields', () => {
-    const parsed = areaWireSchema.parse({
+    const parsed = areaSchema.parse({
       ...baseWire, default_template_id: 'small-change', default_cwd: '/srv/work',
     });
     expect(toArea(parsed)).toMatchObject({
