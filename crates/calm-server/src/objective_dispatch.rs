@@ -28,7 +28,7 @@ fn disposition(notice: &Notice, state: &State) -> Result<std::result::Result<Str
         }
         Notice::ApprovalRequired { .. } => {
             return Ok(Err(
-                "ApprovalRequired is requested explicitly by the Planner via neige_objective_request_approval"
+                "ApprovalRequired is requested explicitly by the Planner via neige_objective_ask"
                     .into(),
             ));
         }

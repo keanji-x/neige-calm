@@ -1,0 +1,1 @@
+Ask the user to approve an objective's current standard. Reuses its unanswered ask; returns approved or awaiting with ask_id. Only clicking 批准 approves; text never does. Standard changes invalidate approval. Read the answer before continuing.

@@ -11,8 +11,8 @@ use std::sync::Arc;
 pub fn register_into(registry: &mut ToolRegistry) {
     registry.register(
         ToolDescriptor {
-            name: "neige_objective_request_approval".into(),
-            description: include_str!("../../../prompts/tools/neige_objective_request_approval.md").trim_end().into(),
+            name: "neige_objective_ask".into(),
+            description: include_str!("../../../prompts/tools/neige_objective_ask.md").trim_end().into(),
             input_schema: json!({"type":"object", "additionalProperties":false, "required":["key"], "properties":{"key":{"type":"string", "minLength":1}}}),
             annotations: Some(role_gated_write_annotations()),
             roles: &[CardRole::Planner],

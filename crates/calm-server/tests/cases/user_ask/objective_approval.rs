@@ -1,7 +1,7 @@
 use super::*;
 use calm_truth::objective_host;
 
-const TOOL: &str = "neige_objective_request_approval";
+const TOOL: &str = "neige_objective_ask";
 fn definition() -> Value {
     json!({"key":"kr", "title":"交付 KR", "mode":"converge",
         "checks":[{"id":"accepted","role":"goal","config":{"kind":"fact","params":{"fact":"task_accepted","subject":"finish"}}}],

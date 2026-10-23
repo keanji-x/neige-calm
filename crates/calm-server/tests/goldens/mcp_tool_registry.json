@@ -273,8 +273,8 @@
     ]
   },
   {
-    "name": "neige_objective_close",
-    "description_sha256": "11dfc8a9270672ab71cf9f26da7fb600fe8bfc4c994d139e32cc5beeae42cdd5",
+    "name": "neige_objective_ask",
+    "description_sha256": "7aa1808b1cae20cc40fa597a2c94a5d495e4e5e3082be1e33e0756547860d42b",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -301,8 +301,8 @@
     ]
   },
   {
-    "name": "neige_objective_request_approval",
-    "description_sha256": "b9e2327825fb87e94a6be53e2a7e76391f9cfb4718e2bccebb20a30d21c2e106",
+    "name": "neige_objective_close",
+    "description_sha256": "0e91e6821c8c9c0dd4370d238470add851156909ae09893972831f9945506b92",
     "input_schema": {
       "additionalProperties": false,
       "properties": {

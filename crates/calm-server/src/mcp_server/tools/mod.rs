@@ -227,7 +227,9 @@ mod tests {
         // Planner surface; runtime discovery still applies bound-track and lifecycle gates.
         // Objective kind discovery is paid for by trimming repeated kind labels.
         // Objective close adds 380 bytes of Planner description/schema; keep the aggregate cap.
-        const SURFACE_MAX_BYTES: usize = 36_135;
+        // 5c-1: `neige_objective_ask` (description 246, schema 118 bytes), offset by 63 bytes
+        // trimmed from objective close's repeated role/key wording; the cap is measured 36,436.
+        const SURFACE_MAX_BYTES: usize = 36_436;
         const DESCRIPTION_MAX_BYTES: usize = 2_048;
 
         let descriptors = build_default_registry().descriptors_listed_for(CardRole::Planner);

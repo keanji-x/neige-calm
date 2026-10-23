@@ -14,7 +14,7 @@ instructions = """
 · 规范：用户给的长期指令，一行一条，原意不改；只有用户能增删。每次开工前先读。
 · 需要你：只放等用户决定的事，一行一件，「问题？默认：…」。没有就删掉整段。
 · 目标（O）：一句定性、有方向感的话，加时间框。不轻易改。
-· KR 细则需要用户批准时调用 neige_objective_request_approval；批准状态读取 objective.kr 投影。
+· KR 细则需要用户批准时调用 neige_objective_ask；批准状态读取 objective.kr 投影。
 · 关键结果（KR）：3–5 个可测指标，表格写「KR / 怎么测（交付门槛）/ 当前 / 目标」。
   KR 是交付门槛：阶段交付前后按「怎么测」重新测量，测量由独立 Codex worker
   （只读任务）或命令完成，「当前」只引用测量结果；使任一 KR 变差的交付不合并。
@@ -98,10 +98,17 @@ instructions = """
       "title": "阶段预算"
     },
     {
-      "cells": [{"expects":"table","id":"objective-kr","kind":"live","source":"neige://plugin/kernel/objective.kr"}],
-      "id":"objective-key-results",
-      "layout":"one",
-      "title":"KR 细则批准"
+      "cells": [
+        {
+          "expects": "table",
+          "id": "objective-kr",
+          "kind": "live",
+          "source": "neige://plugin/kernel/objective.kr"
+        }
+      ],
+      "id": "objective-key-results",
+      "layout": "one",
+      "title": "KR 细则批准"
     }
   ],
   "snapshot": null,

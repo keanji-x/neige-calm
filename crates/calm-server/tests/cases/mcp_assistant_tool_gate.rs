@@ -65,7 +65,7 @@ const ASSISTANT_DENIED_TOOLS_PLANNER_REACHABLE: &[&str] = &[
     "neige_track_close",
     // Closing an objective and freezing its usage is a Planner action.
     "neige_objective_close",
-    "neige_objective_request_approval",
+    "neige_objective_ask",
     // Opening a top-level Track from a recipe is a Planner action.
     "neige_track_add",
     "neige_catalog_ls",
