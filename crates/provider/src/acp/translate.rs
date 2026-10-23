@@ -11,6 +11,7 @@ pub struct TurnContext {
 }
 pub struct TurnTranslator {
     context: TurnContext,
+    compactions: super::compaction::Compactions,
     text: BTreeMap<String, (String, String)>,
     tools: BTreeMap<String, Value>,
     sequence: u64,
@@ -21,6 +22,7 @@ impl TurnTranslator {
     pub fn new(context: TurnContext) -> Self {
         Self {
             context,
+            compactions: Default::default(),
             text: BTreeMap::new(),
             tools: BTreeMap::new(),
             sequence: 0,
@@ -33,6 +35,11 @@ impl TurnTranslator {
             turn_id: self.context.turn_id.clone(),
         })
     }
+    /// Compaction state keyed by the native ID, including settled replay upserts.
+    /// The caller must establish operation ownership separately; there is no "latest" ID.
+    pub fn compactions(&self) -> &BTreeMap<String, super::compaction::Compaction> {
+        &self.compactions.entries
+    }
     pub fn update(&mut self, params: &Value, at_ms: i64) -> Result<Vec<PlannerEvent>, Error> {
         if params["sessionId"].as_str() != Some(&self.context.native_session_id) {
             return Err(Error::Protocol("update session identity mismatch"));
@@ -41,6 +48,11 @@ impl TurnTranslator {
         let kind = update["sessionUpdate"]
             .as_str()
             .ok_or(Error::Protocol("missing session update kind"))?;
+        if let Some(compaction) = super::compaction::CompactionUpdate::decode(update)? {
+            self.compactions
+                .apply(compaction, update.to_string().len())?;
+            return Ok(Vec::new());
+        }
         let mut events = Vec::new();
         match kind {
             "agent_message_chunk" | "agent_thought_chunk" => {

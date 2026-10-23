@@ -641,3 +641,17 @@ fn setup_resume_is_optional_and_uses_native_attachment_fields() {
         json!({"sessionId":"native","cwd":"/workspace","mcpServers":[]})
     );
 }
+
+#[tokio::test]
+async fn acp_compaction_initialize_does_not_advertise_capability() {
+    let (connection, mut reader, mut writer) = peer();
+    let agent = tokio::spawn(async move {
+        let request = read(&mut reader).await;
+        assert_eq!(request["params"]["clientCapabilities"], json!({}));
+        send(&mut writer, json!({"jsonrpc":"2.0","id":request["id"],"result":{"protocolVersion":1,"agentCapabilities":{}}})).await;
+    });
+    protocol::initialize(&connection.client, "client", "1")
+        .await
+        .unwrap();
+    agent.await.unwrap();
+}

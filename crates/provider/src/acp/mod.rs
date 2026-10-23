@@ -1,5 +1,6 @@
 //! ACP v1 transport and pure event translation. The caller owns processes and policy.
 pub mod approvals;
+pub mod compaction;
 pub mod configuration;
 pub mod permission;
 pub mod protocol;
@@ -9,3 +10,6 @@ pub use transport::{Client, Connection, Error, Incoming, PendingResponse, WriteF
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod compaction_tests;
