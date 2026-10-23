@@ -153,6 +153,26 @@ async fn planner_switch_pair_commit_root_history() {
     let receipt = switch_planner_tx(&mut tx, request(&p, false, 0), (a, b))
         .await
         .unwrap();
+    for (card, planner) in [(&p.a, false), (&p.b, true)] {
+        let payload: String = sqlx::query_scalar("SELECT payload FROM cards WHERE id=?1")
+            .bind(card)
+            .fetch_one(&mut **tx)
+            .await
+            .unwrap();
+        let payload: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        assert_eq!(
+            payload.get("planner_harness"),
+            planner.then_some(&json!(true))
+        );
+        assert_eq!(
+            payload[if planner {
+                "planner_provider"
+            } else {
+                "assistant_provider"
+            }],
+            "codex"
+        );
+    }
     assert_eq!(receipt.event_baseline, tail);
     assert_eq!(
         (receipt.demoted.watermark, receipt.promoted.watermark),

@@ -130,6 +130,7 @@ const POST_0067_MIGRATION_NAMES: &[&str] = &[
     "0190_canonical_grok_turns.sql",
     "0191_task_notification_contract.sql",
     "0192_objective_check_jobs.sql",
+    "0193_planner_harness_marker.sql",
 ];
 
 #[test]

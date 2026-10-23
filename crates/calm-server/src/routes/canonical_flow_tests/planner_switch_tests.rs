@@ -9,6 +9,7 @@ use calm_truth::db::sqlite::track_planner::PlannerRevision;
 use calm_truth::db::{RepoEventWrite, RepoRead};
 use calm_truth::session_repo::SessionRepo;
 
+mod claude;
 mod http;
 
 struct Pair {
@@ -75,7 +76,13 @@ async fn complete(state: &AppState, peer: &mut Peer, thread: &str, turn: &str) {
 
 impl Pair {
     async fn new() -> Self {
-        let fixture = Fixture::new().await;
+        Self::with_provider("codex").await
+    }
+    async fn with_provider(provider: &str) -> Self {
+        let mut fixture = Fixture::new().await;
+        if provider == "claude" {
+            claude_creation_tests::assistant::configure(&mut fixture, "exit");
+        }
         let (state, app, cookie, auth) = fixture.application_with_auth(false).await;
         state.dispatcher.abort_event_listener_for_test();
         let mut headers = axum::http::HeaderMap::new();
@@ -103,11 +110,18 @@ impl Pair {
             &cookie,
             &format!("/api/tracks/{track}/conversations"),
             "assistant",
-            json!({"provider":"codex","text":"Assistant history"}),
+            json!({"provider":provider,"text":"Assistant history"}),
         )
         .await;
         let target = assistant["id"].as_str().unwrap().to_owned();
-        complete(&state, &mut peer, "switch-assistant", "assistant-turn").await;
+        if provider == "claude" {
+            claude_creation_tests::assistant::wait_frame(&fixture, &target, |f| {
+                f.idle_for_lifecycle() && f.canonical_inputs.attempts.len() == 1
+            })
+            .await;
+        } else {
+            complete(&state, &mut peer, "switch-assistant", "assistant-turn").await;
+        }
         let (worker, _) = assistant_canonical::carrier(&fixture, &target).await;
         let handle = state.harness.get(&worker).unwrap();
         tokio::time::timeout(Duration::from_secs(5), async {
@@ -120,7 +134,9 @@ impl Pair {
         })
         .await
         .unwrap();
-        fixture.wait_for_stored_reply(&target).await;
+        if provider == "codex" {
+            fixture.wait_for_stored_reply(&target).await;
+        }
         Self {
             fixture,
             state,
@@ -265,7 +281,12 @@ async fn planner_switch_pair_commit_root_history_and_next_send() {
                 new.as_object_mut().unwrap().remove("permission_mode");
             }
             for value in [&mut old, &mut new] {
-                for key in ["planner_provider", "assistant_provider", "harness_profile"] {
+                for key in [
+                    "planner_provider",
+                    "assistant_provider",
+                    "harness_profile",
+                    "planner_harness",
+                ] {
                     value.as_object_mut().unwrap().remove(key);
                 }
             }

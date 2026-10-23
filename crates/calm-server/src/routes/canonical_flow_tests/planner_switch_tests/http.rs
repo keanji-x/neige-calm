@@ -4,7 +4,10 @@ use crate::db::sqlite::track_planner::PlannerSwitchRefusal as T;
 use crate::planner_switch::PlannerSwitchRefusal as R;
 use axum::response::Response;
 
-fn body(p: &Pair) -> Value {
+mod live;
+mod races;
+
+pub(super) fn body(p: &Pair) -> Value {
     json!({"target_assistant_card_id":p.cards[1],"expected_planner_card_id":p.cards[0],"expected_revision":0})
 }
 async fn decoded(response: Response) -> (StatusCode, Value) {
@@ -42,11 +45,11 @@ async fn call(
     }).await.unwrap();
     decoded(response).await
 }
-async fn submit(p: &mut Pair, value: Value) -> (StatusCode, Value) {
+pub(super) async fn submit(p: &mut Pair, value: Value) -> (StatusCode, Value) {
     let cookie = p.cookie.clone();
     call(p, &cookie, "user", None, value).await
 }
-async fn detail(p: &Pair) -> Value {
+pub(super) async fn detail(p: &Pair) -> Value {
     let response = p
         .app
         .clone()
@@ -75,6 +78,7 @@ async fn planner_switch_http_authenticated_user_success() {
         .fetch_all(p.fixture.repo.pool()).await.unwrap();
     let before = detail(&p).await;
     assert_eq!(before["planner_revision"], 0);
+    let mut events = live::Events::open(&p).await;
     let value = body(&p);
     let (status, receipt) = submit(&mut p, value).await;
     assert_eq!(status, StatusCode::OK, "{receipt}");
@@ -82,6 +86,7 @@ async fn planner_switch_http_authenticated_user_success() {
         receipt,
         json!({"track_id":p.track,"planner_card_id":p.cards[1],"demoted_card_id":p.cards[0],"planner_revision":1})
     );
+    events.switched(&p, &receipt).await;
     let after = detail(&p).await;
     assert_eq!(after["planner_revision"], 1);
     for (index, provider_key) in [(0, "assistant_provider"), (1, "planner_provider")] {

@@ -2,7 +2,7 @@
 use super::*;
 use crate::routes::canonical_flow_tests::assistant_canonical::{carrier, initial, track};
 
-fn configure(fixture: &mut Fixture, scenario: &str) {
+pub(in crate::routes::canonical_flow_tests) fn configure(fixture: &mut Fixture, scenario: &str) {
     let fake = fixture.root.path().join("fake");
     std::fs::create_dir_all(&fake).unwrap();
     std::fs::copy(
@@ -26,7 +26,7 @@ fn configure(fixture: &mut Fixture, scenario: &str) {
     fixture.execution = Some(crate::test_support::execution::Supervisor::new());
 }
 
-fn read(fixture: &Fixture, name: &str) -> String {
+pub(in crate::routes::canonical_flow_tests) fn read(fixture: &Fixture, name: &str) -> String {
     std::fs::read_to_string(fixture.root.path().join("fake").join(name)).unwrap_or_default()
 }
 
@@ -52,7 +52,7 @@ async fn get(app: &axum::Router, cookie: &str, uri: &str) -> Value {
     serde_json::from_slice(&bytes).unwrap()
 }
 
-async fn wait_frame(
+pub(in crate::routes::canonical_flow_tests) async fn wait_frame(
     fixture: &Fixture,
     card: &str,
     predicate: impl Fn(&CanonicalHarnessSnapshot) -> bool,

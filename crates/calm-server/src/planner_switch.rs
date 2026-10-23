@@ -149,6 +149,9 @@ async fn switch_owned(
         .sqlite_db
         .clone()
         .ok_or_else(|| CalmError::Internal("Planner switch requires SQLite".into()))?;
+    // Serialize same-Track switches before capturing or parking either carrier.
+    // A waiting request must observe the committed tenure, not a transient park.
+    let _push = s.dispatcher.planner_switch_push_lock(&r.track_id).await;
     let current: Option<String> =
         sqlx::query_scalar("SELECT id FROM cards WHERE track_id=?1 AND role='planner'")
             .bind(r.track_id.as_str())
@@ -260,7 +263,6 @@ async fn switch_owned(
             )
         })?);
     }
-    let _push = s.dispatcher.planner_switch_push_lock(&r.track_id).await;
     let mut sorted = ids;
     sorted.sort_by(|a, b| a.as_str().cmp(b.as_str()));
     let mut fences = Vec::new();

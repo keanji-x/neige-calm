@@ -43,8 +43,10 @@ impl PlannerBinding {
         object.remove(PLANNER_PROVIDER_PAYLOAD_KEY);
         object.remove(ASSISTANT_PROVIDER_PAYLOAD_KEY);
         object.remove("harness_profile");
+        object.remove("planner_harness");
         let role = match self.profile {
             HarnessProfile::Planner => {
+                object.insert("planner_harness".into(), Value::Bool(true));
                 object.insert(
                     PLANNER_PROVIDER_PAYLOAD_KEY.into(),
                     serde_json::to_value(&self.provider)?,
@@ -110,5 +112,51 @@ pub fn profile_from_shape(kind: &str, role: CardRole, payload: &Value) -> Option
             Some(HarnessProfile::Assistant)
         }
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn planner_switch_planner_binding_role_markers() {
+        for provider in [AgentProvider::Codex, AgentProvider::Claude] {
+            for marker in [
+                None,
+                Some(json!(true)),
+                Some(json!(false)),
+                Some(json!("stale")),
+            ] {
+                for profile in [HarnessProfile::Planner, HarnessProfile::Assistant] {
+                    let mut payload = json!({"custom":{"history":"kept"},
+                        "planner_provider":"claude","assistant_provider":"codex","harness_profile":"assistant"});
+                    if let Some(marker) = marker.clone() {
+                        payload["planner_harness"] = marker;
+                    }
+                    let (role, shaped) = PlannerBinding {
+                        profile,
+                        provider: provider.clone(),
+                    }
+                    .conversation_shape(payload)
+                    .unwrap();
+                    assert_eq!(shaped["custom"], json!({"history":"kept"}));
+                    if profile == HarnessProfile::Planner {
+                        assert_eq!(role, CardRole::Planner);
+                        assert_eq!(shaped["planner_harness"], true);
+                        assert_eq!(shaped["planner_provider"], json!(provider));
+                        assert!(shaped.get("assistant_provider").is_none());
+                        assert!(shaped.get("harness_profile").is_none());
+                    } else {
+                        assert_eq!(role, CardRole::Assistant);
+                        assert!(shaped.get("planner_harness").is_none());
+                        assert_eq!(shaped["assistant_provider"], json!(provider));
+                        assert_eq!(shaped["harness_profile"], "assistant");
+                        assert!(shaped.get("planner_provider").is_none());
+                    }
+                }
+            }
+        }
     }
 }

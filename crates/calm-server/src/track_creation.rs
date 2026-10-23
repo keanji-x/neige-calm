@@ -172,16 +172,17 @@ fn planner_payload(
         "codex_source".into(),
         serde_json::Value::String("shared".into()),
     );
-    card_payload.insert("planner_harness".into(), serde_json::Value::Bool(true));
-    card_payload.insert(
-        crate::validation::PLANNER_PROVIDER_PAYLOAD_KEY.into(),
-        serde_json::json!(provider),
-    );
     if let Some(goal) = goal.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         card_payload.insert("prompt".into(), serde_json::Value::String(goal.to_string()));
     }
     crate::planner_permission_mode::mint_at_creation(&mut card_payload, source, &provider, host);
-    serde_json::Value::Object(card_payload)
+    calm_truth::planner_binding::PlannerBinding {
+        profile: calm_types::harness::HarnessProfile::Planner,
+        provider,
+    }
+    .conversation_shape(serde_json::Value::Object(card_payload))
+    .expect("Planner creation constructs an object payload")
+    .1
 }
 
 pub(crate) fn planner_harness_layout_payload(
