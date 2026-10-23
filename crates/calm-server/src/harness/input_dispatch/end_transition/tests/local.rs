@@ -1,10 +1,10 @@
-//! The real joined Claude driver supplies END; correlation and events cannot.
+//! Claude END requires session absence and the correct worker-session binding.
 use crate::harness::backend::claude_dispatch_tests::canonical::Fixture;
 use std::sync::Arc;
 use std::time::Duration;
 
 #[tokio::test]
-async fn canonical_claude_wrong_turn_proof_or_unjoined_driver_cannot_close() {
+async fn canonical_claude_paused_driver_or_wrong_worker_session_cannot_close() {
     let fx = Fixture::new("exit").await;
     let pause = crate::claude_planner::session::SettlePause {
         entered: Arc::default(),
@@ -41,31 +41,8 @@ async fn canonical_claude_wrong_turn_proof_or_unjoined_driver_cannot_close() {
     })
     .await
     .unwrap();
-    let mut wrong = target.clone();
-    let crate::harness::backend::ExecutionEndScope::LocalProcess { local_turn_id, .. } =
-        &mut wrong.scope
-    else {
-        panic!("local fixture")
-    };
-    *local_turn_id = uuid::Uuid::new_v4();
-    assert!(
-        fx.backend
-            .qualify_execution_end(&wrong)
-            .await
-            .unwrap()
-            .is_none()
-    );
-    let mut wrong = target.clone();
-    let calm_types::conversation::SubmissionDispatchProof::V2 { attempt, .. } = &mut wrong.proof;
-    attempt.attempt_id =
-        calm_types::conversation::InputAttemptId::parse(&crate::model::new_id()).unwrap();
-    assert!(
-        fx.backend
-            .qualify_execution_end(&wrong)
-            .await
-            .unwrap()
-            .is_none()
-    );
+    // Local-turn and attempt identity are checked by complete_once/consume_tx
+    // against committed input facts, not by session-level absence qualification.
     let mut wrong = target.clone();
     wrong.worker_session_id = "successor".into();
     assert!(
