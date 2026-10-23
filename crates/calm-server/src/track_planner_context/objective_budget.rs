@@ -1,22 +1,10 @@
 //! Budget semantics come from the engine; this module only builds a native table.
 use super::*;
-use calm_truth::objective_host;
 use objective::engine::Status;
 
 pub(super) const KIND: &str = "objective.budget";
 
-pub(super) async fn build(pool: &sqlx::SqlitePool, track: &str) -> Result<Option<DataUnit>> {
-    let enabled: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM track_capabilities WHERE track_id=? AND capability=?)",
-    )
-    .bind(track)
-    .bind(calm_types::track_capability::TrackCapability::Objectives.as_db_str())
-    .fetch_one(pool)
-    .await?;
-    if !enabled {
-        return Ok(None);
-    }
-    let (_, state) = objective_host::read_state(pool, &TrackId::from(track.to_owned())).await?;
+pub(super) fn unit(state: &objective::State) -> Result<DataUnit> {
     let rows = state
         .objectives
         .values()
@@ -61,7 +49,7 @@ pub(super) async fn build(pool: &sqlx::SqlitePool, track: &str) -> Result<Option
             .collect()
         })
         .collect();
-    Ok(Some(DataUnit {
+    Ok(DataUnit {
         snapshot: Snapshot {
             id: KIND.into(),
             observed_at: None,
@@ -92,5 +80,5 @@ pub(super) async fn build(pool: &sqlx::SqlitePool, track: &str) -> Result<Option
                 highlight: None,
             })?,
         },
-    }))
+    })
 }

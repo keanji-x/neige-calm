@@ -132,12 +132,21 @@ pub async fn forge_approval_tx(
 }
 
 /// Only a click on the first option, Approve, grants.
-fn grants(answers: &[AskAnswer]) -> bool {
+pub(super) fn grants(answers: &[AskAnswer]) -> bool {
     matches!(answers, [AskAnswer::Option(0)])
 }
 
 fn is_contract(questions: &[AskQuestion], delivery: AskDelivery) -> bool {
-    delivery == AskDelivery::Wake && matches!(questions, [question] if question.options == OPTIONS)
+    is_approval_contract(questions, delivery, &OPTIONS)
+}
+
+/// Shared tagged-approval contract: one wake question with kernel-owned choices.
+pub(super) fn is_approval_contract(
+    questions: &[AskQuestion],
+    delivery: AskDelivery,
+    options: &[&str],
+) -> bool {
+    delivery == AskDelivery::Wake && matches!(questions, [question] if question.options == options)
 }
 
 /// The answer has no effect of its own; a forge approval ask whose question is not the kernel's

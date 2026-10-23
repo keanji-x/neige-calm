@@ -20,6 +20,7 @@ use crate::{
 };
 
 mod objective_budget;
+mod objective_kr;
 
 pub const RUN_STATS_OVERLAY_KIND: &str = "run.stats";
 
@@ -123,6 +124,25 @@ fn unit(snapshot: Option<&crate::harness::HarnessSnapshot>, completed: i64) -> D
     }
 }
 
+/// Read once for both objective tables in the existing projector cycle.
+async fn objective_state(pool: &sqlx::SqlitePool, track: &str) -> Result<Option<objective::State>> {
+    let enabled: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM track_capabilities WHERE track_id=? AND capability=?)",
+    )
+    .bind(track)
+    .bind(calm_types::track_capability::TrackCapability::Objectives.as_db_str())
+    .fetch_one(pool)
+    .await?;
+    if !enabled {
+        return Ok(None);
+    }
+    Ok(Some(
+        calm_truth::objective_host::read_state(pool, &TrackId::from(track.to_owned()))
+            .await?
+            .1,
+    ))
+}
+
 impl TrackPlannerContextProjector {
     pub fn new(repo: Arc<dyn Repo>, bus: EventBus, write: WriteContext) -> Option<Self> {
         let pool = repo.sqlite_db()?.read_pool().clone();
@@ -201,24 +221,29 @@ impl TrackPlannerContextProjector {
             )
             .await?;
         let mut objective_changed = false;
-        if let Some(unit) = objective_budget::build(&self.pool, track_id).await? {
+        if let Some(state) = objective_state(&self.pool, track_id).await? {
             if let Err(error) =
                 crate::objective_dispatch::dispatch_track(self.repo.as_ref(), &self.bus, track_id)
                     .await
             {
                 tracing::warn!(%track_id, %error, "objective dispatch failed; continuing overlay publication");
             }
-            let previous = overlays.iter().find(|o| {
-                o.plugin_id == KERNEL_OVERLAY_PLUGIN_ID && o.kind == objective_budget::KIND
-            });
-            objective_changed = self
-                .publish(
-                    track_id,
-                    objective_budget::KIND,
-                    previous.map(|o| &o.payload),
-                    serde_json::to_value(unit)?,
-                )
-                .await?;
+            for (kind, unit) in [
+                (objective_budget::KIND, objective_budget::unit(&state)?),
+                (objective_kr::KIND, objective_kr::unit(&state)?),
+            ] {
+                let previous = overlays
+                    .iter()
+                    .find(|o| o.plugin_id == KERNEL_OVERLAY_PLUGIN_ID && o.kind == kind);
+                objective_changed |= self
+                    .publish(
+                        track_id,
+                        kind,
+                        previous.map(|o| &o.payload),
+                        serde_json::to_value(unit)?,
+                    )
+                    .await?;
+            }
         }
         Ok(context_changed || stats_changed || objective_changed)
     }

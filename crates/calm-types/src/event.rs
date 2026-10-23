@@ -315,6 +315,11 @@ pub enum AskAnswer {
 #[serde(tag = "kind", rename_all = "snake_case")]
 #[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub enum AskAction {
+    /// Human approval of exactly one objective standard, granted only by the first option.
+    ObjectiveApproval {
+        objective: String,
+        standard_hash: String,
+    },
     ReopenTrack {
         closed_at: i64,
     },

@@ -12,6 +12,7 @@ use std::collections::HashSet;
 
 mod forge_approval;
 mod grant_admin;
+pub(crate) mod objective_approval;
 mod reopen;
 pub use forge_approval::{ForgeApproval, ForgeApprovalRead, forge_approval_tx};
 pub use grant_admin::ask_grant_admin_requested_tx;
@@ -389,6 +390,7 @@ pub async fn ask_answered_tx(
     let mut events = reopen::answer_events_tx(tx, ask_id, &track_row, &ask, &answers).await?;
     events.extend(grant_admin::answer_events_tx(tx, &track_row, &ask, &answers).await?);
     events.extend(forge_approval::answer_events_tx(&ask)?);
+    objective_approval::answer_events_tx(tx, track, ask_id, &ask, &answers).await?;
     events.push(Event::AskAnswered {
         ask_id,
         track_id: track_row.id.clone(),

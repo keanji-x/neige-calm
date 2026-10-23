@@ -698,3 +698,6 @@ mod admin;
 
 #[path = "user_ask/forge_approval.rs"]
 mod forge_approval;
+
+#[path = "user_ask/objective_approval.rs"]
+mod objective_approval;

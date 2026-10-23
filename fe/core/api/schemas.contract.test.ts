@@ -1216,3 +1216,18 @@ it('accepts forge approval asks and refuses an incomplete or unknown ask action'
     expect(wireEventSchema.safeParse({ ...ask, data: { ...ask.data, action } }).success).toBe(false);
   }
 });
+
+it('accepts objective approval asks and requires the objective and exact standard hash', () => {
+  const ask = { ev: 'ask.requested', data: {
+    track_id: 't', questions: [{ title: '批准 KR？', options: ['批准', '不批准'] }], delivery: 'wake',
+    action: { kind: 'objective_approval', objective: 'kr', standard_hash: 'hash' },
+  } };
+  expect(wireEventSchema.parse(ask)).toEqual(ask);
+  for (const action of [
+    { kind: 'objective_approval', objective: 'kr' },
+    { kind: 'objective_approval', standard_hash: 'hash' },
+    { kind: 'objective_approval', objective: 1, standard_hash: 'hash' },
+  ]) {
+    expect(wireEventSchema.safeParse({ ...ask, data: { ...ask.data, action } }).success).toBe(false);
+  }
+});

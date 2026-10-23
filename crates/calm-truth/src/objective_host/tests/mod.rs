@@ -9,6 +9,7 @@ use objective::ids::{CheckId, EvaluationId, ObjectiveKey, Revision};
 use objective::ledger::Decision;
 use objective::standard::{Approval, standard_hash};
 
+mod approval;
 mod lifecycle;
 mod refusal;
 mod replay;

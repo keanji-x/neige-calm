@@ -134,6 +134,9 @@ pub(super) fn decode_rows(
                     block_id,
                 }
             }
+            "ask_answered" => InputSource::AskAnswered {
+                ask_id: source_key.parse().map_err(internal)?,
+            },
             "intent_job" => InputSource::IntentJob {
                 intent: serde_json::from_str(source_key).map_err(internal)?,
             },

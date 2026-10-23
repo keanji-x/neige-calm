@@ -46,7 +46,7 @@ export type ArtifactRef = string;
 /**
  * An explicit user choice with a lifecycle effect; absent on ordinary/native asks.
  */
-export type AskAction = { "kind": "reopen_track", closed_at: number, } | { "kind": "grant_admin" } | { "kind": "forge_action", idempotency_key: string, payload_hash: string, };
+export type AskAction = { "kind": "objective_approval", objective: string, standard_hash: string, } | { "kind": "reopen_track", closed_at: number, } | { "kind": "grant_admin" } | { "kind": "forge_action", idempotency_key: string, payload_hash: string, };
 
 /**
  * One answer of an `ask.answered` (#2348): the index of a clicked option, or typed text. Clicking

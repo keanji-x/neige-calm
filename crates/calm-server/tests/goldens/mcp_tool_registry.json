@@ -301,6 +301,34 @@
     ]
   },
   {
+    "name": "neige_objective_request_approval",
+    "description_sha256": "b9e2327825fb87e94a6be53e2a7e76391f9cfb4718e2bccebb20a30d21c2e106",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "key": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "key"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "roles": [
+      "planner"
+    ],
+    "listed_for": [
+      "planner"
+    ]
+  },
+  {
     "name": "neige_op_show",
     "description_sha256": "cf9102f06b1c086c6697455731a2604aae8141a281c4ce493fe680cf204d972c",
     "input_schema": {

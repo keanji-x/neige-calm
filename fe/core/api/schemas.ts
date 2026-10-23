@@ -630,6 +630,7 @@ export const askActionSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('reopen_track'), closed_at: z.number() }),
   z.object({ kind: z.literal('grant_admin') }),
   z.object({ kind: z.literal('forge_action'), idempotency_key: z.string(), payload_hash: z.string() }),
+  z.object({ kind: z.literal('objective_approval'), objective: z.string(), standard_hash: z.string() }),
 ]);
 
 /** The Planner asked the user; the event id is the ask's id. `hold` answers go to a paused request. */

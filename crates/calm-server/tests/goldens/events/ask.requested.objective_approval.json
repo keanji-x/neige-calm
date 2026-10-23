@@ -1,0 +1,24 @@
+{
+  "description": "Kernel-owned objective standard approval ask; only the first option grants the exact standard.",
+  "wire": {
+    "data": {
+      "action": {
+        "kind": "objective_approval",
+        "objective": "kr",
+        "standard_hash": "sha256:standard"
+      },
+      "delivery": "wake",
+      "questions": [
+        {
+          "options": [
+            "批准",
+            "不批准"
+          ],
+          "title": "批准 KR 细则？"
+        }
+      ],
+      "track_id": "track-01"
+    },
+    "ev": "ask.requested"
+  }
+}

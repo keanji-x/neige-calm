@@ -323,6 +323,7 @@ async fn capability_absent_track_refuses_every_source() {
     });
     for (i, event) in events.into_iter().enumerate() {
         for source in [
+            InputSource::AskAnswered { ask_id: 1 },
             InputSource::Planner {
                 principal: Principal::Agent {
                     session_id: "p".into(),

@@ -17,6 +17,11 @@ pub(super) async fn authorize<'a>(
 ) -> Result<AuthorizedInput<'a>> {
     capability::require_tx(tx, &input.track_id).await?;
     let principal = match (&input.event, &input.source) {
+        (Event::ApprovalGranted { .. }, InputSource::AskAnswered { .. }) => {
+            input.source.identity()?;
+            approval::verify_source_tx(tx, input).await?;
+            return Ok(AuthorizedInput { input });
+        }
         (Event::DefinitionChanged { .. }, InputSource::ReportBlock { .. }) => {
             report::verify_source_tx(tx, input).await?;
             input.source.identity()?;

@@ -2,6 +2,7 @@
 //!
 //! The engine owns semantics; this module owns authorization, atomic storage and
 //! source idempotency. Replay rebuilds state, never durable effects.
+mod approval;
 mod authorize;
 pub mod capability;
 mod intents;
@@ -44,6 +45,9 @@ impl PlannerRequestId {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "source", rename_all = "snake_case")]
 pub enum InputSource {
+    AskAnswered {
+        ask_id: i64,
+    },
     ReportBlock {
         report_card_id: crate::ids::CardId,
         doc_rev: u64,
@@ -65,6 +69,9 @@ pub enum InputSource {
 impl InputSource {
     fn identity(&self) -> Result<(&'static str, String)> {
         let (kind, session, id) = match self {
+            Self::AskAnswered { ask_id } => {
+                return Ok(("ask_answered", ask_id.to_string()));
+            }
             Self::ReportBlock {
                 report_card_id,
                 doc_rev,

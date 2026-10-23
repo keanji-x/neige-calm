@@ -1645,3 +1645,21 @@ fn task_git_delivery_settled_requires_exact_settlement_shape() {
         "a candidate field on the failed shape is an unknown field"
     );
 }
+
+golden_test!(
+    ask_requested_objective_approval,
+    "ask.requested.objective_approval.json",
+    Event::AskRequested {
+        action: Some(AskAction::ObjectiveApproval {
+            objective: "kr".into(),
+            standard_hash: "sha256:standard".into(),
+        }),
+        track_id: TrackId::from("track-01"),
+        questions: vec![AskQuestion {
+            title: "批准 KR 细则？".into(),
+            options: vec!["批准".into(), "不批准".into()],
+        }],
+        delivery: AskDelivery::Wake,
+        source_item_id: None,
+    }
+);
