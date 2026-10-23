@@ -91,7 +91,7 @@ async fn retry_sequence(uncertain: bool, recover: bool) {
         InputDeliveryFact::Unknown
     ));
     if recover {
-        // A joined predecessor and a fresh session object are not acceptance/END.
+        // Reopening preserves delivery facts; the boot proof permits END separately.
         fx.session.shutdown().await.unwrap();
         fx.owner.repo.db().close().await;
         let repo = Arc::new(
@@ -107,12 +107,15 @@ async fn retry_sequence(uncertain: bool, recover: bool) {
     }
     let (state, app) = settled::application(&fx).await;
     let harness = fx.start_loop_in(state.harness.clone()).await;
-    tokio::time::sleep(Duration::from_millis(2200)).await;
-    assert_eq!(
-        fx.checkpoint().await.attempts.len(),
-        1,
-        "held is never auto-retried"
-    );
+    for _ in 0..10 {
+        harness.refresh_canonical_input().await.unwrap();
+        assert_eq!(
+            fx.checkpoint().await.attempts.len(),
+            1,
+            "held is never auto-retried"
+        );
+        tokio::task::yield_now().await;
+    }
     if recover {
         std::fs::write(fx.dir.path().join("scenario"), "exit").unwrap();
     }
@@ -120,7 +123,10 @@ async fn retry_sequence(uncertain: bool, recover: bool) {
     assert_eq!(result["waiting_for_settlement"], true);
     if recover {
         tokio::time::timeout(Duration::from_secs(25), async {
-            while fx.checkpoint().await.attempts.len() != 2 {
+            while {
+                let cp = fx.checkpoint().await;
+                cp.attempts.len() != 2 || cp.active.is_some()
+            } {
                 tokio::task::yield_now().await;
             }
         })
@@ -158,7 +164,10 @@ async fn retry_sequence(uncertain: bool, recover: bool) {
     if uncertain {
         fx.session.fail_user_flush_for_test(pause.clone());
     }
-    tokio::time::sleep(Duration::from_millis(2200)).await;
+    for _ in 0..10 {
+        harness.refresh_canonical_input().await.unwrap();
+        tokio::task::yield_now().await;
+    }
     assert_eq!(
         fx.session.user_line_writes_for_test(),
         1,
@@ -183,7 +192,7 @@ async fn retry_sequence(uncertain: bool, recover: bool) {
             while !std::fs::read_to_string(fx.dir.path().join("stdin"))
                 .is_ok_and(|lines| lines.contains("canonical human"))
             {
-                tokio::time::sleep(Duration::from_millis(10)).await;
+                tokio::task::yield_now().await;
             }
         })
         .await
@@ -197,7 +206,7 @@ async fn retry_sequence(uncertain: bool, recover: bool) {
                 {
                     break;
                 }
-                tokio::time::sleep(Duration::from_millis(10)).await;
+                tokio::task::yield_now().await;
             }
         })
         .await
@@ -205,7 +214,7 @@ async fn retry_sequence(uncertain: bool, recover: bool) {
     } else {
         tokio::time::timeout(Duration::from_secs(25), async {
             while fx.checkpoint().await.attempts.len() != 2 {
-                tokio::time::sleep(Duration::from_millis(10)).await;
+                tokio::task::yield_now().await;
             }
         })
         .await
@@ -238,8 +247,11 @@ async fn retry_sequence(uncertain: bool, recover: bool) {
     );
     assert!(matches!(successor.delivery, InputDeliveryFact::Unknown));
     assert!(after.active.is_none());
-    tokio::time::sleep(Duration::from_millis(2200)).await;
-    assert_eq!(fx.checkpoint().await.attempts, after.attempts);
+    for _ in 0..10 {
+        harness.refresh_canonical_input().await.unwrap();
+        assert_eq!(fx.checkpoint().await.attempts, after.attempts);
+        tokio::task::yield_now().await;
+    }
     let lines = std::fs::read_to_string(fx.dir.path().join("stdin")).unwrap();
     assert_eq!(
         lines.lines().count(),

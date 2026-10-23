@@ -321,7 +321,7 @@ pub(crate) type InstructionsFault =
     std::sync::Arc<dyn Fn(&Path, bool) -> std::io::Result<()> + Send + Sync>;
 
 /// Process-free preparation either left no resource behind or could not confirm cleanup.
-/// The lifecycle owner decides whether preceding driver evidence may survive.
+/// The session discards the retained handle if file cleanup is unconfirmed.
 pub(crate) enum PreparationFailure<E> {
     Clean(E),
     Unconfirmed(E),
