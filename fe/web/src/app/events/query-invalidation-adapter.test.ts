@@ -179,8 +179,8 @@ describe('query invalidation adapter', () => {
    * events. Parsed through `wireEventSchema`; the track id is only inside the opaque task id. */
   it.each([
     ['task.dispatched', { idempotency_key: 'w-7:alpha', kind: 'codex' }],
-    ['task.completed', { idempotency_key: 'w-7:alpha', result: null, artifacts: [] }],
-    ['task.failed', { idempotency_key: 'w-7:alpha', reason: 'gate red' }],
+    ['task.completed', { notification: 'notify', idempotency_key: 'w-7:alpha', result: null, artifacts: [] }],
+    ['task.failed', { notification: 'notify', idempotency_key: 'w-7:alpha', reason: 'gate red' }],
     ['task.gate_result', {
       task_id: 'w-7:alpha', idempotency_key: 'w-7:alpha', passed: false,
       log_tail: '', log_path: '/tmp/gate.log', attempt: 1,
