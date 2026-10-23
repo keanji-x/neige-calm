@@ -814,12 +814,10 @@
       "replaces initial detail metadata for presentation (transport abort=false)",
       "replaces initial detail metadata for presentation (transport abort=true)",
       "keeps adjacent detail input events scoped and the latest replacement authoritative",
-      "marks inactive detail metadata stale without eagerly reading it",
-      "preserves the event-to-cache operation baseline through production entry points"
+      "marks inactive detail metadata stale without eagerly reading it"
     ],
     "selection_paths": [
-      "web/src/app/composition.test.tsx",
-      "web/src/app/events/invalidation-baseline.test.ts"
+      "web/src/app/composition.test.tsx"
     ],
     "why_more_than_one": "T-B2 follows a decoded socket event through reducer and adapter. The harness-phase contract also fails because Planner activity now requires the same Track-detail invalidation; CI measured this additional witness. The production detail-query witnesses also require this mapping for each input event, adjacent replacement, and inactive staleness; list witnesses remain green because their separate mapping is intact."
   },
@@ -960,8 +958,7 @@
       "query invalidation adapter write-through ignores an older area event that arrives after a newer cache version"
     ],
     "selection_paths": [
-      "web/src/app/events/query-invalidation-adapter.test.ts",
-      "web/src/app/events/invalidation-baseline.test.ts"
+      "web/src/app/events/query-invalidation-adapter.test.ts"
     ],
     "why_more_than_one": "T-G2a observes both properties this whole-list replacement destroys: preserving an independent row and retaining a newer version of the replaced row."
   },
@@ -976,8 +973,7 @@
       "query invalidation adapter write-through never creates a phantom area when the row is absent"
     ],
     "selection_paths": [
-      "web/src/app/events/query-invalidation-adapter.test.ts",
-      "web/src/app/events/invalidation-baseline.test.ts"
+      "web/src/app/events/query-invalidation-adapter.test.ts"
     ],
     "why_more_than_one": "T-G2b starts with an unrelated cached row and rejects insertion of the event payload."
   },
@@ -992,8 +988,7 @@
       "query invalidation adapter write-through leaves an uninitialized area cache absent"
     ],
     "selection_paths": [
-      "web/src/app/events/query-invalidation-adapter.test.ts",
-      "web/src/app/events/invalidation-baseline.test.ts"
+      "web/src/app/events/query-invalidation-adapter.test.ts"
     ],
     "why_more_than_one": "The undefined-cache witness isolates the first arm from the initialized-list missing-row arm."
   },
@@ -1066,13 +1061,11 @@
     "patch": "diff --git a/core/events/invalidation-plan.ts b/core/events/invalidation-plan.ts\n--- a/core/events/invalidation-plan.ts\n+++ b/core/events/invalidation-plan.ts\n@@ -232,7 +232,7 @@\n     }\n     return result(keys);\n   }),\n-  'terminal.deleted': plan((event, context) => result(taskVerdicts(derivedTrackId(event.data, context)))),\n+  'terminal.deleted': plan(() => result([])),\n   'plugin.state': plan(() => result([eventKeys.plugins(), eventKeys.trackTemplates()])),\n   'plugin.data.changed': plan((event) => result([eventKeys.pluginDataPrefix(event.data.plugin_id)])),\n   'plugin.tool.registered': noop('No plugin-tool catalog query exists.'),\n",
     "expected_red": [
       "invalidation plan behavior invalidates terminal runtime projection through card ownership",
-      "invalidation plan contract pins track-report invalidation to exactly the task-verdict invalidating kinds",
-      "preserves the event-to-cache operation baseline through production entry points"
+      "invalidation plan contract pins track-report invalidation to exactly the task-verdict invalidating kinds"
     ],
     "selection_paths": [
       "core/events/invalidation-plan.contract.test.ts",
-      "core/events/invalidation-plan.test.ts",
-      "web/src/app/events/invalidation-baseline.test.ts"
+      "core/events/invalidation-plan.test.ts"
     ],
     "why_more_than_one": "T-G3b makes production behavior disagree with the independently fixed expected set."
   },
@@ -1085,12 +1078,10 @@
     "patch": "diff --git a/core/events/invalidation-plan.ts b/core/events/invalidation-plan.ts\n--- a/core/events/invalidation-plan.ts\n+++ b/core/events/invalidation-plan.ts\n@@ -209,7 +209,7 @@\n   /* `eventKeys.todayLaunchpad()` carries `report_has_noninitial_content` (Today's empty-state predicate) and\n    * `eventKeys.trackDetail(id)` is where the document is read from; nothing generated protects either line. */\n   'track.report_edited': plan((event) => result([\n-    eventKeys.trackReportPrefix(), eventKeys.trackBacklinksPrefix(),\n+    eventKeys.trackBacklinksPrefix(),\n     eventKeys.todayLaunchpad(), eventKeys.trackDetail(event.data.track_id),\n   ])),\n   'overlay.set': plan((event, context) => {\n",
     "expected_red": [
       "invalidation plan contract pins ordinary query-key literals independently from production definitions",
-      "invalidation plan contract pins track-report invalidation to exactly the task-verdict invalidating kinds",
-      "preserves the event-to-cache operation baseline through production entry points"
+      "invalidation plan contract pins track-report invalidation to exactly the task-verdict invalidating kinds"
     ],
     "selection_paths": [
-      "core/events/invalidation-plan.contract.test.ts",
-      "web/src/app/events/invalidation-baseline.test.ts"
+      "core/events/invalidation-plan.contract.test.ts"
     ],
     "why_more_than_one": "T-G3c independently pins the report-edit plan and the all-kind track-report set."
   },
@@ -1190,13 +1181,11 @@
       "replaces initial detail metadata for persisted (transport abort=false)",
       "replaces initial detail metadata for persisted (transport abort=true)",
       "replaces initial list metadata for persisted (transport abort=false)",
-      "replaces initial list metadata for persisted (transport abort=true)",
-      "preserves the event-to-cache operation baseline through production entry points"
+      "replaces initial list metadata for persisted (transport abort=true)"
     ],
     "selection_paths": [
       "core/events/invalidation-plan.test.ts",
-      "web/src/app/events/query-invalidation-adapter.test.ts",
-      "web/src/app/events/invalidation-baseline.test.ts"
+      "web/src/app/events/query-invalidation-adapter.test.ts"
     ],
     "why_more_than_one": "T-G4a independently observes the pure plan and its production adapter path. The four initial-read witnesses use production query options and a held transport (both abort behaviors); removing the persisted-user event plan also prevents their replacement metadata read."
   },
@@ -1209,12 +1198,10 @@
     "patch": "diff --git a/web/src/app/events/query-invalidation-adapter.ts b/web/src/app/events/query-invalidation-adapter.ts\n--- a/web/src/app/events/query-invalidation-adapter.ts\n+++ b/web/src/app/events/query-invalidation-adapter.ts\n@@ -53,7 +53,7 @@\n         continue;\n       }\n       for (const key of effect.keys) {\n-        invalidateQuery(client, key);\n+        if (key[0] !== 'harness-items') invalidateQuery(client, key);\n       }\n       continue;\n     }\n",
     "expected_red": [
       "presentation event replaces an in-flight old empty conversation page before its late response",
-      "query invalidation adapter turns each real harness plan into its exact live query invalidations",
-      "preserves the event-to-cache operation baseline through production entry points"
+      "query invalidation adapter turns each real harness plan into its exact live query invalidations"
     ],
     "selection_paths": [
-      "web/src/app/events/query-invalidation-adapter.test.ts",
-      "web/src/app/events/invalidation-baseline.test.ts"
+      "web/src/app/events/query-invalidation-adapter.test.ts"
     ],
     "why_more_than_one": "The adapter passes shared addresses directly; the production harness plans and held initial transcript read must still reach the query cache."
   },

@@ -74,10 +74,6 @@ no translation table or silent rejection of an unknown address.
 | plugins / templates / plugin data | `['plugins']` / `['track-templates']` / `['plugin-data', pluginId]` (all windows) |
 | Today resolve / model catalog | `['today-launchpad']` / `['model-catalog', scope]` |
 
-`invalidation-baseline.test.ts` records actual operations through
-`invalidationPlanFor → applyEventEffects` on every wire kind, with resolved and
-unresolved ownership. Its snapshot was captured before this refactor. Prefix
-matching, cancel-before-invalidate, transcript resets and removals are preserved.
 The task events with only opaque task ids use the report **prefix**; ids are
 never parsed. `task.git_delivery_settled` is different: its released payload
 explicitly names a track, so its pre-existing scoped invalidation remains.
