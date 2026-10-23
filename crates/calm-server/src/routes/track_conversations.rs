@@ -155,7 +155,7 @@ pub(crate) async fn list_track_conversations(
         (status = 500, description = "Storage or historical start error; reconcile uncertain acceptance with the original key. Codex provider outage preserves accepted input.", body = ErrorBody),
     ),
 )]
-/// Accept Codex Human creation before wake; other entries retain historical mint.
+/// Accept eligible Human creation before wake; internal entries retain historical mint.
 /// Enqueue observations never establish original acceptance or permission to resend.
 pub(crate) async fn create_track_conversation(
     State(s): State<RouteState>,

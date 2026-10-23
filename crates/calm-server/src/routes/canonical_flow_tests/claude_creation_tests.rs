@@ -468,3 +468,5 @@ async fn canonical_claude_creation_excluded_none_keeps_missing_area_teardown_ref
     );
     fixture.shutdown_process(&state).await;
 }
+
+mod assistant;

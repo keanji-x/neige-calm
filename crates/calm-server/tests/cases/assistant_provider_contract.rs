@@ -14,9 +14,33 @@ async fn assistant_provider_unconfigured_claude_does_not_silently_start_codex() 
             Some(json!({"provider": "claude", "text": "Hello"})),
         )
         .await;
-    assert_eq!(status, StatusCode::CONFLICT, "body={body}");
+    assert_eq!(status, StatusCode::CREATED, "body={body}");
+    assert_eq!(body["provider"], "claude");
+    assert_eq!(body["initialInput"]["kind"], "known");
+    let card = body["id"].as_str().unwrap().to_owned();
+    let runtime = boot
+        .repo
+        .session_projection_active_for_card(&card)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        runtime.agent_provider,
+        Some(calm_types::runtime::AgentProvider::Claude)
+    );
+    assert!(runtime.thread_id.is_none(), "no Codex thread was minted");
+    let frame: calm_types::harness::snapshot::CanonicalHarnessSnapshot =
+        serde_json::from_value(runtime.handle_state_json.unwrap()).unwrap();
+    assert_eq!(
+        frame.header.phase,
+        calm_server::harness::HarnessPhaseTag::Idle
+    );
+    assert_eq!(frame.canonical_inputs.pending.len(), 1);
+    assert!(frame.canonical_inputs.attempts.is_empty());
     let (_, conversations) = boot.list_conversations(&track).await;
-    assert_eq!(conversations, json!([]));
+    assert_eq!(conversations.as_array().unwrap().len(), 1);
+    assert_eq!(conversations[0]["id"], card);
+    assert_eq!(conversations[0]["provider"], "claude");
 }
 
 #[tokio::test]

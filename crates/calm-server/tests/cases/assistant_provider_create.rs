@@ -70,6 +70,7 @@ async fn assistant_provider_claude_first_turn_model_prompt_and_restart() {
         .await;
     assert!(!status.is_success(), "{response}");
     let native = stack.runtime(card).await.session_id;
+    wait_assistant_idle(&stack, card).await;
     stack.shutdown().await;
     let stack = Stack::boot(&root).await;
     assert!(!stack.token_authenticates(&token).await);
@@ -124,7 +125,7 @@ fn requests(root: &Root, method: &str) -> Vec<Value> {
         .filter(|row| row["method"] == method)
         .collect()
 }
-async fn acp_assistant_frame(
+async fn assistant_frame(
     stack: &Stack,
     card: &str,
 ) -> calm_types::harness::snapshot::CanonicalHarnessSnapshot {
@@ -138,18 +139,24 @@ async fn acp_assistant_frame(
     .unwrap()
 }
 
-async fn wait_acp_assistant_idle(stack: &Stack, card: &str) {
+async fn wait_assistant_idle(stack: &Stack, card: &str) {
     tokio::time::timeout(std::time::Duration::from_secs(30), async {
-        while !acp_assistant_frame(stack, card).await.idle_for_lifecycle() {
+        while !assistant_frame(stack, card).await.idle_for_lifecycle() {
             tokio::time::sleep(std::time::Duration::from_millis(25)).await;
         }
     })
     .await
-    .expect("original canonical ACP driver must reach END");
+    .expect("original canonical Assistant driver must reach END");
 }
 
-async fn acp_assistant_lifecycle(stack: &Stack, card: &str) {
-    wait_acp_assistant_idle(stack, card).await;
+async fn wait_completed_outcome(stack: &Stack, card: &str, count: usize) {
+    let outcomes = stack.wait_outcomes(card, count).await;
+    let outcome = &outcomes[count - 1];
+    assert_eq!(outcome["status"], "completed", "{outcome}");
+}
+
+async fn canonical_assistant_lifecycle(stack: &Stack, card: &str, retains_credentials: bool) {
+    wait_assistant_idle(stack, card).await;
     let before = stack.runtime(card).await;
     let count = stack.outcomes(card).await.len();
     stack
@@ -162,8 +169,8 @@ async fn acp_assistant_lifecycle(stack: &Stack, card: &str) {
         .unwrap();
     let (status, response) = stack.post_input(card, "lazy recovery").await;
     assert_eq!(status, StatusCode::OK, "{response}");
-    stack.wait_outcomes(card, count + 1).await;
-    wait_acp_assistant_idle(stack, card).await;
+    wait_completed_outcome(stack, card, count + 1).await;
+    wait_assistant_idle(stack, card).await;
     assert_eq!(stack.runtime(card).await.id, before.id);
     assert_eq!(stack.runtime(card).await.session_id, before.session_id);
     let (status, response) = stack.reset(card).await;
@@ -175,13 +182,14 @@ async fn acp_assistant_lifecycle(stack: &Stack, card: &str) {
     );
     let (status, response) = stack.post_input(card, "after refused reset").await;
     assert_eq!(status, StatusCode::OK, "{response}");
-    stack.wait_outcomes(card, count + 2).await;
-    wait_acp_assistant_idle(stack, card).await;
+    wait_completed_outcome(stack, card, count + 2).await;
+    wait_assistant_idle(stack, card).await;
     assert_eq!(stack.runtime(card).await.id, before.id);
     assert_eq!(stack.runtime(card).await.session_id, before.session_id);
-    assert!(
-        stack.row_hash(&before.id).await.is_none(),
-        "ACP revokes after its exact driver exits"
+    assert_eq!(
+        stack.row_hash(&before.id).await.is_some(),
+        retains_credentials,
+        "the provider owns its credential lifetime after END"
     );
 }
 
@@ -270,7 +278,7 @@ async fn acp_assistant_first_turn_model_prompt_and_restart() {
             .unwrap();
     assert_eq!(permission["result"]["outcome"]["outcome"], "cancelled");
     std::fs::write(root.path().join("scenario"), "reply").unwrap();
-    acp_assistant_lifecycle(&stack, card).await;
+    canonical_assistant_lifecycle(&stack, card, false).await;
     let root_after: Option<String> =
         sqlx::query_scalar("SELECT root_session_id FROM tracks WHERE id=?1")
             .bind(&track)
@@ -331,7 +339,7 @@ async fn acp_assistant_unknown_receipt_is_not_resent_after_boot() {
         "no historical restart affordance: {run}"
     );
     assert_eq!(run["history_replacement_supported"], false);
-    let before = acp_assistant_frame(&stack, card).await;
+    let before = assistant_frame(&stack, card).await;
     assert!(matches!(
         before.canonical_inputs.attempts.last().unwrap().delivery,
         calm_types::conversation::InputDeliveryFact::Unknown
@@ -358,7 +366,7 @@ async fn acp_assistant_unknown_receipt_is_not_resent_after_boot() {
         2,
         "Unknown receipt cannot authorize native resend"
     );
-    let after = acp_assistant_frame(&stack, card).await;
+    let after = assistant_frame(&stack, card).await;
     assert_eq!(
         after.canonical_inputs.attempts,
         before.canonical_inputs.attempts
@@ -393,40 +401,11 @@ async fn acp_assistant_unknown_receipt_is_not_resent_after_boot() {
     stack.shutdown().await;
 }
 
-/// Exercise the production lazy-send, reset, revoke and delete compensation owners.
+/// Exercise canonical retained send/reset refusal, then Claude delete compensation.
 async fn managed_lifecycle(stack: &Stack, card: &str, track: &str) {
-    let before = stack.runtime(card).await;
+    canonical_assistant_lifecycle(stack, card, true).await;
+    let current = stack.runtime(card).await;
     let outcomes = stack.outcomes(card).await.len();
-    let handle = stack.state.harness.remove(&before.id).unwrap();
-    handle.shutdown().await.unwrap();
-    let (status, response) = stack.post_input(card, "lazy recovery").await;
-    assert_eq!(status, StatusCode::OK, "{response}");
-    stack.wait_outcomes(card, outcomes + 1).await;
-    assert_eq!(
-        stack.runtime(card).await.id,
-        before.id,
-        "lazy send preserves native history"
-    );
-    let (status, response) = stack.reset(card).await;
-    assert_eq!(status, StatusCode::OK, "{response}");
-    let reset = stack.runtime(card).await;
-    assert_ne!(reset.id, before.id);
-    assert!(
-        stack.row_hash(&before.id).await.is_none(),
-        "superseded managed credentials are revoked"
-    );
-    assert!(
-        stack.row_hash(&reset.id).await.is_none(),
-        "a replacement cannot inherit its predecessor's hash"
-    );
-    let (status, response) = stack.post_input(card, "new native history").await;
-    assert_eq!(status, StatusCode::OK, "{response}");
-    wait_runtime_outcomes(stack, &reset.id, 1).await;
-    assert_eq!(
-        stack.row_hash(&reset.id).await.is_some(),
-        reset.agent_provider == Some(calm_types::runtime::AgentProvider::Claude),
-        "ACP revokes when its process exits; Claude retains its session credential"
-    );
     sqlx::query(
         "CREATE TRIGGER assistant_block_delete BEFORE DELETE ON tracks
          BEGIN SELECT RAISE(FAIL, 'delete blocked'); END",
@@ -444,53 +423,23 @@ async fn managed_lifecycle(stack: &Stack, card: &str, track: &str) {
     assert!(!status.is_success(), "{response}");
     assert!(stack.repo().track_get(track).await.unwrap().is_some());
     assert!(
-        stack.state.harness.get(&reset.id).is_some(),
-        "aborted deletion must reinstall the Assistant"
+        stack.state.harness.get(&current.id).is_none(),
+        "canonical recovery waits for a live Human source after aborted deletion"
     );
     assert!(
-        stack.row_hash(&reset.id).await.is_none(),
+        stack.row_hash(&current.id).await.is_none(),
         "aborted deletion still revokes credentials"
     );
     let (status, response) = stack.post_input(card, "after aborted deletion").await;
     assert_eq!(status, StatusCode::OK, "{response}");
-    wait_runtime_outcomes(stack, &reset.id, 2).await;
-    assert_eq!(
-        stack.row_hash(&reset.id).await.is_some(),
-        reset.agent_provider == Some(calm_types::runtime::AgentProvider::Claude),
-        "the next turn owns its provider's credential lifetime"
+    wait_completed_outcome(stack, card, outcomes + 1).await;
+    wait_assistant_idle(stack, card).await;
+    assert_eq!(stack.runtime(card).await.id, current.id);
+    assert_eq!(stack.runtime(card).await.session_id, current.session_id);
+    assert!(
+        stack.row_hash(&current.id).await.is_some(),
+        "the next Claude turn restores its own session credential"
     );
-}
-
-async fn wait_runtime_outcomes(stack: &Stack, worker: &str, count: usize) {
-    tokio::time::timeout(std::time::Duration::from_secs(20), async {
-        loop {
-            let session = stack
-                .repo()
-                .session_get(&WorkerSessionId(worker.into()))
-                .await
-                .unwrap()
-                .unwrap();
-            let rows = match (session.card_id.as_ref(), session.thread_id.as_ref()) {
-                (Some(card), Some(thread)) => stack
-                    .repo()
-                    .transcript_rows_of_thread(card.as_str(), thread)
-                    .await
-                    .unwrap()
-                    .into_iter()
-                    .filter(|row| row.method == "turn/completed")
-                    .collect::<Vec<_>>(),
-                _ => Vec::new(),
-            };
-            if rows.len() >= count {
-                let outcome: Value = serde_json::from_str(&rows[count - 1].params).unwrap();
-                assert_eq!(outcome["status"], "completed", "{outcome}");
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-        }
-    })
-    .await
-    .expect("this runtime's own turn must complete");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -731,7 +680,7 @@ async fn acp_assistant_archive_survives_cold_boot_and_restores_the_same_native_c
     let card = row["id"].as_str().unwrap();
     stack.wait_outcomes(card, 1).await;
     let original = stack.runtime(card).await;
-    wait_acp_assistant_idle(&stack, card).await;
+    wait_assistant_idle(&stack, card).await;
     let path = format!("/api/tracks/{track}/conversations/{card}/archive");
     assert_eq!(
         stack

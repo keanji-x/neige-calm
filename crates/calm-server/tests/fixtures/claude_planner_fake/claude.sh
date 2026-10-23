@@ -234,7 +234,7 @@ case "$SCENARIO" in
     echo "$SUCCESS"
     cat > /dev/null
     exit 0 ;;
-  mcp)
+  mcp|assistant-mcp)
     # One real MCP handshake with the spawn's own credential against the kernel's socket (the
     # reply lands in `mcp_reply`), then the calm tool call and its result as Claude reports them.
     python3 - "$D/mcp_reply" <<'PY' || { echo "mcp: handshake script failed" >&2; exit 6; }
@@ -248,6 +248,26 @@ f.write(json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params":
     "_meta": {"dev.neige/auth": {"token": os.environ["NEIGE_MCP_TOKEN"]}}}}) + "\n")
 f.flush()
 open(sys.argv[1], "w").write(f.readline())
+if open(os.path.join(os.path.dirname(sys.argv[1]), "scenario")).read().strip() == "assistant-mcp":
+    f.write(json.dumps({"jsonrpc": "2.0", "method": "notifications/initialized"}) + "\n")
+    f.write(json.dumps({"jsonrpc": "2.0", "id": 10, "method": "tools/list", "params": {}}) + "\n")
+    f.flush()
+    with open(os.path.join(os.path.dirname(sys.argv[1]), "assistant-mcp-tools"), "w") as output:
+        output.write(f.readline())
+    replies = []
+    for number, name, arguments in [
+        (2, "neige_report_read", {"with_markers": True}),
+        (3, "neige_report_commit", {"message": "Claude Assistant prose", "ops": [
+            {"op": "upsert", "kind": "prose", "markdown": "# Assistant note\n\nNative Claude prose.\n"}]}),
+        (4, "neige_task_done", {"attempt_id": "not-an-assistant-attempt"}),
+        (5, "neige_track_add", {"goal": "forbidden Assistant child"}),
+    ]:
+        f.write(json.dumps({"jsonrpc": "2.0", "id": number, "method": "tools/call",
+                           "params": {"name": name, "arguments": arguments}}) + "\n")
+        f.flush()
+        replies.append(json.loads(f.readline()))
+    with open(os.path.join(os.path.dirname(sys.argv[1]), "assistant-mcp-results"), "w") as output:
+        json.dump(replies, output)
 PY
     CALL='{"type":"assistant","uuid":"0b6d1d4e-6f5a-4c2e-9d8e-2a51f3c7b003","message":{"id":"msg_fake_call","content":'
     CALL+='[{"type":"tool_use","id":"toolu_mcp","name":"mcp__neige__neige_report_commit","input":{"text":"x"}}]}}'

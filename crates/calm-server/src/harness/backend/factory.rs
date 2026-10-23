@@ -66,7 +66,7 @@ impl<'a> PlannerFactory<'a> {
         };
         match binding.provider.protocol() {
             AgentProtocol::Codex => true,
-            AgentProtocol::Claude => binding.profile == HarnessProfile::Planner,
+            AgentProtocol::Claude => true,
             AgentProtocol::Acp => {
                 crate::acp_planner::wiring::canonical_inputs(&binding.provider, contract)
             }

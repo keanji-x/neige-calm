@@ -12349,7 +12349,7 @@
         "tags": [
           "tracks"
         ],
-        "summary": "Accept Codex Human creation before wake; other entries retain historical mint.\nEnqueue observations never establish original acceptance or permission to resend.",
+        "summary": "Accept eligible Human creation before wake; internal entries retain historical mint.\nEnqueue observations never establish original acceptance or permission to resend.",
         "operationId": "create_track_conversation",
         "parameters": [
           {
