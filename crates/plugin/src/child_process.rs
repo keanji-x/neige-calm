@@ -21,7 +21,8 @@ where
     let bounded = cap.saturating_add(1) as u64;
     (&mut *reader).take(bounded).read_to_end(buf).await?;
     if buf.len() > cap {
-        let mut sink = [0u8; 8 * 1024];
+        // Keep drain storage off the inline async state of nested command futures.
+        let mut sink = vec![0u8; 8 * 1024];
         // A drain error is not the caller's problem: the answer is already capped, and the child is about to be reaped either way.
         while matches!(reader.read(&mut sink).await, Ok(n) if n > 0) {}
     }
@@ -165,5 +166,22 @@ pub fn signal_process_group(pgid: i32, signal: libc::c_int) -> bool {
         // ESRCH (no such process group) is the expected terminal state.
         tracing::debug!(pgid, signal, error = %err, "planner push: kill(-pgid) returned error (likely already gone)");
         false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn read_capped_future_fits_its_byte_budget() {
+        let mut reader = tokio::io::empty();
+        let mut output = Vec::new();
+        let future = read_capped(&mut reader, 16, &mut output);
+        // This future is composed into stdout/stderr joins and gate recovery.
+        // Keep per-reader state below 1 KiB rather than embedding drain storage
+        // in every parent future, including commands whose output is not capped.
+        let bytes = std::mem::size_of_val(&future);
+        assert!(bytes < 1024, "bounded reader future uses {bytes} bytes");
     }
 }

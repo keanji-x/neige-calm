@@ -1313,7 +1313,7 @@ async fn boot_recovery_skips_deferred_worker_session_phantom_ghost() {
 /// The boot replay applies the same gated-self-report consultation as the live push: a gated task's `task.completed`
 /// is not replayed (the gate verdict wakes the planner); a stale `task.failed` against a gate-owned row is suppressed too.
 #[tokio::test]
-async fn boot_replay_suppresses_gated_self_report_and_replays_gate_result() {
+async fn legacy_boot_replay_suppresses_gated_self_report_and_replays_gate_result() {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let area = repo
         .area_create(
@@ -1436,17 +1436,22 @@ async fn boot_replay_suppresses_gated_self_report_and_replays_gate_result() {
             agent_message: None,
         },
     ] {
-        repo.log_pure_event(
-            ActorId::User,
-            scope.clone(),
-            None,
-            &bus,
-            &role_cache,
-            &area_cache,
-            event,
-        )
-        .await
-        .unwrap();
+        let event_id = repo
+            .log_pure_event(
+                ActorId::User,
+                scope.clone(),
+                None,
+                &bus,
+                &role_cache,
+                &area_cache,
+                event,
+            )
+            .await
+            .unwrap();
+        // Preserve the original pre-v31 persisted-report fixture. New writes still
+        // require an owner declaration; boot reads these immutable legacy bytes.
+        sqlx::query("UPDATE events SET event_version=30,payload=json_remove(payload,'$.notification') WHERE id=?1")
+            .bind(event_id).execute(repo.pool()).await.unwrap();
     }
     repo.log_pure_event(
         ActorId::KernelDispatcher,
