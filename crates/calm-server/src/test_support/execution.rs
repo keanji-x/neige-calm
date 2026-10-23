@@ -83,10 +83,20 @@ impl Supervisor {
         let mut config = Config::try_parse_from(["calm-server"]).unwrap();
         self.configure(&mut config);
         config.execution_recovery_interval = std::time::Duration::from_secs(1);
-        crate::execution_boot::recover(&config, pool)
+        let engine = crate::execution_boot::recover(&config, pool)
             .await
             .unwrap()
-            .unwrap()
+            .unwrap();
+        // Listener binding and SQL recovery do not await the client's Watching.
+        // Both initial assembly and a reopened kernel must finish that handshake.
+        tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            engine.output_generation(),
+        )
+        .await
+        .expect("execution fixture did not reach Watching")
+        .expect("execution fixture Watch failed");
+        engine
     }
 }
 
@@ -181,9 +191,58 @@ pub(crate) async fn block_stops(pool: &SqliteDb) {
     .await
     .unwrap();
 }
+
 pub(crate) async fn unblock_stops(pool: &SqliteDb) {
     sqlx::query("DROP TRIGGER c4_block_stops")
         .execute(pool.writer_pool())
         .await
         .unwrap();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use calm_truth::db::{Repo, sqlite::SqlxRepo};
+
+    #[tokio::test]
+    async fn new_returns_after_watching() {
+        let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
+        let fixture = Fixture::new(repo.sqlite_db().unwrap()).await;
+        assert!(fixture.engine.available(), "new returned before Watching");
+        assert!(crate::provider_execution::engine(Some(&fixture.engine)).is_ok());
+    }
+
+    #[tokio::test]
+    async fn new_kernel_returns_after_watching() {
+        let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
+        let pool = repo.sqlite_db().unwrap();
+        let fixture = Fixture::new(pool.clone()).await;
+        let engine = fixture.new_kernel(pool).await;
+        assert!(engine.available(), "new_kernel returned before Watching");
+        assert!(crate::provider_execution::engine(Some(&engine)).is_ok());
+    }
+
+    #[tokio::test]
+    async fn watching_does_not_hide_later_disconnect() {
+        let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
+        let pool = repo.sqlite_db().unwrap();
+        let fixture = Fixture::new(pool.clone()).await;
+        let reopened = fixture.new_kernel(pool).await;
+        let first = fixture.engine.output_generation().await.unwrap();
+        let second = reopened.output_generation().await.unwrap();
+        drop(fixture.supervisor);
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            first.changed().await.unwrap();
+            second.changed().await.unwrap();
+        })
+        .await
+        .expect("both clients must observe supervisor disconnect");
+        for engine in [&fixture.engine, &reopened] {
+            assert!(!engine.available());
+            assert!(matches!(
+                crate::provider_execution::engine(Some(engine)),
+                Err(crate::error::CalmError::ExecutionUnavailable)
+            ));
+        }
+    }
 }
