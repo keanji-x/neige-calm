@@ -694,6 +694,9 @@ async fn canonical_retry_storage_rollback_second_consumer_and_card_delete() {
 #[path = "retry_storage_tests/upgrade.rs"]
 mod upgrade;
 
+#[path = "retry_storage_tests/grok_turns_upgrade.rs"]
+mod grok_turns_upgrade;
+
 #[tokio::test]
 async fn canonical_retry_storage_upgrade_is_atomic_on_invalid_v4() {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();

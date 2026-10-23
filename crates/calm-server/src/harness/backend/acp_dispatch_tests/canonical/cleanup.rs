@@ -7,8 +7,12 @@ use crate::acp_planner::test_seams::pause_issue;
 async fn canonical(failure: Failure) {
     let mut fx = Fixture::new("reply").await;
     if matches!(failure, Failure::SpawnRevoke) {
-        let (backend, session, _held) =
-            session_for_command(&fx.owner, &fx.dir, "/missing-acp-executable");
+        let (backend, session, _held) = session_for_command(
+            &fx.owner,
+            &fx.dir,
+            fx.provider.clone(),
+            "/missing-acp-executable",
+        );
         fx.backend = backend;
         fx.session = session;
     }

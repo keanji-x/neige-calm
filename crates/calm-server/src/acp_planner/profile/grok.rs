@@ -12,7 +12,7 @@ use super::{AcpAgentProfile, AgentEntry, AgentIdentity, ModeLaunch, NOTHING};
 use provider::acp::approvals::McpToolRequest;
 
 pub(super) const PROFILE: AcpAgentProfile = AcpAgentProfile {
-    canonical_planner_inputs: false,
+    canonical_planner_inputs: true,
     canonical_assistant_inputs: false,
     entry: AgentEntry {
         before_options: &["agent"],

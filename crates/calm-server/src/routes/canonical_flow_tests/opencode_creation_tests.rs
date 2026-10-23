@@ -1,9 +1,29 @@
-//! Public creation, retained wake and reopen use the real ACP spy process.
+//! Public creation, retained wake and reopen use the real ACP spy process, once per ACP
+//! provider whose profile claims canonical Planner input.
 use super::*;
 use axum::extract::FromRef;
 use calm_truth::db::RepoRead;
+use calm_types::runtime::AgentProvider;
 
-async fn body(app: &axum::Router, cookie: &str) -> Value {
+/// Each registration's spy logs under its own root: OpenCode's is the fixture root.
+fn peer_root(fixture: &Fixture, provider: &AgentProvider) -> std::path::PathBuf {
+    match provider {
+        AgentProvider::OpenCode => fixture.root.path().into(),
+        AgentProvider::Grok => fixture.root.path().join("grok"),
+        AgentProvider::Codex | AgentProvider::Claude => panic!("{provider:?} has no ACP spy"),
+    }
+}
+
+/// The other configured ACP registration, for a request that changes only its provider.
+fn other(provider: &AgentProvider) -> AgentProvider {
+    match provider {
+        AgentProvider::OpenCode => AgentProvider::Grok,
+        AgentProvider::Grok => AgentProvider::OpenCode,
+        AgentProvider::Codex | AgentProvider::Claude => panic!("{provider:?} has no ACP spy"),
+    }
+}
+
+async fn body(app: &axum::Router, cookie: &str, provider: &AgentProvider) -> Value {
     let area = post(
         app,
         cookie,
@@ -12,7 +32,7 @@ async fn body(app: &axum::Router, cookie: &str) -> Value {
         json!({"name":"ACP creation","color":"#123456"}),
     )
     .await;
-    json!({"area_id":area["id"],"title":"","planner_provider":"opencode",
+    json!({"area_id":area["id"],"title":"","planner_provider":provider.wire_name(),
         "theme":{"fg":[255,255,255],"bg":[0,0,0]},"first_message":FIRST_BODY})
 }
 
@@ -28,13 +48,13 @@ fn configure(fixture: &mut Fixture) {
         "env":{"ACP_FIXTURE_ROOT":fixture.root.path()},"min_agent_version":"1.0.0"},
         {"provider":"grok","command":"/usr/bin/python3",
         "args":["-u",concat!(env!("CARGO_MANIFEST_DIR"),"/tests/fixtures/acp_planner/agent.py")],
-        "env":{"ACP_FIXTURE_ROOT":grok,"ACP_FIXTURE_IDENTITY":"meta","ACP_FIXTURE_VENDOR":"xai","ACP_FIXTURE_AUTH_METHODS":"cached_token"},"min_agent_version":"1.0.0"}
+        "env":{"ACP_FIXTURE_ROOT":grok,"ACP_FIXTURE_IDENTITY":"meta","ACP_FIXTURE_VENDOR":"xai","ACP_FIXTURE_AUTH_METHODS":"cached_token","ACP_FIXTURE_VERSION":"1.0.62"},"min_agent_version":"1.0.0"}
     ]}).to_string()).unwrap();
     fixture.acp_config = Some(config);
 }
 
-fn prompts(fixture: &Fixture) -> usize {
-    std::fs::read_to_string(fixture.root.path().join("requests.jsonl"))
+fn prompts(fixture: &Fixture, provider: &AgentProvider) -> usize {
+    std::fs::read_to_string(peer_root(fixture, provider).join("requests.jsonl"))
         .unwrap_or_default()
         .lines()
         .map(|line| serde_json::from_str::<Value>(line).unwrap())
@@ -44,9 +64,18 @@ fn prompts(fixture: &Fixture) -> usize {
 
 #[tokio::test]
 async fn canonical_opencode_creation_accepts_before_ready_replays_and_wakes_after_restart() {
+    accepts_before_ready_replays_and_wakes_after_restart(AgentProvider::OpenCode).await;
+}
+
+#[tokio::test]
+async fn canonical_grok_creation_accepts_before_ready_replays_and_wakes_after_restart() {
+    accepts_before_ready_replays_and_wakes_after_restart(AgentProvider::Grok).await;
+}
+
+async fn accepts_before_ready_replays_and_wakes_after_restart(provider: AgentProvider) {
     let mut fixture = Fixture::new().await;
     let (state, app, cookie) = fixture.application().await;
-    let request = body(&app, &cookie).await;
+    let request = body(&app, &cookie, &provider).await;
     let created = post(&app, &cookie, "/api/tracks", "first", request.clone()).await;
     let track = created["id"].as_str().unwrap();
     let (card, worker, accepted) = fixture.carrier(track).await;
@@ -59,7 +88,7 @@ async fn canonical_opencode_creation_accepts_before_ready_replays_and_wakes_afte
     );
     for (field, value) in [
         ("first_message", json!("changed")),
-        ("planner_provider", json!("grok")),
+        ("planner_provider", json!(other(&provider).wire_name())),
         ("model", json!("changed")),
     ] {
         let mut changed = request.clone();
@@ -104,8 +133,9 @@ async fn canonical_opencode_creation_accepts_before_ready_replays_and_wakes_afte
     })
     .await
     .unwrap();
-    assert!(prompts(&fixture) > 0);
-    let requests = std::fs::read_to_string(fixture.root.path().join("requests.jsonl")).unwrap();
+    assert!(prompts(&fixture, &provider) > 0);
+    let requests =
+        std::fs::read_to_string(peer_root(&fixture, &provider).join("requests.jsonl")).unwrap();
     assert_eq!(
         requests
             .lines()
@@ -128,7 +158,7 @@ async fn canonical_opencode_creation_accepts_before_ready_replays_and_wakes_afte
     fixture.shutdown_process(&state).await;
     drop(app);
     drop(state);
-    let before = prompts(&fixture);
+    let before = prompts(&fixture, &provider);
     fixture.repo = Arc::new(SqlxRepo::open(&fixture.url).await.unwrap());
     let (state, app, cookie) = fixture.application().await;
     assert_eq!(
@@ -136,7 +166,7 @@ async fn canonical_opencode_creation_accepts_before_ready_replays_and_wakes_afte
         created["id"]
     );
     assert_eq!(
-        prompts(&fixture),
+        prompts(&fixture, &provider),
         before,
         "restart/key replay never resends"
     );
@@ -155,42 +185,30 @@ async fn canonical_opencode_creation_accepts_before_ready_replays_and_wakes_afte
 }
 
 #[tokio::test]
-async fn canonical_opencode_creation_empty_is_lazy_and_grok_remains_historical() {
+async fn canonical_opencode_creation_empty_is_lazy() {
+    empty_is_lazy(AgentProvider::OpenCode).await;
+}
+
+#[tokio::test]
+async fn canonical_grok_creation_empty_is_lazy() {
+    empty_is_lazy(AgentProvider::Grok).await;
+}
+
+async fn empty_is_lazy(provider: AgentProvider) {
     let mut fixture = Fixture::new().await;
     configure(&mut fixture);
     let (state, app, cookie) = fixture.application().await;
-    let mut request = body(&app, &cookie).await;
+    let mut request = body(&app, &cookie, &provider).await;
     request.as_object_mut().unwrap().remove("first_message");
     let created = post(&app, &cookie, "/api/tracks", "empty", request.clone()).await;
+    assert_eq!(
+        post(&app, &cookie, "/api/tracks", "empty", request).await["id"],
+        created["id"]
+    );
     let (_, _, frame) = fixture.carrier(created["id"].as_str().unwrap()).await;
     assert!(frame.canonical_inputs.pending.is_empty());
     assert!(frame.header.last_thread_id.is_none());
-    request["planner_provider"] = json!("grok");
-    let historical = post(&app, &cookie, "/api/tracks", "grok", request.clone()).await;
-    assert_eq!(
-        post(&app, &cookie, "/api/tracks", "grok", request).await["id"],
-        historical["id"]
-    );
-    let card: String =
-        sqlx::query_scalar("SELECT id FROM cards WHERE track_id=?1 AND role='planner'")
-            .bind(historical["id"].as_str().unwrap())
-            .fetch_one(fixture.repo.pool())
-            .await
-            .unwrap();
-    let mut connection = fixture.repo.pool().acquire().await.unwrap();
-    assert!(
-        !crate::db::sqlite::conversation::card_has_canonical_storage(&mut connection, &card)
-            .await
-            .unwrap(),
-        "fresh Grok retains historical storage"
-    );
-    assert_eq!(
-        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM conversation_human_track_creations")
-            .fetch_one(fixture.repo.pool())
-            .await
-            .unwrap(),
-        0
-    );
+    assert_eq!(prompts(&fixture, &provider), 0);
     fixture.shutdown_process(&state).await;
 }
 
@@ -218,7 +236,11 @@ async fn canonical_opencode_creation_catalog_uses_acp_owner() {
         "ACP setup catalog judges efforts"
     );
     assert!(!state.shared_codex_appserver.is_running());
-    assert_eq!(prompts(&fixture), 0, "catalog discovery never prompts");
+    assert_eq!(
+        prompts(&fixture, &AgentProvider::OpenCode),
+        0,
+        "catalog discovery never prompts"
+    );
     fixture.shutdown_process(&state).await;
 }
 
@@ -257,11 +279,21 @@ async fn canonical_opencode_creation_catalog_does_not_reuse_another_registration
 
 #[tokio::test]
 async fn canonical_opencode_creation_unknown_projects_keep_and_server_retry_reason() {
+    unknown_projects_keep_and_server_retry_reason(AgentProvider::OpenCode).await;
+}
+
+#[tokio::test]
+async fn canonical_grok_creation_unknown_projects_keep_and_server_retry_reason() {
+    unknown_projects_keep_and_server_retry_reason(AgentProvider::Grok).await;
+}
+
+/// Delivery unknown holds the input: Keep is offered, retry is not, and nothing is resent.
+async fn unknown_projects_keep_and_server_retry_reason(provider: AgentProvider) {
     let mut fixture = Fixture::new().await;
     configure(&mut fixture);
-    std::fs::write(fixture.root.path().join("scenario"), "lost").unwrap();
+    std::fs::write(peer_root(&fixture, &provider).join("scenario"), "lost").unwrap();
     let (state, app, cookie) = fixture.application().await;
-    let mut request = body(&app, &cookie).await;
+    let mut request = body(&app, &cookie, &provider).await;
     request["model"] = json!("fixture/model-a");
     request["reasoning_effort"] = json!("normal");
     let created = post(&app, &cookie, "/api/tracks", "first", request).await;
@@ -324,17 +356,26 @@ async fn canonical_opencode_creation_unknown_projects_keep_and_server_retry_reas
         json!({"kind":"unavailable","reason":"unsupported_binding"})
     );
     assert_eq!(run["history_replacement_supported"], false);
-    assert_eq!(prompts(&fixture), 1);
+    assert_eq!(prompts(&fixture, &provider), 1);
     state.harness.shutdown_and_remove(&worker).await.unwrap();
     fixture.shutdown_process(&state).await;
 }
 
 #[tokio::test]
 async fn canonical_opencode_creation_historical_template_key_replays_through_http() {
+    historical_template_key_replays_through_http(AgentProvider::OpenCode).await;
+}
+
+#[tokio::test]
+async fn canonical_grok_creation_historical_template_key_replays_through_http() {
+    historical_template_key_replays_through_http(AgentProvider::Grok).await;
+}
+
+async fn historical_template_key_replays_through_http(provider: AgentProvider) {
     let mut fixture = Fixture::new().await;
     configure(&mut fixture);
     let (state, app, cookie) = fixture.application().await;
-    let mut original = body(&app, &cookie).await;
+    let mut original = body(&app, &cookie, &provider).await;
     original["template_id"] = json!("small-change");
     let created = post(&app, &cookie, "/api/tracks", "historical", original.clone()).await;
     let replay = post(&app, &cookie, "/api/tracks", "historical", original.clone()).await;
@@ -344,6 +385,14 @@ async fn canonical_opencode_creation_historical_template_key_replays_through_htt
         status(&app, &cookie, "/api/tracks", "historical", original).await,
         StatusCode::CONFLICT
     );
+    // The historical first message still reaches the peer, on historical storage only.
+    tokio::time::timeout(Duration::from_secs(30), async {
+        while prompts(&fixture, &provider) == 0 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
     let card: String =
         sqlx::query_scalar("SELECT id FROM cards WHERE track_id=?1 AND role='planner'")
             .bind(created["id"].as_str().unwrap())
@@ -357,6 +406,13 @@ async fn canonical_opencode_creation_historical_template_key_replays_through_htt
             .unwrap()
     );
     drop(connection);
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM conversation_turns")
+            .fetch_one(fixture.repo.pool())
+            .await
+            .unwrap(),
+        0
+    );
     let worker: Option<String> = sqlx::query_scalar("SELECT session_id FROM cards WHERE id=?1")
         .bind(&card)
         .fetch_one(fixture.repo.pool())

@@ -5,6 +5,8 @@ mod cleanup;
 mod continuation;
 mod control;
 mod failures;
+mod grok;
+mod profile_storage;
 mod recovery;
 mod recovery_windows;
 mod resolution;
@@ -17,6 +19,7 @@ use calm_types::conversation::*;
 use std::time::Duration;
 
 struct Fixture {
+    provider: AgentProvider,
     backend: PlannerBackend,
     session: Arc<AcpPlannerSession>,
     owner: super::super::dispatch_fixture::Owner,
@@ -31,7 +34,11 @@ impl Fixture {
         Self::with_storage(scenario, false).await
     }
     async fn with_storage(scenario: &str, persistent: bool) -> Self {
-        let (backend, session, owner, dir, _held) = fixture_storage(persistent).await;
+        Self::with_provider(AgentProvider::OpenCode, scenario, persistent).await
+    }
+    async fn with_provider(provider: AgentProvider, scenario: &str, persistent: bool) -> Self {
+        let (backend, session, owner, dir, _held) =
+            fixture_storage_for(provider.clone(), persistent).await;
         std::fs::write(dir.path().join("scenario"), scenario).unwrap();
         let auth = AuthState::new(AuthConfig {
             username: Some("Owner".into()),
@@ -101,6 +108,7 @@ impl Fixture {
         .unwrap();
         tx.commit().await.unwrap();
         Self {
+            provider,
             backend,
             session,
             owner,

@@ -25,7 +25,7 @@ impl Fixture {
         .await
         .unwrap();
     }
-    async fn claim_successor(&self) -> InputSubmissionId {
+    pub(super) async fn claim_successor(&self) -> InputSubmissionId {
         let mut tx = begin_immediate_tx(self.owner.repo.db()).await.unwrap();
         let mut carrier = current_input_carrier_tx(&mut tx, &self.owner.card, &self.owner.worker)
             .await
@@ -67,7 +67,7 @@ impl Fixture {
         tx.commit().await.unwrap();
         claimed.submission_id
     }
-    async fn dispatch_submission(
+    pub(super) async fn dispatch_submission(
         &self,
         submission: &InputSubmissionId,
     ) -> crate::harness::input_dispatch::CommittedInputReport {
@@ -87,13 +87,13 @@ impl Fixture {
         .await
         .unwrap()
     }
-    async fn receipt_bytes(
+    pub(super) async fn receipt_bytes(
         &self,
         submission: &InputSubmissionId,
     ) -> (String, String, String, Option<String>) {
         sqlx::query_as("SELECT turn_id,input_json,state,outcome_json FROM acp_submissions WHERE worker_session_id=?1 AND client_id=?2").bind(&self.owner.worker).bind(submission.as_str()).fetch_one(self.owner.repo.pool()).await.unwrap()
     }
-    fn requests(&self) -> Vec<serde_json::Value> {
+    pub(super) fn requests(&self) -> Vec<serde_json::Value> {
         std::fs::read_to_string(self.dir.path().join("requests.jsonl"))
             .unwrap()
             .lines()
@@ -104,7 +104,11 @@ impl Fixture {
 
 #[tokio::test]
 async fn canonical_acp_kept_unknown_loads_same_native_on_new_process_and_fences_again() {
-    let fx = Fixture::new("lost").await;
+    kept_unknown_loads_same_native_on_new_process(AgentProvider::OpenCode).await;
+}
+
+pub(super) async fn kept_unknown_loads_same_native_on_new_process(provider: AgentProvider) {
+    let fx = Fixture::with_provider(provider, "lost", false).await;
     fx.dispatch().await.unwrap();
     fx.wait_idle().await;
     let before = fx.receipt_bytes(&fx.submission).await;
@@ -144,6 +148,21 @@ async fn canonical_acp_kept_unknown_loads_same_native_on_new_process_and_fences_
             .count(),
         1
     );
+    // Each process negotiates afresh before its session operation: Grok authenticates every launch.
+    let negotiation: &[&str] = match &fx.provider {
+        AgentProvider::OpenCode => &["initialize"],
+        AgentProvider::Grok => &["initialize", "authenticate"],
+        AgentProvider::Codex | AgentProvider::Claude => panic!("not an ACP provider"),
+    };
+    for (prompt, operation) in [(prompts[0], "session/new"), (prompts[1], "session/load")] {
+        let methods: Vec<_> = requests
+            .iter()
+            .filter(|r| r["_pid"] == prompt["_pid"])
+            .filter_map(|r| r["method"].as_str())
+            .collect();
+        assert_eq!(methods[..negotiation.len()], *negotiation, "{methods:?}");
+        assert_eq!(methods[negotiation.len()], operation, "{methods:?}");
+    }
     // The original key still replays its immutable receipt with no third prompt.
     assert!(fx.dispatch().await.is_err());
     assert_eq!(fx.prompts(), 2);
@@ -201,8 +220,14 @@ async fn canonical_acp_keep_without_finished_cleanup_stays_held() {
 
 #[tokio::test]
 async fn canonical_acp_unsupported_load_and_registration_drift_refuse_without_new() {
+    unsupported_load_and_registration_drift_refuse_without_new(AgentProvider::OpenCode).await;
+}
+
+pub(super) async fn unsupported_load_and_registration_drift_refuse_without_new(
+    provider: AgentProvider,
+) {
     for scenario in ["unsupported-load", "registration-drift"] {
-        let fx = Fixture::new("lost").await;
+        let fx = Fixture::with_provider(provider.clone(), "lost", false).await;
         fx.dispatch().await.unwrap();
         fx.wait_idle().await;
         fx.keep_unknown(&fx.submission, "keep").await;
