@@ -1024,7 +1024,8 @@ export function useTrackMutations(transport: ApiTransportPort, unauthorized: Una
 
 /**
  * Settings › Plugins — the installed list. `retry: false` so a failed read says so and offers Retry.
- * `plugin.state` does not refresh this list, so the query polls only while some row is in motion.
+ * `plugin.state` actively invalidates this list; 2-second polling while a row is spawning/installing
+ * supplements event-driven refresh.
  */
 /* Frozen array, not a `Set`: `no-module-runtime-state` rejects a module-level `new`. */
 const PLUGIN_TRANSIENT_STATES = Object.freeze(['spawning', 'installing'] as const);
