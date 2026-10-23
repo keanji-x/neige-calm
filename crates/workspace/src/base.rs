@@ -1,4 +1,5 @@
 //! Git path and checkout probes.
+use crate::bounded_git::{BoundedOutput, GIT_BOUND};
 use crate::command::neige_git_command;
 use crate::error::{Error, Result};
 use crate::git::{GitWorktreeRegistration, WorkspaceLeaseTarget};
@@ -107,10 +108,11 @@ pub(crate) fn registration_path(path: &Path) -> PathBuf {
 /// which is never reused, pruned or removed.
 pub(crate) fn worktree_registration_in(
     listing: &[u8],
-    target: &WorkspaceLeaseTarget,
+    repo_root: &Path,
+    path: &Path,
 ) -> Result<GitWorktreeRegistration> {
-    let wanted_real = registration_path(&target.path);
-    let wanted_named = named_registration_path(&target.path);
+    let wanted_real = registration_path(path);
+    let wanted_named = named_registration_path(path);
     let mut ours = None;
     let mut foreign = None;
     let mut rest = listing;
@@ -127,7 +129,7 @@ pub(crate) fn worktree_registration_in(
             .ok_or_else(|| {
                 Error::Internal(format!(
                     "git worktree list in {} printed a record without a `worktree ` line: {:?}",
-                    target.repo_root.display(),
+                    repo_root.display(),
                     String::from_utf8_lossy(record)
                 ))
             })?;
@@ -238,7 +240,7 @@ fn git_stdout_line(dir: &Path, args: &[&str]) -> Result<OsString> {
         .arg("-C")
         .arg(dir)
         .args(args)
-        .output()
+        .bounded_output(std::time::Instant::now() + GIT_BOUND)
         .map_err(|e| {
             Error::Internal(format!(
                 "spawn git {} in {}: {e}",
@@ -321,7 +323,7 @@ pub fn worktree_head_ref(worktree: &Path) -> Result<Option<String>> {
         .arg("-C")
         .arg(worktree)
         .args(args)
-        .output()
+        .bounded_output(std::time::Instant::now() + GIT_BOUND)
         .map_err(|e| {
             Error::Internal(format!(
                 "spawn git {} in {}: {e}",

@@ -199,7 +199,7 @@ impl TaskVerifyAdapter {
                                 } else if execution::release(
                                     &ctx,
                                     &op,
-                                    &frozen.task_id,
+                                    execution::ReleaseAuthority::Task(&frozen.task_id),
                                     #[cfg(any(test, feature = "fixtures"))]
                                     None,
                                 )

@@ -579,7 +579,7 @@ impl TaskGateRunAdapter {
                                     let released = execution::release(
                                         &ctx,
                                         &op,
-                                        &frozen.task_id,
+                                        execution::ReleaseAuthority::Task(&frozen.task_id),
                                         #[cfg(any(test, feature = "fixtures"))]
                                         self.hooks.release_response.as_ref(),
                                     )

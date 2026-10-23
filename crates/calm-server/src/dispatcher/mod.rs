@@ -396,6 +396,10 @@ fn dispatcher_operation_runtime(
             planner_harness_shutdown_adapter,
             task_verify_adapter,
             task_gate_run_adapter,
+            Arc::new(crate::operation::objective_check_run::ObjectiveCheckRunAdapter::new(
+                crate::operation::task_verify_adapter::TaskVerifyAdapter::default_gate_logs_dir().with_file_name("objective-checks"),
+                crate::operation::task_verify_adapter::TaskVerifyAdapter::default_gate_logs_dir().join("objective-checks"),
+            )),
             forge_action_adapter,
             child_track_adapter,
             card_create_adapter,

@@ -1,8 +1,6 @@
 //! Kernel-owned fact executors. The support set lives here, shared by admission and execution.
 use super::*;
 use objective::check::{CheckConfig, Fact, FactOutput, FactParams, SampleOutput};
-use objective::engine::Evaluation;
-use objective::standard::standard_hash;
 use sqlx::{Row, Sqlite, Transaction};
 
 /// Caller owns the one writer transaction, including claim, measurement and report.
@@ -21,14 +19,8 @@ pub(super) async fn run_tx(
     else {
         unreachable!()
     };
-    let (_, state) = objective_host::load_state_tx(tx, &row.id.track_id).await?;
-    let current = state.objectives.get(key);
-    let valid = current.is_some_and(|o| {
-        matches!(&o.evaluation, Some(Evaluation::Running { id, revision: r, .. }) if id == evaluation && r == revision)
-        && matches!(&row.effect, objective_host::StoredEffect::RunCheck { standard_hash: hash } if *hash == standard_hash(&o.definition))
-        && o.status == objective::engine::Status::Open
-    });
-    if !valid {
+    let current = objective_host::current_check_tx(tx, &row.id).await?;
+    if current.is_none() {
         objective_host::intent_settle_tx(
             tx,
             &row.id,
@@ -39,12 +31,8 @@ pub(super) async fn run_tx(
         .await?;
         return Ok(());
     }
-    let config = &current
-        .unwrap()
-        .definition
-        .check(check)
-        .ok_or_else(|| CalmError::Conflict("objective check is missing".into()))?
-        .config;
+    let (_, definition) = current.unwrap();
+    let config = &definition.config;
     if !supports(config) {
         return Err(CalmError::Conflict(
             "objective check has no executor".into(),

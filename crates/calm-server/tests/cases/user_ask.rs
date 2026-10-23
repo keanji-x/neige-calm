@@ -3,6 +3,9 @@
 //! `ask.answered`, and the activity projector shows and closes the ask.
 #![cfg(unix)]
 
+#[path = "user_ask/objective_command.rs"]
+mod objective_command;
+
 use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -82,6 +85,10 @@ async fn boot() -> Boot {
 }
 
 async fn boot_with_task_dispatch(task_dispatch: bool) -> Boot {
+    boot_with_workspace(task_dispatch, "").await
+}
+
+async fn boot_with_workspace(task_dispatch: bool, cwd: &str) -> Boot {
     let repo: Arc<dyn Repo> = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let area = repo
         .area_create(
@@ -100,7 +107,7 @@ async fn boot_with_task_dispatch(task_dispatch: bool) -> Boot {
             area_id: area.id.clone(),
             title: "user ask".into(),
             sort: None,
-            cwd: String::new(),
+            cwd: cwd.into(),
             template_id: None,
             plugin_scope: Some("gitforge".into()),
             attach_folder: false,

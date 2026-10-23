@@ -285,7 +285,7 @@ async fn measure(
             if !o.is_approved() { return Err(CalmError::Conflict("approval_required: call neige_objective_ask".into())); }
             if o.status != objective::engine::Status::Open { return Err(CalmError::Conflict("objective is not open; read objective.kr and choose an open objective".into())); }
             if !o.definition.checks.iter().all(|c| crate::objective_dispatch::supports(&c.config)) {
-                return Err(CalmError::Conflict("objective contains a check without an executor; supported: fact TaskAccepted, AskAnswered, evaluator".into()));
+                return Err(CalmError::Conflict("objective contains a check without an executor; supported: fact TaskAccepted, AskAnswered, evaluator, command".into()));
             }
             let event = objective::Event::Requested { objective: key.clone(), revision: revision.clone() };
             if let Some(current) = o.evaluation.as_ref().filter(|e| e.revision() == &revision) {
@@ -346,6 +346,7 @@ async fn measure(
             db,
             &ctx.events,
             track.as_str(),
+            ctx.operation_runtime.get().map(AsRef::as_ref),
         )
         .await
     {

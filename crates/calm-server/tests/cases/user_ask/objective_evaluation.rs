@@ -251,7 +251,6 @@ async fn objective_evaluation_superseded_backlog_and_late_result() {
 #[tokio::test]
 async fn objective_evaluation_refusals_and_unsupported_checks_write_nothing() {
     for config in [
-        json!({"kind":"command","params":{"command":"true"}}),
         json!({"kind":"metric","params":{"command":"true","direction":"lower"}}),
         json!({"kind":"fact","params":{"fact":"pr_merged","subject":"#1"}}),
     ] {

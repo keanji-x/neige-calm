@@ -224,7 +224,7 @@ pub(crate) fn git_worktree_registration(
     if !output.status.success() {
         return Err(git_failed("git worktree list", &target.repo_root, &output));
     }
-    base::worktree_registration_in(&output.stdout, target)
+    base::worktree_registration_in(&output.stdout, &target.repo_root, &target.path)
 }
 
 /// Drop registrations whose directory is gone; touches no files.

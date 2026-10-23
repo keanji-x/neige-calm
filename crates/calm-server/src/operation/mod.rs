@@ -27,6 +27,7 @@ pub(crate) mod gate_execution;
 pub(crate) mod gate_lifecycle;
 pub(crate) mod gate_ops;
 pub(crate) mod gate_process;
+pub mod objective_check_run;
 pub(crate) mod owned_execution;
 pub mod planner_harness_interrupt_adapter;
 pub mod planner_harness_shutdown_adapter;
@@ -93,7 +94,7 @@ pub const TASK_BOUND_ADAPTER_KINDS: [&str; 6] = [
     "child-track",
 ];
 
-pub const NON_TASK_BOUND_ADAPTER_KINDS: [&str; 11] = [
+pub const NON_TASK_BOUND_ADAPTER_KINDS: [&str; 12] = [
     card_create_adapter::CARD_CREATE,
     track_recipe_create_adapter::TRACK_RECIPE_CREATE,
     "terminal-create",
@@ -105,6 +106,7 @@ pub const NON_TASK_BOUND_ADAPTER_KINDS: [&str; 11] = [
     "planner-harness-interrupt",
     "planner-harness-shutdown",
     "forge-action",
+    objective_check_run::KIND,
 ];
 
 #[doc(hidden)]

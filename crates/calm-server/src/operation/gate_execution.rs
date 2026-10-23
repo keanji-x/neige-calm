@@ -125,19 +125,45 @@ pub(crate) async fn admit(
     Ok(record)
 }
 
+pub(crate) enum ReleaseAuthority<'a> {
+    Task(&'a str),
+    ObjectiveIntent(&'a calm_truth::objective_host::IntentId),
+}
+
+impl ReleaseAuthority<'_> {
+    async fn authorize_tx(self, tx: &mut Tx<'_>) -> Result<()> {
+        match self {
+            Self::Task(task) => super::task_launch::TaskLaunch::authorize_tx(tx, task).await,
+            Self::ObjectiveIntent(id) => {
+                let Some((row, _)) = calm_truth::objective_host::current_check_tx(tx, id).await?
+                else {
+                    return Err(conflict("objective check authorization expired"));
+                };
+                if !matches!(
+                    row.status,
+                    calm_truth::objective_host::IntentStatus::Dispatched { .. }
+                ) {
+                    return Err(conflict("objective intent is not dispatched"));
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
 /// All record transitions are fenced by the parked claim and compare the entire v1 record.
 pub(crate) async fn transition(
     ctx: &SpawnCtx,
     op: &Operation,
     old: &Record,
     new: &Record,
-    task: Option<&str>,
+    authority: Option<ReleaseAuthority<'_>>,
 ) -> Result<()> {
     let pool = ctx.operation_repo.sqlite_db();
     let mut tx = crate::db::sqlite::begin_immediate_tx(&pool).await?;
     super::repo_sqlite::require_live_claim_tx(&mut tx, op).await?;
-    if let Some(task) = task {
-        super::task_launch::TaskLaunch::authorize_tx(&mut tx, task).await?;
+    if let Some(authority) = authority {
+        authority.authorize_tx(&mut tx).await?;
     }
     sql::compare_exchange(
         &mut tx,
@@ -174,7 +200,7 @@ pub(crate) async fn stop(ctx: &SpawnCtx, op: &Operation, reason: StopReason) -> 
 pub(crate) async fn release(
     ctx: &SpawnCtx,
     op: &Operation,
-    task: &str,
+    authority: ReleaseAuthority<'_>,
     #[cfg(any(test, feature = "fixtures"))] response: Option<&super::task_gate_run::FaultHook>,
 ) -> Result<()> {
     let old = record(op)?;
@@ -185,7 +211,7 @@ pub(crate) async fn release(
     new.release = Release::Releasing {
         authorized_at_ms: now_ms(),
     };
-    transition(ctx, op, &old, &new, Some(task)).await?;
+    transition(ctx, op, &old, &new, Some(authority)).await?;
     let send = async {
         super::owned_execution::send_release(ctx, &old.execution_id, b"go\n").await?;
         // Fault only after the real token and close reached the executor.

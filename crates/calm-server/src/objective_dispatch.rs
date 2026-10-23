@@ -1,5 +1,6 @@
 //! Objective fact and Notify executors. The durable wake uses the same event log and
 //! Dispatcher replay as compact settlement; event append and settlement are atomic.
+mod command;
 pub(crate) mod evaluator;
 pub(crate) mod fact;
 
@@ -28,7 +29,8 @@ pub(crate) fn supports(config: &CheckConfig) -> bool {
             Fact::PrMerged => false,
         },
         CheckConfig::Evaluator(_) => true,
-        CheckConfig::Command(_) | CheckConfig::Metric(_) => false,
+        CheckConfig::Command(_) => true,
+        CheckConfig::Metric(_) => false,
     }
 }
 
@@ -125,7 +127,11 @@ pub(crate) async fn dispatch_track(
     db: &calm_truth::db::sqlite::SqliteDb,
     bus: &EventBus,
     track: &str,
+    runtime: Option<&crate::operation::OperationRuntime>,
 ) -> Result<()> {
+    let _command_dispatch = command::lock(track).await;
+    crate::operation::objective_check_run::checkout::cleanup_track(db, track).await?;
+    let mut handed_off = std::collections::BTreeSet::new();
     let track_for_tx = track.to_owned();
     let envelopes = write_in_tx_typed(repo, move |tx| {
         Box::pin(async move { evaluator::missing_tx(tx, &track_for_tx).await })
@@ -146,6 +152,7 @@ pub(crate) async fn dispatch_track(
             objective_host::unsettled_intents_for_track(db, &track.to_owned().into())
                 .await?
                 .into_iter()
+                .filter(|row| !handed_off.contains(&(row.id.seq.0, row.id.ordinal)))
                 .filter(|row| !bound.contains(&(row.id.seq.0 as i64, i64::from(row.id.ordinal))))
                 .filter(|row| match &row.intent {
                     Intent::RunCheck { .. } | Intent::Notify { .. } => true,
@@ -156,6 +163,14 @@ pub(crate) async fn dispatch_track(
             return Ok(());
         }
         for row in pending {
+            if matches!(row.intent, Intent::RunCheck { .. })
+                && command::dispatch(repo, db, bus, runtime, &row).await?
+            {
+                // Bound operations and commands deferred behind the per-track limit
+                // are reconciled on the next boot/tick, never spun in this loop.
+                handed_off.insert((row.id.seq.0, row.id.ordinal));
+                continue;
+            }
             let envelope = write_in_tx_typed(repo, move |tx| Box::pin(async move {
             // Another invocation may have consumed this boot view. Recheck under
             // writer admission instead of weakening the lifecycle's strict transitions.

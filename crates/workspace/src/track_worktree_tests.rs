@@ -385,3 +385,70 @@ fn common_dir_bytes_are_not_decoded_before_canonicalize() {
         "the decoy was never used"
     );
 }
+
+#[test]
+fn detached_worktree_is_independent_and_removed() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = tmp.path().join("repo");
+    init_git_repo(&repo);
+    let revision = git_stdout(&repo, ["rev-parse", "HEAD"]);
+    let revision = revision.trim();
+    let checkout = tmp.path().join("detached");
+    crate::worktree::detached_worktree(&repo, &checkout, revision).unwrap();
+    crate::worktree::detached_worktree(&repo, &checkout, revision).unwrap();
+    std::fs::write(repo.join("README.md"), "changed").unwrap();
+    assert_eq!(
+        std::fs::read_to_string(checkout.join("README.md")).unwrap(),
+        "initial\n"
+    );
+    std::fs::write(checkout.join("untracked"), "disposable").unwrap();
+    crate::worktree::remove_worktree(&repo, &checkout).unwrap();
+    crate::worktree::remove_worktree(&repo, &checkout).unwrap();
+    assert!(!checkout.exists());
+    assert!(
+        !git_stdout(&repo, ["worktree", "list", "--porcelain"])
+            .contains(checkout.to_str().unwrap())
+    );
+}
+
+#[test]
+fn detached_worktree_refuses_missing_revision_without_side_effects() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = tmp.path().join("repo");
+    init_git_repo(&repo);
+    let path = tmp.path().join("missing");
+    assert!(crate::worktree::detached_worktree(&repo, &path, &"a".repeat(40)).is_err());
+    assert!(!path.exists());
+}
+
+#[test]
+fn detached_worktree_requires_its_own_registration() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = tmp.path().join("repo");
+    init_git_repo(&repo);
+    let revision = git_stdout(&repo, ["rev-parse", "HEAD"]);
+    let detached = tmp.path().join("detached");
+    crate::worktree::detached_worktree(&repo, &detached, revision.trim()).unwrap();
+    let nested = detached.join("nested");
+    std::fs::create_dir(&nested).unwrap();
+    assert!(crate::worktree::detached_worktree(&repo, &nested, revision.trim()).is_err());
+    crate::worktree::remove_worktree(&repo, &detached).unwrap();
+}
+
+#[test]
+fn detached_worktree_symlinked_parent_reuses_and_removes_registration() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = tmp.path().join("repo");
+    init_git_repo(&repo);
+    let real = tmp.path().join("real");
+    std::fs::create_dir(&real).unwrap();
+    let alias = tmp.path().join("alias");
+    std::os::unix::fs::symlink(&real, &alias).unwrap();
+    let path = alias.join("detached");
+    let revision = git_stdout(&repo, ["rev-parse", "HEAD"]);
+    crate::worktree::detached_worktree(&repo, &path, revision.trim()).unwrap();
+    crate::worktree::detached_worktree(&repo, &path, revision.trim()).unwrap();
+    crate::worktree::remove_worktree(&repo, &path).unwrap();
+    assert!(!path.exists());
+    assert!(!git_stdout(&repo, ["worktree", "list", "--porcelain"]).contains("detached"));
+}

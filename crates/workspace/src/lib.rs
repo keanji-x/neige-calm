@@ -1,5 +1,6 @@
 //! Filesystem and Git workspace mechanisms. Lifecycle and authorization belong to the caller.
 pub mod base;
+mod bounded_git;
 pub mod command;
 pub mod directory;
 pub mod error;

@@ -32,6 +32,7 @@ pub struct TrackPlannerContextProjector {
     db: calm_truth::db::sqlite::SqliteDb,
     bus: EventBus,
     write: WriteContext,
+    operation_runtime: Option<Arc<tokio::sync::OnceCell<Arc<crate::operation::OperationRuntime>>>>,
 }
 
 fn known(amount: f64, unit: &str) -> MetricValue {
@@ -147,7 +148,16 @@ impl TrackPlannerContextProjector {
             db,
             bus,
             write,
+            operation_runtime: None,
         })
+    }
+
+    pub fn with_operation_runtime(
+        mut self,
+        runtime: Arc<tokio::sync::OnceCell<Arc<crate::operation::OperationRuntime>>>,
+    ) -> Self {
+        self.operation_runtime = Some(runtime);
+        self
     }
 
     /// Returns true only when a changed data unit was published.
@@ -223,6 +233,10 @@ impl TrackPlannerContextProjector {
                 &self.db,
                 &self.bus,
                 track_id,
+                self.operation_runtime
+                    .as_ref()
+                    .and_then(|r| r.get())
+                    .map(AsRef::as_ref),
             )
             .await
             {
@@ -409,8 +423,13 @@ impl TrackPlannerContextProjector {
     }
 }
 
-pub fn spawn(repo: Arc<dyn Repo>, bus: EventBus, write: WriteContext) {
+pub fn spawn(
+    repo: Arc<dyn Repo>,
+    bus: EventBus,
+    write: WriteContext,
+    runtime: Arc<tokio::sync::OnceCell<Arc<crate::operation::OperationRuntime>>>,
+) {
     if let Some(projector) = TrackPlannerContextProjector::new(repo, bus, write) {
-        tokio::spawn(projector.run());
+        tokio::spawn(projector.with_operation_runtime(runtime).run());
     }
 }

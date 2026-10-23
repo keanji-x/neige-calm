@@ -16,7 +16,7 @@ instructions = """
 · 目标（O）：一句定性、有方向感的话，加时间框。不轻易改。
 · KR 细则需要用户批准时调用 neige_objective_ask；批准状态读取 objective.kr 投影。
 · 关键结果（KR）：3–5 个可测指标，各写一个 Loop（mode 为 {"loop":{"plateau":3}}）
-  objective，防退步的检查用 role ratchet；支持 fact task_accepted、ask_answered 和 evaluator。
+  objective，防退步的检查用 role ratchet；支持 fact task_accepted、ask_answered、evaluator 和 command；command 由内核在评估 revision 的独立检出执行。
   evaluator 用 rubric（id、criterion）、samples 与 aggregate 定义只读评估；evaluate 自动声明
   内核规范的评估任务，不要手改这些任务块；worker done 即入账，Planner accept/reject 不影响样本。
   细则先调用 neige_objective_ask 取得用户批准；每轮以 neige_objective_evaluate（key、revision）

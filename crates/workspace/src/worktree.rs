@@ -1,4 +1,5 @@
 //! Worktree creation and ignored-file cleanup mechanisms.
+use crate::bounded_git::{BoundedOutput, GIT_BOUND};
 use crate::{
     base,
     command::isolated_git_command,
@@ -7,6 +8,7 @@ use crate::{
     metadata_lock,
 };
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 /// `neige/track-<track_id>`: a 32-hex track id is never `track-…`, so it cannot collide with a
 /// pre-#1830-S2 per-card branch `neige/<track>/<card>` still in a repository.
 pub fn track_branch_for(track_id: &str) -> Result<String> {
@@ -139,4 +141,143 @@ pub fn track_worktree_path_for(repo_root: &Path, track_id: &str) -> PathBuf {
         .join(".claude")
         .join("worktrees")
         .join(format!("track-{track_id}"))
+}
+
+/// Create an independent detached checkout at a commit that exists in this repository.
+/// The caller owns the destination's lifecycle; no track branch is moved.
+pub fn detached_worktree(repo: &Path, path: &Path, revision: &str) -> Result<()> {
+    detached_worktree_with_timeout(repo, path, revision, GIT_BOUND)
+}
+
+/// One deadline for Git checkout commands. Metadata lock acquisition has its own
+/// 30s bound; repository probes also use bounded process groups.
+pub fn detached_worktree_with_timeout(
+    repo: &Path,
+    path: &Path,
+    revision: &str,
+    bound: Duration,
+) -> Result<()> {
+    let deadline = Instant::now() + bound;
+    if revision.len() != 40
+        || !revision
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    {
+        return Err(Error::Internal(
+            "detached worktree revision must be a full commit id".into(),
+        ));
+    }
+    let _lock = metadata_lock::GitMetadataLock::acquire(repo, |_, _| {})?;
+    let exists = checkout_git_command()
+        .arg("-C")
+        .arg(repo)
+        .args(["cat-file", "-e", &format!("{revision}^{{commit}}")])
+        .bounded_output(deadline)
+        .map_err(|e| Error::Internal(e.to_string()))?;
+    if !exists.status.success() {
+        return Err(git::git_failed("git cat-file", repo, &exists));
+    }
+    if path.exists() {
+        if crate::base::is_symlink_leaf(path)?
+            || !registered_worktree(repo, path, deadline)?
+            || crate::base::lease_git_common_dir(path)? != crate::base::lease_git_common_dir(repo)?
+        {
+            return Err(Error::Internal(
+                "detached checkout identity mismatch".into(),
+            ));
+        }
+        let head = checkout_git_command()
+            .arg("-C")
+            .arg(path)
+            .args(["rev-parse", "HEAD"])
+            .bounded_output(deadline)
+            .map_err(|e| Error::Internal(e.to_string()))?;
+        let branch = checkout_git_command()
+            .arg("-C")
+            .arg(path)
+            .args(["symbolic-ref", "-q", "HEAD"])
+            .bounded_output(deadline)
+            .map_err(|e| Error::Internal(e.to_string()))?;
+        if !head.status.success()
+            || branch.status.code() != Some(1)
+            || String::from_utf8_lossy(&head.stdout).trim() != revision
+        {
+            return Err(Error::Internal(
+                "existing checkout is not detached at the requested revision".into(),
+            ));
+        }
+        return Ok(());
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| Error::Internal(e.to_string()))?;
+    }
+    let output = checkout_git_command()
+        .arg("-C")
+        .arg(repo)
+        .args(["worktree", "add", "--detach"])
+        .arg(path)
+        .arg(revision)
+        .bounded_output(deadline)
+        .map_err(|e| Error::Internal(e.to_string()))?;
+    if !output.status.success() {
+        return Err(git::git_failed("git worktree add --detach", repo, &output));
+    }
+    Ok(())
+}
+
+/// Remove a caller-owned disposable checkout, including changes made by its command.
+/// Git owns registration removal; this never prunes unrelated worktrees.
+pub fn remove_worktree(repo: &Path, path: &Path) -> Result<()> {
+    let deadline = Instant::now() + GIT_BOUND;
+    let _lock = metadata_lock::GitMetadataLock::acquire(repo, |_, _| {})?;
+    if !registered_worktree(repo, path, deadline)? {
+        if crate::base::is_symlink_leaf(path)? {
+            return Err(Error::Internal("refusing a symlink checkout".into()));
+        }
+        if path.exists() {
+            std::fs::remove_dir_all(path).map_err(|e| Error::Internal(e.to_string()))?;
+        }
+        return Ok(());
+    }
+    let output = checkout_git_command()
+        .arg("-C")
+        .arg(repo)
+        .args(["worktree", "remove", "--force", "--force"])
+        .arg(path)
+        .bounded_output(deadline)
+        .map_err(|e| Error::Internal(e.to_string()))?;
+    if !output.status.success() {
+        return Err(git::git_failed("git worktree remove", repo, &output));
+    }
+    Ok(())
+}
+
+fn registered_worktree(repo: &Path, path: &Path, deadline: Instant) -> Result<bool> {
+    let listed = checkout_git_command()
+        .arg("-C")
+        .arg(repo)
+        .args(["worktree", "list", "--porcelain", "-z"])
+        .bounded_output(deadline)
+        .map_err(|e| Error::Internal(e.to_string()))?;
+    if !listed.status.success() {
+        return Err(git::git_failed("git worktree list", repo, &listed));
+    }
+    match base::worktree_registration_in(&listed.stdout, repo, path)? {
+        GitWorktreeRegistration::Present | GitWorktreeRegistration::Prunable => Ok(true),
+        GitWorktreeRegistration::Absent => Ok(false),
+        GitWorktreeRegistration::Foreign { .. } => Err(Error::Internal(
+            "refusing another worktree's registration alias".into(),
+        )),
+    }
+}
+
+fn checkout_git_command() -> std::process::Command {
+    let mut cmd = isolated_git_command();
+    cmd.args([
+        "-c",
+        "core.hooksPath=/dev/null",
+        "-c",
+        "core.fsmonitor=false",
+    ]);
+    cmd
 }

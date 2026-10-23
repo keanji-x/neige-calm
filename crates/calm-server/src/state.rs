@@ -559,6 +559,12 @@ fn build_operation_adapters(
             input.claude_planner,
             input.acp_planner.clone(),
         ));
+    let objective_check_adapter: Arc<dyn ProviderAdapter> = Arc::new(
+        crate::operation::objective_check_run::ObjectiveCheckRunAdapter::new(
+            input.gate_logs_dir.with_file_name("objective-checks"),
+            input.gate_logs_dir.join("objective-checks"),
+        ),
+    );
     let task_gate_run_adapter: Arc<dyn ProviderAdapter> =
         Arc::new(TaskGateRunAdapter::new(input.gate_logs_dir.clone()));
     let task_verify_adapter: Arc<dyn ProviderAdapter> =
@@ -603,6 +609,7 @@ fn build_operation_adapters(
             planner_harness_shutdown_adapter,
             task_verify_adapter,
             task_gate_run_adapter,
+            objective_check_adapter,
             forge_action_adapter,
             child_track_adapter,
             card_create_adapter,
@@ -1455,7 +1462,12 @@ impl AppState {
         claude_planner.completion.bind_registry(harness.clone());
         acp_planner.completion.bind(repo.clone());
         acp_planner.completion.bind_registry(harness.clone());
-        crate::track_planner_context::spawn(repo.clone(), events.clone(), write.clone());
+        crate::track_planner_context::spawn(
+            repo.clone(),
+            events.clone(),
+            write.clone(),
+            operation_runtime_cell.clone(),
+        );
         let activity_wake = crate::track_activity::spawn(
             repo.clone(),
             events.clone(),
@@ -1510,7 +1522,16 @@ impl AppState {
             repo.sqlite_db()
                 .ok_or_else(|| anyhow::anyhow!("OperationRuntime requires a sqlite-backed Repo"))?,
         ));
+        // Recover and bind before publishing any operation runtime or starting
+        // dispatchers/plugins that can submit execution-dependent work.
+        let execution_engine = crate::execution_boot::recover(cfg, pool).await?;
         let execution = crate::execution_quiesce::ExecutionLifecycle::default();
+        if let Some(engine) = &execution_engine {
+            execution.bind(engine.clone());
+            claude_planner.execution.bind(engine.clone());
+            acp_planner.execution.bind(engine.clone());
+            plugin.execution.bind(engine.clone());
+        }
         terminal_renderer.set_execution(execution.clone());
         let (adapters, planner_start_adapter) = build_operation_adapters(OperationAdapterInputs {
             execution: execution.clone(),
@@ -1666,23 +1687,18 @@ impl AppState {
         let mut state = state.into_app_state();
         state.bind_track_creator(cfg.track_add_max_open);
         state.route.terminal_execution = cfg.terminal_execution;
-        // Assembly completes boot recovery and starts its sole periodic recovery task.
-        state.execution = crate::execution_boot::recover(cfg, pool).await?;
-        if let Some(engine) = &state.execution {
-            state.route.claude_planner.execution.bind(engine.clone());
-            state.route.acp_planner.execution.bind(engine.clone());
-            state.operation_runtime.execution().bind(engine.clone());
-            state.plugin.execution.bind(engine.clone());
-            if let Some(pool) = state.raw.sqlite_db() {
-                crate::provider_execution::sweep::spawn(
-                    pool,
-                    engine.as_ref().clone(),
-                    crate::execution_boot::provider_owners(
-                        &state.route.claude_planner,
-                        &state.route.acp_planner,
-                    ),
-                );
-            }
+        state.execution = execution_engine;
+        if let Some(engine) = &state.execution
+            && let Some(pool) = state.raw.sqlite_db()
+        {
+            crate::provider_execution::sweep::spawn(
+                pool,
+                engine.as_ref().clone(),
+                crate::execution_boot::provider_owners(
+                    &state.route.claude_planner,
+                    &state.route.acp_planner,
+                ),
+            );
         }
 
         // Orphan-terminal sweeper; emits `TerminalDeleted` through the audited write pipeline. The
