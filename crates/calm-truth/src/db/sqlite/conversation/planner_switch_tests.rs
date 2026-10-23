@@ -461,3 +461,235 @@ async fn planner_switch_typed_refusals() {
         }
     }
 }
+
+// Compare every persisted column, including both roles/bindings, worker pointers,
+// old/new workers and credentials, root, tenure, switching facts and event bytes.
+// Schema discovery keeps new columns covered without a second field inventory.
+async fn switch_state(tx: &mut Transaction<'_, Sqlite>) -> Vec<(&'static str, Vec<String>)> {
+    let mut state = Vec::new();
+    for table in [
+        "cards",
+        "worker_sessions",
+        "card_mcp_tokens",
+        "tracks",
+        "track_planner_changes",
+        "events",
+        "assistant_conversation_archives",
+    ] {
+        let columns: Vec<String> =
+            sqlx::query_scalar("SELECT name FROM pragma_table_info(?1) ORDER BY cid")
+                .bind(table)
+                .fetch_all(&mut **tx)
+                .await
+                .unwrap();
+        assert!(!columns.is_empty(), "missing table {table}");
+        let columns = columns
+            .iter()
+            .map(|column| format!("\"{}\"", column.replace('"', "\"\"")))
+            .collect::<Vec<_>>()
+            .join(",");
+        let rows = sqlx::query_scalar(&format!(
+            "SELECT json_array({columns}) FROM {table} ORDER BY rowid"
+        ))
+        .fetch_all(&mut **tx)
+        .await
+        .unwrap();
+        state.push((table, rows));
+    }
+    state
+}
+
+async fn rollback_pair() -> Pair {
+    let p = pair().await;
+    let mut tx = begin_immediate_tx(p.repo.db()).await.unwrap();
+    for card in [&p.a, &p.b] {
+        db::card_mcp_token_set_tx(&mut tx, card, &format!("card-secret-{card}"))
+            .await
+            .unwrap();
+        sqlx::query(
+            "UPDATE worker_sessions SET mcp_token_hash='worker-secret-'||id WHERE card_id=?1",
+        )
+        .bind(card)
+        .execute(&mut **tx)
+        .await
+        .unwrap();
+    }
+    let track = db::track_get_tx(&mut tx, &p.track.clone().into())
+        .await
+        .unwrap();
+    db::append_decision_event_in_tx(
+        &mut tx,
+        &crate::ids::ActorId::User,
+        &crate::event::EventScope::Track {
+            track: track.id.clone(),
+            area: track.area_id.clone(),
+        },
+        None,
+        &crate::event::Event::TrackUpdated(crate::event::TrackUpdatedPayload::new(track, None)),
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    p
+}
+
+#[tokio::test]
+async fn planner_switch_late_sql_failure_rolls_back_full_state() {
+    let p = rollback_pair().await;
+    let mut tx = begin_immediate_tx(p.repo.db()).await.unwrap();
+    let before = switch_state(&mut tx).await;
+    let a = expected(&mut tx, &p.a, &Protected).await;
+    let b = expected(&mut tx, &p.b, &Protected).await;
+    let req = ExpectedPlanner {
+        user_id: "nonexistent-switch-user",
+        ..request(&p, false, 0)
+    };
+    let error = switch_planner_tx(&mut tx, req, (a, b)).await.err().unwrap();
+    assert!(
+        matches!(&error, PlannerSwitchError::Storage(_)),
+        "{error:?}"
+    );
+    assert_eq!(error.code(), None);
+    assert!(
+        matches!(
+            &error,
+            PlannerSwitchError::Storage(crate::error::TruthError::Db(sqlx::Error::Database(cause)))
+                if cause.is_foreign_key_violation()
+        ),
+        "{error:?}"
+    );
+    // SQLite FK failure is statement-local: prove we reached the fact INSERT
+    // after both replacements, root repoint and tenure/baseline writes.
+    let progress: (String, String, bool, i64, i64) = sqlx::query_as(
+        "SELECT a.role,b.role,t.root_session_id=targ.session_id,t.planner_revision,t.planner_event_baseline
+         FROM tracks t JOIN cards a ON a.id=?2 JOIN cards b ON b.id=?3
+         JOIN cards targ ON targ.id=?3 WHERE t.id=?1")
+        .bind(&p.track).bind(&p.a).bind(&p.b).fetch_one(&mut **tx).await.unwrap();
+    assert_eq!(progress.0, "assistant");
+    assert_eq!(progress.1, "planner");
+    assert!(progress.2);
+    assert_eq!(progress.3, 1);
+    assert!(progress.4 > 0);
+    tx.rollback().await.unwrap();
+    let mut tx = begin_immediate_tx(p.repo.db()).await.unwrap();
+    assert_eq!(switch_state(&mut tx).await, before);
+}
+
+#[tokio::test]
+async fn planner_switch_revision_overflow_rolls_back_full_state() {
+    let p = rollback_pair().await;
+    sqlx::query("UPDATE tracks SET planner_revision=?1 WHERE id=?2")
+        .bind(i64::MAX)
+        .bind(&p.track)
+        .execute(p.repo.pool())
+        .await
+        .unwrap();
+    let mut tx = begin_immediate_tx(p.repo.db()).await.unwrap();
+    let before = switch_state(&mut tx).await;
+    let a = expected(&mut tx, &p.a, &Protected).await;
+    let b = expected(&mut tx, &p.b, &Protected).await;
+    let error = switch_planner_tx(&mut tx, request(&p, false, i64::MAX), (a, b))
+        .await
+        .err()
+        .unwrap();
+    assert_eq!(error.code(), Some("planner_changed"));
+    let role: String = sqlx::query_scalar("SELECT role FROM cards WHERE id=?1")
+        .bind(&p.b)
+        .fetch_one(&mut **tx)
+        .await
+        .unwrap();
+    assert_eq!(role, "planner", "overflow occurs after replacements");
+    tx.rollback().await.unwrap();
+    let mut tx = begin_immediate_tx(p.repo.db()).await.unwrap();
+    assert_eq!(switch_state(&mut tx).await, before);
+}
+
+#[tokio::test]
+async fn planner_switch_invalid_targets_leave_full_state_unchanged() {
+    for case in [
+        "same",
+        "cross-track",
+        "archived",
+        "worker",
+        "kind",
+        "closed",
+    ] {
+        let p = rollback_pair().await;
+        let (_, other) = super::tests::fixture_card(&p.repo).await;
+        let mut tx = begin_immediate_tx(p.repo.db()).await.unwrap();
+        let original = switch_state(&mut tx).await;
+        // Observe valid carriers first; malformed target metadata must be refused
+        // by the switch's own admission, before carrier replacement can run.
+        let a = expected(&mut tx, &p.a, &Protected).await;
+        let mut b = expected(
+            &mut tx,
+            if case == "same" { &p.a } else { &p.b },
+            &Protected,
+        )
+        .await;
+        let mut req = request(&p, false, 0);
+        match case {
+            "same" => req.target_card_id = &p.a,
+            "cross-track" => {
+                let track: String = sqlx::query_scalar("SELECT track_id FROM cards WHERE id=?1")
+                    .bind(&other)
+                    .fetch_one(&mut **tx)
+                    .await
+                    .unwrap();
+                sqlx::query("UPDATE cards SET track_id=?1 WHERE id=?2")
+                    .bind(&track)
+                    .bind(&p.b)
+                    .execute(&mut **tx)
+                    .await
+                    .unwrap();
+                b.track_id = track;
+            }
+            "archived" => {
+                db::conversation_archive_set_tx(&mut tx, &p.b, true)
+                    .await
+                    .unwrap();
+            }
+            "worker" => {
+                sqlx::query("UPDATE cards SET role='worker' WHERE id=?1")
+                    .bind(&p.b)
+                    .execute(&mut **tx)
+                    .await
+                    .unwrap();
+            }
+            "kind" => {
+                sqlx::query("UPDATE cards SET kind='note' WHERE id=?1")
+                    .bind(&p.b)
+                    .execute(&mut **tx)
+                    .await
+                    .unwrap();
+            }
+            "closed" => {
+                sqlx::query("UPDATE tracks SET closed_at=1 WHERE id=?1")
+                    .bind(&p.track)
+                    .execute(&mut **tx)
+                    .await
+                    .unwrap();
+            }
+            _ => unreachable!(),
+        }
+        let before = switch_state(&mut tx).await;
+        let error = switch_planner_tx(&mut tx, req, (a, b)).await.err().unwrap();
+        assert_eq!(
+            error.code(),
+            Some("planner_target_invalid"),
+            "{case}: {error:?}"
+        );
+        assert_eq!(
+            switch_state(&mut tx).await,
+            before,
+            "{case}: admission wrote state"
+        );
+        tx.rollback().await.unwrap();
+        let mut tx = begin_immediate_tx(p.repo.db()).await.unwrap();
+        assert_eq!(
+            switch_state(&mut tx).await,
+            original,
+            "{case}: rollback changed state"
+        );
+    }
+}
