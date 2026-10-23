@@ -3543,12 +3543,12 @@ async fn failed_wake_text_offers_no_delivery_decision() {
     );
 }
 
-/// #1893 S6: the `task.failed` a failed delivery settlement appends for a gated row
+/// Historical pre-v31 #1893 S6: the `task.failed` a failed delivery appended for a gated row
 /// (`status_detail = delivery-failed`, with or without a reason tail) is not a Planner wake —
 /// the settlement's own wake is. `delivery-failed` is not in the pre-gate class table, so the
 /// gated `task.failed` rule suppresses it; adding it there would push it.
 #[tokio::test]
-async fn delivery_failed_task_failed_is_not_a_wake() {
+async fn legacy_delivery_failed_task_failed_is_not_a_wake() {
     let repo = crate::db::sqlite::SqlxRepo::open("sqlite::memory:")
         .await
         .expect("in-memory sqlite");
@@ -3602,7 +3602,7 @@ async fn delivery_failed_task_failed_is_not_a_wake() {
     .await
     .expect("seed tasks");
     let failed = |key: &str, reason: &str| Event::TaskFailed {
-        notification: calm_types::event::PlannerNotification::Notify,
+        notification: calm_types::event::PlannerNotification::Legacy,
         idempotency_key: format!("w:{key}"),
         reason: reason.into(),
         details: None,

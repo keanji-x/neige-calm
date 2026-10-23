@@ -2966,7 +2966,7 @@ async fn failed_delivery_fails_the_gated_task() {
         failed[0].actor
     );
     assert!(
-        matches!(&failed[0].event, Event::TaskFailed { reason, .. } if reason == "delivery-failed"),
+        matches!(&failed[0].event, Event::TaskFailed { notification: calm_types::event::PlannerNotification::Suppress, reason, .. } if reason == "delivery-failed"),
         "{:?}",
         failed[0].event
     );
