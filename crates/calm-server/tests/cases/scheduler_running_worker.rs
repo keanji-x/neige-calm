@@ -503,6 +503,23 @@ async fn idle_arm_leaves_claude_workers_alone() {
     assert!(event_rows(&boot, "task.failed").await.is_empty());
 }
 
+#[tokio::test]
+async fn idle_arm_requires_a_persisted_native_worker_thread() {
+    let boot = boot().await;
+    let worker = seed_idle_codex_worker(&boot, "non-native-row", false).await;
+    sqlx::query("UPDATE worker_sessions SET provider = 'claude' WHERE id = ?1")
+        .bind(&worker.session_row_id)
+        .execute(boot.repo.sqlite_db().unwrap().writer_pool())
+        .await
+        .unwrap();
+    let probe = ScriptedProbe::new(Answer::Facts(r4_facts()), None);
+    let (_runtime, scheduler) =
+        build_scheduler_with_idle(&boot, idle_at(probe.clone(), R4_COMPLETED_AT_MS + 301_000));
+    sweep_and_settle_idle_checks(&scheduler).await;
+    assert!(probe.reads().is_empty());
+    assert_untouched(&boot, &worker).await;
+}
+
 /// A running codex task whose worker card, shared turn and held lease the reap must clean up.
 async fn seed_running_codex_worker(boot: &Boot, label: &str) -> IdleWorker {
     let worker = seed_idle_codex_worker(boot, label, false).await;

@@ -59,8 +59,8 @@ pub(in crate::db::sqlite) async fn retry_availability_tx(
             .bind(carrier.card_id())
             .fetch_one(&mut **tx)
             .await?;
-    let provider =
-        calm_types::worker::WorkerProviderKind::try_from(provider).map_err(CalmError::Internal)?;
+    let provider = calm_types::worker::WorkerProviderKind::try_from(provider)
+        .map_err(|error| CalmError::Internal(error.to_string()))?;
     let Ok(provider) = AgentProvider::try_from(provider) else {
         return Ok(Err(RetryUnavailableReason::UnsupportedBinding));
     };

@@ -26,6 +26,8 @@ pub(crate) enum ToolDiscovery {
 pub(crate) struct BackendMetadata {
     /// Whether queued input can join a running turn.
     pub steer: bool,
+    /// Historical interactive sessions expose activity through PTY output.
+    pub interactive_pty: bool,
     pub catalog: AgentProtocol,
     pub capabilities: ManagedCapabilities,
     pub discovery: ToolDiscovery,
@@ -53,8 +55,13 @@ impl super::backend::PlannerBackend {
             AgentProtocol::Codex => (false, true),
             AgentProtocol::Claude | AgentProtocol::Acp => (true, false),
         };
+        let interactive_pty = match provider {
+            AgentProvider::Codex | AgentProvider::Claude => true,
+            AgentProvider::OpenCode | AgentProvider::Grok => false,
+        };
         BackendMetadata {
             steer,
+            interactive_pty,
             catalog,
             requires_codex_daemon,
             capabilities: ManagedCapabilities {

@@ -134,13 +134,13 @@ impl Fold {
     }
 }
 
-/// A `claude` / `codex` / `terminal` session that is not a harness row and was never bound to a
+/// A session with an interactive PTY resource that is not a harness row and was never bound to a
 /// task. Its `working` comes from PTY output alone; a task-bound card's
 /// comes from the task clause alone.
 pub fn interactive_pty_card(ws: &SessionRow) -> bool {
     ws.mode.as_deref() != Some(calm_types::harness::HARNESS_MODE)
         && !ws.task_bound
-        && matches!(ws.provider.as_str(), "claude" | "codex" | "terminal")
+        && ws.interactive_pty
 }
 
 /// A task-bound worker card whose current attempts are AT LEAST ONE row and ALL `done`, and whose
@@ -221,7 +221,7 @@ pub fn fold(track_id: &str, rows: &TrackRows) -> Fold {
     // S — the per-backend session rules.
     for ws in &rows.sessions {
         let harness = ws.mode.as_deref() == Some(calm_types::harness::HARNESS_MODE);
-        let pty_backed = matches!(ws.provider.as_str(), "codex" | "claude" | "terminal");
+        let pty_backed = ws.interactive_pty;
         if harness {
             // (i) harness codex — planner + assistant.
             if ws.state == "turn_pending" && rows.live_harness_sessions.contains(&ws.id) {

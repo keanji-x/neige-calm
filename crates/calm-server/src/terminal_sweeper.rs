@@ -2,7 +2,6 @@
 //! has no active worker session; the settled-worker arm ends task-owned sessions after their attempts settle or their track closes;
 //! the Planner arm hibernates idle harnesses on closed tracks;
 //! the thread arm releases shared codex threads whose session ended (#1853).
-use provider::control::NativeInterruptOutcome;
 
 use std::time::Duration;
 
@@ -281,27 +280,14 @@ where
         "terminal_sweeper: settled task worker session written exited"
     );
 
-    if session.provider == "codex"
-        && let Some(thread_id) = session.thread_id.as_deref()
-    {
-        match state
-            .shared_codex_appserver
-            .interrupt_active_outcome(thread_id)
-            .await
-        {
-            NativeInterruptOutcome::NativeAck | NativeInterruptOutcome::NoTarget => {}
-            NativeInterruptOutcome::Unconfirmed { error: e } => {
-                tracing::warn!(
-                    target: "shared_codex_daemon::orphan_turn",
-                    worker_session_id = %session.id,
-                    card_id = %session.card_id,
-                    thread_id = %thread_id,
-                    error = %e,
-                    "failed to interrupt active shared codex turn while ending a settled-worker session"
-                );
-            }
-        }
-    }
+    let providers = state.planner_wiring();
+    crate::harness::backend::factory::PlannerFactory::new(
+        std::sync::Arc::downgrade(&state.shared_codex_appserver),
+        &providers.claude,
+        &providers.acp,
+    )
+    .end_settled_worker_resources(session)
+    .await;
 
     let Some(term) = state.repo.terminal_get(&session.terminal_id).await? else {
         return Ok(());

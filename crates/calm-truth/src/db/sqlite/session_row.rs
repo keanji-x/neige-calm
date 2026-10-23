@@ -328,7 +328,8 @@ pub fn worker_session_status_transition_allowed(
 
 fn worker_session_parse<T>(column: &str, value: String) -> Result<T>
 where
-    T: TryFrom<String, Error = String>,
+    T: TryFrom<String>,
+    T::Error: std::fmt::Display,
 {
     T::try_from(value).map_err(|message| {
         CalmError::Internal(format!("invalid worker_sessions.{column}: {message}"))

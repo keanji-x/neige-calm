@@ -15,6 +15,9 @@ pub struct TerminalProvider {
 }
 
 impl TerminalProvider {
+    /// Interactive terminal sessions report activity through PTY output.
+    pub const INTERACTIVE_PTY: bool = true;
+
     pub fn new(supervisor_sock: impl Into<PathBuf>) -> Self {
         Self {
             supervisor_sock: supervisor_sock.into(),

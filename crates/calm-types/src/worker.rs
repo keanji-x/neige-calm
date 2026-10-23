@@ -214,7 +214,7 @@ pub enum WorkerProviderKind {
 }
 
 impl WorkerProviderKind {
-    /// The lowercase string the `worker_sessions.provider` CHECK pins.
+    /// The known lowercase spelling persisted in `worker_sessions.provider`.
     pub fn as_db_str(self) -> &'static str {
         match self {
             WorkerProviderKind::Codex => "codex",
@@ -257,8 +257,15 @@ impl TryFrom<WorkerProviderKind> for crate::runtime::AgentProvider {
     }
 }
 
+/// The persisted schema admits nonempty providers unknown to this binary.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum WorkerProviderDecodeError {
+    #[error("unknown worker_sessions.provider value `{0}`")]
+    UnknownProvider(String),
+}
+
 impl TryFrom<String> for WorkerProviderKind {
-    type Error = String;
+    type Error = WorkerProviderDecodeError;
 
     fn try_from(value: String) -> Result<Self, Self::Error> {
         match value.as_str() {
@@ -267,7 +274,7 @@ impl TryFrom<String> for WorkerProviderKind {
             "opencode" => Ok(WorkerProviderKind::OpenCode),
             "grok" => Ok(WorkerProviderKind::Grok),
             "terminal" => Ok(WorkerProviderKind::Terminal),
-            other => Err(format!("unknown worker_sessions.provider value `{other}`")),
+            other => Err(WorkerProviderDecodeError::UnknownProvider(other.to_owned())),
         }
     }
 }

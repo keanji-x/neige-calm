@@ -264,6 +264,30 @@ async fn worker_reap_codex_interrupt_after_claim() {
 }
 
 #[tokio::test]
+async fn worker_reap_unconfirmed_native_interrupt_still_reaps_terminal() {
+    let h = Harness::start_with_fake_codex().await;
+    let p = open_sleeper(&h, "codex-unconfirmed").await;
+    make_codex_with_active_turn(&h, &p).await;
+    h.state
+        .shared_codex_appserver
+        .fail_turn_interrupt_for_test(true);
+    attempt(&h, &p, "codex-unconfirmed", 1, "done", Some(120_000)).await;
+    let candidate = sole_candidate(&h).await;
+    calm_server::terminal_sweeper::end_settled_worker_session(&h.state, &candidate)
+        .await
+        .unwrap();
+    assert_reaped(&h, &p).await;
+    assert_eq!(
+        h.state
+            .shared_codex_appserver
+            .active_turn_id_for_thread("t-1")
+            .as_deref(),
+        Some("turn-1")
+    );
+    h.stop(&p.terminal).await;
+}
+
+#[tokio::test]
 async fn worker_reap_reattach_after_registry_reset() {
     let h = Harness::start().await;
     let p = open_sleeper(&h, "registry-reset").await;

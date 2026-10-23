@@ -235,10 +235,6 @@ pub(crate) fn task_has_running_liveness_deadline(task: &Task) -> bool {
         && matches!(task.kind, TaskKind::Codex | TaskKind::Claude)
 }
 
-fn duration_ms_i64(duration: Duration) -> i64 {
-    i64::try_from(duration.as_millis()).unwrap_or(i64::MAX)
-}
-
 /// RAII guard for the per-task single-flight map. Losing a slot is always safe — the
 /// holder performs the same guarded writes; this just avoids duplicate `wait()` polling.
 struct InflightGuard {

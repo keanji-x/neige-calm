@@ -520,7 +520,7 @@ async fn superseded_failed_attempt_session_is_not_actionable() {
     admitted.sessions.push(SessionRow {
         id: ws_a.clone(),
         card_id: card_a.clone(),
-        provider: "codex".into(),
+        interactive_pty: true,
         state: "failed".into(),
         updated_at_ms: 4_500,
         created_at_ms: 1_000,
@@ -1619,3 +1619,102 @@ async fn projector_loop_recomputes_on_task_dispatched() {
 
 #[path = "track_activity_projection/report_evidence.rs"]
 mod report_evidence;
+
+#[path = "track_activity_projection/unknown_provider.rs"]
+mod unknown_provider;
+
+#[tokio::test]
+async fn track_activity_materializes_every_persisted_resource_kind() {
+    use calm_server::session_projection_repo::WorkerSessionInit;
+    use calm_server::track_activity::interactive_pty_card;
+    use calm_truth::db::sqlite::{session_start_runtime_tx, terminal_create_tx};
+
+    let f = fx().await;
+    let t = f.track("resource-kinds").await;
+    for (kind, provider, expected) in [
+        (
+            WorkerSessionKind::CodexCard,
+            Some(AgentProvider::Codex),
+            true,
+        ),
+        (
+            WorkerSessionKind::ClaudeCard,
+            Some(AgentProvider::Claude),
+            true,
+        ),
+        (WorkerSessionKind::Terminal, None, true),
+        (
+            WorkerSessionKind::ManagedAssistant,
+            Some(AgentProvider::OpenCode),
+            false,
+        ),
+        (
+            WorkerSessionKind::ManagedAssistant,
+            Some(AgentProvider::Grok),
+            false,
+        ),
+    ] {
+        let name = provider
+            .as_ref()
+            .map_or("terminal", |provider| provider.wire_name());
+        let card = f
+            .card(&t, &format!("resource-{name}"), "codex", CardRole::Worker)
+            .await;
+        let mut tx = f.db().writer_pool().begin().await.unwrap();
+        let terminal = terminal_create_tx(
+            &mut tx,
+            calm_server::model::NewTerminal {
+                card_id: card.clone().into(),
+                program: "unused-resource-fixture".into(),
+                cwd: "/neige-fixture-workspace".into(),
+                env: json!({}),
+                theme: calm_server::model::RequestTheme::default_dark(),
+            },
+        )
+        .await
+        .unwrap();
+        session_start_runtime_tx(
+            &mut tx,
+            WorkerSessionInit {
+                id: format!("resource-ws-{name}"),
+                card_id: card.clone(),
+                kind,
+                agent_provider: provider,
+                status: WorkerSessionState::Running,
+                terminal_run_id: Some(terminal.id.clone()),
+                thread_id: Some(format!("thread-{name}")),
+                session_id: Some(format!("native-{name}")),
+                active_turn_id: None,
+                handle_state_json: None,
+                spawn_op_id: None,
+                now_ms: 1_000,
+            },
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+        let rows = f.projector.read_rows(&t).await.unwrap().unwrap();
+        let row = rows
+            .sessions
+            .iter()
+            .find(|row| row.card_id == card)
+            .unwrap();
+        assert_eq!(row.terminal_run_id.as_deref(), Some(terminal.id.as_str()));
+        assert!(row.pty_open);
+        assert_eq!(row.interactive_pty, expected, "{name}");
+        assert_eq!(interactive_pty_card(row), expected, "{name}");
+        let mut observed = rows.clone();
+        observed.output.insert(card.clone(), observed.now_ms);
+        assert_eq!(
+            fold(&t, &observed).working,
+            expected,
+            "terminal FK and fresh output: {name}"
+        );
+        let mut excluded = row.clone();
+        excluded.task_bound = true;
+        assert!(!interactive_pty_card(&excluded), "task-bound {name}");
+        excluded.task_bound = false;
+        excluded.mode = Some(calm_types::harness::HARNESS_MODE.into());
+        assert!(!interactive_pty_card(&excluded), "harness {name}");
+    }
+}

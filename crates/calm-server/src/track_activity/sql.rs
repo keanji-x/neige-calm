@@ -65,7 +65,8 @@ pub struct TaskRow {
 pub struct SessionRow {
     pub id: String,
     pub card_id: String,
-    pub provider: String,
+    /// The resource owner declares historical interactive PTY activity eligibility.
+    pub interactive_pty: bool,
     pub state: String,
     pub updated_at_ms: i64,
     pub created_at_ms: i64,
@@ -177,21 +178,41 @@ pub async fn eligible_sessions(pool: &SqlitePool, track_id: &str) -> Result<Vec<
         task_bound = task_bound_exists_sql("c.id"),
     );
     let rows = sqlx::query(&sql).bind(track_id).fetch_all(pool).await?;
-    Ok(rows
-        .iter()
-        .map(|r| SessionRow {
-            id: r.get("id"),
-            card_id: r.get("card_id"),
-            provider: r.get("provider"),
-            state: r.get("state"),
-            updated_at_ms: r.get("updated_at_ms"),
-            created_at_ms: r.get("created_at_ms"),
-            mode: r.get("mode"),
-            task_bound: r.get::<bool, _>("task_bound"),
-            terminal_run_id: r.get("terminal_run_id"),
-            pty_open: r.get::<bool, _>("pty_open"),
+    rows.iter()
+        .map(|r| {
+            use calm_truth::worker::{WorkerProviderDecodeError, WorkerProviderKind};
+            let interactive_pty = match WorkerProviderKind::try_from(r.get::<String, _>("provider"))
+            {
+                Ok(WorkerProviderKind::Terminal) => {
+                    provider::worker::TerminalProvider::INTERACTIVE_PTY
+                }
+                Ok(
+                    provider @ (WorkerProviderKind::Codex
+                    | WorkerProviderKind::Claude
+                    | WorkerProviderKind::OpenCode
+                    | WorkerProviderKind::Grok),
+                ) => {
+                    let agent = crate::session_projection_repo::AgentProvider::try_from(provider)
+                        .map_err(|error| crate::error::CalmError::Internal(error.into()))?;
+                    crate::harness::backend::PlannerBackend::metadata(&agent).interactive_pty
+                }
+                // Keep the row for provider-independent task and harness semantics.
+                Err(WorkerProviderDecodeError::UnknownProvider(_)) => false,
+            };
+            Ok(SessionRow {
+                id: r.get("id"),
+                card_id: r.get("card_id"),
+                interactive_pty,
+                state: r.get("state"),
+                updated_at_ms: r.get("updated_at_ms"),
+                created_at_ms: r.get("created_at_ms"),
+                mode: r.get("mode"),
+                task_bound: r.get::<bool, _>("task_bound"),
+                terminal_run_id: r.get("terminal_run_id"),
+                pty_open: r.get::<bool, _>("pty_open"),
+            })
         })
-        .collect())
+        .collect::<Result<Vec<_>>>()
 }
 
 /// The existing `kernel/track/activity` payload, if any.
