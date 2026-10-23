@@ -182,12 +182,13 @@ async fn acp_runs_two_turns_and_loads_the_same_native_session_after_restart() {
             .all(|text| !text.contains("historic reply")),
         "loaded history must not be attributed to a fresh turn: {rows:?}"
     );
+    assert_eq!(requests(&root, "session/resume").len(), 2);
     assert!(
-        requests(&root, "session/load")
+        requests(&root, "session/resume")
             .iter()
             .all(|request| request["params"]["sessionId"] == native)
     );
-    for method in ["session/new", "session/load"] {
+    for method in ["session/new", "session/load", "session/resume"] {
         for request in requests(&root, method) {
             assert_eq!(
                 request["params"]["mcpServers"][0]["args"],

@@ -432,16 +432,23 @@ impl AcpPlannerSession {
             }];
             let (native, mut configuration) = match row.agent_session_id {
                 Some(native) => {
-                    if !process.capabilities.load_session {
-                        return Err(super::start::ContinuationRefusal::LoadUnsupported.into());
-                    }
-                    let result = setup_request(
-                        process,
-                        "session/load",
-                        protocol::encode_load_session(&native, &params.cwd, &mcp),
-                        admission.gate(),
-                    )
-                    .await?;
+                    // We retain our own transcript: prefer a declared attach without replay.
+                    // An existing binding is never replaced, including after a native refusal.
+                    let (method, request) =
+                        if process.capabilities.session_capabilities.resume.is_some() {
+                            (
+                                "session/resume",
+                                protocol::encode_resume_session(&native, &params.cwd, &mcp),
+                            )
+                        } else if process.capabilities.load_session {
+                            (
+                                "session/load",
+                                protocol::encode_load_session(&native, &params.cwd, &mcp),
+                            )
+                        } else {
+                            return Err(super::start::ContinuationRefusal::LoadUnsupported.into());
+                        };
+                    let result = setup_request(process, method, request, admission.gate()).await?;
                     (
                         native,
                         provider::acp::configuration::Configuration::from_response(&result)

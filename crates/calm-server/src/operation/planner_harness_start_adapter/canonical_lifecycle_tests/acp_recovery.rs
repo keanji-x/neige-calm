@@ -237,7 +237,7 @@ async fn canonical_acp_http_keep_wakes_tick_and_claims_fresh_input_on_same_conve
     assert_eq!(
         requests
             .iter()
-            .filter(|r| r["method"] == "session/load")
+            .filter(|r| r["method"] == "session/resume")
             .count(),
         1
     );

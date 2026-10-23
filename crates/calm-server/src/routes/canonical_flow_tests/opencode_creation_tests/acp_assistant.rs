@@ -145,7 +145,7 @@ async fn acp_assistant_outage_acceptance_replay_and_retained_activation() {
     wait_idle(&fixture, card, 3).await;
     let loaded = requests(&fixture)
         .into_iter()
-        .find(|call| call["method"] == "session/load")
+        .find(|call| call["method"] == "session/resume")
         .expect("native load");
     assert_eq!(loaded["params"]["sessionId"], identity.1);
     assert_eq!(carrier(&fixture, card).await.0, worker);

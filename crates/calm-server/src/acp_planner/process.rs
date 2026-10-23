@@ -325,16 +325,18 @@ mod setup_tests {
         read.read_line(&mut line).await.unwrap();
         let request: Value = serde_json::from_str(&line).unwrap();
         let history = json!({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"native","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"historic reply"}}}});
+        let commands = json!({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"native","update":{"sessionUpdate":"available_commands_update","availableCommands":[{"name":"compact","description":"Compact the session"}]}}});
+        let config = json!({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"native","update":{"sessionUpdate":"config_option_update","configOptions":[]}}});
         let response = json!({"jsonrpc":"2.0","id":request["id"],"result":{}});
         write
-            .write_all(format!("{history}\n{response}\n").as_bytes())
+            .write_all(format!("{history}\n{commands}\n{config}\n{response}\n").as_bytes())
             .await
             .unwrap();
         let result = pending.wait(Duration::from_secs(2)).await;
         assert_eq!(
             connection.incoming.len(),
-            1,
-            "history precedes its load response on the real transport"
+            3,
+            "history, commands and config precede the attach response on the real transport"
         );
         finish_setup(&connection.client, &mut connection.incoming, result)
             .await

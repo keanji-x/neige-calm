@@ -1,5 +1,6 @@
 //! Canonical ACP entry exercises the real claim, receipt and native process owners.
 #![cfg(test)]
+mod attach;
 mod carrier;
 mod cleanup;
 mod continuation;

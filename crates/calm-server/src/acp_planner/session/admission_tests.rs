@@ -87,6 +87,7 @@ async fn final_live_fence(parked: bool) {
     for method in [
         "session/new",
         "session/load",
+        "session/resume",
         "session/set_config_option",
         "session/prompt",
         "session/cancel",

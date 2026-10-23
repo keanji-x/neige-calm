@@ -519,8 +519,13 @@ async fn assistant_provider_shutdown_replay_preserves_each_provider_cleanup_cont
                 .await
                 .unwrap();
         }
-        let native_before = ["session/new", "session/load", "session/prompt"]
-            .map(|method| requests(&root, method).len());
+        let native_before = [
+            "session/new",
+            "session/load",
+            "session/resume",
+            "session/prompt",
+        ]
+        .map(|method| requests(&root, method).len());
         let submitted = stack
             .state
             .operation_runtime
@@ -552,8 +557,13 @@ async fn assistant_provider_shutdown_replay_preserves_each_provider_cleanup_cont
             "Claude runtime cleanup uses Engine ownership; ACP retains its native marker until C4.3"
         );
         assert_eq!(
-            ["session/new", "session/load", "session/prompt"]
-                .map(|method| requests(&root, method).len()),
+            [
+                "session/new",
+                "session/load",
+                "session/resume",
+                "session/prompt"
+            ]
+            .map(|method| requests(&root, method).len()),
             native_before,
             "orphan cleanup must not reopen or prompt"
         );
@@ -698,13 +708,17 @@ async fn acp_assistant_archive_survives_cold_boot_and_restores_the_same_native_c
         .await
         .1;
     let prompts = requests(&root, "session/prompt").len();
-    let loads = requests(&root, "session/load").len();
+    let attachments =
+        ["session/load", "session/resume"].map(|method| requests(&root, method).len());
     // This tears down the old AppState, MCP listener and every live harness before production boot.
     stack.shutdown().await;
     let stack = boot_acp(&root).await;
     assert!(stack.state.harness.get(&original.id).is_none());
     assert_eq!(requests(&root, "session/prompt").len(), prompts);
-    assert_eq!(requests(&root, "session/load").len(), loads);
+    assert_eq!(
+        ["session/load", "session/resume"].map(|method| requests(&root, method).len()),
+        attachments
+    );
     let (_, listed) = stack
         .send("GET", &format!("/api/tracks/{track}/conversations"), None)
         .await;

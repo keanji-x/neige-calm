@@ -134,5 +134,6 @@ async fn checkpoint_after_settlement(operation_replay: bool) {
     assert_eq!(requests(&root, "session/prompt").len(), 1);
     assert_eq!(requests(&root, "session/new").len(), 1);
     assert!(requests(&root, "session/load").is_empty());
+    assert!(requests(&root, "session/resume").is_empty());
     stack.shutdown().await;
 }

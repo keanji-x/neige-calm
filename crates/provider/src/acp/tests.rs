@@ -621,3 +621,23 @@ fn setup_close_wire_contains_only_production_fields() {
 fn allow() -> crate::send_boundary::PreSendGate<'static> {
     crate::send_boundary::PreSendGate::new(|| Box::pin(async { Ok(()) }))
 }
+
+#[test]
+fn setup_resume_is_optional_and_uses_native_attachment_fields() {
+    for (wire, advertised) in [
+        (json!({}), false),
+        (json!({"loadSession":true}), false),
+        (json!({"sessionCapabilities":{"resume":null}}), false),
+        (json!({"sessionCapabilities":{"resume":{}}}), true),
+    ] {
+        let capabilities: protocol::AgentCapabilities = protocol::decode(wire).unwrap();
+        assert_eq!(
+            capabilities.session_capabilities.resume.is_some(),
+            advertised
+        );
+    }
+    assert_eq!(
+        protocol::encode_resume_session("native", std::path::Path::new("/workspace"), &[]),
+        json!({"sessionId":"native","cwd":"/workspace","mcpServers":[]})
+    );
+}

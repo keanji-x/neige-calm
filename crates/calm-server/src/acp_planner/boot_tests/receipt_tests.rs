@@ -152,6 +152,7 @@ async fn acp_same_key_replay_checks_exact_claim_without_spawn_setup_or_prompt() 
             requests(&root, "initialize"),
             requests(&root, "session/new"),
             requests(&root, "session/load"),
+            requests(&root, "session/resume"),
             requests(&root, "session/prompt"),
         );
         let TurnStartOutcome::Started { turn } = session
@@ -189,6 +190,7 @@ async fn acp_same_key_replay_checks_exact_claim_without_spawn_setup_or_prompt() 
                 requests(&root, "initialize"),
                 requests(&root, "session/new"),
                 requests(&root, "session/load"),
+                requests(&root, "session/resume"),
                 requests(&root, "session/prompt")
             ),
             before

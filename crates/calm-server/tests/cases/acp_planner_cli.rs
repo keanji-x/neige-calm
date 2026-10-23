@@ -37,7 +37,7 @@ async fn native_cli_uses_the_current_card_context_and_rotates_it_on_load() {
         assert!(hash.is_none(), "a settled turn cannot keep CLI authority");
     }
     assert_eq!(requests(&root, "session/new").len(), 1);
-    assert_eq!(requests(&root, "session/load").len(), 1);
+    assert_eq!(requests(&root, "session/resume").len(), 1);
     stack.shutdown().await;
 }
 

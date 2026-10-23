@@ -22,10 +22,13 @@ pub struct AgentCapabilities {
 }
 #[derive(Clone, Debug, Default, Deserialize)]
 pub struct SessionCapabilities {
+    pub resume: Option<SessionResumeCapability>,
     pub close: Option<SessionCloseCapability>,
 }
 #[derive(Clone, Debug, Deserialize)]
 pub struct SessionCloseCapability {}
+#[derive(Clone, Debug, Deserialize)]
+pub struct SessionResumeCapability {}
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PromptCapabilities {
@@ -156,6 +159,10 @@ pub fn encode_new_session(cwd: &std::path::Path, mcp: &[McpServer]) -> Value {
 }
 pub fn encode_load_session(session: &str, cwd: &std::path::Path, mcp: &[McpServer]) -> Value {
     json!({"sessionId":session,"cwd":cwd,"mcpServers":mcp})
+}
+/// Resume attaches without replay; the owning session policy selects this advertised method.
+pub fn encode_resume_session(session: &str, cwd: &std::path::Path, mcp: &[McpServer]) -> Value {
+    encode_load_session(session, cwd, mcp)
 }
 pub fn encode_set_config_option(session: &str, config_id: &str, value: &str) -> Value {
     json!({"sessionId":session,"configId":config_id,"value":value})

@@ -124,6 +124,12 @@ def write_report(request):
 def update(value):
     emit({'jsonrpc': '2.0', 'method': 'session/update', 'params': {'sessionId': current, 'update': value}})
 
+def attach_updates():
+    if xai:
+        return
+    update({'sessionUpdate': 'available_commands_update', 'availableCommands': [{'name': 'compact', 'description': 'Compact the session'}]})
+    update({'sessionUpdate': 'config_option_update', **config()})
+
 def finish(request, text, reason='end_turn'):
     update({'sessionUpdate': 'agent_message_chunk', 'content': {'type': 'text', 'text': text}})
     result(request, {'stopReason': reason})
@@ -213,9 +219,11 @@ for line in sys.stdin:
                 'socket_present': 'NEIGE_MCP_SOCKET' in os.environ}))
         if (root / 'scenario').read_text().strip() == 'catalog_cancel_initialize':
             hold_catalog()
-        capabilities = {'loadSession': (root / 'scenario').read_text().strip() != 'unsupported-load'}
+        capabilities = {'loadSession': (root / 'scenario').read_text().strip() not in ['unsupported-load', 'resume-only']}
         if (root / 'scenario').read_text().strip() != 'catalog_no_close':
             capabilities['sessionCapabilities'] = {'close': {}}
+        if not xai and (root / 'scenario').read_text().strip() not in ['unsupported-load', 'load-only', 'load-error', 'load-replay-lost']:
+            capabilities.setdefault('sessionCapabilities', {})['resume'] = {}
         version = 'wrong' if wrong else os.environ.get('ACP_FIXTURE_VERSION', '2.1.3')
         if xai:
             capabilities['promptCapabilities'] = {'image': False, 'audio': False, 'embeddedContext': True}
@@ -259,20 +267,25 @@ for line in sys.stdin:
             result(request, {'sessionId': current, **config()})
             while True:
                 time.sleep(0.01)
+        attach_updates()
         result(request, {'sessionId': current, **config()})
     elif method == 'session/close':
         assert params['sessionId'] == current
         result(request, {})
-    elif method == 'session/load':
+    elif method in ['session/load', 'session/resume']:
+        if (root / 'scenario').read_text().strip() in ['load-error', 'resume-error']:
+            emit({'jsonrpc': '2.0', 'id': request['id'], 'error': {'code': -32602, 'message': 'cannot attach session'}})
+            continue
         current = params['sessionId']
         state = json.loads(native_path().read_text())
         assert state['cwd'] == params['cwd']
         model, effort = state['model'], state['effort']
-        for text in state['inputs']:
+        for text in state['inputs'] if method == 'session/load' else []:
             update({'sessionUpdate': 'user_message_chunk', 'content': {'type': 'text', 'text': text}})
             update({'sessionUpdate': 'agent_message_chunk', 'content': {'type': 'text', 'text': 'historic reply'}})
         mcp_servers = params['mcpServers']
         vendor('session/setup')
+        attach_updates()
         check_mcp(params['mcpServers'])
         result(request, config())
     elif method == 'session/set_config_option':
@@ -285,6 +298,8 @@ for line in sys.stdin:
         state = json.loads(native_path().read_text())
         state.update(model=model, effort=effort)
         native_path().write_text(json.dumps(state))
+        if not xai:
+            update({'sessionUpdate': 'config_option_update', **config()})
         result(request, config())
     elif method == 'session/prompt':
         assert params['sessionId'] == current
@@ -297,7 +312,7 @@ for line in sys.stdin:
             (root / 'before-settlement').touch()
             while not (root / 'release-settlement').exists():
                 time.sleep(0.01)
-        if scenario in ['lost', 'checkpoint']:
+        if scenario in ['lost', 'checkpoint', 'load-replay-lost']:
             os._exit(0)
         vendor('queue/changed')
         if scenario == 'grok-mcp' and always_approve:
@@ -324,8 +339,16 @@ for line in sys.stdin:
                 time.sleep(0.3)
                 finish(pending, 'settled')
                 pending = None
-        elif scenario == 'hold':
+        elif scenario in ['hold', 'server-drain']:
             pending = request
+            if scenario == 'server-drain':
+                # 2.x standalone contract: inherited launch env, private lease pipe, serve argv.
+                server = subprocess.Popen([sys.executable, '-c', 'import sys,time; time.sleep(300)',
+                                           'serve', '--stdio', '--port', '0'], stdin=subprocess.PIPE,
+                                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                pid_file = root / 'private-server.tmp'
+                pid_file.write_text(str(server.pid))
+                pid_file.replace(root / 'private-server')
         elif scenario == 'prompt-error':
             # OpenCode 2.1.3 answers the prompt this way once its model API refuses (HTTP 402, or
             # 429 after its retries); the process stays up. Some text may already have streamed.
@@ -345,6 +368,9 @@ for line in sys.stdin:
         permission_log({'event': 'cancel'})
         cancel_seen = True
     elif method == 'session/cancel' and pending:
+        if (root / 'scenario').read_text().strip() == 'server-drain':
+            # A terminal beyond the host's 5s budget cannot prove cancellation.
+            time.sleep(5.5)
         finish(pending, 'cancelled', 'cancelled')
         pending = None
     elif method is None and permission == 'grok-permission' and request.get('id') == permission:

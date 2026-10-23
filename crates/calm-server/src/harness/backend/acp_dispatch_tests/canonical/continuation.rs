@@ -135,10 +135,12 @@ pub(super) async fn kept_unknown_loads_same_native_on_new_process(provider: Agen
     assert_ne!(prompts[0]["_pid"], prompts[1]["_pid"]);
     let native = &prompts[0]["params"]["sessionId"];
     assert_eq!(prompts[1]["params"]["sessionId"], *native);
-    let loaded: Vec<_> = requests
-        .iter()
-        .filter(|r| r["method"] == "session/load")
-        .collect();
+    let attach = if fx.provider == AgentProvider::OpenCode {
+        "session/resume"
+    } else {
+        "session/load"
+    };
+    let loaded: Vec<_> = requests.iter().filter(|r| r["method"] == attach).collect();
     assert_eq!(loaded.len(), 1);
     assert_eq!(loaded[0]["params"]["sessionId"], *native);
     assert_eq!(
@@ -154,7 +156,7 @@ pub(super) async fn kept_unknown_loads_same_native_on_new_process(provider: Agen
         AgentProvider::Grok => &["initialize", "authenticate"],
         AgentProvider::Codex | AgentProvider::Claude => panic!("not an ACP provider"),
     };
-    for (prompt, operation) in [(prompts[0], "session/new"), (prompts[1], "session/load")] {
+    for (prompt, operation) in [(prompts[0], "session/new"), (prompts[1], attach)] {
         let methods: Vec<_> = requests
             .iter()
             .filter(|r| r["_pid"] == prompt["_pid"])
