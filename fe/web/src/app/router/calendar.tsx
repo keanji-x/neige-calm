@@ -10,7 +10,7 @@ import { writeClassOf } from '../../../../core/domain/failure-class.ts';
 import { readErrorText } from '../../../../core/domain/read-failure.ts';
 import { CalendarTasks } from '../../features/calendar/public.tsx';
 import { useKeyedIntent } from '../providers/idempotency-key.ts';
-import { pluginsQueryOptions, runOperation } from '../providers/queries.ts';
+import { pluginsQueryOptions, queryKeys, runOperation } from '../providers/queries.ts';
 import { useRecoveryMutation } from '../providers/recovery-mutation.ts';
 
 export function TodayCalendarTasks({ date, onDateChange, trackCountOn, transport, unauthorized, onSettings, onOpenTrack }: Readonly<{
@@ -24,7 +24,7 @@ export function TodayCalendarTasks({ date, onDateChange, trackCountOn, transport
   const plugins = useQuery(pluginsQueryOptions(transport, unauthorized));
   const enabled = plugins.data?.some((p) => p.id === CALENDAR_PLUGIN_ID && p.state === 'running') ?? false;
   const query = (range: CalendarWindow | null) => ({
-    queryKey: ['plugin-data', CALENDAR_PLUGIN_ID, range?.from, range?.until, timezone], enabled: enabled && range !== null,
+    queryKey: [...queryKeys.pluginDataPrefix(CALENDAR_PLUGIN_ID), range?.from, range?.until, timezone], enabled: enabled && range !== null,
     queryFn: ({ signal }: { signal: AbortSignal }) => {
       if (range === null) throw new Error('The calendar has not reported its visible window.');
       return runOperation(transport, { ...calendarListOperation(range.from, range.until, timezone), signal }, unauthorized);
@@ -42,7 +42,7 @@ export function TodayCalendarTasks({ date, onDateChange, trackCountOn, transport
       ));
     },
     /* `onSettled`: a write whose answer was lost may have been stored, and only the lists say so. */
-    onSettled: () => { void client.invalidateQueries({ queryKey: ['plugin-data', CALENDAR_PLUGIN_ID] }); },
+    onSettled: () => { void client.invalidateQueries({ queryKey: queryKeys.pluginDataPrefix(CALENDAR_PLUGIN_ID) }); },
   });
   /* One new task is one `idempotency_key` (#2131): a retry of the same task after an unknown outcome resends the held
      key, so the server answers the task the first attempt made; a final outcome releases it. */

@@ -54,9 +54,51 @@ describe('query invalidation adapter', () => {
     expect(mapPlannedQueryKey(['conversation-initial-input', 'w1'])).toEqual(['conversation-initial-input', 'w1']);
     expect(mapPlannedQueryKey(['conversation-initial-input', 'w1', 'card-1'])).toEqual(queryKeys.initialInput('w1', 'card-1'));
     expect(mapPlannedQueryKey(['today-launchpad'])).toEqual(queryKeys.todayLaunchpad());
-    for (const dropped of [['conversation-initial-input', undefined], ['conversation-initial-input', 'w1', null], ['conversation-initial-input', 'w1', 'c1', 'extra'], ['track-files'], ['track-files', 'w1'], ['tracks-range'], ['track-backlinks'], ['nope']]) {
+    for (const dropped of [['conversation-initial-input', undefined], ['conversation-initial-input', 'w1', null], ['conversation-initial-input', 'w1', 'c1', 'extra'], ['track-files'], ['track-files', 'w1'], ['tracks-range'], ['plugin-data'], ['nope']]) {
       expect(mapPlannedQueryKey(dropped)).toBeNull();
     }
+  });
+
+  it('invalidates backlinks for every cached track after another track report is edited', () => {
+    const client = new QueryClient();
+    const keys = [queryKeys.trackBacklinks('target-a'), queryKeys.trackBacklinks('target-b')];
+    for (const key of [...keys, queryKeys.plugins()]) client.setQueryData(key, []);
+    const plan = invalidationPlanFor({
+      ev: 'track.report_edited',
+      data: { track_id: 'source', card_id: 'report', author: 'assistant', edit_id: 'edit',
+        summary_before: '', summary_after: '', body_before: '', body_after: 'references changed' },
+    });
+    applyEventEffects(client, [{ type: 'invalidate', keys: plan.invalidate }]);
+    for (const key of keys) expect(client.getQueryState(key)?.isInvalidated).toBe(true);
+    expect(client.getQueryState(queryKeys.plugins())?.isInvalidated).toBe(false);
+    client.clear();
+  });
+
+  it.each([queryKeys.plugins(), queryKeys.trackTemplates()])('invalidates %j on plugin state changes', (head) => {
+    const client = new QueryClient();
+    const key = [head];
+    client.setQueryData(key, []);
+    const plan = invalidationPlanFor({ ev: 'plugin.state', data: {
+      id: 'calendar', state: 'running',
+    } });
+    applyEventEffects(client, [{ type: 'invalidate', keys: plan.invalidate }]);
+    expect(client.getQueryState(key)?.isInvalidated).toBe(true);
+    client.clear();
+  });
+
+  it('invalidates all calendar windows on plugin data changes without touching other plugins', () => {
+    const client = new QueryClient();
+    const keys = [
+      ['plugin-data', 'calendar', '2026-10-01', '2026-11-01', 'UTC'],
+      ['plugin-data', 'calendar', '2026-10-23', '2026-10-24', 'UTC'],
+    ];
+    const foreign = ['plugin-data', 'other', 'window'];
+    for (const key of [...keys, foreign]) client.setQueryData(key, []);
+    const plan = invalidationPlanFor({ ev: 'plugin.data.changed', data: { plugin_id: 'calendar' } });
+    applyEventEffects(client, [{ type: 'invalidate', keys: plan.invalidate }]);
+    for (const key of keys) expect(client.getQueryState(key)?.isInvalidated).toBe(true);
+    expect(client.getQueryState(foreign)?.isInvalidated).toBe(false);
+    client.clear();
   });
 
   it('releases accepted-input query leases for exactly the deleted card, deleted track and database scope', () => {

@@ -41,6 +41,10 @@ export function mapPlannedQueryKey(key: QueryKey): readonly unknown[] | null {
     && 'kind' in first && first.kind === 'card' && 'cardId' in first && typeof first.cardId === 'string') {
     return queryKeys.modelCatalog({ kind: 'card', cardId: first.cardId });
   }
+  if (head === 'track-backlinks' && key.length === 1) return queryKeys.trackBacklinksPrefix();
+  if (head === 'plugins' && key.length === 1) return queryKeys.plugins();
+  if (head === 'track-templates' && key.length === 1) return queryKeys.trackTemplates();
+  if (head === 'plugin-data' && typeof first === 'string' && key.length === 2) return queryKeys.pluginDataPrefix(first);
   if (head === 'areas' && key.length === 1) return queryKeys.areas();
   if (head === 'tracks' && first === 'area' && typeof second === 'string') return queryKeys.tracksInArea(second);
   if (head === 'track' && typeof first === 'string' && key.length === 2) return queryKeys.trackDetail(first);

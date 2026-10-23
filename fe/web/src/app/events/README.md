@@ -75,7 +75,10 @@ behind it. Mapping table (`mapPlannedQueryKey`):
 | `['track-conversations', id]` | `queryKeys.trackConversations(id)` | the endpoint is per-track (#1189 §4.1) and the plan names the track whenever `derivedTrackId` resolves one |
 | `['track-conversations']` | `queryKeys.trackConversationsPrefix()` | fallback for a `worker_session.*` event whose card belongs to no cached track detail. The query behind both arities lands in S5; mapping first is harmless (invalidating an unmounted key is a no-op) and the reverse order is what silently breaks a list |
 | `['tracks-range']` | — | **no-op**: the calendar range query is not built yet (stub) |
-| `['track-backlinks']` | — | **no-op**: no backlinks query is built yet (stub) |
+| `['track-backlinks']` | `queryKeys.trackBacklinksPrefix()` | all tracks: another report can change their backlinks |
+| `['plugins']` | `queryKeys.plugins()` | runtime state and last error |
+| `['track-templates']` | `queryKeys.trackTemplates()` | running template owner availability and input schema |
+| `['plugin-data', id]` | `queryKeys.pluginDataPrefix(id)` | every cached calendar window for that plugin |
 
 Resulting per-kind behavior on the currently-built surfaces:
 
@@ -91,7 +94,7 @@ Resulting per-kind behavior on the currently-built surfaces:
 | `card.deleted` | invalidate track detail + all task verdicts | card disappearance may break a cross-track reference; knowingly no conversation-list key (dropping the deleted row is #1140's) |
 | `worker_session.started` / `worker_session.status_changed` / `worker_session.superseded` | invalidate card overlays, plus track detail when the built-in cache lookup resolves; plus the track's task verdicts and both conversation lists | `track-files` remains an adapter stub. These three are what write `worker_sessions.state`, i.e. the dot each conversation row draws |
 | `overlay.set` / `overlay.deleted` | invalidate overlays of that kind, plus the owning track detail | |
-| `track.report_edited` | invalidate all task verdicts (cross-track refs can change dependents) | `track-files` and `track-backlinks` are still stubs |
+| `track.report_edited` | invalidate all task verdicts and backlinks, the edited track detail and Today resolve | cross-track refs can change dependents; `track-files` remains a stub |
 | `plan.updated` with string `agent_message` | cancel any in-flight initial verdict read, then invalidate that track's task verdicts | standalone pending-task cancellation carries the message and pending rows do not poll; projection companion events omit it and are no-ops here because their paired event already refreshes |
 | `codex.hook`, `claude.hook` | invalidate `track-files` **only** | a hook fires ~twice per tool call per worker and writes no `tasks` row; `track-report` is a live whole-document projection, so it is deliberately excluded (`taskVerdictInvalidatingKinds`) |
 | `terminal.deleted`, `codex.worker_requested`, `terminal.worker_requested`, `task.dispatched`, `task.completed`, `task.failed`, `task.gate_result` | invalidate task verdicts — by track id when the event resolves one, by prefix otherwise | `track-files` is still a stub. The four `task.*` events carry only an idempotency key / task id, so `derivedTrackId` — which reads named fields, never parsing an opaque id — returns null and only the prefix form reaches the cache: that is why the prefix is mapped at all |
@@ -100,7 +103,9 @@ Resulting per-kind behavior on the currently-built surfaces:
 | `harness.transcript.cleared` | invalidate harness items + planner run | a reset always emits `harness.phase.changed` too, which carries the lists |
 | `harness.user_message.enqueued` | invalidate harness items + planner run + both conversation lists | reset and enqueue cross the transcript/run boundary |
 | `harness.transcript.rewound` | invalidate harness items + planner run + both conversation lists + track detail | what `harness.phase.changed` invalidates: an Edit's replace deletes the turn's rows and persists the snapshot |
-| `plugin.*`, `task.context_*`, `workspace.*`, `forge.*`, `worktree.*`, `ask.*`, `proposal.*` | **no-op** | `core/events` declares these as `noop(reason)` and no query consumes them; open asks arrive in the activity overlay's `overlay.set` |
+| `plugin.state` | invalidate plugins + track templates | runtime state changes template owner availability and input schema; existing transient-state polling remains |
+| `plugin.data.changed` | invalidate that plugin's data prefix | calendar windows are query-backed |
+| `plugin.tool.registered`, `task.context_*`, `workspace.*`, `forge.*`, `worktree.*`, `ask.*`, `proposal.*` | **no-op** | `core/events` declares these as `noop(reason)` and no query consumes them; open asks arrive in the activity overlay's `overlay.set` |
 | unknown / future kind | ignored, no throw | the plan lookup returns an empty plan |
 
 Control frames: `replay-complete` → invalidate everything (`keys: null`) plus a
@@ -119,7 +124,7 @@ reconnect.
 
 The legacy app maps 40+ kinds. This slice covers only the kinds that keep the
 built surfaces live — areas, tracks in an area, track detail, track overlays.
-Everything routed to `track-files`, `tracks-range` or `track-backlinks` is a stub
+Everything routed to `track-files` or `tracks-range` is a stub
 here and becomes real the moment those queries exist: the mapping is one entry
 in `mapPlannedQueryKey`, and the pure plan already emits the key. `track-report`
 was such a stub and is now real — `trackTaskVerdictsQueryOptions` in

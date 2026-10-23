@@ -11,6 +11,7 @@ export const queryKeys = Object.freeze({
   trackLists: () => ['tracks'] as const,
   tracksInArea: (areaId: string) => ['tracks', areaId] as const,
   trackDetail: (trackId: string) => ['track', trackId] as const,
+  trackBacklinksPrefix: () => ['track-backlinks'] as const,
   trackBacklinks: (trackId: string) => ['track-backlinks', trackId] as const,
   /* The track's registered previews (#1780). Registrations emit no event; `trackPreviewsQueryOptions` polls. */
   trackPreviews: (trackId: string) => ['track-previews', trackId] as const,
@@ -35,11 +36,13 @@ export const queryKeys = Object.freeze({
   settings: () => ['settings'] as const,
   /* The user's read receipts (#2596). Writes emit no event: the read refetches on focus and after each write. */
   readReceipts: () => ['read-receipts'] as const,
-  /* Settings › Plugins. Not reached by any event policy; `pluginsQueryOptions` polls instead. */
+  /* Settings › Plugins. `plugin.state` invalidates; transient-state polling remains a supplement. */
   plugins: () => ['plugins'] as const,
+  /* Plugin data changes invalidate every cached window belonging to that plugin. */
+  pluginDataPrefix: (id: string) => ['plugin-data', id] as const,
   /* One plugin's detail, read only by its configuration pane; the list carries no manifest by design. */
   pluginDetail: (id: string) => ['plugin-detail', id] as const,
-  /* The New track picker's list. Not invalidated by any event: template keys are compile-time constants. */
+  /* The New track picker: `plugin.state` changes owner availability and input schemas. */
   trackTemplates: () => ['track-templates'] as const,
   /* The user's own recipes. Recipe writes emit no `Event`; the mutations below invalidate this key directly. */
   trackRecipes: () => ['track-recipes'] as const,
