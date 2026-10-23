@@ -229,7 +229,10 @@ mod tests {
         // Objective close adds 380 bytes of Planner description/schema; keep the aggregate cap.
         // 5c-1: `neige_objective_ask` (description 246, schema 118 bytes), offset by 63 bytes
         // trimmed from objective close's repeated role/key wording; the cap is measured 36,436.
-        const SURFACE_MAX_BYTES: usize = 36_436;
+        // 5c-2: gate adds 196 description + 185 schema bytes; report adds 178 + 280.
+        // Trimming ask/close repetition saves 220 bytes, leaving 619 net new bytes.
+        // The real registry budget test measured 37,055 bytes after those offsets.
+        const SURFACE_MAX_BYTES: usize = 37_055;
         const DESCRIPTION_MAX_BYTES: usize = 2_048;
 
         let descriptors = build_default_registry().descriptors_listed_for(CardRole::Planner);

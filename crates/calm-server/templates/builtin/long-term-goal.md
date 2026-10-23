@@ -2,7 +2,7 @@
 id = "long-term-goal"
 capabilities = ["objectives"]
 title = "长期目标"
-description = "长期自主推进一个目标：按 Roadmap 分阶段交付，KR 由独立 worker 测量，自动合并，只在有问题时问你。"
+description = "长期自主推进一个目标：按 Roadmap 分阶段交付，KR 由内核测量，自动合并，只在有问题时问你。"
 instructions = """
 把用户的目标写成「目标 + 关键结果 + Roadmap」，按阶段自主推进。
 实现与评审用 Codex worker；同一 head 评审无阻塞、门禁与 CI 全绿即合并。
@@ -15,13 +15,18 @@ instructions = """
 · 需要你：只放等用户决定的事，一行一件，「问题？默认：…」。没有就删掉整段。
 · 目标（O）：一句定性、有方向感的话，加时间框。不轻易改。
 · KR 细则需要用户批准时调用 neige_objective_ask；批准状态读取 objective.kr 投影。
-· 关键结果（KR）：3–5 个可测指标，表格写「KR / 怎么测（交付门槛）/ 当前 / 目标」。
-  KR 是交付门槛：阶段交付前后按「怎么测」重新测量，测量由独立 Codex worker
-  （只读任务）或命令完成，「当前」只引用测量结果；使任一 KR 变差的交付不合并。
+· 关键结果（KR）：3–5 个可测指标，各写一个 Loop（mode 为 {"loop":{"plateau":3}}）
+  objective，防退步的检查用 role ratchet；当前只支持 fact task_accepted 与 ask_answered。
+  细则先调用 neige_objective_ask 取得用户批准；每轮以 neige_objective_gate（key、revision）
+  发起评估，revision 为 40 位小写提交 hash。收到 EvaluationReady 后读取 objective.kr，
+  用 neige_objective_report（key、evaluation、decision、note）结算；keep 建立或移动基线，
+  discard 留账不移动基线，done 仅用于已完成判定。首轮无基线时第一次 Keep 建立基线。
+  最新判定、样本进度、基线与账本条数只引用 objective.kr，不在 Report 手写判定。
+  退步的候选不能 Keep；修改细则后重新请求用户批准。
 · Roadmap：阶段一个接一个，每个阶段固定写：
   交付物（PR 等）/ 推动（哪个 KR）/ 上下文 预算 Xk（已用读下方运行数据） / 现在。
   每个进行中阶段写一个 objective 块：key stage-N、mode converge、compact none；
-  checks 只放一个 role goal 的 fact task_accepted 检查，subject 为阶段收尾任务 key。
+  checks 只放一个 role goal 的 fact task_accepted 检查，subject 为阶段收尾任务的 attempt_id（从 neige_task_ls 读取，不由 key 推导）。
   budget.tokens 为阶段预算，turns=1000000、wall_secs=315360000（宽松上限）。
   「已用」由 objective.budget 自动累计，不手写；失败回合不计入已用。
   状态用 `进行中` `待开始` `未开始`；阶段移到「已交付」时先调用 neige_objective_close（key 为阶段 key），冻结实际用量。

@@ -21,6 +21,12 @@
 # copy and a contract assertion, not agent-facing instructions. Only a title
 # contract change edits these two sites; this keeps the existing single scan.
 
+# Objective measurement adds three CJK matches: "最新判定", "进行中评估" and
+# "账本条数" in track_planner_context/objective_kr.rs. These are native table
+# headings, not agent instructions. Only a heading-contract change edits that
+# projection and this existing baseline; adding an objective edits neither.
+# No new scan, list of objective keys or CI invocation is added.
+
 set -uo pipefail
 
 cd "$(git rev-parse --show-toplevel)" || exit 1

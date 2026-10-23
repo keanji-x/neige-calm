@@ -25,7 +25,7 @@ use objective::{Event, Intent, State};
 pub use intents::{IntentId, StoredEffect, StoredIntent};
 pub use lifecycle::{
     ExecutorSettlement, IntentSettlement, IntentStatus, intent_mark_dispatched_tx,
-    intent_settle_tx, unsettled_intents,
+    intent_settle_tx, unsettled_intents, unsettled_intents_for_track,
 };
 pub use log::LoggedEvent;
 

@@ -29,6 +29,7 @@ pub const PLANNER_CONTEXT_OVERLAY_KIND: &str = "planner.context";
 pub struct TrackPlannerContextProjector {
     repo: Arc<dyn Repo>,
     pool: sqlx::SqlitePool,
+    db: calm_truth::db::sqlite::SqliteDb,
     bus: EventBus,
     write: WriteContext,
 }
@@ -124,8 +125,8 @@ fn unit(snapshot: Option<&crate::harness::HarnessSnapshot>, completed: i64) -> D
     }
 }
 
-/// Read once for both objective tables in the existing projector cycle.
-async fn objective_state(pool: &sqlx::SqlitePool, track: &str) -> Result<Option<objective::State>> {
+/// Indexed capability guard: ordinary tracks never scan objective intents.
+async fn objectives_enabled(pool: &sqlx::SqlitePool, track: &str) -> Result<bool> {
     let enabled: bool = sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM track_capabilities WHERE track_id=? AND capability=?)",
     )
@@ -133,22 +134,17 @@ async fn objective_state(pool: &sqlx::SqlitePool, track: &str) -> Result<Option<
     .bind(calm_types::track_capability::TrackCapability::Objectives.as_db_str())
     .fetch_one(pool)
     .await?;
-    if !enabled {
-        return Ok(None);
-    }
-    Ok(Some(
-        calm_truth::objective_host::read_state(pool, &TrackId::from(track.to_owned()))
-            .await?
-            .1,
-    ))
+    Ok(enabled)
 }
 
 impl TrackPlannerContextProjector {
     pub fn new(repo: Arc<dyn Repo>, bus: EventBus, write: WriteContext) -> Option<Self> {
-        let pool = repo.sqlite_db()?.read_pool().clone();
+        let db = repo.sqlite_db()?;
+        let pool = db.read_pool().clone();
         Some(Self {
             repo,
             pool,
+            db,
             bus,
             write,
         })
@@ -221,13 +217,22 @@ impl TrackPlannerContextProjector {
             )
             .await?;
         let mut objective_changed = false;
-        if let Some(state) = objective_state(&self.pool, track_id).await? {
-            if let Err(error) =
-                crate::objective_dispatch::dispatch_track(self.repo.as_ref(), &self.bus, track_id)
-                    .await
+        if objectives_enabled(&self.pool, track_id).await? {
+            if let Err(error) = crate::objective_dispatch::dispatch_track(
+                self.repo.as_ref(),
+                &self.db,
+                &self.bus,
+                track_id,
+            )
+            .await
             {
                 tracing::warn!(%track_id, %error, "objective dispatch failed; continuing overlay publication");
             }
+            let (_, state) = calm_truth::objective_host::read_state(
+                &self.pool,
+                &TrackId::from(track_id.to_owned()),
+            )
+            .await?;
             for (kind, unit) in [
                 (objective_budget::KIND, objective_budget::unit(&state)?),
                 (objective_kr::KIND, objective_kr::unit(&state)?),

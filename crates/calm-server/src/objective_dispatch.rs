@@ -1,11 +1,13 @@
-//! Objective Notify executor. The durable wake uses the same event log and
+//! Objective fact and Notify executors. The durable wake uses the same event log and
 //! Dispatcher replay as compact settlement; event append and settlement are atomic.
+pub(crate) mod fact;
+
 use calm_truth::objective_host::{self, ExecutorSettlement};
 use objective::{Intent, State, engine::Notice};
 
 use crate::{
     db::{
-        Repo,
+        RepoEventWrite,
         sqlite::{append_decision_event_in_tx, track_get_tx},
         write_in_tx_typed,
     },
@@ -32,19 +34,40 @@ fn disposition(notice: &Notice, state: &State) -> Result<std::result::Result<Str
                     .into(),
             ));
         }
-        Notice::ApprovalInvalidated { .. } => {
-            return Ok(Err("ApprovalInvalidated has no consumer yet".into()));
-        }
-        Notice::EvaluationReady { .. } => {
-            return Ok(Err("EvaluationReady has no consumer yet".into()));
-        }
-        Notice::SettleRefused { .. } => return Ok(Err("SettleRefused has no consumer yet".into())),
-        Notice::PlateauReached { .. } => {
-            return Ok(Err("PlateauReached has no consumer yet".into()));
-        }
+        Notice::ApprovalInvalidated { objective, .. } => (
+            objective,
+            include_str!("../prompts/objective_approval_invalidated.md"),
+        ),
+        Notice::EvaluationReady { objective, .. } => (
+            objective,
+            include_str!("../prompts/objective_evaluation_ready.md"),
+        ),
+        Notice::SettleRefused { objective, .. } => (
+            objective,
+            include_str!("../prompts/objective_settle_refused.md"),
+        ),
+        Notice::PlateauReached { objective, .. } => (
+            objective,
+            include_str!("../prompts/objective_plateau_reached.md"),
+        ),
         Notice::EventIgnored { .. } => {
             return Ok(Err("EventIgnored does not require Planner attention".into()));
         }
+    };
+    let template = match notice {
+        Notice::EvaluationReady {
+            evaluation,
+            revision,
+            verdict,
+            ..
+        } => template
+            .replace("{evaluation}", &evaluation.to_string())
+            .replace("{revision}", revision.as_str())
+            .replace(
+                "{verdict}",
+                serde_json::to_value(verdict)?.as_str().unwrap(),
+            ),
+        _ => template.into(),
     };
     let objective = state
         .objectives
@@ -81,28 +104,37 @@ fn disposition(notice: &Notice, state: &State) -> Result<std::result::Result<Str
 
 /// Called only after the projector's existing indexed capability check. Its
 /// serial boot sweep and reconciliation loop own retry; there is no new poller.
-pub(crate) async fn dispatch_track(repo: &dyn Repo, bus: &EventBus, track: &str) -> Result<()> {
-    let db = repo
-        .sqlite_db()
-        .ok_or_else(|| CalmError::Internal("objective dispatch requires SQLite".into()))?;
-    let pending: Vec<_> = objective_host::unsettled_intents(&db)
-        .await?
-        .into_iter()
-        .filter(|row| {
-            row.id.track_id.as_str() == track && matches!(row.intent, Intent::Notify { .. })
-        })
-        .collect();
-    if pending.is_empty() {
-        return Ok(());
-    }
-    for row in pending {
-        let envelope = write_in_tx_typed(repo, move |tx| Box::pin(async move {
+pub(crate) async fn dispatch_track(
+    repo: &dyn RepoEventWrite,
+    db: &calm_truth::db::sqlite::SqliteDb,
+    bus: &EventBus,
+    track: &str,
+) -> Result<()> {
+    loop {
+        let pending: Vec<_> =
+            objective_host::unsettled_intents_for_track(db, &track.to_owned().into())
+                .await?
+                .into_iter()
+                .filter(|row| match &row.intent {
+                    Intent::RunCheck { .. } | Intent::Notify { .. } => true,
+                    Intent::Execute { .. } => false,
+                })
+                .collect();
+        if pending.is_empty() {
+            return Ok(());
+        }
+        for row in pending {
+            let envelope = write_in_tx_typed(repo, move |tx| Box::pin(async move {
             // Another invocation may have consumed this boot view. Recheck under
             // writer admission instead of weakening the lifecycle's strict transitions.
             let status: Option<String> = sqlx::query_scalar("SELECT status FROM objective_intents WHERE track_id=? AND event_seq=? AND ordinal=?")
                 .bind(row.id.track_id.as_str()).bind(row.id.seq.0 as i64).bind(i64::from(row.id.ordinal))
                 .fetch_optional(&mut **tx).await?;
             if status.as_deref().is_none_or(|status| status == "settled") { return Ok(None); }
+            if matches!(row.intent, Intent::RunCheck { .. }) {
+                fact::run_tx(tx, &row, status.as_deref() == Some("pending")).await?;
+                return Ok(None);
+            }
             if status.as_deref() == Some("pending") {
                 objective_host::intent_mark_dispatched_tx(tx, &row.id).await?;
             }
@@ -123,9 +155,9 @@ pub(crate) async fn dispatch_track(repo: &dyn Repo, bus: &EventBus, track: &str)
             objective_host::intent_settle_tx(tx, &row.id, settlement).await?;
             Ok(envelope)
         })).await?;
-        if let Some(envelope) = envelope {
-            bus.emit_envelope(envelope);
+            if let Some(envelope) = envelope {
+                bus.emit_envelope(envelope);
+            }
         }
     }
-    Ok(())
 }

@@ -699,7 +699,7 @@ fn record_latest(
 
 /// Planner verdicts are Track-scoped task terminal events; the dispatcher's
 /// spawn-failure `TaskFailed` is also Track-scoped but remains a run failure.
-fn is_planner_verdict_event(scope: &EventScope, actor: &ActorId) -> bool {
+pub fn is_planner_verdict_event(scope: &EventScope, actor: &ActorId) -> bool {
     matches!(scope, EventScope::Track { .. }) && !matches!(actor, ActorId::KernelDispatcher)
 }
 

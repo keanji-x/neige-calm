@@ -178,7 +178,7 @@ pub(crate) fn validate_task_start(map: &Map<String, Value>, errors: &mut Vec<Str
 }
 
 /// #1933: a full commit id as git prints it, 40 lowercase hex digits.
-fn is_full_commit_id(value: &str) -> bool {
+pub fn is_full_commit_id(value: &str) -> bool {
     value.len() == 40
         && value
             .bytes()

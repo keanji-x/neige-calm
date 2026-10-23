@@ -53,6 +53,19 @@ pub async fn unsettled_intents(db: &SqliteDb) -> Result<Vec<StoredIntent>> {
     Ok(result)
 }
 
+/// The per-track executor view; avoids reading other tracks' durable work.
+pub async fn unsettled_intents_for_track(
+    db: &SqliteDb,
+    track: &TrackId,
+) -> Result<Vec<StoredIntent>> {
+    let mut tx = begin_immediate_tx(db).await?;
+    let rows = sqlx::query("SELECT * FROM objective_intents WHERE track_id=? AND status<>'settled' ORDER BY event_seq,ordinal")
+        .bind(track.as_str()).fetch_all(&mut **tx).await?;
+    let result = rows.iter().map(decode).collect::<Result<Vec<_>>>()?;
+    tx.commit().await?;
+    Ok(result)
+}
+
 fn decode(row: &sqlx::sqlite::SqliteRow) -> Result<StoredIntent> {
     use sqlx::Row;
     let intent: Intent = serde_json::from_str(row.try_get("intent_json")?).map_err(internal)?;

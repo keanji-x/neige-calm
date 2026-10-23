@@ -18,6 +18,8 @@ fn expected_planner_toolset() -> Vec<&'static str> {
         "neige_mail_send",
         "neige_objective_ask",
         "neige_objective_close",
+        "neige_objective_gate",
+        "neige_objective_report",
         "neige_preview_add",
         "neige_preview_rm",
         "neige_report_commit",

@@ -274,7 +274,7 @@
   },
   {
     "name": "neige_objective_ask",
-    "description_sha256": "7aa1808b1cae20cc40fa597a2c94a5d495e4e5e3082be1e33e0756547860d42b",
+    "description_sha256": "f97d266beecb43a3112e69b744c7256d38460a2425ae3056e6aa025072ecef2f",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -302,7 +302,7 @@
   },
   {
     "name": "neige_objective_close",
-    "description_sha256": "0e91e6821c8c9c0dd4370d238470add851156909ae09893972831f9945506b92",
+    "description_sha256": "b57e9a97fd344b745f308dd76c120468c256214a3801aeaf43f00558f7414ffc",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -313,6 +313,85 @@
       },
       "required": [
         "key"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "roles": [
+      "planner"
+    ],
+    "listed_for": [
+      "planner"
+    ]
+  },
+  {
+    "name": "neige_objective_gate",
+    "description_sha256": "81dbfe28d1ae3c94836a606afca6e492e7726711f9d4b442c7f5aba2a1255b95",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "key": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "revision": {
+          "pattern": "^[0-9a-f]{40}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "key",
+        "revision"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "roles": [
+      "planner"
+    ],
+    "listed_for": [
+      "planner"
+    ]
+  },
+  {
+    "name": "neige_objective_report",
+    "description_sha256": "a4c3bfe40383579d2fa065b9ce3ddfc03bf5f2c17e42068772ce7b0b88e0f30a",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "decision": {
+          "enum": [
+            "keep",
+            "discard",
+            "done"
+          ],
+          "type": "string"
+        },
+        "evaluation": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "key": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "note": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "key",
+        "evaluation",
+        "decision",
+        "note"
       ],
       "type": "object"
     },

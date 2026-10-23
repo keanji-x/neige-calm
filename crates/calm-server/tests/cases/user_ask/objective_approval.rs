@@ -2,12 +2,12 @@ use super::*;
 use calm_truth::objective_host;
 
 const TOOL: &str = "neige_objective_ask";
-fn definition() -> Value {
+pub(super) fn definition() -> Value {
     json!({"key":"kr", "title":"交付 KR", "mode":"converge",
         "checks":[{"id":"accepted","role":"goal","config":{"kind":"fact","params":{"fact":"task_accepted","subject":"finish"}}}],
         "constraints":[],"budget":{"tokens":10000,"turns":1000,"wall_secs":10000},"compact":"none"})
 }
-async fn define(boot: &Boot, id: Option<Value>, payload: Value) -> Value {
+pub(super) async fn define(boot: &Boot, id: Option<Value>, payload: Value) -> Value {
     let mut op = json!({"kind":"objective","payload":payload});
     if let Some(id) = id {
         op["id"] = id;
@@ -22,7 +22,7 @@ async fn define(boot: &Boot, id: Option<Value>, payload: Value) -> Value {
     .unwrap()["id"]
         .clone()
 }
-async fn setup() -> (Boot, Value) {
+pub(super) async fn setup() -> (Boot, Value) {
     let boot = boot().await;
     let db = boot.repo.sqlite_db().unwrap();
     let mut tx = calm_server::db::sqlite::begin_immediate_tx(&db)
@@ -62,7 +62,7 @@ async fn approved(boot: &Boot) -> bool {
         .objectives[&objective::ids::ObjectiveKey::new("kr")]
         .is_approved()
 }
-async fn request(boot: &Boot) -> Value {
+pub(super) async fn request(boot: &Boot) -> Value {
     call_tool(boot, TOOL, json!({"key":"kr"})).await.unwrap()
 }
 
@@ -119,7 +119,7 @@ async fn objective_approval_rest_click_tool_reuse_and_projection() {
     let kr = overlays.iter().find(|o| o.kind == "objective.kr").unwrap();
     assert_eq!(
         kr.payload["cell"]["table"]["rows"][0],
-        json!({"key":"kr","title":"交付 KR","approval":"已批准"})
+        json!({"key":"kr","title":"交付 KR","approval":"已批准","verdict":"—","evaluation":"—","baseline":"—","ledger":"0"})
     );
     // Resolve the shipped template's slot through the production Report tools too.
     let source = include_str!("../../../templates/builtin/long-term-goal.md");
