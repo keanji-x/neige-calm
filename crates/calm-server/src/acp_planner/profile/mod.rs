@@ -53,8 +53,7 @@ pub(crate) struct AcpAgentProfile {
 /// A profile's supported release line and tested floor. Other majors, including
 /// their prereleases, are refused even if semver precedence is below the next release.
 pub(crate) struct AgentVersions {
-    pub(crate) major: u64,
-    pub(crate) floor: (u64, u64, u64),
+    pub(crate) floor: &'static semver::Version,
     pub(crate) refusal: &'static str,
 }
 
@@ -95,18 +94,15 @@ impl AcpAgentProfile {
         response: &InitializeResponse,
         minimum: &semver::Version,
     ) -> Result<(), String> {
-        if let Some(versions) = &self.versions {
-            let (major, minor, patch) = versions.floor;
-            let floor = semver::Version::new(major, minor, patch);
-            if !self.identity.admits(response, &floor)
+        if let Some(versions) = &self.versions
+            && (!self.identity.admits(response, versions.floor)
                 || self
                     .identity
                     .reported(response)
                     .and_then(|value| semver::Version::parse(value).ok())
-                    .is_none_or(|value| value.major != versions.major)
-            {
-                return Err(versions.refusal.to_owned());
-            }
+                    .is_none_or(|value| value.major != versions.floor.major))
+        {
+            return Err(versions.refusal.to_owned());
         }
         if !self.identity.admits(response, minimum) {
             return Err(format!(

@@ -56,8 +56,7 @@ pub(super) const PROFILE: AcpAgentProfile = AcpAgentProfile {
     },
     identity: AgentIdentity::AgentInfo { name: "OpenCode" },
     versions: Some(AgentVersions {
-        major: 2,
-        floor: (2, 1, 3),
+        floor: &semver::Version::new(2, 1, 3),
         refusal: "OpenCode requires >=2.1.3,<3.0.0; install @opencode/cli (tested floor 2.1.3)",
     }),
     owned_env: &["OPENCODE_CONFIG_CONTENT"],
