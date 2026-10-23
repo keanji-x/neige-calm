@@ -89,6 +89,8 @@ pub use calm_truth::state::WriteContext;
 
 #[derive(Clone)]
 pub struct RouteState {
+    pub(crate) dispatcher: Arc<Dispatcher>,
+    pub(crate) shared_codex_appserver: Arc<SharedCodexAppServer>,
     pub terminal_execution: bool,
     pub daemon: Arc<DaemonClient>,
     pub repo: Arc<dyn RouteRepo>,
@@ -241,6 +243,8 @@ impl BootState {
             HOOK_INGEST_CACHE_CAPACITY,
         )));
         let route = RouteState {
+            dispatcher: self.dispatcher.clone(),
+            shared_codex_appserver: self.shared_codex_appserver.clone(),
             terminal_execution: false,
             daemon: self.daemon.clone(),
             terminal_renderer: self.terminal_renderer.clone(),

@@ -1,7 +1,8 @@
 //! A Planner card's permission mode (#2348): its creation sources and stored value.
 //! The harness reads it when it issues a turn
 //! (`harness::run_loop::turn_permission`) and the provider adapter turns it into its own settings.
-//! After creation, the only writer of a stored value is `PUT /api/cards/{id}/planner/permission-mode`.
+//! After creation, the User-only PUT route edits the stored value; Planner switching
+//! inherits the outgoing Planner's stored mode in the switch transaction.
 
 use serde_json::{Map, Value};
 
@@ -79,6 +80,35 @@ pub fn read(payload: &Value) -> Result<PlannerPermissionMode, MalformedPermissio
     serde_json::from_value(stored.clone()).map_err(|_| MalformedPermissionMode {
         found: Some(stored.clone()),
     })
+}
+
+/// Inherit the Track's current permission choice, just as delegated creation does.
+/// Read and overwrite under the switch transaction, before its ingress observations.
+/// The caller rolls back this write if any later switch check refuses.
+pub(crate) async fn inherit_for_switch_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    outgoing: &str,
+    incoming: &str,
+) -> Result<(), InheritanceError> {
+    let sqlx::types::Json(payload): sqlx::types::Json<Value> =
+        sqlx::query_scalar("SELECT payload FROM cards WHERE id=?1")
+            .bind(outgoing)
+            .fetch_one(&mut **tx)
+            .await
+            .map_err(calm_truth::TruthError::from)?;
+    let mode = read(&payload).map_err(InheritanceError::Malformed)?;
+    crate::db::sqlite::planner_permission_mode_set_tx(tx, incoming, mode, |_| Ok(())).await?;
+    Ok(())
+}
+
+pub(crate) enum InheritanceError {
+    Malformed(MalformedPermissionMode),
+    Storage(calm_truth::TruthError),
+}
+impl From<calm_truth::TruthError> for InheritanceError {
+    fn from(error: calm_truth::TruthError) -> Self {
+        Self::Storage(error)
+    }
 }
 
 /// The mode a Planner card shows: its stored value, or `never` when that cannot be read. Fails

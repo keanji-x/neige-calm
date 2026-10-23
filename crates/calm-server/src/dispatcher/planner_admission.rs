@@ -14,6 +14,28 @@ pub(crate) struct PlannerAdmission {
 }
 
 impl PlannerAdmission {
+    /// Input compensation discovers current Planners on open Tracks independently
+    /// of native harness recovery. A fresh canonical carrier has no thread yet.
+    /// These are hints only: reconcile re-discovers admission under the push lock.
+    pub(super) async fn reconcile_candidates(
+        repo: &dyn crate::db::Repo,
+    ) -> Result<Vec<(TrackId, CardId)>> {
+        let db = repo
+            .sqlite_db()
+            .ok_or_else(|| CalmError::Internal("Planner admission requires SQLite".into()))?;
+        let rows: Vec<(String, String)> = sqlx::query_as(
+            "SELECT t.id,c.id FROM tracks t JOIN cards c ON c.track_id=t.id
+             WHERE t.closed_at IS NULL AND c.role='planner' AND c.session_id IS NOT NULL
+             ORDER BY t.id,c.id",
+        )
+        .fetch_all(db.read_pool())
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|(track, card)| (track.into(), card.into()))
+            .collect())
+    }
+
     pub(crate) async fn discover(
         repo: &dyn crate::db::Repo,
         track: &TrackId,

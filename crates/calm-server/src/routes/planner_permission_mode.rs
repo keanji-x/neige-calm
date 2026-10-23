@@ -1,6 +1,7 @@
-//! `PUT /api/cards/{id}/planner/permission-mode` — the only writer of a Planner card's permission
-//! mode (#2348). A person's choice: an agent, the Planner itself included, is refused, so a Planner
-//! cannot raise its own permissions. Takes effect from the Planner's next turn.
+//! `PUT /api/cards/{id}/planner/permission-mode` — edits a Planner card's permission
+//! mode (#2348); Planner switching inherits it transactionally. A person's choice: an agent,
+//! the Planner itself included, is refused, so a Planner cannot raise its own permissions.
+//! Takes effect from the Planner's next turn.
 
 use axum::extract::State;
 pub use calm_types::harness::SetPlannerPermissionModeResponse;

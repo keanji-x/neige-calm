@@ -20,6 +20,7 @@ pub mod mobile_access;
 pub mod plain_chat;
 mod planner_hibernation;
 mod planner_session;
+mod planner_switch;
 pub mod provider_execution;
 pub mod provider_registry;
 pub mod reaper;

@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# #2774 Planner switch history: runtime_id/crates 1133 -> 1135 adds two
+# reads of the frozen initiating-worker column, before and after switching.
+# These assertions preserve historical attribution; no domain name, exclusion,
+# scan rule or inventory is added. Future frozen-column queries use this baseline.
 # ACP END settlement bounded exception: harness_item/crates 294 -> 297 is
 # three SQL references to the frozen transcript table: the storage owner's
 # idempotent observation query and the regression's row join/failure trigger.

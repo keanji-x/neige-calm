@@ -53,6 +53,8 @@ mod dispatcher_inputs_tests;
 mod dispatcher_report_edit_tests;
 #[cfg(feature = "fixtures")]
 mod opencode_creation_tests;
+#[cfg(feature = "fixtures")]
+mod planner_switch_tests;
 mod presentation_capability_tests;
 mod presentation_read_feedback_tests;
 mod resolution_tests;

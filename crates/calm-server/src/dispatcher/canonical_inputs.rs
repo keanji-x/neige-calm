@@ -241,27 +241,12 @@ impl Inner {
             return Ok(());
         }
         self.producer()?;
-        for runtime in self
-            .repo
-            .session_projection_recover_harnesses_on_boot()
-            .await?
-        {
-            let card = CardId::from(runtime.card_id.clone());
-            if self.write.verify_role(&card) != Some(CardRole::Planner)
-                || !crate::conversation_inputs::has_canonical_storage(
-                    self.repo.as_ref(),
-                    card.as_str(),
-                )
+        for (track, card) in PlannerAdmission::reconcile_candidates(self.repo.as_ref()).await? {
+            if !crate::conversation_inputs::has_canonical_storage(self.repo.as_ref(), card.as_str())
                 .await?
             {
                 continue;
             }
-            let track = self
-                .repo
-                .card_track_id(card.as_str())
-                .await?
-                .ok_or_else(|| CalmError::Conflict("event target lost its Track".into()))?;
-            let track = TrackId::from(track);
             #[cfg(feature = "fixtures")]
             crate::test_seams::pause_point("planner-reconcile-before-push", card.as_str()).await;
             let _guard = self.acquire_push_lock(&track).await;
@@ -474,5 +459,27 @@ impl Dispatcher {
             event_inputs::track_prefix_tx(tx, track.as_str(), PLANNER_CATCH_UP_KINDS, after, None)
                 .await?,
         )
+    }
+}
+
+impl Dispatcher {
+    pub(crate) async fn planner_switch_push_lock(
+        &self,
+        track: &TrackId,
+    ) -> crate::harness::PushLockGuard {
+        self.inner.acquire_push_lock(track).await
+    }
+    pub(crate) async fn planner_switch_pending(
+        &self,
+        track: &TrackId,
+        facts: &[EventInputFact],
+        baseline: i64,
+    ) -> Result<bool> {
+        for fact in facts.iter().filter(|fact| fact.envelope.id > baseline) {
+            if self.inner.qualify(track, fact.clone()).await?.is_some() {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 }
