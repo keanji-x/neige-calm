@@ -84,7 +84,7 @@ function setup(options: Options = {}) {
           return Promise.resolve({ status: 500, statusText: 'Server Error', body: {} });
         }
         return Promise.resolve(ok({
-          track: detail.track, can_reopen: false, can_admin: false, can_close: true, cards: detail.cards, overlays: [],
+          track: detail.track, planner_revision: 0, can_reopen: false, can_admin: false, can_close: true, cards: detail.cards, overlays: [],
         }));
       }
       if (request.path.includes('/planner/run?contract=conversation_v1')) {

@@ -51,7 +51,7 @@ async function shot(name: string, expectedTitles: readonly string[]) {
 
 it.each([1440, 390])('catalog main report and sidebar %i', async width => {
   await page.viewport(width, 900);
-  renderDailyFixture({ initial: '/track/project', reply: request => request.path === '/api/tracks/project' ? ok({ track, can_reopen: false, can_admin: false, can_close: true, cards: [], overlays: [] }) : undefined });
+  renderDailyFixture({ initial: '/track/project', reply: request => request.path === '/api/tracks/project' ? ok({ track, planner_revision: 0, can_reopen: false, can_admin: false, can_close: true, cards: [], overlays: [] }) : undefined });
   await expect.element(page.getByRole('heading', { name: '进展会整理在这里' })).toBeVisible();
   await shot('01-report-' + width, ["进展会整理在这里"]);
   if (width === 390) {

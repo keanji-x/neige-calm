@@ -516,7 +516,7 @@ function metadataRead(surface: 'detail' | 'list', respectsAbort = false, trackId
   const transport = { send: (request: ApiRequest) => new Promise<ApiTransportResponse>((resolve, reject) => {
     const body = surface === 'detail' ? {
       track: { workspace: { isolation: 'none' as const, kind: 'attached' as const, path: '/tmp', frozen_at: null }, id: trackId, area_id: 'area-1', title: 'Track', sort: 0, cwd: '/tmp', pinned_at: null, closed_at: null, created_at: 1, updated_at: 2 },
-      can_reopen: false, can_admin: false, can_close: true, overlays: [],
+      planner_revision: 0, can_reopen: false, can_admin: false, can_close: true, overlays: [],
       cards: [{ id: 'card-1', track_id: trackId, kind: 'codex', title, sort: 0, payload: { planner_harness: true }, deletable: true, created_at: 1, updated_at: 2 }],
     } : [{ id: 'card-1', trackId, title, kind: 'track-assistant', provider: 'codex', state: 'idle', updatedAt: 2, archivedAt: null, lastTurnCompletedAt: null }];
     reads.push({ request, release: () => resolve({ status: 200, statusText: 'OK', body }) });

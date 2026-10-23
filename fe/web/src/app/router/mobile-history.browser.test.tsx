@@ -55,7 +55,7 @@ it('reads only current Track conversations and excludes sibling and other worksp
     ]);
     if (request.path === '/api/areas/project-area/tracks') return ok([track, sibling]);
     if (request.path === '/api/areas/other-area/tracks') return ok([foreign]);
-    if (request.path === '/api/tracks/sibling') return ok({ track: sibling, can_reopen: false, can_admin: false, can_close: true, cards: [], overlays: [] });
+    if (request.path === '/api/tracks/sibling') return ok({ track: sibling, planner_revision: 0, can_reopen: false, can_admin: false, can_close: true, cards: [], overlays: [] });
     if (request.path === '/api/tracks/project/conversations') return ok([
       { id: 'first-chat', trackId: 'project', title: 'Older chat', kind: 'track-assistant', provider: 'codex', state: null, updatedAt: 10, archivedAt: null, lastTurnCompletedAt: null },
     ]);
@@ -139,7 +139,7 @@ it.each([320, 390])('switches four sidebar views using current history and real 
     if (request.path === '/api/tracks/project/conversations') return ok([
       { id: 'current-chat', trackId: 'project', title: 'Current history', kind: 'track-assistant', provider: 'codex', state: null, updatedAt: 10, archivedAt: null, lastTurnCompletedAt: null },
     ]);
-    if (request.path === '/api/tracks/pinned') return ok({ track: pinned, can_reopen: false, can_admin: false, can_close: true, cards: [], overlays: [] });
+    if (request.path === '/api/tracks/pinned') return ok({ track: pinned, planner_revision: 0, can_reopen: false, can_admin: false, can_close: true, cards: [], overlays: [] });
     return undefined;
   } });
   await page.getByRole('button', { name: 'Open conversation history', exact: true }).click();

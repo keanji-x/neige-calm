@@ -205,8 +205,31 @@ fn document() -> Value {
 
 /// Whether the operation lists `status` with an `ErrorBody` answer.
 fn lists_error(operation: &Value, status: &str) -> bool {
-    operation["responses"][status]["content"]["application/json"]["schema"]["$ref"]
-        == "#/components/schemas/ErrorBody"
+    let schema = &operation["responses"][status]["content"]["application/json"]["schema"];
+    let error_ref = "#/components/schemas/ErrorBody";
+    schema["$ref"] == error_ref
+        || schema["anyOf"]
+            .as_array()
+            .is_some_and(|members| members.iter().any(|member| member["$ref"] == error_ref))
+}
+
+#[test]
+fn lists_error_requires_an_explicit_error_body_branch() {
+    use serde_json::json;
+    let error = json!({"$ref":"#/components/schemas/ErrorBody"});
+    let refusal = json!({"$ref":"#/components/schemas/PlannerSwitchRefusalBody"});
+    for (schema, expected) in [
+        (error.clone(), true),
+        (json!({"anyOf":[refusal.clone(), error]}), true),
+        (refusal.clone(), false),
+        (json!({"anyOf":[refusal]}), false),
+        (json!({"type":"object"}), false),
+    ] {
+        let operation =
+            json!({"responses":{"400":{"content":{"application/json":{"schema":schema}}}}});
+        assert_eq!(lists_error(&operation, "400"), expected);
+        assert!(!lists_error(&operation, "403"));
+    }
 }
 
 /// Every `#[utoipa::path]` handler is in the document; it declares a JSON request body exactly when

@@ -302,3 +302,26 @@ async fn corrupt_payload_fails_the_read_instead_of_fabricating_a_card() {
         "unexpected error: {err}"
     );
 }
+
+#[tokio::test]
+async fn track_detail_reads_required_planner_revision() {
+    let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
+    let id = empty_track(&repo).await;
+    assert_eq!(
+        repo.track_detail(&id)
+            .await
+            .unwrap()
+            .unwrap()
+            .planner_revision,
+        0
+    );
+    sqlx::query("UPDATE tracks SET planner_revision=7 WHERE id=?1")
+        .bind(&id)
+        .execute(repo.pool())
+        .await
+        .unwrap();
+    let detail = repo.track_detail(&id).await.unwrap().unwrap();
+    assert_eq!(detail.planner_revision, 7);
+    let value = serde_json::to_value(detail).unwrap();
+    assert_eq!(value["planner_revision"], 7);
+}

@@ -91,7 +91,7 @@ function mount(count: number) {
     let body: unknown = [];
     if (request.path === '/api/areas') body = [{ id: track.area_id, name: 'Performance', color: '#123456', sort: 1, kind: 'user', created_at: 1, updated_at: 1 }];
     if (request.path === `/api/areas/${track.area_id}/tracks`) body = [track];
-    if (request.path === `/api/tracks/${track.id}`) body = { track, can_reopen: false, can_admin: false, can_close: true, cards: [card], overlays: [] };
+    if (request.path === `/api/tracks/${track.id}`) body = { track, planner_revision: 0, can_reopen: false, can_admin: false, can_close: true, cards: [card], overlays: [] };
     if (request.path === '/api/settings') body = {};
     if (request.path.includes('/planner/run?contract=conversation_v1')) body = historicalConversationRun({ card_id: card.id, worker_session_id: 'perf-runtime',
       phase: 'issuing_turn', model: null, reasoning_effort: null, permission_mode: 'never', blocked_reason: null, manual_compact_supported: true, recovery: null, compact_outcome: null, context_usage_invalidated: false, running_turn: null }, 'idle', true);

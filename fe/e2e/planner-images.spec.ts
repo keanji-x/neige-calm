@@ -27,7 +27,7 @@ test('shows local screenshots in planner history after reopening and on mobile',
     if (path === '/api/areas') body = [{ id: track.area_id, name: 'Work', color: '#123456', sort: 1,
       kind: 'user', created_at: 1, updated_at: 1 }];
     if (path === `/api/areas/${track.area_id}/tracks`) body = [track];
-    if (path === `/api/tracks/${track.id}`) body = { track, can_reopen: false, can_admin: false, can_close: true, cards: [card], overlays: [] };
+    if (path === `/api/tracks/${track.id}`) body = { track, planner_revision: 0, can_reopen: false, can_admin: false, can_close: true, cards: [card], overlays: [] };
     if (path === `/api/cards/${card.id}/planner/run` && url.searchParams.get('contract') === 'conversation_v1') body = historicalConversationRun({ card_id: card.id, worker_session_id: 'image-session',
       phase: 'idle', model: null, reasoning_effort: null, permission_mode: 'never', blocked_reason: null, manual_compact_supported: true, recovery: null, compact_outcome: null, context_usage_invalidated: false, running_turn: null }, 'idle', true);
     if (path === `/api/cards/${card.id}/harness/items` && url.searchParams.get('contract') === 'conversation_v1') body = historicalConversationPage(card.id, [{ id: 1, worker_session_id: 'image-session',

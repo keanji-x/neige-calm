@@ -11,7 +11,7 @@ function setup() {
     if (request.path === '/api/tracks/daily') return { status: 200, statusText: 'OK', body: {
       track: { workspace: { isolation: 'none' as const, kind: 'attached' as const, path: '/tmp', frozen_at: null }, id: 'daily', area_id: 'daily-area', title: 'Report preparation', sort: 0, cwd: '/tmp',
         pinned_at: null, closed_at: null, created_at: 1, updated_at: 2 },
-      can_reopen: false, can_close: false, can_admin: false, overlays: [], cards: [{
+      planner_revision: 0, can_reopen: false, can_close: false, can_admin: false, overlays: [], cards: [{
         id: 'prepared-report', track_id: 'daily', kind: 'track-report', title: null, sort: 0,
         created_at: 1, updated_at: 2, deletable: false,
         payload: { schemaVersion: 3, docRev: 1, summary: '', body: '', blocks: [

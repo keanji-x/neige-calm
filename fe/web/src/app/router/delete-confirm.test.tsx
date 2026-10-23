@@ -59,7 +59,7 @@ it('does not navigate on a delete success that arrives after cancellation', asyn
     ] });
     if (request.path === '/api/areas/c1/tracks') return Promise.resolve({ status: 200, statusText: 'OK', body: [track] });
     if (request.path === '/api/tracks/w1') return Promise.resolve({
-      status: 200, statusText: 'OK', body: { track, can_reopen: false, can_admin: false, can_close: true, cards: [], overlays: [] },
+      status: 200, statusText: 'OK', body: { track, planner_revision: 0, can_reopen: false, can_admin: false, can_close: true, cards: [], overlays: [] },
     });
     if (request.path === '/api/settings') return Promise.resolve({ status: 200, statusText: 'OK', body: {} });
     return Promise.resolve({ status: 200, statusText: 'OK', body: [] });
@@ -119,7 +119,7 @@ it('round-trips an encoded track id through useGo, TanStack history, and useRout
     ] });
     if (request.path === '/api/areas/c1/tracks') return Promise.resolve({ status: 200, statusText: 'OK', body: [track] });
     if (request.path.includes('/api/tracks/')) return Promise.resolve({
-      status: 200, statusText: 'OK', body: { track, can_reopen: false, can_admin: false, can_close: true, cards: [], overlays: [] },
+      status: 200, statusText: 'OK', body: { track, planner_revision: 0, can_reopen: false, can_admin: false, can_close: true, cards: [], overlays: [] },
     });
     return Promise.resolve({ status: 200, statusText: 'OK', body: [] });
   } };

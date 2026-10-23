@@ -20,6 +20,7 @@ use calm_types::worker::{WorkerSession, WorkerSessionId};
 /// Row shape of the single-statement `track_detail` read.
 #[derive(sqlx::FromRow)]
 struct TrackDetailRow {
+    planner_revision: i64,
     #[sqlx(flatten)]
     track: crate::db::rows::TrackRow,
     referenced_as_child: bool,
@@ -307,7 +308,7 @@ impl RepoRead for SqlxRepo {
         // renders REAL with only 15 significant digits; `json(c.payload)` re-renders
         // so corrupt text raises instead of becoming card structure.
         let row = sqlx::query_as::<_, TrackDetailRow>(&format!(
-            r#"SELECT {TRACK_SELECT_COLUMNS_W},
+            r#"SELECT {TRACK_SELECT_COLUMNS_W}, w.planner_revision,
                       EXISTS(SELECT 1 FROM tasks parent_task
                               WHERE parent_task.child_track_id = w.id) AS referenced_as_child,
                       (SELECT json_group_array(json_object(
@@ -359,6 +360,7 @@ impl RepoRead for SqlxRepo {
         let can_reopen = row.track.closed_at.is_some() && !area_chat && !row.referenced_as_child;
         let can_close = row.track.closed_at.is_none() && !area_chat;
         Ok(Some(TrackDetail {
+            planner_revision: row.planner_revision,
             track: Track::from(row.track),
             can_reopen,
             can_close,

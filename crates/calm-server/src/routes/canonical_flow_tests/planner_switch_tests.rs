@@ -9,6 +9,8 @@ use calm_truth::db::sqlite::track_planner::PlannerRevision;
 use calm_truth::db::{RepoEventWrite, RepoRead};
 use calm_truth::session_repo::SessionRepo;
 
+mod http;
+
 struct Pair {
     fixture: Fixture,
     state: AppState,

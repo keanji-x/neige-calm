@@ -10596,6 +10596,151 @@
         }
       }
     },
+    "/api/tracks/{id}/planner/switch": {
+      "post": {
+        "tags": [
+          "tracks"
+        ],
+        "operationId": "switch_planner",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Track id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PlannerSwitchRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Planner switched; reconcile uncertain outcomes by reading Track detail",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlannerSwitchResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request or planner_target_invalid",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    },
+                    {
+                      "$ref": "#/components/schemas/PlannerSwitchRefusalBody"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Current human session required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Access denied or planner_user_required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    },
+                    {
+                      "$ref": "#/components/schemas/PlannerSwitchRefusalBody"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Track or Area not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Planner changed or conversation is unsafe to switch",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlannerSwitchRefusalBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "`payload_too_large`: the body is over the request size limit.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "`unsupported_media_type`: the request does not say `Content-Type: application/json`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`invalid_body`: the JSON is not the body's shape (a field missing or of the wrong type).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal failure; refresh detail to reconcile",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/tracks/{id}/previews": {
       "get": {
         "tags": [
@@ -17899,6 +18044,70 @@
           }
         }
       },
+      "PlannerSwitchRefusalBody": {
+        "type": "object",
+        "required": [
+          "error",
+          "code",
+          "card_id"
+        ],
+        "properties": {
+          "card_id": {
+            "type": "string"
+          },
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          }
+        }
+      },
+      "PlannerSwitchRequest": {
+        "type": "object",
+        "required": [
+          "target_assistant_card_id",
+          "expected_planner_card_id",
+          "expected_revision"
+        ],
+        "properties": {
+          "expected_planner_card_id": {
+            "type": "string"
+          },
+          "expected_revision": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "target_assistant_card_id": {
+            "type": "string"
+          }
+        }
+      },
+      "PlannerSwitchResponse": {
+        "type": "object",
+        "required": [
+          "track_id",
+          "planner_card_id",
+          "demoted_card_id",
+          "planner_revision"
+        ],
+        "properties": {
+          "demoted_card_id": {
+            "type": "string"
+          },
+          "planner_card_id": {
+            "type": "string"
+          },
+          "planner_revision": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "track_id": {
+            "type": "string"
+          }
+        }
+      },
       "Plugin": {
         "type": "object",
         "required": [
@@ -19941,6 +20150,7 @@
       "TrackDetail": {
         "type": "object",
         "required": [
+          "planner_revision",
           "track",
           "can_reopen",
           "can_close",
@@ -19972,6 +20182,11 @@
             "items": {
               "$ref": "#/components/schemas/Overlay"
             }
+          },
+          "planner_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Planner tenure read in the same snapshot as the cards."
           },
           "track": {
             "$ref": "#/components/schemas/TrackWire"

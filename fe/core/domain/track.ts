@@ -327,6 +327,7 @@ export const cardWireSchema = z.object({
 export type CardWire = z.infer<typeof cardWireSchema>;
 
 export const trackDetailSchema = z.object({
+  planner_revision: z.number().int().nonnegative(),
   track: trackWireSchema,
   can_reopen: z.boolean(),
   can_close: z.boolean(),

@@ -1,8 +1,4 @@
-//! Internal Track role composition. No transport exposes this operation.
-#![allow(
-    dead_code,
-    reason = "internal entry point for the next Planner switch slice"
-)]
+//! Track role composition shared by transport adapters.
 use crate::db::sqlite::{self, conversation::*, track_planner as truth};
 use crate::harness::backend::factory::PlannerFactory;
 use crate::harness::carrier_replacement::{

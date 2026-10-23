@@ -47,7 +47,7 @@ function setup({ adminGrantedAt, canAdmin, patch }: Kernel) {
     if (request.path === '/api/areas') return ok([AREA]);
     if (request.path === '/api/areas/c1/tracks') return ok([track]);
     if (request.path === '/api/tracks/w1') {
-      return ok({ track, can_reopen: false, can_close: true, can_admin: canAdmin, cards: [PLANNER], overlays: [] });
+      return ok({ track, planner_revision: 0, can_reopen: false, can_close: true, can_admin: canAdmin, cards: [PLANNER], overlays: [] });
     }
     if (request.path.includes('/planner/run?contract=conversation_v1')) return ok(historicalConversationRun(PLANNER_RUN, 'idle', true));
     if (request.path.includes('/harness/items?contract=conversation_v1')) return ok(historicalConversationPage(conversationCardId(request.path), [], null));

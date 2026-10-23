@@ -42,6 +42,7 @@ pub mod planner_input;
 pub mod planner_input_send;
 pub mod planner_model;
 pub mod planner_permission_mode;
+pub mod planner_switch;
 pub mod plugins;
 pub mod read_receipts;
 pub mod settings;
@@ -79,6 +80,7 @@ pub fn protected_router() -> Router<AppState> {
         .merge(area_folders::router())
         .merge(crate::mentions::router())
         .merge(tracks::router())
+        .merge(planner_switch::router())
         .merge(activity_dismissals::router())
         .merge(read_receipts::router())
         .merge(track_asks::router())

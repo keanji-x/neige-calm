@@ -40,7 +40,7 @@ function setup(prepareReport: ReportPreparationPort = prepareReportDocument, ini
     if (request.path === '/api/areas/area/tracks') body = tracks;
     if (request.path === '/api/settings') body = {};
     for (const track of tracks) {
-      if (request.path === `/api/tracks/${track.id}`) body = { track, can_reopen: false, can_admin: false, can_close: true, cards: serverCards.get(track.id), overlays: [] };
+      if (request.path === `/api/tracks/${track.id}`) body = { track, planner_revision: 0, can_reopen: false, can_admin: false, can_close: true, cards: serverCards.get(track.id), overlays: [] };
       if (request.path === `/api/tracks/${track.id}/report`) body = { taskDiagnostics: [] };
     }
     return { status: 200, statusText: 'OK', body };

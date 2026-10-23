@@ -148,7 +148,7 @@ function reportCard(id, size) {
 const details = new Map(tracks.map(track => {
   const item = fixture.find(item => item.id === track.id);
   if (item === undefined) throw new Error(`Missing fixture for ${track.id}`);
-  return [track.id, { track, can_reopen: false, can_admin: true, can_close: true,
+  return [track.id, { track, planner_revision: 0, can_reopen: false, can_admin: true, can_close: true,
     cards: [reportCard(track.id, item.count)], overlays: [] }];
 }));
 /** @type {import('./track-profile-types.d.ts').RecordedRequest[]} */

@@ -641,7 +641,7 @@ describe('a delete answered done drops its cache entry like a success', () => {
 
   it.each([['done', notFound, false], ['unknown', lost, true]] as const)('track delete answered %s', async (_name, answer, kept) => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    client.setQueryData(queryKeys.trackDetail('w1'), { track: baseTrackWire, can_reopen: false, can_admin: false, can_close: true, cards: [], overlays: [] });
+    client.setQueryData(queryKeys.trackDetail('w1'), { track: baseTrackWire, planner_revision: 0, can_reopen: false, can_admin: false, can_close: true, cards: [], overlays: [] });
     const transport: ApiTransportPort = { send: (request) => (request.method === 'GET' ? new Promise(() => undefined) : answer()) };
     const { result } = renderHook(() => useTrackMutations(transport, unauthorized), { wrapper: wrapper(client) });
     await act(() => expect(result.current.remove('w1', 'c1')).rejects.toBeInstanceOf(ApiError));
@@ -655,7 +655,7 @@ describe('track detail mutation cache writes', () => {
     deletable: true, created_at: 1, updated_at: 2,
   });
   const detail = {
-    track: { ...baseTrackWire }, can_reopen: false, can_admin: false, can_close: true,
+    track: { ...baseTrackWire }, planner_revision: 0, can_reopen: false, can_admin: false, can_close: true,
     cards: [cardWire('card-a'), cardWire('card-b')], overlays: [],
   };
 
@@ -956,7 +956,7 @@ describe('input metadata mutation reconciliation', () => {
       const transport = createRecoveryTransports({ send: request => {
         paths.push(request.path);
         if (request.method === 'GET') return Promise.resolve(ok({ track: baseTrackWire,
-          can_reopen: false, can_admin: false, can_close: true, overlays: [], cards: [] }));
+          planner_revision: 0, can_reopen: false, can_admin: false, can_close: true, overlays: [], cards: [] }));
         if (outcome === '401') return Promise.resolve({ status: 401, statusText: 'Unauthorized', body: { error: 'Sign in' } });
         if (outcome === 'offline') access.change('offline');
         else { access.invalidate('recovering'); access.change('connected'); }
@@ -1026,7 +1026,7 @@ describe('input metadata mutation reconciliation', () => {
           await Promise.resolve();
           paths.push(request.path);
           if (request.path === '/api/tracks/w1') return ok({ track: baseTrackWire,
-            can_reopen: false, can_admin: false, can_close: true, overlays: [], cards: [{
+            planner_revision: 0, can_reopen: false, can_admin: false, can_close: true, overlays: [], cards: [{
               id: 'card-1', track_id: 'w1', kind: 'codex', title, sort: 0, payload: { planner_harness: true },
               deletable: true, created_at: 1, updated_at: 2,
             }] });

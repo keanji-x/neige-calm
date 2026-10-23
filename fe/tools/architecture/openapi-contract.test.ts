@@ -16,6 +16,9 @@ const RESPONSE_WIRE_EXCEPTIONS = new Set([
   'InterruptPlannerCardResponse', 'ListdirResponse', 'ModelsResponse', 'PluginDetail', 'PluginListItem',
   'PlannerInputMutationResponse', 'PlannerInputStaleBody',
   'PlannerSteerResponse', 'PlannerSteerConflictBody',
+  // Route-owned Planner switch DTOs; this REST-only slice has no frontend mutation consumer yet.
+  // Their response shapes are exercised through the authenticated router's planner_switch_http_ tests.
+  'PlannerSwitchResponse', 'PlannerSwitchRefusalBody',
   'ReadFileResponse', 'ReportBlockWriteResponse',
   'ResetPlannerCardResponse', 'SendPlannerInputResponse',
   'SetPlannerModelResponse',

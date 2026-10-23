@@ -33,7 +33,7 @@ export function renderCommandFixture(options: Readonly<{
       return ok(track);
     }
     if (request.path === '/api/tracks/daily') return ok({ track,
-      can_reopen: options.canReopen ?? closed, can_close: options.canClose ?? !closed, can_admin: true,
+      planner_revision: 0, can_reopen: options.canReopen ?? closed, can_close: options.canClose ?? !closed, can_admin: true,
       cards: [{ id: 'daily-planner', track_id: 'daily', kind: 'codex', title: 'Daily Planner conversation', sort: 1,
         payload: { planner_harness: true }, deletable: false, created_at: 1, updated_at: 2 }], overlays: [] });
     if (request.path.includes('/harness/items') && options.edit === 'sent') {

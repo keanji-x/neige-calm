@@ -333,7 +333,7 @@ describe('EventBridge contracts', () => {
   it('resolves a runtime card through cached track detail before invalidating', async () => {
     const { record, stream, emit } = fakeStream();
     const client = new QueryClient();
-    client.setQueryData(['track', 'w1'], { track: {}, overlays: [], cards: [{ id: 'card-1' }] });
+    client.setQueryData(['track', 'w1'], { planner_revision: 0, track: {}, overlays: [], cards: [{ id: 'card-1' }] });
     const invalidate = vi.spyOn(client, 'invalidateQueries').mockImplementation(() => Promise.resolve());
     render(<EventBridge client={client} stream={stream} syncEventVersion={3} dbInstanceId="db-a" cursor={memoryCursor()} />);
     await waitFor(() => expect(record.startCalls).toBe(1));

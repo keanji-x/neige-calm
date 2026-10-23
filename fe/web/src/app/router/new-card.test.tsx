@@ -41,7 +41,7 @@ function setup({ createFails = false, deferCreate = false, answers = [] as reado
       if (request.path === '/api/areas') return Promise.resolve(ok([AREA]));
       if (request.path === '/api/areas/c1/tracks') return Promise.resolve(ok([TRACK]));
       if (request.path === '/api/tracks/w1') {
-        return Promise.resolve(ok({ track: TRACK, can_reopen: false, can_admin: false, can_close: true, cards: [...cards], overlays: [] }));
+        return Promise.resolve(ok({ track: TRACK, planner_revision: 0, can_reopen: false, can_admin: false, can_close: true, cards: [...cards], overlays: [] }));
       }
       if (request.path === '/api/tracks/w1/report') return Promise.resolve(ok({ taskDiagnostics: [] }));
       if (request.path.startsWith('/api/fs/listdir')) {

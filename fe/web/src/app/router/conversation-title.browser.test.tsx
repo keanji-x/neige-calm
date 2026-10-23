@@ -52,7 +52,7 @@ it('refreshes unopened pending metadata through the event bridge only for the wi
   const fixture = renderDailyFixture({ initial: '/track/daily?panel=conversations', extraPlanner: true, reply: request => {
     if (request.path === '/api/tracks/daily') return ok({
       track: { workspace: { isolation: 'none' as const, kind: 'attached' as const, path: '/tmp', frozen_at: null }, id: 'daily', area_id: 'daily-area', title: 'Track', sort: 0, cwd: '/tmp', pinned_at: null, closed_at: null, created_at: 1, updated_at: 2 },
-      can_reopen: false, can_admin: false, can_close: false, overlays: [],
+      planner_revision: 0, can_reopen: false, can_admin: false, can_close: false, overlays: [],
       cards: [{ id: 'daily-planner', track_id: 'daily', kind: 'codex', title, sort: 0,
         payload: { planner_harness: true, planner_provider: 'codex' }, deletable: false, created_at: 1, updated_at: 2 }],
     });
@@ -110,7 +110,7 @@ it('refreshes the first pending title after local edit and deletes without a pha
   const fixture = renderDailyFixture({ initial: '/track/daily?panel=conversations', reply: request => {
     if (request.path === '/api/tracks/daily') return ok({
       track: { workspace: { isolation: 'none' as const, kind: 'attached' as const, path: '/tmp', frozen_at: null }, id: 'daily', area_id: 'daily-area', title: 'Track', sort: 0, cwd: '/tmp', pinned_at: null, closed_at: null, created_at: 1, updated_at: 2 },
-      can_reopen: false, can_admin: false, can_close: false, overlays: [],
+      planner_revision: 0, can_reopen: false, can_admin: false, can_close: false, overlays: [],
       cards: [{ id: 'daily-planner', track_id: 'daily', kind: 'codex', title: pending[0]?.text ?? null, sort: 0,
         payload: { planner_harness: true, planner_provider: 'codex' }, deletable: false, created_at: 1, updated_at: 2 }],
     });
@@ -153,7 +153,7 @@ it.each(['agent-only pending', 'confirmed input', 'attachment-only'] as const)(
     const fixture = renderDailyFixture({ initial: '/track/daily?panel=conversations', reply: request => {
       if (request.path === '/api/tracks/daily') return ok({
         track: { workspace: { isolation: 'none' as const, kind: 'attached' as const, path: '/tmp', frozen_at: null }, id: 'daily', area_id: 'daily-area', title: 'Track', sort: 0, cwd: '/tmp', pinned_at: null, closed_at: null, created_at: 1, updated_at: 2 },
-        can_reopen: false, can_admin: false, can_close: false, overlays: [],
+        planner_revision: 0, can_reopen: false, can_admin: false, can_close: false, overlays: [],
         cards: [{ id: 'daily-planner', track_id: 'daily', kind: 'codex', title, sort: 0,
           payload: { planner_harness: true, planner_provider: 'codex' }, deletable: false, created_at: 1, updated_at: 2 }],
       });
@@ -196,7 +196,7 @@ for (const surface of ['detail', 'list'] as const) {
         let response: ApiTransportResponse;
         if (request.path === '/api/tracks/daily') response = { status: 200, statusText: 'OK', body: {
           track: { workspace: { isolation: 'none' as const, kind: 'attached' as const, path: '/tmp', frozen_at: null }, id: 'daily', area_id: 'daily-area', title: 'Track', sort: 0, cwd: '/tmp', pinned_at: null, closed_at: null, created_at: 1, updated_at: 2 },
-          can_reopen: false, can_admin: false, can_close: false, overlays: [],
+          planner_revision: 0, can_reopen: false, can_admin: false, can_close: false, overlays: [],
           cards: [{ id: 'daily-planner', track_id: 'daily', kind: 'codex', title, sort: 0,
             payload: { planner_harness: true, planner_provider: 'codex' }, deletable: false, created_at: 1, updated_at: 2 }],
         } };

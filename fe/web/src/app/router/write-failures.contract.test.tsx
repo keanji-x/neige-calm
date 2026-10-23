@@ -44,7 +44,7 @@ function renderApp(path: string, write: (request: ApiRequest, world: World) => P
     if (request.path === '/api/areas/c1/tracks') return Promise.resolve(ok(world.gone ? [] : [track]));
     if (request.path === '/api/tracks/w1' && world.stale) return new Promise<ApiTransportResponse>(() => undefined);
     if (request.path === '/api/tracks/w1') return Promise.resolve(world.gone ? notFound : ok({
-      track, can_reopen: world.closed, can_admin: false, can_close: !world.closed, cards: [card], overlays: [],
+      track, planner_revision: 0, can_reopen: world.closed, can_admin: false, can_close: !world.closed, cards: [card], overlays: [],
     }));
     if (request.path === '/api/settings') return Promise.resolve(ok({}));
     if (request.path === '/api/version') return Promise.resolve(ok({ areaCreateIdempotency: true }));

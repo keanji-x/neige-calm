@@ -11,6 +11,7 @@ import {
   overlaysByKindOperation, trackDetailOperation, type Track, type OverlayWire,
 } from './track.js';
 import type { Area } from './area.js';
+import { performApiRequest } from '../api/client.js';
 
 const baseWire = { workspace: { isolation: 'none' as const, kind: 'attached' as const, path: '', frozen_at: null },
   id: 'w1', area_id: 'c1', title: 'Ship it', sort: 1,
@@ -28,6 +29,24 @@ function track(overrides: Partial<Track>): Track {
 
 const DAY = 24 * 60 * 60 * 1000;
 
+describe('track detail planner revision contract', () => {
+  const detail = { track: baseWire, can_reopen: false, can_close: true, can_admin: false, cards: [], overlays: [] };
+
+  it.each([undefined, -1, 1.5])('rejects invalid planner_revision %s', (revision) => {
+    const body = revision === undefined ? detail : { ...detail, planner_revision: revision };
+    expect(trackDetailSchema.safeParse(body).success).toBe(false);
+  });
+
+  it.each([0, 7])('retains planner_revision %s through the API decoder', async (revision) => {
+    const body = { ...detail, planner_revision: revision };
+    expect(trackDetailSchema.parse(body)).toMatchObject({ planner_revision: revision });
+    const result = await performApiRequest({
+      send: () => Promise.resolve({ status: 200, statusText: 'OK', body }),
+    }, trackDetailOperation('w1'));
+    expect(result).toMatchObject({ status: 'ready', value: { planner_revision: revision } });
+  });
+});
+
 describe('card and overlay HTTP decode', () => {
   const card = {
     id: 'card', track_id: 'w1', kind: 'note', sort: 0,
@@ -38,7 +57,7 @@ describe('card and overlay HTTP decode', () => {
     kind: 'future-kind', payload: { arbitrary: ['kept'] }, updated_at: 2,
   };
   const detail = (cards: unknown[], overlays: unknown[]) => trackDetailOperation('w1').responseSchema.parse({
-    track: baseWire, can_reopen: false, can_close: true, can_admin: false, cards, overlays,
+    track: baseWire, planner_revision: 0, can_reopen: false, can_close: true, can_admin: false, cards, overlays,
   });
 
   it('defaults the HTTP card title to null and deletable to true, and strips unknown fields', () => {
@@ -173,7 +192,7 @@ describe('open and closed', () => {
   });
 
   it('requires the server-derived Reopen and Close capabilities on track detail', () => {
-    const detail = { track: { ...baseWire }, cards: [], overlays: [] };
+    const detail = { track: { ...baseWire }, planner_revision: 0, cards: [], overlays: [] };
     expect(trackDetailSchema.safeParse(detail).success).toBe(false);
     expect(trackDetailSchema.safeParse({ ...detail, can_reopen: true }).success).toBe(false);
     expect(trackDetailSchema.safeParse({ ...detail, can_admin: false, can_close: true }).success).toBe(false);

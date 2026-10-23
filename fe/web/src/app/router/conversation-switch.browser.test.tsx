@@ -59,7 +59,7 @@ it.each([false, true])('keeps expanded Track A → B → A idle without earlier 
   const fixture = renderDailyFixture({ initial: '/track/daily?panel=conversations', reply: async request => {
     if (request.path === '/api/tracks/project') return ok({
       track: { workspace: { isolation: 'managed', kind: 'managed', path: '/tmp', frozen_at: null }, id: 'project', area_id: 'project-area', title: 'Project evidence', sort: 0, cwd: '/tmp', pinned_at: null, closed_at: null, created_at: 1, updated_at: 2 },
-      can_reopen: false, can_admin: false, can_close: true,
+      planner_revision: 0, can_reopen: false, can_admin: false, can_close: true,
       cards: [{ id: 'project-planner', track_id: 'project', kind: 'codex', title: 'Project conversation', sort: 1,
         payload: { planner_harness: true }, deletable: false, created_at: 1, updated_at: 2 }], overlays: [],
     });

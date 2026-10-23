@@ -45,8 +45,8 @@ export function setupWorkbench({ cards: initial = [] as CardWire[], defer = fals
     if (path === '/api/areas') return ok([{ id: 'area', name: 'Work', color: '#123456', sort: 1, kind: 'user', created_at: 1, updated_at: 1 }]);
     if (path === '/api/areas/area/tracks') return ok([track]);
     if (path === '/api/settings') return ok({});
-    if (path === '/api/tracks/other') return ok({ track: { ...track, id: 'other', title: 'Other track' }, can_reopen: false, can_admin: false, can_close: true, cards: [...otherCards], overlays: [] });
-    if (path === '/api/tracks/workbench') return ok({ track, can_reopen: false, can_admin: false, can_close: true, cards: [...cards], overlays: [] });
+    if (path === '/api/tracks/other') return ok({ track: { ...track, id: 'other', title: 'Other track' }, planner_revision: 0, can_reopen: false, can_admin: false, can_close: true, cards: [...otherCards], overlays: [] });
+    if (path === '/api/tracks/workbench') return ok({ track, planner_revision: 0, can_reopen: false, can_admin: false, can_close: true, cards: [...cards], overlays: [] });
     if (secondaryReads !== null && ['/api/tracks/workbench/report', '/api/tracks/workbench/conversations', '/api/tracks/workbench/backlinks'].includes(path)) await secondaryReads;
     if (path === '/api/tracks/workbench/report') return ok({ taskDiagnostics: [] });
     if (path === '/api/tracks/workbench/conversations') return ok(rows);

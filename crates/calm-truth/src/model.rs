@@ -415,6 +415,8 @@ impl Task {
 
 #[derive(Clone, Debug, Serialize, ToSchema)]
 pub struct TrackDetail {
+    /// Planner tenure read in the same snapshot as the cards.
+    pub planner_revision: i64,
     #[serde(serialize_with = "calm_types::track_wire::serialize_track")]
     #[schema(value_type = calm_types::track_wire::TrackWire)]
     pub track: Track,
