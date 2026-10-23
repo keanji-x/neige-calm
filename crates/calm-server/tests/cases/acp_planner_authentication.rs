@@ -78,7 +78,7 @@ async fn an_opencode_turn_sends_no_authenticate_when_the_agent_offers_methods() 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_agent_below_the_minimum_version_reads_unavailable() {
     let root = Root::new("unused");
-    let stack = boot_with(&root, json!({"ACP_FIXTURE_VERSION":"1.18.35"}), "1.18.36").await;
+    let stack = boot_with(&root, json!({"ACP_FIXTURE_VERSION":"2.1.3"}), "2.1.4").await;
     let (status, providers) = stack.send("GET", "/api/agent-providers", None).await;
     assert_eq!(status, StatusCode::OK);
     let acp = providers
@@ -92,9 +92,34 @@ async fn an_agent_below_the_minimum_version_reads_unavailable() {
         acp["reason"]
             .as_str()
             .unwrap()
-            .contains("version 1.18.36 or later"),
+            .contains("version 2.1.4 or later"),
         "{acp}"
     );
     assert!(requests(&root, "session/new").is_empty());
     stack.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn acp_opencode_profile_refuses_unsupported_versions_even_with_old_operator_minimum() {
+    for version in ["1.18.35", "2.1.2", "2.1.3-beta.1", "3.0.0", "3.0.0-beta.1"] {
+        let root = Root::new("unused");
+        let stack = boot_with(&root, json!({"ACP_FIXTURE_VERSION":version}), "1.0.0").await;
+        let (_, providers) = stack.send("GET", "/api/agent-providers", None).await;
+        let acp = providers
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["provider"] == "opencode")
+            .unwrap();
+        assert_eq!(acp["status"], "unavailable", "{version}: {acp}");
+        assert!(
+            acp["reason"]
+                .as_str()
+                .unwrap()
+                .contains("OpenCode requires >=2.1.3,<3.0.0; install @opencode/cli"),
+            "{acp}"
+        );
+        assert!(requests(&root, "session/new").is_empty());
+        stack.shutdown().await;
+    }
 }

@@ -68,11 +68,11 @@ pub fn cancelled() -> Value {
 mod tests {
     use super::*;
 
-    /// The params OpenCode 1.18.35 sent for a `bash` call under `permission.bash = "ask"`.
-    fn opencode_bash() -> Value {
+    /// The params OpenCode 2.1.3 sent for a correlated `shell` call with native shell permissions set to ask.
+    fn opencode_shell() -> Value {
         json!({
             "sessionId": "ses_1",
-            "toolCall": {"toolCallId": "call_12", "title": "echo one > one.txt", "kind": "execute",
+            "toolCall": {"toolCallId": "call_12", "name": "shell", "title": "echo one > one.txt", "kind": "execute",
                          "status": "pending", "locations": [], "rawInput": {"command": "echo one > one.txt"}},
             "options": [
                 {"optionId": "once", "kind": "allow_once", "name": "Allow once"},
@@ -84,7 +84,7 @@ mod tests {
 
     #[test]
     fn a_request_decodes_its_tool_call_and_options_in_order() {
-        let request = PermissionRequest::decode(opencode_bash()).unwrap();
+        let request = PermissionRequest::decode(opencode_shell()).unwrap();
         assert_eq!(
             request.tool_call.title.as_deref(),
             Some("echo one > one.txt")
@@ -109,6 +109,26 @@ mod tests {
         assert_eq!(minimal.tool_call.title, None);
         assert_eq!(minimal.tool_call.locations, None);
         assert_eq!(minimal.tool_call.raw_input, None);
+    }
+
+    /// v2.1.3 ACPPermission.ask omits name/rawInput without a correlated tool,
+    /// but can still attach a patch preview from permission metadata.
+    #[test]
+    fn opencode_patch_diff_decodes_without_correlated_tool_input() {
+        let request = PermissionRequest::decode(json!({
+            "toolCall": {"toolCallId":"per_1", "title":"/workspace/file", "kind":"edit",
+                "locations":[{"path":"/workspace/file"}],
+                "content":[{"type":"diff","path":"/workspace/file","oldText":"old","newText":"new"}]},
+            "options":[{"optionId":"once","kind":"allow_once","name":"Allow once"}]
+        })).unwrap();
+        assert_eq!(request.tool_call.raw_input, None);
+        assert_eq!(request.tool_call.kind.as_deref(), Some("edit"));
+        assert_eq!(
+            request.tool_call.locations,
+            Some(vec![Location {
+                path: "/workspace/file".into()
+            }])
+        );
     }
 
     #[test]

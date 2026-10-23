@@ -2,7 +2,7 @@
 
 Its registration's env shapes `initialize`: ACP_FIXTURE_IDENTITY `agent_info` (default: agentInfo
 named OpenCode) or `meta` (no agentInfo; `_meta.agentVersion`, as Grok Build 1.0.62 reports),
-ACP_FIXTURE_VERSION (default 1.18.35), ACP_FIXTURE_AUTH_METHODS (comma-separated `authMethods`
+ACP_FIXTURE_VERSION (default 2.1.3), ACP_FIXTURE_AUTH_METHODS (comma-separated `authMethods`
 ids; default none), and ACP_FIXTURE_AUTHENTICATE `ok` (default), `error` or `silent` (never
 answers, as signed-out Grok Build 1.0.62). ACP_FIXTURE_VENDOR `xai` adds what Grok Build 1.0.62
 sends beside ACP: `_x.ai/*` notifications around setup and every turn, and its `initialize`
@@ -27,7 +27,7 @@ with (root / 'environment.jsonl').open('a') as output:
         'NEIGE_MCP_DAEMON_TOKEN', 'NEIGE_MCP_TOKEN', 'NEIGE_MCP_SOCKET', 'ACP_AMBIENT_SENTINEL']}
     presence['catalog'] = os.environ['NEIGE_ACP_PLANNER'].endswith(':catalog')
     presence['readiness'] = os.environ['NEIGE_ACP_PLANNER'].endswith(':readiness')
-    presence['opencode_permission'] = os.environ.get('OPENCODE_PERMISSION')
+    presence['opencode_config_content'] = os.environ.get('OPENCODE_CONFIG_CONTENT')
     output.write(json.dumps(presence) + '\n')
 with (root / 'argv.jsonl').open('a') as output:
     output.write(json.dumps(sys.argv[1:]) + '\n')
@@ -133,10 +133,10 @@ def permission_log(entry):
         output.write(json.dumps(entry) + '\n')
 
 def ask_permission(request_id):
-    # The shape OpenCode 1.18.35 sends for a bash call under `permission.bash = "ask"`.
+    # The OpenCode 2.1.3 correlated shell permission shape.
     emit({'jsonrpc': '2.0', 'id': request_id, 'method': 'session/request_permission', 'params': {
         'sessionId': current,
-        'toolCall': {'toolCallId': 'call_1', 'title': 'echo one > one.txt', 'kind': 'execute',
+        'toolCall': {'toolCallId': 'call_1', 'name': 'shell', 'title': 'echo one > one.txt', 'kind': 'execute',
                      'status': 'pending', 'locations': [], 'rawInput': {'command': 'echo one > one.txt'}},
         'options': [{'optionId': 'once', 'kind': 'allow_once', 'name': 'Allow once'},
                     {'optionId': 'always', 'kind': 'allow_always', 'name': 'Always allow'},
@@ -216,7 +216,7 @@ for line in sys.stdin:
         capabilities = {'loadSession': (root / 'scenario').read_text().strip() != 'unsupported-load'}
         if (root / 'scenario').read_text().strip() != 'catalog_no_close':
             capabilities['sessionCapabilities'] = {'close': {}}
-        version = 'wrong' if wrong else os.environ.get('ACP_FIXTURE_VERSION', '1.18.35')
+        version = 'wrong' if wrong else os.environ.get('ACP_FIXTURE_VERSION', '2.1.3')
         if xai:
             capabilities['promptCapabilities'] = {'image': False, 'audio': False, 'embeddedContext': True}
             capabilities['_meta'] = {'x.ai/fs_notify': True}
@@ -327,7 +327,7 @@ for line in sys.stdin:
         elif scenario == 'hold':
             pending = request
         elif scenario == 'prompt-error':
-            # OpenCode 1.18.35 answers the prompt this way once its model API refuses (HTTP 402, or
+            # OpenCode 2.1.3 answers the prompt this way once its model API refuses (HTTP 402, or
             # 429 after its retries); the process stays up. Some text may already have streamed.
             update({'sessionUpdate': 'agent_message_chunk', 'content': {'type': 'text', 'text': 'partial'}})
             emit({'jsonrpc': '2.0', 'id': request['id'], 'error': {

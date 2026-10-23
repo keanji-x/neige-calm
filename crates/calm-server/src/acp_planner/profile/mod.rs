@@ -23,6 +23,12 @@ pub(crate) struct AcpAgentProfile {
     pub(crate) entry: AgentEntry,
     /// Where the agent's `initialize` answer reports who it is.
     pub(crate) identity: AgentIdentity,
+    /// Supported native contract, independently of an operator's additional minimum.
+    pub(crate) versions: Option<AgentVersions>,
+    /// Environment content owned by the profile, never overwritten in a registration.
+    pub(crate) owned_env: &'static [&'static str],
+    /// What a Planner turn adds under `never`.
+    pub(crate) never: ModeLaunch,
     /// The reported `authMethods` id every launch authenticates with after `initialize`, before
     /// any session operation; `None` sends no `authenticate`.
     pub(crate) authentication: Option<&'static str>,
@@ -42,6 +48,14 @@ pub(crate) struct AcpAgentProfile {
     /// Environment the registration may not set: credentials the agent would use in place of the
     /// sign-in it authenticates with.
     pub(crate) refused_env: &'static [&'static str],
+}
+
+/// A profile's supported release line and tested floor. Other majors, including
+/// their prereleases, are refused even if semver precedence is below the next release.
+pub(crate) struct AgentVersions {
+    pub(crate) major: u64,
+    pub(crate) floor: (u64, u64, u64),
+    pub(crate) refusal: &'static str,
 }
 
 /// The argv an agent CLI serves ACP under, after the registration's `args` (which only prefix
@@ -69,13 +83,39 @@ pub(crate) struct ModeLaunch {
     pub(crate) agent_options: &'static [&'static str],
 }
 
-/// `never` adds nothing: the agent's own configuration stands.
+/// A launch that adds nothing: the agent's own configuration stands.
 const NOTHING: ModeLaunch = ModeLaunch {
     env: &[],
     agent_options: &[],
 };
 
 impl AcpAgentProfile {
+    pub(crate) fn admit_identity(
+        &self,
+        response: &InitializeResponse,
+        minimum: &semver::Version,
+    ) -> Result<(), String> {
+        if let Some(versions) = &self.versions {
+            let (major, minor, patch) = versions.floor;
+            let floor = semver::Version::new(major, minor, patch);
+            if !self.identity.admits(response, &floor)
+                || self
+                    .identity
+                    .reported(response)
+                    .and_then(|value| semver::Version::parse(value).ok())
+                    .is_none_or(|value| value.major != versions.major)
+            {
+                return Err(versions.refusal.to_owned());
+            }
+        }
+        if !self.identity.admits(response, minimum) {
+            return Err(format!(
+                "ACP agent did not negotiate the registered protocol identity at version {minimum} or later"
+            ));
+        }
+        Ok(())
+    }
+
     pub(crate) fn canonical_inputs(&self, contract: calm_types::worker::WorkerContract) -> bool {
         use calm_types::worker::WorkerContract;
         match contract {
@@ -97,7 +137,7 @@ impl AcpAgentProfile {
     /// What one Planner turn's process adds under `mode`.
     pub(crate) fn launch(&self, mode: PlannerPermissionMode) -> &ModeLaunch {
         match mode {
-            PlannerPermissionMode::Never => &NOTHING,
+            PlannerPermissionMode::Never => &self.never,
             PlannerPermissionMode::Ask => &self.ask,
             PlannerPermissionMode::Full => &self.full,
         }
@@ -148,10 +188,16 @@ impl AcpAgentProfile {
 impl AgentIdentity {
     /// Whether `response` reports this identity at a version of at least `minimum` by semver
     /// precedence: build metadata is ignored, and a pre-release ranks below its release, so with
-    /// minimum 1.18.35 `1.18.36-beta.1` is admitted and `1.18.35-beta.1` is not. A version that
+    /// minimum 2.1.3 `2.1.4-beta.1` is admitted and `2.1.3-beta.1` is not. A version that
     /// is not semver is never admitted.
     pub(crate) fn admits(&self, response: &InitializeResponse, minimum: &semver::Version) -> bool {
-        let reported = match self {
+        self.reported(response)
+            .and_then(|version| semver::Version::parse(version).ok())
+            .is_some_and(|version| version.cmp_precedence(minimum).is_ge())
+    }
+
+    fn reported<'a>(&self, response: &'a InitializeResponse) -> Option<&'a str> {
+        match self {
             Self::AgentInfo { name } => response
                 .agent_info
                 .as_ref()
@@ -162,10 +208,7 @@ impl AgentIdentity {
                 .as_ref()
                 .and_then(|meta| meta.get("agentVersion"))
                 .and_then(serde_json::Value::as_str),
-        };
-        reported
-            .and_then(|version| semver::Version::parse(version).ok())
-            .is_some_and(|version| version.cmp_precedence(minimum).is_ge())
+        }
     }
 }
 
@@ -219,20 +262,20 @@ mod tests {
     #[test]
     fn a_reported_version_is_admitted_from_the_minimum_on() {
         let identity = AgentIdentity::AgentInfo { name: "OpenCode" };
-        let minimum = semver::Version::parse("1.18.35").unwrap();
+        let minimum = semver::Version::parse("2.1.3").unwrap();
         for (version, admitted) in [
-            ("1.18.35", true),
-            ("1.18.36", true),
-            ("2.0.0", true),
-            ("1.18.34", false),
+            ("2.1.3", true),
+            ("2.1.4", true),
+            ("3.0.0", true),
+            ("2.1.2", false),
             // Precedence ranks a pre-release below its own release only.
-            ("1.18.36-beta.1", true),
-            ("1.18.35-beta.1", false),
+            ("2.1.4-beta.1", true),
+            ("2.1.3-beta.1", false),
             // Build metadata never ranks.
-            ("1.18.35+vendor.2", true),
-            ("1.18.34+vendor.2", false),
-            ("1.18", false),
-            ("v1.18.35", false),
+            ("2.1.3+vendor.2", true),
+            ("2.1.2+vendor.2", false),
+            ("2.1", false),
+            ("v2.1.3", false),
             ("wrong", false),
         ] {
             let response = initialize(json!({"agentInfo":{"name":"OpenCode","version":version}}));
@@ -245,12 +288,12 @@ mod tests {
     #[test]
     fn a_minimums_build_metadata_never_ranks() {
         let identity = AgentIdentity::AgentInfo { name: "OpenCode" };
-        let minimum = semver::Version::parse("1.18.35+vendor.2").unwrap();
+        let minimum = semver::Version::parse("2.1.3+vendor.2").unwrap();
         for (version, admitted) in [
-            ("1.18.35", true),
-            ("1.18.35+vendor.1", true),
-            ("1.18.35+vendor.2", true),
-            ("1.18.34+vendor.3", false),
+            ("2.1.3", true),
+            ("2.1.3+vendor.1", true),
+            ("2.1.3+vendor.2", true),
+            ("2.1.2+vendor.3", false),
         ] {
             let response = initialize(json!({"agentInfo":{"name":"OpenCode","version":version}}));
             assert_eq!(identity.admits(&response, &minimum), admitted, "{version}");

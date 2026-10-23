@@ -284,6 +284,16 @@ docker/    Development-stack images and nginx configuration
 scripts/   Local gates, diagnostics, generation, and release helpers
 ```
 
+## OpenCode ACP
+
+The managed OpenCode ACP profile supports only OpenCode 2.x, tested from 2.1.3.
+Install it with `npm install -g @opencode/cli@2.1.3` and register the absolute
+`opencode` executable. OpenCode 1.x and 3.x are refused independently of the
+registration's minimum version. Sign in with the native CLI before use. Neige
+owns `OPENCODE_CONFIG_CONTENT`; registrations must not set it. See the
+[ACP profile guide](docs/architecture/2343-acp-planner.md) for permission precedence.
+
+
 ## Project direction
 
 Neige Calm is converging on four user-facing ideas:

@@ -152,6 +152,16 @@ impl AcpPlannerConfig {
                 ));
             }
             if let Some(key) = profile
+                .owned_env
+                .iter()
+                .find(|key| agent.env.contains_key(**key))
+            {
+                return Err(CalmError::BadRequest(format!(
+                    "ACP {} registration cannot set `{key}`: reserved by agent profile; use a native config file",
+                    agent.provider.wire_name()
+                )));
+            }
+            if let Some(key) = profile
                 .refused_env
                 .iter()
                 .find(|key| agent.env.contains_key(**key))
@@ -369,7 +379,18 @@ mod tests {
     }
     fn opencode() -> serde_json::Value {
         json!({"provider":"opencode","command":"/opt/opencode","args":[],"env":{},
-            "min_agent_version":"1.18.35"})
+            "min_agent_version":"2.1.3"})
+    }
+
+    #[test]
+    fn opencode_refuses_operator_config_content_instead_of_overwriting_it() {
+        let mut agent = opencode();
+        agent["env"] = json!({"OPENCODE_CONFIG_CONTENT":"{\"model\":\"private/model\"}"});
+        let error = read(agent).expect_err("configuration collision must be refused");
+        assert!(
+            error.to_string().contains("OPENCODE_CONFIG_CONTENT"),
+            "{error}"
+        );
     }
 
     #[test]
@@ -411,9 +432,9 @@ mod tests {
         let config = read(opencode()).unwrap();
         assert_eq!(
             config.agents[0].min_agent_version,
-            semver::Version::new(1, 18, 35)
+            semver::Version::new(2, 1, 3)
         );
-        for version in ["1.18", "v1.18.35", "latest", ""] {
+        for version in ["2.1", "v2.1.3", "latest", ""] {
             let mut agent = opencode();
             agent["min_agent_version"] = json!(version);
             assert!(read(agent).is_err(), "{version}");
@@ -434,7 +455,7 @@ mod tests {
         for (field, value, hint) in [
             (
                 "expected_agent_version",
-                "1.18.35",
+                "2.1.3",
                 "rename it to `min_agent_version`",
             ),
             (
@@ -471,7 +492,7 @@ mod tests {
         object.remove("min_agent_version");
         object.insert("args".into(), json!(["acp"]));
         object.insert("expected_agent_name".into(), json!("OpenCode"));
-        object.insert("expected_agent_version".into(), json!("1.18.34"));
+        object.insert("expected_agent_version".into(), json!("2.1.2"));
         let message = read(agent).unwrap_err().to_string();
         assert!(
             message.contains("`expected_agent_name` was replaced; remove it")

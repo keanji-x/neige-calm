@@ -193,18 +193,8 @@ async fn negotiate(
 ) -> std::result::Result<protocol::AgentCapabilities, String> {
     let response = protocol::initialize(client, "neige", env!("CARGO_PKG_VERSION"))
         .await
-        .ok()
-        .filter(|response| {
-            profile
-                .identity
-                .admits(response, &config.min_agent_version)
-        })
-        .ok_or_else(|| {
-            format!(
-                "ACP agent did not negotiate the registered protocol identity at version {} or later",
-                config.min_agent_version
-            )
-        })?;
+        .map_err(|error| format!("ACP initialize failed: {error}"))?;
+    profile.admit_identity(&response, &config.min_agent_version)?;
     if let Some(method) = profile.authentication {
         // Only the agent's own report: never its private credential files.
         let signed_out = |cause: String| {

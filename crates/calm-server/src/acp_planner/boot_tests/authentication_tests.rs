@@ -327,12 +327,12 @@ async fn the_reported_version_is_admitted_from_the_registered_minimum() {
         grok(json!({"ACP_FIXTURE_VERSION":version,"ACP_FIXTURE_AUTH_METHODS":"cached_token"}))
     };
     for (provider, env, min, admitted) in [
-        (AgentProvider::OpenCode, json!({}), "1.18.35", true),
-        (AgentProvider::OpenCode, json!({}), "1.18.34", true),
-        (AgentProvider::OpenCode, json!({}), "1.18.36", false),
+        (AgentProvider::OpenCode, json!({}), "2.1.3", true),
+        (AgentProvider::OpenCode, json!({}), "2.1.2", true),
+        (AgentProvider::OpenCode, json!({}), "2.1.4", false),
         (
             AgentProvider::OpenCode,
-            json!({"ACP_FIXTURE_VERSION":"1.18"}),
+            json!({"ACP_FIXTURE_VERSION":"2.1"}),
             "1.0.0",
             false,
         ),
@@ -341,7 +341,7 @@ async fn the_reported_version_is_admitted_from_the_registered_minimum() {
         // OpenCode's profile reads only `agentInfo`, Grok's only `_meta`.
         (
             AgentProvider::OpenCode,
-            json!({"ACP_FIXTURE_IDENTITY":"meta","ACP_FIXTURE_VERSION":"1.18.35"}),
+            json!({"ACP_FIXTURE_IDENTITY":"meta","ACP_FIXTURE_VERSION":"2.1.3"}),
             "1.0.0",
             false,
         ),
@@ -360,7 +360,10 @@ async fn the_reported_version_is_admitted_from_the_registered_minimum() {
             assert!(
                 error
                     .to_string()
-                    .contains(&format!("version {min} or later")),
+                    .contains(&format!("version {min} or later"))
+                    || error
+                        .to_string()
+                        .contains("OpenCode requires >=2.1.3,<3.0.0"),
                 "{error}"
             );
         }

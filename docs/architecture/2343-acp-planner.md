@@ -20,7 +20,7 @@ Review tier: **L2**. Process authority, durable session identity and submission 
 
 ## Admission and recovery
 
-Before dispatch, persist the original input, native session and kernel correlation under the stable input key. A pipe write is dispatch evidence, not acceptance. A lost/ambiguous response leaves an unresolved durable receipt. A JSON-RPC error answer to the prompt is the agent's definite answer: the turn settles as failed with the agent's error text, and later input is not fenced (#2451). OpenCode 1.18.35 answers that way when its model API refuses a call. A repeated exact key returns the original correlation without sending another prompt; changed input or binding is refused. Fresh input is fenced until explicit reset. An unknown outcome is never reported as success.
+Before dispatch, persist the original input, native session and kernel correlation under the stable input key. A pipe write is dispatch evidence, not acceptance. A lost/ambiguous response leaves an unresolved durable receipt. A JSON-RPC error answer to the prompt is the agent's definite answer: the turn settles as failed with the agent's error text, and later input is not fenced (#2451). OpenCode 2.1.3 answers that way when its model API refuses a call. A repeated exact key returns the original correlation without sending another prompt; changed input or binding is refused. Fresh input is fenced until explicit reset. An unknown outcome is never reported as success.
 
 A settled session may load its original native ID after restart. Load/configuration replay is setup traffic; it must be drained before the fresh turn's translator is installed. Native IDs and current settings belong to the registered agent. The registration/cwd digest prevents silently switching the backing profile, and the backend refuses adopting a pre-existing native binding without managed ownership.
 
@@ -81,7 +81,7 @@ Pass `--acp-planner-config /absolute/path/acp-planner.json`:
       "XDG_DATA_HOME": "/private/opencode-profile/data",
       "XDG_CACHE_HOME": "/private/opencode-profile/cache"
     },
-    "min_agent_version": "1.18.34"
+    "min_agent_version": "2.1.3"
   }]
 }
 ```
@@ -110,8 +110,8 @@ reports who it is: ACP's `agentInfo` with the profile's name (OpenCode: `OpenCod
 version at `_meta.agentVersion`. The reported version must be semver and at least
 `min_agent_version`, itself semver; anything else stops the process before a session operation.
 Precedence is semver's: build metadata never ranks, and a pre-release ranks below its own
-release only, so with minimum `1.18.35` an agent reporting `1.18.36-beta.1` is accepted and one
-reporting `1.18.35-beta.1` is not.
+release only, so with minimum `2.1.3` an agent reporting `2.1.4-beta.1` is accepted and one
+reporting `2.1.3-beta.1` is not.
 A file still naming `expected_agent_name` (now fixed by the profile) or `expected_agent_version`
 (renamed `min_agent_version`) fails to parse, and the error adds that change and that `args` no
 longer holds the ACP subcommand; the two forms are never read together.
@@ -231,8 +231,8 @@ is answered `cancelled`. The process is the held-request connection. The turn en
 a fence, under the lock every answer takes: a stop sends `session/cancel` and then `cancelled` for
 every pending request, and the end of the driver's read (the prompt settled, the process exited, a
 protocol error) answers every pending request `cancelled` before any teardown and before the harness
-is told the connection is lost. After the fence an answer writes `cancelled` or nothing: OpenCode
-1.18.35 still runs a command whose `selected` answer arrives after its turn ended. Requests during
+is told the connection is lost. After the fence an answer writes `cancelled` or nothing, so no
+late answer authorizes work after the turn ended. Requests during
 session setup are always answered `cancelled`.
 
 An agent may also ask before calling a tool of Neige's own MCP server. Grok Build does under
@@ -255,26 +255,44 @@ such as ``The agent ended the turn because the person declined `…`.`` or ``…
 request, or to `full` to allow it.``, rather than showing as interrupted. A stop the person sends
 still ends the turn interrupted.
 
-Under `ask` each turn's OpenCode process is launched with
-`OPENCODE_PERMISSION={"bash":"ask","edit":"ask","webfetch":"ask"}`, set explicitly by the launch
-(`AcpAgentConfig::permission_env`), never inherited. OpenCode merges it over every config file's
-top-level `permission`, so bash, edits (also write and patch) and fetches ask; reads outside the
-workspace ask as before. It has no flag or ACP method for this. An agent-level `permission` in the
-operator profile still wins over it: with `agent.build.permission.edit = "allow"`, OpenCode 1.18.35's
-`edit` tool asks nothing. The default `external_directory: "ask"` is then the only ask before a
-write outside the workspace. The #2455 review reproduced this: one outside write raised one request
-(the directory) under this variable, and none, with the file written, once `external_directory` was
-allowed too. So it stays, and one outside command or edit raises two asks: first for the directory
-(kind `other`), then for the acting tool (#2452). Under `never` nothing is added: OpenCode runs with the operator
-profile's own `permission` configuration, which with OpenCode's defaults runs bash, edits and
-fetches unsandboxed without asking, as before. OpenCode's own `always` answer approves a command
-prefix for the rest of the process, which is one turn here; it is not written to disk.
+The OpenCode profile supports `>=2.1.3,<3.0.0`, independently of the operator's
+`min_agent_version`. Install `@opencode/cli`, not the retired 1.x package.
+Each turn composes native `OPENCODE_CONFIG_CONTENT` with
+`permissions: [{action, resource, effect}]`. Operator registrations setting that
+variable are refused rather than overwritten. The registration's other explicit
+environment entries remain intact.
 
-Under `full` (#2441) the launch sets
-`OPENCODE_PERMISSION={"bash":"allow","edit":"allow","webfetch":"allow","external_directory":"allow","doom_loop":"allow","read":"allow"}`
-the same way: bash, edits, fetches and reads outside the workspace run without a
-`session/request_permission`. It names each tool rather than `*`, so tools OpenCode denies a
-Planner stay denied.
+`never` adds only a `question` denial and otherwise retains native policy; Neige
+answers any permission request `cancelled` without asking a person. `ask` adds
+`ask` rules for `shell`, `edit` (also write and patch), `webfetch`, and
+`external_directory`. `full` allows the native acting, reading, searching,
+subagent, skill, todo and MCP-resource actions without asking. All modes deny
+native `question`, whose form/elicitation flow Neige does not implement. The
+removed 1.x `bash`, `doom_loop` and `plan_*` policy assumptions are not used.
+
+These are native defaults, not an isolation boundary against operator-authored
+OpenCode configuration. [Last matching rule wins][permission-evaluate];
+[global rules precede agent-specific rules][permission-agent]. Session rules
+follow agent rules, and [saved approvals follow configured non-denials][permission-saved], so an
+agent-specific allow or a saved approval can bypass an `ask`. A configured deny
+survives saved approvals. An operator agent rule can also override the global
+`question` denial. ACP additional-directory grants are session rules; Neige
+passes no additional directories. Changing Neige's mode does not erase native
+saved approvals. Unlike the old process-local assumption, 2.x `always` answers
+can persist project approvals. A `full` turn still refuses stray ACP permission
+requests, and cancellation continues to fence late answers.
+
+The native action inventory comes from v2.1.3 `packages/core/src/tool/plugin/`:
+`shell`, `edit`, `read`, `grep`, `glob`, `webfetch`, `websearch`, `subagent`,
+`skill`, `todowrite`, `opencode_list_mcp_resources`,
+`opencode_read_mcp_resource`, plus `external_directory` from `file-access.ts`
+and `question`. Future native actions require assessment in the owning profile;
+no generic ACP layer classifies native tool names.
+
+[permission-evaluate]: https://github.com/anomalyco/opencode/blob/v2.1.3/packages/core/src/permission.ts#L74-L87
+[permission-saved]: https://github.com/anomalyco/opencode/blob/v2.1.3/packages/core/src/permission.ts#L135-L165
+[permission-agent]: https://github.com/anomalyco/opencode/blob/v2.1.3/packages/core/src/config/plugin/agent.ts#L82-L123
+
 
 ## Acceptance
 

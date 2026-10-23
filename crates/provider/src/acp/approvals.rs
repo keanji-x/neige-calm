@@ -21,8 +21,8 @@
 //!
 //! The turn ends its requests by a fence: a cancel (`session/cancel` first), and the end of the
 //! turn's read whatever ended it ([`Approvals::close`]), each answer every request still pending
-//! `cancelled` and refuse every later answer. OpenCode 1.18.35 still acts on a `selected` answer
-//! that arrives after its turn was cancelled or settled, so one lock orders every answer with the
+//! `cancelled` and refuse every later answer. A late `selected` answer must never
+//! authorize work after the turn was cancelled or settled, so one lock orders every answer with the
 //! fence: an answer either reaches the agent before it, or writes `cancelled`, or nothing when the
 //! fence already answered its request. A cancel then pushes `Gone` for each request it answered.
 

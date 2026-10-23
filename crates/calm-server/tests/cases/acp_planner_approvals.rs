@@ -13,14 +13,16 @@ fn permission_log(root: &Root) -> Vec<Value> {
         .collect()
 }
 
-/// The `OPENCODE_PERMISSION` each Planner (not readiness) launch of the agent carried.
+/// The `OPENCODE_CONFIG_CONTENT` each Planner (not readiness) launch of the agent carried.
 pub(super) fn launch_permissions(root: &Root) -> Vec<Value> {
     std::fs::read_to_string(root.path().join("environment.jsonl"))
         .unwrap_or_default()
         .lines()
         .map(|line| serde_json::from_str::<Value>(line).unwrap())
         .filter(|launch| launch["readiness"] == false)
-        .map(|launch| launch["opencode_permission"].clone())
+        .map(|launch| {
+            serde_json::from_str(launch["opencode_config_content"].as_str().unwrap()).unwrap()
+        })
         .collect()
 }
 
@@ -168,8 +170,17 @@ async fn run_recovery_acp_ask_mode_holds_each_request_and_answers_the_chosen_opt
     assert!(rows(&stack, &track, "ask.withdrawn").await.is_empty());
     assert_eq!(
         launch_permissions(&root),
-        vec![json!(r#"{"bash":"ask","edit":"ask","webfetch":"ask"}"#); 3],
-        "every ask turn's agent asks before bash, edits and fetches"
+        vec![
+            json!({"permissions":[
+                {"action":"shell","resource":"*","effect":"ask"},
+                {"action":"edit","resource":"*","effect":"ask"},
+                {"action":"webfetch","resource":"*","effect":"ask"},
+                {"action":"external_directory","resource":"*","effect":"ask"},
+                {"action":"question","resource":"*","effect":"deny"}
+            ]});
+            3
+        ],
+        "every ask turn carries native shell, edit and fetch permission defaults"
     );
     stack.shutdown().await;
 }
@@ -312,11 +323,33 @@ async fn acp_full_mode_allows_the_agents_tools_and_refuses_a_stray_request() {
         "interrupted"
     );
     let [permission] = launch_permissions(&root).try_into().expect("one launch");
-    let permission: Value = serde_json::from_str(permission.as_str().unwrap()).unwrap();
-    assert_eq!(
-        permission,
-        json!({"bash": "allow", "edit": "allow", "webfetch": "allow",
-            "external_directory": "allow", "doom_loop": "allow", "read": "allow"})
+    let rules = permission["permissions"].as_array().unwrap();
+    for action in [
+        "shell",
+        "edit",
+        "webfetch",
+        "external_directory",
+        "read",
+        "grep",
+        "glob",
+        "websearch",
+        "subagent",
+        "skill",
+        "todowrite",
+        "opencode_list_mcp_resources",
+        "opencode_read_mcp_resource",
+    ] {
+        assert!(
+            rules
+                .iter()
+                .any(|rule| rule == &json!({"action":action,"resource":"*","effect":"allow"})),
+            "{permission}"
+        );
+    }
+    assert!(
+        rules
+            .iter()
+            .any(|rule| rule == &json!({"action":"question","resource":"*","effect":"deny"}))
     );
     wait_file(&root, "permission-reply.json").await;
     let reply: Value = serde_json::from_str(

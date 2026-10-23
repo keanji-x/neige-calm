@@ -221,8 +221,8 @@ async fn acp_permission_requests_use_never_without_creating_asks() {
     );
     assert_eq!(
         acp_planner_approvals::launch_permissions(&root),
-        vec![Value::Null],
-        "a never turn launches the agent with its own permission config"
+        vec![json!({"permissions":[{"action":"question","resource":"*","effect":"deny"}]})],
+        "a never turn denies native questions while retaining the operator's other permissions"
     );
     wait_file(&root, "permission-reply.json").await;
     let reply: Value = serde_json::from_str(

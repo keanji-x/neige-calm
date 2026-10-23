@@ -19,6 +19,9 @@ pub(super) const PROFILE: AcpAgentProfile = AcpAgentProfile {
         after_options: &["--no-leader", "stdio"],
     },
     identity: AgentIdentity::MetaAgentVersion,
+    versions: None,
+    owned_env: &[],
+    never: NOTHING,
     authentication: Some("cached_token"),
     // Grok's default mode asks before edits, shell commands that write and MCP tool calls; a shell
     // command its own classifier reads as read-only runs without asking, and with no sandbox.

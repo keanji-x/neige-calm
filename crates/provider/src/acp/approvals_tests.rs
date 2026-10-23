@@ -77,11 +77,11 @@ impl Peer {
     }
 }
 
-/// What OpenCode 1.18.35 sent for a `bash` call under `permission.bash = "ask"`.
-fn bash() -> Value {
+/// What OpenCode 2.1.3 sent for a correlated `shell` call with native shell permissions set to ask.
+fn shell() -> Value {
     json!({
         "sessionId": "ses_1",
-        "toolCall": {"toolCallId": "call_12", "title": "echo one > one.txt", "kind": "execute",
+        "toolCall": {"toolCallId": "call_12", "name": "shell", "title": "echo one > one.txt", "kind": "execute",
                      "status": "pending", "locations": [], "rawInput": {"command": "echo one > one.txt"}},
         "options": [
             {"optionId": "once", "kind": "allow_once", "name": "Allow once"},
@@ -91,7 +91,7 @@ fn bash() -> Value {
     })
 }
 
-fn bash_question() -> AskQuestion {
+fn shell_question() -> AskQuestion {
     AskQuestion {
         title: "Run: echo one > one.txt".into(),
         options: vec!["Allow once".into(), "Always allow".into(), "Reject".into()],
@@ -108,7 +108,7 @@ fn expect_open(message: HeldRequestMessage, id: i64) -> Box<dyn HeldResponder> {
         } => {
             assert_eq!(request_key, RequestKey(format!("turn-1/{id}")));
             assert_eq!(connection, ConnectionId("turn-1".into()));
-            assert_eq!(questions, vec![bash_question()]);
+            assert_eq!(questions, vec![shell_question()]);
             responder
         }
         HeldRequestMessage::Gone { .. } => panic!("expected Open, got Gone"),
@@ -124,7 +124,7 @@ fn answer(id: i64, result: Value) -> Value {
 async fn an_ask_turn_holds_each_request_and_answers_the_chosen_option_id() {
     let mut peer = peer(PlannerPermissionMode::Ask);
     for (id, option, option_id) in [(0, 0, "once"), (1, 1, "always"), (2, 2, "reject")] {
-        peer.request(id, bash()).await;
+        peer.request(id, shell()).await;
         let responder = expect_open(peer.next_held().await, id);
         responder.respond(option);
         assert_eq!(
@@ -140,7 +140,7 @@ async fn an_ask_turn_holds_each_request_and_answers_the_chosen_option_id() {
 #[tokio::test]
 async fn a_responder_dropped_unanswered_answers_cancelled() {
     let mut peer = peer(PlannerPermissionMode::Ask);
-    peer.request(4, bash()).await;
+    peer.request(4, shell()).await;
     drop(expect_open(peer.next_held().await, 4));
     assert_eq!(
         peer.read().await,
@@ -154,7 +154,7 @@ async fn a_responder_dropped_unanswered_answers_cancelled() {
 #[tokio::test]
 async fn a_cancel_answers_pending_requests_cancelled_and_reports_them_gone() {
     let mut peer = peer(PlannerPermissionMode::Ask);
-    peer.request(7, bash()).await;
+    peer.request(7, shell()).await;
     let responder = expect_open(peer.next_held().await, 7);
     peer.approvals.cancel("native", &allow()).await.unwrap();
     assert_eq!(
@@ -172,7 +172,7 @@ async fn a_cancel_answers_pending_requests_cancelled_and_reports_them_gone() {
         _ => panic!("expected Gone"),
     }
     responder.respond(0);
-    peer.request(8, bash()).await;
+    peer.request(8, shell()).await;
     assert_eq!(
         peer.read().await,
         answer(8, json!({"outcome": {"outcome": "cancelled"}}))
@@ -190,7 +190,7 @@ async fn a_cancel_answers_pending_requests_cancelled_and_reports_them_gone() {
 #[tokio::test]
 async fn an_answer_after_the_turn_closed_writes_nothing() {
     let mut peer = peer(PlannerPermissionMode::Ask);
-    peer.request(9, bash()).await;
+    peer.request(9, shell()).await;
     let responder = expect_open(peer.next_held().await, 9);
     peer.approvals.close().await;
     assert_eq!(
@@ -198,7 +198,7 @@ async fn an_answer_after_the_turn_closed_writes_nothing() {
         answer(9, json!({"outcome": {"outcome": "cancelled"}}))
     );
     responder.respond(0);
-    peer.request(10, bash()).await;
+    peer.request(10, shell()).await;
     assert_eq!(
         peer.read().await,
         answer(10, json!({"outcome": {"outcome": "cancelled"}}))
@@ -215,7 +215,7 @@ async fn an_answer_after_the_turn_closed_writes_nothing() {
 #[tokio::test]
 async fn an_answer_after_a_cut_short_cancel_is_cancelled() {
     let mut peer = peer(PlannerPermissionMode::Ask);
-    peer.request(11, bash()).await;
+    peer.request(11, shell()).await;
     let responder = expect_open(peer.next_held().await, 11);
     // Block admission, poll cancel once, and drop it before the first write,
     // as the driver's timeout would.
@@ -261,7 +261,7 @@ async fn dropping_an_ask_turns_approvals_loses_its_connection() {
 async fn a_never_or_full_turn_answers_cancelled_itself() {
     for mode in [PlannerPermissionMode::Never, PlannerPermissionMode::Full] {
         let mut peer = peer(mode);
-        peer.request(0, bash()).await;
+        peer.request(0, shell()).await;
         assert_eq!(
             peer.read().await,
             answer(0, json!({"outcome": {"outcome": "cancelled"}})),
@@ -322,7 +322,7 @@ fn the_question_names_the_call_its_kind_and_its_files() {
     })));
     assert_eq!(outside.title, "/probe/outside\nPath: /probe/outside/x.txt");
     assert_eq!(outside.options, vec!["Allow once".to_string()]);
-    // OpenCode 1.18.35's edit of a file outside the workspace: the file is the title and its one
+    // OpenCode 2.1.3's edit of a file outside the workspace: the file is the title and its one
     // location, named once.
     let edit = question(&request(json!({
         "toolCallId": "call_38", "title": "/probe/outside/e.txt", "kind": "edit",
@@ -562,7 +562,7 @@ async fn a_request_the_mode_declined_names_why_the_turn_ended() {
         .await;
     peer.read().await;
     assert_eq!(peer.approvals.declined(), None, "an allowed own tool");
-    peer.request(1, bash()).await;
+    peer.request(1, shell()).await;
     assert_eq!(
         peer.read().await,
         answer(1, json!({"outcome": {"outcome": "cancelled"}}))
@@ -576,7 +576,7 @@ async fn a_request_the_mode_declined_names_why_the_turn_ended() {
         )
     );
     let mut peer = peer_with(PlannerPermissionMode::Full, ends_turn());
-    peer.request(1, bash()).await;
+    peer.request(1, shell()).await;
     peer.read().await;
     assert_eq!(
         peer.approvals.declined().as_deref(),
@@ -586,12 +586,12 @@ async fn a_request_the_mode_declined_names_why_the_turn_ended() {
         )
     );
     let mut peer = peer_with(PlannerPermissionMode::Full, own_tools());
-    peer.request(1, bash()).await;
+    peer.request(1, shell()).await;
     peer.read().await;
     assert_eq!(peer.approvals.declined(), None, "no profile declaration");
     let mut peer = peer_with(PlannerPermissionMode::Never, ends_turn());
     peer.approvals.close().await;
-    peer.request(1, bash()).await;
+    peer.request(1, shell()).await;
     peer.read().await;
     assert_eq!(peer.approvals.declined(), None, "after the fence");
 }
@@ -607,7 +607,7 @@ async fn a_reject_the_person_chose_names_why_the_turn_ended() {
         ),
     ] {
         let mut peer = peer_with(PlannerPermissionMode::Ask, ends_turn());
-        peer.request(0, bash()).await;
+        peer.request(0, shell()).await;
         let HeldRequestMessage::Open { responder, .. } = peer.next_held().await else {
             panic!("expected Open");
         };
