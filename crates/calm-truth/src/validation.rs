@@ -21,6 +21,8 @@ pub const TERMINAL_SIGNALS_PAYLOAD_KEY: &str = "terminal_signals";
 /// Creation-time template instructions, retained across Planner resets and
 /// report edits. Only the track-create transaction may mint this snapshot.
 pub const PLANNER_TEMPLATE_CONTEXT_PAYLOAD_KEY: &str = "template_context";
+/// Frozen named-source material, consumed by the first canonical claim.
+pub const TRACK_CREATION_CONTEXT_PAYLOAD_KEY: &str = "track_creation_context";
 /// The Planner card's backend (`AgentProvider` serde names), minted at track creation and
 /// backfilled `"codex"` by migration 0117. Missing or unknown makes the card not a harness card.
 pub const PLANNER_PROVIDER_PAYLOAD_KEY: &str = "planner_provider";
@@ -50,10 +52,11 @@ pub use calm_types::card_presentation::TERMINAL_PRESENTATION_PAYLOAD_KEY;
 
 /// Kernel-owned card fields, refused at client boundaries and preserved by
 /// `card_update_tx` even when a replacement payload omits them.
-pub const SERVER_OWNED_CARD_PAYLOAD_KEYS: [&str; 11] = [
+pub const SERVER_OWNED_CARD_PAYLOAD_KEYS: [&str; 12] = [
     TERMINAL_SIGNALS_PAYLOAD_KEY,
     TERMINAL_PRESENTATION_PAYLOAD_KEY,
     PLANNER_TEMPLATE_CONTEXT_PAYLOAD_KEY,
+    TRACK_CREATION_CONTEXT_PAYLOAD_KEY,
     PLANNER_PROVIDER_PAYLOAD_KEY,
     ASSISTANT_PROVIDER_PAYLOAD_KEY,
     SIDE_SOURCE_CARD_PAYLOAD_KEY,
@@ -70,7 +73,7 @@ pub fn server_owned_value_is_sticky(key: &str, value: &Value) -> bool {
     match key {
         // Even corrupt snapshots stay protected: startup must report the
         // corruption, not erase it and silently drop the working method.
-        PLANNER_TEMPLATE_CONTEXT_PAYLOAD_KEY => true,
+        PLANNER_TEMPLATE_CONTEXT_PAYLOAD_KEY | TRACK_CREATION_CONTEXT_PAYLOAD_KEY => true,
         // Creation-owned identity stays immutable, including a corrupt stored value.
         PLANNER_PROVIDER_PAYLOAD_KEY
         | ASSISTANT_PROVIDER_PAYLOAD_KEY

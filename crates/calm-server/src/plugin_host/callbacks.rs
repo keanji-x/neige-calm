@@ -1189,6 +1189,7 @@ mod tests {
                 "terminal_signals",
                 "terminal_presentation",
                 "template_context",
+                "track_creation_context",
                 "planner_provider",
                 "assistant_provider",
                 "side_source_card_id",

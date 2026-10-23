@@ -57,6 +57,13 @@ impl TemplateContext {
     }
 }
 
+/// Shared wire formatting; admission of the binding remains with its caller.
+pub(crate) fn append_bound_input(instructions: &mut String, input: &Value) {
+    instructions.push_str("\n\n## Bound Template Input\n```json\n");
+    instructions.push_str(&serde_json::to_string_pretty(input).expect("template_input serializes"));
+    instructions.push_str("\n```");
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

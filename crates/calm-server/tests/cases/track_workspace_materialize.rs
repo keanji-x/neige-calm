@@ -79,6 +79,15 @@ async fn boot() -> Boot {
         .layer(axum::middleware::from_fn(
             calm_server::actor::actor_middleware,
         ))
+        .layer(axum::middleware::from_fn_with_state(
+            calm_server::auth::AuthState::new(calm_server::auth::AuthConfig {
+                username: None,
+                password: None,
+                dev_autologin: true,
+                display_name: "fixture owner".into(),
+            }),
+            calm_server::auth::require_session,
+        ))
         .with_state(state);
     Boot {
         app,
@@ -210,7 +219,7 @@ async fn title_only_create_allocates_and_materializes_a_managed_workspace() {
 }
 
 #[tokio::test]
-async fn template_create_without_cwd_allocates_and_materializes_a_managed_workspace() {
+async fn template_create_without_cwd_materializes_a_managed_workspace_on_first_lease() {
     let b = boot().await;
     let (status, body) = post(
         b.app.clone(),
@@ -261,6 +270,20 @@ async fn template_create_without_cwd_allocates_and_materializes_a_managed_worksp
          §2.3 / D4); a template create is not work"
     );
 
+    // Empty canonical creation allocates the path; the existing lease owner
+    // materializes it when a worker actually needs the checkout.
+    let mut tx = calm_server::db::sqlite::begin_immediate_tx(b.repo.db())
+        .await
+        .unwrap();
+    let checkout = calm_server::test_seams::prepare_worker_lease_for_test(
+        &mut tx,
+        track_id,
+        &b.workspace_root,
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(checkout, PathBuf::from(path));
     assert_workspace_is_usable_by_the_first_worker(&b, track_id).await;
 }
 

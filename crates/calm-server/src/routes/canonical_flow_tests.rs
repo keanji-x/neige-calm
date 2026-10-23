@@ -65,6 +65,7 @@ struct Fixture {
     url: String,
     claude_config: Option<std::path::PathBuf>,
     acp_config: Option<std::path::PathBuf>,
+    templates_dir: Option<std::path::PathBuf>,
     execution: Option<crate::test_support::execution::Supervisor>,
 }
 
@@ -81,6 +82,7 @@ impl Fixture {
             url,
             claude_config: None,
             acp_config: None,
+            templates_dir: None,
             execution: None,
         }
     }
@@ -109,6 +111,7 @@ impl Fixture {
             cfg.db_url = self.url.clone();
             cfg.claude_planner_config = self.claude_config.clone();
             cfg.acp_planner_config = self.acp_config.clone();
+            cfg.templates_dir = self.templates_dir.clone();
             if self.acp_config.is_some() {
                 // Test binaries live in deps/, not beside the workspace's production shim.
                 // Match the ACP stack fixture: never depend on a host-installed shim on PATH.
@@ -312,6 +315,7 @@ mod historical_compatibility_tests;
 mod native_attempt_recovery_tests;
 mod send_boundary_tests;
 mod source_readmission_tests;
+mod u7_canonical;
 mod workspace_binding_tests;
 
 async fn original_input_flow(
@@ -589,3 +593,5 @@ async fn status(app: &axum::Router, cookie: &str, uri: &str, key: &str, body: Va
         .unwrap()
         .status()
 }
+
+mod u7_nondelivery;

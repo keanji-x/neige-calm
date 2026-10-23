@@ -16,10 +16,13 @@ async fn area(app: &axum::Router, cookie: &str) -> Value {
 #[tokio::test]
 async fn historical_template_first_message_keeps_its_original_creation_and_replay() {
     let fixture = Fixture::new().await;
+    let cwd = fixture.root.path().join("attached");
+    crate::test_support::init_fixture_git_repo(&cwd);
     let (state, app, cookie) = fixture.application_with_historical_native(true).await;
     let area = area(&app, &cookie).await;
     let request = json!({
         "area_id":area["id"], "planner_provider":"codex", "template_id":"small-change",
+        "cwd":cwd, "isolation":"none", "attach_folder":true,
         "title":"", "theme":{"fg":[255,255,255],"bg":[0,0,0]},
         "first_message":"Preserve the released template first message"
     });
@@ -42,6 +45,7 @@ async fn historical_template_first_message_keeps_its_original_creation_and_repla
     );
     let changed = json!({
         "area_id":area["id"], "planner_provider":"codex", "template_id":"small-change",
+        "cwd":cwd, "isolation":"none", "attach_folder":true,
         "title":"", "theme":{"fg":[255,255,255],"bg":[0,0,0]},
         "first_message":"A different original first message under the same key"
     });
@@ -353,9 +357,12 @@ async fn historical_recipe_and_single_field_fork_keep_their_starting_points() {
 #[tokio::test]
 async fn historical_admission_rejects_another_real_user_even_with_owner_profile_and_old_keys() {
     let fixture = Fixture::new().await;
+    let cwd = fixture.root.path().join("attached");
+    crate::test_support::init_fixture_git_repo(&cwd);
     let (state, app, cookie, auth) = fixture.application_with_auth(true).await;
     let area = area(&app, &cookie).await;
     let create = json!({"area_id":area["id"],"planner_provider":"codex","template_id":"small-change",
+        "cwd":cwd, "isolation":"none", "attach_folder":true,
         "title":"","theme":{"fg":[255,255,255],"bg":[0,0,0]},"first_message":"Owner's historical input"});
     let created = post(
         &app,
@@ -638,9 +645,12 @@ async fn historical_source_revocation_blocks_start_but_preserves_kernel_compensa
     let request_app = app.clone();
     let request_cookie = cookie.clone();
     let request_area = area["id"].clone();
+    let request_cwd = fixture.root.path().join("attached");
+    crate::test_support::init_fixture_git_repo(&request_cwd);
     let creating = tokio::spawn(async move {
         status(&request_app, &request_cookie, "/api/tracks", "revoked-native-start", json!({
             "area_id":request_area,"planner_provider":"codex","template_id":"small-change","title":"",
+            "cwd":request_cwd, "isolation":"none", "attach_folder":true,
             "theme":{"fg":[255,255,255],"bg":[0,0,0]},"first_message":"Retain the kernel's original cleanup"
         })).await
     });

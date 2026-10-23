@@ -35,6 +35,7 @@ pub(in crate::routes::tracks) async fn accept_dormant_human_track(
     plan: HumanTrackCreationPlan,
     advice: crate::planner_model::selection_advice::CatalogAdvice,
 ) -> Result<HumanTrackCreationResult> {
+    let preparation_state = s.clone();
     let raw_key = plan.key().to_owned();
     let create_sha = plan.create_sha().to_owned();
     let first_sha = plan.first_sha().to_owned();
@@ -96,9 +97,9 @@ pub(in crate::routes::tracks) async fn accept_dormant_human_track(
                 }
                 let (model, effort) = plan.selection();
                 advice.require_create_selection(model, effort)?;
-                let (p, options, text) = plan.into_allocation()?;
+                let (p, options, text) = plan.into_allocation(&preparation_state, area.kind).await?;
                 let CanonicalAllocation { planner, runtime, track, mut events } = allocate_canonical_tx(tx, p, options,
-                    super::super::allocation::TrackAllocationOwners { acp_planner, write, templates, teardown_targets, admission_root }).await?;
+                    super::super::allocation::TrackAllocationOwners { context: super::super::allocation::CreationContext::Canonical(source.clone()), acp_planner, write, templates, teardown_targets, admission_root }).await?;
                 let mut carrier = current_input_carrier_tx(tx, &planner, &runtime).await?;
                 let current = source.current_principal()?;
                 let accepted = crate::conversation_inputs::accept_human_tx(
@@ -313,11 +314,13 @@ pub(in crate::routes::tracks) async fn allocate_dormant_empty_track(
     plan: EmptyTrackCreationPlan,
     advice: crate::planner_model::selection_advice::CatalogAdvice,
 ) -> Result<crate::model::Track> {
+    let preparation_state = s.clone();
     let binding = plan
         .binding()
         .map(|(key, sha)| (key.to_owned(), sha.to_owned()));
     let area_id = plan.area_id().to_owned();
     let owners = super::super::allocation::TrackAllocationOwners {
+        context: super::super::allocation::CreationContext::Canonical(source.clone()),
         acp_planner: s.acp_planner.clone(),
         write: s.write.clone(),
         templates: s.templates,
@@ -393,7 +396,8 @@ pub(in crate::routes::tracks) async fn allocate_dormant_empty_track(
                 }
                 let (model, effort) = plan.selection();
                 advice.require_create_selection(model, effort)?;
-                let (allocation, options) = plan.into_allocation()?;
+                let (allocation, options) =
+                    plan.into_allocation(&preparation_state, area.kind).await?;
                 let CanonicalAllocation { track, events, .. } =
                     allocate_canonical_tx(tx, allocation, options, owners).await?;
                 source.current_principal()?;

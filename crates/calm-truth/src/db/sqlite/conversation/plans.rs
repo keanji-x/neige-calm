@@ -41,6 +41,30 @@ pub async fn pending_plan_for_prefix_tx(
             payload: PrivateHistoryPayload::Present { value: context },
         })
         .collect::<Vec<_>>();
+    // Only wholly confirmed non-delivery releases leave creation context unused.
+    // Effective claims (including uncertain/accepted delivery) and explicit Human
+    // retry retirement still bind it. This query and claim share one transaction;
+    // neither preparation nor recovery reads a mutable template/recipe/Report.
+    let creation: Option<String> = sqlx::query_scalar(
+        "SELECT payload FROM cards WHERE id=?1
+         AND NOT EXISTS(SELECT 1 FROM conversation_input_submissions s WHERE s.card_id=?1
+           AND (NOT EXISTS(SELECT 1 FROM conversation_submission_inputs i WHERE i.submission_id=s.id)
+             OR EXISTS(SELECT 1 FROM conversation_submission_inputs i WHERE i.submission_id=s.id
+               AND (i.effective!=0 OR i.released_by_attempt_id IS NULL))))",
+    )
+    .bind(carrier.card_id())
+    .fetch_optional(&mut **tx)
+    .await?;
+    if let Some(payload) = creation {
+        let payload: serde_json::Value = serde_json::from_str(&payload)?;
+        if let Some(context) = payload.get(crate::validation::TRACK_CREATION_CONTEXT_PAYLOAD_KEY) {
+            segments.push(SubmissionRenderSegment::Context {
+                payload: PrivateHistoryPayload::Present {
+                    value: serde_json::from_value(context.clone())?,
+                },
+            });
+        }
+    }
     for (position, entry) in entries.iter().enumerate() {
         if let PendingInput::System {
             observation_id,

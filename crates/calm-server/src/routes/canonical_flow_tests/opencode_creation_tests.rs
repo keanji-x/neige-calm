@@ -377,6 +377,12 @@ async fn historical_template_key_replays_through_http(provider: AgentProvider) {
     let (state, app, cookie) = fixture.application().await;
     let mut original = body(&app, &cookie, &provider).await;
     original["template_id"] = json!("small-change");
+    // The released attached entry remains historical during the U7 rollout.
+    let cwd = fixture.root.path().join("attached");
+    crate::test_support::init_fixture_git_repo(&cwd);
+    original["cwd"] = json!(cwd);
+    original["isolation"] = json!("none");
+    original["attach_folder"] = json!(true);
     let created = post(&app, &cookie, "/api/tracks", "historical", original.clone()).await;
     let replay = post(&app, &cookie, "/api/tracks", "historical", original.clone()).await;
     assert_eq!(replay["id"], created["id"]);
@@ -483,3 +489,5 @@ async fn canonical_opencode_creation_catalog_get_keeps_workspace_scope() {
 }
 
 mod acp_assistant;
+
+mod u7_canonical;

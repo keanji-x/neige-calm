@@ -1,9 +1,8 @@
 //! One creation-owned binding of the original request to pure allocation data.
 //! This is not Workspace preparation or an execution grant. Effects remain with
 //! their actual owners; the dormant path explicitly supports managed blank data.
-use super::super::{CreateTrackRequest, FolderClaim, TrackInit};
+use super::super::CreateTrackRequest;
 use super::*;
-use crate::db::sqlite::TrackWorkspacePlan;
 use crate::harness::backend::factory::{PlannerFactory, RetainedIdentityPreparation};
 use crate::session_projection_repo::AgentProvider;
 use std::path::PathBuf;
@@ -147,26 +146,34 @@ pub(crate) fn accepts_unavailable_blank_track(provider: &AgentProvider) -> bool 
 fn canonical_creation_supported(request: &CreateRequestShape, input: CreateShape) -> bool {
     // The activation owner queries ACP registration policy. Local bindings are
     // process-free: native session/new waits for the first prompt, so an empty
-    // conversation is valid. Native-thread creation still requires first input.
+    // conversation is valid. Named native-thread creation can also retain its
+    // frozen context in an empty carrier; the existing blank policy stays intact.
+    let named = request.template_id.is_some()
+        || request.recipe_id.is_some()
+        || request.template_input.is_some()
+        || request.fork_report_from.is_some();
     let supported =
         match PlannerFactory::retained_identity(&crate::harness::profile::PlannerBinding {
             profile: crate::harness::profile::HarnessProfile::Planner,
             provider: request.planner_provider.clone(),
         }) {
             Ok(RetainedIdentityPreparation::NativeThread) => {
-                matches!(input, CreateShape::WithFirstMessage(()))
+                named || matches!(input, CreateShape::WithFirstMessage(()))
             }
             Ok(RetainedIdentityPreparation::LocalSession) => true,
             Err(_) => false,
         };
+    // This entry rollout admits Codex/OpenCode named sources only. Other
+    // bindings retain their explicit historical named-source contract.
     supported
+        && (!named
+            || matches!(
+                request.planner_provider,
+                AgentProvider::Codex | AgentProvider::OpenCode
+            ))
         && !request.admin
         && request.cwd.is_none()
         && !request.attach_folder
-        && request.template_id.is_none()
-        && request.recipe_id.is_none()
-        && request.template_input.is_none()
-        && request.fork_report_from.is_none()
         && request.allow_cross_area_cwd.is_none()
 }
 
@@ -269,8 +276,14 @@ impl HumanTrackCreationPlan {
 
     /// Called only after original-key replay has been decided. No mutable
     /// catalog, filesystem or provider check can make an accepted replay mint.
-    pub(super) fn into_allocation(self) -> Result<(NewTrack, CreateTrackOptions, String)> {
+    pub(super) async fn into_allocation(
+        self,
+        state: &RouteState,
+        area_kind: crate::model::AreaKind,
+    ) -> Result<(NewTrack, CreateTrackOptions, String)> {
         let (allocation, options) = blank_allocation(
+            state,
+            area_kind,
             self.allocation,
             CreateShape::WithFirstMessage(()),
             Some(TrackCreateIdempotencyClaim {
@@ -278,7 +291,8 @@ impl HumanTrackCreationPlan {
                 create_request_sha256: self.create_sha,
                 first_message_sha256: Some(self.first_sha),
             }),
-        )?;
+        )
+        .await?;
         Ok((allocation, options, self.text))
     }
 }
@@ -309,8 +323,14 @@ impl EmptyTrackCreationPlan {
             .map(|claim| (claim.key.as_str(), claim.create_sha.as_str()))
     }
 
-    pub(super) fn into_allocation(self) -> Result<(NewTrack, CreateTrackOptions)> {
+    pub(super) async fn into_allocation(
+        self,
+        state: &RouteState,
+        area_kind: crate::model::AreaKind,
+    ) -> Result<(NewTrack, CreateTrackOptions)> {
         blank_allocation(
+            state,
+            area_kind,
             self.allocation,
             CreateShape::MessageLess(()),
             self.claim.map(|claim| TrackCreateIdempotencyClaim {
@@ -319,6 +339,7 @@ impl EmptyTrackCreationPlan {
                 first_message_sha256: None,
             }),
         )
+        .await
     }
 }
 
@@ -331,7 +352,9 @@ impl BlankAllocation {
     }
 }
 
-fn blank_allocation(
+async fn blank_allocation(
+    state: &RouteState,
+    area_kind: crate::model::AreaKind,
     allocation: BlankAllocation,
     input: CreateShape,
     claim: Option<TrackCreateIdempotencyClaim>,
@@ -343,7 +366,7 @@ fn blank_allocation(
     } = allocation;
     if !canonical_creation_supported(&request, input) {
         return Err(CalmError::BadRequest(
-            "dormant Human acceptance supports only a new blank managed Track Planner".into(),
+            "dormant acceptance requires an admitted managed Track Planner".into(),
         ));
     }
     // This configured root is pure allocation data. It neither resolves a
@@ -357,7 +380,11 @@ fn blank_allocation(
         CalmError::BadRequest("configured workspace root is not representable as text".into())
     })?;
     let normalized_root = super::super::normalize_path(root);
-    let body_area_id = area_id.to_string();
+    let named_source = super::super::preparation::NamedSource::from_request(
+        request.template_id,
+        request.recipe_id,
+        request.fork_report_from,
+    )?;
     let allocation = NewTrack {
         area_id,
         title: request.title,
@@ -366,10 +393,20 @@ fn blank_allocation(
         cwd: normalized_root.clone(),
         template_id: None,
         plugin_scope: None,
-        template_input: None,
+        template_input: request.template_input,
         attach_folder: false,
         theme: request.theme,
     };
+    let super::super::preparation::PreparedCreate {
+        p: allocation,
+        folder_claim,
+        body_area_id,
+        normalized_cwd,
+        init,
+        workspace_plan,
+        ..
+    } = super::super::preparation::prepare_in_area(state, allocation, named_source, area_kind)
+        .await?;
     let options = CreateTrackOptions {
         human_source: None,
         admin: false,
@@ -379,11 +416,11 @@ fn blank_allocation(
         planner_provider: request.planner_provider,
         model: request.model,
         reasoning_effort: request.reasoning_effort,
-        folder_claim: FolderClaim::Skip,
+        folder_claim,
         body_area_id,
-        normalized_cwd: normalized_root,
-        init: TrackInit::Blank,
-        workspace_plan: TrackWorkspacePlan::ManagedUnder(workspace_root),
+        normalized_cwd,
+        init,
+        workspace_plan,
         idempotency_claim: claim,
     };
     Ok((allocation, options))

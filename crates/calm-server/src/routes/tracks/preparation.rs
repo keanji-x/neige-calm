@@ -128,10 +128,53 @@ pub(super) struct PreparedCreate {
 
 pub(super) async fn prepare(
     s: &RouteState,
+    p: NewTrack,
+    named_source: NamedSource,
+    isolation: CreateIsolation,
+    allow_cross_area_cwd: Option<CrossAreaCwdAuthorization>,
+) -> Result<PreparedCreate> {
+    prepare_with_area(
+        s,
+        p,
+        named_source,
+        isolation,
+        allow_cross_area_cwd,
+        PreparationArea::Lookup,
+    )
+    .await
+}
+
+/// Canonical allocation already holds the authoritative Area admission. Reuse
+/// that fact without leasing reader capacity while holding the writer.
+pub(super) async fn prepare_in_area(
+    s: &RouteState,
+    p: NewTrack,
+    named_source: NamedSource,
+    area_kind: AreaKind,
+) -> Result<PreparedCreate> {
+    prepare_with_area(
+        s,
+        p,
+        named_source,
+        CreateIsolation::Managed,
+        None,
+        PreparationArea::Admitted(area_kind),
+    )
+    .await
+}
+
+enum PreparationArea {
+    Lookup,
+    Admitted(AreaKind),
+}
+
+async fn prepare_with_area(
+    s: &RouteState,
     mut p: NewTrack,
     named_source: NamedSource,
     isolation: CreateIsolation,
     allow_cross_area_cwd: Option<CrossAreaCwdAuthorization>,
+    area: PreparationArea,
 ) -> Result<PreparedCreate> {
     let cwd_omitted = isolation == CreateIsolation::Managed;
     // Validate cwd before opening the tx; the route owns every cross-area check so
@@ -168,12 +211,15 @@ pub(super) async fn prepare(
 
     // The system area is exempt from the `area_folders` claim namespace: claiming a path
     // under it would poison every real area's descendant check.
-    let area_kind = match s.repo.area_get(p.area_id.as_str()).await? {
-        Some(area) => Some(area.kind),
-        // Defer the missing-Area refusal until the authoritative ownership check
-        // in the creation transaction. This branch can never mint a track.
-        None if isolation == CreateIsolation::Attached(AttachedIsolation::None) => None,
-        None => return Err(CalmError::NotFound(format!("area `{}`", p.area_id))),
+    let area_kind = match area {
+        PreparationArea::Admitted(kind) => Some(kind),
+        PreparationArea::Lookup => match s.repo.area_get(p.area_id.as_str()).await? {
+            Some(area) => Some(area.kind),
+            // Defer the missing-Area refusal until the authoritative ownership check
+            // in the creation transaction. This branch can never mint a track.
+            None if isolation == CreateIsolation::Attached(AttachedIsolation::None) => None,
+            None => return Err(CalmError::NotFound(format!("area `{}`", p.area_id))),
+        },
     };
     let is_system_area = area_kind == Some(AreaKind::System);
     if allow_cross_area_cwd.is_some() && (is_system_area || cwd_omitted) {

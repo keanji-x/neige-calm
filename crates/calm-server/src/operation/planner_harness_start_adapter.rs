@@ -451,11 +451,7 @@ pub(crate) fn render_planner_developer_instructions(
     }
     // Deliberately NOT passed through `render_system_prompt`: user-controlled JSON must not have literal `{track_id}` substituted.
     if let Some(input) = template_input {
-        instructions.push_str("\n\n## Bound Template Input\n");
-        instructions.push_str("```json\n");
-        instructions
-            .push_str(&serde_json::to_string_pretty(input).expect("template_input serializes"));
-        instructions.push_str("\n```");
+        crate::template_context::append_bound_input(&mut instructions, input);
     }
     instructions
 }
@@ -470,12 +466,21 @@ pub(crate) async fn planner_instructions(
     card_id: &str,
 ) -> Result<String> {
     let bound_template = bound_template(repo, plugin, track_id).await?;
+    let card = repo
+        .card_get(card_id)
+        .await?
+        .ok_or_else(|| CalmError::NotFound(format!("card {card_id}")))?;
+    let canonical_context = card
+        .payload
+        .get(crate::validation::TRACK_CREATION_CONTEXT_PAYLOAD_KEY)
+        .is_some();
     let mut instructions = render_planner_developer_instructions(
         track_id,
         bound_template.as_ref().map(|bound| &bound.descriptor),
         bound_template
             .as_ref()
-            .and_then(|bound| bound.input.as_ref()),
+            .and_then(|bound| bound.input.as_ref())
+            .filter(|_| !canonical_context),
     );
     let track = repo
         .track_get(track_id)
@@ -489,12 +494,9 @@ pub(crate) async fn planner_instructions(
         }
     }
     append_plugin_instructions(repo, plugin, &track, &mut instructions).await?;
-    let card = repo
-        .card_get(card_id)
-        .await?
-        .ok_or_else(|| CalmError::NotFound(format!("card {card_id}")))?;
-    if let Some(context) =
-        crate::template_context::TemplateContext::from_card_payload(&card.payload)?
+    if !canonical_context
+        && let Some(context) =
+            crate::template_context::TemplateContext::from_card_payload(&card.payload)?
     {
         context.append_to(&mut instructions)?;
     }

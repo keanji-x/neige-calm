@@ -33,6 +33,15 @@ pub(super) async fn wait_for_claim(
     track: &str,
     peer: &mut Peer,
 ) -> CanonicalHarnessSnapshot {
+    wait_for_claim_after_attempts(fixture, track, peer, 0).await
+}
+
+pub(super) async fn wait_for_claim_after_attempts(
+    fixture: &Fixture,
+    track: &str,
+    peer: &mut Peer,
+    expected_attempts: usize,
+) -> CanonicalHarnessSnapshot {
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {
             tokio::select! {
@@ -48,7 +57,10 @@ pub(super) async fn wait_for_claim(
                     let (_, _, frame) = fixture.carrier(track).await;
                     if frame.canonical_inputs.active.is_some() {
                         assert!(frame.canonical_inputs.pending.is_empty());
-                        assert!(frame.canonical_inputs.attempts.is_empty());
+                        assert_eq!(frame.canonical_inputs.attempts.len(), expected_attempts);
+                        assert!(frame.canonical_inputs.attempts.iter().all(|attempt| matches!(
+                            attempt.delivery, calm_types::conversation::InputDeliveryFact::NotDispatched { .. }
+                        )));
                         assert_eq!(frame.header.phase,HarnessPhaseTag::IssuingTurn);
                         return frame;
                     }

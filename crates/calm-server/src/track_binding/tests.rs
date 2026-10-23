@@ -289,6 +289,15 @@ async fn boot(owners: &[OwnerFixture]) -> Boot {
     );
     let app = routes::router()
         .layer(axum::middleware::from_fn(crate::actor::actor_middleware))
+        .layer(axum::middleware::from_fn_with_state(
+            crate::auth::AuthState::new(crate::auth::AuthConfig {
+                username: None,
+                password: None,
+                dev_autologin: true,
+                display_name: "fixture owner".into(),
+            }),
+            crate::auth::require_session,
+        ))
         .with_state(state.clone());
 
     Boot {

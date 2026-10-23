@@ -76,6 +76,7 @@ mod add;
 mod allocation;
 mod create;
 pub(crate) use create::accepts_unavailable_blank_track;
+mod creation_context;
 mod deletion_observation;
 use deletion_observation::{DeletionObservation, Stage};
 mod fork_guard;
@@ -811,6 +812,8 @@ pub(crate) async fn create_track(
                 ),
             };
             let source = source.ok_or(CalmError::Unauthorized)?;
+            #[cfg(feature = "fixtures")]
+            crate::test_seams::pause_point("track-canonical-allocation", area_id.as_str()).await;
             let accepted = match plan {
                 create::CreateShape::MessageLess(plan) => {
                     let track =
@@ -1418,6 +1421,7 @@ async fn create_track_structure(
                     options,
                     (planner_card_id_for_tx, report_card_id_for_tx),
                     allocation::TrackAllocationOwners {
+                        context: allocation::CreationContext::Historical,
                         acp_planner,
                         write: write_for_tx,
                         templates,

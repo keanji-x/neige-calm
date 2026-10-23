@@ -271,3 +271,34 @@ async fn canonical_claude_creation_old_key_replays_historical_without_new_mint()
 async fn canonical_opencode_creation_old_key_replays_historical_without_new_mint() {
     super::old_key_replays_historical(AgentProvider::OpenCode).await;
 }
+
+#[tokio::test]
+async fn u7_canonical_preparation_does_not_reacquire_reader_pool() {
+    let fx = Fixture::new().await;
+    let mut request = fx.request(FIRST);
+    request.template_id = Some("small-change".into());
+    let mut headers = HeaderMap::new();
+    headers.insert("idempotency-key", "reader-capacity".parse().unwrap());
+    let mut readers = Vec::new();
+    for _ in 0..fx.repo.pool().options().get_max_connections() {
+        readers.push(fx.repo.pool().acquire().await.unwrap());
+    }
+    let accepted = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        accept_dormant_human_track(
+            fx.route.clone(),
+            fx.source.clone(),
+            headers,
+            request,
+            crate::planner_model::selection_advice::CatalogAdvice::default(),
+        ),
+    )
+    .await;
+    drop(readers);
+    assert!(
+        accepted.is_ok(),
+        "the writer must reuse its admitted Area without waiting for reader capacity"
+    );
+    accepted.unwrap().unwrap();
+    assert_eq!(fx.counts().await, (1, 2, 1, 1, 1, 0));
+}

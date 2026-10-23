@@ -91,17 +91,25 @@ async fn template_startup_injects_the_creation_snapshot_before_any_report_read()
         .unwrap()
         .recipe();
     assert_eq!(snapshot["body"], original.body);
+    b.started_turn_text("Investigate the latency regression")
+        .await;
+    let input = recorded_prompt(&b, "Investigate the latency regression");
     let starts = b
         .state
         .shared_codex_appserver
         .started_thread_params_for_test();
     assert_eq!(starts.len(), 1);
-    let instructions = starts[0].0.as_ref().unwrap();
-    let injected: Value =
-        serde_json::from_str(instructions.split_once("## Selected Template\n").unwrap().1).unwrap();
+    assert!(
+        !starts[0]
+            .0
+            .as_ref()
+            .unwrap()
+            .contains("## Selected Template\n")
+    );
+    let injected = selected_template(&input);
     assert_eq!(
         &injected, snapshot,
-        "the actual thread/start carries the exact immutable snapshot"
+        "the actual first prompt carries the exact immutable snapshot"
     );
     assert!(
         b.started_turn_text("Investigate the latency regression")
@@ -112,7 +120,7 @@ async fn template_startup_injects_the_creation_snapshot_before_any_report_read()
 }
 
 #[tokio::test]
-async fn template_startup_recipe_snapshot_survives_source_edits_and_reset() {
+async fn template_startup_historical_recipe_snapshot_survives_source_edits_and_reset() {
     let b = boot().await;
     let table = json!({
         "columns": [{"key": "name", "label": "Name", "align": "left"}],
@@ -123,11 +131,15 @@ async fn template_startup_recipe_snapshot_survives_source_edits_and_reset() {
         recipe_body(),
         calm_types::report_blocks::render_fence("table", &table)
     );
+    // Historical reset retains its released attached-entry contract.
+    let cwd = b.tmp.path().join("historical-recipe");
+    user_repo(&cwd);
     let recipe = b.create_recipe("Original method", &source).await;
     let (_, original) = b.get_json(&format!("/api/track-recipes/{recipe}")).await;
     let (status, created) = b.post_create(Some("recipe-context"), json!({
         "planner_provider": "codex",
         "area_id": b.area_id, "recipe_id": recipe, "first_message": "Carry out this investigation",
+        "cwd":cwd, "isolation":"none", "attach_folder":true,
         "theme": {"fg": [255, 255, 255], "bg": [0, 0, 0]},
     })).await;
     assert_eq!(status, StatusCode::CREATED, "{created}");
@@ -157,6 +169,8 @@ async fn template_startup_recipe_snapshot_survives_source_edits_and_reset() {
             .unwrap()
             .contains("Keep literal {track_id}")
     );
+    b.started_turn_text("Carry out this investigation").await;
+    let input = recorded_prompt(&b, "Carry out this investigation");
     let first = b
         .state
         .shared_codex_appserver
@@ -164,8 +178,8 @@ async fn template_startup_recipe_snapshot_survives_source_edits_and_reset() {
         .0
         .clone()
         .unwrap();
-    let injected: Value =
-        serde_json::from_str(first.split_once("## Selected Template\n").unwrap().1).unwrap();
+    assert!(!input.contains("## Selected Template\n"));
+    let injected = selected_template(&first);
     assert_eq!(injected, snapshot);
 
     let (status, updated) = request(&b, "PUT", &format!("/api/track-recipes/{recipe}"), json!({
@@ -320,7 +334,7 @@ async fn template_startup_does_not_inject_into_blank_tracks_or_assistants() {
         .started_thread_params_for_test();
     assert_eq!(starts.len(), 3);
     assert!(
-        starts[1]
+        !starts[1]
             .0
             .as_ref()
             .unwrap()
@@ -335,4 +349,25 @@ async fn template_startup_does_not_inject_into_blank_tracks_or_assistants() {
         "a conversation is not the Planner"
     );
     b.shutdown_harnesses().await;
+}
+
+fn selected_template(input: &str) -> Value {
+    serde_json::Deserializer::from_str(input.split_once("## Selected Template\n").unwrap().1)
+        .into_iter::<Value>()
+        .next()
+        .unwrap()
+        .unwrap()
+}
+
+fn recorded_prompt(b: &Boot, needle: &str) -> String {
+    b.state
+        .shared_codex_appserver
+        .started_turns_for_test()
+        .into_iter()
+        .flat_map(|(_, items)| items)
+        .find_map(|item| match item {
+            provider::InputItem::Text { text } if text.contains(needle) => Some(text),
+            _ => None,
+        })
+        .expect("the production turn/start contains the accepted Human input")
 }

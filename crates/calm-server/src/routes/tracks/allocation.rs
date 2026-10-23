@@ -5,8 +5,15 @@ use crate::state::WriteContext;
 use sqlx::{Sqlite, Transaction};
 use std::sync::{Arc, OnceLock};
 
+/// The admitted entry decides where its frozen material is consumed.
+pub(super) enum CreationContext {
+    Historical,
+    Canonical(crate::auth::HumanInputSource),
+}
+
 /// The route-state owners the allocation reads inside the transaction.
 pub(super) struct TrackAllocationOwners {
+    pub(super) context: CreationContext,
     pub(super) acp_planner: Arc<crate::acp_planner::config::AcpPlannerHost>,
     pub(super) write: WriteContext,
     pub(super) templates: &'static TemplateRoster,
@@ -59,6 +66,7 @@ pub(super) async fn allocate_track_structure_tx(
         }
     }
     let TrackAllocationOwners {
+        context,
         acp_planner,
         write: write_for_tx,
         templates,
@@ -213,6 +221,16 @@ pub(super) async fn allocate_track_structure_tx(
             let source_track = track_get_tx(tx, &source_id)
                 .await
                 .map_err(|error| fork_source_error(error.into(), source_track_id))?;
+            // A Report copy admits content, never the source's execution grant.
+            if let CreationContext::Canonical(source) = &context {
+                crate::organization_access::require_area_access_tx(
+                    tx,
+                    source_track.area_id.as_str(),
+                    &source.current_principal()?,
+                    calm_types::organization::AreaAccess::Collaborate,
+                )
+                .await?;
+            }
             let source_area_kind: String = sqlx::query_scalar("SELECT kind FROM areas WHERE id=?1")
                 .bind(source_track.area_id.as_str())
                 .fetch_one(&mut **tx)
@@ -244,6 +262,14 @@ pub(super) async fn allocate_track_structure_tx(
 
     let mut planner_payload =
         planner_card_payload(&acp_planner, None, planner_provider, init_snapshot.as_ref())?;
+    if matches!(context, CreationContext::Canonical(_)) {
+        super::creation_context::freeze(
+            &mut planner_payload,
+            &track,
+            matches!(init, TrackInit::Fork { .. }),
+            init_snapshot.as_ref(),
+        )?;
+    }
     if model.is_some() || reasoning_effort.is_some() {
         crate::planner_model::CardModelSelection::apply_to_payload(
             planner_payload

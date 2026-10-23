@@ -663,6 +663,7 @@ async fn old_key_replays_historical(provider: AgentProvider) {
                     options,
                     (crate::model::new_id(), crate::model::new_id()),
                     super::super::super::allocation::TrackAllocationOwners {
+                        context: super::super::super::allocation::CreationContext::Historical,
                         acp_planner: std::sync::Arc::new(
                             crate::acp_planner::config::AcpPlannerHost::unconfigured_scratch()
                                 .unwrap(),
