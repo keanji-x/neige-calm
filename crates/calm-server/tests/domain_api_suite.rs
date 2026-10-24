@@ -27,8 +27,6 @@ mod card_cascade_semantics;
 mod cards_deletable;
 #[path = "cases/claude_ingest.rs"]
 mod claude_ingest;
-#[path = "cases/crud_verbs_migration.rs"]
-mod crud_verbs_migration;
 #[path = "cases/deferred_read_tx_deadlock_repro.rs"]
 mod deferred_read_tx_deadlock_repro;
 #[path = "cases/dispatcher_real_auth_path.rs"]
@@ -49,12 +47,8 @@ mod head_schema_fixture;
 mod in_process_renderer_e2e;
 #[path = "cases/mobile_pairing.rs"]
 mod mobile_pairing;
-#[path = "cases/native_plugin_tool_names_migration.rs"]
-mod native_plugin_tool_names_migration;
 #[path = "cases/neige_cli_task_report.rs"]
 mod neige_cli_task_report;
-#[path = "cases/neige_tool_name_migration.rs"]
-mod neige_tool_name_migration;
 #[path = "cases/openapi.rs"]
 mod openapi;
 #[path = "cases/openapi_statuses.rs"]
@@ -63,16 +57,12 @@ mod openapi_statuses;
 mod payload_validation;
 #[path = "cases/planner_permission_mode_creation.rs"]
 mod planner_permission_mode_creation;
-#[path = "cases/plugin_names_migration.rs"]
-mod plugin_names_migration;
 #[path = "cases/plugin_ws_proxy.rs"]
 mod plugin_ws_proxy;
 #[path = "cases/preview_gateway.rs"]
 mod preview_gateway;
 #[path = "cases/read_receipts.rs"]
 mod read_receipts;
-#[path = "cases/recipe_minted_names_migration.rs"]
-mod recipe_minted_names_migration;
 #[path = "cases/repo.rs"]
 mod repo;
 #[path = "cases/request_rejections.rs"]
@@ -83,8 +73,6 @@ mod rest_track_previews;
 mod role_enforcement;
 #[path = "cases/settings.rs"]
 mod settings;
-#[path = "cases/terminal_verbs_migration.rs"]
-mod terminal_verbs_migration;
 #[path = "cases/threads_api.rs"]
 mod threads_api;
 #[path = "cases/threads_resolve_claude.rs"]
@@ -93,10 +81,6 @@ mod threads_resolve_claude;
 mod today_launchpad;
 #[path = "cases/today_launchpad_reset.rs"]
 mod today_launchpad_reset;
-#[path = "cases/tool_name_separator_migration.rs"]
-mod tool_name_separator_migration;
-#[path = "cases/tool_verbs_migration.rs"]
-mod tool_verbs_migration;
 
 #[path = "cases/today_summary.rs"]
 mod today_summary;

@@ -79,20 +79,12 @@ const REJECTION_INPUT_MARKER: &str = "// retired-name: rejection input";
 /// and the two design documents whose rename tables record the old names.
 fn allowlisted(path: &str) -> bool {
     path.starts_with("crates/calm-truth/migrations/")
-        || path == "crates/calm-server/tests/cases/neige_tool_name_migration.rs"
-        || path == "crates/calm-server/tests/cases/tool_name_separator_migration.rs"
-        || path == "crates/calm-server/tests/cases/tool_verbs_migration.rs"
-        || path == "crates/calm-server/tests/cases/terminal_verbs_migration.rs"
-        || path == "crates/calm-server/tests/cases/crud_verbs_migration.rs"
-        || path == "crates/calm-server/tests/cases/plugin_names_migration.rs"
-        || path == "crates/calm-server/tests/cases/native_plugin_tool_names_migration.rs"
         || path == "crates/calm-truth/src/db/sqlite/track_plugin_scope_migration_tests.rs"
         || path == "crates/calm-truth/src/db/sqlite/track_template_rename_migration_tests.rs"
         || path == "crates/calm-truth/src/db/sqlite/track_merge_policy_ask_migration_tests.rs"
         || path == "crates/calm-server/tests/goldens/events/forge_pr_merged.historical_subject.json"
         || path == "docs/architecture/2003-cli-mcp-naming.md"
         || path == "docs/conventions/agent-commands.md"
-        || path == "crates/calm-server/tests/cases/recipe_minted_names_migration.rs"
 }
 
 /// The scanned roots, relative to the workspace root (git pathspecs): everything the product ships
