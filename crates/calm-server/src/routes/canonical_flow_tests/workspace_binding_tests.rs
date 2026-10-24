@@ -76,7 +76,7 @@ async fn response(
     (status, serde_json::from_slice(&bytes).unwrap())
 }
 
-async fn finish_turn(
+pub(super) async fn finish_turn(
     fixture: &Fixture,
     state: &AppState,
     peer: &mut Peer,

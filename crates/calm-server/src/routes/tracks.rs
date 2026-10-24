@@ -779,6 +779,7 @@ pub(crate) async fn create_track(
 ) -> Result<Response> {
     let source = source.map(|source| source.0);
     let area_id = request.area_id.clone();
+    let admin = request.admin;
     let selection = (
         request.planner_provider.clone(),
         request.model.clone(),
@@ -791,6 +792,13 @@ pub(crate) async fn create_track(
         }
         create::CreatePlan::Historical(request) => create::KeyedPlan::Mint(request),
         create::CreatePlan::Canonical(plan) => {
+            if admin {
+                super::track_report_blocks::require_rest_user_actor_for(
+                    &actor,
+                    "admin",
+                    "Only the user grants Area admin.",
+                )?;
+            }
             let _area_delete_guard =
                 crate::per_card_lock::lock_key(&s.area_delete_locks, area_id.as_str()).await;
             let (plan, advice) = match plan {
