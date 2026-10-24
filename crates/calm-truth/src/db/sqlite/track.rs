@@ -97,51 +97,8 @@ impl<'a> PathLocation<'a> {
 /// Compare lexical and physical locations, preserving a missing tail below the nearest
 /// existing ancestor. Failure to resolve a location is an error, never a disjoint proof.
 fn physical_path(path: &std::path::Path) -> Result<std::path::PathBuf> {
-    let mut ancestor = path;
-    let mut tail = Vec::new();
-    loop {
-        match std::fs::canonicalize(ancestor) {
-            Ok(mut root) => {
-                for component in tail.into_iter().rev() {
-                    root.push(component);
-                }
-                return Ok(root);
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                // A dangling symlink exists but cannot be canonicalized. Do not
-                // step past it and silently compare its lexical name instead.
-                match std::fs::symlink_metadata(ancestor) {
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                    Ok(_) => {
-                        return Err(CalmError::BadRequest(format!(
-                            "cannot resolve existing ancestor {} of {}",
-                            ancestor.display(),
-                            path.display()
-                        )));
-                    }
-                    Err(error) => {
-                        return Err(CalmError::BadRequest(format!(
-                            "cannot resolve {}: {error}",
-                            path.display()
-                        )));
-                    }
-                }
-                let name = ancestor.file_name().ok_or_else(|| {
-                    CalmError::BadRequest(format!("cannot resolve {}", path.display()))
-                })?;
-                tail.push(name);
-                ancestor = ancestor.parent().ok_or_else(|| {
-                    CalmError::BadRequest(format!("cannot resolve {}", path.display()))
-                })?;
-            }
-            Err(error) => {
-                return Err(CalmError::BadRequest(format!(
-                    "cannot resolve {}: {error}",
-                    path.display()
-                )));
-            }
-        }
-    }
+    workspace::worktree::physical_path(path)
+        .map_err(|error| CalmError::BadRequest(error.to_string()))
 }
 
 fn paths_overlap(
@@ -159,8 +116,9 @@ fn paths_overlap(
 }
 
 /// Authoritative attached admission under the caller's SQLite write transaction.
-/// None refuses overlap in either direction; worktree refuses only cwd inside or
-/// equal to an owned root, allowing a repository containing existing worktrees.
+/// None refuses overlap in either direction; worktree refuses cwd, repository
+/// root, or derived target parent inside or equal to an owned root, allowing a
+/// repository containing existing worktrees.
 /// The runtime snapshot includes deletes committed before this transaction acquired its lock.
 pub async fn admit_attached_workspace_tx(
     tx: &mut Transaction<'_, Sqlite>,
@@ -176,7 +134,17 @@ pub async fn admit_attached_workspace_tx(
         | TrackWorkspacePlan::ManagedFrozenUnder(_)
         | TrackWorkspacePlan::InheritAttachedFrozen(_) => return Ok(()),
     };
-    let candidate = PathLocation::existing(std::path::Path::new(path))?;
+    let mut candidates = vec![PathLocation::existing(std::path::Path::new(path))?];
+    // The ID is minted only after admission. Use the authoritative derivation
+    // and check its parent: an ancestor redirect moves every future target.
+    let target;
+    if let TrackWorkspacePlan::AttachedWithTrackWorktree(repo_root) = plan {
+        candidates.push(PathLocation::existing(repo_root)?);
+        target = workspace::worktree::track_worktree_path_for(repo_root, "");
+        candidates.push(PathLocation::allow_missing(
+            target.parent().expect("derived worktree has a parent"),
+        )?);
+    }
     let live: Vec<String> = sqlx::query_scalar(
         "SELECT workspace_worktree_path FROM tracks WHERE workspace_worktree_path IS NOT NULL",
     )
@@ -186,7 +154,10 @@ pub async fn admit_attached_workspace_tx(
         .chain(live.into_iter().map(std::path::PathBuf::from))
         .chain(teardown_roots.iter().cloned())
     {
-        if paths_overlap(&candidate, &root, containing)? {
+        for candidate in &candidates {
+            if !paths_overlap(candidate, &root, containing)? {
+                continue;
+            }
             return Err(CalmError::BadRequest(format!(
                 "isolation {isolation} cwd {path} overlaps Neige-owned location {}",
                 root.display()

@@ -262,12 +262,19 @@ async fn prepare_with_area(
             TrackWorkspacePlan::AttachedFromCwd
         }
         CreateIsolation::Attached(AttachedIsolation::Worktree) => {
-            TrackWorkspacePlan::AttachedWithTrackWorktree(
-                workspace_runtime::selection::git_repo_root_for_track_cwd(
-                    "(new)",
-                    &normalized_cwd,
-                )?,
-            )
+            let repo_root = workspace_runtime::selection::git_repo_root_for_track_cwd(
+                "(new)",
+                &normalized_cwd,
+            )?;
+            // Git can print a noncanonical core.worktree. Persist the physical
+            // repository root so the mechanism can enforce path equality.
+            let repo_root = std::fs::canonicalize(&repo_root).map_err(|error| {
+                CalmError::BadRequest(format!(
+                    "cannot resolve repository root {}: {error}",
+                    repo_root.display()
+                ))
+            })?;
+            TrackWorkspacePlan::AttachedWithTrackWorktree(repo_root)
         }
     };
     Ok(PreparedCreate {

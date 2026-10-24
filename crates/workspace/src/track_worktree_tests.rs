@@ -452,3 +452,49 @@ fn detached_worktree_symlinked_parent_reuses_and_removes_registration() {
     assert!(!path.exists());
     assert!(!git_stdout(&repo, ["worktree", "list", "--porcelain"]).contains("detached"));
 }
+
+#[test]
+fn track_worktree_post_admission_ancestor_swap_is_refused() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = tmp.path().join("repo");
+    init_git_repo(&repo);
+    let path = crate::worktree::track_worktree_path_for(&repo, "swap");
+    let target = crate::worktree::track_worktree_target("swap", path.to_str().unwrap()).unwrap();
+    let redirected = tmp.path().join("redirected");
+    std::fs::create_dir(&redirected).unwrap();
+    std::fs::create_dir(repo.join(".claude")).unwrap();
+    std::os::unix::fs::symlink(&redirected, repo.join(".claude/worktrees")).unwrap();
+    let result = crate::worktree::ensure_track_worktree(
+        &target,
+        |root, _| crate::base::resolve_head_base(root),
+        |_, _| {},
+    );
+    assert!(result.is_err(), "{result:?}");
+    assert!(!redirected.join("track-swap").exists());
+    assert!(!git_ref_exists(&repo, &format!("refs/heads/{}", target.branch)).unwrap());
+}
+
+#[test]
+fn track_worktree_redirect_during_add_is_removed() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = tmp.path().join("repo");
+    init_git_repo(&repo);
+    let path = crate::worktree::track_worktree_path_for(&repo, "during-add");
+    let target =
+        crate::worktree::track_worktree_target("during-add", path.to_str().unwrap()).unwrap();
+    let redirected = tmp.path().join("redirected");
+    std::fs::create_dir(&redirected).unwrap();
+    let result = crate::worktree::ensure_track_worktree(
+        &target,
+        |root, _| {
+            std::fs::create_dir_all(root.join(".claude")).unwrap();
+            std::os::unix::fs::symlink(&redirected, root.join(".claude/worktrees")).unwrap();
+            crate::base::resolve_head_base(root)
+        },
+        |_, _| {},
+    );
+    assert!(result.is_err(), "{result:?}");
+    assert!(!redirected.join("track-during-add").exists());
+    let listed = git_stdout(&repo, ["worktree", "list", "--porcelain"]);
+    assert!(!listed.contains("track-during-add"), "{listed}");
+}

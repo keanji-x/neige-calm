@@ -692,12 +692,87 @@ async fn worktree_admission_allows_repository_containing_owned_worktrees() {
     let area = create_area(&b, "repository-worktree-admission").await;
     let source = user_repo(&b.tmp.path().join("source"));
     let first = attached_track(&b, &area, "first", &source).await;
-    let second = attached_track(&b, &area, "second", &source).await;
+    let alias = b.tmp.path().join("repository-alias");
+    std::os::unix::fs::symlink(&source, &alias).unwrap();
+    let second = attached_track(&b, &area, "second", &alias).await;
     assert_ne!(first, second);
     for id in [first, second] {
         let track = b.repo.track_get(&id).await.unwrap().unwrap();
         let root = PathBuf::from(track.workspace.worktree.unwrap());
-        assert!(root.starts_with(&source));
+        assert_eq!(
+            root,
+            workspace::worktree::track_worktree_path_for(&source, &id)
+        );
+        assert_eq!(std::fs::canonicalize(&root).unwrap(), root);
         assert!(root.join(".git").is_file());
     }
+}
+
+async fn assert_redirect_admission(i: usize) {
+    let b = boot().await;
+    let area = create_area(&b, "redirect-admission").await;
+    let (_, managed) = managed_track(&b, &area, "managed").await;
+    let owner_source = user_repo(&b.tmp.path().join("owner-source"));
+    let owner = attached_track(&b, &area, "owner", &owner_source).await;
+    let owned_worktree = PathBuf::from(
+        b.repo
+            .track_get(&owner)
+            .await
+            .unwrap()
+            .unwrap()
+            .workspace
+            .worktree
+            .unwrap(),
+    );
+    let before: i64 = sqlx::query_scalar("SELECT count(*) FROM tracks")
+        .fetch_one(b.repo.pool())
+        .await
+        .unwrap();
+    let claims: i64 = sqlx::query_scalar("SELECT count(*) FROM area_folders")
+        .fetch_one(b.repo.pool())
+        .await
+        .unwrap();
+    let destinations = [managed, b.workspace_root.clone(), owned_worktree];
+    let destination = &destinations[i];
+    let source = user_repo(&b.tmp.path().join(format!("redirect-source-{i}")));
+    if i == 0 {
+        assert!(
+            Command::new("git")
+                .arg("-C")
+                .arg(&source)
+                .args(["config", "core.worktree", destination.to_str().unwrap()])
+                .status()
+                .unwrap()
+                .success()
+        );
+    } else {
+        std::fs::create_dir_all(source.join(".claude")).unwrap();
+        std::os::unix::fs::symlink(destination, source.join(".claude/worktrees")).unwrap();
+    }
+    assert_worktree_refused(&b, &area, &source).await;
+    let after: i64 = sqlx::query_scalar("SELECT count(*) FROM tracks")
+        .fetch_one(b.repo.pool())
+        .await
+        .unwrap();
+    let after_claims: i64 = sqlx::query_scalar("SELECT count(*) FROM area_folders")
+        .fetch_one(b.repo.pool())
+        .await
+        .unwrap();
+    assert_eq!(after, before);
+    assert_eq!(after_claims, claims);
+}
+
+#[tokio::test]
+async fn worktree_admission_refuses_redirected_repository_without_claims() {
+    assert_redirect_admission(0).await;
+}
+
+#[tokio::test]
+async fn worktree_admission_refuses_redirected_target_managed_root_without_claims() {
+    assert_redirect_admission(1).await;
+}
+
+#[tokio::test]
+async fn worktree_admission_refuses_redirected_target_owned_worktree_without_claims() {
+    assert_redirect_admission(2).await;
 }

@@ -41,6 +41,68 @@ pub fn track_worktree_target(track_id: &str, worktree: &str) -> Result<Workspace
     }
 }
 
+/// Resolve the deepest existing ancestor and append its missing tail. A dangling
+/// symlink or unreadable ancestor is an error, never a lexical fallback.
+pub fn physical_path(path: &Path) -> Result<PathBuf> {
+    let mut ancestor = path;
+    let mut tail = Vec::new();
+    loop {
+        match std::fs::canonicalize(ancestor) {
+            Ok(mut root) => {
+                for component in tail.into_iter().rev() {
+                    root.push(component);
+                }
+                return Ok(root);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                // A dangling symlink exists but cannot be canonicalized. Do not
+                // step past it and silently compare its lexical name instead.
+                match std::fs::symlink_metadata(ancestor) {
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Ok(_) => {
+                        return Err(Error::Internal(format!(
+                            "cannot resolve existing ancestor {} of {}",
+                            ancestor.display(),
+                            path.display()
+                        )));
+                    }
+                    Err(error) => {
+                        return Err(Error::Internal(format!(
+                            "cannot resolve {}: {error}",
+                            path.display()
+                        )));
+                    }
+                }
+                let name = ancestor
+                    .file_name()
+                    .ok_or_else(|| Error::Internal(format!("cannot resolve {}", path.display())))?;
+                tail.push(name);
+                ancestor = ancestor
+                    .parent()
+                    .ok_or_else(|| Error::Internal(format!("cannot resolve {}", path.display())))?;
+            }
+            Err(error) => {
+                return Err(Error::Internal(format!(
+                    "cannot resolve {}: {error}",
+                    path.display()
+                )));
+            }
+        }
+    }
+}
+
+fn require_physical_target(target: &WorkspaceLeaseTarget) -> Result<()> {
+    let physical = physical_path(&target.path)?;
+    if physical != target.path {
+        return Err(Error::Internal(format!(
+            "worktree target {} resolves to {}, refusing redirected worktree",
+            target.path.display(),
+            physical.display()
+        )));
+    }
+    Ok(())
+}
+
 /// Ensure under the metadata lock. `prepare_branch` runs only for a new branch, after the
 /// registration/ref probes, so the kernel selects the base and records upstream at that instant.
 /// `observe` preserves the kernel's existing fixture observations of lock ordering.
@@ -53,6 +115,7 @@ pub fn ensure_track_worktree<E: From<crate::error::Error>>(
     let _metadata_lock =
         crate::metadata_lock::GitMetadataLock::acquire(&target.repo_root, &observe)?;
     observe("track-metadata-entered", &target.repo_root);
+    require_physical_target(target)?;
     ensure_workspace_worktree_root_excluded(&target.repo_root)?;
     // Registered and on disk: done. Anything else (a hand-removed directory, another
     // registration at the path) is left to `git worktree add` to refuse.
@@ -84,6 +147,25 @@ pub fn ensure_track_worktree<E: From<crate::error::Error>>(
     })?;
     if !output.status.success() {
         return Err(git_failed("git worktree add", &target.repo_root, &output).into());
+    }
+    if let Err(error) = require_physical_target(target) {
+        // We hold the metadata lock and just created this registration. Let Git
+        // remove it (including the redirected checkout), without reacquiring the lock.
+        let cleanup = isolated_git_command()
+            .arg("-C")
+            .arg(&target.repo_root)
+            .args(["worktree", "remove", "--force"])
+            .arg(&target.path)
+            .output()
+            .map_err(|cleanup| Error::Internal(format!("{error}; worktree cleanup: {cleanup}")))?;
+        if !cleanup.status.success() {
+            return Err(Error::Internal(format!(
+                "{error}; {}",
+                git_failed("git worktree remove", &target.repo_root, &cleanup)
+            ))
+            .into());
+        }
+        return Err(error.into());
     }
     Ok(())
 }
