@@ -1819,8 +1819,8 @@ async fn concurrent_session_commit_exit_has_single_winner() {
     assert_eq!(session.updated_at_ms, probe_ms);
 }
 
-/// Two genuinely CONCURRENT starts on one card: two pooled connections, two `BEGIN IMMEDIATE`
-/// transactions, both released by one barrier. The loser parks at `BEGIN IMMEDIATE` rather than deadlocking.
+/// Two concurrent starts on one card, both counted in flight before either requests
+/// a `BEGIN IMMEDIATE` transaction. The loser waits for writer admission without holding a transaction.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn ws_unique_active_per_card_blocks_concurrent_double_spawn() {
     let repo = Arc::new(fresh_repo().await);
@@ -1839,9 +1839,9 @@ async fn ws_unique_active_per_card_blocks_concurrent_double_spawn() {
         let in_flight = Arc::clone(&in_flight);
         let peak_in_flight = Arc::clone(&peak_in_flight);
         handles.push(tokio::spawn(async move {
-            barrier.wait().await;
             let now = in_flight.fetch_add(1, Ordering::SeqCst) + 1;
             peak_in_flight.fetch_max(now, Ordering::SeqCst);
+            barrier.wait().await;
 
             let outcome = async {
                 let mut tx = calm_server::db::sqlite::begin_immediate_tx(repo.db())
