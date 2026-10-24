@@ -294,5 +294,138 @@ async fn planner_switch_old_credential_mcp_request_refused() {
         denied["error"]["code"],
         crate::mcp_server::handshake::TOKEN_NOT_RECOGNIZED_CODE
     );
+    // Retirement also rejects the handshake, so pin revocation itself: a
+    // superseded-state check must not hide retained credentials in either store.
+    let hash: Option<String> =
+        sqlx::query_scalar("SELECT mcp_token_hash FROM worker_sessions WHERE id=?1")
+            .bind(&p.workers[0])
+            .fetch_one(p.fixture.repo.pool())
+            .await
+            .unwrap();
+    assert!(
+        hash.is_none(),
+        "old Planner credential mirror must be revoked"
+    );
+    let tokens: i64 = sqlx::query_scalar("SELECT count(*) FROM card_mcp_tokens WHERE card_id=?1")
+        .bind(&p.cards[0])
+        .fetch_one(p.fixture.repo.pool())
+        .await
+        .unwrap();
+    assert_eq!(tokens, 0, "old Planner card credential must be revoked");
+    p.close().await;
+}
+
+/// Product behavior is to refuse cutover while an admitted MCP mutation is in flight.
+#[tokio::test]
+async fn planner_switch_admitted_mcp_write_blocks_cutover() {
+    use crate::mcp_server::{registry::ConnectionIdentity, transport::dispatch_tools_call};
+    let mut p = Pair::new().await;
+    let ctx = p.state.mcp_context();
+    let registry = Arc::new(crate::mcp_server::build_default_registry());
+    let worker = p
+        .fixture
+        .repo
+        .session_get(&p.workers[0].clone().into())
+        .await
+        .unwrap()
+        .unwrap();
+    let thread = worker.thread_id.unwrap();
+    // Exercise the production MCP dispatcher, including identity resolution,
+    // role checks, read ledger and the report mutation's normal persistence owner.
+    let params = |name: &str, arguments: Value| {
+        json!({
+            "name": name, "arguments": arguments, "_meta": {"threadId": thread}
+        })
+    };
+    dispatch_tools_call(
+        &ctx,
+        None,
+        params("neige_report_read", json!({})),
+        &ConnectionIdentity::DaemonTrust,
+        &registry,
+    )
+    .await
+    .unwrap();
+    let before: Value =
+        sqlx::query_scalar("SELECT payload FROM cards WHERE track_id=?1 AND kind='track-report'")
+            .bind(&p.track)
+            .fetch_one(p.fixture.repo.pool())
+            .await
+            .unwrap();
+
+    let discovery = PausePoint::default();
+    install_pause_for_test("mcp-identity-discovered", &p.workers[0], discovery.clone());
+    let arguments = params(
+        "neige_report_write",
+        json!({
+            "body": "# Admitted write\nPreserve the old Planner's accepted mutation.",
+            "message": "admitted-before-cutover"
+        }),
+    );
+    let writing = tokio::spawn(async move {
+        dispatch_tools_call(
+            &ctx,
+            None,
+            arguments,
+            &ConnectionIdentity::DaemonTrust,
+            &registry,
+        )
+        .await
+    });
+    tokio::time::timeout(Duration::from_secs(5), discovery.entered.notified())
+        .await
+        .unwrap();
+    // The second discovery occurs with ToolCallGuard held, after the active
+    // session has been revalidated. Re-arm before releasing the first discovery.
+    let admitted = PausePoint::default();
+    install_pause_for_test("mcp-identity-discovered", &p.workers[0], admitted.clone());
+    discovery.release.notify_one();
+    tokio::time::timeout(Duration::from_secs(5), admitted.entered.notified())
+        .await
+        .unwrap();
+    assert!(
+        p.state
+            .mcp_context()
+            .tool_calls
+            .fence(&p.workers[0])
+            .is_err()
+    );
+    let result = p.switch().await;
+    assert_eq!(
+        result.as_ref().err().and_then(code),
+        Some("planner_pending_submission")
+    );
+    p.unchanged().await;
+    assert_eq!(http::detail(&p).await["planner_revision"], 0);
+    let paused: Value =
+        sqlx::query_scalar("SELECT payload FROM cards WHERE track_id=?1 AND kind='track-report'")
+            .bind(&p.track)
+            .fetch_one(p.fixture.repo.pool())
+            .await
+            .unwrap();
+    assert_eq!(paused, before, "the admitted mutation has not written yet");
+
+    admitted.release.notify_one();
+    let written = tokio::time::timeout(Duration::from_secs(5), writing)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert!(written.get("structuredContent").is_some(), "{written}");
+    let after: Value =
+        sqlx::query_scalar("SELECT payload FROM cards WHERE track_id=?1 AND kind='track-report'")
+            .bind(&p.track)
+            .fetch_one(p.fixture.repo.pool())
+            .await
+            .unwrap();
+    assert!(
+        after
+            .to_string()
+            .contains("Preserve the old Planner's accepted mutation.")
+    );
+    // Once the request has finished the same switch can commit. The accepted
+    // write belongs to the old tenure; it did not run under a new Planner.
+    p.switch().await.unwrap();
+    assert_eq!(http::detail(&p).await["planner_revision"], 1);
     p.close().await;
 }
