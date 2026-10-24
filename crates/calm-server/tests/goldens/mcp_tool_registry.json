@@ -409,7 +409,7 @@
   },
   {
     "name": "neige_op_show",
-    "description_sha256": "2acfbac1a69fed903b4d819403787ac1226a7aca55a19ca6445345ffdca03406",
+    "description_sha256": "850c244302504bf3e40d62a48bc8f40390bb45bbc914d167d89add8d29d3cb3e",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -1703,7 +1703,7 @@
   },
   {
     "name": "neige_track_cat",
-    "description_sha256": "0f63264580a9f05a57996538e3e4dd67a4833e85268d307155dcb2408787c42f",
+    "description_sha256": "56504599d3e554143fe121672bd894eca8776a6f8f67e1e687a5c911926730d7",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -1715,25 +1715,8 @@
           "minItems": 1,
           "type": "array"
         },
-        "byte_offset": {
-          "minimum": 0,
-          "type": "integer"
-        },
-        "end_line": {
-          "minimum": 1,
-          "type": "integer"
-        },
-        "grep": {
-          "type": "string"
-        },
         "path": {
           "type": "string"
-        },
-        "rev": {
-          "type": [
-            "integer",
-            "string"
-          ]
         },
         "sections": {
           "description": "Report paths only: print just these H1 sections, as neige_report_read sections does.",
@@ -1743,17 +1726,10 @@
           "minItems": 1,
           "type": "array"
         },
-        "start_line": {
-          "minimum": 1,
-          "type": "integer"
-        },
         "step": {
+          "description": "Gate logs only: select one displayed step.",
           "minLength": 1,
           "type": "string"
-        },
-        "tail": {
-          "minimum": 1,
-          "type": "integer"
         }
       },
       "required": [

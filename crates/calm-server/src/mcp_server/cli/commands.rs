@@ -206,13 +206,7 @@ pub(crate) const COMMANDS: &[Command] = &[
         tool: track_file::TOOL_TRACK_CAT,
         positionals: &[pos("path", true)],
         options: &[
-            opt("--start-line", "start_line", OptValue::Integer, false),
-            opt("--end-line", "end_line", OptValue::Integer, false),
-            opt("--tail", "tail", OptValue::Integer, false),
             opt("--step", "step", OptValue::Text, false),
-            opt("--grep", "grep", OptValue::Text, false),
-            opt("--byte-offset", "byte_offset", OptValue::Integer, false),
-            opt("--rev", "rev", OptValue::JsonOrText, false),
             opt("--blocks", "blocks", OptValue::CommaList, false),
             opt("--sections", "sections", OptValue::CommaList, false),
         ],

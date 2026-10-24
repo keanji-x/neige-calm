@@ -134,7 +134,7 @@ async fn deep_completion_and_same_batch_user_reach_transport() {
                 .await
                 .is_empty()
         );
-        assert!(text.contains("runs/deep-attempt/result --rev"));
+        assert!(text.contains("runs/deep-attempt/result"));
         let result = calm_truth::track_fs_view::TrackFsView::new(fx.repo.as_ref(), &write)
             .cat(&track, "runs/deep-attempt/result")
             .await

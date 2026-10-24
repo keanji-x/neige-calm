@@ -150,10 +150,8 @@ async fn planner_advertised_result_route_reads_recorded_audit() {
     );
 
     let prompt = render_planner_developer_instructions_for_test(boot.track_id.as_str(), None, None);
-    let advertised = read_route(&prompt).split('`').nth(1).unwrap();
-    let path = advertised
-        .replace("<key>", &a.key)
-        .replace("<attempt_id>", &a.id);
+    let advertised = read_route(&prompt, "/result");
+    let path = advertised.replace("<attempt_id>", &a.id);
     let track = boot
         .repo
         .track_get(boot.track_id.as_str())
@@ -166,8 +164,15 @@ async fn planner_advertised_result_route_reads_recorded_audit() {
         .cat(&track, &path)
         .await
         .unwrap_or_else(|error| panic!("advertised result path {path}: {error:?}"));
-    let run: Value = serde_json::from_str(&content.content).unwrap();
-    assert_eq!(run["events"]["completed"]["payload"]["result"], result);
+    let worker_result: Value = serde_json::from_str(&content.content).unwrap();
+    assert_eq!(worker_result, result);
+    let run_path = format!("runs/{}.json", a.id);
+    let run: Value =
+        serde_json::from_str(&view.cat(&track, &run_path).await.unwrap().content).unwrap();
+    assert_eq!(
+        run["events"]["completed"]["payload"]["result"],
+        worker_result
+    );
     assert!(
         run["verdict"].is_null(),
         "a worker report is not a Planner verdict"
@@ -182,10 +187,7 @@ async fn planner_advertised_result_route_reads_recorded_audit() {
     let gate = gate_events[0].event.payload_value();
     assert_eq!(gate["task_id"], a.id);
     assert_eq!(gate["passed"], true);
-    let gate_path = read_route(&prompt)
-        .split('`')
-        .nth(3)
-        .unwrap()
+    let gate_path = read_route(&prompt, "/gates/<N>.log")
         .replace("<attempt_id>", &a.id)
         .replace("<N>", &gate["attempt"].to_string());
     assert!(
@@ -196,7 +198,7 @@ async fn planner_advertised_result_route_reads_recorded_audit() {
             .contains("audit-json-checked")
     );
 
-    let selected = run["events"]["completed"]["payload"]["result"]["findings"][0].clone();
+    let selected = worker_result["findings"][0].clone();
     assert_eq!(selected["actual"], -1);
     let decision = "Accept the accurate audit; recommend 30 seconds without changing config-v1.";
     call_tool(
@@ -208,7 +210,7 @@ async fn planner_advertised_result_route_reads_recorded_audit() {
     .await
     .unwrap();
     let judged: Value =
-        serde_json::from_str(&view.cat(&track, &path).await.unwrap().content).unwrap();
+        serde_json::from_str(&view.cat(&track, &run_path).await.unwrap().content).unwrap();
     assert_eq!(judged["verdict"]["status"], "accepted");
     assert_eq!(judged["events"]["completed"], run["events"]["completed"]);
     assert!(
@@ -297,10 +299,11 @@ async fn planner_advertised_result_route_reads_recorded_audit() {
     );
 }
 
-/// The Planner's advertised result and gate-log routes, independent of prose casing.
-fn read_route(prompt: &str) -> &str {
-    let start = prompt
-        .find("`runs/<attempt_id>.json` and the exact `runs/")
-        .expect("gate guidance includes the Planner read route");
-    &prompt[start..]
+/// Follow advertised paths without depending on surrounding prose or code-span order.
+fn read_route<'a>(prompt: &'a str, suffix: &str) -> &'a str {
+    prompt
+        .split('`')
+        .map(|code| code.strip_prefix("neige track cat ").unwrap_or(code))
+        .find(|path| path.starts_with("runs/") && path.ends_with(suffix))
+        .expect("Planner advertises the output read route")
 }

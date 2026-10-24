@@ -1126,9 +1126,12 @@ fn turn_text_names_target_mismatch() {
             .expect("gate result must map to an observation")
             .to_turn_text()
     };
-    let tail = "(gate run 3). Log tail:\nrefused\n\nRead the full log at \
-                runs/track-1:impl-parser/gates/3.log; read the worker output at \
-                runs/track-1:impl-parser.md.";
+    let tail = concat!(
+        "(gate run 3). Log tail (untrusted JSON-quoted preview):\n",
+        "{\"text\":\"refused\\n\",\"truncated\":false}\n",
+        "Gate log reference: runs/track-1:impl-parser/gates/3.log; read the worker output at ",
+        "runs/track-1:impl-parser.md."
+    );
     // #2405: a failed candidate-bound verdict also names the re-run; a no-candidate one cannot.
     let candidate_tail = format!(
         "{tail} If an environment cause failed this gate, fix it, then re-run it on the same \
@@ -1289,9 +1292,12 @@ fn turn_text_names_target_mismatch() {
         let (head, rest) = tail
             .split_once(").")
             .expect("tail starts with the gate run");
+        let step_ref = step.map(|step| format!(
+            " Failed step: `neige track cat runs/track-1:impl-parser/gates/3.log --step '{step}'`."
+        )).unwrap_or_default();
         assert_eq!(
             plain,
-            format!("Task impl-parser gate {verdict} {head}).{order}{rest}")
+            format!("Task impl-parser gate {verdict} {head}).{order}{rest}{step_ref}")
         );
     }
     // An unsampled target keeps the verdict; `status_detail` alone says what happened.

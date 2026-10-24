@@ -213,10 +213,7 @@ impl<'a> TrackFsView<'a> {
                     return content_json(&messages);
                 }
                 if parts.len() == 3 && parts[2] == "result" {
-                    return self
-                        .run_result(track, parts[1])
-                        .await
-                        .map(|(content, _)| content);
+                    return self.run_result(track, parts[1]).await;
                 }
                 let runs = self.runs_for_track(track).await?;
                 let run_path = path.trim_start_matches("runs/");
@@ -234,12 +231,12 @@ impl<'a> TrackFsView<'a> {
         }
     }
 
-    /// Read the value and its completion revision from the same authoritative snapshot.
-    pub async fn run_result(
+    /// Read the immutable worker completion value from the authoritative projection.
+    async fn run_result(
         &self,
         track: &Track,
         attempt_id: &str,
-    ) -> Result<(TrackFsContent, i64), TrackFsError> {
+    ) -> Result<TrackFsContent, TrackFsError> {
         let event = self
             .run_output_event(track, attempt_id, "completed")
             .await?;
@@ -249,7 +246,7 @@ impl<'a> TrackFsView<'a> {
             .ok_or_else(|| path_not_available("missing worker result"))?;
         let mut content = content_json(result)?;
         content.content = calm_types::observation::receipt::escape_json(&content.content);
-        Ok((content, event.event_id))
+        Ok(content)
     }
 
     /// Authoritative worker event projection, shared by result reads and receipt matching.

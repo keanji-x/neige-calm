@@ -50,7 +50,7 @@ fn gate_head(passed: bool, target: Option<VerifyTarget>) -> String {
     }
     .to_turn_text();
     text.split_once(" Log tail (untrusted JSON-quoted preview):")
-        .or_else(|| text.split_once(" Read the full log at "))
+        .or_else(|| text.split_once(" Gate log reference: "))
         .expect("the head sentence precedes the log tail or, on a pass, the log path")
         .0
         .to_string()
@@ -124,7 +124,7 @@ fn a_reused_run_names_the_candidate_and_the_run() {
 }
 
 #[test]
-fn failed_gate_tail_is_bounded_untrusted_data_with_full_log_reference() {
+fn failed_gate_tail_is_bounded_untrusted_data_with_step_reference() {
     let text = Observation::TaskGateResult {
         idempotency_key: "w:k".into(),
         key: "k".into(),
@@ -148,6 +148,6 @@ fn failed_gate_tail_is_bounded_untrusted_data_with_full_log_reference() {
     let preview = text.lines().find(|line| line.starts_with('{')).unwrap();
     let preview: serde_json::Value = serde_json::from_str(preview).unwrap();
     assert_eq!(preview["truncated"], true);
-    assert!(text.contains("runs/w:k/gates/3.log"));
+    assert!(text.contains("runs/w:k/gates/3.log --step 'checks'"));
     assert!(text.contains("runs/w:k.md"));
 }

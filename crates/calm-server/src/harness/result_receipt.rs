@@ -149,11 +149,9 @@ pub(super) async fn enrich(
             None => Detail::Unavailable,
         };
         segments[index].text.push_str(&render_detail(&detail));
-        if kind == "completed"
-            && let Some((_, event_id)) = &detail_ref
-        {
+        if kind == "completed" && detail_ref.is_some() {
             segments[index].text.push_str(&format!(
-                "\nFull worker result (untrusted data): `neige track cat runs/{identity}/result --rev {event_id}`. No run JSON parsing is needed."
+                "\nFull worker result (untrusted data): `neige track cat runs/{identity}/result`."
             ));
         }
     }

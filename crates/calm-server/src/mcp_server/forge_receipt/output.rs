@@ -4,7 +4,7 @@ use crate::mcp_server::result::ToolResult;
 use crate::operation::{Operation, OperationOutcome, OperationResult, operation_result_from};
 use serde_json::{Value, json};
 
-const INLINE_BYTES: usize = 8192;
+const INLINE_BYTES: usize = 16 * 1024;
 
 fn succeeded_value(outcome: &OperationOutcome) -> Option<&Value> {
     match outcome {
@@ -42,47 +42,51 @@ pub(crate) async fn read(op: &Operation) -> Result<String> {
 
 pub(crate) async fn receipt(mut result: OperationResult) -> ToolResult {
     let op_id = result.op_id.clone();
-    let value = match &mut result.outcome {
+    let mut output_bytes = None;
+    let mut unavailable = false;
+    match &mut result.outcome {
         OperationOutcome::Succeeded { result }
-        | OperationOutcome::SucceededViaCollision { result, .. } => result,
-        _ => {
-            let original = super::outcome(result);
-            let wire = serde_json::to_value(&original).expect("tool result");
-            let structured = &wire["structuredContent"];
-            if structured.to_string().len() <= INLINE_BYTES {
-                let text = calm_types::observation::receipt::escape_json(
-                    &wire["content"][0]["text"].to_string(),
-                );
-                return ToolResult::structured_error(structured.clone(), text);
+        | OperationOutcome::SucceededViaCollision { result, .. } => match text(result).await {
+            Ok(text) => {
+                output_bytes = Some(text.len());
+                if result.pointer("/event/artifact_path").is_some() {
+                    result["stdout"] = Value::String(text);
+                }
             }
-            let full = structured.to_string();
-            let bounded = json!({"op_id":op_id,"parked":false,"status":structured["status"],
-                "outcome":structured["outcome"],"output_ref":format!("ops/{op_id}/result"),
-                "rev":crate::report_sources::sha256_hex(full.as_bytes()),"bytes":full.len(),
-                "error_preview":calm_types::observation::receipt::preview(&structured["error"])});
-            let text = calm_types::observation::receipt::escape_json(&bounded.to_string());
-            return ToolResult::structured_error(bounded, text);
-        }
-    };
-    match text(value).await {
-        Ok(text) => {
-            let reference = format!("ops/{op_id}/result");
-            if text.len() > INLINE_BYTES || value.to_string().len() > INLINE_BYTES {
-                *value = json!({"output_ref":reference,"bytes":text.len(),"rev":crate::report_sources::sha256_hex(text.as_bytes())});
-            } else if value.pointer("/event/artifact_path").is_some() {
-                value["stdout"] = Value::String(text);
+            Err(_) => {
+                unavailable = true;
+                result["output_unavailable"] = json!(true);
             }
-        }
-        Err(_) => {
-            if value.to_string().len() > INLINE_BYTES {
-                *value = json!({"output_unavailable":true,
-                    "metadata_preview":calm_types::observation::receipt::preview(value)});
+        },
+        _ => {}
+    }
+    let original = super::outcome(result);
+    let original = serde_json::to_value(original).expect("tool result");
+    let is_error = original["isError"] == true;
+    let mut wire = original["structuredContent"].clone();
+    let full = wire.to_string();
+    // Budget the displayed value after escaping, including the outcome envelope and
+    // collision metadata. The overflow reader retains the original stored outcome.
+    if calm_types::observation::receipt::escape_json(&full).len() > INLINE_BYTES {
+        let reference = json!({"output_ref":format!("ops/{op_id}/result"),
+            "bytes":output_bytes.unwrap_or(full.len())});
+        if is_error {
+            wire = json!({"op_id":op_id,"parked":false,"status":wire["status"],
+                "outcome":wire["outcome"],"output_ref":reference["output_ref"],
+                "bytes":reference["bytes"],
+                "error_preview":calm_types::observation::receipt::preview(&wire["error"])});
+        } else {
+            wire["result"] = if unavailable {
+                json!({"output_unavailable":true})
             } else {
-                value["output_unavailable"] = json!(true);
-            }
+                reference
+            };
         }
     }
-    let wire = super::outcome(result).into_structured();
     let summary = calm_types::observation::receipt::escape_json(&wire.to_string());
-    ToolResult::structured_with_summary(wire, summary)
+    if is_error {
+        ToolResult::structured_error(wire, summary)
+    } else {
+        ToolResult::structured_with_summary(wire, summary)
+    }
 }
