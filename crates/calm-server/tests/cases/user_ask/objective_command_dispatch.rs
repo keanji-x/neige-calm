@@ -36,7 +36,7 @@ async fn statuses(w: &World) -> Vec<String> {
         .fetch_all(w.boot.repo.sqlite_db().unwrap().read_pool()).await.unwrap()
 }
 async fn entered(signal: &tokio::sync::Notify) {
-    tokio::time::timeout(Duration::from_secs(30), signal.notified())
+    tokio::time::timeout(Duration::from_secs(10), signal.notified())
         .await
         .unwrap();
 }
