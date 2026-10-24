@@ -33,6 +33,19 @@ impl PreC4Sweep {
     pub(crate) fn proves_absent(&self, session: &str) -> bool {
         !self.unproven.contains(session)
     }
+
+    /// Validate the full destructive scope before its revocation transaction commits.
+    /// As with strict session stops, an uninitialized boot proof proves nothing.
+    pub(crate) fn require_absent(proof: Option<&Self>, sessions: &[String]) -> Result<()> {
+        for session in sessions {
+            if !proof.is_some_and(|sweep| sweep.proves_absent(session)) {
+                return Err(CalmError::Conflict(format!(
+                    "pre-C4 process absence unproven for session {session}"
+                )));
+            }
+        }
+        Ok(())
+    }
 }
 
 pub enum CompletionEvidence {

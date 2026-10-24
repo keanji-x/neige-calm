@@ -370,7 +370,17 @@ pub async fn sweep_track(
     host: &AcpPlannerHost,
     track: &str,
 ) -> Result<()> {
-    let ids = revoke_owned(repo, Some(track.to_owned())).await?;
+    let track = track.to_owned();
+    let proof = host.pre_c4.get().cloned();
+    let ids = crate::db::write_in_tx_typed(repo, move |tx| {
+        Box::pin(async move {
+            let ids = revoke_owned_tx(tx, Some(&track)).await?;
+            // A refusal rolls back revocation before any Stop can be requested.
+            crate::provider_execution::PreC4Sweep::require_absent(proof.as_ref(), &ids)?;
+            Ok(ids)
+        })
+    })
+    .await?;
     let executions = crate::db::write_in_tx_typed(repo, move |tx| {
         Box::pin(async move {
             let mut executions = Vec::new();
@@ -416,11 +426,25 @@ async fn revoke_owned(
     repo: &dyn crate::db::RepoEventWrite,
     track: Option<String>,
 ) -> Result<Vec<String>> {
-    crate::db::write_in_tx_typed(repo, move |tx| Box::pin(async move {
-        let ids = sqlx::query_scalar(concat!("SELECT ws.id FROM acp_managed_sessions owned JOIN worker_sessions ws ON ","ws.id=owned.worker_session_id WHERE (?1 IS NULL OR ws.track_id=?1)")).bind(&track).fetch_all(&mut **tx).await?;
-        sqlx::query(concat!("UPDATE worker_sessions SET mcp_token_hash=NULL WHERE id IN (SELECT worker_session_id FROM ","acp_managed_sessions) AND (?1 IS NULL OR track_id=?1)")).bind(track).execute(&mut **tx).await?;
-        Ok(ids)
-    })).await
+    crate::db::write_in_tx_typed(repo, move |tx| {
+        Box::pin(async move { revoke_owned_tx(tx, track.as_deref()).await })
+    })
+    .await
+}
+
+async fn revoke_owned_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    track: Option<&str>,
+) -> Result<Vec<String>> {
+    let ids = sqlx::query_scalar(concat!(
+        "SELECT ws.id FROM acp_managed_sessions owned JOIN worker_sessions ws ON ",
+        "ws.id=owned.worker_session_id WHERE (?1 IS NULL OR ws.track_id=?1)"
+    ))
+    .bind(track)
+    .fetch_all(&mut **tx)
+    .await?;
+    sqlx::query(concat!("UPDATE worker_sessions SET mcp_token_hash=NULL WHERE id IN (SELECT worker_session_id FROM ","acp_managed_sessions) AND (?1 IS NULL OR track_id=?1)")).bind(track).execute(&mut **tx).await?;
+    Ok(ids)
 }
 
 #[cfg(test)]

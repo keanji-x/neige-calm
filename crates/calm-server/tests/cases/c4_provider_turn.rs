@@ -503,6 +503,10 @@ async fn c4_track_stop_settles_within_quiesce_deadline_and_record_dies_with_row(
     use calm_server::{claude_planner::session::SettlePause, db::prelude::*};
     use std::sync::Arc;
     let rig = Rig::new("hold").await;
+    // Destructive sweeps require the boot proof, just like strict session stops.
+    calm_server::claude_planner::lifecycle::boot(rig.repo.as_ref(), &rig.host)
+        .await
+        .unwrap();
     let pause = SettlePause {
         entered: Arc::default(),
         release: Arc::default(),

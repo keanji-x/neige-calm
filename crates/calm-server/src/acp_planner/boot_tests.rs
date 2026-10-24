@@ -475,12 +475,20 @@ async fn acp_boot_track_sweep_without_execution_revokes_without_native_scan() {
         root.join("mcp.sock"),
     )
     .unwrap();
+    super::config::boot_with_sweep(&repo, &host, |_| async { Ok(()) })
+        .await
+        .unwrap();
+    sqlx::query("UPDATE worker_sessions SET mcp_token_hash=?1 WHERE id=?2")
+        .bind(old_hash(&row))
+        .bind(&row.worker)
+        .execute(repo.pool())
+        .await
+        .unwrap();
+    // The pre-C4 native scan remains boot-only.
     super::config::sweep_track(&repo, &host, &row.track)
         .await
         .unwrap();
     assert_eq!(token(&repo, &row).await, None);
-    // The pre-C4 native scan remains boot-only.
-    boot(&repo, &host).await.unwrap();
 }
 
 #[cfg(target_os = "linux")]
@@ -559,3 +567,5 @@ async fn acp_pre_c4_failed_boot_fences_each_strict_stop() {
     .await
     .unwrap();
 }
+
+mod pre_c4_sweep_tests;
