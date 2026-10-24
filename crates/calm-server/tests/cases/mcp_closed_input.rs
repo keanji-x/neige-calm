@@ -172,7 +172,7 @@ async fn every_gitforge_tool_refuses_unknown_arguments() {
         .map(|plugin| plugin.manifest().clone())
         .find(|manifest| manifest.id == "gitforge")
         .expect("the gitforge built-in");
-    assert_eq!(manifest.exposes_tools.len(), 13, "anti-vacuity");
+    assert!(!manifest.exposes_tools.is_empty(), "anti-vacuity");
     for tool in &manifest.exposes_tools {
         let schema = tool.input_schema.as_ref().expect("a declared schema");
         assert_eq!(

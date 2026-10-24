@@ -96,7 +96,7 @@ pub const TASK_BOUND_ADAPTER_KINDS: [&str; 6] = [
     "child-track",
 ];
 
-pub const NON_TASK_BOUND_ADAPTER_KINDS: [&str; 12] = [
+pub const NON_TASK_BOUND_ADAPTER_KINDS: [&str; 13] = [
     card_create_adapter::CARD_CREATE,
     track_recipe_create_adapter::TRACK_RECIPE_CREATE,
     "terminal-create",
@@ -109,6 +109,7 @@ pub const NON_TASK_BOUND_ADAPTER_KINDS: [&str; 12] = [
     "planner-harness-shutdown",
     "forge-action",
     objective_check_run::KIND,
+    crate::workspace_service::reclaim::operation::KIND,
 ];
 
 #[doc(hidden)]
