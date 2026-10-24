@@ -135,7 +135,7 @@ D1–D3 的前提是三条更窄的事实：(a) **准入时排除**：每个新�
 | C4.2 | Claude Planner turn 与 compaction 改为 Engine 消费者；MCP token 走 release stdin 载荷；复用 C4.1 的代理分类函数（`server/execution_environment.rs`） | 见 C4 设计 | C4.1 |
 | C4.3 | ACP Planner turn 改为同一 owner 层的消费者；运营者 env 值走载荷 | 见 C4 设计 | C4.2 |
 | C4.4 | 删除 Planner marker 的运行期机制（保留 boot 时的 pre-C4 sweep）；Claude readiness 加进程组回收，ACP catalog 加总时限 | readiness/catalog 回收测试；replay C4.2/C4.3 | C4.2、C4.3 |
-| C5 | 破坏性 effect 的正向静默：recycle、`remove_track_worktree`、sweep、area 补偿在 fence 下要求 `unsettled_executions(scope)` 为空，否则 Busy 并保留目录；已迁移类型的 Legacy 代理判断同片删除，未迁移类型的 Legacy 检查保留；forge action 与 probe 自 C3.2c 起是 execution、由该谓词覆盖，pre-C3 原生 forge 行（含 Stuck）没有 execution，其 forge-owned 检查保留；C4 之后仍不是 execution 的还有：task worker（terminal-worker、claude-worker、codex viewer）在 W 之前仍是 Legacy PTY，与 owner 自建 card 的 Legacy PTY、升级前的 Legacy worker 行一样保留 Legacy 占用与静默检查（见 C4 设计 Q6 与 §3.3）；共享 Codex app-server 下的 Codex 线程保留线程级检查（Q7）。C5 不等待 W。W 按 [task-worker-execution.md](task-worker-execution.md) 的路线 A 合入后，新启动的 claude-worker 是带 track 的 provider execution（`server/provider_execution/launch.rs:44`），terminal-worker 是带 track 的 Pipe execution（同 gate，`server/operation/gate_execution.rs:79`），都落在同一 `unsettled_executions(Track)` 谓词之内，不加新谓词；尚未准入的 `claude-worker-turn` 行由 C1 的 clean 复查视为待发行（该文 §3.6）；这两个 kind 只为升级前的 Legacy 行保留 Legacy 检查；codex viewer 的 Legacy 检查保留到迁移 | 删除路径保持“先 quiesce、后写者复查”的现有时序；scope 只在非重叠合同（含 O1）成立后才等于 owning track。验收：未结算执行时 Track/Area 删除返回 Conflict 且目录与 branch 保留 | C2a–C4、O1（不依赖 W） |
+| C5 | 破坏性 effect 的正向静默：recycle、`remove_track_worktree`、sweep、area 补偿在 fence 下要求 `unsettled_executions(scope)` 为空，否则 Busy 并保留目录；已迁移类型的 Legacy 代理判断同片删除，未迁移类型的 Legacy 检查保留；forge action 与 probe 自 C3.2c 起是 execution、由该谓词覆盖，pre-C3 原生 forge 行（含 Stuck）没有 execution，其 forge-owned 检查保留；C4 之后仍不是 execution 的还有：task worker（terminal-worker、claude-worker、codex viewer）在 W 之前仍是 Legacy PTY，与 owner 自建 card 的 Legacy PTY、升级前的 Legacy worker 行一样保留 Legacy 占用与静默检查（见 C4 设计 Q6 与 §3.3）；共享 Codex app-server 下的 Codex 线程保留线程级检查（Q7）。C5 不等待 W。W 按 [task-worker-execution.md](task-worker-execution.md) 的路线 A 合入后，新启动的 claude-worker 是带 track 的 provider execution（`server/provider_execution/launch.rs:44`），terminal-worker 是带 track 的 Pipe execution（同 gate，`server/operation/gate_execution.rs:79`），都落在同一 `unsettled_executions(Track)` 谓词之内，不加新谓词；尚未准入的 `claude-worker-turn` 行由 C1 的 clean 复查视为待发行（该文 §3.6）；这两个 kind 只为升级前的 Legacy 行保留 Legacy 检查；codex viewer 的 Legacy 检查保留到迁移 | 拆为 C5a–C5c，合同 C5-D1…C5-D5 与各片验收见下“C5 设计决定”。占用不只按 owning track：O1 之后显式 cwd 的 typed 终端仍可运行在另一 track 的目录内，占用 = owning track 的未结算执行 ∪ 根位于目标之内的未结算执行（C5-D1）；删除路径保持“先 quiesce、后写者复查”，并在既有围栏下、第一次移动之前加一次正向证明，restore 不做新证明、永不因证明失败而跳过（C5-D2、C5-D5）；repoint 保持“不 Stop 即拒绝”（C5-D3）；retired trash 与一次性 objective checkout 的豁免以准入拒绝为前提（C5-D4）。验收：未结算执行（含他 track 拥有、根在目标内者）时 Track/Area 删除、repoint、clean 返回 Conflict/延后且目录、branch 与行保留 | C2a–C4、O1（已在 main，`truth/db/sqlite/track.rs:123`；不依赖 W） |
 | C6（可选） | 释放作业：删除事务内写入待回收的 worktree/refs 描述，提交后 sweep 消费，启动时补跑 | 修复“提交后崩溃 → worktree 与 branch 永久泄漏”；不改 7 天 trash 与回收顺序。未消费的作业行同片并入 `none` 准入的自有位置集合（§4.2 进行中的 teardown 目标），验收加“作业未消费时准入其目标 → 400”。若接受泄漏只记 follow-up，则不做，也不声称已有 crash-safe release | C5 |
 | W | task worker 迁入 Engine：claude-worker 走无界面的 Agent Runtime（路线 A），terminal-worker 只走 Pipe execution（不提供 PTY 变体），codex viewer 按 OQ6；重写设计见 [task-worker-execution.md](task-worker-execution.md)（第三版，设计已定稿：两路 L2 设计评审第 3 轮通过，用户已确认方向，ask 686425；仍只是设计，未实现），WR1–WR7 的处置见 §3.3 | 见 [task-worker-execution.md](task-worker-execution.md) §7 | C4（与 C5 无硬依赖：先于 C5 合入时，C5 对 claude-worker 的 Legacy 检查只为升级前的行保留） |
 | Legacy wind-down | W 之后迁移 owner 自建 card；升级时排空 pre-upgrade Legacy 行；随后删除剩余 Legacy 检查与 EnsureProc；保留 Codex thread 检查 | 见下文 Legacy wind-down；动工前 L2 设计 | W |
@@ -1061,6 +1061,111 @@ turn_pending}`、未结算 intent/执行、checkout lease。
 残余风险写进 PR 并由 Planner 接受：锁不跨进程崩溃；server 崩溃后孤儿 `git clean` 子进程可能继续运行，时长没有上界，期间
 重启后的启动不受围栏保护。这与 §4.2 已启动 teardown 子进程跨崩溃存活属同一残余风险类，留给 follow-up #2862
 （PDEATHSIG / child lifetime semantics）闭合，本计划不新增机制。不改 clean 的 SQL 采样。
+
+**C5 设计决定。** 核实基线 main `0a172a409`（只读盘点 c5-inventory 的同一基线）；路径前缀同 C2b，另 `workspace/` 指
+`crates/workspace/src/`、`tests/` 指 `crates/calm-server/tests/`。只是设计，不声称已实现。C5 行原文假设 O1 成立后按 owning track
+的占用即覆盖全部破坏性 effect；盘点在代码中找到与之矛盾的五处，逐条决定如下。为不与 §3.1 的 D1–D8 重名，编号为 C5-D1…C5-D5。
+O1 已在 main 实现（`truth/db/sqlite/track.rs:123` 的 `admit_attached_workspace_tx`，`server/routes/tracks/allocation.rs:101`
+在创建写者内调用）；§0 第 4 条与 §3.1 中“待接受、在 C5 之前修复”的写法是历史记录，不再是前置条件。
+
+- **破坏性 effect 的范围。** 移走或删除执行可能在用的目录或其中文件的 effect：Track 删除的 recycle（`server/routes/tracks.rs:2992`
+  → `runtime/recycle.rs:83`）、Area 删除的批量 recycle（`server/routes/areas.rs:542` → `runtime/recycle.rs:201`）、提交后的
+  worktree/branch/refs sweep（`server/routes/tracks.rs:3126`、`server/routes/areas.rs:740` → `runtime/sweep.rs:113`）、repoint 回收
+  旧 managed 目录（`server/routes/tracks.rs:2296`）、已关闭 worktree 的 `git clean -fdX`（`server/workspace_service/ports.rs:113-138`）。
+  restore 与自补偿、只删行的 Card/plugin 删除与启动补偿、materialization staging 不属于此类（C5-D2、C5-D4、C5c）。
+- **正向证明。** 在该 effect 既有围栏（全局 drive 锁与 track 锁，Area 另加 area 锁）持有区间内的一次新读，得到：(i) scope 内
+  `unsettled_executions` 为空（`truth/db/sqlite/workspace_execution.rs:174-199`：只看 `settled_at_ms IS NULL`，Held、Stopping、
+  Unknown 一律算占用；不得改用 `pending`，`:103`）；(ii) C5-D1 的位置占用为空；(iii) 未迁移类型的 Legacy 检查照旧通过。今天
+  Track 删除只有 quiesce 的快照（`server/execution_quiesce.rs:42-77` 只等它快照到的 id，不再读一次）与 recycle **之后**的写者复查
+  （`server/routes/tracks.rs:2859`），recycle 之前没有直接证明；Area 同样（`server/routes/areas.rs:469`、`:615`）。C5 在第一次移动
+  之前加这次读，写者复查保留。
+
+- **C5-D1（已决定）：占用按位置覆盖，不只按 owning track。** 事实：显式 cwd 与 track 的选择无关（`server/operation/terminal_adapter/target.rs:22-35`，
+  显式值直接成为 `ExternalDir`），经 `terminal_cwd_or_track_workspace`（`server/operation/terminal_adapter.rs:221-228`，调用于 `:292`）
+  写进终端行；typed 终端以请求的 track 作 `metadata.track`、以该 cwd 作 `source.root`（`server/operation/terminal_execution_create.rs:64`、
+  `:66`）。track A 的 typed 终端因此可以在 track B 的 managed 目录或 worktree 内运行，而 `unsettled_executions(Track(B))` 看不到它；
+  O1 只约束 track 选择的准入，不约束终端 cwd。准入时序也不闭合：typed 终端创建只 try-lock 请求 track 的锁
+  （`server/operation/terminal_execution_create.rs:166` → `server/operation/driver.rs:79-85`），不取全局 drive 锁，B 的删除持有的锁挡不住它。
+  决定：
+  1. **位置占用。** 破坏性 effect 的占用 = owning scope 的未结算执行 ∪ 位置集合：`source.root`（`runtime/execution/mod.rs:36-56`，
+     原样序列化在 `workspace_executions.intent_json`，写入见 `truth/db/sqlite/workspace_execution.rs:29-50`）**位于或等于**任一 effect
+     目标根（managed 目录、track worktree 根；Area 为全部成员的目标）的未结算执行，与它的 owning track 无关。比较复用 calm-truth 唯一的
+     重叠函数 `paths_overlap`（`truth/db/sqlite/track.rs:104-117`：lexical 与 physical 各比一次，解析失败是错误，不当作不相交），
+     `containing = false`。根在目标之上的执行（例如仓库根上 attached track 自己的终端或 Planner）不算占用：worktree 位于仓库根之内
+     （`workspace/worktree.rs:205-210`），O1 对 worktree 也只拒绝“位于或等于”（`truth/db/sqlite/track.rs:119-122`），与 §4.2 接受的同仓库
+     重叠是同一规则。SQL 在 calm-truth：新读者经部分索引 `workspace_executions_unsettled`（`truth/migrations/0170_workspace_executions.sql:16-17`）
+     取未结算行的 `$.source.root`，在同一 owner 模块用同一个 `paths_overlap` 过滤；该函数改为 calm-truth 内共享（O1 与新读者共用），
+     不复制第二份路径比较，也不在 server 或 runtime 重写 SQL。
+  2. **他 track 的占用者只拒绝、不 Stop。** owning scope 内的执行照旧由删除的 quiesce Stop；位置集合中 owning track 不在 scope 内的执行，
+     删除、repoint、clean 都在任何 effect 之前返回 Conflict（clean 为延后），目录、branch 与行保留。删除 B 不授予停止 A 的 card 的权限；
+     该终端由其 owner 关闭后重试即可。
+  3. **准入围栏，不是准入拒绝。** 显式 cwd 的终端准入（typed 与 Legacy 共用 `target::decode`，`target.rs:28`）另外 try-lock cwd 所在的
+     每个自有位置（managed 目录与 live worktree 根，同一 `paths_overlap` 求得）的 owning track 锁，冲突即 `WorkspaceBusy`（可重试，
+     同 C1 持有区间表中 typed admit 的规则）；在准入写者内重新求 owner 集合，与已锁集合不一致也返回 `WorkspaceBusy`。不在破坏性生命周期内时
+     这些锁空闲，终端照常创建。Planner 偏好的“不新增终端创建拒绝”因此成立：用户在其他目录（含他 track 的目录）开终端是正当用法，
+     只有与该位置的破坏性 effect 并发时才 Busy。有了这一围栏，B 的证明在 B 的锁下与 effect 之间不会再有新的位置占用者。
+  4. **不覆盖（记录，不声称）。** shell 在准入之后自行 `cd`（与 §3.1 D1 中准入之后外部改名属同一类，不在防御范围内）；Legacy PTY
+     （配置关闭时的 Legacy terminal-create，`terminal_execution_create.rs:144-152`，以及 owner 自建 card）没有 execution 根，保留按 owning
+     track 的 Legacy 检查，其跨 track 位置缺口是既有缺陷，单独立 issue，交给 Legacy wind-down。
+  否决：只按 owning track（上面的反例）；终端创建时拒绝落在他 track 目录内的 cwd（拒绝正当用法）；删除时 Stop 他 track 的执行（越权）。
+
+- **C5-D2（已决定）：restore 与回滚不做新证明，证明失败永不删除、永不削弱回滚。** restore 是同一围栏下对已完成移动的逆操作：只检查原路径
+  不存在后把 trash 条目改名回去（`workspace/recycle.rs:51-79`），不删除任何东西。各分支照旧无条件执行其既有条件：Track 提交失败且行仍在
+  （`server/routes/tracks.rs:3072`、`:3080`）、Track panic 且行仍在（`:3160`、`:3165`）、Area 提交失败（`server/routes/areas.rs:692`）、
+  Area panic 且 area 仍在（`:767`）、批量中途失败（`runtime/recycle.rs:218-224`，反序 `:237-249`）、落点校验失败的自补偿
+  （`workspace/recycle.rs:253`）。若在 restore 前要求新证明并在失败时跳过，live 目录会留在 `.trash`、7 天后被 GC，等于把已回滚的删除变成
+  延期删除；此时发现的占用者恰恰需要目录回到原处。正向证明前移到第一次移动之前（上文），写者复查失败于是只剩“输给未受围栏的入口”这一窄
+  分支，它保持现状：restore，再返回 Conflict（`server/operation/terminal_disposal.rs:110-120`）；restore 自身失败时保留 trash 条目与 seal，
+  返回 Internal（`server/routes/tracks.rs:3082-3086`、`server/routes/areas.rs:692-696`），由既有 owner 路径（重试删除或运营者恢复）处理。
+  提交后的 sweep 与 area 空目录 `remove_dir`（非递归，`workspace/recycle.rs:294`）继承提交前的证明：drive 与 track 锁随 prepared deletion
+  保持到 sweep 结束（Area 的 area 锁只在成员关系提交后于 `server/routes/areas.rs:738` 释放，成员 track 锁保留），C5-D1 的准入围栏又
+  挡住新的位置占用者；提交后不再查询，尤其不以已为空的 Area 成员关系作证明。
+
+- **C5-D3（已决定）：repoint 保持既有“不 Stop 即拒绝”，不套用删除的 quiesce。** repoint 是对 live track 的绑定变更，不是删除，没有停止
+  用户在跑工作的权限；`tests/execution_hooks.rs:468`（`repoint_rejects_unsettled_typed_without_stop`）断言 Conflict 且 desired 仍为 `run`，保留。
+  时序不变：drive（`server/routes/tracks.rs:2041`）与 track（`:2043`）锁下，`require_safe_tx` 先于 session 取代与 harness 关停（`:2088`
+  先于 `:2132`、`:2162`），Claude/ACP owner sweep（`:2187`、`:2206`）之后在绑定写事务内再查一次（`:2265`，写入 `:2270`），提交后回收旧
+  目录（`:2296`），锁一直持有。C5 只把两次检查都扩到 C5-D1 的位置占用（目标为旧 managed 目录）；`:2265` 那次就是 `:2296` 的正向证明，
+  因为其后到 effect 之间围栏未释放，且新位置占用者被 C5-D1 的准入围栏挡住。删除路径的“先 quiesce、后写者复查”只适用于删除。
+
+- **C5-D4（已决定）：retired trash 与一次性 objective checkout 豁免 Track/Area 证明，前提由准入拒绝保证。** Planner 偏好的理由是“二者是
+  Neige 独占资源、在任何执行根之外”，今天并不成立：显式 cwd 不受限制（`target.rs:33-34`），可以指向 `<managed root>/.trash/…` 或
+  objective checkout 根（`server/state.rs:567`，`objective-checks/<track>/<seq>-<ordinal>-<op>`，`server/operation/objective_check_run/mod.rs:155-158`）。
+  决定：终端 cwd 解码（`target.rs:28`，typed 与 Legacy、`claude_restart_adapter.rs:286` 共用）拒绝位于或等于这两个 Neige 内部根的显式 cwd
+  （BadRequest，同一 `paths_overlap`）。这不是 C5-D1 否决的那种拒绝：二者不是用户目录，§4.2 已把 `.trash` 列为自有位置；他 track 的
+  workspace 与任意目录照旧允许。在此前提下：
+  - trash GC（`server/workspace_service/trash.rs:19-28` → `workspace/recycle.rs:311-370`）不做 Track/Area 或位置证明，围栏只用于采样时间
+    （`trash.rs:21-24`）照旧在删除前释放。理由：条目没有可回溯的 owner（track 与 Area 行可能已删）；条目只在 C5 证明（含位置）之后进入
+    trash，进入后不会再有新根被准入；7 天保留期保护回滚。残留：C5 之前已准入、根在 trash 内的执行，接受并写进 PR，不加永久检查。
+  - objective checkout 的 owner 是 operation，唯一准入的占用者是它自己的 gate execution；局部条件照旧：重建前只在 op 尚无 execution 记录时
+    删除（`server/operation/objective_check_run/mod.rs:197-199` → `checkout.rs:9-11`），清理只在 owned 恢复读到结算（`mod.rs:265`）并
+    完成之后（`checkout.rs:62-86`）。不套 Track 证明：同 track 的无关执行会无谓阻塞清理；而 Track 删除照旧经该 gate execution 的 track
+    （`server/operation/gate_execution.rs`）保守地覆盖它。
+  - claim staging（`workspace/materialize.rs:378`、`:413`）是发布前、按尝试命名、按年龄回收的目录，不是已准入 workspace 的拆除，不加执行生命周期。
+
+- **C5-D5（已决定）：Area 在第一次移动之前做一次全 Area 证明；ACP owner 撤销先于通用 Stop。** 今天 Area 的顺序是 Legacy 检查
+  （`server/routes/areas.rs:453`）→ Claude sweep（`:462`）→ 通用 quiesce（`:469`）→ 每个成员的 Codex（`:484`）、Legacy 终端（`:489`）、
+  **ACP sweep（`:499`）**、harness 关停（`:505`）→ 批量 recycle（`:542`）→ 写者复查（`:615`）→ `area_delete_tx`（`:648`）。ACP sweep 落在
+  通用 Stop 之后，与 Track（`server/routes/tracks.rs:2748`、`:2758` 先于 `:2768`）和 `areas.rs:459-460` 的注释都不一致。决定：
+  1. ACP 的 `sweep_track` 移到 Claude sweep 的成员循环旁，全部成员的 provider 撤销与 Stop 都先于 `:469`；
+  2. 所有成员的 Codex、Legacy 终端与 harness 步骤之后、`recycle_area_workspaces` 移动第一个目录之前，做一次全 Area 正向证明：scope 为
+     prepared 时捕获的成员 track id（area 锁 `:875` 与成员 track 锁 `:892` 下成员关系不变，与 `Scope::Area` 等价），位置集合为全部成员的
+     managed 目录与 worktree 根；任何占用都在移动之前返回 Conflict，不出现“部分移动再回滚”。不做逐成员证明与移动交错。
+  3. 写者复查 `:615` 保留 `Scope::Area`（提交前成员关系完整）；提交后的 sweep 与空目录清理按 C5-D2 继承证明。
+
+**C5 切片。** 每片 L2（workspace 隔离与生命周期边界），gate 同 §3.2 公共 gate G：worker 跑聚焦测试与格式化；gate 跑 quick、文本与
+contract 检查各一次，加一次拒绝空选择的聚焦 replay；广泛套件归 CI。下表测试为实现时注册的新过滤器。三片都**保留**：Legacy worker 启动行
+（`server/operation/terminal_disposal.rs:37` 的 terminal-worker、claude-worker、codex-worker，与 `:110-141` 的两个检查；W 的 WT2/WA2 不在
+main）、Legacy 终端静默（`server/terminal_sweeper.rs:535` 起，typed 已跳过）、共享 Codex 线程检查（`server/routes/planner_cards.rs:82`、
+`server/routes/tracks.rs:2735`、`server/routes/areas.rs:484`）、pre-C4 Planner 的 boot 证明与 Claude/ACP owner 生命周期
+（`server/claude_planner/lifecycle.rs:91`、`:106`，`server/acp_planner/config.rs:371`、`:381`；后者不是 Legacy 代理）、`checkout_occupancy`
+（`truth/db/sqlite/track_occupancy.rs:47`）、repoint 的规范 carrier 与 pristine 检查。
+
+| # | 结果 | 范围、删除与保留 | 验收 | 依赖 |
+|---|---|---|---|---|
+| C5a | 位置占用与 Track 侧正向证明 | calm-truth：共享 `paths_overlap` 与按位置的未结算读者（C5-D1.1）；终端 cwd 解码的准入围栏（C5-D1.3）与内部根拒绝（C5-D4）；生产消费者：Track 删除在 recycle 之前的正向证明与写者复查、repoint 两次检查（C5-D3）、clean 的 fence（`server/workspace_service/ports.rs:129-134`）。不删除 Legacy 检查 | A 的 typed 终端根在 B 的 managed 目录或 worktree 内：B 的删除与 repoint 返回 Conflict、clean 延后，目录、branch 与行保留，A 的执行 desired 仍为 `run`；B 删除持锁期间 A 在 B 目录内的显式 cwd 创建得到 `WorkspaceBusy`，锁释放后成功；根在仓库根（B 的 worktree 之上）的执行不阻塞；显式 cwd 位于 `.trash` 或 objective checkout 根时 BadRequest；quiesce 之后、recycle 之前准入的执行使删除在移动之前 Conflict（不经 restore）；`tests/execution_hooks.rs:468` 照旧通过 | C2a–C4、O1 |
+| C5b | Area 全量证明与 forge 代理切换 | C5-D5 的 ACP 顺序与全 Area 证明；Area 补偿矩阵按 C5-D2 只扩测试、不改 restore。同片删除 forge 已迁移类型的阶段代理：三个破坏性调用者（`server/routes/tracks.rs:3317`、`server/routes/areas.rs:902`、`server/workspace_service/ports.rs:125`）不再因带 `forge_execution` 的 op 处于可恢复阶段而阻塞，由执行谓词覆盖；**保留** pre-C3 原生行与原生 Stuck（`server/operation/workspace_lease/mod.rs:102-110` 中 `forge_execution` 缺失的分支），分类留在 forge owner；`track_close`（`server/mcp_server/tools/track_state.rs:390`）的逻辑活动策略不变 | 任一成员（含他 track 拥有、根在成员目录内的执行）未结算时第一个目录不移动，Conflict，全部目录与 branch 保留；ACP 撤销先于通用 Stop 的顺序测试；提交失败与 panic 照旧恢复全部目录；带 `forge_execution` 且执行已结算、op 仍在可恢复阶段时 Track/Area 删除与 clean 不再被阻塞，执行未结算时被阻塞；原生 Stuck 行照旧 Conflict 且被忽略文件保留（既有 `tests/cases/track_delete_forge_fence.rs` 的原生用例保留，只伪造阶段的用例改为带真实 execution） | C5a |
+| C5c | clean 的 session 代理切换与其余删除入口审计 | `CLOSED_TRACK_WORKTREES_SQL`（`server/workspace_service/ports.rs:79-84`）中 Engine 已承载的 session（typed 终端、Claude/ACP Planner）由 owner 提供的持久分类剔除，改由执行谓词覆盖；**保留** Legacy task worker、owner 自建 PTY、升级前的行与 Codex 线程状态（`provider_execution_json` 为 NULL 不足以判 Legacy）；审计只删行的 Card、plugin 与启动补偿入口，写明它们不是 C5 effect，扩大其授权或生命周期须另行决定 | session 状态陈旧但执行已结算时 clean 进行；执行未结算而 session 显示 exited/idle、无 renderer 时 clean 延后；Legacy 终端 session 无执行时照旧延后（`tests/cases/track_worktree.rs` 既有断言保留）；C1 的 issuance 与 clean 互斥照旧（`tests/cases/c1_planner_fence.rs`、`tests/cases/c1_fence.rs`）；只对新的 no-silent-miss 断言做变异验证 | C5b |
 
 之后的 S3（Revision、B pin、7/90）与 S2b（view、WorkspaceRef、WorkspaceContent）沿用各自协议，不在本表。
 
