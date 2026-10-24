@@ -524,8 +524,12 @@ jobs:
 
       - name: prepare nextest tests
         run: |
+          set -euo pipefail
           case "$GITHUB_EVENT_NAME" in
-            pull_request) scripts/ci/prepare-rust-nextest.sh archive --archive-file nextest-archive.tar.zst ;;
+            pull_request)
+              scripts/ci/prepare-rust-nextest.sh archive --archive-file nextest-archive.tar.zst \
+                2>&1 | tee cargo-timings-producer.log
+              ;;
             push) scripts/ci/prepare-rust-nextest.sh inventory ;;
             *) echo "unsupported nextest build event: $GITHUB_EVENT_NAME" >&2; exit 1 ;;
           esac
@@ -537,6 +541,41 @@ jobs:
           path: nextest-archive.tar.zst
           # Already zstd-compressed: upload the file itself, not a zip of it (the artifact takes the file's name).
           archive: false
+          retention-days: 1
+          if-no-files-found: error
+
+      # Temporary observation: remove this capture/upload and the archive --timings after evidence collection.
+      - name: collect Cargo unit timings
+        if: github.event_name == 'pull_request'
+        run: |
+          set -euo pipefail
+          mkdir cargo-unit-timings
+          cp cargo-timings-producer.log cargo-unit-timings/producer.log
+          {
+            rustc --version --verbose
+            cargo --version --verbose
+            cargo nextest --version
+          } > cargo-unit-timings/tool-versions.txt
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          import shutil
+
+          log = Path('cargo-timings-producer.log').read_text()
+          # CARGO_TERM_COLOR stays unchanged; remove ANSI SGR only for parsing.
+          log = re.sub(r'\x1b\[[0-9;]*m', '', log)
+          reports = re.findall(r'^\s*Timing report saved to (.+\.html)\s*$', log, re.MULTILINE)
+          if len(reports) != 1:
+              raise SystemExit(f'expected one Cargo timing report line, got {len(reports)}')
+          shutil.copyfile(reports[0], 'cargo-unit-timings/report.html')
+          PY
+
+      - name: upload temporary Cargo unit timings
+        if: github.event_name == 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: cargo-unit-timings
+          path: cargo-unit-timings/
           retention-days: 1
           if-no-files-found: error
 

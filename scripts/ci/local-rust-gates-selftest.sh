@@ -346,7 +346,7 @@ if name == 'cargo':
                         self.assertEqual(calls.pop(0), ['cargo', 'build', '--locked', '-p',
                                          'neige-mcp-stdio-shim', '--bin', 'neige-mcp-stdio-shim'])
                     input_args = ['--archive-file', filename] if filename else []
-                    build = (['cargo', 'nextest', 'archive', *source, '--profile', 'ci', *input_args]
+                    build = (['cargo', 'nextest', 'archive', *source, '--profile', 'ci', *input_args, '--timings']
                              if filename else ['cargo', 'nextest', 'list', *source, '--profile', 'ci',
                                                '--list-type', 'binaries-only', '--message-format', 'json'])
                     expected = [build, ['python3', 'scripts/ci/check-nextest-overrides.py', *input_args]]

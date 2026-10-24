@@ -12,7 +12,7 @@ case "${1:-}" in
       echo "$usage" >&2
       exit 2
     fi
-    env -u NEIGE_CODEX_BIN cargo nextest archive "${source_args[@]}" --archive-file "$3"
+    env -u NEIGE_CODEX_BIN cargo nextest archive "${source_args[@]}" --archive-file "$3" --timings
     env -u NEIGE_CODEX_BIN python3 scripts/ci/check-nextest-overrides.py --archive-file "$3"
     ;;
   inventory)
