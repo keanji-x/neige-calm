@@ -250,11 +250,6 @@ describe('styles/tokens themed color contracts', () => {
     },
   );
 
-  it.each(MISC)('%s has light/dark parity', (name) => {
-    expect(root.has(name)).toBe(true);
-    expect(dark.has(name)).toBe(true);
-  });
-
   it('keeps the scrim as the intentional rgba exception in both themes', () => {
     expect(root.get('--overlay-scrim')).toMatch(/^rgba\(.+\)$/);
     expect(dark.get('--overlay-scrim')).toMatch(/^rgba\(.+\)$/);

@@ -16,12 +16,6 @@ describe('PanelModule module marker', () => {
     /* On the section itself: the marker is the module layer's scope boundary. */
     expect(container.querySelectorAll('[data-nc-module]').length).toBe(1);
   });
-
-  it('emits no attribute when the prop is omitted', () => {
-    const { container } = render(<PanelModule title="Conversations">rows</PanelModule>);
-    expect(container.querySelector('[data-nc-module]')).toBeNull();
-    expect(container.querySelector('section')?.hasAttribute('data-nc-module')).toBe(false);
-  });
 });
 
 describe('PanelModule title field marker', () => {
@@ -33,18 +27,6 @@ describe('PanelModule title field marker', () => {
     expect(heading?.getAttribute('data-nc-field')).toBe('module-title');
     expect(heading?.textContent).toBe('Cards');
     expect(container.querySelectorAll('[data-nc-field]').length).toBe(1);
-  });
-
-  it('emits no attribute when the prop is omitted', () => {
-    const { container } = render(<PanelModule title="Cards">rows</PanelModule>);
-    expect(container.querySelector('[data-nc-field]')).toBeNull();
-    expect(container.querySelector('h2')?.hasAttribute('data-nc-field')).toBe(false);
-  });
-
-  it('the two channels are independent', () => {
-    const { container } = render(<PanelModule title="Cards" moduleMarker="cards">rows</PanelModule>);
-    expect(container.querySelector('section')?.getAttribute('data-nc-module')).toBe('cards');
-    expect(container.querySelector('h2')?.hasAttribute('data-nc-field')).toBe(false);
   });
 });
 

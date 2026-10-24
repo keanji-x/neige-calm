@@ -3,7 +3,7 @@
 // The real page as a faithful projection of its view model, checked over the desktop panel subtree: the mobile surface is a sibling in the same DOM.
 
 import { cleanup, screen } from '@testing-library/react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import type { ReportTaskRow } from '../../../../../core/domain/report.ts';
 import { NEUTRAL_ACTIVITY, type CardWire } from '../../../../../core/domain/track.ts';
@@ -67,8 +67,10 @@ const ALL_MODULES: readonly RowModuleView[] = [
 ];
 const ALL_ROWS: readonly PanelRow[] = ALL_MODULES.flatMap((module) => [...module.rows]);
 
-describe('fixture shape guard', () => {
-  it('title and kind are non-empty and neither contains the other', () => {
+// These assertions qualify the inputs used by the projection tests below.
+beforeAll(() => {
+  // title and kind are non-empty and neither contains the other
+  {
     for (const row of ALL_ROWS) {
       expect(row.title).not.toEqual('');
       if (row.kind === null) continue;
@@ -76,40 +78,45 @@ describe('fixture shape guard', () => {
       expect(row.title.includes(row.kind)).toBe(false);
       expect(row.kind.includes(row.title)).toBe(false);
     }
-  });
+  }
 
-  it('kind is exercised both null and non-null', () => {
+  // kind is exercised both null and non-null
+  {
     expect(ALL_ROWS.some((row) => row.kind === null)).toBe(true);
     expect(ALL_ROWS.some((row) => row.kind !== null)).toBe(true);
-  });
+  }
 
-  it('status is exercised null, non-null, phrase !== token, and an empty token', () => {
+  // status is exercised null, non-null, phrase !== token, and an empty token
+  {
     expect(ALL_ROWS.some((row) => row.status === null)).toBe(true);
     expect(ALL_ROWS.some((row) => row.status !== null)).toBe(true);
     expect(ALL_ROWS.some((row) => row.status !== null && row.status.phrase !== row.status.token)).toBe(true);
     expect(ALL_ROWS.some((row) => row.status !== null && row.status.token === '')).toBe(true);
-  });
+  }
 
-  it('badge counts cover zero through two, which is the whole reachable range', () => {
+  // badge counts cover zero through two, which is the whole reachable range
+  {
     const counts = ALL_ROWS.map((row) => row.badges.length);
     expect(counts).toContain(0);
     expect(counts).toContain(1);
     expect(counts).toContain(2);
     expect(Math.max(...counts)).toBe(2);
-  });
+  }
 
-  it('every action kind the desktop offers appears at least once', () => {
+  // every action kind the desktop offers appears at least once
+  {
     const painted = ALL_ROWS.flatMap((row) => row.actions.map((action) => action.kind));
     for (const kind of ['reveal-block', 'open-card', 'delete-card']) expect(painted).toContain(kind);
-  });
+  }
 
-  it('every module key is exercised both empty and non-empty', () => {
+  // every module key is exercised both empty and non-empty
+  {
     for (const key of ['work', 'cards'] as const) {
       const mine = ALL_MODULES.filter((module) => module.key === key);
       expect(mine.some((module) => module.rows.length === 0)).toBe(true);
       expect(mine.some((module) => module.rows.length > 0)).toBe(true);
     }
-  });
+  }
 });
 
 describe('the rendered desktop panel projects its view model faithfully', () => {

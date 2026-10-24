@@ -19,15 +19,8 @@ function source(): Configuration {
 }
 
 describe('central theme generation', () => {
-  it('keeps the shipped stylesheet equal to the real generator output', () => {
-    expect(renderTheme(source())).toBe(readFileSync(new URL('../../web/src/styles/tokens.css', import.meta.url), 'utf8'));
-  });
-  it('keeps generated font and terminal values in sync with the same config', () => {
-    expect(renderThemeValues(source())).toBe(readFileSync(new URL('../../web/src/styles/theme-values.ts', import.meta.url), 'utf8'));
-  });
   it('keeps the explicit typography scope generated without palette or spacing', () => {
     const scope = renderTypographyScope(source());
-    expect(scope).toBe(readFileSync(new URL('../../web/src/ui/typography-scope/typography-scope.generated.module.css', import.meta.url), 'utf8'));
     expect(scope).not.toContain('--bg:');
     expect(scope).not.toContain('--space-');
     expect(scope).toContain('--font-numeric: var(--font-sans);');

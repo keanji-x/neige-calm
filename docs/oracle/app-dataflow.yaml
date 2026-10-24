@@ -668,7 +668,7 @@
     fe/web/src/features/chat/list/public.test.tsx:32-88; fe/web/src/app/router/track-conversation.test.tsx:3385-3470;
     fe/web/src/features/chat/thread/public.test.tsx:537-608;
     fe/web/src/features/track/page/public.test.tsx:180-270,349-419;
-    fe/web/src/features/track/page/header-status.browser.test.tsx:82-193; fe/web/src/features/track/page/mobile-projection.test.tsx:255-283;
+    fe/web/src/features/track/page/header-status.browser.test.tsx:82-193; fe/web/src/features/track/page/mobile-projection.test.tsx:278-318;
     fe/core/view/track-page.test.ts:239-266; fe/web/src/app/router/track-cards-panel.test.tsx:391-416;
     fe/web/src/systems/cards/builtins/terminal-lifecycle.test.tsx:95-111;
     fe/web/src/systems/cards/builtins/terminal-head-activity.test.tsx:48-75

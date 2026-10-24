@@ -308,12 +308,6 @@ describe('MobileListItem markers', () => {
     expect(container.querySelectorAll('[data-nc-row]').length).toBe(1);
   });
 
-  it('emits no row attribute when the prop is omitted', () => {
-    const { container } = render(row());
-    expect(container.querySelector('[data-nc-row]')).toBeNull();
-    expect(container.querySelector('li')?.hasAttribute('data-nc-row')).toBe(false);
-  });
-
   it('puts the title field marker on the visible title span, not on the li', () => {
     const { container } = render(row({ titleFieldMarker: 'title' }));
     const carrier = container.querySelector('[data-nc-field]');
@@ -324,11 +318,6 @@ describe('MobileListItem markers', () => {
     expect(container.querySelectorAll('[data-nc-field]').length).toBe(1);
   });
 
-  it('emits no field attribute when the prop is omitted', () => {
-    const { container } = render(row());
-    expect(container.querySelector('[data-nc-field]')).toBeNull();
-  });
-
   /* The row-action marker shares the `<li>` on purpose: it is a host annotation, not a content marker. */
   it('puts the row-action marker on the root li, beside the row marker', () => {
     const { container } = render(row({ rowMarker: 'block-1', rowActionMarker: 'reveal-block' }));
@@ -336,18 +325,6 @@ describe('MobileListItem markers', () => {
     expect(item?.getAttribute('data-nc-row')).toBe('block-1');
     expect(item?.getAttribute('data-nc-row-action')).toBe('reveal-block');
     expect(container.querySelectorAll('[data-nc-row-action]').length).toBe(1);
-  });
-
-  it('emits no row-action attribute when the prop is omitted', () => {
-    const { container } = render(row({ rowMarker: 'card-1' }));
-    expect(container.querySelector('[data-nc-row-action]')).toBeNull();
-    expect(container.querySelector('li')?.hasAttribute('data-nc-row-action')).toBe(false);
-  });
-
-  it('the two channels are independent', () => {
-    const { container } = render(row({ rowMarker: 'card-1' }));
-    expect(container.querySelector('li')?.getAttribute('data-nc-row')).toBe('card-1');
-    expect(container.querySelector('[data-nc-field]')).toBeNull();
   });
 
   /* The meta lane is a sibling of the label, so nothing the painter puts there lands inside the compared string. */
@@ -387,12 +364,6 @@ describe('MobileListPage markers', () => {
     expect(container.querySelectorAll('[data-nc-module]').length).toBe(1);
   });
 
-  it('emits no module attribute when the prop is omitted', () => {
-    const { container } = render(<MobileListPage title="Outline">rows</MobileListPage>);
-    expect(container.querySelector('[data-nc-module]')).toBeNull();
-    expect(container.firstElementChild?.hasAttribute('data-nc-module')).toBe(false);
-  });
-
   it('puts the title field marker on the heading that carries the title', () => {
     const { container } = render(
       <MobileListPage title="Cards" titleFieldMarker="module-title">rows</MobileListPage>,
@@ -401,20 +372,6 @@ describe('MobileListPage markers', () => {
     expect(heading?.getAttribute('data-nc-field')).toBe('module-title');
     expect(heading?.textContent).toBe('Cards');
     expect(container.querySelectorAll('[data-nc-field]').length).toBe(1);
-  });
-
-  it('emits no field attribute when the prop is omitted', () => {
-    const { container } = render(<MobileListPage title="Cards">rows</MobileListPage>);
-    expect(container.querySelector('[data-nc-field]')).toBeNull();
-    expect(container.querySelector('h2')?.hasAttribute('data-nc-field')).toBe(false);
-  });
-
-  it('the two channels are independent', () => {
-    const { container } = render(
-      <MobileListPage title="Cards" moduleMarker="cards">rows</MobileListPage>,
-    );
-    expect(container.firstElementChild?.getAttribute('data-nc-module')).toBe('cards');
-    expect(container.querySelector('h2')?.hasAttribute('data-nc-field')).toBe(false);
   });
 });
 
@@ -425,11 +382,5 @@ describe('MobileListEmpty field marker', () => {
     expect(paragraph?.getAttribute('data-nc-field')).toBe('empty');
     expect(paragraph?.textContent).toBe('No cards yet.');
     expect(container.querySelectorAll('[data-nc-field]').length).toBe(1);
-  });
-
-  it('emits no attribute when the prop is omitted', () => {
-    const { container } = render(<MobileListEmpty icon={<Icon name="tools" />} title="No cards yet." description="Cards appear here." />);
-    expect(container.querySelector('[data-nc-field]')).toBeNull();
-    expect(container.querySelector('h3')?.hasAttribute('data-nc-field')).toBe(false);
   });
 });

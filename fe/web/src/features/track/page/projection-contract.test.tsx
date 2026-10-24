@@ -3,7 +3,7 @@
 
 import { render } from '@testing-library/react';
 import type { ReactNode } from 'react';
-import { describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it } from 'vitest';
 
 import { FIELD, MARKER } from '../../../../../core/view/panel.ts';
 import type {
@@ -141,16 +141,20 @@ const unsupportedOf = (row: PanelRow): readonly RowAction[] =>
   row.actions.filter((action) => !shapeTable[action.kind].supported);
 
 /* Oracle preconditions, not obligations of the projection: the fixtures must be discriminating enough for the malicious painters to mean what they claim. The two closed domains are mechanical; the remaining clauses are a hand-written list. */
-describe('fixture shape guard', () => {
-  it('the action-kind list this guard iterates is the capability table in full', () => {
+// These assertions qualify the inputs used by the projection tests below.
+beforeAll(() => {
+  // the action-kind list this guard iterates is the capability table in full
+  {
     expect([...ACTION_KINDS].sort()).toEqual(Object.keys(allSupported).sort());
-  });
+  }
 
-  it('at least two fixtures', () => {
+  // at least two fixtures
+  {
     expect(FIXTURES.length).toBeGreaterThanOrEqual(2);
-  });
+  }
 
-  it('in every row, title and kind are non-empty and neither contains the other', () => {
+  // in every row, title and kind are non-empty and neither contains the other
+  {
     for (const row of ALL_ROWS) {
       expect(row.title).not.toEqual('');
       if (row.kind === null) continue;
@@ -158,64 +162,75 @@ describe('fixture shape guard', () => {
       expect(row.title.includes(row.kind)).toBe(false);
       expect(row.kind.includes(row.title)).toBe(false);
     }
-  });
+  }
 
-  it('at least one row has title !== kind', () => {
+  // at least one row has title !== kind
+  {
     expect(ALL_ROWS.some((row) => row.kind !== null && row.title !== row.kind)).toBe(true);
-  });
+  }
 
-  it('kind is exercised both null and non-null', () => {
+  // kind is exercised both null and non-null
+  {
     expect(ALL_ROWS.some((row) => row.kind === null)).toBe(true);
     expect(ALL_ROWS.some((row) => row.kind !== null)).toBe(true);
-  });
+  }
 
-  it('status is exercised both null and non-null', () => {
+  // status is exercised both null and non-null
+  {
     expect(ALL_ROWS.some((row) => row.status === null)).toBe(true);
     expect(ALL_ROWS.some((row) => row.status !== null)).toBe(true);
-  });
+  }
 
-  it('at least one status has phrase !== token', () => {
+  // at least one status has phrase !== token
+  {
     expect(ALL_ROWS.some((row) => row.status !== null && row.status.phrase !== row.status.token)).toBe(true);
-  });
+  }
 
-  it('at least one status has an empty token', () => {
+  // at least one status has an empty token
+  {
     expect(ALL_ROWS.some((row) => row.status !== null && row.status.token === '')).toBe(true);
-  });
+  }
 
-  it('badge counts cover zero, one and more than one', () => {
+  // badge counts cover zero, one and more than one
+  {
     const counts = ALL_ROWS.map((row) => row.badges.length);
     expect(counts).toContain(0);
     expect(counts).toContain(1);
     expect(counts.some((count) => count > 1)).toBe(true);
-  });
+  }
 
-  it('some row carries two badges with the same text and different ids', () => {
+  // some row carries two badges with the same text and different ids
+  {
     expect(ALL_ROWS.some((row) => row.badges.some((badge, index) =>
       row.badges.some((other, otherIndex) =>
         index !== otherIndex && other.text === badge.text && other.id !== badge.id)))).toBe(true);
-  });
+  }
 
-  it('every action kind appears at least once', () => {
+  // every action kind appears at least once
+  {
     const painted = ALL_ROWS.flatMap((row) => row.actions.map((action) => action.kind));
     for (const kind of ACTION_KINDS) expect(painted).toContain(kind);
-  });
+  }
 
-  it('some row holds only unsupported actions, and some row holds an unsupported plus a supported one', () => {
+  // some row holds only unsupported actions, and some row holds an unsupported plus a supported one
+  {
     expect(ALL_ROWS.some((row) => unsupportedOf(row).length > 0 && supportedOf(row).length === 0)).toBe(true);
     expect(ALL_ROWS.some((row) => unsupportedOf(row).length > 0 && supportedOf(row).length > 0)).toBe(true);
-  });
+  }
 
-  it('the module keys these fixtures carry are the key domain in full', () => {
+  // the module keys these fixtures carry are the key domain in full
+  {
     expect([...new Set(ALL_MODULES.map((module) => module.key))].sort()).toEqual([...MODULE_KEYS].sort());
-  });
+  }
 
-  it('every module key in the domain is exercised both empty and non-empty', () => {
+  // every module key in the domain is exercised both empty and non-empty
+  {
     for (const key of MODULE_KEYS) {
       const mine = ALL_MODULES.filter((module) => module.key === key);
       expect(mine.some((module) => module.rows.length === 0)).toBe(true);
       expect(mine.some((module) => module.rows.length > 0)).toBe(true);
     }
-  });
+  }
 });
 
 const mark = (name: string, value: string): Readonly<Record<string, string>> => ({ [name]: value });

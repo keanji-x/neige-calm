@@ -3,7 +3,7 @@
 // The real page's mobile panel as a faithful projection of its view model, one module at a time.
 
 import { cleanup, screen, within } from '@testing-library/react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { activityLabelOf, type ActivityState } from '../../../../../core/domain/activity.ts';
 import type { ReportTaskRow } from '../../../../../core/domain/report.ts';
@@ -80,8 +80,10 @@ const tasksModule = (tasks: readonly ReportTaskRow[]): readonly RowModuleView[] 
 
 const ROWS: readonly PanelRow[] = cardsModule(CARDS).flatMap((module) => [...module.rows]);
 
-describe('fixture shape guard', () => {
-  it('title and kind are non-empty and neither contains the other', () => {
+// These assertions qualify the inputs used by the projection tests below.
+beforeAll(() => {
+  // title and kind are non-empty and neither contains the other
+  {
     for (const row of ROWS) {
       expect(row.title).not.toEqual('');
       if (row.kind === null) continue;
@@ -89,45 +91,52 @@ describe('fixture shape guard', () => {
       expect(row.title.includes(row.kind)).toBe(false);
       expect(row.kind.includes(row.title)).toBe(false);
     }
-  });
+  }
 
-  it('kind is exercised both null and non-null', () => {
+  // kind is exercised both null and non-null
+  {
     expect(ROWS.some((row) => row.kind === null)).toBe(true);
     expect(ROWS.some((row) => row.kind !== null)).toBe(true);
-  });
+  }
 
-  it('badge counts cover zero through two, which is the whole reachable range', () => {
+  // badge counts cover zero through two, which is the whole reachable range
+  {
     const counts = ROWS.map((row) => row.badges.length);
     expect(counts).toContain(0);
     expect(counts).toContain(1);
     expect(counts).toContain(2);
     expect(Math.max(...counts)).toBe(2);
-  });
+  }
 
-  it('the derivation offers both unsupported actions, so filtering them is not vacuous', () => {
+  // the derivation offers both unsupported actions, so filtering them is not vacuous
+  {
     const offered = ROWS.flatMap((row) => row.actions.map((action) => action.kind));
     expect(offered).toContain('open-card');
     expect(offered).toContain('delete-card');
     for (const kind of offered) expect(painter().action[kind].supported).toBe(false);
-  });
+  }
 
-  it('exercises status both null and non-null, the session status phrased wider than its token', () => {
+  // exercises status both null and non-null, the session status phrased wider than its token
+  {
     expect(ROWS.some((row) => row.status === null)).toBe(true);
     const withStatus = ROWS.filter((row) => row.status !== null);
     expect(withStatus.length).toBeGreaterThan(0);
     for (const row of withStatus) expect(row.status!.phrase).not.toEqual(row.status!.token);
-  });
+  }
 });
 
 const TASK_ROWS: readonly PanelRow[] = tasksModule(TASKS).flatMap((module) => [...module.rows]);
 
-describe('Tasks fixture shape guard', () => {
-  it('exercises kind both null and non-null', () => {
+// These assertions qualify the inputs used by the projection tests below.
+beforeAll(() => {
+  // exercises kind both null and non-null
+  {
     expect(TASK_ROWS.some((row) => row.kind === null)).toBe(true);
     expect(TASK_ROWS.some((row) => row.kind !== null)).toBe(true);
-  });
+  }
 
-  it('exercises status both null and non-null, with a phrase wider than its token', () => {
+  // exercises status both null and non-null, with a phrase wider than its token
+  {
     expect(TASK_ROWS.some((row) => row.status === null)).toBe(true);
     const withStatus = TASK_ROWS.filter((row) => row.status !== null);
     expect(withStatus.length).toBeGreaterThan(0);
@@ -135,16 +144,18 @@ describe('Tasks fixture shape guard', () => {
       expect(row.status!.phrase).not.toEqual(row.status!.token);
       expect(row.status!.phrase.startsWith(row.status!.token)).toBe(true);
     }
-  });
+  }
 
-  it('exercises a struck declaration, an unstruck one, and a row with none', () => {
+  // exercises a struck declaration, an unstruck one, and a row with none
+  {
     const badges = TASK_ROWS.flatMap((row) => [...row.badges]);
     expect(badges.some((badge) => badge.struck)).toBe(true);
     expect(badges.some((badge) => !badge.struck)).toBe(true);
     expect(TASK_ROWS.some((row) => row.badges.length === 0)).toBe(true);
-  });
+  }
 
-  it('offers a supported action on every row and an unsupported one on some', () => {
+  // offers a supported action on every row and an unsupported one on some
+  {
     for (const row of TASK_ROWS) {
       expect(row.actions.map((action) => action.kind)).toContain('reveal-block');
     }
@@ -152,22 +163,14 @@ describe('Tasks fixture shape guard', () => {
     expect(offered).toContain('open-card');
     expect(painter().action['reveal-block'].supported).toBe(true);
     expect(painter().action['open-card'].supported).toBe(false);
-  });
+  }
 
-  it('exercises a row carrying a declaration and a kind at once', () => {
+  // exercises a row carrying a declaration and a kind at once
+  {
     expect(TASK_ROWS.some((row) => row.badges.length > 0 && row.kind !== null)).toBe(true);
-  });
+  }
 
-  /* `Not ready` is not absent from the module — the undispatched row keeps it — so a blanket "never appears" would be false. */
-  it('drops the readiness word for a ready row and for a dispatched one', () => {
-    const words = TASK_ROWS.flatMap((row) => row.badges.map((badge) => badge.text));
-    expect(words).not.toContain('Ready');
-    const byId = new Map(TASK_ROWS.map((row) => [row.id, row]));
-    expect(byId.get('block-1')!.badges).toEqual([]);
-    expect(byId.get('block-2')!.badges).toEqual([]);
-    expect(byId.get('block-2')!.status).not.toBeNull();
-    expect(byId.get('block-5')!.badges.map((badge) => badge.text)).toEqual(['Not ready']);
-  });
+
 });
 
 describe('the rendered mobile Cards page projects its view model faithfully', () => {
@@ -207,6 +210,17 @@ describe('the rendered mobile Cards page projects its view model faithfully', ()
 });
 
 describe('the rendered mobile Tasks page projects its view model faithfully', () => {
+  /* `Not ready` is not absent from the module — the undispatched row keeps it — so a blanket "never appears" would be false. */
+  it('drops the readiness word for a ready row and for a dispatched one', () => {
+    const words = TASK_ROWS.flatMap((row) => row.badges.map((badge) => badge.text));
+    expect(words).not.toContain('Ready');
+    const byId = new Map(TASK_ROWS.map((row) => [row.id, row]));
+    expect(byId.get('block-1')!.badges).toEqual([]);
+    expect(byId.get('block-2')!.badges).toEqual([]);
+    expect(byId.get('block-2')!.status).not.toBeNull();
+    expect(byId.get('block-5')!.badges.map((badge) => badge.text)).toEqual(['Not ready']);
+  });
+
   it('across ready, dispatched, withdrawn and unreadable rows', () => {
     const { container } = renderPage({ tasks: TASKS, panel: 'tasks' });
     expect(checkProjectionIn(painter(), tasksModule(TASKS), mobilePanel(container))).toEqual([]);
