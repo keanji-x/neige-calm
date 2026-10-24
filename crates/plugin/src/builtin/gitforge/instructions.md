@@ -4,6 +4,12 @@ The development plugin supports Git worktrees, validation and pull requests thro
 
 Its tools are named `plugin_gitforge_<name>` (e.g. `plugin_gitforge_gh_pr_checks`); list them with `neige tool ls --prefix plugin_gitforge_`.
 
+Worktrees created by `git_worktree_add` are not automatically reclaimed by Neige.
+The creator is responsible for cleanup. For read-only review, use an unregistered
+snapshot or a Neige `read_only` task. If a registered worktree is necessary,
+record the reason and remove it in the same session with
+`git worktree remove <path>` without `--force`.
+
 To deliver an attached Git Track, use `plugin_gitforge_publish`. It pushes a completed task's candidate and opens the PR, or gives the open PR the new title and body. Report-only work does not need a PR.
 
 When the PR conflicts or the upstream moved on, catch the Track up with a codex or claude task declared `start: "upstream"` with a gate (its worker replays your last done commit on the fetched upstream), then publish again: `plugin_gitforge_publish` replaces the Track's own branch when it is absent or at a commit an attempt of this Track made, and exits 22 for anyone else's commit (ask the user). After a failed catch-up, continue with an ordinary task only when its worker left partial work; if it never ran, declare another `start: "upstream"` task.

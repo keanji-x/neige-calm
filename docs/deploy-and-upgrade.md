@@ -33,10 +33,10 @@ commands with stale semantics.
 New attached Tracks use a dedicated Track worktree, and ordinary Codex/Claude
 workers share that checkout one at a time (read-only tasks run beside each
 other). Older attached Tracks without one
-cannot run these workers; create a new Track. The released-worktree cleanup
-sweep concerns eligible older per-attempt worktrees, not the new Track checkout.
-It preserves slice branches and refuses dirty or otherwise unsafe trees;
-released directories should not be treated as permanent artifact storage.
+cannot run these workers; create a new Track. The Track checkout is managed by
+Neige. Separate worktrees created by agents or operators, including through
+gitforge's `git_worktree_add`, are not automatically reclaimed by Neige; their
+creators are responsible for cleanup.
 
 Tracks now use open/closed state. A closed Track must be reopened before further
 scheduling. See [Using Neige Calm](using-neige-calm.md) for current controls,

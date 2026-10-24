@@ -32,8 +32,12 @@ unless the task requires it.
    tier, required gates are green, and the diff contains only intended files.
 
 Keep implementation and review isolated. Allow only one writer per worktree;
-use separate worktrees for parallel agents or independent review. Never clean a
-worktree with destructive commands such as `git checkout` or `git reset --hard`.
+use separate worktrees for parallel implementation. For read-only review, use an
+unregistered snapshot (`git archive <rev> | tar -x -C "$(mktemp -d)"`) or a Neige
+`read_only` task. If `git worktree add` is necessary, record the reason; its
+creator must remove it in the same session with `git worktree remove <path>`
+without `--force`. Never clean a worktree with destructive commands such as
+`git checkout` or `git reset --hard`.
 
 ## Review tiers
 
@@ -169,7 +173,11 @@ unit tests:
 Run mutation work only in an exclusive, recoverable worktree with no concurrent
 writer or reviewer that could observe transient code. Do not use destructive
 checkout/reset for restoration, and do not interrupt a mutation run midway;
-repository mutation tooling rewrites files in place.
+repository mutation tooling rewrites files in place. The snapshot advice for
+read-only review does not apply to mutation tooling that requires Git metadata.
+If mutation work requires `git worktree add`, record the reason; its creator
+must remove it in the same session with `git worktree remove <path>` without
+`--force`, after completing and restoring the mutation.
 
 ## Verification
 
