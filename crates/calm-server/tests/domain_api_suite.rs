@@ -136,3 +136,6 @@ mod area_create_idempotency;
 
 #[path = "cases/track_list_access.rs"]
 mod track_list_access;
+
+#[path = "cases/shared_support_tests.rs"]
+mod shared_support_tests;

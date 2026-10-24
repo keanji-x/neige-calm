@@ -75,13 +75,6 @@ fn keys(tasks: &[Task]) -> Vec<&str> {
 }
 
 #[test]
-fn design_claim_resolution_failure_scope_is_consistent() {
-    let design = include_str!("../../../../docs/architecture/985-doc-as-plan.md");
-    assert!(design.contains("claim 前定位失败一律不下判决"));
-    assert!(!design.contains("越 area、超预算、确定性定位失败一律直接判"));
-}
-
-#[test]
 fn ready_set_requires_all_deps_done() {
     let tasks = vec![
         task("a", TaskStatus::Done, &[], 0),

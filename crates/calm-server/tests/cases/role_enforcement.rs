@@ -116,7 +116,11 @@ async fn planner_card_can_update_track() {
     assert_eq!(row.0, 1, "exactly one track.updated row");
 
     let env = sub.try_recv().expect("envelope on bus");
-    matches!(env.event, Event::TrackUpdated(_));
+    assert!(
+        matches!(env.event, Event::TrackUpdated(_)),
+        "unexpected event: {:?}",
+        env.event
+    );
 }
 
 #[tokio::test]
