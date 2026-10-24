@@ -528,13 +528,15 @@ async fn a_retry_after_a_failed_add_records_the_checkout_upstream_as_of_the_retr
 /// branch with it, though the human detached the checkout meanwhile.
 #[tokio::test]
 async fn a_retry_after_an_add_that_made_the_branch_keeps_its_upstream() {
+    use std::os::unix::fs::PermissionsExt;
     let b = boot().await;
     let up = upstream(b.tmp.path());
     let blocker = up.clone.join(".claude/worktrees");
-    std::fs::create_dir_all(blocker.parent().unwrap()).unwrap();
-    std::fs::write(&blocker, "not a directory\n").unwrap();
+    std::fs::create_dir_all(&blocker).unwrap();
+    std::fs::set_permissions(&blocker, std::fs::Permissions::from_mode(0o555)).unwrap();
 
     let (status, body) = b.create_at(&up.clone, Some("idem-path"), None).await;
+    std::fs::set_permissions(&blocker, std::fs::Permissions::from_mode(0o755)).unwrap();
     assert!(!status.is_success(), "premise: {status} {body}");
     let track_id = b.only_track_id().await;
     let branch = format!("refs/heads/neige/track-{track_id}");
@@ -543,12 +545,33 @@ async fn a_retry_after_an_add_that_made_the_branch_keeps_its_upstream() {
         "premise: the branch exists"
     );
 
-    std::fs::remove_file(&blocker).unwrap();
     run_git(&up.clone, ["checkout", "-q", "--detach"]);
     let (status, body) = b.create_at(&up.clone, Some("idem-path"), None).await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
     let worktree = expected_worktree(&up.clone, &track_id);
     assert_eq!(upstream_of(&worktree).as_deref(), Some("origin/main"));
+    b.shutdown_harnesses().await;
+}
+
+/// A non-directory worktree ancestor is refused before `git worktree add` creates a branch.
+#[tokio::test]
+async fn a_non_directory_worktree_ancestor_fails_the_create_without_a_branch_or_worktree() {
+    let b = boot().await;
+    let up = upstream(b.tmp.path());
+    let blocker = up.clone.join(".claude/worktrees");
+    std::fs::create_dir_all(blocker.parent().unwrap()).unwrap();
+    std::fs::write(&blocker, "not a directory\n").unwrap();
+
+    let (status, body) = b.create_at(&up.clone, None, None).await;
+    assert!(!status.is_success(), "{status} {body}");
+    let track_id = b.only_track_id().await;
+    assert!(!expected_worktree(&up.clone, &track_id).exists());
+    assert!(!git_ref_exists(
+        &up.clone,
+        &format!("refs/heads/neige/track-{track_id}")
+    ));
+    let listed = git_stdout(&up.clone, ["worktree", "list", "--porcelain"]);
+    assert!(!listed.contains(&format!("track-{track_id}")), "{listed}");
     b.shutdown_harnesses().await;
 }
 
