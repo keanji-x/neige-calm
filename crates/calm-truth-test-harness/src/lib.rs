@@ -498,11 +498,6 @@ where
     );
 }
 
-pub fn invariant_t4_no_operations_read_api() {
-    // A doc/grep firewall: CI enforces that no operation-only truth-layer append symbol exists under `crates/`;
-    // saga appends must use `append_decision_event(s)_in_tx`.
-}
-
 pub async fn provider_conformance<P: WorkerProvider>(p: P) {
     let expected_mode = expected_session_mode(p.kind());
     assert_eq!(p.session_mode(), expected_mode);
@@ -583,10 +578,6 @@ pub async fn t2_observation_writes_can_skip_events() {
 
 pub async fn t3_state_is_not_fold_events() {
     invariant_t3_state_is_not_fold_events(Arc::new(PermissiveGate)).await;
-}
-
-pub fn t4_no_operations_read_api() {
-    invariant_t4_no_operations_read_api();
 }
 
 pub use fakes::*;

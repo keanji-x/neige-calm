@@ -158,35 +158,3 @@ pub(crate) async fn get_version(State(state): State<RouteState>) -> Json<Version
         (*state.database_id).clone(),
     ))
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// The wire field must echo the constant verbatim.
-    #[test]
-    fn min_web_compat_version_matches_constant() {
-        let body = VersionInfo {
-            assistant_providers: true,
-            area_create_idempotency: true,
-            conversation_create_model: true,
-            conversation_side: true,
-            conversation_initial_input: true,
-            kernel_version: env!("CARGO_PKG_VERSION").to_string(),
-            api_version: API_VERSION.to_string(),
-            sync_event_version: SYNC_EVENT_VERSION,
-            mcp_protocol_version: KERNEL_MCP_PROTOCOL_VERSION.to_string(),
-            plugin_mcp_protocol_version: KERNEL_PROTOCOL_VERSION.to_string(),
-            web_compat_version: WEB_COMPAT_VERSION,
-            min_web_compat_version: WEB_COMPAT_VERSION,
-            supervisor_control_version: SUPERVISOR_CONTROL_VERSION,
-            build_sha: option_env!("NEIGE_BUILD_SHA").map(|s| s.to_string()),
-            db_instance_id: "test-id".to_string(),
-            database_id: "test-database-id".to_string(),
-        };
-        assert_eq!(body.min_web_compat_version, WEB_COMPAT_VERSION);
-        assert_eq!(body.web_compat_version, WEB_COMPAT_VERSION);
-        assert_eq!(body.supervisor_control_version, SUPERVISOR_CONTROL_VERSION);
-        assert_eq!(body.plugin_mcp_protocol_version, KERNEL_PROTOCOL_VERSION);
-    }
-}

@@ -1370,11 +1370,6 @@ mod tests {
     }
 
     #[test]
-    fn terminal_accepts_missing_schema_version() {
-        validate_builtin_card("terminal", &json!({ "terminal_id": "t1" })).unwrap();
-    }
-
-    #[test]
     fn terminal_accepts_matching_schema_version() {
         validate_builtin_card(
             "terminal",

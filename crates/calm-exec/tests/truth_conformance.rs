@@ -1,4 +1,4 @@
-//! Scoped T1-T4 truth-layer conformance tests; implementations live in `calm-truth-test-harness`.
+//! Scoped T1-T3 truth-layer conformance tests; implementations live in `calm-truth-test-harness`.
 
 #[tokio::test]
 async fn t1_decision_write_couples_state_and_event() {
@@ -28,11 +28,6 @@ async fn t2_observation_writes_can_skip_events() {
 #[tokio::test]
 async fn t3_state_is_not_fold_events() {
     calm_truth_test_harness::t3_state_is_not_fold_events().await;
-}
-
-#[test]
-fn t4_no_operations_read_api() {
-    calm_truth_test_harness::t4_no_operations_read_api();
 }
 
 #[tokio::test]

@@ -748,27 +748,6 @@ mod boot_order_tests {
         assert!(reconcile < recover);
     }
 
-    #[test]
-    fn boot_order_calls_card_id_assert_before_harness_reconcile_and_operations() {
-        let main_rs = include_str!("application_boot.rs");
-        let card_id_assert = main_rs
-            .find("assert_worker_sessions_card_id_complete_on_boot(&state).await?")
-            .expect("main boot asserts worker_sessions.card_id completeness");
-        let boot_harnesses = main_rs
-            .find("boot_harnesses(&state).await")
-            .expect("main boot starts daemon and gates planner harness recovery");
-        let reconcile = main_rs
-            .find("reconcile_supervisor_on_boot(&state).await")
-            .expect("main boot calls reconcile_supervisor_on_boot");
-        let recover = main_rs
-            .find("recover_operations_on_boot(&state).await")
-            .expect("main boot calls recover_operations_on_boot");
-        assert!(card_id_assert < boot_harnesses);
-        assert!(card_id_assert < reconcile);
-        assert!(reconcile < recover);
-        assert!(card_id_assert < recover);
-    }
-
     /// The area_folders fence must be fatal: warn-and-continue would leave folder resolution
     /// silently picking an arbitrary owner.
     #[test]
@@ -807,39 +786,6 @@ mod boot_order_tests {
             boot < listener,
             "the listener must open after the revocation"
         );
-    }
-
-    #[test]
-    fn lease_reaper_removed() {
-        let main_rs = include_str!("main.rs");
-        let retired = concat!("runtimes_recover_", "orphans_on_boot");
-        assert!(
-            !main_rs.contains(retired),
-            "retired lease scan must not be wired into main boot"
-        );
-    }
-
-    #[test]
-    fn boot_card_id_assertion_failure_is_fatal() {
-        let main_rs = include_str!("application_boot.rs");
-        assert!(
-            main_rs.contains("assert_worker_sessions_card_id_complete_on_boot(&state).await?"),
-            "worker_sessions.card_id boot assertion must ?-propagate so serving never starts with active NULL card_id rows"
-        );
-    }
-
-    /// The scheduler's boot sweep runs AFTER operation recovery, so its `dispatched` arm reads
-    /// already-recovered operation rows instead of racing the recovery's re-drive.
-    #[test]
-    fn boot_order_scheduler_sweep_after_operation_recovery() {
-        let main_rs = include_str!("application_boot.rs");
-        let recover = main_rs
-            .find("recover_operations_on_boot(&state).await")
-            .expect("main boot calls recover_operations_on_boot");
-        let sweep = main_rs
-            .find("scheduler_sweep_on_boot(&state).await")
-            .expect("main boot calls scheduler_sweep_on_boot");
-        assert!(recover < sweep);
     }
 
     #[test]

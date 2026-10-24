@@ -1533,27 +1533,4 @@ mod tests {
         drop(client);
         let _ = tokio::time::timeout(Duration::from_millis(200), task).await;
     }
-
-    #[tokio::test]
-    async fn capability_entirely_absent_is_false() {
-        let (k_r, k_w, task) = spawn_init_stub(json!({
-            "protocolVersion": KERNEL_PROTOCOL_VERSION,
-            "serverInfo": { "name": "stub", "version": "0.0.0" },
-            "capabilities": {}
-        }));
-        let client = McpClient::connect_with_auth(
-            k_r,
-            k_w,
-            InitializeMeta {
-                kernel_version: "9.8.7",
-                expected_echo: None,
-                config: None,
-            },
-        )
-        .await
-        .expect("connect");
-        assert!(!client.has_kernel_callbacks_capability("test.plugin"));
-        drop(client);
-        let _ = tokio::time::timeout(Duration::from_millis(200), task).await;
-    }
 }

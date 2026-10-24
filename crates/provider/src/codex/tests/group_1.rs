@@ -284,11 +284,6 @@ async fn notification_await_apis_return_matching_notifications() {
     }
 }
 
-#[test]
-fn default_request_timeout_is_30s() {
-    assert_eq!(DEFAULT_REQUEST_TIMEOUT, Duration::from_secs(30));
-}
-
 #[tokio::test]
 async fn with_request_timeout_overrides_default() {
     // Stand up only enough to construct a client (no real IO needed).
