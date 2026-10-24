@@ -49,7 +49,11 @@ pub async fn save_tx(
     read: &LastRead,
 ) -> Result<()> {
     let rev = i64::try_from(read.doc_rev).map_err(corrupt)?;
-    sqlx::query("INSERT INTO report_read_ledger(worker_session_id,report_card_id,doc_rev,whole,sections_json) VALUES(?,?,?,?,?) ON CONFLICT(worker_session_id,report_card_id) DO UPDATE SET doc_rev=excluded.doc_rev,whole=excluded.whole,sections_json=excluded.sections_json")
+    sqlx::query(
+        "INSERT INTO report_read_ledger(worker_session_id,report_card_id,doc_rev,whole,sections_json)
+         VALUES(?,?,?,?,?) ON CONFLICT(worker_session_id,report_card_id) DO UPDATE SET
+         doc_rev=excluded.doc_rev,whole=excluded.whole,sections_json=excluded.sections_json",
+    )
         .bind(session).bind(report).bind(rev).bind(i64::from(read.whole))
         .bind(serde_json::to_string(&read.sections).map_err(corrupt)?).execute(&mut **tx).await?;
     sqlx::query(

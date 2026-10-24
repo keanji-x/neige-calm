@@ -250,7 +250,7 @@ async fn transactional_failure_rolls_back_report_tasks_events_and_history() {
             planner_identity(&b),
             json!({"ops":[
                 {"op":"replace","section":"概要","markdown":"# 概要\n\nrolled back\n"},
-                {"op":"upsert","kind":"task","payload":{"key":"ledger-rollback","kind":"terminal","command":"true","ready":false,"declared_by":"spec"}}
+                {"op":"upsert","kind":"task","payload":{"key":"ledger-rollback","kind":"terminal","command":"true","ready":false,"declared_by":calm_types::report_blocks::tasks::PLANNER_DECLARATION_AUTHOR}}
             ]})
         )
         .await
@@ -441,7 +441,13 @@ async fn read_save_failure_does_not_return_success_or_replace_knowledge() {
     let mut tx = calm_server::db::sqlite::begin_immediate_tx(&pool)
         .await
         .unwrap();
-    sqlx::query("CREATE TRIGGER reject_read BEFORE INSERT ON report_read_ledger_blocks BEGIN SELECT RAISE(ABORT, 'read ledger failure'); END").execute(&mut **tx).await.unwrap();
+    sqlx::query(
+        "CREATE TRIGGER reject_read BEFORE INSERT ON report_read_ledger_blocks
+         BEGIN SELECT RAISE(ABORT, 'read ledger failure'); END",
+    )
+    .execute(&mut **tx)
+    .await
+    .unwrap();
     tx.commit().await.unwrap();
     assert!(
         call_tool(

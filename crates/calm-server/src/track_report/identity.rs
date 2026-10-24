@@ -35,7 +35,7 @@ pub(crate) async fn resolve_tx(
         .await?
     {
         GateDecision::Allow => (),
-        GateDecision::Deny(_) => (),
+        GateDecision::Deny(reason) => return Err(CalmError::Forbidden(reason)),
     }
     if !matches!(
         identity.role,
