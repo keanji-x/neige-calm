@@ -39,7 +39,9 @@ pub(crate) async fn cleanup_track(
     let outputs: Vec<(String, String)> = sqlx::query_as(
         "SELECT id,tx_output_json FROM operations WHERE kind=? AND target_type='track' \
          AND target_id=? AND phase IN ('succeeded','failed') AND tx_output_json IS NOT NULL \
-         AND json_extract(tx_output_json,'$.data.checkout_removed') IS NOT 1",
+         AND (json_extract(tx_output_json,'$.data.checkout_removed') IS NOT 1 OR \
+         (json_extract(tx_output_json,'$.data.stdout') IS NOT NULL AND \
+         json_extract(tx_output_json,'$.data.capture_removed') IS NOT 1))",
     )
     .bind(KIND)
     .bind(track)
@@ -62,9 +64,23 @@ pub(super) async fn cleanup_operation(
     id: &str,
     frozen: &Frozen,
 ) -> Result<()> {
+    // Terminal operations have either never admitted an execution or completed
+    // owned recovery with quiescence evidence. Never unlink a live collector.
+    // Include old rows whose checkout ACK predates host-side capture cleanup.
+    if let Some(stdout) = &frozen.stdout {
+        let mut pipe = stdout.as_os_str().to_owned();
+        pipe.push(".pipe");
+        for path in [PathBuf::from(pipe), stdout.clone()] {
+            match tokio::fs::remove_file(path).await {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+    }
     remove(frozen).await?;
     sqlx::query("UPDATE operations SET \
-         tx_output_json=json_set(tx_output_json,'$.data.checkout_removed',json('true')) WHERE id=? AND \
+         tx_output_json=json_set(tx_output_json,'$.data.checkout_removed',json('true'),'$.data.capture_removed',json('true')) WHERE id=? AND \
          kind=? AND phase IN ('succeeded','failed')")
         .bind(id).bind(KIND).execute(db.writer_pool()).await?;
     Ok(())

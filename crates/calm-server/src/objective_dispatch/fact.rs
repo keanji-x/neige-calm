@@ -35,7 +35,9 @@ pub(super) async fn run_tx(
     let config = &definition.config;
     if !supports(&definition) {
         return Err(CalmError::Conflict(
-            "objective check has no executor".into(),
+            include_str!("../../prompts/objective_check_unsupported.md")
+                .trim_end()
+                .into(),
         ));
     }
     let CheckConfig::Fact(params) = config else {
