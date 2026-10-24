@@ -41,13 +41,22 @@ const WRITER_STATEMENTS: &[(&str, &str)] = &[
 ];
 
 /// Writes expected outside the production writer, by exact normalized text: `(file, statement, why)`.
-const EXPECTED_OTHER_WRITES: &[(&str, &str, &str)] = &[(
-    "crates/calm-truth/src/db/sqlite/track_workspace_migration_tests.rs",
-    "update tracks set workspace_frozen_at = null where id = ?1",
-    "The single-writer regression deliberately opens the latch to exercise \
+const EXPECTED_OTHER_WRITES: &[(&str, &str, &str)] = &[
+    (
+        "crates/calm-truth/src/db/sqlite/track_workspace_migration_tests.rs",
+        "update tracks set workspace_frozen_at = null where id = ?1",
+        "The single-writer regression deliberately opens the latch to exercise \
          a second whole-value write. Production has no un-freeze statement; \
          ordinary fixtures select their workspace through the production writer.",
-)];
+    ),
+    (
+        "crates/calm-server/src/operation/child_track_adapter/provider_tests.rs",
+        "update tracks set workspace_worktree_path=?1 where id=?2",
+        "The child admission regression seeds a live owned worktree on an already \
+         frozen attached row, then redirects a separate parent's core.worktree there. \
+         This fixture exercises admission of existing ownership before any child row is minted.",
+    ),
+];
 
 /// This file, skipped by its own scan: its literals are the detector's test vectors.
 const SELF: &str = "crates/calm-truth/tests/track_write_point_registry.rs";

@@ -144,6 +144,14 @@ impl ChildTrackAdapter {
         };
         let plan = child_workspace_plan(&frozen.track.workspace, &self.workspace_root)?;
         let seed = render_child_seed(&payload);
+        calm_truth::db::sqlite::admit_attached_workspace_tx(
+            tx,
+            &frozen.track.workspace.path,
+            &self.workspace_root,
+            &self.teardown_targets.snapshot(),
+            &plan,
+        )
+        .await?;
         let child = track_create_tx(
             tx,
             NewTrack {

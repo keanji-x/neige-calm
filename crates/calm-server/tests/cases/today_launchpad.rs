@@ -36,6 +36,7 @@ pub(crate) struct Boot {
     system_area_mint: Arc<SystemAreaMintCounters>,
     /// The managed workspace root this boot was pinned to.
     workspace_root: PathBuf,
+    teardown_targets: workspace_runtime::sweep::TeardownTargets,
     _tmp: TempDir,
 }
 
@@ -101,6 +102,9 @@ async fn boot_with_rendezvous(
     };
     let system_area_mint = Arc::clone(&state.system_area_mint);
     let dispatcher = Arc::clone(&state.dispatcher);
+    let teardown_targets =
+        <calm_server::state::RouteState as axum::extract::FromRef<AppState>>::from_ref(&state)
+            .teardown_targets;
     let app = routes::router()
         .layer(axum::middleware::from_fn_with_state(
             calm_server::auth::AuthState::new(calm_server::auth::AuthConfig {
@@ -127,6 +131,7 @@ async fn boot_with_rendezvous(
         repo,
         dispatcher,
         system_area_mint,
+        teardown_targets,
         workspace_root: tmp.path().join(root_name),
         _tmp: tmp,
     }
@@ -879,6 +884,7 @@ pub(crate) async fn create_child_track(b: &Boot, parent_track_id: &str) -> Strin
         b.repo.card_role_cache().clone(),
         b.repo.track_area_cache().clone(),
         b.workspace_root.clone(),
+        b.teardown_targets.clone(),
     );
     let mut tx = b.repo.pool().begin().await.unwrap();
     let output = adapter

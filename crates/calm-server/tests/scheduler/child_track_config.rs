@@ -19,6 +19,7 @@ async fn child_track_config_invalid_provider_fails_parent_task_readably() {
         boot.card_role_cache.clone(),
         boot.track_area_cache.clone(),
         child_track_workspace_root(),
+        workspace_runtime::sweep::TeardownTargets::default(),
     )) as Arc<dyn ProviderAdapter>;
     let (_runtime, scheduler) = build_scheduler(&boot, vec![adapter]);
     scheduler.sweep_all().await;

@@ -1539,6 +1539,7 @@ async fn support_child_track(b: &Boot, parent_track_id: &str) -> String {
         b.repo.card_role_cache().clone(),
         b.repo.track_area_cache().clone(),
         b.workspace_root.clone(),
+        b.teardown_targets.clone(),
     );
     let mut tx = b.repo.pool().begin().await.unwrap();
     let output = adapter
