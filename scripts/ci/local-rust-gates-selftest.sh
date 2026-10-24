@@ -198,33 +198,18 @@ if [ "$dispatch_rc" -ne 2 ] || [ "$dispatch_output" != "$dispatch_usage" ]; then
   exit 1
 fi
 
-ci_file=.github/workflows/ci.yml
-ci_call='          scripts/run-ci-rust-nextest.sh \'
-grep_rc=0
-ci_call_count="$(grep -Fxc "$ci_call" "$ci_file")" || grep_rc=$?
-if [ "$grep_rc" -gt 1 ]; then
-  echo "could not inspect CI Rust nextest wiring" >&2
-  exit 1
-fi
-# Once for the PR shards (from the archive), once for the hosted main push.
-if [ "$ci_call_count" -ne 2 ]; then
-  echo "CI must invoke the shared Rust nextest dispatch exactly twice" >&2
-  exit 1
-fi
-if grep -Fq 'migration replay gate (#679 PR0-D)' "$ci_file"; then
-  echo "CI must not rerun migration replay outside the full nextest suite" >&2
-  exit 1
-fi
-
-# Execute the producer's real run blocks; do not duplicate its event routing.
-python3 - <<'PYTEST'
+# Exercise the real workflow run blocks, shared producer and guard main. Cargo
+# is stubbed; no Rust compilation or private nextest format is reproduced here.
+SELFTEST_STUB_BIN="$stub_bin" python3 - <<'PYTEST'
 import contextlib
 import importlib.util
 import io
+import itertools
 import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -235,9 +220,9 @@ from unittest.mock import patch
 sys.dont_write_bytecode = True
 ROOT = Path.cwd()
 workflow = Path('.github/workflows/ci.yml').read_text()
-producer = workflow.split('  rust-build:\n', 1)[1].split('\n  rust-shards:', 1)[0]
-steps = re.split(r'^      - name: ', producer, flags=re.M)[1:]
-selected = [s for s in steps if s.startswith(('cargo nextest ', 'build nextest binary inventory', 'check nextest override matches'))]
+# Discover declared events so additional non-Rust triggers need no test list edit.
+events = [*re.findall(r'^  ([a-z_]+):', workflow.split('\nconcurrency:', 1)[0], re.M), 'unknown']
+jobs = dict(re.findall(r'^  ([\w-]+):\n(.*?)(?=^  [\w-]+:|\Z)', workflow, re.M | re.S))
 spec = importlib.util.spec_from_file_location('guard', ROOT / 'scripts/ci/check-nextest-overrides.py')
 guard = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(guard)
@@ -248,27 +233,62 @@ protocol = json.dumps({'rust-suites': {'sample': {
     'testcases': {'example': {'ignored': False, 'filter-match': {'status': 'matches'}}}}}})
 
 
+def steps(job):
+    body = re.sub(r'^      #.*\n', '', jobs[job], flags=re.M)
+    return re.split(r'^      - ', body, flags=re.M)[1:]
+
+
+def field(text, key, indent=8):
+    match = re.search(r'^' + ' ' * indent + re.escape(key) + r': (.*)$', text, re.M)
+    if not match:
+        return None
+    if match[1] != '|':
+        return match[1]
+    lines = text[match.end():].splitlines()[1:]
+    return ''.join(line[indent + 2:] + '\n' for line in
+                   itertools.takewhile(lambda line: not line.strip() or
+                                       line.startswith(' ' * (indent + 2)), lines))
+
+
+def expression(text, values):
+    text = text.removeprefix('${{').removesuffix('}}').strip()
+    text = re.sub(r'\b(?:github|needs|env|matrix)\.[\w.-]+',
+                  lambda m: repr(values[m[0]]), text)
+    text = text.replace('always()', 'True').replace('&&', ' and ').replace('||', ' or ')
+    return eval(text, {'__builtins__': {}}, {})
+
+
+def render(text, values):
+    return re.sub(r'\$\{\{(.*?)\}\}', lambda m: str(expression(m[1], values)), text)
+
+
 class ProducerTests(unittest.TestCase):
-    def execute(self, event, *, fail='', zero=False):
+    def execute(self, event, job='rust-build', *, fail='', zero=False, command=None):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / '.config').mkdir()
+            (root / 'scripts/ci').mkdir(parents=True)
+            shutil.copy(ROOT / 'scripts/ci/prepare-rust-nextest.sh', root / 'scripts/ci')
             (root / '.config/nextest.toml').write_text(
                 '[profile.ci]\n' if zero else
                 '[[profile.renamed.overrides]]\nfilter = "all()"\n')
             log = root / 'calls'
-            # All production shell commands are observed with exact argv. The
-            # python3 stub delegates to the real guard main, including zero rows.
+            # The Python stub delegates to the real guard main with the fixture
+            # config. Queries still go through the real guard subprocess path.
             stub = f'''#!{sys.executable}
 import importlib.util, json, os, pathlib, sys
 sys.dont_write_bytecode = True
 name = pathlib.Path(sys.argv[0]).name
+args = sys.argv[1:]
 with open(os.environ['CALLS'], 'a') as out:
-    out.write(json.dumps([name, *sys.argv[1:]]) + '\\n')
-if os.environ['FAIL'] == name:
+    out.write(json.dumps([name, *args]) + '\\n')
+assert 'NEIGE_CODEX_BIN' not in os.environ or args[0] == 'build'
+phase = ('guard' if name == 'python3' else
+         'shim' if args[0] == 'build' else
+         'build' if args[1] == 'archive' or 'binaries-only' in args else 'query')
+if os.environ['FAIL'] == phase:
     sys.exit(42)
 if name == 'python3':
-    assert 'NEIGE_CODEX_BIN' not in os.environ
     spec = importlib.util.spec_from_file_location('guard', {str(spec.origin)!r})
     guard = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(guard)
@@ -278,92 +298,196 @@ if name == 'python3':
 if name == 'cargo':
     print({protocol!r})
 '''
-            for name in ('cargo', 'python3', 'ls'):
+            for name in ('cargo', 'python3'):
                 path = root / name
                 path.write_text(stub)
                 path.chmod(0o755)
             env = dict(os.environ, PATH=f'{tmp}:' + os.environ['PATH'],
                        CALLS=str(log), FAIL=fail, GITHUB_EVENT_NAME=event,
-                       NEIGE_CODEX_BIN='/must-not-reach-guard')
-            rc = 0
+                       NEIGE_CODEX_BIN='/must-not-reach-nextest')
+            rc, uploads = 0, []
+            selected = [s for s in steps(job) if
+                        'scripts/ci/prepare-rust-nextest.sh' in s or
+                        s.startswith('name: build cross-package') or
+                        'uses: actions/upload-artifact@v7' in s]
+            if command is not None:
+                selected = ['name: direct\n        run: ' + command]
             for step in selected:
-                condition = re.search(r'^        if: (.+)$', step, re.M)
-                if condition:
-                    match = re.fullmatch(r"github.event_name == '(pull_request|push)'", condition[1])
-                    self.assertIsNotNone(match, condition[1])
-                    if event != match[1]:
-                        continue
+                condition = field(step, 'if')
+                if condition and not expression(condition, {'github.event_name': event}):
+                    continue
                 self.assertNotIn('continue-on-error:', step)
-                run = re.search(r'^        run: (.+(?:\n.*)*)', step, re.M)[1]
-                script = (''.join(line[10:] + '\n' for line in run.splitlines()[1:])
-                          if run.startswith('|') else run)
-                result = subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', script],
+                if 'uses: actions/upload-artifact@v7' in step:
+                    self.assertEqual(field(step, 'if'),
+                                     "github.event_name == 'pull_request'" if job == 'rust-build' else None)
+                    self.assertEqual(field(step, 'archive', 10), 'false')
+                    self.assertEqual(field(step, 'retention-days', 10), '1')
+                    self.assertEqual(field(step, 'if-no-files-found', 10), 'error')
+                    uploads.append(field(step, 'path', 10))
+                    continue
+                result = subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', field(step, 'run')],
                                         cwd=root, env=env, capture_output=True, text=True)
                 rc = result.returncode
                 if rc:
                     break
             calls = [json.loads(row) for row in log.read_text().splitlines()] if log.exists() else []
-            return rc, calls
+            return rc, calls, uploads
 
-    def test_pr_archive(self):
-        rc, calls = self.execute('pull_request')
-        self.assertEqual(rc, 0)
-        self.assertEqual(calls[:3], [
-            ['cargo', 'nextest', 'archive', *source, '--profile', 'ci', *archive],
-            ['ls', '-l', 'nextest-archive.tar.zst'],
-            ['python3', 'scripts/ci/check-nextest-overrides.py', *archive]])
-        self.assertEqual(len(calls), 4)
-        self.assertEqual(calls[3][:4], ['cargo', 'nextest', 'list', '--archive-file'])
+    def test_complete_producer_inputs(self):
+        for event, job, filename in (
+                ('pull_request', 'rust-build', 'nextest-archive.tar.zst'),
+                ('push', 'rust-build', None),
+                ('push', 'rust-main', 'nextest-main-archive.tar.zst')):
+            for zero in (False, True):
+                with self.subTest(event=event, job=job, zero=zero):
+                    rc, calls, uploads = self.execute(event, job, zero=zero)
+                    self.assertEqual(rc, 0)
+                    if job == 'rust-main':
+                        self.assertEqual(calls.pop(0), ['cargo', 'build', '--locked', '-p',
+                                         'neige-mcp-stdio-shim', '--bin', 'neige-mcp-stdio-shim'])
+                    input_args = ['--archive-file', filename] if filename else []
+                    build = (['cargo', 'nextest', 'archive', *source, '--profile', 'ci', *input_args]
+                             if filename else ['cargo', 'nextest', 'list', *source, '--profile', 'ci',
+                                               '--list-type', 'binaries-only', '--message-format', 'json'])
+                    expected = [build, ['python3', 'scripts/ci/check-nextest-overrides.py', *input_args]]
+                    if not zero:
+                        query_source = [*input_args, '--workspace-remap', unittest.mock.ANY] if filename else source
+                        expected.append(['cargo', 'nextest', 'list', *query_source,
+                                         '--profile', 'renamed', '--message-format', 'json', '-E', 'all()'])
+                    self.assertEqual(calls, expected)
+                    self.assertEqual(uploads, [filename] if filename else [])
 
-    def test_push_inventory(self):
-        rc, calls = self.execute('push')
-        self.assertEqual(rc, 0)
-        self.assertEqual(calls, [
-            ['cargo', 'nextest', 'list', *source, '--profile', 'ci', '--list-type', 'binaries-only'],
-            ['python3', 'scripts/ci/check-nextest-overrides.py'],
-            ['cargo', 'nextest', 'list', *source, '--profile', 'renamed',
-             '--message-format', 'json', '-E', 'all()']])
+    def test_producer_failure_blocks_upload(self):
+        for event, job in (('pull_request', 'rust-build'), ('push', 'rust-build'), ('push', 'rust-main')):
+            for phase in ('build', 'guard'):
+                with self.subTest(event=event, job=job, phase=phase):
+                    rc, calls, uploads = self.execute(event, job, fail=phase)
+                    self.assertEqual(rc, 42)
+                    self.assertEqual(uploads, [])
+                    guards = [c for c in calls if c[0] == 'python3']
+                    self.assertEqual(len(guards), int(phase == 'guard'))
+                    self.assertEqual(len(calls), 1 + int(job == 'rust-main') + int(phase == 'guard'))
+        rc, calls, uploads = self.execute('push', 'rust-main', fail='shim')
+        self.assertEqual((rc, len(calls), uploads), (42, 1, []))
 
-    def test_push_zero_overrides(self):
-        rc, calls = self.execute('push', zero=True)
-        self.assertEqual(rc, 0)
-        self.assertEqual(calls, [
-            ['cargo', 'nextest', 'list', *source, '--profile', 'ci', '--list-type', 'binaries-only'],
-            ['python3', 'scripts/ci/check-nextest-overrides.py']])
-
-    def test_build_failure(self):
-        for event in ('pull_request', 'push'):
-            with self.subTest(event=event):
-                rc, calls = self.execute(event, fail='cargo')
-                self.assertEqual(rc, 42)
-                self.assertEqual(len(calls), 1, calls)
-
-    def test_guard_failure(self):
-        for event in ('pull_request', 'push'):
-            with self.subTest(event=event):
-                rc, calls = self.execute(event, fail='python3')
-                self.assertEqual(rc, 42)
-                self.assertEqual(calls[-1][0], 'python3')
-                self.assertEqual(sum(c[0] == 'python3' for c in calls), 1)
-
-    def test_unknown_event(self):
-        rc, calls = self.execute('unknown')
+    def test_unknown_event_and_modes(self):
+        rc, calls, uploads = self.execute('unknown')
         self.assertNotEqual(rc, 0)
-        self.assertEqual(calls, [])
+        self.assertEqual((calls, uploads), ([], []))
+        for args in ('', 'unknown', 'archive', 'archive --archive-file',
+                     'archive --archive-file ""', 'archive --other file',
+                     'archive --archive-file file extra', 'inventory extra'):
+            with self.subTest(args=args):
+                rc, calls, uploads = self.execute('push', command='scripts/ci/prepare-rust-nextest.sh ' + args)
+                self.assertEqual(rc, 2)
+                self.assertEqual((calls, uploads), ([], []))
 
     def test_shared_guard_boundaries(self):
-        self.assertEqual(workflow.count('scripts/ci/check-nextest-overrides.py'), 1)
-        check = producer.index('      - name: check nextest override matches\n')
-        upload = producer.index('      - name: upload nextest archive')
-        self.assertLess(check, upload)
-        step = producer[check:upload]
-        self.assertEqual(step.count('      - name:'), 1)
-        self.assertNotIn('if:', step)
-        self.assertNotIn('continue-on-error:', step)
-        self.assertNotIn('matrix:', producer)
+        for job in ('rust-build', 'rust-main'):
+            prepare = [s for s in steps(job) if 'scripts/ci/prepare-rust-nextest.sh' in s]
+            self.assertTrue(prepare)
+            for step in prepare:
+                self.assertIsNone(field(step, 'if'))
+                self.assertNotIn('continue-on-error:', step)
+            self.assertNotIn('matrix:', jobs[job])
         for path in ('scripts/run-rust-nextest.sh', 'scripts/run-ci-rust-nextest.sh'):
             self.assertNotIn('check-nextest-overrides', Path(path).read_text())
+        self.assertNotIn('migration replay gate (#679 PR0-D)', workflow)
 
+
+class RoutingTests(unittest.TestCase):
+    def values(self, event, build='success', main='success', shards='success',
+               changes='success', rust='true'):
+        return {'github.event_name': event, 'needs.rust-build.result': build,
+                'needs.rust-main.result': main, 'needs.rust-shards.result': shards,
+                'needs.changes.result': changes, 'needs.changes.outputs.rust_changed': rust}
+
+    def test_shards_select_event_owner(self):
+        self.assertEqual(field(jobs['rust-shards'], 'needs', 4), '[changes, rust-build, rust-main]')
+        condition = field(jobs['rust-shards'], 'if', 4)
+        self.assertIn('always()', condition)
+        for event, build in itertools.product(
+                events,
+                ('success', 'failure', 'cancelled', 'skipped')):
+            # The two owners are independent: a skipped main must not block PR,
+            # and failed inventory warming must not suppress push test coverage.
+            for main in ('success', 'failure', 'cancelled', 'skipped'):
+                with self.subTest(event=event, build=build, main=main):
+                    expected = ((event == 'pull_request' and build == 'success') or
+                                (event == 'push' and main == 'success'))
+                    self.assertEqual(bool(expression(condition, self.values(event, build, main))), expected)
+
+    def test_current_run_artifact_and_archive_execution(self):
+        shard_steps = steps('rust-shards')
+        download = next(s for s in shard_steps if s.startswith('uses: actions/download-artifact@'))
+        # No cross-run, pattern, merge or fallback selection; download defaults to this run.
+        self.assertEqual(download.strip(), 'uses: actions/download-artifact@v8\n'
+                         '        with:\n          name: ${{ env.NEXTEST_ARCHIVE }}')
+        run = next(s for s in shard_steps if 'id: rust_nextest' in s)
+        for job in ('rust-build', 'rust-main', 'rust-shards'):
+            checkout = next(s for s in steps(job) if s.startswith('uses: actions/checkout@'))
+            self.assertEqual(checkout.strip(), 'uses: actions/checkout@v4\n'
+                             '        with:\n          persist-credentials: false')
+        for event, filename in (('pull_request', 'nextest-archive.tar.zst'),
+                                ('push', 'nextest-main-archive.tar.zst')):
+            values = self.values(event)
+            values['env.NEXTEST_ARCHIVE'] = expression(field(jobs['rust-shards'], 'NEXTEST_ARCHIVE', 6), values)
+            self.assertEqual(render(field(download, 'name', 10), values), filename)
+            shards = json.loads(field(jobs['rust-shards'], 'shard', 8))
+            for shard in shards:
+                values['matrix.shard'] = shard
+                with tempfile.TemporaryDirectory() as tmp:
+                    capture = Path(tmp) / 'args'
+                    # Existing production wrapper validates the file, unsets the
+                    # provider binary and adds remap/extraction, without building.
+                    archive_path = Path(tmp) / filename
+                    archive_path.touch()
+                    script = render(field(run, 'run'), values)
+                    env = dict(os.environ, PATH=str(Path(os.environ['SELFTEST_STUB_BIN'])) + ':' + os.environ['PATH'],
+                               NEXTEST_ARCHIVE=str(archive_path), RUST_NEXTEST_CAPTURE=str(capture),
+                               NEIGE_CODEX_BIN='must-not-reach-nextest')
+                    subprocess.run(['bash', '-e', '-c', script], cwd=ROOT, env=env, check=True)
+                    actual = capture.read_bytes().decode().strip('\0').split('\0')
+                    self.assertEqual(actual, ['nextest', 'run', '--archive-file', str(archive_path),
+                                     '--workspace-remap', '.', '--extract-to', '.', '--extract-overwrite',
+                                     '--profile', 'ci', '--partition', f'count:{shard}/{len(shards)}'])
+        self.assertNotIn('rust-cache', jobs['rust-shards'])
+
+    def test_required_failure_propagation(self):
+        self.assertIn('always()', field(jobs['rust'], 'if', 4))
+        self.assertEqual(set(re.findall(r'[\w-]+', field(jobs['rust'], 'needs', 4))),
+                         {'changes', 'rust-build', 'rust-main', 'rust-shards'})
+        step = next(s for s in steps('rust') if s.startswith('name: require'))
+        for event, build, main, shards in itertools.product(
+                ('pull_request', 'push', 'unknown'),
+                ('success', 'failure', 'cancelled', 'skipped'),
+                ('success', 'failure', 'cancelled', 'skipped'),
+                ('success', 'failure', 'cancelled', 'skipped')):
+            with self.subTest(event=event, build=build, main=main, shards=shards):
+                values = self.values(event, build, main, shards)
+                env = dict(os.environ, GITHUB_EVENT_NAME=event)
+                for key, value in re.findall(r'^          (\w+): (.+)$', step, re.M):
+                    env[key] = render(value, values)
+                rc = subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', field(step, 'run')],
+                                    env=env, capture_output=True).returncode
+                expected = (event in ('pull_request', 'push') and build == shards == 'success'
+                            and (event == 'pull_request' or main == 'success'))
+                self.assertEqual(rc == 0, expected)
+
+    def test_classification_and_non_rust_boundaries(self):
+        for event, changes, rust in itertools.product(
+                events,
+                ('success', 'failure', 'cancelled', 'skipped'), ('true', 'false', '')):
+            for job in ('rust-build', 'rust-main', 'rust'):
+                with self.subTest(event=event, changes=changes, rust=rust, job=job):
+                    expected = (event in ('pull_request', 'push') and
+                                (job != 'rust-main' or event == 'push') and
+                                (changes != 'success' or rust == 'true'))
+                    self.assertEqual(bool(expression(field(jobs[job], 'if', 4),
+                                     self.values(event, changes=changes, rust=rust))), expected)
+
+
+class GuardTests(unittest.TestCase):
     def test_guard_main_contract(self):
         config = tomllib.loads((ROOT / '.config/nextest.toml').read_text())
         rows = [(profile, row['filter']) for profile, settings in config['profile'].items()

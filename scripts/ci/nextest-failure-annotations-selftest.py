@@ -5,6 +5,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import textwrap
 import unittest
 from pathlib import Path
 
@@ -110,11 +111,51 @@ class RendererTests(unittest.TestCase):
         result = self.run_xml('<testsuite><testcase classname="crate-name::test_binary" name="module::case"><error/></testcase></testsuite>')
         self.assertIn("crate-name%3A%3Atest_binary%3A%3Amodule%3A%3Acase", result.stdout)
 
-    def test_ci_both_paths_preserve_status(self):
+    def test_ci_execution_paths_preserve_status(self):
         workflow = (HERE / "../../.github/workflows/ci.yml").read_text()
-        self.assertEqual(workflow.count("id: rust_nextest"), 2)
-        self.assertEqual(workflow.count("if: ${{ failure() && steps.rust_nextest.outcome == 'failure' }}"), 2)
-        self.assertEqual(workflow.count("run: python3 scripts/ci/nextest-failure-annotations.py"), 2)
+
+        def field(step, key):
+            match = re.search(rf"^        {key}: (.*)$", step, re.M)
+            if match is None:
+                return None
+            if match[1] == "|":
+                body = re.search(rf"^        {key}: \|\n(.*?)(?=^        \S|\Z)", step, re.M | re.S)
+                return textwrap.dedent(body[1]).strip()
+            return match[1]
+
+        executions = 0
+        for job, body in re.findall(r"^  ([A-Za-z_][A-Za-z0-9_-]*):\n(.*?)(?=^  [A-Za-z_][A-Za-z0-9_-]*:|\Z)", workflow, re.M | re.S):
+            steps = re.split(r"^      - ", body, flags=re.M)[1:]
+            for index, step in enumerate(steps):
+                run = field(step, "run") or ""
+                # Discover execution from the owning wrappers, not job names or
+                # the outcome id whose presence this test must independently check.
+                commands = re.findall(r"scripts/run-(?:ci-)?rust-nextest\.sh\b", run)
+                if not commands:
+                    continue
+                executions += 1
+                with self.subTest(job=job, step=index):
+                    outcome_id = field(step, "id")
+                    self.assertIsNotNone(outcome_id)
+                    condition = "${{ failure() && steps." + outcome_id + ".outcome == 'failure' }}"
+                    annotations = [i for i, candidate in enumerate(steps)
+                                   if field(candidate, "run") == "python3 scripts/ci/nextest-failure-annotations.py"
+                                   and field(candidate, "if") == condition]
+                    self.assertEqual(len(annotations), 1, "each execution needs its failure annotation")
+                    self.assertGreater(annotations[0], index)
+                    # Run the actual workflow shell with only the test entry
+                    # point stubbed: a later success/|| true must not mask failure.
+                    with tempfile.TemporaryDirectory() as directory:
+                        for command in set(commands):
+                            stub = Path(directory) / command
+                            stub.parent.mkdir(parents=True, exist_ok=True)
+                            stub.write_text("#!/bin/sh\nexit 42\n")
+                            stub.chmod(0o755)
+                        script = re.sub(r"\$\{\{.*?\}\}", "1", run)
+                        result = subprocess.run(["bash", "-e", "-o", "pipefail", "-c", script], cwd=directory,
+                                                capture_output=True, text=True)
+                        self.assertEqual(result.returncode, 42, result.stderr)
+        self.assertGreater(executions, 0, "no nextest execution steps discovered")
         self.assertNotIn("continue-on-error", workflow)
         lint = re.search(r"^  lint:\n(.*?)(?=^  [A-Za-z_][A-Za-z0-9_-]*:|\Z)", workflow, re.M | re.S).group(1)
         step = re.search(r"^      - name: nextest public annotation protocol selftest\n(.*?)(?=^      - |\Z)", lint, re.M | re.S).group(1)

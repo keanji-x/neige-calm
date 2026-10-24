@@ -522,28 +522,13 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libxkbcommon-dev libpixman-1-dev
 
-      - name: cargo nextest archive --workspace --locked
-        if: github.event_name == 'pull_request'
+      - name: prepare nextest tests
         run: |
-          set -euo pipefail
-          cargo nextest archive --workspace --locked --features calm-server/codex-e2e --profile ci --archive-file nextest-archive.tar.zst
-          ls -l nextest-archive.tar.zst
-
-      - name: build nextest binary inventory without archiving
-        if: github.event_name == 'push'
-        run: |
-          set -euo pipefail
-          cargo nextest list --workspace --locked --features calm-server/codex-e2e --profile ci --list-type binaries-only > /dev/null
-
-      - name: check nextest override matches
-        run: |
-          set -euo pipefail
           case "$GITHUB_EVENT_NAME" in
-            pull_request) args=(--archive-file nextest-archive.tar.zst) ;;
-            push) args=() ;;
+            pull_request) scripts/ci/prepare-rust-nextest.sh archive --archive-file nextest-archive.tar.zst ;;
+            push) scripts/ci/prepare-rust-nextest.sh inventory ;;
             *) echo "unsupported nextest build event: $GITHUB_EVENT_NAME" >&2; exit 1 ;;
           esac
-          env -u NEIGE_CODEX_BIN python3 scripts/ci/check-nextest-overrides.py "${args[@]}"
 
       - name: upload nextest archive
         if: github.event_name == 'pull_request'
@@ -557,8 +542,10 @@ jobs:
 
   rust-shards:
     name: rust test shard ${{ matrix.shard }}/8
-    needs: [changes, rust-build]
-    if: ${{ always() && github.event_name == 'pull_request' && needs.rust-build.result == 'success' }}
+    needs: [changes, rust-build, rust-main]
+    if: ${{ always() && ((github.event_name == 'pull_request' && needs.rust-build.result == 'success') || (github.event_name == 'push' && needs.rust-main.result == 'success')) }}
+    env:
+      NEXTEST_ARCHIVE: ${{ github.event_name == 'pull_request' && 'nextest-archive.tar.zst' || 'nextest-main-archive.tar.zst' }}
     strategy:
       fail-fast: false
       matrix:
@@ -608,7 +595,7 @@ jobs:
 
       - uses: actions/download-artifact@v8
         with:
-          name: nextest-archive.tar.zst
+          name: ${{ env.NEXTEST_ARCHIVE }}
 
       - name: wait for toolchain and isolated provider fixture dependencies
         timeout-minutes: 10
@@ -623,7 +610,7 @@ jobs:
         # nextest runs no doctests and this repo has none (every doc fence carries a non-rust tag); add a `cargo test --doc` step if that changes.
         run: |
           scripts/run-ci-rust-nextest.sh \
-            github-hosted --archive-file nextest-archive.tar.zst --partition "count:${{ matrix.shard }}/8"
+            github-hosted --archive-file "$NEXTEST_ARCHIVE" --partition "count:${{ matrix.shard }}/8"
 
       - name: annotate failed nextest tests
         if: ${{ failure() && steps.rust_nextest.outcome == 'failure' }}
@@ -667,58 +654,27 @@ jobs:
           cache-workspace-crates: true
           save-if: ${{ github.event_name == 'push' }}
 
-      # Two neige-app tailnet tests build the Go helper at test time.
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: tailnet/go.mod
-          cache-dependency-path: tailnet/go.sum
-
       - uses: taiki-e/install-action@nextest
 
-      - name: install isolated provider fixture dependencies
+      - name: install compositor link libraries
         run: |
           sudo apt-get update
-          sudo apt-get install -y bubblewrap python3 libxkbcommon-dev libpixman-1-dev
-          test "$RUNNER_ENVIRONMENT" = github-hosted
-          policy=/proc/sys/kernel/apparmor_restrict_unprivileged_userns
-          if [ -f "$policy" ]; then
-            cat "$policy" > "$RUNNER_TEMP/isolated-provider-userns-policy"
-            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-          fi
+          sudo apt-get install -y libxkbcommon-dev libpixman-1-dev
 
       - name: build cross-package isolated provider fixture executables
         run: |
           cargo build --locked -p neige-mcp-stdio-shim --bin neige-mcp-stdio-shim
 
-      - name: cargo nextest run --workspace --locked
-        id: rust_nextest
-        run: |
-          scripts/run-ci-rust-nextest.sh \
-            github-hosted
+      - name: prepare nextest tests
+        run: scripts/ci/prepare-rust-nextest.sh archive --archive-file nextest-main-archive.tar.zst
 
-      - name: annotate failed nextest tests
-        if: ${{ failure() && steps.rust_nextest.outcome == 'failure' }}
-        run: python3 scripts/ci/nextest-failure-annotations.py
-
-      - name: restore hosted isolated provider namespace policy
-        if: always()
-        run: |
-          policy_file="$RUNNER_TEMP/isolated-provider-userns-policy"
-          if [ -f "$policy_file" ]; then
-            original_policy=$(cat "$policy_file")
-            sudo sysctl -w "kernel.apparmor_restrict_unprivileged_userns=$original_policy"
-          fi
-
-      # nextest's store dir is target/nextest under the workspace root, not under CARGO_TARGET_DIR.
-      - name: upload nextest junit timing
-        if: always()
-        uses: actions/upload-artifact@v4
+      - name: upload nextest archive
+        uses: actions/upload-artifact@v7
         with:
-          name: nextest-junit-main
-          path: target/nextest/ci/junit.xml
-          retention-days: 7
-          if-no-files-found: ignore
-
+          path: nextest-main-archive.tar.zst
+          archive: false
+          retention-days: 1
+          if-no-files-found: error
 
   # Preserve the required status-check name across the build/shard split.
   # This job performs no checkout and is the single branch-protection verdict.
@@ -731,9 +687,16 @@ jobs:
       - name: require the build and every test job to pass
         env:
           BUILD_RESULT: ${{ needs.rust-build.result }}
-          TEST_RESULT: ${{ github.event_name == 'pull_request' && needs.rust-shards.result || needs.rust-main.result }}
+          SHARD_RESULT: ${{ needs.rust-shards.result }}
+          MAIN_RESULT: ${{ needs.rust-main.result }}
         run: |
-          for pair in "rust build:$BUILD_RESULT" "rust tests:$TEST_RESULT"; do
+          results=("rust build:$BUILD_RESULT" "rust shards:$SHARD_RESULT")
+          case "$GITHUB_EVENT_NAME" in
+            pull_request) ;;
+            push) results+=("rust main:$MAIN_RESULT") ;;
+            *) echo "unsupported nextest verdict event: $GITHUB_EVENT_NAME" >&2; exit 1 ;;
+          esac
+          for pair in "${results[@]}"; do
             if [ "${pair##*:}" != "success" ]; then
               echo "::error::${pair%:*} finished with: ${pair##*:}"
               exit 1
