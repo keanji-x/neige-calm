@@ -119,17 +119,43 @@ async fn c4_stderr_exact_cap_is_not_overflow() {
     assert_eq!(diagnostic.capture, Capture::Complete);
 }
 async fn interrupted(script: &str) {
+    use tokio::io::AsyncReadExt;
+
     let rig = RegisteredRig::new("exit").await;
-    // POSIX $! reports the wrapper's sink job. Inject loss of its EOF publisher
-    // after head opens the file, before the provider starts. Head still retains
-    // CAP bytes; the real Engine Stop owns teardown of the remaining scope.
-    let prefix = r#"while [ ! -f "$NEIGE_TEST_STDERR_DIR/stderr" ]; do sleep 0.001; done
-kill -KILL "$!"
-"#;
-    let (claim, _guard, dir) = start_with_prefix(&rig, script, prefix).await;
-    wait(|| std::fs::metadata(dir.join("stderr")).is_ok_and(|m| m.len() == stderr::CAP as u64))
-        .await;
+    // Save the sink job before starting the injector. File creation alone does
+    // not prove head has started: let the provider fill CAP before killing the
+    // EOF publisher. The injector must not retain stdin or the stderr FIFO.
+    let prefix = format!(
+        r#"sink_pid=$!
+(
+    exec 0<&- 2>&-
+    until [ -f "$NEIGE_TEST_STDERR_DIR/stderr" ] &&
+        [ "$(wc -c < "$NEIGE_TEST_STDERR_DIR/stderr")" -eq {cap} ]; do :; done
+    kill -KILL "$sink_pid" && printf 'sink-killed'
+) &
+"#,
+        cap = stderr::CAP
+    );
+    let (claim, _guard, dir) = start_with_prefix(&rig, script, &prefix).await;
+    let id = owner::execution_id(claim.record()).unwrap();
+    let mut reader =
+        owner::stdio::EngineStdio::new(rig.host.execution.engine().unwrap().clone(), id);
+    let mut confirmation = [0; 11];
+    tokio::time::timeout(
+        Duration::from_secs(10),
+        reader.read_exact(&mut confirmation),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(&confirmation, b"sink-killed");
+    assert_eq!(
+        std::fs::metadata(dir.join("stderr")).unwrap().len(),
+        stderr::CAP as u64
+    );
+    assert!(!dir.join("stderr.closed").exists());
     stop(&rig, &claim).await;
+    assert!(!dir.join("stderr.closed").exists());
     let diagnostic = stderr::diagnostic(&dir);
     assert_eq!(diagnostic.bytes.len(), stderr::CAP);
     assert!(
