@@ -202,17 +202,17 @@ impl ClaudePlannerSession {
                     .clone(),
             )
             .map_err(|failure| failure.map_error(SpawnFailure::from))?;
-            let argv = spawn::argv(
-                thread_uuid,
+            let argv = spawn::argv(&crate::claude_planner::role::PlannerArgs {
+                thread: thread_uuid,
                 purpose,
                 start,
                 truncation,
                 selection,
                 mode,
-                &params.cwd,
-                &host.mcp_shim,
-                instructions.path(),
-            );
+                cwd: &params.cwd,
+                mcp_shim: &host.mcp_shim,
+                instructions: instructions.path(),
+            });
             let argv = match argv {
                 Ok(argv) => argv,
                 Err(error) => {
@@ -392,19 +392,26 @@ impl ClaudePlannerSession {
         }
         cancellation.armed = false;
         let driver = tokio::spawn(drive(
-            Arc::clone(shared),
-            TurnRun {
-                claim,
-                guard,
-                stdout,
+            PlannerSink {
+                shared: Arc::clone(shared),
                 slot,
                 translator,
                 instructions,
                 thread: thread_uuid,
                 purpose,
                 bind: !row_bound,
-                version: config.claude_version.clone(),
                 approvals: Approvals::for_spawn(mode, held, &turn_id),
+                compacted: false,
+            },
+            ProtocolTurn {
+                claim,
+                guard,
+                stdout,
+                profile: PlannerRole {
+                    thread: thread_uuid,
+                    purpose,
+                    version: config.claude_version.clone(),
+                },
             },
         ));
         *driver_slot = Some(execution_end::DriverSlot::new(

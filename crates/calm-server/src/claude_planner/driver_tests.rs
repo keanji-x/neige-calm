@@ -3,7 +3,8 @@
 use uuid::Uuid;
 
 use super::compact::{NO_BOUNDARY, result_event};
-use super::driver::{TerminalEvent, decide, init_check};
+use super::driver::{TerminalEvent, decide};
+use super::role::{PlannerRole, init_check};
 use super::spawn::SpawnPurpose;
 use crate::claude_planner::turn_slot::TerminalCause;
 use provider::claude::protocol::{McpStatus, PluginRef, SystemInit};
@@ -93,7 +94,14 @@ type Deviate = fn(&mut SystemInit);
 fn every_init_check_refuses_its_own_deviation() {
     let thread = Uuid::new_v4();
     assert_eq!(
-        init_check(&init(thread), thread, "2.1.280", SpawnPurpose::Turn),
+        init_check(
+            &init(thread),
+            &PlannerRole {
+                thread,
+                version: "2.1.280".into(),
+                purpose: SpawnPurpose::Turn
+            }
+        ),
         Ok(())
     );
     let deviations: Vec<(&str, Deviate)> = vec![
@@ -108,7 +116,15 @@ fn every_init_check_refuses_its_own_deviation() {
         let mut record = init(thread);
         deviate(&mut record);
         assert!(
-            init_check(&record, thread, "2.1.280", SpawnPurpose::Turn).is_err(),
+            init_check(
+                &record,
+                &PlannerRole {
+                    thread,
+                    version: "2.1.280".into(),
+                    purpose: SpawnPurpose::Turn
+                }
+            )
+            .is_err(),
             "{name}"
         );
     }
@@ -124,7 +140,14 @@ fn a_compaction_init_needs_the_compact_command_in_place_of_no_skills() {
         record.slash_commands = vec!["context".into(), "compact".into()];
         record.skills = vec!["dataviz".into()];
         deviate(&mut record);
-        init_check(&record, thread, "2.1.280", SpawnPurpose::Compaction)
+        init_check(
+            &record,
+            &PlannerRole {
+                thread,
+                version: "2.1.280".into(),
+                purpose: SpawnPurpose::Compaction,
+            },
+        )
     };
     assert_eq!(check(|_| {}), Ok(()));
     assert_eq!(
@@ -145,7 +168,15 @@ fn a_compaction_init_needs_the_compact_command_in_place_of_no_skills() {
     turn.slash_commands = vec!["compact".into()];
     turn.skills = vec!["dataviz".into()];
     assert!(
-        init_check(&turn, thread, "2.1.280", SpawnPurpose::Turn).is_err(),
+        init_check(
+            &turn,
+            &PlannerRole {
+                thread,
+                version: "2.1.280".into(),
+                purpose: SpawnPurpose::Turn
+            }
+        )
+        .is_err(),
         "a turn still refuses skills"
     );
 }

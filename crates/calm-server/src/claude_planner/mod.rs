@@ -21,11 +21,14 @@ pub(crate) mod execution;
 pub mod lifecycle;
 pub mod models;
 mod outcome_record;
+mod protocol_turn;
 pub mod readiness_command;
 pub(crate) mod recovery;
 pub(crate) mod rewind;
+mod role;
 pub mod session;
 pub mod spawn;
+mod turn_sink;
 mod turn_slot;
 pub(crate) mod wiring;
 
@@ -44,3 +47,6 @@ mod spawn_tests;
 mod pre_c4_boot_tests;
 #[cfg(all(test, target_os = "linux"))]
 mod readiness_command_tests;
+
+#[cfg(all(test, target_os = "linux"))]
+mod protocol_tests;

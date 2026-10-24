@@ -38,17 +38,17 @@ fn args_for(
     selection: &TurnModelSelection,
     cwd: &str,
 ) -> Vec<String> {
-    argv(
-        Uuid::parse_str(THREAD).unwrap(),
+    argv(&crate::claude_planner::role::PlannerArgs {
+        thread: Uuid::parse_str(THREAD).unwrap(),
         purpose,
         start,
-        None,
+        truncation: None,
         selection,
         mode,
-        Path::new(cwd),
-        Path::new("/opt/neige/neige-mcp-stdio-shim"),
-        Path::new("/data/claude-planner/tmp/ws1-turn1.md"),
-    )
+        cwd: Path::new(cwd),
+        mcp_shim: Path::new("/opt/neige/neige-mcp-stdio-shim"),
+        instructions: Path::new("/data/claude-planner/tmp/ws1-turn1.md"),
+    })
     .expect("argv")
     .into_iter()
     .map(|arg| arg.into_string().expect("utf-8"))
@@ -377,17 +377,17 @@ fn a_workspace_that_would_split_a_rule_is_refused() {
             .map(|m| (cwd, m))
         })
     {
-        let result = argv(
-            Uuid::parse_str(THREAD).unwrap(),
-            SpawnPurpose::Turn,
-            SessionStart::New,
-            None,
-            &TurnModelSelection::inherit(),
+        let result = argv(&crate::claude_planner::role::PlannerArgs {
+            thread: Uuid::parse_str(THREAD).unwrap(),
+            purpose: SpawnPurpose::Turn,
+            start: SessionStart::New,
+            truncation: None,
+            selection: &TurnModelSelection::inherit(),
             mode,
-            Path::new(cwd),
-            Path::new("/opt/shim"),
-            Path::new("/data/x.md"),
-        );
+            cwd: Path::new(cwd),
+            mcp_shim: Path::new("/opt/shim"),
+            instructions: Path::new("/data/x.md"),
+        });
         assert!(result.is_err(), "{cwd} {mode:?}");
     }
 }
@@ -424,12 +424,15 @@ fn the_ambient_allowlist_drops_codex_openai_and_rust_keys() {
 /// reads nor writes it. The `--version` check runs on the same env, so it carries it too.
 #[test]
 fn the_spawn_env_disables_claude_auto_memory() {
-    let env = base_env(&EnvInputs {
-        path: "/usr/bin".into(),
-        config_dir: Path::new("/home/owner/.claude"),
-        mcp_socket: Path::new("/run/calm/mcp.sock"),
-        proxy: &[],
-    });
+    let env = base_env(
+        &super::role::PlannerEnvironment,
+        &EnvInputs {
+            path: "/usr/bin".into(),
+            config_source: super::role::ConfigSource::Dedicated(Path::new("/home/owner/.claude")),
+            mcp_socket: Path::new("/run/calm/mcp.sock"),
+            proxy: &[],
+        },
+    );
     let values: Vec<&std::ffi::OsString> = env
         .iter()
         .filter(|(key, _)| key == "CLAUDE_CODE_DISABLE_AUTO_MEMORY")

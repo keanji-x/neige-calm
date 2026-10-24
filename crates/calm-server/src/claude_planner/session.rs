@@ -13,8 +13,10 @@ use uuid::Uuid;
 
 use super::approvals::Approvals;
 use super::config::{ClaudePlannerHost, needs_an_operator, unavailable_message};
-use super::driver::{TurnRun, drive};
+use super::protocol_turn::{ProtocolTurn, drive};
+use super::role::PlannerRole;
 use super::spawn::{self, InstructionsFile, ResumeTruncation, SessionStart, SpawnPurpose};
+use super::turn_sink::PlannerSink;
 use super::turn_slot::{TerminalCause, TurnSlot};
 use crate::db::Repo;
 use crate::error::{CalmError, Result};
@@ -34,11 +36,7 @@ mod process;
 
 /// After an interrupt, the turn is stopped if the CLI has not ended it within this bound.
 pub const STOP_TIMER: Duration = Duration::from_secs(10);
-/// Once a stop is armed, the turn's `TurnCompleted` is emitted by `settle_by` = the stop deadline +
-/// this margin, whatever the CLI does: every await after the stop is armed is capped by it. An
-/// interrupt therefore settles by interrupt + [`STOP_TIMER`] + this = 22 s, inside the harness's
-/// 30 s `interrupt_completion_budget` with 8 s left for the run loop's own work around the call.
-pub const SETTLE_AFTER_STOP: Duration = Duration::from_secs(12);
+pub use super::protocol_turn::SETTLE_AFTER_STOP;
 /// How long [`ClaudePlannerSession::shutdown`] waits for the running turn to settle after its stop.
 const SHUTDOWN_SETTLE_WAIT: Duration = Duration::from_secs(20);
 

@@ -9,14 +9,14 @@ use std::path::{Path, PathBuf};
 use serde_json::json;
 use uuid::Uuid;
 
+use super::role::{ConfigSource, PlannerEnvironment};
 use crate::error::{CalmError, Result};
-use crate::mcp_server::wiring::{MCP_SERVER_KEY, claude_mcp_config_json};
+use crate::mcp_server::wiring::MCP_SERVER_KEY;
 use crate::planner_permission_mode::PlannerPermissionMode;
 use crate::shared_codex_appserver::SPAWN_ENV_PASSTHROUGH;
-use provider::TurnModelSelection;
 
 /// The CLI's own tools a Planner may use; everything else (Task, Skill, …) stays off.
-const TOOLS: &str = "Bash,Read,Edit,Write,ToolSearch,WebFetch,WebSearch";
+pub(super) const TOOLS: &str = "Bash,Read,Edit,Write,ToolSearch,WebFetch,WebSearch";
 
 /// Owner decision (§9.6): the sandbox is always on and fails closed; the network is unrestricted.
 /// Claude's commit and PR attribution is hidden (#1873). This is the `never` turn's settings and
@@ -102,7 +102,7 @@ impl<'a> PermissionRoot<'a> {
 /// `--allowedTools` rules. Edit is confined to the workspace (an Edit rule governs Write too). A
 /// bare `Bash` would let every command run outside the sandbox once `ask` allows leaving it, so
 /// only `never`, which never leaves it, and `full`, which bypasses every check, allow Bash by rule.
-fn allowed_tools(mode: PlannerPermissionMode, root: &PermissionRoot<'_>) -> String {
+pub(super) fn allowed_tools(mode: PlannerPermissionMode, root: &PermissionRoot<'_>) -> String {
     let edit = root.rule("Edit", "**");
     let common = format!("Read ToolSearch WebFetch WebSearch mcp__{MCP_SERVER_KEY} {edit}");
     match mode {
@@ -127,7 +127,7 @@ pub enum SpawnPurpose {
 }
 
 /// The stream-json print mode every `claude -p` this module starts runs in.
-const PRINT_MODE: [&str; 6] = [
+pub(super) const PRINT_MODE: [&str; 6] = [
     "-p",
     "--input-format",
     "stream-json",
@@ -147,7 +147,7 @@ pub struct ResumeTruncation {
 
 impl ResumeTruncation {
     /// One token each, like `--model=`, so a value can never be read as a flag.
-    fn flags(&self) -> [OsString; 2] {
+    pub(super) fn flags(&self) -> [OsString; 2] {
         [
             format!("--resume-session-at={}", self.at).into(),
             format!("--resume-drops-turn={}", self.drops_turn).into(),
@@ -173,85 +173,9 @@ pub(crate) fn truncation_check_argv(thread: Uuid, truncation: &ResumeTruncation)
     args
 }
 
-/// `selection` is the card's stored choice (#1822 6′): a model rides as `--model=<value>` and an
-/// effort as `--effort=<level>`, one token each so a value can never be read as a flag; the CLI
-/// judges the model and refuses one it cannot run. `None` passes the flag not at all, so the CLI
-/// runs its default. `truncation` rides right after `--resume <thread>`; a new session has nothing
-/// to cut. `mode` is the card's permission mode, read at this spawn (#2348); every mode loads the
-/// project setting source, which is also where `CLAUDE.md` and `AGENTS.md` come from. A turn runs
-/// with `--disable-slash-commands`; a compaction runs without it, since the flag disables every
-/// command, built-in `/compact` included.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn argv(
-    thread: Uuid,
-    purpose: SpawnPurpose,
-    start: SessionStart,
-    truncation: Option<&ResumeTruncation>,
-    selection: &TurnModelSelection,
-    mode: PlannerPermissionMode,
-    cwd: &Path,
-    mcp_shim: &Path,
-    instructions: &Path,
-) -> Result<Vec<OsString>> {
-    let root = PermissionRoot::new(cwd)?;
-    let session_flag = match start {
-        SessionStart::New => "--session-id",
-        SessionStart::Resume => "--resume",
-    };
-    let mut args: Vec<OsString> = PRINT_MODE.into_iter().map(OsString::from).collect();
-    args.push("--replay-user-messages".into());
-    args.push("--include-partial-messages".into());
-    args.push(session_flag.into());
-    args.push(thread.to_string().into());
-    if let Some(truncation) = truncation {
-        if start == SessionStart::New {
-            return Err(CalmError::Conflict(
-                "a Claude conversation that has no session yet has no turn to remove".into(),
-            ));
-        }
-        args.extend(truncation.flags());
-    }
-    if let Some(model) = &selection.model {
-        args.push(format!("--model={model}").into());
-    }
-    if let Some(effort) = &selection.effort {
-        args.push(format!("--effort={effort}").into());
-    }
-    args.push("--setting-sources".into());
-    args.push("project".into());
-    if purpose == SpawnPurpose::Turn {
-        args.push("--disable-slash-commands".into());
-    }
-    for arg in ["--tools", TOOLS, "--strict-mcp-config"] {
-        args.push(arg.into());
-    }
-    args.push("--mcp-config".into());
-    args.push(claude_mcp_config_json(mcp_shim)?.into());
-    args.push("--settings".into());
-    args.push(turn_settings_json(mode, &root).into());
-    match mode {
-        PlannerPermissionMode::Never => {
-            args.push("--permission-prompts".into());
-            args.push("none".into());
-        }
-        PlannerPermissionMode::Ask => {
-            args.push("--permission-prompt-tool".into());
-            args.push("stdio".into());
-        }
-        // Every check is bypassed; whatever would still ask (a workspace's
-        // `disableBypassPermissionsMode`) fails as under `never`.
-        PlannerPermissionMode::Full => {
-            args.push("--permission-mode".into());
-            args.push("bypassPermissions".into());
-            args.push("--permission-prompts".into());
-            args.push("none".into());
-        }
-    }
-    args.push("--allowedTools".into());
-    args.push(allowed_tools(mode, &root).into());
-    args.push("--append-system-prompt-file".into());
-    args.push(instructions.as_os_str().to_owned());
-    Ok(args)
+/// Build argv from the selected typed role contract.
+pub(crate) fn argv(role: &impl super::role::LaunchRole) -> Result<Vec<OsString>> {
+    role.argv()
 }
 
 /// Ambient keys a Claude Planner inherits: the Codex daemon's list without the Codex, OpenAI and
@@ -268,7 +192,7 @@ pub(crate) fn passthrough_keys() -> impl Iterator<Item = &'static str> {
 /// What the environment is computed from; the MCP token joins only the turn's own spawn.
 pub(crate) struct EnvInputs<'a> {
     pub path: OsString,
-    pub config_dir: &'a Path,
+    pub config_source: ConfigSource<'a>,
     pub mcp_socket: &'a Path,
     /// `(UPPER, lower, value)` from the server's proxy resolver.
     pub proxy: &'a [(String, String, String)],
@@ -280,17 +204,24 @@ pub(crate) fn session_env(
     config_dir: &Path,
 ) -> Result<Vec<(String, OsString)>> {
     let kernel_path = crate::kernel_bin_path::kernel_led_path().map_err(CalmError::from)?;
-    Ok(base_env(&EnvInputs {
-        path: kernel_path.path,
-        config_dir,
-        mcp_socket: &params.host.mcp_socket,
-        proxy: &params.proxy,
-    }))
+    Ok(base_env(
+        &PlannerEnvironment,
+        &EnvInputs {
+            path: kernel_path.path,
+            config_source: ConfigSource::Dedicated(config_dir),
+            mcp_socket: &params.host.mcp_socket,
+            proxy: &params.proxy,
+        },
+    ))
 }
 
 /// The `env_clear()` environment of the `--version` check: everything but the MCP token.
-pub(crate) fn base_env(inputs: &EnvInputs<'_>) -> Vec<(String, OsString)> {
-    let mut env: Vec<(String, OsString)> = passthrough_keys()
+pub(crate) fn base_env(
+    role: &impl super::role::EnvironmentRole,
+    inputs: &EnvInputs<'_>,
+) -> Vec<(String, OsString)> {
+    let mut env: Vec<(String, OsString)> = role
+        .passthrough_keys()
         .filter_map(|key| std::env::var_os(key).map(|value| (key.to_string(), value)))
         .collect();
     for (upper, lower, value) in inputs.proxy {
@@ -298,10 +229,9 @@ pub(crate) fn base_env(inputs: &EnvInputs<'_>) -> Vec<(String, OsString)> {
         env.push((lower.clone(), value.into()));
     }
     env.push(("PATH".into(), inputs.path.clone()));
-    env.push((
-        "CLAUDE_CONFIG_DIR".into(),
-        inputs.config_dir.as_os_str().to_owned(),
-    ));
+    if let ConfigSource::Dedicated(path) = &inputs.config_source {
+        env.push(("CLAUDE_CONFIG_DIR".into(), path.as_os_str().to_owned()));
+    }
     env.push((
         "NEIGE_MCP_SOCKET".into(),
         inputs.mcp_socket.as_os_str().to_owned(),

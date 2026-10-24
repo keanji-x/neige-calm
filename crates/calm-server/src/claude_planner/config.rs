@@ -206,12 +206,15 @@ impl ClaudePlannerHost {
         &self,
         config: &ClaudePlannerConfig,
     ) -> Result<Vec<(String, std::ffi::OsString)>> {
-        Ok(super::spawn::base_env(&super::spawn::EnvInputs {
-            path: crate::kernel_bin_path::kernel_led_path()?.path,
-            config_dir: &config.config_dir,
-            mcp_socket: &self.mcp_socket,
-            proxy: &[],
-        }))
+        Ok(super::spawn::base_env(
+            &super::role::PlannerEnvironment,
+            &super::spawn::EnvInputs {
+                path: crate::kernel_bin_path::kernel_led_path()?.path,
+                config_source: super::role::ConfigSource::Dedicated(&config.config_dir),
+                mcp_socket: &self.mcp_socket,
+                proxy: &[],
+            },
+        ))
     }
 }
 
