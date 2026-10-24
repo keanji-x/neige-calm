@@ -148,25 +148,9 @@ pub fn ensure_track_worktree<E: From<crate::error::Error>>(
     if !output.status.success() {
         return Err(git_failed("git worktree add", &target.repo_root, &output).into());
     }
-    if let Err(error) = require_physical_target(target) {
-        // We hold the metadata lock and just created this registration. Let Git
-        // remove it (including the redirected checkout), without reacquiring the lock.
-        let cleanup = isolated_git_command()
-            .arg("-C")
-            .arg(&target.repo_root)
-            .args(["worktree", "remove", "--force"])
-            .arg(&target.path)
-            .output()
-            .map_err(|cleanup| Error::Internal(format!("{error}; worktree cleanup: {cleanup}")))?;
-        if !cleanup.status.success() {
-            return Err(Error::Internal(format!(
-                "{error}; {}",
-                git_failed("git worktree remove", &target.repo_root, &cleanup)
-            ))
-            .into());
-        }
-        return Err(error.into());
-    }
+    // Repository code may have redirected the path during checkout. Fail closed
+    // without cleanup: the mutable pathname no longer identifies what we created.
+    require_physical_target(target)?;
     Ok(())
 }
 
