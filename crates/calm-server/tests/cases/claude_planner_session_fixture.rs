@@ -2,14 +2,9 @@
 //! (`tests/fixtures/claude_planner_fake/claude.sh`), a data dir, a workspace, and an in-memory
 //! repo with a Planner card, around a real `ClaudePlannerSession`.
 //!
-//! Safety: every rig mints a fresh `data_dir` (so a fresh marker instance) and a fresh worker
-//! session id, so the host-wide sweep of one test can only match processes that test started. The
-//! default `Rig` kills whatever still carries its own marker. Registered-only tests use
-//! `RegisteredRig`: its execution fixture owns supervisor shutdown and payload reap. Both
-//! variants share the same session, host and database construction below.
+//! The real execution fixture owns supervisor shutdown and payload reap for every rig.
 
 use calm_types::organization::LEGACY_OWNER_USER_ID;
-use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -17,7 +12,6 @@ use std::time::Duration;
 use calm_server::card_role_cache::CardRoleCache;
 use calm_server::claude_planner::config::{ClaudePlannerConfig, ClaudePlannerHost};
 use calm_server::claude_planner::session::{ClaudePlannerSession, ClaudePlannerSessionParams};
-use calm_server::claude_planner::stop::{MARKER_KEY, sigkill_verified_for_test};
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{
     SqlxRepo, card_create_with_id_tx, session_set_harness_observation_runtime_tx,
@@ -25,7 +19,6 @@ use calm_server::db::sqlite::{
 };
 use calm_server::harness::held_requests::{HeldRequestMessage, HeldRequestSender};
 use calm_server::model::{CardRole, NewArea, NewCard, NewTrack, new_id};
-use calm_server::proc_identity::read_proc_start_time;
 use calm_server::session_projection_repo::{
     AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
 };
@@ -46,51 +39,7 @@ pub const P_D_FIXTURE: &str = concat!(
     "/../provider/tests/fixtures/claude_planner_stream/pB_emptycfg.ndjson"
 );
 
-pub struct Rig {
-    registered: RegisteredRig,
-}
-
-impl Rig {
-    pub async fn new(scenario: &str) -> Self {
-        Self::with_instructions(scenario, "Planner instructions for the fake.").await
-    }
-
-    pub async fn with_instructions(scenario: &str, instructions: &str) -> Self {
-        Self {
-            registered: RegisteredRig::with_execution_interval(
-                scenario,
-                instructions,
-                Duration::from_secs(1),
-            )
-            .await,
-        }
-    }
-
-    pub fn marker(&self) -> String {
-        self.host.instance.marker(&self.worker_session_id)
-    }
-
-    /// Live (non-zombie) processes carrying this rig's exact marker.
-    pub fn marked_pids(&self) -> Vec<i32> {
-        self.marked().into_iter().map(|(pid, _)| pid).collect()
-    }
-
-    fn marked(&self) -> Vec<(i32, u64)> {
-        marked(&HashSet::from([self.marker()]))
-    }
-}
-
-impl std::ops::Deref for Rig {
-    type Target = RegisteredRig;
-
-    fn deref(&self) -> &Self::Target {
-        &self.registered
-    }
-}
-
-/// For tests whose commands all run through the registered executor, including turns,
-/// compaction and rewind. Tests that inspect the Linux marker lifecycle use `Rig`.
-/// This owns the existing execution fixture directly; it has no legacy marker cleanup.
+/// Real executor-backed provider sessions, including turns, compaction and rewind.
 pub struct RegisteredRig {
     _execution: crate::support::execution::Fixture,
     pub dir: tempfile::TempDir,
@@ -110,6 +59,10 @@ pub struct RegisteredRig {
 }
 
 impl RegisteredRig {
+    pub async fn with_instructions(scenario: &str, instructions: &str) -> Self {
+        Self::with_execution_interval(scenario, instructions, Duration::from_secs(1)).await
+    }
+
     pub async fn new(scenario: &str) -> Self {
         Self::with_execution_interval(
             scenario,
@@ -357,16 +310,6 @@ impl RegisteredRig {
     }
 }
 
-impl Drop for Rig {
-    /// Kills only through the `start_time`-verified signal, so a pid recycled since the scan is
-    /// never hit.
-    fn drop(&mut self) {
-        for (pid, start_time) in self.marked() {
-            sigkill_verified_for_test(pid, start_time);
-        }
-    }
-}
-
 /// The card's stored transcript rows of one `method`, oldest first, as their params.
 pub async fn card_rows(repo: &dyn Repo, card_id: &str, method: &str) -> Vec<Value> {
     repo.harness_item_list_by_card(card_id, 0, 10_000, false)
@@ -458,38 +401,6 @@ pub(super) async fn worker_session_row(
     .await
     .expect("worker session row");
     tx.commit().await.expect("commit");
-}
-
-/// `(pid, start_time)` of every live process carrying one of `markers`, found without the code
-/// under test; the `start_time` is read before the environ.
-pub fn marked(markers: &HashSet<String>) -> Vec<(i32, u64)> {
-    let prefix = format!("{MARKER_KEY}=");
-    let mut found = Vec::new();
-    for entry in std::fs::read_dir("/proc").expect("proc").flatten() {
-        let Some(pid) = entry
-            .file_name()
-            .to_str()
-            .and_then(|s| s.parse::<i32>().ok())
-        else {
-            continue;
-        };
-        let Some(start_time) = read_proc_start_time(pid) else {
-            continue;
-        };
-        let Ok(environ) = std::fs::read(format!("/proc/{pid}/environ")) else {
-            continue;
-        };
-        let is_marked = environ.split(|&b| b == 0).any(|entry| {
-            entry
-                .strip_prefix(prefix.as_bytes())
-                .and_then(|v| std::str::from_utf8(v).ok())
-                .is_some_and(|v| markers.contains(v))
-        });
-        if is_marked && alive(pid) {
-            found.push((pid, start_time));
-        }
-    }
-    found
 }
 
 /// Present in `/proc` and not a zombie.

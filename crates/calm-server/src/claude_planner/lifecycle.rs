@@ -2,10 +2,10 @@
 //! Boot also retains proof of the pre-C4 marker sweep for processes from older kernels.
 
 use super::config::ClaudePlannerHost;
-use super::stop::{SeamPolicy, sweep};
 use crate::db::sqlite::{ClaudePlannerScope, claude_planner_revoke_tx};
 use crate::db::{RepoEventWrite, write_in_tx_typed};
 use crate::error::Result;
+use crate::planner_process::sweep_pre_c4;
 
 async fn revoke(
     repo: &dyn RepoEventWrite,
@@ -45,8 +45,9 @@ pub async fn boot(repo: &dyn RepoEventWrite, host: &ClaudePlannerHost) -> Result
         &host.instructions_dir.display().to_string(),
     )
     .await;
-    let markers: Vec<&str> = ids.iter().map(String::as_str).collect();
-    let unproven = match sweep(&host.instance, &markers, SeamPolicy::Ignore).await {
+    let mut markers: Vec<&str> = ids.iter().map(String::as_str).collect();
+    markers.push("readiness");
+    let unproven = match sweep_pre_c4(&host.instance, &markers).await {
         Ok(()) => Default::default(),
         Err(error) => {
             tracing::warn!(%error, "claude planner boot pre-C4 sweep did not confirm");
@@ -54,7 +55,7 @@ pub async fn boot(repo: &dyn RepoEventWrite, host: &ClaudePlannerHost) -> Result
         }
     };
     host.pre_c4
-        .set(super::config::PreC4Sweep { unproven })
+        .set(crate::provider_execution::PreC4Sweep { unproven })
         .map_err(|_| {
             crate::error::CalmError::Conflict("Claude boot sweep proof already initialized".into())
         })?;
@@ -197,28 +198,19 @@ pub(crate) async fn stop_session(
     session: &str,
     reason: crate::provider_execution::StopReason,
 ) -> Result<()> {
-    use crate::provider_execution::{self as execution, execution_id};
     let repo = host.completion.repo()?;
     let pool = repo
         .sqlite_db()
         .ok_or(crate::error::CalmError::ExecutionUnavailable)?;
-    let Some(claim) =
-        calm_truth::db::sqlite::provider_execution::load(pool.read_pool(), session).await?
-    else {
-        return Ok(());
-    };
-    let owner = &host.provider_execution;
-    let engine = host.execution.engine();
-    let id = execution_id(claim.record())?;
-    owner.stop(&pool, engine, session, &claim, reason).await?;
-    let engine = execution::engine(engine)?;
-    execution::wait_settled(engine, &id, super::session::SETTLE_AFTER_STOP).await?;
-    if !owner.drivers.contains(&id) {
-        owner
-            .finish(&pool, Some(engine), session, &claim, None)
-            .await?;
-    }
-    Ok(())
+    host.provider_execution
+        .stop_session(
+            &pool,
+            host.execution.engine(),
+            session,
+            reason,
+            super::session::SETTLE_AFTER_STOP,
+        )
+        .await
 }
 
 /// R2 preflight outside SQL. A Live handle supplies the old session's issue lock;

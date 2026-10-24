@@ -9,7 +9,6 @@ use std::path::{Path, PathBuf};
 use serde_json::json;
 use uuid::Uuid;
 
-use super::stop::MARKER_KEY;
 use crate::error::{CalmError, Result};
 use crate::mcp_server::wiring::{MCP_SERVER_KEY, claude_mcp_config_json};
 use crate::planner_permission_mode::PlannerPermissionMode;
@@ -271,7 +270,6 @@ pub(crate) struct EnvInputs<'a> {
     pub path: OsString,
     pub config_dir: &'a Path,
     pub mcp_socket: &'a Path,
-    pub marker: String,
     /// `(UPPER, lower, value)` from the server's proxy resolver.
     pub proxy: &'a [(String, String, String)],
 }
@@ -286,7 +284,6 @@ pub(crate) fn session_env(
         path: kernel_path.path,
         config_dir,
         mcp_socket: &params.host.mcp_socket,
-        marker: params.host.instance.marker(&params.worker_session_id),
         proxy: &params.proxy,
     }))
 }
@@ -309,7 +306,6 @@ pub(crate) fn base_env(inputs: &EnvInputs<'_>) -> Vec<(String, OsString)> {
         "NEIGE_MCP_SOCKET".into(),
         inputs.mcp_socket.as_os_str().to_owned(),
     ));
-    env.push((MARKER_KEY.into(), inputs.marker.clone().into()));
     env.push(("DISABLE_AUTOUPDATER".into(), "1".into()));
     let (key, value) = crate::claude_code_env::DISABLE_AUTO_MEMORY;
     env.push((key.into(), value.into()));

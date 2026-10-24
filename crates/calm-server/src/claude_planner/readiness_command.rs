@@ -9,6 +9,7 @@ use std::path::Path;
 use std::process::{ExitStatus, Stdio};
 use std::time::Duration;
 
+use plugin::child_process::spawn_within;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 /// More than any readiness answer; a longer one is refused, not read. The largest is the
@@ -93,9 +94,15 @@ async fn run_inner(
     if let Some(input) = &input {
         command.current_dir(input.cwd);
     }
-    let mut child = command.spawn().map_err(RunFailure::Spawn)?;
-    let mut stdout = child.stdout.take().expect("stdout is piped");
-    let stdin = child.stdin.take();
+    #[cfg(unix)]
+    command.process_group(0);
+    let deadline = tokio::time::Instant::now() + timeout;
+    let mut child = spawn_within(command, deadline)
+        .await
+        .map_err(|_| RunFailure::TimedOut(timeout))?
+        .map_err(RunFailure::Spawn)?;
+    let mut stdout = child.stdout().expect("stdout is piped");
+    let stdin = child.stdin();
     let read = async {
         if let (Some(mut stdin), Some(input)) = (stdin, &input) {
             // Dropping the handle closes stdin, which tells the CLI no further input follows. A
@@ -116,16 +123,21 @@ async fn run_inner(
         if bytes.len() as u64 > STDOUT_LIMIT {
             return Err(RunFailure::TooLong);
         }
-        let status = child.wait().await.map_err(RunFailure::Wait)?;
-        Ok((status, bytes))
+        let (status, group) = child.wait_and_release_group().await;
+        group.sweep();
+        Ok((status.map_err(RunFailure::Wait)?, bytes))
     };
-    let outcome = match tokio::time::timeout(timeout, read).await {
+    let outcome = match tokio::time::timeout_at(deadline, read).await {
         Ok(outcome) => outcome,
         Err(_) => Err(RunFailure::TimedOut(timeout)),
     };
     if outcome.is_err() {
         // Kill and reap: a hung or flooding child must not outlive the check.
-        let _ = child.kill().await;
+        child.kill_group();
+        if child.start_kill().is_ok() {
+            let (_, group) = child.wait_and_release_group().await;
+            group.sweep();
+        }
     }
     outcome
 }

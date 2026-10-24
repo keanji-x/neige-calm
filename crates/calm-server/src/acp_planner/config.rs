@@ -192,6 +192,7 @@ pub struct AcpPlannerHost {
     pub(crate) completion: std::sync::Arc<super::execution::Owner>,
     config: Option<AcpPlannerConfig>,
     pub instance: MarkerInstance,
+    pub(crate) pre_c4: std::sync::OnceLock<crate::provider_execution::PreC4Sweep>,
     pub mcp_shim: PathBuf,
     pub mcp_socket: PathBuf,
     /// What Neige's MCP server lists each session, for agents whose requests for its tools are
@@ -223,6 +224,7 @@ impl AcpPlannerHost {
             provider_execution,
             completion,
             execution: Default::default(),
+            pre_c4: std::sync::OnceLock::new(),
             config,
             instance: MarkerInstance::for_data_dir(data_dir, MARKER_KEY)?,
             mcp_shim,
@@ -317,13 +319,25 @@ impl AcpPlannerHost {
         let process =
             super::process::Process::spawn(self, registration, "readiness", &std::env::temp_dir())
                 .await?;
-        process.stop(self, "readiness").await
+        process.stop().await
     }
 }
 
 /// Revoke owned credentials before listening, even without a current registration. A failed
-/// sweep only warns here; every launch still requires its own successful stop before spawning.
+/// pre-C4 marker sweep warns and retains an unproven-session fence; runtime Stop is durable.
 pub async fn boot(repo: &dyn crate::db::RepoEventWrite, host: &AcpPlannerHost) -> Result<()> {
+    boot_with_sweep(repo, host, |ids| async move {
+        let ids: Vec<&str> = ids.iter().map(String::as_str).collect();
+        crate::planner_process::sweep_pre_c4(&host.instance, &ids).await
+    })
+    .await
+}
+
+pub(super) async fn boot_with_sweep<F: std::future::Future<Output = Result<()>>>(
+    repo: &dyn crate::db::RepoEventWrite,
+    host: &AcpPlannerHost,
+    sweep: impl FnOnce(Vec<String>) -> F,
+) -> Result<()> {
     let ids = revoke_owned(repo, None).await?;
     let pass_a_ids = ids.clone();
     if let Err(error) = crate::db::write_in_tx_typed(repo, move |tx| {
@@ -335,20 +349,19 @@ pub async fn boot(repo: &dyn crate::db::RepoEventWrite, host: &AcpPlannerHost) -
     {
         tracing::warn!(%error, "ACP boot pass A failed; durable sweep will retry");
     }
-    let mut ids: Vec<&str> = ids.iter().map(String::as_str).collect();
-    ids.push(super::catalog::WORKER);
-    if let Err(error) = crate::planner_process::sweep(
-        &host.instance,
-        &ids,
-        crate::planner_process::SeamPolicy::Ignore,
-    )
-    .await
-    {
-        tracing::warn!(
-            %error,
-            "ACP boot cleanup failed; old MCP credentials revoked; boot continues; each launch still requires a successful stop"
-        );
-    }
+    let mut markers = ids.clone();
+    markers.push(super::catalog::WORKER.into());
+    markers.push("readiness".into());
+    let unproven = match sweep(markers).await {
+        Ok(()) => Default::default(),
+        Err(error) => {
+            tracing::warn!(%error, "ACP boot pre-C4 sweep did not confirm; old MCP credentials revoked; boot continues");
+            ids.into_iter().collect()
+        }
+    };
+    host.pre_c4
+        .set(crate::provider_execution::PreC4Sweep { unproven })
+        .map_err(|_| CalmError::Conflict("ACP boot sweep proof already initialized".into()))?;
     Ok(())
 }
 

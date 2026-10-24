@@ -1,4 +1,4 @@
-use super::config::{AcpPlannerHost, MARKER_KEY, Registration};
+use super::config::{AcpPlannerHost, Registration};
 use crate::error::{CalmError, Result};
 use plugin::child_process::{GroupChild, set_process_group_leader, spawn_within};
 use provider::acp::{Connection, Incoming, approvals::refuse, protocol};
@@ -35,7 +35,6 @@ impl Process {
         cwd: &std::path::Path,
     ) -> std::result::Result<Self, StartFailure> {
         let Registration { config, profile } = registration;
-        crate::planner_process::stop(&host.instance, worker).await?;
         let mut command = Command::new(&config.command);
         command
             .args(&config.args)
@@ -49,7 +48,6 @@ impl Process {
                     .map_err(CalmError::from)?
                     .path,
             )
-            .env(MARKER_KEY, host.instance.marker(worker))
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
@@ -83,17 +81,15 @@ impl Process {
                 connection.client.close();
                 let _ = child.start_kill();
                 reap(&mut child).await;
-                crate::planner_process::stop(&host.instance, worker).await?;
                 Err(StartFailure::Failed(CalmError::Conflict(refusal)))
             }
         }
     }
-    pub async fn stop(mut self, host: &AcpPlannerHost, worker: &str) -> Result<()> {
+    pub async fn stop(mut self) -> Result<()> {
         self.connection.client.close();
-        let result = crate::planner_process::stop(&host.instance, worker).await;
         let _ = self.child.start_kill();
         reap(&mut self.child).await;
-        result
+        Ok(())
     }
 }
 

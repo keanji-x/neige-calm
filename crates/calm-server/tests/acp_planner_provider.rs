@@ -333,7 +333,9 @@ async fn acp_uses_declared_configuration_keys_and_authenticates_mcp() {
     {
         let presence: Value = serde_json::from_str(line).unwrap();
         assert_eq!(presence["NEIGE_MCP_DAEMON_TOKEN"], false);
-        let operational = presence["readiness"] == false && presence["catalog"] == false;
+        let operational = requests(&root, "session/prompt")
+            .iter()
+            .any(|request| request["_pid"] == presence["_pid"]);
         assert_eq!(presence["NEIGE_MCP_TOKEN"], operational);
         assert_eq!(presence["NEIGE_MCP_SOCKET"], operational);
         assert_eq!(presence["ACP_AMBIENT_SENTINEL"], false);

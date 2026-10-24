@@ -1774,13 +1774,17 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
                 Ok(())
             }
             "interrupt_thread" => {
-                // Both cleanups, whatever the card's binding says now (it may no longer be readable): a Claude stop by this
-                // operation's runtime id signals nothing when nothing carries its marker, and a Codex interrupt of a thread the
-                // daemon does not run is a no-op. Failures are logged; the compensation goes on (#1791 §4.1 row 13). The
-                // runtime id is always in the output (`plan_compensation` already requires it), so a missing one is an error.
+                // Durable provider cleanup is scoped to this operation's runtime, whatever the
+                // card's current binding says. Each owner checks the execution consumer; a Codex
+                // interrupt of an absent thread is a no-op. Failures remain log-only (#1791).
+                // plan_compensation requires the original runtime id in the durable output.
                 let worker_session_id = _output.output_string("runtime_id", "planner harness")?;
-                if let Err(error) =
-                    crate::planner_process::stop(&self.acp_host.instance, &worker_session_id).await
+                if let Err(error) = crate::acp_planner::lifecycle::stop_session(
+                    &self.acp_host,
+                    &worker_session_id,
+                    crate::provider_execution::StopReason::Shutdown,
+                )
+                .await
                 {
                     tracing::warn!(worker_session_id,%error,"ACP compensation cleanup did not confirm");
                 }
@@ -3264,6 +3268,11 @@ mod tests {
     ) -> PlannerHarnessStartAdapter {
         let repo_dyn: Arc<dyn Repo> = repo;
         let daemon = SharedCodexAppServer::new_stub(repo_dyn.clone());
+        let claude = Arc::new(ClaudePlannerHost::unconfigured_scratch().unwrap());
+        let acp =
+            Arc::new(crate::acp_planner::config::AcpPlannerHost::unconfigured_scratch().unwrap());
+        claude.completion.bind(repo_dyn.clone());
+        acp.completion.bind(repo_dyn.clone());
         PlannerHarnessStartAdapter::new(
             repo_dyn,
             daemon.clone(),
@@ -3273,14 +3282,8 @@ mod tests {
             CardRoleCache::new(),
             TrackAreaCache::new(),
             None,
-            std::sync::Arc::new(
-                crate::claude_planner::config::ClaudePlannerHost::unconfigured_scratch()
-                    .expect("scratch claude planner host"),
-            ),
-            std::sync::Arc::new(
-                crate::acp_planner::config::AcpPlannerHost::unconfigured_scratch()
-                    .expect("ACP host"),
-            ),
+            claude,
+            acp,
         )
     }
 

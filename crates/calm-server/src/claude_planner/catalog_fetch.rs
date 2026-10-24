@@ -39,8 +39,7 @@ pub(crate) fn argv(settings: &str) -> Vec<&str> {
     ]
 }
 
-/// Run the exchange with `env` (the spawn's own allowlisted environment, readiness marker
-/// included) in `cwd` through [`readiness_command::run_with_input`], and parse the list strictly.
+/// Run the exchange with `env` (the spawn's own allowlisted environment, without a marker or MCP token) in `cwd` through [`readiness_command::run_with_input`], and parse the list strictly.
 /// `Err` is neige's own sentence for why there is no list.
 pub async fn fetch(
     binary: &Path,

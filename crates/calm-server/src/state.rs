@@ -846,14 +846,14 @@ impl AppState {
         mcp_shim: PathBuf,
         mcp_socket: PathBuf,
     ) -> Self {
-        self.route.acp_planner = Arc::new(
-            AcpPlannerHost::new(Some(config), data_dir, mcp_shim, mcp_socket)
-                .expect("ACP host")
-                .with_tool_names(crate::mcp_server::transport::SessionToolNames::new(
-                    self.route.mcp_context.clone(),
-                    crate::mcp_server::build_default_registry(),
-                )),
-        );
+        let mut host = AcpPlannerHost::new(Some(config), data_dir, mcp_shim, mcp_socket)
+            .expect("ACP host")
+            .with_tool_names(crate::mcp_server::transport::SessionToolNames::new(
+                self.route.mcp_context.clone(),
+                crate::mcp_server::build_default_registry(),
+            ));
+        host.pre_c4 = self.route.acp_planner.pre_c4.clone();
+        self.route.acp_planner = Arc::new(host);
         self.route.acp_planner.completion.bind(self.raw.clone());
         self.route
             .acp_planner

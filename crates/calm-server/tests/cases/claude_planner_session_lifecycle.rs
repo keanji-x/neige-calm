@@ -11,7 +11,7 @@ use provider::TurnModelSelection;
 use provider::control::TurnStartOutcome;
 
 use super::claude_planner_session_fixture::{
-    Rig, client_id, completed_turn, request, until_completed, wait_for_file,
+    RegisteredRig as Rig, client_id, completed_turn, request, until_completed, wait_for_file,
 };
 
 fn started(outcome: TurnStartOutcome<CalmError, StartDiagnostic>) -> String {
@@ -59,10 +59,6 @@ async fn an_ignored_interrupt_is_ended_by_the_stop_timer_within_budget() {
         "the timer, not the CLI, ended it: {elapsed:?}"
     );
     assert_eq!(rig.outcomes().await[0]["status"], "interrupted");
-    assert!(
-        rig.marked_pids().is_empty(),
-        "no marked process after the timer"
-    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -87,7 +83,6 @@ async fn stdout_that_is_not_utf8_fails_the_turn_as_protocol() {
     assert_eq!(completed["status"], "failed");
     let message = completed["error"]["message"].as_str().unwrap_or("");
     assert!(message.starts_with("protocol"), "{message}");
-    assert!(rig.marked_pids().is_empty());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -168,7 +163,6 @@ async fn a_ready_result_wins_over_a_stop_that_fires_with_it() {
     assert_eq!(completed["id"], turn.as_str());
     assert_eq!(completed["status"], "completed");
     assert_eq!(rig.outcomes().await[0]["status"], "completed");
-    assert!(rig.marked_pids().is_empty());
 }
 
 /// #1791 §5.1 item 2: the credential is minted at the first turn and at most once per harness;
@@ -353,7 +347,6 @@ async fn a_cli_that_never_stops_writing_is_stopped_within_budget() {
         .expect("settled by settle_by");
 
     assert_eq!(completed_turn(&seen)["status"], "interrupted");
-    assert!(rig.marked_pids().is_empty());
 }
 
 /// The CLI names (and so creates) the session before a later init check fails the turn: the row is
@@ -510,10 +503,6 @@ async fn a_cli_ignoring_sigterm_still_settles_by_settle_by() {
     );
     assert_eq!(completed_turn(&seen)["status"], "interrupted");
     assert_eq!(rig.outcomes().await[0]["status"], "interrupted");
-    assert!(
-        rig.marked_pids().is_empty(),
-        "the stubborn CLI did not survive"
-    );
 }
 
 /// #1791 PR4 (§5.1 token invariant): a first-turn mint on a row superseded after the run loop's

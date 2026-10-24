@@ -1,6 +1,6 @@
 //! Claude turns and compaction use the real Engine -> SessionExecutor -> executor rig.
 use super::claude_planner_session_fixture::{
-    RegisteredRig, Rig, client_id, completed_turn, request, until_completed,
+    RegisteredRig, RegisteredRig as Rig, client_id, completed_turn, request, until_completed,
 };
 use calm_server::planner_permission_mode::PlannerPermissionMode;
 use calm_truth::db::sqlite::provider_execution as sql;

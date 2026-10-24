@@ -428,7 +428,6 @@ fn the_spawn_env_disables_claude_auto_memory() {
         path: "/usr/bin".into(),
         config_dir: Path::new("/home/owner/.claude"),
         mcp_socket: Path::new("/run/calm/mcp.sock"),
-        marker: "marker".into(),
         proxy: &[],
     });
     let values: Vec<&std::ffi::OsString> = env

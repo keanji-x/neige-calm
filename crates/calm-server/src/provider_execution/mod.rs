@@ -20,6 +20,17 @@ pub mod stdio;
 pub mod sweep;
 pub use sql::{Claim, Decision, Purpose, Record, StopReason};
 
+/// Boot-owned absence proof for native sessions created before registered execution.
+#[derive(Clone, Debug)]
+pub(crate) struct PreC4Sweep {
+    pub(crate) unproven: std::collections::BTreeSet<String>,
+}
+impl PreC4Sweep {
+    pub(crate) fn proves_absent(&self, session: &str) -> bool {
+        !self.unproven.contains(session)
+    }
+}
+
 pub enum CompletionEvidence {
     Settled(Settlement),
     Unconfirmed,
@@ -173,6 +184,39 @@ pub(crate) async fn request_stop_tx(
 }
 
 impl ProviderExecution {
+    /// Stop the exact session execution and await settlement, then complete an orphaned driver.
+    /// Compensation may invoke several owners; persisted metadata selects the owning consumer.
+    pub(crate) async fn stop_session(
+        &self,
+        pool: &SqliteDb,
+        engine: Option<&ExecutionEngine>,
+        session: &str,
+        reason: StopReason,
+        budget: Duration,
+    ) -> Result<()> {
+        let Some(claim) = sql::load(pool.read_pool(), session).await? else {
+            return Ok(());
+        };
+        let id = execution_id(claim.record())?;
+        let row = executions::load(pool.read_pool(), id.as_str())
+            .await?
+            .ok_or_else(|| conflict("execution disappeared"))?;
+        let metadata: ExecutionMetadata = serde_json::from_str(&row.intent_json)?;
+        if metadata.consumer.0 != self.owner.consumer() {
+            return Ok(());
+        }
+        if metadata.id != id || metadata.alias.0 != sweep::alias(session, id.as_str()) {
+            return Err(conflict("provider session alias changed"));
+        }
+        self.stop(pool, engine, session, &claim, reason).await?;
+        let engine = self::engine(engine)?;
+        wait_settled(engine, &id, budget).await?;
+        if !self.drivers.contains(&id) {
+            self.finish(pool, Some(engine), session, &claim, None)
+                .await?;
+        }
+        Ok(())
+    }
     /// Caller holds its session issue lock. SQL errors are never absence.
     pub async fn admission_gate(
         &self,

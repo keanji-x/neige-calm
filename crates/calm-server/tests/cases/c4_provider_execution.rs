@@ -1,5 +1,5 @@
 //! C4.1 uses the production owner, Engine, SessionExecutor and real supervisor.
-use super::claude_planner_session_fixture::{RegisteredRig, Rig, request};
+use super::claude_planner_session_fixture::{RegisteredRig, RegisteredRig as Rig, request};
 use calm_server::{error::CalmError, provider_execution as owner};
 use calm_truth::db::sqlite::{provider_execution as sql, workspace_execution as executions};
 use provider::control::{CompactSubmission, EditPreparation};

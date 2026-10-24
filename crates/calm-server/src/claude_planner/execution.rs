@@ -295,7 +295,7 @@ pub(super) async fn intent(
     // Resolve that final environment before classifying either side of the payload.
     let env = env
         .into_iter()
-        .filter(|(key, _)| key != super::stop::MARKER_KEY && key != "NEIGE_MCP_TOKEN")
+        .filter(|(key, _)| key != "NEIGE_MCP_TOKEN")
         .collect::<std::collections::BTreeMap<_, _>>()
         .into_iter()
         .filter_map(|(key, value)| {

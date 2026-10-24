@@ -176,12 +176,12 @@ async fn acp_catalog_does_not_require_optional_close_capability() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn acp_catalog_cancellation_stops_marked_descendants_without_another_request() {
+async fn acp_catalog_cancellation_kills_process_group_without_another_request() {
     cancelled_catalog_stops_children("catalog_cancel").await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn acp_catalog_cancellation_during_initialize_stops_marked_descendants() {
+async fn acp_catalog_cancellation_during_initialize_kills_process_group() {
     cancelled_catalog_stops_children("catalog_cancel_initialize").await;
 }
 
@@ -204,36 +204,43 @@ async fn cancelled_catalog_stops_children(scenario: &str) {
         .unwrap()
         .parse()
         .unwrap();
-    let instance = calm_server::planner_process::MarkerInstance::for_data_dir(
-        &root.data_dir(),
-        calm_server::acp_planner::config::MARKER_KEY,
-    )
-    .unwrap();
-    let marker = instance.marker("catalog");
-    assert!(calm_server::proc_identity::proc_env_contains(
-        pid,
-        calm_server::acp_planner::config::MARKER_KEY,
-        &marker
-    ));
+    let identity = calm_server::proc_identity::read_proc_start_time(pid).unwrap();
+    // The helper must belong to the native control process's own group.
+    let pgid = unsafe { libc::getpgid(pid) };
+    assert!(pgid > 1 && pgid != unsafe { libc::getpgrp() });
+    let leader = requests(&root, "initialize").last().unwrap()["_pid"]
+        .as_i64()
+        .unwrap();
+    assert_eq!(
+        i64::from(pgid),
+        leader,
+        "helper belongs to the discovery leader's group"
+    );
+    let environ = std::fs::read(format!("/proc/{pid}/environ")).unwrap();
+    assert!(
+        !environ
+            .split(|byte| *byte == 0)
+            .any(|entry| entry.starts_with(b"NEIGE_ACP_PLANNER=")),
+        "catalog must not carry a marker"
+    );
     query.abort();
     assert!(query.await.unwrap_err().is_cancelled());
     let stopped = tokio::time::timeout(Duration::from_secs(3), async {
-        while calm_server::proc_identity::proc_env_contains(
-            pid,
-            calm_server::acp_planner::config::MARKER_KEY,
-            &marker,
-        ) {
+        while calm_server::proc_identity::read_proc_start_time(pid).is_some()
+            && std::fs::read_to_string(format!("/proc/{pid}/stat"))
+                .is_ok_and(|stat| !stat.split_once(") ").unwrap().1.starts_with('Z'))
+        {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
     })
     .await;
-    // Clean the deliberately orphaned helper even when this reproduction is red.
-    calm_server::planner_process::stop(&instance, "catalog")
-        .await
-        .unwrap();
+    // Clean up even when the reproduction is red.
+    if calm_server::proc_identity::read_proc_start_time(pid) == Some(identity) {
+        plugin::child_process::kill_process_group(pgid);
+    }
     assert!(
         stopped.is_ok(),
-        "cancelled catalog discovery left its marked helper running"
+        "cancelled discovery left a group member running"
     );
     stack.shutdown().await;
 }

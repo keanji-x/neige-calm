@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 
 pub(super) const WORKER: &str = "catalog";
 const TTL: Duration = Duration::from_secs(30);
+const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(30);
 type Catalog = (Configuration, i64);
 pub(super) type DiscoveryCache = tokio::sync::Mutex<Option<Entry>>;
 
@@ -47,10 +48,14 @@ impl AcpPlannerHost {
         provider: &AgentProvider,
         cwd: Option<&Path>,
     ) -> Option<Catalog> {
+        // One deadline includes contention for the native discovery slot.
+        let deadline = tokio::time::Instant::now() + DISCOVERY_TIMEOUT;
         // Check registration even before consulting the cache.
         let registration = self.registration(provider).ok()?;
         let key = cwd.map(Path::to_path_buf);
-        let mut cache = self.discovery.lock().await;
+        let mut cache = tokio::time::timeout_at(deadline, self.discovery.lock())
+            .await
+            .ok()?;
         if let Some(entry) = cache.as_ref()
             && entry.provider == *provider
             && entry.cwd == key
@@ -59,7 +64,7 @@ impl AcpPlannerHost {
             return entry.catalog.clone();
         }
         let started = Instant::now();
-        let result: Result<Configuration> = async {
+        let result: Result<Configuration> = tokio::time::timeout_at(deadline, async {
             let scratch = tempfile::Builder::new()
                 .prefix("neige-acp-catalog-")
                 .tempdir()?;
@@ -94,11 +99,16 @@ impl AcpPlannerHost {
                     .map_err(|error| CalmError::Conflict(error.to_string()))
             }
             .await;
-            let stopped = process.stop(self, WORKER).await;
+            let stopped = process.stop().await;
             stopped?;
             discovered
-        }
-        .await;
+        })
+        .await
+        .unwrap_or_else(|_| {
+            Err(CalmError::Conflict(
+                "ACP catalog total deadline expired".into(),
+            ))
+        });
         let catalog = match result {
             Ok(configuration) => Some((configuration, crate::model::now_ms())),
             Err(error) => {

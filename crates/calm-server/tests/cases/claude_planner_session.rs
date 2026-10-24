@@ -1,17 +1,14 @@
 //! #1791 PR2b: a real `ClaudePlannerSession` driving a fake `claude` (bash) through every turn
 //! path — exit, kill, linger, undecodable, stalled write, immediate exit — plus the submission
-//! contract's refusals and the stop seam. See `claude_planner_session_fixture.rs` for the rig.
+//! contract's refusals through the registered executor. See `claude_planner_session_fixture.rs` for the rig.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use calm_server::claude_planner::session::SettlePause;
-use calm_server::claude_planner::stop::{
-    SeamPolicy, clear_claude_planner_stop_failure_for_test, fail_claude_planner_stop_for_test,
-    sigkill_verified_for_test, stop, sweep,
-};
 use calm_server::error::CalmError;
 use calm_server::harness::backend::{StartDiagnostic, TurnStartFailure};
+use calm_server::planner_process::sigkill_verified_for_test;
 use calm_server::proc_identity::read_proc_start_time;
 use provider::InputItem;
 use provider::TurnModelSelection;
@@ -21,8 +18,8 @@ use serde_json::Value;
 use tokio::sync::Notify;
 
 use super::claude_planner_session_fixture::{
-    P_D_FIXTURE, Rig, alive, client_id, cmdline, completed_turn, request, until_completed,
-    wait_for_file,
+    P_D_FIXTURE, RegisteredRig as Rig, alive, client_id, cmdline, completed_turn, request,
+    until_completed, wait_for_file,
 };
 
 fn started(outcome: TurnStartOutcome<CalmError, StartDiagnostic>) -> String {
@@ -123,10 +120,6 @@ async fn exit_path_records_the_outcome_before_turn_completed() {
     assert!(
         rig.instructions_files().is_empty(),
         "file removed before emit"
-    );
-    assert!(
-        rig.marked_pids().is_empty(),
-        "no marked process before emit"
     );
     pause.release.notify_one();
     let seen = until_completed(&mut rx).await;
@@ -259,16 +252,11 @@ async fn a_surviving_setsid_child_of_a_successful_exit_is_gone_before_turn_compl
         .read_bin("orphan")
         .and_then(|pid| pid.trim().parse::<i32>().ok())
         .map(alive);
-    let marked = rig.marked_pids();
     assert_eq!(completed_turn(&seen)["status"], "completed");
     assert_eq!(
         orphan_alive,
         Some(false),
         "the setsid child outlived settlement"
-    );
-    assert!(
-        marked.is_empty(),
-        "marked processes at TurnCompleted: {marked:?}"
     );
 }
 
@@ -337,7 +325,6 @@ async fn a_killed_cli_settles_failed_with_its_exit_status() {
     assert_eq!(outcomes.len(), 1);
     assert_eq!(outcomes[0]["id"], turn.as_str());
     assert_eq!(outcomes[0]["status"], "failed");
-    assert!(rig.marked_pids().is_empty());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -359,10 +346,6 @@ async fn a_cli_lingering_after_its_result_is_stopped_and_the_turn_completes() {
         .expect("turn_start");
     let seen = until_completed(&mut rx).await;
     assert_eq!(completed_turn(&seen)["status"], "completed");
-    assert!(
-        rig.marked_pids().is_empty(),
-        "the lingering CLI was stopped"
-    );
     assert!(rig.instructions_files().is_empty());
 }
 
@@ -388,7 +371,6 @@ async fn an_undecodable_line_fails_the_turn_as_protocol() {
     let message = completed["error"]["message"].as_str().unwrap_or("");
     assert!(message.starts_with("protocol"), "{message}");
     assert_eq!(rig.outcomes().await[0]["status"], "failed");
-    assert!(rig.marked_pids().is_empty());
 }
 
 /// Count every successful spawn on the session's side (the after-spawn hook runs only then), so a
@@ -667,65 +649,6 @@ async fn the_private_instructions_never_reach_a_cmdline() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn the_stop_seam_fails_without_signalling_until_cleared() {
-    let rig = Rig::new("exit").await;
-    let mut marked = std::process::Command::new("/bin/bash")
-        .args(["-c", "exec sleep 300"])
-        .env_clear()
-        .env("PATH", "/usr/bin:/bin")
-        .env("NEIGE_CLAUDE_PLANNER", rig.marker())
-        .spawn()
-        .expect("spawn marked sleep");
-    let pid = marked.id() as i32;
-    fail_claude_planner_stop_for_test(&rig.worker_session_id);
-
-    let stopped = stop(&rig.host.instance, &rig.worker_session_id).await;
-    let scoped = sweep(
-        &rig.host.instance,
-        &[rig.worker_session_id.as_str()],
-        SeamPolicy::Consult,
-    )
-    .await;
-    let alive_while_armed = alive(pid);
-    clear_claude_planner_stop_failure_for_test(&rig.worker_session_id);
-    let cleared = stop(&rig.host.instance, &rig.worker_session_id).await;
-    let _ = marked.wait();
-
-    assert!(
-        stopped.is_err() && scoped.is_err(),
-        "armed seam fails the stop"
-    );
-    assert!(alive_while_armed, "an armed seam signals nothing");
-    assert!(cleared.is_ok(), "cleared: {cleared:?}");
-    assert!(!alive(pid), "the cleared stop ends the marked process");
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn the_boot_sweep_ignores_the_seam() {
-    let rig = Rig::new("exit").await;
-    let mut marked = std::process::Command::new("/bin/bash")
-        .args(["-c", "exec sleep 300"])
-        .env_clear()
-        .env("PATH", "/usr/bin:/bin")
-        .env("NEIGE_CLAUDE_PLANNER", rig.marker())
-        .spawn()
-        .expect("spawn marked sleep");
-    let pid = marked.id() as i32;
-    fail_claude_planner_stop_for_test(&rig.worker_session_id);
-    let swept = sweep(
-        &rig.host.instance,
-        &[rig.worker_session_id.as_str()],
-        SeamPolicy::Ignore,
-    )
-    .await;
-    clear_claude_planner_stop_failure_for_test(&rig.worker_session_id);
-    let _ = marked.wait();
-
-    assert!(swept.is_ok(), "{swept:?}");
-    assert!(!alive(pid));
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn shutdown_interrupts_the_running_turn_and_refuses_the_next() {
     let rig = Rig::new("hold").await;
     let mut rx = rig.session().subscribe_events();
@@ -750,7 +673,6 @@ async fn shutdown_interrupts_the_running_turn_and_refuses_the_next() {
     assert_eq!(completed["id"], turn.as_str());
     assert_eq!(completed["status"], "interrupted");
     assert_eq!(rig.outcomes().await[0]["status"], "interrupted");
-    assert!(rig.marked_pids().is_empty());
     assert!(matches!(
         rig.session()
             .turn_start(
@@ -817,59 +739,4 @@ async fn an_image_goes_out_as_base64_and_is_stored_as_its_placeholder() {
         serde_json::json!({ "type": "localImage", "path": path })
     );
     assert!(!stored.to_string().contains("UE5HREFUQQ=="));
-}
-
-/// A `/proc` scan that hangs (an `environ` read blocked on a process's mm lock) fails its stop at
-/// the deadline and leaks its blocking thread; until it returns, every later stop fails closed at
-/// once instead of leaking one more thread per attempt.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_hung_proc_scan_fails_later_stops_at_once_until_it_returns() {
-    use calm_server::claude_planner::stop::{
-        MarkerInstance, hold_claude_planner_scans_for_test, hung_claude_planner_scans_for_test,
-        stop_by,
-    };
-    let dir = tempfile::tempdir().expect("tempdir");
-    let instance =
-        MarkerInstance::for_data_dir(dir.path(), calm_server::claude_planner::stop::MARKER_KEY)
-            .expect("instance");
-    let id = calm_server::model::new_id();
-    hold_claude_planner_scans_for_test(true);
-    let first = stop_by(
-        &instance,
-        &id,
-        tokio::time::Instant::now() + Duration::from_millis(300),
-    )
-    .await;
-    let hung_after_first = hung_claude_planner_scans_for_test();
-    let asked = Instant::now();
-    let second = stop_by(
-        &instance,
-        &id,
-        tokio::time::Instant::now() + Duration::from_secs(3),
-    )
-    .await;
-    let second_took = asked.elapsed();
-    let hung_after_second = hung_claude_planner_scans_for_test();
-    // Released before asserting, so a red run does not leave blocking threads parked.
-    hold_claude_planner_scans_for_test(false);
-
-    let first = first.expect_err("the hung scan fails closed");
-    assert!(
-        first.to_string().contains("did not finish in time"),
-        "{first}"
-    );
-    assert_eq!(hung_after_first, 1);
-    let second = second.expect_err("fails closed at once");
-    assert!(second_took < Duration::from_secs(1), "{second_took:?}");
-    assert!(second.to_string().contains("still hung"), "{second}");
-    assert_eq!(hung_after_second, 1, "no second leaked thread");
-
-    for _ in 0..200 {
-        if hung_claude_planner_scans_for_test() == 0 {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(25)).await;
-    }
-    assert_eq!(hung_claude_planner_scans_for_test(), 0);
-    stop(&instance, &id).await.expect("scans run again");
 }

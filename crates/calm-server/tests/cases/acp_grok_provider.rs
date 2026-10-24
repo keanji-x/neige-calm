@@ -45,7 +45,7 @@ fn turn_argv(root: &Root) -> Vec<Value> {
     lines(root, "argv.jsonl")
         .into_iter()
         .zip(lines(root, "environment.jsonl"))
-        .filter(|(_, launch)| launch["readiness"] == false && launch["catalog"] == false)
+        .filter(|(_, launch)| launch["NEIGE_MCP_TOKEN"] == true)
         .map(|(argv, _)| argv)
         .collect()
 }

@@ -1,4 +1,4 @@
-//! Shared exact-marker process cleanup. Marker keys are supplied by the owning backend.
+//! Boot-only pre-C4 upgrade cleanup. Never used by runtime provider or control paths.
 use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Arc;
@@ -14,8 +14,8 @@ use crate::proc_identity::{parse_proc_stat_fields, proc_entry_vanished, read_pro
 
 const TERM_GRACE: Duration = Duration::from_secs(5);
 const KILL_WAIT: Duration = Duration::from_secs(10);
-/// A stop given no tighter deadline gives up this long after it starts.
-pub const STOP_BOUND: Duration = Duration::from_secs(15);
+/// The boot upgrade sweep gives up this long after it starts.
+const STOP_BOUND: Duration = Duration::from_secs(15);
 /// Under a tight deadline the SIGTERM grace ends this long before it, so SIGKILL still goes out.
 const KILL_RESERVE: Duration = Duration::from_secs(1);
 const POLL: Duration = Duration::from_millis(50);
@@ -44,53 +44,12 @@ impl MarkerInstance {
     }
 }
 
-/// Whether a sweep honours the fixtures-only stop-failure seam. The boot sweep never does.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SeamPolicy {
-    Consult,
-    Ignore,
-}
-
-/// Stop every process carrying this worker session's marker. `Ok` means a scan found none left.
-pub async fn stop(instance: &MarkerInstance, worker_session_id: &str) -> Result<()> {
-    stop_by(instance, worker_session_id, Instant::now() + STOP_BOUND).await
-}
-
-/// [`stop`] that gives up at `until`: `Err` unless a scan found no member by then.
-pub async fn stop_by(
-    instance: &MarkerInstance,
-    worker_session_id: &str,
-    until: Instant,
-) -> Result<()> {
-    sweep_by(instance, &[worker_session_id], SeamPolicy::Consult, until).await
-}
-
-/// One sweep over the markers of a set of worker sessions, one `/proc` pass per scan.
-pub async fn sweep(
+/// Sweep pre-C4 native processes once at boot, bounded by the shared scan deadline.
+pub(crate) async fn sweep_pre_c4(
     instance: &MarkerInstance,
     worker_session_ids: &[&str],
-    seam: SeamPolicy,
 ) -> Result<()> {
-    sweep_by(
-        instance,
-        worker_session_ids,
-        seam,
-        Instant::now() + STOP_BOUND,
-    )
-    .await
-}
-
-/// SIGTERM → grace (at most [`TERM_GRACE`], ending [`KILL_RESERVE`] before `until`) → rescan and
-/// SIGKILL → wait until no member, all by `until`; every scan is bounded by `until` too.
-pub async fn sweep_by(
-    instance: &MarkerInstance,
-    worker_session_ids: &[&str],
-    seam: SeamPolicy,
-    until: Instant,
-) -> Result<()> {
-    if seam == SeamPolicy::Consult {
-        seam::check(worker_session_ids)?;
-    }
+    let until = Instant::now() + STOP_BOUND;
     let markers: Arc<HashSet<String>> = Arc::new(
         worker_session_ids
             .iter()
@@ -154,8 +113,8 @@ async fn wait_empty(
 }
 
 /// Scans abandoned at their deadline whose blocking thread has not returned yet. While one is
-/// hung, every new scan fails closed at once instead of leaking one more blocking thread per stop
-/// attempt (a `turn_start` retry stops every few seconds). Wrapping arithmetic: the abandoned
+/// hung, the other provider's boot scan fails closed at once instead of leaking another blocking
+/// thread. Wrapping arithmetic: the abandoned
 /// scan's own decrement may land before the abandoning increment.
 static HUNG_SCANS: AtomicUsize = AtomicUsize::new(0);
 const SCAN_RUNNING: u8 = 0;
@@ -166,7 +125,7 @@ const SCAN_ABANDONED: u8 = 2;
 /// same-user process can make an `environ` read block (its mm lock held); past `until` the scan is
 /// an `Err` (fail closed) and its blocking thread is leaked until the read returns; until then no
 /// other scan starts (see [`HUNG_SCANS`]).
-pub(crate) async fn scan_off_thread(
+async fn scan_off_thread(
     proc_root: &Path,
     markers: &Arc<HashSet<String>>,
     until: Instant,
@@ -181,8 +140,6 @@ pub(crate) async fn scan_off_thread(
     let phase = Arc::new(AtomicU8::new(SCAN_RUNNING));
     let scan_phase = Arc::clone(&phase);
     let scan = tokio::task::spawn_blocking(move || {
-        #[cfg(feature = "fixtures")]
-        seam::wait_if_scan_held();
         let members = scan_in(&proc_root, &markers);
         if scan_phase
             .compare_exchange(SCAN_RUNNING, SCAN_DONE, Ordering::SeqCst, Ordering::SeqCst)
@@ -218,9 +175,9 @@ pub(crate) async fn scan_off_thread(
 /// A process carrying one of the markers, with the `start_time` read BEFORE its environ: if the
 /// pid changed hands in between, the signal-time check rejects it and the next scan re-reads it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct Member {
-    pub(crate) pid: i32,
-    pub(crate) start_time: u64,
+struct Member {
+    pid: i32,
+    start_time: u64,
 }
 
 /// One pass over `proc_root`. A listing that cannot be read is an `Err`, never an empty (and so
@@ -228,7 +185,7 @@ pub(crate) struct Member {
 /// whose `stat` cannot be read or parsed for another reason is an `Err` only when its environ
 /// carries one of the markers, because a member without a `start_time` can be neither signalled
 /// nor proven gone, while a non-member is not this sweep's business.
-pub(crate) fn scan_in(proc_root: &Path, markers: &HashSet<String>) -> Result<Vec<Member>> {
+fn scan_in(proc_root: &Path, markers: &HashSet<String>) -> Result<Vec<Member>> {
     let entries = std::fs::read_dir(proc_root).map_err(|error| {
         CalmError::Conflict(format!(
             "planner stop cannot list {}: {error}",
@@ -292,7 +249,7 @@ fn carries_marker(proc_dir: &Path, markers: &HashSet<String>) -> bool {
 
 /// Signal each member whose live `start_time` still equals the scanned one; returns the signalled
 /// pids. The check-then-kill window is the same accepted epsilon as `sigkill_verified_members`.
-pub(crate) fn signal_verified(members: &[Member], signal: libc::c_int) -> Vec<i32> {
+fn signal_verified(members: &[Member], signal: libc::c_int) -> Vec<i32> {
     let self_pid = std::process::id() as i32;
     let mut signalled = Vec::new();
     for member in members {
@@ -310,92 +267,119 @@ pub(crate) fn signal_verified(members: &[Member], signal: libc::c_int) -> Vec<i3
     signalled
 }
 
-#[cfg(feature = "fixtures")]
-mod seam {
-    use std::collections::HashSet;
-    use std::sync::{LazyLock, Mutex};
-
-    use crate::error::{CalmError, Result};
-
-    static FAILING: LazyLock<Mutex<HashSet<String>>> = LazyLock::new(Default::default);
-
-    pub(super) fn check(worker_session_ids: &[&str]) -> Result<()> {
-        let failing = FAILING.lock().expect("planner stop seam poisoned");
-        match worker_session_ids.iter().find(|id| failing.contains(**id)) {
-            Some(id) => Err(CalmError::Conflict(format!(
-                "planner stop for {id} failed (fixture)"
-            ))),
-            None => Ok(()),
-        }
-    }
-
-    pub(super) fn arm(worker_session_id: &str) {
-        FAILING
-            .lock()
-            .expect("planner stop seam poisoned")
-            .insert(worker_session_id.to_string());
-    }
-
-    pub(super) fn clear(worker_session_id: &str) {
-        FAILING
-            .lock()
-            .expect("planner stop seam poisoned")
-            .remove(worker_session_id);
-    }
-
-    /// While held, every `/proc` scan blocks on its blocking thread, as a scan stuck on an
-    /// `environ` read does.
-    static SCAN_HELD: LazyLock<(Mutex<bool>, std::sync::Condvar)> = LazyLock::new(Default::default);
-
-    pub(super) fn hold_scans(held: bool) {
-        let (lock, released) = &*SCAN_HELD;
-        *lock.lock().expect("scan hold poisoned") = held;
-        released.notify_all();
-    }
-
-    pub(super) fn wait_if_scan_held() {
-        let (lock, released) = &*SCAN_HELD;
-        let mut held = lock.lock().expect("scan hold poisoned");
-        while *held {
-            held = released.wait(held).expect("scan hold poisoned");
-        }
-    }
-}
-
-#[cfg(not(feature = "fixtures"))]
-mod seam {
-    pub(super) fn check(_worker_session_ids: &[&str]) -> crate::error::Result<()> {
-        Ok(())
-    }
-}
-
-/// Fixtures only: every later `stop` or consulting sweep that covers `worker_session_id` returns
-/// `Err` without signalling anything, until [`clear_claude_planner_stop_failure_for_test`].
-#[cfg(feature = "fixtures")]
-pub fn fail_claude_planner_stop_for_test(worker_session_id: &str) {
-    seam::arm(worker_session_id);
-}
-
-/// Fixtures only: test cleanup kills through the same `start_time`-verified signal as `stop`, so a
+/// Fixtures only: test cleanup kills through the same `start_time`-verified signal as the boot sweep, so a
 /// cleanup can never hit a pid that was recycled after the test captured it. `true` when signalled.
 #[cfg(feature = "fixtures")]
 pub fn sigkill_verified_for_test(pid: i32, start_time: u64) -> bool {
     !signal_verified(&[Member { pid, start_time }], libc::SIGKILL).is_empty()
 }
 
-#[cfg(feature = "fixtures")]
-pub fn clear_claude_planner_stop_failure_for_test(worker_session_id: &str) {
-    seam::clear(worker_session_id);
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-/// Fixtures only: `true` makes every later `/proc` scan hang on its blocking thread until `false`.
-#[cfg(feature = "fixtures")]
-pub fn hold_claude_planner_scans_for_test(held: bool) {
-    seam::hold_scans(held);
-}
+    #[test]
+    fn pre_c4_marker_match_is_an_exact_environment_entry() {
+        let root = tempfile::tempdir().unwrap();
+        let markers = HashSet::from(["KEY=instance:session".to_owned()]);
+        for (entry, expected) in [
+            ("KEY=instance:session", true),
+            ("KEY=instance:session-extra", false),
+            ("OTHER_KEY=instance:session", false),
+            ("PREFIX=KEY=instance:session", false),
+        ] {
+            std::fs::write(root.path().join("environ"), format!("OTHER=x\0{entry}\0")).unwrap();
+            assert_eq!(carries_marker(root.path(), &markers), expected, "{entry}");
+        }
+    }
 
-/// Fixtures only: how many abandoned scans are still hung.
-#[cfg(feature = "fixtures")]
-pub fn hung_claude_planner_scans_for_test() -> usize {
-    HUNG_SCANS.load(Ordering::SeqCst)
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn pre_c4_recycled_pid_identity_is_not_signalled() {
+        let child = std::process::Command::new("/bin/sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        let mut child = child;
+        let pid = child.id() as i32;
+        let start_time = read_proc_start_time(pid).unwrap();
+        let signalled = signal_verified(
+            &[Member {
+                pid,
+                start_time: start_time + 1,
+            }],
+            libc::SIGKILL,
+        );
+        let still_alive = child.try_wait().unwrap().is_none();
+        child.kill().unwrap();
+        child.wait().unwrap();
+        assert!(signalled.is_empty());
+        assert!(still_alive);
+    }
+
+    #[tokio::test]
+    async fn pre_c4_unlistable_proc_fails_closed() {
+        let root = tempfile::tempdir().unwrap();
+        let markers = Arc::new(HashSet::from(["KEY=instance:session".into()]));
+        let error = scan_off_thread(
+            &root.path().join("missing"),
+            &markers,
+            Instant::now() + Duration::from_secs(1),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("cannot list"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn pre_c4_scan_deadline_fails_closed() {
+        use std::os::unix::ffi::OsStrExt;
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join((std::process::id() + 1).to_string());
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::write(dir.join("stat"), "invalid stat").unwrap();
+        // A marked process with unreadable stat still reads environ to determine membership.
+        let fifo = dir.join("environ");
+        let path = std::ffi::CString::new(fifo.as_os_str().as_bytes()).unwrap();
+        // SAFETY: a valid NUL-terminated path inside the private test directory.
+        assert_eq!(unsafe { libc::mkfifo(path.as_ptr(), 0o600) }, 0);
+        let (release, wait) = std::sync::mpsc::channel();
+        let writer = std::thread::spawn(move || {
+            use std::os::unix::fs::OpenOptionsExt;
+            let deadline = std::time::Instant::now() + Duration::from_secs(2);
+            loop {
+                match std::fs::OpenOptions::new()
+                    .write(true)
+                    .custom_flags(libc::O_NONBLOCK)
+                    .open(&fifo)
+                {
+                    Ok(writer) => {
+                        let _ = wait.recv_timeout(Duration::from_secs(2));
+                        drop(writer);
+                        break;
+                    }
+                    Err(error) if error.raw_os_error() == Some(libc::ENXIO) => {
+                        assert!(std::time::Instant::now() < deadline);
+                        std::thread::sleep(Duration::from_millis(1));
+                    }
+                    Err(error) => panic!("{error}"),
+                }
+            }
+        });
+        let markers = Arc::new(HashSet::from(["KEY=instance:session".into()]));
+        let result = scan_off_thread(
+            root.path(),
+            &markers,
+            Instant::now() + Duration::from_millis(50),
+        )
+        .await;
+        // Unblock the abandoned scanner before asserting (also under a broken timeout mutation).
+        let _ = release.send(());
+        writer.join().unwrap();
+        let error = result.unwrap_err();
+        assert!(
+            error.to_string().contains("did not finish in time"),
+            "{error}"
+        );
+    }
 }

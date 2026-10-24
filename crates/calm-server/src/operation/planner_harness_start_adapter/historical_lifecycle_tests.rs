@@ -8,6 +8,7 @@ use crate::operation::{OperationCompletionBus, OperationKey, OperationRepo, Sqlx
 use crate::plugin_host::PluginRegistry;
 use crate::state::DaemonClient;
 use crate::terminal_renderer::TerminalRendererRegistry;
+use calm_truth::db::RepoRead;
 
 struct Fixture {
     repo: Arc<SqlxRepo>,
@@ -43,6 +44,9 @@ impl Fixture {
             ),
         ));
         let adapter = super::tests::adapter_for(repo.clone(), plugin);
+        crate::acp_planner::config::boot(repo.as_ref(), &adapter.acp_host)
+            .await
+            .unwrap();
         let operations = Arc::new(SqlxOperationRepo::new(repo.db().clone()));
         let payload = serde_json::to_value(super::tests::historical_start_payload(
             ActorId::Kernel,
@@ -156,10 +160,10 @@ async fn historical_acp_predecessor_stop_failure_is_strict_before_mint() {
     fx.output
         .set_output_data(PREDECESSOR_SESSION_KEY, json!(predecessor), "test")
         .unwrap();
-    crate::planner_process::fail_claude_planner_stop_for_test(&predecessor);
+    corrupt_predecessor(&fx, &predecessor).await;
     let result = fx.interact().await;
-    crate::planner_process::clear_claude_planner_stop_failure_for_test(&predecessor);
-    assert!(result.unwrap_err().to_string().contains("failed (fixture)"));
+    let error = result.unwrap_err();
+    assert!(error.to_string().contains("missing field"), "{error:?}");
     assert!(output_existing_thread_id(&fx.output).unwrap().is_none());
 }
 
@@ -178,9 +182,8 @@ async fn historical_claude_predecessor_stop_failure_is_best_effort() {
         .await
         .unwrap();
     fx.op.tx_output = Some(fx.output.clone());
-    crate::planner_process::fail_claude_planner_stop_for_test(&predecessor);
+    corrupt_predecessor(&fx, &predecessor).await;
     let result = fx.interact().await;
-    crate::planner_process::clear_claude_planner_stop_failure_for_test(&predecessor);
     result.unwrap();
     assert!(output_existing_thread_id(&fx.output).unwrap().is_some());
 }
@@ -208,10 +211,28 @@ async fn historical_acp_displaced_stop_failure_keeps_committed_output() {
     .await
     .unwrap();
     tx.commit().await.unwrap();
-    crate::planner_process::fail_claude_planner_stop_for_test(&predecessor);
+    sqlx::query("CREATE TABLE c44_displaced_fault (worker TEXT NOT NULL)")
+        .execute(fx.repo.pool())
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO c44_displaced_fault(worker) VALUES (?)")
+        .bind(&predecessor)
+        .execute(fx.repo.pool())
+        .await
+        .unwrap();
+    // A durable read fault after the checkpoint must not discard committed output.
+    // At this boundary the displaced carrier has already passed its unclaimed fence.
+    sqlx::query(concat!(
+        "CREATE TRIGGER c44_displaced_fault AFTER UPDATE OF tx_output_json ON operations ",
+        "BEGIN UPDATE worker_sessions SET provider_execution_json='{}' ",
+        "WHERE id IN (SELECT worker FROM c44_displaced_fault); END",
+    ))
+    .execute(fx.repo.pool())
+    .await
+    .unwrap();
     let result = fx.interact().await;
-    crate::planner_process::clear_claude_planner_stop_failure_for_test(&predecessor);
-    assert!(result.unwrap_err().to_string().contains("failed (fixture)"));
+    let error = result.unwrap_err();
+    assert!(error.to_string().contains("missing field"), "{error:?}");
     let stored = fx
         .ctx
         .operation_repo
@@ -258,4 +279,148 @@ async fn historical_native_start_clears_local_attribution_and_checkpoints_creden
         .await
         .unwrap();
     assert_eq!(row.mcp_token_hash, Some(hash));
+}
+
+async fn runtime_stop_settles(path: &str) {
+    use crate::provider_execution as execution;
+    use workspace_runtime::execution::{ProcessAlias, TrackId, test_support};
+    let mut fx = Fixture::new(AgentProvider::OpenCode, false).await;
+    let root = tempfile::tempdir().unwrap();
+    let supervisor = crate::test_support::execution::Fixture::new(fx.repo.db().clone()).await;
+    fx.adapter
+        .acp_host
+        .execution
+        .bind(supervisor.engine.clone());
+    let worker = fx.worker();
+    let row = fx
+        .repo
+        .session_projection_by_id(&worker)
+        .await
+        .unwrap()
+        .unwrap();
+    let mut intent = test_support::intent(root.path().to_owned());
+    intent.metadata.consumer = crate::acp_planner::execution::CONSUMER.into();
+    let id = intent.metadata.id.clone();
+    intent.metadata.alias = ProcessAlias(execution::sweep::alias(&worker, id.as_str()));
+    intent.metadata.track = TrackId(fx.output.output_string("track_id", "test").unwrap());
+    intent.metadata.program.program = "/bin/sleep".into();
+    intent.metadata.program.args = vec!["300".into()];
+    let (_, guard) = fx
+        .adapter
+        .acp_host
+        .provider_execution
+        .admit(
+            fx.repo.db(),
+            &supervisor.engine,
+            &worker,
+            intent,
+            execution::Purpose::Turn { turn_id: new_id() },
+        )
+        .await
+        .unwrap();
+    execution::release::wait_spawned(&supervisor.engine, &id)
+        .await
+        .unwrap();
+    drop(guard);
+    let factory = PlannerFactory::new(
+        Arc::downgrade(&fx.adapter.daemon),
+        &fx.adapter.claude_host,
+        &fx.adapter.acp_host,
+    );
+    match path {
+        "shutdown" => factory.shutdown_replay(&row).await.unwrap(),
+        "predecessor" => factory
+            .stop_historical_predecessor(&AgentProvider::OpenCode, "card", &worker)
+            .await
+            .unwrap(),
+        "displaced" => factory
+            .stop_displaced_historical(
+                &AgentProvider::OpenCode,
+                &fx.adapter.harness_registry,
+                Some(&worker),
+            )
+            .await
+            .unwrap(),
+        "compensation" => {
+            fx.output
+                .set_output_data(SUCCESSOR_SESSION_KEY, json!(worker), "test")
+                .unwrap();
+            fx.adapter
+                .compensate_step(
+                    &CompensationStep::new(
+                        "interrupt_thread",
+                        json!({"card_id": fx.output.output_string("card_id", "test").unwrap()}),
+                    ),
+                    &fx.output,
+                    &fx.op,
+                    &fx.ctx,
+                )
+                .await
+                .unwrap();
+        }
+        _ => unreachable!(),
+    }
+    assert!(
+        execution::settlement(fx.repo.db(), &id)
+            .await
+            .unwrap()
+            .is_some(),
+        "{path} returned without Engine settlement"
+    );
+    assert!(
+        calm_truth::db::sqlite::provider_execution::load(fx.repo.pool(), &worker)
+            .await
+            .unwrap()
+            .is_none(),
+        "owner completion clears the stopped claim"
+    );
+}
+
+#[tokio::test]
+async fn c4_acp_shutdown_replay_settles_execution() {
+    runtime_stop_settles("shutdown").await;
+}
+#[tokio::test]
+async fn c4_acp_historical_predecessor_settles_execution() {
+    runtime_stop_settles("predecessor").await;
+}
+#[tokio::test]
+async fn c4_acp_displaced_historical_settles_execution() {
+    runtime_stop_settles("displaced").await;
+}
+#[tokio::test]
+async fn c4_acp_compensation_settles_execution() {
+    runtime_stop_settles("compensation").await;
+}
+
+async fn corrupt_predecessor(fx: &Fixture, predecessor: &str) {
+    if fx
+        .repo
+        .session_get(&calm_types::worker::WorkerSessionId(predecessor.into()))
+        .await
+        .unwrap()
+        .is_none()
+    {
+        let card_id = fx.output.output_string("card_id", "test").unwrap();
+        let card = fx.repo.card_get(&card_id).await.unwrap().unwrap();
+        let provider = startable_provider(HarnessProfile::Planner, &card).unwrap();
+        let mut tx = begin_immediate_tx(fx.repo.db()).await.unwrap();
+        let mut init = starting_runtime_init(
+            HarnessProfile::Planner,
+            provider,
+            predecessor.into(),
+            card_id,
+            None,
+            serde_json::to_value(initial_snapshot_with_goal(None)).unwrap(),
+            now_ms(),
+        );
+        init.status = crate::session_projection_repo::WorkerSessionState::Superseded;
+        session_start_runtime_tx(&mut tx, init).await.unwrap();
+        tx.commit().await.unwrap();
+    }
+    sqlx::query("UPDATE worker_sessions SET provider_execution_json='{}' WHERE id=?")
+        .bind(predecessor)
+        .execute(fx.repo.pool())
+        .await
+        .unwrap();
 }

@@ -15,11 +15,12 @@ use std::time::Duration;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use calm_server::claude_planner::stop::{MARKER_KEY, MarkerInstance, sigkill_verified_for_test};
+use calm_server::claude_planner::config::MARKER_KEY;
 use calm_server::config::Config;
 use calm_server::db::prelude::*;
 use calm_server::harness::PlannerHarness;
 use calm_server::model::{CardRole, NewArea};
+use calm_server::planner_process::{MarkerInstance, sigkill_verified_for_test};
 use calm_server::proc_identity::read_proc_start_time;
 use calm_server::session_projection_repo::WorkerSessionProjection;
 use calm_server::state::AppState;
@@ -118,7 +119,7 @@ impl Root {
     pub fn instance(&self) -> MarkerInstance {
         MarkerInstance::for_data_dir(
             &self.data_dir(),
-            calm_server::claude_planner::stop::MARKER_KEY,
+            calm_server::claude_planner::config::MARKER_KEY,
         )
         .expect("marker instance")
     }

@@ -15,7 +15,9 @@ use provider::TurnModelSelection;
 use provider::control::TurnStartOutcome;
 use serde_json::{Value, json};
 
-use super::claude_planner_session_fixture::{Rig, client_id, request, until_completed};
+use super::claude_planner_session_fixture::{
+    RegisteredRig as Rig, client_id, request, until_completed,
+};
 use super::claude_planner_stack_fixture::{Root, Stack};
 
 const ALLOW_LINE: &str = r#"{"type":"control_response","response":{"subtype":"success","request_id":"perm-1","response":{"behavior":"allow"}}}"#;

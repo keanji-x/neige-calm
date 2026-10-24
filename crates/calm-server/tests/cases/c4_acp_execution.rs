@@ -460,7 +460,16 @@ async fn c4_acp_boot_never_resends_held_or_releasing_payload() {
             tx.commit().await.unwrap();
         }
         drop(guard); // a new kernel has no live protocol driver
-        calm_server::acp_planner::config::boot(stack.repo(), session.host())
+        // A new kernel owns a fresh boot proof. Keep the original owner/Engine
+        // below only to observe settlement of the exact registered execution.
+        let rebooted_host = calm_server::acp_planner::config::AcpPlannerHost::new(
+            None,
+            &root.data_dir(),
+            session.host().mcp_shim.clone(),
+            session.host().mcp_socket.clone(),
+        )
+        .unwrap();
+        calm_server::acp_planner::config::boot(stack.repo(), &rebooted_host)
             .await
             .unwrap();
         let after = claim(&stack, &worker).await.unwrap();

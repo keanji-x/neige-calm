@@ -389,68 +389,6 @@ async fn acp_boot_revocation_error_prevents_listener() {
 }
 
 #[cfg(target_os = "macos")]
-fn scan_error(error: impl std::fmt::Display) {
-    assert!(
-        error.to_string().contains("planner stop cannot list /proc"),
-        "{error}"
-    );
-}
-
-#[cfg(target_os = "macos")]
-#[tokio::test]
-async fn acp_boot_readiness_refuses_before_spawn() {
-    let Some(root) = isolated("acp_boot_readiness_refuses_before_spawn") else {
-        return;
-    };
-    let state = AppState::boot(&config(&root, true))
-        .await
-        .unwrap()
-        .into_parts()
-        .0;
-    let checked = crate::agent_providers::ProviderAvailabilityCache::default()
-        .acp(
-            &AgentProvider::OpenCode,
-            crate::agent_providers::Freshness::Recheck,
-            &host(&state),
-        )
-        .await;
-    close(state).await;
-    assert!(
-        !root.join("spawned").exists(),
-        "readiness must not execute the agent"
-    );
-    match checked.verdict {
-        crate::agent_providers::Verdict::Unavailable(error) => scan_error(error),
-        other => panic!("configured ACP must remain unavailable: {other:?}"),
-    }
-}
-
-#[cfg(target_os = "macos")]
-#[tokio::test]
-async fn acp_boot_catalog_refuses_before_spawn() {
-    let Some(root) = isolated("acp_boot_catalog_refuses_before_spawn") else {
-        return;
-    };
-    let state = AppState::boot(&config(&root, true))
-        .await
-        .unwrap()
-        .into_parts()
-        .0;
-    let catalog = host(&state)
-        .discover_catalog(&AgentProvider::OpenCode, Some(&root))
-        .await;
-    close(state).await;
-    assert_eq!(
-        catalog.source,
-        crate::planner_model::catalog::ModelSource::Unavailable
-    );
-    assert!(
-        !root.join("spawned").exists(),
-        "catalog must not execute the agent"
-    );
-}
-
-#[cfg(target_os = "macos")]
 #[tokio::test]
 async fn acp_boot_turn_refuses_unavailable_executor_before_mint() {
     let Some(root) = isolated("acp_boot_turn_refuses_unavailable_executor_before_mint") else {
@@ -551,3 +489,73 @@ mod authentication_tests;
 #[cfg(all(target_os = "linux", feature = "fixtures"))]
 #[cfg(test)]
 mod receipt_tests;
+
+#[tokio::test]
+async fn acp_pre_c4_failed_boot_fences_each_strict_stop() {
+    use super::config::AcpPlannerHost;
+    use crate::harness::backend::factory::PlannerFactory;
+    use std::sync::Arc;
+    let root = tempfile::tempdir().unwrap();
+    let cfg = config(root.path(), false);
+    let repo = Arc::new(SqlxRepo::open(&cfg.db_url).await.unwrap());
+    let row = historical(&repo, root.path(), AgentProvider::OpenCode, true).await;
+    std::fs::create_dir_all(cfg.data_dir_resolved()).unwrap();
+    let host = Arc::new(
+        AcpPlannerHost::new(
+            None,
+            &cfg.data_dir_resolved(),
+            "no-shim".into(),
+            root.path().join("mcp.sock"),
+        )
+        .unwrap(),
+    );
+    host.completion.bind(repo.clone());
+    let expected = row.worker.clone();
+    super::config::boot_with_sweep(repo.as_ref(), &host, |markers| async move {
+        assert!(markers.contains(&expected));
+        Err(crate::error::CalmError::Conflict(
+            "injected pre-C4 sweep failure".into(),
+        ))
+    })
+    .await
+    .unwrap();
+    assert_eq!(token(&repo, &row).await, None);
+    let claude =
+        Arc::new(crate::claude_planner::config::ClaudePlannerHost::unconfigured_scratch().unwrap());
+    let factory = PlannerFactory::new(std::sync::Weak::new(), &claude, &host);
+    let runtime = repo
+        .session_projection_by_id(&row.worker)
+        .await
+        .unwrap()
+        .unwrap();
+    let registry = crate::harness::HarnessRegistry::new();
+    let results = [
+        factory.shutdown_replay(&runtime).await,
+        factory
+            .stop_historical_predecessor(&AgentProvider::OpenCode, &row.card, &row.worker)
+            .await,
+        factory
+            .stop_displaced_historical(&AgentProvider::OpenCode, &registry, Some(&row.worker))
+            .await,
+    ];
+    for (caller, result) in [
+        "shutdown_replay",
+        "stop_historical_predecessor",
+        "stop_displaced_historical",
+    ]
+    .into_iter()
+    .zip(results)
+    {
+        let error = result.expect_err(caller);
+        assert!(error.to_string().contains("pre-C4"), "{caller}: {error}");
+    }
+    // A newly created session was never part of the failed legacy sweep.
+    let fresh = owner(&repo, root.path(), AgentProvider::OpenCode).await;
+    super::lifecycle::stop_session(
+        &host,
+        &fresh.worker,
+        crate::provider_execution::StopReason::Shutdown,
+    )
+    .await
+    .unwrap();
+}

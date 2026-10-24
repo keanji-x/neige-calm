@@ -2,8 +2,11 @@
 #[cfg(all(test, unix))]
 mod boot_tests;
 mod catalog;
+#[cfg(all(test, target_os = "linux"))]
+mod catalog_lifecycle_tests;
 pub mod config;
 pub(crate) mod execution;
+pub(crate) mod lifecycle;
 mod process;
 mod profile;
 pub(crate) mod recovery;

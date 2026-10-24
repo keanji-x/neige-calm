@@ -29,6 +29,11 @@ impl std::fmt::Debug for Owner {
     }
 }
 impl Owner {
+    pub(crate) fn repo(&self) -> Result<&Arc<dyn crate::db::Repo>> {
+        self.repo
+            .get()
+            .ok_or_else(|| conflict("ACP completion repository unavailable"))
+    }
     pub(crate) fn bind(&self, repo: Arc<dyn crate::db::Repo>) {
         let _ = self.repo.set(repo);
     }

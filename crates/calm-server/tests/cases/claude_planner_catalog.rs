@@ -177,12 +177,10 @@ async fn the_list_is_asked_with_the_readiness_allowlist_only() {
             .any(|line| line == format!("CLAUDE_CONFIG_DIR={}", config_dir.display())),
         "{env}"
     );
-    let marker = format!(
-        "{}={}",
-        calm_server::claude_planner::stop::MARKER_KEY,
-        root.instance().marker("readiness")
+    assert!(
+        !init.contains(calm_server::claude_planner::config::MARKER_KEY),
+        "readiness must not carry a marker"
     );
-    assert!(env.lines().any(|line| line == marker), "{env}");
     for key in &init {
         assert!(
             !key.starts_with("ANTHROPIC_") && key != "NEIGE_MCP_TOKEN",

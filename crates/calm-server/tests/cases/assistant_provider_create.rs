@@ -478,7 +478,7 @@ async fn assistant_provider_shutdown_replay_preserves_each_provider_cleanup_cont
         let wiring = stack.state.planner_wiring();
         let (key, marker) = match provider.protocol() {
             AgentProtocol::Claude => (
-                calm_server::claude_planner::stop::MARKER_KEY,
+                calm_server::claude_planner::config::MARKER_KEY,
                 wiring.claude.instance.marker(&runtime.id),
             ),
             AgentProtocol::Acp => (
@@ -551,10 +551,9 @@ async fn assistant_provider_shutdown_replay_preserves_each_provider_cleanup_cont
         }
         child.wait().await.unwrap();
         assert!(outcome.is_ok(), "{outcome:?}");
-        assert_eq!(
-            stopped,
-            provider == AgentProvider::OpenCode,
-            "Claude runtime cleanup uses Engine ownership; ACP retains its native marker until C4.3"
+        assert!(
+            !stopped,
+            "runtime cleanup uses Engine ownership for both providers"
         );
         assert_eq!(
             [

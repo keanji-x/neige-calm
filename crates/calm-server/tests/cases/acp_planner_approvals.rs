@@ -19,7 +19,7 @@ pub(super) fn launch_permissions(root: &Root) -> Vec<Value> {
         .unwrap_or_default()
         .lines()
         .map(|line| serde_json::from_str::<Value>(line).unwrap())
-        .filter(|launch| launch["readiness"] == false)
+        .filter(|launch| launch["NEIGE_MCP_TOKEN"] == true)
         .map(|launch| {
             serde_json::from_str(launch["opencode_config_content"].as_str().unwrap()).unwrap()
         })

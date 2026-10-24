@@ -58,7 +58,12 @@ impl PlannerFactory<'_> {
     ) -> Result<()> {
         match provider.protocol() {
             AgentProtocol::Acp => {
-                crate::planner_process::stop(&self.acp.instance, predecessor).await
+                crate::acp_planner::lifecycle::stop_session(
+                    self.acp,
+                    predecessor,
+                    crate::provider_execution::StopReason::Shutdown,
+                )
+                .await
             }
             AgentProtocol::Claude => {
                 crate::claude_planner::lifecycle::stop_historical_predecessor(
@@ -116,7 +121,12 @@ impl PlannerFactory<'_> {
             AgentProtocol::Acp => {
                 if let Some(displaced) = displaced {
                     registry.shutdown_and_remove(displaced).await?;
-                    crate::planner_process::stop(&self.acp.instance, displaced).await?;
+                    crate::acp_planner::lifecycle::stop_session(
+                        self.acp,
+                        displaced,
+                        crate::provider_execution::StopReason::Shutdown,
+                    )
+                    .await?;
                 }
                 Ok(())
             }

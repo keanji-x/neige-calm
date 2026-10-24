@@ -11,8 +11,7 @@ use super::readiness_command;
 /// How long `auth status` may take; it answers from the local config dir.
 pub const AUTH_STATUS_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Run `auth status --json` with `env` (the spawn's own allowlisted environment, readiness marker
-/// included) through [`readiness_command::run`] and answer `loggedIn`. `Err` is neige's own
+/// Run `auth status --json` with `env` (the spawn's own allowlisted environment, without a marker or MCP token) through [`readiness_command::run`] and answer `loggedIn`. `Err` is neige's own
 /// sentence for why the answer is unknown.
 pub async fn logged_in(
     binary: &Path,

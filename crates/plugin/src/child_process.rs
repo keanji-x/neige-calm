@@ -79,6 +79,13 @@ impl GroupChild {
         self.child.stdin.take()
     }
 
+    /// Kill the owned group before reaping the leader; Drop uses the same cleanup.
+    pub fn kill_group(&mut self) {
+        if let Some(pgid) = self.pgid.take() {
+            kill_process_group(pgid);
+        }
+    }
+
     pub fn start_kill(&mut self) -> std::io::Result<()> {
         self.child.start_kill()
     }
@@ -112,9 +119,7 @@ impl ReleasedGroup {
 
 impl Drop for GroupChild {
     fn drop(&mut self) {
-        if let Some(pgid) = self.pgid.take() {
-            kill_process_group(pgid);
-        }
+        self.kill_group();
     }
 }
 

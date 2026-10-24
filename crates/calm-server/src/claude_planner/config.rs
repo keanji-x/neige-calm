@@ -2,7 +2,7 @@
 //! `--version` check that keeps the pinned binary the one every release-gate result was recorded
 //! against.
 
-use std::collections::BTreeSet;
+use crate::provider_execution::PreC4Sweep;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
@@ -10,7 +10,10 @@ use std::time::Duration;
 use serde::Deserialize;
 
 use super::spawn::instructions_dir;
-use super::stop::MarkerInstance;
+use crate::planner_process::MarkerInstance;
+
+/// Marker used by pre-C4 kernels; only the boot upgrade sweep consumes it.
+pub const MARKER_KEY: &str = "NEIGE_CLAUDE_PLANNER";
 use crate::error::{CalmError, Result};
 use crate::harness::backend::TurnStartFailure;
 use crate::model::CardRole;
@@ -109,12 +112,6 @@ pub enum VersionProblem {
 /// The flag whose absence keeps the Claude Planner unavailable (design #1791 §5.3).
 pub const CONFIG_FLAG: &str = "--claude-planner-config";
 
-/// Sessions whose pre-C4 process absence was not proved by this boot's sweep.
-#[derive(Clone, Debug)]
-pub(crate) struct PreC4Sweep {
-    pub(super) unproven: BTreeSet<String>,
-}
-
 /// What every Claude Planner of this server shares: configuration, marker instance,
 /// boot sweep proof, instructions directory, MCP transport and tools.
 #[derive(Debug)]
@@ -155,10 +152,7 @@ impl ClaudePlannerHost {
             execution: Default::default(),
             provider_execution,
             config,
-            instance: MarkerInstance::for_data_dir(
-                data_dir,
-                crate::claude_planner::stop::MARKER_KEY,
-            )?,
+            instance: MarkerInstance::for_data_dir(data_dir, MARKER_KEY)?,
             pre_c4: OnceLock::new(),
             instructions_dir,
             mcp_shim,
@@ -189,7 +183,7 @@ impl ClaudePlannerHost {
     pub(super) fn pre_boot_absent(&self, session: &str) -> bool {
         self.pre_c4
             .get()
-            .is_some_and(|sweep| !sweep.unproven.contains(session))
+            .is_some_and(|sweep| sweep.proves_absent(session))
     }
 
     /// The config, or the refusal that names [`CONFIG_FLAG`].
@@ -207,7 +201,7 @@ impl ClaudePlannerHost {
     }
 
     /// The environment of every readiness command (`--version`, `auth status`, the model list): the spawn's own
-    /// allowlist under the `readiness` marker, without the MCP token.
+    /// allowlist without a process marker or MCP token.
     pub(crate) fn readiness_env(
         &self,
         config: &ClaudePlannerConfig,
@@ -216,7 +210,6 @@ impl ClaudePlannerHost {
             path: crate::kernel_bin_path::kernel_led_path()?.path,
             config_dir: &config.config_dir,
             mcp_socket: &self.mcp_socket,
-            marker: self.instance.marker("readiness"),
             proxy: &[],
         }))
     }

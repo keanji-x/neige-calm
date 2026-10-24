@@ -2,7 +2,7 @@
 //! translation of a Claude turn into the `PlannerEvent`s the Planner harness consumes;
 //! `session` runs one `claude -p` process per turn (`spawn` is its argv, environment and
 //! instructions file, `driver` its read loop and settlement, `turn_slot` the live turn's state,
-//! `compact` its manual context compaction), `stop` is the marker sweep,
+//! `compact` its manual context compaction), `lifecycle` owns durable Stop and the pre-C4 boot sweep,
 //! `config` the typed configuration. `availability` is the readiness check (#1817): `auth_status`
 //! is its login step, `catalog_fetch` its model-list step (#1822), and `readiness_command` the
 //! bounded run they and the `--version` check share. `models` is the CLI's model list that check
@@ -26,7 +26,6 @@ pub(crate) mod recovery;
 pub(crate) mod rewind;
 pub mod session;
 pub mod spawn;
-pub mod stop;
 mod turn_slot;
 pub(crate) mod wiring;
 
@@ -40,5 +39,8 @@ mod driver_tests;
 mod rewind_tests;
 #[cfg(test)]
 mod spawn_tests;
-#[cfg(test)]
-mod stop_tests;
+
+#[cfg(all(test, target_os = "linux"))]
+mod pre_c4_boot_tests;
+#[cfg(all(test, target_os = "linux"))]
+mod readiness_command_tests;

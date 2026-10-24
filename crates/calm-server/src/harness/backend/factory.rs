@@ -288,7 +288,12 @@ impl<'a> PlannerFactory<'a> {
                 Ok(())
             }
             Some(AgentProtocol::Acp) if managed => {
-                crate::planner_process::stop(&self.acp.instance, &runtime.id).await
+                crate::acp_planner::lifecycle::stop_session(
+                    self.acp,
+                    &runtime.id,
+                    crate::provider_execution::StopReason::Shutdown,
+                )
+                .await
             }
             Some(AgentProtocol::Codex) | None => self.shutdown_codex_replay(runtime).await,
             Some(AgentProtocol::Claude | AgentProtocol::Acp) => {

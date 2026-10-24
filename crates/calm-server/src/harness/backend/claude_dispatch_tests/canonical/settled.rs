@@ -551,10 +551,6 @@ async fn canonical_claude_settled_refused_new_start_leaves_no_claim() {
     fx.dispatch().await.unwrap();
     finished(&fx).await;
     assert!(settled(&fx).await);
-    let worker = fx.owner.worker.clone();
-    fx.session.set_after_spawn_hook_for_test(Arc::new(move || {
-        crate::claude_planner::stop::fail_claude_planner_stop_for_test(&worker);
-    }));
     let proof = crate::harness::backend::dispatch_tests::proof();
     let refused = NativePromptAdmission::new(
         || {
@@ -580,7 +576,6 @@ async fn canonical_claude_settled_refused_new_start_leaves_no_claim() {
             &refused,
         )
         .await;
-    crate::claude_planner::stop::clear_claude_planner_stop_failure_for_test(&fx.owner.worker);
     assert!(report.outcome().is_err());
     assert!(
         settled(&fx).await,
