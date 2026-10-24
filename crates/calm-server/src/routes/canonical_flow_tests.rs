@@ -316,6 +316,7 @@ mod native_attempt_recovery_tests;
 mod send_boundary_tests;
 mod source_readmission_tests;
 mod u7_canonical;
+mod u8_canonical;
 mod workspace_binding_tests;
 
 async fn original_input_flow(

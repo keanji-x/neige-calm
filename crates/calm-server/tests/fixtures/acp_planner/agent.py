@@ -23,6 +23,29 @@ import hashlib
 import socket
 
 root = pathlib.Path(os.environ['ACP_FIXTURE_ROOT'])
+# Opt-in cold-recovery observer: one append-only, credential-free stream. The
+# workspace is supplied by the case, never inferred from a native session ID.
+cold_workspace = root / 'cold-observer-workspace'
+def cold_trace(event, request=None, response=None):
+    if not cold_workspace.exists():
+        return
+    record = {'schema': 1, 'pid': os.getpid(), 'event': event,
+              'credential': any(name in os.environ for name in [
+                  'NEIGE_MCP_TOKEN', 'NEIGE_MCP_SOCKET', 'NEIGE_MCP_DAEMON_TOKEN'])}
+    if request is not None:
+        record.update(id=request.get('id'), method=request.get('method'))
+        params = request.get('params', {})
+        if request.get('method') == 'session/new':
+            record.update(mcp_empty=params.get('mcpServers') == [],
+                          accepted_cwd=params.get('cwd') == cold_workspace.read_text())
+        if request.get('method') == 'session/close':
+            record['session_id'] = params.get('sessionId')
+    if response is not None:
+        record['session_id'] = response.get('sessionId')
+    with (root / 'cold-trace.jsonl').open('a') as output:
+        output.write(json.dumps(record) + '\n')
+
+cold_trace('start')
 with (root / 'environment.jsonl').open('a') as output:
     presence = {name: name in os.environ for name in [
         'NEIGE_MCP_DAEMON_TOKEN', 'NEIGE_MCP_TOKEN', 'NEIGE_MCP_SOCKET', 'ACP_AMBIENT_SENTINEL']}
@@ -43,6 +66,8 @@ def emit(value):
     print(json.dumps(value, ensure_ascii=False), flush=True)
 
 def result(request, value):
+    if request.get('method') == 'session/new':
+        cold_trace('result', request, value)
     emit({'jsonrpc': '2.0', 'id': request['id'], 'result': value})
 
 def hold_catalog():
@@ -210,6 +235,7 @@ def check_mcp(servers):
 
 for line in sys.stdin:
     request = json.loads(line)
+    cold_trace('request', request)
     logged = json.loads(json.dumps(request))
     logged['_pid'] = os.getpid()
     for server in logged.get('params', {}).get('mcpServers', []):
