@@ -15,6 +15,8 @@ mod grok;
 mod opencode;
 
 pub(crate) struct AcpAgentProfile {
+    /// Consumes standard compaction lifecycle updates for canonical maintenance.
+    pub(crate) manual_compact: bool,
     /// Supports receipt-owned canonical Planner input; activation is independently gated.
     pub(crate) canonical_planner_inputs: bool,
     /// Supports receipt-owned canonical Assistant input, independently of Planner policy.

@@ -178,7 +178,15 @@ impl AcpPlannerSession {
         };
         let turn = uuid::Uuid::new_v4().to_string();
         if let Err(error) = guard
-            .launch(engine, registration, &token, permission, &turn)
+            .launch(
+                engine,
+                registration,
+                &token,
+                permission,
+                crate::provider_execution::Purpose::Turn {
+                    turn_id: turn.clone(),
+                },
+            )
             .await
         {
             guard.finish().await?;
@@ -192,6 +200,7 @@ impl AcpPlannerSession {
                 .connection
                 .client,
             registration,
+            registration.profile.manual_compact,
         )
         .await;
         match negotiated {
@@ -219,104 +228,23 @@ impl AcpPlannerSession {
             shared.admission(thread, Some(permission), original_native.as_deref(), None);
         let admission = input.admission(&owner_admission);
         let prepared = async {
-            let mcp = [protocol::McpServer::Stdio {
-                name: server.clone(),
-                command: params.host.mcp_shim.to_string_lossy().into_owned(),
-                // Native MCP consumers may build model output from content alone.
-                args: vec!["--structured-content-as-text".into()],
-                env: crate::mcp_server::wiring::card_mcp_env(&params.host.mcp_socket, &token)
-                    .into_iter()
-                    .map(|(name, value)| protocol::EnvVariable {
-                        name: name.into(),
-                        value,
-                    })
-                    .collect(),
-            }];
-            let (native, mut configuration) = match row.agent_session_id {
-                Some(native) => {
-                    // Prefer the declared attach without replay; never replace a binding.
-                    let (method, request) =
-                        if process.capabilities.session_capabilities.resume.is_some() {
-                            (
-                                "session/resume",
-                                protocol::encode_resume_session(&native, &params.cwd, &mcp),
-                            )
-                        } else if process.capabilities.load_session {
-                            (
-                                "session/load",
-                                protocol::encode_load_session(&native, &params.cwd, &mcp),
-                            )
-                        } else {
-                            return Err(
-                                super::super::start::ContinuationRefusal::LoadUnsupported.into()
-                            );
-                        };
-                    let result =
-                        setup_request(&mut process.connection, method, request, admission.gate())
-                            .await?;
-                    (
-                        native,
-                        provider::acp::configuration::Configuration::from_response(&result)
-                            .map_err(|error| StartFailure::Failed(wire_error(error)))?,
-                    )
-                }
-                None => {
-                    let result = setup_request(
-                        &mut process.connection,
-                        "session/new",
-                        protocol::encode_new_session(&params.cwd, &mcp),
-                        admission.gate(),
-                    )
-                    .await?;
-                    let configuration =
-                        provider::acp::configuration::Configuration::from_response(&result)
-                            .map_err(|error| StartFailure::Failed(wire_error(error)))?;
-                    let native: protocol::NewSessionResponse = protocol::decode(result)
-                        .map_err(|error| StartFailure::Failed(wire_error(error)))?;
-                    if native.session_id.is_empty() {
-                        return Err(refused("ACP agent returned an empty native identity"));
-                    }
-                    bind_native(params, thread, &native.session_id).await?;
-                    (native.session_id, configuration)
-                }
-            };
-            params
-                .host
-                .record_configuration(&params.card_id, configuration.clone());
-            for (category, value) in [
-                ("model", selection.model.as_deref()),
-                ("thought_level", selection.effort.as_deref()),
-            ] {
-                let Some(value) = value else {
-                    continue;
-                };
-                let option = configuration
-                    .category(category)
-                    .filter(|option| option.accepts(value))
-                    .ok_or_else(|| {
-                        refused("The ACP agent did not declare that model or effort choice")
-                    })?;
+            let mcp = [params.mcp_server(server.clone(), &token)];
+            let (native, configuration) = setup::attach(
+                process,
+                params,
+                thread,
+                row.agent_session_id,
+                &mcp,
+                &admission,
+            )
+            .await?;
+            {
                 let owner_admission =
                     shared.admission(thread, Some(permission), Some(&native), None);
                 let admission = input.admission(&owner_admission);
-                let result = setup_request(
-                    &mut process.connection,
-                    "session/set_config_option",
-                    protocol::encode_set_config_option(&native, &option.id, value),
-                    admission.gate(),
-                )
-                .await?;
-                configuration = provider::acp::configuration::Configuration::from_response(&result)
-                    .map_err(|error| StartFailure::Failed(wire_error(error)))?;
-                if configuration
-                    .category(category)
-                    .is_none_or(|option| option.current_value != value)
-                {
-                    return Err(refused("ACP did not confirm the selected model or effort"));
-                }
-                params
-                    .host
-                    .record_configuration(&params.card_id, configuration.clone());
+                shared
+                    .configure(process, &native, configuration, &selection, &admission)
+                    .await?;
             }
             if params.seals.is_sealed(thread) || shared.state.lock().expect("ACP state").closed {
                 return Err(refused("ACP conversation was sealed before dispatch"));

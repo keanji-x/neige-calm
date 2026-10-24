@@ -42,6 +42,7 @@ pub enum KnownEnd {
     ClaudeRefused,
     AcpTurn(Box<crate::acp_planner::execution::End>),
     AcpRefused,
+    AcpCompaction,
 }
 #[async_trait]
 pub trait ProviderExecutionOwner: Send + Sync {

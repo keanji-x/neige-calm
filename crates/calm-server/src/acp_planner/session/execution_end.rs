@@ -19,6 +19,11 @@ enum DriverInput {
     Cleanup,
     Historical,
     Canonical(Box<CanonicalDriver>),
+    Maintenance {
+        target: crate::harness::backend::MaintenanceTarget,
+        turn: String,
+        native: String,
+    },
 }
 struct CanonicalDriver {
     receipt: AcpSubmission,
@@ -56,6 +61,23 @@ impl DriverSlot {
         self.execution_id = Some(id);
         self
     }
+    pub(super) fn maintenance(
+        driver: tokio::task::JoinHandle<Settlement>,
+        target: crate::harness::backend::MaintenanceTarget,
+        turn: String,
+        native: String,
+    ) -> Self {
+        Self {
+            execution_id: None,
+            completion: Completion::Driver(RetainedJoin::new(driver)),
+            input: DriverInput::Maintenance {
+                target,
+                turn,
+                native,
+            },
+        }
+    }
+
     pub(super) fn cleanup(driver: tokio::task::JoinHandle<Settlement>) -> Self {
         Self {
             execution_id: None,
@@ -160,6 +182,40 @@ pub(super) async fn join_driver(shared: &Shared) -> Result<()> {
         driver.lock().await.finish().await?;
     }
     Ok(())
+}
+pub(super) async fn maintenance_attempted(
+    shared: &Shared,
+    expected: &crate::harness::backend::MaintenanceTarget,
+) -> bool {
+    let Some(driver) = slot(shared) else {
+        return false;
+    };
+    matches!(&driver.lock().await.input, DriverInput::Maintenance { target, .. } if target.operation_id == expected.operation_id)
+}
+pub(super) async fn observe_maintenance(
+    shared: &Shared,
+    expected: &crate::harness::backend::MaintenanceTarget,
+    current_native: Option<&str>,
+) -> crate::harness::backend::MaintenanceObservation {
+    use crate::harness::backend::MaintenanceObservation;
+    let Some(driver) = slot(shared) else {
+        return MaintenanceObservation::Unconfirmed;
+    };
+    let mut driver = driver.lock().await;
+    let turn_id = match &driver.input {
+        DriverInput::Maintenance {
+            target,
+            turn,
+            native,
+        } if target == expected && current_native == Some(native.as_str()) => turn.clone(),
+        _ => return MaintenanceObservation::Unconfirmed,
+    };
+    let settled = if driver.completion.is_finished() {
+        Some(matches!(driver.finish().await, Ok(Settlement::Completed)))
+    } else {
+        None
+    };
+    MaintenanceObservation::Turn { turn_id, settled }
 }
 async fn current_receipt_owner(params: &SessionParams, expected: &AcpSubmission) -> Result<bool> {
     let (card, worker, track, provider, thread, native) = (
@@ -288,7 +344,9 @@ impl AcpPlannerSession {
             let driver = driver.lock().await;
             match &driver.input {
                 DriverInput::Canonical(input) => Some(input.receipt.clone()),
-                DriverInput::Cleanup | DriverInput::Historical => None,
+                DriverInput::Cleanup
+                | DriverInput::Historical
+                | DriverInput::Maintenance { .. } => None,
             }
         };
         if let Some(expected) = expected {
@@ -520,61 +578,19 @@ mod tests {
     }
 }
 
-impl AcpPlannerSession {
-    pub(crate) async fn complete_lost_execution(
-        &self,
-        id: &workspace_runtime::execution::ExecutionId,
-        turn: &str,
-        outcome: Value,
-    ) -> Result<()> {
-        let shared = &self.shared;
-        if let Some(slot) = slot(shared) {
-            let mut driver = slot
-                .try_lock()
-                .map_err(|_| CalmError::Conflict("ACP driver join is pending".into()))?;
-            if driver
-                .execution_id
-                .as_ref()
-                .is_some_and(|expected| expected != id)
-            {
-                return Err(CalmError::Conflict(
-                    "ACP completion identity changed".into(),
-                ));
-            }
-            if !driver.completion.is_finished() {
-                return Err(CalmError::Conflict("ACP driver remains live".into()));
-            }
-            // Joining an aborted/panicked task is never a normal cleanup observation.
-            if driver.finish().await.is_err() {
-                drop(driver);
-                let mut current = shared.driver.lock().expect("ACP driver");
-                if current
-                    .as_ref()
-                    .is_some_and(|current| Arc::ptr_eq(current, &slot))
-                {
-                    *current = None;
-                }
-            }
-        }
-        let thread = {
-            let state = shared.state.lock().expect("ACP state");
-            state
-                .active
-                .as_ref()
-                .filter(|active| active.execution_id == *id && active.turn == turn)
-                .map(|active| active.thread.clone())
-        };
-        if let Some(thread) = thread {
-            shared.finish_execution(id.as_str(), turn, &thread, Vec::new(), outcome);
-        }
-        Ok(())
-    }
-}
+mod lost;
 
 #[cfg(feature = "fixtures")]
 impl AcpPlannerSession {
     pub fn driver_finished_for_test(&self) -> bool {
         driver_finished(&self.shared)
+    }
+    #[cfg(test)]
+    pub(crate) async fn lock_driver_for_test(&self) -> impl Send {
+        slot(&self.shared)
+            .expect("retained ACP driver")
+            .lock_owned()
+            .await
     }
     pub async fn abort_driver_for_test(&self) {
         if let Some(slot) = slot(&self.shared) {
@@ -585,3 +601,6 @@ impl AcpPlannerSession {
         }
     }
 }
+
+#[cfg(all(test, feature = "fixtures"))]
+mod lost_maintenance_tests;

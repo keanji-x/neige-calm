@@ -13,17 +13,18 @@ impl PlannerHarness {
         purpose: &crate::provider_execution::Purpose,
         outcome: serde_json::Value,
     ) -> Result<()> {
-        if matches!(
-            purpose,
-            crate::provider_execution::Purpose::Compaction { .. }
-        ) && self.inner.inputs.canonical().is_some()
-        {
-            let expected = self.inner.backend.lost_maintenance_target(id, turn).await;
-            compact_command::canonical::lost(&self.inner, expected.as_ref(), turn).await?;
-        }
         self.inner
             .backend
-            .complete_provider_execution(id, turn, outcome)
+            .complete_provider_execution(id, turn, purpose, outcome, |expected| async move {
+                if matches!(
+                    purpose,
+                    crate::provider_execution::Purpose::Compaction { .. }
+                ) && self.inner.inputs.canonical().is_some()
+                {
+                    compact_command::canonical::lost(&self.inner, expected.as_ref(), turn).await?;
+                }
+                Ok(())
+            })
             .await
     }
 }

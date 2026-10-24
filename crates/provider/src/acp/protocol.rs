@@ -134,7 +134,21 @@ pub async fn initialize(
     name: &str,
     version: &str,
 ) -> Result<InitializeResponse, Error> {
-    let value = client.request("initialize", json!({"protocolVersion":PROTOCOL_VERSION,"clientCapabilities":{},"clientInfo":{"name":name,"version":version}}), SETUP_TIMEOUT).await?;
+    initialize_with_compaction(client, name, version, false).await
+}
+/// Declare only capabilities the owning session consumes; no vendor policy lives here.
+pub async fn initialize_with_compaction(
+    client: &Client,
+    name: &str,
+    version: &str,
+    compaction: bool,
+) -> Result<InitializeResponse, Error> {
+    let capabilities = if compaction {
+        json!({"session":{"compaction":{}}})
+    } else {
+        json!({})
+    };
+    let value = client.request("initialize", json!({"protocolVersion":PROTOCOL_VERSION,"clientCapabilities":capabilities,"clientInfo":{"name":name,"version":version}}), SETUP_TIMEOUT).await?;
     let response: InitializeResponse = decode(value)?;
     if response.protocol_version != PROTOCOL_VERSION {
         client.close();

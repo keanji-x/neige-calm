@@ -254,7 +254,7 @@ async fn canonical_run_manual_compact_uses_bound_provider_capability() {
     for (provider, supported) in [
         ("codex", true),
         ("claude", true),
-        ("opencode", false),
+        ("opencode", true),
         ("grok", false),
     ] {
         sqlx::query(

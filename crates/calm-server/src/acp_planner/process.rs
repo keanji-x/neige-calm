@@ -12,6 +12,7 @@ pub(super) struct Process {
     child: GroupChild,
     pub connection: Connection,
     pub capabilities: protocol::AgentCapabilities,
+    pub commands: Vec<(String, String)>,
 }
 impl Process {
     pub async fn spawn(
@@ -71,11 +72,12 @@ impl Process {
                 .stdin()
                 .ok_or_else(|| CalmError::Internal("ACP stdin missing".into()))?,
         );
-        match negotiate(&connection.client, registration).await {
+        match negotiate(&connection.client, registration, false).await {
             Ok(capabilities) => Ok(Self {
                 child,
                 connection,
                 capabilities,
+                commands: Vec::new(),
             }),
             Err(refusal) => {
                 connection.client.close();
@@ -166,10 +168,16 @@ async fn open_log(path: &std::path::Path) -> std::io::Result<tokio::fs::File> {
 pub(super) async fn negotiate(
     client: &provider::acp::Client,
     Registration { config, profile }: Registration<'_>,
+    compaction: bool,
 ) -> std::result::Result<protocol::AgentCapabilities, String> {
-    let response = protocol::initialize(client, "neige", env!("CARGO_PKG_VERSION"))
-        .await
-        .map_err(|error| format!("ACP initialize failed: {error}"))?;
+    let response = protocol::initialize_with_compaction(
+        client,
+        "neige",
+        env!("CARGO_PKG_VERSION"),
+        compaction,
+    )
+    .await
+    .map_err(|error| format!("ACP initialize failed: {error}"))?;
     profile.admit_identity(&response, &config.min_agent_version)?;
     if let Some(method) = profile.authentication {
         // Only the agent's own report: never its private credential files.
@@ -207,6 +215,7 @@ async fn reap(child: &mut GroupChild) {
 
 pub(super) async fn setup_request(
     connection: &mut Connection,
+    commands: &mut Vec<(String, String)>,
     method: &str,
     params: Value,
     gate: &provider::send_boundary::PreSendGate<'_>,
@@ -220,23 +229,49 @@ pub(super) async fn setup_request(
     tokio::pin!(response);
     loop {
         tokio::select! {
-            result=&mut response=>return finish_setup(&connection.client,&mut connection.incoming,result).await,
+            result=&mut response=>return finish_setup(&connection.client,&mut connection.incoming,commands,result).await,
             incoming=connection.incoming.recv()=>match incoming {
                 Some(Incoming::Request{id,method,..})=>refuse(&connection.client,id,&method).await.map_err(|error| StartFailure::Failed(CalmError::Conflict(error.to_string())))?,
-                Some(Incoming::Notification{..})=>{}, // Loaded replay never represents a fresh native prompt.
+                Some(frame @ Incoming::Notification{..})=>observe_commands(commands, &frame), // Replay is setup only.
+
                 None=>return Err(StartFailure::Failed(CalmError::Conflict("ACP setup connection closed".into()))),
             }
         }
     }
 }
+// Catalog declarations survive setup; history and compaction replay do not.
+fn observe_commands(commands: &mut Vec<(String, String)>, frame: &Incoming) {
+    let Incoming::Notification { method, params } = frame else {
+        return;
+    };
+    if method != "session/update"
+        || params["update"]["sessionUpdate"] != "available_commands_update"
+    {
+        return;
+    }
+    let Some(session) = params["sessionId"].as_str() else {
+        return;
+    };
+    commands.retain(|(id, _)| id != session);
+    if let Some(available) = params["update"]["availableCommands"].as_array() {
+        commands.extend(available.iter().filter_map(|command| {
+            command["name"]
+                .as_str()
+                .map(|name| (session.to_owned(), name.to_owned()))
+        }));
+    }
+}
+
 async fn finish_setup(
     client: &provider::acp::Client,
     incoming: &mut tokio::sync::mpsc::Receiver<Incoming>,
+    commands: &mut Vec<(String, String)>,
     result: std::result::Result<Value, provider::acp::Error>,
 ) -> std::result::Result<Value, StartFailure> {
     // The transport delivered these frames before the response. Drain replay at this boundary,
     // even when select chooses the ready response before the incoming branch.
     while let Ok(frame) = incoming.try_recv() {
+        observe_commands(commands, &frame);
         if let Incoming::Request { id, method, .. } = frame {
             refuse(client, id, &method)
                 .await
@@ -268,8 +303,13 @@ mod setup_tests {
             let (kernel, _peer) = tokio::io::duplex(4096);
             let (read, write) = tokio::io::split(kernel);
             let mut connection = provider::acp::Connection::new(read, write);
-            let result =
-                finish_setup(&connection.client, &mut connection.incoming, Err(error)).await;
+            let result = finish_setup(
+                &connection.client,
+                &mut connection.incoming,
+                &mut Vec::new(),
+                Err(error),
+            )
+            .await;
             let outcome = super::super::start::start_result(result.map(|_| unreachable!()));
             assert!(matches!(
                 outcome,
@@ -313,9 +353,14 @@ mod setup_tests {
             3,
             "history, commands and config precede the attach response on the real transport"
         );
-        finish_setup(&connection.client, &mut connection.incoming, result)
-            .await
-            .unwrap();
+        finish_setup(
+            &connection.client,
+            &mut connection.incoming,
+            &mut Vec::new(),
+            result,
+        )
+        .await
+        .unwrap();
         assert!(
             matches!(
                 connection.incoming.try_recv(),
@@ -415,6 +460,7 @@ sys.stdin.read()
 "#).await;
         let result = setup_request(
             &mut process.connection,
+            &mut Vec::new(),
             "session/new",
             protocol::encode_new_session(std::path::Path::new("/workspace"), &[]),
             &provider::send_boundary::PreSendGate::new(|| Box::pin(async { Ok(()) })),
@@ -435,6 +481,7 @@ sys.stdin.read()
 "#).await;
         let result = setup_request(
             &mut process.connection,
+            &mut Vec::new(),
             "session/load",
             protocol::encode_load_session("native", std::path::Path::new("/workspace"), &[]),
             &provider::send_boundary::PreSendGate::new(|| Box::pin(async { Ok(()) })),
@@ -461,6 +508,7 @@ sys.stdin.read()
         .await;
         let result = setup_request(
             &mut process.connection,
+            &mut Vec::new(),
             "session/new",
             protocol::encode_new_session(std::path::Path::new("/workspace"), &[]),
             &provider::send_boundary::PreSendGate::new(|| Box::pin(async { Ok(()) })),
@@ -480,6 +528,7 @@ sys.stdin.read()
         let mut process = peer("import sys\nsys.stdin.readline()\n").await;
         let result = setup_request(
             &mut process.connection,
+            &mut Vec::new(),
             "session/set_config_option",
             protocol::encode_set_config_option("native", "model", "chosen"),
             &provider::send_boundary::PreSendGate::new(|| Box::pin(async { Ok(()) })),

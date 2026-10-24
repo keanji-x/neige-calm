@@ -37,6 +37,7 @@ mcp_servers = []
 xai = os.environ.get('ACP_FIXTURE_VENDOR') == 'xai'
 always_approve = '--always-approve' in sys.argv
 model, effort = 'fixture/model-a', 'normal'
+compaction = False
 
 def emit(value):
     print(json.dumps(value, ensure_ascii=False), flush=True)
@@ -126,7 +127,7 @@ def update(value):
     emit({'jsonrpc': '2.0', 'method': 'session/update', 'params': {'sessionId': current, 'update': value}})
 
 def attach_updates():
-    if xai:
+    if xai or (root / 'scenario').read_text().strip() == 'compact-undeclared':
         return
     update({'sessionUpdate': 'available_commands_update', 'availableCommands': [{'name': 'compact', 'description': 'Compact the session'}]})
     update({'sessionUpdate': 'config_option_update', **config()})
@@ -213,6 +214,7 @@ for line in sys.stdin:
         output.write(json.dumps(logged) + '\n')
     method, params = request.get('method'), request.get('params', {})
     if method == 'initialize':
+        compaction = params.get('clientCapabilities', {}).get('session', {}).get('compaction') is not None
         wrong = (root / 'scenario').read_text().strip() == 'wrong-identity' and 'NEIGE_MCP_TOKEN' in os.environ
         if wrong:
             (root / 'wrong-identity.json').write_text(json.dumps({
@@ -314,6 +316,35 @@ for line in sys.stdin:
         state['inputs'].extend(texts)
         native_path().write_text(json.dumps(state))
         scenario = (root / 'scenario').read_text().strip()
+        if texts == ['/compact']:
+            assert compaction, 'standard compaction capability must be negotiated'
+            if scenario.startswith('compact-review-'):
+                def lifecycle(cid, status):
+                    update({'sessionUpdate': 'compaction_update', 'compactionId': cid, 'status': status})
+                if scenario == 'compact-review-auto-first':
+                    lifecycle('auto', 'in_progress')
+                    lifecycle('auto', 'completed')
+                    lifecycle('manual', 'in_progress')
+                    lifecycle('manual', 'failed')
+                elif scenario == 'compact-review-replayed-id':
+                    lifecycle('old-settled', 'completed')
+                    lifecycle('old-settled', 'in_progress')
+                    lifecycle('old-settled', 'completed')
+                result(request, {'stopReason': 'end_turn'})
+                continue
+            # Successful maintenance has exactly one previously unseen lifecycle.
+            native_id = 'compact_' + uuid.uuid4().hex
+            update({'sessionUpdate': 'compaction_update', 'compactionId': native_id, 'status': 'in_progress'})
+            update({'sessionUpdate': 'compaction_summary_chunk', 'compactionId': native_id, 'content': {'type': 'text', 'text': 'summary'}})
+            if scenario == 'compact-death':
+                os._exit(0)
+            if scenario != 'compact-lost':
+                status = scenario.removeprefix('compact-') if scenario in ['compact-failed', 'compact-cancelled'] else 'completed'
+                update({'sessionUpdate': 'compaction_update', 'compactionId': 'auto-other' if scenario == 'compact-other-id' else native_id, 'status': status})
+            if scenario == 'compact-no-response':
+                os._exit(0)
+            result(request, {'stopReason': 'end_turn'})
+            continue
         if scenario == 'settlement':
             (root / 'before-settlement').touch()
             while not (root / 'release-settlement').exists():

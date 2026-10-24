@@ -1,10 +1,12 @@
 use super::start::{self, StartFailure};
 mod admission;
 mod cancellation;
+mod compact;
 mod driver;
 mod input;
 mod issuance;
 mod recovery;
+mod setup;
 use cancellation::IssueGuard;
 use driver::drive;
 use input::InputContract;
@@ -456,3 +458,6 @@ impl AcpPlannerSession {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod compaction_owner_tests;

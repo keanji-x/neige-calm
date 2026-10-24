@@ -29,7 +29,7 @@ impl IssueGuard {
         registration: super::super::config::Registration<'_>,
         token: &str,
         permission: PlannerPermissionMode,
-        turn: &str,
+        purpose: crate::provider_execution::Purpose,
     ) -> Result<()> {
         use crate::provider_execution::{self as execution, stdio::EngineStdio};
         let params = &self.shared.params;
@@ -55,15 +55,7 @@ impl IssueGuard {
         let (claim, guard) = params
             .host
             .provider_execution
-            .admit(
-                &pool,
-                engine,
-                &params.worker_session_id,
-                intent,
-                execution::Purpose::Turn {
-                    turn_id: turn.into(),
-                },
-            )
+            .admit(&pool, engine, &params.worker_session_id, intent, purpose)
             .await?;
         self.claim = Some(claim);
         self.guard = Some(guard);
@@ -84,6 +76,7 @@ impl IssueGuard {
         self.process = Some(Process {
             connection,
             capabilities: Default::default(),
+            commands: Vec::new(),
             io,
         });
         Ok(())
@@ -102,6 +95,22 @@ impl IssueGuard {
         (
             process,
             receipt,
+            self.claim.take().expect("admitted execution"),
+            self.guard.take().expect("driver guard"),
+        )
+    }
+    pub(super) fn handoff_process(
+        &mut self,
+    ) -> (
+        Process,
+        crate::provider_execution::Claim,
+        crate::provider_execution::DriverGuard,
+    ) {
+        self.armed = false;
+        (
+            self.process
+                .take()
+                .expect("prepared ACP maintenance process"),
             self.claim.take().expect("admitted execution"),
             self.guard.take().expect("driver guard"),
         )
@@ -184,7 +193,12 @@ impl IssueGuard {
                             params.engine.as_ref(),
                             &params.worker_session_id,
                             claim,
-                            Some(KnownEnd::AcpRefused),
+                            Some(match claim.record().purpose {
+                                crate::provider_execution::Purpose::Compaction { .. } => {
+                                    KnownEnd::AcpCompaction
+                                }
+                                _ => KnownEnd::AcpRefused,
+                            }),
                         )
                         .await
                 }

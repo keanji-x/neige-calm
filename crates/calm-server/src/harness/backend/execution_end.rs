@@ -227,9 +227,9 @@ impl PlannerBackend {
                         .await,
                 ))
             }
-            Arm::Acp(_) => Err(CalmError::BadRequest(
-                "canonical maintenance is unavailable for this provider".into(),
-            )),
+            Arm::Acp(session) => Ok(session
+                .compact_canonical(target, &request.selection, admission)
+                .await),
         }
     }
 
@@ -245,7 +245,7 @@ impl PlannerBackend {
                 }
                 Ok(daemon.observe_maintenance(target))
             }
-            Arm::Acp(_) => Ok(None),
+            Arm::Acp(session) => session.observe_maintenance(target).await,
         }
     }
 }

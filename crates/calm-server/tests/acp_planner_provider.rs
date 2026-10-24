@@ -1,4 +1,6 @@
-//! Managed ACP acceptance through the production boot, REST routes and Harness.
+#[path = "cases/acp_compact.rs"]
+mod acp_compact;
+// Managed ACP acceptance through the production boot, REST routes and Harness.
 #[path = "cases/acp_grok_provider.rs"]
 mod acp_grok_provider;
 #[path = "cases/acp_planner_approvals.rs"]

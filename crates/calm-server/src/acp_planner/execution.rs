@@ -70,19 +70,20 @@ impl ProviderExecutionOwner for Owner {
         evidence: CompletionEvidence,
         known: Option<KnownEnd>,
     ) -> Result<()> {
-        let Purpose::Turn { turn_id } = &record.purpose else {
-            return Err(conflict("wrong ACP purpose"));
+        let turn_id = match &record.purpose {
+            Purpose::Turn { turn_id } | Purpose::Compaction { turn_id } => turn_id,
+            Purpose::RewindCheck => return Err(conflict("wrong ACP purpose")),
         };
-        match &known {
-            Some(KnownEnd::AcpTurn(end)) => {
+        // Validate purpose and result before any credential, receipt or harness effect.
+        match (&record.purpose, &known) {
+            (Purpose::Turn { .. }, Some(KnownEnd::AcpTurn(end))) => {
                 if end.receipt.worker_session_id != session || end.receipt.turn_id != *turn_id {
                     return Err(conflict("ACP completion identity changed"));
                 }
             }
-            None | Some(KnownEnd::AcpRefused) => {}
-            Some(KnownEnd::ClaudeTurn(_) | KnownEnd::ClaudeRefused | KnownEnd::RewindCheck) => {
-                return Err(conflict("wrong ACP completion result"));
-            }
+            (Purpose::Turn { .. }, None | Some(KnownEnd::AcpRefused))
+            | (Purpose::Compaction { .. }, None | Some(KnownEnd::AcpCompaction)) => {}
+            _ => return Err(conflict("wrong ACP completion result")),
         }
         let repo = self
             .repo
@@ -100,6 +101,23 @@ impl ProviderExecutionOwner for Owner {
         })
         .await?;
         if !owned {
+            return Ok(());
+        }
+        if matches!(record.purpose, Purpose::Compaction { .. }) {
+            // Maintenance has neither an input receipt nor a durable turn outcome.
+            // Only recovery projects loss; the live compact driver retains its result.
+            if known.is_none()
+                && let Some(harness) = self.registry.get().and_then(|r| r.get(&session.to_owned()))
+            {
+                harness
+                    .complete_provider_execution(
+                        &execution_id(record)?,
+                        turn_id,
+                        &record.purpose,
+                        serde_json::Value::Null,
+                    )
+                    .await?;
+            }
             return Ok(());
         }
         let receipt = if matches!(known, None | Some(KnownEnd::AcpRefused)) {
@@ -174,6 +192,7 @@ impl ProviderExecutionOwner for Owner {
 }
 
 pub(super) struct Process {
+    pub commands: Vec<(String, String)>,
     pub io: Arc<crate::provider_execution::stdio::WriteProgress>,
     pub connection: Connection,
     pub capabilities: protocol::AgentCapabilities,

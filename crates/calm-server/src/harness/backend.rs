@@ -321,27 +321,50 @@ impl PlannerBackend {
         }
     }
 
+    #[cfg(test)]
     pub(crate) async fn lost_maintenance_target(
         &self,
         id: &workspace_runtime::execution::ExecutionId,
         turn: &str,
-    ) -> Option<MaintenanceTarget> {
+    ) -> Result<Option<MaintenanceTarget>> {
         match &self.0 {
-            Arm::Claude(session) => session.lost_maintenance_target(id, turn).await,
-            Arm::Codex(..) | Arm::Acp(_) => None,
+            Arm::Claude(session) => Ok(session.lost_maintenance_target(id, turn).await),
+            Arm::Acp(session) => session.lost_maintenance_target(id, turn).await,
+            Arm::Codex(..) => Ok(None),
         }
     }
 
-    pub(crate) async fn complete_provider_execution(
+    pub(crate) async fn complete_provider_execution<F, Fut>(
         &self,
         id: &workspace_runtime::execution::ExecutionId,
         turn: &str,
+        purpose: &crate::provider_execution::Purpose,
         outcome: serde_json::Value,
-    ) -> Result<()> {
+        project: F,
+    ) -> Result<()>
+    where
+        F: FnOnce(Option<MaintenanceTarget>) -> Fut,
+        Fut: std::future::Future<Output = Result<()>>,
+    {
         match &self.0 {
-            Arm::Claude(session) => session.complete_lost_execution(id, turn, outcome).await?,
-            Arm::Acp(session) => session.complete_lost_execution(id, turn, outcome).await?,
-            Arm::Codex(..) => {}
+            Arm::Claude(session) => {
+                let target = if matches!(
+                    purpose,
+                    crate::provider_execution::Purpose::Compaction { .. }
+                ) {
+                    session.lost_maintenance_target(id, turn).await
+                } else {
+                    None
+                };
+                project(target).await?;
+                session.complete_lost_execution(id, turn, outcome).await?
+            }
+            Arm::Acp(session) => {
+                session
+                    .complete_lost_execution_with_projection(id, turn, purpose, outcome, project)
+                    .await?
+            }
+            Arm::Codex(..) => project(None).await?,
         }
         Ok(())
     }

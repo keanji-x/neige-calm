@@ -14,7 +14,12 @@ async fn compact_run_declares_capability_for_dormant_backend_bindings() {
     let boot = boot_with(idle_snapshot(vec![])).await;
     boot.harness.shutdown().await.unwrap();
     boot.registry.remove(&boot.worker_session_id);
-    for (provider, supported) in [("codex", true), ("claude", true), ("opencode", false)] {
+    for (provider, supported) in [
+        ("codex", true),
+        ("claude", true),
+        ("opencode", true),
+        ("grok", false),
+    ] {
         sqlx::query(
             "UPDATE cards SET payload = json_set(payload, '$.planner_provider', ?1) WHERE id = ?2",
         )

@@ -79,7 +79,8 @@ impl ProviderExecutionOwner for Owner {
                     KnownEnd::ClaudeTurn(_)
                     | KnownEnd::ClaudeRefused
                     | KnownEnd::AcpTurn(_)
-                    | KnownEnd::AcpRefused,
+                    | KnownEnd::AcpRefused
+                    | KnownEnd::AcpCompaction,
                 ) => {
                     return Err(conflict("wrong Claude completion purpose"));
                 }
@@ -193,7 +194,12 @@ impl ProviderExecutionOwner for Owner {
                         return Ok(());
                     }
                     Some(KnownEnd::ClaudeRefused) => {}
-                    Some(KnownEnd::RewindCheck | KnownEnd::AcpRefused | KnownEnd::AcpTurn(_)) => {
+                    Some(
+                        KnownEnd::RewindCheck
+                        | KnownEnd::AcpRefused
+                        | KnownEnd::AcpTurn(_)
+                        | KnownEnd::AcpCompaction,
+                    ) => {
                         return Err(conflict("wrong Claude completion purpose"));
                     }
                     None => {
