@@ -527,7 +527,7 @@ async fn gitforge_reclaim_old_success_does_not_cancel_new_provision() {
     // Only recover the already admitted old operations. No new close snapshot is taken.
     let recovered = recover_reclaims(&f).await;
     recovered.sweep_parked().await.unwrap();
-    let claims = unmatched_provisioned_worktrees(&mut *f.b.repo.pool().acquire().await.unwrap())
+    let claims = unmatched_provisioned_worktrees(&mut f.b.repo.pool().acquire().await.unwrap())
         .await
         .unwrap();
     assert!(claims.iter().any(|claim| claim.event_id == provision));

@@ -44,6 +44,14 @@
 # They use the existing 120-character shape and baseline; there is no new
 # exemption, identity list or CI invocation to maintain.
 
+# Durable workspace reclaim adds six long_literal matches: three persistence
+# queries in workspace_service/reclaim/operation.rs (parked registration,
+# execution binding and unsettled admission), and three independent SQLite
+# receipt-failure triggers in tests/cases/gitforge_reclaim.rs. These are SQL,
+# not agent-facing prose. Query/fixture changes update their owning source and
+# this existing baseline; ordinary test additions need no inventory edit.
+# The existing 120-character shape and single CI scan remain unchanged.
+
 set -uo pipefail
 
 cd "$(git rev-parse --show-toplevel)" || exit 1

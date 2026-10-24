@@ -433,9 +433,10 @@ async fn every_lease_reader_returns_base_and_policy() {
     assert_eq!(all_active.len(), 1);
     assert!(all_active.iter().all(|lease| lease.base.is_some()));
     let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
-    let release = release_workspace_leases_for_track_tx(&mut tx, &track_id, &[track_id.clone()])
-        .await
-        .unwrap();
+    let release =
+        release_workspace_leases_for_track_tx(&mut tx, &track_id, std::slice::from_ref(&track_id))
+            .await
+            .unwrap();
     tx.commit().await.unwrap();
     assert_eq!(
         release.events.len(),

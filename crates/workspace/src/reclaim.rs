@@ -36,7 +36,7 @@ pub enum ReclaimOutcome {
 /// A preflight either retains the path or returns the isolated command with its metadata lock.
 /// External Git and filesystem writers remain outside this cooperative lock.
 pub enum Preparation {
-    Ready(PreparedReclaim),
+    Ready(Box<PreparedReclaim>),
     Retained(&'static str),
 }
 
@@ -172,11 +172,11 @@ pub fn prepare(request: &ReclaimRequest, observe: impl Fn(&str, &Path)) -> Resul
         "--",
         base::utf8_path(path, "extra worktree")?,
     ]);
-    Ok(Preparation::Ready(PreparedReclaim {
+    Ok(Preparation::Ready(Box::new(PreparedReclaim {
         _lock,
         command,
         deadline,
-    }))
+    })))
 }
 
 fn git(repo: &Path, args: &[&str], deadline: Instant) -> Result<Output> {
