@@ -200,6 +200,21 @@ struct Owner {
 /// The same repository constructors used by the existing Planner session fixture, without its
 /// Linux process-scanning Root/Drop. Each row owns its own card and is initially unbound.
 async fn owner(repo: &SqlxRepo, root: &Path, provider: AgentProvider) -> Owner {
+    owner_with_plan(
+        repo,
+        root,
+        provider,
+        &crate::db::sqlite::TrackWorkspacePlan::AttachedFromCwd,
+    )
+    .await
+}
+
+async fn owner_with_plan(
+    repo: &SqlxRepo,
+    root: &Path,
+    provider: AgentProvider,
+    plan: &crate::db::sqlite::TrackWorkspacePlan,
+) -> Owner {
     let area = repo
         .area_create(
             LEGACY_OWNER_USER_ID,
@@ -211,8 +226,10 @@ async fn owner(repo: &SqlxRepo, root: &Path, provider: AgentProvider) -> Owner {
         )
         .await
         .unwrap();
-    let track = repo
-        .track_create(NewTrack {
+    let mut tx = repo.pool().begin().await.unwrap();
+    let track = crate::db::sqlite::track_create_tx(
+        &mut tx,
+        NewTrack {
             template_input: None,
             area_id: area.id,
             title: "ACP boot".into(),
@@ -222,10 +239,14 @@ async fn owner(repo: &SqlxRepo, root: &Path, provider: AgentProvider) -> Owner {
             plugin_scope: None,
             attach_folder: false,
             theme: crate::routes::theme::RequestTheme::default_dark(),
-        })
-        .await
-        .unwrap();
-    let mut tx = repo.pool().begin().await.unwrap();
+        },
+        None,
+        plan,
+        None,
+        repo.track_area_cache(),
+    )
+    .await
+    .unwrap();
     let card = card_create_with_id_tx(&mut tx, new_id(), NewCard {
         track_id: track.id.clone(), title: None, kind: "codex".into(), sort: None,
         payload: json!({"schemaVersion":1,"planner_harness":true,"planner_provider":provider,"permission_mode":"never"}),
@@ -262,6 +283,10 @@ async fn owner(repo: &SqlxRepo, root: &Path, provider: AgentProvider) -> Owner {
 
 async fn historical(repo: &SqlxRepo, root: &Path, provider: AgentProvider, owned: bool) -> Owner {
     let row = owner(repo, root, provider).await;
+    historical_row(repo, row, owned).await
+}
+
+async fn historical_row(repo: &SqlxRepo, row: Owner, owned: bool) -> Owner {
     sqlx::query("UPDATE worker_sessions SET mcp_token_hash=?1 WHERE id=?2")
         .bind(old_hash(&row))
         .bind(&row.worker)

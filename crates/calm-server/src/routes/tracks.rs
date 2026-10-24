@@ -2042,6 +2042,14 @@ async fn repoint_track_workspace(
     let mut track_guard =
         Some(crate::per_card_lock::lock_key(&s.track_delete_locks, &track_id).await);
 
+    crate::claude_planner::lifecycle::preflight(
+        w.repo.as_ref(),
+        &s.claude_planner,
+        crate::db::sqlite::ClaudePlannerScope::Track(&track_id),
+    )
+    .await?;
+    crate::acp_planner::config::preflight_track(w.repo.as_ref(), &s.acp_planner, &track_id).await?;
+
     // R2: finish settled owner claims under each old session's issue lock before
     // the SQL-only carrier fence. Its transaction check still wins issuance races.
     for card in s.repo.cards_by_track(&track_id).await? {
@@ -2938,6 +2946,22 @@ fn recycle_track_workspace_for_delete(
 }
 
 impl PreparedTrackDeletion {
+    async fn preflight(&self, route: &RouteState, worker: &WorkerState) -> Result<()> {
+        crate::claude_planner::lifecycle::preflight(
+            worker.repo.as_ref(),
+            &route.claude_planner,
+            crate::db::sqlite::ClaudePlannerScope::Track(self.plan.track_id.as_str()),
+        )
+        .await?;
+        crate::acp_planner::config::preflight_track(
+            worker.repo.as_ref(),
+            &route.acp_planner,
+            self.plan.track_id.as_str(),
+        )
+        .await?;
+        Ok(())
+    }
+
     async fn quiesce(
         self,
         route: &RouteState,
@@ -3163,6 +3187,7 @@ async fn finish_prepared_track_deletion_owned(
     actor: ActorId,
     prepared: PreparedTrackDeletion,
 ) -> Result<()> {
+    prepared.preflight(&route, &worker).await?;
     let track_id = prepared.track.id.clone();
     let recovery_track_ids = HashSet::from([track_id.clone()]);
     let task_track_id = track_id.clone();

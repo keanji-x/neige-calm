@@ -365,6 +365,19 @@ pub(super) async fn boot_with_sweep<F: std::future::Future<Output = Result<()>>>
     Ok(())
 }
 
+/// Refuse before the route can supersede, shut down, or request any Stop.
+/// The boot-owned unproven set is fixed; later sessions are proven by construction.
+/// The sweep still rechecks inside its credential revocation transaction.
+pub(crate) async fn preflight_track(
+    repo: &dyn crate::db::Repo,
+    host: &AcpPlannerHost,
+    track: &str,
+) -> Result<()> {
+    let db = repo.sqlite_db().ok_or(CalmError::ExecutionUnavailable)?;
+    let ids = crate::db::sqlite::acp_managed_session_ids(db.read_pool(), Some(track)).await?;
+    crate::provider_execution::PreC4Sweep::require_absent(host.pre_c4.get(), &ids)
+}
+
 pub async fn sweep_track(
     repo: &dyn crate::db::RepoEventWrite,
     host: &AcpPlannerHost,
@@ -436,13 +449,7 @@ async fn revoke_owned_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     track: Option<&str>,
 ) -> Result<Vec<String>> {
-    let ids = sqlx::query_scalar(concat!(
-        "SELECT ws.id FROM acp_managed_sessions owned JOIN worker_sessions ws ON ",
-        "ws.id=owned.worker_session_id WHERE (?1 IS NULL OR ws.track_id=?1)"
-    ))
-    .bind(track)
-    .fetch_all(&mut **tx)
-    .await?;
+    let ids = crate::db::sqlite::acp_managed_session_ids(&mut **tx, track).await?;
     sqlx::query(concat!("UPDATE worker_sessions SET mcp_token_hash=NULL WHERE id IN (SELECT worker_session_id FROM ","acp_managed_sessions) AND (?1 IS NULL OR track_id=?1)")).bind(track).execute(&mut **tx).await?;
     Ok(ids)
 }

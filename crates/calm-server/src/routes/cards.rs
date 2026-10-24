@@ -561,6 +561,18 @@ pub(crate) async fn delete_card(
         .card_get(&id)
         .await?
         .ok_or_else(|| CalmError::NotFound(format!("card {id}")))?;
+    crate::claude_planner::lifecycle::preflight(
+        w.repo.as_ref(),
+        &s.claude_planner,
+        crate::db::sqlite::ClaudePlannerScope::Card(&id),
+    )
+    .await?;
+    crate::acp_planner::config::preflight_track(
+        w.repo.as_ref(),
+        &s.acp_planner,
+        card.track_id.as_str(),
+    )
+    .await?;
     crate::operation::terminal_disposal::require_safe(
         s.repo.as_ref(),
         crate::operation::terminal_disposal::Scope::Card(id.clone()),

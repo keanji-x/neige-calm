@@ -169,3 +169,6 @@ async fn claude_pre_c4_card_sweep_checks_claimless_sessions_and_scope() {
     assert_eq!(token(&repo, &other).await, None);
     assert_eq!(token(&repo, &row).await, Some(old_hash(&row)));
 }
+
+#[cfg(test)]
+mod route_tests;

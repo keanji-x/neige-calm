@@ -113,11 +113,9 @@ pub enum ClaudePlannerScope<'a> {
     Card(&'a str),
 }
 
-/// Null the MCP hash of every `(claude, planner)` row in `scope`, in any state, and return their
-/// ids for the marker sweep that follows (#1791 §5.1 items 1 and 4). A revoked row authenticates
-/// again only after its next first-turn mint.
-pub async fn claude_planner_revoke_tx(
-    tx: &mut Transaction<'_, Sqlite>,
+/// Read-only inventory shared by destructive preflight and credential revocation.
+pub async fn claude_planner_session_ids<'e>(
+    executor: impl sqlx::Executor<'e, Database = Sqlite>,
     scope: ClaudePlannerScope<'_>,
 ) -> Result<Vec<String>> {
     let (track, card) = match scope {
@@ -125,7 +123,7 @@ pub async fn claude_planner_revoke_tx(
         ClaudePlannerScope::Track(track_id) => (Some(track_id), None),
         ClaudePlannerScope::Card(card_id) => (None, Some(card_id)),
     };
-    let ids: Vec<String> = sqlx::query_scalar(
+    Ok(sqlx::query_scalar(
         r#"SELECT id FROM worker_sessions
             WHERE provider = 'claude' AND contract IN ('planner','assistant')
               AND (?1 IS NULL OR track_id = ?1)
@@ -134,8 +132,23 @@ pub async fn claude_planner_revoke_tx(
     )
     .bind(track)
     .bind(card)
-    .fetch_all(&mut **tx)
-    .await?;
+    .fetch_all(executor)
+    .await?)
+}
+
+/// Null the MCP hash of every `(claude, planner)` row in `scope`, in any state, and return their
+/// ids for the marker sweep that follows (#1791 §5.1 items 1 and 4). A revoked row authenticates
+/// again only after its next first-turn mint.
+pub async fn claude_planner_revoke_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    scope: ClaudePlannerScope<'_>,
+) -> Result<Vec<String>> {
+    let ids = claude_planner_session_ids(&mut **tx, scope).await?;
+    let (track, card) = match scope {
+        ClaudePlannerScope::All => (None, None),
+        ClaudePlannerScope::Track(track_id) => (Some(track_id), None),
+        ClaudePlannerScope::Card(card_id) => (None, Some(card_id)),
+    };
     sqlx::query(
         r#"UPDATE worker_sessions SET mcp_token_hash = NULL
             WHERE provider = 'claude' AND contract IN ('planner','assistant')

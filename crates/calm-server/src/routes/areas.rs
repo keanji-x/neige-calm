@@ -425,6 +425,25 @@ async fn wait_at_area_delete_commit_hook(area_id: &str) -> (bool, bool) {
 }
 
 impl PreparedAreaDeletion {
+    async fn preflight(&self, route: &RouteState, worker: &WorkerState) -> Result<()> {
+        // Validate the whole area before any member can revoke, Stop or tear down.
+        for track in &self.tracks {
+            crate::claude_planner::lifecycle::preflight(
+                worker.repo.as_ref(),
+                &route.claude_planner,
+                crate::db::sqlite::ClaudePlannerScope::Track(track.id.as_str()),
+            )
+            .await?;
+            crate::acp_planner::config::preflight_track(
+                worker.repo.as_ref(),
+                &route.acp_planner,
+                track.id.as_str(),
+            )
+            .await?;
+        }
+        Ok(())
+    }
+
     async fn quiesce(
         self,
         route: &RouteState,
@@ -774,6 +793,7 @@ async fn finish_prepared_area_deletion_owned(
     codex: CodexShellState,
     prepared: PreparedAreaDeletion,
 ) -> Result<()> {
+    prepared.preflight(&route, &worker).await?;
     let area_id = prepared.id.clone();
     let recovery_track_ids: HashSet<_> = prepared
         .tracks

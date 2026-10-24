@@ -159,11 +159,11 @@ pub use session_projection::{
     session_set_status_tx,
 };
 pub use session_row::{
-    ClaudePlannerScope, claude_planner_revoke_tx, session_commit_exit_tx,
-    session_get_by_active_token_hash, session_get_by_id, session_get_tx, session_insert_tx,
-    session_mark_track_root_tx, session_mcp_token_set_if_active_tx, session_mcp_token_set_tx,
-    session_record_activity_by_thread_tx, session_record_activity_tx, session_set_liveness_tx,
-    session_state_transition_tx, worker_session_status_transition_allowed,
+    ClaudePlannerScope, claude_planner_revoke_tx, claude_planner_session_ids,
+    session_commit_exit_tx, session_get_by_active_token_hash, session_get_by_id, session_get_tx,
+    session_insert_tx, session_mark_track_root_tx, session_mcp_token_set_if_active_tx,
+    session_mcp_token_set_tx, session_record_activity_by_thread_tx, session_record_activity_tx,
+    session_set_liveness_tx, session_state_transition_tx, worker_session_status_transition_allowed,
 };
 pub(crate) use session_row::{derive_session_identity, worker_session_from_row};
 pub use task::{

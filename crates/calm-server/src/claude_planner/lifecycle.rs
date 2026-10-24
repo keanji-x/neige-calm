@@ -84,6 +84,22 @@ pub async fn boot(repo: &dyn RepoEventWrite, host: &ClaudePlannerHost) -> Result
     Ok(())
 }
 
+/// Read-only proof check over every row the scoped sweep would revoke, including
+/// claimless and inactive sessions. Check before any route side effect. The boot
+/// unproven set is fixed; later sessions are proven by construction. The sweep's
+/// transactional check remains the authoritative fence.
+pub(crate) async fn preflight(
+    repo: &dyn crate::db::Repo,
+    host: &ClaudePlannerHost,
+    scope: ClaudePlannerScope<'_>,
+) -> Result<()> {
+    let db = repo
+        .sqlite_db()
+        .ok_or(crate::error::CalmError::ExecutionUnavailable)?;
+    let ids = crate::db::sqlite::claude_planner_session_ids(db.read_pool(), scope).await?;
+    crate::provider_execution::PreC4Sweep::require_absent(host.pre_c4.get(), &ids)
+}
+
 /// Before a destructive step on a track (its deletion, its area's deletion, a workspace repoint):
 /// revoke then Stop and settle every Claude provider execution of the track, in any state. `Err` aborts the step
 /// before anything moves.

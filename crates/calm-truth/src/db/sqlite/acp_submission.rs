@@ -48,6 +48,20 @@ impl From<sqlx::Error> for AcpRegistrationError {
         Self::Storage(error.into())
     }
 }
+/// Read-only inventory of ACP-owned sessions, shared by preflight and revocation.
+pub async fn acp_managed_session_ids<'e>(
+    executor: impl sqlx::Executor<'e, Database = sqlx::Sqlite>,
+    track: Option<&str>,
+) -> Result<Vec<String>> {
+    Ok(sqlx::query_scalar(concat!(
+        "SELECT ws.id FROM acp_managed_sessions owned JOIN worker_sessions ws ON ",
+        "ws.id=owned.worker_session_id WHERE (?1 IS NULL OR ws.track_id=?1)"
+    ))
+    .bind(track)
+    .fetch_all(executor)
+    .await?)
+}
+
 /// Claim only a fresh managed session, or the exact registration that already owns it.
 pub async fn acp_registration_claim(
     pool: &crate::db::sqlite::SqliteDb,
