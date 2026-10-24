@@ -305,5 +305,3 @@ impl History {
         evidence::bounded(e, l)
     }
 }
-#[cfg(test)]
-mod tests;

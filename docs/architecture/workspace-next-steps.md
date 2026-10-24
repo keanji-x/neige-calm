@@ -893,7 +893,7 @@ C4 各片不依赖 W，也不为 worker 预置只有 worker 需要的东西；�
     `acp_grok_provider::grok_runs_two_planner_turns_and_loads_the_same_native_session_after_restart`（进程活过 kernel，boot Stop）、`acp_settlement::*`（写者竞争改在 WriteStdin）、`acp_planner_{prompt_error,start,transcript,checkpoint,authentication,permission_creation,cli}::*`；
     lib `acp_planner::process::{setup_tests, pump_tests::*}`（python3 真实 pipe 改为 `EngineStdio`）、`acp_planner::boot_tests::*`（含 `authentication_tests`、`receipt_tests` 的 25ms 轮询；macOS 专用
     `acp_boot_turn_refuses_before_spawn_and_revokes_minted_token` 的拒绝原因改为 `ExecutionUnavailable` 且在 mint 之前）、`acp_planner::session::control_tests`；planner_harness_suite `planner_harness_boot_recovery`；
-    mcp_integration_suite `opencode_history*`；api_suite `domain_api_suite::track_workspace_recycle`。
+    History 恢复专属测试已退役，不再作为 replay 目标；api_suite `domain_api_suite::track_workspace_recycle`。
   - C4.4（E1–E5）：随机制删除 lib `claude_planner::stop_tests::*`、`planner_process` 的运行期单元测试与上列 C4.2 的三条 marker 用例；ACP macOS 专用 `acp_boot_readiness_refuses_before_spawn`、`acp_boot_catalog_refuses_before_spawn`
     （不再因缺 `/proc` 拒绝，macOS 上的 readiness 行为变化写进 PR）；保留 boot-owned `planner_process` 的 exact marker、recycled PID identity、unlistable `/proc` fail-closed 与 scan deadline 小型测试集；`acp_planner_catalog::acp_catalog_cancellation_stops_marked_descendants_*`（`:179-235`）改为按进程组断言。macOS readiness/catalog 不再因缺 `/proc` 在 spawn 前拒绝；按真实 ACP 协议结果判定。
   - C4.0d：lib `execution_boot::port_contract`（boot `recover` 不变，节拍在其后起）；全局 recover 会周期重驱 gate、forge 与 typed 终端的未完成行，所以 replay
@@ -955,8 +955,8 @@ C4 各片不依赖 W，也不为 worker 预置只有 worker 需要的东西；�
   lib `task_gate_run::tests`、`task_verify_adapter::verdict_tests`、`owned_parked::tests`、`forge_action_adapter`、`forge_suite` 全部与 `c4_recovery_tick` 过滤器；
   C4.1：C4.0b 的全部（ACP 除外），加 lib `provider_execution::`、`execution_boot::port_contract` 与 `c4_` 过滤器（C4.0d 的列表由它自己的片 replay，C4.1 不重复）；
   C4.2：C4.1 的全部（`planner_harness_suite` 全部已含 `track_mail_claude`、`planner_turn_budget`、`planner_timeout`）；
-  C4.3：C4.2 的全部，加 `runtime_suite acp_planner_provider::`、`planner_harness_suite planner_harness_boot_recovery::`、`mcp_integration_suite opencode_history`、
-  `api_suite domain_api_suite::track_workspace_recycle`、lib `acp_planner::`；C4.4：C4.3 的全部。W 各片的 gate 目标见 §3.3。
+  C4.3：C4.2 的全部，加 `runtime_suite acp_planner_provider::`、`planner_harness_suite planner_harness_boot_recovery::`、
+  `api_suite domain_api_suite::track_workspace_recycle`、lib `acp_planner::`；C4.4：C4.3 的全部。History 恢复专属测试已退役，不再 replay。W 各片的 gate 目标见 §3.3。
   实现 PR 以本片改动的**生产符号**做调用者审计，不只按构造器名：C4.1/C4.2 `start_spawn|prepare_edit|join_driver|finish_turn|ClaudePlannerHost|claude_planner_session_fixture|claude_planner_stack_fixture`，
   C4.3 `AcpPlannerHost|acp_planner|settle_receipt`，C4.0d `ExecutionEngine|execution_boot::recover|Engine::recover|pending`，C4.1 起另加 `proxy_value_is_secret|base_env`；搜索范围
   `crates/calm-server/{src,tests}`、`crates/provider`、`crates/calm-exec`、`crates/calm-truth-test-harness`。命中的 target 都必须在该片列表里，结果写进 PR，

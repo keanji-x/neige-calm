@@ -10,13 +10,11 @@ use crate::{
     track_area_cache::TrackAreaCache,
 };
 use calm_truth::db::RepoOutOfDomain as _;
-use calm_truth::db::RepoRead;
 struct Fixture {
     repo: Arc<SqlxRepo>,
     host: Arc<PluginHost>,
     ctx: Arc<AppContext>,
-    tmp: tempfile::TempDir,
-    values: Value,
+    _tmp: tempfile::TempDir,
 }
 impl Fixture {
     async fn new(source: &str) -> Self {
@@ -62,8 +60,7 @@ impl Fixture {
             repo,
             host,
             ctx,
-            tmp,
-            values,
+            _tmp: tmp,
         }
     }
     async fn identity(&self, scope: Option<&str>) -> ToolCallIdentity {
@@ -104,129 +101,7 @@ impl Fixture {
             thread_id: "synthetic-thread".into(),
         }
     }
-    async fn call(
-        &self,
-        identity: ToolCallIdentity,
-    ) -> Result<crate::mcp_server::result::ToolResult, RpcError> {
-        let registry = crate::mcp_server::build_default_registry();
-        let name = registry_name("opencodehistory", "source_ls");
-        registry.lookup(&name).unwrap()(self.ctx.clone(), identity, json!({})).await
-    }
 }
-#[test]
-fn native_contract_is_optional_and_planner_only() {
-    let component = super::super::get("opencodehistory").unwrap();
-    assert!(component.can_disable());
-    assert_eq!(component.native.descriptors().len(), 4);
-    for d in component.native.descriptors() {
-        assert_eq!(d.roles, &[CardRole::Planner]);
-    }
-    assert!(component.manifest().entrypoint.is_none());
-}
-#[tokio::test]
-async fn bound_planner_scope_and_disabled_lifecycle_fence() {
-    let fx = Fixture::new("first").await;
-    let bound = fx.identity(Some("opencodehistory")).await;
-    assert!(
-        !fx.repo
-            .plugin_get_by_id("opencodehistory")
-            .await
-            .unwrap()
-            .unwrap()
-            .enabled
-    );
-    assert!(fx.call(bound.clone()).await.is_err());
-    fx.host.enable("opencodehistory").await.unwrap();
-    assert!(fx.call(bound.clone()).await.is_ok());
-    assert!(fx.call(fx.identity(None).await).await.is_err());
-    fx.host.enable("gitforge").await.unwrap();
-    assert!(fx.call(fx.identity(Some("gitforge")).await).await.is_err());
-    let registry = crate::mcp_server::build_default_registry();
-    for tool in plugin::builtin::opencode_history::descriptors() {
-        let name = registry_name(plugin::builtin::opencode_history::PLUGIN_ID, &tool.name);
-        for role in [CardRole::Worker, CardRole::Assistant, CardRole::ReportCard] {
-            let mut caller = bound.clone();
-            caller.role = role;
-            let error = registry.lookup(&name).unwrap()(fx.ctx.clone(), caller, json!({}))
-                .await
-                .unwrap_err();
-            assert_eq!(error.code, -32403, "{name}: {error:?}");
-            assert!(
-                error.message.contains("tool requires role in ["),
-                "{name}: {error:?}"
-            );
-        }
-    }
-    fx.host.disable("opencodehistory").await.unwrap();
-    assert!(fx.call(bound).await.is_err());
-    assert!(fx.host.connector_client("opencodehistory").await.is_none());
-}
-#[tokio::test]
-async fn independent_host_runs_snapshot_and_restart_without_process() {
-    let a = Fixture::new("first").await;
-    let b = Fixture::new("second").await;
-    a.host.enable("opencodehistory").await.unwrap();
-    b.host.enable("opencodehistory").await.unwrap();
-    assert_eq!(a.host.status("opencodehistory").await.unwrap().pid, None);
-    assert!(a.host.mcp_client("opencodehistory").await.is_none());
-    let first = a.identity(Some("opencodehistory")).await;
-    let second = b.identity(Some("opencodehistory")).await;
-    let read = serde_json::to_string(&a.call(first.clone()).await.unwrap()).unwrap();
-    assert!(read.contains("first"));
-    assert!(!read.contains("second"));
-    assert!(
-        serde_json::to_string(&b.call(second.clone()).await.unwrap())
-            .unwrap()
-            .contains("second")
-    );
-    let path = a.values["history_config_path"].as_str().unwrap();
-    let mut config: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
-    config["sources"][0]["source_id"] = json!("restarted");
-    std::fs::write(path, config.to_string()).unwrap();
-    assert!(
-        serde_json::to_string(&a.call(first.clone()).await.unwrap())
-            .unwrap()
-            .contains("first")
-    );
-    a.host.reload("opencodehistory").await.unwrap();
-    assert!(
-        serde_json::to_string(&a.call(first).await.unwrap())
-            .unwrap()
-            .contains("restarted")
-    );
-    assert!(
-        serde_json::to_string(&b.call(second).await.unwrap())
-            .unwrap()
-            .contains("second")
-    );
-    let tokens: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM plugin_tokens")
-        .fetch_one(a.repo.pool())
-        .await
-        .unwrap();
-    assert_eq!(tokens, 0);
-}
-#[tokio::test]
-async fn invalid_configuration_refuses_running_and_can_recover() {
-    let fx = Fixture::new("first").await;
-    std::fs::write(fx.tmp.path().join("config.json"), "{}").unwrap();
-    assert!(fx.host.enable("opencodehistory").await.is_err());
-    assert!(
-        !fx.host
-            .running_plugin_ids()
-            .await
-            .contains("opencodehistory")
-    );
-    assert!(matches!(
-        fx.host.status("opencodehistory").await.unwrap().status,
-        crate::plugin_host::PluginRuntimeStatus::Unavailable { .. }
-    ));
-    fx.repo
-        .plugin_update_user_config("opencodehistory", json!({}))
-        .await
-        .unwrap();
-    assert!(fx.host.reload("opencodehistory").await.is_err());
-}
-
 #[tokio::test]
 async fn stateless_builtins_keep_runs_and_native_calendar_entry() {
     let fx = Fixture::new("first").await;

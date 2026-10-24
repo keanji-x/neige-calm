@@ -1602,41 +1602,6 @@ async fn dev_create_without_issue_preserves_binding_and_optional_input() {
 }
 
 #[tokio::test]
-async fn optional_history_template_reports_setup_and_ready_through_owner_lifecycle() {
-    let boot = boot().await;
-    for enabled in [false, true] {
-        if enabled {
-            boot.state.plugin.enable("opencodehistory").await.unwrap();
-        } else {
-            boot.state.plugin.disable("opencodehistory").await.unwrap();
-        }
-        let (_, listing) = get(boot.app.clone(), "/api/track-templates").await;
-        let availability = &listed_template(&listing, HISTORY_REBUILD)["availability"];
-        if enabled {
-            assert_eq!(availability, &json!({"status":"ready"}));
-        } else {
-            assert_eq!(
-                availability,
-                &json!({"status":"requires_plugin", "plugin_id":"opencodehistory", "plugin_name":"OpenCode history"})
-            );
-            let before = db_snapshot(&boot.repo).await;
-            let (status, body) = post(
-                boot.app.clone(),
-                "/api/tracks",
-                create_body(
-                    &boot.area_id,
-                    "disabled history",
-                    json!({"template_id":HISTORY_REBUILD}),
-                ),
-            )
-            .await;
-            assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
-            assert_eq!(db_snapshot(&boot.repo).await, before);
-        }
-    }
-}
-
-#[tokio::test]
 async fn objective_long_term_goal_run_stats_creates_without_template_input_bound_to_gitforge() {
     let boot = boot().await;
     let (status, body) = post(

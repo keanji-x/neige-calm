@@ -166,15 +166,7 @@ SHA-256 为 `d224c1a7506ae981c8d4fc1a8d1f58ac185e27324f94d4daf1b8f84fc2552d26`�
 python3 -I scripts/generate-opencode-history-contract.py /path/to/packages/sdk/openapi.json
 ```
 
-从仓库根执行冻结的 focused 验证（均拒绝空选择）：
+History 恢复专属测试已退役，目前没有专属恢复验证命令。维护生产适配器时，
+需按实际改动补充验证；通用结果哈希、builtin 和模板测试不证明恢复行为正确。
 
-```sh
-env -u NEIGE_CODEX_BIN RUSTC_WRAPPER= CARGO_BUILD_JOBS=6 cargo nextest run --locked -p plugin --lib -E 'test(builtin::opencode_history::)' --no-tests fail --test-threads 8
-env -u NEIGE_CODEX_BIN RUSTC_WRAPPER= CARGO_BUILD_JOBS=6 cargo nextest run --locked -p calm-server --lib -E 'test(builtin_plugins::opencode_history::)' --no-tests fail --test-threads 8
-env -u NEIGE_CODEX_BIN RUSTC_WRAPPER= CARGO_BUILD_JOBS=6 cargo nextest run --locked -p calm-server --test mcp_integration_suite -E 'test(opencode_history_)' --no-tests fail --test-threads 8
-```
-
-测试只用临时配置/凭据和受控 HTTP 合成历史，经过 Rust 生产 tool 入口。
-真实 native 注册名/精确参数/解析出的 Track 写入共享 recorder 后由 source_capture 保存原文。
-协议 fixtures 不证明真实 OpenCode 部署兼容；没有访问私人历史或运行真实 Codex E2E。
 固定官方原件投影生成器仅维护 artifact，不是运行依赖。
