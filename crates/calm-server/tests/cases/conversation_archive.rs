@@ -709,11 +709,14 @@ mod persistence;
 async fn repeated_archive_stays_idempotent_with_buffered_observations() {
     let b = boot().await;
     let track = b.create_track("Archived observations").await;
-    let (_, row) = b
+    terminal::join_planner(&b, &track).await;
+    let (status, row) = b
         .create_internal_conversation(&track, "observation-archive", "first")
         .await;
+    assert_eq!(status, StatusCode::CREATED, "{row}");
+    assert_eq!(row["initialInput"]["kind"], "known", "{row}");
     let card = row["id"].as_str().unwrap();
-    finish_turn(&b, card).await;
+    terminal::finish_initial_turn(&b, &track, card, &row["initialInput"]["receipt"]).await;
     let runtime = b
         .repo
         .session_projection_active_for_card(&card.to_string())
@@ -761,3 +764,6 @@ async fn repeated_archive_stays_idempotent_with_buffered_observations() {
 
 #[path = "conversation_archive_start.rs"]
 mod start;
+
+#[path = "conversation_archive_terminal.rs"]
+mod terminal;

@@ -2805,6 +2805,13 @@ async fn on_notification(
                 last_turn_id: turn_id.clone(),
             };
             *inner.interrupt_deadline.lock().await = None;
+            // This terminal-origin cut holds no state, queue, issuance, or SQL guard.
+            #[cfg(feature = "fixtures")]
+            crate::test_seams::pause_point(
+                "historical-turn-completed-published",
+                inner.card_id.as_str(),
+            )
+            .await;
             held::end_turn(inner).await;
             live_reply::settle(inner, live, &turn_id, &turn).await;
             let _ = persist_turn_outcome(inner, &turn_id, &turn).await;
