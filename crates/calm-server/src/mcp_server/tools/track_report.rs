@@ -13,8 +13,8 @@ use crate::mcp_server::tools::track_report_hydrate::{hydrated_block_index, parse
 use crate::model::{Card, CardRole, Track};
 use crate::track_report::TrackReportPayload;
 use crate::track_report_read::{
-    ReportReadScope, flat_blocks_text, listed_blocks, load_report_doc_snapshot_with_track,
-    marked_blocks_text, report_read_task_diagnostics, selected_blocks_text,
+    ReportReadScope, flat_blocks_text, listed_blocks, marked_blocks_text,
+    report_read_task_diagnostics, selected_blocks_text,
 };
 use calm_types::track_report::ReportBlock;
 use serde_json::{Value, json};
@@ -73,8 +73,12 @@ fn read_summary_line(value: &Value) -> String {
         Some(prefix) => format!("{prefix}…"),
         None => summary.to_string(),
     };
+    let anchor = value["anchor_status"]
+        .as_str()
+        .map(|status| format!("{status}; "))
+        .unwrap_or_default();
     format!(
-        "doc_rev {doc_rev} · {blocks} blocks · {payload} · {summary}; full state in structuredContent"
+        "doc_rev {doc_rev} · {blocks} blocks · {payload} · {summary}; {anchor}full state in structuredContent"
     )
 }
 
@@ -121,60 +125,93 @@ pub(crate) async fn report_read(
     };
     // The response body comes from ONE fresh row snapshot so `summary`/`text`/`blocks` can never tear against each other.
     let resolve_modes = parse_resolve_arg(&args, "neige_report_read")?;
-    let (track, _, report_card, _) = resolve_report_for_caller(&ctx, &identity).await?;
-    let (snapshot_track_id, snapshot) =
-        load_report_doc_snapshot_with_track(ctx.repo.as_ref(), report_card.id.as_str())
-            .await
-            .map_err(|e| RpcError::internal(format!("{e}")))?;
-    // A task block is rendered only when the read names it by id (#2617); `detail: "index"` lists
-    // every block, the way to discover task ids.
+    let identity_tx = identity.clone();
+    let select_tx = select.clone();
+    let (track, snapshot, text, anchor) =
+        crate::db::write_in_tx_typed(ctx.repo.as_ref(), move |tx| {
+            let identity = identity_tx.clone();
+            let select = select_tx.clone();
+            Box::pin(async move {
+                let target = crate::track_report::identity::resolve_tx(
+                    tx,
+                    &identity,
+                    crate::track_report::identity::Access::Read,
+                )
+                .await?;
+                let (track, report, _) = target.into_parts();
+                let report_id = report.id.to_string();
+                let bytes = crate::db::sqlite::card_body_crdt_get_tx(tx, &report_id).await?;
+                let snapshot = crate::track_report_read::report_doc_snapshot(
+                    &report_id,
+                    report.updated_at,
+                    report.payload,
+                    bytes.as_deref(),
+                )?;
+                let listed = || listed_blocks(&snapshot.blocks);
+                let text = match &select {
+                    ReadSelect::Index => None,
+                    ReadSelect::Part(selection) => {
+                        // Markers are unconditional here: a partial text is only addressable through them. An unknown id is the caller's mistake.
+                        let ids = selection
+                            .block_ids(&snapshot.blocks)
+                            .map_err(|e| crate::error::CalmError::BadRequest(e.message))?;
+                        let text = selected_blocks_text(&snapshot.blocks, &ids).map_err(|id| {
+                            crate::error::CalmError::BadRequest(
+                                unknown_block(&snapshot.blocks, id).message,
+                            )
+                        })?;
+                        Some((text, ids))
+                    }
+                    ReadSelect::Full => {
+                        let text = if with_markers {
+                            marked_blocks_text(listed())
+                        } else {
+                            flat_blocks_text(listed())
+                        };
+                        Some((text, listed().map(|block| block.id.clone()).collect()))
+                    }
+                };
+                let mut read = crate::db::sqlite::report_knowledge::load_tx(
+                    tx,
+                    &identity.session_id,
+                    &report_id,
+                )
+                .await?;
+                if let Some((_, ids)) = &text {
+                    let recorded = crate::report_read_ledger::record_read(
+                        read,
+                        snapshot.doc_rev,
+                        &snapshot.blocks,
+                        ids,
+                    );
+                    crate::db::sqlite::report_knowledge::save_tx(
+                        tx,
+                        &identity.session_id,
+                        &report_id,
+                        &recorded,
+                    )
+                    .await?;
+                    read = Some(recorded);
+                }
+                let anchor = crate::report_read_ledger::anchor(read.as_ref(), snapshot.doc_rev);
+                Ok((track, snapshot, text, anchor))
+            })
+        })
+        .await
+        .map_err(crate::mcp_server::framing::calm_error)?;
     let listed = || listed_blocks(&snapshot.blocks);
-    let text = match &select {
-        ReadSelect::Index => None,
-        ReadSelect::Part(selection) => {
-            // Markers are unconditional here: a partial text is only addressable through them. An unknown id is the caller's mistake.
-            let ids = selection.block_ids(&snapshot.blocks)?;
-            let text = selected_blocks_text(&snapshot.blocks, &ids)
-                .map_err(|id| unknown_block(&snapshot.blocks, id))?;
-            Some((text, ids))
-        }
-        ReadSelect::Full => {
-            let text = if with_markers {
-                marked_blocks_text(listed())
-            } else {
-                flat_blocks_text(listed())
-            };
-            Some((text, listed().map(|block| block.id.clone()).collect()))
-        }
-    };
     let task_diagnostics = if identity.role == CardRole::Planner {
         let scope = match (&select, &text) {
             (ReadSelect::Full, _) => ReportReadScope::Full,
             (ReadSelect::Part(_), Some((_, ids))) => ReportReadScope::Part(ids),
             _ => ReportReadScope::Index,
         };
-        report_read_task_diagnostics(
-            ctx.repo.as_ref(),
-            snapshot_track_id.as_str(),
-            &snapshot,
-            scope,
-        )
-        .await
-        .map_err(|e| RpcError::internal(format!("{e}")))?
+        report_read_task_diagnostics(ctx.repo.as_ref(), track.id.as_str(), &snapshot, scope)
+            .await
+            .map_err(|e| RpcError::internal(format!("{e}")))?
     } else {
         Vec::new()
     };
-    // Only a read that returned text is this session's read of the report (#1877): exactly the blocks it rendered.
-    if let Some((_, rendered)) = &text {
-        ctx.read_ledger.record(
-            &identity.session_id,
-            &identity.card_id,
-            report_card.id.as_str(),
-            snapshot.doc_rev,
-            &snapshot.blocks,
-            rendered,
-        );
-    }
     // The index of a text read omits the task blocks it did not render.
     let indexed: Vec<ReportBlock> = match &text {
         None => snapshot.blocks.clone(),
@@ -197,6 +234,7 @@ pub(crate) async fn report_read(
         "doc_rev": snapshot.doc_rev,
         "updated_at": crate::time_format::at(snapshot.updated_at),
         "blocks": index,
+        "anchor": anchor,
     });
     if let Some((text, _)) = text {
         response["text"] = Value::String(text);
@@ -204,6 +242,13 @@ pub(crate) async fn report_read(
     // Only the Planner sees actionable diagnostics; status is available through `neige_task_ls`.
     if identity.role == CardRole::Planner {
         response["task_diagnostics"] = task_diagnostics_output(json!(task_diagnostics));
+    }
+    response["anchor_status"] = json!(crate::report_read_ledger::anchor_line(&response["anchor"]));
+    if matches!(select, ReadSelect::Index) {
+        response["anchor_status"] = json!(format!(
+            "{} · index does not add knowledge",
+            response["anchor_status"].as_str().expect("status")
+        ));
     }
     Ok(response)
 }
@@ -245,7 +290,7 @@ fn snake_case(key: &str) -> String {
     out
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum ReadSelect {
     /// The `text` and index of every block but the task blocks (#2617).
     Full,
@@ -281,38 +326,6 @@ fn parse_select_arg(args: &Value, tool: &str) -> Result<ReadSelect, RpcError> {
         (None, true) => Ok(ReadSelect::Index),
         (None, false) => Ok(ReadSelect::Full),
     }
-}
-
-/// A missing planner card, track, or report card is a data-shape bug (every track has exactly one report card), surfaced as InternalError.
-pub(crate) async fn resolve_report_for_caller(
-    ctx: &Arc<AppContext>,
-    identity: &ToolCallIdentity,
-) -> Result<(Track, Card, Card, TrackReportPayload), RpcError> {
-    let card_id_str = identity.card_id.as_str().to_string();
-    let planner_card = ctx
-        .repo
-        .card_get(&card_id_str)
-        .await
-        .map_err(|e| RpcError::internal(format!("planner card lookup: {e}")))?
-        .ok_or_else(|| {
-            RpcError::internal(format!(
-                "bound planner card {card_id_str} not found (deleted mid-connection?)"
-            ))
-        })?;
-    let track = ctx
-        .repo
-        .track_get(planner_card.track_id.as_str())
-        .await
-        .map_err(|e| RpcError::internal(format!("track lookup: {e}")))?
-        .ok_or_else(|| {
-            RpcError::internal(format!(
-                "track {} for planner card {} not found",
-                planner_card.track_id.as_str(),
-                card_id_str
-            ))
-        })?;
-    let (report_card, payload) = load_report_for_track(ctx, &track).await?;
-    Ok((track, planner_card, report_card, payload))
 }
 
 /// Role-agnostic by design: callers must enforce their own MCP entry gate and track binding before reaching it.

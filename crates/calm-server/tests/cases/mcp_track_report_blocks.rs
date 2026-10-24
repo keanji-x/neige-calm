@@ -2123,81 +2123,28 @@ async fn commit_delete_naming_a_live_task_retires_it_inside_a_batch() {
 }
 
 #[tokio::test]
-async fn commit_rejects_duplicate_block_ids_before_touching_the_doc() {
+async fn commit_delete_then_upsert_missing_block_rolls_back() {
     let boot = boot().await;
     let index = seed_two_blocks(&boot).await;
-    let (a_id, _) = index[0].clone();
-    let (b_id, _) = index[1].clone();
+    let id = &index[1].0;
     let before = current_payload(&boot).await;
-    assert_eq!(before.doc_rev, 1);
     let mut rx = boot.ctx.events.subscribe();
-
-    // A content-changing upsert would bump A to rev 2, so a later op on A could never match the read — refused up front instead of failing -32409.
-    let cases: Vec<(&str, Value)> = vec![
-        (
-            "upsert then delete the same id",
-            json!([
-                { "op": "upsert", "id": a_id, "kind": "prose", "markdown": "# A\n\nv2\n" },
-                { "op": "delete", "id": a_id }
-            ]),
-        ),
-        (
-            "move then move the same id",
-            json!([
-                { "op": "move", "id": b_id, "to_index": 0 },
-                { "op": "upsert", "kind": "prose", "markdown": "# C\n\nnew\n" },
-                { "op": "move", "id": b_id, "to_index": 2 }
-            ]),
-        ),
-        (
-            "delete then upsert the same id",
-            json!([
-                { "op": "delete", "id": b_id },
-                { "op": "upsert", "id": b_id, "kind": "prose", "markdown": "# B\n\nback\n" }
-            ]),
-        ),
-    ];
-    for (name, ops) in cases {
-        let err = call_tool(
-            &boot,
-            TOOL_REPORT_COMMIT,
-            planner_identity(&boot),
-            commit_args(ops),
-        )
-        .await
-        .err()
-        .unwrap_or_else(|| panic!("{name}: must be refused"));
-        assert_eq!(err.code, -32602, "{name}: {err:?}");
-        assert!(
-            err.message
-                .contains("each block id may appear at most once per commit"),
-            "{name}: {err:?}"
-        );
-        assert!(
-            err.message.contains("ops[1]:") || err.message.contains("ops[2]:"),
-            "{name}: names the offending op: {err:?}"
-        );
-    }
-
-    let after = current_payload(&boot).await;
-    assert_eq!(after.doc_rev, before.doc_rev, "docRev unchanged");
-    assert_eq!(after.body, before.body, "nothing persisted");
-    assert_eq!(index_of(&read(&boot, json!({})).await), index);
-    assert!(drain_events(&mut rx).await.is_empty(), "nothing emitted");
-
-    // Two creates (no id) in one commit are fine — they address nothing.
-    let out = call_tool(
+    let err = call_tool(
         &boot,
         TOOL_REPORT_COMMIT,
         planner_identity(&boot),
         commit_args(json!([
-            { "op": "upsert", "kind": "prose", "markdown": "# C\n\nc\n" },
-            { "op": "upsert", "kind": "prose", "markdown": "# D\n\nd\n" }
+            {"op":"delete","id":id},
+            {"op":"upsert","id":id,"kind":"prose","markdown":"# B\n\nback\n"}
         ])),
     )
     .await
-    .expect("two creates");
-    assert_eq!(out["doc_rev"].as_u64(), Some(2));
+    .unwrap_err();
+    assert_eq!(err.code, -32602);
+    assert_eq!(current_payload(&boot).await.doc_rev, before.doc_rev);
+    assert_eq!(current_payload(&boot).await.body, before.body);
+    assert_eq!(index_of(&read(&boot, json!({})).await), index);
+    assert!(drain_events(&mut rx).await.is_empty(), "nothing emitted");
 }
 
 /// Keys out of declaration order and an explicit `"omit_if_empty":false`, so a stored canonical line proves the ingress rewrote it.

@@ -360,7 +360,6 @@ mod tests {
             scheduler_poke: Arc::new(tokio::sync::OnceCell::new()),
             series_resolver: Arc::new(crate::report_series::SeriesResolver::new_unstarted(None)),
             plugin_results: Arc::new(crate::plugin_results::PluginResults::new()),
-            read_ledger: Arc::new(crate::report_read_ledger::ReadLedger::new()),
             preview: Arc::new(crate::preview::PreviewRegistry::disabled()),
             sqlite_db,
             gate_run_wait: crate::operation::task_gate_run::GateRunWait::DEFAULT,

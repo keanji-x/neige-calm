@@ -249,8 +249,6 @@ pub struct AppContext {
     pub series_resolver: Arc<crate::report_series::SeriesResolver>,
     /// Transient ring of Planner plugin results `neige_source_capture` reads.
     pub plugin_results: Arc<crate::plugin_results::PluginResults>,
-    /// What each session last read of a report: the anchors of the agent report writes (#1877, #1883).
-    pub read_ledger: Arc<crate::report_read_ledger::ReadLedger>,
     /// #1780 preview gateway registrations; the gateway listeners read the same `Arc`.
     pub preview: Arc<crate::preview::PreviewRegistry>,
     /// The repo's sqlite pool for **read-only** statements; writes never go through this.
@@ -295,7 +293,6 @@ impl AppContext {
             scheduler_poke: Arc::new(tokio::sync::OnceCell::new()),
             series_resolver,
             plugin_results: Arc::new(crate::plugin_results::PluginResults::new()),
-            read_ledger: Arc::new(crate::report_read_ledger::ReadLedger::new()),
             preview: Arc::new(crate::preview::PreviewRegistry::disabled()),
             sqlite_db,
             gate_run_wait: crate::operation::task_gate_run::GateRunWait::DEFAULT,

@@ -65,7 +65,7 @@ pub(crate) async fn rest_user_replace(
         write,
         ActorId::User,
         EditAuthor::User,
-        target,
+        PersistTarget::Resolved(Box::new(target)),
         ReportDocOp::Replace {
             summary: next.summary,
             body: next.body,
@@ -95,7 +95,7 @@ pub(crate) async fn rest_user_reset(
         write,
         ActorId::User,
         EditAuthor::User,
-        target,
+        PersistTarget::Resolved(Box::new(target)),
         ReportDocOp::ResetToInitial { if_doc_rev },
         None,
         None,
@@ -120,7 +120,7 @@ pub(crate) async fn rest_user_block_op(
         write,
         ActorId::User,
         EditAuthor::User,
-        target,
+        PersistTarget::Resolved(Box::new(target)),
         op,
         None,
         None,
@@ -144,7 +144,7 @@ pub(crate) async fn agent_report_op(
     target: ReportEditTarget,
     op: ReportDocOp,
     agent_message: Option<String>,
-    knowledge: Option<crate::report_read_ledger::LastRead>,
+    knowledge_session: Option<String>,
     recorder_admission: Arc<dyn RecorderAdmissionGate>,
 ) -> Result<(Card, ReportOpTrace), CalmError> {
     persist(
@@ -153,11 +153,43 @@ pub(crate) async fn agent_report_op(
         write,
         actor,
         author,
-        target,
+        PersistTarget::Resolved(Box::new(target)),
         op,
         agent_message,
-        knowledge,
+        knowledge_session,
         Some(recorder_admission),
+        TaskWriteAdmission::RefuseFixableDeclarations,
+    )
+    .await
+}
+
+enum PersistTarget {
+    Resolved(Box<ReportEditTarget>),
+    Agent(crate::mcp_server::registry::ToolCallIdentity),
+}
+
+pub(crate) async fn agent_report_intent(
+    repo: &dyn RouteRepo,
+    events: &EventBus,
+    write: &WriteContext,
+    identity: crate::mcp_server::registry::ToolCallIdentity,
+    op: ReportDocOp,
+    agent_message: Option<String>,
+) -> Result<(Card, ReportOpTrace), CalmError> {
+    let author = super::identity::report_op_attribution(identity.role)?;
+    let actor = identity.to_actor_id();
+    let session = identity.session_id.clone();
+    persist(
+        repo,
+        events,
+        write,
+        actor,
+        author,
+        PersistTarget::Agent(identity),
+        op,
+        agent_message,
+        Some(session),
+        None,
         TaskWriteAdmission::RefuseFixableDeclarations,
     )
     .await
@@ -228,11 +260,11 @@ pub async fn persist_report(
         write,
         actor,
         author,
-        ReportEditTarget {
+        PersistTarget::Resolved(Box::new(ReportEditTarget {
             track,
             report_card,
             current_payload,
-        },
+        })),
         ReportDocOp::Replace {
             summary: next.summary,
             body: next.body,
@@ -258,50 +290,62 @@ async fn persist(
     write: &WriteContext,
     actor: ActorId,
     author: EditAuthor,
-    target: ReportEditTarget,
+    target: PersistTarget,
     op: ReportDocOp,
     agent_message: Option<String>,
-    knowledge: Option<crate::report_read_ledger::LastRead>,
+    knowledge_session: Option<String>,
     recorder_admission: Option<Arc<dyn RecorderAdmissionGate>>,
     task_admission: TaskWriteAdmission,
 ) -> Result<(Card, ReportOpTrace), CalmError> {
-    let ReportEditTarget {
-        track,
-        report_card,
-        current_payload,
-    } = target;
-    let report_card_id = report_card.id.clone();
-    let track_id = track.id.clone();
-    let area_id = track.area_id.clone();
-    let scope = EventScope::Card {
-        card: report_card_id.clone(),
-        track: track_id.clone(),
-        area: area_id.clone(),
-    };
-    let track_scope = EventScope::Track {
-        track: track_id.clone(),
-        area: area_id,
-    };
-    let report_card_id_inner = report_card_id.clone();
-    let track_id_for_event = track_id.clone();
     write_with_actor_events_typed::<_, _>(repo, None, events, write, move |tx| {
-        let id = report_card_id_inner.as_str().to_string();
-        let report_card_id = report_card_id_inner.clone();
-        let track_id = track_id_for_event.clone();
-        let scope = scope.clone();
-        let track_scope = track_scope.clone();
-        let current_payload = current_payload.clone();
+        let target = match &target {
+            PersistTarget::Resolved(target) => PersistTarget::Resolved(target.clone()),
+            PersistTarget::Agent(identity) => PersistTarget::Agent(identity.clone()),
+        };
         let op = op.clone();
         let actor = actor.clone();
         let agent_message = agent_message.clone();
         let recorder_admission = recorder_admission.clone();
-        let knowledge = knowledge.clone();
+        let knowledge_session = knowledge_session.clone();
         Box::pin(async move {
+            let ReportEditTarget {
+                track, report_card, ..
+            } = match target {
+                PersistTarget::Resolved(target) => *target,
+                PersistTarget::Agent(identity) => {
+                    super::identity::resolve_tx(tx, &identity, super::identity::Access::Write)
+                        .await?
+                }
+            };
+            let id = report_card.id.to_string();
+            let report_card_id = report_card.id.clone();
+            let track_id = track.id.clone();
+            let scope = EventScope::Card {
+                card: report_card_id.clone(),
+                track: track_id.clone(),
+                area: track.area_id.clone(),
+            };
+            let track_scope = EventScope::Track {
+                track: track_id.clone(),
+                area: track.area_id.clone(),
+            };
             let mut events: Vec<(ActorId, EventScope, Event)> = Vec::new();
             if let Some(gate) = recorder_admission.as_ref() {
                 gate.require_admission(tx, RecorderAdmissionDecisionKind::ReportWrite)
                     .await?;
             }
+            let live_card = crate::db::sqlite::card_for_update_tx(tx, &id).await?;
+            if live_card.track_id != track_id || live_card.kind != "track-report" {
+                return Err(CalmError::Forbidden("Report target changed".into()));
+            }
+            let current_payload: TrackReportPayload = serde_json::from_value(live_card.payload)
+                .map_err(|e| CalmError::Internal(format!("track_report: payload: {e}")))?;
+            let knowledge = match knowledge_session.as_deref() {
+                Some(session) => {
+                    crate::db::sqlite::report_knowledge::load_tx(tx, session, &id).await?
+                }
+                None => None,
+            };
             // 1. Load (or lazy-init) the CRDT doc. Loaded docs may still carry the old layout (no block
             //    map) — migrate in place using the payload's block ids as hint; written back in this tx.
             let existing = card_body_crdt_get_tx(tx, &id).await?;
@@ -318,8 +362,7 @@ async fn persist(
                         })?;
                     doc
                 }
-                // Safe: current_payload was read outside the tx, but is only consulted while body_crdt is
-                // still NULL in-tx; SQLite's single writer means nothing populated the blob in between.
+                // Payload and CRDT were loaded under this writer lock.
                 None => {
                     let mut doc = ReportDoc::from_payload(&current_payload);
                     doc.ensure_blocks_layout(current_payload.blocks.as_deref())
@@ -361,7 +404,6 @@ async fn persist(
                 None
             };
             // 3. Apply the op; `if_rev` checks happen in here against the CRDT truth, a conflict aborts the tx.
-            let before_rev = doc.doc_rev().map_err(block_op_internal)?;
             let before_blocks = doc.blocks_snapshot().map_err(block_op_internal)?;
             crate::objective_dispatch::evaluator::guard_create_tx(
                 tx,
@@ -370,7 +412,8 @@ async fn persist(
                 &op,
             )
             .await?;
-            let (mut trace, doc_rev) = apply_persisted_report_op(&mut doc, &op, author)?;
+            let (trace, doc_rev) =
+                super::ops::apply_persisted_with_knowledge(&mut doc, &op, author, knowledge)?;
             if let Some(before) = tasks_before {
                 let after = doc
                     .blocks_snapshot()
@@ -399,17 +442,6 @@ async fn persist(
                 ))
             })?);
             let blocks = projected_payload.blocks.as_deref().unwrap_or_default();
-            trace.knowledge = knowledge.as_ref().map(|old| {
-                crate::report_read_ledger::project_commit(
-                    old,
-                    before_rev,
-                    &before_blocks,
-                    doc_rev,
-                    blocks,
-                    &trace.written_block_ids,
-                    &trace.section_output_ids,
-                )
-            });
             let (declarations, block_diagnostics) =
                 calm_types::report_blocks::tasks::project_task_declarations(blocks);
             // 5. The row write and the task projection, in the one order both writers use.
@@ -466,6 +498,11 @@ async fn persist(
                 ));
             }
             events.extend(task_projection.kernel_events);
+            if let (Some(session), Some(read)) =
+                (knowledge_session.as_deref(), trace.knowledge.as_ref())
+            {
+                crate::db::sqlite::report_knowledge::save_tx(tx, session, &id, read).await?;
+            }
             Ok(((updated, trace), events))
         })
     })

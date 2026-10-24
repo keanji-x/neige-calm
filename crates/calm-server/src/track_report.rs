@@ -348,6 +348,14 @@ pub use calm_types::track_report::{ReportBlock, TrackReportPayload};
 /// transactional truth (the JSON `blocks` cache can be arbitrarily stale).
 #[derive(Debug, Clone)]
 pub enum ReportDocOp {
+    AgentBatch {
+        summary: Option<String>,
+        ops: Vec<BlockIntent>,
+    },
+    AgentWrite {
+        summary: Option<String>,
+        body: String,
+    },
     /// The user's wholesale `(summary, body)` replace (REST); the summary is always given.
     Replace {
         summary: String,
@@ -587,6 +595,7 @@ mod compact_origination;
 #[cfg(test)]
 mod compact_tests;
 mod ops;
+#[cfg(test)]
 use ops::apply_persisted_report_op;
 #[cfg(test)]
 pub(crate) use ops::apply_report_op;
@@ -635,6 +644,7 @@ fn check_doc_rev(doc: &ReportDoc, expected: u64) -> Result<(), CalmError> {
 /// catch for an accidental pairing, not a guard against a caller that means it.
 ///
 /// [`for_resolved_parts`]: ReportEditTarget::for_resolved_parts
+#[derive(Clone)]
 pub(crate) struct ReportEditTarget {
     track: Track,
     report_card: Card,
@@ -724,3 +734,14 @@ pub(crate) mod objective_tests;
 
 #[cfg(test)]
 mod objective_write_tests;
+
+mod intent;
+pub use intent::BlockIntent;
+
+pub(crate) mod identity;
+
+impl ReportEditTarget {
+    pub(crate) fn into_parts(self) -> (Track, Card, TrackReportPayload) {
+        (self.track, self.report_card, self.current_payload)
+    }
+}

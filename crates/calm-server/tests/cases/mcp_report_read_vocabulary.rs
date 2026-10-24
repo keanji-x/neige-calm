@@ -10,7 +10,7 @@
 //! | `{ sections: [H1 texts] }`   | `sections: [H1 texts]` |
 
 use crate::mcp_track_report::{
-    Boot, boot, call_tool, call_tool_raw, current_doc_rev, planner_identity, seed_large_body,
+    Boot, boot, call_tool, call_tool_raw, current_doc_rev, seed_large_body,
 };
 use calm_server::mcp_server::ToolCallIdentity;
 use calm_server::mcp_server::tools::track_report::TOOL_REPORT_READ;
@@ -19,24 +19,32 @@ use calm_server::report_read_ledger::LastRead;
 use serde_json::{Value, json};
 
 /// A planner session that has read nothing yet, so the ledger shows exactly this one read.
-fn fresh_reader(boot: &Boot, name: &str) -> ToolCallIdentity {
-    ToolCallIdentity {
-        session_id: format!("b2-reader-{name}"),
-        ..planner_identity(boot)
-    }
+async fn fresh_reader(boot: &Boot, name: &str) -> ToolCallIdentity {
+    let pool = boot.repo.sqlite_db().unwrap();
+    let current: String = sqlx::query_scalar("SELECT session_id FROM cards WHERE id=?")
+        .bind(boot.planner_card_id.as_str())
+        .fetch_one(pool.read_pool())
+        .await
+        .unwrap();
+    crate::mcp_report_sections::supersede_planner(boot, &current, &format!("b2-reader-{name}"))
+        .await
 }
 
-fn anchors(boot: &Boot, reader: &ToolCallIdentity) -> Option<LastRead> {
-    boot.ctx
-        .read_ledger
-        .last_read(&reader.session_id, boot.report_card_id.as_str())
+async fn anchors(boot: &Boot, reader: &ToolCallIdentity) -> Option<LastRead> {
+    calm_truth::db::sqlite::report_knowledge::load(
+        boot.repo.as_ref(),
+        &reader.session_id,
+        boot.report_card_id.as_str(),
+    )
+    .await
+    .unwrap()
 }
 
 async fn block_ids(boot: &Boot) -> Vec<String> {
     let index = call_tool(
         boot,
         TOOL_REPORT_READ,
-        fresh_reader(boot, "ids"),
+        fresh_reader(boot, "ids").await,
         json!({"detail": "index"}),
     )
     .await
@@ -53,7 +61,7 @@ async fn block_ids(boot: &Boot) -> Vec<String> {
 async fn detail_index_returns_anchors_without_text_and_records_no_read() {
     let boot = boot().await;
     seed_large_body(&boot).await;
-    let reader = fresh_reader(&boot, "index");
+    let reader = fresh_reader(&boot, "index").await;
     let wire = call_tool_raw(
         &boot,
         TOOL_REPORT_READ,
@@ -80,7 +88,7 @@ async fn detail_index_returns_anchors_without_text_and_records_no_read() {
     assert!(line.contains(" · index only · "), "{line}");
     assert!(line.len() < 300, "{line}");
     assert_eq!(
-        anchors(&boot, &reader),
+        anchors(&boot, &reader).await,
         None,
         "an index read anchors nothing"
     );
@@ -98,12 +106,12 @@ async fn full_detail_is_the_default_read_and_anchors_every_block() {
         ("full", json!({"detail": "full"})),
         ("null", json!({"detail": null})),
     ] {
-        let reader = fresh_reader(&boot, name);
+        let reader = fresh_reader(&boot, name).await;
         let out = call_tool(&boot, TOOL_REPORT_READ, reader.clone(), args)
             .await
             .unwrap();
         assert_eq!(out["text"].as_str(), Some(body.as_str()), "{name}");
-        let read = anchors(&boot, &reader).expect("a text read anchors");
+        let read = anchors(&boot, &reader).await.expect("a text read anchors");
         assert!(read.whole, "{name}");
         let mut seen: Vec<String> = read.blocks.keys().cloned().collect();
         seen.sort();
@@ -119,7 +127,7 @@ async fn blocks_return_only_those_blocks_in_document_order_and_anchor_only_them(
     seed_large_body(&boot).await;
     let ids = block_ids(&boot).await;
     let (b1, b2, b3) = (&ids[0], &ids[1], &ids[2]);
-    let reader = fresh_reader(&boot, "blocks");
+    let reader = fresh_reader(&boot, "blocks").await;
     let out = call_tool(
         &boot,
         TOOL_REPORT_READ,
@@ -144,7 +152,9 @@ async fn blocks_return_only_those_blocks_in_document_order_and_anchor_only_them(
         "the index stays whole"
     );
     assert_eq!(out["doc_rev"].as_u64(), Some(current_doc_rev(&boot).await));
-    let read = anchors(&boot, &reader).expect("a blocks read anchors");
+    let read = anchors(&boot, &reader)
+        .await
+        .expect("a blocks read anchors");
     assert!(!read.whole);
     let mut seen: Vec<&String> = read.blocks.keys().collect();
     seen.sort();
@@ -154,7 +164,7 @@ async fn blocks_return_only_those_blocks_in_document_order_and_anchor_only_them(
     let again = call_tool(
         &boot,
         TOOL_REPORT_READ,
-        fresh_reader(&boot, "blocks-again"),
+        fresh_reader(&boot, "blocks-again").await,
         json!({"blocks": [b1, b2], "with_markers": true, "detail": "full"}),
     )
     .await
@@ -164,7 +174,7 @@ async fn blocks_return_only_those_blocks_in_document_order_and_anchor_only_them(
     let err = call_tool(
         &boot,
         TOOL_REPORT_READ,
-        planner_identity(&boot),
+        fresh_reader(&boot, "validation").await,
         json!({"blocks": [b1, "b_doesnotexist"]}),
     )
     .await
@@ -182,7 +192,7 @@ async fn sections_return_and_anchor_whole_h1_sections() {
     let boot = boot().await;
     seed_large_body(&boot).await;
     let ids = block_ids(&boot).await;
-    let reader = fresh_reader(&boot, "sections");
+    let reader = fresh_reader(&boot, "sections").await;
     let out = call_tool(
         &boot,
         TOOL_REPORT_READ,
@@ -192,14 +202,16 @@ async fn sections_return_and_anchor_whole_h1_sections() {
     .await
     .unwrap();
     // Checked first: another session of the same card replaces this one in the ledger.
-    let read = anchors(&boot, &reader).expect("a sections read anchors");
+    let read = anchors(&boot, &reader)
+        .await
+        .expect("a sections read anchors");
     assert!(!read.whole);
     assert_eq!(read.blocks.keys().collect::<Vec<_>>(), vec![&ids[1]]);
     assert_eq!(read.sections.keys().collect::<Vec<_>>(), vec!["Two"]);
     let blocks_text = call_tool(
         &boot,
         TOOL_REPORT_READ,
-        fresh_reader(&boot, "same-as-blocks"),
+        fresh_reader(&boot, "same-as-blocks").await,
         json!({"blocks": [&ids[1]]}),
     )
     .await
@@ -217,20 +229,16 @@ async fn retired_select_and_malformed_selections_are_refused() {
     let boot = boot().await;
     seed_large_body(&boot).await;
     let b1 = block_ids(&boot).await.remove(0);
+    let validator = fresh_reader(&boot, "validation").await;
     for old in [
         json!({"select": "index"}),
         json!({"select": "full"}),
         json!({"select": {"blocks": [&b1]}}),
         json!({"select": {"sections": ["One"]}}),
     ] {
-        let err = call_tool(
-            &boot,
-            TOOL_REPORT_READ,
-            planner_identity(&boot),
-            old.clone(),
-        )
-        .await
-        .expect_err("the retired select must be refused");
+        let err = call_tool(&boot, TOOL_REPORT_READ, validator.clone(), old.clone())
+            .await
+            .expect_err("the retired select must be refused");
         assert_eq!(err.code, RpcError::INVALID_PARAMS, "{old}");
         assert_eq!(
             err.message,
@@ -248,18 +256,13 @@ async fn retired_select_and_malformed_selections_are_refused() {
         (json!({"blocks": [&b1], "sections": ["One"]}), "not both"),
         (json!({"blocks": [&b1], "detail": "index"}), "detail"),
     ] {
-        let err = call_tool(
-            &boot,
-            TOOL_REPORT_READ,
-            planner_identity(&boot),
-            bad.clone(),
-        )
-        .await
-        .expect_err("a malformed read must be refused");
+        let err = call_tool(&boot, TOOL_REPORT_READ, validator.clone(), bad.clone())
+            .await
+            .expect_err("a malformed read must be refused");
         assert_eq!(err.code, RpcError::INVALID_PARAMS, "{bad} → {err:?}");
         assert!(err.message.contains(key), "{bad} → {err:?}");
     }
-    let _: Value = call_tool(&boot, TOOL_REPORT_READ, planner_identity(&boot), json!({}))
+    let _: Value = call_tool(&boot, TOOL_REPORT_READ, validator.clone(), json!({}))
         .await
         .expect("the default read still works");
 }

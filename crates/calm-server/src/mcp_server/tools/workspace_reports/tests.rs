@@ -27,6 +27,44 @@ async fn identity(
     }
 }
 
+// Workspace views take the bound tool identity; Report writes also prove a live SQL session.
+async fn seed_report_session(state: &crate::state::RouteState, identity: &ToolCallIdentity) {
+    use crate::session_projection_repo::WorkerSessionInit;
+    use calm_types::worker::WorkerSessionState;
+    let init = match identity.role {
+        CardRole::Planner => WorkerSessionInit::shared_planner(
+            identity.session_id.clone(),
+            identity.card_id.clone(),
+            identity.provider.clone(),
+            WorkerSessionState::Starting,
+            None,
+            json!({}),
+            1,
+        ),
+        CardRole::Assistant => WorkerSessionInit::managed_assistant(
+            identity.session_id.clone(),
+            identity.card_id.clone(),
+            identity.provider.clone(),
+            WorkerSessionState::Starting,
+            None,
+            json!({}),
+            1,
+        ),
+        _ => panic!("Report fixture requires a recorder"),
+    };
+    crate::db::write_in_tx_typed(state.repo.as_ref(), move |tx| {
+        let init = init.clone();
+        Box::pin(async move {
+            if init.kind == crate::session_projection_repo::WorkerSessionKind::ManagedAssistant {
+                sqlx::query("UPDATE cards SET payload=json_set(payload,'$.harness_profile','assistant','$.assistant_provider','codex') WHERE id=?")
+                    .bind(&init.card_id).execute(&mut **tx).await?;
+            }
+            crate::db::sqlite::session_prepare_deferred_planner_tx(tx, &init).await?;
+            Ok(())
+        })
+    }).await.unwrap();
+}
+
 #[tokio::test]
 async fn granted_planner_reads_foreign_reports_without_write_authority() {
     let (_tmp, _repo, state) = fixture().await;
@@ -74,6 +112,7 @@ async fn granted_planner_reads_foreign_reports_without_write_authority() {
         1
     );
     // The ordinary write tool still resolves only the bound Track and requires its own marker read.
+    seed_report_session(&route, &id).await;
     let write = registry.lookup("neige_report_write").unwrap();
     let result = write(
         route.mcp_context.clone(),
@@ -96,11 +135,14 @@ async fn granted_planner_reads_foreign_reports_without_write_authority() {
         .find(|card| card.kind == "track-report")
         .unwrap();
     assert!(
-        route
-            .mcp_context
-            .read_ledger
-            .last_read("reader-test", foreign_report.id.as_str())
-            .is_none()
+        calm_truth::db::sqlite::report_knowledge::load(
+            route.repo.as_ref(),
+            "reader-test",
+            foreign_report.id.as_str()
+        )
+        .await
+        .unwrap()
+        .is_none()
     );
 }
 
@@ -178,12 +220,16 @@ async fn granted_assistant_reads_all_workspace_tools_without_foreign_write_ancho
         .find(|card| card.kind == "track-report")
         .unwrap();
     assert!(
-        route
-            .mcp_context
-            .read_ledger
-            .last_read(&id.session_id, foreign_report.id.as_str())
-            .is_none()
+        calm_truth::db::sqlite::report_knowledge::load(
+            route.repo.as_ref(),
+            &id.session_id,
+            foreign_report.id.as_str()
+        )
+        .await
+        .unwrap()
+        .is_none()
     );
+    seed_report_session(&route, &id).await;
     let write = registry.lookup("neige_report_write").unwrap();
     assert_eq!(
         write(

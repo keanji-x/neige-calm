@@ -126,3 +126,6 @@ mod retired_carrier_authority;
 
 #[path = "cases/objective_dispatch.rs"]
 mod objective_dispatch;
+
+#[path = "cases/mcp_report_anchor_knowledge_persistence.rs"]
+mod mcp_report_anchor_knowledge_persistence;

@@ -2,8 +2,7 @@
 
 use super::required_string;
 use crate::mcp_server::framing::RpcError;
-use crate::report_read_ledger::LastRead;
-use crate::track_report::{BatchBlockOp, SectionRead};
+use crate::track_report::BlockIntent;
 use serde_json::Value;
 
 /// `{ op: "replace", section, markdown }` / `{ op: "delete", section }`, anchored by this session's
@@ -13,8 +12,7 @@ pub(super) fn parse_section_op(
     op: &str,
     section: String,
     at: &str,
-    last_read: Option<&LastRead>,
-) -> Result<BatchBlockOp, RpcError> {
+) -> Result<BlockIntent, RpcError> {
     if !matches!(op, "replace" | "delete") {
         return Err(RpcError::invalid_params(format!(
             "{at}: op `{op}` does not take `section` (only \"replace\" and \"delete\" do)"
@@ -29,15 +27,10 @@ pub(super) fn parse_section_op(
              last read of the section"
         )));
     }
-    let read = match last_read.and_then(|read| read.sections.get(&section)) {
-        Some(seen) => SectionRead::Seen(seen.clone()),
-        None => SectionRead::Unseen,
-    };
     if op == "replace" {
-        return Ok(BatchBlockOp::ReplaceSection {
+        return Ok(BlockIntent::ReplaceSection {
             markdown: required_string(obj, "markdown", at)?,
             section,
-            read,
         });
     }
     if obj.contains_key("markdown") {
@@ -45,21 +38,5 @@ pub(super) fn parse_section_op(
             "{at}: a section `delete` takes no `markdown`"
         )));
     }
-    Ok(BatchBlockOp::DeleteSection { section, read })
-}
-
-/// An id op's `if_rev`: the rev this session last read of that block.
-pub(super) fn block_anchor(
-    last_read: Option<&LastRead>,
-    id: &str,
-    at: &str,
-) -> Result<u32, RpcError> {
-    last_read
-        .and_then(|read| read.blocks.get(id).copied())
-        .ok_or_else(|| {
-            RpcError::invalid_params(format!(
-                "{at}: block `{id}` has not been read by this session — read it first \
-                 (neige_report_read {{ blocks: [\"{id}\"] }})"
-            ))
-        })
+    Ok(BlockIntent::DeleteSection { section })
 }

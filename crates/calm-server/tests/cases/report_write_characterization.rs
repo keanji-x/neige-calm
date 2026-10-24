@@ -24,7 +24,7 @@ use sqlx::SqlitePool;
 use tower::ServiceExt;
 
 use crate::mcp_track_report::{
-    Boot, assistant_identity, boot, planner_identity, read_then_write_markdown,
+    Boot, assistant_identity, boot, call_tool, planner_identity, read_then_write_markdown,
     seed_non_root_session_with_provider, upsert_block,
 };
 use crate::support::mcp::set_persisted_card_role;
@@ -151,14 +151,23 @@ async fn mcp_assistant_block_write_is_assistant_attributed() {
 async fn mcp_report_write_consults_the_recorder_gate_before_it_commits() {
     let boot = boot().await;
     let pool = mcp_pool(&boot);
+    call_tool(
+        &boot,
+        "neige_report_read",
+        planner_identity(&boot),
+        json!({}),
+    )
+    .await
+    .unwrap();
     sqlx::query("UPDATE worker_sessions SET state = 'exited' WHERE id = ?1")
         .bind("planner-session")
         .execute(&pool)
         .await
         .expect("retire the planner session");
 
-    let error = read_then_write_markdown(
+    let error = call_tool(
         &boot,
+        calm_server::mcp_server::tools::track_report_blocks::TOOL_REPORT_WRITE,
         planner_identity(&boot),
         json!({
             "body": "# Denied\n",
@@ -260,8 +269,9 @@ async fn mcp_report_write_is_refused_when_the_recorder_gate_is_the_only_objectio
         thread_id: "foreign-planner-thread".to_string(),
     };
 
-    read_then_write_markdown(
+    let error = call_tool(
         &boot,
+        calm_server::mcp_server::tools::track_report_blocks::TOOL_REPORT_WRITE,
         identity,
         json!({
             "body": "# Denied\n",
@@ -271,6 +281,10 @@ async fn mcp_report_write_is_refused_when_the_recorder_gate_is_the_only_objectio
     )
     .await
     .expect_err("the recorder gate refuses a session whose card is on another track");
+    assert_eq!(
+        error.code, -32403,
+        "foreign identity is refused before ledger binding"
+    );
 
     assert!(
         persisted_events(&pool, "track.report_edited")
@@ -308,16 +322,18 @@ async fn mcp_assistant_block_write_from_a_foreign_track_is_refused_without_the_p
         thread_id: "foreign-assistant-thread".to_string(),
     };
 
-    upsert_block(
+    let error = call_tool(
         &boot,
+        calm_server::mcp_server::tools::track_report_blocks::TOOL_REPORT_COMMIT,
         identity,
-        json!({
-            "kind": "prose",
-            "markdown": "# Denied\n"
-        }),
+        json!({"message":"denied", "ops":[{"op":"upsert","kind":"prose","markdown":"# Denied\n"}]}),
     )
     .await
     .expect_err("an assistant session on another track may not write this report");
+    assert_eq!(
+        error.code, -32403,
+        "foreign identity is refused before ledger binding"
+    );
 
     assert!(
         persisted_events(&pool, "track.report_edited")
@@ -348,8 +364,9 @@ async fn mcp_report_write_probe_reads_the_written_track_not_the_callers_claimed_
         ..planner_identity(&boot)
     };
 
-    read_then_write_markdown(
+    let error = call_tool(
         &boot,
+        calm_server::mcp_server::tools::track_report_blocks::TOOL_REPORT_WRITE,
         identity,
         json!({
             "body": "# Denied\n",
@@ -359,6 +376,10 @@ async fn mcp_report_write_probe_reads_the_written_track_not_the_callers_claimed_
     )
     .await
     .expect_err("a self-consistent foreign identity may still not write this track's report");
+    assert_eq!(
+        error.code, -32403,
+        "foreign identity is refused before ledger binding"
+    );
 
     assert!(
         persisted_events(&pool, "track.report_edited")

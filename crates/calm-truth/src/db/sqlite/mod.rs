@@ -108,8 +108,8 @@ pub use area::{
 };
 pub use card::{
     CardExecutionShape, TerminalDeleted, card_body_crdt_get_tx, card_create_tx,
-    card_create_with_id_tx, card_delete_tx, card_execution_shape_tx, card_update_tx,
-    card_update_with_crdt_tx, planner_permission_mode_set_tx, terminal_create_tx,
+    card_create_with_id_tx, card_delete_tx, card_execution_shape_tx, card_for_update_tx,
+    card_update_tx, card_update_with_crdt_tx, planner_permission_mode_set_tx, terminal_create_tx,
     terminal_delete_tx, terminal_get_by_card_tx, terminal_set_exit_with_output_tx,
 };
 pub use card_composite::{
@@ -466,3 +466,5 @@ pub mod track_planner;
 mod planner_switch_projection_tests;
 #[cfg(test)]
 mod task_notification_tests;
+
+pub mod report_knowledge;

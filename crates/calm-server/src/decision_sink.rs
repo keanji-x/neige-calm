@@ -8,24 +8,21 @@ pub use worker_report::WorkerTaskReport;
 
 use crate::db::{RouteRepo, write_with_actor_events_typed};
 use crate::error::CalmError;
-use crate::event::{EditAuthor, Event, EventBus, EventScope};
+#[cfg(test)]
+use crate::event::EditAuthor;
+use crate::event::{Event, EventBus, EventScope};
 pub use crate::git_candidate::commit_message::{CommitMessage, DeliveryMessage};
-use crate::ids::{CardId, TrackId};
+use crate::ids::CardId;
+#[cfg(test)]
+use crate::ids::TrackId;
 use crate::mcp_server::registry::{AppContext, ToolCallIdentity};
-use crate::model::{Card, CardRole, Track};
+use crate::model::{Card, CardRole};
 use crate::operation::workspace_lease::release_workspace_lease_for_card_tx;
-use crate::recorder_admission::{
-    RecorderAdmissionDecisionKind, RecorderAdmissionDenial, RecorderAdmissionGate, emit_denial,
-};
 use crate::report_sources::{self, SourceLinkWarning};
 use crate::state::WriteContext;
-use crate::track_report::{
-    self, BlockOpOutcome, ReportBlock, ReportDocOp, ReportEditTarget, TrackReportPayload,
-};
-use async_trait::async_trait;
-use calm_truth::decision_gate::{GateDecision, PrincipalDecisionGate};
-use calm_types::worker::Principal;
-use sqlx::{Sqlite, Transaction};
+#[cfg(test)]
+use crate::track_report::TrackReportPayload;
+use crate::track_report::{self, BlockOpOutcome, ReportBlock, ReportDocOp};
 use std::sync::Arc;
 
 #[derive(Clone)]
@@ -35,7 +32,6 @@ pub struct CardDecisionSink {
     write: WriteContext,
     /// Read-only, for the post-commit `report_sources` lookup behind the receipt warnings; `None` means no warnings are computed.
     sqlite_db: Option<crate::db::sqlite::SqliteDb>,
-    read_ledger: Arc<crate::report_read_ledger::ReadLedger>,
 }
 
 /// The updated card, the block-level outcome where the op has one, and the unresolved `neige://source/` links of the prose the write touched.
@@ -44,6 +40,7 @@ pub struct ReportOpCommit {
     pub card: Card,
     pub block: Option<BlockOpOutcome>,
     pub warnings: Vec<SourceLinkWarning>,
+    pub anchor: serde_json::Value,
 }
 
 impl CardDecisionSink {
@@ -53,7 +50,6 @@ impl CardDecisionSink {
             events: ctx.events.clone(),
             write: ctx.write.clone(),
             sqlite_db: ctx.sqlite_db.clone(),
-            read_ledger: Arc::clone(&ctx.read_ledger),
         }
     }
 
@@ -311,38 +307,25 @@ impl CardDecisionSink {
     pub async fn commit_report_op(
         &self,
         identity: &ToolCallIdentity,
-        track: Track,
-        report_card: Card,
-        current_payload: TrackReportPayload,
         op: ReportDocOp,
         agent_message: Option<String>,
     ) -> Result<ReportOpCommit, CalmError> {
-        let actor = identity.to_actor_id();
-        let track_id = track.id.clone();
-        let recorder_admission: Arc<dyn RecorderAdmissionGate> = Arc::new(
-            CardDecisionSinkRecorderAdmissionGate::for_identity(identity, track.id.clone()),
-        );
-        let author = report_op_attribution(identity.role)?;
-        // The writer is private to its module; this is the one entry point that accepts a caller-decided attribution.
-        let report_id = report_card.id.to_string();
-        let captured = self.read_ledger.capture(&identity.session_id, &report_id);
-        let (card, trace) = track_report::write::agent_report_op(
+        let (card, trace) = track_report::write::agent_report_intent(
             self.repo.as_ref(),
             &self.events,
             &self.write,
-            actor,
-            author,
-            ReportEditTarget::for_resolved_parts(track, report_card, current_payload)?,
+            identity.clone(),
             op,
             agent_message,
-            captured.as_ref().map(|(_, read)| read.clone()),
-            recorder_admission,
         )
         .await?;
-        if let (Some((generation, _)), Some(read)) = (captured, trace.knowledge) {
-            self.read_ledger
-                .publish(&identity.session_id, &report_id, generation, read);
-        }
+        let track_id = card.track_id.clone();
+        let current_rev = card
+            .payload
+            .get("docRev")
+            .and_then(serde_json::Value::as_u64)
+            .ok_or_else(|| CalmError::Internal("written Report lacks docRev".into()))?;
+        let anchor = crate::report_read_ledger::anchor(trace.knowledge.as_ref(), current_rev);
         // After the transaction committed, before the receipt is assembled. Never blocks the write; a lookup failure here is the receipt's problem, not the row's.
         let warnings = match self.sqlite_db.as_ref() {
             Some(pool) if !trace.written_prose_block_ids.is_empty() => {
@@ -370,93 +353,15 @@ impl CardDecisionSink {
             card,
             block: trace.block,
             warnings,
+            anchor,
         })
     }
 }
 
-/// The role → attribution decision for every write reaching [`CardDecisionSink::commit_report_op`].
-/// Exhaustive on purpose: a future role must state its own verdict rather than inherit the planner's. `Worker` and `ReportCard` are refused outright rather than folded in with `Planner`.
-fn report_op_attribution(role: CardRole) -> Result<EditAuthor, CalmError> {
-    Ok(match role {
-        CardRole::Assistant => EditAuthor::Assistant,
-        CardRole::Planner => EditAuthor::Planner,
-        role @ (CardRole::Worker | CardRole::ReportCard) => {
-            return Err(CalmError::Forbidden(format!(
-                "card role {role:?} may not write the track report"
-            )));
-        }
-    })
-}
+#[cfg(test)]
+use crate::track_report::identity::report_op_attribution;
 
-pub(crate) struct CardDecisionSinkRecorderAdmissionGate {
-    principal: Option<Principal>,
-    track_id: TrackId,
-    card_id: CardId,
-}
-
-impl CardDecisionSinkRecorderAdmissionGate {
-    /// The recorder gate for a write the MCP caller makes on `track_id` outside the report funnel.
-    pub(crate) fn for_identity(identity: &ToolCallIdentity, track_id: TrackId) -> Self {
-        Self {
-            principal: identity.to_principal(),
-            track_id,
-            card_id: identity.card_id.clone().into(),
-        }
-    }
-}
-
-#[async_trait]
-impl RecorderAdmissionGate for CardDecisionSinkRecorderAdmissionGate {
-    async fn require_admission(
-        &self,
-        tx: &mut Transaction<'_, Sqlite>,
-        decision_kind: RecorderAdmissionDecisionKind,
-    ) -> Result<(), CalmError> {
-        let principal = self.principal.as_ref().ok_or_else(|| {
-            CalmError::Forbidden("recorder gate requires an agent principal".into())
-        })?;
-        let Principal::Agent { session_id, .. } = principal else {
-            return Err(CalmError::Forbidden(
-                "recorder gate requires an agent session".into(),
-            ));
-        };
-        let gate = PrincipalDecisionGate::new(principal.clone());
-        let decision = if decision_kind == RecorderAdmissionDecisionKind::PlannerMessage {
-            gate.decide_card_write(tx, &self.track_id, &self.card_id, CardRole::Planner)
-                .await
-        } else {
-            gate.decide_recorder(tx, &self.track_id).await
-        };
-        match decision {
-            Ok(GateDecision::Allow) => Ok(()),
-            Ok(GateDecision::Deny(message)) => {
-                emit_denial(&RecorderAdmissionDenial {
-                    track_id: self.track_id.clone(),
-                    session_id: session_id.clone(),
-                    decision_kind,
-                });
-                Err(CalmError::Forbidden(format!(
-                    "recorder gate denied {}: {message}",
-                    decision_kind.as_str()
-                )))
-            }
-            Err(error) => {
-                tracing::warn!(
-                    target: "neige::recorder_shadow",
-                    track_id = %self.track_id,
-                    session_id = %session_id,
-                    decision_kind = decision_kind.as_str(),
-                    error = %error,
-                    "recorder admission gate computation failed; denying write"
-                );
-                Err(CalmError::Forbidden(format!(
-                    "recorder gate failed closed for {}: {error}",
-                    decision_kind.as_str()
-                )))
-            }
-        }
-    }
-}
+pub(crate) use crate::recorder_admission::CardDecisionSinkRecorderAdmissionGate;
 
 #[cfg(test)]
 mod tests {
@@ -668,7 +573,6 @@ mod tests {
             events: EventBus::new(),
             write: WriteContext::new(card_role_cache, track_area_cache),
             sqlite_db: repo.sqlite_db(),
-            read_ledger: Arc::new(crate::report_read_ledger::ReadLedger::new()),
         };
         let identity = ToolCallIdentity {
             card_id: worker_card.id.as_str().to_string(),
@@ -796,7 +700,6 @@ mod tests {
             events: EventBus::new(),
             write: WriteContext::new(card_role_cache, track_area_cache),
             sqlite_db: repo.sqlite_db(),
-            read_ledger: Arc::new(crate::report_read_ledger::ReadLedger::new()),
         };
         let identity = ToolCallIdentity {
             card_id: planner_card.id.as_str().to_string(),
@@ -827,9 +730,6 @@ mod tests {
         let err = sink
             .commit_report_op(
                 &identity,
-                track.clone(),
-                report_card,
-                TrackReportPayload::initial(),
                 ReportDocOp::WriteMarkdown {
                     summary: Some(next.summary),
                     body: next.body,
@@ -939,7 +839,6 @@ mod tests {
             events: EventBus::new(),
             write: WriteContext::new(card_role_cache, track_area_cache),
             sqlite_db: repo.sqlite_db(),
-            read_ledger: Arc::new(crate::report_read_ledger::ReadLedger::new()),
         };
         let identity = ToolCallIdentity {
             card_id: planner_card.id.as_str().to_string(),
@@ -955,9 +854,6 @@ mod tests {
         let updated = sink
             .commit_report_op(
                 &identity,
-                track.clone(),
-                report_card,
-                TrackReportPayload::initial(),
                 ReportDocOp::WriteMarkdown {
                     summary: Some(next.summary),
                     body: next.body,

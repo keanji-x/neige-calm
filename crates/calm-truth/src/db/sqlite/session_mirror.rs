@@ -411,6 +411,7 @@ pub async fn session_supersede_active_tx(
             "active worker session {id} not found for supersede"
         )));
     }
+    super::report_knowledge::clear_session_tx(tx, id).await?;
     Ok(())
 }
 
@@ -665,6 +666,7 @@ pub(super) async fn session_mark_superseded_tx(
     .bind(agent_provider_db_strings(is_non_codex_agent))
     .execute(&mut **tx)
     .await?;
+    super::report_knowledge::clear_session_tx(tx, id).await?;
     Ok(())
 }
 

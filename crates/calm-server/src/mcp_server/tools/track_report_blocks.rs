@@ -8,10 +8,9 @@ use crate::mcp_server::framing::RpcError;
 use crate::mcp_server::registry::{
     AppContext, ToolCallIdentity, ToolHandler, ToolHandlerFuture, ToolRegistry, refuse_unknown_keys,
 };
-use crate::mcp_server::tools::track_report::{resolve_report_for_caller, updated_report_doc_rev};
+use crate::mcp_server::tools::track_report::updated_report_doc_rev;
 use crate::mcp_server::tools::write_args::{parse_optional_write_args, parse_write_args};
-use crate::report_read_ledger::LastRead;
-use crate::track_report::{BatchBlockOp, DocAnchor, MAX_BATCH_OPS, ReportDocOp};
+use crate::track_report::{BlockIntent, MAX_BATCH_OPS, ReportDocOp};
 use calm_types::report_blocks;
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -19,7 +18,7 @@ use std::sync::Arc;
 mod anchors;
 mod contracts;
 
-use anchors::{block_anchor, parse_section_op};
+use anchors::parse_section_op;
 use contracts::{commit_descriptor, kinds_descriptor, kinds_table, write_markdown_descriptor};
 
 pub const TOOL_REPORT_DESCRIBE: &str = "neige_report_describe";
@@ -92,33 +91,17 @@ async fn write_markdown(
     let body = required_string(obj, "body", tool)?;
     let summary_override = optional_string(obj, "summary", tool)?;
 
-    let (track, _, report_card, current) = resolve_report_for_caller(&ctx, &identity).await?;
-    // A rewrite drops every block its body does not carry, so the session must have seen all of them.
-    let if_doc_rev = match ctx
-        .read_ledger
-        .last_read(&identity.session_id, report_card.id.as_str())
-    {
-        Some(LastRead {
-            doc_rev,
-            whole: true,
-            ..
-        }) => doc_rev,
-        _ => {
-            return Err(RpcError::invalid_params(format!(
-                "{tool}: this session has not read the whole report at its current doc_rev — \
-                 read it with a full neige_report_read (`with_markers: true` keeps the block ids), \
-                 then retry"
-            )));
-        }
-    };
-    // Omitted summary = keep the existing one, resolved by the persist layer INSIDE the transaction; resolving from `current` here would let a concurrent summary write be silently reverted.
-    let op = ReportDocOp::WriteMarkdown {
+    let op = ReportDocOp::AgentWrite {
         summary: summary_override,
         body,
-        if_doc_rev,
     };
-    let ReportOpCommit { card, warnings, .. } = match CardDecisionSink::from_app_context(&ctx)
-        .commit_report_op(&identity, track, report_card, current, op, message)
+    let ReportOpCommit {
+        card,
+        warnings,
+        anchor,
+        ..
+    } = match CardDecisionSink::from_app_context(&ctx)
+        .commit_report_op(&identity, op, message)
         .await
     {
         Ok(out) => out,
@@ -126,7 +109,7 @@ async fn write_markdown(
     };
     let doc_rev = updated_report_doc_rev(&card, tool)?;
     Ok(
-        json!({ "updated_at": crate::time_format::at(card.updated_at), "doc_rev": doc_rev, "warnings": warnings }),
+        json!({ "updated_at": crate::time_format::at(card.updated_at), "doc_rev": doc_rev, "anchor": anchor, "anchor_status": crate::report_read_ledger::anchor_line(&anchor), "warnings": warnings }),
     )
 }
 
@@ -162,31 +145,20 @@ async fn commit(
             "{tool}: nothing to commit — pass at least one of `ops`, `summary`"
         )));
     }
-    let (track, _, report_card, current) = resolve_report_for_caller(&ctx, &identity).await?;
-    let last_read = ctx
-        .read_ledger
-        .last_read(&identity.session_id, report_card.id.as_str());
     let ops = raw_ops
         .iter()
         .enumerate()
-        .map(|(index, raw)| parse_batch_op(raw, index, tool, last_read.as_ref()))
+        .map(|(index, raw)| parse_batch_op(raw, index, tool))
         .collect::<Result<Vec<_>, _>>()?;
-    reject_duplicate_block_ids(&ops, tool)?;
-    let doc_anchor = match &last_read {
-        Some(read) => DocAnchor::LastRead(read.doc_rev),
-        None => DocAnchor::Unread,
-    };
-    let ReportOpCommit { card, warnings, .. } = CardDecisionSink::from_app_context(&ctx)
+    let ReportOpCommit {
+        card,
+        warnings,
+        anchor,
+        ..
+    } = CardDecisionSink::from_app_context(&ctx)
         .commit_report_op(
             &identity,
-            track,
-            report_card,
-            current,
-            ReportDocOp::Batch {
-                doc_anchor,
-                summary,
-                ops,
-            },
+            ReportDocOp::AgentBatch { summary, ops },
             Some(message),
         )
         .await
@@ -211,17 +183,12 @@ async fn commit(
         "updated_at": crate::time_format::at(card.updated_at),
         "doc_rev": doc_rev,
         "blocks": blocks,
-        "warnings": warnings,
+        "anchor": anchor, "anchor_status": crate::report_read_ledger::anchor_line(&anchor), "warnings": warnings,
     }))
 }
 
 /// One `ops[i]` of `neige_report_commit`: an id op anchored by the block's rev in `last_read`, or a section op.
-fn parse_batch_op(
-    raw: &Value,
-    index: usize,
-    tool: &str,
-    last_read: Option<&LastRead>,
-) -> Result<BatchBlockOp, RpcError> {
+fn parse_batch_op(raw: &Value, index: usize, tool: &str) -> Result<BlockIntent, RpcError> {
     let at = format!("{tool}: ops[{index}]");
     let obj = raw
         .as_object()
@@ -239,28 +206,22 @@ fn parse_batch_op(
         ))
     })?;
     if let Some(section) = optional_string(obj, "section", &at)? {
-        return parse_section_op(obj, op, section, &at, last_read);
+        return parse_section_op(obj, op, section, &at);
     }
     match op {
         "upsert" => {
             let id = optional_string(obj, "id", &at)?;
             let (kind, content) = resolve_upsert_content(obj, &at)?;
             let position = optional_index(obj, "position", &at)?;
-            let if_rev = match &id {
-                Some(_) if position.is_some() => {
-                    return Err(RpcError::invalid_params(format!(
-                        "{at}: `position` is only valid when creating a new block; use a \
-                         `move` op to reorder"
-                    )));
-                }
-                Some(id) => Some(block_anchor(last_read, id, &at)?),
-                None => None,
-            };
-            Ok(BatchBlockOp::Upsert {
+            if id.is_some() && position.is_some() {
+                return Err(RpcError::invalid_params(format!(
+                    "{at}: `position` is only valid when creating a new block; use a `move` op to reorder"
+                )));
+            }
+            Ok(BlockIntent::Upsert {
                 id,
                 kind,
                 content,
-                if_rev,
                 position,
             })
         }
@@ -269,12 +230,11 @@ fn parse_batch_op(
             let to_index = optional_index(obj, "to_index", &at)?.ok_or_else(|| {
                 RpcError::invalid_params(format!("{at}: missing `to_index` (integer)"))
             })?;
-            Ok(BatchBlockOp::Move { id, to_index })
+            Ok(BlockIntent::Move { id, to_index })
         }
         "delete" => {
             let id = required_string(obj, "id", &at)?;
-            let if_rev = block_anchor(last_read, &id, &at)?;
-            Ok(BatchBlockOp::Delete { id, if_rev })
+            Ok(BlockIntent::Delete { id })
         }
         "replace" => Err(RpcError::invalid_params(format!(
             "{at}: `replace` needs `section` (the H1 heading text) and `markdown`"
@@ -343,36 +303,6 @@ fn resolve_upsert_content(
         )));
     };
     Ok((kind, content))
-}
-
-/// A content-changing upsert bumps that block's rev, so a second op on the same block would need an `if_rev` the caller cannot know yet.
-/// Likewise a section: its replace or delete changes its blocks' revs.
-fn reject_duplicate_block_ids(ops: &[BatchBlockOp], tool: &str) -> Result<(), RpcError> {
-    let mut seen: std::collections::HashSet<(bool, &str)> = std::collections::HashSet::new();
-    for (index, op) in ops.iter().enumerate() {
-        let target = match op {
-            BatchBlockOp::Upsert { id, .. } => id.as_deref().map(|id| (false, id)),
-            BatchBlockOp::Move { id, .. } | BatchBlockOp::Delete { id, .. } => {
-                Some((false, id.as_str()))
-            }
-            BatchBlockOp::ReplaceSection { section, .. }
-            | BatchBlockOp::DeleteSection { section, .. } => Some((true, section.as_str())),
-        };
-        if let Some(target @ (is_section, name)) = target
-            && !seen.insert(target)
-        {
-            let (what, each) = if is_section {
-                ("section", "section")
-            } else {
-                ("block", "block id")
-            };
-            return Err(RpcError::invalid_params(format!(
-                "{tool}: ops[{index}]: {what} `{name}` already addressed by an earlier op — each \
-                 {each} may appear at most once per commit"
-            )));
-        }
-    }
-    Ok(())
 }
 
 fn map_commit_err(tool: &str, e: CalmError) -> RpcError {

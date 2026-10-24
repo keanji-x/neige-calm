@@ -12,11 +12,27 @@ pub(crate) fn apply_report_op(
 }
 
 /// [`apply_report_op`] plus the written-prose trace.
+#[cfg(test)]
 pub(crate) fn apply_report_op_traced(
     doc: &mut ReportDoc,
     op: &ReportDocOp,
     author: EditAuthor,
 ) -> Result<ReportOpTrace, CalmError> {
+    apply_with_knowledge(doc, op, author, None)
+}
+
+fn apply_with_knowledge(
+    doc: &mut ReportDoc,
+    op: &ReportDocOp,
+    author: EditAuthor,
+    mut knowledge: Option<crate::report_read_ledger::LastRead>,
+) -> Result<ReportOpTrace, CalmError> {
+    let raw_ops = match op {
+        ReportDocOp::AgentBatch { ops, .. } => Some(ops),
+        _ => None,
+    };
+    let bound_header = super::intent::header(op, knowledge.as_ref())?;
+    let op = &bound_header;
     let internal = block_op_internal;
     // `summary: None` = keep the current summary, resolved HERE from the doc itself — never from a
     // caller-side snapshot, which could revert a summary written since the caller's read.
@@ -46,7 +62,11 @@ pub(crate) fn apply_report_op_traced(
     let mut written_block_ids = Vec::new();
     let mut section_output_ids = Vec::new();
 
+    let mut bound_steps = Vec::new();
     let outcome: Result<Option<BlockOpOutcome>, CalmError> = match &op {
+        ReportDocOp::AgentBatch { .. } | ReportDocOp::AgentWrite { .. } => {
+            unreachable!("intent header bound")
+        }
         ReportDocOp::Replace {
             summary,
             body,
@@ -148,6 +168,7 @@ pub(crate) fn apply_report_op_traced(
                 }
             };
             outcome.map(|outcome| {
+                written_block_ids.push(outcome.id.clone());
                 if kind == KIND_PROSE {
                     written = Written::Ids(vec![outcome.id.clone()]);
                 }
@@ -191,8 +212,17 @@ pub(crate) fn apply_report_op_traced(
                         BatchBlockOp::Upsert { id: None, .. } | BatchBlockOp::Move { .. }
                     )
                 });
+            let needs_doc_anchor = needs_doc_anchor
+                || raw_ops.is_some_and(|ops| {
+                    ops.iter().any(|op| {
+                        matches!(
+                            op,
+                            BlockIntent::Upsert { id: None, .. } | BlockIntent::Move { .. }
+                        )
+                    })
+                });
             check_doc_anchor(doc, *doc_anchor, needs_doc_anchor)?;
-            if ops.len() > MAX_BATCH_OPS {
+            if raw_ops.map_or(ops.len(), Vec::len) > MAX_BATCH_OPS {
                 return Err(CalmError::BadRequest(format!(
                     "batch carries {} ops; at most {MAX_BATCH_OPS} per commit",
                     ops.len()
@@ -201,12 +231,22 @@ pub(crate) fn apply_report_op_traced(
             // Ops run in order against the doc as the previous ones left it; batches address existing
             // blocks (a created id is not known to the caller yet). The first `?` aborts the whole tx.
             let mut written_ids = Vec::new();
-            for (index, block_op) in ops.iter().enumerate() {
+            for index in 0..raw_ops.map_or(ops.len(), Vec::len) {
                 let step = |e: CalmError| match e {
                     CalmError::Conflict(m) => CalmError::Conflict(format!("ops[{index}]: {m}")),
                     CalmError::BadRequest(m) => CalmError::BadRequest(format!("ops[{index}]: {m}")),
                     other => other,
                 };
+                let block_op = if let Some(raw) = raw_ops {
+                    raw[index].bind(knowledge.as_ref()).map_err(step)?
+                } else {
+                    ops[index].clone()
+                };
+                bound_steps.push(block_op.clone());
+                let block_op = &block_op;
+                let step_before = doc.blocks_snapshot().map_err(internal)?;
+                let written_start = written_block_ids.len();
+                let section_start = section_output_ids.len();
                 match block_op {
                     BatchBlockOp::Upsert {
                         id,
@@ -272,6 +312,18 @@ pub(crate) fn apply_report_op_traced(
                         sections::apply_delete_section(doc, section, read).map_err(step)?;
                     }
                 }
+                if let Some(old) = knowledge.as_ref() {
+                    let rev = doc.doc_rev().map_err(internal)?;
+                    knowledge = Some(crate::report_read_ledger::project_commit(
+                        old,
+                        rev,
+                        &step_before,
+                        rev,
+                        &doc.blocks_snapshot().map_err(internal)?,
+                        &written_block_ids[written_start..],
+                        &section_output_ids[section_start..],
+                    ));
+                }
             }
             if let Some(summary) = summary {
                 doc.set_summary(summary).map_err(internal)?;
@@ -310,7 +362,7 @@ pub(crate) fn apply_report_op_traced(
             .filter(|block| block.kind != KIND_PROSE)
             .map(|block| block.id.as_str())
             .collect(),
-        ReportDocOp::Batch { ops, .. } => ops
+        ReportDocOp::Batch { .. } => bound_steps
             .iter()
             .filter_map(|op| match op {
                 BatchBlockOp::Delete { id, .. } => Some(id.as_str()),
@@ -322,26 +374,59 @@ pub(crate) fn apply_report_op_traced(
     super::compact_origination::guard_compact_origination(&before, &after, author)?;
     guard_task_declarations(&before, &after, author, &deleted_by_id)?;
     crate::track_report_objective_guard::guard_objective_blocks(&before, &after, author)?;
+    let knowledge = knowledge.as_ref().map(|old| {
+        let rev = doc.doc_rev().expect("revision already checked");
+        if raw_ops.is_some() {
+            old.clone()
+        } else {
+            crate::report_read_ledger::project_commit(
+                old,
+                rev,
+                &before,
+                rev,
+                &after,
+                &written_block_ids,
+                &section_output_ids,
+            )
+        }
+    });
     Ok(ReportOpTrace {
         block: outcome,
         written_prose_block_ids,
         written_block_ids,
         section_output_ids,
-        knowledge: None,
+        knowledge,
     })
 }
 
 /// Advance the document-wide revision exactly once per successful op. Kept outside
 /// [`apply_report_op`]: every operation invalidates whole-document anchors, including moves
 /// and content-equal replacements that do not bump a block.
+#[cfg(test)]
 pub(super) fn apply_persisted_report_op(
     doc: &mut ReportDoc,
     op: &ReportDocOp,
     author: EditAuthor,
 ) -> Result<(ReportOpTrace, u64), CalmError> {
-    let trace = apply_report_op_traced(doc, op, author)?;
+    apply_persisted_with_knowledge(doc, op, author, None)
+}
+
+pub(super) fn apply_persisted_with_knowledge(
+    doc: &mut ReportDoc,
+    op: &ReportDocOp,
+    author: EditAuthor,
+    knowledge: Option<crate::report_read_ledger::LastRead>,
+) -> Result<(ReportOpTrace, u64), CalmError> {
+    let before_rev = doc.doc_rev().map_err(block_op_internal)?;
+    let mut trace = apply_with_knowledge(doc, op, author, knowledge)?;
     let doc_rev = doc.increment_doc_rev().map_err(|e| {
         CalmError::Internal(format!("track_report: increment document revision: {e}"))
     })?;
+    if let Some(read) = trace.knowledge.as_mut() {
+        read.whole = read.whole && read.doc_rev == before_rev;
+        if read.doc_rev == before_rev {
+            read.doc_rev = doc_rev;
+        }
+    }
     Ok((trace, doc_rev))
 }

@@ -106,7 +106,11 @@ async fn assistant_edits(boot: &Boot, heading: &str, markdown: &str) {
 }
 
 /// Supersede the planner card's session with a fresh one, as a planner restart does; the successor's identity.
-async fn supersede_planner(boot: &Boot, current: &str, successor: &str) -> ToolCallIdentity {
+pub(crate) async fn supersede_planner(
+    boot: &Boot,
+    current: &str,
+    successor: &str,
+) -> ToolCallIdentity {
     let pool = boot.repo.sqlite_db().expect("sqlite pool");
     let mut tx = calm_server::db::sqlite::begin_immediate_tx(&pool)
         .await
@@ -284,7 +288,12 @@ async fn a_new_session_of_the_card_starts_with_an_empty_ledger() {
     read_sections(&boot, planner_identity(&boot), &["决策"]).await;
     let old = planner_identity(&boot).session_id;
     let report = boot.report_card_id.as_str();
-    assert!(boot.ctx.read_ledger.last_read(&old, report).is_some());
+    assert!(
+        calm_truth::db::sqlite::report_knowledge::load(boot.repo.as_ref(), &old, report)
+            .await
+            .unwrap()
+            .is_some()
+    );
 
     let successor = supersede_planner(&boot, &old, "planner-session-2").await;
     let err = commit(&boot, successor.clone(), replace("决策", "# 决策\n\nx\n"))
@@ -293,9 +302,11 @@ async fn a_new_session_of_the_card_starts_with_an_empty_ledger() {
     assert_eq!(err.code, INVALID_PARAMS, "{err:?}");
     read_sections(&boot, successor.clone(), &["决策"]).await;
     assert_eq!(
-        boot.ctx.read_ledger.last_read(&old, report),
+        calm_truth::db::sqlite::report_knowledge::load(boot.repo.as_ref(), &old, report)
+            .await
+            .unwrap(),
         None,
-        "the successor's first read evicts the superseded session"
+        "superseding clears the predecessor before any successor read"
     );
     commit(&boot, successor.clone(), replace("决策", "# 决策\n\nx\n"))
         .await
@@ -451,9 +462,13 @@ async fn a_cat_read_anchors_no_commit() {
     }
     let session = planner_identity(&boot).session_id;
     assert_eq!(
-        boot.ctx
-            .read_ledger
-            .last_read(&session, boot.report_card_id.as_str()),
+        calm_truth::db::sqlite::report_knowledge::load(
+            boot.repo.as_ref(),
+            &session,
+            boot.report_card_id.as_str()
+        )
+        .await
+        .unwrap(),
         None
     );
     let before = payload(&boot).await;

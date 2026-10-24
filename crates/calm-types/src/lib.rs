@@ -53,3 +53,5 @@ pub mod daily_planner;
 pub mod subtrack_route;
 
 pub mod track_wire;
+
+pub mod report_knowledge;

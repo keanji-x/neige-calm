@@ -45,11 +45,14 @@ async fn own_moves_rebuild_section_anchors() {
         )
         .await
         .unwrap();
-        let read = b
-            .ctx
-            .read_ledger
-            .last_read(&planner_identity(&b).session_id, b.report_card_id.as_str())
-            .unwrap();
+        let read = calm_truth::db::sqlite::report_knowledge::load(
+            b.repo.as_ref(),
+            &planner_identity(&b).session_id,
+            b.report_card_id.as_str(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
         for (title, heading) in [("概要", "# 概要"), ("已完成", "# 已完成")] {
             let expected: Vec<_> = section_blocks(&b, heading)
                 .await
@@ -106,14 +109,29 @@ async fn foreign_content_is_not_granted_by_an_unrelated_commit() {
     commit(&b, planner_identity(&b), replace("决策", "# 决策\n\nown\n"))
         .await
         .unwrap();
-    let read = b
-        .ctx
-        .read_ledger
-        .last_read(&planner_identity(&b).session_id, b.report_card_id.as_str())
-        .unwrap();
+    let read = calm_truth::db::sqlite::report_knowledge::load(
+        b.repo.as_ref(),
+        &planner_identity(&b).session_id,
+        b.report_card_id.as_str(),
+    )
+    .await
+    .unwrap()
+    .unwrap();
     let foreign = section_blocks(&b, "# 概要").await[0].clone();
-    assert_ne!(read.blocks.get(&foreign.0), Some(&(foreign.1 as u32)));
-    assert!(!read.sections.contains_key("概要"));
+    assert_ne!(
+        read.blocks.get(&foreign.0).map(|b| b.rev),
+        Some(foreign.1 as u32)
+    );
+    assert_ne!(
+        read.sections.get("概要"),
+        Some(
+            &section_blocks(&b, "# 概要")
+                .await
+                .into_iter()
+                .map(|(id, rev)| (id, rev as u32))
+                .collect::<Vec<_>>()
+        )
+    );
     assert!(!read.whole);
     assert!(
         commit(
@@ -145,13 +163,34 @@ async fn foreign_move_of_known_blocks_does_not_grant_section() {
     commit(&b, planner_identity(&b), replace("决策", "# 决策\n\nown\n"))
         .await
         .unwrap();
-    let read = b
-        .ctx
-        .read_ledger
-        .last_read(&planner_identity(&b).session_id, b.report_card_id.as_str())
-        .unwrap();
-    assert!(!read.sections.contains_key("概要"));
-    assert!(!read.sections.contains_key("已完成"));
+    let read = calm_truth::db::sqlite::report_knowledge::load(
+        b.repo.as_ref(),
+        &planner_identity(&b).session_id,
+        b.report_card_id.as_str(),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_ne!(
+        read.sections.get("概要"),
+        Some(
+            &section_blocks(&b, "# 概要")
+                .await
+                .into_iter()
+                .map(|(id, rev)| (id, rev as u32))
+                .collect::<Vec<_>>()
+        )
+    );
+    assert_ne!(
+        read.sections.get("已完成"),
+        Some(
+            &section_blocks(&b, "# 已完成")
+                .await
+                .into_iter()
+                .map(|(id, rev)| (id, rev as u32))
+                .collect::<Vec<_>>()
+        )
+    );
     assert!(!read.whole);
 }
 
@@ -165,11 +204,14 @@ async fn partial_read_commit_never_grants_whole() {
     commit(&b, planner_identity(&b), replace("概要", "# 概要\n\nown\n"))
         .await
         .unwrap();
-    let read = b
-        .ctx
-        .read_ledger
-        .last_read(&planner_identity(&b).session_id, b.report_card_id.as_str())
-        .unwrap();
+    let read = calm_truth::db::sqlite::report_knowledge::load(
+        b.repo.as_ref(),
+        &planner_identity(&b).session_id,
+        b.report_card_id.as_str(),
+    )
+    .await
+    .unwrap()
+    .unwrap();
     assert!(!read.whole);
     assert!(
         call_tool(
@@ -189,10 +231,13 @@ async fn failed_transaction_leaves_knowledge_unchanged_and_new_session_empty() {
     seed(&b, SECTIONS).await;
     read_sections(&b, planner_identity(&b), &["概要", "已完成"]).await;
     let who = planner_identity(&b);
-    let old = b
-        .ctx
-        .read_ledger
-        .last_read(&who.session_id, b.report_card_id.as_str());
+    let old = calm_truth::db::sqlite::report_knowledge::load(
+        b.repo.as_ref(),
+        &who.session_id,
+        b.report_card_id.as_str(),
+    )
+    .await
+    .unwrap();
     let doc = payload(&b).await;
     assert!(
         commit(
@@ -207,21 +252,24 @@ async fn failed_transaction_leaves_knowledge_unchanged_and_new_session_empty() {
         .is_err()
     );
     assert_eq!(
-        b.ctx
-            .read_ledger
-            .last_read(&who.session_id, b.report_card_id.as_str()),
+        calm_truth::db::sqlite::report_knowledge::load(
+            b.repo.as_ref(),
+            &who.session_id,
+            b.report_card_id.as_str()
+        )
+        .await
+        .unwrap(),
         old
     );
     assert_eq!(payload(&b).await.body, doc.body);
     assert_eq!(
-        b.ctx
-            .read_ledger
-            .last_read("new-session", b.report_card_id.as_str()),
-        None
-    );
-    assert_eq!(
-        calm_server::report_read_ledger::ReadLedger::new()
-            .last_read(&who.session_id, b.report_card_id.as_str()),
+        calm_truth::db::sqlite::report_knowledge::load(
+            b.repo.as_ref(),
+            "new-session",
+            b.report_card_id.as_str()
+        )
+        .await
+        .unwrap(),
         None
     );
 }
@@ -271,13 +319,25 @@ async fn own_move_of_unread_content_grants_neither_block_nor_section() {
     )
     .await
     .unwrap();
-    let read = b
-        .ctx
-        .read_ledger
-        .last_read(&planner_identity(&b).session_id, b.report_card_id.as_str())
-        .unwrap();
+    let read = calm_truth::db::sqlite::report_knowledge::load(
+        b.repo.as_ref(),
+        &planner_identity(&b).session_id,
+        b.report_card_id.as_str(),
+    )
+    .await
+    .unwrap()
+    .unwrap();
     assert!(!read.blocks.contains_key(&id));
-    assert!(!read.sections.contains_key("已完成"));
+    assert_ne!(
+        read.sections.get("已完成"),
+        Some(
+            &section_blocks(&b, "# 已完成")
+                .await
+                .into_iter()
+                .map(|(id, rev)| (id, rev as u32))
+                .collect::<Vec<_>>()
+        )
+    );
     assert!(!read.whole);
 }
 
@@ -314,13 +374,25 @@ async fn known_content_outside_sections_needs_structural_evidence() {
     )
     .await
     .unwrap();
-    let read = b
-        .ctx
-        .read_ledger
-        .last_read(&planner_identity(&b).session_id, b.report_card_id.as_str())
-        .unwrap();
+    let read = calm_truth::db::sqlite::report_knowledge::load(
+        b.repo.as_ref(),
+        &planner_identity(&b).session_id,
+        b.report_card_id.as_str(),
+    )
+    .await
+    .unwrap()
+    .unwrap();
     assert!(read.blocks.contains_key(&id));
-    assert!(!read.sections.contains_key("概要"));
+    assert_ne!(
+        read.sections.get("概要"),
+        Some(
+            &section_blocks(&b, "# 概要")
+                .await
+                .into_iter()
+                .map(|(id, rev)| (id, rev as u32))
+                .collect::<Vec<_>>()
+        )
+    );
     assert!(!read.whole);
 }
 
@@ -391,21 +463,15 @@ async fn section_output_does_not_certify_foreign_members(variant: &str) {
         _ => "待你定",
     };
     let committed = commit(&b, planner_identity(&b), json!({"ops":ops})).await;
-    if variant == "repeated_replace" {
-        assert!(
-            committed
-                .unwrap_err()
-                .message
-                .contains("each section may appear at most once")
-        );
-        return;
-    }
     committed.unwrap();
-    let read = b
-        .ctx
-        .read_ledger
-        .last_read(&planner_identity(&b).session_id, b.report_card_id.as_str())
-        .unwrap();
+    let read = calm_truth::db::sqlite::report_knowledge::load(
+        b.repo.as_ref(),
+        &planner_identity(&b).session_id,
+        b.report_card_id.as_str(),
+    )
+    .await
+    .unwrap()
+    .unwrap();
     assert!(
         read.blocks.contains_key(x) && read.blocks.contains_key(y),
         "{variant}: content known"
@@ -441,7 +507,7 @@ async fn section_output_does_not_certify_split_foreign_members() {
 }
 
 #[tokio::test]
-async fn repeated_section_ops_are_rejected_before_provenance_projection() {
+async fn repeated_section_ops_keep_foreign_provenance_ungranted() {
     section_output_does_not_certify_foreign_members("repeated_replace").await;
 }
 
@@ -474,4 +540,67 @@ async fn section_output_keeps_provenance_after_heading_edit() {
     )
     .await
     .unwrap();
+}
+
+#[tokio::test]
+async fn disk_restart_preserves_read_for_commit_without_reread() {
+    use calm_server::db::Repo;
+    use calm_server::db::sqlite::SqlxRepo;
+    use calm_server::mcp_server::registry::AppContext;
+    use std::sync::Arc;
+    let dir = tempfile::tempdir().unwrap();
+    let url = format!(
+        "sqlite://{}?mode=rwc",
+        dir.path().join("ledger.db").display()
+    );
+    let mut b = crate::mcp_track_report::boot_at(&url).await;
+    seed(&b, SECTIONS).await;
+    read_sections(&b, planner_identity(&b), &["概要"]).await;
+    let who = planner_identity(&b);
+    let repo: Arc<dyn Repo> = Arc::new(SqlxRepo::open(&url).await.unwrap());
+    let ctx = AppContext::new(
+        repo.clone(),
+        b.ctx.events.clone(),
+        b.ctx.write.clone(),
+        None,
+        Arc::new(tokio::sync::OnceCell::new()),
+        Arc::new(tokio::sync::OnceCell::new()),
+        dir.path().join("gates"),
+    );
+    b.repo = repo;
+    b.ctx = ctx;
+    commit(&b, who, replace("概要", "# 概要\n\nafter restart\n"))
+        .await
+        .expect("durable read must anchor the same session after restart");
+    let other = crate::mcp_track_report::assistant_identity(&b);
+    read_sections(&b, other.clone(), &["概要"]).await;
+    commit(
+        &b,
+        other,
+        replace("概要", "# 概要\n\nexternal after restart\n"),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        commit(
+            &b,
+            planner_identity(&b),
+            replace("概要", "# 概要\n\nstale\n")
+        )
+        .await
+        .unwrap_err()
+        .code,
+        -32409
+    );
+    assert_eq!(
+        commit(
+            &b,
+            crate::mcp_track_report::assistant_b_identity(&b),
+            replace("概要", "# 概要\n\nnever read\n")
+        )
+        .await
+        .unwrap_err()
+        .code,
+        -32602
+    );
 }
