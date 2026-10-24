@@ -12,7 +12,7 @@ use super::{AcpAgentProfile, AgentEntry, AgentIdentity, ModeLaunch, NOTHING};
 use provider::acp::approvals::McpToolRequest;
 
 pub(super) const PROFILE: AcpAgentProfile = AcpAgentProfile {
-    manual_compact: false,
+    compaction: Some(super::CompactionWire::XaiExtension),
     canonical_planner_inputs: true,
     canonical_assistant_inputs: false,
     entry: AgentEntry {

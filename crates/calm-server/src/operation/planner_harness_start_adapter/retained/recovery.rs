@@ -59,9 +59,7 @@ fn require_restorable(target: &Target) -> Result<()> {
     // in-flight guard. This grants no work input or maintenance retry.
     let held_maintenance =
         !PlannerFactory::canonical_recovery_requires_idle(&target.binding.provider)
-            && crate::harness::backend::PlannerBackend::manual_compact_supported(
-                &target.binding.provider,
-            )
+            && crate::harness::backend::PlannerBackend::manual_compact_supported(&target.binding)
             && frame.canonical_inputs.active.is_none()
             && (frame.header.phase == HarnessPhaseTag::Compacting
                 || frame

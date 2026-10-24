@@ -200,7 +200,8 @@ impl AcpPlannerSession {
                 .connection
                 .client,
             registration,
-            registration.profile.manual_compact,
+            registration.profile.compaction
+                == Some(super::super::profile::CompactionWire::StandardPrompt),
         )
         .await;
         match negotiated {

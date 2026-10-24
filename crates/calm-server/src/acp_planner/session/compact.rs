@@ -1,11 +1,15 @@
-//! Canonical maintenance owns one prompt and one exact retained cleanup driver, never an input.
+//! Canonical maintenance owns one native request and one exact cleanup driver, never an input.
+use super::super::profile::CompactionWire;
 use super::*;
 use crate::harness::backend::{MaintenanceObservation, MaintenanceTarget};
 use crate::harness::native_admission::NativePromptAdmission;
 use provider::acp::compaction::{CompactionUpdate, Status};
+use provider::acp::grok_compaction;
 use provider::control::{
     CompactNotSubmitted, CompactSubmission, SubmissionBasis, SubmissionEvidence,
 };
+
+type CompactInbox = Arc<std::sync::Mutex<Option<tokio::sync::mpsc::Receiver<Incoming>>>>;
 
 impl AcpPlannerSession {
     fn owns_maintenance(&self, target: &MaintenanceTarget) -> bool {
@@ -68,11 +72,13 @@ impl AcpPlannerSession {
             .host
             .registration(&params.provider)
             .map_err(CompactFailure::Before)?;
-        if !registration.profile.manual_compact
-            || !registration.profile.canonical_inputs(row.contract)
-        {
+        if !registration.profile.canonical_inputs(row.contract) {
             return Err(before("ACP profile does not consume canonical compaction"));
         }
+        let wire = registration
+            .profile
+            .compaction
+            .ok_or_else(|| before("ACP profile does not declare compaction"))?;
         let native = row
             .agent_session_id
             .ok_or_else(|| before("ACP maintenance requires a native binding"))?;
@@ -153,7 +159,7 @@ impl AcpPlannerSession {
                     .connection
                     .client,
                 registration,
-                true,
+                wire == CompactionWire::StandardPrompt,
             )
             .await
             .map_err(|error| StartFailure::Failed(CalmError::Conflict(error)))?;
@@ -192,7 +198,7 @@ impl AcpPlannerSession {
             guard.finish().await.map_err(CompactFailure::Before)?;
             return Err(CompactFailure::Before(error.into()));
         }
-        let (process, claim, driver_guard) = guard.handoff_process();
+        let (mut process, claim, driver_guard) = guard.handoff_process();
         let execution_id = crate::provider_execution::execution_id(claim.record())
             .map_err(CompactFailure::Before)?;
         let approvals = Arc::new(Approvals::for_turn(
@@ -211,6 +217,23 @@ impl AcpPlannerSession {
             approvals: Arc::downgrade(&approvals),
             native_session_id: native.clone(),
         });
+        // Keep the inbox with this one driver, but expose its queued prefix to
+        // the final synchronous admission check before the first write poll.
+        let inbox = (wire == CompactionWire::XaiExtension).then(|| {
+            let (_, empty) = tokio::sync::mpsc::channel(1);
+            Arc::new(std::sync::Mutex::new(Some(std::mem::replace(
+                &mut process.connection.incoming,
+                empty,
+            ))))
+        });
+        #[cfg(all(test, feature = "fixtures"))]
+        if let Some(inbox) = &inbox {
+            super::super::test_seams::observe_compact_inbox(&params.worker_session_id, {
+                let inbox = inbox.clone();
+                move || inbox.lock().unwrap().as_ref().map_or(0, |rx| rx.len())
+            });
+        }
+        let driver_inbox = inbox.clone();
         let client = process.connection.client.clone();
         let capabilities = process.capabilities.clone();
         let (send, pending) = tokio::sync::oneshot::channel();
@@ -221,7 +244,9 @@ impl AcpPlannerSession {
                 task_shared,
                 process,
                 task_native,
+                wire,
                 pending,
+                driver_inbox,
                 cancelled,
                 approvals,
                 claim,
@@ -236,14 +261,51 @@ impl AcpPlannerSession {
         );
         let owner = shared.admission(thread, Some(permission), Some(&native), Some(&turn));
         let combined = admission.combined(&owner);
-        let result = protocol::prompt(
-            &client,
-            &capabilities,
-            &native,
-            &[protocol::ContentBlock::text("/compact")],
-            combined.gate(),
-        )
-        .await;
+        let result = match wire {
+            CompactionWire::StandardPrompt => {
+                protocol::prompt(
+                    &client,
+                    &capabilities,
+                    &native,
+                    &[protocol::ContentBlock::text("/compact")],
+                    combined.gate(),
+                )
+                .await
+            }
+            CompactionWire::XaiExtension => {
+                let gate = combined.gate_with_final_check(|| {
+                    let mut inbox = inbox
+                        .as_ref()
+                        .expect("Grok compact inbox")
+                        .lock()
+                        .expect("compact inbox");
+                    let incoming = inbox.as_mut().expect("compact driver awaits handoff");
+                    // Exclude the finite prefix queued during async admission.
+                    // This precedes the first AsyncWrite poll, not necessarily
+                    // actual bytes: EngineStdio may await SQL/RPC work internally.
+                    // The matching RPC result and cleanup remain mandatory.
+                    // Never drain after submit: preserve fast completions.
+                    for _ in 0..incoming.len() {
+                        if matches!(incoming.try_recv(), Ok(Incoming::Request { .. })) {
+                            return Err(CalmError::Conflict(
+                                "ACP compact has a pre-send client request".into(),
+                            ));
+                        }
+                    }
+                    Ok(())
+                });
+                client
+                    .submit_gated(
+                        grok_compaction::METHOD,
+                        grok_compaction::encode(
+                            &native,
+                            "Preserve the conversation context for subsequent turns.",
+                        ),
+                        &gate,
+                    )
+                    .await
+            }
+        };
         let failure = match &result {
             Ok(_) => None,
             Err(provider::acp::WriteFailure::BeforeWrite(error)) => Some(CompactFailure::Before(
@@ -293,6 +355,35 @@ struct Correlation {
     settled: Option<bool>,
 }
 impl Correlation {
+    fn observe(
+        &mut self,
+        wire: CompactionWire,
+        method: &str,
+        params: &Value,
+        native: &str,
+    ) -> Result<()> {
+        match wire {
+            CompactionWire::StandardPrompt if method == "session/update" => {
+                self.update(params, native)
+            }
+            CompactionWire::XaiExtension => {
+                if let Some(completion) =
+                    grok_compaction::decode(method, params).map_err(wire_error)?
+                {
+                    if completion.is_replay().map_err(wire_error)? {
+                        return Ok(());
+                    }
+                    if completion.session_id != native {
+                        return Err(CalmError::Conflict("xAI compaction session changed".into()));
+                    }
+                    self.settled = Some(true);
+                }
+                Ok(())
+            }
+            _ => Ok(()),
+        }
+    }
+
     fn update(&mut self, frame: &Value, native: &str) -> Result<()> {
         if frame["sessionId"].as_str() != Some(native) {
             return Err(CalmError::Conflict("ACP compaction session changed".into()));
@@ -331,35 +422,46 @@ async fn drive_compact(
     shared: Arc<Shared>,
     mut process: Process,
     native: String,
+    wire: CompactionWire,
     pending: tokio::sync::oneshot::Receiver<
         std::result::Result<provider::acp::PendingResponse, provider::acp::WriteFailure>,
     >,
+    inbox: Option<CompactInbox>,
     mut cancelled: watch::Receiver<CancelRequest>,
     approvals: Arc<Approvals>,
     claim: crate::provider_execution::Claim,
     _guard: crate::provider_execution::DriverGuard,
 ) -> execution_end::Settlement {
     let outcome = async {
-        let pending = pending.await.map_err(|_| before("ACP compact handoff lost"))?.map_err(|e| CompactFailure::Crossed(wire_error(e.into_error())))?;
+        let handed = pending.await;
+        if let Some(inbox) = inbox {
+            process.connection.incoming = inbox.lock().expect("compact inbox").take().expect("one compact driver");
+        }
+        let pending = handed.map_err(|_| before("ACP compact handoff lost"))?.map_err(|e| CompactFailure::Crossed(wire_error(e.into_error())))?;
         let response = pending.wait(Duration::from_secs(3600)); tokio::pin!(response);
         let mut correlation = Correlation::default();
         loop { tokio::select! {
             result = &mut response => {
                 while let Ok(frame) = process.connection.incoming.try_recv() {
                     match frame {
-                        Incoming::Notification { method, params } if method == "session/update" => correlation.update(&params, &native).map_err(CompactFailure::Before)?,
+                        Incoming::Notification { method, params } => correlation.observe(wire, &method, &params, &native).map_err(CompactFailure::Before)?,
                         Incoming::Request { .. } => return Err(before("ACP compact ended with a pending client request")),
-                        _ => {},
                     }
                 }
-                let result: protocol::PromptResponse = protocol::decode(result.map_err(|e| CompactFailure::Crossed(wire_error(e)))?).map_err(|e| CompactFailure::Crossed(wire_error(e)))?;
-                return Ok(matches!(result.stop_reason, protocol::StopReason::EndTurn) && correlation.settled == Some(true));
+                let result = result.map_err(|e| CompactFailure::Crossed(wire_error(e)))?;
+                let confirmed = match wire {
+                    CompactionWire::StandardPrompt => {
+                        let result: protocol::PromptResponse = protocol::decode(result).map_err(|e| CompactFailure::Crossed(wire_error(e)))?;
+                        matches!(result.stop_reason, protocol::StopReason::EndTurn)
+                    },
+                    CompactionWire::XaiExtension => grok_compaction::empty_response(&result),
+                };
+                return Ok(confirmed && correlation.settled == Some(true));
             },
             _ = cancelled.changed() => return Err(before("ACP compact interrupted")),
             frame = process.connection.incoming.recv() => match frame {
-                Some(Incoming::Notification { method, params }) if method == "session/update" => correlation.update(&params, &native).map_err(CompactFailure::Before)?,
+                Some(Incoming::Notification { method, params }) => correlation.observe(wire, &method, &params, &native).map_err(CompactFailure::Before)?,
                 Some(Incoming::Request { id, method, .. }) => provider::acp::approvals::refuse(&process.connection.client, id, &method).await.map_err(|e| CompactFailure::Crossed(wire_error(e)))?,
-                Some(_) => {},
                 None => return Err(before("ACP compact connection closed")),
             }
         }}

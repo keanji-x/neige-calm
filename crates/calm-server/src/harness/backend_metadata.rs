@@ -45,10 +45,22 @@ impl super::backend::PlannerBackend {
         let (steer, images, manual_compact, history_replacement, discovery) = match provider {
             AgentProvider::Codex => (true, true, true, true, ToolDiscovery::DeferredSearch),
             AgentProvider::Claude => (false, true, true, true, ToolDiscovery::DirectMcp),
-            AgentProvider::OpenCode => (false, false, true, false, ToolDiscovery::SessionToolList),
+            AgentProvider::OpenCode => (
+                false,
+                false,
+                crate::acp_planner::wiring::manual_compaction(provider),
+                false,
+                ToolDiscovery::SessionToolList,
+            ),
             // Grok Build's `_meta.sendNow` cancels the running turn and reruns it rather than
             // joining it, and its `initialize` reports `promptCapabilities.image: false`.
-            AgentProvider::Grok => (false, false, false, false, ToolDiscovery::SessionToolList),
+            AgentProvider::Grok => (
+                false,
+                false,
+                crate::acp_planner::wiring::manual_compaction(provider),
+                false,
+                ToolDiscovery::SessionToolList,
+            ),
         };
         let catalog = provider.protocol();
         let (requires_ready_availability, requires_codex_daemon) = match catalog {

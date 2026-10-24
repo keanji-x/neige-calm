@@ -219,7 +219,7 @@ pub(super) async fn read(
                     // Canonical HTTP input admits ordinary text only (planner_input_send::human).
                     attachments_supported: false,
                     manual_compact_supported:
-                        crate::harness::PlannerBackend::manual_compact_supported(&binding.provider),
+                        crate::harness::PlannerBackend::manual_compact_supported(&binding),
                     // Persisted native identity does not prove a monotonic running clock after reopen.
                     running_turn: None,
                 },

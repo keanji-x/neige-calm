@@ -34,7 +34,20 @@ impl PlannerHarness {
 }
 
 pub(super) async fn request(inner: &Arc<Inner>, request_id: String) -> Result<CompactionAnswer> {
-    if !PlannerBackend::manual_compact_supported(&inner.backend.provider()) {
+    let row = inner
+        .repo
+        .session_get(&calm_types::worker::WorkerSessionId(
+            inner.worker_session_id.clone(),
+        ))
+        .await?;
+    let binding = match row {
+        Some(row) => crate::harness::profile::live_binding(inner.repo.as_ref(), &row).await?,
+        None => None,
+    };
+    if binding.is_none_or(|binding| {
+        binding.provider != inner.backend.provider()
+            || !PlannerBackend::manual_compact_supported(&binding)
+    }) {
         return Ok(CompactionAnswer::Refused(
             CompactionRefusal::UnsupportedProvider,
         ));

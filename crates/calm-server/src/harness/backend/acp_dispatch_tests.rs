@@ -47,6 +47,19 @@ async fn fixture_storage_for(
     crate::test_support::execution::Directory,
     crate::harness::held_requests::HeldRequestReceiver,
 ) {
+    fixture_storage_for_version(provider, persistent, None).await
+}
+async fn fixture_storage_for_version(
+    provider: AgentProvider,
+    persistent: bool,
+    version: Option<&str>,
+) -> (
+    PlannerBackend,
+    Arc<AcpPlannerSession>,
+    super::dispatch_fixture::Owner,
+    crate::test_support::execution::Directory,
+    crate::harness::held_requests::HeldRequestReceiver,
+) {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("scenario"), "reply").unwrap();
     let url = if persistent {
@@ -61,7 +74,8 @@ async fn fixture_storage_for(
         _execution: execution,
         directory: dir,
     };
-    let (backend, session, rx) = session_for_provider(&owner, &dir, provider);
+    let (backend, session, rx) =
+        session_for_command_version(&owner, &dir, provider, "/usr/bin/python3", version);
     (backend, session, owner, dir, rx)
 }
 
@@ -124,6 +138,23 @@ fn session_for_command(
     Arc<AcpPlannerSession>,
     crate::harness::held_requests::HeldRequestReceiver,
 ) {
+    session_for_command_version(owner, dir, provider, command, None)
+}
+fn session_for_command_version(
+    owner: &super::dispatch_fixture::Owner,
+    dir: &crate::test_support::execution::Directory,
+    provider: AgentProvider,
+    command: &str,
+    version: Option<&str>,
+) -> (
+    PlannerBackend,
+    Arc<AcpPlannerSession>,
+    crate::harness::held_requests::HeldRequestReceiver,
+) {
+    let mut env = peer_env(&provider, dir);
+    if let Some(version) = version {
+        env.insert("ACP_FIXTURE_VERSION".into(), version.into());
+    }
     let host = Arc::new(
         AcpPlannerHost::new(
             Some(AcpPlannerConfig {
@@ -138,7 +169,7 @@ fn session_for_command(
                         )
                         .into(),
                     ],
-                    env: peer_env(&provider, dir),
+                    env,
                     default_permission_mode: None,
                     min_agent_version: semver::Version::new(1, 0, 0),
                 }],

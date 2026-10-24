@@ -152,3 +152,27 @@ pub(crate) fn pause_issue(worker: &str, stage: IssueStage) -> SettlementPause {
 pub(crate) async fn wait_issue(worker: &str, stage: IssueStage) {
     wait_at(&ISSUE, &format!("{worker}:{stage:?}")).await;
 }
+
+#[cfg(test)]
+type CompactInbox = Arc<dyn Fn() -> usize + Send + Sync>;
+#[cfg(test)]
+static COMPACT_INBOX: LazyLock<Mutex<HashMap<String, CompactInbox>>> =
+    LazyLock::new(Mutex::default);
+#[cfg(test)]
+pub(crate) fn observe_compact_inbox(
+    worker: &str,
+    count: impl Fn() -> usize + Send + Sync + 'static,
+) {
+    COMPACT_INBOX
+        .lock()
+        .unwrap()
+        .insert(worker.into(), Arc::new(count));
+}
+#[cfg(test)]
+pub(crate) fn compact_incoming_len(worker: &str) -> usize {
+    COMPACT_INBOX
+        .lock()
+        .unwrap()
+        .get(worker)
+        .map_or(0, |count| count())
+}

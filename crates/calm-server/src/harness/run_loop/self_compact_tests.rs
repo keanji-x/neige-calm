@@ -239,7 +239,7 @@ fn compact_requested_snapshot_is_not_hibernation_idle() {
 }
 
 #[tokio::test]
-async fn compact_request_refuses_unsupported_acp_provider() {
+async fn acp_grok_compact_request_refuses_unsupported_acp_provider() {
     use crate::harness::profile::{HarnessProfile, PlannerBinding};
     use crate::harness::wiring::{PlannerRow, PlannerWiring};
     let mut f = Fixture::new().await;
@@ -256,7 +256,7 @@ async fn compact_request_refuses_unsupported_acp_provider() {
         f.repo.clone(),
         PlannerRow {
             binding: PlannerBinding {
-                profile: HarnessProfile::Planner,
+                profile: HarnessProfile::Assistant,
                 provider: AgentProvider::Grok,
             },
             worker_session_id: inner.worker_session_id.as_str(),

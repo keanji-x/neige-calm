@@ -9,7 +9,7 @@ async fn create(stack: &Stack) -> (String, String) {
         .await
 }
 
-async fn wait_phase(stack: &Stack, worker: &str, phase: &str) {
+pub(super) async fn wait_phase(stack: &Stack, worker: &str, phase: &str) {
     tokio::time::timeout(Duration::from_secs(30), async {
         loop {
             let row = stack
@@ -31,7 +31,7 @@ async fn wait_phase(stack: &Stack, worker: &str, phase: &str) {
     .await
     .expect("persisted canonical phase");
 }
-async fn turn(stack: &Stack, card: &str, text: &str, n: usize) -> Value {
+pub(super) async fn turn(stack: &Stack, card: &str, text: &str, n: usize) -> Value {
     let (status, body) = stack.post_input(card, text).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     let outcome = stack.wait_outcomes(card, n).await[n - 1].clone();
@@ -39,7 +39,7 @@ async fn turn(stack: &Stack, card: &str, text: &str, n: usize) -> Value {
     outcome
 }
 
-async fn compact(stack: &Stack, card: &str) -> (StatusCode, Value) {
+pub(super) async fn compact(stack: &Stack, card: &str) -> (StatusCode, Value) {
     stack
         .send(
             "POST",
@@ -54,7 +54,7 @@ fn compact_prompts(root: &Root) -> Vec<Value> {
         .filter(|r| r["params"]["prompt"] == json!([{"type":"text","text":"/compact"}]))
         .collect()
 }
-async fn human_state(stack: &Stack, card: &str) -> Vec<(String, i64, String, String)> {
+pub(super) async fn human_state(stack: &Stack, card: &str) -> Vec<(String, i64, String, String)> {
     sqlx::query_as(concat!(
         "SELECT m.id,m.current_revision,r.payload_json,r.body_sha256 ",
         "FROM conversation_messages m JOIN conversation_message_revisions r ",
@@ -65,15 +65,35 @@ async fn human_state(stack: &Stack, card: &str) -> Vec<(String, i64, String, Str
     .await
     .unwrap()
 }
-async fn snapshot(stack: &Stack, card: &str) -> Value {
+async fn receipt_state(
+    stack: &Stack,
+    worker: &str,
+) -> Vec<(String, String, String, Option<String>)> {
+    sqlx::query_as("SELECT client_id,input_json,state,outcome_json FROM acp_submissions WHERE worker_session_id=? ORDER BY client_id")
+        .bind(worker).fetch_all(stack.repo().sqlite_db().unwrap().read_pool()).await.unwrap()
+}
+
+pub(super) async fn snapshot(stack: &Stack, card: &str) -> Value {
     stack.runtime(card).await.handle_state_json.unwrap()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn acp_compact_success_preserves_inputs_and_settles_once() {
+    success(false).await;
+}
+
+pub(super) async fn success(grok: bool) {
     let root = Root::new("unused");
-    let stack = boot(&root).await;
-    let (_, card) = create(&stack).await;
+    let stack = if grok {
+        super::acp_grok_compact::boot_grok(&root).await
+    } else {
+        boot(&root).await
+    };
+    let (_, card) = if grok {
+        super::acp_grok_compact::create_grok(&stack).await
+    } else {
+        create(&stack).await
+    };
     turn(&stack, &card, "first", 1).await;
     let before = snapshot(&stack, &card).await;
     let humans = human_state(&stack, &card).await;
@@ -81,8 +101,17 @@ async fn acp_compact_success_preserves_inputs_and_settles_once() {
     let rows =
         claude_planner_session_fixture::card_rows(stack.repo(), &card, "item/completed").await;
     let runtime = stack.runtime(&card).await;
+    let receipts = receipt_state(&stack, &runtime.id).await;
     let cleanup = calm_server::acp_planner::test_seams::pause_after_fence(&runtime.id);
-    std::fs::write(root.path().join("scenario"), "compact-success").unwrap();
+    std::fs::write(
+        root.path().join("scenario"),
+        if grok {
+            "grok-compact-success"
+        } else {
+            "compact-success"
+        },
+    )
+    .unwrap();
     // The maintenance request must cross C4.3's release boundary before ACP
     // initialize, then retain that same claim until cleanup settles.
     use calm_server::test_seams::{PausePoint, install_pause_for_test};
@@ -153,20 +182,46 @@ async fn acp_compact_success_preserves_inputs_and_settles_once() {
     let after = snapshot(&stack, &card).await;
     assert_eq!(after["compact_outcome"]["status"], "completed", "{after}");
     assert_eq!(after["last_turn_id"], before["last_turn_id"]);
+    if grok {
+        assert_eq!(receipt_state(&stack, &runtime.id).await, receipts);
+        assert_eq!(after["context_usage_invalidated"], true);
+        assert_eq!(
+            after["context_usage_invalidated_turn"],
+            before["last_turn_id"]
+        );
+        assert_eq!(after["canonical_inputs"], before["canonical_inputs"]);
+        assert_eq!(stack.runtime(&card).await.session_id, runtime.session_id);
+    }
     assert_eq!(human_state(&stack, &card).await, humans);
     assert_eq!(
         claude_planner_session_fixture::card_rows(stack.repo(), &card, "item/completed").await,
         rows
     );
-    assert_eq!(compact_prompts(&root).len(), 1);
+    let maintenance = if grok {
+        requests(&root, "_x.ai/compact_conversation")
+    } else {
+        compact_prompts(&root)
+    };
+    assert_eq!(maintenance.len(), 1);
+    if grok {
+        assert_eq!(requests(&root, "session/prompt").len(), 1);
+        assert_eq!(
+            maintenance[0]["params"]["session_id"],
+            runtime.session_id.as_deref().unwrap()
+        );
+    }
     assert_eq!(stack.outcomes(&card).await.len(), 1);
-    for request in requests(&root, "initialize")
-        .into_iter()
-        .filter(|r| r["_pid"] == compact_prompts(&root)[0]["_pid"])
-    {
+    let ordinary = requests(&root, "session/prompt");
+    for request in requests(&root, "initialize").into_iter().filter(|r| {
+        r["_pid"] == maintenance[0]["_pid"] || ordinary.iter().any(|p| p["_pid"] == r["_pid"])
+    }) {
         assert_eq!(
             request["params"]["clientCapabilities"],
-            json!({"session":{"compaction":{}}})
+            if grok {
+                json!({})
+            } else {
+                json!({"session":{"compaction":{}}})
+            }
         );
     }
     let pool = stack.repo().sqlite_db().unwrap();
@@ -275,20 +330,7 @@ async fn acp_compact_assistant_and_grok_capability_contract() {
     );
     assert_eq!(compact_prompts(&root).len(), 1);
     stack.shutdown().await;
-
-    let root = Root::new("unused");
-    let stack = boot_as(&root, "grok", json!({"ACP_FIXTURE_IDENTITY":"meta","ACP_FIXTURE_VERSION":"1.0.62","ACP_FIXTURE_AUTH_METHODS":"cached_token","ACP_FIXTURE_VENDOR":"xai"}), "1.0.62").await;
-    let (_, card) = stack
-        .create_claude_track_with(json!({"planner_provider":"grok","title":"Grok unchanged"}))
-        .await;
-    turn(&stack, &card, "first", 1).await;
-    assert!(!compact(&stack, &card).await.0.is_success());
-    assert!(compact_prompts(&root).is_empty());
-    assert!(!requests(&root, "initialize").is_empty());
-    for request in requests(&root, "initialize") {
-        assert_eq!(request["params"]["clientCapabilities"], json!({}));
-    }
-    stack.shutdown().await;
+    super::acp_grok_compact::historical_assistant_refuses().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

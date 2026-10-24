@@ -211,8 +211,20 @@ impl PlannerBackend {
 
     /// Static support of the bound Planner backend, including before a session is opened.
     /// This is not admission: `compact_start` and the harness retain their current fences.
-    pub(crate) fn manual_compact_supported(provider: &AgentProvider) -> bool {
-        Self::metadata(provider).capabilities.manual_compact
+    pub(crate) fn manual_compact_supported(
+        binding: &crate::harness::profile::PlannerBinding,
+    ) -> bool {
+        match binding.provider.protocol() {
+            calm_types::runtime::AgentProtocol::Acp => {
+                factory::PlannerFactory::canonical_inputs(binding)
+                    && crate::acp_planner::wiring::manual_compaction(&binding.provider)
+            }
+            _ => {
+                Self::metadata(&binding.provider)
+                    .capabilities
+                    .manual_compact
+            }
+        }
     }
 
     /// Provider-owned suspension; the generic harness does not infer authentication policy.

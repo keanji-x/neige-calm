@@ -48,7 +48,7 @@ const FULL_PERMISSION: (&str, &str) = (
 );
 
 pub(super) const PROFILE: AcpAgentProfile = AcpAgentProfile {
-    manual_compact: true,
+    compaction: Some(super::CompactionWire::StandardPrompt),
     canonical_planner_inputs: true,
     canonical_assistant_inputs: true,
     entry: AgentEntry {

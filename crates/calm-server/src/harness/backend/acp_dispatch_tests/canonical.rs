@@ -10,6 +10,7 @@ mod continuation;
 mod control;
 mod failures;
 mod grok;
+mod grok_compact;
 mod profile_storage;
 mod recovery;
 mod recovery_windows;
@@ -41,8 +42,16 @@ impl Fixture {
         Self::with_provider(AgentProvider::OpenCode, scenario, persistent).await
     }
     async fn with_provider(provider: AgentProvider, scenario: &str, persistent: bool) -> Self {
+        Self::with_provider_version(provider, scenario, persistent, None).await
+    }
+    async fn with_provider_version(
+        provider: AgentProvider,
+        scenario: &str,
+        persistent: bool,
+        version: Option<&str>,
+    ) -> Self {
         let (backend, session, owner, dir, _held) =
-            fixture_storage_for(provider.clone(), persistent).await;
+            fixture_storage_for_version(provider.clone(), persistent, version).await;
         std::fs::write(dir.path().join("scenario"), scenario).unwrap();
         let auth = AuthState::new(AuthConfig {
             username: Some("Owner".into()),

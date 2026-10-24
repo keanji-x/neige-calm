@@ -450,7 +450,7 @@ pub(super) async fn historical_planner_run(
         )));
     };
     let manual_compact_supported =
-        crate::harness::PlannerBackend::manual_compact_supported(&binding.provider);
+        crate::harness::PlannerBackend::manual_compact_supported(&binding);
 
     // Unreadable model keys are reported as 'no selection' by this READ rather than as a 500; the turn-issuing path refuses on the same payload, so the conversation still stops but this surface can show why.
     let selection =

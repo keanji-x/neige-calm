@@ -13,7 +13,7 @@ fn grok() -> Value {
 async fn boot_grok(root: &Root) -> Stack {
     boot_as(root, "grok", grok(), "1.0.62").await
 }
-async fn create_grok(stack: &Stack) -> (String, String) {
+pub(super) async fn create_grok(stack: &Stack) -> (String, String) {
     stack
         .create_claude_track_with(json!({"planner_provider":"grok","title":"Managed Grok"}))
         .await
@@ -101,7 +101,7 @@ async fn grok_runs_two_planner_turns_and_loads_the_same_native_session_after_res
         .unwrap()["capabilities"];
     assert_eq!(
         capabilities,
-        &json!({"managed_conversation":true,"steer":false,"images":false,"manual_compact":false,
+        &json!({"managed_conversation":true,"steer":false,"images":false,"manual_compact":true,
             "history_replacement":false,"requires_ready_availability":true})
     );
     let (_, card) = create_grok(&stack).await;

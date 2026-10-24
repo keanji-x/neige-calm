@@ -2,6 +2,7 @@
 pub mod approvals;
 pub mod compaction;
 pub mod configuration;
+pub mod grok_compaction;
 pub mod permission;
 pub mod protocol;
 pub mod translate;

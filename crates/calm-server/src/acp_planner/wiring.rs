@@ -41,6 +41,12 @@ pub(crate) async fn open_session(
     })))
 }
 
+/// Read-only native maintenance declaration; profile policy stays private.
+pub(crate) fn manual_compaction(provider: &calm_types::runtime::AgentProvider) -> bool {
+    super::profile::AcpAgentProfile::of(provider)
+        .is_some_and(|profile| profile.compaction.is_some())
+}
+
 /// Canonical support is registration policy owned by the ACP profile and contract.
 pub(crate) fn canonical_inputs(
     provider: &calm_types::runtime::AgentProvider,

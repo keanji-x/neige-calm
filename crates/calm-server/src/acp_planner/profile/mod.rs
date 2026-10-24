@@ -14,9 +14,15 @@ use provider::acp::protocol::InitializeResponse;
 mod grok;
 mod opencode;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CompactionWire {
+    StandardPrompt,
+    XaiExtension,
+}
+
 pub(crate) struct AcpAgentProfile {
-    /// Consumes standard compaction lifecycle updates for canonical maintenance.
-    pub(crate) manual_compact: bool,
+    /// Native wire consumed by canonical maintenance.
+    pub(crate) compaction: Option<CompactionWire>,
     /// Supports receipt-owned canonical Planner input; activation is independently gated.
     pub(crate) canonical_planner_inputs: bool,
     /// Supports receipt-owned canonical Assistant input, independently of Planner policy.
@@ -215,6 +221,39 @@ mod tests {
     use super::*;
     use calm_types::runtime::AgentProtocol;
     use serde_json::json;
+
+    #[test]
+    fn acp_grok_compact_declared_only_for_canonical_planner() {
+        assert_eq!(grok::PROFILE.compaction, Some(CompactionWire::XaiExtension));
+        assert!(grok::PROFILE.canonical_inputs(calm_types::worker::WorkerContract::Planner));
+        assert!(!grok::PROFILE.canonical_inputs(calm_types::worker::WorkerContract::Assistant));
+    }
+
+    #[test]
+    fn acp_grok_compact_binding_capability_matrix() {
+        use crate::harness::{
+            backend::PlannerBackend,
+            profile::{HarnessProfile, PlannerBinding},
+        };
+        for (provider, planner, assistant) in [
+            (AgentProvider::Grok, true, false),
+            (AgentProvider::OpenCode, true, true),
+        ] {
+            for (profile, expected) in [
+                (HarnessProfile::Planner, planner),
+                (HarnessProfile::Assistant, assistant),
+                (HarnessProfile::PlainChat, false),
+            ] {
+                assert_eq!(
+                    PlannerBackend::manual_compact_supported(&PlannerBinding {
+                        provider: provider.clone(),
+                        profile
+                    }),
+                    expected
+                );
+            }
+        }
+    }
 
     #[test]
     fn acp_assistant_capability_is_independent_of_planner_contract() {

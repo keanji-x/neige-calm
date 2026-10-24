@@ -228,7 +228,7 @@ async fn canonical_run_reads_only_the_exact_current_terminal_timeout_and_still_s
 }
 
 #[tokio::test]
-async fn canonical_run_manual_compact_uses_bound_provider_capability() {
+async fn acp_grok_compact_canonical_run_uses_bound_provider_capability() {
     let fixture = Fixture::new().await;
     let (state, app, cookie) = fixture.application().await;
     let area = post(
@@ -255,7 +255,7 @@ async fn canonical_run_manual_compact_uses_bound_provider_capability() {
         ("codex", true),
         ("claude", true),
         ("opencode", true),
-        ("grok", false),
+        ("grok", true),
     ] {
         sqlx::query(
             "UPDATE cards SET payload=json_set(payload,'$.planner_provider',?1) WHERE id=?2",

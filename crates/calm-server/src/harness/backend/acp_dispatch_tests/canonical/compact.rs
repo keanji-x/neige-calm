@@ -8,10 +8,25 @@ use serde_json::json;
 
 #[tokio::test]
 async fn acp_compact_retained_operation_never_sends_second_prompt() {
-    let fx = Fixture::new("reply").await;
+    retained_operation(false).await;
+}
+pub(super) async fn retained_operation(grok: bool) {
+    let fx = if grok {
+        super::grok_compact::fixture().await
+    } else {
+        Fixture::new("reply").await
+    };
     fx.dispatch().await.unwrap();
     fx.wait_end().await;
-    std::fs::write(fx.dir.path().join("scenario"), "compact-lost").unwrap();
+    std::fs::write(
+        fx.dir.path().join("scenario"),
+        if grok {
+            "grok-compact-success"
+        } else {
+            "compact-lost"
+        },
+    )
+    .unwrap();
     let target = MaintenanceTarget {
         card_id: fx.owner.card.clone(),
         track_id: fx.owner.track.clone(),
@@ -35,9 +50,9 @@ async fn acp_compact_retained_operation_never_sends_second_prompt() {
             if matches!(
                 fx.backend.observe_maintenance(&target).await.unwrap(),
                 Some(MaintenanceObservation::Turn {
-                    settled: Some(false),
+                    settled: Some(value),
                     ..
-                })
+                }) if value == grok
             ) {
                 break;
             }
@@ -50,8 +65,12 @@ async fn acp_compact_retained_operation_never_sends_second_prompt() {
         fx.requests()
             .iter()
             .filter(|frame| {
-                frame["method"] == "session/prompt"
-                    && frame["params"]["prompt"] == json!([{"type":"text","text":"/compact"}])
+                if grok {
+                    frame["method"] == "_x.ai/compact_conversation"
+                } else {
+                    frame["method"] == "session/prompt"
+                        && frame["params"]["prompt"] == json!([{"type":"text","text":"/compact"}])
+                }
             })
             .count()
     };
@@ -102,16 +121,36 @@ async fn acp_compact_failed_join_recovery_allows_issuance_and_shutdown() {
 }
 
 async fn retained_loss(case: LossCase) {
+    retained_loss_for(case, false).await;
+}
+pub(super) async fn grok_failed_join() {
+    for issue_next in [false, true] {
+        retained_loss_for(LossCase::Failed { issue_next }, true).await;
+    }
+}
+async fn retained_loss_for(case: LossCase, grok: bool) {
     let started = std::time::Instant::now();
     let phase = |label: &str| eprintln!("loss {case:?} +{:?}: {label}", started.elapsed());
     phase("fixture start");
-    let fx = Fixture::new("reply").await;
+    let fx = if grok {
+        super::grok_compact::fixture().await
+    } else {
+        Fixture::new("reply").await
+    };
     fx.dispatch().await.unwrap();
     phase("initial dispatched");
     fx.wait_end().await;
     phase("initial END consumed");
     let (harness, _registry) = registered_recovery_harness(&fx).await;
-    std::fs::write(fx.dir.path().join("scenario"), "compact-no-response").unwrap();
+    std::fs::write(
+        fx.dir.path().join("scenario"),
+        if grok {
+            "grok-compact-hung"
+        } else {
+            "compact-no-response"
+        },
+    )
+    .unwrap();
     let target = MaintenanceTarget {
         card_id: fx.owner.card.clone(),
         track_id: fx.owner.track.clone(),
@@ -296,8 +335,12 @@ async fn retained_loss(case: LossCase) {
             .requests()
             .iter()
             .filter(|frame| {
-                frame["method"] == "session/prompt"
-                    && frame["params"]["prompt"] == json!([{"type":"text","text":"/compact"}])
+                if grok {
+                    frame["method"] == "_x.ai/compact_conversation"
+                } else {
+                    frame["method"] == "session/prompt"
+                        && frame["params"]["prompt"] == json!([{"type":"text","text":"/compact"}])
+                }
             })
             .count();
         assert_eq!(compact_prompts, 1, "lost maintenance is never resent");

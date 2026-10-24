@@ -152,10 +152,12 @@ def update(value):
     emit({'jsonrpc': '2.0', 'method': 'session/update', 'params': {'sessionId': current, 'update': value}})
 
 def attach_updates():
-    if xai or (root / 'scenario').read_text().strip() == 'compact-undeclared':
+    scenario = (root / 'scenario').read_text().strip()
+    if (xai and not scenario.startswith('grok-compact-')) or scenario == 'compact-undeclared':
         return
     update({'sessionUpdate': 'available_commands_update', 'availableCommands': [{'name': 'compact', 'description': 'Compact the session'}]})
-    update({'sessionUpdate': 'config_option_update', **config()})
+    if not xai:
+        update({'sessionUpdate': 'config_option_update', **config()})
 
 def finish(request, text, reason='end_turn'):
     update({'sessionUpdate': 'agent_message_chunk', 'content': {'type': 'text', 'text': text}})
@@ -322,6 +324,20 @@ for line in sys.stdin:
         mcp_servers = params['mcpServers']
         vendor('session/setup')
         attach_updates()
+        if xai and (root / 'scenario').read_text().strip().startswith('grok-compact-'):
+            vendor('session/update', {'sessionId': current, 'update': {
+                'sessionUpdate': 'auto_compact_completed', 'tokens_before': 23450,
+                'tokens_after': 23450, 'summary_preview': None}, '_meta': {'isReplay': True}})
+            if (root / 'scenario').read_text().strip().startswith('grok-compact-pre-send'):
+                import threading
+                def pre_send_completion():
+                    while not (root / 'grok-pre-send').exists():
+                        time.sleep(0.001)
+                    vendor('session_notification', {'sessionId': current, 'update': {
+                        'sessionUpdate': 'auto_compact_completed', 'tokens_before': 23450,
+                        'tokens_after': 23450}, '_meta': {'isReplay': False}})
+                threading.Thread(target=pre_send_completion, daemon=True).start()
+
         check_mcp(params['mcpServers'])
         result(request, config())
         # Fixture-only barrier: setup has replied, but the next prompt is not read yet.
@@ -342,6 +358,65 @@ for line in sys.stdin:
         if not xai:
             update({'sessionUpdate': 'config_option_update', **config()})
         result(request, config())
+    elif method == '_x.ai/compact_conversation':
+        assert xai and not compaction, 'Grok does not negotiate standard compaction'
+        assert params['session_id'] == current
+        assert isinstance(params['user_context'], str) and params['user_context']
+        scenario = (root / 'scenario').read_text().strip()
+        def completed(session=current, replay=False, method='session_notification'):
+            vendor(method, {'sessionId': session, 'update': {
+                'sessionUpdate': 'auto_compact_completed', 'tokens_before': 23450,
+                'tokens_after': 23450, 'summary_preview': None},
+                '_meta': {'eventId': 'opaque-event', 'agentTimestampMs': 1792827612149,
+                          'isReplay': replay}})
+        if scenario == 'grok-compact-hung':
+            completed()
+            completed(replay=True)
+            completed(replay=True, method='session/update')
+        if scenario.endswith('-mixed'):
+            # No notification, even a valid live event, substitutes for this RPC id.
+            completed()
+            completed(session='another-session')
+            completed(replay=True)
+            completed(replay=True, method='session/update')
+            scenario = scenario.removesuffix('-mixed')
+        if scenario == 'grok-compact-unknown':
+            emit({'jsonrpc': '2.0', 'id': request['id'], 'error': {'code': -32601, 'message': 'unknown ACP extension method'}})
+            continue
+        if scenario == 'grok-compact-hung':
+            # Keep stdin, stdout and the process alive without answering.
+            pending = request
+            continue
+        if scenario == 'grok-compact-death':
+            os._exit(0)
+        if scenario == 'grok-compact-replay':
+            completed(replay=True)
+        elif scenario == 'grok-compact-replay-method':
+            completed(replay=True, method='session/update')
+        elif scenario.startswith('grok-compact-wrong-session'):
+            completed(session='another-session')
+            if scenario.endswith('-then-valid'):
+                completed()
+        elif scenario == 'grok-compact-summary':
+            vendor('session_notification', {'sessionId': current, 'update': {
+                'sessionUpdate': 'session_summary_generated', 'session_summary': 'summary'}})
+            vendor('session/update', {'sessionId': current, 'update': {
+                'sessionUpdate': 'compaction_checkpoint'}})
+        elif scenario == 'grok-compact-standard':
+            update({'sessionUpdate': 'compaction_update', 'compactionId': 'standard', 'status': 'in_progress'})
+            update({'sessionUpdate': 'compaction_update', 'compactionId': 'standard', 'status': 'completed'})
+        elif scenario not in ['grok-compact-empty', 'grok-compact-failed', 'grok-compact-pre-send', 'grok-compact-pre-send-lost-response']:
+            completed()
+        if scenario == 'grok-compact-pre-send-lost-response':
+            emit({'jsonrpc': '2.0', 'id': 900000000, 'result': {}})
+            os._exit(0)
+        if scenario == 'grok-compact-lost-response':
+            os._exit(0)
+        if scenario in ['grok-compact-failed', 'grok-compact-failed-live']:
+            emit({'jsonrpc': '2.0', 'id': request['id'], 'error': {
+                'code': -32603, 'message': 'compact failed', 'data': {'kind': 'compact_failed'}}})
+        else:
+            result(request, {'unexpected': True} if scenario == 'grok-compact-invalid-response' else {})
     elif method == 'session/prompt':
         assert params['sessionId'] == current
         state = json.loads(native_path().read_text())

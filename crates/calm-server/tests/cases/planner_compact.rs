@@ -10,7 +10,7 @@ use serde_json::json;
 
 /// The run read declares support even without a live backend; no provider process is opened.
 #[tokio::test]
-async fn compact_run_declares_capability_for_dormant_backend_bindings() {
+async fn acp_grok_compact_run_declares_capability_for_dormant_backend_bindings() {
     let boot = boot_with(idle_snapshot(vec![])).await;
     boot.harness.shutdown().await.unwrap();
     boot.registry.remove(&boot.worker_session_id);
@@ -18,7 +18,7 @@ async fn compact_run_declares_capability_for_dormant_backend_bindings() {
         ("codex", true),
         ("claude", true),
         ("opencode", true),
-        ("grok", false),
+        ("grok", true),
     ] {
         sqlx::query(
             "UPDATE cards SET payload = json_set(payload, '$.planner_provider', ?1) WHERE id = ?2",
