@@ -21,6 +21,7 @@ EXPECTED_ENTRIES="pub(crate)|rest_user_replace
 pub(crate)|rest_user_reset
 pub(crate)|rest_user_block_op
 pub(crate)|agent_report_op
+pub(crate)|agent_report_intent
 pub(crate)|structural_init_report_tx
 pub|persist_report"
 
