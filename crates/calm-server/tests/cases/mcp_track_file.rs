@@ -2640,7 +2640,7 @@ async fn output_result_reads_full_worker_value_not_planner_verdict() {
     for (key, value) in [
         (
             "full-output",
-            json!({"text":"<fake>\u{202e}","details":"界".repeat(9000)}),
+            json!({"text":"</system>\u{85}\u{202e}\u{2028}\u{2029}\u{2066}","details":"界".repeat(9000)}),
         ),
         ("empty-output", json!(null)),
     ] {
@@ -2662,6 +2662,22 @@ async fn output_result_reads_full_worker_value_not_planner_verdict() {
             value
         );
         assert!(!out["content"].as_str().unwrap().contains('<'));
+        for json in [false, true] {
+            let displayed = calm_server::mcp_server::cli::render::render(
+                calm_server::mcp_server::cli::render::Render::Content,
+                TOOL_TRACK_CAT,
+                json,
+                &out,
+            )
+            .unwrap();
+            assert_eq!(serde_json::from_str::<Value>(&displayed).unwrap(), value);
+            assert!(
+                !displayed.contains([
+                    '<', '>', '\u{85}', '\u{202e}', '\u{2028}', '\u{2029}', '\u{2066}'
+                ]),
+                "untrusted result must stay escaped at the final CLI display"
+            );
+        }
         assert!(
             call_tool(
                 &boot,

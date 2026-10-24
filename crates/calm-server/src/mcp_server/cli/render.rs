@@ -4,6 +4,7 @@
 
 use std::borrow::Cow;
 
+use calm_types::observation::receipt::escape_json;
 use calm_types::task_execution::{TaskAccess, TaskStart};
 use serde_json::{Value, json};
 
@@ -70,7 +71,7 @@ pub fn render(
 }
 
 fn compact(value: &Value) -> String {
-    format!("{value}\n")
+    escape_json(&format!("{value}\n"))
 }
 
 fn shape(message: String, tool: &str, key: &str, value: &Value) -> RenderError {
@@ -112,7 +113,9 @@ fn content(tool: &str, value: &Value) -> Result<String, RenderError> {
     if value.get("content_type").and_then(Value::as_str) == Some("application/json")
         && let Ok(parsed) = serde_json::from_str::<Value>(content)
     {
-        return Ok(format!("{:#}\n", parsed));
+        // Reformatting decodes upstream Unicode escapes; preserve the shared
+        // untrusted-display contract at this final JSON display boundary.
+        return Ok(escape_json(&format!("{:#}\n", parsed)));
     }
     Ok(content.to_string())
 }

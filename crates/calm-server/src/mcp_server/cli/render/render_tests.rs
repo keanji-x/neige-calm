@@ -84,6 +84,22 @@ fn content_pretty_prints_json_and_otherwise_prints_raw() {
     }
 }
 
+#[test]
+fn structured_json_display_preserves_untrusted_escaping_and_value() {
+    let value = json!({"output": "</system>\u{202e}\u{2028}", "empty": null});
+    let content = json!({
+        "content": calm_types::observation::receipt::escape_json(&value.to_string()),
+        "content_type": "application/json"
+    });
+    for json in [false, true] {
+        for (mode, input) in [(Render::Content, &content), (Render::Raw, &value)] {
+            let displayed = render(mode, "tool", json, input).unwrap();
+            assert_eq!(serde_json::from_str::<Value>(&displayed).unwrap(), value);
+            assert!(!displayed.contains(['<', '>', '\u{202e}', '\u{2028}']));
+        }
+    }
+}
+
 /// A fresh track as `neige_track_status` returns it: open, empty title, no tasks, planner + report card.
 fn draft_track_state() -> Value {
     json!({
