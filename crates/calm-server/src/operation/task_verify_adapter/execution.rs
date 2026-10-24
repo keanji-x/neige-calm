@@ -44,7 +44,7 @@ impl TaskVerifyAdapter {
                     exit: &paths.exit,
                     step: &paths.step,
                 },
-                &frozen.gate.steps,
+                crate::operation::gate_process::WrapperSteps::Logged(&frozen.gate.steps),
                 &gate_attempt_key(&frozen.task_id, frozen.attempt),
             )
             .await?;

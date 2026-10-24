@@ -359,7 +359,9 @@ impl ProviderAdapter for TaskGateRunAdapter {
                     exit: &paths.exit,
                     step: &paths.step,
                 },
-                &checkpoint::run_steps(&frozen),
+                crate::operation::gate_process::WrapperSteps::Logged(&checkpoint::run_steps(
+                    &frozen,
+                )),
                 &frozen.key(),
             )
             .await?;

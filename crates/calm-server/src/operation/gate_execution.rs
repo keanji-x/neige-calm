@@ -40,7 +40,7 @@ pub(crate) async fn admit(
     cwd: &str,
     track: &str,
     files: GateFiles<'_>,
-    steps: &[super::gate_lifecycle::GateStep],
+    steps: super::gate_process::WrapperSteps<'_>,
     marker: &str,
 ) -> Result<Record> {
     let engine = engine(ctx)?;
@@ -67,11 +67,7 @@ pub(crate) async fn admit(
         environment.push((key.into(), path.display().to_string()));
     }
     environment.push(("NEIGE_GATE_OP".into(), marker.into()));
-    tokio::fs::write(
-        files.script,
-        super::gate_process::render_gate_wrapper(steps),
-    )
-    .await?;
+    tokio::fs::write(files.script, steps.render()).await?;
     tokio::fs::write(files.log, b"").await?;
     let id = ExecutionId::fresh()?;
     let intent = ExecutionIntent {

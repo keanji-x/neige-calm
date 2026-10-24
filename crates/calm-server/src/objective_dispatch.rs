@@ -22,15 +22,18 @@ use crate::{
     ids::ActorId,
 };
 
-pub(crate) fn supports(config: &CheckConfig) -> bool {
-    match config {
+pub(crate) fn supports(definition: &objective::definition::CheckDefinition) -> bool {
+    match &definition.config {
         CheckConfig::Fact(params) => match params.fact {
             Fact::TaskAccepted | Fact::AskAnswered => true,
             Fact::PrMerged => false,
         },
         CheckConfig::Evaluator(_) => true,
         CheckConfig::Command(_) => true,
-        CheckConfig::Metric(_) => false,
+        CheckConfig::Metric(_) => matches!(
+            definition.role,
+            objective::definition::Role::Ratchet | objective::definition::Role::Invariant
+        ),
     }
 }
 

@@ -33,7 +33,7 @@ pub(super) async fn run_tx(
     }
     let (_, definition) = current.unwrap();
     let config = &definition.config;
-    if !supports(config) {
+    if !supports(&definition) {
         return Err(CalmError::Conflict(
             "objective check has no executor".into(),
         ));

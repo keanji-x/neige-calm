@@ -33,6 +33,8 @@ pub(crate) struct Frozen {
     pub timeout_secs: i64,
     pub repo: PathBuf,
     pub cwd: PathBuf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stdout: Option<PathBuf>,
 }
 impl Frozen {
     fn from_output(output: &TxOutput) -> Result<Self> {
@@ -43,8 +45,15 @@ impl Frozen {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub(crate) enum CheckRunResult {
-    Measured { exit_code: i32 },
-    Failed { reason: String },
+    Measured {
+        exit_code: i32,
+    },
+    Metric {
+        output: objective::check::MetricOutput,
+    },
+    Failed {
+        reason: String,
+    },
 }
 
 #[cfg(any(test, feature = "fixtures"))]
@@ -120,10 +129,20 @@ impl ProviderAdapter for ObjectiveCheckRunAdapter {
         let (row, definition) = objective_host::current_check_tx(tx, &intent_id)
             .await?
             .ok_or_else(|| CalmError::Conflict("objective check authorization expired".into()))?;
-        let CheckConfig::Command(params) = definition.config else {
+        if !crate::objective_dispatch::supports(&definition) {
             return Err(CalmError::Conflict(
-                "objective-check-run requires a command check".into(),
+                "objective check has no executor".into(),
             ));
+        }
+        let metric = matches!(definition.config, CheckConfig::Metric(_));
+        let command = match definition.config {
+            CheckConfig::Command(params) => params.command,
+            CheckConfig::Metric(params) => params.command,
+            _ => {
+                return Err(CalmError::Conflict(
+                    "objective-check-run requires command or metric".into(),
+                ));
+            }
         };
         let Intent::RunCheck { revision, .. } = &row.intent else {
             unreachable!()
@@ -134,13 +153,14 @@ impl ProviderAdapter for ObjectiveCheckRunAdapter {
             objective_host::intent_mark_dispatched_tx(tx, &intent_id).await?;
         }
         let frozen = Frozen {
+            stdout: metric.then(|| self.paths(op).script.with_extension("stdout")),
             cwd: self.root.join(intent_id.track_id.as_str()).join(format!(
                 "{}-{}-{}",
                 intent_id.seq.0, intent_id.ordinal, op.id
             )),
             repo: workspace.path.into(),
             revision: revision.as_str().into(),
-            command: params.command,
+            command,
             timeout_secs: self.timeout_secs,
             intent: row.intent,
             intent_id,
@@ -181,6 +201,23 @@ impl ProviderAdapter for ObjectiveCheckRunAdapter {
             checkout::create(&frozen).await?;
             let paths = self.paths(op);
             paths.unlink_stale(&self.logs).await?;
+            let step = gate_lifecycle::GateStep {
+                name: if frozen.stdout.is_some() {
+                    "metric"
+                } else {
+                    "command"
+                }
+                .into(),
+                cmd: frozen.command.clone(),
+            };
+            let logged = [step.clone()];
+            let steps = match &frozen.stdout {
+                Some(path) => gate_process::WrapperSteps::CaptureStdout {
+                    step,
+                    path: path.clone(),
+                },
+                None => gate_process::WrapperSteps::Logged(&logged),
+            };
             execution::admit(
                 op,
                 ctx,
@@ -195,10 +232,7 @@ impl ProviderAdapter for ObjectiveCheckRunAdapter {
                     exit: &paths.exit,
                     step: &paths.step,
                 },
-                &[gate_lifecycle::GateStep {
-                    name: "command".into(),
-                    cmd: frozen.command.clone(),
-                }],
+                steps,
                 &op.id,
             )
             .await?;
@@ -251,7 +285,10 @@ impl ProviderAdapter for ObjectiveCheckRunAdapter {
                         status: Some(code), ..
                     },
                 ),
-            ) => CheckRunResult::Measured { exit_code: code },
+            ) => match Frozen::from_output(required_output(op)?)?.stdout {
+                Some(path) => metric_result(code, &path),
+                None => CheckRunResult::Measured { exit_code: code },
+            },
             (Decision::Stopping { reason }, _, _) => CheckRunResult::Failed {
                 reason: format!("{reason:?}"),
             },
@@ -367,5 +404,31 @@ impl ObjectiveCheckRunAdapter {
             }
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
+    }
+}
+
+// The numeric parser belongs to objective; this layer owns bounded process evidence.
+fn metric_result(exit_code: i32, path: &std::path::Path) -> CheckRunResult {
+    let parsed: std::result::Result<_, String> = (|| {
+        if exit_code != 0 {
+            return Err(format!("metric command exited with {exit_code}"));
+        }
+        use std::io::Read;
+        let mut bytes = Vec::new();
+        std::fs::File::open(path)
+            .and_then(|file| {
+                file.take((gate_process::CAPTURE_STDOUT_LIMIT + 1) as u64)
+                    .read_to_end(&mut bytes)
+            })
+            .map_err(|e| format!("metric stdout: {e}"))?;
+        if bytes.len() > gate_process::CAPTURE_STDOUT_LIMIT {
+            return Err("metric stdout exceeded 64 KiB".into());
+        }
+        let stdout = std::str::from_utf8(&bytes).map_err(|e| format!("metric stdout: {e}"))?;
+        objective::check::parse_metric_output(stdout).map_err(|e| format!("metric stdout: {e:?}"))
+    })();
+    match parsed {
+        Ok(output) => CheckRunResult::Metric { output },
+        Err(reason) => CheckRunResult::Failed { reason },
     }
 }

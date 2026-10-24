@@ -818,3 +818,6 @@ async fn objective_command_checkout_filter_is_bounded() {
         1
     );
 }
+
+#[path = "objective_metric.rs"]
+mod objective_metric;

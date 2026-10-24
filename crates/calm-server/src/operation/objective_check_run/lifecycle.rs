@@ -26,45 +26,48 @@ pub(super) async fn finish_tx(tx: &mut Tx<'_>, op: &Operation) -> Result<Vec<Bro
         }
         return Ok(vec![]);
     }
-    // The owned recovery derived this result exclusively from the executor journal's wait status.
+    // Owned recovery uses the executor journal's wait status and, for metrics, bounded stdout.
     let raw: String = sqlx::query_scalar("SELECT tx_output_json FROM operations WHERE id=?")
         .bind(&op.id)
         .fetch_one(&mut **tx)
         .await?;
     let output: TxOutput = serde_json::from_str(&raw)?;
-    if let CheckRunResult::Measured { exit_code } = serde_json::from_value(output.result)? {
-        let Intent::RunCheck {
-            objective,
-            evaluation,
-            check,
-            revision,
-            sample,
-        } = frozen.intent
-        else {
-            unreachable!()
-        };
-        objective_host::react_tx(
-            tx,
-            &objective_host::ObjectiveInput {
-                track_id: frozen.intent_id.track_id.clone(),
-                source: objective_host::InputSource::IntentJob {
-                    intent: frozen.intent_id,
-                },
-                event: objective::Event::CheckFinished {
-                    objective,
-                    evaluation,
-                    check,
-                    revision,
-                    sample,
-                    output: objective::check::SampleOutput::Command(
-                        objective::check::CommandOutput { exit_code },
-                    ),
-                },
+    let measured = match serde_json::from_value(output.result)? {
+        CheckRunResult::Measured { exit_code } => {
+            objective::check::SampleOutput::Command(objective::check::CommandOutput { exit_code })
+        }
+        CheckRunResult::Metric { output } => objective::check::SampleOutput::Metric(output),
+        CheckRunResult::Failed { .. } => return Ok(vec![]),
+    };
+    let Intent::RunCheck {
+        objective,
+        evaluation,
+        check,
+        revision,
+        sample,
+    } = frozen.intent
+    else {
+        unreachable!()
+    };
+    objective_host::react_tx(
+        tx,
+        &objective_host::ObjectiveInput {
+            track_id: frozen.intent_id.track_id.clone(),
+            source: objective_host::InputSource::IntentJob {
+                intent: frozen.intent_id,
             },
-            now_ms(),
-        )
-        .await?;
-    }
+            event: objective::Event::CheckFinished {
+                objective,
+                evaluation,
+                check,
+                revision,
+                sample,
+                output: measured,
+            },
+        },
+        now_ms(),
+    )
+    .await?;
     // Infrastructure results remain dispatched; the dispatcher owns bounded retry and wake.
     Ok(vec![])
 }

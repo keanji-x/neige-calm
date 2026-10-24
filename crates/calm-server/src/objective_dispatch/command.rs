@@ -28,7 +28,10 @@ pub(super) async fn dispatch(
     let Some((_, definition)) = current else {
         return Ok(false);
     };
-    if !matches!(definition.config, CheckConfig::Command(_)) {
+    if !matches!(
+        definition.config,
+        CheckConfig::Command(_) | CheckConfig::Metric(_)
+    ) {
         return Ok(false);
     }
     let Some(runtime) = runtime else {

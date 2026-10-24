@@ -284,8 +284,8 @@ async fn measure(
             let o = state.objectives.get(&key).ok_or(CalmError::NotFound("objective does not exist in this track; read objective.kr and choose an existing key".into()))?;
             if !o.is_approved() { return Err(CalmError::Conflict("approval_required: call neige_objective_ask".into())); }
             if o.status != objective::engine::Status::Open { return Err(CalmError::Conflict("objective is not open; read objective.kr and choose an open objective".into())); }
-            if !o.definition.checks.iter().all(|c| crate::objective_dispatch::supports(&c.config)) {
-                return Err(CalmError::Conflict("objective contains a check without an executor; supported: fact TaskAccepted, AskAnswered, evaluator, command".into()));
+            if !o.definition.checks.iter().all(crate::objective_dispatch::supports) {
+                return Err(CalmError::Conflict(include_str!("../../../prompts/objective_check_unsupported.md").trim_end().into()));
             }
             let event = objective::Event::Requested { objective: key.clone(), revision: revision.clone() };
             if let Some(current) = o.evaluation.as_ref().filter(|e| e.revision() == &revision) {
