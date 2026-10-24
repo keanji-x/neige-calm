@@ -83,7 +83,7 @@
 | 边界 | 当前事实与设计要求 |
 |---|---|
 | 同一连续上下文 | Codex 仅 thread/start 注入，已启动 thread 不追溯替换。Claude 下一次 open_session 重组说明并在 resume spawn 传文件，已打开 session 不承诺即时刷新。ACP 仅无 acp_submissions 时前置说明，这是本地提交记录判断，首提交后保留/自动压缩语义未知，不当安全保证 |
-| compact（手动/自动） | Codex/Claude 支持，ACP 当前拒绝手动 compact。成功不证明所有规则/目标/审批被保留。恢复前重验必要约束、摘要与证据索引；本切片不启用新的省略；不能用 provider 自然语言“记住了”或本地 `sent=true` 当保证 |
+| compact（手动/自动） | Codex/Claude 和 canonical OpenCode Planner/Assistant 支持手动 compact，Grok 不支持。成功不证明所有规则/目标/审批被保留。恢复前重验必要约束、摘要与证据索引；本切片不启用新的省略；不能用 provider 自然语言“记住了”或本地 `sent=true` 当保证 |
 | resume/hibernate/服务重启 | 原生恢复可能保留历史，也可能加载失败；确认 native session 身份与现有恢复结果，重新解析 live 权限。无法确认时保守保留说明/显式要求受控新上下文，不自动重放有副作用动作 |
 | 不同 provider 的新卡/reset/rewind | provider 不能运行时切换；未来更换 provider 指新建绑定不同 provider 的卡，属于独立上下文，按创建路径加载说明并显式交接摘要；没有已有历史迁移机制。reset 不冒充跨 provider 迁移。rewind 后按来源重验摘要，Report 持久化不等于来源仍有效 |
 | retry 结果未知 | 区分未提交、已拒绝与已 dispatch 但未知。保持现有 issuance/ACP submission journal 的不重发语义；先核对结果，不为补上下文重复动作。ACP unresolved outcome 明确阻止再发；摘要不得把未知写成失败 |

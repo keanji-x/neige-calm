@@ -7,16 +7,16 @@ import { useConversationCommands, type ConversationRegistry } from '../conversat
 import { queryKeys } from '../providers/queries.ts';
 import type { ApiRequest, ApiTransportResponse } from '../../../../core/api/types.ts';
 import { renderDailyFixture } from './daily-planner-fixture.tsx';
-import type { ConversationDisplayItem, ConversationPage, HarnessPhaseTag, WorkerSessionState, HarnessTimeoutEvidence, ConversationPendingInput, ConversationActiveInput } from '../../../../core/api/generated/wire.ts';
+import type { ConversationDisplayItem, ConversationPage, HarnessPhaseTag, WorkerSessionState, HarnessTimeoutEvidence, ConversationPendingInput, ConversationActiveInput, AgentProvider } from '../../../../core/api/generated/wire.ts';
 
 const identity={userId:'jian',displayName:'Jian',role:'owner',sessionId:'fixture-jian'};
 const cursor=(position:number)=>({contract:'conversation_v1',source:'presentation',card_id:'daily-planner',position} as const);
 const human=(id:string,uid:string,name:string,position:number,text='Same saved words'):ConversationDisplayItem=>({cursor:cursor(position),source:{
   kind:'human',message_id:id,revision:1,author:{user_id:uid,display_name:name},text,attachments:[],created_at_ms:position,
 }});
-function fixture(items:ConversationDisplayItem[],run:Readonly<{state:WorkerSessionState;phase:HarnessPhaseTag;blockedReason:string|null;terminalTimeout:HarnessTimeoutEvidence|null;pendingInputs:readonly ConversationPendingInput[];activeInput?:ConversationActiveInput|null}>,onSend?:()=>ConversationDisplayItem[], onKeep?:(request:ApiRequest)=>ApiTransportResponse) {
+function fixture(items:ConversationDisplayItem[],run:Readonly<{provider?:AgentProvider;state:WorkerSessionState;phase:HarnessPhaseTag;blockedReason:string|null;terminalTimeout:HarnessTimeoutEvidence|null;pendingInputs:readonly ConversationPendingInput[];activeInput?:ConversationActiveInput|null}>,onSend?:()=>ConversationDisplayItem[], onKeep?:(request:ApiRequest)=>ApiTransportResponse) {
   let stored=items;
-  return renderDailyFixture({identity,initial:'/track/daily?panel=conversations',reply:request=>{
+  return renderDailyFixture({identity,plannerProvider:run.provider,initial:'/track/daily?panel=conversations',reply:request=>{
     if(request.path.includes('/harness/items?contract=conversation_v1')) {
       const body:ConversationPage={contract:'conversation_v1',source:'presentation',items:stored,next_cursor:null};
       return {status:200,statusText:'OK',body};
@@ -360,7 +360,7 @@ it.each([1280,390])('retry keep-only reason remains visible at width %s',async w
   f.client.clear();
 });
 
-it('canonical OpenCode Unknown offers Keep and the server reason without Retry', async () => {
+it.each(['failed', 'exited'] as const)('canonical OpenCode Unknown offers Keep without Retry while runtime is %s', async state => {
   await page.viewport(1280,800);
   const input:ConversationActiveInput={current_execution_id:null,submissions:[{
     carrier_id:'original-retained',logical_turn_id:'logical',submission_id:'opencode-submission',attempt:{
@@ -369,11 +369,11 @@ it('canonical OpenCode Unknown offers Keep and the server reason without Retry',
       actions:{keep:{kind:'available'},retry:{kind:'unavailable',reason:'unsupported_binding'}},
     },
   }]};
-  const f=fixture([human('opencode-message','jian','Jian',1,'Saved ACP input')],{state:'failed',phase:'wedged',blockedReason:'Execution is held.',terminalTimeout:null,pendingInputs:[],activeInput:input});
+  const f=fixture([human('opencode-message','jian','Jian',1,'Saved ACP input')],{provider:'opencode',state,phase:'wedged',blockedReason:'Execution is held.',terminalTimeout:null,pendingInputs:[],activeInput:input});
   await page.getByRole('button',{name:/Conversation Daily Planner conversation/}).click();
   await expect.element(page.getByRole('button',{name:'Keep as delivered',exact:true})).toBeVisible();
   await expect.element(page.getByText('Retry is unavailable for this conversation binding.',{exact:true})).toBeVisible();
   expect(screen.queryByRole('button',{name:/Retry/})).toBeNull();
-  await page.screenshot({path:'./__screenshots__/canonical-opencode-unknown.png'});
+  await page.screenshot({path:`./__screenshots__/canonical-opencode-unknown-${state}.png`});
   f.client.clear();
 });

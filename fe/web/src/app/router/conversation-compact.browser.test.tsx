@@ -6,7 +6,7 @@ import { renderCompactFixture } from './conversation-compact-fixture.tsx';
 
 afterEach(cleanup);
 
-it.each(['claude', 'codex'] as const)('compact in the real %s router composer posts an operation rather than chat', async provider => {
+it.each(['claude', 'codex', 'opencode'] as const)('compact in the real %s router composer posts an operation rather than chat', async provider => {
   await page.viewport(1280, 800);
   const fixture = renderCompactFixture(provider, true);
   await page.getByRole('button', { name: /Conversation Daily Planner conversation/ }).click();
@@ -59,4 +59,28 @@ it('compact browser lifecycle shows confirmed result, hides old usage, and resto
   fixture.run.token_usage = null;
   await fixture.client.invalidateQueries({ queryKey: ['planner-run', 'daily-planner'] });
   await expect.element(page.getByText('已压缩', { exact: true })).not.toBeInTheDocument();
+});
+
+it.each(['opencode', 'grok'] as const)('canonical %s Planner and Assistant expose compact only when declared', async provider => {
+  await page.viewport(1280, 800);
+  const fixture = renderCompactFixture(provider, provider === 'opencode', true, undefined, true);
+  for (const title of ['Daily Planner', 'Other']) {
+    await page.getByRole('button', { name: new RegExp(`Conversation ${title} conversation`) }).click();
+    await expect.element(page.getByText('Earlier reply.', { exact: true })).toBeVisible();
+    await page.getByRole('combobox', { name: 'Message' }).fill('/compact');
+    if (provider === 'opencode') {
+      await expect.element(page.getByRole('option', { name: /^compact/ })).toBeVisible();
+      await page.screenshot({ path: `./__screenshots__/compact-${provider}-${title}.png` });
+      await userEvent.keyboard('{Enter}');
+      await userEvent.keyboard('{Enter}');
+      const card = title === 'Other' ? 'second-planner' : 'daily-planner';
+      await expect.poll(() => fixture.requests.filter(request => request.method === 'POST' && request.path === `/api/cards/${card}/planner/compact`).length).toBe(1);
+    } else {
+      await expect.element(page.getByRole('option', { name: /^compact/ })).not.toBeInTheDocument();
+      await page.screenshot({ path: `./__screenshots__/compact-${provider}-${title}.png` });
+    }
+    await page.getByRole('button', { name: 'Close conversation', exact: true }).click();
+  }
+  expect(fixture.requests.filter(request => request.method === 'POST' && request.path.endsWith('/planner/input'))).toHaveLength(0);
+  if (provider === 'grok') expect(fixture.requests.filter(request => request.path.endsWith('/planner/compact'))).toHaveLength(0);
 });

@@ -22,7 +22,7 @@ it('compact capability is a required boolean in the run contract', () => {
   }
 });
 
-it.each(['claude', 'codex', 'opencode'] as const)('compact uses the declared capability for an existing %s conversation', async provider => {
+it.each(['claude', 'codex', 'opencode', 'grok'] as const)('compact uses the declared capability for an existing %s conversation', async provider => {
   const fixture = renderCompactFixture(provider, true);
   await userEvent.click(await screen.findByRole('button', { name: /Conversation Daily Planner conversation/ }));
   await screen.findByText('Earlier reply.');
@@ -34,7 +34,7 @@ it.each(['claude', 'codex', 'opencode'] as const)('compact uses the declared cap
   expect(fixture.requests.filter(request => request.method === 'POST' && request.path.endsWith('/planner/input'))).toHaveLength(0);
 });
 
-it.each(['claude', 'codex', 'opencode'] as const)('compact is hidden when the %s session declares no capability', async provider => {
+it.each(['claude', 'codex', 'opencode', 'grok'] as const)('compact is hidden when the %s session declares no capability', async provider => {
   renderCompactFixture(provider, false);
   await userEvent.click(await screen.findByRole('button', { name: /Conversation Daily Planner conversation/ }));
   await screen.findByText('Earlier reply.');
@@ -147,4 +147,19 @@ it('compact result stays with its conversation when switching cards', async () =
   await userEvent.click(await screen.findByRole('button', { name: /Conversation Daily Planner conversation/ }));
   expect(await screen.findByText('已压缩')).toBeTruthy();
   expect(await screen.findByText('用量待更新')).toBeTruthy();
+});
+
+it.each(['opencode', 'grok'] as const)('canonical %s Planner and Assistant compact follow only the run capability', async provider => {
+  renderCompactFixture(provider, provider === 'opencode', true, undefined, true);
+  for (const title of ['Daily Planner', 'Other']) {
+    await userEvent.click(await screen.findByRole('button', { name: new RegExp(`Conversation ${title} conversation`) }));
+    await screen.findByText('Earlier reply.');
+    await userEvent.type(screen.getByRole('combobox', { name: 'Message' }), '/');
+    if (provider === 'opencode') {
+      await screen.findByRole('option', { name: /^compact/ });
+    } else {
+      expect(screen.queryByRole('option', { name: /^compact/ })).toBeNull();
+    }
+    await userEvent.click(screen.getByRole('button', { name: 'Close conversation' }));
+  }
 });

@@ -18,7 +18,7 @@ track-assistant summary 身份。Assistant 可读写 report prose、使用同 Tr
 task-worker terminal；不能写 plan/task blocks、作 task verdict、关闭 Track、开启
 terminal、获得 Planner 权限或成为 root。permission mode 保持 `Never`。
 不改普通 worker、PlainChat、Planner 策略；不新增菜单、不复制 provider policy，
-不因身份扩展 OpenCode 的 image、manual compact、history replacement 能力。
+不因身份扩展 OpenCode 的 image、history replacement 能力。U6b 已启用 canonical OpenCode Planner 和 Assistant 的手动 compact；前端仅按 run 的 `manual_compact_supported` 展示 `/compact`，Grok 不支持。
 
 | 身份 | provider | card kind / role / marker | session contract / kind / mode | root / MCP |
 | --- | --- | --- | --- | --- |

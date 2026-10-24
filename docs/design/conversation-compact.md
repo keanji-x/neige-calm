@@ -1,6 +1,6 @@
 # Manual conversation compaction
 
-Outcome: `/compact` compresses the current Codex conversation's context without sending a chat message or creating a conversation. Slash commands use distinct icons: new (plus), side (chat), compact (inward arrows).
+Outcome: `/compact` compresses the current conversation's context for Codex, Claude and canonical OpenCode Planner and Assistant conversations without sending a chat message or creating a conversation. Slash commands use distinct icons: new (plus), side (chat), compact (inward arrows).
 
 Review tier: L2, because compaction changes provider-owned durable context. The REST route must admit only human users and harness-backed cards. Provider policy stays in PlannerBackend; the generic composer receives an optional callback.
 
@@ -26,7 +26,7 @@ A later turn resumes the compacted session as usual. A rewind still cuts at the 
 
 ## Frontend capability contract
 
-The bound Planner backend declares `manual_compact_supported` through `PlannerBackend::manual_compact_supported`; the read route resolves the existing `PlannerBinding`, without consulting the worker provider registry or opening a provider session. Codex and Claude implement manual compaction; managed ACP does not. This capability describes backend support, not permission or current admission: the existing compact POST still enforces human authorization, busy state, queue, history and seal checks.
+The bound Planner backend declares `manual_compact_supported` through `PlannerBackend::manual_compact_supported`; the read route resolves the existing `PlannerBinding`, without consulting the worker provider registry or opening a provider session. Codex, Claude and canonical OpenCode Planner and Assistant conversations support manual compaction; Grok does not. The frontend exposes `/compact` solely from the run response’s required `manual_compact_supported` boolean, with history loaded; it has no provider allow-list. This capability describes backend support, not permission or current admission: the existing compact POST still enforces human authorization, busy state, queue, history and seal checks.
 
 `GET /api/cards/{id}/planner/run` always sends the required boolean, including dormant reads. The frontend schema rejects a missing or non-boolean value. The store passes it to the router/composer, which offers the command only with loaded history and outside message editing. Selecting it calls the existing compact POST rather than sending chat. REST revision 30 and web compatibility revision 49 keep an older kernel from pairing with a bundle that requires the field.
 
