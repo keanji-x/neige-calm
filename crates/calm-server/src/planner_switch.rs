@@ -325,6 +325,8 @@ async fn switch_owned(
             error: std::sync::Mutex::new(None),
         })
         .collect();
+    #[cfg(feature = "fixtures")]
+    crate::test_seams::pause_point("planner-switch-before-commit", ids[0].as_str()).await;
     let mut tx = sqlite::begin_immediate_tx(&db).await?;
     let outcome = async {
         let principal = human.current_principal()?;

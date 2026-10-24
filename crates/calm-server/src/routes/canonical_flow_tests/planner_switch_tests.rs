@@ -11,6 +11,7 @@ use calm_truth::session_repo::SessionRepo;
 
 mod claude;
 mod http;
+mod overlaps;
 
 struct Pair {
     fixture: Fixture,
