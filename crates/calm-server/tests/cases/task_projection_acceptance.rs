@@ -1204,10 +1204,12 @@ async fn in_flight_reference_target_deletion_warns_on_both_reads_without_declara
         blocks: Some(blocks),
     };
     let pool = boot.repo.sqlite_db().unwrap();
+    // The write boundary reloads its baseline under the writer lock. Seed the
+    // same-write fixture there, rather than only in persist_report's argument.
     sqlx::query(
         "UPDATE cards SET payload=json(?1),body_crdt=NULL WHERE track_id=?2 AND kind='track-report'",
     )
-    .bind(serde_json::to_string(&TrackReportPayload::initial()).unwrap())
+    .bind(serde_json::to_string(&current).unwrap())
     .bind(boot.track_id.as_str())
     .execute(pool.writer_pool())
     .await

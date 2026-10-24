@@ -130,12 +130,13 @@ fn insta_like_assert(references: &[ReferenceToWorkerSessions]) {
 }
 
 /// Incoming keys act on children when the worker is deleted, never delete the worker.
-/// ACP ownership and receipts are lifecycle-owned children; deletion removes their
+/// ACP ownership, receipts and report knowledge are lifecycle-owned children; deletion removes their
 /// metadata with the worker. Freeze these exact edges, not an open cascade exemption.
 const EXPECTED_REFERENCES: &[(&str, &str, &str)] = &[
     ("acp_managed_sessions", "worker_session_id", "CASCADE"),
     ("acp_submissions", "worker_session_id", "CASCADE"),
     ("cards", "session_id", "SET NULL"),
+    ("report_read_ledger", "worker_session_id", "CASCADE"),
     ("tracks", "root_session_id", "NO ACTION"),
     ("worker_flow_items", "worker_session_id", "SET NULL"),
     ("worker_sessions", "parent_session_id", "NO ACTION"),
