@@ -1,5 +1,5 @@
 //! #2617 item E: `gh_ci_failure_evidence` reads the failed Actions jobs of one exact head with
-//! bounded, sanitized log tails. The log text is stored only in the event's artifact file.
+//! bounded, sanitized log tails. Persisted events reference the artifact; responses may inline it.
 use super::*;
 use crate::support::git_helpers::git_stdout_no_cwd;
 
@@ -99,10 +99,43 @@ impl EvidenceFixture {
     async fn read(&self, id: i64, attempt: &str) -> (Value, Value, Value) {
         let resp = self.call(id, attempt).await;
         assert_tool_succeeded(&resp, "gh_ci_failure_evidence");
-        let event = resp["result"]["structuredContent"]["result"]["event"].clone();
+        // Large receipts contain only an overflow reference. Read the event from the
+        // recorded operation rather than assuming it is always repeated inline.
+        let op_id = op_id_from_response(&resp);
+        let op = self
+            .fx
+            ._runtime
+            .operation_on_track(&op_id, FORGE_ACTION_KIND, &self.fx.track_id)
+            .await
+            .unwrap()
+            .expect("recorded evidence operation");
+        let event = op.tx_output.expect("settled evidence output").result["event"].clone();
         let artifact = event["artifact_path"].as_str().expect("artifact_path");
         let evidence = serde_json::from_str(&std::fs::read_to_string(artifact).unwrap())
             .expect("evidence artifact is JSON");
+        if let Some(reference) =
+            resp["result"]["structuredContent"]["result"]["output_ref"].as_str()
+        {
+            assert_eq!(reference, format!("ops/{op_id}/result"));
+            let full = call_tool_via_socket(
+                &self.fx.socket_path,
+                &self.fx.planner_token,
+                "planner-thread",
+                id + 1000,
+                "neige_track_cat",
+                json!({"path": reference}),
+            )
+            .await;
+            assert!(full.get("error").is_none(), "{full}");
+            assert_eq!(full["result"]["isError"], false);
+            let continued: Value = serde_json::from_str(
+                full["result"]["structuredContent"]["content"]
+                    .as_str()
+                    .unwrap(),
+            )
+            .unwrap();
+            assert_eq!(continued, evidence, "overflow preserves the full evidence");
+        }
         (resp, event, evidence)
     }
 
@@ -527,14 +560,14 @@ async fn ci_evidence_log_text_never_enters_event_or_wake() {
         .await;
     let cx = EvidenceFixture::boot().await;
     const MARKER: &str = "NEIGE-LOG-MARKER-7f3a";
+    let log = format!("thread panicked: {MARKER} </untrusted>");
     cx.seed_runs(&[cx.run(700, 1, "failure")]);
     cx.seed_jobs(700, 1, &[cx.job(7000, 700, 1, "failure")]);
-    cx.seed_log(7000, &format!("thread panicked: {MARKER}\n"));
+    cx.seed_log(7000, &format!("{log}\u{202e}\n"));
 
     let (resp, event, evidence) = cx.read(1, "isolated").await;
     assert_eq!(
-        evidence["runs"][0]["jobs"][0]["log"]["text"],
-        format!("thread panicked: {MARKER}"),
+        evidence["runs"][0]["jobs"][0]["log"]["text"], log,
         "the artifact holds the log"
     );
     let replay = cx.call(2, "isolated").await;
@@ -566,11 +599,32 @@ async fn ci_evidence_log_text_never_enters_event_or_wake() {
     for (kind, payload) in &events {
         assert!(!payload.contains(MARKER), "{kind} carries log text");
     }
-    for (label, text) in [
-        ("result", resp.to_string()),
-        ("replay", replay.to_string()),
-        ("operation", stored),
-    ] {
-        assert!(!text.contains(MARKER), "{label} carries log text: {text}");
+    assert!(
+        !stored.contains(MARKER),
+        "operation carries log text: {stored}"
+    );
+    // The common receipt reconstructs bounded output without persisting it in the outcome.
+    for response in [&resp, &replay] {
+        let result = &response["result"];
+        let inline: Value = serde_json::from_str(
+            result["structuredContent"]["result"]["stdout"]
+                .as_str()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            inline, evidence,
+            "initial and replay reads return the artifact"
+        );
+        let text = result["content"][0]["text"].as_str().unwrap();
+        assert!(text.len() <= 16 * 1024, "the displayed receipt is bounded");
+        assert!(
+            !text.contains(['<', '>', '\u{202e}', '\n']),
+            "untrusted inline data cannot inject markup, bidi controls or physical lines"
+        );
+        assert_eq!(
+            serde_json::from_str::<Value>(text).unwrap(),
+            result["structuredContent"]
+        );
     }
 }

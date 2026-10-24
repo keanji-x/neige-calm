@@ -585,12 +585,6 @@ async fn git_forge_happy_path_persists_ordered_template_events() {
     )
     .await;
     assert_tool_succeeded(&diff_resp, "gh_pr_diff");
-    assert!(
-        diff_resp["result"]["structuredContent"]["result"]
-            .get("stdout")
-            .is_none(),
-        "gh_pr_diff must not inline patch stdout"
-    );
     let diff_rows = wait_for_event_count(&fx.repo, "forge.pr.diff.read", 1).await;
     let diff = diff_rows[0].clone();
     assert_track_event(&diff, &fx.track_id);
@@ -606,6 +600,21 @@ async fn git_forge_happy_path_persists_ordered_template_events() {
         "diff artifact_path must be non-empty"
     );
     let artifact = std::fs::read_to_string(&artifact_path).expect("read diff artifact");
+    assert_eq!(
+        diff_resp["result"]["structuredContent"]["result"]["stdout"], artifact,
+        "a small diff is returned inline from its recorded artifact"
+    );
+    assert!(
+        diff_resp["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .len()
+            <= 16 * 1024
+    );
+    assert!(
+        diff.payload.get("stdout").is_none(),
+        "the persisted event carries the artifact reference, not the patch"
+    );
     assert!(
         artifact.contains("diff --git") && artifact.contains("feature.txt"),
         "diff artifact must contain the shim patch body: {artifact}"
