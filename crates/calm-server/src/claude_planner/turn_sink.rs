@@ -20,10 +20,18 @@ const BIND_TIMEOUT: Duration = Duration::from_secs(5);
 #[async_trait::async_trait]
 pub(crate) trait TurnSink: Send {
     fn slot(&self) -> Arc<TurnSlot>;
+    /// Supply the admitted execution's owner and cancellation guard before reading stdout.
     fn cancellation(&self, claim: &execution::Claim) -> execution::Cancellation;
+    /// Observe a matching session init before role validation, even if validation then fails.
+    /// Planner uses this ordering to retain the CLI's session for the next resume.
     async fn observe_init(&mut self, init: &SystemInit);
+    /// Only validated records reach this callback. While draining, `answering` is false:
+    /// record output normally, but do not issue control replies on the closing stdin.
     async fn record(&mut self, line: &str, record: &Record, answering: bool);
+    /// Apply role-specific result policy after recording the result and before settlement.
     fn result_event(&self, event: TerminalEvent) -> TerminalEvent;
+    /// Package the frozen protocol outcome for the execution owner. The owner sets
+    /// `qualified` only when completion evidence qualifies the foreground outcome.
     fn known_end(
         self,
         claim: &execution::Claim,

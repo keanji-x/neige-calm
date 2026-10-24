@@ -15,6 +15,8 @@ const DRAIN_WINDOW: Duration = Duration::from_secs(1);
 const EXIT_WAIT: Duration = Duration::from_secs(5);
 const DRAIN_AFTER_EXIT: Duration = Duration::from_secs(1);
 /// Hard settlement margin after the stop deadline; every cleanup await is capped by it.
+/// Planner's 10 s stop timer plus this margin fits the harness's 30 s interrupt budget,
+/// leaving 8 s for the surrounding run loop.
 pub const SETTLE_AFTER_STOP: Duration = Duration::from_secs(12);
 
 pub(crate) struct ProtocolTurn<P> {
