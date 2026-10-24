@@ -3,6 +3,7 @@
 
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Write};
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
@@ -119,8 +120,35 @@ fn stat(pid: i32) -> Option<(char, u64)> {
     Some((fields[0].chars().next()?, fields[19].parse().ok()?))
 }
 
-/// The fake's helpers as (in_group, own_group, session).
-fn helpers(profile: &Path) -> (Proc, Proc, Proc) {
+/// Pin only helpers whose published identities we have checked. Cleanup also
+/// runs when a group assertion panics; it never signals a numeric pid or group.
+struct Helpers(Vec<(Proc, OwnedFd)>);
+
+impl Helpers {
+    fn processes(&self) -> (Proc, Proc, Proc) {
+        (self.0[0].0, self.0[1].0, self.0[2].0)
+    }
+}
+
+impl Drop for Helpers {
+    fn drop(&mut self) {
+        for (_, fd) in &self.0 {
+            // SAFETY: each pidfd pins the helper checked at construction.
+            unsafe {
+                libc::syscall(
+                    libc::SYS_pidfd_send_signal,
+                    fd.as_raw_fd(),
+                    libc::SIGKILL,
+                    0,
+                    0,
+                );
+            }
+        }
+    }
+}
+
+/// The fake's helpers as (in_group, own_group, session), ready before publication.
+fn helpers(profile: &Path, browser: i32) -> Helpers {
     let path = profile.join("fake-chrome-helpers");
     let deadline = Instant::now() + DEATH_BOUND;
     let text = loop {
@@ -133,11 +161,33 @@ fn helpers(profile: &Path) -> (Proc, Proc, Proc) {
         );
         std::thread::sleep(Duration::from_millis(20));
     };
-    let pids: Vec<Proc> = text
-        .split_whitespace()
-        .map(|pid| Proc::of(pid.parse().unwrap()))
-        .collect();
-    (pids[0], pids[1], pids[2])
+    let mut helpers = Helpers(Vec::new());
+    for pid in text.split_whitespace() {
+        let proc = Proc::of(pid.parse().unwrap());
+        // SAFETY: pidfd_open returns a new owned descriptor on success.
+        let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, proc.pid, 0) };
+        assert!(fd >= 0, "pin {proc:?}: {}", std::io::Error::last_os_error());
+        let fd = unsafe { OwnedFd::from_raw_fd(fd as i32) };
+        assert!(
+            proc.alive(),
+            "helper identity changed while pinning {proc:?}"
+        );
+        helpers.0.push((proc, fd));
+    }
+    assert_eq!(helpers.0.len(), 3, "{text:?}");
+    // SAFETY: plain process identity queries, without sending signals.
+    let sid = unsafe { libc::getsid(browser) };
+    assert!(sid >= 0, "browser {browser} session");
+    let (in_group, own_group, session) = helpers.processes();
+    for (proc, expected) in [
+        (in_group, (browser, sid)),
+        (own_group, (own_group.pid, sid)),
+        (session, (session.pid, session.pid)),
+    ] {
+        let actual = unsafe { (libc::getpgid(proc.pid), libc::getsid(proc.pid)) };
+        assert_eq!(actual, expected, "helper not ready: {proc:?} PGID/SID");
+    }
+    helpers
 }
 
 fn environ(pid: i32) -> BTreeMap<String, String> {
@@ -203,7 +253,8 @@ fn owner_sigkill_kills_the_browser() {
     let dirs = dirs("helpers");
     let (mut owner, browser) = start_owner(&dirs, &[]);
     let browser = Proc::of(browser);
-    let (_in_group, own_group, session) = helpers(&dirs.profile);
+    let helpers = helpers(&dirs.profile, browser.pid);
+    let (_in_group, own_group, session) = helpers.processes();
     owner.kill().unwrap(); // SIGKILL
     owner.wait().unwrap();
     assert!(
@@ -223,7 +274,8 @@ async fn stop_ends_the_browser_group() {
     let dirs = dirs("helpers");
     let chrome = Chrome::launch(config(&dirs)).await.unwrap();
     let browser = Proc::of(chrome.pid() as i32);
-    let (in_group, own_group, session) = helpers(&dirs.profile);
+    let helpers = helpers(&dirs.profile, browser.pid);
+    let (in_group, own_group, session) = helpers.processes();
     let status = chrome.stop().await.unwrap();
     assert_eq!(
         status.code(),
@@ -248,7 +300,8 @@ async fn stop_ends_the_browser_group() {
 async fn stop_sends_sigterm_to_the_browser_only() {
     let dirs = dirs("helpers-ignore-close");
     let chrome = Chrome::launch(config(&dirs)).await.unwrap();
-    let (in_group, _own_group, _session) = helpers(&dirs.profile);
+    let helpers = helpers(&dirs.profile, chrome.pid() as i32);
+    let (in_group, _own_group, _session) = helpers.processes();
     chrome.stop().await.unwrap();
     assert!(in_group.dies_within(DEATH_BOUND));
     assert!(
