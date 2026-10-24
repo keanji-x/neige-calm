@@ -2,10 +2,10 @@
 use crate::execution_quiesce::ExecutionLifecycle;
 use std::path::PathBuf;
 
-pub(super) struct Executor {
+pub(in crate::operation) struct Executor {
     pub lifecycle: ExecutionLifecycle,
-    pub(super) _root: tempfile::TempDir,
-    pub(super) _socket: tempfile::TempDir,
+    pub(in crate::operation) _root: tempfile::TempDir,
+    pub(in crate::operation) _socket: tempfile::TempDir,
     child: std::process::Child,
 }
 impl Drop for Executor {

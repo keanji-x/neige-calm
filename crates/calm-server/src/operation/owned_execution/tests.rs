@@ -116,8 +116,7 @@ async fn c3_keyed_record_cas_never_touches_another_key() {
 }
 
 // Reuse the real supervisor fixture; it contains transport setup, not owner policy.
-#[path = "../forge_action_adapter/tests/executor.rs"]
-mod executor;
+use crate::operation::forge_action_adapter::tests::executor;
 
 async fn pipe_admission(config: super::pipe::PipeConfig, gate_facade: bool) {
     use crate::operation::{OperationCompletionBus, SpawnCtx};

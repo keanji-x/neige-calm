@@ -2,7 +2,7 @@ use super::sh_single_quote as shell_quote;
 use super::*;
 use crate::event::EventBus;
 use crate::operation::OperationCompletionBus;
-mod executor;
+pub(in crate::operation) mod executor;
 #[cfg(test)]
 mod failure_wake_tests;
 use calm_types::forge_git::{FORGE_SHELL_PRELUDE, GIT_COMMIT_PROBE_SCRIPT};
