@@ -630,48 +630,8 @@ fn objective_command_boot_cleans_settled_orphan_checkout() {
     });
 }
 
-#[tokio::test]
-async fn objective_command_one_active_operation_per_track() {
-    let (hook, entered, resume) = pause();
-    let once = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let w = world("true", |a| {
-        a.with_before_release(Arc::new(move || {
-            let (once, hook) = (once.clone(), hook.clone());
-            Box::pin(async move {
-                if !once.swap(true, std::sync::atomic::Ordering::SeqCst) {
-                    hook().await;
-                }
-            })
-        }))
-    })
-    .await;
-    let mut d = definition();
-    d["mode"] = json!({"loop":{"plateau":10}});
-    d["checks"][0]["role"] = json!("ratchet");
-    d["checks"][0]["config"] = json!({"kind":"command","params":{"command":"true"}});
-    let mut second = d["checks"][0].clone();
-    second["id"] = json!("second");
-    d["checks"].as_array_mut().unwrap().push(second);
-    define(&w.boot, Some(w.block.clone()), d).await;
-    approve(&w).await;
-    evaluate(&w, &w.revision).await.unwrap();
-    tokio::time::timeout(Duration::from_secs(10), entered.notified())
-        .await
-        .unwrap();
-    tokio::join!(project(&w), project(&w));
-    assert_eq!(phases(&w).await, ["parked"]);
-    let statuses: Vec<String> = sqlx::query_scalar(
-        "SELECT status FROM objective_intents WHERE kind='run_check' ORDER BY ordinal",
-    )
-    .fetch_all(w.boot.repo.sqlite_db().unwrap().read_pool())
-    .await
-    .unwrap();
-    assert_eq!(statuses, ["dispatched", "pending"]);
-    resume.notify_one();
-    ready(&w).await;
-    assert_eq!(phases(&w).await, ["succeeded", "succeeded"]);
-    assert_eq!(count(&w, "check_finished").await, 2);
-}
+#[path = "objective_command_dispatch.rs"]
+mod objective_command_dispatch;
 
 #[tokio::test]
 async fn objective_command_infrastructure_failure_retries_without_cleanup_blocking() {

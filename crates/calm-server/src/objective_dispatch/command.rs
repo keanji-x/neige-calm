@@ -22,10 +22,15 @@ pub(super) async fn dispatch(
     runtime: Option<&OperationRuntime>,
     row: &StoredIntent,
 ) -> Result<bool> {
+    // Pause before writer admission: a completing observer must be able to commit.
+    #[cfg(feature = "fixtures")]
+    crate::test_seams::pause_point("objective-command-snapshot", &row.id.to_string()).await;
     let mut tx = crate::db::sqlite::begin_immediate_tx(db).await?;
+    // Authorization, retry history and track occupancy must describe one writer
+    // snapshot; completion atomically changes all three. Submit only after commit.
     let current = objective_host::current_check_tx(&mut tx, &row.id).await?;
-    tx.commit().await?;
     let Some((_, definition)) = current else {
+        tx.commit().await?;
         return Ok(false);
     };
     if !supports(&definition)
@@ -34,14 +39,17 @@ pub(super) async fn dispatch(
             CheckConfig::Command(_) | CheckConfig::Metric(_)
         )
     {
+        tx.commit().await?;
         return Ok(false);
     }
     let Some(runtime) = runtime else {
+        tx.commit().await?;
         return Ok(true);
     };
     // Readiness is a deferral, never a durable execution failure. Boot/tick
     // reconciliation retries the same intent after the engine has been bound.
     if runtime.require_gate_execution().is_err() {
+        tx.commit().await?;
         return Ok(true);
     }
     let prefix = format!("objective-check:{}", row.id);
@@ -55,8 +63,15 @@ pub(super) async fn dispatch(
     .bind(row.id.track_id.as_str())
     .bind(row.id.seq.0 as i64)
     .bind(i64::from(row.id.ordinal))
-    .fetch_all(db.read_pool())
+    .fetch_all(&mut **tx)
     .await?;
+    // Submission is serial per track. Pending rows have no target_id yet, so use
+    // the adapter's typed payload binding for the occupancy query.
+    let busy: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM operations WHERE kind=? AND \
+         json_extract(payload_json,'$.intent_id.track_id')=? AND phase NOT IN ('succeeded','failed'))"
+    ).bind(objective_check_run::KIND).bind(row.id.track_id.as_str()).fetch_one(&mut **tx).await?;
+    tx.commit().await?;
     if runs
         .iter()
         .any(|(phase, _)| !matches!(phase.as_str(), "succeeded" | "failed"))
@@ -89,12 +104,6 @@ pub(super) async fn dispatch(
         }
         return Ok(true);
     }
-    // Submission is serial per track. Pending rows have no target_id yet, so use
-    // the adapter's typed payload binding for the occupancy query.
-    let busy: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM operations WHERE kind=? AND \
-         json_extract(payload_json,'$.intent_id.track_id')=? AND phase NOT IN ('succeeded','failed'))"
-    ).bind(objective_check_run::KIND).bind(row.id.track_id.as_str()).fetch_one(db.read_pool()).await?;
     if busy {
         return Ok(true);
     }
