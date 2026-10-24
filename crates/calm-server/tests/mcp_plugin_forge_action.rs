@@ -295,10 +295,7 @@ async fn forge_action_plugin_tools_submit_await_park_and_reject_malformed() {
         .iter()
         .find(|tool| tool["name"] == EXPOSED_NAME)
         .unwrap();
-    assert!(
-        tool["description"].as_str().unwrap().contains(message),
-        "discovery and pending receipt guidance differ: {listed}"
-    );
+    assert_eq!(tool["description"], "submit a lowered forge scan");
 
     let completed_resp = call_forge_tool(&parked, 51).await;
     let completed_structured = &completed_resp["result"]["structuredContent"];
@@ -1189,14 +1186,7 @@ async fn assert_tool_is_discoverable(fx: &Fixture) {
         .find(|tool| tool["name"] == EXPOSED_NAME)
         .unwrap();
     let description = tool["description"].as_str().unwrap();
-    assert!(
-        description.contains("For a pending receipt:"),
-        "{description}"
-    );
-    assert!(
-        description.contains("not confirmed success"),
-        "{description}"
-    );
+    assert_eq!(description, "submit a lowered forge scan");
 }
 
 /// Where the stub writes the `_meta["dev.neige/track"]` it received, beside the call marker.

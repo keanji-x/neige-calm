@@ -599,10 +599,14 @@
   },
   {
     "name": "neige_report_describe",
-    "description_sha256": "358f91d2fe5bb95e874be69309378d25cda7f98e666c0353ce7d5e87b2f024f1",
+    "description_sha256": "afb70ba836edadfb6f003dd8b25de014c6bfc5731f008dcda274a3e953f2c3a4",
     "input_schema": {
       "additionalProperties": false,
-      "properties": {},
+      "properties": {
+        "kind": {
+          "type": "string"
+        }
+      },
       "type": "object"
     },
     "annotations": {

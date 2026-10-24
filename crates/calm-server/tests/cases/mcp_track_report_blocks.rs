@@ -169,6 +169,70 @@ async fn removed_revision_params_are_refused_as_unknown_parameters() {
 }
 
 #[tokio::test]
+async fn kinds_filters_one_schema_and_preserves_unfiltered_output() {
+    let boot = boot().await;
+    let all = call_tool(
+        &boot,
+        TOOL_REPORT_DESCRIBE,
+        planner_identity(&boot),
+        json!({}),
+    )
+    .await
+    .unwrap();
+    for kind in all["kinds"].as_array().unwrap() {
+        let mut expected = all.clone();
+        expected["kinds"] = json!([kind]);
+        let filtered = call_tool(
+            &boot,
+            TOOL_REPORT_DESCRIBE,
+            planner_identity(&boot),
+            json!({"kind": kind["kind"]}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(filtered, expected);
+    }
+    let null = call_tool(
+        &boot,
+        TOOL_REPORT_DESCRIBE,
+        planner_identity(&boot),
+        json!({"kind": null}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        null, all,
+        "null follows the existing optional-string contract"
+    );
+}
+
+#[tokio::test]
+async fn kinds_rejects_invalid_or_unknown_filters() {
+    let boot = boot().await;
+    for args in [
+        json!({"kind": 1}),
+        json!({"kind": true}),
+        json!({"kind": []}),
+        json!({"kind": {}}),
+        json!({"kind": ""}),
+        json!({"kind": "missing"}),
+        json!({"kind": " task "}),
+        json!({"unexpected": "task"}),
+        json!([]),
+    ] {
+        let err = call_tool(
+            &boot,
+            TOOL_REPORT_DESCRIBE,
+            planner_identity(&boot),
+            args.clone(),
+        )
+        .await
+        .expect_err("invalid filter must be refused");
+        assert_eq!(err.code, RpcError::INVALID_PARAMS, "{args}: {err:?}");
+    }
+}
+
+#[tokio::test]
 async fn kinds_returns_all_supported_schemas() {
     let boot = boot().await;
     let out = call_tool(

@@ -461,14 +461,9 @@ pub(crate) fn plugin_tool_descriptors_from(
         }
         let plugin_id = manifest.id;
         for entry in manifest.exposes_tools {
-            let mut description = entry.description.unwrap_or_default();
-            if entry.kind == Some(ToolKind::ForgeAction) {
-                description.push_str("\nFor a pending receipt: ");
-                description.push_str(forge_receipt::PENDING_GUIDANCE.trim());
-            }
             descriptors.push(ToolDescriptor {
                 name: crate::plugin_results::registry_name(&plugin_id, &entry.name),
-                description,
+                description: entry.description.unwrap_or_default(),
                 input_schema: entry
                     .input_schema
                     .unwrap_or_else(|| json!({ "type": "object" })),

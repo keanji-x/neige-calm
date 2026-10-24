@@ -76,9 +76,22 @@ where
 async fn blocks_kinds(
     _ctx: Arc<AppContext>,
     _identity: ToolCallIdentity,
-    _args: Value,
+    args: Value,
 ) -> Result<Value, RpcError> {
-    Ok(kinds_table())
+    let tool = TOOL_REPORT_DESCRIBE;
+    let obj = require_object(&args, tool)?;
+    let mut table = kinds_table();
+    if let Some(kind) = optional_string(obj, "kind", tool)? {
+        let kinds = table["kinds"].as_array_mut().expect("kinds table");
+        kinds.retain(|entry| entry["kind"] == kind);
+        if kinds.is_empty() {
+            return Err(RpcError::invalid_params(format!(
+                "{tool}: {}",
+                report_blocks::unknown_kind_message(&kind)
+            )));
+        }
+    }
+    Ok(table)
 }
 
 async fn write_markdown(

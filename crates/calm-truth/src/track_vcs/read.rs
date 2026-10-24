@@ -239,9 +239,13 @@ pub async fn since_last_turn_block(
     let report_note = if report_patch == ReportPatch::Omit {
         Some("see the block-level diff below")
     } else if mixed_report {
-        Some("mixed authors: includes other authors' edits; read report.md and track history")
+        Some(
+            "mixed authors: includes other authors' edits; list paths; read report blocks and track history on demand",
+        )
     } else if attribution.is_none() {
-        Some("authors unknown: may include others' edits; read report.md and track history")
+        Some(
+            "authors unknown: may include others' edits; list paths; read report blocks and track history on demand",
+        )
     } else {
         None
     };
@@ -286,7 +290,7 @@ pub async fn since_last_turn_block(
         ));
     }
     if mixed_report && !report_changed {
-        out.push_str("- report.md (mixed authors: includes other authors' edits with no net change; read track history)\n");
+        out.push_str("- report.md (mixed authors: others' edits, no net change; list paths; read blocks and history on demand)\n");
     }
     for entry in entries {
         if observation_card_id(&entry.path).is_some()

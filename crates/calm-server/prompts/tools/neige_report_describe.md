@@ -1,1 +1,1 @@
-Planner + Assistant: list report kinds, schemas and usage: prose, chart.candles, chart.series, table, view, app, task, preview, window, html, objective. Write with neige_report_commit upserts. Objective writes need Planner/User and capability. Discovery grants no execution authority.
+Planner + Assistant: report kind schemas and usage. Pass optional `kind` for one kind; {} returns all. Write with neige_report_commit upserts. Objective writes need Planner/User and capability. Discovery grants no execution authority.

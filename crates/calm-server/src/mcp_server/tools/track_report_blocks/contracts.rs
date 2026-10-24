@@ -19,7 +19,7 @@ pub(super) fn kinds_descriptor() -> ToolDescriptor {
         input_schema: json!({
             "type": "object",
             "additionalProperties": false,
-            "properties": {}
+            "properties": {"kind": {"type": "string"}}
         }),
         annotations: Some(read_only_annotations()),
         roles: &[CardRole::Planner, CardRole::Assistant],
