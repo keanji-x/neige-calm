@@ -126,6 +126,25 @@ describe('entity sub-schema compatibility', () => {
 });
 
 describe('planner harness transcript lifecycle events', () => {
+  it('preserves explicit null reset telemetry and rejects missing keys on harness.transcript.cleared', () => {
+    const telemetry = {
+      cleared_item_count: null, cleared_params_bytes: null, card_age_ms_at_clear: null,
+    };
+    const payload = {
+      ev: 'harness.transcript.cleared',
+      data: {
+        worker_session_id: 'runtime_2', card_id: 'card_planner_1', track_id: 'track_1',
+        ...telemetry,
+      },
+    };
+    expect(wireEventSchema.parse(payload).data).toMatchObject(telemetry);
+    for (const key of Object.keys(telemetry)) {
+      const data: Record<string, unknown> = { ...payload.data };
+      delete data[key];
+      expect(wireEventSchema.safeParse({ ...payload, data }).success).toBe(false);
+    }
+  });
+
   it('rejects harness.transcript.cleared with non-numeric telemetry', () => {
     const result = wireEventSchema.safeParse({
       ev: 'harness.transcript.cleared',
