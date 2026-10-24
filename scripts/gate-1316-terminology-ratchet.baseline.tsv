@@ -2,23 +2,23 @@
 #   ./scripts/gate-1316-terminology-ratchet.sh --update-baseline
 # Counts are OCCURRENCES per (term, scope). Only-down is enforced.
 # term	scope	count
-cove	crates	143
+cove	crates	133
 cove	fe	0
 cove	docs	0
 cove	e2e	0
-wave	crates	708
+wave	crates	680
 wave	fe	16
 wave	docs	12
 wave	e2e	0
-spec	crates	531
+spec	crates	522
 spec	fe	66
 spec	docs	0
 spec	e2e	1
-runtime_id	crates	1138
+runtime_id	crates	1114
 runtime_id	fe	37
 runtime_id	docs	1
 runtime_id	e2e	4
-harness_item	crates	297
+harness_item	crates	286
 harness_item	fe	137
 harness_item	docs	2
 harness_item	e2e	0

@@ -107,7 +107,7 @@ run_clean_case() {
       exit 1
     fi
   done
-  echo "PASS clean: both ratchets accepted legal 0055 regression fixture"
+  echo "PASS clean: both ratchets accepted historical migrations and non-SQL fixtures"
 }
 
 run_single_mutation_case() {
@@ -234,8 +234,33 @@ run_scan_command_error_case() {
   echo "PASS infrastructure scan-command-error: nonzero exit; error named scan infrastructure failure"
 }
 
+# The deleted regression file's former path must no longer bypass either rule.
+run_former_regression_path_case() {
+  local sql="$1" expected_error="$2" fixture output rc
+  fixture="$(mktemp -d)"
+  cp -R "$fixtures/clean/." "$fixture/"
+  mkdir -p "$fixture/crates/calm-server/tests/cases"
+  printf 'const ILLEGAL_SQL: &str = r#"%s"#;\n' "$sql" \
+    > "$fixture/crates/calm-server/tests/cases/migration_0055_drop_runtimes.rs"
+  set +e
+  output="$("${ratchets[1]}" "$fixture" 2>&1)"
+  rc=$?
+  set -e
+  rm -rf "$fixture"
+  count_errors "$output"
+  if [ "$rc" -ne 1 ] || [ "$error_count" -ne 1 ] || \
+    [[ "$error_lines" != *"$expected_error"* ]]; then
+    printf '%s\n' "$output"
+    echo "selftest failure: former 0055 regression path bypassed $expected_error" >&2
+    exit 1
+  fi
+  echo "PASS former regression path: exit 1; exactly one $expected_error error"
+}
+
 run_fixture_registry_case
 run_clean_case
+run_former_regression_path_case 'CREATE TABLE "runtimes" (id TEXT)' 'DDL/JOIN/REPLACE'
+run_former_regression_path_case 'SELECT * FROM "runtimes"' 'quoted-identifier SQL'
 for i in "${!mutation_case_paths[@]}"; do
   case_path="${mutation_case_paths[$i]}"
   run_single_mutation_case \

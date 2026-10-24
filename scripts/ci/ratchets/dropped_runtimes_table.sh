@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-# The `runtimes` table was dropped in migration 0055 and must never return. This closes the two holes the bare-verb ratchet leaves: DDL/JOIN/REPLACE it never names, and quoted identifiers `"runtimes"` that slip past \b-anchored patterns. The 0055 drop-regression test legitimately re-creates the table and is the single scoped exclusion.
+# The `runtimes` table was dropped in migration 0055 and must never return. This closes the two holes the bare-verb ratchet leaves: DDL/JOIN/REPLACE it never names, and quoted identifiers `"runtimes"` that slip past \b-anchored patterns. Only frozen historical migrations are excluded; Rust tests are scanned like all other Rust sources.
 # Hidden and ignored paths are outside the scan boundary on purpose: --no-ignore would sweep build artifacts.
 
 script_dir="${BASH_SOURCE[0]%/*}"
@@ -18,8 +18,7 @@ require_path "$scan_root"
 scan_root="$(cd "$scan_root" && pwd)"
 require_path \
   "$scan_root/crates" \
-  "$scan_root/crates/calm-truth/migrations" \
-  "$scan_root/crates/calm-server/tests/cases/migration_0055_drop_runtimes.rs"
+  "$scan_root/crates/calm-truth/migrations"
 
 cd "$scan_root"
 
@@ -27,7 +26,6 @@ exclusions=(
   --type=rust
   --type=sql
   --glob '!crates/calm-truth/migrations/**'
-  --glob '!crates/calm-server/tests/cases/migration_0055_drop_runtimes.rs'
 )
 failures=0
 
