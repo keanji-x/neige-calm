@@ -65,15 +65,41 @@ async fn world_with_readiness(
     d["checks"][0]["config"] = json!({"kind":"command","params":{"command":command}});
     define(&boot, Some(block.clone()), d).await;
     let execution = crate::support::execution::Fixture::new(db.clone()).await;
-    let op_repo = Arc::new(SqlxOperationRepo::new(db));
-    let completion = OperationCompletionBus::new();
-    let route_repo: Arc<dyn calm_server::db::RouteRepo> = boot.repo.clone();
     let checks = tmp.path().join("objective-checks");
     let adapter = hook(ObjectiveCheckRunAdapter::new(
         checks.clone(),
         tmp.path().join("logs"),
     ));
-    let runtime = Arc::new(OperationRuntime::new_unchecked(
+    let runtime = operation_runtime(
+        &boot,
+        adapter,
+        if bound {
+            execution.lifecycle.clone()
+        } else {
+            Default::default()
+        },
+    );
+    assert!(boot.ctx.operation_runtime.set(runtime.clone()).is_ok());
+    World {
+        boot,
+        block,
+        runtime,
+        repo,
+        revision,
+        checks,
+        _execution: execution,
+        _tmp: tmp,
+    }
+}
+fn operation_runtime(
+    boot: &Boot,
+    adapter: ObjectiveCheckRunAdapter,
+    execution: calm_server::execution_quiesce::ExecutionLifecycle,
+) -> Arc<OperationRuntime> {
+    let op_repo = Arc::new(SqlxOperationRepo::new(boot.repo.sqlite_db().unwrap()));
+    let completion = OperationCompletionBus::new();
+    let route_repo: Arc<dyn calm_server::db::RouteRepo> = boot.repo.clone();
+    Arc::new(OperationRuntime::new_unchecked(
         op_repo.clone(),
         vec![
             Arc::new(adapter) as Arc<dyn ProviderAdapter>,
@@ -89,23 +115,8 @@ async fn world_with_readiness(
             boot.events.clone(),
             completion,
         )
-        .with_execution(if bound {
-            execution.lifecycle.clone()
-        } else {
-            Default::default()
-        }),
-    ));
-    assert!(boot.ctx.operation_runtime.set(runtime.clone()).is_ok());
-    World {
-        boot,
-        block,
-        runtime,
-        repo,
-        revision,
-        checks,
-        _execution: execution,
-        _tmp: tmp,
-    }
+        .with_execution(execution),
+    ))
 }
 async fn approve(w: &World) {
     let id = request(&w.boot).await["ask_id"].as_i64().unwrap();
@@ -126,13 +137,17 @@ async fn evaluate(
     .await
 }
 async fn project(w: &World) {
+    let runtime = Arc::new(tokio::sync::OnceCell::new());
+    runtime
+        .set(w.runtime.clone())
+        .unwrap_or_else(|_| panic!("fresh runtime cell"));
     calm_server::track_planner_context::TrackPlannerContextProjector::new(
         w.boot.repo.clone(),
         w.boot.events.clone(),
         w.boot.ctx.write.clone(),
     )
     .unwrap()
-    .with_operation_runtime(w.boot.ctx.operation_runtime.clone())
+    .with_operation_runtime(runtime)
     .recompute_track(w.boot.track_id.as_str())
     .await
     .unwrap();
@@ -234,6 +249,7 @@ async fn objective_command_revision_and_cleanup() {
         objective::check::CheckOutput::Command(objective::check::CommandOutput { exit_code: 0 })
     );
     settled(&w).await;
+    project(&w).await; // Await cleanup after observing all operations terminal.
     let outputs: Vec<String> =
         sqlx::query_scalar("SELECT tx_output_json FROM operations WHERE kind=?")
             .bind(KIND)
@@ -550,36 +566,68 @@ async fn objective_command_release_rechecks_intent_hash() {
     );
 }
 
-#[tokio::test]
-async fn objective_command_boot_cleans_settled_orphan_checkout() {
-    let w = world("true", |a| a).await;
-    approve(&w).await;
-    evaluate(&w, &w.revision).await.unwrap();
-    ready(&w).await;
-    settled(&w).await;
-    let raw: String = sqlx::query_scalar("SELECT tx_output_json FROM operations WHERE kind=?")
-        .bind(KIND)
-        .fetch_one(w.boot.repo.sqlite_db().unwrap().read_pool())
-        .await
+#[test]
+fn objective_command_boot_cleans_settled_orphan_checkout() {
+    let boot_runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
         .unwrap();
-    let output: Value = serde_json::from_str(&raw).unwrap();
-    let path = PathBuf::from(output["data"]["cwd"].as_str().unwrap());
-    tokio::time::timeout(Duration::from_secs(10), async {
-        loop {
-            let removed: bool = sqlx::query_scalar("SELECT json_extract(tx_output_json,'$.data.checkout_removed') IS 1 FROM operations WHERE kind=?")
-                .bind(KIND).fetch_one(w.boot.repo.sqlite_db().unwrap().read_pool()).await.unwrap();
-            if removed { break; }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    }).await.unwrap();
-    sqlx::query("UPDATE operations SET tx_output_json=json_remove(tx_output_json,'$.data.checkout_removed') WHERE kind=?")
-        .bind(KIND).execute(w.boot.repo.sqlite_db().unwrap().writer_pool()).await.unwrap();
-    // Recreate the exact durable orphan left by a crash after commit, before unlink.
-    workspace::worktree::detached_worktree(&w.repo, &path, &w.revision).unwrap();
-    assert!(path.exists());
-    project(&w).await; // a new production projector performs its startup reconciliation
-    assert!(!path.exists());
-    assert_eq!(count(&w, "check_finished").await, 1);
+    let (mut w, writer) = boot_runtime.block_on(async {
+        let w = world("true", |a| a).await;
+        approve(&w).await;
+        evaluate(&w, &w.revision).await.unwrap();
+        ready(&w).await;
+        settled(&w).await;
+        // Drain submitted ACK statements and fence new ones at the single writer.
+        let writer = w
+            .boot
+            .repo
+            .sqlite_db()
+            .unwrap()
+            .writer_pool()
+            .acquire()
+            .await
+            .unwrap();
+        (w, writer)
+    });
+    // This is the crash boundary, before changing any durable cleanup state.
+    // Runtime::drop cancels and drops every async task (including completion
+    // cleanup and projectors), and waits for spawn_blocking Git removal to end.
+    // The writer lease also fences SQLite's independent worker: earlier ACKs
+    // finished before acquisition; blocked ACK tasks are dropped at shutdown.
+    drop(boot_runtime);
+
+    let restarted = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    restarted.block_on(async {
+        drop(writer); // Return the drained connection on the new, live runtime.
+        w._execution = crate::support::execution::Fixture::new(w.boot.repo.sqlite_db().unwrap()).await;
+        w.runtime = operation_runtime(
+            &w.boot,
+            ObjectiveCheckRunAdapter::new(w.checks.clone(), w._tmp.path().join("logs")),
+            w._execution.lifecycle.clone(),
+        );
+        let db = w.boot.repo.sqlite_db().unwrap();
+        let raw: String = sqlx::query_scalar("SELECT tx_output_json FROM operations WHERE kind=?")
+            .bind(KIND)
+            .fetch_one(db.read_pool())
+            .await
+            .unwrap();
+        let output: Value = serde_json::from_str(&raw).unwrap();
+        let path = PathBuf::from(output["data"]["cwd"].as_str().unwrap());
+        // Shutdown may cancel cleanup before unlink; normalize that old checkout
+        // only after its tasks are gone, then inject the crash's durable orphan.
+        workspace::worktree::remove_worktree(&w.repo, &path).unwrap();
+        sqlx::query("UPDATE operations SET tx_output_json=json_remove(tx_output_json,'$.data.checkout_removed') WHERE kind=?")
+            .bind(KIND).execute(db.writer_pool()).await.unwrap();
+        workspace::worktree::detached_worktree(&w.repo, &path, &w.revision).unwrap();
+        assert!(path.exists());
+        project(&w).await; // Fresh operation runtime and projector reconcile startup.
+        assert!(!path.exists());
+        assert_eq!(count(&w, "check_finished").await, 1);
+    });
 }
 
 #[tokio::test]
