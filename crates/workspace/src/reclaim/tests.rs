@@ -179,3 +179,95 @@ fn reclaim_detached_head_with_surviving_ref_is_allowed() {
         ReclaimOutcome::Removed
     );
 }
+
+#[test]
+fn reclaim_assume_unchanged_retains_contents_and_index() {
+    hidden_index_flags_retain_contents_and_index(&["--assume-unchanged"]);
+}
+
+#[test]
+fn reclaim_skip_worktree_retains_contents_and_index() {
+    hidden_index_flags_retain_contents_and_index(&["--skip-worktree"]);
+}
+
+#[test]
+fn reclaim_combined_index_flags_retain_contents_and_index() {
+    hidden_index_flags_retain_contents_and_index(&["--assume-unchanged", "--skip-worktree"]);
+}
+
+fn hidden_index_flags_retain_contents_and_index(flags: &[&str]) {
+    for dirty in [true, false] {
+        let f = Fixture::new();
+        for flag in flags {
+            git(&f.path, &["update-index", flag, "file"]);
+        }
+        if dirty {
+            std::fs::write(f.path.join("file"), "precious hidden work").unwrap();
+        }
+        assert!(git(&f.path, &["status", "--porcelain"]).is_empty());
+        let contents = std::fs::read(f.path.join("file")).unwrap();
+        let index_path = git(&f.path, &["rev-parse", "--git-path", "index"]);
+        let index = std::fs::read(&index_path).unwrap();
+        let flags_before = git(&f.path, &["ls-files", "-v"]);
+        let attempts = AtomicUsize::new(0);
+        let observe = |point: &str, _: &Path| {
+            if point == "extra-worktree-remove-attempt" {
+                attempts.fetch_add(1, Ordering::SeqCst);
+            }
+        };
+        let prepared_retained = matches!(
+            prepare(&f.request(), observe).unwrap(),
+            Preparation::Retained(_)
+        );
+        let reclaimed_retained = matches!(
+            reclaim(&f.request(), observe).unwrap(),
+            ReclaimOutcome::Retained(_)
+        );
+        assert_eq!((prepared_retained, reclaimed_retained), (true, true));
+        assert_eq!(attempts.load(Ordering::SeqCst), 0);
+        assert_eq!(std::fs::read(f.path.join("file")).unwrap(), contents);
+        assert_eq!(git(&f.path, &["ls-files", "-v"]), flags_before);
+        assert_eq!(std::fs::read(index_path).unwrap(), index);
+    }
+}
+
+#[test]
+fn reclaim_index_protocol_fails_closed() {
+    for output in [
+        b"h file\0".as_slice(),
+        b"S file\0",
+        b"s file\0",
+        b"H \0",
+        b"\0",
+        b"H file",
+        b"? file\0",
+        b"H good\0S hidden\0",
+    ] {
+        assert!(!index_allows_status(output), "{output:?}");
+    }
+    for output in [b"".as_slice(), b"H file\0", b"H line\nbreak\0H \xff\0"] {
+        assert!(index_allows_status(output), "{output:?}");
+    }
+}
+
+#[test]
+fn reclaim_unreadable_index_never_attempts_remove() {
+    let f = Fixture::new();
+    let index = git(&f.path, &["rev-parse", "--git-path", "index"]);
+    std::fs::write(&index, "invalid index").unwrap();
+    let attempts = AtomicUsize::new(0);
+    assert!(
+        reclaim(&f.request(), |point, _| {
+            if point == "extra-worktree-remove-attempt" {
+                attempts.fetch_add(1, Ordering::SeqCst);
+            }
+        })
+        .is_err()
+    );
+    assert_eq!(attempts.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        std::fs::read_to_string(f.path.join("file")).unwrap(),
+        "original"
+    );
+    assert_eq!(std::fs::read_to_string(index).unwrap(), "invalid index");
+}

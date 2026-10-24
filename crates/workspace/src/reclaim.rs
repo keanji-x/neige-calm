@@ -125,6 +125,15 @@ pub fn prepare(request: &ReclaimRequest, observe: impl Fn(&str, &Path)) -> Resul
     if String::from_utf8_lossy(&top.stdout).trim_end() != path.to_string_lossy() {
         return Ok(Retained("checkout identity mismatch"));
     }
+    // Git status (and even no-force worktree remove) can hide tracked edits under
+    // assume-unchanged or skip-worktree. The public ls-files -v protocol uses
+    // lowercase tags for assume-unchanged and S/s for skip-worktree. Only ordinary
+    // cached entries (H) let status establish cleanliness; retain sparse checkouts
+    // and unexpected records too, without changing the user's index flags.
+    let index = git(path, &["ls-files", "--cached", "-v", "-z"], deadline)?;
+    if !index_allows_status(&index.stdout) {
+        return Ok(Retained("hidden or unknown index state"));
+    }
     let status = git(
         path,
         &[
@@ -177,6 +186,12 @@ pub fn prepare(request: &ReclaimRequest, observe: impl Fn(&str, &Path)) -> Resul
         command,
         deadline,
     })))
+}
+
+fn index_allows_status(output: &[u8]) -> bool {
+    output
+        .split_inclusive(|byte| *byte == 0)
+        .all(|record| record.starts_with(b"H ") && record.len() > 3 && record.last() == Some(&0))
 }
 
 fn git(repo: &Path, args: &[&str], deadline: Instant) -> Result<Output> {

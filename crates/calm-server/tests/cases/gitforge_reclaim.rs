@@ -572,3 +572,62 @@ fn state_for_reclaim(b: &Boot, socket: &Path) -> AppState {
     .with_workspace_root(b.tmp.path().join("workspaces"))
     .with_shared_codex_appserver(b.state.shared_codex_appserver.clone())
 }
+
+#[tokio::test]
+async fn gitforge_reclaim_hidden_index_flags_close_and_delete() {
+    for delete in [false, true] {
+        let f = Fixture::new().await;
+        std::fs::remove_file(f.dirty.join("untracked")).unwrap();
+        let mut saved = Vec::new();
+        for (path, flag) in [
+            (&f.clean, "--assume-unchanged"),
+            (&f.dirty, "--skip-worktree"),
+        ] {
+            let file = git_stdout(path, ["ls-files"])
+                .lines()
+                .next()
+                .unwrap()
+                .to_string();
+            run_git(path, ["update-index", flag, &file]);
+            std::fs::write(path.join(&file), "precious hidden work").unwrap();
+            assert!(git_stdout(path, ["status", "--porcelain"]).is_empty());
+            let index = git_stdout(path, ["rev-parse", "--git-path", "index"]);
+            saved.push((
+                path,
+                file,
+                index.clone(),
+                std::fs::read(&index).unwrap(),
+                git_stdout(path, ["ls-files", "-v"]),
+            ));
+        }
+        if delete {
+            assert_eq!(f.b.delete_track(&f.track).await.0, StatusCode::NO_CONTENT);
+        } else {
+            f.close().await;
+            f.tick(&mut HashSet::new()).await;
+        }
+        assert_eq!(
+            (
+                f.clean_attempts.load(Ordering::SeqCst),
+                f.dirty_attempts.load(Ordering::SeqCst)
+            ),
+            (0, 0)
+        );
+        for (path, file, index, bytes, flags) in saved {
+            assert_eq!(
+                std::fs::read_to_string(path.join(file)).unwrap(),
+                "precious hidden work"
+            );
+            assert_eq!(git_stdout(path, ["ls-files", "-v"]), flags);
+            assert_eq!(std::fs::read(index).unwrap(), bytes);
+        }
+        let receipts: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM events WHERE kind='worktree.removed' AND scope_track=?",
+        )
+        .bind(&f.track)
+        .fetch_one(f.b.repo.pool())
+        .await
+        .unwrap();
+        assert_eq!(receipts, 0);
+    }
+}
