@@ -624,3 +624,80 @@ async fn isolation_none_reset_response_projects_workspace() {
     assert_eq!(value["track"]["workspace"]["isolation"], "none", "{value}");
     assert_eq!(fingerprint(&source), before);
 }
+
+#[tokio::test]
+async fn worktree_admission_refuses_owned_locations_and_symlinks() {
+    let b = boot().await;
+    let area = create_area(&b, "owned-worktree-admission").await;
+    let (_, managed) = managed_track(&b, &area, "managed").await;
+    user_repo(&b.workspace_root);
+    let system = user_repo(&b.workspace_root.join("system-area"));
+    let trash = user_repo(&b.workspace_root.join(".trash"));
+    let source = user_repo(&b.tmp.path().join("source"));
+    let owner = attached_track(&b, &area, "owner", &source).await;
+    let worktree = PathBuf::from(
+        b.repo
+            .track_get(&owner)
+            .await
+            .unwrap()
+            .unwrap()
+            .workspace
+            .worktree
+            .unwrap(),
+    );
+    let managed_sub = managed.join("sub");
+    let worktree_sub = worktree.join("sub");
+    std::fs::create_dir(&managed_sub).unwrap();
+    std::fs::create_dir(&worktree_sub).unwrap();
+    // The lexical fence must also refuse a symlink pointing OUT of an owned root.
+    let outward = managed.join("outside-alias");
+    std::os::unix::fs::symlink(&source, &outward).unwrap();
+    for (i, root) in [
+        b.workspace_root.clone(),
+        managed,
+        managed_sub,
+        system,
+        trash,
+        worktree,
+        worktree_sub,
+    ]
+    .iter()
+    .enumerate()
+    {
+        let alias = b.tmp.path().join(format!("worktree-alias-{i}"));
+        std::os::unix::fs::symlink(root, &alias).unwrap();
+        for cwd in [root, &alias] {
+            assert_worktree_refused(&b, &area, cwd).await;
+        }
+    }
+    assert_worktree_refused(&b, &area, &outward).await;
+}
+
+async fn assert_worktree_refused(b: &Boot, area: &str, cwd: &Path) {
+    let mut body = none_body(area, cwd);
+    body["isolation"] = json!("worktree");
+    let (status, error) = request(b.app.clone(), "POST", "/api/tracks", Some(body)).await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "{}: {error}",
+        cwd.display()
+    );
+    assert!(error.contains("Neige-owned location"), "{error}");
+}
+
+#[tokio::test]
+async fn worktree_admission_allows_repository_containing_owned_worktrees() {
+    let b = boot().await;
+    let area = create_area(&b, "repository-worktree-admission").await;
+    let source = user_repo(&b.tmp.path().join("source"));
+    let first = attached_track(&b, &area, "first", &source).await;
+    let second = attached_track(&b, &area, "second", &source).await;
+    assert_ne!(first, second);
+    for id in [first, second] {
+        let track = b.repo.track_get(&id).await.unwrap().unwrap();
+        let root = PathBuf::from(track.workspace.worktree.unwrap());
+        assert!(root.starts_with(&source));
+        assert!(root.join(".git").is_file());
+    }
+}

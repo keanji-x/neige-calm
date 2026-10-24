@@ -252,7 +252,7 @@ async fn prepare_with_area(
     let init = source.init;
 
     // Only worktree isolation resolves a repository root; none borrows the cwd.
-    // The ownership proof for none runs in the mint's write transaction.
+    // Both attached ownership proofs run in the mint's write transaction.
     let workspace_plan = match isolation {
         CreateIsolation::Managed => TrackWorkspacePlan::ManagedUnder(s.workspace_root.clone()),
         CreateIsolation::Attached(AttachedIsolation::None) => {

@@ -98,15 +98,14 @@ pub(super) async fn allocate_track_structure_tx(
     if let Some(creator) = &creator {
         creator.admit_tx(tx).await?;
     }
-    if matches!(workspace_plan, TrackWorkspacePlan::AttachedFromCwd) {
-        calm_truth::db::sqlite::admit_isolation_none_tx(
-            tx,
-            &p.cwd,
-            &admission_root,
-            &teardown_targets.snapshot(),
-        )
-        .await?;
-    }
+    calm_truth::db::sqlite::admit_attached_workspace_tx(
+        tx,
+        &p.cwd,
+        &admission_root,
+        &teardown_targets.snapshot(),
+        &workspace_plan,
+    )
+    .await?;
     // Claim scan + insert is atomic with the row, after ownership admission and
     // before any row writes, so every branch leaves the claim table consistent.
     enforce_folder_claim_tx(

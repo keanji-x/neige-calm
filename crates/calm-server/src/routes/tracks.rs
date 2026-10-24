@@ -873,11 +873,12 @@ pub(crate) async fn create_track(
             crate::db::write_in_tx_typed(s.repo.as_ref(), move |tx| {
                 Box::pin(async move {
                     source.check_current()?;
-                    crate::db::sqlite::admit_isolation_none_tx(
+                    crate::db::sqlite::admit_attached_workspace_tx(
                         tx,
                         &cwd,
                         &admission_root,
                         &teardown_targets.snapshot(),
+                        &TrackWorkspacePlan::AttachedFromCwd,
                     )
                     .await?;
                     Ok(())
