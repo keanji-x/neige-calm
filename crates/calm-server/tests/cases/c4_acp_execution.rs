@@ -31,7 +31,7 @@ async fn c4_acp_existing_execution_refuses_before_credential_mint() {
     let mut intent = test_support::intent(root.path().to_owned());
     let id = intent.metadata.id.clone();
     intent.metadata.consumer = "acp-planner".into();
-    intent.metadata.alias = ProcessAlias(execution::sweep::alias(&worker, id.as_str()));
+    intent.metadata.alias = ProcessAlias(format!("planner:{}:{}", &worker, id.as_str(),));
     intent.metadata.owner = OperationRef(format!("worker-session:{worker}"));
     intent.metadata.track = TrackId(track);
     intent.metadata.program.program = "/bin/sh".into();
@@ -41,7 +41,7 @@ async fn c4_acp_existing_execution_refuses_before_credential_mint() {
             &pool,
             session.host().execution.engine().unwrap(),
             &worker,
-            intent,
+            calm_server::provider_execution::PreparedIntent(intent),
             execution::Purpose::Turn {
                 turn_id: uuid::Uuid::new_v4().to_string(),
             },
@@ -419,7 +419,7 @@ async fn c4_acp_boot_never_resends_held_or_releasing_payload() {
         let mut intent = workspace_runtime::execution::test_support::intent(root.path().to_owned());
         let id = intent.metadata.id.clone();
         intent.metadata.consumer = "acp-planner".into();
-        intent.metadata.alias = ProcessAlias(execution::sweep::alias(&worker, id.as_str()));
+        intent.metadata.alias = ProcessAlias(format!("planner:{}:{}", &worker, id.as_str(),));
         intent.metadata.owner = OperationRef(format!("worker-session:{worker}"));
         intent.metadata.track = TrackId(track);
         intent.metadata.program.program = "/bin/sh".into();
@@ -430,7 +430,7 @@ async fn c4_acp_boot_never_resends_held_or_releasing_payload() {
                 &pool,
                 engine,
                 &worker,
-                intent,
+                calm_server::provider_execution::PreparedIntent(intent),
                 execution::Purpose::Turn {
                     turn_id: uuid::Uuid::new_v4().to_string(),
                 },
@@ -493,4 +493,22 @@ async fn c4_acp_boot_never_resends_held_or_releasing_payload() {
         );
         stack.shutdown().await;
     }
+}
+
+#[tokio::test]
+async fn w_owner_alias_preserves_planner_bytes_acp() {
+    let root = Root::new("unused");
+    let stack = boot(&root).await;
+    let (_, card) = create(&stack).await;
+    let worker = stack.runtime(&card).await.id;
+    let session = session(&stack, &worker).await;
+    assert_eq!(
+        session
+            .host()
+            .provider_execution
+            .owner
+            .alias("session", "execution"),
+        "planner:session:execution"
+    );
+    stack.shutdown().await;
 }

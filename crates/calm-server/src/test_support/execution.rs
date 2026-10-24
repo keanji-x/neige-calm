@@ -83,10 +83,11 @@ impl Supervisor {
         let mut config = Config::try_parse_from(["calm-server"]).unwrap();
         self.configure(&mut config);
         config.execution_recovery_interval = std::time::Duration::from_secs(1);
-        let engine = crate::execution_boot::recover(&config, pool)
-            .await
-            .unwrap()
-            .unwrap();
+        let engine =
+            crate::execution_boot::recover(&config, pool, &["claude-planner", "acp-planner"])
+                .await
+                .unwrap()
+                .unwrap();
         // Listener binding and SQL recovery do not await the client's Watching.
         // Both initial assembly and a reopened kernel must finish that handshake.
         tokio::time::timeout(

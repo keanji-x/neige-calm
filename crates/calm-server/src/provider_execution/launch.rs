@@ -3,7 +3,7 @@ use super::*;
 use std::{ffi::OsString, path::Path};
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn intent(
-    consumer: &str,
+    owner: &dyn ProviderExecutionOwner,
     session: &str,
     track: &str,
     cwd: &Path,
@@ -37,9 +37,9 @@ pub(crate) async fn intent(
     Ok((
         ExecutionIntent {
             metadata: ExecutionMetadata {
-                consumer: consumer.into(),
+                consumer: owner.consumer().into(),
                 id: id.clone(),
-                alias: ProcessAlias(super::sweep::alias(session, id.as_str())),
+                alias: ProcessAlias(owner.alias(session, id.as_str())),
                 owner: OperationRef(format!("worker-session:{}", session)),
                 track: TrackId(track.to_owned()),
                 source: PrivateSource {

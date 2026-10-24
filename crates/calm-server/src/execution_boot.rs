@@ -5,36 +5,24 @@ use workspace_runtime::execution::{Engine, session_executor::SessionExecutor};
 
 pub type ExecutionEngine = Engine<SqliteExecutionStore, SessionExecutor>;
 
-/// Provider completion ports are registered beside their consumer projections.
-/// Host construction owns provider-specific resources; the sweep only consumes ports.
-pub(crate) fn provider_owners(
-    claude: &crate::claude_planner::config::ClaudePlannerHost,
-    acp: &crate::acp_planner::config::AcpPlannerHost,
-) -> Vec<crate::provider_execution::ProviderExecution> {
-    vec![
-        claude.provider_execution.clone(),
-        acp.provider_execution.clone(),
-    ]
-}
-
 pub async fn recover(
     cfg: &Config,
     pool: crate::db::sqlite::SqliteDb,
+    provider_consumers: &[&str],
 ) -> anyhow::Result<Option<Arc<ExecutionEngine>>> {
     let Some(key_file) = &cfg.kernel_client_key_file else {
         return Ok(None);
     };
     let secret = serde_json::from_reader(std::fs::File::open(key_file)?)?;
     let executor = SessionExecutor::new(cfg.proc_supervisor_sock_resolved(), secret);
-    let store = SqliteExecutionStore::new(pool)
-        .with_projection(
-            crate::acp_planner::execution::CONSUMER.into(),
+    let mut store = SqliteExecutionStore::new(pool);
+    for consumer in provider_consumers {
+        store = store.with_projection(
+            (*consumer).into(),
             Arc::new(crate::provider_execution::Projection),
-        )
-        .with_projection(
-            crate::claude_planner::execution::CONSUMER.into(),
-            Arc::new(crate::provider_execution::Projection),
-        )
+        );
+    }
+    let store = store
         .with_projection(
             crate::operation::gate_execution::CONSUMER.into(),
             Arc::new(crate::operation::gate_execution::Projection),
@@ -118,7 +106,7 @@ mod port_contract {
         let mut tx = pool.writer_pool().begin().await.unwrap();
         store.insert(&mut tx, &intent).await.unwrap();
         tx.commit().await.unwrap();
-        let engine = recover(&cfg, pool).await.unwrap().unwrap();
+        let engine = recover(&cfg, pool, &[]).await.unwrap().unwrap();
         assert!(!engine.available());
         assert_eq!(engine.recover().await.scheduled, 1);
         assert_eq!(store.pending().await.unwrap(), vec![intent.metadata.id]);

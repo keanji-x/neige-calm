@@ -20,6 +20,12 @@ impl ProviderExecutionOwner for NativeEvidence {
     fn consumer(&self) -> &'static str {
         self.inner.consumer()
     }
+    fn alias_prefix(&self) -> calm_server::provider_execution::AliasPrefix {
+        self.inner.alias_prefix()
+    }
+    fn alias(&self, session: &str, id: &str) -> String {
+        self.inner.alias(session, id)
+    }
     async fn complete(
         &self,
         session: &str,

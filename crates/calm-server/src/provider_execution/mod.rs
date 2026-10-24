@@ -13,6 +13,10 @@ use std::{
 };
 use workspace_runtime::execution::*;
 
+mod admission;
+pub use admission::{Admission, PreparedIntent};
+mod alias;
+pub use alias::AliasPrefix;
 pub(crate) mod launch;
 pub mod release;
 pub mod stderr;
@@ -47,6 +51,8 @@ pub enum KnownEnd {
 #[async_trait]
 pub trait ProviderExecutionOwner: Send + Sync {
     fn consumer(&self) -> &'static str;
+    fn alias_prefix(&self) -> AliasPrefix;
+    fn alias(&self, session: &str, id: &str) -> String;
     /// A captured record may no longer own the session. Guard session-wide
     /// writes by exact execution ownership inside their writer transaction;
     /// scope other effects to this execution or its turn.
@@ -187,7 +193,7 @@ pub(crate) async fn request_stop_tx(
 impl ProviderExecution {
     /// Stop the exact session execution and await settlement, then complete an orphaned driver.
     /// Compensation may invoke several owners; persisted metadata selects the owning consumer.
-    pub(crate) async fn stop_session(
+    pub async fn stop_session(
         &self,
         pool: &SqliteDb,
         engine: Option<&ExecutionEngine>,
@@ -206,7 +212,7 @@ impl ProviderExecution {
         if metadata.consumer.0 != self.owner.consumer() {
             return Ok(());
         }
-        if metadata.id != id || metadata.alias.0 != sweep::alias(session, id.as_str()) {
+        if metadata.id != id || metadata.alias.0 != self.owner.alias(session, id.as_str()) {
             return Err(conflict("provider session alias changed"));
         }
         self.stop(pool, engine, session, &claim, reason).await?;
@@ -228,18 +234,23 @@ impl ProviderExecution {
         admission_gate(pool, engine, session, Some(self)).await
     }
     /// ① Driver registration precedes COMMIT; RAII covers cancellation during commit.
-    pub async fn admit(
+    pub async fn admit<A: Admission>(
         &self,
         pool: &SqliteDb,
         engine: &ExecutionEngine,
         session: &str,
-        intent: ExecutionIntent,
+        admission: A,
         purpose: Purpose,
     ) -> Result<(Claim, DriverGuard)> {
         let engine = self::engine(Some(engine))?;
+        let mut tx = calm_truth::db::sqlite::begin_immediate_tx(pool).await?;
+        admission.authorize_tx(&mut tx).await?;
+        let intent = admission.intent_tx(&mut tx).await?;
+        self.owner
+            .alias_prefix()
+            .validate(self.owner.as_ref(), session, &intent)?;
         let id = intent.metadata.id.clone();
         let guard = self.drivers.claim(id.clone());
-        let mut tx = calm_truth::db::sqlite::begin_immediate_tx(pool).await?;
         let sql::Cas::Applied(claim) = sql::admit(
             &mut tx,
             session,

@@ -301,7 +301,7 @@ async fn runtime_stop_settles(path: &str) {
     let mut intent = test_support::intent(root.path().to_owned());
     intent.metadata.consumer = crate::acp_planner::execution::CONSUMER.into();
     let id = intent.metadata.id.clone();
-    intent.metadata.alias = ProcessAlias(execution::sweep::alias(&worker, id.as_str()));
+    intent.metadata.alias = ProcessAlias(format!("planner:{}:{}", &worker, id.as_str(),));
     intent.metadata.track = TrackId(fx.output.output_string("track_id", "test").unwrap());
     intent.metadata.program.program = "/bin/sleep".into();
     intent.metadata.program.args = vec!["300".into()];
@@ -313,7 +313,7 @@ async fn runtime_stop_settles(path: &str) {
             fx.repo.db(),
             &supervisor.engine,
             &worker,
-            intent,
+            execution::PreparedIntent(intent),
             execution::Purpose::Turn { turn_id: new_id() },
         )
         .await

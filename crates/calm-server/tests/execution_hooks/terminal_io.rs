@@ -374,10 +374,14 @@ async fn cold_start_recover_drives_committed_typed_with_config_off() {
     ])
     .unwrap();
     assert!(!cfg.terminal_execution);
-    let recovered = calm_server::execution_boot::recover(&cfg, f.repo.db().clone())
-        .await
-        .unwrap()
-        .unwrap();
+    let recovered = calm_server::execution_boot::recover(
+        &cfg,
+        f.repo.db().clone(),
+        &["claude-planner", "acp-planner"],
+    )
+    .await
+    .unwrap()
+    .unwrap();
     // Boot recovery is asynchronous; its startup work is not a deletion quiesce budget.
     wait(|| async {
         f.repo

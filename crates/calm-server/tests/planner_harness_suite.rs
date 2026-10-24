@@ -148,3 +148,9 @@ mod claude_planner_hibernation;
 
 #[path = "cases/claude_planner_shutdown.rs"]
 mod claude_planner_shutdown;
+
+#[path = "cases/w_provider_owner.rs"]
+mod w_provider_owner;
+
+#[path = "cases/c4_provider_release.rs"]
+mod c4_provider_release;

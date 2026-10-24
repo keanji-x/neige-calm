@@ -124,7 +124,7 @@ pub(crate) async fn check(
             &pool,
             engine,
             &params.worker_session_id,
-            intent,
+            crate::provider_execution::PreparedIntent(intent),
             Purpose::RewindCheck,
         )
         .await
@@ -147,8 +147,15 @@ pub(crate) async fn check(
     let mut lines = BufReader::new(EngineStdio::new(engine.clone(), id.clone())).lines();
     let mut released = false;
     let read = async {
-        execution::release::send(&pool, engine, &params.worker_session_id, &claim, &payload)
-            .await?;
+        execution::release::send(
+            &pool,
+            engine,
+            &params.worker_session_id,
+            &claim,
+            &payload,
+            &crate::provider_execution::release::NoAuthority,
+        )
+        .await?;
         released = true;
         engine.close_stdin(&id).await.map_err(execution::conflict)?;
         let mut ticks = tokio::time::interval(Duration::from_millis(10));

@@ -55,7 +55,13 @@ impl IssueGuard {
         let (claim, guard) = params
             .host
             .provider_execution
-            .admit(&pool, engine, &params.worker_session_id, intent, purpose)
+            .admit(
+                &pool,
+                engine,
+                &params.worker_session_id,
+                crate::provider_execution::PreparedIntent(intent),
+                purpose,
+            )
             .await?;
         self.claim = Some(claim);
         self.guard = Some(guard);
@@ -66,6 +72,7 @@ impl IssueGuard {
             &params.worker_session_id,
             self.claim.as_ref().unwrap(),
             &payload,
+            &crate::provider_execution::release::NoAuthority,
         )
         .await?;
         self.reason = execution::StopReason::SetupFailed;

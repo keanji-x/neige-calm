@@ -28,7 +28,11 @@ async fn start_with_prefix(
     let id = &intent.metadata.id;
     let dir = stderr::create(&rig.host.instructions_dir, id.as_str()).unwrap();
     intent.metadata.consumer = "claude-planner".into();
-    intent.metadata.alias = ProcessAlias(owner::sweep::alias(&rig.worker_session_id, id.as_str()));
+    intent.metadata.alias = ProcessAlias(format!(
+        "planner:{}:{}",
+        &rig.worker_session_id,
+        id.as_str(),
+    ));
     intent
         .metadata
         .program
@@ -52,7 +56,7 @@ async fn start_with_prefix(
             rig.repo.db(),
             rig.host.execution.engine().unwrap(),
             &rig.worker_session_id,
-            intent,
+            calm_server::provider_execution::PreparedIntent(intent),
             owner::Purpose::RewindCheck,
         )
         .await

@@ -43,8 +43,11 @@ async fn c4_boot_pass_a_precedes_listener_and_failure_is_covered_by_sweep() {
             .with_projection("claude-planner".into(), Arc::new(owner::Projection));
         let mut intent = test_support::intent(root.path().to_owned());
         intent.metadata.consumer = "claude-planner".into();
-        intent.metadata.alias =
-            ProcessAlias(owner::sweep::alias(&session, intent.metadata.id.as_str()));
+        intent.metadata.alias = ProcessAlias(format!(
+            "planner:{}:{}",
+            &session,
+            intent.metadata.id.as_str(),
+        ));
         let id = intent.metadata.id.clone();
         let mut tx = repo.pool().begin().await.unwrap();
         store.insert(&mut tx, &intent).await.unwrap();

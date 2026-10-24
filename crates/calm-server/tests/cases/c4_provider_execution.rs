@@ -10,7 +10,7 @@ use workspace_runtime::execution::*;
 #[test]
 fn native_macos_fake_provider_pipe_and_explicit_environment() {
     c4_rewind_has_one_engine_construction();
-    c4_release_continues_partial_payload_writes();
+    super::c4_provider_release::c4_release_continues_partial_payload_writes();
 }
 
 async fn wait(mut ready: impl AsyncFnMut() -> bool) {
@@ -22,10 +22,10 @@ async fn wait(mut ready: impl AsyncFnMut() -> bool) {
     .await
     .expect("C4 progress");
 }
-fn script(rig: &RegisteredRig, source: &str) {
+pub(super) fn script(rig: &RegisteredRig, source: &str) {
     std::fs::write(rig.bin("claude"), format!("#!/bin/sh\n{source}\n")).unwrap();
 }
-async fn claim(rig: &RegisteredRig) -> Option<sql::Claim> {
+pub(super) async fn claim(rig: &RegisteredRig) -> Option<sql::Claim> {
     sql::load(rig.repo.db().read_pool(), &rig.worker_session_id)
         .await
         .unwrap()
@@ -399,7 +399,8 @@ async fn c4_repeated_rewind_launches_with_distinct_execution_aliases() {
 async fn admit(rig: &RegisteredRig) -> (sql::Claim, owner::DriverGuard) {
     let mut intent = test_support::intent(rig.dir.path().join("ws"));
     intent.metadata.consumer = "claude-planner".into();
-    intent.metadata.alias = ProcessAlias(owner::sweep::alias(
+    intent.metadata.alias = ProcessAlias(format!(
+        "planner:{}:{}",
         &rig.worker_session_id,
         intent.metadata.id.as_str(),
     ));
@@ -411,7 +412,7 @@ async fn admit(rig: &RegisteredRig) -> (sql::Claim, owner::DriverGuard) {
             rig.repo.db(),
             rig.host.execution.engine().unwrap(),
             &rig.worker_session_id,
-            intent,
+            calm_server::provider_execution::PreparedIntent(intent),
             owner::Purpose::RewindCheck,
         )
         .await
@@ -424,7 +425,8 @@ async fn c4_provider_admission_is_exclusive_per_session() {
     let mut intent = test_support::intent(rig.dir.path().join("ws"));
     intent.metadata.consumer = "claude-planner".into();
     let next_id = intent.metadata.id.clone();
-    intent.metadata.alias = ProcessAlias(owner::sweep::alias(
+    intent.metadata.alias = ProcessAlias(format!(
+        "planner:{}:{}",
         &rig.worker_session_id,
         next_id.as_str(),
     ));
@@ -435,7 +437,7 @@ async fn c4_provider_admission_is_exclusive_per_session() {
                 rig.repo.db(),
                 rig.host.execution.engine().unwrap(),
                 &rig.worker_session_id,
-                intent,
+                calm_server::provider_execution::PreparedIntent(intent),
                 owner::Purpose::RewindCheck
             )
             .await
@@ -506,6 +508,12 @@ struct CompletionProbe {
 impl owner::ProviderExecutionOwner for CompletionProbe {
     fn consumer(&self) -> &'static str {
         "claude-planner"
+    }
+    fn alias_prefix(&self) -> owner::AliasPrefix {
+        owner::AliasPrefix::new("probe").unwrap()
+    }
+    fn alias(&self, session: &str, id: &str) -> String {
+        format!("probe:{session}:{id}")
     }
     async fn complete(
         &self,
@@ -746,83 +754,4 @@ async fn c4_planner_committed_retire_recovers_by_tick() {
             .is_none()
     })
     .await;
-}
-
-#[tokio::test]
-async fn c4_release_authorization_precedes_first_byte() {
-    let rig = RegisteredRig::new("exit").await;
-    script(&rig, "touch ready; exit 0");
-    let pause = calm_server::test_seams::PausePoint::default();
-    calm_server::test_seams::install_pause_for_test(
-        "c4-release-authorized",
-        &rig.worker_session_id,
-        pause.clone(),
-    );
-    let task = {
-        let session = rig.session().clone();
-        let thread = rig.thread.clone();
-        tokio::spawn(async move { session.prepare_edit_for_test(&thread).await })
-    };
-    tokio::time::timeout(Duration::from_secs(10), pause.entered.notified())
-        .await
-        .unwrap();
-    assert!(matches!(
-        claim(&rig).await.unwrap().record().release,
-        sql::Release::Releasing { .. }
-    ));
-    assert!(!rig.dir.path().join("ws/ready").exists());
-    pause.release.notify_one();
-    assert!(matches!(
-        task.await.unwrap().unwrap(),
-        EditPreparation::Prepared { .. }
-    ));
-}
-
-#[tokio::test]
-async fn c4_release_continues_partial_payload_writes() {
-    let rig = RegisteredRig::new("exit").await;
-    script(&rig, "printf '%s' \"$HTTP_PROXY\" > received; exit 0");
-    let proxy = format!("http://{}:password@proxy.invalid", "u".repeat(12000));
-    let session = rig
-        .open_session_with_environment(
-            vec![("HTTP_PROXY".into(), "HTTP_PROXY".into(), proxy.clone())],
-            rig.host.execution.engine().cloned(),
-        )
-        .await;
-    assert!(matches!(
-        session.prepare_edit_for_test(&rig.thread).await.unwrap(),
-        EditPreparation::Prepared { .. }
-    ));
-    assert_eq!(
-        std::fs::read_to_string(rig.dir.path().join("ws/received")).unwrap(),
-        proxy
-    );
-}
-
-#[tokio::test]
-async fn c4_rewind_proxy_override_order_is_preserved() {
-    let rig = RegisteredRig::new("exit").await;
-    script(&rig, "printf '%s' \"$HTTP_PROXY\" > received; exit 0");
-    for (first, last) in [
-        ("http://user:secret@proxy.invalid", "http://public.invalid"),
-        ("http://public.invalid", "http://user:secret@proxy.invalid"),
-    ] {
-        let session = rig
-            .open_session_with_environment(
-                vec![
-                    ("HTTP_PROXY".into(), "http_proxy".into(), first.into()),
-                    ("HTTP_PROXY".into(), "http_proxy".into(), last.into()),
-                ],
-                rig.host.execution.engine().cloned(),
-            )
-            .await;
-        assert!(matches!(
-            session.prepare_edit_for_test(&rig.thread).await.unwrap(),
-            EditPreparation::Prepared { .. }
-        ));
-        assert_eq!(
-            std::fs::read_to_string(rig.dir.path().join("ws/received")).unwrap(),
-            last
-        );
-    }
 }

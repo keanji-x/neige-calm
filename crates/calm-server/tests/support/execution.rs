@@ -212,10 +212,11 @@ impl Fixture {
         if hold_retire {
             cfg.execution_recovery_faults.arm("load");
         }
-        let engine = calm_server::execution_boot::recover(&cfg, pool)
-            .await
-            .unwrap()
-            .unwrap();
+        let engine =
+            calm_server::execution_boot::recover(&cfg, pool, &["claude-planner", "acp-planner"])
+                .await
+                .unwrap()
+                .unwrap();
         if hold_retire {
             tokio::time::timeout(std::time::Duration::from_secs(10), async {
                 while cfg
@@ -262,10 +263,11 @@ impl Fixture {
         fixture.configure(&mut cfg);
         cfg.execution_recovery_interval = interval;
         fixture.faults = cfg.execution_recovery_faults.clone();
-        let engine = calm_server::execution_boot::recover(&cfg, pool)
-            .await
-            .unwrap()
-            .unwrap();
+        let engine =
+            calm_server::execution_boot::recover(&cfg, pool, &["claude-planner", "acp-planner"])
+                .await
+                .unwrap()
+                .unwrap();
         Self::wait_available(&engine).await;
         fixture.lifecycle.bind(engine);
         fixture

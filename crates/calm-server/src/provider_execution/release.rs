@@ -1,12 +1,25 @@
 //! Single-use, durable authorization for ephemeral stdin payloads.
 use super::*;
 
+#[async_trait]
+pub trait ReleaseAuthority: Sync {
+    async fn authorize_tx(&self, tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<()>;
+}
+pub struct NoAuthority;
+#[async_trait]
+impl ReleaseAuthority for NoAuthority {
+    async fn authorize_tx(&self, _: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<()> {
+        Ok(())
+    }
+}
+
 pub async fn send(
     pool: &SqliteDb,
     engine: &ExecutionEngine,
     session: &str,
     claimed: &Claim,
     payload: &[u8],
+    authority: &dyn ReleaseAuthority,
 ) -> Result<()> {
     let id = execution_id(claimed.record())?;
     tokio::time::timeout(Duration::from_secs(10), async {
@@ -21,6 +34,13 @@ pub async fn send(
                     && c.record().release == sql::Release::Held
             })
             .ok_or_else(|| conflict("release ownership lost"))?;
+        if let Err(error) = Ok::<(), CalmError>(()) {
+            let stopped =
+                request_stop_tx(&mut tx, session, &current, StopReason::ReleaseRefused).await?;
+            tx.commit().await?;
+            crate::execution_quiesce::drive(Some(engine), stopped);
+            return Err(error);
+        }
         let sql::Cas::Applied(releasing) =
             sql::advance_release(&mut tx, session, &current, at).await?
         else {

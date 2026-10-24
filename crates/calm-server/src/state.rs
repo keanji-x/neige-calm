@@ -1524,7 +1524,16 @@ impl AppState {
         ));
         // Recover and bind before publishing any operation runtime or starting
         // dispatchers/plugins that can submit execution-dependent work.
-        let execution_engine = crate::execution_boot::recover(cfg, pool).await?;
+        let provider_owners = vec![
+            claude_planner.provider_execution.clone(),
+            acp_planner.provider_execution.clone(),
+        ];
+        let provider_consumers = provider_owners
+            .iter()
+            .map(|owner| owner.owner.consumer())
+            .collect::<Vec<_>>();
+        let execution_engine =
+            crate::execution_boot::recover(cfg, pool, &provider_consumers).await?;
         let execution = crate::execution_quiesce::ExecutionLifecycle::default();
         if let Some(engine) = &execution_engine {
             execution.bind(engine.clone());
@@ -1691,14 +1700,7 @@ impl AppState {
         if let Some(engine) = &state.execution
             && let Some(pool) = state.raw.sqlite_db()
         {
-            crate::provider_execution::sweep::spawn(
-                pool,
-                engine.as_ref().clone(),
-                crate::execution_boot::provider_owners(
-                    &state.route.claude_planner,
-                    &state.route.acp_planner,
-                ),
-            );
+            crate::provider_execution::sweep::spawn(pool, engine.as_ref().clone(), provider_owners);
         }
 
         // Orphan-terminal sweeper; emits `TerminalDeleted` through the audited write pipeline. The

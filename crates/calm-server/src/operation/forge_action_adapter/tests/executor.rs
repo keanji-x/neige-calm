@@ -52,7 +52,7 @@ impl Executor {
             path.to_str().unwrap(),
         ])
         .unwrap();
-        let engine = crate::execution_boot::recover(&cfg, pool)
+        let engine = crate::execution_boot::recover(&cfg, pool, &["claude-planner", "acp-planner"])
             .await
             .unwrap()
             .unwrap();

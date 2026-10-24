@@ -64,6 +64,12 @@ impl ProviderExecutionOwner for Owner {
     fn consumer(&self) -> &'static str {
         CONSUMER
     }
+    fn alias_prefix(&self) -> crate::provider_execution::AliasPrefix {
+        crate::provider_execution::AliasPrefix::planner()
+    }
+    fn alias(&self, session: &str, id: &str) -> String {
+        format!("planner:{session}:{id}")
+    }
     async fn complete(
         &self,
         session: &str,
@@ -326,7 +332,7 @@ pub(super) async fn intent(
         .render(|key| secrets.get(key).cloned())
         .map_err(|_| CalmError::BadRequest("invalid Planner release payload".into()))?;
     execution::launch::intent(
-        CONSUMER,
+        params.host.provider_execution.owner.as_ref(),
         &params.worker_session_id,
         &params.track_id,
         &params.cwd,

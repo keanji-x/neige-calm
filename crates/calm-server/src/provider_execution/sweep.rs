@@ -2,9 +2,6 @@
 use super::*;
 use std::collections::{HashMap, HashSet};
 
-pub fn alias(session: &str, id: &str) -> String {
-    format!("planner:{session}:{id}")
-}
 impl ProviderExecution {
     pub async fn sweep(&self, pool: &SqliteDb, engine: Option<&ExecutionEngine>) -> Result<()> {
         let owners = sql::list(pool.read_pool()).await?;
@@ -35,12 +32,12 @@ impl ProviderExecution {
             // still identifies all possible aliases belonging to that session.
             if unclassified
                 .iter()
-                .any(|session| alias(session, &id) == entry.alias)
+                .any(|session| self.owner.alias(session, &id) == entry.alias)
             {
                 continue;
             }
             let owned = claims.iter().find(|(session, claim)| {
-                claim.record().execution_id == id && alias(session, &id) == entry.alias
+                claim.record().execution_id == id && self.owner.alias(session, &id) == entry.alias
             });
             let result = async {
                 let execution_id = ExecutionId::try_from(id.clone()).map_err(conflict)?;
@@ -61,7 +58,7 @@ impl ProviderExecution {
                     // Re-read under the writer lock: admission and owner deletion may
                     // race the inventory. A fresh exact claim always wins.
                     for (session, row) in sql::list(&mut **tx).await? {
-                        if alias(&session, &id) != entry.alias {
+                        if self.owner.alias(&session, &id) != entry.alias {
                             continue;
                         }
                         match row {

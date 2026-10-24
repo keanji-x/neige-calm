@@ -16,10 +16,14 @@ async fn fixture() -> (
     cfg.proc_supervisor_sock = Some(f._socket.path().join("control.sock"));
     cfg.execution_recovery_interval = Duration::from_millis(100);
     let faults = cfg.execution_recovery_faults.clone();
-    f.engine = calm_server::execution_boot::recover(&cfg, f.repo.db().clone())
-        .await
-        .unwrap()
-        .unwrap();
+    f.engine = calm_server::execution_boot::recover(
+        &cfg,
+        f.repo.db().clone(),
+        &["claude-planner", "acp-planner"],
+    )
+    .await
+    .unwrap()
+    .unwrap();
     (f, faults)
 }
 async fn admit(f: &Fixture, script: &str) -> (ExecutionId, Terminal) {

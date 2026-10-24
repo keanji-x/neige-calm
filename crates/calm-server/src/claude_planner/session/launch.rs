@@ -264,7 +264,7 @@ impl ClaudePlannerSession {
                 &pool,
                 engine,
                 &params.worker_session_id,
-                intent,
+                crate::provider_execution::PreparedIntent(intent),
                 purpose_record,
             )
             .await
@@ -317,6 +317,7 @@ impl ClaudePlannerSession {
             &params.worker_session_id,
             &claim,
             &payload,
+            &crate::provider_execution::release::NoAuthority,
         )
         .await
         {
