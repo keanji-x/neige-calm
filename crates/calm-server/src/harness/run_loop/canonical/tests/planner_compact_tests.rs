@@ -503,3 +503,117 @@ async fn canonical_planner_compact_system_error_settles_unconfirmed() {
     .await;
     shutdown(&fx.harness, &mut peer).await;
 }
+
+#[tokio::test]
+async fn canonical_planner_compact_start_between_request_reads() {
+    use crate::test_seams::{PausePoint, install_pause_for_test};
+    let (fx, _client, mut peer) = ready().await;
+    let id = format!("{}:compact", fx.harness.inner.track_id);
+    fx.harness
+        .inner
+        .issuance_paused
+        .store(true, Ordering::SeqCst);
+    let pause = PausePoint::default();
+    install_pause_for_test("planner-compact-request-frame-read", &id, pause.clone());
+    let declaration = declare(&fx);
+    tokio::pin!(declaration);
+    tokio::select! {
+        _ = &mut declaration => panic!("request did not pause"),
+        _ = pause.entered.notified() => {}
+    }
+    assert!(fx.frame().await.header.compact_outcome.is_none());
+    let dispatched = fx.original.repo.task_get(&id).await.unwrap().unwrap();
+    assert_eq!(dispatched.status, TaskStatus::Dispatched);
+    // Hold a second, directly observable acknowledgement at the same boundary.
+    let acknowledgement_pause = PausePoint::default();
+    install_pause_for_test(
+        "planner-compact-request-frame-read",
+        &id,
+        acknowledgement_pause.clone(),
+    );
+    let acknowledgement = fx.harness.request_compaction(id.clone());
+    tokio::pin!(acknowledgement);
+    tokio::select! {
+        _ = &mut acknowledgement => panic!("acknowledgement did not pause"),
+        _ = acknowledgement_pause.entered.notified() => {}
+    }
+    fx.harness
+        .inner
+        .issuance_paused
+        .store(false, Ordering::SeqCst);
+    // Start commits both Running and the outcome while acknowledgement holds
+    // the old frame. Keep the fake native RPC outstanding until after refusal.
+    let call = request(&mut peer).await;
+    assert_eq!(call["method"], "thread/compact/start");
+    assert_eq!(
+        fx.original
+            .repo
+            .task_get(&id)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        TaskStatus::Running
+    );
+    pause.release.notify_one();
+    acknowledgement_pause.release.notify_one();
+    let scheduler = declaration.await;
+    assert_eq!(
+        acknowledgement.await.unwrap(),
+        crate::harness::compact_outcome::CompactionAnswer::Scheduled
+    );
+    let track = fx
+        .original
+        .repo
+        .track_get(dispatched.track_id.as_str())
+        .await
+        .unwrap()
+        .unwrap();
+    // Independently fence a stale refusal, even when admission reads correctly.
+    scheduler
+        .refuse_compact_for_test(&dispatched, &track)
+        .await
+        .unwrap();
+    assert_eq!(
+        fx.original
+            .repo
+            .task_get(&id)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        TaskStatus::Running
+    );
+    assert_eq!(
+        fx.harness.request_compaction(id).await.unwrap(),
+        crate::harness::compact_outcome::CompactionAnswer::Scheduled
+    );
+    send(&mut peer, json!({"id":call["id"], "result":{}})).await;
+    shutdown(&fx.harness, &mut peer).await;
+}
+
+#[tokio::test]
+async fn canonical_planner_compact_unavailable_conversation_still_refused() {
+    let fx = Fixture::new().await;
+    assert!(fx.frame().await.header.last_turn_id.is_none());
+    let scheduler = declare(&fx).await;
+    let id = format!("{}:compact", fx.harness.inner.track_id);
+    let task = fx.original.repo.task_get(&id).await.unwrap().unwrap();
+    assert_eq!(task.status, TaskStatus::Failed);
+    assert_eq!(
+        task.status_detail.as_deref(),
+        Some("compaction-refused: conversation_unavailable")
+    );
+    scheduler.sweep_all().await;
+    assert_eq!(
+        fx.original
+            .repo
+            .task_get(&id)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        TaskStatus::Failed
+    );
+    fx.harness.shutdown().await.unwrap();
+}

@@ -73,7 +73,12 @@ pub(in crate::harness::run_loop) async fn request(
             CompactionRefusal::ConversationUnavailable,
         ));
     }
+    // Start commits Running and the outcome together. Read the task first so
+    // observing Running cannot be paired with a frame from before Start.
+    let task = pending(inner).await?;
     let current = canonical::read_current(inner).await?;
+    #[cfg(test)]
+    crate::test_seams::pause_point("planner-compact-request-frame-read", request_id).await;
     if let Some(outcome) = current.snapshot.header.compact_outcome.as_ref() {
         if outcome.operation_id == request_id {
             return Ok(CompactionAnswer::Scheduled);
@@ -94,7 +99,7 @@ pub(in crate::harness::run_loop) async fn request(
             });
         }
     }
-    if let Some(task) = pending(inner).await? {
+    if let Some(task) = task {
         if task.id != request_id {
             return Ok(CompactionAnswer::AlreadyPending {
                 request_id: task.id,

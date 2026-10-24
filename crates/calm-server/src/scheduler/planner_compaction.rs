@@ -119,6 +119,12 @@ impl Scheduler {
         Ok(())
     }
 
+    #[cfg(test)]
+    pub(crate) async fn refuse_compact_for_test(&self, task: &Task, track: &Track) -> Result<()> {
+        self.refuse_compact(task, track, "conversation_unavailable")
+            .await
+    }
+
     async fn refuse_compact(&self, task: &Task, track: &Track, reason: &str) -> Result<()> {
         let task = task.clone();
         let track = track.clone();
@@ -130,6 +136,16 @@ impl Scheduler {
             &self.write,
             move |tx| {
                 Box::pin(async move {
+                    // A dispatched request may have crossed Start while its
+                    // acknowledgement was in flight. Refusal cannot settle the
+                    // operation now owned by the runtime (or a terminal task).
+                    if task.status == TaskStatus::Dispatched
+                        && task_get_tx(tx, &task.id)
+                            .await?
+                            .is_none_or(|current| current.status != TaskStatus::Dispatched)
+                    {
+                        return Err(race_lost_err());
+                    }
                     let events =
                         fail_worker_task_tx(tx, &task, &track, "compaction-refused", &reason)
                             .await?;
