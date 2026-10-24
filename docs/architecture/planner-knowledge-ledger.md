@@ -21,19 +21,19 @@ migration `0194_planner_knowledge_ledger.sql`，已发布不改。
 
 **读**：report_read 经 db::write_in_tx_typed 的 BEGIN IMMEDIATE writer 事务，重验认证 session/card/Report 归属及当前性，加载 card+CRDT，选择/渲染主 text，冻结 rendered ids/anchor，合并保存后提交。禁止升级 read-pool 快照；任一失败不返回成功 text。index 不记账。提交后断线仍算成功生成的阅读，重试幂等，不声称网络原子；衍生 diagnostics/hydration/warning 失败不撤销知识。
 
-**定位**：读事务内 VCS 暴露 tx 版 head/tree/blob 查询，复用 store::head_in_tx/tree_at_in_tx/cat_at。验证 commit payload 的 rendered 块 id/rev/kind/payload 等于渲染快照才记 commit；无 HEAD/对象、旧 payload 无 blocks、不匹配则 unavailable，不以新 HEAD 补绑旧 rev。局部只覆盖 rendered 定位，允许 b@1→C1、c@3→C7。全文沿 record 清换非 task 集合；未渲染 task 只保留仍相等的已知项。定位 commit 非块作者提交。
+**定位**：读事务内 VCS 暴露 tx 版 head/tree/blob 查询，复用 store::head_in_tx/tree_at_in_tx/cat_at。验证 commit payload 的 rendered 块 id/rev/kind/payload 等于渲染快照才记 commit；无 HEAD/对象、旧 payload 无 blocks、不匹配则 unavailable，不以新 HEAD 补绑旧 rev。局部只覆盖 rendered 定位，允许 b@1→C1、c@3→C7。全文沿 record 清换非 task；未渲染 task 只保留仍相等的已知项。
 
 **写**：MCP 原始无 revision 意图/身份进 persist；load 身份/账本/CRDT、bind/check、Report/tasks/events/project/save 同事务。删 handler 预绑定/sink capture；REST/reset/fork/任务投影不记账。
 
-自身 commit：[events](../../crates/calm-truth/src/db/sqlite/events.rs)::write_with_actor_events 现于闭包返回后才授权、append、VCS commit。提取该通用事务步骤为可复用原语，返回实际 track→CommitHash，旧 wrapper 共用，保持授权/事件顺序/提交后广播。Report persist 在同一事务的投影/事件/历史之后、SQL commit 之前保存知识；事件层不识别账本，不复制写入器/生成第二次历史/事后补 HEAD。VCS commit.rs::commit_events_with_author_in_tx 已返回 Option<CommitHash>，Report 编辑应取得 Some，否则失败。验证该 payload 最终 written 块后覆盖定位，未写保留旧定位，自身删移除。授权/历史/账本失败全回滚，enrichment 消费冻结 anchor。
+[events](../../crates/calm-truth/src/db/sqlite/events.rs)::write_with_actor_events 现于闭包返回后才授权、append、VCS commit。提取通用事务原语，返回实际 track→CommitHash，旧 wrapper 共用，保持授权/事件顺序/提交后广播。Report persist 在同一事务的投影/事件/历史之后、SQL commit 之前保存知识；事件层不识别账本，不复制写入器/生成第二次历史/事后补 HEAD。VCS commit.rs::commit_events_with_author_in_tx 已返回 Option<CommitHash>，Report 编辑应取得 Some，否则失败。验证该 payload 最终 written 块后覆盖定位，未写保留旧定位。授权/历史/账本失败全回滚，enrichment 消费冻结 anchor。
 
-`project_commit` 保留外部改动/删除的 stale blocks 及定位，own 写覆盖、own 删移除；whole/doc_rev 仅按原 anchored 条件推进。无关 own 写不能洗白外部 b@1→b@2。sections 仍保守认证内容与结构来源，不由 stale/零散内容推断；全文重读才清换集合。
+`project_commit` 保留外部改动/删除的 stale id/rev/定位及 GC 引用，own 写覆盖；仅 own 删、全文读既定清换或生命周期清理移除。whole/doc_rev 仅按原 anchored 条件推进；sections 保守认证内容与结构来源，不由 stale/零散内容推断。
 
-**batch**：ops.rs 原循环复用 Written/written_block_ids/section_output_ids，逐步推进临时知识，后 op 执行时绑定有效证据。前 op 实写新 rev 后可 delete/upsert，section marker 保 id 同理。删 MCP 同目标一次限制/预绑定，保留语法/内容校验。不能凭累计 written ids 认证最终快照：own 删移除，move 不授未知，外部 stale 不因无关 op 变新。结构只由有效来源证书/实际 section 输出推进，未知成员不认证。doc/whole/task/objective/compact/声明 guard 不放宽。最终存仍存在的已知 rev，written 定位自身 commit；失败全回滚，
+**batch**：ops.rs 原循环复用 Written/written_block_ids/section_output_ids，逐步推进临时知识供后 op 绑定。前 op 实写新 rev 后可 delete/upsert，marker 保 id 同理。删 MCP 同目标一次限制/预绑定，保留语法/内容校验。不凭累计 written ids 认证最终快照；move 不授未知，结构仅由有效来源证书/实际 section 输出推进，未知成员不认证。doc/whole/task/objective/compact/声明 guard 不放宽。仅本批实写的最终现存项覆盖 rev/自身 commit 定位；整账不按 after 存在性过滤，无关 own 写不洗白外部改动/删除，保留旧 GC 引用；按上述移除，失败全回滚。
 
 **清理/GC**：[session_mirror](../../crates/calm-truth/src/db/sqlite/session_mirror.rs)::session_supersede_active_tx、session_mark_superseded_tx 及包装 转换事务清账，扫全路径，回滚一起恢复。`compensation.rs`恢复旧 session 后不恢复已清知识，须重读。session/card/track/area 删除级联；reset 留 stale，fork 不复制。idle/重启/resume 不清，session/Report 隔离。升级空账本须读，不回填。
 
-S1 将所有尚存账本 commit 引用并入 gc.rs::active_diff_endpoint_commits_tx，不能仅筛 active harness。缺引用/损坏沿既有跳过 prune 规则，展示明确缺历史。与 last_seen_head/issued_turn_head 共用 floor，不建保护通道，非 Report endpoints 保留。引用/GC 同 writer 串行，覆盖/清换/清理释放引用后可回收，sweeper 沿 commit/tree 保护。最老引用保留后缀；测积累/释放后的 commit/对象量，无 TTL/逐出。
+S1 将所有尚存账本 commit 引用并入 gc.rs::active_diff_endpoint_commits_tx，不限 active harness。缺引用/损坏沿既有跳过 prune 规则，展示明确缺历史。与 last_seen_head/issued_turn_head 共用 floor，不建保护通道，非 Report endpoints 保留。引用/GC 同 writer 串行，覆盖/清换/清理释放引用后可回收，sweeper 沿 commit/tree 保护。最老引用保留后缀；测积累/释放的 commit/对象量，无 TTL/逐出。
 
 ## S2：观测产生处的增量
 
@@ -45,7 +45,7 @@ ReportEdited 增可选 knowledge_text，新观测必填，to_turn_text 逐字使
 
 VCS read::since_last_turn_block 移除 Report 输出，由 ledger delta 统一给 report.md 行/正文；已知不列，无/相同 HEAD 不短路。非 Report/last_seen_head/作者逻辑保持；Report 删除 own/other/mixed/unknown/50 提交归因。
 
-小变更 history_ref 取旧块、验 id/rev，复用 [report_edit_diff](../../crates/calm-types/src/report_edit_diff.rs)展示/转义/data fence 做真 diff，每块 ≤24 行/2048 UTF-8 bytes，总正文 ≤8192 bytes（含围栏），超界整块引用。新增空 before/删除空 after。未读/缺历史明确标注，不伪造 diff；大改/未知 task 仅 id/标题/known→current/读取引用。作者只附 commit_record 直接可得的 commit 作者，缺失省略。
+小变更 history_ref 取旧块、验 id/rev，复用 [report_edit_diff](../../crates/calm-types/src/report_edit_diff.rs)展示/转义/data fence 做真 diff，每块 ≤24 行/2048 UTF-8 bytes，总正文 ≤8192 bytes（含围栏），超界整块引用。新增空 before/删除空 after。未读/缺历史明确标注，不伪造 diff；大改/未知 task 仅 id/标题/known→current/读取引用。仅已有直接事实证明 actor 实写所展示 block rev 才附作者，否则省略；定位 commit 含相同块不构成证明，不沿链找、不新增作者机制。
 
 ## S3：anchor 与冲突
 
@@ -67,9 +67,9 @@ S1 持久化/事务/清理/GC/anchor，S2 观测/diff，S3 信封。双 L2 查�
 
 1. MCP read→磁盘重启/超2h→commit；index/新 session/升级未读拒绝。局部 commit 不串/不绑新 HEAD；缺历史仅引用；whole/空/markers/task/独立 sections。
 2. MCP→persist 读写交错，自身定位匹配；后 op/guards/授权/VCS/ledger 失败全回滚 Report/tasks/events/VCS/ledger；warning 失败后 anchor 可用。
-3. section 保 id 改 b→delete b 成功，多次自身写绑定最新 rev；move 不授未知，无关 own 写不洗外部 stale/删除，section 不凭零散内容认证；后项失败回滚；doc-only 局部读成功，whole 仍需 full。
+3. section 保 id 改 b→delete b 成功，多次自身写绑定最新 rev；move 不授未知，已知 b@1 被外部删后 own 改 c，delta 仍 b:(1,null)；doc-only 局部读成功，whole 仍需 full。
 4. 两个 supersede、补偿重读、事务回滚、session/card/track/area 直接删、fork/reset；超50提交且 wake 推进 HEAD 后旧块仍可 cat_at，own 覆盖/清理释放引用；sweep 后真 diff 可用。
 5. 真实 dispatcher→canonical acceptance→claim→input_dispatch→测试 provider：各 session 建议独立，已知/own rev 正文及 report.md 行均零回送；无/相同 HEAD、60+混合提交不漏外部。篡改 event/card/session/source 拒绝；接受后读/编辑/重启/retry 字节冻结，新观测仅未见 rev；legacy live/fold 同测，历史/非 Report 保持，不复制 delta fixture。
-6. 真块 diff/大改引用、删除/null、UTF-8/围栏预算、缺作者省略；四原因/码/target/next_step/重读与身份不泄露。关键授权/回滚/不漏 stale 断言按 AGENTS.md 单因素 mutation：预测完整红集、跑相关完整 filter、恢复复绿。
+6. 真 diff/大改引用、删除/null、UTF-8/围栏预算；A 在 C1 写 b@1，B 在 C2 只改 c，定位 C2 不得标 B；四原因/码/target/next_step/重读与身份不泄露。关键授权/回滚/不漏 stale 断言按 AGENTS.md 单因素 mutation：预测完整红集、跑相关完整 filter、恢复复绿。
 
-实现测试用 mcp_integration_suite、dispatcher/harness lib、calm-truth，list 非零；worker focused、kernel gates/replay、CI broad，无真实 Codex E2E。本文字节/链接自检，文本仅 kernel gate。
+实现测试用 mcp_integration_suite、dispatcher/harness lib、calm-truth，list 非零；worker focused、kernel gates/replay、CI broad，无真实 Codex E2E。字节/链接自检，文本由 kernel gate。
