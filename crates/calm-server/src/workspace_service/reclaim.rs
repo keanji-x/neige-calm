@@ -1,81 +1,54 @@
 //! Transactional facts and typed receipts for shared runtime worktree reclamation.
+pub(crate) mod operation;
 use crate::{
     error::{CalmError, Result},
-    event::{BroadcastEnvelope, Event, EventBus, EventScope, SYNC_EVENT_VERSION},
+    event::{BroadcastEnvelope, Event, EventScope, SYNC_EVENT_VERSION},
     ids::ActorId,
 };
 use calm_truth::db::sqlite::{
-    SqliteDb, append_decision_event_in_tx, begin_immediate_tx,
-    worktree_events::unmatched_provisioned_worktrees,
+    SqliteDb, append_decision_event_in_tx, worktree_events::unmatched_provisioned_worktrees,
 };
 use std::path::{Path, PathBuf};
 use workspace_runtime::reclaim::{ExtraWorktree, ReclaimReceipts};
 
 #[derive(Clone)]
 pub(crate) struct ServerReclaimPorts {
+    pub runtime: std::sync::Arc<crate::operation::OperationRuntime>,
     pub db: SqliteDb,
-    pub events: EventBus,
 }
 
 #[async_trait::async_trait]
 impl ReclaimReceipts for ServerReclaimPorts {
     type Error = CalmError;
-    async fn refresh(
+    async fn reclaim(
         &self,
         target: &ExtraWorktree,
-    ) -> Result<Option<workspace::reclaim::ReclaimRequest>> {
-        let mut conn = self.db.read_pool().acquire().await?;
-        let claims = unmatched_provisioned_worktrees(&mut conn).await?;
-        if !claims.iter().any(|r| r.event_id == target.provision_id) {
-            return Ok(None);
-        }
-        let (protected, terminal) = protection_facts(&mut conn).await?;
-        let mut request = target.request.clone();
-        request.unknown_terminal = terminal;
-        request.protected.extend(protected);
-        request.protected.extend(
-            claims
-                .iter()
-                .filter(|r| r.event_id != target.provision_id)
-                .map(|r| PathBuf::from(&r.path)),
-        );
-        Ok(Some(request))
+        observe: workspace_runtime::track_worktree::ObservePoint,
+    ) -> Result<()> {
+        operation::run(self.runtime.reclaim_context(), target, observe).await
     }
+}
 
-    async fn removed(&self, target: &ExtraWorktree) -> Result<()> {
-        let mut tx = begin_immediate_tx(&self.db).await?;
-        // Do not cancel a newer lifecycle if an external producer changed the event stream.
-        if !unmatched_provisioned_worktrees(&mut tx)
-            .await?
-            .iter()
-            .any(|r| r.event_id == target.provision_id)
-        {
-            return Err(CalmError::Conflict(
-                "extra worktree receipt changed during removal".into(),
-            ));
-        }
-        let actor = ActorId::KernelDispatcher;
-        let scope = EventScope::Card {
-            card: target.card_id.clone().into(),
-            track: target.track_id.clone().into(),
-            area: target.area_id.clone().into(),
-        };
-        let event = Event::WorktreeRemoved {
-            track_id: target.track_id.clone().into(),
-            card_id: target.card_id.clone().into(),
-            path: target.request.path.to_string_lossy().into_owned(),
-        };
-        let id = append_decision_event_in_tx(&mut tx, &actor, &scope, None, &event).await?;
-        tx.commit().await?;
-        self.events.emit_envelope(BroadcastEnvelope {
-            id,
-            actor,
-            scope,
-            event,
-            event_version: SYNC_EVENT_VERSION,
-        });
-        Ok(())
+pub(super) async fn refresh(
+    db: &SqliteDb,
+    target: &ExtraWorktree,
+) -> Result<Option<workspace::reclaim::ReclaimRequest>> {
+    let mut conn = db.read_pool().acquire().await?;
+    let claims = unmatched_provisioned_worktrees(&mut conn).await?;
+    if !claims.iter().any(|r| r.event_id == target.provision_id) {
+        return Ok(None);
     }
+    let (protected, terminal) = protection_facts(&mut conn).await?;
+    let mut request = target.request.clone();
+    request.unknown_terminal = terminal;
+    request.protected.extend(protected);
+    request.protected.extend(
+        claims
+            .iter()
+            .filter(|r| r.event_id != target.provision_id)
+            .map(|r| PathBuf::from(&r.path)),
+    );
+    Ok(Some(request))
 }
 
 impl workspace_runtime::sweep::CandidateRefs for ServerReclaimPorts {
@@ -89,10 +62,11 @@ impl workspace_runtime::sweep::CandidateRefs for ServerReclaimPorts {
 
 /// Read before rows or leases disappear; the returned values require no post-delete join.
 pub(crate) async fn snapshot(
-    conn: &mut sqlx::SqliteConnection,
+    tx: &mut crate::operation::Tx<'_>,
     track_id: &str,
     deleting: &[String],
 ) -> Result<Vec<ExtraWorktree>> {
+    let conn = &mut **tx;
     let Some(track) =
         sqlx::query_as::<_, calm_truth::db::rows::TrackRow>("SELECT * FROM tracks WHERE id=?")
             .bind(track_id)
@@ -116,7 +90,7 @@ pub(crate) async fn snapshot(
             .filter(|r| r.track_id != track_id)
             .map(|r| PathBuf::from(&r.path)),
     );
-    Ok(claims
+    let targets: Vec<_> = claims
         .iter()
         .filter(|r| r.track_id == track_id)
         .map(|r| {
@@ -129,6 +103,15 @@ pub(crate) async fn snapshot(
                     .map(|other| PathBuf::from(&other.path)),
             );
             ExtraWorktree {
+                operation_id: format!(
+                    "workspace-reclaim:{}:{}",
+                    r.event_id,
+                    if deleting.is_empty() {
+                        "close"
+                    } else {
+                        "delete"
+                    }
+                ),
                 provision_id: r.event_id,
                 track_id: r.track_id.clone(),
                 card_id: r.card_id.clone(),
@@ -145,7 +128,11 @@ pub(crate) async fn snapshot(
                 },
             }
         })
-        .collect())
+        .collect();
+    for target in &targets {
+        operation::register(tx, target, !deleting.is_empty()).await?;
+    }
+    Ok(targets)
 }
 
 /// Existing kernel teardown/recycle is forceful. Refuse before any external effects if an

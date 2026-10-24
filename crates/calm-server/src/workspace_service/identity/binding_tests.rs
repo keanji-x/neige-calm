@@ -173,7 +173,7 @@ async fn workspace_identity_deleted_selection_is_not_revived_by_same_path_recrea
     let tmp = tempfile::tempdir().unwrap();
     let source = tmp.path().join("repo");
     init(&source);
-    let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
+    let repo = std::sync::Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let old = track(&repo, &source, TrackWorkspacePlan::AttachedFromCwd).await;
     super::observe_for_task(repo.db(), old.id.as_str())
         .await
@@ -230,11 +230,22 @@ async fn workspace_identity_deleted_selection_is_not_revived_by_same_path_recrea
     );
 }
 
-async fn delete_through_sweep(repo: &SqlxRepo, current: &Track) {
+async fn delete_through_sweep(repo: &std::sync::Arc<SqlxRepo>, current: &Track) {
+    let operations =
+        std::sync::Arc::new(crate::operation::SqlxOperationRepo::new(repo.db().clone()));
+    let ctx = super::legacy_tests::context(repo.clone(), operations.clone());
+    let runtime = std::sync::Arc::new(crate::operation::OperationRuntime::new_unchecked(
+        operations,
+        vec![],
+        ctx.events.clone(),
+        ctx.completion.clone(),
+        ctx,
+    ));
     let mut tx = repo.pool().begin().await.unwrap();
     let sweep = crate::workspace_service::sweep::workspace_track_sweep_for_track_tx(
         &mut tx,
         current.id.as_str(),
+        &[current.id.to_string()],
     )
     .await
     .unwrap()
@@ -250,8 +261,8 @@ async fn delete_through_sweep(repo: &SqlxRepo, current: &Track) {
     workspace_runtime::sweep::sweep_workspace_worktrees_for_tracks(
         registration.sweeps(vec![sweep]),
         crate::workspace_service::reclaim::ServerReclaimPorts {
+            runtime,
             db: repo.db().clone(),
-            events: crate::event::EventBus::new(),
         },
         crate::workspace_service::ports::observe,
     )
@@ -263,7 +274,7 @@ async fn workspace_identity_owned_create_delete_create_keeps_history_without_res
     let tmp = tempfile::tempdir().unwrap();
     let source = tmp.path().join("repo");
     init(&source);
-    let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
+    let repo = std::sync::Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let old = track(
         &repo,
         &source,

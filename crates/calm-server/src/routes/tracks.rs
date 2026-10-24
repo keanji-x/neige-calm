@@ -2868,7 +2868,12 @@ async fn finish_track_deletion(
                 overlay_delete_card_overlays_by_track_tx(tx, track_id.as_str()).await?;
                 overlay_delete_by_entity_tx(tx, "track", track_id.as_str()).await?;
                 overlay_delete_by_entity_tx(tx, "view", track_id.as_str()).await?;
-                let release = release_workspace_leases_for_track_tx(tx, track_id.as_str()).await?;
+                let release = release_workspace_leases_for_track_tx(
+                    tx,
+                    track_id.as_str(),
+                    &[track_id.to_string()],
+                )
+                .await?;
                 let mut events = release.events;
                 if let Some(sweep) = &release.sweep {
                     registration.register(sweep);
@@ -3317,7 +3322,7 @@ pub(crate) async fn delete_track(
     observation.observe(Stage::Reprojection, preflight_track_deletion_reprojection(&pool, &track_id)).await?;
 
     let prepared = PreparedTrackDeletion {
-        reclaim_ports: crate::workspace_service::reclaim::ServerReclaimPorts {db: pool.clone(), events: s.events.clone()},
+        reclaim_ports: crate::workspace_service::reclaim::ServerReclaimPorts {runtime: s.operation_runtime.clone(), db: pool.clone()},
         observation: observation.clone(),
         plan: observation.observe(Stage::Snapshot, snapshot_track_deletion(&s, &track)).await?,
         turn_daemon: cs.shared_codex_appserver.clone(),

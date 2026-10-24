@@ -24,8 +24,10 @@ struct Fixture {
 }
 impl Fixture {
     async fn new() -> Self {
-        let b = boot().await;
+        let mut b = boot().await;
         let execution = crate::support::execution::Fixture::new(b.repo.db().clone()).await;
+        b.state = state_for_reclaim(&b, &execution.socket);
+        b.app = crate::support::authenticated_router::application(b.state.clone()).await;
         b.state
             .operation_runtime
             .execution()
@@ -327,4 +329,246 @@ async fn gitforge_reclaim_close_only_reclaims_creating_track() {
     assert!(!f.dirty.exists());
     assert!(target.exists());
     assert!(f.unrecorded.exists());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gitforge_reclaim_fences_cross_track_terminal_admission() {
+    cross_track_terminal_admission(false).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gitforge_reclaim_fences_cross_track_typed_terminal_admission() {
+    cross_track_terminal_admission(true).await;
+}
+
+async fn cross_track_terminal_admission(typed: bool) {
+    use calm_server::test_seams::{PausePoint, install_pause_for_test};
+    let mut f = Fixture::new().await;
+    f.b.state = f.b.state.clone().with_terminal_execution(typed);
+    f.b.app = crate::support::authenticated_router::application(f.b.state.clone()).await;
+    let f = Arc::new(f);
+    let (status, other) = f.b.create_at(&f.up.clone, None, None).await;
+    assert_eq!(status, StatusCode::CREATED, "{other}");
+    f.b.shutdown_harnesses().await;
+    f.close().await;
+    let pause = PausePoint::default();
+    install_pause_for_test(
+        "extra-worktree-remove-attempt",
+        f.clean.to_str().unwrap(),
+        pause.clone(),
+    );
+    let tick = tokio::spawn({
+        let f = f.clone();
+        async move { f.tick(&mut HashSet::new()).await }
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(15), pause.entered.notified())
+        .await
+        .unwrap();
+    // Exercise the actual HTTP admission, with the other owner's explicit external cwd.
+    let (status, body) = f.b.as_user("POST", &format!("/api/tracks/{}/terminal-cards", other["id"].as_str().unwrap()),
+        json!({"cwd":f.clean, "program":"exec sleep 120", "theme":calm_server::routes::theme::RequestTheme::default_dark()})).await;
+    // Always release the blocking production seam before making the red assertion.
+    pause.release.notify_one();
+    tick.await.unwrap();
+    f.b.shutdown_harnesses().await;
+    assert_eq!(
+        status,
+        StatusCode::CONFLICT,
+        "cross-owner admission during removal: {body}"
+    );
+    assert_eq!(body["code"], "workspace_busy");
+    assert!(!f.clean.exists());
+    let (status, body) = f.b.as_user("POST", &format!("/api/tracks/{}/terminal-cards", other["id"].as_str().unwrap()),
+        json!({"cwd":f.unrecorded, "program":"true", "theme":calm_server::routes::theme::RequestTheme::default_dark()})).await;
+    assert_eq!(status, StatusCode::CREATED, "reservation released: {body}");
+}
+
+#[tokio::test]
+async fn gitforge_reclaim_recovers_removed_effect_after_receipt_failure() {
+    let f = Fixture::new().await;
+    let nested = f.kernel.join("nested-receipt-retry");
+    let card: String =
+        sqlx::query_scalar("SELECT id FROM cards WHERE track_id=? AND role='planner'")
+            .bind(&f.track)
+            .fetch_one(f.b.repo.pool())
+            .await
+            .unwrap();
+    gitforge_worktree_add_for_test(
+        &f.b.state.operation_runtime,
+        &f.b.tmp.path().join("logs"),
+        &f.track,
+        &card,
+        &f.kernel,
+        &nested,
+        "receipt-retry",
+    )
+    .await
+    .unwrap();
+    f.close().await;
+    sqlx::query("CREATE TRIGGER fail_reclaim_receipt BEFORE INSERT ON events WHEN NEW.kind='worktree.removed' BEGIN SELECT RAISE(FAIL,'receipt unavailable'); END")
+        .execute(f.b.repo.pool()).await.unwrap();
+    f.tick(&mut HashSet::new()).await;
+    assert!(
+        !nested.exists(),
+        "physical effect completed before injected receipt failure"
+    );
+    sqlx::query("DROP TRIGGER fail_reclaim_receipt")
+        .execute(f.b.repo.pool())
+        .await
+        .unwrap();
+    let recovered = recover_reclaims(&f).await;
+    f.tick(&mut HashSet::new()).await;
+    recovered.sweep_parked().await.unwrap();
+    let receipts: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM events WHERE kind='worktree.removed' AND json_extract(payload,'$.path')=?")
+        .bind(nested.to_str().unwrap()).fetch_one(f.b.repo.pool()).await.unwrap();
+    assert_eq!(
+        receipts, 1,
+        "settled success must replay one durable receipt after recovery"
+    );
+    assert_eq!(f.b.delete_track(&f.track).await.0, StatusCode::NO_CONTENT);
+    assert_eq!(
+        f.b.as_user(
+            "DELETE",
+            &format!("/api/areas/{}", f.b.area_id),
+            Value::Null
+        )
+        .await
+        .0,
+        StatusCode::NO_CONTENT
+    );
+}
+
+#[tokio::test]
+async fn gitforge_reclaim_receipt_recovery_outlives_deleted_owner_rows() {
+    let f = Fixture::new().await;
+    sqlx::query("CREATE TRIGGER fail_reclaim_receipt BEFORE INSERT ON events WHEN NEW.kind='worktree.removed' BEGIN SELECT RAISE(FAIL,'receipt unavailable'); END")
+        .execute(f.b.repo.pool()).await.unwrap();
+    assert_eq!(f.b.delete_track(&f.track).await.0, StatusCode::NO_CONTENT);
+    assert!(!f.clean.exists());
+    assert!(f.b.repo.track_get(&f.track).await.unwrap().is_none());
+    sqlx::query("DROP TRIGGER fail_reclaim_receipt")
+        .execute(f.b.repo.pool())
+        .await
+        .unwrap();
+    let recovered = recover_reclaims(&f).await;
+    recovered.sweep_parked().await.unwrap();
+    let receipts: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM events WHERE kind='worktree.removed' AND scope_track=? AND json_extract(payload,'$.path')=?")
+        .bind(&f.track).bind(f.clean.to_str().unwrap()).fetch_one(f.b.repo.pool()).await.unwrap();
+    assert_eq!(receipts, 1);
+    assert!(f.dirty.join("untracked").exists());
+    assert_eq!(
+        f.b.as_user(
+            "DELETE",
+            &format!("/api/areas/{}", f.b.area_id),
+            Value::Null
+        )
+        .await
+        .0,
+        StatusCode::NO_CONTENT
+    );
+}
+
+#[tokio::test]
+async fn gitforge_reclaim_old_success_does_not_cancel_new_provision() {
+    use calm_server::{
+        event::{Event, EventScope},
+        ids::ActorId,
+    };
+    use calm_truth::db::sqlite::{
+        append_decision_event_in_tx, begin_immediate_tx,
+        worktree_events::unmatched_provisioned_worktrees,
+    };
+    let f = Fixture::new().await;
+    f.close().await;
+    sqlx::query("CREATE TRIGGER fail_reclaim_receipt BEFORE INSERT ON events WHEN NEW.kind='worktree.removed' BEGIN SELECT RAISE(FAIL,'receipt unavailable'); END")
+        .execute(f.b.repo.pool()).await.unwrap();
+    f.tick(&mut HashSet::new()).await;
+    assert!(!f.clean.exists());
+    sqlx::query("DROP TRIGGER fail_reclaim_receipt")
+        .execute(f.b.repo.pool())
+        .await
+        .unwrap();
+    run_git(
+        &f.up.clone,
+        [
+            "worktree",
+            "add",
+            "-qb",
+            "new-lifecycle",
+            f.clean.to_str().unwrap(),
+        ],
+    );
+    std::fs::write(f.clean.join("new-work"), "new lifecycle").unwrap();
+    let card: String =
+        sqlx::query_scalar("SELECT id FROM cards WHERE track_id=? AND role='planner'")
+            .bind(&f.track)
+            .fetch_one(f.b.repo.pool())
+            .await
+            .unwrap();
+    let mut tx = begin_immediate_tx(f.b.repo.db()).await.unwrap();
+    let provision = append_decision_event_in_tx(
+        &mut tx,
+        &ActorId::KernelDispatcher,
+        &EventScope::Card {
+            card: card.clone().into(),
+            track: f.track.clone().into(),
+            area: f.b.area_id.clone().into(),
+        },
+        None,
+        &Event::WorktreeProvisioned {
+            track_id: f.track.clone().into(),
+            card_id: card.into(),
+            path: f.clean.to_str().unwrap().into(),
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    // Only recover the already admitted old operations. No new close snapshot is taken.
+    let recovered = recover_reclaims(&f).await;
+    recovered.sweep_parked().await.unwrap();
+    let claims = unmatched_provisioned_worktrees(&mut *f.b.repo.pool().acquire().await.unwrap())
+        .await
+        .unwrap();
+    assert!(claims.iter().any(|claim| claim.event_id == provision));
+    assert_eq!(
+        std::fs::read_to_string(f.clean.join("new-work")).unwrap(),
+        "new lifecycle"
+    );
+    let receipts: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM events WHERE kind='worktree.removed' AND json_extract(payload,'$.path')=?")
+        .bind(f.clean.to_str().unwrap()).fetch_one(f.b.repo.pool()).await.unwrap();
+    assert_eq!(
+        receipts, 0,
+        "old success must not receipt the newer provision"
+    );
+}
+
+async fn recover_reclaims(f: &Fixture) -> Arc<calm_server::operation::OperationRuntime> {
+    // Fresh production adapter assembly and execution recovery share only the durable DB and
+    // the supervisor journal with the original invocation, not its runtime/reservation state.
+    let engine = f._execution.new_kernel(f.b.repo.db().clone(), false).await;
+    assert!(engine.recover().await.error.is_none());
+    let state = state_for_reclaim(&f.b, &f._execution.socket);
+    state.operation_runtime.execution().bind(Arc::new(engine));
+    let runtime = state.operation_runtime.clone();
+    let plan = runtime.recover_on_boot().await.unwrap();
+    runtime.apply_recovery(plan).await.unwrap();
+    runtime
+}
+
+fn state_for_reclaim(b: &Boot, socket: &Path) -> AppState {
+    AppState::from_parts(
+        b.repo.clone(),
+        b.state.events.clone(),
+        Arc::new(calm_server::state::DaemonClient {
+            data_dir: b.state.daemon.data_dir.clone(),
+            proc_supervisor_sock: Some(socket.to_owned()),
+        }),
+        b.state.plugin.clone(),
+        b.state.codex.clone(),
+        Some(b.state.card_role_cache.clone()),
+        Some(b.state.track_area_cache.clone()),
+    )
+    .with_workspace_root(b.tmp.path().join("workspaces"))
+    .with_shared_codex_appserver(b.state.shared_codex_appserver.clone())
 }

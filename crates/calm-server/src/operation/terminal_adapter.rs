@@ -288,6 +288,7 @@ impl ProviderAdapter for TerminalAdapter {
         };
         let runtime_id = payload.worker_session_id.clone().unwrap_or_else(new_id);
         let track_id = payload.request.track_id.clone();
+        crate::workspace_service::reclaim::operation::terminal_admission_tx(tx, &track_id).await?;
         // An empty request `cwd` is resolved here, not in normalization: a default materialized into the operation payload would enter `stable_payload_hash`.
         let cwd = terminal_cwd_or_track_workspace(
             tx,
@@ -658,6 +659,8 @@ impl ProviderAdapter for TerminalWorkerAdapter {
         op: &Operation,
     ) -> Result<TxOutput> {
         let payload: TerminalWorkerOperationPayload = serde_json::from_value(input.clone())?;
+        crate::workspace_service::reclaim::operation::terminal_admission_tx(tx, &payload.track_id)
+            .await?;
         super::refuse_if_context_stale(tx, Some(&payload.idempotency_key)).await?;
         // Derived from the `tasks` row inside this tx (never carried on the payload, which would move `stable_payload_hash`); `None` leaves the card untitled.
         let card_title = super::task_key_for_card_title(tx, &payload.idempotency_key).await;

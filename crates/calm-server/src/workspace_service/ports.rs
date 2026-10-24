@@ -105,12 +105,10 @@ impl ClosedWorktreeFacts for ServerClosedWorktreeFacts {
         &self,
         track: &str,
     ) -> Result<Vec<workspace_runtime::reclaim::ExtraWorktree>> {
-        super::reclaim::snapshot(
-            &mut *self.receipts.db.read_pool().acquire().await?,
-            track,
-            &[],
-        )
-        .await
+        let mut tx = calm_truth::db::sqlite::begin_immediate_tx(&self.receipts.db).await?;
+        let targets = super::reclaim::snapshot(&mut tx, track, &[]).await?;
+        tx.commit().await?;
+        Ok(targets)
     }
 
     async fn closed_idle_worktrees(&self) -> Result<Vec<ClosedWorktree>> {
@@ -136,32 +134,7 @@ impl ClosedWorktreeFacts for ServerClosedWorktreeFacts {
         crate::test_seams::pause_point("c1-clean-sampled", track).await;
         let drive = self.runtime.lock_for_track_delete().await;
         let guard = crate::per_card_lock::lock_key(self.runtime.track_delete_locks(), track).await;
-        // Reuse the unchanged candidate policy, including idle Planner eligibility.
-        let still_closed = self
-            .closed_idle_worktrees()
-            .await?
-            .into_iter()
-            .any(|row| row.track_id == track && row.closed_at == closed_at);
-        if !still_closed
-            || crate::operation::workspace_lease::track_has_active_forge_action(
-                self.receipts.db.read_pool(),
-                track,
-            )
-            .await?
-            || checkout_occupancy(
-                &mut *self.receipts.db.read_pool().acquire().await?,
-                track,
-                "",
-            )
-            .await?
-                != CheckoutOccupancy::Free
-            || !calm_truth::db::sqlite::workspace_execution::unsettled_executions(
-                &mut *self.receipts.db.read_pool().acquire().await?,
-                calm_truth::db::sqlite::workspace_execution::Scope::Track(track),
-            )
-            .await?
-            .is_empty()
-        {
+        if !closed_idle_reclaim_safe(&self.receipts.db, track, Some(closed_at)).await? {
             return Ok(None);
         }
         drop(drive);
@@ -171,16 +144,45 @@ impl ClosedWorktreeFacts for ServerClosedWorktreeFacts {
     }
 }
 
+/// Sample only while the caller owns the track lifecycle fence. Recovery and the close tick
+/// share the same eligibility policy; neither a parked row nor a closed flag is authority alone.
+pub(super) async fn closed_idle_reclaim_safe(
+    db: &calm_truth::db::sqlite::SqliteDb,
+    track: &str,
+    expected_close: Option<i64>,
+) -> Result<bool> {
+    let current: Option<i64> = sqlx::query_scalar(&format!(
+        "SELECT closed_at FROM ({CLOSED_TRACK_WORKTREES_SQL}) WHERE id=?"
+    ))
+    .bind(track)
+    .fetch_optional(db.read_pool())
+    .await?;
+    Ok(
+        current.is_some_and(|at| expected_close.is_none_or(|expected| at == expected))
+            && !crate::operation::workspace_lease::track_has_active_forge_action(
+                db.read_pool(),
+                track,
+            )
+            .await?
+            && checkout_occupancy(&mut *db.read_pool().acquire().await?, track, "").await?
+                == CheckoutOccupancy::Free
+            && calm_truth::db::sqlite::workspace_execution::unsettled_executions(
+                &mut *db.read_pool().acquire().await?,
+                calm_truth::db::sqlite::workspace_execution::Scope::Track(track),
+            )
+            .await?
+            .is_empty(),
+    )
+}
+
 #[async_trait]
 impl workspace_runtime::reclaim::ReclaimReceipts for ServerClosedWorktreeFacts {
     type Error = CalmError;
-    async fn refresh(
+    async fn reclaim(
         &self,
         target: &workspace_runtime::reclaim::ExtraWorktree,
-    ) -> Result<Option<workspace::reclaim::ReclaimRequest>> {
-        self.receipts.refresh(target).await
-    }
-    async fn removed(&self, target: &workspace_runtime::reclaim::ExtraWorktree) -> Result<()> {
-        self.receipts.removed(target).await
+        observe: workspace_runtime::track_worktree::ObservePoint,
+    ) -> Result<()> {
+        self.receipts.reclaim(target, observe).await
     }
 }

@@ -47,6 +47,10 @@ pub async fn recover(
             crate::operation::terminal_execution_create::CONSUMER.into(),
             Arc::new(crate::operation::terminal_execution_create::TerminalProjection),
         );
+    let store = store.with_projection(
+        crate::workspace_service::reclaim::operation::CONSUMER.into(),
+        Arc::new(crate::workspace_service::reclaim::operation::Projection),
+    );
     #[cfg(feature = "fixtures")]
     let store = store.with_faults(cfg.execution_recovery_faults.clone());
     let engine = Arc::new(Engine::new(store, executor));

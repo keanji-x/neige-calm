@@ -123,8 +123,8 @@ pub async fn clean_closed_worktrees_with_history_for_test(
     workspace_runtime::worktree_clean::clean_idle_closed_track_worktrees(
         &crate::workspace_service::ports::ServerClosedWorktreeFacts {
             receipts: crate::workspace_service::reclaim::ServerReclaimPorts {
+                runtime: runtime.clone(),
                 db: db.clone(),
-                events: crate::event::EventBus::new(),
             },
             runtime: runtime.clone(),
         },

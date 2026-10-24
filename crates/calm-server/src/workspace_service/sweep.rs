@@ -7,6 +7,7 @@ use workspace_runtime::sweep::WorkspaceTrackSweep;
 pub(crate) async fn workspace_track_sweep_for_track_tx(
     tx: &mut Tx<'_>,
     track_id: &str,
+    deleting: &[String],
 ) -> Result<Option<WorkspaceTrackSweep>> {
     let Some(track) = calm_truth::db::sqlite::track_find_tx(tx, track_id).await? else {
         return Ok(None);
@@ -21,7 +22,7 @@ pub(crate) async fn workspace_track_sweep_for_track_tx(
     .into_iter()
     .map(PathBuf::from)
     .collect();
-    let extra_worktrees = super::reclaim::snapshot(tx, track_id, &[track_id.to_string()]).await?;
+    let extra_worktrees = super::reclaim::snapshot(tx, track_id, deleting).await?;
     Ok(Some(WorkspaceTrackSweep {
         track_id: track_id.to_string(),
         workspace: track.workspace,

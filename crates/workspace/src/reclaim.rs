@@ -14,7 +14,7 @@ use std::{
     time::Instant,
 };
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct ReclaimRequest {
     pub repo: PathBuf,
     pub path: PathBuf,
@@ -33,10 +33,55 @@ pub enum ReclaimOutcome {
     Retained(&'static str),
 }
 
-/// Every probe and the final Git operation use a bounded, credential-isolated command.
-/// The metadata lock coordinates Neige; external Git and filesystem writers remain outside it.
+/// A preflight either retains the path or returns the isolated command with its metadata lock.
+/// External Git and filesystem writers remain outside this cooperative lock.
+pub enum Preparation {
+    Ready(PreparedReclaim),
+    Retained(&'static str),
+}
+
+/// Keeps the same cooperative Git metadata lock through the execution's settlement.
+/// The caller must retain this value until the exact admitted command has stopped.
+pub struct PreparedReclaim {
+    _lock: metadata_lock::GitMetadataLock,
+    pub command: std::process::Command,
+    deadline: Instant,
+}
+
 pub fn reclaim(request: &ReclaimRequest, observe: impl Fn(&str, &Path)) -> Result<ReclaimOutcome> {
-    use ReclaimOutcome::Retained;
+    match prepare(request, observe)? {
+        Preparation::Retained(reason) => Ok(ReclaimOutcome::Retained(reason)),
+        Preparation::Ready(mut prepared) => {
+            let result = prepared
+                .command
+                .bounded_output(prepared.deadline)
+                .map_err(|e| Error::Internal(e.to_string()))?;
+            if !result.status.success() {
+                return Err(git_failed("extra worktree reclaim", &request.repo, &result));
+            }
+            Ok(ReclaimOutcome::Removed)
+        }
+    }
+}
+
+fn command(repo: &Path) -> std::process::Command {
+    let mut command = isolated_git_command();
+    command
+        .args([
+            "-c",
+            "core.hooksPath=/dev/null",
+            "-c",
+            "core.fsmonitor=false",
+            "-c",
+            "core.untrackedCache=false",
+            "-C",
+        ])
+        .arg(repo);
+    command
+}
+
+pub fn prepare(request: &ReclaimRequest, observe: impl Fn(&str, &Path)) -> Result<Preparation> {
+    use Preparation::Retained;
     let path = &request.path;
     if !path.is_absolute() {
         return Ok(Retained("relative path"));
@@ -120,31 +165,22 @@ pub fn reclaim(request: &ReclaimRequest, observe: impl Fn(&str, &Path)) -> Resul
     }
     // This observation is deliberately immediately before the attempt, after every preflight.
     observe("extra-worktree-remove-attempt", path);
-    git(
-        &request.repo,
-        &[
-            "worktree",
-            "remove",
-            "--",
-            base::utf8_path(path, "extra worktree")?,
-        ],
+    let mut command = command(&request.repo);
+    command.args([
+        "worktree",
+        "remove",
+        "--",
+        base::utf8_path(path, "extra worktree")?,
+    ]);
+    Ok(Preparation::Ready(PreparedReclaim {
+        _lock,
+        command,
         deadline,
-    )?;
-    Ok(ReclaimOutcome::Removed)
+    }))
 }
 
 fn git(repo: &Path, args: &[&str], deadline: Instant) -> Result<Output> {
-    let result = isolated_git_command()
-        .args([
-            "-c",
-            "core.hooksPath=/dev/null",
-            "-c",
-            "core.fsmonitor=false",
-            "-c",
-            "core.untrackedCache=false",
-            "-C",
-        ])
-        .arg(repo)
+    let result = command(repo)
         .args(args)
         .bounded_output(deadline)
         .map_err(|e| Error::Internal(e.to_string()))?;

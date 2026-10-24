@@ -620,7 +620,9 @@ async fn finish_area_deletion(
                         .fetch_all(&mut **tx)
                         .await?;
                 for track_id in &deleted_track_ids {
-                    let release = release_workspace_leases_for_track_tx(tx, track_id).await?;
+                    let release =
+                        release_workspace_leases_for_track_tx(tx, track_id, &deleted_track_ids)
+                            .await?;
                     events.extend(release.events);
                     if let Some(sweep) = release.sweep {
                         registration.register(&sweep);
@@ -896,8 +898,8 @@ pub(crate) async fn delete_area(
 
     let prepared = PreparedAreaDeletion {
         reclaim_ports: crate::workspace_service::reclaim::ServerReclaimPorts {
+            runtime: s.operation_runtime.clone(),
             db: pool.clone(),
-            events: s.events.clone(),
         },
         id,
         area_kind,

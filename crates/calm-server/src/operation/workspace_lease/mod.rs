@@ -250,9 +250,11 @@ async fn acquire_workspace_lease_at_path_tx(
 pub(crate) async fn release_workspace_leases_for_track_tx(
     tx: &mut Tx<'_>,
     track_id: &str,
+    deleting: &[String],
 ) -> Result<WorkspaceTrackRelease> {
     let sweep =
-        crate::workspace_service::sweep::workspace_track_sweep_for_track_tx(tx, track_id).await?;
+        crate::workspace_service::sweep::workspace_track_sweep_for_track_tx(tx, track_id, deleting)
+            .await?;
     let sql = format!(
         "SELECT {WORKSPACE_LEASE_COLUMNS} FROM workspace_leases \
          WHERE track_id = ?1 AND state IN ('held','releasing') \

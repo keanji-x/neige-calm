@@ -57,6 +57,11 @@ pub struct OperationDriveGuard {
     _guard: tokio::sync::OwnedMutexGuard<HashSet<String>>,
 }
 
+pub(crate) struct LaunchFence {
+    _admission: tokio::sync::OwnedRwLockReadGuard<()>,
+    _track: crate::per_card_lock::KeyedLockGuard,
+}
+
 #[derive(Clone)]
 pub struct OperationRuntime {
     pub(super) repo: Arc<dyn OperationRepo>,
@@ -76,12 +81,23 @@ impl OperationRuntime {
         &self.spawn_ctx.track_delete_locks
     }
 
-    pub(crate) fn try_launch_fence(
-        &self,
-        track: &str,
-    ) -> Result<crate::per_card_lock::KeyedLockGuard> {
-        crate::per_card_lock::try_lock_key(self.track_delete_locks(), track)
-            .ok_or_else(|| CalmError::WorkspaceBusy(track.to_owned()))
+    pub(crate) fn try_launch_fence(&self, track: &str) -> Result<LaunchFence> {
+        let admission = self
+            .spawn_ctx
+            .reclaim_admission
+            .clone()
+            .try_read_owned()
+            .map_err(|_| CalmError::WorkspaceBusy(track.to_owned()))?;
+        let guard = crate::per_card_lock::try_lock_key(self.track_delete_locks(), track)
+            .ok_or_else(|| CalmError::WorkspaceBusy(track.to_owned()))?;
+        Ok(LaunchFence {
+            _admission: admission,
+            _track: guard,
+        })
+    }
+
+    pub(crate) fn reclaim_context(&self) -> &SpawnCtx {
+        &self.spawn_ctx
     }
 
     #[cfg(feature = "fixtures")]
@@ -249,12 +265,11 @@ impl OperationRuntime {
             else {
                 break (drive, None);
             };
-            if let Some(fence) =
-                crate::per_card_lock::try_lock_key(self.track_delete_locks(), &track)
-            {
+            if let Ok(fence) = self.try_launch_fence(&track) {
                 break (drive, Some(fence));
             }
             drop(drive);
+            drop(self.spawn_ctx.reclaim_admission.read().await);
             let fence = crate::per_card_lock::lock_key(self.track_delete_locks(), &track).await;
             drop(fence);
         };
@@ -557,7 +572,7 @@ impl OperationRuntime {
         &self,
         adapter: Arc<dyn ProviderAdapter>,
         op: Operation,
-        preparation_fence: Option<crate::per_card_lock::KeyedLockGuard>,
+        preparation_fence: Option<LaunchFence>,
     ) -> Result<()> {
         let from_phase = op.phase.tag();
         if let Err(error) = self
@@ -645,6 +660,7 @@ impl OperationRuntime {
                         return;
                     }
                 }
+                drop(runtime.spawn_ctx.reclaim_admission.read().await);
                 let track_guard =
                     crate::per_card_lock::lock_key(runtime.track_delete_locks(), &track).await;
                 // Never hold track while waiting on drive (clean takes drive -> track).
@@ -696,7 +712,7 @@ impl OperationRuntime {
         &self,
         adapter: Arc<dyn ProviderAdapter>,
         op: Operation,
-        preparation_fence: Option<crate::per_card_lock::KeyedLockGuard>,
+        preparation_fence: Option<LaunchFence>,
     ) -> Result<()> {
         match op.phase.clone() {
             Phase::Pending => {
@@ -741,6 +757,12 @@ impl OperationRuntime {
                         Ok(super::PrepareAdvance::Stale) => continue,
                         Ok(super::PrepareAdvance::ClaimLost) => {
                             log_lost_lease(&op, PhaseTag::TxCommitted);
+                            return Ok(());
+                        }
+                        Err(CalmError::WorkspaceBusy(_)) => {
+                            // Durable owner reservations can outlive this process's locks. Keep
+                            // Pending leased for the existing expiry retry, without binding a
+                            // temporary refusal as a permanent keyed failure or spinning a waker.
                             return Ok(());
                         }
                         Err(e) => {

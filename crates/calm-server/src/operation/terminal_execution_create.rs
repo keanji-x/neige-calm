@@ -144,7 +144,17 @@ pub async fn create(
         if !typed {
             // Keep Legacy's validate/insert/drive path, including concurrent keyed inserts.
             // The endpoint lookup above also permits replay of a typed row after config-off.
+            let track = serde_json::from_value::<
+                super::terminal_adapter::TerminalCreateOperationPayload,
+            >(payload.clone())?
+            .request
+            .track_id;
+            crate::workspace_service::reclaim::operation::terminal_admission_tx(&mut tx, &track)
+                .await?;
             tx.rollback().await?;
+            // Fail promptly for a fresh request; Pending preparation re-admits under the same
+            // reservation, so releasing it before drive cannot authorize a racing start.
+            drop(runtime.try_launch_fence(&track)?);
             let id = runtime.submit("terminal-create", key, payload).await?;
             return Ok(CreatedTerminal {
                 result: runtime.wait(&id).await?,
