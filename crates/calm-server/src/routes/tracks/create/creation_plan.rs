@@ -158,20 +158,20 @@ fn canonical_creation_supported(request: &CreateRequestShape, input: CreateShape
             provider: request.planner_provider.clone(),
         }) {
             Ok(RetainedIdentityPreparation::NativeThread) => {
-                named || matches!(input, CreateShape::WithFirstMessage(()))
+                named || request.admin || matches!(input, CreateShape::WithFirstMessage(()))
             }
             Ok(RetainedIdentityPreparation::LocalSession) => true,
             Err(_) => false,
         };
-    // This entry rollout admits Codex/OpenCode named sources only. Other
+    // This entry rollout admits Codex/OpenCode named/admin sources only. Other
     // bindings retain their explicit historical named-source contract.
     supported
-        && (!named
+        && (!(named || request.admin)
             || matches!(
                 request.planner_provider,
                 AgentProvider::Codex | AgentProvider::OpenCode
             ))
-        && !request.admin
+        && request.isolation == super::super::CreateIsolation::Managed
         && request.cwd.is_none()
         && !request.attach_folder
         && request.allow_cross_area_cwd.is_none()
@@ -409,7 +409,7 @@ async fn blank_allocation(
         .await?;
     let options = CreateTrackOptions {
         human_source: None,
-        admin: false,
+        admin: request.admin,
         managed_identity: None,
         creator: None,
         creation_message: None,

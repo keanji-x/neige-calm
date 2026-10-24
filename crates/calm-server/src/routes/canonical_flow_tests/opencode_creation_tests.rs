@@ -36,7 +36,7 @@ async fn body(app: &axum::Router, cookie: &str, provider: &AgentProvider) -> Val
         "theme":{"fg":[255,255,255],"bg":[0,0,0]},"first_message":FIRST_BODY})
 }
 
-fn configure(fixture: &mut Fixture) {
+pub(super) fn configure(fixture: &mut Fixture) {
     fixture
         .execution
         .get_or_insert_with(crate::test_support::execution::Supervisor::new);
