@@ -98,7 +98,7 @@ impl<'a> PathLocation<'a> {
 /// existing ancestor. Failure to resolve a location is an error, never a disjoint proof.
 fn physical_path(path: &std::path::Path) -> Result<std::path::PathBuf> {
     workspace::worktree::physical_path(path)
-        .map_err(|error| CalmError::BadRequest(error.to_string()))
+        .map_err(|workspace::error::Error::Internal(message)| CalmError::BadRequest(message))
 }
 
 fn paths_overlap(

@@ -202,6 +202,8 @@ pub struct CodexShellState {
 }
 
 pub struct BootState {
+    /// Shared by route deletion and attached admission, including child-track operations.
+    pub teardown_targets: workspace_runtime::sweep::TeardownTargets,
     pub repo: Arc<dyn Repo>,
     pub workspace_root: PathBuf,
     /// Owns the auto-allocated workspace root of a test/replay state; `None` in production.
@@ -250,7 +252,7 @@ impl BootState {
             terminal_renderer: self.terminal_renderer.clone(),
             repo: route_repo.clone(),
             workspace_root: self.workspace_root.clone(),
-            teardown_targets: workspace_runtime::sweep::TeardownTargets::default(),
+            teardown_targets: self.teardown_targets,
             events: self.events.clone(),
             plugin: self.plugin.clone(),
             db_instance_id: self.db_instance_id.clone(),
@@ -412,6 +414,7 @@ pub struct AppState {
 }
 
 struct OperationAdapterInputs {
+    teardown_targets: workspace_runtime::sweep::TeardownTargets,
     execution: crate::execution_quiesce::ExecutionLifecycle,
     route_repo: Arc<dyn RouteRepo>,
     repo: Arc<dyn Repo>,
@@ -576,6 +579,7 @@ fn build_operation_adapters(
             input.card_role_cache.clone(),
             input.track_area_cache.clone(),
             input.workspace_root.clone(),
+            input.teardown_targets.clone(),
         )
         .with_selection_context(child_selection),
     );
@@ -980,7 +984,9 @@ impl AppState {
         acp_planner.completion.bind_registry(harness.clone());
         let execution = crate::execution_quiesce::ExecutionLifecycle::default();
         terminal_renderer.set_execution(execution.clone());
+        let teardown_targets = workspace_runtime::sweep::TeardownTargets::default();
         let (adapters, planner_start_adapter) = build_operation_adapters(OperationAdapterInputs {
+            teardown_targets: teardown_targets.clone(),
             execution: execution.clone(),
             route_repo: route_repo.clone(),
             repo: repo.clone(),
@@ -1062,6 +1068,7 @@ impl AppState {
         );
         let database_id = repo.database_id();
         BootState {
+            teardown_targets,
             repo,
             workspace_root: workspace_root_sandbox.path().to_path_buf(),
             workspace_root_guard: Some(workspace_root_sandbox),
@@ -1194,6 +1201,7 @@ impl AppState {
             )));
         let execution = self.operation_runtime.execution().clone();
         let (adapters, planner_start_adapter) = build_operation_adapters(OperationAdapterInputs {
+            teardown_targets: self.route.teardown_targets.clone(),
             execution: execution.clone(),
             route_repo: route_repo.clone(),
             repo: self.raw.clone(),
@@ -1533,7 +1541,9 @@ impl AppState {
             plugin.execution.bind(engine.clone());
         }
         terminal_renderer.set_execution(execution.clone());
+        let teardown_targets = workspace_runtime::sweep::TeardownTargets::default();
         let (adapters, planner_start_adapter) = build_operation_adapters(OperationAdapterInputs {
+            teardown_targets: teardown_targets.clone(),
             execution: execution.clone(),
             route_repo: route_repo.clone(),
             repo: repo.clone(),
@@ -1654,6 +1664,7 @@ impl AppState {
         );
         let database_id = repo.database_id();
         let state = BootState {
+            teardown_targets,
             repo,
             workspace_root,
             // Production: the root is the user's real directory, never swept.

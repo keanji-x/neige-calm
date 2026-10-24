@@ -182,6 +182,7 @@ async fn child_track_config_inherited_permission_overrides_registration() {
         repo.card_role_cache().clone(),
         repo.track_area_cache().clone(),
         test_workspace_root(),
+        workspace_runtime::sweep::TeardownTargets::default(),
     );
     let input = serde_json::to_value(payload(&task)).unwrap();
     let mut tx = repo.pool().begin().await.unwrap();

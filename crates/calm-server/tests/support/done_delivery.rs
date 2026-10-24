@@ -51,6 +51,7 @@ impl Wiring {
     ) -> calm_server::state::AppState {
         let repo_dyn: Arc<dyn Repo> = repo.clone();
         calm_server::state::BootState {
+            teardown_targets: Default::default(),
             repo: repo_dyn.clone(),
             workspace_root: workspace,
             workspace_root_guard: None,

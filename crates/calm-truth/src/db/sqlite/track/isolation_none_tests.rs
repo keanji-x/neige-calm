@@ -86,3 +86,37 @@ async fn isolation_none_unresolvable_owned_symlink_is_refused() {
         "{error}"
     );
 }
+
+#[tokio::test]
+async fn isolation_none_resolution_error_preserves_bad_request_message() {
+    let tmp = tempfile::tempdir().unwrap();
+    let candidate = tmp.path().join("candidate");
+    std::fs::create_dir(&candidate).unwrap();
+    let alias = tmp.path().join("alias");
+    std::os::unix::fs::symlink(tmp.path().join("missing"), &alias).unwrap();
+    let owned = alias.join("owned");
+    let repo = super::super::SqlxRepo::open("sqlite::memory:")
+        .await
+        .unwrap();
+    let mut tx = super::super::begin_immediate_tx(repo.db()).await.unwrap();
+    let error = admit_attached_workspace_tx(
+        &mut tx,
+        candidate.to_str().unwrap(),
+        &owned,
+        &[],
+        &TrackWorkspacePlan::AttachedFromCwd,
+    )
+    .await
+    .unwrap_err();
+    let CalmError::Core(calm_types::error::CoreError::BadRequest(message)) = error else {
+        panic!("expected BadRequest")
+    };
+    assert_eq!(
+        message,
+        format!(
+            "cannot resolve existing ancestor {} of {}",
+            alias.display(),
+            owned.display()
+        )
+    );
+}

@@ -98,6 +98,7 @@ async fn a_parent_planner_without_a_provider_refuses_the_child() {
         repo.card_role_cache().clone(),
         repo.track_area_cache().clone(),
         test_workspace_root(),
+        workspace_runtime::sweep::TeardownTargets::default(),
     );
     let mut tx = repo.pool().begin().await.unwrap();
     let error = adapter
@@ -224,6 +225,83 @@ async fn child_track_config_attached_child_has_own_worktree() {
         git(std::path::Path::new(&worktree), &["rev-parse", "HEAD"]),
         git(dir.path(), &["rev-parse", "HEAD"])
     );
+}
+
+#[tokio::test]
+async fn child_attached_admission_refuses_live_core_worktree_redirect_without_child_row() {
+    use crate::operation::{OperationKey, OperationOutcome};
+    let repo = std::sync::Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
+    let source = tempfile::tempdir().unwrap();
+    let owned_repo = tempfile::tempdir().unwrap();
+    let owned = owned_repo.path().join("live");
+    init_repo(source.path());
+    init_repo(owned_repo.path());
+    git(
+        owned_repo.path(),
+        &[
+            "worktree",
+            "add",
+            "--detach",
+            owned.to_str().unwrap(),
+            "HEAD",
+        ],
+    );
+    assert!(!owned.as_path().starts_with(test_workspace_root()));
+    let parent = parent_with_plan(&repo, source.path(), TrackWorkspacePlan::AttachedFromCwd).await;
+    let owner = parent_with_plan(&repo, owned.as_path(), TrackWorkspacePlan::AttachedFromCwd).await;
+    sqlx::query("UPDATE tracks SET workspace_worktree_path=?1 WHERE id=?2")
+        .bind(owned.as_path().to_str().unwrap())
+        .bind(owner.id.as_str())
+        .execute(repo.pool())
+        .await
+        .unwrap();
+    git(
+        source.path(),
+        &["config", "core.worktree", owned.as_path().to_str().unwrap()],
+    );
+    assert_eq!(
+        git(source.path(), &["rev-parse", "--show-toplevel"]),
+        owned.as_path().to_str().unwrap()
+    );
+    let task = seed_task(&repo, parent.id.as_str(), false).await;
+    let input = serde_json::to_value(payload(&task)).unwrap();
+    let before: i64 = sqlx::query_scalar("SELECT count(*) FROM tracks")
+        .fetch_one(repo.pool())
+        .await
+        .unwrap();
+    let runtime = child_runtime(&repo, false).await;
+    let op = runtime
+        .submit(
+            CHILD_TRACK_KIND,
+            OperationKey {
+                operation_key: new_id(),
+                idempotency_key: Some(task.id.clone()),
+                payload_hash: crate::routes::idempotency_key::stable_payload_hash(&input).unwrap(),
+            },
+            input,
+        )
+        .await
+        .unwrap();
+    let outcome = runtime.wait(&op).await.unwrap();
+    assert!(
+        matches!(&outcome.outcome, OperationOutcome::Failed { last_error, .. }
+            if last_error.contains("overlaps Neige-owned location")),
+        "{outcome:?}"
+    );
+    let after: i64 = sqlx::query_scalar("SELECT count(*) FROM tracks")
+        .fetch_one(repo.pool())
+        .await
+        .unwrap();
+    assert_eq!(
+        after, before,
+        "admission must refuse before minting a child row"
+    );
+    let child: Option<String> = sqlx::query_scalar("SELECT child_track_id FROM tasks WHERE id=?1")
+        .bind(&task.id)
+        .fetch_one(repo.pool())
+        .await
+        .unwrap();
+    assert_eq!(child, None);
 }
 
 fn git(path: &std::path::Path, args: &[&str]) -> String {
@@ -398,6 +476,7 @@ async fn child_runtime(
         repo.card_role_cache().clone(),
         repo.track_area_cache().clone(),
         test_workspace_root(),
+        workspace_runtime::sweep::TeardownTargets::default(),
     );
     let adapter = adapter.with_selection_context(selection_context(repo).await);
     let adapter: Arc<dyn ProviderAdapter> = if block_worktree {

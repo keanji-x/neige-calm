@@ -373,6 +373,8 @@ fn dispatcher_operation_runtime(
             write.role_cache().clone(),
             write.area_cache().clone(),
             workspace_root.clone(),
+            // This standalone runtime has no RouteState; AppState injects the routes' registry.
+            workspace_runtime::sweep::TeardownTargets::default(),
         )
         .with_selection_context(child_selection),
     );
