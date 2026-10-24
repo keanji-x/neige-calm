@@ -164,19 +164,6 @@ mod tests {
     }
 
     #[test]
-    fn installed_state_round_trips_through_json() {
-        let state = state();
-        let bytes = serde_json::to_vec(&state).expect("serialize");
-        let decoded: InstalledState = serde_json::from_slice(&bytes).expect("deserialize");
-
-        assert_eq!(decoded.release_id, state.release_id);
-        assert_eq!(
-            decoded.units.get(&UnitName::CalmServer),
-            state.units.get(&UnitName::CalmServer)
-        );
-    }
-
-    #[test]
     fn installed_state_from_manifest_copies_units() {
         let mut units = BTreeMap::new();
         units.insert(

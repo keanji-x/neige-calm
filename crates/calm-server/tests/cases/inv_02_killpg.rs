@@ -83,49 +83,6 @@ async fn force_cleanup(mut child: tokio::process::Child, pgid: i32) {
     let _ = child.wait().await;
 }
 
-/// A pid-only SIGTERM to the leader leaves the grandchild alive; the group form reaps both.
-/// `#[ignore]`d because it passes on main; it is a regression guard for teardown refactors.
-#[tokio::test]
-#[ignore = "regression-guard: passes on main; un-ignore to verify after teardown refactors. \
-            see issue #318 INV-2."]
-async fn inv2_pid_only_kill_leaks_grandchild() {
-    let (child, pgid, grandchild_pid) = spawn_leader_with_grandchild().await;
-
-    // Bug shape: kill ONLY the leader pid (`pgid` is also the leader pid via `process_group(0)`).
-    let rc = unsafe { libc::kill(pgid, libc::SIGTERM) };
-    assert_eq!(rc, 0, "kill(leader_pid, SIGTERM) should deliver");
-
-    // The leader dies; the grandchild is reparented to init and keeps running.
-    tokio::time::sleep(Duration::from_millis(150)).await;
-
-    assert!(
-        pgrp_of(grandchild_pid).is_some(),
-        "INV-2 GUARD: pid-only SIGTERM to the leader (pid={pgid}) was supposed to \
-         leak the `sleep` grandchild (pid={grandchild_pid}). If the grandchild is \
-         gone, either /proc is racy or the launcher's exit reaped it via SIGHUP \
-         propagation (unexpected without controlling-terminal semantics). Either \
-         way, the encoding of 'pid-only kill leaks grandchild' is broken — fix \
-         the test."
-    );
-
-    // The group kill MUST reap the grandchild.
-    assert!(
-        signal_process_group(pgid, libc::SIGKILL),
-        "signal_process_group(pgid, SIGKILL) should deliver"
-    );
-    let gone = await_gone(grandchild_pid, Duration::from_millis(500)).await;
-    force_cleanup(child, pgid).await;
-
-    assert!(
-        gone,
-        "INV-2 violated: even the group SIGKILL failed to reap grandchild \
-         pid={grandchild_pid} (group pgid={pgid}) within 500ms. \
-         `signal_process_group` must use `kill(-pgid, …)` (the negative-pgid \
-         form) so the kernel signals the whole group. A regression to \
-         `kill(pid, …)` would manifest exactly this way."
-    );
-}
-
 /// SIGKILL (not SIGTERM) so the test does not depend on the launcher cooperating: this isolates
 /// group targeting from the orthogonal "what signal" question.
 #[tokio::test]

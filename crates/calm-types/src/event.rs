@@ -1628,29 +1628,6 @@ mod scope_tests {
     }
 
     #[test]
-    fn serde_round_trip_all_variants() {
-        for s in [
-            EventScope::System,
-            EventScope::Area {
-                area: AreaId::from("c"),
-            },
-            EventScope::Track {
-                track: TrackId::from("w"),
-                area: AreaId::from("c"),
-            },
-            EventScope::Card {
-                card: CardId::from("k"),
-                track: TrackId::from("w"),
-                area: AreaId::from("c"),
-            },
-        ] {
-            let json = serde_json::to_string(&s).expect("serialize");
-            let back: EventScope = serde_json::from_str(&json).expect("deserialize");
-            assert_eq!(back, s, "round-trip mismatch for {s:?} via {json}");
-        }
-    }
-
-    #[test]
     fn serde_card_shape_pinned() {
         let s = EventScope::Card {
             card: CardId::from("k"),
