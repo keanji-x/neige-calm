@@ -355,6 +355,7 @@ pub(crate) async fn update_area(
 }
 
 struct PreparedAreaDeletion {
+    reclaim_ports: crate::workspace_service::reclaim::ServerReclaimPorts,
     id: String,
     area_kind: Option<AreaKind>,
     tracks: Vec<Track>,
@@ -720,7 +721,7 @@ impl RecycledAreaDeletion {
         crate::workspace_service::sweep::before_sweep(&sweeps).await;
         sweep_workspace_worktrees_for_tracks(
             registration.sweeps(sweeps),
-            crate::workspace_service::ports::ServerWorkspacePorts,
+            self.quiesced.prepared.reclaim_ports.clone(),
             crate::workspace_service::ports::observe,
         )
         .await;
@@ -885,7 +886,19 @@ pub(crate) async fn delete_area(
         )));
     }
 
+    for track in &tracks {
+        crate::workspace_service::reclaim::protect_delete(
+            &mut *pool.read_pool().acquire().await?,
+            &track.workspace,
+        )
+        .await?;
+    }
+
     let prepared = PreparedAreaDeletion {
+        reclaim_ports: crate::workspace_service::reclaim::ServerReclaimPorts {
+            db: pool.clone(),
+            events: s.events.clone(),
+        },
         id,
         area_kind,
         tracks,

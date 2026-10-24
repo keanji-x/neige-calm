@@ -21,10 +21,13 @@ pub(crate) async fn workspace_track_sweep_for_track_tx(
     .into_iter()
     .map(PathBuf::from)
     .collect();
+    let extra_worktrees = super::reclaim::snapshot(tx, track_id, &[track_id.to_string()]).await?;
     Ok(Some(WorkspaceTrackSweep {
         track_id: track_id.to_string(),
         workspace: track.workspace,
         git_common_dirs,
+        extra_worktrees,
+        removed_refs: super::reclaim::removed_refs(track_id)?,
     }))
 }
 

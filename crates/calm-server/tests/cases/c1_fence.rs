@@ -51,7 +51,7 @@ fn clean(b: Arc<Boot>) -> tokio::task::JoinHandle<(usize, HashSet<(String, i64)>
     tokio::spawn(async move {
         let mut history = HashSet::new();
         let count = calm_server::test_seams::clean_closed_worktrees_with_history_for_test(
-            b.repo.pool(),
+            b.repo.db(),
             &b.state.operation_runtime,
             &mut history,
         )

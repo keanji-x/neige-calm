@@ -249,7 +249,10 @@ async fn delete_through_sweep(repo: &SqlxRepo, current: &Track) {
     tx.commit().await.unwrap();
     workspace_runtime::sweep::sweep_workspace_worktrees_for_tracks(
         registration.sweeps(vec![sweep]),
-        crate::workspace_service::ports::ServerWorkspacePorts,
+        crate::workspace_service::reclaim::ServerReclaimPorts {
+            db: repo.db().clone(),
+            events: crate::event::EventBus::new(),
+        },
         crate::workspace_service::ports::observe,
     )
     .await;

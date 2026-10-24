@@ -47,6 +47,7 @@ mod session_conversation;
 pub mod terminal_outcome;
 mod transcript_projection;
 mod worker_flow_capture;
+pub mod worktree_events;
 pub use session_conversation::{
     PLANNER_START_CARD_KEY, PLANNER_START_OPERATION_KIND, TERMINAL_OPERATION_PHASES,
 };

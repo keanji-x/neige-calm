@@ -140,6 +140,7 @@ struct TrackDeletePlan {
 }
 
 struct PreparedTrackDeletion {
+    reclaim_ports: crate::workspace_service::reclaim::ServerReclaimPorts,
     observation: DeletionObservation,
     track: Track,
     area_kind: Option<AreaKind>,
@@ -3100,7 +3101,7 @@ impl RecycledTrackDeletion {
         crate::workspace_service::sweep::before_sweep(&sweeps).await;
         sweep_workspace_worktrees_for_tracks(
             registration.sweeps(sweeps),
-            crate::workspace_service::ports::ServerWorkspacePorts,
+            prepared.reclaim_ports.clone(),
             crate::workspace_service::ports::observe,
         )
         .await;
@@ -3294,6 +3295,8 @@ pub(crate) async fn delete_track(
         )));
     }
 
+    crate::workspace_service::reclaim::protect_delete(&mut *pool.read_pool().acquire().await?, &track.workspace).await?;
+
     // Experience-only preflight: the in-transaction guard in `track_delete_tx` is the
     // correctness boundary; a child created after this read makes the final delete return
     // Conflict, which is safe and retryable.
@@ -3314,6 +3317,7 @@ pub(crate) async fn delete_track(
     observation.observe(Stage::Reprojection, preflight_track_deletion_reprojection(&pool, &track_id)).await?;
 
     let prepared = PreparedTrackDeletion {
+        reclaim_ports: crate::workspace_service::reclaim::ServerReclaimPorts {db: pool.clone(), events: s.events.clone()},
         observation: observation.clone(),
         plan: observation.observe(Stage::Snapshot, snapshot_track_deletion(&s, &track)).await?,
         turn_daemon: cs.shared_codex_appserver.clone(),

@@ -314,7 +314,7 @@ async fn assert_closed_worktree_clean_refuses_forge(native_stuck: bool) {
 
     let mut history = HashSet::new();
     assert_eq!(
-        clean(pool, &boot.state.operation_runtime, &mut history)
+        clean(&db, &boot.state.operation_runtime, &mut history)
             .await
             .unwrap(),
         0
@@ -323,7 +323,7 @@ async fn assert_closed_worktree_clean_refuses_forge(native_stuck: bool) {
     assert!(ignored.exists(), "active forge must protect ignored files");
     set_operation_phase(&boot, &op, "succeeded").await;
     assert_eq!(
-        clean(pool, &boot.state.operation_runtime, &mut history)
+        clean(&db, &boot.state.operation_runtime, &mut history)
             .await
             .unwrap(),
         1

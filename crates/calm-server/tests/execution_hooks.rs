@@ -693,7 +693,7 @@ async fn worktree_clean_skips_until_settled() {
     tx.commit().await.unwrap();
     assert_eq!(
         calm_server::test_seams::clean_idle_closed_track_worktrees_for_test(
-            f.repo.pool(),
+            f.repo.db(),
             &f.state.operation_runtime
         )
         .await
@@ -704,7 +704,7 @@ async fn worktree_clean_skips_until_settled() {
     f.stop(&id).await;
     assert_eq!(
         calm_server::test_seams::clean_idle_closed_track_worktrees_for_test(
-            f.repo.pool(),
+            f.repo.db(),
             &f.state.operation_runtime
         )
         .await

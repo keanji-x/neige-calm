@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# #3176 bounded contract exception: spec/crates 521 -> 523 adds the existing
+# event_spec helper for the remove receipt and its serialized-field assertion.
+# No new domain name, scan rule, exemption or check is introduced; the existing
+# occurrence scan runs once in CI lint and later wire references update its baseline.
 # #2774 Planner switch history: runtime_id/crates 1133 -> 1135 adds two
 # reads of the frozen initiating-worker column, before and after switching.
 # These assertions preserve historical attribution; no domain name, exclusion,

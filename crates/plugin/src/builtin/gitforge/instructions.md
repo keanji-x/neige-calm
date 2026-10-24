@@ -4,9 +4,10 @@ The development plugin supports Git worktrees, validation and pull requests thro
 
 Its tools are named `plugin_gitforge_<name>` (e.g. `plugin_gitforge_gh_pr_checks`); list them with `neige tool ls --prefix plugin_gitforge_`.
 
-Worktrees created by `git_worktree_add` are not automatically reclaimed by Neige.
-The creator is responsible for cleanup. For read-only review, use an unregistered
-snapshot or a Neige `read_only` task. If a registered worktree is necessary,
+Worktrees created by `git_worktree_add` are eligible for safe reclamation when
+their owning track closes or is deleted. The creator remains responsible for
+retained paths. For read-only review, use an unregistered snapshot or a Neige
+`read_only` task. If a registered worktree is necessary,
 record the reason and remove it in the same session with
 `git worktree remove <path>` without `--force`.
 
@@ -61,3 +62,6 @@ merge. A truncated suite snapshot (more than 100 suites) is rejected explicitly.
 `gh_pr_merge` refreshes this evidence immediately before writing and always pins
 that head with `--match-head-commit`; pass `expected_head_sha` to also bind your
 own reviewed head. New requests do not reuse historical, weaker checks results.
+
+Use `git_worktree_remove` with `target` and an explicit `idem` to remove a clean linked worktree without force. It preserves the branch and records removal only on success. When adding the same path again, give `git_worktree_add` a fresh `idem`; use a fresh remove `idem` for that lifecycle.
+Extra paths successfully provisioned by this track are eligible for safe automatic reclamation through its close tick or deletion sweep. Dirty paths (including ignored files), unknown terminals, missing retained refs, and uncertain ownership are retained with a warning; the default track worktree still follows the kernel close/reopen contract.

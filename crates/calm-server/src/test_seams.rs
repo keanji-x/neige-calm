@@ -107,26 +107,25 @@ pub async fn prepare_worker_lease_for_test(
 /// many worktrees it cleaned.
 #[cfg(any(test, feature = "fixtures"))]
 pub async fn clean_idle_closed_track_worktrees_for_test(
-    pool: &sqlx::SqlitePool,
+    db: &calm_truth::db::sqlite::SqliteDb,
     runtime: &std::sync::Arc<crate::operation::OperationRuntime>,
 ) -> crate::error::Result<usize> {
-    clean_closed_worktrees_with_history_for_test(
-        pool,
-        runtime,
-        &mut std::collections::HashSet::new(),
-    )
-    .await
+    clean_closed_worktrees_with_history_for_test(db, runtime, &mut std::collections::HashSet::new())
+        .await
 }
 
 #[cfg(any(test, feature = "fixtures"))]
 pub async fn clean_closed_worktrees_with_history_for_test(
-    pool: &sqlx::SqlitePool,
+    db: &calm_truth::db::sqlite::SqliteDb,
     runtime: &std::sync::Arc<crate::operation::OperationRuntime>,
     cleaned: &mut std::collections::HashSet<(String, i64)>,
 ) -> crate::error::Result<usize> {
     workspace_runtime::worktree_clean::clean_idle_closed_track_worktrees(
         &crate::workspace_service::ports::ServerClosedWorktreeFacts {
-            pool: pool.clone(),
+            receipts: crate::workspace_service::reclaim::ServerReclaimPorts {
+                db: db.clone(),
+                events: crate::event::EventBus::new(),
+            },
             runtime: runtime.clone(),
         },
         cleaned,
@@ -431,5 +430,86 @@ impl ExecutionRecoveryFaults {
             )));
         }
         Ok(())
+    }
+}
+
+/// Exercise the real builtin lowering, forge admission, executor and event policy in route fixtures.
+#[cfg(feature = "fixtures")]
+pub async fn gitforge_worktree_add_for_test(
+    runtime: &std::sync::Arc<crate::operation::OperationRuntime>,
+    logs: &std::path::Path,
+    track: &str,
+    card: &str,
+    cwd: &std::path::Path,
+    target: &std::path::Path,
+    branch: &str,
+) -> crate::error::Result<()> {
+    let lowered = crate::builtin_plugins::dev::git_actions::lower(
+        "git_worktree_add",
+        &serde_json::json!({"target":target,"branch":branch}),
+    )
+    .map_err(crate::error::CalmError::Internal)?;
+    let payload = serde_json::from_value(lowered)?;
+    let submitted = crate::mcp_server::transport::submit_forge_action_with_key(
+        runtime,
+        logs,
+        None,
+        "gitforge",
+        track.into(),
+        card.into(),
+        cwd.into(),
+        payload,
+        crate::model::new_id(),
+    )
+    .await
+    .map_err(|e| crate::error::CalmError::Internal(format!("{e:?}")))?
+    .map_err(crate::error::CalmError::Internal)?
+    .submitted()
+    .map_err(crate::error::CalmError::Internal)?;
+    let result = runtime.wait(&submitted.op_id).await?;
+    if !matches!(
+        result.outcome,
+        crate::operation::OperationOutcome::Succeeded { .. }
+            | crate::operation::OperationOutcome::SucceededViaCollision { .. }
+    ) {
+        return Err(crate::error::CalmError::Internal(format!(
+            "forge add failed: {result:?}"
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(feature = "fixtures")]
+type WorkspaceObservers = std::sync::Mutex<
+    std::collections::HashMap<(String, String), std::sync::Arc<std::sync::atomic::AtomicUsize>>,
+>;
+#[cfg(feature = "fixtures")]
+fn workspace_observers() -> &'static WorkspaceObservers {
+    static OBSERVERS: std::sync::OnceLock<WorkspaceObservers> = std::sync::OnceLock::new();
+    OBSERVERS.get_or_init(Default::default)
+}
+
+/// Counter arms only a specified path; no global environment or production command replacement.
+#[cfg(feature = "fixtures")]
+pub fn count_workspace_observation_for_test(
+    point: &str,
+    path: &std::path::Path,
+) -> std::sync::Arc<std::sync::atomic::AtomicUsize> {
+    let counter = std::sync::Arc::default();
+    workspace_observers().lock().unwrap().insert(
+        (point.into(), path.to_str().unwrap().into()),
+        std::sync::Arc::clone(&counter),
+    );
+    counter
+}
+
+#[cfg(feature = "fixtures")]
+pub(crate) fn record_workspace_observation(point: &str, path: &std::path::Path) {
+    if let Some(counter) = workspace_observers()
+        .lock()
+        .unwrap()
+        .get(&(point.into(), path.to_str().unwrap().into()))
+    {
+        counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     }
 }

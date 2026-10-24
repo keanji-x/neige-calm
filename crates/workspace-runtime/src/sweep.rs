@@ -40,11 +40,17 @@ pub struct TeardownRegistration(std::sync::Arc<Registration>);
 
 impl TeardownRegistration {
     pub fn register(&self, sweep: &WorkspaceTrackSweep) {
+        let mut paths: Vec<PathBuf> = sweep
+            .extra_worktrees
+            .iter()
+            .map(|target| target.request.path.clone())
+            .filter(|path| path.is_absolute())
+            .collect();
         if sweep.workspace.isolation() == WorkspaceIsolation::Worktree {
-            let key = (
-                sweep.track_id.clone(),
-                PathBuf::from(sweep.workspace.agent_cwd()),
-            );
+            paths.push(PathBuf::from(sweep.workspace.agent_cwd()));
+        }
+        for path in paths {
+            let key = (sweep.track_id.clone(), path);
             *self
                 .0
                 .targets
@@ -93,7 +99,7 @@ pub struct RegisteredSweeps {
     registration: TeardownRegistration,
 }
 
-pub trait CandidateRefs: Clone + Send + Sync + 'static {
+pub trait CandidateRefs: crate::reclaim::ReclaimReceipts + Clone + Send + Sync + 'static {
     fn delete_for_track(&self, track_id: &str, git_common_dirs: &[PathBuf]);
 }
 
@@ -105,6 +111,8 @@ pub struct WorkspaceTrackSweep {
     /// Workspace decoded from the track row inside the deletion transaction.
     pub workspace: TrackWorkspace,
     pub git_common_dirs: Vec<PathBuf>,
+    pub extra_worktrees: Vec<crate::reclaim::ExtraWorktree>,
+    pub removed_refs: Vec<String>,
 }
 
 /// The post-commit half of a track or area teardown, best effort: the track worktree, then the
@@ -115,12 +123,36 @@ pub async fn sweep_workspace_worktrees_for_tracks<P: CandidateRefs>(
     ports: P,
     observe: ObservePoint,
 ) {
-    if let Err(error) = tokio::task::spawn_blocking(move || {
+    if let Err(error) = tokio::spawn(async move {
         let RegisteredSweeps {
             sweeps,
             registration,
         } = sweeps;
-        sweep_workspace_worktrees_blocking(sweeps, ports, observe);
+        // A ref removed by any member of this area sweep cannot protect another member's HEAD.
+        let excluded: Vec<String> = sweeps.iter().flat_map(|s| s.removed_refs.clone()).collect();
+        for mut sweep in sweeps {
+            for target in &mut sweep.extra_worktrees {
+                target.request.excluded_refs.extend(excluded.clone());
+            }
+
+            if let Err(error) = crate::reclaim::reclaim_extra_worktrees(
+                sweep.extra_worktrees.clone(),
+                &ports,
+                observe,
+            )
+            .await
+            {
+                tracing::warn!(%error, "extra worktree sweep failed");
+            }
+            let ports = ports.clone();
+            if let Err(error) = tokio::task::spawn_blocking(move || {
+                sweep_workspace_worktrees_blocking(vec![sweep], ports, observe)
+            })
+            .await
+            {
+                tracing::warn!(%error, "track teardown Git sweep task failed");
+            }
+        }
         drop(registration);
     })
     .await
@@ -164,6 +196,8 @@ mod isolation_none_tests {
                 worktree: Some("/owned/worktree".into()),
             },
             git_common_dirs: Vec::new(),
+            extra_worktrees: Vec::new(),
+            removed_refs: Vec::new(),
         };
         let first = targets.registration();
         let rollback = targets.registration();

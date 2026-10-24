@@ -642,9 +642,10 @@ async fn a_closed_idle_track_worktree_drops_its_ignored_files() {
     std::fs::write(linked.join("work.txt"), "nested work\n").unwrap();
     b.shutdown_harnesses().await;
     let pool = b.repo.pool();
+    let db = b.repo.db();
 
     assert_eq!(
-        clean(pool, &b.state.operation_runtime).await.unwrap(),
+        clean(db, &b.state.operation_runtime).await.unwrap(),
         0,
         "an open track is not cleaned"
     );
@@ -704,7 +705,7 @@ async fn a_closed_idle_track_worktree_drops_its_ignored_files() {
     .unwrap();
     tx.commit().await.unwrap();
     assert_eq!(
-        clean(pool, &b.state.operation_runtime).await.unwrap(),
+        clean(db, &b.state.operation_runtime).await.unwrap(),
         0,
         "a running worker session defers the clean"
     );
@@ -715,7 +716,7 @@ async fn a_closed_idle_track_worktree_drops_its_ignored_files() {
         .execute(pool)
         .await
         .unwrap();
-    assert_eq!(clean(pool, &b.state.operation_runtime).await.unwrap(), 1);
+    assert_eq!(clean(db, &b.state.operation_runtime).await.unwrap(), 1);
     assert!(!worktree.join("target").exists(), "build output is gone");
     assert!(worktree.join(".gitignore").is_file(), "tracked files stay");
     assert!(
@@ -773,7 +774,7 @@ async fn a_closed_track_clean_never_reaches_the_users_checkout() {
     }
 
     assert_eq!(
-        clean(b.repo.pool(), &b.state.operation_runtime)
+        clean(b.repo.db(), &b.state.operation_runtime)
             .await
             .unwrap(),
         0
@@ -787,3 +788,6 @@ async fn a_closed_track_clean_never_reaches_the_users_checkout() {
         "nothing under the broken worktree is cleaned through the user's checkout"
     );
 }
+
+#[path = "gitforge_reclaim.rs"]
+mod gitforge_reclaim;

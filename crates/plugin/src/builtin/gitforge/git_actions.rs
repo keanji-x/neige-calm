@@ -18,6 +18,7 @@ mod issue_creation;
 pub fn lower(tool: &str, args: &Value) -> Result<Value, String> {
     match tool {
         "git_worktree_add" => lower_git_worktree_add(args),
+        "git_worktree_remove" => lower_git_worktree_remove(args),
         "git_commit" => lower_git_commit(args),
         "gh_pr_list" => lower_gh_pr_list(args),
         "gh_pr_diff" => lower_gh_pr_diff(args),
@@ -71,9 +72,31 @@ fn lower_git_worktree_add(args: &Value) -> Result<Value, String> {
     }
     forge_payload(
         argv,
-        format!("git.worktree.add:{target}"),
+        match optional_string(args, "idem")? {
+            Some(idem) => format!("git.worktree.add:v2:{}", json!([target, idem])),
+            None => format!("git.worktree.add:{target}"),
+        },
         Some(event_spec("worktree.provisioned", [])),
         json!({ "path": target }),
+        None,
+        false,
+    )
+}
+
+fn lower_git_worktree_remove(args: &Value) -> Result<Value, String> {
+    let target = required_string(args, "target")?;
+    let idem = required_string(args, "idem")?;
+    forge_payload(
+        vec![
+            "sh".into(),
+            "-c".into(),
+            format!("{FORGE_SHELL_PRELUDE}\nneige_git worktree remove -- \"$1\""),
+            "sh".into(),
+            target.clone(),
+        ],
+        format!("git.worktree.remove:{}", json!([target, idem])),
+        Some(event_spec("worktree.removed", [])),
+        json!({"path": target}),
         None,
         false,
     )

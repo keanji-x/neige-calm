@@ -38,7 +38,7 @@ async fn isolation_none_track_area_delete_and_clean_preserve_source() {
             .unwrap();
         assert_eq!(
             calm_server::test_seams::clean_idle_closed_track_worktrees_for_test(
-                b.repo.pool(),
+                b.repo.db(),
                 &b.operation_runtime
             )
             .await
@@ -540,7 +540,7 @@ async fn isolation_none_sibling_lifecycle_preserves_admitted_subdirectory() {
         .await;
         assert_eq!(status, StatusCode::OK, "{body}");
         calm_server::test_seams::clean_idle_closed_track_worktrees_for_test(
-            b.repo.pool(),
+            b.repo.db(),
             &b.operation_runtime,
         )
         .await

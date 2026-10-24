@@ -128,3 +128,24 @@ fn gh_pr_checks_keys_never_take_a_released_form() {
         }
     }
 }
+
+#[test]
+fn worktree_remove_requires_explicit_idem_and_preserves_argument_boundary() {
+    use serde_json::json;
+    assert!(super::lower("git_worktree_remove", &json!({"target":"/tmp/extra"})).is_err());
+    let payload = super::lower(
+        "git_worktree_remove",
+        &json!({"target":"--force; touch /tmp/no", "idem":"attempt"}),
+    )
+    .unwrap();
+    let argv = payload["argv"].as_array().unwrap();
+    assert_eq!(argv[4], "--force; touch /tmp/no");
+    assert!(
+        argv[2]
+            .as_str()
+            .unwrap()
+            .ends_with("neige_git worktree remove -- \"$1\"")
+    );
+    assert_eq!(payload["event_spec"]["event_kind"], "worktree.removed");
+    assert_eq!(payload["context"]["path"], "--force; touch /tmp/no");
+}

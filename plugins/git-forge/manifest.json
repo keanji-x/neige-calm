@@ -20,6 +20,10 @@
           "branch": {
             "type": "string",
             "description": "Optional branch name to create for the worktree"
+          },
+          "idem": {
+            "type": "string",
+            "description": "Explicit operation key; use a fresh key when recreating this path after removal"
           }
         },
         "required": [
@@ -31,6 +35,34 @@
         "title": "Git Worktree Add",
         "readOnlyHint": false,
         "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "git_worktree_remove",
+      "description": "Remove a linked worktree without force; keep its branch and record success",
+      "kind": "forge-action",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "target": {
+            "type": "string"
+          },
+          "idem": {
+            "type": "string",
+            "description": "Operation key; use a fresh key for each add/remove lifecycle"
+          }
+        },
+        "required": [
+          "target",
+          "idem"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "title": "Git Worktree Remove",
+        "readOnlyHint": false,
+        "destructiveHint": true,
         "openWorldHint": false
       }
     },

@@ -9,6 +9,7 @@ pub mod git;
 pub mod identity;
 pub mod materialize;
 mod metadata_lock;
+pub mod reclaim;
 pub mod recycle;
 pub mod teardown;
 pub mod worktree;

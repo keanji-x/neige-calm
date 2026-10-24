@@ -19,6 +19,14 @@ pub(crate) fn candidate_ref_prefix(track_id: &str) -> String {
     format!("refs/neige/candidates/{track_id}/")
 }
 
+/// The same declared prefixes drive deletion and HEAD retention checks during workspace sweep.
+pub(crate) fn teardown_ref_prefixes(track_id: &str) -> [String; 2] {
+    [
+        candidate_ref_prefix(track_id),
+        crate::operation::task_gate_run::gate_run_ref_prefix(track_id),
+    ]
+}
+
 /// Delete every candidate and gate-run ref of `track_id` in each distinct common dir the Track's
 /// lease rows recorded (`for-each-ref <prefix>` then `update-ref -d` per ref). Rows without a base
 /// (leases claimed before the base columns existed) have no candidates and are not listed.
@@ -27,10 +35,7 @@ pub(crate) fn delete_candidate_refs_for_track<'a>(
     git_common_dirs: impl IntoIterator<Item = &'a Path>,
 ) {
     let distinct: BTreeSet<PathBuf> = git_common_dirs.into_iter().map(Path::to_path_buf).collect();
-    let prefixes = [
-        candidate_ref_prefix(track_id),
-        crate::operation::task_gate_run::gate_run_ref_prefix(track_id),
-    ];
+    let prefixes = teardown_ref_prefixes(track_id);
     for (common_dir, prefix) in distinct
         .iter()
         .flat_map(|dir| prefixes.iter().map(move |prefix| (dir, prefix)))

@@ -1,9 +1,6 @@
-//! #2356 S2 — a closed track's worktree drops its ignored files. The worktree itself stays until
-//! track or area delete (`crate::track_worktree::remove_track_worktree`), since a track can be
-//! reopened and its branch and uncommitted work belong to it; but build output (a Rust `target`
-//! is about 9G), `node_modules` and the like are regenerable and would otherwise stay on disk for
-//! every closed track. Time-driven and read-only on the database, so every close writer (route,
-//! Planner tool, kernel) is covered without a hook in each.
+//! Closed-track maintenance: retain the default worktree for reopen, clean its ignored output
+//! once per close, and retry event-owned extra worktrees through the shared safe reclaimer.
+//! Every close writer is covered by the existing tick; there is no separate garbage timer.
 
 use std::collections::HashSet;
 use std::time::Duration;
@@ -22,8 +19,14 @@ pub struct ClosedWorktree {
 }
 
 #[async_trait]
-pub trait ClosedWorktreeFacts: Send + Sync + 'static {
-    type Error: std::fmt::Display + Send + 'static;
+pub trait ClosedWorktreeFacts:
+    crate::reclaim::ReclaimReceipts + Clone + Send + Sync + 'static
+{
+    async fn kernel_clean_safe(&self, workspace: &TrackWorkspace) -> Result<bool, Self::Error>;
+    async fn extra_worktrees(
+        &self,
+        track: &str,
+    ) -> Result<Vec<crate::reclaim::ExtraWorktree>, Self::Error>;
 
     async fn closed_idle_worktrees(&self) -> Result<Vec<ClosedWorktree>, Self::Error>;
     /// Claim the existing lifecycle fence and recheck the sampled close and occupancy.
@@ -73,35 +76,42 @@ where
     let rows = facts.closed_idle_worktrees().await?;
     let mut count = 0;
     for row in rows {
-        let worktree = match (row.workspace.kind, row.workspace.worktree) {
-            (TrackWorkspaceKind::Managed, _) => continue,
-            // Guarantee G: never mutate a borrowed source directory.
-            (TrackWorkspaceKind::Attached, None) => continue,
-            (TrackWorkspaceKind::Attached, Some(worktree)) => worktree,
-        };
-        let key = (row.track_id, row.closed_at);
-        if cleaned.contains(&key) {
-            continue;
-        }
+        let key = (row.track_id.clone(), row.closed_at);
         let Some(track) = facts.fence(&key.0, key.1).await? else {
             continue;
         };
-        let track_id = key.0.clone();
-        let (_track, result) = tokio::task::spawn_blocking(move || {
-            let result = workspace::worktree::clean_ignored(&track_id, &worktree, observe);
-            (track, result)
+        let targets = facts.extra_worktrees(&key.0).await?;
+        let clean_kernel =
+            facts.kernel_clean_safe(&row.workspace).await? && !cleaned.contains(&key);
+        let facts = facts.clone();
+        // Keep the lifecycle fence through I/O and receipts even if the tick's await is cancelled.
+        let result = tokio::spawn(async move {
+            let _track = track;
+            crate::reclaim::reclaim_extra_worktrees(targets, &facts, observe).await?;
+            if !clean_kernel {
+                return Ok(false);
+            }
+            let worktree = match (row.workspace.kind, row.workspace.worktree) {
+                (TrackWorkspaceKind::Attached, Some(path)) => path,
+                _ => return Ok(false),
+            };
+            tokio::task::spawn_blocking(move || {
+                workspace::worktree::clean_ignored(&row.track_id, &worktree, observe)
+            })
+            .await
+            .map_err(|e| WorkspaceError::Internal(format!("track worktree clean task: {e}")))?
+            .map_err(WorkspaceError::from)
         })
         .await
-        .map_err(|error| WorkspaceError::Internal(format!("track worktree clean task: {error}")))?;
+        .map_err(|e| WorkspaceError::Internal(format!("track clean task: {e}")))?;
         match result {
-            Ok(true) => count += 1,
-            Ok(false) => {}
-            Err(error) => {
-                tracing::warn!(track_id = %key.0, error = %error, "track worktree clean failed");
-                continue;
+            Ok(true) => {
+                count += 1;
+                cleaned.insert(key);
             }
+            Ok(false) => {}
+            Err(error) => tracing::warn!(track_id = %key.0, %error, "track worktree clean failed"),
         }
-        cleaned.insert(key);
     }
     Ok(count)
 }

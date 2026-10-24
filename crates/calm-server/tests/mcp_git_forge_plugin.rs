@@ -2,6 +2,9 @@
 
 mod support;
 
+#[path = "cases/git_forge_remove.rs"]
+mod git_forge_remove;
+
 #[path = "cases/git_forge_issue_creation.rs"]
 mod issue_creation;
 
@@ -111,6 +114,7 @@ fn real_manifest_parses() {
         tool_names,
         vec![
             "git_worktree_add",
+            "git_worktree_remove",
             "git_commit",
             "gh_pr_list",
             "gh_pr_diff",
