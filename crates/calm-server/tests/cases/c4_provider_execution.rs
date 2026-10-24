@@ -109,6 +109,12 @@ async fn c4_rewind_credentials_never_enter_intent_or_journal() {
         )
         .await,
     );
+    let completed = calm_server::test_seams::PausePoint::default();
+    calm_server::test_seams::install_pause_for_test(
+        "c4-release-completed",
+        &rig.worker_session_id,
+        completed.clone(),
+    );
     let task = {
         let session = session.clone();
         let thread = rig.thread.clone();
@@ -128,10 +134,16 @@ async fn c4_rewind_credentials_never_enter_intent_or_journal() {
         std::fs::read_to_string(root.join("normalized-received")).unwrap(),
         normalized_secret
     );
-    assert!(matches!(
-        claim(&rig).await.unwrap().record().release,
-        sql::Release::Released { .. }
-    ));
+    tokio::time::timeout(Duration::from_secs(10), completed.entered.notified())
+        .await
+        .unwrap();
+    let released = claim(&rig).await.unwrap();
+    completed.release.notify_one();
+    assert!(
+        matches!(released.record().release, sql::Release::Released { .. }),
+        "release after completed seam: {:?}",
+        released.record().release
+    );
     let intent: String = sqlx::query_scalar("SELECT intent_json FROM workspace_executions")
         .fetch_one(rig.repo.pool())
         .await

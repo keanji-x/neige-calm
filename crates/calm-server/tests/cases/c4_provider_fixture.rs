@@ -42,20 +42,32 @@ async fn leave_live_rewind(rig: RegisteredRig, panic: bool) -> Result<(), &'stat
     .unwrap();
     let session = rig.session().clone();
     let thread = rig.thread.clone();
+    let completed = calm_server::test_seams::PausePoint::default();
+    calm_server::test_seams::install_pause_for_test(
+        "c4-release-completed",
+        &rig.worker_session_id,
+        completed.clone(),
+    );
     let mut request = Box::pin(session.prepare_edit_for_test(&thread));
     let ready = rig.dir.path().join("ws/ready");
     tokio::select! {
         result = &mut request => panic!("rewind completed before fixture exit: {result:?}"),
         () = wait_for_file(&ready) => {}
     }
+    tokio::select! {
+        result = &mut request => panic!("rewind completed before fixture exit: {result:?}"),
+        entered = tokio::time::timeout(Duration::from_secs(10), completed.entered.notified()) => entered.unwrap(),
+    }
     let claim = sql::load(rig.repo.pool(), &rig.worker_session_id)
         .await
         .unwrap()
         .unwrap();
-    assert!(matches!(
-        claim.record().release,
-        sql::Release::Released { .. }
-    ));
+    completed.release.notify_one();
+    assert!(
+        matches!(claim.record().release, sql::Release::Released { .. }),
+        "release after completed seam: {:?}",
+        claim.record().release
+    );
     // Keep the request pending while the rig leaves scope. No explicit Stop/sweep is used:
     // the fixture's existing supervisor owner must close the live registered payload.
     let _rig = rig;
