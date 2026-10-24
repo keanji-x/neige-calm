@@ -1049,7 +1049,7 @@ async fn dispatch_forge_action_result(
     };
     let result = if submitted.parked {
         // The stored operation, as `neige_op_show` reads it, so both answer alike.
-        runtime
+        let result = runtime
             .operation_on_track(&submitted.op_id, FORGE_ACTION_KIND, &track_id)
             .await
             .and_then(|op| {
@@ -1059,13 +1059,16 @@ async fn dispatch_forge_action_result(
                         submitted.op_id
                     ))
                 })
-            })
-            .and_then(|op| forge_receipt::show(&op))
+            });
+        match result {
+            Ok(op) => forge_receipt::show(&op).await,
+            Err(error) => Err(error),
+        }
     } else {
-        runtime
-            .wait(&submitted.op_id)
-            .await
-            .map(forge_receipt::outcome)
+        match runtime.wait(&submitted.op_id).await {
+            Ok(result) => Ok(forge_receipt::output::receipt(result).await),
+            Err(error) => Err(error),
+        }
     };
     Ok(json!(
         result.unwrap_or_else(|e| forge_receipt::error(e.to_string()))

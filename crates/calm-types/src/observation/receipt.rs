@@ -24,7 +24,7 @@ impl Write for Prefix {
     }
 }
 
-fn preview(value: &Value) -> String {
+pub fn preview(value: &Value) -> String {
     let mut prefix = Prefix(Vec::new());
     let truncated = if let Value::String(text) = value {
         prefix.write_all(text.as_bytes()).is_err()
@@ -37,6 +37,11 @@ fn preview(value: &Value) -> String {
             .expect("the serialized prefix starts with valid UTF-8"),
     };
     let encoded = json!({"text": valid, "truncated": truncated}).to_string();
+    escape_json(&encoded)
+}
+
+/// Escape a serialized JSON value for untrusted display without changing its value.
+pub fn escape_json(encoded: &str) -> String {
     // Keep every field on one physical line, including Unicode line separators
     // and bidi controls. Markup delimiters cannot close the report-data framing.
     let mut escaped = String::new();

@@ -9,6 +9,8 @@ use crate::mcp_server::result::ToolResult;
 use crate::operation::forge_action_adapter::completion_event;
 use crate::operation::{Operation, OperationOutcome, OperationResult, operation_result_from};
 
+pub(crate) mod output;
+
 pub(super) const PENDING_GUIDANCE: &str = include_str!("../../prompts/forge-action/pending.md");
 
 #[derive(Serialize)]
@@ -40,9 +42,9 @@ pub(crate) fn pending(op_id: &str, completion_event: Option<&str>) -> Value {
 
 /// A stored forge-action operation as recorded: its outcome, or, while it has none, its pending
 /// receipt naming the completion event its payload declares.
-pub(crate) fn show(op: &Operation) -> crate::error::Result<ToolResult> {
+pub(crate) async fn show(op: &Operation) -> crate::error::Result<ToolResult> {
     if let Some(result) = operation_result_from(op)? {
-        return Ok(outcome(result));
+        return Ok(output::receipt(result).await);
     }
     let completion_event = completion_event(op)?;
     Ok(ToolResult::structured(pending(
@@ -255,16 +257,55 @@ mod tests {
     #[tokio::test]
     async fn show_renders_a_recorded_outcome_without_decoding_the_payload() {
         let (repo, op) = stored(json!({ "track_id": "track-a" })).await;
-        assert!(show(&op).is_err(), "a pending receipt needs the payload");
+        assert!(
+            show(&op).await.is_err(),
+            "a pending receipt needs the payload"
+        );
         sqlx::query("UPDATE operations SET phase = 'failed', last_error = 'boom' WHERE id = ?1")
             .bind(&op.id)
             .execute(repo.sqlite_db().writer_pool())
             .await
             .unwrap();
         let failed = repo.get_operation(&op.id).await.unwrap().unwrap();
-        let shown = serde_json::to_value(show(&failed).unwrap()).unwrap();
+        let shown = serde_json::to_value(show(&failed).await.unwrap()).unwrap();
         assert_eq!(shown["isError"], true);
         assert_eq!(shown["structuredContent"]["status"], "failed");
         assert_eq!(shown["structuredContent"]["last_error"], "boom");
+    }
+    #[tokio::test]
+    async fn recorded_artifact_missing_and_bounded_failure_references_are_honest() {
+        use crate::operation::{Phase, TxOutput};
+        let (_repo, mut op) = stored(json!({"track_id":"track-a"})).await;
+        op.phase = Phase::Succeeded;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("artifact");
+        std::fs::write(&path, "<untrusted>\u{202e}").unwrap();
+        op.tx_output = Some(TxOutput::new(
+            "track",
+            None,
+            json!({"event":{"artifact_path":path}}),
+        ));
+        let shown = serde_json::to_value(show(&op).await.unwrap()).unwrap();
+        assert_eq!(
+            shown["structuredContent"]["result"]["stdout"],
+            "<untrusted>\u{202e}"
+        );
+        assert!(!shown["content"][0]["text"].as_str().unwrap().contains('<'));
+        std::fs::remove_file(&path).unwrap();
+        let shown = show(&op).await.unwrap().into_structured();
+        assert_eq!(shown["result"]["output_unavailable"], true);
+        assert!(shown["result"].get("output_ref").is_none());
+        assert!(output::read(&op).await.is_err());
+        op.phase = Phase::Failed;
+        op.last_error = Some("<boom>界".repeat(9000));
+        let shown = serde_json::to_value(show(&op).await.unwrap()).unwrap();
+        assert_eq!(shown["isError"], true);
+        assert!(shown.to_string().len() < 30000);
+        assert_eq!(
+            shown["structuredContent"]["output_ref"],
+            format!("ops/{}/result", op.id)
+        );
+        let full: Value = serde_json::from_str(&output::read(&op).await.unwrap()).unwrap();
+        assert_eq!(full["last_error"], op.last_error.unwrap());
     }
 }

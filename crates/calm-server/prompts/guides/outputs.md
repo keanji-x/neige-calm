@@ -25,3 +25,11 @@ Do not run or re-declare another track's tasks unless this track's request needs
 ## Mentions
 
 A user message may point at reports with `@` and a code span: ``@`tag:<tag>` `` is a tag (`neige report find area/reports/ --tag <tag>`), ``@`area/reports/<name>.md` `` a report (`neige track cat` it), ``@`area/reports/<name>.md#<id>` `` one block (`--blocks <id>`). After a rename, `neige track ls area/reports/` shows the new name.
+
+## Full results and selected logs
+
+`neige track cat runs/<attempt_id>/result` prints the original worker result as JSON, including empty values. Completion receipts give this path with `--rev <event-id>` so a later completion cannot silently replace it. Run JSON remains optional metadata and artifact claims; it is not needed to read the result.
+
+`neige track cat runs/<attempt_id>/gates/<N>.log --step checks --grep 'error.' --tail 30` selects an exact displayed step and a literal substring before taking the tail. `--start-line 100 --end-line 150` selects inclusive original line numbers instead of a tail. Step markers are untrusted display hints, not gate authority. Selected output is bounded and includes original line numbers, byte positions, path, revision and `next_byte_offset`. Repeat the same selectors with `--rev <returned-rev> --byte-offset <next_byte_offset>` until it is null. A very long line is split only at UTF-8 boundaries. No selectors reads the full output.
+
+Forge receipts inline small recorded output. Large output carries `output_ref: ops/<op_id>/result`, its byte count and content revision. `neige track cat ops/<op_id>/result` reads it through the same track-scoped operation lookup as `neige op show`; line and continuation selectors work there too. An unavailable recorded artifact yields an explicit error and no readable reference is promised. These virtual paths accept no disk paths.

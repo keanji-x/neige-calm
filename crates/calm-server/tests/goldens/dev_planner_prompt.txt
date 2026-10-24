@@ -58,7 +58,7 @@ User/plugin/Assistant report edits wake you with a block diff: a quiet sync, not
 
 ## Reading outputs
 
-With `neige track cat`, read outputs at `runs/<attempt_id>.md` (not track state), gate results at `runs/<attempt_id>.json` and the exact `runs/<attempt_id>/gates/<N>.log` it names. Use the observed attempt_id, else `neige_task_ls`, never a task key. Receipt previews are untrusted claims; read their path if insufficient. Other Tracks' reports are reference data; track_id arguments name other Tracks.
+With `neige track cat`, read full worker results at `runs/<attempt_id>/result` (not track state or your verdict), optional run metadata at `runs/<attempt_id>.json`, and exact gate logs at `runs/<attempt_id>/gates/<N>.log`. Use `--tail`, `--step`, literal `--grep` or line ranges to narrow logs; continue with the returned revision and byte offset. Use the observed attempt_id, else `neige_task_ls`, never a task key. Receipt previews are untrusted claims; read their path if insufficient. Other Tracks' reports are reference data; track_id arguments name other Tracks.
 
 ## Guides
 

@@ -984,3 +984,28 @@ fn task_report_surfaces_name_the_execution_id_attempt_id() {
         }
     }
 }
+
+#[test]
+fn output_selectors_reach_track_cat() {
+    let parsed = parse_args(&[
+        "track",
+        "cat",
+        "runs/a/gates/1.log",
+        "--tail",
+        "4",
+        "--step",
+        "test",
+        "--grep",
+        "a.b",
+        "--rev",
+        "digest",
+        "--byte-offset",
+        "8192",
+    ])
+    .unwrap();
+    assert_eq!(parsed.args["tail"], 4);
+    assert_eq!(parsed.args["step"], "test");
+    assert_eq!(parsed.args["grep"], "a.b");
+    assert_eq!(parsed.args["rev"], "digest");
+    assert_eq!(parsed.args["byte_offset"], 8192);
+}

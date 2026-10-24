@@ -409,7 +409,7 @@
   },
   {
     "name": "neige_op_show",
-    "description_sha256": "cf9102f06b1c086c6697455731a2604aae8141a281c4ce493fe680cf204d972c",
+    "description_sha256": "2acfbac1a69fed903b4d819403787ac1226a7aca55a19ca6445345ffdca03406",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -1703,7 +1703,7 @@
   },
   {
     "name": "neige_track_cat",
-    "description_sha256": "d6ab35677ab7c06c8e29a8e98f3fca00bee4a5e7aa027ffd6fcf1a2a17810f87",
+    "description_sha256": "0f63264580a9f05a57996538e3e4dd67a4833e85268d307155dcb2408787c42f",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -1715,8 +1715,25 @@
           "minItems": 1,
           "type": "array"
         },
+        "byte_offset": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "end_line": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "grep": {
+          "type": "string"
+        },
         "path": {
           "type": "string"
+        },
+        "rev": {
+          "type": [
+            "integer",
+            "string"
+          ]
         },
         "sections": {
           "description": "Report paths only: print just these H1 sections, as neige_report_read sections does.",
@@ -1725,6 +1742,18 @@
           },
           "minItems": 1,
           "type": "array"
+        },
+        "start_line": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "step": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "tail": {
+          "minimum": 1,
+          "type": "integer"
         }
       },
       "required": [

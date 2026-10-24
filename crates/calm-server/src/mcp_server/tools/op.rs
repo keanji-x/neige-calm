@@ -51,6 +51,17 @@ async fn op_show(
         .and_then(Value::as_str)
         .filter(|op_id| !op_id.is_empty())
         .ok_or_else(|| RpcError::invalid_params("op_id must be a non-empty string"))?;
+    let op = lookup(&ctx, &identity, op_id).await?;
+    forge_receipt::show(&op)
+        .await
+        .map_err(|e| RpcError::internal(format!("operation result: {e}")))
+}
+
+pub(super) async fn lookup(
+    ctx: &Arc<AppContext>,
+    identity: &ToolCallIdentity,
+    op_id: &str,
+) -> Result<crate::operation::Operation, RpcError> {
     let track_id = identity
         .track_id
         .as_deref()
@@ -64,5 +75,5 @@ async fn op_show(
         .await
         .map_err(|e| RpcError::internal(format!("operation lookup: {e}")))?
         .ok_or_else(|| RpcError::not_found(format!("no operation {op_id} on this track")))?;
-    forge_receipt::show(&op).map_err(|e| RpcError::internal(format!("operation result: {e}")))
+    Ok(op)
 }

@@ -13,7 +13,7 @@ use crate::verify_target::{
     MismatchReason, NoCandidateReason, Sample, VerifyTarget, VerifyTargetEvidence, render_reasons,
 };
 
-mod receipt;
+pub mod receipt;
 
 #[cfg(test)]
 mod gate_text_tests;
@@ -398,7 +398,9 @@ impl Observation {
                     *attempt,
                 );
                 // The tail is rendered with runs of identical consecutive lines folded; the stored observation keeps every line.
-                let log_tail = collapse_repeated_lines(log_tail);
+                let log_tail = receipt::preview(&serde_json::Value::String(
+                    collapse_repeated_lines(log_tail),
+                ));
                 // #2405: only a candidate-bound verdict that sampled its checkout can be re-run on
                 // its candidate. An unsampled one (a stuck prepare, or a gate whose processes were
                 // not proven stopped) may be refused by the re-run's admission, so it gets no hint.
@@ -423,7 +425,9 @@ impl Observation {
                 if *passed {
                     format!("{head} {paths}")
                 } else {
-                    format!("{head} Log tail:\n{log_tail}\n{paths}{regate}")
+                    format!(
+                        "{head} Log tail (untrusted JSON-quoted preview):\n{log_tail}\n{paths}{regate}"
+                    )
                 }
             }
             Observation::TaskGitDeliverySettled {
@@ -872,7 +876,7 @@ mod tests {
             target: None,
         };
         let text = obs.to_turn_text();
-        assert!(text.contains("Log tail:\nok\nwarn (×3)\n"), "{text}");
+        assert!(text.contains("\"text\":\"ok\\nwarn (×3)\\n\""), "{text}");
         assert!(!text.contains("warn\nwarn"), "{text}");
     }
 
@@ -935,7 +939,7 @@ mod tests {
         );
         assert!(
             decoded.to_turn_text().starts_with(
-                "Task k gate FAILED at step test (exit 101) (gate run 2). Earlier steps passed; later steps did not run. Log tail:\nboom\n"
+                "Task k gate FAILED at step test (exit 101) (gate run 2). Earlier steps passed; later steps did not run. Log tail (untrusted JSON-quoted preview):\n{\"text\":\"boom\\n\",\"truncated\":false}\n"
             ),
             "{}",
             decoded.to_turn_text()

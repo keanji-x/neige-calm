@@ -36,9 +36,10 @@ where
     Arc::new(move |ctx, identity, args| -> ToolHandlerFuture {
         let result = f(ctx, identity, args);
         Box::pin(async move {
-            result
-                .await
-                .map(crate::mcp_server::result::ToolResult::structured)
+            result.await.map(|value| {
+                let text = calm_types::observation::receipt::escape_json(&value.to_string());
+                crate::mcp_server::result::ToolResult::structured_with_summary(value, text)
+            })
         })
     })
 }
@@ -64,7 +65,7 @@ fn ls_descriptor() -> ToolDescriptor {
 }
 
 fn cat_descriptor() -> ToolDescriptor {
-    ToolDescriptor {
+    let mut descriptor = ToolDescriptor {
         name: TOOL_TRACK_CAT.into(),
         description: include_str!("../../../prompts/tools/neige_track_cat.md")
             .trim_end()
@@ -92,7 +93,17 @@ fn cat_descriptor() -> ToolDescriptor {
         annotations: Some(read_only_annotations()),
         roles: &[CardRole::Planner, CardRole::Worker],
         listed_for: &[],
-    }
+    };
+    descriptor.input_schema["properties"]
+        .as_object_mut()
+        .expect("object properties")
+        .extend(
+            super::output_projection::OutputSelect::schema()
+                .as_object()
+                .expect("selector schema")
+                .clone(),
+        );
+    descriptor
 }
 
 async fn track_ls(
@@ -144,6 +155,17 @@ async fn track_cat(
 ) -> Result<Value, RpcError> {
     let path = parse_path_arg(&args, true)?;
     let selection = parse_selection_arg(&args)?;
+    let output = super::output_projection::OutputSelect::parse(&args)?;
+    let output_path = path.starts_with("ops/")
+        || (path.starts_with("runs/") && (path.ends_with("/result") || path.ends_with(".log")));
+    if (output.active() || output.rev.is_some()) && (selection.is_some() || !output_path) {
+        return Err(RpcError::invalid_params(
+            "output selectors require a run result, gate log or operation result, without report selectors",
+        ));
+    }
+    if output.step_is_set() && !path.ends_with(".log") {
+        return Err(RpcError::invalid_params("step selects gate logs only"));
+    }
     if let Some(area_path) = area_reports::classify(&path) {
         return super::area_reports::cat(&ctx, &identity, &path, area_path, selection.as_ref())
             .await;
@@ -167,12 +189,52 @@ async fn track_cat(
     // Gate logs are enabled only here (MCP carries a card identity, so the track is the caller's own); the gate-logs dir is the configured one, never recomputed from env.
     let view = TrackFsView::new(ctx.repo.as_ref(), &ctx.write)
         .with_gate_log_access(ctx.gate_logs_dir.clone());
-    let content = view
-        .cat(&track, path.as_str())
-        .await
-        .map_err(track_fs_error_to_rpc)?;
-    serde_json::to_value(content)
-        .map_err(|e| RpcError::internal(format!("json serialization: {e}")))
+    let mut result_revision = None;
+    let content = if let Some(attempt) = path
+        .strip_prefix("runs/")
+        .and_then(|rest| rest.strip_suffix("/result"))
+    {
+        let (content, rev) = view
+            .run_result(&track, attempt)
+            .await
+            .map_err(track_fs_error_to_rpc)?;
+        result_revision = Some(rev);
+        content
+    } else if let Some(op_id) = path
+        .strip_prefix("ops/")
+        .and_then(|rest| rest.strip_suffix("/result"))
+    {
+        let op = super::op::lookup(&ctx, &identity, op_id).await?;
+        TrackFsContent {
+            content: crate::mcp_server::forge_receipt::output::read(&op)
+                .await
+                .map_err(|error| RpcError::invalid_params(error.to_string()))?,
+            content_type: "text/plain".into(),
+        }
+    } else {
+        view.cat(&track, path.as_str())
+            .await
+            .map_err(track_fs_error_to_rpc)?
+    };
+    let rev = result_revision.map_or_else(
+        || {
+            json!(crate::report_sources::sha256_hex(
+                content.content.as_bytes()
+            ))
+        },
+        |rev| json!(rev),
+    );
+    output.check_rev(&rev)?;
+    if output.active() {
+        return output.project(&path, &content.content, rev);
+    }
+    let mut value = serde_json::to_value(content)
+        .map_err(|e| RpcError::internal(format!("json serialization: {e}")))?;
+    if output_path {
+        value["path"] = json!(path);
+        value["rev"] = rev;
+    }
+    Ok(value)
 }
 
 fn parse_path_arg(args: &Value, required: bool) -> Result<String, RpcError> {

@@ -10,6 +10,7 @@ pub mod mail;
 pub mod message_read;
 pub mod objective;
 pub mod op;
+mod output_projection;
 pub(crate) mod paging;
 pub mod plan;
 pub mod preview;

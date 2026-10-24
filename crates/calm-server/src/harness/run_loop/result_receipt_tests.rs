@@ -134,11 +134,15 @@ async fn deep_completion_and_same_batch_user_reach_transport() {
                 .await
                 .is_empty()
         );
-        if depth == 124 {
-            assert!(text.contains(UNAVAILABLE));
-        } else {
-            read_details(&fx, text).await;
-        }
+        assert!(text.contains("runs/deep-attempt/result --rev"));
+        let result = calm_truth::track_fs_view::TrackFsView::new(fx.repo.as_ref(), &write)
+            .cat(&track, "runs/deep-attempt/result")
+            .await
+            .unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&result.content).unwrap(),
+            args["result"]
+        );
     }
 }
 

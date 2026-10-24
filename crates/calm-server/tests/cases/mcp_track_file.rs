@@ -2633,3 +2633,158 @@ async fn worker_reads_own_track_gate_log_but_not_another_tracks() {
 
 #[path = "mcp_track_file_guides.rs"]
 mod guides;
+
+#[tokio::test]
+async fn output_result_reads_full_worker_value_not_planner_verdict() {
+    let boot = boot().await;
+    for (key, value) in [
+        (
+            "full-output",
+            json!({"text":"<fake>\u{202e}","details":"界".repeat(9000)}),
+        ),
+        ("empty-output", json!(null)),
+    ] {
+        request_codex(&boot, key).await;
+        materialize_worker(&boot, key).await;
+        let rev = complete_run_with_result(&boot, key, value.clone()).await;
+        accept_run(&boot, key).await;
+        let path = format!("runs/{key}/result");
+        let out = call_tool(
+            &boot,
+            TOOL_TRACK_CAT,
+            worker_identity(&boot),
+            json!({"path":path,"rev":rev}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(out["content"].as_str().unwrap()).unwrap(),
+            value
+        );
+        assert!(!out["content"].as_str().unwrap().contains('<'));
+        assert!(
+            call_tool(
+                &boot,
+                TOOL_TRACK_CAT,
+                other_planner_identity(&boot),
+                json!({"path":path})
+            )
+            .await
+            .is_err()
+        );
+        assert!(
+            call_tool(
+                &boot,
+                TOOL_TRACK_CAT,
+                planner_identity(&boot),
+                json!({"path":path,"rev":rev+1})
+            )
+            .await
+            .is_err()
+        );
+    }
+}
+
+#[tokio::test]
+async fn output_gate_selectors_keep_readable_original_lines() {
+    let boot = boot().await;
+    let task = seed_gated_task(&boot, "output-gate", 1).await;
+    std::fs::create_dir_all(&boot.gate_logs_dir).unwrap();
+    std::fs::write(
+        boot.gate_logs_dir.join(format!("{task}-g1.log")),
+        "::gate-step build\na.b\naxb\n::gate-step test\na.b second\n",
+    )
+    .unwrap();
+    let path = format!("runs/{task}/gates/1.log");
+    let out = call_tool(
+        &boot,
+        TOOL_TRACK_CAT,
+        planner_identity(&boot),
+        json!({"path":path,"step":"build","grep":"a.b","tail":1}),
+    )
+    .await
+    .unwrap();
+    let rows = out["lines"].as_array().unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["line"], 2);
+    assert_eq!(rows[0]["text"], "a.b\n");
+    assert_eq!(out["path"], path);
+    assert!(
+        call_tool(
+            &boot,
+            TOOL_TRACK_CAT,
+            planner_identity(&boot),
+            json!({"path":path,"blocks":["b_x"],"tail":1})
+        )
+        .await
+        .is_err()
+    );
+    assert!(
+        call_tool(
+            &boot,
+            TOOL_TRACK_CAT,
+            planner_identity(&boot),
+            json!({"path":path,"tail":1,"start_line":1})
+        )
+        .await
+        .is_err()
+    );
+    std::fs::remove_dir_all(&boot.gate_logs_dir).unwrap();
+}
+
+#[tokio::test]
+async fn output_gate_utf8_long_line_continuation_and_stale_revision() {
+    let boot = boot().await;
+    let task = seed_gated_task(&boot, "output-pages", 1).await;
+    std::fs::create_dir_all(&boot.gate_logs_dir).unwrap();
+    let disk = boot.gate_logs_dir.join(format!("{task}-g1.log"));
+    let original = format!("{}\nlast\n", "界<\u{202e}>".repeat(5000));
+    std::fs::write(&disk, &original).unwrap();
+    let path = format!("runs/{task}/gates/1.log");
+    let mut offset = 0;
+    let mut restored = String::new();
+    let mut rev: Option<Value> = None;
+    loop {
+        let mut args = json!({"path":path,"start_line":1,"byte_offset":offset});
+        if let Some(rev) = &rev {
+            args["rev"] = rev.clone();
+        }
+        let page = call_tool(&boot, TOOL_TRACK_CAT, planner_identity(&boot), args)
+            .await
+            .unwrap();
+        let printed: Value = serde_json::from_str(page["content"].as_str().unwrap()).unwrap();
+        assert_eq!(printed["path"], path);
+        assert_eq!(printed["next_byte_offset"], page["next_byte_offset"]);
+        assert_eq!(printed["rev"], page["rev"]);
+        assert!(!page["content"].as_str().unwrap().contains('<'));
+        rev = Some(page["rev"].clone());
+        let mut bytes = 0;
+        for line in page["lines"].as_array().unwrap() {
+            let text = line["text"].as_str().unwrap();
+            restored.push_str(text);
+            bytes += text.len();
+            assert!(line["line"].as_u64().unwrap() <= 2);
+        }
+        assert!(bytes <= 8192);
+        match page["next_byte_offset"].as_u64() {
+            Some(next) => {
+                assert!(next > offset);
+                offset = next;
+            }
+            None => break,
+        }
+    }
+    assert_eq!(restored, original);
+    std::fs::write(&disk, "replacement").unwrap();
+    assert!(
+        call_tool(
+            &boot,
+            TOOL_TRACK_CAT,
+            planner_identity(&boot),
+            json!({"path":path,"tail":1,"rev":rev})
+        )
+        .await
+        .is_err()
+    );
+    std::fs::remove_dir_all(&boot.gate_logs_dir).unwrap();
+}

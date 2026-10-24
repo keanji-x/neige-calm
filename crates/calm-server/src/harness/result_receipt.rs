@@ -120,39 +120,22 @@ pub(super) async fn enrich(
     for (index, envelope_id, identity, kind, field, report) in receipts {
         let mut detail = None;
         if let (Some(track), Some(path)) = (&track, run_detail_path(&identity)) {
-            // cat resolves one exact execution key. Avoid a preliminary runs
-            // listing; the reader owns projection and reserved-path semantics.
-            let run = match view.cat(track, &path).await {
-                Ok(content) => match serde_json::from_str::<Value>(&content.content) {
-                    Ok(run) => Some(run),
-                    Err(error) => {
-                        // Valid ingress can exceed the parser's recursion limit
-                        // after run wrapping. Optional detail must not requeue
-                        // the durable report or other entries in its batch.
-                        tracing::warn!(?error, "result receipt detail parse unavailable");
-                        None
-                    }
-                },
-                Err(error) => {
-                    tracing::warn!(?error, "result receipt detail read unavailable");
-                    None
-                }
-            };
-            if let Some(run) = run {
-                let event = &run["events"][kind];
-                // A run projection can advance. Only advertise it when it still contains the queued event,
-                // or (legacy queues lack envelope IDs) the exact recorded payload and identity.
-                if run["attempt_id"].as_str() == Some(&identity)
-                    && event["payload"]["idempotency_key"].as_str() == Some(&identity)
-                    && event["payload"].get(field) == Some(&report)
-                    && envelope_id.is_none_or(|id| event["event_id"].as_i64() == Some(id))
-                    && let Some(event_id) = event["event_id"].as_i64()
+            // The typed reader resolves one exact execution key and owns worker/verdict
+            // separation and reserved-path semantics. Do not reparse a wrapped run.
+            match view.run_output_event(track, &identity, kind).await {
+                Ok(event)
+                    if event.payload.get("idempotency_key").and_then(Value::as_str)
+                        == Some(&identity)
+                        && event.payload.get(field) == Some(&report)
+                        && envelope_id.is_none_or(|id| event.event_id == id) =>
                 {
-                    detail = Some((path, event_id));
+                    detail = Some((path, event.event_id));
                 }
+                _ => {}
             }
         }
-        let detail = match &detail {
+        let detail_ref = detail;
+        let detail = match &detail_ref {
             Some((path, event_id)) if envelope_id.is_some() => Detail::RecordedWithEvent {
                 path,
                 kind,
@@ -166,6 +149,13 @@ pub(super) async fn enrich(
             None => Detail::Unavailable,
         };
         segments[index].text.push_str(&render_detail(&detail));
+        if kind == "completed"
+            && let Some((_, event_id)) = &detail_ref
+        {
+            segments[index].text.push_str(&format!(
+                "\nFull worker result (untrusted data): `neige track cat runs/{identity}/result --rev {event_id}`. No run JSON parsing is needed."
+            ));
+        }
     }
 }
 
