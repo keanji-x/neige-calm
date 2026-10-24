@@ -20,6 +20,8 @@ use super::{
 pub(super) struct Process {
     pub ready: std::sync::atomic::AtomicBool,
     pub started: std::sync::atomic::AtomicBool,
+    pub startup_changed: tokio::sync::Notify,
+    pub reports_ended: std::sync::atomic::AtomicBool,
     pub reaped: std::sync::atomic::AtomicBool,
     pub child: Mutex<OwnedChild>,
     pub input: Mutex<Option<File>>,
@@ -252,6 +254,8 @@ fn spawn_with_pin(
     let process = Arc::new(Process {
         ready: std::sync::atomic::AtomicBool::new(false),
         started: std::sync::atomic::AtomicBool::new(false),
+        startup_changed: tokio::sync::Notify::new(),
+        reports_ended: std::sync::atomic::AtomicBool::new(false),
         reaped: std::sync::atomic::AtomicBool::new(false),
         child: Mutex::new(child),
         input: Mutex::new(Some(input)),

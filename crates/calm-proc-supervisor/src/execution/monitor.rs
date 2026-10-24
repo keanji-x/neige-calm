@@ -24,6 +24,7 @@ impl Executor {
             let mut drained = false;
             while let Some(event) = receive.recv().await {
                 let outcome = executor.apply_event(&id, event).await;
+                process.startup_changed.notify_waiters();
                 match outcome {
                     Ok(true) => {
                         drained = true;
@@ -36,6 +37,10 @@ impl Executor {
                     }
                 }
             }
+            process
+                .reports_ended
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            process.startup_changed.notify_waiters();
             if !drained {
                 let _ = executor
                     .apply_event(

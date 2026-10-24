@@ -262,6 +262,15 @@ async fn canonical_acp_retained_recovery_crash_windows_keep_sending_held_without
 
 #[tokio::test]
 async fn canonical_acp_later_activity_invalidates_completed_settlement() {
+    later_activity(true).await;
+}
+
+#[tokio::test]
+async fn canonical_acp_dispatch_return_does_not_prove_peer_consumption() {
+    later_activity(false).await;
+}
+
+async fn later_activity(consume_before_shutdown: bool) {
     let fx = Fixture::new("reply").await;
     fx.dispatch().await.unwrap();
     fx.wait_idle().await;
@@ -306,7 +315,11 @@ async fn canonical_acp_later_activity_invalidates_completed_settlement() {
             .unwrap();
     tx.commit().await.unwrap();
     std::fs::write(fx.dir.path().join("scenario"), "hold").unwrap();
-    crate::harness::input_dispatch::initial(
+    let listener =
+        tokio::net::UnixListener::bind(fx.dir.path().join("prompt-consumption.sock")).unwrap();
+    // Subscribe before dispatch: a local write receipt cannot prove remote consumption.
+    let mut events = fx.session.subscribe_events();
+    let report = crate::harness::input_dispatch::initial(
         fx.owner.repo.as_ref(),
         &fx.source,
         &fx.owner.card,
@@ -319,12 +332,48 @@ async fn canonical_acp_later_activity_invalidates_completed_settlement() {
     .await
     .unwrap();
     assert!(matches!(
+        report.report.delivery(),
+        InputDelivery::Unknown(_)
+    ));
+    assert!(matches!(
         fx.backend
             .settled_activity(&fx.owner.card, &fx.owner.thread, &admission)
             .await
             .unwrap(),
         SettledActivity::Held
     ));
-    fx.session.shutdown().await.unwrap();
-    assert_eq!(fx.prompts(), 2);
+    let (mut peer, _) = tokio::time::timeout(Duration::from_secs(20), listener.accept())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        fx.prompts(),
+        1,
+        "dispatch returned while the real peer was blocked before reading prompt two"
+    );
+    if consume_before_shutdown {
+        use tokio::io::AsyncWriteExt;
+        peer.write_all(b"!").await.unwrap();
+        tokio::time::timeout(Duration::from_secs(20), async {
+            loop {
+                let event = events.recv().await.unwrap();
+                if matches!(event.kind, provider::events::PlannerEventKind::ReplyDelta { ref delta, .. }
+                    if delta == "held prompt received") {
+                    assert_eq!(event.thread_id.as_deref(), Some(fx.owner.thread.as_str()));
+                    break;
+                }
+            }
+        }).await.unwrap();
+        fx.session.shutdown().await.unwrap();
+        assert_eq!(fx.prompts(), 2);
+    } else {
+        fx.session.shutdown().await.unwrap();
+        use tokio::io::AsyncReadExt;
+        assert_eq!(
+            peer.read(&mut [0]).await.unwrap(),
+            0,
+            "shutdown killed the blocked peer"
+        );
+        assert_eq!(fx.prompts(), 1);
+    }
 }

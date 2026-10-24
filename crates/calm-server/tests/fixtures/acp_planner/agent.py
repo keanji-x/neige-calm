@@ -20,6 +20,7 @@ import sys
 import uuid
 import time
 import hashlib
+import socket
 
 root = pathlib.Path(os.environ['ACP_FIXTURE_ROOT'])
 with (root / 'environment.jsonl').open('a') as output:
@@ -290,6 +291,11 @@ for line in sys.stdin:
         attach_updates()
         check_mcp(params['mcpServers'])
         result(request, config())
+        # Fixture-only barrier: setup has replied, but the next prompt is not read yet.
+        if (root / 'prompt-consumption.sock').exists():
+            with socket.socket(socket.AF_UNIX) as barrier:
+                barrier.connect(str(root / 'prompt-consumption.sock'))
+                assert barrier.recv(1) == b'!'
     elif method == 'session/set_config_option':
         if params['configId'] == 'declared-model-key':
             model = params['value']
@@ -343,6 +349,8 @@ for line in sys.stdin:
                 pending = None
         elif scenario in ['hold', 'server-drain']:
             pending = request
+            if (root / 'prompt-consumption.sock').exists():
+                update({'sessionUpdate': 'agent_message_chunk', 'content': {'type': 'text', 'text': 'held prompt received'}})
             if scenario == 'server-drain':
                 # 2.x standalone contract: inherited launch env, private lease pipe, serve argv.
                 server = subprocess.Popen([sys.executable, '-c', 'import sys,time; time.sleep(300)',

@@ -60,6 +60,15 @@ pub(super) fn run_with_command_hook(
     report_fd: RawFd,
     before_spawn: impl FnOnce(&mut Command),
 ) -> anyhow::Result<()> {
+    run_with_hooks(config_fd, report_fd, before_spawn, || {})
+}
+
+pub(super) fn run_with_hooks(
+    config_fd: RawFd,
+    report_fd: RawFd,
+    before_spawn: impl FnOnce(&mut Command),
+    after_spawn: impl FnOnce(),
+) -> anyhow::Result<()> {
     anyhow::ensure!(
         config_fd > 2 && report_fd > 2 && config_fd != report_fd,
         "invalid helper descriptors"
@@ -165,6 +174,7 @@ pub(super) fn run_with_command_hook(
             return Ok(());
         }
     };
+    after_spawn();
     release_pipe_stdin()?;
     send(&mut report, &context, &HelperEvent::Started);
     let mut status = None;

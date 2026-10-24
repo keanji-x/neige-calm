@@ -23,6 +23,8 @@ impl Executor {
         let first = deadline.is_none();
         let kill_at = *deadline.get_or_insert(tokio::time::Instant::now() + STOP_GRACE);
         drop(deadline);
+        #[cfg(target_os = "linux")]
+        process.startup_changed.notify_waiters();
         if !first {
             return Ok(());
         }

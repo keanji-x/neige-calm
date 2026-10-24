@@ -29,6 +29,8 @@ mod protocol_tests;
 mod scope_helper;
 mod shutdown;
 #[cfg(all(test, target_os = "linux"))]
+mod stdin_handoff_tests;
+#[cfg(all(test, target_os = "linux"))]
 mod stop_tests;
 #[cfg(all(test, target_os = "linux"))]
 mod tombstone_tests;
