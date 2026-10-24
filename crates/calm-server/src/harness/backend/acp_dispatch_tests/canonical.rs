@@ -194,6 +194,22 @@ impl Fixture {
             .count()
     }
 }
+#[test]
+fn acp_fixture_interrupted_native_updates_remain_resumable() {
+    let output = std::process::Command::new("/usr/bin/python3")
+        .arg(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/acp_planner/test_native_persistence.py"
+        ))
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 #[tokio::test]
 async fn canonical_acp_executes_through_body_free_receipt_and_exact_end() {
     for scenario in ["reply", "prompt-error", "lost"] {

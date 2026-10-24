@@ -153,6 +153,13 @@ def ask_permission(request_id):
 def native_path():
     return root / (current + '.json')
 
+def write_native(state):
+    # Stop may interrupt a prompt write; resume must still see a complete snapshot.
+    path = native_path()
+    pending = path.with_suffix('.pending')
+    pending.write_text(json.dumps(state))
+    pending.replace(path)
+
 def check_mcp(servers):
     if servers and (root / 'scenario').read_text().strip() == 'cli':
         cli = pathlib.Path(servers[0]['command']).with_name('neige')
@@ -305,7 +312,7 @@ for line in sys.stdin:
             raise AssertionError('use the declared config key')
         state = json.loads(native_path().read_text())
         state.update(model=model, effort=effort)
-        native_path().write_text(json.dumps(state))
+        write_native(state)
         if not xai:
             update({'sessionUpdate': 'config_option_update', **config()})
         result(request, config())
@@ -314,7 +321,7 @@ for line in sys.stdin:
         state = json.loads(native_path().read_text())
         texts = [part['text'] for part in params['prompt']]
         state['inputs'].extend(texts)
-        native_path().write_text(json.dumps(state))
+        write_native(state)
         scenario = (root / 'scenario').read_text().strip()
         if texts == ['/compact']:
             assert compaction, 'standard compaction capability must be negotiated'
