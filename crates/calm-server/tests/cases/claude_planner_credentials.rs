@@ -111,7 +111,10 @@ async fn a_superseded_claude_rows_live_process_is_gone_after_boot_and_delete() {
     assert_eq!(status, StatusCode::OK, "{body}");
     stack.shutdown().await;
     // The reset committed, then the server died before the old id's stop: its Bash lives on.
-    root.spawn_marked_orphan(&old.id);
+    let (orphan_pid, orphan_start_time) = root.spawn_marked_orphan(&old.id);
+    let other_root = Root::new("exit");
+    let (foreign_pid, _) = other_root.spawn_marked_orphan(&old.id);
+    let (sibling_pid, _) = root.spawn_marked_orphan("not-in-this-database");
     assert_eq!(root.marked_pids(&old.id).len(), 1);
 
     let stack = Stack::boot(&root).await;
@@ -119,11 +122,18 @@ async fn a_superseded_claude_rows_live_process_is_gone_after_boot_and_delete() {
         root.wait_unmarked(&old.id, BUDGET).await.is_empty(),
         "boot swept the superseded row's marker"
     );
+    assert!(
+        calm_server::proc_identity::read_proc_start_time(orphan_pid) != Some(orphan_start_time)
+            || !super::claude_planner_session_fixture::alive(orphan_pid),
+        "boot removed the captured orphan identity"
+    );
     let (status, body) = stack
         .send("DELETE", &format!("/api/tracks/{track_id}"), None)
         .await;
     assert!(status.is_success(), "{status} {body}");
     assert!(root.marked_pids(&old.id).is_empty());
+    assert_eq!(other_root.marked_pids(&old.id), vec![foreign_pid]);
+    assert_eq!(root.marked_pids("not-in-this-database"), vec![sibling_pid]);
 }
 
 /// §9.1 PR4: after boot, a reset of a Claude card whose harness was not reinstalled never

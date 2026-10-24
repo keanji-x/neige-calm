@@ -6,11 +6,16 @@
 //!
 //! Safety: every stack has its own root, so its own `data_dir`, marker instance and fake directory;
 //! the host-wide sweeps of one test can only match processes that test started. `Drop` kills what
-//! still carries one of this root's markers, through the `start_time`-verified signal.
+//! still carries one of this root's markers, plus retained orphan identities, through the
+//! `start_time`-verified signal.
 
 use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::collections::HashSet;
+use std::io::{BufRead, BufReader, Read, Write};
+use std::os::fd::OwnedFd;
+use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::time::Duration;
 
 use axum::body::Body;
@@ -35,11 +40,27 @@ const FAKE: &str = concat!(
     "/tests/fixtures/claude_planner_fake/claude.sh"
 );
 
+// Separate private streams keep the final ready report independent of its builtin read.
+const ORPHAN_CHILD: &str = r#"printf 'ready %s\n' "$BASHPID"; IFS= read -r hold"#;
+
+struct Orphan {
+    pid: i32,
+    start_time: u64,
+    hold: UnixStream,
+}
+
+impl Drop for Orphan {
+    fn drop(&mut self) {
+        sigkill_verified_for_test(self.pid, self.start_time);
+    }
+}
+
 /// The files of one server's life that outlive a reboot: database, data dir, fake, config.
 pub struct Root {
     // Owned by the test, so every boot over this root uses the same supervisor.
     execution: crate::support::execution::Fixture,
     pub dir: tempfile::TempDir,
+    orphans: Mutex<Vec<Orphan>>,
 }
 
 impl Root {
@@ -47,6 +68,7 @@ impl Root {
         let dir = tempfile::tempdir().expect("tempdir");
         let root = Self {
             dir,
+            orphans: Mutex::new(Vec::new()),
             execution: crate::support::execution::Fixture::start(),
         };
         let fake = root.fake_dir();
@@ -144,29 +166,98 @@ impl Root {
         cfg
     }
 
-    /// Spawn a detached `setsid sleep 300` carrying `worker_session_id`'s marker, as a Bash tool
-    /// the CLI started would; returns `(pid, start_time)` of the sleep.
+    /// The final setsid child acknowledges its own PID, then blocks in a Bash builtin.
+    /// It never execs or forks after readiness. The launcher is already reaped on return.
     pub fn spawn_marked_orphan(&self, worker_session_id: &str) -> (i32, u64) {
-        let pid_file = self.path().join(format!("orphan-{worker_session_id}"));
-        let status = std::process::Command::new("bash")
-            .arg("-c")
-            .arg(format!(
-                "setsid sleep 300 < /dev/null > /dev/null 2>&1 & echo $! > {}",
-                pid_file.display()
-            ))
+        self.try_spawn_marked_orphan(worker_session_id, ORPHAN_CHILD, |_, _, _, _| {})
+            .expect("prepare marked orphan")
+    }
+
+    fn try_spawn_marked_orphan(
+        &self,
+        worker_session_id: &str,
+        child_script: &str,
+        // The contract regressions control the final child before its readiness report.
+        before_ready: impl FnOnce(i32, u64, &mut UnixStream, &mut BufReader<UnixStream>),
+    ) -> anyhow::Result<(i32, u64)> {
+        let files = tempfile::tempdir_in(self.path())?;
+        let pid_file = files.path().join("pid");
+        let (ready, report) = UnixStream::pair()?;
+        ready.set_read_timeout(Some(Duration::from_secs(5)))?;
+        let (hold, input) = UnixStream::pair()?;
+        let mut launcher = std::process::Command::new("/bin/bash")
+            .args([
+                "-c",
+                r#"setsid /bin/bash -c "$1" orphan <&0 & printf '%s\n' "$!" > "$2""#,
+                "launcher",
+            ])
+            .arg(child_script)
+            .arg(&pid_file)
             .env_clear()
             .env("PATH", std::env::var_os("PATH").unwrap_or_default())
             .env(MARKER_KEY, self.instance().marker(worker_session_id))
-            .status()
-            .expect("spawn orphan");
-        assert!(status.success());
-        let pid: i32 = std::fs::read_to_string(&pid_file)
-            .expect("orphan pid")
-            .trim()
-            .parse()
-            .expect("pid");
-        let start_time = read_proc_start_time(pid).expect("orphan start time");
-        (pid, start_time)
+            .stdin(std::process::Stdio::from(OwnedFd::from(input)))
+            .stdout(std::process::Stdio::from(OwnedFd::from(report)))
+            .stderr(std::process::Stdio::null())
+            .spawn()?;
+        // Reap the launcher before accepting the detached final child.
+        let status = launcher.wait()?;
+        anyhow::ensure!(status.success(), "orphan launcher failed: {status}");
+        let pid: i32 = std::fs::read_to_string(pid_file)?.trim().parse()?;
+        anyhow::ensure!(
+            pid > 1 && pid != std::process::id() as i32,
+            "invalid launch PID"
+        );
+        let start_time = read_proc_start_time(pid)
+            .ok_or_else(|| anyhow::anyhow!("orphan exited before readiness"))?;
+        // Capture cleanup ownership before reading the final ack or inspecting its marker.
+        // In particular, failed preparation must not depend on a later marker scan.
+        let mut orphan = Orphan {
+            pid,
+            start_time,
+            hold,
+        };
+        let mut ready = BufReader::new(ready);
+        before_ready(pid, start_time, &mut orphan.hold, &mut ready);
+        let mut frame = String::new();
+        let count = ready.by_ref().take(128).read_line(&mut frame)?;
+        anyhow::ensure!(count > 0, "orphan readiness EOF");
+        self.verify_orphan_ready(worker_session_id, pid, start_time, &frame)?;
+        anyhow::ensure!(
+            // SAFETY: getsid only queries the positive PID captured above.
+            unsafe { libc::getsid(pid) } == pid,
+            "orphan is not a session leader"
+        );
+        self.orphans.lock().unwrap().push(orphan);
+        Ok((pid, start_time))
+    }
+
+    fn verify_orphan_ready(
+        &self,
+        worker_session_id: &str,
+        pid: i32,
+        start_time: u64,
+        frame: &str,
+    ) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            frame == format!("ready {pid}\n"),
+            "bad orphan readiness identity: {frame:?}"
+        );
+        anyhow::ensure!(
+            read_proc_start_time(pid) == Some(start_time),
+            "orphan identity changed"
+        );
+        anyhow::ensure!(
+            super::claude_planner_session_fixture::alive(pid),
+            "orphan is not live"
+        );
+        // Reuse the fixture's exact marker decoder, not a second environment parser.
+        anyhow::ensure!(
+            marked(&HashSet::from([self.instance().marker(worker_session_id)]))
+                .contains(&(pid, start_time)),
+            "orphan marker is not ready"
+        );
+        Ok(())
     }
 
     /// Live (non-zombie) processes carrying `worker_session_id`'s marker of this root.
@@ -198,6 +289,7 @@ impl Root {
 
 impl Drop for Root {
     fn drop(&mut self) {
+        self.orphans.get_mut().unwrap().clear();
         let instance = self.instance().marker("");
         for (pid, start_time) in marked_by(|value| value.starts_with(&instance)) {
             sigkill_verified_for_test(pid, start_time);
@@ -542,4 +634,75 @@ fn marked_by(accept: impl Fn(&str) -> bool) -> Vec<(i32, u64)> {
         }
     }
     found
+}
+
+#[test]
+fn orphan_readiness_waits_for_the_final_child() {
+    let root = Root::new("exit");
+    let script = format!("printf 'entered\\n'; IFS= read -r permit; {ORPHAN_CHILD}");
+    let (pid, stamp) = root
+        .try_spawn_marked_orphan("barrier", &script, |_, _, permit, ready| {
+            let mut entered = String::new();
+            ready.read_line(&mut entered).unwrap();
+            assert_eq!(entered, "entered\n");
+            eprintln!("ChildEntered; WaitReadyEntered; final ack withheld until permit");
+            permit.write_all(b"go\n").unwrap();
+        })
+        .unwrap();
+    eprintln!("HelperReturned after final ready: pid={pid} start_time={stamp}");
+    assert_eq!(root.marked_pids("barrier"), vec![pid]);
+    assert!(
+        root.verify_orphan_ready("barrier", pid, stamp + 1, &format!("ready {pid}\n"))
+            .is_err()
+    );
+}
+
+#[test]
+fn orphan_bad_preparation_fails_and_cleans_known_identity() {
+    let root = Root::new("exit");
+    let unmarked = format!(
+        "exec /usr/bin/env -u {MARKER_KEY} /bin/bash -c '{}'",
+        ORPHAN_CHILD.replace('\'', "'\\''")
+    );
+    for (id, script, expected) in [
+        ("eof", "exec 1>&-; IFS= read -r hold", "readiness EOF"),
+        (
+            "bad",
+            "printf 'ready 1\\n'; IFS= read -r hold",
+            "bad orphan readiness identity",
+        ),
+        ("exit", "exit 0", "orphan"),
+        ("unmarked", unmarked.as_str(), "orphan marker is not ready"),
+    ] {
+        let mut held = None;
+        let error = root
+            .try_spawn_marked_orphan(id, script, |pid, stamp, hold, _| {
+                eprintln!("{id}: known launch pid={pid} start_time={stamp}");
+                held = Some(hold.try_clone().unwrap());
+            })
+            .unwrap_err();
+        assert!(error.to_string().contains(expected), "{id}: {error:#}");
+        if let Some(mut held) = held {
+            held.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            let mut byte = [0];
+            assert_eq!(
+                held.read(&mut byte).unwrap(),
+                0,
+                "failed preparation left its child alive: {id}"
+            );
+        }
+        eprintln!("{id}: rejected and launch channel closed: {error}");
+    }
+    assert!(root.orphans.lock().unwrap().is_empty());
+}
+
+#[test]
+fn orphan_drop_preserves_another_roots_same_session() {
+    let root = Root::new("exit");
+    let other = Root::new("exit");
+    root.spawn_marked_orphan("same");
+    let (pid, stamp) = other.spawn_marked_orphan("same");
+    drop(root);
+    assert_eq!(other.marked_pids("same"), vec![pid]);
+    assert_eq!(read_proc_start_time(pid), Some(stamp));
 }
