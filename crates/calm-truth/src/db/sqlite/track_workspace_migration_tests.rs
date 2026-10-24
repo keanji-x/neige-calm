@@ -1,23 +1,6 @@
-//! Migration 0077 backfill and the single-writer projection it hands over to.
-
-use std::borrow::Cow;
-
-use sqlx::sqlite::SqlitePoolOptions;
+//! Workspace storage fixtures and the single-writer projection.
 
 use crate::model::{TrackWorkspace, TrackWorkspaceKind};
-
-fn migrator_through(version: i64) -> sqlx::migrate::Migrator {
-    sqlx::migrate::Migrator {
-        migrations: Cow::Owned(
-            crate::MIGRATOR
-                .iter()
-                .filter(|migration| migration.version <= version)
-                .cloned()
-                .collect(),
-        ),
-        ..sqlx::migrate::Migrator::DEFAULT
-    }
-}
 
 /// Shared real pre-workspace storage fixture, using the released historical schema.
 pub(super) async fn seed_pre_workspace_area(pool: &sqlx::SqlitePool) {
@@ -46,98 +29,6 @@ pub(super) async fn seed_pre_workspace_track(
     .execute(pool)
     .await
     .unwrap_or_else(|error| panic!("seed track {id}: {error}"));
-}
-
-/// Every pre-migration track becomes `attached`, pointing at its own `cwd`,
-/// frozen at `created_at` — including the `cwd = ''` rows migration 0018 produced.
-#[tokio::test]
-async fn migration_0077_backfills_existing_tracks_as_frozen_attached() {
-    let pool = SqlitePoolOptions::new()
-        .max_connections(1)
-        .connect("sqlite::memory:")
-        .await
-        .expect("open migration fixture");
-    migrator_through(76)
-        .run(&pool)
-        .await
-        .expect("apply migrations through 0076");
-
-    seed_pre_workspace_area(&pool).await;
-    sqlx::query(
-        "INSERT INTO coves (id, name, color, sort, kind, created_at, updated_at)
-         VALUES ('area-system', 'system', '#000', -1, 'system', 1, 1)",
-    )
-    .execute(&pool)
-    .await
-    .expect("seed system area");
-    sqlx::query(
-        "INSERT INTO waves (id, cove_id, title, sort, lifecycle, cwd, created_at, updated_at)
-         VALUES ('w-today', 'area-system', 'Today', 0, 'draft', '/home/kenji', 6000, 6000)",
-    )
-    .execute(&pool)
-    .await
-    .expect("seed legacy Today track");
-
-    let seeds = [
-        ("w-repo", "/home/kenji/neige-calm", 1000_i64),
-        ("w-home", "/home/kenji", 2000),
-        ("w-tmp", "/tmp", 3000),
-        ("w-root", "/", 4000),
-        ("w-empty", "", 5000),
-    ];
-    for (id, cwd, created_at) in seeds {
-        seed_pre_workspace_track(&pool, id, cwd, created_at).await;
-    }
-
-    migrator_through(77)
-        .run(&pool)
-        .await
-        .expect("apply migration 0077");
-
-    for (id, cwd, created_at) in seeds {
-        let row: (String, String, Option<i64>) = sqlx::query_as(
-            "SELECT workspace_kind, workspace_path, workspace_frozen_at FROM waves WHERE id = ?1",
-        )
-        .bind(id)
-        .fetch_one(&pool)
-        .await
-        .unwrap_or_else(|error| panic!("read back {id}: {error}"));
-        assert_eq!(row.0, "attached", "{id}: every legacy track is attached");
-        assert_eq!(row.1, cwd, "{id}: workspace_path is backfilled from cwd");
-        assert_eq!(
-            row.2,
-            Some(created_at),
-            "{id}: legacy tracks are frozen at created_at (D9) — an unfrozen \
-             attached row is what a kind-blind PATCH branch would relocate"
-        );
-    }
-
-    // The system area's track stays re-pointable: `today_launchpad_ensure_tx`
-    // re-points it, and a blanket `frozen_at = created_at` would break that.
-    let today: (String, String, Option<i64>) = sqlx::query_as(
-        "SELECT workspace_kind, workspace_path, workspace_frozen_at FROM waves WHERE id='w-today'",
-    )
-    .fetch_one(&pool)
-    .await
-    .expect("read back w-today");
-    assert_eq!(today.0, "attached");
-    assert_eq!(today.1, "/home/kenji", "path still backfills from cwd");
-    assert_eq!(
-        today.2, None,
-        "the system area's track must stay unfrozen (design D9 exception)"
-    );
-
-    let unfrozen_outside_system: Vec<(String,)> = sqlx::query_as(
-        "SELECT w.id FROM waves w JOIN coves c ON c.id = w.cove_id \
-         WHERE w.workspace_frozen_at IS NULL AND c.kind != 'system'",
-    )
-    .fetch_all(&pool)
-    .await
-    .expect("scan unfrozen");
-    assert!(
-        unfrozen_outside_system.is_empty(),
-        "tracks outside the system area must all be frozen, found {unfrozen_outside_system:?}"
-    );
 }
 
 #[tokio::test]

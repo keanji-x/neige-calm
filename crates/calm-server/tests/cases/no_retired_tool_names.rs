@@ -79,9 +79,6 @@ const REJECTION_INPUT_MARKER: &str = "// retired-name: rejection input";
 /// and the two design documents whose rename tables record the old names.
 fn allowlisted(path: &str) -> bool {
     path.starts_with("crates/calm-truth/migrations/")
-        || path == "crates/calm-truth/src/db/sqlite/track_plugin_scope_migration_tests.rs"
-        || path == "crates/calm-truth/src/db/sqlite/track_template_rename_migration_tests.rs"
-        || path == "crates/calm-truth/src/db/sqlite/track_merge_policy_ask_migration_tests.rs"
         || path == "crates/calm-server/tests/goldens/events/forge_pr_merged.historical_subject.json"
         || path == "docs/architecture/2003-cli-mcp-naming.md"
         || path == "docs/conventions/agent-commands.md"

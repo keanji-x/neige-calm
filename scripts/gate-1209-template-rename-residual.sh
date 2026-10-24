@@ -20,9 +20,6 @@ read -r -d '' ALLOWLIST <<'EOF' || true
 5   crates/calm-truth/migrations/0079_waves_rename_workflow_id_to_template_id.sql
 # --- 2b. The area-rename migration cites 0079 as its precedent by the exact column names it renamed.
 1   crates/calm-truth/migrations/0080_cove_to_area.sql
-# --- 3. Migration fixtures built through a migrator truncated before the rename; the old column names are correct there.
-11  crates/calm-truth/src/db/sqlite/track_plugin_scope_migration_tests.rs
-4   crates/calm-truth/src/db/sqlite/track_template_rename_migration_tests.rs
 # --- 4. `Manifest::parse` refuses the retired `workflows` key by name; the check, its tests, and the field doc must spell it.
 9  crates/plugin/src/manifest.rs
 # --- 5. The deserialize-only `#[serde(alias)]` that lets historical `track.updated` rows replay; deleting it is the fail-open this gate prevents.

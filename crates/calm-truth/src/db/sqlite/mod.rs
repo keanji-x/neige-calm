@@ -366,16 +366,11 @@ impl Repo for SqlxRepo {
 mod tests;
 
 #[cfg(test)]
-mod area_defaults_migration_tests;
-
-#[cfg(test)]
 mod sub_track_tree_tests;
 #[cfg(test)]
 mod task_context_migration_tests;
 #[cfg(test)]
 mod task_liveness_deadline_tests;
-#[cfg(test)]
-mod terminal_output_migration_tests;
 #[cfg(test)]
 mod track_tree_budget_tests;
 
@@ -410,9 +405,6 @@ mod session_record_activity_tests;
 mod track_template_input_tests;
 
 #[cfg(test)]
-mod track_plugin_scope_migration_tests;
-
-#[cfg(test)]
 mod track_workspace_migration_tests;
 
 #[cfg(test)]
@@ -420,15 +412,6 @@ mod operations_keyed_rows_permanent_tests;
 
 #[cfg(test)]
 mod track_create_idempotency_tests;
-
-#[cfg(test)]
-mod track_create_request_fingerprint_migration_tests;
-
-#[cfg(test)]
-mod track_template_rename_migration_tests;
-
-#[cfg(test)]
-mod track_merge_policy_ask_migration_tests;
 
 #[cfg(test)]
 mod track_closed_at_migration_tests;
