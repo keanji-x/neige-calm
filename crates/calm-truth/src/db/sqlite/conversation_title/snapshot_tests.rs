@@ -534,16 +534,22 @@ async fn assert_pool_reusable(repo: &SqlxRepo) {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn conversation_title_shared_cache_cancel_releases_transaction() {
     let f = Fixture::memory().await;
-    let (_, ready, release) = f.schedule().await;
-    let reader = f.reader.clone();
-    let card = f.card.clone();
-    let read = tokio::spawn(async move { reader.conversation_title_context(&[card]).await });
-    tokio::task::spawn_blocking(move || ready.recv_timeout(Duration::from_secs(10)).unwrap())
-        .await
-        .unwrap();
-    read.abort();
+    let (schedule, ready, release) = f.schedule().await;
+    let ids = [f.card.clone()];
+    let mut read = f.reader.conversation_title_context(&ids);
+    tokio::select! {
+        result = &mut read => panic!("metadata must remain pending at the held SELECT: {result:?}"),
+        ready = tokio::task::spawn_blocking(move || {
+            ready.recv_timeout(Duration::from_secs(10)).unwrap()
+        }) => ready.unwrap(),
+    }
+    assert!(schedule.acquired.lock().unwrap().is_some());
+    assert!(schedule.held.lock().unwrap().is_none());
+    // Own cancellation: abort only requests it, and a running task poll can still
+    // return Ready after PROFILE resumes. Drop the pending production future
+    // before releasing SQLite so its transaction cannot reach COMMIT.
+    drop(read);
     release.send(()).unwrap();
-    assert!(read.await.unwrap_err().is_cancelled());
     assert_pool_reusable(&f.reader).await;
     assert_eq!(
         f.reader
