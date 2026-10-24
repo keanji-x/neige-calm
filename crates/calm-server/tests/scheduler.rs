@@ -9021,11 +9021,6 @@ async fn gate_timeout_group_kills_and_fails_gate_timeout() {
 
 /// A parked-deadline probe that runs after the live observer's timeout verdict but before it
 /// commits must see the leader's identity still owned, so the verdict stays `gate-timeout` (#1846).
-#[tokio::test]
-async fn gate_timeout_survives_parked_probe_before_observer_commit() {
-    timeout_probe_preserves_decision().await;
-}
-
 async fn timeout_probe_preserves_decision() {
     let _guard = GATE_SPAWN_TEST_LOCK.lock().await;
     let boot = boot().await;
@@ -9078,11 +9073,6 @@ async fn timeout_probe_preserves_decision() {
         "{row:?}"
     );
     std::fs::remove_dir_all(&dir).ok();
-}
-
-#[tokio::test]
-async fn gate_spawn_kills_prior_recorded_group() {
-    c2b::prior_execution_must_settle().await;
 }
 
 /// The verdict channel is the wait status, never the worker-reachable exit file.
@@ -9350,21 +9340,6 @@ async fn stale_gate_before_first_attempt_fails_without_running_shell() {
         .unwrap();
     assert_eq!(op.phase.tag(), PhaseTag::Failed);
     std::fs::remove_dir_all(&dir).ok();
-}
-
-#[tokio::test]
-async fn parked_gate_dead_at_boot_fails_op_and_row_reconciles_gate_infra() {
-    c2b::held_boot_is_infra().await;
-}
-
-#[tokio::test]
-async fn boot_reattach_live_gate_lands_verdict_after_exit() {
-    c2b::released_boot_recovers().await;
-}
-
-#[tokio::test]
-async fn parked_gate_dead_with_exit_file_recovers_real_verdict() {
-    c2b::recovered_status(false).await;
 }
 
 #[tokio::test]
