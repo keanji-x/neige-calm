@@ -153,24 +153,33 @@ fn strip_terminal_escapes(text: &str) -> String {
     out
 }
 
-/// The last 8 KiB of the log, terminal escapes removed.
-pub(crate) fn read_log_tail(log_path: &Path) -> String {
+/// A decoded, escape-stripped log suffix. `truncated` describes the source bytes.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct LogTail {
+    pub text: String,
+    pub truncated: bool,
+}
+
+/// Read the last `max_bytes` bytes; metadata, seek and read failures remain errors.
+pub(crate) fn try_read_log_tail(log_path: &Path, max_bytes: u64) -> std::io::Result<LogTail> {
     use std::io::{Read, Seek, SeekFrom};
-    let Ok(mut file) = std::fs::File::open(log_path) else {
-        return String::new();
-    };
-    let len = file.metadata().map(|m| m.len()).unwrap_or(0);
-    if file
-        .seek(SeekFrom::Start(len.saturating_sub(LOG_TAIL_BYTES)))
-        .is_err()
-    {
-        return String::new();
-    }
+    let mut file = std::fs::File::open(log_path)?;
+    let len = file.metadata()?.len();
+    let start = len.saturating_sub(max_bytes);
+    file.seek(SeekFrom::Start(start))?;
     let mut bytes = Vec::new();
-    if file.read_to_end(&mut bytes).is_err() {
-        return String::new();
-    }
-    strip_terminal_escapes(&String::from_utf8_lossy(&bytes))
+    file.take(len - start).read_to_end(&mut bytes)?;
+    Ok(LogTail {
+        text: strip_terminal_escapes(&String::from_utf8_lossy(&bytes)),
+        truncated: len > max_bytes,
+    })
+}
+
+/// The last 8 KiB of the log, terminal escapes removed; errors retain the legacy empty tail.
+pub(crate) fn read_log_tail(log_path: &Path) -> String {
+    try_read_log_tail(log_path, LOG_TAIL_BYTES)
+        .map(|tail| tail.text)
+        .unwrap_or_default()
 }
 
 /// One gate attempt's evidence: its log, the step file its wrapper writes, and the steps it runs.
@@ -301,6 +310,52 @@ pub(crate) struct GateFiles<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn w_pipe_log_tail_untruncated() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("log");
+        std::fs::write(&log, b"\x1b[31mhello\x1b[0m\n").unwrap();
+        assert_eq!(
+            try_read_log_tail(&log, 64).unwrap(),
+            LogTail {
+                text: "hello\n".into(),
+                truncated: false
+            }
+        );
+        std::fs::write(&log, b"1234").unwrap();
+        assert!(!try_read_log_tail(&log, 4).unwrap().truncated);
+    }
+
+    #[test]
+    fn w_pipe_log_tail_truncated_exact_suffix() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("log");
+        std::fs::write(&log, b"0123456789").unwrap();
+        assert_eq!(
+            try_read_log_tail(&log, 4).unwrap(),
+            LogTail {
+                text: "6789".into(),
+                truncated: true
+            }
+        );
+        assert_eq!(
+            try_read_log_tail(&log, 0).unwrap(),
+            LogTail {
+                text: String::new(),
+                truncated: true
+            }
+        );
+    }
+
+    #[test]
+    fn w_pipe_log_tail_unreadable_returns_error() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(try_read_log_tail(&dir.path().join("absent"), 4).is_err());
+        // An openable directory produces a read error even when tests run as root.
+        assert!(try_read_log_tail(dir.path(), 4).is_err());
+        assert_eq!(read_log_tail(&dir.path().join("absent")), "");
+    }
 
     #[test]
     fn objective_metric_gate_wrapper_snapshot_unchanged() {

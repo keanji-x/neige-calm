@@ -1,4 +1,5 @@
 //! Owner-neutral execution transport and lifecycle mechanisms.
+pub(crate) mod pipe;
 use super::{Operation, SpawnCtx};
 use crate::error::{CalmError, Result};
 use calm_truth::db::sqlite::gate_execution as sql;

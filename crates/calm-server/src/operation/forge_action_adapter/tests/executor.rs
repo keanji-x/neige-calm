@@ -4,8 +4,8 @@ use std::path::PathBuf;
 
 pub(super) struct Executor {
     pub lifecycle: ExecutionLifecycle,
-    _root: tempfile::TempDir,
-    _socket: tempfile::TempDir,
+    pub(super) _root: tempfile::TempDir,
+    pub(super) _socket: tempfile::TempDir,
     child: std::process::Child,
 }
 impl Drop for Executor {

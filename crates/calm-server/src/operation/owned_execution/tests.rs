@@ -114,3 +114,167 @@ async fn c3_keyed_record_cas_never_touches_another_key() {
         json!({"other":"preserved","gate_execution":updated,"terminal_launch":terminal})
     );
 }
+
+// Reuse the real supervisor fixture; it contains transport setup, not owner policy.
+#[path = "../forge_action_adapter/tests/executor.rs"]
+mod executor;
+
+async fn pipe_admission(config: super::pipe::PipeConfig, gate_facade: bool) {
+    use crate::operation::{OperationCompletionBus, SpawnCtx};
+    use crate::{
+        db::RouteRepo, event::EventBus, state::DaemonClient,
+        terminal_renderer::TerminalRendererRegistry,
+    };
+    use std::sync::Arc;
+    use workspace_runtime::execution::ExecutionSpecification;
+    let db = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
+    let repo = Arc::new(SqlxOperationRepo::new(db.db().clone()));
+    let id = repo
+        .insert_operation(
+            "pipe-test",
+            OperationKey {
+                operation_key: new_id(),
+                idempotency_key: None,
+                payload_hash: "hash".into(),
+            },
+            json!({}),
+        )
+        .await
+        .unwrap();
+    let mut output = TxOutput::new("unknown", None, json!({}));
+    output.data = json!({"preserved": true});
+    sqlx::query("UPDATE operations SET phase='spawn_started',tx_output_json=?2 WHERE id=?1")
+        .bind(&id)
+        .bind(serde_json::to_string(&output).unwrap())
+        .execute(db.pool())
+        .await
+        .unwrap();
+    let op = repo.claim_drive_operation(&id).await.unwrap().unwrap();
+    let execution = executor::Executor::new(db.db().clone()).await;
+    assert!(execution.lifecycle.engine().unwrap().available());
+    let route: Arc<dyn RouteRepo> = db.clone();
+    let secret = serde_json::from_reader(
+        std::fs::File::open(execution._root.path().join("key.json")).unwrap(),
+    )
+    .unwrap();
+    let engine = std::sync::Arc::new(workspace_runtime::execution::Engine::new(
+        crate::execution_store::SqliteExecutionStore::new(db.db().clone()).with_projection(
+            config.consumer.into(),
+            Arc::new(crate::operation::gate_execution::Projection),
+        ),
+        workspace_runtime::execution::session_executor::SessionExecutor::new(
+            execution._socket.path().join("control.sock"),
+            secret,
+        ),
+    ));
+    assert!(engine.recover().await.error.is_none());
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while !engine.available() {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let lifecycle = crate::execution_quiesce::ExecutionLifecycle::default();
+    lifecycle.bind(engine);
+    let ctx = SpawnCtx::new(
+        route.clone(),
+        repo.clone(),
+        Arc::new(DaemonClient::new_stub()),
+        TerminalRendererRegistry::new_with_repo(route),
+        EventBus::new(),
+        OperationCompletionBus::new(),
+    )
+    .with_execution(lifecycle);
+    let cwd = tempfile::tempdir().unwrap();
+    let paths = crate::operation::gate_lifecycle::GatePaths::new(cwd.path(), "test");
+    let admitted = if gate_facade {
+        crate::operation::gate_execution::admit(
+            &op,
+            &ctx,
+            cwd.path().to_str().unwrap(),
+            "pipe-track",
+            crate::operation::gate_process::GateFiles {
+                script: &paths.script,
+                log: &paths.log,
+                exit: &paths.exit,
+                step: &paths.step,
+            },
+            crate::operation::gate_process::WrapperSteps::Logged(&[]),
+            "pipe-marker",
+        )
+        .await
+        .unwrap()
+    } else {
+        super::pipe::admit(
+            config,
+            &op,
+            &ctx,
+            cwd.path().canonicalize().unwrap(),
+            "pipe-track",
+            ExecutionSpecification {
+                program: "/bin/sh".into(),
+                args: vec!["-c".into(), "read -r go".into()],
+                environment: vec![],
+                io_mode: calm_session::control::IoMode::Pipe,
+                replay_bytes: 8192,
+            },
+        )
+        .await
+        .unwrap()
+    };
+    let current = repo.get_operation(&id).await.unwrap().unwrap();
+    let data = &current.tx_output.as_ref().unwrap().data;
+    assert_eq!(data["preserved"], true);
+    assert_eq!(
+        data[config.record_key],
+        serde_json::to_value(&admitted).unwrap()
+    );
+    assert_eq!(super::pipe::record(config, &current).unwrap(), admitted);
+    let intent: String =
+        sqlx::query_scalar("SELECT intent_json FROM workspace_executions WHERE execution_id=?1")
+            .bind(admitted.execution_id.as_str())
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+    let intent: Value = serde_json::from_str(&intent).unwrap();
+    assert_eq!(intent["consumer"], config.consumer, "{intent}");
+    assert_eq!(intent["alias"], format!("{}:{id}", config.alias_prefix));
+    if gate_facade {
+        assert_eq!(config.consumer, "gate");
+        assert_eq!(config.alias_prefix, "gate");
+        assert_eq!(config.record_key, "gate_execution");
+        assert_eq!(intent["program"]["program"], "/bin/sh");
+        assert_eq!(intent["program"]["args"], json!([paths.script]));
+        assert_eq!(intent["program"]["io_mode"], "Pipe");
+        assert_eq!(intent["program"]["replay_bytes"], 8192);
+        assert_eq!(
+            std::fs::read_to_string(&paths.script).unwrap(),
+            crate::operation::gate_process::render_gate_wrapper(&[])
+        );
+    } else {
+        assert!(data.get("gate_execution").is_none());
+    }
+    // Persist Stop while the release pipe is held; never leave a test child running.
+    super::pipe::stop(config, &ctx, &current, super::StopReason::Timeout)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn w_pipe_non_gate_config_admits_own_identity_and_record() {
+    pipe_admission(
+        super::pipe::PipeConfig {
+            consumer: "pipe-test",
+            alias_prefix: "pipe-test",
+            record_key: "terminal_launch",
+        },
+        false,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn w_pipe_gate_config_preserves_literal_contract() {
+    pipe_admission(crate::operation::gate_execution::CONFIG, true).await;
+}
