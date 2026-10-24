@@ -1,5 +1,6 @@
 //! Same expected tenure: concurrent admission and a later byte-identical replay.
 use super::*;
+use crate::test_seams::{PausePoint, install_pause_for_test};
 
 async fn counts(p: &Pair) -> (i64, i64, i64) {
     sqlx::query_as(
@@ -27,9 +28,27 @@ async fn planner_switch_http_concurrent_and_success_replay() {
             .body(Body::from(value.to_string()))
             .unwrap()
     };
-    let first = p.app.clone().oneshot(make());
-    let second = p.app.clone().oneshot(make());
-    let both = async { tokio::join!(first, second) };
+    let pause = PausePoint::default();
+    install_pause_for_test("planner-switch-before-commit", &p.cards[0], pause.clone());
+    let first = tokio::spawn(p.app.clone().oneshot(make()));
+    tokio::time::timeout(Duration::from_secs(5), pause.entered.notified())
+        .await
+        .unwrap();
+    // The second authenticated request reaches the switch while the first owns
+    // the Track lock and has captured its carriers, before either can commit.
+    let admission = PausePoint::default();
+    install_pause_for_test(
+        "planner-switch-before-push-lock",
+        &p.cards[0],
+        admission.clone(),
+    );
+    let second = tokio::spawn(p.app.clone().oneshot(make()));
+    tokio::time::timeout(Duration::from_secs(5), admission.entered.notified())
+        .await
+        .unwrap();
+    admission.release.notify_one();
+    pause.release.notify_one();
+    let both = async { (first.await.unwrap(), second.await.unwrap()) };
     tokio::pin!(both);
     let (a,b) = tokio::time::timeout(Duration::from_secs(10), async {
         loop { tokio::select! {

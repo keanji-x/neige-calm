@@ -24,6 +24,7 @@ struct Pair {
     track: String,
     cards: [String; 2],
     workers: [String; 2],
+    credentials: Vec<(String, Option<String>)>,
 }
 
 async fn complete(state: &AppState, peer: &mut Peer, thread: &str, turn: &str) {
@@ -138,7 +139,9 @@ impl Pair {
         if provider == "codex" {
             fixture.wait_for_stored_reply(&target).await;
         }
+        let credentials = credential_facts(&fixture, &track).await;
         Self {
+            credentials,
             fixture,
             state,
             app,
@@ -177,6 +180,10 @@ impl Pair {
         }).await.unwrap()
     }
     async fn unchanged(&self) {
+        assert_eq!(
+            credential_facts(&self.fixture, &self.track).await,
+            self.credentials
+        );
         let current: Vec<(String,String)> = sqlx::query_as("SELECT id,session_id FROM cards WHERE track_id=?1 AND role IN ('planner','assistant') ORDER BY role DESC").bind(&self.track).fetch_all(self.fixture.repo.pool()).await.unwrap();
         assert_eq!(
             current,
@@ -200,6 +207,18 @@ impl Pair {
         self.fixture.shutdown_process(&self.state).await;
     }
 }
+async fn credential_facts(fixture: &Fixture, track: &str) -> Vec<(String, Option<String>)> {
+    sqlx::query_as(
+        "SELECT ws.id, ws.mcp_token_hash FROM worker_sessions ws WHERE ws.track_id=?1
+        UNION ALL SELECT t.card_id, t.hashed_token FROM card_mcp_tokens t
+        JOIN cards c ON c.id=t.card_id WHERE c.track_id=?1 ORDER BY 1",
+    )
+    .bind(track)
+    .fetch_all(fixture.repo.pool())
+    .await
+    .unwrap()
+}
+
 fn code(error: &PlannerSwitchError) -> Option<&'static str> {
     match error {
         PlannerSwitchError::Refused { reason, .. } => Some(reason.code()),

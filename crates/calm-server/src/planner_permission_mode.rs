@@ -83,13 +83,13 @@ pub fn read(payload: &Value) -> Result<PlannerPermissionMode, MalformedPermissio
 }
 
 /// Inherit the Track's current permission choice, just as delegated creation does.
-/// Read and overwrite under the switch transaction, before its ingress observations.
+/// Read and overwrite under the switch transaction, after its carrier CAS.
 /// The caller rolls back this write if any later switch check refuses.
 pub(crate) async fn inherit_for_switch_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     outgoing: &str,
     incoming: &str,
-) -> Result<(), InheritanceError> {
+) -> Result<Card, InheritanceError> {
     let sqlx::types::Json(payload): sqlx::types::Json<Value> =
         sqlx::query_scalar("SELECT payload FROM cards WHERE id=?1")
             .bind(outgoing)
@@ -97,8 +97,7 @@ pub(crate) async fn inherit_for_switch_tx(
             .await
             .map_err(calm_truth::TruthError::from)?;
     let mode = read(&payload).map_err(InheritanceError::Malformed)?;
-    crate::db::sqlite::planner_permission_mode_set_tx(tx, incoming, mode, |_| Ok(())).await?;
-    Ok(())
+    Ok(crate::db::sqlite::planner_permission_mode_set_tx(tx, incoming, mode, |_| Ok(())).await?)
 }
 
 pub(crate) enum InheritanceError {

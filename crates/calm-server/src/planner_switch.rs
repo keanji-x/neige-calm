@@ -151,6 +151,12 @@ async fn switch_owned(
         .ok_or_else(|| CalmError::Internal("Planner switch requires SQLite".into()))?;
     // Serialize same-Track switches before capturing or parking either carrier.
     // A waiting request must observe the committed tenure, not a transient park.
+    #[cfg(feature = "fixtures")]
+    crate::test_seams::pause_point(
+        "planner-switch-before-push-lock",
+        r.expected_planner_card_id.as_str(),
+    )
+    .await;
     let _push = s.dispatcher.planner_switch_push_lock(&r.track_id).await;
     let current: Option<String> =
         sqlx::query_scalar("SELECT id FROM cards WHERE track_id=?1 AND role='planner'")
@@ -164,7 +170,6 @@ async fn switch_owned(
         ));
     }
     let mut workers = Vec::new();
-    let mut cards = Vec::new();
     let mut handles = Vec::new();
     let mut slots = Vec::new();
     let factory = PlannerFactory::new(
@@ -244,7 +249,6 @@ async fn switch_owned(
         slots.push(s.harness.carrier_retirement_slot(worker));
         workers.push(worker.clone());
         handles.push(handle);
-        cards.push(card);
     }
     let context = &s.mcp_context;
     let mut parks = Vec::new();
@@ -288,16 +292,35 @@ async fn switch_owned(
     // Even a read snapshot uses the shared immediate owner to avoid deferred-lock cycles.
     let mut read = sqlite::begin_immediate_tx(&db).await?;
     let mut arrivals: Vec<Vec<calm_truth::db::sqlite::event_inputs::EventInputFact>> = Vec::new();
+    // Freeze the carrier expectations with arrivals. Reading them in the final
+    // transaction would absorb ingress committed after this qualification.
+    let mut captured = Vec::new();
     for (i, worker) in workers.iter().enumerate() {
         let carrier = current_input_carrier_tx(&mut read, ids[i].as_str(), worker).await?;
         let after = carrier.snapshot()["push_watermark"]
             .as_i64()
             .ok_or_else(|| CalmError::Internal("missing watermark".into()))?;
+        let shape = sqlite::card_execution_shape_tx(&mut read, ids[i].as_str()).await?;
+        let binding = PlannerBinding::from_shape(&shape.kind, shape.role, &shape.payload)
+            .ok_or_else(|| {
+                refused(
+                    PlannerSwitchRefusal::Truth(T::BindingUnsupported),
+                    ids[i].as_str(),
+                )
+            })?;
+        let ingress = carrier_ingress_revision_tx(
+            &mut read,
+            ids[i].as_str(),
+            r.track_id.as_str(),
+            carrier.worker_session_id(),
+        )
+        .await?;
         arrivals.push(
             s.dispatcher
                 .carrier_quiescence_prefix_tx(&mut read, &r.track_id, after)
                 .await?,
         );
+        captured.push((carrier, binding, ingress));
     }
     let baseline: i64 = sqlx::query_scalar("SELECT planner_event_baseline FROM tracks WHERE id=?1")
         .bind(r.track_id.as_str())
@@ -333,7 +356,47 @@ async fn switch_owned(
         let area =
             crate::track_access::require_detail_access_tx(&mut tx, r.track_id.as_str(), &principal)
                 .await?;
-        crate::planner_permission_mode::inherit_for_switch_tx(
+        let mut expected = Vec::new();
+        for (i, (carrier, binding, ingress)) in captured.into_iter().enumerate() {
+            expected.push(ExpectedCarrier {
+                card_id: ids[i].to_string(),
+                track_id: r.track_id.to_string(),
+                worker_session_id: carrier.worker_session_id().into(),
+                original_snapshot: carrier.original_snapshot().into(),
+                execution: RuntimeExecutionFence::from_carrier(&carrier),
+                accepted_prefix: carrier.snapshot()["push_watermark"]
+                    .as_i64()
+                    .ok_or_else(|| CalmError::Internal("missing watermark".into()))?,
+                binding,
+                ingress,
+                owner: &owners[i],
+                revision: CallerRevision::Unversioned,
+            });
+            // Both open-ask checks precede the first credential revocation.
+            owners[i]
+                .owner
+                .recheck_typed_tx(&mut tx, &carrier)
+                .await
+                .map_err(|e| owner_error(e, ids[i].as_str()))?;
+        }
+        let target = expected.pop().expect("target");
+        let old = expected.pop().expect("Planner");
+        let mut receipt = truth::switch_planner_tx(
+            &mut tx,
+            truth::ExpectedPlanner {
+                track_id: r.track_id.as_str(),
+                planner_card_id: ids[0].as_str(),
+                target_card_id: ids[1].as_str(),
+                revision: r.expected_revision,
+                user_id: &principal.user_id,
+            },
+            (old, target),
+        )
+        .await
+        .map_err(PlannerSwitchError::from)?;
+        // This payload write is itself fenced ingress: perform it only after CAS,
+        // and refresh the incoming event before publishing the committed pair.
+        let incoming = crate::planner_permission_mode::inherit_for_switch_tx(
             &mut tx,
             ids[0].as_str(),
             ids[1].as_str(),
@@ -349,65 +412,13 @@ async fn switch_owned(
             }
             crate::planner_permission_mode::InheritanceError::Storage(error) => error.into(),
         })?;
-        let mut expected = Vec::new();
-        for (i, card) in cards.iter().enumerate() {
-            let carrier = current_input_carrier_tx(&mut tx, ids[i].as_str(), &workers[i]).await?;
-            let binding = PlannerBinding::from_card(
-                card,
-                if i == 0 {
-                    CardRole::Planner
-                } else {
-                    CardRole::Assistant
-                },
-            )
-            .ok_or_else(|| {
-                refused(
-                    PlannerSwitchRefusal::Truth(T::BindingUnsupported),
-                    ids[i].as_str(),
-                )
-            })?;
-            expected.push(ExpectedCarrier {
-                card_id: ids[i].to_string(),
-                track_id: r.track_id.to_string(),
-                worker_session_id: carrier.worker_session_id().into(),
-                original_snapshot: carrier.original_snapshot().into(),
-                execution: RuntimeExecutionFence::from_carrier(&carrier),
-                accepted_prefix: carrier.snapshot()["push_watermark"]
-                    .as_i64()
-                    .ok_or_else(|| CalmError::Internal("missing watermark".into()))?,
-                binding,
-                ingress: carrier_ingress_revision_tx(
-                    &mut tx,
-                    ids[i].as_str(),
-                    r.track_id.as_str(),
-                    carrier.worker_session_id(),
-                )
-                .await?,
-                owner: &owners[i],
-                revision: CallerRevision::Unversioned,
-            });
-            // Both open-ask checks precede the first credential revocation.
-            owners[i]
-                .owner
-                .recheck_typed_tx(&mut tx, &carrier)
-                .await
-                .map_err(|e| owner_error(e, ids[i].as_str()))?;
+        for event in &mut receipt.events {
+            if let crate::event::Event::CardUpdated(card) = event
+                && card.id.as_str() == ids[1].as_str()
+            {
+                *card = incoming.clone();
+            }
         }
-        let target = expected.pop().expect("target");
-        let old = expected.pop().expect("Planner");
-        let receipt = truth::switch_planner_tx(
-            &mut tx,
-            truth::ExpectedPlanner {
-                track_id: r.track_id.as_str(),
-                planner_card_id: ids[0].as_str(),
-                target_card_id: ids[1].as_str(),
-                revision: r.expected_revision,
-                user_id: &principal.user_id,
-            },
-            (old, target),
-        )
-        .await
-        .map_err(PlannerSwitchError::from)?;
         let scope = crate::event::EventScope::Track {
             track: r.track_id.clone(),
             area,

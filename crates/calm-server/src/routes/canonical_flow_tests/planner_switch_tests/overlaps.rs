@@ -2,6 +2,40 @@
 use super::*;
 use crate::test_seams::{PausePoint, install_pause_for_test};
 
+type Switching =
+    tokio::task::JoinHandle<Result<planner_switch::PlannerSwitchReceipt, PlannerSwitchError>>;
+
+async fn captured(p: &Pair) -> (PausePoint, Switching) {
+    let pause = PausePoint::default();
+    install_pause_for_test("planner-switch-before-commit", &p.cards[0], pause.clone());
+    let route = RouteState::from_ref(&p.state);
+    let human = p.human.clone();
+    let request = p.request();
+    let switching = tokio::spawn(async move {
+        planner_switch::switch_planner(&route, &Actor("user".into()), &human, request).await
+    });
+    tokio::time::timeout(Duration::from_secs(5), pause.entered.notified())
+        .await
+        .unwrap();
+    (pause, switching)
+}
+
+async fn refused_after(p: &Pair, pause: PausePoint, switching: Switching, expected: &str) {
+    pause.release.notify_one();
+    let result = tokio::time::timeout(Duration::from_secs(10), switching)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        result.as_ref().err().and_then(code),
+        Some(expected),
+        "switch succeeded: {}",
+        result.is_ok()
+    );
+    p.unchanged().await;
+    assert_eq!(http::detail(p).await["planner_revision"], 0);
+}
+
 #[tokio::test]
 async fn planner_switch_native_binding_after_capture_refused() {
     let mut p = Pair::with_provider("claude").await;
@@ -93,5 +127,172 @@ async fn planner_switch_native_binding_after_capture_refused() {
     );
     p.unchanged().await;
     assert_eq!(http::detail(&p).await["planner_revision"], 0);
+    let persisted: Option<String> =
+        sqlx::query_scalar("SELECT agent_session_id FROM worker_sessions WHERE id=?1")
+            .bind(&p.workers[1])
+            .fetch_one(p.fixture.repo.pool())
+            .await
+            .unwrap();
+    assert_eq!(persisted.as_deref(), Some(native.as_str()));
+    p.close().await;
+}
+
+#[tokio::test]
+async fn planner_switch_message_after_capture_refused() {
+    for index in [0, 1] {
+        let p = Pair::new().await;
+        let (pause, switching) = captured(&p).await;
+        let sent = post(
+            &p.app,
+            &p.cookie,
+            &format!("/api/cards/{}/planner/input", p.cards[index]),
+            "overlapping-message",
+            json!({"text":"Preserve overlapping input"}),
+        )
+        .await;
+        assert_eq!(sent["worker_session_id"], p.workers[index]);
+        refused_after(&p, pause, switching, "planner_changed").await;
+        let text: String = sqlx::query_scalar(
+            "SELECT payload_json FROM conversation_message_revisions WHERE message_id=?1 ORDER BY revision DESC LIMIT 1")
+            .bind(sent["entry_id"].as_str().unwrap()).fetch_one(p.fixture.repo.pool()).await.unwrap();
+        assert!(text.contains("Preserve overlapping input"));
+        p.close().await;
+    }
+}
+
+#[tokio::test]
+async fn planner_switch_event_after_capture_refused() {
+    let p = Pair::new().await;
+    let (pause, switching) = captured(&p).await;
+    let area = p
+        .fixture
+        .repo
+        .track_get(&p.track)
+        .await
+        .unwrap()
+        .unwrap()
+        .area_id;
+    let id = p
+        .fixture
+        .repo
+        .log_pure_event(
+            crate::ids::ActorId::KernelDispatcher,
+            crate::event::EventScope::Track {
+                track: p.track.clone().into(),
+                area,
+            },
+            None,
+            &p.state.events,
+            &p.state.card_role_cache,
+            &p.state.track_area_cache,
+            crate::event::Event::TrackReportEdited {
+                track_id: p.track.clone().into(),
+                card_id: p.cards[0].clone().into(),
+                author: crate::event::EditAuthor::User,
+                author_plugin_id: None,
+                edit_id: "overlapping-event".into(),
+                summary_before: String::new(),
+                summary_after: String::new(),
+                body_before: String::new(),
+                body_after: "Preserve overlapping event".into(),
+                agent_message: None,
+            },
+        )
+        .await
+        .unwrap();
+    refused_after(&p, pause, switching, "planner_pending_observations").await;
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM events WHERE id=?1")
+        .bind(id)
+        .fetch_one(p.fixture.repo.pool())
+        .await
+        .unwrap();
+    assert_eq!(count, 1);
+    p.close().await;
+}
+
+#[tokio::test]
+async fn planner_switch_ask_after_capture_refused() {
+    let p = Pair::new().await;
+    let (pause, switching) = captured(&p).await;
+    let mut tx = crate::db::sqlite::begin_immediate_tx(p.fixture.repo.db())
+        .await
+        .unwrap();
+    let (scope, event) = crate::ask::ask_requested_tx(
+        &mut tx,
+        &p.cards[0].clone().into(),
+        vec![crate::event::AskQuestion {
+            title: "Overlapping ask".into(),
+            options: vec!["Yes".into()],
+        }],
+    )
+    .await
+    .unwrap();
+    let id = crate::db::sqlite::append_decision_event_in_tx(
+        &mut tx,
+        &crate::ids::ActorId::AiPlannerSession(p.workers[0].clone().into()),
+        &scope,
+        None,
+        &event,
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    refused_after(&p, pause, switching, "planner_open_ask").await;
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM events WHERE id=?1")
+        .bind(id)
+        .fetch_one(p.fixture.repo.pool())
+        .await
+        .unwrap();
+    assert_eq!(count, 1);
+    p.close().await;
+}
+
+#[tokio::test]
+async fn planner_switch_old_credential_mcp_request_refused() {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    let mut p = Pair::new().await;
+    let mut tx = crate::db::sqlite::begin_immediate_tx(p.fixture.repo.db())
+        .await
+        .unwrap();
+    let token =
+        crate::mcp_server::wiring::mint_and_persist_card_token(&mut tx, &p.cards[0], &p.workers[0])
+            .await
+            .unwrap();
+    tx.commit().await.unwrap();
+    let socket = &p.state.mcp_server.as_ref().unwrap().shim_config.socket_path;
+    let initialize = json!({"jsonrpc":"2.0","id":1,"method":"initialize",
+        "params":{"protocolVersion":"2024-11-05","_meta":{"dev.neige/auth":{"token":token}}}});
+    let mut connection = BufReader::new(tokio::net::UnixStream::connect(socket).await.unwrap());
+    connection
+        .get_mut()
+        .write_all(format!("{initialize}\n").as_bytes())
+        .await
+        .unwrap();
+    let mut line = String::new();
+    tokio::time::timeout(Duration::from_secs(5), connection.read_line(&mut line))
+        .await
+        .unwrap()
+        .unwrap();
+    let admitted: Value = serde_json::from_str(&line).unwrap();
+    assert!(admitted.get("result").is_some(), "{admitted}");
+    p.switch().await.unwrap();
+    // A fresh connection exercises the actual product handshake with the old credential.
+    let socket = &p.state.mcp_server.as_ref().unwrap().shim_config.socket_path;
+    let mut connection = BufReader::new(tokio::net::UnixStream::connect(socket).await.unwrap());
+    connection
+        .get_mut()
+        .write_all(format!("{initialize}\n").as_bytes())
+        .await
+        .unwrap();
+    line.clear();
+    tokio::time::timeout(Duration::from_secs(5), connection.read_line(&mut line))
+        .await
+        .unwrap()
+        .unwrap();
+    let denied: Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(
+        denied["error"]["code"],
+        crate::mcp_server::handshake::TOKEN_NOT_RECOGNIZED_CODE
+    );
     p.close().await;
 }
