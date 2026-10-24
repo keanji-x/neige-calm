@@ -58,7 +58,7 @@ async fn aliases(rig: &RegisteredRig, count: usize) {
     let unique: std::collections::HashSet<_> = rows.iter().map(|(_, alias)| alias).collect();
     assert_eq!(unique.len(), count);
     for (id, alias) in rows {
-        assert_eq!(alias, format!("planner:{}:{}", &rig.worker_session_id, &id));
+        assert_eq!(alias, format!("planner:{}:{id}", rig.worker_session_id));
     }
 }
 #[tokio::test]

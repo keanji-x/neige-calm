@@ -34,7 +34,7 @@ pub async fn send(
                     && c.record().release == sql::Release::Held
             })
             .ok_or_else(|| conflict("release ownership lost"))?;
-        if let Err(error) = Ok::<(), CalmError>(()) {
+        if let Err(error) = authority.authorize_tx(&mut tx).await {
             let stopped =
                 request_stop_tx(&mut tx, session, &current, StopReason::ReleaseRefused).await?;
             tx.commit().await?;

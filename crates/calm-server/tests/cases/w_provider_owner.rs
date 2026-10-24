@@ -248,7 +248,14 @@ async fn w_release_runs_caller_authority_in_release_tx() {
     audit(&rig).await;
     let (claim, _guard) = admit(&rig).await;
     // Failure after authorization must roll back its write too, proving shared transaction.
-    sqlx::query("CREATE TRIGGER w_fail_release BEFORE UPDATE OF provider_execution_json ON worker_sessions WHEN NEW.provider_execution_json LIKE '%Releasing%' BEGIN SELECT RAISE(ABORT, 'test release rollback'); END").execute(rig.repo.pool()).await.unwrap();
+    sqlx::query(concat!(
+        "CREATE TRIGGER w_fail_release BEFORE UPDATE OF provider_execution_json ",
+        "ON worker_sessions WHEN NEW.provider_execution_json LIKE '%Releasing%' ",
+        "BEGIN SELECT RAISE(ABORT, 'test release rollback'); END",
+    ))
+    .execute(rig.repo.pool())
+    .await
+    .unwrap();
     let authority = Authority {
         calls: 0.into(),
         refuse: false,

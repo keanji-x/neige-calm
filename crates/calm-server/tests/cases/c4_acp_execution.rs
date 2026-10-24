@@ -31,7 +31,7 @@ async fn c4_acp_existing_execution_refuses_before_credential_mint() {
     let mut intent = test_support::intent(root.path().to_owned());
     let id = intent.metadata.id.clone();
     intent.metadata.consumer = "acp-planner".into();
-    intent.metadata.alias = ProcessAlias(format!("planner:{}:{}", &worker, id.as_str(),));
+    intent.metadata.alias = ProcessAlias(format!("planner:{worker}:{}", id.as_str()));
     intent.metadata.owner = OperationRef(format!("worker-session:{worker}"));
     intent.metadata.track = TrackId(track);
     intent.metadata.program.program = "/bin/sh".into();
@@ -419,7 +419,7 @@ async fn c4_acp_boot_never_resends_held_or_releasing_payload() {
         let mut intent = workspace_runtime::execution::test_support::intent(root.path().to_owned());
         let id = intent.metadata.id.clone();
         intent.metadata.consumer = "acp-planner".into();
-        intent.metadata.alias = ProcessAlias(format!("planner:{}:{}", &worker, id.as_str(),));
+        intent.metadata.alias = ProcessAlias(format!("planner:{worker}:{}", id.as_str()));
         intent.metadata.owner = OperationRef(format!("worker-session:{worker}"));
         intent.metadata.track = TrackId(track);
         intent.metadata.program.program = "/bin/sh".into();

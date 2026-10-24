@@ -45,7 +45,7 @@ async fn c4_boot_pass_a_precedes_listener_and_failure_is_covered_by_sweep() {
         intent.metadata.consumer = "claude-planner".into();
         intent.metadata.alias = ProcessAlias(format!(
             "planner:{}:{}",
-            &session,
+            session,
             intent.metadata.id.as_str(),
         ));
         let id = intent.metadata.id.clone();

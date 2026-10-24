@@ -401,7 +401,7 @@ async fn admit(rig: &RegisteredRig) -> (sql::Claim, owner::DriverGuard) {
     intent.metadata.consumer = "claude-planner".into();
     intent.metadata.alias = ProcessAlias(format!(
         "planner:{}:{}",
-        &rig.worker_session_id,
+        rig.worker_session_id,
         intent.metadata.id.as_str(),
     ));
     intent.metadata.program.program = "/bin/sh".into();
@@ -427,7 +427,7 @@ async fn c4_provider_admission_is_exclusive_per_session() {
     let next_id = intent.metadata.id.clone();
     intent.metadata.alias = ProcessAlias(format!(
         "planner:{}:{}",
-        &rig.worker_session_id,
+        rig.worker_session_id,
         next_id.as_str(),
     ));
     assert!(
@@ -500,6 +500,7 @@ async fn c4_orphan_execution_without_record_is_retired() {
 }
 
 struct CompletionProbe {
+    inner: Arc<dyn owner::ProviderExecutionOwner>,
     pool: calm_server::db::sqlite::SqliteDb,
     fail: std::sync::atomic::AtomicBool,
     calls: std::sync::atomic::AtomicUsize,
@@ -510,10 +511,10 @@ impl owner::ProviderExecutionOwner for CompletionProbe {
         "claude-planner"
     }
     fn alias_prefix(&self) -> owner::AliasPrefix {
-        owner::AliasPrefix::new("probe").unwrap()
+        self.inner.alias_prefix()
     }
     fn alias(&self, session: &str, id: &str) -> String {
-        format!("probe:{session}:{id}")
+        self.inner.alias(session, id)
     }
     async fn complete(
         &self,
@@ -552,6 +553,7 @@ async fn c4_retire_only_after_settlement_and_owner_completion() {
     let (old, guard) = admit(&rig).await;
     let id = owner::execution_id(old.record()).unwrap();
     let probe = Arc::new(CompletionProbe {
+        inner: rig.host.provider_execution.owner.clone(),
         pool: rig.repo.db().clone(),
         fail: true.into(),
         calls: 0.into(),
