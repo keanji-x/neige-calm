@@ -2,10 +2,11 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, extname, relative, resolve } from 'node:path';
 import postcss from 'postcss';
+import ts from 'typescript';
 
-// CSS-only existence audit, not a cascade/scope proof. TSX/JS inline styles and
-// CodeMirror theme objects silently pass: they require browser coverage. Dynamic
-// names are also out of scope. Only shipped CSS imports supply vendor names.
+// CSS-use existence audit, not a cascade/scope proof. Production TS/TSX
+// literals contribute definitions only; their uses require browser coverage.
+// Dynamic names are out of scope. Only shipped CSS imports supply vendor names.
 export function auditCustomProperties(files) {
   const definitions = new Set();
   const uses = [];
@@ -24,6 +25,17 @@ export function auditCustomProperties(files) {
         if (decl.prop.startsWith('--')) definitions.add(decl.prop);
         if (!file.startsWith('node_modules/')) value(decl.value, file);
       });
+    } else if (extname(file) === '.ts' || extname(file) === '.tsx') {
+      const source = ts.createSourceFile(file, code, ts.ScriptTarget.Latest, false,
+        file.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS);
+      const visit = node => {
+        // Quoted object keys are string literals too. Any exact-name literal
+        // counts, without trying to infer runtime style ownership or execution.
+        if ((ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node))
+          && /^--[\w\u00a0-\uffff-]+$/.test(node.text)) definitions.add(node.text);
+        ts.forEachChild(node, visit);
+      };
+      visit(source);
     }
   }
   return uses.filter(({ name }) => !definitions.has(name))
@@ -50,10 +62,12 @@ export function checkCustomProperties(root) {
       if (entry.isDirectory()) walk(path);
       else if (!path.includes('.test.') && !path.includes('.spec.')) {
         if (path.endsWith('.module.css')) addCss(path);
+        else if (path.endsWith('.ts') || path.endsWith('.tsx')) sources.set(path, readFileSync(path, 'utf8'));
       }
     }
   };
   walk(resolve(root, 'web/src'));
+  walk(resolve(root, 'core'));
   return auditCustomProperties([...sources].map(([path, code]) => ({ file: relative(root, path), code })));
 }
 

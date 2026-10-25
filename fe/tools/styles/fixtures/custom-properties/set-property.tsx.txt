@@ -1,0 +1,1 @@
+node.style.setProperty('--from-source', 'red');
