@@ -2043,10 +2043,23 @@ async fn a_retry_after_a_failure_fails_once_the_attached_directory_is_no_reposit
     .await
     .unwrap();
     tx.commit().await.unwrap();
-    let request: calm_server::operation::planner_harness_start_adapter::PlannerHarnessStartOperationPayload =
-        serde_json::from_value(json!({"actor":calm_server::ids::ActorId::User,"wave_id":track.id,
-            "spec_card_id":planner,"report_card_id":report,"cwd":track.workspace.agent_cwd(),"goal":null,
-            "first_message":"second time lucky","create_request_sha256":create_sha})).unwrap();
+    let request =
+        calm_server::operation::planner_harness_start_adapter::PlannerHarnessStartOperationPayload {
+            actor: calm_server::ids::ActorId::User,
+            track_id: track.id.to_string(),
+            planner_card_id: planner.into(),
+            report_card_id: Some(report),
+            sort: None,
+            cwd: track.workspace.agent_cwd().into(),
+            goal: None,
+            reset_harness_items: false,
+            force_new_thread: false,
+            profile: Default::default(),
+            create_card: None,
+            opening_briefing: None,
+            first_message: Some("second time lucky".into()),
+            create_request_sha256: Some(create_sha),
+        };
     let key = format!(
         "track-create-{}",
         hex::encode(Sha256::digest(
