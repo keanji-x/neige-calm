@@ -50,7 +50,7 @@ PATH="$stub_bin:$PATH" \
   LOCAL_RUST_GATES_SPEC="$PWD/fe/core/api/generated/openapi.json" \
   scripts/local-rust-gates.sh >/dev/null
 assert_argv "$local_capture" nextest run --workspace --locked --features \
-  calm-server/codex-e2e --profile ci --test-threads 8
+  calm-server/codex-e2e,calm-server/fixtures --profile ci --test-threads 8
 
 # Exercise quick against a real git history and worktree, including untracked
 # paths. The cargo stub records commands; the production classifier is unchanged.
@@ -83,7 +83,7 @@ assert_quick() {
     "$fixture/scripts/local-rust-gates.sh" --quick "$@" > "$temp_root/$name.output"
   cat > "$expected" <<'EOF'
 fmt --all --check
-clippy --workspace --all-targets --features calm-server/codex-e2e -- -D warnings
+clippy --workspace --all-targets --features calm-server/codex-e2e,calm-server/fixtures -- -D warnings
 EOF
   if [ "$openapi" = true ]; then
     echo 'run --quiet --manifest-path Cargo.toml --bin emit-openapi' >> "$expected"
@@ -129,7 +129,7 @@ PATH="$stub_bin:$PATH" \
   RUST_NEXTEST_CAPTURE="$hosted_capture" \
   scripts/run-ci-rust-nextest.sh github-hosted >/dev/null
 assert_argv "$hosted_capture" nextest run --workspace --locked --features \
-  calm-server/codex-e2e --profile ci
+  calm-server/codex-e2e,calm-server/fixtures --profile ci
 
 self_hosted_capture="$temp_root/self-hosted.args"
 PATH="$stub_bin:$PATH" \
@@ -137,7 +137,7 @@ PATH="$stub_bin:$PATH" \
   RUST_NEXTEST_CAPTURE="$self_hosted_capture" \
   scripts/run-ci-rust-nextest.sh self-hosted >/dev/null
 assert_argv "$self_hosted_capture" nextest run --workspace --locked --features \
-  calm-server/codex-e2e --profile ci --test-threads 8
+  calm-server/codex-e2e,calm-server/fixtures --profile ci --test-threads 8
 
 partition_capture="$temp_root/partition.args"
 PATH="$stub_bin:$PATH" \
@@ -145,7 +145,7 @@ PATH="$stub_bin:$PATH" \
   RUST_NEXTEST_CAPTURE="$partition_capture" \
   scripts/run-ci-rust-nextest.sh github-hosted --partition hash:2/3 >/dev/null
 assert_argv "$partition_capture" nextest run --workspace --locked --features \
-  calm-server/codex-e2e --profile ci --partition hash:2/3
+  calm-server/codex-e2e,calm-server/fixtures --profile ci --partition hash:2/3
 
 archive_capture="$temp_root/archive.args"
 archive_file="$temp_root/tests.tar.zst"
@@ -226,7 +226,7 @@ jobs = dict(re.findall(r'^  ([\w-]+):\n(.*?)(?=^  [\w-]+:|\Z)', workflow, re.M |
 spec = importlib.util.spec_from_file_location('guard', ROOT / 'scripts/ci/check-nextest-overrides.py')
 guard = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(guard)
-source = ['--workspace', '--locked', '--features', 'calm-server/codex-e2e']
+source = ['--workspace', '--locked', '--features', 'calm-server/codex-e2e,calm-server/fixtures']
 archive = ['--archive-file', 'nextest-archive.tar.zst']
 protocol = json.dumps({'rust-suites': {'sample': {
     'package-name': 'sample', 'binary-id': 'sample', 'status': 'listed',
@@ -346,7 +346,7 @@ if name == 'cargo':
                         self.assertEqual(calls.pop(0), ['cargo', 'build', '--locked', '-p',
                                          'neige-mcp-stdio-shim', '--bin', 'neige-mcp-stdio-shim'])
                     input_args = ['--archive-file', filename] if filename else []
-                    build = (['cargo', 'nextest', 'archive', *source, '--profile', 'ci', *input_args]
+                    build = (['cargo', 'nextest', 'archive', *source, '--profile', 'ci', *input_args, '--timings']
                              if filename else ['cargo', 'nextest', 'list', *source, '--profile', 'ci',
                                                '--list-type', 'binaries-only', '--message-format', 'json'])
                     expected = [build, ['python3', 'scripts/ci/check-nextest-overrides.py', *input_args]]

@@ -73,7 +73,7 @@ def main():
     args = parser.parse_args()
     source = (["--archive-file", args.archive_file, "--workspace-remap", str(ROOT)]
               if args.archive_file else
-              ["--workspace", "--locked", "--features", "calm-server/codex-e2e"])
+              ["--workspace", "--locked", "--features", "calm-server/codex-e2e,calm-server/fixtures"])
     try:
         with (ROOT / ".config/nextest.toml").open("rb") as stream:
             config = tomllib.load(stream)

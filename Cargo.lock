@@ -521,7 +521,6 @@ dependencies = [
  "calm-exec",
  "calm-proc-supervisor",
  "calm-report",
- "calm-server",
  "calm-session",
  "calm-tailnet-control",
  "calm-terminal-view",

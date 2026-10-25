@@ -17,15 +17,14 @@ default = []
 # `routes/*` handler, `plugin_host/*`, `terminal_sweeper`, and the
 # `replay` lib — MUST NOT enable this feature; they go through
 # `write_with_event_typed` / `log_pure_event` instead. Integration
-# tests under `tests/*.rs` auto-enable this via the `[dev-dependencies]`
-# self-loop below.
+# tests and all-targets lint builds must explicitly enable `fixtures`.
 #
 # #840 e2 carve-out: the feature ALSO gates the `test_seams` calls made
 # *from* production modules: `crash_point` (`operation/forge_action_adapter.rs`,
 # pre-fence-commit) and `pause_point` (the operation insert and the planner
 # send's replay miss, #2068). They are deliberate: the out-of-process
 # crash-recovery tests spawn `CARGO_BIN_EXE_calm-server` (a `cargo test`
-# artifact, so fixtures is on via the self-loop) and need a deterministic
+# artifact built with explicit `fixtures`) and need a deterministic
 # in-binary abort point, and the race tests need to hold a request at a
 # named point. The "MUST NOT enable" rule above still holds for release
 # builds: each seam and its call site (statement + arguments) exist only
@@ -44,7 +43,7 @@ fixtures = [
 # has `NEIGE_MCP_SOCKET` + `NEIGE_MCP_TOKEN` in its process env.
 # Off by default because `codex` is not in CI; the feature-gated test
 # self-skips when the binary is missing. Run locally with:
-#   cargo test --features codex-e2e --test codex_e2e_planner_card -- --nocapture
+#   cargo test --features codex-e2e,fixtures --test codex_e2e_planner_card -- --nocapture
 codex-e2e = []
 
 [[bin]]
@@ -70,8 +69,8 @@ path = "../../plugins/market/main.rs"
 # dev hook. Every spawn site passes the flag:
 #   * web/e2e/_setup/replay-server.setup.ts (`cargo run ... --features fixtures`)
 #   * .github/workflows/ci.yml a11y job (`cargo build ... --features fixtures`)
-# `cargo test` / `clippy --all-targets` builds pick the feature up
-# automatically via the `[dev-dependencies]` self-loop below.
+# `cargo test` / `clippy --all-targets` builds must explicitly pass
+# `--features calm-server/fixtures` as well.
 [[bin]]
 name = "replay"
 path = "src/bin/replay.rs"
@@ -323,14 +322,6 @@ libc = "0.2"
 workspace-runtime = { path = "../workspace-runtime", features = ["test-support"] }
 plugin = { path = "../plugin", features = ["test-support"] }
 calm-test-sockets = { path = "../calm-test-sockets" }
-# Self-loop to auto-enable the `fixtures` feature when building
-# integration tests (`tests/*.rs`). Each integration test is its own
-# crate that depends on `calm-server`; this dev-dep entry tells Cargo to
-# unify the test-side dependency graph with `fixtures` enabled, exposing
-# `AppState::raw_repo()` to the test crates without ever enabling it for
-# the production binary or any non-test consumer. See `state.rs` doc on
-# `raw_repo` and the `fixtures` feature definition above.
-calm-server = { path = ".", features = ["fixtures"] }
 calm-truth-test-harness = { path = "../calm-truth-test-harness" }
 # Route integration tests drive the Router via `tower::ServiceExt::oneshot`
 # without bringing up a TCP listener. `tower` itself is already a normal dep

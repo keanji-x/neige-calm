@@ -166,7 +166,7 @@ handle and observes its original process group. This weaker macOS fact does not
 provide Linux's full descendant-drain proof. An already running installation does
 not gain these changes until it starts the newly built binaries.
 
-`cargo test -p calm-server --lib` as a whole is not expected to pass on macOS:
+`cargo test -p calm-server --lib --features calm-server/fixtures` as a whole is not expected to pass on macOS:
 some Linux-only fixtures are not `cfg`-gated. Only filtered subsets were run
 there.
 
@@ -237,7 +237,9 @@ env -u NEIGE_CODEX_BIN RUSTC_WRAPPER= CARGO_BUILD_JOBS=6 \
   -p <package> <test-name-filter> --test-threads 8
 ```
 
-Add `--features calm-server/codex-e2e` only when the affected test requires it.
+For direct server test/nextest or all-targets clippy commands, explicitly add
+`--features calm-server/fixtures`. Add `calm-server/codex-e2e` to that feature
+list only when the affected test requires it.
 Narrow further with `--lib` or `--test <test-target>` when useful. Use
 `scripts/local-rust-gates.sh --quick` when the change also needs the Rust compile,
 lint, and OpenAPI preflight. The full `scripts/local-rust-gates.sh` is not a

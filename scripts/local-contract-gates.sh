@@ -57,7 +57,7 @@ filterset="($filterset) & (not binary(api_suite) | test(/^domain_api_suite::/)) 
 # listed package, so packages that need different targets are separate groups.
 groups=(
   'plugin contracts:-p plugin --lib'
-  'calm-server+calm-types:-p calm-server -p calm-types --lib --test replay_event_suite --test runtime_suite --test mcp_core_suite --test planner_harness_suite --test api_suite'
+  'calm-server+calm-types:--features calm-server/fixtures -p calm-server -p calm-types --lib --test replay_event_suite --test runtime_suite --test mcp_core_suite --test planner_harness_suite --test api_suite'
   'integration suites:-p calm-truth -p calm-exec -p calm-codex-bridge -p calm-session -p calm-proc-supervisor --test integration_suite'
 )
 

@@ -46,7 +46,7 @@ step "fmt"
 cargo fmt --all --check
 
 step "clippy (WITH features, mirrors the lint job)"
-cargo clippy --workspace --all-targets --features calm-server/codex-e2e -- -D warnings
+cargo clippy --workspace --all-targets --features calm-server/codex-e2e,calm-server/fixtures -- -D warnings
 
 if [[ "$quick" == false ]]; then
   step "lib check (DEFAULT features, mirrors openapi-drift + the e2e builds)"

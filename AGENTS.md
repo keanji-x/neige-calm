@@ -216,12 +216,13 @@ scripts/local-rust-gates.sh --quick --base origin/main
   ones. It runs every `scripts/gate-*.sh` step of the CI lint job, which the
   commands above do not; it scans tracked and untracked files in the working
   tree and skips ignored ones.
-- Add `--features calm-server/codex-e2e` to a targeted Rust command only when
-  the affected test requires that feature. Narrow further with `--lib` or
-  `--test <test-target>` when useful. Keep `NEIGE_CODEX_BIN` unset and cap local
+- For direct server test/nextest or all-targets clippy commands, explicitly
+  add `--features calm-server/fixtures`. Add `calm-server/codex-e2e` to that
+  feature list only when the affected test requires it. Narrow further with
+  `--lib` or `--test <test-target>` when useful. Keep `NEIGE_CODEX_BIN` unset and cap local
   concurrency on the shared production host.
-- Quick runs fmt and clippy with `calm-server/codex-e2e`; default-feature lib
-  check and release builds belong to CI. OpenAPI runs only when the shared CI
+- Quick runs fmt and clippy with `calm-server/codex-e2e,calm-server/fixtures`;
+  default-feature lib check and release builds belong to CI. OpenAPI runs only when the shared CI
   classifier selects changed paths (committed since the merge-base, staged,
   unstaged and untracked). Use `--base REF` for a different target branch;
   missing comparison refs and empty diffs conservatively run OpenAPI.
