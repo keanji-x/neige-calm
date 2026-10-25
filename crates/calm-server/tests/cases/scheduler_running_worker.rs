@@ -60,7 +60,7 @@ impl CodexDaemonProbe for ScriptedProbe {
     async fn read_liveness_facts(&self, thread_id: &str) -> Option<CodexLivenessFacts> {
         self.reads.lock().unwrap().push(thread_id.to_string());
         match &self.answer {
-            Answer::Facts(facts) => Some(*facts),
+            Answer::Facts(facts) => Some(facts.clone()),
             Answer::Unreachable => None,
             Answer::Hang => std::future::pending().await,
         }
@@ -77,6 +77,7 @@ fn thread_facts(status: ThreadStatusLite, last_turn: Option<LastTurnFacts>) -> C
 
 fn last_turn(completed_at: Option<i64>, status: TurnStatusLite) -> Option<LastTurnFacts> {
     Some(LastTurnFacts {
+        cause: None,
         completed_at,
         status,
     })
@@ -234,7 +235,12 @@ async fn assert_turn_ended_and_woken_with(
     assert_eq!(failed.len(), 1, "exactly one task.failed");
     assert_eq!(failed[0].actor, ActorId::KernelDispatcher);
     match &failed[0].event {
-        Event::TaskFailed { reason, .. } => assert_eq!(reason, wording.reason),
+        Event::TaskFailed {
+            reason, details, ..
+        } => {
+            assert_eq!(reason, wording.reason);
+            assert!(details.is_none());
+        }
         other => panic!("not task.failed: {other:?}"),
     }
     assert!(
@@ -742,3 +748,6 @@ async fn report_first_then_cancel_is_refused_with_the_current_status() {
     );
     assert!(event_rows(&boot, "plan.updated").await.is_empty());
 }
+
+#[path = "worker_failure.rs"]
+mod worker_failure;

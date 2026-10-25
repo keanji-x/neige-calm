@@ -199,9 +199,21 @@ pub struct ThreadView {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TurnView {
+    /// Native app-server `Turn.error`; populated only for a failed turn.
+    #[serde(default)]
+    pub error: Option<TurnError>,
     #[serde(default)]
     pub completed_at: Option<i64>,
     pub status: TurnStatus,
+}
+
+/// Narrowed app-server v2 `TurnError` (schema generated from the installed Codex).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TurnError {
+    pub message: String,
+    #[serde(default)]
+    pub codex_error_info: Option<serde_json::Value>,
 }
 
 /// Mirror of upstream `TurnStatus`. The field stays required; `Unknown` only absorbs a value

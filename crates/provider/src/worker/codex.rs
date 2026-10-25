@@ -37,8 +37,9 @@ pub enum TurnStatusLite {
 }
 
 /// The thread's MOST RECENT turn, as a live `thread/read` reports it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LastTurnFacts {
+    pub cause: Option<super::WorkerFailureCause>,
     /// `None` = started but never finished (the positive death signal); `Some(ts)` (Unix SECONDS)
     /// = finished cleanly, failed or deliberately aborted — not a death.
     pub completed_at: Option<i64>,
@@ -47,7 +48,7 @@ pub struct LastTurnFacts {
 }
 
 /// The liveness facts the death arbiter needs from a live `thread/read`; `None` from the probe means the RPC was unreachable.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CodexLivenessFacts {
     /// Whether the thread is loaded in daemon memory. Secondary signal; the arbiter keys on `status` + the last turn's `completed_at`.
     pub loaded: bool,
@@ -250,7 +251,7 @@ mod tests {
             0
         }
         async fn read_liveness_facts(&self, _thread_id: &str) -> Option<CodexLivenessFacts> {
-            self.facts
+            self.facts.clone()
         }
     }
 
@@ -267,6 +268,7 @@ mod tests {
             loaded: true,
             status,
             last_turn: last.map(|completed_at| LastTurnFacts {
+                cause: None,
                 completed_at,
                 status: match completed_at {
                     Some(_) => TurnStatusLite::Completed,

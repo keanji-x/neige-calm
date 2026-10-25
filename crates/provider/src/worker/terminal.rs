@@ -136,7 +136,7 @@ mod tests {
     }
 
     #[test]
-    fn failed_reason_probe_source_hides_exit_code_sentinel() {
+    fn worker_failure_probe_source_keeps_outcome_unknown() {
         let reason = failed_reason(
             "terminal",
             &ExitEvidence {
@@ -150,6 +150,8 @@ mod tests {
         assert!(!reason.contains("-1"));
         assert!(reason.contains("outcome unknown"));
         assert!(reason.contains("supervisor probe"));
+        assert!(!reason.contains("restart"));
+        assert!(!reason.contains("OOM"));
     }
 
     /// No message delivery, so keys are accepted: `TuiInput` cannot refuse keys without one.

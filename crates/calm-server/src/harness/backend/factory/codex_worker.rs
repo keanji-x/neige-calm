@@ -40,10 +40,12 @@ impl WorkerIdleWake {
 /// How the worker's last turn itself ended, from the turn's own `status`: the thread status
 /// only says the thread is resting, and it keeps `systemError` after a turn that completed and
 /// comes back `idle` on reload after a failed one (#1813).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum TurnEnd {
     Ended,
-    Failed,
+    Failed {
+        cause: Option<provider::worker::WorkerFailureCause>,
+    },
 }
 
 /// How the thread's most recent turn ended, when it ended at least `grace_ms` ago, the thread
@@ -54,14 +56,16 @@ fn turn_ended_past_grace(
     now_ms: i64,
     grace_ms: i64,
 ) -> Option<TurnEnd> {
-    let turn = facts.last_turn?;
+    let turn = facts.last_turn.as_ref()?;
     let completed_at_s = turn.completed_at?;
     let resting = matches!(
         facts.status,
         ThreadStatusLite::Idle | ThreadStatusLite::SystemError
     );
     let end = match turn.status {
-        TurnStatusLite::Failed => TurnEnd::Failed,
+        TurnStatusLite::Failed => TurnEnd::Failed {
+            cause: turn.cause.clone(),
+        },
         TurnStatusLite::Completed
         | TurnStatusLite::Interrupted
         | TurnStatusLite::InProgress
@@ -295,6 +299,7 @@ mod tests {
 
     fn turn(completed_at: Option<i64>, status: TurnStatusLite) -> Option<LastTurnFacts> {
         Some(LastTurnFacts {
+            cause: None,
             completed_at,
             status,
         })
@@ -310,17 +315,17 @@ mod tests {
         let ended = [
             (TurnStatusLite::Completed, TurnEnd::Ended),
             (TurnStatusLite::Interrupted, TurnEnd::Ended),
-            (TurnStatusLite::Failed, TurnEnd::Failed),
+            (TurnStatusLite::Failed, TurnEnd::Failed { cause: None }),
             (TurnStatusLite::InProgress, TurnEnd::Ended),
             (TurnStatusLite::Unknown, TurnEnd::Ended),
         ];
         for status in resting {
-            for (turn_status, end) in ended {
-                let ended = facts(status, turn(Some(COMPLETED_S), turn_status));
+            for (turn_status, end) in &ended {
+                let ended = facts(status, turn(Some(COMPLETED_S), *turn_status));
                 assert_eq!(turn_ended_past_grace(&ended, None, at(299), GRACE_MS), None);
                 assert_eq!(
                     turn_ended_past_grace(&ended, None, at(300), GRACE_MS),
-                    Some(end),
+                    Some(end.clone()),
                     "{ended:?}"
                 );
                 assert_eq!(

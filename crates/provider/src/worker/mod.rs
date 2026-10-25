@@ -1,5 +1,7 @@
 pub mod claude;
 pub mod codex;
+mod failure;
+pub use failure::{WorkerFailureCause, WorkerFailureKind};
 pub mod managed;
 mod supervisor;
 pub mod terminal;

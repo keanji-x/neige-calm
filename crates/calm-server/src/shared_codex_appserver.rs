@@ -4379,6 +4379,7 @@ mod tests {
             assert_eq!(
                 facts.last_turn,
                 Some(LastTurnFacts {
+                    cause: None,
                     completed_at: Some(1800),
                     status: lite,
                 }),

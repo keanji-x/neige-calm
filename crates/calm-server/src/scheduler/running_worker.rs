@@ -83,9 +83,44 @@ impl RunningWorkerFailure {
                 ..
             } => "worker turn ended without a task report".to_string(),
             Self::TurnEnded {
-                end: TurnEnd::Failed,
+                end: TurnEnd::Failed { cause },
                 ..
-            } => "worker turn ended in an error without a task report".to_string(),
+            } => {
+                let base = "worker turn ended in an error without a task report";
+                match cause {
+                    Some(cause) => {
+                        use provider::worker::WorkerFailureKind;
+                        let next_step = match cause.kind {
+                            WorkerFailureKind::ConcurrencyLimit => {
+                                "Retry later with a new task key"
+                            }
+                            WorkerFailureKind::ContentRefusal => {
+                                "Rewrite the task before retrying with a new task key"
+                            }
+                            WorkerFailureKind::ProviderError => {
+                                "Review the provider error before retrying"
+                            }
+                        };
+                        format!(
+                            "{base}; category={}; next step: {next_step}; provider error (untrusted, truncated={}): {}",
+                            cause.kind.as_str(),
+                            cause.truncated,
+                            cause.message
+                        )
+                    }
+                    None => base.to_string(),
+                }
+            }
+        }
+    }
+
+    fn details(&self) -> Option<serde_json::Value> {
+        match self {
+            Self::TurnEnded {
+                end: TurnEnd::Failed { cause: Some(cause) },
+                ..
+            } => Some(serde_json::json!({"cause": cause})),
+            _ => None,
         }
     }
 
@@ -229,6 +264,7 @@ impl Scheduler {
         let track_id = track.id.clone();
         let detail = failure.detail();
         let reason = failure.reason();
+        let details = failure.details();
         let liveness_recheck = matches!(failure, RunningWorkerFailure::LivenessTimeout(_))
             .then(|| (self.worker_liveness, self.liveness_floor()));
         let cleanup_reason = failure.cleanup_reason();
@@ -301,7 +337,7 @@ impl Scheduler {
  notification: calm_types::event::PlannerNotification::Notify,
                             idempotency_key: task_id.clone(),
                             reason,
-                            details: None,
+                            details,
                             agent_message: None,
                         },
                     )];
