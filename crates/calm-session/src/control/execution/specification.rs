@@ -56,14 +56,29 @@ struct Legacy {
     io_mode: IoMode,
     replay_bytes: usize,
 }
+impl From<Legacy> for ExecutionSpecification {
+    fn from(old: Legacy) -> Self {
+        Self {
+            version: SpecificationVersion::ExplicitOnlyV1,
+            program: old.program,
+            args: old.args,
+            environment: old.environment,
+            ambient_environment: AmbientEnvironment::None,
+            io_mode: old.io_mode,
+            replay_bytes: old.replay_bytes,
+        }
+    }
+}
 impl Serialize for ExecutionSpecification {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        if serializer.is_human_readable() && self.version == SpecificationVersion::ExplicitOnlyV1 {
-            if self.ambient_environment != AmbientEnvironment::None {
-                return Err(serde::ser::Error::custom(
-                    "legacy specification cannot authorize ambient",
-                ));
-            }
+        if self.version == SpecificationVersion::ExplicitOnlyV1
+            && self.ambient_environment != AmbientEnvironment::None
+        {
+            return Err(serde::ser::Error::custom(
+                "legacy specification cannot authorize ambient",
+            ));
+        }
+        if self.ambient_environment == AmbientEnvironment::None {
             return Legacy {
                 program: self.program.clone(),
                 args: self.args.clone(),
@@ -72,6 +87,11 @@ impl Serialize for ExecutionSpecification {
                 replay_bytes: self.replay_bytes,
             }
             .serialize(serializer);
+        }
+        if !serializer.is_human_readable() {
+            return Err(serde::ser::Error::custom(
+                "ambient specification requires PrepareAmbient",
+            ));
         }
         Current {
             version: match self.version {
@@ -91,38 +111,23 @@ impl Serialize for ExecutionSpecification {
 impl<'de> Deserialize<'de> for ExecutionSpecification {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let human_readable = deserializer.is_human_readable();
-        let current = if human_readable {
-            let value = serde_json::Value::deserialize(deserializer)?;
-            if value.get("version").is_none() {
-                let old: Legacy = serde_json::from_value(value).map_err(D::Error::custom)?;
-                return Ok(Self {
-                    version: SpecificationVersion::ExplicitOnlyV1,
-                    program: old.program,
-                    args: old.args,
-                    environment: old.environment,
-                    ambient_environment: AmbientEnvironment::None,
-                    io_mode: old.io_mode,
-                    replay_bytes: old.replay_bytes,
-                });
-            }
-            serde_json::from_value::<Current>(value).map_err(D::Error::custom)?
-        } else {
-            Current::deserialize(deserializer)?
-        };
-        if (current.version != EXECUTION_SPECIFICATION_VERSION
-            && (human_readable || current.version != 1))
-            || (current.version == 1 && current.ambient_environment != AmbientEnvironment::None)
-        {
+        if !human_readable {
+            let old = Legacy::deserialize(deserializer)?;
+            return Ok(old.into());
+        }
+        let value = serde_json::Value::deserialize(deserializer)?;
+        if value.get("version").is_none() {
+            let old: Legacy = serde_json::from_value(value).map_err(D::Error::custom)?;
+            return Ok(old.into());
+        }
+        let current = serde_json::from_value::<Current>(value).map_err(D::Error::custom)?;
+        if current.version != EXECUTION_SPECIFICATION_VERSION {
             return Err(D::Error::custom(
                 "unsupported execution specification version",
             ));
         }
         Ok(Self {
-            version: if current.version == 1 {
-                SpecificationVersion::ExplicitOnlyV1
-            } else {
-                SpecificationVersion::AmbientV2
-            },
+            version: SpecificationVersion::AmbientV2,
             program: current.program,
             args: current.args,
             environment: current.environment,
@@ -169,5 +174,27 @@ impl ExecutionSpecification {
             return Err("legacy specification cannot authorize ambient");
         }
         EnvironmentPreflight::from(self).validate()
+    }
+}
+
+/// The negotiated extension carries a versioned JSON specification. Released binary
+/// Prepare keeps its original five-field specification, including its wire ordinals.
+pub(super) mod ambient_prepare {
+    use super::*;
+    use crate::control::execution::PrepareExecution;
+
+    pub fn serialize<S: Serializer>(
+        request: &PrepareExecution,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        serde_json::to_string(request)
+            .map_err(serde::ser::Error::custom)?
+            .serialize(serializer)
+    }
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<PrepareExecution, D::Error> {
+        let json = String::deserialize(deserializer)?;
+        serde_json::from_str(&json).map_err(D::Error::custom)
     }
 }

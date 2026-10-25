@@ -360,7 +360,9 @@ impl Executor {
                 executor_boot: self.boot.clone(),
                 mode: hello.mode,
             }),
-            ExecutionRequest::Prepare(request) => self.prepare(request).await,
+            ExecutionRequest::Prepare(request) | ExecutionRequest::PrepareAmbient(request) => {
+                self.prepare(request).await
+            }
             ExecutionRequest::Inspect(id) => self.inspect(&id),
             ExecutionRequest::Watch => Ok(self.watch()?.0),
             ExecutionRequest::Retire {

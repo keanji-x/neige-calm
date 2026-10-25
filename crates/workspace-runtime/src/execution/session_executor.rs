@@ -119,11 +119,12 @@ impl Executor for SessionExecutor {
             .request(ExecutionRequest::PreflightEnvironment(
                 EnvironmentPreflight::from(specification),
             ))
-            .await?
+            .await
+            .map_err(|_| ExecError::Refused("supervisor ambient capability unavailable".into()))?
         {
             ExecutionReply::ActionComplete => Ok(()),
-            _ => Err(ExecError::Transport(
-                "unexpected environment preflight response".into(),
+            _ => Err(ExecError::Refused(
+                "supervisor ambient capability unavailable".into(),
             )),
         }
     }

@@ -366,3 +366,98 @@ async fn w_owned_exclude_policy_drops_ambient_proxies_at_spawn() {
         format!("unset\nunset\nunset\n{}\n", kernel_path())
     );
 }
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn w_owned_none_large_explicit_environment_starts_linux_helper() {
+    let f = Fixture::new("http://proxy.example:8080").await;
+    let mut intent = f.intent(AmbientEnvironment::None);
+    intent
+        .metadata
+        .program
+        .environment
+        .extend((0..3).map(|i| (format!("WX_LARGE_{i}"), "x".repeat(100_000))));
+    assert_eq!(
+        f.run(intent).await,
+        format!("unset\nunset\nunset\n{}\n", kernel_path())
+    );
+}
+
+#[tokio::test]
+async fn w_owned_unsupported_peer_refused_before_intent() {
+    use calm_session::{
+        control::{ControlMsg, ControlReply},
+        read_frame, write_frame,
+    };
+    let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
+    let socket_root = calm_test_sockets::socket_dir("w-unsupported");
+    let socket = socket_root.path().join("old.sock");
+    let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+    let (seen, mut unsupported) = tokio::sync::mpsc::unbounded_channel();
+    // Released v10 peers close on the unknown additive RPC. None never sends it.
+    let peer = tokio::spawn(async move {
+        loop {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let seen = seen.clone();
+            tokio::spawn(async move {
+                let Ok(ControlMsg::Execution(hello)) =
+                    read_frame::<ControlMsg, _>(&mut stream).await
+                else {
+                    return;
+                };
+                let ExecutionRequest::Handshake(hello) = *hello else {
+                    return;
+                };
+                assert_eq!(hello.required_contract, 10);
+                write_frame(
+                    &mut stream,
+                    &ControlReply::Execution(Box::new(ExecutionReply::Handshake {
+                        envelope_version: 10,
+                        executor_boot: ExecutorBootId::fresh().unwrap(),
+                        mode: hello.mode,
+                    })),
+                )
+                .await
+                .unwrap();
+                let Ok((ControlMsg::Execution(request), _)) =
+                    calm_session::control::execution::rights::receive::<ControlMsg>(&stream).await
+                else {
+                    return;
+                };
+                if matches!(*request, ExecutionRequest::PreflightEnvironment(_)) {
+                    let _ = seen.send(());
+                }
+                // An old decoder closes on the unknown preflight ordinal.
+            });
+        }
+    });
+    let adapter = SessionExecutor::new(socket, CapabilityToken::fresh().unwrap());
+    let store = SqliteExecutionStore::new(repo.db().clone()).with_projection(
+        execution::test_support::TEST_CONSUMER.into(),
+        Arc::new(NoopProjection),
+    );
+    let root = tempfile::tempdir().unwrap();
+    let mut intent = execution::test_support::intent(root.path().canonicalize().unwrap());
+    intent.metadata.program.ambient_environment = allowed();
+    let engine = Engine::new(store.clone(), adapter.clone());
+    let mut tx = repo.pool().begin().await.unwrap();
+    assert!(matches!(
+        adapter
+            .preflight_environment(&intent.metadata.program)
+            .await,
+        Err(ExecError::Refused(_))
+    ));
+    assert!(engine.admit(&mut tx, intent.clone()).await.is_err());
+    tokio::time::timeout(std::time::Duration::from_secs(5), unsupported.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    tx.rollback().await.unwrap();
+    assert!(store.load(&intent.metadata.id).await.unwrap().is_none());
+    intent.metadata.program.ambient_environment = AmbientEnvironment::None;
+    adapter
+        .preflight_environment(&intent.metadata.program)
+        .await
+        .unwrap();
+    peer.abort();
+}

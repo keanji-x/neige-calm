@@ -1,5 +1,6 @@
 //! Ambient environment allowed across the application-to-child boundary.
 //! Provider credentials belong in the caller's explicit EnsureProcRequest.envs.
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use std::ffi::OsString;
 
 const ALLOWED: &[&str] = &[
@@ -60,8 +61,25 @@ use calm_session::control::execution::{
 };
 
 /// Spawn-only bytes, transported over the anonymous helper pipe, never a journal field.
-#[derive(serde::Serialize, serde::Deserialize)]
-pub(crate) struct LaunchEnvironment(pub Vec<(Vec<u8>, Vec<u8>)>);
+#[derive(Default, serde::Serialize, serde::Deserialize)]
+pub(crate) struct LaunchEnvironment(Vec<(String, String)>);
+impl LaunchEnvironment {
+    pub(crate) fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+    pub(crate) fn decode(self) -> anyhow::Result<Vec<(OsString, OsString)>> {
+        use std::os::unix::ffi::OsStringExt;
+        self.0
+            .into_iter()
+            .map(|(k, v)| {
+                Ok((
+                    OsString::from_vec(STANDARD.decode(k)?),
+                    OsString::from_vec(STANDARD.decode(v)?),
+                ))
+            })
+            .collect()
+    }
+}
 
 fn ambient_values(input: &EnvironmentPreflight) -> anyhow::Result<Vec<(OsString, OsString)>> {
     let AmbientEnvironment::SupervisorAllowed { proxy_policy } = &input.ambient_environment else {
@@ -100,21 +118,12 @@ pub(crate) fn launch_environment(
     specification
         .validate_environment()
         .map_err(anyhow::Error::msg)?;
-    let explicit = || {
-        specification
-            .environment
-            .iter()
-            .map(|(key, value)| (key.as_bytes().to_vec(), value.as_bytes().to_vec()))
-    };
-    // Preserve the released envp ordering (including repeated explicit keys) for None.
-    if specification.ambient_environment == AmbientEnvironment::None {
-        return Ok(LaunchEnvironment(explicit().collect()));
-    }
-    // Validate exactly the snapshot used for spawn, without mutating the durable specification.
-    let mut values = std::collections::BTreeMap::new();
-    for (key, value) in ambient_values(&EnvironmentPreflight::from(specification))? {
-        values.insert(key.as_bytes().to_vec(), value.as_bytes().to_vec());
-    }
-    values.extend(explicit());
-    Ok(LaunchEnvironment(values.into_iter().collect()))
+    // Only the ambient delta crosses the helper pipe. Explicit values already live
+    // in the specification, preserving None's released helper plan size and envp.
+    Ok(LaunchEnvironment(
+        ambient_values(&EnvironmentPreflight::from(specification))?
+            .into_iter()
+            .map(|(k, v)| (STANDARD.encode(k.as_bytes()), STANDARD.encode(v.as_bytes())))
+            .collect(),
+    ))
 }

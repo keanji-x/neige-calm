@@ -13,7 +13,9 @@ impl Executor {
             self.authenticates(secret),
             "unregistered object-transfer client"
         );
-        if let ExecutionRequest::Prepare(prepare) = request {
+        if let ExecutionRequest::Prepare(prepare) | ExecutionRequest::PrepareAmbient(prepare) =
+            request
+        {
             let reply = match self.prepare_objects(prepare, descriptors).await {
                 Ok(reply) => reply,
                 Err(error) => refused(&error.to_string()),

@@ -18,6 +18,10 @@ pub(super) enum HelperPlan {
     Execution {
         context: HelperContext,
         specification: ExecutionSpecification,
+        #[serde(
+            default,
+            skip_serializing_if = "crate::child_environment::LaunchEnvironment::is_empty"
+        )]
         environment: crate::child_environment::LaunchEnvironment,
     },
 }
@@ -126,17 +130,12 @@ pub(super) fn run_with_hooks(
         specification,
         environment,
     } = plan;
-    use std::os::unix::ffi::OsStringExt;
     let mut command = Command::new(&specification.program);
     command
         .args(&specification.args)
         .env_clear()
-        .envs(environment.0.into_iter().map(|(k, v)| {
-            (
-                std::ffi::OsString::from_vec(k),
-                std::ffi::OsString::from_vec(v),
-            )
-        }))
+        .envs(environment.decode()?)
+        .envs(specification.environment.iter().map(|(k, v)| (k, v)))
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
@@ -358,5 +357,20 @@ pub(super) fn reports(file: File, send: tokio::sync::mpsc::UnboundedSender<Helpe
         if send.send(event).is_err() {
             break;
         }
+    }
+}
+
+#[cfg(test)]
+mod compatibility_tests {
+    use super::*;
+    #[test]
+    fn w_owned_none_helper_plan_matches_released_bytes() {
+        // Serialized by the production HelperPlan at 88e8615c0 from the same
+        // released linux-v4 journal used by the journal contract fixtures.
+        let bytes = include_bytes!("fixtures/linux-v10.explicit.helper.json");
+        let mut plan: HelperPlan = serde_json::from_slice(bytes).unwrap();
+        let HelperPlan::Execution { specification, .. } = &mut plan;
+        specification.version = calm_session::control::execution::SpecificationVersion::AmbientV2;
+        assert_eq!(serde_json::to_vec(&plan).unwrap(), bytes);
     }
 }

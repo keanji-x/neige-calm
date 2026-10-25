@@ -16,7 +16,9 @@ impl RegisteredExecutorConnection {
         self.begin()?;
         rights::send(
             &self.stream,
-            &super::super::ControlMsg::Execution(Box::new(ExecutionRequest::Prepare(request))),
+            &super::super::ControlMsg::Execution(Box::new(
+                ExecutionRequest::Prepare(request).for_wire(),
+            )),
             &held.descriptors(),
         )
         .await?;

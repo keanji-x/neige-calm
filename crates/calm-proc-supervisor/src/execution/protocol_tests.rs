@@ -726,3 +726,26 @@ async fn private_prepare_inspect_refuses_pending_settlement() {
 
 #[path = "protocol_tests/transfer.rs"]
 mod transfer;
+
+#[tokio::test]
+async fn w_owned_none_prepare_replay_survives_journal_roundtrip() {
+    let temp = tempfile::tempdir().unwrap();
+    let secret = CapabilityToken::fresh().unwrap();
+    let executor = executor(&temp, &secret);
+    let (request, held) = private(&executor, temp.path());
+    prepare(&executor, &request, &held).await;
+    drop(executor);
+    let reopened = self::executor(&temp, &secret);
+    // Recovery revokes a never-launched private execution. Its exact immutable
+    // input still replays that fact, even when the caller constructed current None.
+    assert!(matches!(
+        reopened
+            .prepare_objects(request, descriptors(&held))
+            .await
+            .unwrap(),
+        ExecutionReply::Receipt {
+            state: ExecutionState::Revoked,
+            ..
+        }
+    ));
+}

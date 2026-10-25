@@ -22,7 +22,7 @@ pub use watch::ExecutionWatcher;
 pub const STOP_GRACE: std::time::Duration = std::time::Duration::from_millis(200);
 pub const DRAIN_BUDGET: std::time::Duration = std::time::Duration::from_millis(1000);
 
-pub const EXECUTION_ENVELOPE_VERSION: u32 = 11;
+pub const EXECUTION_ENVELOPE_VERSION: u32 = 10;
 
 /// Persisted registration receipt contract; independent of bincode wire ordinals.
 pub const PERSISTED_RECEIPT_CONTRACT_VERSION: u32 = 4;
@@ -148,6 +148,22 @@ pub enum ExecutionRequest {
     },
     /// Validation replies contain no supervisor environment values.
     PreflightEnvironment(EnvironmentPreflight),
+    /// Requires a successful PreflightEnvironment response before admission.
+    PrepareAmbient(#[serde(with = "specification::ambient_prepare")] PrepareExecution),
+}
+
+impl ExecutionRequest {
+    /// Select the additive wire extension only for an explicitly ambient execution.
+    fn for_wire(self) -> Self {
+        match self {
+            Self::Prepare(request)
+                if request.specification.ambient_environment != AmbientEnvironment::None =>
+            {
+                Self::PrepareAmbient(request)
+            }
+            request => request,
+        }
+    }
 }
 
 /// All process actions, including future variants, must first resolve this exact capability.
@@ -449,7 +465,7 @@ impl RegisteredExecutorConnection {
         self.begin()?;
         rights::send(
             &self.stream,
-            &super::ControlMsg::Execution(Box::new(request)),
+            &super::ControlMsg::Execution(Box::new(request.for_wire())),
             &[],
         )
         .await?;
@@ -472,3 +488,6 @@ impl RegisteredExecutorConnection {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod compatibility_tests;
