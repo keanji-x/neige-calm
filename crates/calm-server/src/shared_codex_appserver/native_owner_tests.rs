@@ -184,6 +184,29 @@ pub(crate) async fn notify_thread(
     }).await.unwrap();
 }
 
+/// ACK from the actual feeder Receiver, after all earlier same-peer stamp futures.
+#[cfg(feature = "fixtures")]
+pub(crate) async fn feeder_prefix_started(peer: &mut Peer) -> crate::test_seams::PausePoint {
+    let barrier = format!("fixture/barrier/{}", uuid::Uuid::new_v4());
+    let ack = crate::test_seams::PausePoint::default();
+    crate::test_seams::install_pause_for_test(
+        "liveness-feeder-prefix-committed",
+        &barrier,
+        ack.clone(),
+    );
+    ack.release.notify_one();
+    send(peer, json!({"method":barrier,"params":{}})).await;
+    ack
+}
+
+#[cfg(feature = "fixtures")]
+pub(crate) async fn feeder_prefix_committed(peer: &mut Peer) {
+    let ack = feeder_prefix_started(peer).await;
+    tokio::time::timeout(Duration::from_secs(5), ack.entered.notified())
+        .await
+        .unwrap();
+}
+
 fn start(daemon: &Arc<SharedCodexAppServer>) -> JoinHandle<CodexPromptReport> {
     let daemon = daemon.clone();
     tokio::spawn(async move {

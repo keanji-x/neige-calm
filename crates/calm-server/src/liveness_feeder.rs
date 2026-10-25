@@ -111,9 +111,22 @@ async fn run_feeder_loop<W, Fut, E>(
     E: std::fmt::Display,
 {
     let mut pending: HashMap<String, PendingStamp> = HashMap::new();
+    #[cfg(feature = "fixtures")]
+    let mut prefix_failed = false;
     loop {
         match rx.recv().await {
             Ok(notification) => {
+                // Fixture ACK follows all earlier write futures on this Receiver.
+                #[cfg(feature = "fixtures")]
+                if let Notification::Other { method, params } = &notification
+                    && method.starts_with("fixture/barrier/")
+                    && params.get("threadId").is_none()
+                    && !prefix_failed
+                    && pending.is_empty()
+                {
+                    crate::test_seams::pause_point("liveness-feeder-prefix-committed", method)
+                        .await;
+                }
                 let Some(status_str) = stamp_status_for(&notification) else {
                     continue;
                 };
@@ -129,6 +142,10 @@ async fn run_feeder_loop<W, Fut, E>(
                     )
                     .await
                 {
+                    #[cfg(feature = "fixtures")]
+                    {
+                        prefix_failed = true;
+                    }
                     tracing::warn!(
                         target = "liveness_feeder",
                         %thread_id,
@@ -137,11 +154,24 @@ async fn run_feeder_loop<W, Fut, E>(
                         "durable liveness replay failed (second consecutive failure); stamp dropped"
                     );
                 }
+                // Before BEGIN: holding a SQLite writer would prevent switch capture.
+                #[cfg(feature = "fixtures")]
+                if completed_turn(&notification) {
+                    crate::test_seams::pause_point(
+                        "liveness-original-completed-before-write",
+                        thread_id,
+                    )
+                    .await;
+                }
                 let at_ms = now_ms();
                 let turn_completed_ms = completed_turn(&notification).then_some(at_ms);
                 if let Err(e) =
                     write(thread_id.to_string(), at_ms, status_str, turn_completed_ms).await
                 {
+                    #[cfg(feature = "fixtures")]
+                    {
+                        prefix_failed = true;
+                    }
                     tracing::warn!(
                         target = "liveness_feeder",
                         %thread_id,
@@ -160,6 +190,10 @@ async fn run_feeder_loop<W, Fut, E>(
                 }
             }
             Err(RecvError::Lagged(n)) => {
+                #[cfg(feature = "fixtures")]
+                {
+                    prefix_failed = true;
+                }
                 // The columns are best-effort recency hints (the live `thread_read` pull is authoritative
                 // for the reaper), so a lag is benign.
                 tracing::warn!(
@@ -653,5 +687,114 @@ mod tests {
         // The three later notifications did not move the completion column.
         let again = last_turn_completed_ms(&repo, &ws).await.unwrap();
         assert_eq!(again, completed_at);
+    }
+    #[cfg(feature = "fixtures")]
+    fn prefix_ack() -> (Notification, crate::test_seams::PausePoint) {
+        let method = format!("fixture/barrier/{}", uuid::Uuid::new_v4());
+        let ack = crate::test_seams::PausePoint::default();
+        crate::test_seams::install_pause_for_test(
+            "liveness-feeder-prefix-committed",
+            &method,
+            ack.clone(),
+        );
+        ack.release.notify_one();
+        (
+            Notification::Other {
+                method,
+                params: json!({}),
+            },
+            ack,
+        )
+    }
+
+    #[cfg(feature = "fixtures")]
+    async fn failed_prefix(failures: usize, recover: bool) {
+        let (barrier, ack) = prefix_ack();
+        let (tx, rx) = tokio::sync::broadcast::channel(8);
+        tx.send(turn_completed("prefix", "completed")).unwrap();
+        if recover {
+            tx.send(turn_completed("prefix", "completed")).unwrap();
+        }
+        tx.send(barrier).unwrap();
+        drop(tx);
+        let mut attempts = 0;
+        run_feeder_loop(rx, move |_, _, _, _| {
+            attempts += 1;
+            let failed = attempts <= failures;
+            async move {
+                if failed {
+                    Err("injected write failure")
+                } else {
+                    Ok(())
+                }
+            }
+        })
+        .await;
+        assert!(
+            futures_util::poll!(Box::pin(ack.entered.notified()).as_mut()).is_pending(),
+            "failed prefix cannot ACK success"
+        );
+    }
+
+    #[cfg(feature = "fixtures")]
+    #[tokio::test]
+    async fn prefix_pending_write_cannot_ack() {
+        failed_prefix(1, false).await;
+    }
+
+    #[cfg(feature = "fixtures")]
+    #[tokio::test]
+    async fn prefix_first_error_stays_failed_after_recovery() {
+        failed_prefix(1, true).await;
+    }
+
+    #[cfg(feature = "fixtures")]
+    #[tokio::test]
+    async fn prefix_replay_error_stays_failed_after_drop() {
+        failed_prefix(2, true).await;
+    }
+
+    #[cfg(feature = "fixtures")]
+    #[tokio::test]
+    async fn prefix_lag_cannot_ack() {
+        let (barrier, ack) = prefix_ack();
+        let (tx, rx) = tokio::sync::broadcast::channel(1);
+        tx.send(turn_completed("prefix", "completed")).unwrap();
+        tx.send(barrier).unwrap();
+        drop(tx);
+        run_feeder_loop(rx, |_, _, _, _| async { Ok::<_, &str>(()) }).await;
+        assert!(
+            futures_util::poll!(Box::pin(ack.entered.notified()).as_mut()).is_pending(),
+            "lost prefix cannot ACK success"
+        );
+    }
+
+    #[cfg(feature = "fixtures")]
+    #[tokio::test]
+    async fn prefix_ack_waits_for_write_future() {
+        let (barrier, ack) = prefix_ack();
+        let write = crate::test_seams::PausePoint::default();
+        let held = write.clone();
+        let (tx, rx) = tokio::sync::broadcast::channel(8);
+        tx.send(turn_completed("prefix", "completed")).unwrap();
+        tx.send(barrier).unwrap();
+        drop(tx);
+        let feeder = tokio::spawn(run_feeder_loop(rx, move |_, _, _, _| {
+            let held = held.clone();
+            async move {
+                held.entered.notify_one();
+                held.release.notified().await;
+                Ok::<_, &str>(())
+            }
+        }));
+        tokio::time::timeout(std::time::Duration::from_secs(5), write.entered.notified())
+            .await
+            .unwrap();
+        assert!(futures_util::poll!(Box::pin(ack.entered.notified()).as_mut()).is_pending());
+        write.release.notify_one();
+        tokio::time::timeout(std::time::Duration::from_secs(5), ack.entered.notified())
+            .await
+            .unwrap();
+        feeder.await.unwrap();
     }
 }

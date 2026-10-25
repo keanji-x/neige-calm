@@ -6,7 +6,7 @@ use crate::planner_switch::{self, PlannerSwitchError, SwitchPlannerRequest};
 use crate::shared_codex_appserver::native_owner_tests::Peer;
 use crate::state::RouteState;
 use calm_truth::db::sqlite::track_planner::PlannerRevision;
-use calm_truth::db::{RepoEventWrite, RepoRead};
+use calm_truth::db::{RepoEventWrite, RepoOutOfDomain, RepoRead};
 use calm_truth::session_repo::SessionRepo;
 
 mod claude;
@@ -28,6 +28,17 @@ struct Pair {
 }
 
 async fn complete(state: &AppState, peer: &mut Peer, thread: &str, turn: &str) {
+    complete_controlled(state, peer, thread, turn, None, None).await;
+}
+
+async fn complete_controlled(
+    state: &AppState,
+    peer: &mut Peer,
+    thread: &str,
+    turn: &str,
+    tail: Option<(&str, &crate::test_seams::PausePoint)>,
+    held: Option<&crate::test_seams::PausePoint>,
+) {
     let result = tokio::time::timeout(Duration::from_secs(5), async {
         loop {
             let call = request(peer).await;
@@ -57,6 +68,13 @@ async fn complete(state: &AppState, peer: &mut Peer, thread: &str, turn: &str) {
         }
     };
     send(peer, json!({"id":call["id"],"result":{"turn":{"id":turn}}})).await;
+    if let Some((card, pause)) = tail {
+        crate::test_seams::install_pause_for_test(
+            "canonical-presentation-tail",
+            card,
+            pause.clone(),
+        );
+    }
     notify_thread(
         &state.shared_codex_appserver,
         peer,
@@ -65,6 +83,21 @@ async fn complete(state: &AppState, peer: &mut Peer, thread: &str, turn: &str) {
         json!({"id":turn,"status":"inProgress"}),
     )
     .await;
+    if let Some(held) = held {
+        crate::shared_codex_appserver::native_owner_tests::feeder_prefix_committed(peer).await;
+        let status: String =
+            sqlx::query_scalar("SELECT last_thread_status FROM worker_sessions WHERE thread_id=?1")
+                .bind(thread)
+                .fetch_one(state.mcp_context().sqlite_db.as_ref().unwrap().read_pool())
+                .await
+                .unwrap();
+        assert_eq!(status, "active");
+        crate::test_seams::install_pause_for_test(
+            "liveness-original-completed-before-write",
+            thread,
+            held.clone(),
+        );
+    }
     send(peer,json!({"method":"item/completed","params":{"threadId":thread,"turnId":turn,"item":{"id":"original-native-reply","type":"agentMessage","text":"Original execution result"}}})).await;
     notify_thread(
         &state.shared_codex_appserver,
@@ -74,6 +107,16 @@ async fn complete(state: &AppState, peer: &mut Peer, thread: &str, turn: &str) {
         json!({"id":turn,"status":"completed"}),
     )
     .await;
+    if let Some(held) = held {
+        tokio::time::timeout(Duration::from_secs(5), held.entered.notified())
+            .await
+            .unwrap();
+    }
+    if let Some((_, pause)) = tail {
+        tokio::time::timeout(Duration::from_secs(5), pause.entered.notified())
+            .await
+            .unwrap();
+    }
 }
 
 impl Pair {
@@ -81,6 +124,19 @@ impl Pair {
         Self::with_provider("codex").await
     }
     async fn with_provider(provider: &str) -> Self {
+        Self::with_presentation_tail(provider, None).await
+    }
+    async fn with_presentation_tail(
+        provider: &str,
+        tail: Option<&crate::test_seams::PausePoint>,
+    ) -> Self {
+        Self::with_completion_hold(provider, tail, None).await
+    }
+    async fn with_completion_hold(
+        provider: &str,
+        tail: Option<&crate::test_seams::PausePoint>,
+        held: Option<&crate::test_seams::PausePoint>,
+    ) -> Self {
         let mut fixture = Fixture::new().await;
         if provider == "claude" {
             claude_creation_tests::assistant::configure(&mut fixture, "exit");
@@ -107,6 +163,19 @@ impl Pair {
             .await;
         let (planner, old, _) = fixture.carrier(&track).await;
         fixture.wait_for_stored_reply(&planner).await;
+        let mut tx = fixture.repo.pool().begin().await.unwrap();
+        let receipt = crate::db::sqlite::conversation::human_track_creation_get_tx(
+            &mut tx,
+            area["id"].as_str().unwrap(),
+            "planner",
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        tx.rollback().await.unwrap();
+        let crate::db::sqlite::conversation::HumanTrackCreationAck::V1 { first_message, .. } =
+            receipt.acknowledgement;
+        prepare_consumed_message(&state, &old, first_message, human.as_ref().unwrap()).await;
         let assistant = post(
             &app,
             &cookie,
@@ -122,7 +191,15 @@ impl Pair {
             })
             .await;
         } else {
-            complete(&state, &mut peer, "switch-assistant", "assistant-turn").await;
+            complete_controlled(
+                &state,
+                &mut peer,
+                "switch-assistant",
+                "assistant-turn",
+                tail.map(|pause| (target.as_str(), pause)),
+                held,
+            )
+            .await;
         }
         let (worker, _) = assistant_canonical::carrier(&fixture, &target).await;
         let handle = state.harness.get(&worker).unwrap();
@@ -138,6 +215,65 @@ impl Pair {
         .unwrap();
         if provider == "codex" {
             fixture.wait_for_stored_reply(&target).await;
+        }
+        // The original reply row is committed before its presentation event. Re-observe
+        // this exact consumed Human input on the serial owner, then ask that owner
+        // for idle; a stored phase/reply alone does not finish the running handler.
+        let (_, frame) = assistant_canonical::carrier(&fixture, &target).await;
+        assert!(frame.canonical_inputs.active.is_none());
+        assert!(frame.canonical_inputs.pending.is_empty());
+        let [attempt] = frame.canonical_inputs.attempts.as_slice() else {
+            panic!("one consumed assistant input")
+        };
+        let (message_id, revision): (String, i64) = sqlx::query_as(
+            "SELECT message_id,revision FROM conversation_submission_inputs
+             WHERE submission_id=?1 AND input_kind='human' AND effective=1",
+        )
+        .bind(attempt.attempt.submission_id.as_str())
+        .fetch_one(fixture.repo.pool())
+        .await
+        .unwrap();
+        let message = calm_types::conversation::MessageRevisionRef {
+            message_id: calm_types::conversation::ConversationMessageId::parse(&message_id)
+                .unwrap(),
+            revision: std::num::NonZeroU32::new(u32::try_from(revision).unwrap()).unwrap(),
+        };
+        prepare_consumed_message_controlled(
+            &state,
+            &worker,
+            message,
+            human.as_ref().unwrap(),
+            tail,
+        )
+        .await;
+        let ack =
+            crate::shared_codex_appserver::native_owner_tests::feeder_prefix_started(&mut peer)
+                .await;
+        let committed = ack.entered.notified();
+        tokio::pin!(committed);
+        if let Some(held) = held {
+            // The original completed write is still before BEGIN. The same-peer
+            // prefix was sent, but readiness cannot precede the feeder's commit.
+            assert!(futures_util::poll!(committed.as_mut()).is_pending());
+            held.release.notify_one();
+        }
+        tokio::time::timeout(Duration::from_secs(5), committed)
+            .await
+            .unwrap();
+        for id in [&old, &worker] {
+            let handle = state.harness.get(id).unwrap();
+            let owner = handle.idle_carrier_owner_typed().await.unwrap();
+            owner.recheck_typed().await.unwrap();
+        }
+        if held.is_some() {
+            let stored: (String, String, String, Option<i64>) = sqlx::query_as(
+                "SELECT card_id,thread_id,last_thread_status,last_turn_completed_ms FROM worker_sessions WHERE id=?1")
+                .bind(&worker).fetch_one(fixture.repo.pool()).await.unwrap();
+            assert_eq!(
+                (&stored.0, stored.1.as_str(), stored.2.as_str()),
+                (&target, "switch-assistant", "idle")
+            );
+            assert!(stored.3.is_some());
         }
         let credentials = credential_facts(&fixture, &track).await;
         Self {
@@ -601,4 +737,38 @@ async fn planner_switch_reconcile_fresh_planner_without_broadcast() {
         "the normal wake must execute the accepted System input once"
     );
     p.close().await;
+}
+
+async fn prepare_consumed_message(
+    state: &AppState,
+    worker: &String,
+    message: calm_types::conversation::MessageRevisionRef,
+    human: &HumanInputSource,
+) {
+    prepare_consumed_message_controlled(state, worker, message, human, None).await;
+}
+
+async fn prepare_consumed_message_controlled(
+    state: &AppState,
+    worker: &String,
+    message: calm_types::conversation::MessageRevisionRef,
+    human: &HumanInputSource,
+    tail: Option<&crate::test_seams::PausePoint>,
+) {
+    let handle = state.harness.get(worker).unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        let observed = handle.observe_canonical_source(message, human);
+        tokio::pin!(observed);
+        if let Some(tail) = tail {
+            // complete_controlled saw the original reply's handler enter the seam.
+            // Its ACK cannot run until that handler's real event commit finishes.
+            assert!(futures_util::poll!(observed.as_mut()).is_pending());
+            tail.release.notify_one();
+        }
+        observed.await.unwrap();
+        let owner = handle.idle_carrier_owner_typed().await.unwrap();
+        owner.recheck_typed().await.unwrap();
+    })
+    .await
+    .unwrap();
 }

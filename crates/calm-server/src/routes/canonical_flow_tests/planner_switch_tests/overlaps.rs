@@ -319,7 +319,8 @@ async fn planner_switch_old_credential_mcp_request_refused() {
 #[tokio::test]
 async fn planner_switch_admitted_mcp_write_blocks_cutover() {
     use crate::mcp_server::{registry::ConnectionIdentity, transport::dispatch_tools_call};
-    let mut p = Pair::new().await;
+    let held = PausePoint::default();
+    let mut p = Pair::with_completion_hold("codex", None, Some(&held)).await;
     let ctx = p.state.mcp_context();
     let registry = Arc::new(crate::mcp_server::build_default_registry());
     let worker = p
@@ -425,6 +426,41 @@ async fn planner_switch_admitted_mcp_write_blocks_cutover() {
     );
     // Once the request has finished the same switch can commit. The accepted
     // write belongs to the old tenure; it did not run under a new Planner.
+    p.switch().await.unwrap();
+    assert_eq!(http::detail(&p).await["planner_revision"], 1);
+    p.close().await;
+}
+
+#[tokio::test]
+async fn planner_switch_preparation_waits_for_presentation_tail() {
+    let tail = crate::test_seams::PausePoint::default();
+    let mut p = Pair::with_presentation_tail("codex", Some(&tail)).await;
+    let rows = p
+        .fixture
+        .repo
+        .transcript_rows_of_thread(&p.cards[1], "switch-assistant")
+        .await
+        .unwrap();
+    let reply = rows
+        .iter()
+        .find(|row| row.item_uuid.as_deref() == Some("original-native-reply"))
+        .unwrap();
+    let tail_committed: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM events e JOIN conversation_presentations p
+         ON json_extract(e.payload,'$.cursor.position')=p.sequence
+         WHERE e.kind='harness.presentation.changed' AND e.scope_card=?1
+           AND p.card_id=?1 AND p.native_item_row_id=?2)",
+    )
+    .bind(&p.cards[1])
+    .bind(reply.id)
+    .fetch_one(p.fixture.repo.pool())
+    .await
+    .unwrap();
+    assert!(
+        tail_committed,
+        "ready must follow the original reply's event commit"
+    );
+    // Cutover still succeeds directly, without a retry that could hide Changed.
     p.switch().await.unwrap();
     assert_eq!(http::detail(&p).await["planner_revision"], 1);
     p.close().await;

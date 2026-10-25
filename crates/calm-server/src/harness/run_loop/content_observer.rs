@@ -151,6 +151,11 @@ pub(super) async fn on_item(
         native_ask::ask_from_item(inner, item_uuid.as_deref(), questions).await;
     }
     if let Some(cursor) = presentation_cursor {
+        #[cfg(feature = "fixtures")]
+        if phase == ItemPhase::Completed {
+            crate::test_seams::pause_point("canonical-presentation-tail", inner.card_id.as_str())
+                .await;
+        }
         return emit_presentation_changed(inner, cursor).await;
     }
     emit_item_added(
