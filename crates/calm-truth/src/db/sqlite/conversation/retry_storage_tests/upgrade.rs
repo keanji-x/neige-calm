@@ -14,7 +14,7 @@ async fn canonical_retry_storage_inline_upgrade_preserves_populated_graph() {
     let dir = tempfile::tempdir().unwrap();
     let url = format!("sqlite://{}/empty.db?mode=rwc", dir.path().display());
     let db = super::super::super::SqliteDb::connect(&url).await.unwrap();
-    old_migrator().run(db.read_pool()).await.unwrap();
+    through(183).run(db.read_pool()).await.unwrap();
     let before: Vec<(String, i64)> =
         sqlx::query_as("SELECT name,seq FROM sqlite_sequence ORDER BY name")
             .fetch_all(db.read_pool())
@@ -31,12 +31,12 @@ async fn canonical_retry_storage_inline_upgrade_preserves_populated_graph() {
     );
 }
 
-fn old_migrator() -> sqlx::migrate::Migrator {
+fn through(last: i64) -> sqlx::migrate::Migrator {
     sqlx::migrate::Migrator {
         migrations: std::borrow::Cow::Owned(
             crate::MIGRATOR
                 .iter()
-                .filter(|m| m.version <= 183)
+                .filter(|m| m.version <= last)
                 .cloned()
                 .collect(),
         ),
@@ -49,7 +49,7 @@ async fn populated_upgrade(empty_presentations: bool) {
     let dir = tempfile::tempdir().unwrap();
     let url = format!("sqlite://{}/upgrade.db?mode=rwc", dir.path().display());
     let db = super::super::super::SqliteDb::connect(&url).await.unwrap();
-    let old = old_migrator();
+    let old = through(183);
     old.run(db.read_pool()).await.unwrap();
     let repo = SqlxRepo {
         db,
@@ -165,6 +165,34 @@ async fn populated_upgrade(empty_presentations: bool) {
             .await
             .unwrap();
     let objects: Vec<(String,String)> = sqlx::query_as("SELECT name,sql FROM sqlite_master WHERE type IN ('trigger','index') AND sql IS NOT NULL ORDER BY name").fetch_all(s.repo.pool()).await.unwrap();
+    // Compare schema preservation at this migration's boundary. Later migrations
+    // may intentionally evolve these objects; head compatibility is checked below.
+    let with_0184 = through(184);
+    super::super::super::infra::check_no_unknown_future_migrations(s.repo.pool(), &with_0184)
+        .await
+        .unwrap();
+    with_0184.run(s.repo.pool()).await.unwrap();
+    for (name, sql) in objects {
+        // 0184 changes the creation fence from V4 to V5.
+        let sql = if name == "conversation_human_track_creation_fact_scope" {
+            sql.replace("'$.schema_version')=4", "'$.schema_version')=5")
+        } else {
+            sql
+        };
+        let current: String = sqlx::query_scalar("SELECT sql FROM sqlite_master WHERE name=?1")
+            .bind(&name)
+            .fetch_one(s.repo.pool())
+            .await
+            .unwrap();
+        if !matches!(
+            name.as_str(),
+            "conversation_submission_plan_immutable"
+                | "conversation_submission_only_private_erasure"
+                | "conversation_submission_input_identity_immutable"
+        ) {
+            assert_eq!(current, sql, "{name}");
+        }
+    }
     let Seed {
         repo, card, root, ..
     } = s;
@@ -201,34 +229,6 @@ async fn populated_upgrade(empty_presentations: bool) {
         .unwrap();
     assert_eq!(restored_native.len(), native.len());
     assert_eq!(restored_native[0].id, native[0].id);
-    for (name, sql) in objects {
-        // The only creation-fence evolution is its declared live codec version.
-        let sql = if name == "conversation_human_track_creation_fact_scope" {
-            sql.replace("'$.schema_version')=4", "'$.schema_version')=5")
-        } else if name == "acp_one_unresolved_submission" {
-            // C2 intentionally replaces this receipt fence; its owner supplies
-            // the head predicate. Every unrelated schema object stays exact.
-            sql.replace(
-                "state IN ('sending','unknown')",
-                crate::db::sqlite::ACP_BLOCKING_RECEIPT_SQL,
-            )
-        } else {
-            sql
-        };
-        let current: String = sqlx::query_scalar("SELECT sql FROM sqlite_master WHERE name=?1")
-            .bind(&name)
-            .fetch_one(upgraded.pool())
-            .await
-            .unwrap();
-        if !matches!(
-            name.as_str(),
-            "conversation_submission_plan_immutable"
-                | "conversation_submission_only_private_erasure"
-                | "conversation_submission_input_identity_immutable"
-        ) {
-            assert_eq!(current, sql, "{name}");
-        }
-    }
     assert_eq!(
         sqlx::query_scalar::<_, i64>(
             "SELECT seq FROM sqlite_sequence WHERE name='conversation_presentations'"
