@@ -4,6 +4,7 @@ import { afterEach, expect, it } from 'vitest';
 import { page } from 'vitest/browser';
 import { useState } from '../state/public.ts';
 import { Dialog } from '../dialog/public.tsx';
+import { AnchoredHint } from './anchored-hint.tsx';
 import { GuideAnchor, GuideProvider } from './guided-tour.tsx';
 import { parseGuideCatalog } from './guide-catalog.ts';
 
@@ -79,4 +80,24 @@ it('pauses background tours after completing an exclusive foreground form', asyn
   await expect.element(page.getByRole('note')).not.toBeInTheDocument();
   await page.getByRole('button', { name: 'Close native form' }).click();
   await expect.element(page.getByRole('note', { name: 'Second group' })).toBeVisible();
+});
+
+
+it('withdraws semantics immediately and retains the painted explanation until exit completes', async () => {
+  await page.viewport(1000, 800);
+  const hint = (open: boolean) => <AnchoredHint open={open} title={open ? 'Retained explanation' : ''}
+    description={open ? 'Keep this explanation during exit.' : ''} onSkip={() => {}}>
+    {(anchor, describedBy) => <button ref={anchor} aria-describedby={describedBy}>Native action</button>}
+  </AnchoredHint>;
+  const view = render(hint(true));
+  await expect.element(page.getByRole('note', { name: 'Retained explanation' })).toBeVisible();
+  const positioner = page.getByRole('note', { name: 'Retained explanation' }).element();
+  await expect.poll(() => positioner.firstElementChild!.getAnimations().every(animation => animation.playState === 'finished')).toBe(true);
+  view.rerender(hint(false));
+  expect(positioner.hasAttribute('inert')).toBe(true);
+  expect(positioner.getAttribute('aria-hidden')).toBe('true');
+  expect(positioner.textContent).toContain('Keep this explanation during exit.');
+  await expect.element(page.getByRole('note')).not.toBeInTheDocument();
+  await expect.poll(() => positioner.isConnected).toBe(false);
+  await expect.element(page.getByRole('button', { name: 'Native action' })).toBeVisible();
 });

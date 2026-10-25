@@ -29,8 +29,10 @@ import { routeParamFromPath } from '../router/navigation.ts';
 import { SIDEBAR_SECTION_IDS, moveSidebarGroup, type SidebarGroupId, type SidebarMove, type SidebarSectionId } from '../../../../core/view/sidebar-layout.ts';
 import { AreaGroup } from './area-group.tsx';
 import { SidebarGroup, SidebarTrackGroup, type GroupManagement } from './sidebar-group.tsx';
+import { ListText } from '../../ui/list-typography/public.tsx';
+import revealStyles from './area-group.module.css';
 import styles from './shell.module.css';
-import { navigationRowClass as rowLayout } from '../../ui/navigation-row/public.ts';
+import { navigationRowClass as rowLayout, navigationRowPresentation } from '../../ui/navigation-row/public.ts';
 import { GuideAnchor } from '../../ui/floating-control/public.ts';
 
 export type SidebarProps = Readonly<{
@@ -87,6 +89,7 @@ export function Sidebar({
   readLoading = false, onRetryRead = () => undefined,
 }: SidebarProps) {
   const preferences = useUiPreferences();
+  const demoPresentation = navigationRowPresentation({ kind: 'entry', depth: 1 });
   const createRef = useRef<HTMLSpanElement | null>(null);
   const railRef = useRef<HTMLElement | null>(null);
   const accountButtonRef = useRef<HTMLButtonElement | null>(null);
@@ -314,7 +317,7 @@ export function Sidebar({
               <><div className={styles.emptyArea}>
                 <EmptyState variant="compact" icon={<Icon name="folder" />} title="还没有 Area" description="项目与 Track 会按 Area 归类。" />
               </div>
-              {onOpenDemo !== undefined && <button type="button" data-nc-role="row" className={`${styles.emptyAreaCreate} ${rowLayout('labelStart')}`} onClick={onOpenDemo}>先体验 Demo</button>}</>
+              {onOpenDemo !== undefined && <button type="button" data-nc-role="row" className={`${revealStyles.showMore} ${demoPresentation.className} ${rowLayout('labelStart')}`} onClick={onOpenDemo}><ListText tone={demoPresentation.tone} className={revealStyles.showMoreLabel}>先体验 Demo</ListText></button>}</>
             )}
 
             {shownAreas.length > 0 && (

@@ -2,6 +2,7 @@ import { DepthFeedback } from '../../ui/motion/depth-feedback.tsx';
 import { createRoot } from 'react-dom/client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { createHashHistory, RouterProvider } from '@tanstack/react-router';
+import { Badge } from '@astryxdesign/core/Badge';
 import { Button } from '@astryxdesign/core/Button';
 import { createUnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import { createCardHost, createCardRegistry } from '../../systems/cards/public.ts';
@@ -36,7 +37,7 @@ export function mountOnboardingDemo(root: HTMLElement): void {
     <DatabaseScopeProvider id="onboarding-demo"><ConnectionStatusScope value={{ connected: true, label: '演示模式', detail: '只使用页面内的预置数据，不连接真实后端。' }}>
       <div className={styles.demo}>
         <aside className={styles.banner} aria-label="演示模式">
-          <div className={styles.identity}><strong>Demo</strong><span>预置练习 · 不连接 AI，不修改文件</span></div>
+          <div className={styles.identity}><Badge variant="neutral" label="Demo" /><span className={styles.sentence}>预置练习 · 不连接 AI，不修改文件</span></div>
           <div className={styles.actions}>
             <Button type="button" label="重新开始" size="sm" variant="ghost" onClick={() => window.location.assign(ONBOARDING_DEMO_URL)} />
             <Button type="button" label="退出演示" size="sm" variant="secondary" onClick={leave} />

@@ -145,12 +145,12 @@ export function GuideAnchor({ id, disabled = false, reserveSpace = false, placem
   return <AnchoredHint open={active} title={active ? guide.current.step.title : ''}
     description={active ? guide.current.step.description : ''} reserveSpace={reserveSpace} placement={placement}
     onSkip={() => guide?.skip()}
-    contextLabel={active ? `${guide.current.tour} · ${String(guide.current.index + 1).padStart(2, '0')} / ${String(guide.current.count).padStart(2, '0')}` : undefined}
+    contextLabel={active ? `${guide.current.tour} · ${guide.current.index + 1} / ${guide.current.count}` : undefined}
     detail={step === null ? undefined : <>
       {example !== undefined && <div className={styles.example}>
         <span className={styles.exampleLabel}>试一试</span>
         <p>{example.summary}</p>
-        {onExample !== undefined && <Button type="button" className={styles.exampleAction} label={example.label} size="sm" variant="primary"
+        {onExample !== undefined && <Button type="button" label={example.label} size="sm" variant="secondary"
           onClick={() => { element?.focus({ preventScroll: true }); onExample(example.text); }} />}
       </div>}
       {step.outcome !== undefined && <p className={styles.outcome}>接下来：{step.outcome}</p>}

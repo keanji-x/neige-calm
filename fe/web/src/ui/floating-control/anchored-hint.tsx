@@ -1,7 +1,10 @@
-import { useCallback, useId, useLayoutEffect, useRef, type ReactNode, type RefCallback } from 'react';
-import { arrow, autoUpdate, flip, FloatingArrow, hide, offset, shift, useFloating } from '@floating-ui/react';
+import { useCallback, useId, useLayoutEffect, useMemo, useRef, type ReactNode, type RefCallback } from 'react';
+import { autoUpdate, flip, hide, offset, shift, useFloating } from '@floating-ui/react';
 import { Button } from '@astryxdesign/core/Button';
 import { useState } from '../state/public.ts';
+import { useSurfacePresence } from '../motion/surface-presence.ts';
+import { readSurfaceFrame } from '../motion/geometry.ts';
+import material from './floating-control.module.css';
 import styles from './anchored-hint.module.css';
 
 /** Optional hints require the top layer; native controls work without this API. */
@@ -27,16 +30,18 @@ export function AnchoredHint({ open, title, description, onSkip, children, reser
   const visible = open && supportsAnchoredHints();
   const [hintHeight, setHintHeight] = useState(0);
   const control = useRef<HTMLElement | null>(null);
-  const arrowRef = useRef<SVGSVGElement | null>(null);
-  const { refs, floatingStyles, context, isPositioned, middlewareData, update } = useFloating({
-    open: visible,
+  const positioner = useRef<HTMLDivElement | null>(null);
+  const surface = useRef<HTMLDivElement | null>(null);
+  const [retained, setRetained] = useState(false);
+  const present = visible || retained;
+  const { refs, floatingStyles, isPositioned, middlewareData, update } = useFloating({
+    open: present,
     placement,
     strategy: 'fixed',
     middleware: [
       offset(12),
       flip(),
       shift({ padding: 12 }),
-      arrow({ element: arrowRef, padding: 8 }),
       hide(),
     ],
     whileElementsMounted: (reference, floating, reposition) => autoUpdate(reference, floating, reposition, { animationFrame: true }),
@@ -46,12 +51,19 @@ export function AnchoredHint({ open, title, description, onSkip, children, reser
     refs.setReference(element);
   }, [refs]);
   useLayoutEffect(() => {
-    const element = refs.floating.current;
+    const element = positioner.current;
     if (!visible || element === null) return;
-    element.showPopover();
+    setRetained(true);
+    if (!element.matches(':popover-open')) element.showPopover();
     void update();
-    return () => { if (element.matches(':popover-open')) element.hidePopover(); };
-  }, [visible, refs.floating, update]);
+  }, [visible, update]);
+  useSurfacePresence({ parts: { kind: 'single', primary: { element: surface, readFrame: () => readSurfaceFrame(positioner.current) } },
+    geometry: { kind: 'lift', origin: { kind: 'anchor', anchor: { ref: control }, unavailable: 'surface-center' } },
+    open: visible, present, enabled: true, onExited: () => {
+      const element = positioner.current;
+      if (element?.matches(':popover-open')) element.hidePopover();
+      setRetained(false);
+    } });
   useLayoutEffect(() => {
     const element = refs.floating.current;
     if (!visible || !reserveSpace || element === null) return;
@@ -62,20 +74,25 @@ export function AnchoredHint({ open, title, description, onSkip, children, reser
     return () => observer.disconnect();
   }, [visible, reserveSpace, refs.floating]);
   const nativeControl = children(anchor, visible ? id : undefined);
-  const hint = visible && <div ref={(element) => refs.setFloating(element)} id={id} popover="manual" data-nc-guide-hint="" role="note" aria-label={title}
-      className={styles.hint} style={{ ...floatingStyles, visibility: isPositioned && !middlewareData.hide?.referenceHidden ? 'visible' : 'hidden' }}>
-      <FloatingArrow ref={arrowRef} context={context} width={14} height={7} tipRadius={2}
-        fill="var(--paper)" stroke="var(--hairline)" strokeWidth={1} className={styles.arrow} aria-hidden="true" />
-      {contextLabel !== undefined && <span className={styles.context}>{contextLabel}</span>}
+  const content = useMemo(() => <>
       <div className={styles.body}>
-      <strong className={styles.title}>{title}</strong>
-      <p className={styles.description}>{description}</p>
-      {detail}
+        {contextLabel !== undefined && <span className={styles.context}>{contextLabel}</span>}
+        <strong className={styles.title}>{title}</strong>
+        <p>{description}</p>
+        {detail}
       </div>
-      {footer ?? <Button label="跳过引导" size="sm" variant="ghost" onClick={() => {
+      {footer ?? <div className={styles.actions}><Button label="跳过引导" size="sm" variant="ghost" onClick={() => {
         control.current?.focus({ preventScroll: true });
         onSkip();
-      }} />}
+      }} /></div>}
+    </>, [contextLabel, title, description, detail, footer, onSkip]);
+  // Keep the last painted explanation intact while the owner withdraws its step.
+  const [lastContent, setLastContent] = useState(content);
+  useLayoutEffect(() => { if (visible) setLastContent(content); }, [visible, content]);
+  const hint = present && <div ref={(element) => { positioner.current = element; refs.setFloating(element); }} id={id}
+      popover="manual" data-nc-guide-hint="" role="note" aria-label={title} inert={!visible} aria-hidden={!visible || undefined}
+      className={styles.positioner} style={{ ...floatingStyles, visibility: isPositioned && !middlewareData.hide?.referenceHidden ? 'visible' : 'hidden' }}>
+      <div ref={surface} className={`${styles.hint} ${material.material}`}>{visible ? content : lastContent}</div>
     </div>;
   return reserveSpace
     ? <div className={visible ? styles.reserved : styles.unreserved}>

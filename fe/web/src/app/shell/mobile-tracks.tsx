@@ -10,7 +10,7 @@ import { visibleAreas, type Area } from '../../../../core/domain/area.ts';
 import { areaPinnedTracks, type Track } from '../../../../core/domain/track.ts';
 import { ErrorBox } from '../../ui/error-box/public.tsx';
 import { Icon } from '../../ui/icon/public.tsx';
-import { MobileList, MobileListEmpty, MobileListGroup } from '../../ui/mobile-list/public.tsx';
+import { MobileList, MobileListEmpty, MobileListGroup, MobileListItem } from '../../ui/mobile-list/public.tsx';
 import { MobileNavigationCreateAction, MobileNavigationHeader, type MobileNavigationActions } from './mobile-navigation-header.tsx';
 import styles from './mobile-navigation.module.css';
 import { type TrackActionsProps } from '../../features/track/row/actions.tsx';
@@ -91,7 +91,7 @@ function NavigationPage({
               <span className={styles.trackArrow}><Icon name="chevron-right" /></span>
             </button>}</GuideAnchor>
           </li>)}
-          {shown.length === 0 && !readLoading && readError === null && <><MobileListEmpty icon={<Icon name="folder" />} title="还没有 Area" description="项目与 Track 会按 Area 归类。" />{onOpenDemo !== undefined && <li><button type="button" onClick={onOpenDemo}>先体验 Demo</button></li>}</>}
+          {shown.length === 0 && !readLoading && readError === null && <><MobileListEmpty icon={<Icon name="folder" />} title="还没有 Area" description="项目与 Track 会按 Area 归类。" />{onOpenDemo !== undefined && <MobileListItem title="先体验 Demo" onSelect={onOpenDemo} startContent={<Icon name="chevron-right" />} />}</>}
         </MobileList> : <MobileTrackList tracks={tracks} currentTrackId={currentTrackId} onOpenTrack={onOpenTrack}
           isUnread={isUnread} trackActions={trackActions} emptyState={readError === null && !readLoading ? { icon: <Icon name="file" />, title: '这个 Area 还没有 Track', description: '在此 Area 创建的 Track 会显示在这里。' } : undefined} />}
       </MobileListGroup>

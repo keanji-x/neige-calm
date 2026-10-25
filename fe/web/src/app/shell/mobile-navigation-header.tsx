@@ -31,8 +31,8 @@ export function MobileNavigationHeader({
   return <>
     <MobileHeader className={actionsPlacement !== 'rows' ? styles.navigationHeader : undefined} title={title} backLabel={backLabel} onBack={onBack}
       actions={<span ref={headerRef} style={{ display: 'inline-flex' }}>{actionsPlacement === 'header' && area === undefined ? <IconButton label={creationScope === 'area' ? 'New area' : 'New track'} isDisabled={creationScope !== 'area'} icon={<Icon name="plus" />} variant="ghost" size="lg" className={`${styles.iconButton} ${floatingControlClassName}`} onClick={() => onCreateArea({ kind: 'anchor', anchor: { ref: headerRef }, unavailable: 'surface-center' })} /> : area === undefined && onStartGuide === undefined ? undefined : <Menu wrapClassName={menuStyles.toolsMenuWrap} menuClassName={menuStyles.toolsMenu} itemClassName={menuStyles.menuItem}
-        items={[...(actionsPlacement === 'header' && area !== undefined ? [{ label: 'New track', onSelect: () => onNewTrack(area.id) }] : []), { label: area === undefined ? 'Edit area' : `Edit area ${area.name}`, disabled: area === undefined,
-          onSelect: () => { if (area !== undefined) onEditArea(area, { kind: 'anchor', anchor: { ref: headerRef }, unavailable: 'surface-center' }); } }, ...(onStartGuide === undefined ? [] : [{ label: '入门引导', onSelect: onStartGuide }])]}
+        items={[...(actionsPlacement === 'header' && area !== undefined ? [{ label: 'New track', onSelect: () => onNewTrack(area.id) }] : []), ...(area === undefined ? [] : [{ label: `Edit area ${area.name}`,
+          onSelect: () => { onEditArea(area, { kind: 'anchor', anchor: { ref: headerRef }, unavailable: 'surface-center' }); } }]), ...(onStartGuide === undefined ? [] : [{ label: '入门引导', onSelect: onStartGuide }])]}
         trigger={(props) => <IconButton {...props} label={area === undefined ? 'Workspace actions' : 'Area actions'} icon={actionsPlacement !== 'header' ? <AstryxIcon icon="moreHorizontal" size="md" color="inherit" /> : <Icon name="plus" />}
           variant="ghost" size="lg" className={`${styles.iconButton} ${floatingControlClassName}`} />} />}</span>} />
     {filters}

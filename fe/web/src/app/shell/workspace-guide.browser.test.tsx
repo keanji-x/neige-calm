@@ -32,8 +32,9 @@ it('automatically enrolls a loaded empty workspace and remembers Skip', async ()
   await expect.element(page.getByRole('note', { name: '先做出一个能预览的小作品' })).toBeVisible();
   expect(preferences.guideEnabled()).toBe(true);
   const add = page.getByRole('button', { name: 'New area', exact: true }).element().getBoundingClientRect();
-  const pointer = page.getByRole('note', { name: '先做出一个能预览的小作品' }).element().querySelector('svg')!.getBoundingClientRect();
-  expect(Math.abs(pointer.left + pointer.width / 2 - (add.left + add.width / 2))).toBeLessThanOrEqual(2);
+  const callout = page.getByRole('note', { name: '先做出一个能预览的小作品' }).element().getBoundingClientRect();
+  expect(Math.abs(callout.left + callout.width / 2 - (add.left + add.width / 2))).toBeLessThanOrEqual(2);
+  expect(Math.abs(callout.top - add.bottom - 12)).toBeLessThanOrEqual(2);
   await page.getByRole('button', { name: '跳过引导', exact: true }).click();
   expect(preferences.guideEnabled()).toBe(false);
   first.client.clear(); cleanup();
