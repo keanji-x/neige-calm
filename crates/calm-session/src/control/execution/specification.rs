@@ -20,7 +20,7 @@ pub enum SpecificationVersion {
     AmbientV2,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Eq)]
 pub struct ExecutionSpecification {
     pub version: SpecificationVersion,
     pub program: PathBuf,
@@ -30,6 +30,21 @@ pub struct ExecutionSpecification {
     pub ambient_environment: AmbientEnvironment,
     pub io_mode: IoMode,
     pub replay_bytes: usize,
+}
+
+// The version records the source format. None has one released representation,
+// so its origin marker must not change immutable-input equality after a roundtrip.
+impl PartialEq for ExecutionSpecification {
+    fn eq(&self, other: &Self) -> bool {
+        self.ambient_environment == other.ambient_environment
+            && (self.ambient_environment == AmbientEnvironment::None
+                || self.version == other.version)
+            && self.program == other.program
+            && self.args == other.args
+            && self.environment == other.environment
+            && self.io_mode == other.io_mode
+            && self.replay_bytes == other.replay_bytes
+    }
 }
 
 pub const EXECUTION_SPECIFICATION_VERSION: u32 = 2;

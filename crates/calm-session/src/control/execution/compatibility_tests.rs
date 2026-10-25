@@ -16,8 +16,10 @@ fn w_owned_none_matches_released_wire_and_specification_bytes() {
     let ExecutionRequest::Prepare(mut request) = *request else {
         panic!()
     };
+    let released = request.specification.clone();
     // Current callers may construct the current in-memory version with None.
     request.specification.version = SpecificationVersion::AmbientV2;
+    assert_eq!(request.specification, released);
     assert_eq!(
         serde_json::to_vec(&request.specification).unwrap(),
         include_bytes!("fixtures/explicit-v10.specification.json")

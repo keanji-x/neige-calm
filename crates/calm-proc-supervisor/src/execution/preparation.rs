@@ -116,18 +116,13 @@ impl Executor {
 
     pub(super) async fn prepare_objects(
         &self,
-        mut request: PrepareExecution,
+        request: PrepareExecution,
         descriptors: Vec<std::os::fd::OwnedFd>,
     ) -> anyhow::Result<ExecutionReply> {
         request
             .specification
             .validate_environment()
             .map_err(anyhow::Error::msg)?;
-        // None has one released durable/wire representation. Normalize direct
-        // library callers too, so exact retries compare equally after recovery.
-        if request.specification.ambient_environment == AmbientEnvironment::None {
-            request.specification.version = SpecificationVersion::ExplicitOnlyV1;
-        }
         crate::child_environment::preflight(
             &calm_session::control::execution::EnvironmentPreflight::from(&request.specification),
         )?;
