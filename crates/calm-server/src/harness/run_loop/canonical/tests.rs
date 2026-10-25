@@ -17,7 +17,9 @@ mod compact_tests;
 mod content_tests;
 mod control_tests;
 mod objective_tests;
+mod phase_diagnostics;
 mod planner_compact_tests;
+use phase_diagnostics::PhaseWaitStage;
 mod selection_authority_tests;
 
 pub(super) struct Fixture {
@@ -191,17 +193,7 @@ impl Fixture {
     }
 
     pub(super) async fn wait_phase(&self, phase: HarnessPhaseTag) -> CanonicalHarnessSnapshot {
-        tokio::time::timeout(Duration::from_secs(5), async {
-            loop {
-                let frame = self.frame().await;
-                if frame.header.phase == phase {
-                    return frame;
-                }
-                tokio::time::sleep(Duration::from_millis(5)).await;
-            }
-        })
-        .await
-        .unwrap()
+        self.wait_phase_at(phase, PhaseWaitStage::Unspecified).await
     }
 }
 

@@ -201,7 +201,8 @@ async fn canonical_planner_compact_expired_end_is_inert() {
         started_at: Instant::now() - inner.config.max_turn_duration,
     };
     drop(issuance);
-    fx.wait_phase(HarnessPhaseTag::Wedged).await;
+    fx.wait_phase_at(HarnessPhaseTag::Wedged, PhaseWaitStage::ExpiredMaintenance)
+        .await;
     assert_terminal(
         &fx,
         TaskStatus::Failed,

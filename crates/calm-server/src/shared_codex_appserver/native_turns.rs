@@ -6,6 +6,8 @@
 //! Detach leases fence one thread and fail recheck on source-generation changes.
 use super::*;
 mod detach;
+#[cfg(test)]
+mod diagnostics;
 mod history;
 mod maintenance;
 mod settlement;

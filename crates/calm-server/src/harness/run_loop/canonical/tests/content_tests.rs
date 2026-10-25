@@ -85,7 +85,9 @@ pub(super) async fn start(
     )
     .await;
     send(peer, json!({"id":call["id"],"result":{"turn":{"id":turn}}})).await;
-    let running = fx.wait_phase(HarnessPhaseTag::TurnRunning).await;
+    let running = fx
+        .wait_phase_at(HarnessPhaseTag::TurnRunning, PhaseWaitStage::UserStart)
+        .await;
     assert_eq!(running.header.last_turn_id.as_deref(), Some(turn));
     thread
 }
@@ -99,7 +101,8 @@ pub(super) async fn complete(fx: &Fixture, peer: &mut Peer, thread: &str, turn: 
         json!({"id":turn,"status":"completed"}),
     )
     .await;
-    fx.wait_phase(HarnessPhaseTag::TurnCompleted).await;
+    fx.wait_phase_at(HarnessPhaseTag::TurnCompleted, PhaseWaitStage::UserComplete)
+        .await;
 }
 
 async fn accept(fx: &Fixture, body: &str) -> MessageRevisionRef {
