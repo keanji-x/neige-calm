@@ -513,3 +513,13 @@ pub(crate) fn record_workspace_observation(point: &str, path: &std::path::Path) 
         counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     }
 }
+
+/// Allocate a released daily fixture through the real Historical structure owner.
+/// Fresh reconcile now owns a canonical carrier; REST owns ordinary creator start.
+#[cfg(feature = "fixtures")]
+pub async fn historical_daily_for_test(
+    state: &crate::state::RouteState,
+    now: chrono::DateTime<chrono::Utc>,
+) -> crate::error::Result<crate::model::Track> {
+    crate::daily_planner::historical_daily_for_test(state, now).await
+}

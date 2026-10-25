@@ -44,11 +44,18 @@ async fn ensure_area(state: &RouteState) -> Result<String> {
 
 /// No missed empty days are backfilled. Past open days are closed before today is exposed.
 pub async fn reconcile(state: &RouteState, now: DateTime<Utc>) -> Result<Track> {
+    let (request, identity) = prepare_daily_track(state, now).await?;
+    crate::routes::tracks::create_managed_track(state.clone(), request, identity).await
+}
+
+async fn prepare_daily_track(
+    state: &RouteState,
+    now: DateTime<Utc>,
+) -> Result<(NewTrack, ManagedTrackIdentity)> {
     let date = now.with_timezone(&TIME_ZONE).date_naive();
     let area_id = ensure_area(state).await?;
     reconcile_closed_days(state, date).await?;
-    crate::routes::tracks::create_managed_track(
-        state.clone(),
+    Ok((
         NewTrack {
             area_id: area_id.into(),
             title: date.to_string(),
@@ -74,8 +81,17 @@ pub async fn reconcile(state: &RouteState, now: DateTime<Utc>) -> Result<Track> 
             tool_policy: ToolPolicy::Reports,
             kernel_controls_lifecycle: true,
         },
-    )
-    .await
+    ))
+}
+
+/// Recreate the released daily allocation using its original structure owner.
+#[cfg(feature = "fixtures")]
+pub(crate) async fn historical_daily_for_test(
+    state: &RouteState,
+    now: DateTime<Utc>,
+) -> Result<Track> {
+    let (request, identity) = prepare_daily_track(state, now).await?;
+    crate::routes::tracks::historical_managed_track_for_test(state.clone(), request, identity).await
 }
 
 async fn reconcile_closed_days(state: &RouteState, date: NaiveDate) -> Result<()> {

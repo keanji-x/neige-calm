@@ -1,5 +1,5 @@
-//! Human-only dormant allocation and first-input acceptance. This DB composition never starts
-//! or wakes a provider; later execution needs its own owning authorization.
+//! Human dormant admission and shared allocation-local carrier mint. Neither
+//! starts or wakes a provider; later execution needs its owning authorization.
 use super::creation_plan::{EmptyTrackCreationPlan, HumanTrackCreationPlan};
 use super::*;
 use crate::auth::HumanInputSource;
@@ -271,7 +271,23 @@ async fn allocate_canonical_tx(
             "Human acceptance requires its fresh allocation".into(),
         ));
     }
-    let shape = crate::db::sqlite::card_execution_shape_tx(tx, &planner).await?;
+    let runtime = mint_dormant_carrier_tx(tx, &planner, provider).await?;
+    Ok(CanonicalAllocation {
+        planner,
+        runtime,
+        track,
+        events,
+    })
+}
+
+/// Allocation-local carrier mint. Admission belongs to each entry owner; this
+/// step validates the allocated Planner and creates no input or native session.
+pub(in crate::routes::tracks) async fn mint_dormant_carrier_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    planner: &str,
+    provider: crate::session_projection_repo::AgentProvider,
+) -> Result<String> {
+    let shape = crate::db::sqlite::card_execution_shape_tx(tx, planner).await?;
     let actual = PlannerBinding::from_shape(&shape.kind, shape.role, &shape.payload)
         .ok_or_else(|| CalmError::Conflict("fresh Planner binding is invalid".into()))?;
     if actual.profile != HarnessProfile::Planner || actual.provider != provider {
@@ -282,7 +298,7 @@ async fn allocate_canonical_tx(
     let already_owned: bool = sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM cards WHERE id=?1 AND session_id IS NOT NULL)",
     )
-    .bind(&planner)
+    .bind(planner)
     .fetch_one(&mut **tx)
     .await?;
     if already_owned {
@@ -298,7 +314,7 @@ async fn allocate_canonical_tx(
         tx,
         WorkerSessionInit::shared_planner(
             runtime.clone(),
-            planner.clone(),
+            planner.to_owned(),
             provider,
             WorkerSessionState::Idle,
             None,
@@ -307,12 +323,7 @@ async fn allocate_canonical_tx(
         ),
     )
     .await?;
-    Ok(CanonicalAllocation {
-        planner,
-        runtime,
-        track,
-        events,
-    })
+    Ok(runtime)
 }
 
 /// Empty is an allocation intent, never an accepted Human message. Its optional

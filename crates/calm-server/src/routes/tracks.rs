@@ -1429,6 +1429,23 @@ async fn create_track_structure(
     p: NewTrack,
     options: CreateTrackOptions,
 ) -> Result<(Track, bool, String, String)> {
+    create_track_structure_with_context(
+        s,
+        actor,
+        p,
+        options,
+        allocation::CreationContext::Historical,
+    )
+    .await
+}
+
+async fn create_track_structure_with_context(
+    s: RouteState,
+    actor: ActorId,
+    p: NewTrack,
+    options: CreateTrackOptions,
+    context: allocation::CreationContext,
+) -> Result<(Track, bool, String, String)> {
     let human_source = options.human_source.clone();
     let workspace_root_for_materialize = s.workspace_root.clone();
     let teardown_targets = s.teardown_targets.clone();
@@ -1455,7 +1472,7 @@ async fn create_track_structure(
                     options,
                     (planner_card_id_for_tx, report_card_id_for_tx),
                     allocation::TrackAllocationOwners {
-                        context: allocation::CreationContext::Historical,
+                        context,
                         acp_planner,
                         write: write_for_tx,
                         templates,
@@ -1563,12 +1580,29 @@ pub(crate) async fn create_managed_track(
 ) -> Result<Track> {
     let _area_guard =
         crate::per_card_lock::lock_key(&s.area_delete_locks, p.area_id.as_str()).await;
+    let options = managed_track_options(&s, &p, identity)?;
+    let (track, _, _, _) = create_track_structure_with_context(
+        s,
+        ActorId::Kernel,
+        p,
+        options,
+        allocation::CreationContext::ManagedCanonical,
+    )
+    .await?;
+    Ok(track)
+}
+
+fn managed_track_options(
+    s: &RouteState,
+    p: &NewTrack,
+    identity: crate::managed_track::ManagedTrackIdentity,
+) -> Result<CreateTrackOptions> {
     let template = p
         .template_id
         .as_deref()
         .and_then(|id| s.templates.get(id))
         .ok_or_else(|| CalmError::Internal("managed Track template is not registered".into()))?;
-    let options = CreateTrackOptions {
+    Ok(CreateTrackOptions {
         human_source: None,
         admin: false,
         managed_identity: Some(identity),
@@ -1587,7 +1621,19 @@ pub(crate) async fn create_managed_track(
         },
         workspace_plan: TrackWorkspacePlan::ManagedUnder(s.workspace_root.clone()),
         idempotency_claim: None,
-    };
+    })
+}
+
+/// Fixtures need the released owner, not a canonical allocation with its identity rewritten.
+#[cfg(feature = "fixtures")]
+pub(crate) async fn historical_managed_track_for_test(
+    s: RouteState,
+    p: NewTrack,
+    identity: crate::managed_track::ManagedTrackIdentity,
+) -> Result<Track> {
+    let _area_guard =
+        crate::per_card_lock::lock_key(&s.area_delete_locks, p.area_id.as_str()).await;
+    let options = managed_track_options(&s, &p, identity)?;
     let (track, _, _, _) = create_track_structure(s, ActorId::Kernel, p, options).await?;
     Ok(track)
 }

@@ -254,7 +254,7 @@ async fn historical_public_send_keeps_its_v1_key_and_original_acknowledgement() 
 async fn historical_daily_first_send_starts_and_replays_the_original_acknowledgement() {
     let fixture = Fixture::new().await;
     let (state, app, cookie) = fixture.application_with_historical_native(true).await;
-    let track = crate::daily_planner::reconcile(
+    let track = crate::test_seams::historical_daily_for_test(
         &axum::extract::FromRef::from_ref(&state),
         chrono::DateTime::parse_from_rfc3339("2026-10-04T01:00:00Z")
             .unwrap()
@@ -563,7 +563,7 @@ async fn canonical_collaborator_content_is_accepted_independently_of_private_exe
 async fn historical_daily_start_rechecks_its_real_source_after_the_start_wait() {
     let fixture = Fixture::new().await;
     let (state, app, cookie) = fixture.application_with_historical_native(true).await;
-    let track = crate::daily_planner::reconcile(
+    let track = crate::test_seams::historical_daily_for_test(
         &axum::extract::FromRef::from_ref(&state),
         chrono::DateTime::parse_from_rfc3339("2026-10-04T01:00:00Z")
             .unwrap()
@@ -634,6 +634,16 @@ async fn historical_daily_start_rechecks_its_real_source_after_the_start_wait() 
 async fn historical_source_revocation_blocks_start_but_preserves_kernel_compensation() {
     let fixture = Fixture::new().await;
     let (state, app, cookie) = fixture.application_with_historical_native(true).await;
+    let daily_track: String = sqlx::query_scalar(
+        "SELECT track_id FROM managed_track_identities WHERE owner='daily-planner'",
+    )
+    .fetch_one(fixture.repo.pool())
+    .await
+    .unwrap();
+    let (daily_card, daily_worker, daily_empty) = fixture.carrier(&daily_track).await;
+    assert!(daily_empty.canonical_inputs.pending.is_empty());
+    assert!(daily_empty.canonical_inputs.active.is_none());
+    assert!(daily_empty.canonical_inputs.attempts.is_empty());
     // System resource creation retains the actual historical owner after U8b.
     let area = post(&app, &cookie, "/api/areas/system", "system", json!({})).await;
     let gate = state
@@ -652,21 +662,28 @@ async fn historical_source_revocation_blocks_start_but_preserves_kernel_compensa
             "theme":{"fg":[255,255,255],"bg":[0,0,0]},"first_message":"Retain the kernel's original cleanup"
         })).await
     });
-    tokio::time::timeout(Duration::from_secs(5), async {
+    let (track, card): (String, String) = tokio::time::timeout(Duration::from_secs(5), async {
         loop {
-            let prepared: i64 =
-                sqlx::query_scalar("SELECT count(*) FROM worker_sessions WHERE state='starting'")
-                    .fetch_one(fixture.repo.pool())
-                    .await
-                    .unwrap();
-            if prepared == 1 {
-                break;
+            let prepared = sqlx::query_as(
+                "SELECT b.track_id,b.planner_card_id FROM track_create_idempotency b
+                 JOIN worker_sessions ws ON ws.track_id=b.track_id AND ws.card_id=b.planner_card_id
+                 WHERE b.area_id=?1 AND b.idempotency_key=?2 AND ws.state='starting'",
+            )
+            .bind(area["id"].as_str().unwrap())
+            .bind("revoked-native-start")
+            .fetch_optional(fixture.repo.pool())
+            .await
+            .unwrap();
+            if let Some(owner) = prepared {
+                break owner;
             }
             tokio::task::yield_now().await;
         }
     })
     .await
     .expect("the real historical adapter commits its original starting runtime");
+    assert_ne!(track, daily_track);
+    assert_ne!(card, daily_card);
     assert_eq!(
         status(&app, &cookie, "/api/auth/logout", "logout", json!({})).await,
         StatusCode::OK
@@ -679,21 +696,46 @@ async fn historical_source_revocation_blocks_start_but_preserves_kernel_compensa
             .unwrap(),
         StatusCode::UNAUTHORIZED
     );
-    let active: i64 = sqlx::query_scalar("SELECT count(*) FROM worker_sessions WHERE state IN ('starting','running','idle','turn_pending')")
-        .fetch_one(fixture.repo.pool()).await.unwrap();
+    let (active, threaded): (i64, i64) = sqlx::query_as(
+        "SELECT
+         (SELECT count(*) FROM worker_sessions WHERE track_id=?1 AND card_id=?2
+          AND state IN ('starting','running','idle','turn_pending')),
+         (SELECT count(*) FROM worker_sessions WHERE track_id=?1 AND card_id=?2
+          AND thread_id IS NOT NULL)",
+    )
+    .bind(&track)
+    .bind(&card)
+    .fetch_one(fixture.repo.pool())
+    .await
+    .unwrap();
     assert_eq!(
         active, 0,
         "source revocation cannot disable the kernel's original failed-start compensation"
     );
-    let threaded: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM worker_sessions WHERE thread_id IS NOT NULL")
-            .fetch_one(fixture.repo.pool())
-            .await
-            .unwrap();
     assert_eq!(
         threaded, 0,
         "the revoked source never begins a native thread"
     );
+    let (retained_card, retained_worker, retained) = fixture.carrier(&daily_track).await;
+    assert_eq!(retained_card, daily_card);
+    assert_eq!(retained_worker, daily_worker);
+    assert_eq!(retained.canonical_inputs, daily_empty.canonical_inputs);
+    assert!(retained.header.last_thread_id.is_none());
+    assert!(retained.header.last_turn_id.is_none());
+    let daily_unstarted: bool = sqlx::query_scalar(
+        "SELECT ws.state='idle' AND ws.thread_id IS NULL AND ws.active_turn_id IS NULL
+                AND ws.mcp_token_hash IS NULL AND t.root_session_id=ws.id
+                AND NOT EXISTS (SELECT 1 FROM card_mcp_tokens WHERE card_id=ws.card_id)
+         FROM worker_sessions ws JOIN tracks t ON t.id=ws.track_id
+         WHERE ws.id=?1 AND ws.card_id=?2",
+    )
+    .bind(&daily_worker)
+    .bind(&daily_card)
+    .fetch_one(fixture.repo.pool())
+    .await
+    .expect("boot daily carrier must survive compensation");
+    assert!(daily_unstarted);
+    assert!(state.harness.get(&daily_worker).is_none());
     shutdown(&fixture, &state).await;
 }
 

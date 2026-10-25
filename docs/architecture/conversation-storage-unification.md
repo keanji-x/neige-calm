@@ -103,13 +103,18 @@ provider, profile or source to the deployment owner.
   compensate-and-reenqueue. Reuse `planner_attachments/bind.rs` for required bound-attachment facts
   before canonical acceptance; integrate edit/withdraw/steer and replacement refusal with existing
   canonical owners, never translate a body back into a V1 queue.
-* **Internal entries:** `add.rs` keeps CreatorAdmission and cap checks; accepted mail must use its
-  owning qualified source. `create_managed_track` commits an empty canonical carrier with its
-  managed identity; daily Planner still starts on input. Today summary and watcher must provide
-  qualified durable System references through their existing event/dispatcher owners.
-  `Actor::server_send` alone is not a source. If the present source contract cannot express
-  bootstrap input, obtain #2671's decision before switching that entry; do not impersonate a Human
-  or introduce a second queue.
+* **Internal entries:** `add.rs` keeps CreatorAdmission and cap checks. Human input uses
+  `Human { message, author: FrozenHumanAttribution { registered_user_id, display_name } }`;
+  agent-written creator first input uses `System { observation_id, payload }`. The mail owner
+  binds full first text to a durable mail row and wake in the allocation transaction. Ordinary
+  mail and creator share its transaction helper; ordinary mail retains its summary wake. Existing
+  Dispatcher qualification accepts it, with no resend or re-accept on replay. Origin kinds
+  remain closed; registered Human identities are open. `create_managed_track` commits an empty
+  canonical carrier with its managed identity; daily Planner still starts on real input, with
+  no bootstrap or historical-date backfill. Today summary and watcher use qualified durable
+  System references through their existing event/dispatcher owners. `Actor::server_send` alone
+  is not a source; do not impersonate a Human or introduce a second queue. This source decision
+  is settled by the parent; #2671 is deferred until this migration is complete.
 * **Child/Today:** child allocation keeps inherited provider, parent Area and Workspace
   qualification (`child_track_adapter.rs:214,237,253`); scheduler bootstrap keeps `CardStartFence`
   (`scheduler/mod.rs:1255`) and needs a qualified System source, not a fabricated Human. Today
@@ -492,14 +497,14 @@ U1b-pre is delivered before the one-card replacement primitive; the table has fi
 | 1 / U1a current-carrier authorization fences / 900 | Existing Codex canonical Planner | MCP transaction owners/transport, native pre-send owners; stale already-admitted mutation and native-registration race fail after retirement; no new tool |
 | 2 / U1b-pre owner-local quiescence prerequisites / 1,500 | U1a | MCP in-flight fence/bounded cleanup, positive native/harness safe-detach guards, unresolved-start typed tx proof, ACP/event-prefix tx queries, Truth binding decoder with server capability admission; production races, retained completed start and fence/idle mutation evidence; no replacement/revocation/publication |
 | 3 / U1b one-card tx rotation + publication hooks / 1,400 | U1a, U1b-pre; protected owner proofs in §5 | Truth conversation/carrier sibling, session/token/link owners, registry/publication hooks; full-snapshot/prefix CAS, both token stores, rollback, original history, Codex same-role next-send and cold boot. Twice in one test tx; no product two-card flow/revision schema |
-| 4 / U2 imported provenance schema/read / 1,200 | #2671 imported representation agreement | New migration, Truth presentation/read, types/display/generated + consumers; schema-only, no population; echo/missing-native-id, mixed order/cursors, redaction/erasure |
+| 4 / U2 imported provenance schema/read / 1,200 | Imported representation agreement | New migration, Truth presentation/read, types/display/generated + consumers; schema-only, no population; echo/missing-native-id, mixed order/cursors, redaction/erasure |
 | 5 / U3 Codex Assistant canonical create/activate / 1,400 | Existing Codex lifecycle; U1b for rotation integration | Assistant route, Truth creation receipt, retained/profile/attachment owners; authenticated real HTTP card+carrier+accept+ACK, side context, outage/replay and correct tools; no compensate/requeue |
 | 6 / U4 Claude Assistant create/activate / 1,200 | U3; external Claude track slices 2–5 | Same entry/profile with actual Claude send/END/retained/control; lost reply/no resend, cold resume; Planner work is external |
 | 7 / U5+U6 ACP host integration + Planner/Assistant admission / 2,200 | U3; external #2836 M3a lazy new/load/receipts/no-resend/driver join; H1 if stronger quiescence needed; Claude slice 5 for shared predicate | Host backend dispatch/END, retained/control/resume and existing creation_plan/dormant + Assistant entry; real local ACP peer qualified original-worker send/load/Stop/compact/END; empty/first input/outage, no V1 fallback or ACP transport reimplementation |
 | 8 / U7 template/recipe/fork admission / 1,200 | Delivered provider lifecycle for admitted bindings; Claude slice 5 | Existing preparation/allocation/create owners; immutable recipe/report context, original key replay; need not wait for internal entries |
 | 9 / U8 Workspace/attached/cross-area/admin admission / 1,300 | U7, actual Workspace qualification | Existing isolation/fork_guard/area_admin owners; denied/deletion/materialization races, no retained repoint or grant expansion |
 | 10 / U9 creator/mail + managed/daily entries / 1,100 | Qualified source/provider contracts; U7/U8 where resources require them | add.rs, tracks.rs, daily_planner; cap race, original mail key, no-start daily carrier, qualified first input |
-| 11 / U11+U12 child/Today + summary/watcher System entry / 2,100 | Source decision if bootstrap unrepresentable; #2671 source agreement; lifecycle/Workspace proof; U3/U4/U6 for admitted provider | child_track_adapter, scheduler, track_creation, today, summary/watcher/dispatcher; inherited provider/Area, no bootstrap remint, retained-safe adoption preserving history; authenticated issuer/prefix, replay/cold watermark, no server_send fallback |
+| 11 / U11+U12 child/Today + summary/watcher System entry / 2,100 | Source decision if bootstrap unrepresentable; source agreement; lifecycle/Workspace proof; U3/U4/U6 for admitted provider | child_track_adapter, scheduler, track_creation, today, summary/watcher/dispatcher; inherited provider/Area, no bootstrap remint, retained-safe adoption preserving history; authenticated issuer/prefix, replay/cold watermark, no server_send fallback |
 | 12 / U13 offline classifier/export/boot barrier / 1,200 | U2; approved §9 dispositions | Truth upgrade/boot owner + offline command; no population yet, manifest covers all stores/keys, exact classification, boot fails closed when required |
 | 13 / U14 atomic migration application / 1,400 | U13; all entries/lifecycles delivered and stopped backup rehearsal | Truth upgrade tx + receipt replay owners; in-place worker/native continuity, original/null ACK, atomic index/frame/completion, crash each phase/restore |
 | 14 / U15+U16 historical input/control + creation/start deletion / 2,500 | U14; external Claude slice 6 | Historical queue/parallel codecs/input/edit/withdraw/steer/Stop and create/delivery/start/input_transfer/Assistant wire owners; canonical production paths + Worker/PlainChat regression, factual digest replay; every §1 entry canonical, original receipt replay, no queue harvest/retry mint |

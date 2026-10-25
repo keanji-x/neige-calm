@@ -8,6 +8,8 @@ use std::sync::{Arc, OnceLock};
 /// The admitted entry decides where its frozen material is consumed.
 pub(super) enum CreationContext {
     Historical,
+    /// Trusted managed admission; no Human input or borrowed resource authority.
+    ManagedCanonical,
     Canonical(crate::auth::HumanInputSource),
 }
 
@@ -277,9 +279,16 @@ pub(super) async fn allocate_track_structure_tx(
         }
     };
 
-    let mut planner_payload =
-        planner_card_payload(&acp_planner, None, planner_provider, init_snapshot.as_ref())?;
-    if matches!(context, CreationContext::Canonical(_)) {
+    let mut planner_payload = planner_card_payload(
+        &acp_planner,
+        None,
+        planner_provider.clone(),
+        init_snapshot.as_ref(),
+    )?;
+    if matches!(
+        context,
+        CreationContext::Canonical(_) | CreationContext::ManagedCanonical
+    ) {
         super::creation_context::freeze(
             &mut planner_payload,
             &track,
@@ -333,6 +342,15 @@ pub(super) async fn allocate_track_structure_tx(
         init_projection = Some(projection);
     }
 
+    if matches!(context, CreationContext::ManagedCanonical) {
+        super::create::dormant::mint_dormant_carrier_tx(
+            tx,
+            &planner_card_id_for_tx,
+            planner_provider,
+        )
+        .await?;
+    }
+
     let mut events = structure.creation_events(&track, &actor_id_for_tx, creation_message);
     if let Some(projection) = init_projection {
         if !projection.changed_keys.is_empty() {
@@ -362,5 +380,94 @@ pub(super) fn fork_source_error(error: CalmError, source_track_id: &str) -> Calm
         ))
     } else {
         error
+    }
+}
+
+#[cfg(test)]
+mod managed_tests {
+    use super::*;
+    use axum::extract::FromRef;
+
+    #[tokio::test]
+    async fn u9_canonical_historical_identity_replay_keeps_original_owner() {
+        let (_tmp, repo, state) = crate::daily_planner::tests::fixture().await;
+        let route = RouteState::from_ref(&state);
+        let (_, area) = crate::routes::areas::ensure_system_area(&route)
+            .await
+            .unwrap();
+        let request = NewTrack {
+            area_id: area.id,
+            title: "historical managed".into(),
+            sort: None,
+            cwd: String::new(),
+            template_id: Some(crate::templates::DAILY_PLANNER.into()),
+            plugin_scope: None,
+            template_input: None,
+            attach_folder: false,
+            theme: crate::model::RequestTheme::default_dark(),
+        };
+        let identity = crate::managed_track::ManagedTrackIdentity {
+            owner: "historical-managed".into(),
+            identity: "original".into(),
+            report_read_scope: crate::managed_track::ReportReadScope::Workspace,
+            report_time_zone: crate::daily_planner::TIME_ZONE,
+            tool_policy: crate::managed_track::ToolPolicy::Reports,
+            kernel_controls_lifecycle: true,
+        };
+        // Exercise the original Historical structure owner to persist an actual
+        // legacy allocation; the new entry must replay it without reminting.
+        let (track, _, planner, _) = create_track_structure(
+            route.clone(),
+            ActorId::Kernel,
+            request.clone(),
+            CreateTrackOptions {
+                human_source: None,
+                admin: false,
+                managed_identity: Some(identity.clone()),
+                creator: None,
+                creation_message: None,
+                planner_provider: AgentProvider::Codex,
+                model: None,
+                reasoning_effort: None,
+                folder_claim: FolderClaim::Skip,
+                body_area_id: request.area_id.to_string(),
+                normalized_cwd: String::new(),
+                init: TrackInit::Template {
+                    key: crate::templates::DAILY_PLANNER,
+                    capabilities: &[],
+                    binding: None,
+                },
+                workspace_plan: TrackWorkspacePlan::ManagedUnder(route.workspace_root.clone()),
+                idempotency_claim: None,
+            },
+        )
+        .await
+        .unwrap();
+        let before: i64 = sqlx::query_scalar("SELECT count(*) FROM events")
+            .fetch_one(repo.pool())
+            .await
+            .unwrap();
+        let replay = create_managed_track(route.clone(), request, identity)
+            .await
+            .unwrap();
+        assert_eq!(replay.id, track.id);
+        let pointers: (Option<String>, Option<String>) = sqlx::query_as(
+            "SELECT c.session_id,t.root_session_id FROM cards c JOIN tracks t ON t.id=c.track_id WHERE c.id=?1")
+            .bind(&planner).fetch_one(repo.pool()).await.unwrap();
+        assert_eq!(pointers, (None, None));
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT count(*) FROM worker_sessions")
+                .fetch_one(repo.pool())
+                .await
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT count(*) FROM events")
+                .fetch_one(repo.pool())
+                .await
+                .unwrap(),
+            before
+        );
     }
 }

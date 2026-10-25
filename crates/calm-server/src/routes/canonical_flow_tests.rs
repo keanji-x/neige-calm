@@ -318,6 +318,7 @@ mod source_readmission_tests;
 mod u7_canonical;
 mod u8_canonical;
 mod u8b_canonical;
+mod u9_canonical;
 mod workspace_binding_tests;
 
 async fn original_input_flow(

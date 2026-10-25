@@ -1,6 +1,6 @@
 //! #2184 — a harness card with no thread to preserve starts on a person's send, unless its creator
-//! still owns the first start. The daily Track is
-//! created model-free (#2024), and an ordinary Track's create-time start can fail; the first
+//! still owns the first start. Historical managed Tracks are
+//! created model-free, and an ordinary Track's create-time start can fail; the first
 //! `POST /planner/input` must start the conversation and queue the message, not answer 409
 //! `planner_harness_dormant`. A live or retired carrier, or a transcript, keeps the dormant answer.
 
@@ -10,7 +10,6 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use axum::body::Body;
-use axum::extract::FromRef;
 use axum::http::{Request, StatusCode};
 use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
@@ -20,13 +19,12 @@ use calm_server::model::{new_id, now_ms};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::session_projection_repo::{AgentProvider, WorkerSessionInit, WorkerSessionState};
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
-use calm_server::state::{AppState, CodexClient, DaemonClient, RouteState, WriteContext};
+use calm_server::state::{AppState, CodexClient, DaemonClient, WriteContext};
 use calm_server::test_seams::{
     PLANNER_FIRST_START, PLANNER_INPUT_REPLAY_MISSED, PausePoint, install_pause_for_test,
 };
 use calm_server::track_area_cache::TrackAreaCache;
 use calm_types::runtime::AgentProtocol;
-use chrono::{DateTime, Utc};
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -45,12 +43,6 @@ pub(crate) struct Boot {
 pub(crate) enum AppServer {
     Running,
     Down,
-}
-
-fn today() -> DateTime<Utc> {
-    DateTime::parse_from_rfc3339("2026-10-04T01:00:00Z")
-        .unwrap()
-        .with_timezone(&Utc)
 }
 
 pub(crate) async fn router(state: &AppState) -> axum::Router {
@@ -94,19 +86,23 @@ pub(crate) async fn app_state(app_server: AppServer) -> (TempDir, Arc<SqlxRepo>,
     (tmp, repo, state)
 }
 
-/// The production daily lifecycle creates today's Track: the Planner card exists and nothing has
-/// ever started it.
+/// Exercise the released daily Historical allocation; fresh V2 is covered by u9_canonical.
 async fn boot(app_server: AppServer) -> Boot {
     let (tmp, repo, state) = app_state(app_server).await;
-    let track = calm_server::daily_planner::reconcile(&RouteState::from_ref(&state), today())
-        .await
-        .expect("daily reconcile creates today's Track");
+    let track = calm_server::test_seams::historical_daily_for_test(
+        &axum::extract::FromRef::from_ref(&state),
+        chrono::DateTime::parse_from_rfc3339("2026-10-04T01:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc),
+    )
+    .await
+    .unwrap();
     let planner_card_id: String =
-        sqlx::query_scalar("SELECT id FROM cards WHERE track_id = ?1 AND role = 'planner'")
+        sqlx::query_scalar("SELECT id FROM cards WHERE track_id=?1 AND role='planner'")
             .bind(track.id.as_str())
             .fetch_one(repo.pool())
             .await
-            .expect("the daily Track has one Planner card");
+            .unwrap();
     let boot = Boot {
         app: router(&state).await,
         state,
@@ -117,7 +113,7 @@ async fn boot(app_server: AppServer) -> Boot {
     assert_eq!(
         boot.session_rows().await,
         0,
-        "premise: creation started no model"
+        "historical fixture has no carrier"
     );
     assert_eq!(boot.start_ops().await, 0, "premise: no start was submitted");
     boot
@@ -229,6 +225,10 @@ pub(crate) async fn post_input(
     text: &str,
     key: &str,
 ) -> (StatusCode, Value) {
+    post_body(app, uri, json!({ "text": text }), key).await
+}
+
+async fn post_body(app: axum::Router, uri: &str, body: Value, key: &str) -> (StatusCode, Value) {
     let response = app
         .oneshot(
             Request::builder()
@@ -236,7 +236,7 @@ pub(crate) async fn post_input(
                 .uri(uri)
                 .header("content-type", "application/json")
                 .header("idempotency-key", key)
-                .body(Body::from(json!({ "text": text }).to_string()))
+                .body(Body::from(body.to_string()))
                 .unwrap(),
         )
         .await
@@ -250,7 +250,7 @@ pub(crate) async fn post_input(
 }
 
 #[tokio::test]
-async fn the_first_send_to_a_never_started_daily_planner_starts_it_and_queues_the_message() {
+async fn the_first_send_to_a_historical_managed_track_starts_it_and_queues_the_message() {
     let boot = boot(AppServer::Running).await;
 
     let (status, body) = post_input(

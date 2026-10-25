@@ -124,29 +124,38 @@ impl Fixture {
             tx.commit().await.unwrap();
             planner
         };
-        let runtime = new_id();
-        let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
-        crate::db::sqlite::session_start_runtime_tx(
-            &mut tx,
-            WorkerSessionInit::shared_planner(
-                runtime.clone(),
-                card.clone(),
-                AgentProvider::Codex,
-                WorkerSessionState::Idle,
-                Some("fixture-owned-thread".into()),
-                serde_json::to_value({
-                    let mut frame =
-                        calm_types::harness::snapshot::CanonicalHarnessSnapshot::dormant(0);
-                    frame.header.last_thread_id = Some("fixture-owned-thread".into());
-                    frame
-                })
-                .unwrap(),
-                0,
-            ),
-        )
-        .await
-        .unwrap();
-        tx.commit().await.unwrap();
+        let runtime = if system {
+            repo.session_projection_active_for_card(&card)
+                .await
+                .unwrap()
+                .expect("daily allocation owns its carrier")
+                .id
+        } else {
+            let runtime = new_id();
+            let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
+            crate::db::sqlite::session_start_runtime_tx(
+                &mut tx,
+                WorkerSessionInit::shared_planner(
+                    runtime.clone(),
+                    card.clone(),
+                    AgentProvider::Codex,
+                    WorkerSessionState::Idle,
+                    Some("fixture-owned-thread".into()),
+                    serde_json::to_value({
+                        let mut frame =
+                            calm_types::harness::snapshot::CanonicalHarnessSnapshot::dormant(0);
+                        frame.header.last_thread_id = Some("fixture-owned-thread".into());
+                        frame
+                    })
+                    .unwrap(),
+                    0,
+                ),
+            )
+            .await
+            .unwrap();
+            tx.commit().await.unwrap();
+            runtime
+        };
         let input = InputState {
             repo,
             card,
