@@ -15,6 +15,7 @@ fn one_of_every_variant() -> Vec<Observation> {
     let samples = vec![
         Observation::TrackGoal { text: "g".into() },
         Observation::ReportEdited {
+            presentation: Default::default(),
             track_id: track_id(),
             body_sha256: "sha".into(),
             body: "b".into(),

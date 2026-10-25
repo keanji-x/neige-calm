@@ -137,6 +137,7 @@ async fn idle_harness(
 
 fn report_edit(track_id: &TrackId, version: u32) -> Observation {
     Observation::ReportEdited {
+        presentation: Default::default(),
         track_id: track_id.clone(),
         body_sha256: format!("sha-{version}"),
         body: format!("# R\n\nv{version}\n"),

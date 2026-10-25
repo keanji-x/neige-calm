@@ -308,6 +308,7 @@ async fn committed_row_is_not_replayed_and_an_old_queued_commit_is_consumed_once
         fx.repo.clone(),
         fx.harness.inner.card_id.as_str(),
         &fx.harness.inner.track_id,
+        &fx.harness.inner.worker_session_id,
         snapshot.push_watermark,
         &mut snapshot,
     )
@@ -355,6 +356,7 @@ async fn committed_row_is_not_replayed_and_an_old_queued_commit_is_consumed_once
         fx.repo.clone(),
         inner.card_id.as_str(),
         &inner.track_id,
+        &inner.worker_session_id,
         stored.push_watermark,
         &mut stored,
     )

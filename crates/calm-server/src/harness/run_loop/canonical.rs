@@ -24,6 +24,7 @@ mod inputs;
 pub(super) use inputs::CanonicalInputs;
 mod load;
 pub(super) use load::load_current;
+mod report_context;
 mod resume;
 mod retry;
 use resume::resume_unattempted;
@@ -470,10 +471,12 @@ pub(super) async fn tick(inner: &Arc<Inner>, ingress_empty: bool) -> Result<()> 
     }
     let (claimed, claimed_frame) = write_in_tx_typed(inner.repo.as_ref(), {
         let source = source.clone();
+        let track = inner.track_id.clone();
         move |tx| {
             Box::pin(async move {
                 let mut carrier = current_input_carrier_tx(tx, &card, &runtime).await?;
                 require_head(&carrier, &expected, &message)?;
+                report_context::append_tx(tx, &source, &carrier, &track, &mut contexts).await?;
                 let plan = pending_plan_for_prefix_tx(
                     tx,
                     &carrier,

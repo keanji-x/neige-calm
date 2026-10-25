@@ -166,3 +166,5 @@ pub(crate) fn project_commit(
 mod tests;
 
 pub(crate) mod history;
+
+pub(crate) mod delta;

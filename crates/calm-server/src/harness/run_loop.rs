@@ -612,6 +612,10 @@ impl PlannerHarness {
         &self.inner.track_id
     }
 
+    pub(crate) fn worker_session_id(&self) -> &str {
+        &self.inner.worker_session_id
+    }
+
     /// The provider requests this harness's running turn is paused on (#2348).
     pub fn held_requests(&self) -> &HeldRequests {
         &self.inner.held_requests
@@ -3641,7 +3645,7 @@ async fn since_last_turn_diff_block(
         return track_vcs::SinceLastTurnBlock::empty();
     };
     let last_seen_head = inner.last_seen_head.lock().await.clone();
-    match track_vcs::since_last_turn_block(
+    let mut diff = match track_vcs::since_last_turn_block(
         pool.read_pool(),
         &inner.track_id,
         last_seen_head.as_deref(),
@@ -3681,7 +3685,27 @@ async fn since_last_turn_diff_block(
                 block: None,
             }
         }
+    };
+    if report_patch == track_vcs::ReportPatch::Include {
+        match crate::report_read_ledger::delta::for_track(
+            inner.repo.as_ref(),
+            &inner.track_id,
+            &inner.worker_session_id,
+        )
+        .await
+        {
+            Ok(report) if !report.is_empty() => {
+                let block = diff.block.get_or_insert_with(String::new);
+                if !block.is_empty() {
+                    block.push('\n');
+                }
+                block.push_str(&report);
+            }
+            Ok(_) => {}
+            Err(error) => tracing::warn!(%error, "Report knowledge suggestion unavailable"),
+        }
     }
+    diff
 }
 
 fn prepend_diff_block(diff_block: Option<String>, observation_text: String) -> String {
@@ -4579,6 +4603,7 @@ mod tests {
         let edit = |before: Option<&str>| {
             QueueEntry::system(
                 Observation::ReportEdited {
+                    presentation: Default::default(),
                     track_id: TrackId::from("track-1"),
                     body_sha256: "sha".into(),
                     body: "# T\n\nnew\n".into(),

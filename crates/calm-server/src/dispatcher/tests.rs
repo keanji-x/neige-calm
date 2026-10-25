@@ -1803,6 +1803,7 @@ fn harness_observation_from_event_mapping_pin() {
             Some("impl-parser")
         ),
         Some(HarnessObservation::ReportEdited {
+            presentation: Default::default(),
             track_id: track.clone(),
             body_sha256: "09b37878497ec46015d1913ba0dff1cd051ca244859c80f4a3fc14d88a4a9465".into(),
             body: "loop-pin-body".into(),
@@ -2216,9 +2217,10 @@ async fn a_hold_answer_does_not_wake_the_planner() {
         .unwrap();
         tx.commit().await.unwrap();
     }
-    let replayed = crate::harness::catch_up::observations_since(&repo, &track, 0, None)
-        .await
-        .unwrap();
+    let replayed =
+        crate::harness::catch_up::observations_since(&repo, &track, "non-report-only", 0, None)
+            .await
+            .unwrap();
     assert_eq!(
         replayed.len(),
         1,
@@ -4008,6 +4010,7 @@ async fn deferred_settlement_is_silent_live_and_on_replay() {
     let replayed = crate::harness::catch_up::observations_since(
         repo.as_ref(),
         &track.id,
+        &worker_session_id,
         deferred_event_id - 1,
         None,
     )

@@ -605,6 +605,25 @@ pub fn try_fold_tail(
             *text = new_text.clone();
             true
         }
+        (
+            QueueEntry::System {
+                observation: held, ..
+            },
+            QueueEntry::System {
+                observation: new, ..
+            },
+        ) if matches!((&*held, new), (
+            Observation::ReportEdited { track_id, .. },
+            Observation::ReportEdited {
+                track_id: new_track,
+                presentation: calm_types::observation::ReportEditPresentation::Knowledge { .. },
+                ..
+            }
+        ) if track_id == new_track) =>
+        {
+            *held = new.clone();
+            true
+        }
         // Adjacent report edits of one track fold, but only when the incoming edit CONTINUES the
         // held one (its `body_before` is the survivor's body); folding across an intervening write
         // would render that write's lines as the user's.
@@ -612,6 +631,7 @@ pub fn try_fold_tail(
             QueueEntry::System {
                 observation:
                     Observation::ReportEdited {
+                        presentation: calm_types::observation::ReportEditPresentation::Legacy,
                         track_id,
                         body_sha256,
                         body,
@@ -625,6 +645,7 @@ pub fn try_fold_tail(
             QueueEntry::System {
                 observation:
                     Observation::ReportEdited {
+                        presentation: calm_types::observation::ReportEditPresentation::Legacy,
                         track_id: new_track_id,
                         body_sha256: new_body_sha256,
                         body: new_body,

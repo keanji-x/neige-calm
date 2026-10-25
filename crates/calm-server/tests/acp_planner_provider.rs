@@ -681,6 +681,7 @@ async fn acp_recovery_retires_dispatch_before_folding_later_report_edits() {
     stack
         .harness(&runtime.id)
         .observe(Observation::ReportEdited {
+            presentation: Default::default(),
             track_id: TrackId::from(track.clone()),
             body_sha256: "original".into(),
             body: "original report".into(),
@@ -720,6 +721,12 @@ async fn acp_recovery_retires_dispatch_before_folding_later_report_edits() {
         .fetch_one(&mut **tx)
         .await
         .unwrap();
+    let report: String =
+        sqlx::query_scalar("SELECT id FROM cards WHERE track_id=? AND kind='track-report'")
+            .bind(&track)
+            .fetch_one(&mut **tx)
+            .await
+            .unwrap();
     let later = calm_server::db::sqlite::append_decision_event_in_tx(
         &mut tx,
         &ActorId::User,
@@ -730,7 +737,7 @@ async fn acp_recovery_retires_dispatch_before_folding_later_report_edits() {
         None,
         &Event::TrackReportEdited {
             track_id: track.clone().into(),
-            card_id: CardId::from(card.clone()),
+            card_id: CardId::from(report),
             author: EditAuthor::User,
             author_plugin_id: None,
             edit_id: "later-edit".into(),

@@ -527,3 +527,91 @@ async fn corrupt_or_missing_knowledge_commit_skips_prune_for_inactive_sessions()
         assert_eq!(counts(&b).await, before);
     }
 }
+
+#[tokio::test]
+async fn report_knowledge_delta_header_does_not_echo_known_report_after_sixty_edits() {
+    use crate::mcp_report_sections::{commit, replace};
+    use crate::mcp_track_report::assistant_identity;
+    use calm_truth::track_vcs as vcs;
+    let b = boot().await;
+    seed(&b, SECTIONS).await;
+    let before = head(&b).await;
+    for n in 0..64 {
+        if n % 4 < 2 {
+            let identity = if n % 4 == 0 {
+                assistant_identity(&b)
+            } else {
+                planner_identity(&b)
+            };
+            read_sections(&b, identity.clone(), &["决策"]).await;
+            commit(
+                &b,
+                identity,
+                replace("决策", &format!("# 决策\n\nedit {n}\n")),
+            )
+            .await
+            .unwrap();
+        } else {
+            let (track, card, current) = calm_server::track_report::resolve_report_for_track(
+                b.repo.as_ref(),
+                b.track_id.as_str(),
+            )
+            .await
+            .unwrap();
+            let rev = current.doc_rev;
+            let (actor, author) = if n % 4 == 2 {
+                (
+                    calm_server::ids::ActorId::User,
+                    calm_server::event::EditAuthor::User,
+                )
+            } else {
+                (
+                    calm_server::ids::ActorId::Kernel,
+                    calm_server::event::EditAuthor::Kernel,
+                )
+            };
+            let body = format!(
+                "{}{}",
+                crate::mcp_report_sections::CONTRACT,
+                SECTIONS.replace("gamma", &format!("edit {n}"))
+            );
+            calm_server::track_report::persist_report(
+                b.repo.as_ref(),
+                &b.ctx.events,
+                &b.ctx.write,
+                actor,
+                author,
+                track,
+                card,
+                current,
+                calm_server::track_report::TrackReportPayload::new("", body),
+                rev,
+                None,
+            )
+            .await
+            .unwrap();
+        }
+    }
+    read_sections(&b, planner_identity(&b), &["决策"]).await;
+    let pool = b.repo.sqlite_db().unwrap();
+    let wake = vcs::since_last_turn_block(
+        pool.read_pool(),
+        &b.track_id,
+        Some(&before),
+        None,
+        Some(&b.planner_card_id),
+        &planner_identity(&b).session_id.into(),
+        vcs::ReportPatch::Include,
+    )
+    .await
+    .unwrap();
+    let text = wake.block.unwrap_or_default();
+    assert!(
+        !text.contains("report.md"),
+        "known Report must not echo through the header: {text}"
+    );
+    assert!(
+        !text.contains(b.report_card_id.as_str()),
+        "Report card summary must use knowledge: {text}"
+    );
+}

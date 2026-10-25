@@ -1,5 +1,6 @@
 //! Historical Dispatcher delivery through the real PlannerHarness ingress.
 use super::*;
+use calm_truth::db::RepoEventWrite as _;
 
 #[tokio::test]
 async fn dispatcher_historical_wake_out_of_order_preserves_prefix() {
@@ -171,7 +172,7 @@ async fn assert_historical_prefix(later: LaterObservation) {
     );
     let context_monitor = Arc::new(TaskContextMonitor::new_with_metrics(
         repo.clone(),
-        events,
+        events.clone(),
         write.clone(),
         scheduler.context_metrics(),
     ));
@@ -189,6 +190,37 @@ async fn assert_historical_prefix(later: LaterObservation) {
         semaphore,
     });
 
+    let report = if matches!(later, LaterObservation::Report) {
+        let report = repo
+            .card_create(NewCard {
+                track_id: track.id.clone(),
+                title: None,
+                kind: "track-report".into(),
+                sort: None,
+                payload: serde_json::to_value(crate::track_report::TrackReportPayload::initial())
+                    .unwrap(),
+            })
+            .await
+            .unwrap();
+        let announced = report.clone();
+        repo.write_with_event(
+            ActorId::Kernel,
+            EventScope::Card {
+                card: report.id.clone(),
+                track: track.id.clone(),
+                area: area.id.clone(),
+            },
+            None,
+            &events,
+            &inner.write,
+            Box::new(move |_| Box::pin(async move { Ok(Event::CardAdded(announced)) })),
+        )
+        .await
+        .unwrap();
+        Some(report)
+    } else {
+        None
+    };
     let scope = track_scope(&track.id, &area.id);
     let mut envelopes = Vec::new();
     let wake = |key: &str| Event::TrackWakeRequested {
@@ -202,7 +234,7 @@ async fn assert_historical_prefix(later: LaterObservation) {
         LaterObservation::Report => (
             Event::TrackReportEdited {
                 track_id: track.id.clone(),
-                card_id: planner_card.id.clone(),
+                card_id: report.as_ref().unwrap().id.clone(),
                 author: EditAuthor::User,
                 author_plugin_id: None,
                 edit_id: "report-B".into(),

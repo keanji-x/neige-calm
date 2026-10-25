@@ -22,6 +22,7 @@ fn edit_with_refs(
 ) -> QueueEntry {
     QueueEntry::system(
         Observation::ReportEdited {
+            presentation: Default::default(),
             track_id: TrackId::from("track-1"),
             body_sha256: format!("sha:{after}"),
             body: after.to_string(),
@@ -190,4 +191,38 @@ fn fold_takes_the_newest_doc_rev_and_block_refs() {
     assert_eq!(body, "v3");
     assert_eq!(doc_rev_after, None);
     assert_eq!(blocks_after, None);
+}
+
+#[test]
+fn report_knowledge_delta_fold_keeps_latest_complete_suggestion() {
+    use calm_types::observation::ReportEditPresentation;
+    let mut first = edit(EditAuthor::User, Some("v0"), "v1");
+    let mut latest = edit(EditAuthor::User, Some("unrelated"), "v2");
+    if let QueueEntry::System {
+        observation: Observation::ReportEdited { presentation, .. },
+        ..
+    } = &mut first
+    {
+        *presentation = ReportEditPresentation::Knowledge {
+            knowledge_text: "first complete suggestion".into(),
+        };
+    }
+    if let QueueEntry::System {
+        observation: Observation::ReportEdited { presentation, .. },
+        ..
+    } = &mut latest
+    {
+        *presentation = ReportEditPresentation::Knowledge {
+            knowledge_text: "latest complete suggestion".into(),
+        };
+    }
+    let mut queue = VecDeque::from([first]);
+    assert!(matches!(
+        super::try_fold_report_edit_tail(&mut queue, &latest),
+        FoldOutcome::Folded { .. }
+    ));
+    assert_eq!(
+        folded_report_edit(&queue).to_turn_text(),
+        "latest complete suggestion"
+    );
 }

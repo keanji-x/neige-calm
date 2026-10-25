@@ -6,9 +6,15 @@ use crate::test_seams::{PausePoint, install_pause_for_test};
 use calm_truth::db::RepoEventWrite as _;
 
 async fn event(flow: &Flow, body: &str) -> (Event, i64) {
+    let report: String =
+        sqlx::query_scalar("SELECT id FROM cards WHERE track_id=? AND kind='track-report'")
+            .bind(&flow.track)
+            .fetch_one(flow.fixture.repo.pool())
+            .await
+            .unwrap();
     let event = Event::TrackReportEdited {
         track_id: flow.track.clone().into(),
-        card_id: flow.card.clone().into(),
+        card_id: report.into(),
         author: EditAuthor::User,
         author_plugin_id: None,
         edit_id: body.into(),

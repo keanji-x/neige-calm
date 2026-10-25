@@ -275,6 +275,7 @@ pub(crate) async fn spawn_recovered_harness_admitted(
             repo.clone(),
             &runtime.card_id,
             &card.track_id,
+            &runtime.id,
             catch_up_watermark,
             &mut snapshot,
         )
@@ -402,6 +403,7 @@ pub(crate) async fn spawn_recovered_harness_admitted(
                 repo.clone(),
                 &runtime.card_id,
                 &card.track_id,
+                &runtime.id,
                 watermark,
                 &mut snapshot,
             )
@@ -469,11 +471,12 @@ async fn replay_harness_events_since(
     repo: Arc<dyn Repo>,
     card_id: &str,
     track_id: &TrackId,
+    session: &str,
     watermark: i64,
     snapshot: &mut HarnessSnapshot,
 ) -> Result<()> {
     let observations =
-        catch_up::observations_since(repo.as_ref(), track_id, watermark, None).await?;
+        catch_up::observations_since(repo.as_ref(), track_id, session, watermark, None).await?;
     let mut replayed = 0usize;
     let mut entries: VecDeque<queue::QueueEntry> = snapshot.pending_entries().into();
     for (event_id, obs) in observations {
@@ -1166,7 +1169,7 @@ mod tests {
         snapshot.phase = HarnessPhaseTag::Idle;
         snapshot.last_thread_id = Some(thread_id.clone());
         let mut tx = repo.pool().begin().await.unwrap();
-        session_start_runtime_tx(
+        let worker_session = session_start_runtime_tx(
             &mut tx,
             WorkerSessionInit {
                 id: runtime_id.clone(),
@@ -1191,6 +1194,7 @@ mod tests {
             repo.clone(),
             planner_card.id.as_str(),
             &track.id,
+            &worker_session.id,
             0,
             &mut snapshot,
         )

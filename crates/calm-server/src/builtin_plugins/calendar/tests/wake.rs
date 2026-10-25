@@ -260,6 +260,7 @@ async fn due_track_entry_wakes_its_planner_exactly_once() {
     let replayed = crate::harness::catch_up::observations_since(
         fx.repo.as_ref(),
         &track.as_str().into(),
+        &planner.identity.session_id,
         0,
         None,
     )

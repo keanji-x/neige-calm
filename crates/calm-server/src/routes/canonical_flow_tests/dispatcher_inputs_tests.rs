@@ -5,6 +5,8 @@ use crate::shared_codex_appserver::native_owner_tests::Peer;
 use calm_types::conversation::PendingInput;
 
 mod child_results;
+mod knowledge;
+mod phase_trace;
 #[cfg(all(test, feature = "fixtures"))]
 mod planner_switch_tests;
 mod qualification;
@@ -52,6 +54,7 @@ async fn human(app: &axum::Router, cookie: &str, card: &str) -> Value {
 }
 
 struct Flow {
+    trace: phase_trace::Trace,
     fixture: Fixture,
     state: AppState,
     app: axum::Router,
@@ -68,8 +71,12 @@ impl Flow {
         Self::running_with_model(false).await
     }
     async fn running_with_model(frozen: bool) -> Self {
+        let trace = phase_trace::Trace::new();
+        let running = trace.phase("running");
+        let setup = trace.phase("running.fixture_application");
         let fixture = Fixture::new().await;
         let (state, app, cookie) = fixture.application().await;
+        setup.complete();
         let area = post(
             &app,
             &cookie,
@@ -78,25 +85,36 @@ impl Flow {
             json!({"name":"Mixed original Planner","color":"#123456"}),
         )
         .await;
+        let connection = trace.phase("running.native_connect");
         let (client, mut peer) = connect(&state.shared_codex_appserver).await;
+        connection.complete();
         let mut body = json!({"area_id":area["id"],"title":"","planner_provider":"codex",
             "theme":{"fg":[255,255,255],"bg":[0,0,0]},"first_message":FIRST_BODY});
         if frozen {
             body["model"] = json!("retry-model");
             body["reasoning_effort"] = json!("high");
         }
-        let create = post(&app, &cookie, "/api/tracks", "first", body);
+        let create = async {
+            let phase = trace.phase("running.http_create");
+            let created = post(&app, &cookie, "/api/tracks", "first", body).await;
+            phase.complete();
+            created
+        };
         let native = async {
+            let phase = trace.phase("running.initial_handshake");
             if frozen {
                 let catalog = request(&mut peer).await;
                 assert_eq!(catalog["method"], "model/list");
                 send(&mut peer, json!({"id":catalog["id"],"error":{"code":-32603,"message":"catalog unavailable"}})).await;
             }
-            super::native_attempt_recovery_tests::initial_request(&mut peer).await
+            let call = super::native_attempt_recovery_tests::initial_request(&mut peer).await;
+            phase.complete();
+            call
         };
         let (created, call) = tokio::join!(create, native);
         let track = created["id"].as_str().unwrap().to_owned();
         let (card, worker, _) = fixture.carrier(&track).await;
+        let receipt = trace.phase("running.turn_response_notification");
         send(
             &mut peer,
             json!({"id":call["id"],"result":{"turn":{"id":TURN}}}),
@@ -110,10 +128,15 @@ impl Flow {
             json!({"id":TURN,"status":"inProgress"}),
         )
         .await;
+        receipt.complete();
+        let wait = trace.phase("running.wait_turn_running");
         fixture
             .wait_phase(&track, HarnessPhaseTag::TurnRunning)
             .await;
+        wait.complete();
+        running.complete();
         Self {
+            trace,
             fixture,
             state,
             app,
@@ -148,9 +171,12 @@ impl Flow {
         human(&self.app, &self.cookie, &self.card).await
     }
     async fn next(&mut self) -> Option<Value> {
-        tokio::time::timeout(Duration::from_secs(4), async {
+        let phase = self.trace.phase("next");
+        let result = tokio::time::timeout(Duration::from_secs(4), async {
             loop {
+                let request_phase = self.trace.phase("next.request");
                 let call = request(&mut self.peer).await;
+                request_phase.complete();
                 match call["method"].as_str().unwrap() {
                     "config/read" => {
                         send(
@@ -174,7 +200,13 @@ impl Flow {
             }
         })
         .await
-        .ok()
+        .ok();
+        phase.finish(if result.is_some() {
+            "complete"
+        } else {
+            "timeout"
+        });
+        result
     }
     async fn accept(&mut self, call: &Value, turn: &str) {
         send(
@@ -205,6 +237,7 @@ impl Flow {
         .await;
     }
     async fn close(&mut self) {
+        let phase = self.trace.phase("close");
         let handle = self.state.harness.remove(&self.worker).unwrap();
         let mut stopping = tokio::spawn(async move { handle.shutdown().await });
         let mut extra = vec![];
@@ -228,12 +261,17 @@ impl Flow {
                 }
             }
         }).await.expect("normal original lifecycle cleanup");
+        let shutdown = self.trace.phase("close.shutdown_process");
         self.fixture.shutdown_process(&self.state).await;
+        shutdown.complete();
+        let peer = self.trace.phase("close.peer");
         self.peer.close(None).await.unwrap();
+        peer.complete();
         assert!(
             extra.is_empty(),
             "all accepted input must continue before cleanup: {extra:?}"
         );
+        phase.complete();
     }
 }
 
@@ -297,22 +335,34 @@ async fn mixed_order(system_first: bool) {
         .find(|source| source["kind"] == "system")
         .unwrap()
         .clone();
-    assert!(display["text"].as_str().unwrap().contains(SYSTEM_BODY));
+    let system_text = match system {
+        PendingInput::System { observation, .. } => observation.observation().to_turn_text(),
+        _ => unreachable!(),
+    };
+    assert_eq!(display["text"], system_text);
     assert_ne!(display["presentation"], "user");
     assert_eq!(display["created_at_ms"], system.queued_at_ms());
     assert_eq!(flow.fixture.carrier(&flow.track).await.1, flow.worker);
     flow.end(TURN).await;
     let expected = if system_first {
-        [SYSTEM_BODY, HUMAN_BODY]
+        [system_text.as_str(), HUMAN_BODY]
     } else {
-        [HUMAN_BODY, SYSTEM_BODY]
+        [HUMAN_BODY, system_text.as_str()]
     };
     let mut observed = vec![];
     for (index, body) in expected.iter().enumerate() {
         let Some(call) = flow.next().await else {
             break;
         };
-        assert!(call["params"]["input"].to_string().contains(body));
+        assert!(
+            call["params"]["input"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|input| input["text"]
+                    .as_str()
+                    .is_some_and(|text| text.contains(*body)))
+        );
         observed.push(*body);
         let turn = format!("mixed-turn-{index}");
         flow.accept(&call, &turn).await;
@@ -364,7 +414,11 @@ pub(super) async fn retry_system_via_http() {
     flow.report(SYSTEM_BODY).await;
     flow.end(TURN).await;
     let call = flow.next().await.expect("real Dispatcher input must cross");
-    assert!(call["params"]["input"].to_string().contains(SYSTEM_BODY));
+    assert!(
+        call["params"]["input"]
+            .to_string()
+            .contains("Report knowledge delta")
+    );
     send(
         &mut flow.peer,
         json!({"id":call["id"],"result":{"turn":{}}}),

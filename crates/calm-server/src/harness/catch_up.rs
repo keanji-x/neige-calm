@@ -12,6 +12,7 @@ use crate::model::CardRole;
 pub(crate) async fn observations_since(
     repo: &dyn Repo,
     track_id: &TrackId,
+    session: &str,
     watermark: i64,
     through: Option<i64>,
 ) -> Result<Vec<(i64, Observation)>> {
@@ -44,6 +45,7 @@ pub(crate) async fn observations_since(
         else {
             continue;
         };
+        let obs = crate::report_read_ledger::delta::attach(repo, session, &row.event, obs).await?;
         observations.push((row.id, obs));
     }
     Ok(observations)

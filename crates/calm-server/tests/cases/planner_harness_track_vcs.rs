@@ -1173,6 +1173,25 @@ async fn transcript_refresh_failure_from_corrupt_card_payload_does_not_wedge_har
     boot.harness.shutdown().await.unwrap();
 }
 
+fn assert_report_knowledge_refs(text: &str) {
+    assert_report_knowledge_status(text);
+    assert!(
+        text.contains("known_rev") && text.contains("current_rev"),
+        "{text}"
+    );
+}
+
+fn assert_report_knowledge_status(text: &str) {
+    assert!(
+        text.contains("Report knowledge delta") && text.contains("doc_rev"),
+        "{text}"
+    );
+    assert!(
+        !text.contains("report.md new (by kernel)") && !text.contains("unified patch follows"),
+        "Report attribution and body patches must not echo in the VCS header: {text}"
+    );
+}
+
 #[tokio::test]
 async fn next_turn_prepends_diff_since_completed_turn_head() {
     let boot = boot().await;
@@ -1200,12 +1219,7 @@ async fn next_turn_prepends_diff_since_completed_turn_head() {
         short(&before),
         short(&issued_head)
     )));
-    assert!(text.contains("report.md new (by kernel)"));
-    assert!(text.contains("report.md new (by kernel) (unified patch follows)"));
-    assert!(text.contains("```diff\n--- a/report.md"));
-    assert!(text.contains("+++ b/report.md"));
-    assert!(text.contains("@@"));
-    assert!(text.contains("\n+# 概要"));
+    assert_report_knowledge_refs(&text);
     assert!(text.contains("\n\n---\n\n"));
     assert_receipt_identity(&text, "report-write");
     boot.harness.shutdown().await.unwrap();
@@ -1221,6 +1235,7 @@ async fn report_edited_turn_names_report_md_without_the_unified_patch() {
     let text = issue_observation(
         &boot,
         Observation::ReportEdited {
+            presentation: Default::default(),
             track_id: boot.track_id.clone(),
             body_sha256: "sha-after".into(),
             body: "# Goal\n\nedited by the user\n".into(),
@@ -1243,10 +1258,7 @@ async fn report_edited_turn_names_report_md_without_the_unified_patch() {
         short(&before),
         short(&issued_head)
     )));
-    assert!(
-        text.contains("report.md new (by kernel) (see the block-level diff below)\n"),
-        "{text}"
-    );
+    assert!(text.contains("Report knowledge delta"), "{text}");
     assert!(
         !text.contains("(unified patch follows)"),
         "the patch must not be announced: {text}"
@@ -1265,9 +1277,9 @@ async fn report_edited_turn_names_report_md_without_the_unified_patch() {
     boot.harness.shutdown().await.unwrap();
 }
 
-/// A `ReportEdited` with no `body_before` (a queue entry persisted before the upgrade) renders no block-level diff, so the unified patch is the only place that edit is visible.
+/// Historical entries keep their old sentence and receive current owner references in the header.
 #[tokio::test]
-async fn legacy_report_edited_turn_keeps_the_unified_patch() {
+async fn report_knowledge_delta_legacy_entry_keeps_its_sentence_and_current_references() {
     let boot = boot().await;
     complete_first_turn_and_stamp(&boot).await;
     add_report_card_event(&boot).await;
@@ -1275,6 +1287,7 @@ async fn legacy_report_edited_turn_keeps_the_unified_patch() {
     let text = issue_observation(
         &boot,
         Observation::ReportEdited {
+            presentation: Default::default(),
             track_id: boot.track_id.clone(),
             body_sha256: "sha-after".into(),
             body: "# Goal\n\nedited by the user\n".into(),
@@ -1287,11 +1300,8 @@ async fn legacy_report_edited_turn_keeps_the_unified_patch() {
     )
     .await;
 
-    assert!(
-        text.contains("report.md new (by kernel) (unified patch follows)\n"),
-        "{text}"
-    );
-    assert!(text.contains("```diff\n--- a/report.md"), "{text}");
+    assert!(text.contains("Report knowledge delta"), "{text}");
+    assert_report_knowledge_refs(&text);
     assert!(!text.contains("(see the block-level diff below)"), "{text}");
     assert!(
         !text.contains("Block-level diff follows"),
@@ -1308,6 +1318,7 @@ const CHANNEL_LINE: &str = "This is a background sync turn: an ordinary reply he
 
 fn report_edit_with_diff(boot: &Boot) -> Observation {
     Observation::ReportEdited {
+        presentation: Default::default(),
         track_id: boot.track_id.clone(),
         body_sha256: "sha-after".into(),
         body: "# Goal\n\nedited by the user\n".into(),
@@ -1400,8 +1411,8 @@ async fn mixed_batch_with_a_user_message_has_no_channel_line() {
         "a mixed batch is not a background sync: {text}"
     );
     assert!(
-        text.contains("(unified patch follows)"),
-        "a mixed batch keeps the unified patch: {text}"
+        !text.contains("(unified patch follows)"),
+        "a mixed batch uses the Report owner suggestion: {text}"
     );
     boot.harness.shutdown().await.unwrap();
 }
@@ -1416,6 +1427,7 @@ async fn legacy_report_edited_batch_has_no_channel_line() {
     let text = issue_observation(
         &boot,
         Observation::ReportEdited {
+            presentation: Default::default(),
             track_id: boot.track_id.clone(),
             body_sha256: "sha-after".into(),
             body: "# Goal\n\nedited by the user\n".into(),
@@ -1428,17 +1440,17 @@ async fn legacy_report_edited_batch_has_no_channel_line() {
     )
     .await;
 
-    assert!(text.contains("(unified patch follows)"), "{text}");
+    assert_report_knowledge_refs(&text);
     assert!(
         !text.contains(CHANNEL_LINE),
-        "a legacy batch keeps the patch and gets no channel line: {text}"
+        "a legacy batch gets no channel line: {text}"
     );
     boot.harness.shutdown().await.unwrap();
 }
 
-/// The counterpart: the patch omission is scoped to report-edit-only batches.
+/// Human turns receive the same Report owner references.
 #[tokio::test]
-async fn user_message_turn_still_carries_the_unified_report_patch() {
+async fn report_knowledge_delta_user_message_turn_receives_current_references() {
     let boot = boot().await;
     complete_first_turn_and_stamp(&boot).await;
     add_report_card_event(&boot).await;
@@ -1454,11 +1466,8 @@ async fn user_message_turn_still_carries_the_unified_report_patch() {
     wait_for_turn_count(&boot.daemon, 2).await;
     let text = turn_text(&boot.daemon, 1);
 
-    assert!(
-        text.contains("report.md new (by kernel) (unified patch follows)\n"),
-        "{text}"
-    );
-    assert!(text.contains("```diff\n--- a/report.md"), "{text}");
+    assert!(text.contains("Report knowledge delta"), "{text}");
+    assert_report_knowledge_refs(&text);
     assert!(!text.contains("(see the block-level diff below)"), "{text}");
     assert!(text.contains("User says:\nwhat changed?"), "{text}");
     boot.harness.shutdown().await.unwrap();
@@ -1789,7 +1798,7 @@ async fn mid_turn_changes_remain_visible_on_next_turn() {
         short(&turn_two_issued_head),
         short(&turn_three_issued_head)
     )));
-    assert!(third_text.contains("report.md new"));
+    assert_report_knowledge_status(&third_text);
     assert_receipt_identity(&third_text, "turn-three");
     boot.harness.shutdown().await.unwrap();
 }
@@ -1868,7 +1877,7 @@ async fn runtime_status_flip_current_schema_has_no_payload_diff_entry() {
     .await;
 
     assert!(text.starts_with("## Track state changes since your last turn"));
-    assert!(text.contains("report.md new"));
+    assert_report_knowledge_status(&text);
     assert!(
         !text.contains(&format!("cards/{}/.payload.json", worker.id.as_str())),
         "current-schema runtime re-render must not create payload diff noise: {text}"
@@ -1979,10 +1988,7 @@ async fn a_rewound_turn_gives_its_track_changes_back_to_the_next_turn() {
         .unwrap();
     wait_for_turn_count(&boot.daemon, 2).await;
     let rewound_text = turn_text(&boot.daemon, 1);
-    assert!(
-        rewound_text.contains("report.md new (by kernel)"),
-        "premise: the turn carried the block: {rewound_text}"
-    );
+    assert_report_knowledge_status(&rewound_text);
     let rewound_turn = boot
         .daemon
         .active_turn_for_test(&boot.thread_id)
@@ -2010,6 +2016,6 @@ async fn a_rewound_turn_gives_its_track_changes_back_to_the_next_turn() {
         text.contains(&format!("HEAD {} -> ", short(&before))),
         "the block starts where the remaining conversation left off: {text}"
     );
-    assert!(text.contains("report.md new (by kernel)"), "{text}");
+    assert_report_knowledge_status(&text);
     boot.harness.shutdown().await.unwrap();
 }

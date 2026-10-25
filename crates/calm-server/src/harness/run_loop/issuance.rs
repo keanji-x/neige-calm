@@ -15,12 +15,25 @@ pub(super) async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
     }
     // Most ticks find the queue empty; bail before any logging so the 50ms
     // tick cadence does not flood the log with one entry line per tick.
-    let (queue_len, only_report_edits, report_edits_carry_diffs) = {
+    let (queue_len, only_report_edits, report_edits_carry_diffs, report_edits_use_knowledge) = {
         let queue = inner.historical_queue()?.lock().await;
         (
             queue.len(),
             queue_is_only_report_edits(&queue),
             queue_report_edits_all_carry_diffs(&queue),
+            !queue.is_empty() && queue.iter().all(|entry| {
+                matches!(
+                    entry,
+                    QueueEntry::System {
+                        observation: Observation::ReportEdited {
+                            presentation:
+                                calm_types::observation::ReportEditPresentation::Knowledge { .. },
+                            ..
+                        },
+                        ..
+                    }
+                )
+            }),
         )
     };
     if queue_len == 0 {
@@ -207,9 +220,9 @@ pub(super) async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
         refresh_head = ?refresh_head.as_deref(),
         "fetching since-last-turn diff"
     );
-    // A batch of report edits each carrying its diff issues a turn whose input IS the diff, so the
-    // since-last-turn block omits the unified patch; a pre-diff entry keeps it.
-    let report_patch = if report_edits_carry_diffs {
+    // New Report suggestions already carry the complete knowledge delta. Historical entries
+    // retain their old rendering and still need the current owner suggestion in the header.
+    let report_patch = if report_edits_use_knowledge {
         track_vcs::ReportPatch::Omit
     } else {
         track_vcs::ReportPatch::Include
@@ -399,7 +412,7 @@ pub(super) async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
         segments.insert(0, notice);
     }
 
-    // The channel statement is the batch's, appended once here; same flag as `report_patch`.
+    // The channel statement is the batch's, appended once here.
     append_report_edit_batch_channel_line(&mut segments, report_edits_carry_diffs);
     let joined_observation_text = segments
         .iter()

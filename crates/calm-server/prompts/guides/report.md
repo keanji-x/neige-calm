@@ -2,7 +2,7 @@
 
 ## Edits by others
 
-A `track.report_edited` diff lists block/line changes, including `task` blocks' old/new `ready` and `key`. Multiple saves may share a diff.
+`track.report_edited` compares block revisions with your session's knowledge; it records no read. Small known changes include diffs; others give block references. Saves may share a suggestion.
 
 - A `doc_rev` is a document anchor, not proof of text coverage. Check known block revisions and section membership; tasks require reads by id. Index reads add no knowledge. Re-read changed targets before writes; full replacement needs a whole-report read.
 - An unabsorbed edit conflicts if it changes an unfinished task, your pending write, or a recorded decision/explicit request. A user's rewrite of a finished block is final: accept silently. Merge without asking when you can preserve their content and finish.

@@ -491,6 +491,7 @@ async fn receipt_recovery_keeps_original_attempt_and_replay_deduplicates() {
         fx.repo.clone(),
         inner.card_id.as_str(),
         &inner.track_id,
+        &inner.worker_session_id,
         0,
         &mut replay,
     )
@@ -502,6 +503,7 @@ async fn receipt_recovery_keeps_original_attempt_and_replay_deduplicates() {
         fx.repo.clone(),
         inner.card_id.as_str(),
         &inner.track_id,
+        &inner.worker_session_id,
         replay.push_watermark,
         &mut replay,
     )

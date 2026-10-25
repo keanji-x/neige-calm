@@ -91,3 +91,68 @@ pub(crate) async fn locate_written_tx(
     }
     Ok(())
 }
+
+/// Resolve only the exact stable id/revision. The commit's author is not evidence of authorship.
+pub(crate) async fn block_at_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    track: &TrackId,
+    report: &str,
+    commit: &str,
+    id: &str,
+    rev: u32,
+) -> Result<Option<ReportBlock>, CalmError> {
+    let Some(payload) = payload_at_tx(tx, track, report, commit).await? else {
+        return Ok(None);
+    };
+    let Some(blocks) = payload.blocks else {
+        return Ok(None);
+    };
+    let mut matches = blocks.into_iter().filter(|b| b.id == id);
+    let block = matches.next();
+    Ok(block.filter(|b| b.rev == rev && matches.next().is_none()))
+}
+
+/// A full-read certificate can prove a new id was absent only when its historical document
+/// is located too. Partial knowledge and missing history never stand in for an empty before.
+pub(crate) async fn whole_snapshot_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    track: &TrackId,
+    report: &str,
+    read: &LastRead,
+) -> Result<Option<Vec<ReportBlock>>, CalmError> {
+    if !read.whole {
+        return Ok(None);
+    }
+    let commits = read
+        .blocks
+        .values()
+        .filter_map(|block| match &block.history_ref {
+            HistoryRef::Commit(commit) => Some(commit),
+            HistoryRef::Unavailable(_) => None,
+        })
+        .collect::<std::collections::BTreeSet<_>>();
+    for commit in commits {
+        let Some(payload) = payload_at_tx(tx, track, report, commit).await? else {
+            continue;
+        };
+        if payload.doc_rev != read.doc_rev {
+            continue;
+        }
+        let Some(blocks) = payload.blocks else {
+            continue;
+        };
+        let indexed = blocks
+            .iter()
+            .map(|block| (block.id.as_str(), block.rev))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        if indexed.len() == blocks.len()
+            && read
+                .blocks
+                .iter()
+                .all(|(id, known)| indexed.get(id.as_str()) == Some(&known.rev))
+        {
+            return Ok(Some(blocks));
+        }
+    }
+    Ok(None)
+}

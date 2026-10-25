@@ -35,6 +35,34 @@ use calm_server::state::{AppState, CodexClient, DaemonClient, WriteContext};
 use serde_json::json;
 use tempfile::TempDir;
 
+async fn add_replay_report(
+    repo: &SqlxRepo,
+    bus: &EventBus,
+    roles: &calm_server::card_role_cache::CardRoleCache,
+    areas: &calm_server::track_area_cache::TrackAreaCache,
+    track: &TrackId,
+) -> calm_server::model::Card {
+    let report = repo
+        .card_create(NewCard {
+            track_id: track.clone(),
+            title: None,
+            kind: "track-report".into(),
+            sort: None,
+            payload: serde_json::to_value(calm_server::track_report::TrackReportPayload::initial())
+                .unwrap(),
+        })
+        .await
+        .unwrap();
+    crate::support::report_writes::announce_report(
+        repo,
+        bus,
+        &WriteContext::new(roles.clone(), areas.clone()),
+        report.clone(),
+    )
+    .await;
+    report
+}
+
 /// The stored `planner-harness-start` payload every boot-recovery fixture needs, differing only in `goal`.
 fn start_payload(
     track_id: &str,
@@ -1018,6 +1046,7 @@ async fn boot_recovery_replays_events_since_snapshot_watermark() {
     let bus = EventBus::new();
     let role_cache = calm_server::card_role_cache::CardRoleCache::new();
     let area_cache = calm_server::track_area_cache::TrackAreaCache::new();
+    let report = add_replay_report(repo.as_ref(), &bus, &role_cache, &area_cache, &track.id).await;
     let missed_id = repo
         .log_pure_event(
             ActorId::User,
@@ -1031,7 +1060,7 @@ async fn boot_recovery_replays_events_since_snapshot_watermark() {
             &area_cache,
             Event::TrackReportEdited {
                 track_id: track.id.clone(),
-                card_id: card.id.clone(),
+                card_id: report.id.clone(),
                 author: EditAuthor::User,
                 author_plugin_id: None,
                 edit_id: "missed-edit".into(),
@@ -1057,7 +1086,7 @@ async fn boot_recovery_replays_events_since_snapshot_watermark() {
             &area_cache,
             Event::TrackReportEdited {
                 track_id: track.id.clone(),
-                card_id: card.id.clone(),
+                card_id: report.id.clone(),
                 author: EditAuthor::User,
                 author_plugin_id: None,
                 edit_id: "queued-edit".into(),
@@ -1123,13 +1152,19 @@ async fn boot_recovery_replays_events_since_snapshot_watermark() {
     let stored: HarnessSnapshot =
         serde_json::from_value(runtime.handle_state_json.unwrap()).unwrap();
     assert_eq!(stored.push_watermark, queued_id.max(missed_id));
-    assert_eq!(stored.pending_observations().len(), 2);
+    assert_eq!(
+        stored.pending_observations().len(),
+        1,
+        "new knowledge suggestions fold to the latest complete observation"
+    );
     assert!(stored.pending_observations().iter().any(|obs| {
         matches!(obs, Observation::ReportEdited { body, .. } if body == "queued body")
     }));
-    assert!(stored.pending_observations().iter().any(|obs| {
-        matches!(obs, Observation::ReportEdited { body, .. } if body == "missed body")
-    }));
+    assert!(
+        stored.pending_observations()[0]
+            .to_turn_text()
+            .contains("Report knowledge delta")
+    );
     let handle = registry.get(&runtime_id).expect("recovered harness");
     handle.shutdown().await.unwrap();
 }
@@ -1756,6 +1791,7 @@ async fn assistant_provider_boot_recovery_registers_the_assistant_without_replay
     let role_cache = repo.card_role_cache().clone();
     let area_cache = calm_server::track_area_cache::TrackAreaCache::new();
     repo.seed_track_area_cache(&area_cache).await.unwrap();
+    let report = add_replay_report(repo.as_ref(), &bus, &role_cache, &area_cache, &track.id).await;
     let scope = EventScope::Track {
         track: track.id.clone(),
         area: area.id.clone(),
@@ -1786,7 +1822,7 @@ async fn assistant_provider_boot_recovery_registers_the_assistant_without_replay
         &area_cache,
         Event::TrackReportEdited {
             track_id: track.id.clone(),
-            card_id: planner_card.id.clone(),
+            card_id: report.id.clone(),
             author: EditAuthor::User,
             author_plugin_id: None,
             edit_id: new_id(),

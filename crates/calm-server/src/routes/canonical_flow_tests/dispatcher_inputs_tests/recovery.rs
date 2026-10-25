@@ -131,6 +131,7 @@ async fn cold_system_claim(case: ColdInput) {
             .bind(event_id).execute(flow.fixture.repo.pool()).await.unwrap();
     }
     let Flow {
+        trace,
         mut fixture,
         state,
         app,
@@ -190,6 +191,7 @@ async fn cold_system_claim(case: ColdInput) {
     }
     let (client, peer) = connect(&state.shared_codex_appserver).await;
     let mut flow = Flow {
+        trace,
         fixture,
         state,
         app,
@@ -251,15 +253,38 @@ async fn cold_system_claim(case: ColdInput) {
         && resumed.is_some()
         && let Some(call) = flow.next().await
     {
-        assert!(
-            call["params"]["input"]
-                .to_string()
-                .contains(if cold_human_tail {
-                    HUMAN_BODY
-                } else {
-                    LATER_ENRICHMENT
+        let input = call["params"]["input"].to_string();
+        if cold_human_tail || matches!(case, ColdInput::LegacyTask) {
+            assert!(input.contains(if cold_human_tail {
+                HUMAN_BODY
+            } else {
+                LATER_ENRICHMENT
+            }));
+        } else {
+            let payload: String = sqlx::query_scalar(
+                "SELECT payload FROM cards WHERE track_id=? AND kind='track-report'",
+            )
+            .bind(&flow.track)
+            .fetch_one(flow.fixture.repo.pool())
+            .await
+            .unwrap();
+            let report: crate::track_report::TrackReportPayload =
+                serde_json::from_str(&payload).unwrap();
+            let block = report
+                .blocks
+                .unwrap()
+                .into_iter()
+                .find(|b| {
+                    b.payload["markdown"]
+                        .as_str()
+                        .is_some_and(|text| text.contains(LATER_ENRICHMENT))
                 })
-        );
+                .unwrap();
+            assert!(
+                input.contains(&block.id) && input.contains("Report knowledge delta"),
+                "the later unread revision keeps its own reference: {input}"
+            );
+        }
         flow.accept(&call, "cold-later-report-turn").await;
         flow.end("cold-later-report-turn").await;
         flow.fixture
@@ -307,7 +332,13 @@ async fn cold_system_claim(case: ColdInput) {
     } else {
         let input = resumed_input
             .expect("a fresh real producer must restore its original unattempted System work");
-        assert!(input.contains(SYSTEM_BODY));
+        assert!(input.contains(
+            if matches!(case, ColdInput::LegacyTask | ColdInput::ChangedLegacyTask) {
+                SYSTEM_BODY
+            } else {
+                "Report knowledge delta"
+            }
+        ));
         assert!(!input.contains(FIRST_BODY));
         assert!(
             !input.contains(if cold_human_tail {

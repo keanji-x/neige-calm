@@ -12,6 +12,8 @@ use calm_truth::session_repo::SessionRepo;
 mod claude;
 mod http;
 mod overlaps;
+#[cfg(test)]
+mod report_knowledge_tests;
 
 struct Pair {
     fixture: Fixture,
@@ -289,6 +291,13 @@ impl Pair {
             cards: [planner, target],
             workers: [old, worker],
         }
+    }
+    async fn report_card_id(&self) -> crate::ids::CardId {
+        crate::track_report::resolve_report_for_track(self.fixture.repo.as_ref(), &self.track)
+            .await
+            .unwrap()
+            .1
+            .id
     }
     fn request(&self) -> SwitchPlannerRequest {
         SwitchPlannerRequest {
@@ -603,7 +612,7 @@ async fn planner_switch_pending_event_refused() {
             &p.state.track_area_cache,
             crate::event::Event::TrackReportEdited {
                 track_id: p.track.clone().into(),
-                card_id: p.cards[0].clone().into(),
+                card_id: p.report_card_id().await,
                 author: crate::event::EditAuthor::User,
                 author_plugin_id: None,
                 edit_id: "pending".into(),
@@ -696,7 +705,7 @@ async fn planner_switch_reconcile_fresh_planner_without_broadcast() {
             &p.state.track_area_cache,
             crate::event::Event::TrackReportEdited {
                 track_id: p.track.clone().into(),
-                card_id: p.cards[1].clone().into(),
+                card_id: p.report_card_id().await,
                 author: crate::event::EditAuthor::User,
                 author_plugin_id: None,
                 edit_id: "pending".into(),

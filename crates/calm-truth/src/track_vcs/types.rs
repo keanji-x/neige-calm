@@ -141,8 +141,8 @@ pub struct SinceLastTurnBlock {
     pub block: Option<String>,
 }
 
-/// Whether `since_last_turn_block` may inline a Report patch. Own-session edits are
-/// never inlined; mixed or unavailable attribution gets an explicit history hint.
+/// Whether the Report owner adds its knowledge suggestion to the turn header.
+/// The VCS header itself never renders Report content or attribution.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ReportPatch {
     Include,

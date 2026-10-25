@@ -105,6 +105,7 @@ async fn checkpoint_after_settlement(operation_replay: bool) {
             assert!(checkpoint.push_watermark > 0);
             let later = QueueEntry::system(
                 Observation::ReportEdited {
+                presentation: Default::default(),
                     track_id: track.into(),
                     body_sha256: "later".into(),
                     body: "later report".into(),

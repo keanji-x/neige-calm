@@ -2705,7 +2705,7 @@ async fn card_retarget_from_track_report_is_refused_and_preserves_report_blob() 
 }
 
 #[tokio::test]
-async fn since_last_turn_report_diff_uses_dynamic_fence_for_markdown_code_blocks() {
+async fn report_knowledge_delta_vcs_header_does_not_repeat_report_body() {
     let repo = fresh_repo().await;
     let area = make_area(&repo).await;
     let track = make_track(&repo, area.id.as_str()).await;
@@ -2768,35 +2768,10 @@ async fn since_last_turn_report_diff_uses_dynamic_fence_for_markdown_code_blocks
     .await
     .unwrap();
     assert_eq!(since.current_head.as_deref(), Some(after.as_str()));
-    let block = since.block.expect("diff block");
+    let text = since.block.unwrap_or_default();
     assert!(
-        block.contains("report.md edited (by kernel) (unified patch follows)"),
-        "block = {block}"
-    );
-    assert!(
-        block.contains("````diff\n--- a/report.md"),
-        "dynamic fence should grow beyond the triple backtick run: {block}"
-    );
-    assert_eq!(
-        block.lines().filter(|line| *line == "````diff").count(),
-        1,
-        "block = {block}"
-    );
-    assert_eq!(
-        block.lines().filter(|line| *line == "````").count(),
-        1,
-        "block = {block}"
-    );
-    let diff_start = block.find("````diff\n").expect("opening fence") + "````diff\n".len();
-    let diff_end = diff_start + block[diff_start..].find("\n````\n").expect("closing fence");
-    let diff_body = &block[diff_start..diff_end];
-    assert!(
-        diff_body.contains("\n ```\n"),
-        "diff should contain the markdown code fence context line: {block}"
-    );
-    assert!(
-        diff_body.contains("\n-old line\n+new line"),
-        "diff should contain the report edit hunk: {block}"
+        !text.contains("report.md") && !text.contains(old_body) && !text.contains(new_body),
+        "Report body belongs to its knowledge owner: {text}"
     );
 }
 

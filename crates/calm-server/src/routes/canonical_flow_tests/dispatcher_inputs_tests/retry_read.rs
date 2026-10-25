@@ -22,7 +22,12 @@ pub(super) async fn system_display(app: &axum::Router, cookie: &str, card: &str)
         1,
         "one retained presentation, even across repeated claims: {page}"
     );
-    assert!(systems[0]["text"].as_str().unwrap().contains(SYSTEM_BODY));
+    assert!(
+        systems[0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("Report knowledge delta")
+    );
     systems[0].clone()
 }
 

@@ -193,6 +193,27 @@ async fn dispatcher_routes_report_edit_to_harness_runtime() {
     .unwrap();
     tx.commit().await.unwrap();
 
+    // A Report edit names the Report card, never the Planner carrier.
+    let report = repo
+        .card_create(NewCard {
+            track_id: track.id.clone(),
+            title: None,
+            kind: "track-report".into(),
+            sort: None,
+            payload: serde_json::to_value(calm_server::track_report::TrackReportPayload::initial())
+                .unwrap(),
+        })
+        .await
+        .unwrap();
+
+    crate::support::report_writes::announce_report(
+        repo.as_ref(),
+        &EventBus::new(),
+        &WriteContext::new(role_cache.clone(), track_area_cache.clone()),
+        report.clone(),
+    )
+    .await;
+
     let thread_id = "thread-harness-route".to_string();
     let worker_session_id = new_id();
     let mut snapshot = HarnessSnapshot::initial(0, vec![]);
@@ -287,7 +308,7 @@ async fn dispatcher_routes_report_edit_to_harness_runtime() {
         &track_area_cache,
         Event::TrackReportEdited {
             track_id: track.id.clone(),
-            card_id: card.id.clone(),
+            card_id: report.id.clone(),
             author: EditAuthor::User,
             author_plugin_id: None,
             edit_id: "edit-harness-route".into(),
@@ -370,6 +391,27 @@ async fn dispatcher_harness_full_queue_retries_without_advancing_cursor() {
     .await
     .unwrap();
     tx.commit().await.unwrap();
+
+    // A Report edit names the Report card, never the Planner carrier.
+    let report = repo
+        .card_create(NewCard {
+            track_id: track.id.clone(),
+            title: None,
+            kind: "track-report".into(),
+            sort: None,
+            payload: serde_json::to_value(calm_server::track_report::TrackReportPayload::initial())
+                .unwrap(),
+        })
+        .await
+        .unwrap();
+
+    crate::support::report_writes::announce_report(
+        repo.as_ref(),
+        &EventBus::new(),
+        &WriteContext::new(role_cache.clone(), track_area_cache.clone()),
+        report.clone(),
+    )
+    .await;
 
     let thread_id = "thread-harness-full".to_string();
     let worker_session_id = new_id();
@@ -456,7 +498,7 @@ async fn dispatcher_harness_full_queue_retries_without_advancing_cursor() {
 
     let event = Event::TrackReportEdited {
         track_id: track.id.clone(),
-        card_id: card.id.clone(),
+        card_id: report.id.clone(),
         author: EditAuthor::User,
         author_plugin_id: None,
         edit_id: "edit-harness-full".into(),

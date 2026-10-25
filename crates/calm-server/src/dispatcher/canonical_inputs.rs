@@ -347,7 +347,11 @@ impl Inner {
                     let binding = EventBinding { producer: producer.clone(), database: database.clone(), track: track.clone(), card: card.clone(), worker: worker.clone(), admission: admission.clone(), event: input.fact };
                     binding.authorize_tx(tx, &carrier).await?;
                     if binding.event.envelope.id > carrier.snapshot()["push_watermark"].as_i64().unwrap_or(0) {
-                        conversation::accept_pending_system_tx(tx, &mut carrier, input.observation, &binding.event).await?;
+                        let mut observation = input.observation.observation().clone();
+                        crate::report_read_ledger::delta::attach_tx(tx, &worker, &binding.event.envelope.event, &mut observation).await?;
+                        let observation = SystemObservation::try_from(observation)
+                            .map_err(|error| CalmError::Forbidden(error.into()))?;
+                        conversation::accept_pending_system_tx(tx, &mut carrier, observation, &binding.event).await?;
                     }
                 }
                 let mut stored = vec![];

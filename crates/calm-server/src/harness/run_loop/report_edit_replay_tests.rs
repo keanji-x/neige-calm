@@ -1,31 +1,118 @@
 //! Boot replay folds contiguous `track.report_edited` events into one pending entry, like the live enqueue.
 use super::completed_commit_tests::Fixture;
 use super::*;
-use crate::db::sqlite::append_decision_event_in_tx;
-use crate::model::new_id;
+use crate::model::{NewCard, new_id};
+use calm_truth::db::{RepoEventWrite, RepoRead};
 use calm_types::event::EditAuthor;
 
 async fn record_report_edit(fx: &Fixture, before: &str, after: &str) -> i64 {
     let inner = &fx.harness.inner;
-    let event = Event::TrackReportEdited {
-        track_id: inner.track_id.clone(),
-        card_id: inner.card_id.clone(),
-        author: EditAuthor::User,
-        author_plugin_id: None,
-        edit_id: new_id(),
-        summary_before: String::new(),
-        summary_after: String::new(),
-        body_before: before.to_string(),
-        body_after: after.to_string(),
-        agent_message: None,
-    };
-    let scope = harness_event_scope(inner, event.kind_tag());
-    let mut tx = fx.repo.pool().begin().await.unwrap();
-    let id = append_decision_event_in_tx(&mut tx, &ActorId::KernelDispatcher, &scope, None, &event)
+    let report: Option<String> =
+        sqlx::query_scalar("SELECT id FROM cards WHERE track_id=? AND kind='track-report'")
+            .bind(inner.track_id.as_str())
+            .fetch_optional(fx.repo.pool())
+            .await
+            .unwrap();
+    let write = crate::state::WriteContext::new(
+        inner.card_role_cache.clone(),
+        inner.track_area_cache.clone(),
+    );
+    if report.is_none() {
+        let track = fx
+            .repo
+            .track_get(inner.track_id.as_str())
+            .await
+            .unwrap()
+            .unwrap();
+        let id = new_id();
+        let scope = EventScope::Card {
+            card: id.clone().into(),
+            track: track.id.clone(),
+            area: track.area_id,
+        };
+        let new_card = NewCard {
+            track_id: track.id,
+            title: None,
+            kind: "track-report".into(),
+            sort: None,
+            payload: serde_json::to_value(crate::track_report::TrackReportPayload::initial())
+                .unwrap(),
+        };
+        let roles = inner.card_role_cache.clone();
+        fx.repo
+            .write_with_event(
+                ActorId::Kernel,
+                scope,
+                None,
+                &inner.events,
+                &write,
+                Box::new(move |tx| {
+                    Box::pin(async move {
+                        let card = crate::db::sqlite::card_create_with_id_tx(
+                            tx,
+                            id,
+                            new_card,
+                            crate::model::CardRole::ReportCard,
+                            false,
+                            &roles,
+                        )
+                        .await?;
+                        Ok(Event::CardAdded(card))
+                    })
+                }),
+            )
+            .await
+            .unwrap();
+        let (track, card, current) = crate::track_report::resolve_report_for_track(
+            fx.repo.as_ref(),
+            inner.track_id.as_str(),
+        )
         .await
         .unwrap();
-    tx.commit().await.unwrap();
-    id
+        let rev = current.doc_rev;
+        crate::track_report::persist_report(
+            fx.repo.as_ref(),
+            &inner.events,
+            &write,
+            ActorId::Kernel,
+            EditAuthor::Kernel,
+            track,
+            card,
+            current,
+            crate::track_report::TrackReportPayload::new("", before),
+            rev,
+            None,
+        )
+        .await
+        .unwrap();
+    }
+    let (track, card, current) =
+        crate::track_report::resolve_report_for_track(fx.repo.as_ref(), inner.track_id.as_str())
+            .await
+            .unwrap();
+    let rev = current.doc_rev;
+    crate::track_report::persist_report(
+        fx.repo.as_ref(),
+        &inner.events,
+        &write,
+        ActorId::User,
+        EditAuthor::User,
+        track,
+        card,
+        current,
+        crate::track_report::TrackReportPayload::new("", after),
+        rev,
+        None,
+    )
+    .await
+    .unwrap();
+    fx.repo
+        .events_for_track(inner.track_id.as_str(), &["track.report_edited"], None)
+        .await
+        .unwrap()
+        .last()
+        .unwrap()
+        .id
 }
 
 fn report_edit_bodies(entry: &QueueEntry) -> (Option<String>, String) {
@@ -38,7 +125,7 @@ fn report_edit_bodies(entry: &QueueEntry) -> (Option<String>, String) {
 }
 
 #[tokio::test]
-async fn replay_folds_contiguous_report_edits_into_one_entry() {
+async fn report_knowledge_delta_legacy_replay_folds_latest_complete_suggestion() {
     let fx = Fixture::new().await;
     let inner = &fx.harness.inner;
     record_report_edit(&fx, "v0", "v1").await;
@@ -50,6 +137,7 @@ async fn replay_folds_contiguous_report_edits_into_one_entry() {
         fx.repo.clone(),
         inner.card_id.as_str(),
         &inner.track_id,
+        &inner.worker_session_id,
         0,
         &mut replay,
     )
@@ -64,8 +152,8 @@ async fn replay_folds_contiguous_report_edits_into_one_entry() {
     );
     assert_eq!(
         report_edit_bodies(&entries[0]),
-        (Some("v0".to_string()), "v3".to_string()),
-        "first before, newest after"
+        (Some("v2".to_string()), "v3".to_string()),
+        "latest complete observation, without splicing historical bodies"
     );
     assert_eq!(
         entries[0].envelope_id(),
@@ -75,34 +163,64 @@ async fn replay_folds_contiguous_report_edits_into_one_entry() {
     assert_eq!(replay.push_watermark, last);
 }
 
-/// Round-4 M2 applies on replay too: a save that does not continue the
-/// held body keeps its own slot.
+/// Knowledge suggestions fold independently of the historical before/after chain.
 #[tokio::test]
-async fn replay_keeps_a_non_contiguous_report_edit_separate() {
+async fn report_knowledge_delta_legacy_replay_uses_current_owner_suggestion() {
     let fx = Fixture::new().await;
     let inner = &fx.harness.inner;
     record_report_edit(&fx, "v0", "v1").await;
-    record_report_edit(&fx, "v1-planner", "v2").await;
-
+    record_report_edit(&fx, "v1", "v2").await;
     let mut replay = HarnessSnapshot::initial(0, vec![]);
     crate::harness::replay_harness_events_since(
         fx.repo.clone(),
         inner.card_id.as_str(),
         &inner.track_id,
+        &inner.worker_session_id,
         0,
         &mut replay,
     )
     .await
     .unwrap();
-
     let entries = replay.pending_entries();
-    assert_eq!(entries.len(), 2, "a broken chain is two entries");
+    assert_eq!(entries.len(), 1);
     assert_eq!(
         report_edit_bodies(&entries[0]),
-        (Some("v0".to_string()), "v1".to_string())
+        (Some("v1".into()), "v2".into())
     );
+    assert!(
+        entries[0]
+            .observation()
+            .to_turn_text()
+            .contains("Report knowledge delta")
+    );
+}
+
+#[tokio::test]
+async fn report_knowledge_delta_header_reads_report_without_or_with_same_head() {
+    let fx = Fixture::new().await;
+    record_report_edit(&fx, "before", "unseen").await;
+    let inner = &fx.harness.inner;
+    let head = track_vcs::head(fx.repo.pool(), &inner.track_id)
+        .await
+        .unwrap()
+        .unwrap();
+    *inner.last_seen_head.lock().await = Some(head.clone());
+    let same =
+        since_last_turn_diff_block(inner, Some(&head), track_vcs::ReportPatch::Include).await;
+    assert!(
+        same.block
+            .as_deref()
+            .is_some_and(|text| text.contains("known_rev") && text.contains("current_rev"))
+    );
+    sqlx::query("DELETE FROM track_vcs_refs WHERE track_id=?")
+        .bind(inner.track_id.as_str())
+        .execute(fx.repo.pool())
+        .await
+        .unwrap();
+    let absent = since_last_turn_diff_block(inner, None, track_vcs::ReportPatch::Include).await;
+    assert!(absent.current_head.is_none());
     assert_eq!(
-        report_edit_bodies(&entries[1]),
-        (Some("v1-planner".to_string()), "v2".to_string())
+        same.block, absent.block,
+        "HEAD cannot short-circuit Report knowledge"
     );
 }

@@ -30,6 +30,22 @@ async fn read_report(app: &axum::Router, cookie: &str, track: &str) -> Value {
 
 async fn shutdown(state: &AppState, worker: &str, peer: &mut Peer) -> bool {
     let handle = state.harness.remove(worker).unwrap();
+    let context = state.mcp_context();
+    let report_payload: String = sqlx::query_scalar("SELECT r.payload FROM cards r JOIN cards p ON p.track_id=r.track_id WHERE p.session_id=? AND r.kind='track-report'")
+        .bind(worker).fetch_one(context.sqlite_db.as_ref().unwrap().read_pool()).await.unwrap();
+    let report: crate::track_report::TrackReportPayload =
+        serde_json::from_str(&report_payload).unwrap();
+    let block_id = report
+        .blocks
+        .unwrap()
+        .into_iter()
+        .find(|b| {
+            b.payload["markdown"]
+                .as_str()
+                .is_some_and(|text| text.contains(REPORT_BODY))
+        })
+        .unwrap()
+        .id;
     let mut stopping = tokio::spawn(async move { handle.shutdown().await });
     let mut delivered = false;
     tokio::time::timeout(Duration::from_secs(5), async {
@@ -43,7 +59,7 @@ async fn shutdown(state: &AppState, worker: &str, peer: &mut Peer) -> bool {
                             // Accepted report work may already own a native call
                             // when normal shutdown begins. Finish its real reply.
                             assert_eq!(call["params"]["threadId"], THREAD);
-                            assert!(call["params"]["input"].to_string().contains(REPORT_BODY));
+                            assert!(call["params"]["input"].to_string().contains(&block_id));
                             assert!(!call["params"]["input"].to_string().contains(FIRST_BODY));
                             send(peer, json!({"id":call["id"],"result":{"turn":{"id":FOLLOW_UP_TURN}}})).await;
                             notify_thread(&state.shared_codex_appserver, peer, THREAD,
@@ -193,7 +209,7 @@ async fn production_http_default_planner_accepts_real_user_report_edit_from_disp
                     "config/read" => send(&mut peer, json!({"id":call["id"],"result":{"config":{}}})).await,
                     "turn/start" => {
                         assert_eq!(call["params"]["threadId"], THREAD);
-                        assert!(call["params"]["input"].to_string().contains(REPORT_BODY));
+                        assert!(call["params"]["input"].to_string().contains(write["id"].as_str().unwrap()));
                         assert!(!call["params"]["input"].to_string().contains(FIRST_BODY));
                         break Some(call);
                     }

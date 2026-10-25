@@ -386,7 +386,7 @@ async fn planner_switch_http_pending_event_refused() {
             &p.state.track_area_cache,
             crate::event::Event::TrackReportEdited {
                 track_id: p.track.clone().into(),
-                card_id: p.cards[0].clone().into(),
+                card_id: p.report_card_id().await,
                 author: crate::event::EditAuthor::User,
                 author_plugin_id: None,
                 edit_id: "pending".into(),

@@ -86,7 +86,7 @@ async fn commit(
 }
 
 #[tokio::test]
-async fn since_last_turn_report_authors_do_not_echo_own_edits_or_hide_others() {
+async fn report_knowledge_delta_vcs_header_omits_report_for_every_author() {
     let (repo, track) = fixture().await;
     let before = commit(&repo, &track, None, None, &[("report.md", "old\n")]).await;
     for author in [
@@ -117,12 +117,10 @@ async fn since_last_turn_report_authors_do_not_echo_own_edits_or_hide_others() {
         )
         .await
         .unwrap()
-        .block
-        .unwrap();
-        assert_eq!(
-            block.contains("```diff"),
-            author != Some("ai:planner-session:this"),
-            "{author:?}: {block}"
+        .block;
+        assert!(
+            block.is_none(),
+            "Report is presented by its knowledge owner: {block:?}"
         );
         let mixed = commit(
             &repo,
@@ -143,12 +141,11 @@ async fn since_last_turn_report_authors_do_not_echo_own_edits_or_hide_others() {
         )
         .await
         .unwrap()
-        .block
-        .unwrap();
-        if author != Some("ai:planner-session:this") {
-            assert!(block.contains("mixed authors"), "{block}");
-            assert!(!block.contains("```diff"), "{block}");
-        }
+        .block;
+        assert!(
+            block.is_none(),
+            "Report has no author fallback in the VCS header: {block:?}"
+        );
     }
 }
 
@@ -194,7 +191,7 @@ async fn since_last_turn_collapses_card_internals_but_keeps_runs() {
 }
 
 #[tokio::test]
-async fn since_last_turn_mixed_net_zero_and_unknown_ranges_keep_explicit_hints() {
+async fn report_knowledge_delta_vcs_header_has_no_mixed_or_unknown_fallback() {
     let (repo, track) = fixture().await;
     let before = commit(&repo, &track, None, None, &[("report.md", "old\n")]).await;
     let other = commit(
@@ -225,10 +222,11 @@ async fn since_last_turn_mixed_net_zero_and_unknown_ranges_keep_explicit_hints()
     )
     .await
     .unwrap()
-    .block
-    .unwrap();
-    assert!(block.contains("mixed authors"), "{block}");
-    assert!(block.contains("no net change"), "{block}");
+    .block;
+    assert!(
+        block.is_none(),
+        "Report has no mixed-author fallback: {block:?}"
+    );
     let mut current = other;
     for _ in 0..50 {
         current = commit(
@@ -251,8 +249,9 @@ async fn since_last_turn_mixed_net_zero_and_unknown_ranges_keep_explicit_hints()
     )
     .await
     .unwrap()
-    .block
-    .unwrap();
-    assert!(block.contains("authors unknown"), "{block}");
-    assert!(!block.contains("```diff"), "{block}");
+    .block;
+    assert!(
+        block.is_none(),
+        "Report has no scan-bound fallback: {block:?}"
+    );
 }
