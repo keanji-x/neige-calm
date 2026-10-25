@@ -89,14 +89,16 @@ async fn an_answer_without_a_boolean_logged_in_is_no_answer() {
 #[tokio::test(flavor = "current_thread")]
 async fn a_hanging_auth_status_is_killed_and_reaped_on_timeout() {
     let fake = Fake::new("hang");
+    // Allow a slow fake startup to record its pid before the timeout kills it.
+    let timeout = Duration::from_secs(10);
     let started = std::time::Instant::now();
     let reason = fake
-        .ask(Duration::from_millis(500))
+        .ask(timeout)
         .await
         .expect_err("a hung child is no answer");
     assert!(reason.contains("did not answer within"), "{reason}");
     assert!(
-        started.elapsed() < Duration::from_secs(5),
+        started.elapsed() < timeout * 2,
         "bounded by the timeout"
     );
     let pid = fake.pid();
