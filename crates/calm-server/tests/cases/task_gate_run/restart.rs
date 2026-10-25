@@ -32,6 +32,88 @@ fn launch(world: &FileWorld, name: &str) -> Option<ChildGuard> {
     );
     Some(child)
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn new_worker_waits_for_independent_file_writer_after_boot() {
+    if free_port_or_skip("worker-writer-admission").is_none() {
+        return; // SKIP was printed: sandbox denied loopback bind
+    }
+    let world = file_world().await;
+    let Some(mut child) = launch(&world, "worker-writer-admission") else {
+        return; // SKIP was printed
+    };
+    let fx = &world.fx;
+    let independent = calm_server::db::sqlite::SqliteDb::connect(&format!(
+        "sqlite://{}?mode=rwc",
+        world.db_path.display()
+    ))
+    .await
+    .unwrap();
+    for pool in [fx.pool(), independent.read_pool().clone()] {
+        let file: String =
+            sqlx::query_scalar("SELECT file FROM pragma_database_list WHERE name = 'main'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(Path::new(&file), world.db_path);
+        let journal: String = sqlx::query_scalar("PRAGMA journal_mode")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(journal, "wal");
+        let busy_timeout: i64 = sqlx::query_scalar("PRAGMA busy_timeout")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(busy_timeout, 5000);
+    }
+    let holder = calm_server::db::sqlite::begin_immediate_tx(&independent)
+        .await
+        .unwrap();
+    // Poll the real card/session helper while the independent file writer holds admission.
+    let mut create = Box::pin(fx.new_worker("writer-admission", AgentProvider::Codex));
+    assert!(
+        tokio::time::timeout(Duration::from_secs(1), &mut create)
+            .await
+            .is_err(),
+        "worker creation completed while an independent writer was held"
+    );
+    holder.rollback().await.unwrap();
+    let worker = tokio::time::timeout(WAIT, create).await.unwrap();
+    let cards: Vec<(String, String, String)> =
+        sqlx::query_as("SELECT track_id, role, session_id FROM cards WHERE id = ?")
+            .bind(&worker.card_id)
+            .fetch_all(&fx.pool())
+            .await
+            .unwrap();
+    assert_eq!(
+        cards,
+        vec![(
+            fx.track().into(),
+            "worker".into(),
+            worker.session_id.clone()
+        )]
+    );
+    let sessions: Vec<(String, String, String, String, String)> = sqlx::query_as(
+        "SELECT id, track_id, provider, contract, state FROM worker_sessions WHERE card_id = ?",
+    )
+    .bind(&worker.card_id)
+    .fetch_all(&fx.pool())
+    .await
+    .unwrap();
+    assert_eq!(
+        sessions,
+        vec![(
+            worker.session_id,
+            fx.track().into(),
+            "codex".into(),
+            "executor".into(),
+            "starting".into()
+        )]
+    );
+    child.sigkill_and_reap();
+}
+
 fn typed_record(op: &Operation) -> Value {
     op.tx_output.as_ref().unwrap().data["gate_execution"].clone()
 }

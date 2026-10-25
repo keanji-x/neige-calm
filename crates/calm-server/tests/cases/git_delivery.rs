@@ -446,7 +446,9 @@ impl Fx {
     pub(super) async fn new_worker(&self, name: &str, provider: AgentProvider) -> ToolCallIdentity {
         let card_id = format!("worker-{name}");
         let session_id = format!("{card_id}-session");
-        let mut tx = self.pool().begin().await.unwrap();
+        let mut tx = calm_server::db::sqlite::begin_immediate_tx(&self.db())
+            .await
+            .unwrap();
         card_create_with_id_tx(
             &mut tx,
             card_id.clone(),
@@ -933,7 +935,9 @@ impl Fx {
         let mut snapshot = HarnessSnapshot::initial(0, vec![]);
         snapshot.phase = HarnessPhaseTag::Idle;
         snapshot.last_thread_id = Some("planner-observer".into());
-        let mut tx = self.pool().begin().await.unwrap();
+        let mut tx = calm_server::db::sqlite::begin_immediate_tx(&self.db())
+            .await
+            .unwrap();
         session_start_runtime_tx(
             &mut tx,
             WorkerSessionInit {
