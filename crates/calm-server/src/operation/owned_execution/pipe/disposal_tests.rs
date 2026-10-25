@@ -516,4 +516,5 @@ async fn w_owned_disposal_timeout_retains_scope_and_original_claim() {
     ));
 }
 
+#[cfg(test)]
 mod card_tests;

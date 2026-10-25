@@ -193,10 +193,18 @@ async fn w_owned_delete_card_stops_and_settles_without_terminal_row() {
 
 async fn task(h: &Harness, id: &str, stamped: bool, gated: bool) {
     let card_row = h.db.card_get(card(h)).await.unwrap().unwrap();
-    sqlx::query("INSERT INTO tasks(id,track_id,key,kind,goal,context_json,status,worker_card_id,gate_json,created_at_ms,updated_at_ms) VALUES(?1,?2,?1,'terminal','owned','{}','running',?3,?4,1,1)")
-        .bind(id).bind(card_row.track_id.as_str()).bind(stamped.then(|| card(h)))
-        .bind(gated.then_some(r#"{"steps":[{"name":"check","command":"true"}]}"#))
-        .execute(h.db.pool()).await.unwrap();
+    sqlx::query(
+        "INSERT INTO tasks(id,track_id,key,kind,goal,context_json,status,worker_card_id,\
+         gate_json,created_at_ms,updated_at_ms) \
+         VALUES(?1,?2,?1,'terminal','owned','{}','running',?3,?4,1,1)",
+    )
+    .bind(id)
+    .bind(card_row.track_id.as_str())
+    .bind(stamped.then(|| card(h)))
+    .bind(gated.then_some(r#"{"steps":[{"name":"check","command":"true"}]}"#))
+    .execute(h.db.pool())
+    .await
+    .unwrap();
     if !stamped {
         let proof = h
             .repo

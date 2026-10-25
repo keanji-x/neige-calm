@@ -39,7 +39,7 @@ impl DisposalOwner for CardDisposalOwner {
             return Ok(Vec::new());
         };
         let card = sqlite::card_for_update_tx(tx, &card).await?;
-        let events: Vec<(crate::ids::ActorId, crate::event::EventScope, crate::event::Event)> = Vec::new();
+        let events = super::fail_tasks_for_deleted_card_tx(tx, &card).await?;
         let mut envelopes = Vec::new();
         for (actor, scope, event) in events {
             let id = sqlite::append_decision_event_in_tx(tx, &actor, &scope, None, &event).await?;
