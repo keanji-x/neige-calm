@@ -1526,6 +1526,7 @@ async fn rev_conflicts_carry_the_current_revisions_in_error_data() {
         .await
         .unwrap();
     let id = read["blocks"][0]["id"].as_str().unwrap().to_string();
+    let known_rev = read["blocks"][0]["rev"].as_u64().unwrap();
     let other = upsert_block(
         &boot,
         assistant_identity(&boot),
@@ -1550,15 +1551,21 @@ async fn rev_conflicts_carry_the_current_revisions_in_error_data() {
             .await
             .expect_err("a stale read must conflict");
         assert_eq!(err.code, RPC_REV_CONFLICT, "{tool}: {err:?}");
-        assert!(
-            err.message
-                .contains(&format!("current doc_rev is {current}")),
-            "{tool}: {err:?}"
-        );
+        let next_step = if tool == TOOL_REPORT_WRITE {
+            json!({"action": "read", "blocks": [], "sections": [], "mode": "full"})
+        } else {
+            json!({"action": "read", "blocks": [id], "sections": []})
+        };
         assert_eq!(
-            err.data.as_ref().and_then(|d| d["doc_rev"].as_u64()),
-            Some(current),
-            "{tool}: data.doc_rev must be the current doc rev: {err:?}"
+            err.data,
+            Some(json!({
+                "reason_code": "changed_since",
+                "target": {"report_card_id": boot.report_card_id, "block_ids": [], "sections": []},
+                "next_step": next_step,
+                "changed": [{"id": id, "known_rev": known_rev, "current_rev": rev}],
+                "doc_rev": current
+            })),
+            "{tool}: {err:?}"
         );
     }
 
@@ -1573,15 +1580,16 @@ async fn rev_conflicts_carry_the_current_revisions_in_error_data() {
     .await
     .expect_err("a stale block read must conflict");
     assert_eq!(err.code, RPC_REV_CONFLICT, "{err:?}");
-    assert!(
-        err.message.contains(&format!("current rev is {rev}")),
-        "{err:?}"
-    );
-    // Both anchors, so the retry needs no full re-read.
     assert_eq!(
         err.data,
-        Some(json!({"doc_rev": current, "rev": rev})),
-        "data must carry the current doc_rev AND the block's current rev: {err:?}"
+        Some(json!({
+            "reason_code": "changed_since",
+            "target": {"report_card_id": boot.report_card_id, "block_ids": [id], "sections": []},
+            "next_step": {"action": "read", "blocks": [id], "sections": []},
+            "changed": [{"id": id, "known_rev": known_rev, "current_rev": rev}],
+            "doc_rev": current
+        })),
+        "the stale block must carry typed evidence and reread advice: {err:?}"
     );
     // Nothing was written: the anchors a retry would use are unchanged.
     assert_eq!(current_doc_rev(&boot).await, current);
