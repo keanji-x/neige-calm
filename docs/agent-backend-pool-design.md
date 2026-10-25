@@ -1,7 +1,7 @@
 # Provider 无关的多 Agent 后端池与负载均衡设计
 
-状态：设计稿，第一轮 L2 评审修订；只改文档，不改代码。源码复核基线为 `927adecd8`。
-本版是对两路发现的处置，尚不声称通过修订后的两路 L2 复审；逐项证据见 §14。
+状态：设计稿，第二轮两路 L2 评审修订；只改文档，不改代码。源码复核基线为 `47d268ffd`。
+本版统一修复裸原生线程 ID 的身份缺陷类，尚不声称通过修订后的两路 L2 复审；逐项证据见 §14。
 简写：`server/` = `crates/calm-server/src/`，`truth/` = `crates/calm-truth/src/`，`provider/` = `crates/provider/src/`，
 `types/` = `crates/calm-types/src/`。文中源码事实都带 `file:line`；没有源码证据、要在固定版本原生 CLI 上实测的事实标为 **〔待实测〕**。
 
@@ -135,9 +135,9 @@ ACP 注册来自 `--acp-planner-config`（`server/config.rs:45`；校验见 `ser
 | S5 | `shared_codex_appserver.rs:795`、`server/config.rs:297` | 只有一个日志目录 | 日志交错 | P2 |
 | S6 | `crates/calm-truth/migrations/0026_shared_codex_daemon.sql:2`、`truth/db/mod.rs:403`、`:590` | `CHECK (id = 1)`，读写不带键 | 无法分别记录与接管多个进程 | P2 |
 | S7 | `shared_codex_appserver.rs:4290` 起的注释 | 关机时不停 daemon，留给下次启动接管 | 每个后端都要能接管；被删除的后端要有回收路径 | P2 |
-| S8 | `shared_codex_appserver.rs:778`、`server/state.rs:285` | “The server's one deletion-seal registry” 在 daemon 内部构造 | N 个实例会产生 N 个 seal 表，删除时的 fence 被拆散 | P2（改为外部注入同一份） |
+| S8 | `shared_codex_appserver.rs:778`、`server/state.rs:285` | “The server's one deletion-seal registry” 在 daemon 内部构造 | N 个实例会产生 N 个 seal 表，删除时的 fence 被拆散 | P2（外部注入同一份）；P3 范围化所有键与调用者 |
 | S9 | `shared_codex_appserver.rs:847-853`、`:3166-3191` | 启动/接管时回填并 resume **所有**活跃 Codex 线程 | P2 就会跨 home resume | P2 default-only 历史范围；P3 按持久绑定 |
-| S10 | `server/pending_codex_threads.rs:27`、`:373` | 一条 FIFO 把下一个 `thread/started` 绑给最早等待的 card | TUI 连到不同 daemon 时会错绑 | P3（按后端分队列） |
+| S10 | `server/pending_codex_threads.rs:27`、`:373` | 一条 FIFO 把下一个 `thread/started` 绑给最早等待的 card | TUI 连到不同 daemon 时会错绑 | P3（原 registry 按范围分区，不另建队列 owner） |
 | S11 | `server/mcp_server/transport.rs:1780`、`truth/db/sqlite/session_repo_impl.rs:183-187` | 线程只在 `provider='codex'` 一个命名空间内查找 | 缺少后端范围校验，UUID 不能充当隔离依据 | P2 token 范围；P3 组合绑定解析 |
 | S12 | `server/harness/backend/factory.rs:40`、`:131` | 工厂只持有一个 `Weak` daemon | Planner 只能落在这一个后端上 | P3 |
 | S13 | `server/harness/backend.rs:111` | `Arm::Codex` 持有唯一 daemon | 同上；本身不用改，只需换成绑定后端的实例 | P3 |
@@ -150,6 +150,26 @@ ACP 注册来自 `--acp-planner-config`（`server/config.rs:45`；校验见 `ser
 | S20 | `server/claude_planner/config.rs:28-35` | Claude Planner 只有一个 `config_dir` | 无法有多个 Claude 账号 | 后续 Claude 片 |
 | S21 | `server/acp_planner/config.rs:129-140` | 每个 ACP provider 只能登记一次 | 无法有多个 Grok/OpenCode 账号 | 后续 ACP 片 |
 | S22 | `provider/worker/failure.rs:6-64` | 只能识别 Codex 并发上限的固定前缀；没有限流和额度耗尽的类别 | 调度器拿不到摘除依据 | P4 |
+
+### 3.1 线程身份缺陷类：全量消费者扫描
+
+第二轮在 `calm-server/src`、`provider/src` 扫描 `thread_id`/`codex_thread_id`、seals、通知订阅、
+`DashMap`/`HashMap`/`HashSet` 与 SQL 谓词，再追入 truth 仓储实现。下面是线程身份消费者；§10.4 的 T1–T11
+给出逐项源码与处理方式，原 S1–S22 不能替代这份清单。身份一律使用 §4.2 的 `HostThreadKey`。
+
+| 项 | 消费者与源码锚点 | 处理切片/方式（完整调用链见 §10.4） |
+|---|---|---|
+| T1 | `server/thread_seals.rs:13-44,50-93` | P3：唯一共享 registry 的键、删除 guard 和 rollback/forget 参数全部范围化 |
+| T2 | `server/routes/{tracks.rs:156,3114-3214,areas.rs:376,569-582,701-724,planner_cards.rs:83-110}`、`harness/registry.rs:385-388` | P3：删除计划保存完整身份，按原 owner 补偿/清理 |
+| T3 | `server/harness/mod.rs:264,671`、`harness/backend.rs:266-270`、`shared_codex_appserver/exact_thread.rs:110-151` | P3：恢复、发轮与 exact thread fence 复检范围 |
+| T4 | `server/shared_codex_appserver.rs:3117-3140` | P3：late TurnStarted 只检查本 backend 的 seal，interrupt 仍走原连接 |
+| T5 | `server/liveness_feeder.rs:88-113,141-195`、`truth/db/sqlite/session_row.rs:487-520` | P3：pending replay 与 SQL 写入都带身份/源代次，不只改通知外壳 |
+| T6 | `server/harness/backend/factory/codex_worker.rs:15-28,83-99,124-157` | P3：idle SQL 返回绑定，探测与 active turn 取同实例快照 |
+| T7 | `server/shared_codex_appserver.rs:3166-3188`、`shared_codex_appserver/resume_replay.rs:10-13,45-151` | P2 default-only；P3 范围化恢复读取与 replay 候选 |
+| T8 | `server/harness/codex_events.rs:24,68-119`、`harness/run_loop.rs:2533-2538`、`pending_codex_threads.rs:121,323-379` | P3：事件匹配、FIFO 分区与绑定事务保留身份/代次 |
+| T9 | `truth/db/sqlite/session_projection.rs:164-180,222-237`、`session_repo_impl.rs:172-195`、`server/planner_hibernation.rs:132` | P3：按 thread 查找/结束/休眠/归属仓储都加范围 |
+| T10 | `server/shared_codex_appserver.rs:453-473,3016-3018`、`shared_codex_appserver/native_turns.rs:186-188` | P3：实例内原生键只在固定范围内使用，不允许跨实例裸键入口 |
+| T11 | `provider/codex/approvals.rs:71-111`、`provider/codex/mod.rs:298,435-505` | P3：连接内路由保留原生键，宿主先验证绑定再解包；provider 不接管宿主身份政策 |
 
 没有全局 `static`/`OnceLock` 持有 daemon 或 home；单例都来自构造参数、路径派生和单行表。所以多实例化主要改构造与接线，不需要清理全局状态。
 
@@ -175,6 +195,8 @@ row/wiring 的注入留在原 server 构造路径。本设计照此分工：
 
 ```text
 BackendRef      = (AgentProvider, BackendId)        // BackendId: 运维声明的稳定短名，如 "default"、"team-b"
+HostThreadKey   = (NativeScope, native_thread_id)   // 宿主唯一的线程键；原生 ID 只是局部标识
+NativeScope     = Backend(BackendRef) | Session(worker_session_id)
 BackendProfile  = 类型化登记（§6）：BackendRef、凭据范围、权重、容量上限、是否接收新会话
 BackendInstance = 宿主内的运行句柄，按 AgentProtocol 闭集持有已有 host 的实例：
                     Codex  -> Arc<SharedCodexAppServer>        (ART §10 SharedProcess)
@@ -182,6 +204,15 @@ BackendInstance = 宿主内的运行句柄，按 AgentProtocol 闭集持有已�
                     Acp    -> 一条 AcpAgentConfig + 已有 AcpPlannerHost (OwnedProcess)
 BackendSignals  = 健康（Ready / Unavailable(reason) / NotConfigured）、在途数、冷却截止时间（带来源证据）、额度状态、观测时间
 ```
+
+**唯一身份合同**：Codex 的 NativeScope 必须是持久 NativeBinding 的 `Backend(BackendRef)`；A、B 的同名原生
+线程是两个不同的 HostThreadKey。未纳入池的 Claude/ACP 继续用已有会话 owner 的稳定 `worker_session_id`
+构成 `Session` 范围，不能伪装成 codex/default，也不能退回裸 thread；后续多凭据片再显式迁移其范围。
+这是一种类型的两个合法范围分支，不是另一份绑定表。范围由现有 session owner 提供，调用者不得自选。
+连接代次不参与线程相等性：重连后仍是同一线程；通知/延迟任务另携 `(HostThreadKey, connection_generation)`
+并由原连接 owner 复检源。所有跨实例 map、删除计划、仓储查写、合流消息只接受 HostThreadKey（或可验证的产品会话 ID）。
+只有已固定 BackendRef 且不能混入外来键的实例/连接内部可解包原生 ID 发 RPC 或作为局部 map 键；边界必须验证范围，
+禁止按 UUID 不碰撞、当前 default 或逐 daemon 试探来猜归属。ThreadSeals 仍全 server 一份，池不建第二份 fence/队列/裁决。
 
 “能力”不在池里另存一份。能力视图属于 ART §5.3 的 Session。相同二进制/profile 不证明账号模型与可用性相同；
 目录、认证和可用性按 BackendRef 查询（P3），不复制成静态能力清单。
@@ -198,7 +229,7 @@ BackendPool
   select_for_new_session(provider, hint) -> 候选 BackendRef 与可选试探租约 | NoEligibleBackend{per-backend reasons}
   signals(BackendRef)                    -> BackendSignals（带观测时间；读不到是 Unknown，不是 0）
   observe(BackendRef, connection_generation, BackendObservation) // 拒绝旧连接代次的状态更新
-  subscribe_notifications()              -> 各 Codex 实例通知的合流（每条带 BackendRef）
+  subscribe_notifications()              -> 各 Codex 实例通知的合流（每条带 HostThreadKey/连接代次）
 ```
 
 - 池只持有句柄和内存信号，不持有队列、轮次状态或第二份 busy 标志。ART §11 规定这些归 `PlannerHarness` 和各 backend。
@@ -312,7 +343,9 @@ BackendPool
 - `credentials` 是按协议的闭合枚举：`codex_home { path }`，后续增加 `claude_config_dir { path }` 和 `acp_registration { … }`。
   枚举随协议实现增加，不提供“任意 JSON extras”（ART §9）。
 - 校验（`deny_unknown_fields`）：`id` 在 provider 内唯一，并且满足 `[a-z0-9-]{1,32}`（会用于路径和 socket 名）；路径是绝对路径；
-  先创建/校验受控目录再 canonicalize；路径两两不重叠，也不位于另一后端的派生目录中；`weight >= 1`。
+  `weight >= 1`。**P1 仅无副作用语法/词法检查**：JSON、未知字段、id/重复、绝对路径及数值；不创建目录，
+  不以词法路径比较承诺实际隔离。**P2 才做文件系统/身份检查**：创建/核验受控目录所有权与权限，再 canonicalize，
+  检查规范化路径两两不重叠、也不位于另一后端的派生目录中；符号链接/别名不能绕过。
   注册后持久冻结规范化凭据范围（协议、canonical home，ACP 后续用其已定义摘要）；重启及任何 daemon 接管之前核对，
   同名换 home、路径别名/符号链接导致范围变化、删除后复用 id 均拒绝。轮换同一 home 内的登录凭据允许，不把秘密内容当身份。
 - 每个后端的 socket、认证检查点和日志目录由池按 `BackendId` 从 `data_dir` 派生，例如 `run/codex-appserver-<id>.sock`，不可配置。
@@ -339,9 +372,16 @@ P2 不得为新 home 调用 `provider/codex/shared/home.rs:48-90` 的宿主播�
 
 ### 7.1 绑定的持久性与线性化（P3）
 
-现有库只记录 provider/thread，无法支持离线时的后端归属（§2.7）。BackendRef 是会话持久类型的必填字段；
-旧行可一次性真实回填为 default，但**不保留 SQL `DEFAULT 'default'`** 掩盖遗漏的新写者。SQLite 迁移具体用表重建或
-等价的显式回填实现，沿用存储 owner 的迁移方法；新写者、镜像、fixture、operation 载荷和恢复读取必须全部显式带值。
+现有库只记录 provider/thread，无法支持离线时的后端归属（§2.7）。**必填适用类型为 Codex 绑定**：Planner、
+assistant、retained、交互卡、task worker 的 Codex carrier（包括固定后端后尚无原生 ID 的行），其类型分支
+`Codex { backend: BackendRef, native_thread: NotMinted | Minted(id) }` 强制带 backend。尚未选择的准备态显式为
+`Unbound`，禁止原生副作用，CAS 将其转为 Codex 固定态。通用 worker_sessions 的 terminal 等不使用池的行用
+`NotApplicable`，Claude/ACP 本期用已有协议会话分支；这些分支不填假 codex/default，不采用任意 `Option<BackendRef>`。
+SQL 列的物理 nullable 必须由分支判别与 CHECK/解码合同限制：Codex 固定态非空，NotApplicable 无 backend；
+调用者不能把缺字段当作 NotApplicable。新写者覆盖所有行类型，fixture 必须显式选择分支。
+只有旧 Codex 行可一次性真实回填为 default，terminal 等保持显式不适用，且**不保留 SQL `DEFAULT 'default'`**。
+SQLite 迁移具体用表重建或
+等价的显式回填实现，沿用存储 owner 的迁移方法；新写者、镜像、fixture、operation 载荷和恢复读取必须全部显式带适用分支及其必填值。
 不改已发布迁移，不改 snapshot/handle/transcript codec 来藏一个平行绑定。
 
 线性化点在已有 session/carrier owner 的事务与 CAS：
@@ -357,8 +397,9 @@ P2 不得为新 home 调用 `provider/codex/shared/home.rs:48-90` 的宿主播�
 空 prompt 的 pending 登记/TUI spawn，以及 task worker 的显式 mint→persist→首 turn（adapter `:1161-1208`）。
 `session_bind_attribution_tx` 是 ID 归属写入点，不能独自充当前置固定点。P3 必须扫清所有新建行和原生发送入口。
 
-按线程查找必须将 BackendRef 与原生 thread ID 组合校验；不依赖 UUID 不碰撞来证明隔离。
-对于只有 thread ID 的旧入口，由存储 owner 解析唯一已记录绑定；歧义、缺失或范围不一致失败关闭，不轮询各 daemon 猜归属。
+按线程查找只接受 HostThreadKey；已有产品会话 ID 的入口由存储 owner 解析绑定。只给裸 thread ID 的旧入口必须
+升级为显式范围/产品会话身份，不能通过 `ORDER BY … LIMIT 1` 或“当前恰好唯一”绕过范围；缺失、歧义或范围不一致失败关闭。
+原生 wire 仍传原生 ID，宿主在已验证实例边界解包。查找、索引、活性写入和删除统一使用同一绑定，不新增映射表。
 
 ### 7.2 登记、运行记录与恢复范围（P2 起）
 
@@ -456,7 +497,7 @@ P4 (L1, 仅限额观测/选择信号) ── 等 P3
 Claude/ACP 多凭据档 ── 等 M3 对应 backend 迁移；worker UserHome 不变
 ```
 
-- 可以并行：P1 与 M1、M2、WA 系列（P1 只新增文件，挂接点只有配置解析和启动日志）。
+- 可以并行：P1 的纯模型新文件与 M1、M2、WA 系列；P1 仍会改 `server/config.rs`、`state.rs`、`lib.rs` 的参数、解析与组合根挂接，重叠文件须串行协调，不能声称只新增文件。
 - P2 的恢复范围、MCP 和身份校验也在原 owner，不能按“只改构造”安排并行写入。P2 先行，M2 以 P2 最终树重取基线；
   若 M2 已开始则串行协调并重定基线，不并入 P3，也不并行改同一 owner。
 - P3、P4 必须等 M2 落地。
@@ -489,21 +530,21 @@ crates/calm-truth/migrations/下一编号_*.sql       P2 登记/运行表，P3 �
 
 | 切片 | 现有文件/入口 | 必须改动 | 粗估行数 |
 |---|---|---|---|
-| P1 | `server/{config,state,lib}.rs` | CLI、类型解析和只读登记；不启动实例 | 25–50 |
+| P1 | `server/{config,state,lib}.rs` | CLI、无副作用解析和组合根挂接；不读写持久登记/创建目录 | 35–65 |
 | P2 | `shared_codex_appserver.rs:754-858,1854-2556,3166-3191`、`resume_replay.rs` | 构造注入 BackendRef/路径/seals；按键记录；default-only 回填与全部恢复入口范围复检 | 100–180 |
 | P2 | `truth/db/mod.rs:403,590`、`sqlite/{out_of_domain,read}.rs` | 接口带键，委托新登记/运行记录模块 | 45–90 |
 | P2 | `server/{state,state_clients,lib}.rs`、`types/runtime_paths.rs` | 全量身份校验先于 boot、组合多实例、逐实例 boot/follower；home 验证/禁止播种 | 100–180 |
 | P2 | `shared_codex_home.rs`、`routes/settings.rs:111` | 每 home 注入本实例 token；代理变更所有实例标记重启 | 20–45 |
 | P2 | `mcp_server/{wiring,handshake,registry,transport}.rs` 及 token 存储 owner | 默认方案：daemon token 范围、initialize、thread 归属及 admission 复检；复用原鉴权 | 100–200（Q10 未定） |
 | P3 | `harness/backend/{factory.rs,factory/*}`、operation 的 start/retained/recovery/adapters、`operation/{mod,driver}.rs` | 首副作用前固定后端；按行构造实例；超时停止与恢复同绑定 | 160–280 |
-| P3 | `truth` 的 session row/mirror/repo、server projection 与 pending | 必填 BackendRef、CAS/不可变守卫、所有写者与读取；pending 按范围分队列 | 120–220 |
-| P3 | `provider/worker/codex.rs:62-164`、`server/provider_registry.rs`、reaper 调用链 | 改无参探测为一次性绑定快照，保留死亡裁决规则 | 80–140 |
-| P3 | `state.rs` 各 state/组合、`harness/codex_events.rs`、`dispatcher/mod.rs`、`replay.rs` | 池注入和带范围通知/重放订阅 | 90–160 |
-| P3 | §10.4 按线程生命周期调用者 | strict 删除、forget、休眠、release retry、sweeper、rollout 路由 | 180–320 |
+| P3 | `truth` 的 session row/mirror/repo、server projection 与 pending | 分支必填 BackendRef、HostThreadKey 查写/索引、CAS 与全部写读者；原 pending registry 分区 | 200–340 |
+| P3 | `provider/worker/codex.rs:62-164`、`server/provider_registry.rs`、reaper、`factory/codex_worker.rs`、state/dispatcher 注入 | 含 WorkerIdleWake/idle SQL 的绑定快照，保留死亡/idle 裁决 | 130–220 |
+| P3 | `state.rs` 各 state/组合、`harness/codex_events.rs`、`dispatcher/mod.rs`、`resume_replay.rs`、`liveness_feeder.rs` | 池注入、通知匹配/源代次、feeder pending 与 SQL 接线 | 160–280 |
+| P3 | §10.4 T1–T4/T10 及按线程生命周期调用者 | 共享 seal 键/全部检查、删除计划/rollback/forget、exact/late interrupt、休眠/release/sweeper/rollout | 300–500 |
 | P3 | `agent_providers.rs`、`routes/{agent_providers,planner_recovery,models,planner_model}.rs`、`planner_model/*`、`harness/codex_selection.rs` | 后端 slot、认证 retry/recovery、catalog 查询与模型写入校验；API/绑定生成 | 180–300 |
 | P4 | `provider/worker/failure.rs`、已有失败/原生事件消费点 | 证实后的分类与关联观测，无准入变化 | 60–120 |
 
-现有文件粗估：P2 365–695 行，P3 810–1420 行，另有新实现/测试；旧估计显著低估范围。
+现有文件粗估：P1 35–65 行，P2 365–695 行，P3 1130–1920 行，P4 60–120 行，另有新实现/测试；第二轮已计入共享键与全部下游，不用第一轮 810–1420 行预算。
 P3 涉及同一个“副作用前固定且所有后续操作不越界”不变量，不能拆出一个先放流量、再补清理/模型的切片。
 可以在实施内分小批接线，但直到完整退出条件满足都保持非 default 流量关闭；若超出可审查范围，重新设计分片门槛，不能降低 L2。
 
@@ -513,7 +554,7 @@ P3 涉及同一个“副作用前固定且所有后续操作不越界”不变�
 - **重复逻辑**：复用原 follower、模型 acquisition、健康检查与 replay；新 probe 只选实例/冻结证据，不复制死亡裁决。
 - **硬编码身份**：按 AgentProtocol 声明的闭集分派；default 是池的升级标识，不用 UUID 或 provider 名猜线程归属。
 - **外部事实**：只用持久范围、协议报告和 Neige 路径；限流拒绝状态待实测，allowed 样本不证明限流。
-- **永久成本**：P2 新登记表和运行表，P3 一个绑定字段；普通新增后端只改配置（会持久登记，不能随意删/复用）。
+- **永久成本**：P2 新登记表和运行表，P3 类型化绑定分支与范围化查询/索引；普通新增后端只改配置（会持久登记，不能随意删/复用）。
   普通新增路由须走 owner 的绑定入口并加所属行为用例，不维护固定文件/测试名 CI 清单。协议认证环境键变化修改其所属
   环境定义及池校验/测试；新增授权策略另立 L2。沿用既有 target，单元用例每次对应 CI target 执行一次，
   gate 额外一次聚焦 replay；调用者清单是本次评审证据，不加每个 workflow 重复运行的源码文本 pin。
@@ -521,7 +562,7 @@ P3 涉及同一个“副作用前固定且所有后续操作不越界”不变�
 ### 10.4 P3 放流量前的路由清单
 
 这是一轮源码扫查的职责清单；实施时对单例字段、类型注入及其下游做新鲜扫查，逐项归类，不能只搜索字段名。
-三类入口均须完成；P2 的 default 兼容句柄在 P3 后不得被业务调用者用作隐式路由。
+三类入口和下列 T1–T11 身份消费者均须完成；P2 的 default 兼容句柄在 P3 后不得被业务调用者用作隐式路由。
 
 | 类别 | 调用者与当前证据 | 目标路由与验收 |
 |---|---|---|
@@ -537,8 +578,37 @@ P3 涉及同一个“副作用前固定且所有后续操作不越界”不变�
 | 全实例广播 | `terminal_sweeper.rs:149-156`、`thread_release.rs:82-120` | 所有实例的 hibernating release 重试、ended release；实例 owner 保留义务，即使 SQL carrier 已消失 |
 | 全相关 owner | `routes/tracks.rs:3204-3216`（含 area 删除）、`shared_codex_appserver.rs:1235-1310` | 提交后在全部相关实例清 cache、native turn/replay/pending 与释放义务，再忘记共享 seal；不能只清 default |
 
-删除在事务/移动 workspace 前收集并保存所有相关 `(BackendRef, thread)`，所有 owner strict quiesce 成功才继续。
-提交失败按原 owner 补偿并保留 fence；提交后调用每个相关 owner 清理，待全部清理职责已完成或由实例 owner 明确保留重试义务、
+**身份消费者明细（T1–T11 与 §3.1 一一对应，全部属于 P3 放流量门槛）**。以下 `shared_codex_appserver/`
+等无前缀路径均在 server 内；每项必须同时处理入口、缓存与最终查写，不能只在池门面补 BackendRef。
+类型定义放在现有持久 NativeBinding/session 类型 owner，seals、Repo 与池共用；不让 truth 依赖 server 池模块。
+
+| 项 | 完整源码证据（基线 47d268ffd） | 同一 owner 中的处理与验收 |
+|---|---|---|
+| T1 seals 全生命周期 | `server/thread_seals.rs:13-44,50-93`；`server/state.rs:156,800`；`shared_codex_appserver.rs:778,1339` | 仍只有一个 Arc，`DashMap<HostThreadKey, …>`；seal/is_sealed、guard 去重、retain、Drop rollback、forget 全用完整键。A/t 的 seal/rollback/forget 不触碰 B/t；不加每 daemon seal 表。 |
+| T2 删除计划/补偿 | `routes/planner_cards.rs:83-110`；`harness/run_loop.rs:1071-1078`；`harness/registry.rs:385-388,603-690`；`routes/tracks.rs:156-162,2821,3067-3214,3256-3278`；`routes/areas.rs:376,479-518,569-582,701-724,759-772` | 所有 `Vec<String>` 线程计划/返回值改携 HostThreadKey；事务/异步补偿捕获原键与原 owner。删除 A 与删除 B 交错失败时各自 rollback 只解自己的 fence，成功后清理/forget 也只消耗自己的计划。同键并发删除沿用既有 saga 合同，本片不新增仲裁。 |
+| T3 全部 fence 检查/exact | `harness/mod.rs:264,671`；`harness/backend.rs:266-270`；`shared_codex_appserver.rs:1369`；`shared_codex_appserver/{prompt_attempt.rs:201,364,revert.rs:16,maintenance.rs:32,exact_thread.rs:110-151}`；`harness/run_loop/replace_command.rs:82` | harness context/RecoveryTarget/maintenance target 带现有绑定，恢复与 native gate 都检查 HostThreadKey；exact 验证 target.backend 等于实例，再用原 transition/replay 锁和 source 复检。Claude/ACP 共用 seals 的适配也必须取其 Session 范围，不能隐式套 Codex。 |
+| T3（其他协议同表调用者） | `claude_planner/session.rs:290-291`、`session/{launch.rs:67,112,302,execution_end.rs:104}`；`acp_planner/session.rs:118-119`、`session/{admission.rs:55,issuance.rs:42,250,compact.rs:90,execution_end.rs:329}` | 全部通过统一 HostThreadKey 检查，协议原生 ID 与 Codex 同名也不互封；这是共享 registry 签名迁移所需，不在本片启动其他协议多凭据。 |
+| T4 晚到 interrupt | `shared_codex_appserver.rs:3067-3078,3117-3140` | forwarder 捕获本实例 BackendRef，晚到 TurnStarted 以该范围查 seal；仍用原 Weak client/source 与 native_turns 确认 interrupt，旧源不能驱动新连接。seal A/t 时 B/t 的 late turn 不被中断。 |
+| T5 feeder/pending/SQL | `server/liveness_feeder.rs:88-113,141-195,227-231`；`truth/db/sqlite/session_repo_impl.rs:96-113`；`truth/db/sqlite/session_row.rs:487-520` | 原 feeder 接范围通知，原 pending map 改以 HostThreadKey 为键并携源代次；换代丢弃旧 pending，不沿用旧代次 stamp。replay/本次 stamp 在原 supervisor 的源稳定边界内复检并持有至 SQL 提交，不能检查后 await 时被换代穿越；遵守原 transition/replay 锁序，不新增裁决 owner。Repo/tx 签名及 UPDATE 的 provider/backend/thread 谓词同步改，不能只加内存键；保留不动 updated_at_ms、完成时间单调与一次 replay 合同。A 通知或失败 replay 不得写 B 的活性列。 |
+| T6 idle 探测全链 | `factory/codex_worker.rs:15-28,83-99,124-157`（相对 `harness/backend/`）；`server/state.rs:841`；`dispatcher/mod.rs:807`；`provider/worker/codex.rs:62-71,119-161`；`server/provider_registry.rs:36,51` | `idle_candidate_thread` 以当前 card/session 选候选并返回 HostThreadKey/绑定；WorkerIdleWake 不持固定 default probe，以绑定取一次快照，read_liveness_facts 与 active turn 同实例同源代次。保留原 grace/TurnEnd 算法；缺绑定/跨代次 Unknown，无 idle 结论。reaper 使用相同宿主 probe 入口，不另写 idle 裁决。 |
+| T7 resume/replay/休眠 | `shared_codex_appserver.rs:3166-3188`；`shared_codex_appserver/resume_replay.rs:10-13,45-151`；`server/planner_hibernation.rs:132`；`truth/db/sqlite/session_projection.rs:222-237`；`truth/session_projection_lookup.rs:109-122` | DB attribution/merge、sleeping_thread 均按范围筛选；原连接 ReplayPlan 的 configs/excluded 保留在绑定实例/当前 source 内，候选、cache recheck、授权准备不丢范围。禁止把 A/t 的 excluded/config/token 用在 B/t，旧任务不能把 plan 直接用于新源；只有原 supervisor 按 HotTakeover/ColdRespawn 合同重验绑定/授权后继续准备。原有 exclusions 继承规则仍由该 owner 决定，不丢失其防重复/取消语义。 |
+| T8 通知与 pending 归属 | `harness/codex_events.rs:24,68-119`；`harness/run_loop.rs:2533-2538`；`dispatcher/mod.rs:820`；`operation/codex_adapter/mod.rs:448,1146,1241`；`shared_codex_appserver.rs:3084-3099,3148-3160,4048-4100`；`server/pending_codex_threads.rs:27,121,323-379` | 合流 envelope 带 HostThreadKey/源代次，PlannerEvent 与 harness 匹配完整身份，通知转换不剥范围。原 pending registry 按 BackendRef 分区，entry 固定绑定，on_thread_started 与写入事务复检范围/代次/carrier；不新建第二 FIFO。kernel-initiated/forgotten 分支同样不能跨实例查库或吞事件。 |
+| T9 全部 thread 仓储与外部入口 | `truth/session_projection_repo.rs:151`；`truth/session_projection_lookup.rs:17-54,109-122`；`truth/db/sqlite/session_projection.rs:164-180,222-237,723-728`；`truth/db/sqlite/session_repo_impl.rs:172-195`；`server/mcp_server/transport.rs:1771-1816`；`server/routes/threads.rs:15-49` | active_by_thread、resolve_card/session、attribution、codex_threads_ended 及其 Repo/tx/SQL 都加绑定范围（ended 的正例与 NOT EXISTS live 必须同范围），索引同步；hooks/API 升级范围参数并更新桥接调用者/生成契约。MCP 范围来自已认证连接，产品 session 解析后仍复检，不准 LIMIT 1 任选。 |
+| T9（operation 输出/回滚与会话内 SQL） | `operation/codex_adapter/mod.rs:450-481,568,635,1832`；`operation/planner_harness_start_adapter.rs:1276,1549,1676,2408-2470`；`truth/db/sqlite/{session_mirror.rs:166,512,613,session_projection.rs:57,session_system_error_recovery.rs:90,transcript_projection.rs:77,114,out_of_domain.rs:131,517,545}` | codex_thread_id 输出的恢复/停止/rollback 携同一固定绑定并与 carrier 对照；不能从输出裸 ID 重选实例。原已按 worker_session_id/card 约束的 SQL 复用其 owner，并核对该行绑定，不另建 thread 表；所有镜像/ID 写入继续受 §7.1 不变守卫保护。 |
+| T10 map/set 局部范围 | `shared_codex_appserver.rs:453,456,473,603,3016-3018,3620,4050-4052`；`shared_codex_appserver/native_turns.rs:131,163-188`；`shared_codex_appserver/resume_replay.rs:12-13`；`shared_codex_appserver/thread_release.rs:14-47` | thread_cache、hibernating_releases、kernel_initiated、forgotten、fixture thread_paths、thread→status 结果、native slots/detaching 及 replay/release 集合是实例局部：固定 BackendRef 不变，宿主入口验键后解包才可保留 String。turn/candidate map 的 String 是 turn ID，由现有线程 slot/source owner 约束，不改成线程键。跨实例返回/合并必须重新包完整键，禁止全局 String map。 |
+| T11 provider 路由/RPC | `provider/codex/approvals.rs:71-111,298-310`；`provider/codex/mod.rs:103,298,435-505`；`shared_codex_appserver.rs:479,792,4331-4334` | ApprovalRoutes 是每 supervisor 创建并注入连接的原 owner，不能池级共享；其 thread String 与 RequestKey 留在此实例，旧 route Drop 保留 owner 校验。wire RPC/通知原生 ID 保持原协议；宿主选择/校验实例后才调用。provider 的 u64 pending 是连接 RPC ID，不是线程身份，不塞入宿主 BackendRef。 |
+
+扫描还检查了所有 `DashMap/HashMap<String, …>`：`harness/registry.rs:45`、`per_card_lock.rs:8`、
+`scheduler/mod.rs:422,432` 是 card/task 键；`task_context.rs:240` 是恢复 cursor，`worker_flow/mod.rs:45` 是 source task；
+`auth/session.rs:52`、`terminal_renderer/mod.rs:325`、`terminal_interaction/mod.rs:86` 是登录/终端连接键；
+`mcp_server/transport/carrier_quiescence.rs:12` 是 carrier；`worker_flow/claude_normalizer.rs:16-19` 与
+`provider/claude/translate.rs:143` 是单 stream 的 item/tool 键。其余 report、配置、设备、工具注册与 test-hook 的 String map
+不是线程索引，保持所属 owner；不机械地把所有 String 换成线程类型。`codex_thread_id` 是 operation 兼容字段名，
+生产查询以 worker_sessions.thread_id 为准；T5/T6/T7/T9 覆盖其最终 SQL，不能只扫描同名 JSON 字段。
+此表是基线证据，实施时对新增/迁移后的真实调用路径再扫一次；不新增固定文件名 CI pin。
+
+删除在事务/移动 workspace 前收集并保存所有相关 `HostThreadKey`，所有 owner strict quiesce 成功才继续。
+提交失败仅按原计划的完整身份与 owner 补偿，补偿完成才解对应 fence；提交后调用每个相关 owner 清理，待全部清理职责已完成或由实例 owner 明确保留重试义务、
 且不能被 replay/pending 重新归属时才 `ThreadSeals::forget_deleted`。释放 RPC 不改成全局必须成功，复用原 best-effort/重试合同；
 不能提前丢掉 owner 的义务再以 SQL 行已删为由跳过。所有者集合来自删除计划/登记，不靠删除后的库反查。
 
@@ -550,20 +620,30 @@ readiness 是每实例 watch；合流通知保留 BackendRef/连接代次，不�
 
 ### P1 配置与纯模型（L1）
 
-只新增类型、配置解析、纯评分与观测模型，在 config/state/lib 留窄挂接，不启动额外实例、不写登记、
-不启用选择、不改变既有授权。依赖无；可先于 M2。退出：非法/重复 id、未知字段、相对/重叠路径、权重校验，
+新增类型、配置解析、纯评分与观测模型，并实际修改 `server/config.rs`、`state.rs`、`lib.rs` 的参数与组合根窄挂接，
+不启动额外实例、不读写持久登记、不创建目录、不改变既有授权。依赖无；可先于 M2（重叠文件协调见 §9）。
+退出：非法/重复 id、未知字段、非绝对路径、权重的无副作用语法检查；不声称已检查权限、canonical 或真实路径重叠；
 加权最少在途与 ordered 的排序/同分规则、Unknown 与软上限场景通过；policy 不分配半开租约。
 L1 理由：不跨持久/进程/权限边界。若路径创建/登记副作用被提前，应留在 P2，不能顺手扩大 P1。
 
 ### P2 多实例基础设施，非 default 禁止产品流量（L2）
 
 范围为 §6–8：持久身份登记与 keyed runtime 迁移、default-only 历史恢复、home/env 隔离、每实例完整 MCP follower、
-共享 seals、各实例 readiness 与生命周期。Q10 默认隔离方案必须先经 L2 落定，不能以基础设施无流量为由复制全局 token。
+共享 seals、各实例 readiness 与生命周期。
+
+**seal 键的阶段取舍**：P2 先只将唯一 Arc 外部注入，暂保留现有裸键接口；P2 禁止非 default 的产品线程、pending
+归属和 TUI，default 是唯一可进入此 registry 的 Codex 线程范围，额外 daemon 只有基础设施操作，不能用未知 thread
+通知建立归属、更新产品活性或查共享裸 seal 触发 late interrupt。非 default forwarder 的这些产品分支必须禁用，
+在默认线程被 seal 时注入非 default 同 ID 通知，验证无归属/活性写入/interrupt；不能只在 mint 入口禁流量。故 P2 不需要提前拆开 seals 与全部消费者的原子接口迁移，避免裸键/范围键兼容重载。
+P3 必须将 T1–T11 一起改成 §4.2 合同后才解禁，P2 的无流量前提不能作为 P3 延后任一键迁移的理由；
+若实施发现 P2 有绕过上述围栏的入口，先堵住围栏，无法封闭则须提前整套范围键迁移并重新 L2，不保留两套表。
+
+Q10 默认隔离方案必须先经 L2 落定，不能以基础设施无流量为由复制全局 token。
 P1/P2 先行；M2 基线取 P2 最终树，按 §9 串行协调。
 
 退出必须同时满足：
 
-- 两 fixture 实例路径隔离、default 与旧 home 一致、未知/变化/删减/复用配置在接管前拒绝，升级后接管精确验证。
+- P2 创建/所有权/权限/canonical/符号链接别名与真实重叠检查通过；两 fixture 实例路径隔离、default 与旧 home 一致、未知/变化/删减/复用配置在接管前拒绝，升级后接管精确验证。
 - 带历史线程的旧库启动/接管、连接重建、crash 自愈和设置替换时，只有 default 有产品 resume 候选；
   非 default 的 mint、TUI、pending 归属入口被拒绝。canonical recovery、sleep 与原授权复检保持。
 - 每个实例的插件 grants generation 写入先于 reload；插件读取失败空 grants，home 写失败不 reload，
@@ -584,10 +664,10 @@ L2：身份持久性、凭据、MCP 授权与进程生命周期。新文件见 �
 
 退出必须同时满足：
 
-- 首副作用前固定与 CAS 竞争覆盖 Planner、retained、worker、prompt/空 prompt 卡；所有新写者显式必填 BackendRef，
-  旧行仅一次性回填。无 ID、unknown、取消/重启均不重新选择；变更绑定拒绝。
+- 首副作用前固定与 CAS 竞争覆盖 Planner、retained、worker、prompt/空 prompt 卡；所有 Codex 固定绑定新写者显式必填 BackendRef，
+  terminal 等显式 NotApplicable，旧 Codex 行仅一次性回填。无 ID、unknown、取消/重启均不重新选择；变更绑定拒绝。
 - 两后端的冷启、热接管、重连、自愈只恢复自己线程；通知/pending/replay 保留实例及代次，TUI home/remote 与绑定一致。
-- §10.4 每行具备真实生产入口的路由证据与针对两个实例的行为测试：strict deletion、post-commit forget 与 seal 顺序、
+- §3.1/§10.4 每行（包括 T1–T11 的缓存、全部查写接口/SQL 与共享 seals 调用者）具备真实生产入口的证据与双实例行为测试：strict deletion、post-commit forget 与 seal 顺序、
   replacement、超时/取消、休眠、release retry、sweeper、rollout thread_path 均无 default 遗漏。
 - 探测一次性快照包括 running 与 connected_at，RPC 代次变化为 Unknown；default down、另一实例活跃不会误判后者 Dead；
   readiness 各自订阅，不用无参状态拼出跨实例事实。
@@ -596,8 +676,22 @@ L2：身份持久性、凭据、MCP 授权与进程生命周期。新文件见 �
 - 审查所有单例注入及下游，无业务 default fallback；删除前相关 owner 集合留存到提交后，全部 owner 清理后才 forget seal。
   非 default 流量围栏最后一次性解除；没有清单、断言或实测的路径继续禁流量。
 
+**必须强制 A、B 返回完全相同原生 ID `t` 的生产入口回归**（不能仅靠随机 UUID 或两个不同 ID）：
+
+| 场景 | P3 必须观测到的结果 |
+|---|---|
+| 删除 A/t，B/t 正在运行；A 的 late TurnStarted 晚到 | 只中断/清理/forget A；B 的发轮、exact recovery、cache、release 义务与通知正常；A 的 late turn 被原 owner 拦截 |
+| A、B 删除事务交错，一方 rollback，另一方仍 quiesce/commit；再交换顺序 | A rollback 不解 B 的 seal，B rollback 不解 A；guard Drop、显式补偿、post-commit forget 全路径验证，跨协议同原生 ID 也不互封 |
+| A/B 同 ID 通知交错，A 的 SQL 写失败后 B 先通知、A 再通知 | pending 不被 B 消耗；只各自更新所属行 last_activity/status/completed，更新时间与一次 replay 合同保持；原 SQL/tx 入口验证 A 通知期间 B 未变 |
+| A 重连前写失败产生 pending 或 resume plan，旧代次通知/延迟任务在新代次之后到达 | 不污染新代次活性、pending 归属、resume 授权/config 或 native turns；B 同 ID 不受影响，旧源无权 interrupt 新源 |
+| B/t 为 idle 候选，default/A down 或 A/t active；再反转 idle/active | idle SQL 返回 B 绑定，read 与 active-turn/running/connected_at 同一实例同代次；跨代次/无绑定只 Unknown，不错误结束 B |
+| 按 thread 仓储/MCP/hook/ended/休眠/rollback 查询 A/t | 只查写 A；无范围拒绝；ended 的 B 活行不阻止 A 释放，A 终态也不能释放 B；实例局部 approvals/native map/replay 同样隔离 |
+
+以上测试走原 owner 与真实 Repo/SQLite 写入口，不能用手写分发 fixture 代替生产身份解析。P3 放流量 gate 必须覆盖全部场景，
+任何清单缺项或缺断言继续禁流量；不把它们推至 P4 或远期多账号 E2E。
+
 L2：原生归属、持久 CAS、删除/死亡裁决与授权路由。可以分提交评审，不能将放流量退出条件拆散。
-mutation 选“去绑定过滤”“绕过不可变 CAS”及跨后端 probe 各一个单因素，预测并核对完整失败集；
+mutation 选“seal 键丢 BackendRef”“活性 SQL 去 backend 谓词”“idle 取 default probe”及“绕过不可变 CAS”各一个单因素，预测并核对所属 target 完整失败集；
 tier 1 集成覆盖无需凭据，真实多账号 Codex E2E 仅专用宿主。
 
 ### P4 限额观测与选择信号（收窄为 L1）
@@ -650,7 +744,9 @@ gate 按仓库要求拥有 text/contract/quick 和一次拒绝空选择的聚焦
 | Q9 | 已由 TWE OQ10 收敛 | OQ10 已定 UserHome；worker 保持用户登录，多 Claude 凭据档仅 Planner（§9.2） |
 | Q10 | **待决，新增信任域取舍** | 多 home 是否共享全局 daemon 信任域？默认不共享：token 绑定 BackendRef 并校验 threadId 后端；若选共享须明确接受跨后端 threadId 授权面并重新 L2。决定/默认方案评审落定前不启动额外实例（§8、P2） |
 
-## 14. 评审处理（第一轮）
+## 14. 评审处理
+
+### 第一轮
 
 全部先用当前源码核实；下表“成立”指设计缺口成立，不代表已实现修复。路径简写同文首，行号按复核基线。
 无发现整条驳回；N 中有关“已实现/待决定”的表述按源码与上游定稿纠正。修订版仍交两路 L2 复审。
@@ -671,3 +767,17 @@ gate 按仓库要求拥有 text/contract/quick 和一次拒绝空选择的聚焦
 | L / ad-P2（凭据） | 成立：`provider/codex/shared/environment.rs:36-42` 实有五键；adapter `:1503-1538` 构造 TUI env，不能只改 daemon。home `:55,328` 只有 mkdir，0700 是新增约束；补 daemon/TUI 两路径验收 | §8、§11 P2/P3、Q5 |
 | M / ad-P2（限流证据） | 成立：`provider/tests/fixtures/claude_planner_stream/pH.ndjson:11` 的 status 为 allowed，overageStatus rejected 不证明整次请求拒绝；不得用于拒绝冷却，拒绝/耗尽标待实测并保留 allowed 负例 | §4.4、§5、§11 P4、R4 |
 | N / bd-N2、bd-N3 | 核实纠正：TWE §5.4 已定 UserHome、§7 WA2 仍是计划；worker 首 turn 的显式 mint/persist 见 adapter `:1161-1208`，FIFO 只属空 prompt 交互路径。删除待决 OQ10/已实现 ConfigSource 暗示；P4 删除 BackendAdmission，新增准入/认证授权只能独立 L2 | §2.3、§4.6、§9.2、§11、Q9 |
+
+### 第二轮
+
+本轮只更新设计合同与实施门槛，不声称已实现或执行未来切片的行为测试；三条阻塞统一作为裸原生 ID 身份缺陷类关闭设计缺口。
+保持 L2：涉及隔离、删除 fence 与持久归属；本修订仍由 Planner 安排独立两路复审。
+
+| 发现 | 核实与处置 | 对应小节/验收 |
+|---|---|---|
+| R2-B（共享 seals；两路同类发现） | 成立：thread_seals.rs:14 是裸 String 键；只共享 Arc 不足以隔离。定义唯一 HostThreadKey，迁移删除计划、guard、rollback/forget、所有 harness/exact/late interrupt 检查；不建平行 registry | §3.1 T1–T4、§4.2、§10.4；P2 过渡理由与 P3 同 ID 删除/交错 rollback 回归 |
+| R2-B（feeder/pending replay） | 成立：liveness_feeder.rs:113 裸键，session_row.rs:502 仅 provider/thread UPDATE。通知携范围/代次，pending 与 Repo/tx SQL 同步范围化，换代丢弃旧 pending，复用原一次 replay owner | §3.1 T5/T8/T9、§10.4；P3 活性不串写与旧代次回归 |
+| R2-B（idle 独立链） | 成立：factory/codex_worker.rs:83 只返回 String、:135/:152 用固定 probe；一般 reaper 改造不能覆盖它。候选返回持久绑定，WorkerIdleWake/state/dispatcher 同步接绑定快照，不复制裁决 | §3.1 T6、§10.2/10.4；P3 同 ID idle/active 与 default down 回归 |
+| R2-N1 | Codex 固定绑定必填；通用行以显式分支区分 Unbound、Codex、已有协议和 NotApplicable；terminal 不填假 default，不用任意 Option 掩盖遗漏，迁移与 fixture 覆盖所有行类型 | §7.1、§11 P3 |
+| R2-N2 | P1 仅语法/词法且无文件系统副作用；目录创建、权限、canonical/真实重叠属于 P2；如实列出 P1 config/state/lib 既有文件及并行冲突，重估 P1/P3 行数 | §6.1、§9、§10.2、§11 P1/P2 |
+| 决策复核 | Q1/P1-P2 先行且 P3 在 M2 后独立 L2、Q2 默认加权最少在途/ordered、Q5 五键拒绝、Q8 显式 home 不播种均不变；Q10 仍待用户决定、默认不共享 | §13；本轮不替用户批准共享信任域 |
