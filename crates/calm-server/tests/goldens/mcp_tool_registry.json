@@ -1815,7 +1815,7 @@
   },
   {
     "name": "neige_track_handback",
-    "description_sha256": "7fef2053f1a7106f9a4798d0d32ecabd71050935b9bd90d9aa4640be8cf2c943",
+    "description_sha256": "b391a7142971789898cb052408c740d2f3617c382ce570272c70066775e5c646",
     "input_schema": {
       "additionalProperties": false,
       "properties": {

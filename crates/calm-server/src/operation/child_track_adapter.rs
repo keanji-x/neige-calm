@@ -18,6 +18,7 @@ use super::{
 };
 
 mod configuration;
+mod continuation;
 use configuration::{FrozenParent, PreparedChild, ensure_child_workspace};
 
 pub const CHILD_TRACK_KIND: &str = "child-track";
@@ -117,6 +118,12 @@ impl ChildTrackAdapter {
         let payload: ChildTrackOperationPayload = serde_json::from_value(input.clone())?;
         // Deliberately the first DB action: a materialized frozen context may not create a child skeleton.
         refuse_if_context_stale(tx, Some(&payload.task_id)).await?;
+        if let Some(config) = &payload.child_track {
+            config.validate().map_err(CalmError::BadRequest)?;
+            if let Some(child) = &config.continue_track_id {
+                return self.continue_tx(tx, &payload, child).await;
+            }
+        }
 
         let (root_id, parent_depth) = root_and_depth(tx, &payload.parent_track_id).await?;
         if parent_depth >= MAX_TRACK_TREE_DEPTH {
@@ -222,22 +229,14 @@ impl ChildTrackAdapter {
         )
         .await?;
 
-        let stamped = sqlx::query(
-            "UPDATE tasks SET child_track_id=COALESCE(child_track_id,?1),updated_at_ms=?2 \
-             WHERE id=?3 AND status='dispatched' \
-               AND (child_track_id IS NULL OR child_track_id=?1)",
+        calm_truth::db::sqlite::task_bind_child_track_tx(
+            tx,
+            &payload.task_id,
+            &payload.parent_track_id,
+            child.id.as_str(),
+            now_ms(),
         )
-        .bind(child.id.as_str())
-        .bind(now_ms())
-        .bind(&payload.task_id)
-        .execute(&mut **tx)
         .await?;
-        if stamped.rows_affected() == 0 {
-            return Err(CalmError::Conflict(format!(
-                "child-track parent task {} is not dispatched",
-                payload.task_id
-            )));
-        }
 
         // `N` has changed, so every old member's deterministic share may have shrunk; rebuild the whole tree before this transaction can expose the child.
         let projections = tasks_rebuild_tree_tx(tx, &root_id).await?;
@@ -375,6 +374,13 @@ impl ProviderAdapter for ChildTrackAdapter {
         ctx: &SpawnCtx,
     ) -> Result<Option<Box<dyn super::PreparedTx>>> {
         let payload: ChildTrackOperationPayload = serde_json::from_value(input.clone())?;
+        if let Some(config) = &payload.child_track {
+            config.validate().map_err(CalmError::BadRequest)?;
+            if config.continue_track_id.is_some() {
+                // No parent model, HEAD or checkout observation belongs to continuation.
+                return Ok(None);
+            }
+        }
         let db = ctx.operation_repo.sqlite_db();
         let mut snapshot = crate::db::sqlite::begin_immediate_tx(&db).await?;
         let mut frozen = FrozenParent::read(&mut snapshot, &payload.parent_track_id).await?;

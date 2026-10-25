@@ -212,16 +212,35 @@ pub struct GateStepInput {
     pub cmd: String,
 }
 
-/// Explicit child planner choices; approval remains inherited. Only sub-track tasks accept this.
+/// Child planner creation choices or an exclusive continuation target. Only sub-track tasks accept this.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ChildTrackConfig {
+    #[serde(default, rename = "continue", skip_serializing_if = "Option::is_none")]
+    pub continue_track_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<String>,
+}
+
+impl ChildTrackConfig {
+    pub fn validate(&self) -> std::result::Result<(), String> {
+        if let Some(child) = &self.continue_track_id {
+            if child.trim().is_empty() {
+                return Err("child_track.continue: must be non-empty".into());
+            }
+            if self.provider.is_some() || self.model.is_some() || self.reasoning_effort.is_some() {
+                return Err(
+                    "child_track.continue: exclusive with provider, model and reasoning_effort"
+                        .into(),
+                );
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Required declaration provenance. Pure validation inputs have no report root and must never be

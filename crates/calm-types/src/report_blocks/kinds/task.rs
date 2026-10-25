@@ -207,6 +207,9 @@ pub(super) fn validate_task(map: &Map<String, Value>, errors: &mut Vec<String>) 
         match serde_json::from_value::<crate::report_blocks::tasks::ChildTrackConfig>(value.clone())
         {
             Ok(config) => {
+                if let Err(error) = config.validate() {
+                    errors.push(error);
+                }
                 if let Some(object) = value.as_object() {
                     for (name, member) in object {
                         if !member.is_string() {
@@ -215,6 +218,7 @@ pub(super) fn validate_task(map: &Map<String, Value>, errors: &mut Vec<String>) 
                     }
                 }
                 for (name, value) in [
+                    ("continue", config.continue_track_id),
                     ("provider", config.provider),
                     ("model", config.model),
                     ("reasoning_effort", config.reasoning_effort),

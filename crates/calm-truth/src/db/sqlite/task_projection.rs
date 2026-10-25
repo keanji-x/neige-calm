@@ -712,6 +712,7 @@ fn reference_lookup_request(reference: &str) -> Option<ReferenceLookupRequest> {
 
 /// Everything the schedulability verdict needs, read in ONE statement.
 struct TrackProjectionState {
+    continuable_children: BTreeSet<String>,
     policy: Option<String>,
     ceiling: i64,
     require_gates: bool,
@@ -725,6 +726,7 @@ struct TrackProjectionState {
 
 #[derive(sqlx::FromRow)]
 struct TrackProjectionStateRow {
+    continuable_children_json: String,
     automation_policy: Option<String>,
     planner_task_ceiling: Option<i64>,
     require_task_gates: i64,
@@ -747,7 +749,7 @@ async fn track_projection_state(
 ) -> Result<TrackProjectionState> {
     let reference_requests_json = serde_json::to_string(reference_requests)
         .map_err(|e| CalmError::Internal(format!("serialize task reference lookups: {e}")))?;
-    let row: Option<TrackProjectionStateRow> = sqlx::query_as(
+    let sql = format!(
         r#"WITH reference_input(reference,lookup_kind,track_id,block_id,card_id) AS (
                SELECT json_extract(value,'$.reference'),
                       json_extract(value,'$.lookup_kind'),
@@ -757,6 +759,10 @@ async fn track_projection_state(
                  FROM json_each(?2)
            )
            SELECT w.automation_policy, w.planner_task_ceiling, w.require_task_gates, w.area_id,
+                  (SELECT json_group_array(child.id) FROM ({}) child
+                   WHERE child.parent_track_id=w.id
+                   AND NOT EXISTS(SELECT 1 FROM tasks active WHERE active.child_track_id=child.id
+                       AND active.status IN ('dispatched','running'))) AS continuable_children_json,
                   (SELECT json_group_array(json_object(
                        'key', t.key, 'status', t.status,
                        'declared_by', t.declared_by))
@@ -821,12 +827,14 @@ async fn track_projection_state(
                       LEFT JOIN areas target_area ON target_area.id = target.area_id)
                      AS reference_targets_json
            FROM tracks w WHERE w.id = ?1"#,
-    )
-    .bind(track_id)
-    .bind(reference_requests_json)
-    .bind(i64::from(include_read_state))
-    .fetch_optional(&mut *conn)
-    .await?;
+        super::child_track_handback_targets_sql(),
+    );
+    let row: Option<TrackProjectionStateRow> = sqlx::query_as(&sql)
+        .bind(track_id)
+        .bind(reference_requests_json)
+        .bind(i64::from(include_read_state))
+        .fetch_optional(&mut *conn)
+        .await?;
     // Keep the test seam immediately after the one statement, so any future
     // split crosses this t0/t1 boundary.
     after_statement.await;
@@ -837,6 +845,7 @@ async fn track_projection_state(
             .map(|target| (target.reference.clone(), target))
             .collect();
     Ok(TrackProjectionState {
+        continuable_children: serde_json::from_str(&row.continuable_children_json)?,
         policy: row.automation_policy,
         ceiling: effective_limit(row.planner_task_ceiling, DEFAULT_PLANNER_TASK_CEILING),
         require_gates: row.require_task_gates != 0,
@@ -1058,6 +1067,22 @@ async fn evaluate_schedulability_with_tree_term_after_snapshot(
         if tree_root_unresolved {
             diagnostics.push(tree_root_unresolved_diagnostic());
         }
+        // Settled/inflight declarations keep their historical verdict. Only a fresh assignment
+        // needs a presently handed-back target; the writer repeats admission before stamping.
+        if let Some(child) = declaration
+            .child_track
+            .as_ref()
+            .and_then(|c| c.continue_track_id.as_ref())
+        {
+            let already_claimed = state.frozen.iter().any(|row| row.1 == declaration.key);
+            if !already_claimed && !state.continuable_children.contains(child) {
+                diagnostics.push(Diagnostic::new(
+                    "payload",
+                    "child_track.continue requires an open handed-back child of this parent without an active assignment",
+                ));
+            }
+        }
+
         for (_, dependency) in unknown.iter().filter(|(key, _)| key == &declaration.key) {
             diagnostics.push(Diagnostic::coded(
                 "unknown_dependency",
@@ -2473,6 +2498,98 @@ mod tests {
                 row,
                 ("pending".into(), start.unwrap_or("checkout").to_string())
             );
+        }
+    }
+
+    #[tokio::test]
+    async fn child_track_continue_declaration_requires_owned_open_returned_child() {
+        for condition in ["returned", "active", "foreign", "closed", "failed"] {
+            let (repo, track) = setup().await;
+            sqlx::query(
+                "INSERT INTO tracks(id,area_id,title,sort,created_at,updated_at,parent_track_id) \
+                VALUES('continued-child','area-projection','child',1,0,0,?1)",
+            )
+            .bind(&track)
+            .execute(repo.pool())
+            .await
+            .unwrap();
+            insert_block_task(&repo, &track, "prior", "failed").await;
+            sqlx::query(
+                "UPDATE tasks SET spawn='sub-track',child_track_id='continued-child',\
+                status_detail='child-track-handed-back' WHERE key='prior'",
+            )
+            .execute(repo.pool())
+            .await
+            .unwrap();
+            match condition {
+                "active" => {
+                    sqlx::query("UPDATE tasks SET status='running' WHERE key='prior'")
+                        .execute(repo.pool())
+                        .await
+                        .unwrap();
+                }
+                "foreign" => {
+                    sqlx::query("INSERT INTO tracks(id,area_id,title,sort,created_at,updated_at) VALUES('foreign-parent',\
+                        'area-projection','other parent',2,0,0)")
+                        .execute(repo.pool()).await.unwrap();
+                    sqlx::query(
+                        "UPDATE tracks SET parent_track_id='foreign-parent' WHERE id='continued-child'",
+                    )
+                    .execute(repo.pool())
+                    .await
+                    .unwrap();
+                }
+                "closed" => {
+                    sqlx::query("UPDATE tracks SET closed_at=1 WHERE id='continued-child'")
+                        .execute(repo.pool())
+                        .await
+                        .unwrap();
+                }
+                "failed" => {
+                    sqlx::query("UPDATE tasks SET status_detail='other' WHERE key='prior'")
+                        .execute(repo.pool())
+                        .await
+                        .unwrap();
+                }
+                _ => {}
+            }
+            let outcome = project_blocks(
+                &repo,
+                &track,
+                &[task_block(
+                    0,
+                    json!({
+                        "key":"new-round", "kind":"codex", "goal":"new assignment", "ready":true,
+                        "spawn":"sub-track", "declared_by":PLANNER_DECLARATION_AUTHOR,
+                        "child_track":{"continue":"continued-child"}
+                    }),
+                )],
+            )
+            .await;
+            let verdict = outcome
+                .diagnostics
+                .iter()
+                .find(|v| v.key == "new-round")
+                .unwrap();
+            assert_eq!(
+                verdict.schedulable,
+                condition == "returned",
+                "{condition}: {verdict:?}"
+            );
+            if condition != "returned" {
+                assert!(
+                    verdict
+                        .diagnostics
+                        .iter()
+                        .any(|d| d.code == "invalid_declaration")
+                );
+            }
+            let projected: i64 =
+                sqlx::query_scalar("SELECT count(*) FROM current_tasks WHERE key='new-round'")
+                    .fetch_one(repo.pool())
+                    .await
+                    .unwrap();
+            assert_eq!(projected, i64::from(condition == "returned"));
         }
     }
 

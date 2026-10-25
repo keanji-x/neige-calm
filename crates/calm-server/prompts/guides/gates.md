@@ -9,6 +9,6 @@ Declare `gate` with named steps; the kernel checks it after worker report.
 - Check checkout files, e.g. `python3 -m unittest discover` or `test -s artifacts/result.json` (existence only). Other artifacts: put their paths and semantic checks in the worker's goal; the worker reports the paths.
 - {task_gate_guidance} Read-only tasks may run side by side.
 - An agent write to an unstarted `ready: true` task is refused for static errors (`gate_required`, duplicate key, cycle, bad ref); edits to started or finished tasks are kept.
-- `spawn: "sub-track"` requires `kind: "codex"`. Optional `child_track: {provider, model, reasoning_effort}` overrides the child planner; other fields inherit. Changing provider resets omitted model/effort to its defaults. Approval always inherits. Choices freeze at creation; invalid provider/model fails the task. A declared gate runs on child closure in task `cwd`, else parent checkout.
+- `spawn:"sub-track"` requires `kind:"codex"`. `child_track:{provider,model,reasoning_effort}` overrides its Planner; omitted fields inherit. Provider changes reset omitted model/effort to defaults. After handback, `child_track:{"continue":"id"}` reuses the child with a new key and no overrides. Approval inherits; creation choices freeze. Invalid provider/model fails. A gate runs on child close in task `cwd`, else parent checkout.
 
 `neige_task_ls.verification` says whether a failed gate judged code. Fix its environment then `neige_task_regate`, or declare a new task with a fixed command.

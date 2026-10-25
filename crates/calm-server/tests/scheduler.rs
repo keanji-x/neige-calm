@@ -5,6 +5,8 @@
 mod c2b;
 #[path = "scheduler/child_track_config.rs"]
 mod child_track_config;
+#[path = "scheduler/child_track_continue.rs"]
+mod child_track_continue;
 #[path = "scheduler/child_track_handback.rs"]
 mod child_track_handback;
 #[path = "scheduler/compact.rs"]

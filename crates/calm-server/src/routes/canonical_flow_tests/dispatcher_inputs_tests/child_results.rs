@@ -173,3 +173,123 @@ async fn completed_child_result_reconciles_and_wakes_parent_once() {
 async fn completed_gated_child_remains_deferred_until_gate_verdict() {
     child_result(false, false, true).await;
 }
+
+#[tokio::test]
+async fn child_track_continue_planner_receives_new_seed_on_original_session() {
+    use crate::operation::{OperationKey, OperationOutcome};
+    let mut flow = Flow::running().await;
+    flow.state.dispatcher.abort_event_listener_for_test();
+    let parent = flow
+        .fixture
+        .repo
+        .track_create(crate::model::NewTrack {
+            area_id: flow.area.clone().into(),
+            title: "parent".into(),
+            sort: None,
+            cwd: "/no-parent-checkout-needed".into(),
+            template_id: None,
+            plugin_scope: None,
+            template_input: None,
+            attach_folder: false,
+            theme: crate::routes::theme::RequestTheme::default_dark(),
+        })
+        .await
+        .unwrap();
+    sqlx::query("UPDATE tracks SET parent_track_id=?1 WHERE id=?2")
+        .bind(parent.id.as_str())
+        .bind(&flow.track)
+        .execute(flow.fixture.repo.pool())
+        .await
+        .unwrap();
+    let assignment = crate::model::new_id();
+    sqlx::query("INSERT INTO tasks(id,track_id,key,kind,goal,context_json,status,status_detail,spawn,\
+        child_track_id,created_at_ms,updated_at_ms) \
+        VALUES('previous-round',?1,'previous','codex','old goal','{}','failed','child-track-handed-back','sub-track',?2,1,1)")
+        .bind(parent.id.as_str()).bind(&flow.track).execute(flow.fixture.repo.pool()).await.unwrap();
+    sqlx::query("INSERT INTO tasks(id,track_id,key,kind,goal,context_json,status,spawn,created_at_ms,updated_at_ms) \
+        VALUES(?1,?2,'new-round','codex','new child objective','{}','dispatched','sub-track',2,2)")
+        .bind(&assignment).bind(parent.id.as_str()).execute(flow.fixture.repo.pool()).await.unwrap();
+    let original = flow.fixture.carrier(&flow.track).await;
+    let input = json!({"task_id":assignment,"parent_track_id":parent.id,"goal":"new child objective",
+        "acceptance":"meet the revised contract","context":{"decision":"continue"},"cwd":null,
+        "child_track":{"continue":flow.track}});
+    let operation = flow
+        .state
+        .operation_runtime
+        .submit(
+            "child-track",
+            OperationKey {
+                operation_key: crate::model::new_id(),
+                idempotency_key: Some(assignment.clone()),
+                payload_hash: crate::routes::idempotency_key::stable_payload_hash(&input).unwrap(),
+            },
+            input,
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        flow.state
+            .operation_runtime
+            .wait(&operation)
+            .await
+            .unwrap()
+            .outcome,
+        OperationOutcome::Succeeded { .. }
+    ));
+    let db = crate::db::Repo::sqlite_db(flow.fixture.repo.as_ref()).unwrap();
+    let mut tx = crate::db::sqlite::begin_immediate_tx(&db).await.unwrap();
+    calm_truth::db::sqlite::task_mark_sub_track_running_tx(
+        &mut tx,
+        &assignment,
+        crate::model::now_ms(),
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    let rows = flow
+        .fixture
+        .repo
+        .events_for_track(&flow.track, &["track.wake_requested"], None)
+        .await
+        .unwrap();
+    let row = rows.iter().find(|row| matches!(&row.event, crate::event::Event::TrackWakeRequested { key, .. } if key == &assignment)).unwrap();
+    let crate::event::Event::TrackWakeRequested {
+        source, key, text, ..
+    } = &row.event
+    else {
+        unreachable!()
+    };
+    assert_eq!(source, "parent_task");
+    assert_eq!(key, &assignment);
+    assert!(text.contains("task key: new-round"));
+    assert!(text.contains("new child objective"));
+    for _ in 0..2 {
+        flow.state.dispatcher.reconcile_tick_for_test().await;
+    }
+    let retained = flow.fixture.carrier(&flow.track).await;
+    assert_eq!(retained.0, original.0);
+    assert_eq!(retained.1, original.1);
+    assert_eq!(retained.2.canonical_inputs.pending.len(), 1);
+    assert_eq!(
+        retained.2.canonical_inputs.pending[0].envelope_id(),
+        Some(row.id)
+    );
+    flow.end(TURN).await;
+    let call = flow
+        .next()
+        .await
+        .expect("the new seed wakes the retained native thread");
+    let native_input = call["params"]["input"].to_string();
+    assert!(native_input.contains(&assignment), "{native_input}");
+    assert!(native_input.contains("parent_task"), "{native_input}");
+    assert!(
+        native_input.contains("new child objective"),
+        "{native_input}"
+    );
+    flow.accept(&call, "continued-child-turn").await;
+    flow.end("continued-child-turn").await;
+    flow.fixture
+        .wait_phase(&flow.track, HarnessPhaseTag::TurnCompleted)
+        .await;
+    flow.close().await;
+}

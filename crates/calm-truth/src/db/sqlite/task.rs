@@ -4,6 +4,9 @@ use sqlx::Transaction;
 use crate::error::{CalmError, Result};
 use crate::model::*;
 
+/// Inflight work that prevents track close, handback and Planner hibernation.
+pub const RUNNING_WORK_STATUSES_SQL: &str = "('dispatched','running','verifying')";
+
 /// One spelling so the `FromRow` mapping can't drift between pool and in-tx reads.
 pub(super) const TASK_COLUMNS: &str = "id, track_id, key, kind, goal, context_json, acceptance_criteria, \
      cwd, depends_on_json, priority, gate_json, status, status_detail, worker_card_id, \

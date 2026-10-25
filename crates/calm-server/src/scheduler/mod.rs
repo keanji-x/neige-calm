@@ -1231,6 +1231,11 @@ impl Scheduler {
             .ok_or_else(|| {
                 CalmError::Internal("child-track result missing child_track_id".into())
             })?;
+        if result.get("continued").and_then(Value::as_bool) == Some(true) {
+            // The binding and wake committed atomically. Dispatcher resumes the retained Planner
+            // through the ordinary durable wake path; no bootstrap operation or parent cwd here.
+            return self.mark_sub_track_running(&task.id).await;
+        }
         let planner_card_id = result
             .get("planner_card_id")
             .and_then(Value::as_str)

@@ -368,7 +368,16 @@ fn task_kind() -> Value {
             "properties": {
                 "child_track": {
                     "type": "object", "additionalProperties": false,
+                    "not": {
+                        "required": ["continue"],
+                        "anyOf": [
+                            { "required": ["provider"] },
+                            { "required": ["model"] },
+                            { "required": ["reasoning_effort"] }
+                        ]
+                    },
                     "properties": {
+                        "continue": { "type": "string", "minLength": 1, "pattern": "\\S", "maxLength": report_blocks::MAX_STRING_CHARS },
                         "provider": { "type": "string", "minLength": 1, "pattern": "\\S", "maxLength": report_blocks::MAX_STRING_CHARS },
                         "model": { "type": "string", "minLength": 1, "pattern": "\\S", "maxLength": report_blocks::MAX_STRING_CHARS },
                         "reasoning_effort": { "type": "string", "minLength": 1, "pattern": "\\S", "maxLength": report_blocks::MAX_STRING_CHARS }

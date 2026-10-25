@@ -8,8 +8,7 @@ use crate::state::AppState;
 use axum::extract::FromRef;
 use sqlx::Row;
 
-/// Work that prevents both Admin close and closed-Planner hibernation. SQL closed set owned here.
-pub(crate) const RUNNING_WORK_STATUSES_SQL: &str = "('dispatched','running','verifying')";
+pub(crate) use calm_truth::db::sqlite::RUNNING_WORK_STATUSES_SQL;
 
 /// Cheap lifecycle candidates. The harness input owner interprets the persisted
 /// checkpoint, and its original loop rechecks live eligibility before quiescence.

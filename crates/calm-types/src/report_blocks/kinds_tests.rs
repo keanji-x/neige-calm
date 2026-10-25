@@ -878,3 +878,24 @@ fn child_track_config_declaration_accepts_typed_overrides() {
     });
     assert!(super::validate_payload(super::KIND_TASK, &payload).is_ok());
 }
+
+#[test]
+fn child_track_continue_declaration_accepts_only_exclusive_nonempty_target() {
+    let mut payload = serde_json::json!({
+        "key":"second-round", "kind":"codex", "goal":"continue", "declared_by":crate::report_blocks::tasks::PLANNER_DECLARATION_AUTHOR,
+        "ready":true, "spawn":"sub-track", "child_track":{"continue":"child-id"}
+    });
+    assert!(super::validate_payload(super::KIND_TASK, &payload).is_ok());
+    for field in ["provider", "model", "reasoning_effort"] {
+        payload["child_track"] = serde_json::json!({"continue":"child-id",field:"choice"});
+        assert!(super::validate_payload(super::KIND_TASK, &payload).is_err());
+    }
+    for target in [
+        serde_json::json!(" "),
+        serde_json::json!(null),
+        serde_json::json!(42),
+    ] {
+        payload["child_track"] = serde_json::json!({"continue":target});
+        assert!(super::validate_payload(super::KIND_TASK, &payload).is_err());
+    }
+}
