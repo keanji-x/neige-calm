@@ -31,12 +31,11 @@ export function GuideProvider({ catalog, enabled, sessionKey, facts, isSeen, onS
   const [pinned, setPinned] = useState<string | null>(null);
   useEffect(() => setPinned(null), [sessionKey]);
   const register = useCallback((key: symbol, target: Target | null) => {
-    if (!running && target !== null) return;
     const previous = targets.get(key);
     if (previous?.id === target?.id && previous?.element === target?.element) return;
     if (target === null) targets.delete(key); else targets.set(key, target);
     revise(value => value + 1);
-  }, [running, targets]);
+  }, [targets]);
   useEffect(() => {
     if (!running) return;
     let frame = 0;
