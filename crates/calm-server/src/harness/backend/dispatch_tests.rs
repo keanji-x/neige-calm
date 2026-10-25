@@ -134,5 +134,5 @@ async fn budget_control_sends_only_fixed_notice_to_original_native_turn() {
     assert_eq!(calls[0].1, "original-turn");
     assert_eq!(calls[0].3.as_deref(), Some("original-start:budget-warning"));
     assert!(matches!(calls[0].2.as_slice(), [InputItem::Text { text }]
-        if text == "[Trusted Planner turn budget reminder]\nAt most 120 seconds of execution remain. Wrap up now before the hard stop."));
+        if text == "[Trusted Planner turn budget reminder]\nAt most 120 seconds of execution remain. Only this turn ends at the hard stop. The Track stays open; tasks keep running; the next observation wakes you. Save progress in the Report and end this turn. Do not close or hand back the Track because of this notice."));
 }
