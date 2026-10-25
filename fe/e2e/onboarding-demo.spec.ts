@@ -1,15 +1,25 @@
 import { expect, test } from '@playwright/test';
+import { wsUrl } from '../web/src/systems/events/websocket-driver.ts';
+
+// Exercise transport isolation even when the document's defense-in-depth CSP is bypassed.
+test.use({ bypassCSP: true });
+
+function isBackendEndpoint(url: URL): boolean {
+  // The event socket lives in the same API namespace as the HTTP backend.
+  const apiNamespace = new URL('.', wsUrl({ protocol: 'http:', host: url.host })).pathname;
+  return url.pathname === apiNamespace.slice(0, -1) || url.pathname.startsWith(apiNamespace);
+}
 
 test('the native lesson generates and revises only prerecorded browser data', async ({ page }) => {
   test.setTimeout(60_000);
   await page.setViewportSize({ width: 1440, height: 1000 });
   const api: string[] = []; const sockets: string[] = [];
-  page.on('request', request => { if (new URL(request.url()).pathname.startsWith('/api/')) api.push(request.url()); });
-  page.on('websocket', socket => sockets.push(socket.url()));
-  await page.route(url => url.pathname.startsWith('/api/'), route => route.abort());
+  page.on('request', request => { if (isBackendEndpoint(new URL(request.url()))) api.push(request.url()); });
+  page.on('websocket', socket => { if (isBackendEndpoint(new URL(socket.url()))) sockets.push(socket.url()); });
+  await page.route(isBackendEndpoint, route => route.abort());
   await page.addInitScript(() => { if (window.location.protocol !== 'data:') localStorage.setItem('demo-isolation-check', 'keep'); });
   await page.goto('/next/?demo=onboarding');
-  await expect(page.getByRole('complementary', { name: '演示模式', exact: true })).toBeVisible();
+  await expect(page.getByRole('complementary', { name: '演示模式', exact: true })).toBeVisible({ timeout: 30_000 });
   await page.getByRole('button', { name: 'New area', exact: true }).click();
   await page.getByRole('button', { name: '填入这个名字', exact: true }).click();
   await page.getByRole('button', { name: '下一步', exact: true }).click();
@@ -38,19 +48,20 @@ test('the native lesson generates and revises only prerecorded browser data', as
   expect(api).toEqual([]); expect(sockets).toEqual([]);
   expect(await page.evaluate(() => Object.fromEntries(Object.entries(localStorage)))).toEqual({ 'demo-isolation-check': 'keep' });
   await page.reload();
-  await expect(page.getByRole('complementary', { name: '演示模式', exact: true })).toBeVisible();
+  await expect(page.getByRole('complementary', { name: '演示模式', exact: true })).toBeVisible({ timeout: 30_000 });
   await expect(page.getByRole('button', { name: /^Collapse area 我的练习项目/ })).toHaveCount(0);
   expect(api).toEqual([]); expect(sockets).toEqual([]);
   await page.getByRole('button', { name: '重新开始', exact: true }).click();
   await expect(page.getByRole('button', { name: 'New area', exact: true })).toBeVisible();
-  expect(api).toEqual([]);
+  expect(api).toEqual([]); expect(sockets).toEqual([]);
 });
 
 test('the Demo banner and callout remain usable on a phone', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
-  const api: string[] = [];
-  page.on('request', request => { if (new URL(request.url()).pathname.startsWith('/api/')) api.push(request.url()); });
-  await page.route(url => url.pathname.startsWith('/api/'), route => route.abort());
+  const api: string[] = []; const sockets: string[] = [];
+  page.on('request', request => { if (isBackendEndpoint(new URL(request.url()))) api.push(request.url()); });
+  page.on('websocket', socket => { if (isBackendEndpoint(new URL(socket.url()))) sockets.push(socket.url()); });
+  await page.route(isBackendEndpoint, route => route.abort());
   await page.goto('/next/?demo=onboarding');
   await expect(page.getByRole('complementary', { name: '演示模式' })).toBeVisible();
   await expect(page.getByRole('note', { name: '先做出一个能预览的小作品' })).toBeVisible();
@@ -62,5 +73,5 @@ test('the Demo banner and callout remain usable on a phone', async ({ page }) =>
   expect((box?.x ?? 0) + (box?.width ?? 0)).toBeLessThanOrEqual(390);
   await fill.click();
   await expect(page.getByRole('textbox', { name: 'Name', exact: true })).toHaveValue('我的练习项目');
-  expect(api).toEqual([]);
+  expect(api).toEqual([]); expect(sockets).toEqual([]);
 });

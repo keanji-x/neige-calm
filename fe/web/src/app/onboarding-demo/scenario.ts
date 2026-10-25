@@ -1,8 +1,14 @@
 import { z } from 'zod';
 import type { AreaWire } from '../../../../core/domain/area.ts';
-import type { CardWire, TrackWire } from '../../../../core/domain/track.ts';
+import type { CardWire, TrackWire, TrackTemplate } from '../../../../core/domain/track.ts';
 import type { WorkspaceFilePort } from '../../../../core/domain/fs.ts';
 import type { ApiRequest, ApiTransportPort, ApiTransportResponse } from '../../../../core/api/types.ts';
+import type { ConversationPage } from '../../../../core/api/generated/wire.ts';
+import type { PlannerRun } from '../../../../core/domain/conversation.ts';
+import type { conversationRunMetadataSchema } from '../../../../core/domain/conversation-display.ts';
+import type { TaskRecoveryView } from '../../../../core/domain/task-recovery.ts';
+import type { TemplateDetail } from '../../../../core/domain/template.ts';
+import type { ProviderAvailability, ManagedProviderAvailability } from '../../../../core/domain/agent-providers.ts';
 import { ApiError } from '../../../../core/domain/failure-class.ts';
 import { WEB_COMPAT_VERSION } from '../providers/public.tsx';
 import { demoPortfolio } from './portfolio.ts';
@@ -72,7 +78,7 @@ export function createOnboardingScenario(onChange: () => void = () => undefined)
         const attempt = { attempt_id: `${track.wire.id}-demo-attempt`, generation: 1, status: 'done',
           status_detail: '预置演示，没有运行模型或测试。', blocking_reason: null, worker_card_id: null,
           created_at_ms: now, finished_at_ms: now + track.revision };
-        return response({ key: 'demo-page', current: attempt, attempts: [attempt] });
+        return response({ key: 'demo-page', current: attempt, attempts: [attempt] } satisfies TaskRecoveryView);
       }
       if (suffix === '/conversations' || suffix === '/previews') return response([]);
       if (suffix === '/backlinks') return response({ backlinks: [], truncated: false, skipped_sources: 0 });
@@ -85,8 +91,8 @@ export function createOnboardingScenario(onChange: () => void = () => undefined)
         phase: 'idle', model: null, reasoning_effort: null, permission_mode: 'never', blocked_reason: null, recovery: null,
         input_contract: 'historical', runtime_state: 'idle', pending_inputs: [], active_input: null, native_turn_id: null,
         history_replacement_supported: false, terminal_timeout: null,
-        pending: [], manual_compact_supported: false, compact_outcome: null, context_usage_invalidated: false,
-        attachments_supported: false, running_turn: null });
+        pending: [], pending_overflow: 0, token_usage: null, manual_compact_supported: false, compact_outcome: null, context_usage_invalidated: false,
+        attachments_supported: false, running_turn: null } satisfies PlannerRun & z.infer<typeof conversationRunMetadataSchema>);
       const rows = track.messages.map((message, index) => ({ id: index + 1, worker_session_id: `demo-session-${track.wire.id}`,
         card_id: cardMatch[1], track_id: track.wire.id, thread_id: `demo-thread-${track.wire.id}`,
         turn_id: `demo-turn-${Math.floor(index / 2)}`, turn_error_text: null, item_uuid: `demo-item-${index}`,
@@ -96,21 +102,21 @@ export function createOnboardingScenario(onChange: () => void = () => undefined)
       }));
       return response({ contract: 'conversation_v1', source: 'historical_raw', next_cursor: null,
         items: rows.map(item => ({ cursor: { contract: 'conversation_v1', source: 'historical_raw', card_id: cardMatch[1], position: item.id },
-          source: { kind: 'historical_raw', item } })) });
+          source: { kind: 'historical_raw', item } })) } satisfies ConversationPage);
     }
     if (path === '/api/today/daily') return response({ date: url.searchParams.get('date') ?? new Date().toISOString().slice(0, 10), time_zone: 'Asia/Shanghai', track_id: HOME_ID });
     if (path === '/api/today/report-changes') return response({ date: url.searchParams.get('date') ?? '', timezone: 'Asia/Shanghai', through_event_id: 0, next_cursor: null, changes: [] });
     if (path === '/api/read-receipts') return response({ baselineMs: now, receipts: [...receipts.values()] });
     if (path === '/api/settings') return response({});
     if (path === '/api/plugins' || path === '/api/overlays' || path === '/api/track-recipes') return response([]);
-    if (path === '/api/track-templates') return response([{ id: 'small-change', title: 'Small change', description: '本地小改练习 · Demo 结果预置', availability: { status: 'ready' }, tasks: [] }]);
-    if (path === '/api/track-templates/small-change') return response({ id: 'small-change', title: 'Small change', description: 'Demo 练习', instructions: '演示生成与修改页面。', body: '# Demo\n\n仅展示预置结果。' });
+    if (path === '/api/track-templates') return response([{ id: 'small-change', title: 'Small change', description: '本地小改练习 · Demo 结果预置', availability: { status: 'ready' }, tasks: [] }] satisfies TrackTemplate[]);
+    if (path === '/api/track-templates/small-change') return response({ id: 'small-change', title: 'Small change', description: 'Demo 练习', instructions: '演示生成与修改页面。', body: '# Demo\n\n仅展示预置结果。' } satisfies TemplateDetail);
     if (path === '/api/track-templates/small-change/plugin-guides') return response([]);
     if (path === '/api/fs/listdir') return response({ path: '/演示项目', parent: null, entries: [] });
-    const availability = { provider: 'codex', status: 'ready', reason: null, checked_at_ms: now, authentication_notice: null };
+    const availability = { provider: 'codex', status: 'ready', reason: null, checked_at_ms: now, authentication_notice: null } satisfies ProviderAvailability;
     if (path === '/api/agent-providers') return response([availability]);
-    if (path === '/api/agent-providers/managed') return response([{ availability, capabilities: { managed_conversation: true,
-      images: false, manual_compact: false, history_replacement: false, requires_ready_availability: true } }]);
+    if (path === '/api/agent-providers/managed') return response([{ availability, accepts_unavailable_blank_track: false, capabilities: { managed_conversation: true,
+      steer: false, images: false, manual_compact: false, history_replacement: false, requires_ready_availability: true } }] satisfies ManagedProviderAvailability[]);
     if (path === '/api/models') return response({ models: [], default: { model: null, reasoning_effort: null, supported_reasoning_efforts: null },
       default_source: 'unknown', source: 'live', fetched_at_ms: now });
     if (path === '/api/version') return response({ areaCreateIdempotency: true, assistantProviders: true, conversationCreateModel: true, conversationSide: false,
