@@ -137,3 +137,6 @@ pub(crate) async fn drain_exited(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod ambient_tests;

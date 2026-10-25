@@ -126,3 +126,35 @@ fn native_macos_journal_incomplete_output_never_releases_private_resources() {
     record.pending_persistence = true;
     assert!(!record.durably_settled());
 }
+
+#[test]
+fn w_owned_old_journal_keeps_explicit_only() {
+    use calm_session::control::execution::{
+        AmbientEnvironment, AmbientProxyPolicy, SpecificationVersion,
+    };
+    for version in [4, 5] {
+        let temp = tempfile::tempdir().unwrap();
+        let store = Store::open(temp.path().join("journal")).unwrap();
+        let mut value: serde_json::Value = serde_json::from_str(LEGACY_JOURNAL).unwrap();
+        value["version"] = version.into();
+        std::fs::write(
+            store.path().join("old.execution"),
+            serde_json::to_vec(&value).unwrap(),
+        )
+        .unwrap();
+        let mut record = store.load().unwrap().pop().unwrap();
+        record.validate().unwrap();
+        assert_eq!(
+            record.request.specification.ambient_environment,
+            AmbientEnvironment::None
+        );
+        assert_eq!(
+            record.request.specification.version,
+            SpecificationVersion::ExplicitOnlyV1
+        );
+        record.request.specification.ambient_environment = AmbientEnvironment::SupervisorAllowed {
+            proxy_policy: AmbientProxyPolicy::RejectSecret,
+        };
+        assert!(record.validate().is_err());
+    }
+}

@@ -48,6 +48,8 @@ fn private_request(
         control_tokens: ExecutionControlTokens::fresh().unwrap(),
         handoff: None,
         specification: ExecutionSpecification {
+            version: calm_session::control::execution::SpecificationVersion::AmbientV2,
+            ambient_environment: calm_session::control::execution::AmbientEnvironment::None,
             program: "/bin/true".into(),
             args: vec![],
             environment: vec![],

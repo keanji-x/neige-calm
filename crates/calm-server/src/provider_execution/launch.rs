@@ -56,6 +56,8 @@ pub(crate) async fn intent(
                     },
                 },
                 program: ExecutionSpecification {
+                    version: calm_session::control::execution::SpecificationVersion::AmbientV2,
+                    ambient_environment: calm_session::control::execution::AmbientEnvironment::None,
                     program: "/bin/sh".into(),
                     args: wrapper_args,
                     environment,

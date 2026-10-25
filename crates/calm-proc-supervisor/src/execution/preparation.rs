@@ -119,6 +119,13 @@ impl Executor {
         request: PrepareExecution,
         descriptors: Vec<std::os::fd::OwnedFd>,
     ) -> anyhow::Result<ExecutionReply> {
+        request
+            .specification
+            .validate_environment()
+            .map_err(anyhow::Error::msg)?;
+        crate::child_environment::preflight(
+            &calm_session::control::execution::EnvironmentPreflight::from(&request.specification),
+        )?;
         #[cfg(target_os = "macos")]
         anyhow::ensure!(
             matches!(request.source, PreparedSource::Private(_))
@@ -215,7 +222,13 @@ impl Executor {
         // The global reservation is released before journal IO, and survives failed persistence.
         self.preparations.reserve(&request)?;
         self.persist(Journal {
-            version: journal::JOURNAL_VERSION,
+            version: if request.specification.ambient_environment
+                == calm_session::control::execution::AmbientEnvironment::None
+            {
+                journal::JOURNAL_VERSION
+            } else {
+                journal::AMBIENT_JOURNAL_VERSION
+            },
             host_boot_id: self.host_boot_id.clone(),
             output_end: OutputEnd::Open,
             request,

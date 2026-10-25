@@ -12,6 +12,8 @@ use workspace::execution::{ExecutionId, NativeProcessIdentity, ScopeMechanismIde
 
 // Pre-E1a opt-in journals are intentionally refused; required facts are never backfilled.
 pub(super) const JOURNAL_VERSION: u32 = 5;
+/// Ambient journals must be refused by released explicit-only supervisors.
+pub(super) const AMBIENT_JOURNAL_VERSION: u32 = 6;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -30,6 +32,12 @@ pub(super) struct Journal {
 impl Journal {
     /// Validate persisted facts without acquiring or reconstructing process authority.
     pub fn validate(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.version == AMBIENT_JOURNAL_VERSION
+                || self.request.specification.ambient_environment
+                    == calm_session::control::execution::AmbientEnvironment::None,
+            "legacy journal cannot authorize ambient environment"
+        );
         if let Some(receipt) = self.phase.receipt() {
             anyhow::ensure!(
                 receipt.identity == self.request.identity,
@@ -295,8 +303,13 @@ impl Store {
                         version: u32,
                     }
                     let probe: Version = serde_json::from_slice(&bytes)?;
+                    if probe.version == AMBIENT_JOURNAL_VERSION {
+                        let value: serde_json::Value = serde_json::from_slice(&bytes)?;
+                        anyhow::ensure!(value["request"]["specification"]["version"] == calm_session::control::execution::EXECUTION_SPECIFICATION_VERSION,
+                            "ambient journal requires versioned specification");
+                    }
                     anyhow::ensure!(
-                        probe.version == 4 || probe.version == JOURNAL_VERSION,
+                        matches!(probe.version, 4 | JOURNAL_VERSION | AMBIENT_JOURNAL_VERSION),
                         "unsupported execution journal version {}; expected {}; pre-E1a journals require a fresh state directory",
                         probe.version,
                         JOURNAL_VERSION

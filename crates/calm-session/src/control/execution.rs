@@ -22,7 +22,7 @@ pub use watch::ExecutionWatcher;
 pub const STOP_GRACE: std::time::Duration = std::time::Duration::from_millis(200);
 pub const DRAIN_BUDGET: std::time::Duration = std::time::Duration::from_millis(1000);
 
-pub const EXECUTION_ENVELOPE_VERSION: u32 = 10;
+pub const EXECUTION_ENVELOPE_VERSION: u32 = 11;
 
 /// Persisted registration receipt contract; independent of bincode wire ordinals.
 pub const PERSISTED_RECEIPT_CONTRACT_VERSION: u32 = 4;
@@ -68,15 +68,9 @@ pub enum ExecutionRegistration {
     },
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ExecutionSpecification {
-    pub program: PathBuf,
-    pub args: Vec<String>,
-    /// Complete explicit child environment. No ambient values are added.
-    pub environment: Vec<(String, String)>,
-    pub io_mode: IoMode,
-    pub replay_bytes: usize,
-}
+mod specification;
+pub use specification::*;
+pub mod proxy;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PreparedSource {
@@ -152,6 +146,8 @@ pub enum ExecutionRequest {
         execution_id: ExecutionId,
         lifecycle: CapabilityToken,
     },
+    /// Validation replies contain no supervisor environment values.
+    PreflightEnvironment(EnvironmentPreflight),
 }
 
 /// All process actions, including future variants, must first resolve this exact capability.

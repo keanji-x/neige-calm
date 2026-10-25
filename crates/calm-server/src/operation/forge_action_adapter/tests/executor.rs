@@ -16,6 +16,12 @@ impl Drop for Executor {
 }
 impl Executor {
     pub async fn new(pool: crate::db::sqlite::SqliteDb) -> Self {
+        Self::with_environment(pool, &[]).await
+    }
+    pub async fn with_environment(
+        pool: crate::db::sqlite::SqliteDb,
+        environment: &[(std::ffi::OsString, std::ffi::OsString)],
+    ) -> Self {
         use clap::Parser;
         let root = tempfile::tempdir().unwrap();
         let socket = calm_test_sockets::socket_dir("forge-lib");
@@ -36,6 +42,7 @@ impl Executor {
             "build calm-server's osc-probe-child fixture before library tests"
         );
         let child = std::process::Command::new(helper)
+            .envs(environment.iter().cloned())
             .arg("--execution-supervisor")
             .arg(root.path().join("journal"))
             .arg(&path)

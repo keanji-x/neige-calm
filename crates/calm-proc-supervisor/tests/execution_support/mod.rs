@@ -195,6 +195,8 @@ pub(super) fn prepare(
         control_tokens: ExecutionControlTokens::fresh().unwrap(),
         handoff: None,
         specification: ExecutionSpecification {
+            version: calm_session::control::execution::SpecificationVersion::AmbientV2,
+            ambient_environment: calm_session::control::execution::AmbientEnvironment::None,
             program: "/bin/sh".into(),
             args: vec!["-c".into(), script.into()],
             environment: vec![

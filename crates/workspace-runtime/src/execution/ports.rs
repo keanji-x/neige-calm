@@ -81,6 +81,20 @@ pub trait Store: Send + Sync {
 }
 #[async_trait]
 pub trait Executor: Send + Sync {
+    async fn preflight_environment(
+        &self,
+        specification: &ExecutionSpecification,
+    ) -> Result<(), ExecError> {
+        specification
+            .validate_environment()
+            .map_err(|e| ExecError::Refused(e.into()))?;
+        if specification.ambient_environment
+            != calm_session::control::execution::AmbientEnvironment::None
+        {
+            return Err(ExecError::Refused("ambient preflight unsupported".into()));
+        }
+        Ok(())
+    }
     async fn prepare(&self, intent: &ExecutionIntent) -> Result<Fact, ExecError>;
     async fn launch(&self, consume: &ConsumeExecution) -> Result<Fact, ExecError>;
     async fn revoke(&self, consume: &ConsumeExecution) -> Result<Fact, ExecError>;

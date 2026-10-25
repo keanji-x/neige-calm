@@ -169,6 +169,7 @@ fn spawn_with_pin(
     let encoded = serde_json::to_vec(&HelperPlan::Execution {
         context,
         specification: specification.clone(),
+        environment: crate::child_environment::launch_environment(specification)?,
     })?;
     anyhow::ensure!(
         encoded.len() <= 1024 * 1024,
@@ -416,6 +417,8 @@ mod tests {
             ),
         };
         let specification = ExecutionSpecification {
+            version: calm_session::control::execution::SpecificationVersion::AmbientV2,
+            ambient_environment: calm_session::control::execution::AmbientEnvironment::None,
             program: "/bin/true".into(),
             args: vec![],
             environment: vec![],

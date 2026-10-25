@@ -18,6 +18,7 @@ pub(super) enum HelperPlan {
     Execution {
         context: HelperContext,
         specification: ExecutionSpecification,
+        environment: crate::child_environment::LaunchEnvironment,
     },
 }
 #[derive(Serialize, Deserialize)]
@@ -123,12 +124,19 @@ pub(super) fn run_with_hooks(
     let HelperPlan::Execution {
         context,
         specification,
+        environment,
     } = plan;
+    use std::os::unix::ffi::OsStringExt;
     let mut command = Command::new(&specification.program);
     command
         .args(&specification.args)
         .env_clear()
-        .envs(specification.environment.iter().cloned())
+        .envs(environment.0.into_iter().map(|(k, v)| {
+            (
+                std::ffi::OsString::from_vec(k),
+                std::ffi::OsString::from_vec(v),
+            )
+        }))
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());

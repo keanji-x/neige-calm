@@ -40,11 +40,21 @@ impl<S: Store + 'static, X: Executor + 'static> Engine<S, X> {
     pub fn available(&self) -> bool {
         self.0.executor.available()
     }
+    /// Call before persisting any consumer preparation output. Admission rechecks it.
+    pub async fn preflight_environment(
+        &self,
+        specification: &ExecutionSpecification,
+    ) -> Result<(), ExecError> {
+        self.0.executor.preflight_environment(specification).await
+    }
     pub async fn admit(
         &self,
         tx: &mut S::Tx<'_>,
         intent: ExecutionIntent,
     ) -> Result<PendingDriveTicket, StoreError> {
+        self.preflight_environment(&intent.metadata.program)
+            .await
+            .map_err(|e| StoreError(format!("environment preflight refused: {e:?}")))?;
         self.0.store.insert(tx, &intent).await?;
         Ok(PendingDriveTicket(intent.metadata.id))
     }

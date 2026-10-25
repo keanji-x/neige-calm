@@ -103,7 +103,32 @@ fn checked(reply: ExecutionReply) -> Result<ExecutionReply, ExecError> {
 }
 #[async_trait]
 impl Executor for SessionExecutor {
+    async fn preflight_environment(
+        &self,
+        specification: &ExecutionSpecification,
+    ) -> Result<(), ExecError> {
+        specification
+            .validate_environment()
+            .map_err(|e| ExecError::Refused(e.into()))?;
+        if specification.ambient_environment
+            == calm_session::control::execution::AmbientEnvironment::None
+        {
+            return Ok(());
+        }
+        match self
+            .request(ExecutionRequest::PreflightEnvironment(
+                EnvironmentPreflight::from(specification),
+            ))
+            .await?
+        {
+            ExecutionReply::ActionComplete => Ok(()),
+            _ => Err(ExecError::Transport(
+                "unexpected environment preflight response".into(),
+            )),
+        }
+    }
     async fn prepare(&self, intent: &ExecutionIntent) -> Result<Fact, ExecError> {
+        self.preflight_environment(&intent.metadata.program).await?;
         let mut connection = self.connect().await?;
         let source = &intent.metadata.source;
         let held = HeldSourceObjects::open(&source.root, false)

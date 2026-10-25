@@ -162,7 +162,7 @@ impl Executor {
             }
             let identity = record.request.identity.clone();
             record.validate()?;
-            record.version = journal::JOURNAL_VERSION;
+            record.version = record.version.max(journal::JOURNAL_VERSION);
             let path = store.output_path(&identity.execution_id);
             if record.phase.receipt().is_some() || path.exists() {
                 // Persisted completion must agree with the actual durable log.
@@ -351,6 +351,10 @@ impl Executor {
         request: ExecutionRequest,
     ) -> anyhow::Result<ExecutionReply> {
         match request {
+            ExecutionRequest::PreflightEnvironment(policy) => {
+                crate::child_environment::preflight(&policy)?;
+                Ok(ExecutionReply::ActionComplete)
+            }
             ExecutionRequest::Handshake(hello) => Ok(ExecutionReply::Handshake {
                 envelope_version: EXECUTION_ENVELOPE_VERSION,
                 executor_boot: self.boot.clone(),
