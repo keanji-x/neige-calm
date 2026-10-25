@@ -108,3 +108,68 @@ fn w_owned_specification_roundtrip_preserves_immutable_input() {
         }
     }
 }
+
+// Frozen released shape: fields and serde attributes of ExecutionSpecification at 88e8615c0.
+// In particular, the released reader ignores unknown fields.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+struct ReleasedExecutionSpecification {
+    pub program: PathBuf,
+    pub args: Vec<String>,
+    pub environment: Vec<(String, String)>,
+    pub io_mode: IoMode,
+    pub replay_bytes: usize,
+}
+
+#[test]
+fn w_owned_released_reader_refuses_ambient_and_preserves_none_bytes() {
+    let bytes = include_bytes!("fixtures/explicit-v10.specification.json");
+    let mut input: ExecutionSpecification = serde_json::from_slice(bytes).unwrap();
+    let explicit = serde_json::to_vec(&input).unwrap();
+    let released: ReleasedExecutionSpecification = serde_json::from_slice(&explicit).unwrap();
+    assert_eq!(serde_json::to_vec(&released).unwrap(), bytes);
+    assert_eq!(explicit, bytes);
+    for proxy_policy in [
+        AmbientProxyPolicy::RejectSecret,
+        AmbientProxyPolicy::Exclude,
+    ] {
+        input.ambient_environment = AmbientEnvironment::SupervisorAllowed { proxy_policy };
+        let ambient = serde_json::to_vec(&input).unwrap();
+        assert!(serde_json::from_slice::<ReleasedExecutionSpecification>(&ambient).is_err());
+    }
+}
+
+#[test]
+fn w_owned_specification_rejects_duplicate_members_and_unknown_versions() {
+    for json in [
+        r#"{"program":"/bin/true","program":"/bin/false","args":[],"environment":[],"io_mode":"Pipe","replay_bytes":0}"#,
+        r#"{"program":"/bin/true","args":[],"environment":[],"environment":[["X","Y"]],"io_mode":"Pipe","replay_bytes":0}"#,
+        r#"{"version":999,"version":2,"specification":{"program":"/bin/true","args":[],"environment":[],"ambient_environment":{"SupervisorAllowed":{"proxy_policy":"Exclude"}},"io_mode":"Pipe","replay_bytes":0}}"#,
+        r#"{"version":2,"specification":{"program":"/bin/true","args":[],"environment":[],"ambient_environment":"None","ambient_environment":{"SupervisorAllowed":{"proxy_policy":"Exclude"}},"io_mode":"Pipe","replay_bytes":0}}"#,
+        r#"{"version":999,"specification":{"program":"/bin/true","args":[],"environment":[],"ambient_environment":{"SupervisorAllowed":{"proxy_policy":"Exclude"}},"io_mode":"Pipe","replay_bytes":0}}"#,
+        r#"{"version":999,"program":"/bin/true","args":[],"environment":[],"ambient_environment":{"SupervisorAllowed":{"proxy_policy":"Exclude"}},"io_mode":"Pipe","replay_bytes":0}"#,
+    ] {
+        assert!(
+            serde_json::from_str::<ExecutionSpecification>(json).is_err(),
+            "{json}"
+        );
+    }
+}
+
+#[test]
+fn w_owned_specification_accepts_wrapped_current_and_rejects_mixed_shapes() {
+    let json = r#"{"version":2,"specification":{"program":"/bin/true","args":[],"environment":[],"ambient_environment":{"SupervisorAllowed":{"proxy_policy":"Exclude"}},"io_mode":"Pipe","replay_bytes":0}}"#;
+    let input: ExecutionSpecification = serde_json::from_str(json).unwrap();
+    assert_eq!(
+        input.ambient_environment,
+        AmbientEnvironment::SupervisorAllowed {
+            proxy_policy: AmbientProxyPolicy::Exclude
+        }
+    );
+    assert_eq!(serde_json::to_string(&input).unwrap(), json);
+    let mixed = json.replacen(
+        "{",
+        r#"{"program":"/bin/false","args":[],"environment":[],"io_mode":"Pipe","replay_bytes":0,"#,
+        1,
+    );
+    assert!(serde_json::from_str::<ExecutionSpecification>(&mixed).is_err());
+}

@@ -31,6 +31,12 @@ pub const EXECUTION_SPECIFICATION_VERSION: u32 = 2;
 #[serde(deny_unknown_fields)]
 struct Current {
     version: u32,
+    specification: AmbientSpecification,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AmbientSpecification {
     program: PathBuf,
     args: Vec<String>,
     environment: Vec<(String, String)>,
@@ -80,12 +86,14 @@ impl Serialize for ExecutionSpecification {
         }
         Current {
             version: EXECUTION_SPECIFICATION_VERSION,
-            program: self.program.clone(),
-            args: self.args.clone(),
-            environment: self.environment.clone(),
-            ambient_environment: self.ambient_environment.clone(),
-            io_mode: self.io_mode.clone(),
-            replay_bytes: self.replay_bytes,
+            specification: AmbientSpecification {
+                program: self.program.clone(),
+                args: self.args.clone(),
+                environment: self.environment.clone(),
+                ambient_environment: self.ambient_environment.clone(),
+                io_mode: self.io_mode.clone(),
+                replay_bytes: self.replay_bytes,
+            },
         }
         .serialize(serializer)
     }
@@ -97,17 +105,25 @@ impl<'de> Deserialize<'de> for ExecutionSpecification {
             let old = Legacy::deserialize(deserializer)?;
             return Ok(old.into());
         }
-        let value = serde_json::Value::deserialize(deserializer)?;
-        if value.get("version").is_none() {
-            let old: Legacy = serde_json::from_value(value).map_err(D::Error::custom)?;
-            return Ok(old.into());
+        // Serde's untagged content preserves map entries, including duplicates;
+        // each deny_unknown_fields struct rejects duplicate and mixed shapes.
+        // Do not dispatch through Value: its map silently overwrites duplicates.
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Format {
+            Legacy(Legacy),
+            Current(Current),
         }
-        let current = serde_json::from_value::<Current>(value).map_err(D::Error::custom)?;
+        let current = match Format::deserialize(deserializer)? {
+            Format::Legacy(old) => return Ok(old.into()),
+            Format::Current(current) => current,
+        };
         if current.version != EXECUTION_SPECIFICATION_VERSION {
             return Err(D::Error::custom(
                 "unsupported execution specification version",
             ));
         }
+        let current = current.specification;
         Ok(Self {
             program: current.program,
             args: current.args,
