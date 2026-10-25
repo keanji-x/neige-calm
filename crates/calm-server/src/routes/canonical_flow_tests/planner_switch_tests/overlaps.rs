@@ -319,8 +319,7 @@ async fn planner_switch_old_credential_mcp_request_refused() {
 #[tokio::test]
 async fn planner_switch_admitted_mcp_write_blocks_cutover() {
     use crate::mcp_server::{registry::ConnectionIdentity, transport::dispatch_tools_call};
-    let held = PausePoint::default();
-    let mut p = Pair::with_completion_hold("codex", None, Some(&held)).await;
+    let mut p = Pair::new().await;
     let ctx = p.state.mcp_context();
     let registry = Arc::new(crate::mcp_server::build_default_registry());
     let worker = p
@@ -434,7 +433,8 @@ async fn planner_switch_admitted_mcp_write_blocks_cutover() {
 #[tokio::test]
 async fn planner_switch_preparation_waits_for_presentation_tail() {
     let tail = crate::test_seams::PausePoint::default();
-    let mut p = Pair::with_presentation_tail("codex", Some(&tail)).await;
+    let held = PausePoint::default();
+    let mut p = Pair::with_completion_hold("codex", Some(&tail), Some(&held)).await;
     let rows = p
         .fixture
         .repo
