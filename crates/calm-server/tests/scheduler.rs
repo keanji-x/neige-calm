@@ -5,6 +5,8 @@
 mod c2b;
 #[path = "scheduler/child_track_config.rs"]
 mod child_track_config;
+#[path = "scheduler/child_track_handback.rs"]
+mod child_track_handback;
 #[path = "scheduler/compact.rs"]
 mod compact;
 mod support;
@@ -7677,6 +7679,17 @@ async fn seed_child_parent(
         .bind(child.id.as_str())
         .bind(&task_id)
         .execute(boot.repo.sqlite_db().unwrap().writer_pool())
+        .await
+        .unwrap();
+    boot.repo
+        .card_create(NewCard {
+            track_id: child.id.clone(),
+            title: None,
+            kind: "track-report".into(),
+            sort: None,
+            payload: serde_json::to_value(calm_server::track_report::TrackReportPayload::initial())
+                .unwrap(),
+        })
         .await
         .unwrap();
     (task_id, child.id.to_string())

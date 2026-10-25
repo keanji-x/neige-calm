@@ -52,7 +52,7 @@ model sees    := "mcp__" server_key "__" tool name     e.g. mcp__neige__neige_tr
 - MCP is the complete surface. A CLI row exists only for a shell-native view (`track
   ls/cat/show/diff/log/status`, `catalog ls/cat`, `report find`, `report tag`, `mail ls/cat`, `op show`), a Worker
   attempt tool in CLI mode (`task done/fail/gate`, `message read`), the Admin Planner's ordinary Track creation (`track add`, #2777), the Track's close
-  (`track close --message`, no `--force`) or maintenance that needs `--force` (`admin gc/vacuum`) (#2003 §4.4). `report tag`
+  (`track close --message`, no `--force`), child assignment return (`track handback --blocked-on`), or maintenance that needs `--force` (`admin gc/vacuum`) (#2003 §4.4). `report tag`
   is the one view that also writes: `tag` is a W/V verb (§3), so `--add`/`--remove` are its write.
 
 ## 3. Verb vocabulary (closed)
@@ -85,6 +85,7 @@ Effect classes: **V** view (no state change, no anchor; access metadata excepted
 | `control` | W | claim, release or detach terminal control | none (domain) |
 | `open` | LC | start a terminal | `open(2)` |
 | `close` | LC | end the track | `close(2)` |
+| `handback` | LC | return an unmet child assignment to its parent while keeping the child Track open (child Planner) | none (domain) |
 | `cancel` | LC | stop a pending or running task | `cancel` (lp/CUPS) |
 | `publish` | LC | push the track branch and open or reuse its PR | `npm publish` |
 | `accept` | LC | record that an attempt meets the task (Planner) | none (plain English) |
@@ -101,6 +102,8 @@ Effect classes: **V** view (no state change, no anchor; access metadata excepted
 | `vacuum` | M | reclaim database pages | SQLite `VACUUM` |
 
 Decisions, one line each:
+
+- **`handback` returns a child assignment** with kernel-owned result references; it leaves the child open and lets its parent decide the next action. `close` ends a Track, while `fail` reports a Worker attempt.
 
 - **`evaluate` / `settle` belong to objective measurement** (#3126): start a revision evaluation / decide a ready evaluation; `gate` runs a Worker attempt gate, `report` records the watcher verdict, and `accept` decides whether an attempt meets its task.
 
@@ -124,7 +127,7 @@ Decisions, one line each:
 - **CRUD words retire:** `create`/`register` → `add`, `update` → `set`, `unregister` and
   cancel-by-flag → `rm`. `mv` is not used: no tool moves an entry between containers.
 - **Domain verbs with no Unix equivalent stay** (`capture`, `control`, `ask`, `accept`,
-  `reject`, `publish`, `regate`, `gate`, `rerun`), each with one meaning. `gate` is the Worker's
+  `reject`, `publish`, `regate`, `gate`, `rerun`, `handback`), each with one meaning. `gate` is the Worker's
   run of its attempt's gate before it reports; `regate` is the Planner's re-run of a failed one;
   `rerun` asks the forge to re-run a CI run's failed jobs.
 - **`done` / `fail` replace the two Worker compounds** so every action is one word. The Worker
@@ -148,6 +151,7 @@ Decisions, one line each:
 | `expected_version` | the optimistic lock of a `set` or `rm` |
 | `message` | the audit note a write records: why this change (`git commit -m`) |
 | `reason` | why something failed or was rejected; stored with the failure |
+| `blocked_on` | the nonempty human explanation for returning an unmet child assignment; never parsed as a protocol |
 | `text` | verbatim text delivered to a person, typed into a terminal, or mailed to a Track |
 | `body` | a document's whole content (report body, PR body, comment body) |
 | `summary` / `title` | one-line summary / display name |

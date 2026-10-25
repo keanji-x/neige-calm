@@ -28,6 +28,7 @@ const PLANNER_SESSION_ID: &str = "planner-session";
 /// One-shot boot: in-memory sqlite + bus + cache + one area with one track, one planner card and one worker card.
 struct Boot {
     ctx: Arc<AppContext>,
+    card_role_cache: CardRoleCache,
     registry: Arc<ToolRegistry>,
     repo: Arc<dyn Repo>,
     area_id: AreaId,
@@ -135,7 +136,7 @@ async fn boot() -> Boot {
             .sqlite_db()
             .map(calm_truth::track_vcs_repo::SqlxTrackVcsRepo::shared),
         events,
-        write: calm_server::state::WriteContext::new(card_role_cache, track_area_cache),
+        write: calm_server::state::WriteContext::new(card_role_cache.clone(), track_area_cache),
         daemon_token_hash: None,
         gate_logs_dir: std::env::temp_dir().join("neige-test-gate-logs"),
         plugin_host: Arc::new(tokio::sync::OnceCell::new()),
@@ -157,6 +158,7 @@ async fn boot() -> Boot {
 
     Boot {
         ctx,
+        card_role_cache,
         registry,
         repo,
         area_id: area.id,
@@ -727,3 +729,6 @@ async fn new_track_is_open() {
 
 #[path = "track_close.rs"]
 mod track_close;
+
+#[path = "child_track_handback.rs"]
+mod child_track_handback;

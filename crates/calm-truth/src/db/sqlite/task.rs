@@ -235,6 +235,10 @@ const TASK_CLAIM_PENDING_SQL: &str = r#"UPDATE tasks
                context_closure_truncated = ?2,
                updated_at_ms = ?3
            WHERE id = ?4 AND status = 'pending'
+             AND EXISTS (SELECT 1 FROM tracks child WHERE child.id=tasks.track_id
+               AND (child.parent_track_id IS NULL OR EXISTS (
+                 SELECT 1 FROM current_tasks parent WHERE parent.track_id=child.parent_track_id
+                   AND parent.child_track_id=child.id AND parent.status IN ('dispatched','running'))))
              AND EXISTS (SELECT 1 FROM current_task_attempt_allocations a WHERE a.attempt_id=tasks.id)"#;
 
 pub async fn task_claim_pending_tx(

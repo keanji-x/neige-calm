@@ -1752,7 +1752,7 @@
   },
   {
     "name": "neige_track_close",
-    "description_sha256": "e96614322e34439e2295aa4abfaee508bfba5486a2f3ab09bdd600e59ec8be0f",
+    "description_sha256": "28a5dc43676ffb8f9560741b4b3029ac47f4b2f877ace9d049c82bbb6477030c",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -1812,6 +1812,34 @@
       "worker"
     ],
     "listed_for": []
+  },
+  {
+    "name": "neige_track_handback",
+    "description_sha256": "7fef2053f1a7106f9a4798d0d32ecabd71050935b9bd90d9aa4640be8cf2c943",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "blocked_on": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "blocked_on"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "roles": [
+      "planner"
+    ],
+    "listed_for": [
+      "planner"
+    ]
   },
   {
     "name": "neige_track_log",

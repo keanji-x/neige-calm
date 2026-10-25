@@ -705,10 +705,7 @@ impl Scheduler {
                         let event = Event::TaskCompleted {
  notification: if target_status == "done" { calm_types::event::PlannerNotification::Notify } else { calm_types::event::PlannerNotification::Suppress },
                             idempotency_key: snapshot.task_id,
-                            result: json!({
-                                "source": "child-track",
-                                "child_track_id": snapshot.child_track_id,
-                            }),
+                            result: crate::child_track_result::result_ref_tx(tx, &snapshot.child_track_id, None).await?,
                             artifacts: vec![],
                             agent_message: None,
                         };

@@ -245,6 +245,13 @@ pub(crate) const COMMANDS: &[Command] = &[
         render: Render::Status,
     },
     Command {
+        tool: track_state::TOOL_TRACK_HANDBACK,
+        positionals: &[],
+        options: &[opt("--blocked-on", "blocked_on", OptValue::Text, true)],
+        confirm: None,
+        render: Render::Raw,
+    },
+    Command {
         tool: track_state::TOOL_TRACK_CLOSE,
         positionals: &[],
         options: &[

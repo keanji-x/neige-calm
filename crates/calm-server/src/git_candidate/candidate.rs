@@ -18,7 +18,7 @@ use crate::operation::workspace_lease::WorkspaceLease;
 use workspace::command::neige_git_command;
 
 /// One `task_candidates` row.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub(crate) struct CandidateRow {
     pub candidate_id: String,
     pub track_id: String,
@@ -122,6 +122,23 @@ pub(crate) async fn candidate_for_attempt_tx(
         .fetch_optional(&mut **tx)
         .await?;
     row.map(row_to_candidate).transpose()
+}
+
+/// The latest durable candidate, with a deterministic tie break for equal timestamps.
+pub(crate) async fn latest_candidate_for_track_tx(
+    tx: &mut Tx<'_>,
+    track_id: &str,
+) -> Result<Option<CandidateRow>> {
+    let sql = format!(
+        "SELECT {CANDIDATE_COLUMNS} FROM task_candidates WHERE track_id=?1 \
+        ORDER BY created_at_ms DESC, candidate_id DESC LIMIT 1"
+    );
+    sqlx::query(&sql)
+        .bind(track_id)
+        .fetch_optional(&mut **tx)
+        .await?
+        .map(row_to_candidate)
+        .transpose()
 }
 
 /// One candidate of a track with its attempt's status.

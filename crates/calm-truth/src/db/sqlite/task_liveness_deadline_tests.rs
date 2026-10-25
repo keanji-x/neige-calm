@@ -4,11 +4,11 @@ use super::{
 };
 use crate::model::{Task, TaskKind, TaskStatus, now_ms};
 
-fn task(key: &str, status: TaskStatus) -> Task {
+fn task(track_id: &str, key: &str, status: TaskStatus) -> Task {
     let now = now_ms();
     Task {
-        id: format!("track-1:{key}"),
-        track_id: "track-1".to_string(),
+        id: format!("{track_id}:{key}"),
+        track_id: track_id.to_string(),
         key: key.to_string(),
         kind: TaskKind::Codex,
         goal: format!("do {key}"),
@@ -109,7 +109,7 @@ async fn migration_adds_task_running_liveness_column_and_task_round_trips_it() {
         "partial liveness index missing or drifted: {index_sql:?}"
     );
 
-    let mut row = task("roundtrip", TaskStatus::Running);
+    let mut row = task("track-1", "roundtrip", TaskStatus::Running);
     row.running_deadline_ms = Some(5678);
     let id = row.id.clone();
     let mut tx = repo.pool().begin().await.expect("begin insert tx");
@@ -127,7 +127,8 @@ async fn mark_running_stamps_running_liveness_deadline() {
     let repo = SqlxRepo::open("sqlite::memory:")
         .await
         .expect("open in-memory sqlite repo");
-    let row = task("stamp", TaskStatus::Pending);
+    let track_id = super::workspace_lease_lookup_tests::seed_track(&repo).await;
+    let row = task(&track_id, "stamp", TaskStatus::Pending);
     let id = row.id.clone();
     let mut tx = repo.pool().begin().await.expect("begin insert tx");
     insert_task(&mut tx, &row).await;
@@ -172,7 +173,8 @@ async fn liveness_facts_take_the_latest_cursor_of_the_worker_card_only() {
     let repo = SqlxRepo::open("sqlite::memory:")
         .await
         .expect("open in-memory sqlite repo");
-    let row = task("progress", TaskStatus::Pending);
+    let track_id = super::workspace_lease_lookup_tests::seed_track(&repo).await;
+    let row = task(&track_id, "progress", TaskStatus::Pending);
     let id = row.id.clone();
     let mut tx = repo.pool().begin().await.expect("begin insert tx");
     insert_task(&mut tx, &row).await;
@@ -219,9 +221,9 @@ async fn stamp_missing_running_liveness_includes_claude_and_excludes_terminal() 
     let repo = SqlxRepo::open("sqlite::memory:")
         .await
         .expect("open in-memory sqlite repo");
-    let mut claude = task("claude", TaskStatus::Running);
+    let mut claude = task("track-1", "claude", TaskStatus::Running);
     claude.kind = TaskKind::Claude;
-    let mut terminal = task("terminal", TaskStatus::Running);
+    let mut terminal = task("track-1", "terminal", TaskStatus::Running);
     terminal.kind = TaskKind::Terminal;
     let claude_id = claude.id.clone();
     let terminal_id = terminal.id.clone();
@@ -268,7 +270,7 @@ async fn stamp_missing_running_liveness_keeps_an_existing_deadline_once() {
     let repo = SqlxRepo::open("sqlite::memory:")
         .await
         .expect("open in-memory sqlite repo");
-    let mut legacy = task("legacy", TaskStatus::Running);
+    let mut legacy = task("track-1", "legacy", TaskStatus::Running);
     legacy.running_deadline_ms = Some(1234);
     let id = legacy.id.clone();
     let mut tx = repo.pool().begin().await.expect("begin insert tx");

@@ -1,7 +1,8 @@
 //! Track-state tools: `neige_track_status` (Planner or Worker snapshot read, no event emission),
 //! `neige_task_accept` / `neige_task_reject` (Planner-only verdicts, lowered to `TaskCompleted` / `TaskFailed`, scoped to the caller's track),
 //! `neige_task_regate` (Planner-only re-run of a failed gate on the same candidate, #2405)
-//! and `neige_track_close` (own close, or an Admin closing a Track it added).
+//! `neige_track_handback` (return an unmet child assignment), and `neige_track_close`
+//! (own close, returned child, or an Admin closing a Track it added).
 
 use crate::decision_sink::{CardDecisionSink, CardDecisionSinkRecorderAdmissionGate};
 use crate::error::CalmError;
@@ -19,6 +20,9 @@ use crate::track_report::TrackReportPayload;
 use serde_json::{Value, json};
 use std::sync::Arc;
 
+mod handback;
+pub use handback::TOOL_TRACK_HANDBACK;
+
 pub const TOOL_TRACK_STATUS: &str = "neige_track_status";
 pub const TOOL_TASK_ACCEPT: &str = "neige_task_accept";
 pub const TOOL_TASK_REJECT: &str = "neige_task_reject";
@@ -26,6 +30,7 @@ pub const TOOL_TRACK_CLOSE: &str = "neige_track_close";
 pub const TOOL_TASK_REGATE: &str = "neige_task_regate";
 
 pub fn register_into(registry: &mut ToolRegistry) {
+    handback::register_into(registry);
     registry.register(track_state_descriptor(), wrap(track_state));
     for verdict in [Verdict::Accept, Verdict::Reject] {
         registry.register(
@@ -377,9 +382,22 @@ async fn track_close(
             .track_get(target_id.as_str())
             .await
             .map_err(|error| crate::mcp_server::framing::calm_error(error.into()))?;
-        if !target
+        let pool = ctx
+            .sqlite_db
             .as_ref()
-            .is_some_and(|target| added_by(target, &track))
+            .ok_or_else(|| RpcError::internal("close needs sqlite"))?;
+        let is_parent: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM tracks WHERE id=?1 AND parent_track_id=?2)",
+        )
+        .bind(target_id.as_str())
+        .bind(track.id.as_str())
+        .fetch_one(pool.read_pool())
+        .await
+        .map_err(|e| RpcError::internal(e.to_string()))?;
+        if !is_parent
+            && !target
+                .as_ref()
+                .is_some_and(|target| added_by(target, &track))
         {
             return Err(close_refusal(-32404, "unknown_track", json!({})));
         }
@@ -450,7 +468,17 @@ async fn close_authorized_tx(
     other: bool,
     message: String,
 ) -> Result<(i64, Vec<(EventScope, Event)>), CloseError> {
-    if other {
+    let detached_child: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM tracks child WHERE child.id=?1 AND child.parent_track_id=?2 \
+         AND NOT EXISTS(SELECT 1 FROM current_tasks task WHERE task.track_id=?2 \
+           AND task.child_track_id=child.id AND task.status IN ('dispatched','running')))",
+    )
+    .bind(target_id.as_str())
+    .bind(caller.id.as_str())
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(CalmError::from)?;
+    if other && !detached_child {
         crate::area_admin::require_admin_tx(tx, caller.id.as_str())
             .await
             .map_err(|error| match error {
@@ -469,7 +497,7 @@ async fn close_authorized_tx(
         .map_err(CalmError::from);
     let target = if other {
         match target {
-            Ok(target) if added_by(&target, &caller) => target,
+            Ok(target) if detached_child || added_by(&target, &caller) => target,
             Ok(_) | Err(CalmError::NotFound(_)) => {
                 return Err(CloseError::Refusal(close_refusal(
                     -32404,

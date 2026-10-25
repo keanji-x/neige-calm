@@ -52,6 +52,13 @@
 # this existing baseline; ordinary test additions need no inventory edit.
 # The existing 120-character shape and single CI scan remain unchanged.
 
+# Child Track handback adds five long_literal matches, all SQL test fixtures:
+# the parent assignment INSERT and event rollback trigger in child_track_handback.rs,
+# and workspace lease, delivery and candidate INSERTs in support/child_track.rs.
+# They exercise production persistence contracts, not agent-facing instructions.
+# Schema changes edit the affected fixture and regenerate this existing baseline;
+# adding ordinary tests needs no list update or additional CI scan.
+
 set -uo pipefail
 
 cd "$(git rev-parse --show-toplevel)" || exit 1

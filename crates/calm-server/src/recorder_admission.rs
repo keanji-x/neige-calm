@@ -12,6 +12,7 @@ use sqlx::{Sqlite, Transaction};
 pub(crate) enum RecorderAdmissionDecisionKind {
     ReportWrite,
     TrackClose,
+    TrackHandback,
     PlannerMessage,
 }
 
@@ -20,6 +21,7 @@ impl RecorderAdmissionDecisionKind {
         match self {
             Self::ReportWrite => "report_write",
             Self::TrackClose => "track_close",
+            Self::TrackHandback => "track_handback",
             Self::PlannerMessage => "planner_message",
         }
     }

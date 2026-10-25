@@ -51,15 +51,21 @@ pub struct ChildTrackOperationPayload {
     pub child_track: Option<calm_types::report_blocks::tasks::ChildTrackConfig>,
 }
 
-/// Stable first observation for the child planner; all four fields come from the post-claim task row, never a report reader.
-pub fn render_child_seed(payload: &ChildTrackOperationPayload) -> String {
+/// Stable child observation: frozen task fields and the bound parent execution identity.
+pub fn render_child_seed(payload: &ChildTrackOperationPayload, task_key: &str) -> String {
     let acceptance = payload.acceptance.as_deref().unwrap_or("Not specified");
     let task_cwd = payload.cwd.as_deref().unwrap_or("Not specified");
     let context =
         serde_json::to_string_pretty(&payload.context).unwrap_or_else(|_| "null".to_string());
     format!(
-        "# Goal\n{}\n\n# Acceptance\n{}\n\n# Context\n```json\n{}\n```\n\n# Task working directory\n{}",
-        payload.goal, acceptance, context, task_cwd
+        "# Parent\nparent_track_id: {}\ntask key: {}\nattempt_id: {}\n\n# Goal\n{}\n\n# Acceptance\n{}\n\n# Context\n```json\n{}\n```\n\n# Task working directory\n{}",
+        payload.parent_track_id,
+        task_key,
+        payload.task_id,
+        payload.goal,
+        acceptance,
+        context,
+        task_cwd
     )
 }
 
@@ -143,7 +149,13 @@ impl ChildTrackAdapter {
             None => FrozenParent::read(tx, &payload.parent_track_id).await?,
         };
         let plan = child_workspace_plan(&frozen.track.workspace, &self.workspace_root)?;
-        let seed = render_child_seed(&payload);
+        let task_key: String =
+            sqlx::query_scalar("SELECT key FROM tasks WHERE id=?1 AND track_id=?2")
+                .bind(&payload.task_id)
+                .bind(&payload.parent_track_id)
+                .fetch_one(&mut **tx)
+                .await?;
+        let seed = render_child_seed(&payload, &task_key);
         calm_truth::db::sqlite::admit_attached_workspace_tx(
             tx,
             &frozen.track.workspace.path,
@@ -156,7 +168,7 @@ impl ChildTrackAdapter {
             tx,
             NewTrack {
                 area_id: frozen.track.area_id.clone(),
-                title: payload.goal.clone(),
+                title: task_key,
                 sort: None,
                 // Attached keeps the repository root; agent_cwd selects the child worktree.
                 cwd: frozen.track.workspace.path.clone(),
@@ -1213,7 +1225,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn acceptance_5_child_seed_uses_all_four_frozen_fields_and_parent_cwd() {
+    async fn child_track_seed_uses_frozen_fields_parent_identity_and_key_title() {
         let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
         let parent = seed_parent(&repo, true).await;
         let task = seed_task(&repo, &parent, false).await;
@@ -1261,7 +1273,10 @@ mod tests {
         tx.commit().await.unwrap();
         assert_eq!(
             output.data["seed"],
-            "# Goal\nfrozen-goal\n\n# Acceptance\nfrozen-acceptance\n\n# Context\n```json\n{\n  \"frozen\": \"context\"\n}\n```\n\n# Task working directory\n/task-only-cwd"
+            format!(
+                "# Parent\nparent_track_id: {}\ntask key: child\nattempt_id: {}\n\n# Goal\nfrozen-goal\n\n# Acceptance\nfrozen-acceptance\n\n# Context\n```json\n{{\n  \"frozen\": \"context\"\n}}\n```\n\n# Task working directory\n/task-only-cwd",
+                parent, task.id
+            )
         );
         let planner_card_id = output.data["planner_card_id"].as_str().unwrap();
         let planner_payload: String = sqlx::query_scalar("SELECT payload FROM cards WHERE id=?1")
@@ -1289,6 +1304,14 @@ mod tests {
             );
         }
         let child_id = output.data["child_track_id"].as_str().unwrap();
+        assert_eq!(
+            sqlx::query_scalar::<_, String>("SELECT title FROM tracks WHERE id=?1")
+                .bind(child_id)
+                .fetch_one(repo.pool())
+                .await
+                .unwrap(),
+            "child"
+        );
         // Attached children own a worktree under the same repository.
         let expected_child_workspace =
             workspace::worktree::track_worktree_path_for(test_parent_path(), child_id)

@@ -234,7 +234,9 @@ mod tests {
         // Trimming ask/close repetition saves 220 bytes, leaving 680 net new bytes.
         // #3126 review fix: naming plus explicit retry-result wording adds 61 bytes
         // to the previous 37,055; the real registry totals 37,116 after those offsets.
-        const SURFACE_MAX_BYTES: usize = 37_116;
+        // Child handback adds its description/schema and explains the parent close exception.
+        // Root sessions hide handback; this static registry bound covers the child superset.
+        const SURFACE_MAX_BYTES: usize = 38_050;
         const DESCRIPTION_MAX_BYTES: usize = 2_048;
 
         let descriptors = build_default_registry().descriptors_listed_for(CardRole::Planner);
@@ -607,7 +609,7 @@ mod tests {
             "ls", "cat", "show", "status", "log", "diff", "find", "describe", "read", "write",
             "commit", "tag", "rename", "add", "set", "rm", "capture", "ask", "send", "input",
             "control", "open", "close", "cancel", "publish", "accept", "reject", "regate", "gate",
-            "rerun", "evaluate", "settle", "done", "fail", "report", "gc", "vacuum",
+            "rerun", "evaluate", "settle", "done", "fail", "report", "gc", "vacuum", "handback",
         ];
         let word = regex::Regex::new(r"^[a-z0-9]+$").expect("word regex");
         let outside: Vec<String> = kernel_tool_names()
