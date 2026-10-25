@@ -21,6 +21,18 @@ async fn child_result(deleted: bool, incomplete: bool, gated: bool) {
         })
         .await
         .unwrap();
+    flow.fixture
+        .repo
+        .card_create(crate::model::NewCard {
+            track_id: child.id.clone(),
+            title: None,
+            kind: "track-report".into(),
+            sort: None,
+            payload: serde_json::to_value(crate::track_report::TrackReportPayload::initial())
+                .unwrap(),
+        })
+        .await
+        .unwrap();
     sqlx::query("UPDATE tracks SET parent_track_id=?1,closed_at=?2 WHERE id=?3")
         .bind(&flow.track)
         .bind(crate::model::now_ms())

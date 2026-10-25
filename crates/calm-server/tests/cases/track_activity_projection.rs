@@ -209,6 +209,8 @@ async fn parent_gate_verifying_is_working() {
     let f = fx().await;
     let parent = f.track("parent").await;
     let child = f.track("child").await;
+    // A met child has a report, even when it declares no tasks.
+    f.plan_tasks(&child, &[]).await;
     // No `gate.cwd`: a codex declaration carrying one is not admitted (#1727 S4 `gate_cwd_on_agent_task`).
     let gate = json!({ "steps": [{ "name": "ok", "cmd": "true" }] });
     f.plan_tasks(
