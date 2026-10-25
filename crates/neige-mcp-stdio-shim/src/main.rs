@@ -28,10 +28,13 @@ async fn main() -> ExitCode {
     let content = match args.as_slice() {
         [] => content::ResultContent::AsReceived,
         [flag] if flag == "--structured-content-as-text" => content::ResultContent::StructuredText,
+        [flag] if flag == "--deduplicate-equivalent-content" => {
+            content::ResultContent::DeduplicateEquivalentContent
+        }
         _ => {
             let _ = writeln!(
                 io::stderr(),
-                "usage: neige-mcp-stdio-shim [--structured-content-as-text | --version]"
+                "usage: neige-mcp-stdio-shim [--structured-content-as-text | --deduplicate-equivalent-content | --version]"
             );
             return ExitCode::from(2);
         }

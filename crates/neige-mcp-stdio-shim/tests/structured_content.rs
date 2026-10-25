@@ -118,34 +118,126 @@ async fn result_projection_is_opt_in_and_keeps_errors_and_unsolicited_frames_unc
 
 #[tokio::test]
 async fn structured_text_projection_survives_the_kernel_reconnect_handshake() {
+    for flag in [
+        "--structured-content-as-text",
+        "--deduplicate-equivalent-content",
+    ] {
+        let (_root, path) = socket();
+        let listener = listen(&path);
+        let mut child = spawn_shim_with_args(&path, &[flag]);
+        let mut stdin = child.stdin.take().unwrap();
+        let mut stdout = BufReader::new(child.stdout.take().unwrap());
+        let mut stderr = BufReader::new(child.stderr.take().unwrap());
+        let mut stub = accept(&listener, "first connection").await;
+        write_stdin(&mut stdin, &initialize_line(1)).await;
+        assert_replayed_initialize(&stub.read_frame("initialize").await, 1);
+        stub.reply_ok(&json!(1)).await;
+        read_stdout(&mut stdout, "initialize reply").await;
+        drop(stub);
+        assert!(
+            read_stderr_line(&mut stderr)
+                .await
+                .contains("connection to kernel lost")
+        );
+        write_stdin(&mut stdin, &tools_call_line(2)).await;
+        let mut stub = accept(&listener, "reconnect").await;
+        assert_replayed_initialize(&stub.read_frame("replayed initialize").await, 1);
+        stub.reply_ok(&json!(1)).await;
+        assert_eq!(stub.read_frame("tools/call after handshake").await["id"], 2);
+        let text = if flag == "--structured-content-as-text" {
+            "summary"
+        } else {
+            "{\"blocks\":[\"restored\"]}"
+        };
+        stub.write_frame(&json!({"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":text}],"structuredContent":{"blocks":["restored"]}}})).await;
+        let actual = read_stdout(&mut stdout, "projected reply").await;
+        assert_eq!(
+            actual["result"].get("structuredContent").is_some(),
+            flag == "--structured-content-as-text"
+        );
+        assert_eq!(
+            actual["result"]["content"][0]["text"],
+            "{\"blocks\":[\"restored\"]}"
+        );
+        drop(stdin);
+        drop(stub);
+        assert_eq!(wait_exit_code(&mut child, "reconnected result").await, 0);
+    }
+}
+
+#[tokio::test]
+async fn deduplicate_equivalent_content_preserves_information_and_correlation() {
     let (_root, path) = socket();
     let listener = listen(&path);
-    let mut child = spawn_shim_with_args(&path, &["--structured-content-as-text"]);
+    let mut child = spawn_shim_with_args(&path, &["--deduplicate-equivalent-content"]);
     let mut stdin = child.stdin.take().unwrap();
     let mut stdout = BufReader::new(child.stdout.take().unwrap());
-    let mut stderr = BufReader::new(child.stderr.take().unwrap());
-    let mut stub = accept(&listener, "first connection").await;
-    write_stdin(&mut stdin, &initialize_line(1)).await;
-    assert_replayed_initialize(&stub.read_frame("initialize").await, 1);
-    stub.reply_ok(&json!(1)).await;
-    read_stdout(&mut stdout, "initialize reply").await;
-    drop(stub);
-    assert!(
-        read_stderr_line(&mut stderr)
-            .await
-            .contains("connection to kernel lost")
-    );
-    write_stdin(&mut stdin, &tools_call_line(2)).await;
-    let mut stub = accept(&listener, "reconnect").await;
-    assert_replayed_initialize(&stub.read_frame("replayed initialize").await, 1);
-    stub.reply_ok(&json!(1)).await;
-    assert_eq!(stub.read_frame("tools/call after handshake").await["id"], 2);
-    stub.write_frame(&json!({"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"summary"}],"structuredContent":{"blocks":["restored"]}}})).await;
-    assert_eq!(
-        read_stdout(&mut stdout, "projected reply").await["result"]["content"][0]["text"],
-        "{\"blocks\":[\"restored\"]}"
-    );
+    let mut stub = accept(&listener, "deduplicate results").await;
+    let content = json!([
+        {"type":"text","text":"summary"},
+        {"type":"text","text":" {\"z\": [1, true], \"a\": \"\\u5b8c成\"} "},
+        {"type":"image","data":"AA==","mimeType":"image/png"},
+        {"type":"resource","resource":{"uri":"test:///report","text":"details"}}
+    ]);
+    let equivalent = json!({"content":content,"structuredContent":{"a":"完成","z":[1,true]},"isError":false,"_meta":{"kept":true}});
+    let mut failure = equivalent.clone();
+    failure["isError"] = json!(true);
+    for (id, method, result, deduplicated) in [
+        (1, "tools/call", equivalent.clone(), true),
+        (2, "other/method", equivalent.clone(), false),
+        (3, "tools/call", failure, false),
+        (
+            4,
+            "tools/call",
+            json!({"content":[{"type":"text","text":"summary"}],"structuredContent":{"a":1}}),
+            false,
+        ),
+        (
+            5,
+            "tools/call",
+            json!({"content":[{"type":"text","text":"{invalid"}],"structuredContent":{"a":1}}),
+            false,
+        ),
+        (
+            6,
+            "tools/call",
+            json!({"content":[{"type":"text","text":"{\"a\":2}"}],"structuredContent":{"a":1}}),
+            false,
+        ),
+        (7, "tools/call", json!({"structuredContent":{"a":1}}), false),
+        (8, "tools/call", json!({"content":content}), false),
+        (
+            9,
+            "tools/call",
+            json!({"content":[{"type":"text","text":"[1]"}],"structuredContent":[1]}),
+            false,
+        ),
+    ] {
+        write_stdin(&mut stdin, &request_line(id, method)).await;
+        assert_eq!(stub.read_frame("request").await["id"], id);
+        let mut expected = json!({"jsonrpc":"2.0","id":id,"result":result});
+        stub.write_frame(&expected).await;
+        if deduplicated {
+            expected["result"]
+                .as_object_mut()
+                .unwrap()
+                .remove("structuredContent");
+        }
+        assert_eq!(
+            read_stdout(&mut stdout, "reply").await,
+            expected,
+            "case {id}"
+        );
+    }
+    let unsolicited = json!({"jsonrpc":"2.0","id":99,"result":equivalent});
+    stub.write_frame(&unsolicited).await;
+    assert_eq!(read_stdout(&mut stdout, "unsolicited").await, unsolicited);
+    write_stdin(&mut stdin, &tools_call_line(10)).await;
+    stub.read_frame("RPC error request").await;
+    let error = json!({"jsonrpc":"2.0","id":10,"error":{"code":-32603,"message":"failure"}});
+    stub.write_frame(&error).await;
+    assert_eq!(read_stdout(&mut stdout, "RPC error").await, error);
     drop(stdin);
     drop(stub);
-    assert_eq!(wait_exit_code(&mut child, "reconnected result").await, 0);
+    assert_eq!(wait_exit_code(&mut child, "deduplicate results").await, 0);
 }

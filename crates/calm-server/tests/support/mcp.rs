@@ -520,3 +520,17 @@ pub async fn call_tool_card_bound(
     .await;
     recv_frame(&mut rd).await
 }
+
+pub fn locate_shim_bin() -> PathBuf {
+    let mut p = std::env::current_exe().expect("current_exe");
+    p.pop();
+    p.pop();
+    p.push("neige-mcp-stdio-shim");
+    assert!(
+        p.exists(),
+        "neige-mcp-stdio-shim not found at {p:?}; run \
+         `cargo build -p neige-mcp-stdio-shim --bin neige-mcp-stdio-shim` first, or \
+         use `cargo test --workspace` which builds workspace bins",
+    );
+    p
+}

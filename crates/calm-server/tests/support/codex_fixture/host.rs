@@ -45,19 +45,7 @@ pub fn resolve_codex_bin() -> Option<PathBuf> {
     Some(expanded)
 }
 
-pub fn locate_shim_bin() -> PathBuf {
-    let mut p = std::env::current_exe().expect("current_exe");
-    p.pop();
-    p.pop();
-    p.push("neige-mcp-stdio-shim");
-    assert!(
-        p.exists(),
-        "neige-mcp-stdio-shim not found at {p:?}; run \
-         `cargo build -p neige-mcp-stdio-shim --bin neige-mcp-stdio-shim` first, or \
-         use `cargo test --workspace` which builds workspace bins",
-    );
-    p
-}
+pub use super::super::mcp::locate_shim_bin;
 
 pub fn seed_auth_only(home: &SharedCodexHome) {
     home.seed_from(None).expect("seed empty shared CODEX_HOME");

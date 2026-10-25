@@ -6,6 +6,7 @@ pub(crate) enum ResultContent {
     #[default]
     AsReceived,
     StructuredText,
+    DeduplicateEquivalentContent,
 }
 
 impl ResultContent {
@@ -36,19 +37,29 @@ impl ResultContent {
         let Some(content) = result.get("content").and_then(Value::as_array) else {
             return line;
         };
-        if content.iter().any(|item| {
+        let equivalent = content.iter().any(|item| {
             item["type"] == "text"
                 && item["text"].as_str().is_some_and(|text| {
                     serde_json::from_str::<Value>(text).is_ok_and(|value| &value == state)
                 })
-        }) {
-            return line;
+        });
+        if matches!(self, Self::DeduplicateEquivalentContent) {
+            if !equivalent {
+                return line;
+            }
+            // This opt-in client has no outputSchema contract. Preserve every
+            // original content block and omit only the redundant JSON value.
+            result.remove("structuredContent");
+        } else {
+            if equivalent {
+                return line;
+            }
+            // Keep original summaries, warnings and non-text blocks. Consumers
+            // validating outputSchema still receive structuredContent unchanged.
+            let mut projected = vec![json!({"type":"text","text":text})];
+            projected.extend(content.iter().cloned());
+            result.insert("content".into(), Value::Array(projected));
         }
-        // Keep original summaries, warnings and non-text blocks. Consumers
-        // validating outputSchema still receive structuredContent unchanged.
-        let mut projected = vec![json!({"type":"text","text":text})];
-        projected.extend(content.iter().cloned());
-        result.insert("content".into(), Value::Array(projected));
         let mut bytes = value.to_string().into_bytes();
         bytes.push(b'\n');
         bytes

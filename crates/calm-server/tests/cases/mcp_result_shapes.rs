@@ -356,3 +356,6 @@ async fn tool_result_times_are_rfc3339_with_an_offset() {
         "given text is returned as given"
     );
 }
+
+#[path = "codex_projection.rs"]
+mod shared_codex_home_projection;

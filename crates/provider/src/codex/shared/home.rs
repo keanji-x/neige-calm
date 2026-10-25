@@ -16,6 +16,7 @@ use toml_edit::DocumentMut;
 pub struct McpServerConfig<'a> {
     pub key: &'a str,
     pub command: &'a Path,
+    pub args: &'a [&'a str],
     pub env: &'a [(String, String)],
 }
 
@@ -361,7 +362,8 @@ impl SharedCodexHome {
                 if let Some(kernel_table) = kernel.as_table_mut() {
                     kernel_table["command"] =
                         toml_edit::value(shim.command.to_string_lossy().to_string());
-                    kernel_table["args"] = toml_edit::value(toml_edit::Array::new());
+                    kernel_table["args"] =
+                        toml_edit::value(shim.args.iter().copied().collect::<toml_edit::Array>());
                     // Approval grants are [`Self::refresh_mcp_entry`]'s alone, and the file never carries
                     // one across a restart: the plugin behind a granted name may have changed meanwhile.
                     kernel_table.remove("tools");
@@ -563,6 +565,7 @@ mod tests {
         home.ensure_config(Some(&McpServerConfig {
             key: "svc",
             command: Path::new("/svc/shim"),
+            args: &[],
             env: &env,
         }))
         .unwrap();
@@ -664,9 +667,23 @@ mod tests {
         home.ensure_config(Some(&McpServerConfig {
             key: "custom_service",
             command: Path::new("/custom/shim"),
+            args: &["--custom-mode", "a b"],
             env: &env,
         }))
         .unwrap();
+        let config: toml_edit::DocumentMut = fs::read_to_string(home.path().join("config.toml"))
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert_eq!(
+            config["mcp_servers"]["custom_service"]["args"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v.as_str().unwrap())
+                .collect::<Vec<_>>(),
+            ["--custom-mode", "a b"]
+        );
         home.verify_expected_mcp_servers(&["custom_service"])
             .unwrap();
         assert_eq!(

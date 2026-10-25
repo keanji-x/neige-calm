@@ -31,6 +31,7 @@ impl SharedCodexHome {
             .ensure_config(Some(&provider::codex::shared::home::McpServerConfig {
                 key: MCP_SERVER_KEY,
                 command: &shim.shim_bin,
+                args: &["--deduplicate-equivalent-content"],
                 env: &env,
             }))
     }
