@@ -18,7 +18,6 @@ use calm_server::ids::{ActorId, CardId, TrackId};
 use calm_server::model::{CardRole, NewArea};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::role_gate::enforce_role;
-use calm_server::routes;
 use calm_server::state::{AppState, CodexClient, DaemonClient};
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
@@ -90,11 +89,7 @@ async fn boot() -> Boot {
         Some(track_area_cache.clone()),
     );
 
-    let app = routes::router()
-        .layer(axum::middleware::from_fn(
-            calm_server::actor::actor_middleware,
-        ))
-        .with_state(state);
+    let app = crate::support::authenticated_router::application(state).await;
 
     Boot {
         app,

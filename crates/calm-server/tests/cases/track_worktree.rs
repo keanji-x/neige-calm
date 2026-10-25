@@ -41,6 +41,7 @@ struct Boot {
     area_id: String,
     repo: Arc<SqlxRepo>,
     tmp: TempDir,
+    historical_creator: tokio::sync::OnceCell<calm_server::mcp_server::ToolCallIdentity>,
 }
 
 async fn boot() -> Boot {
@@ -64,7 +65,7 @@ async fn boot() -> Boot {
     let roles = CardRoleCache::new();
     let tracks = TrackAreaCache::new();
     repo.seed_track_area_cache(&tracks).await.unwrap();
-    let state = AppState::from_parts(
+    let mut state = AppState::from_parts(
         repo_dyn.clone(),
         events.clone(),
         Arc::new(DaemonClient {
@@ -88,6 +89,7 @@ async fn boot() -> Boot {
     .with_shared_codex_appserver(SharedCodexAppServer::new_fake_running_with_pending(
         repo_dyn, None,
     ));
+    state.bind_track_creator(100);
     let app = crate::support::authenticated_router::application(state.clone()).await;
     Boot {
         app,
@@ -95,6 +97,7 @@ async fn boot() -> Boot {
         area_id,
         repo,
         tmp,
+        historical_creator: Default::default(),
     }
 }
 
@@ -126,6 +129,62 @@ impl Boot {
         }
         self.send(builder.body(Body::from(body.to_string())).unwrap())
             .await
+    }
+
+    /// Real non-Human owner for historical start/fence contracts. No canonical
+    /// carrier is removed or rewritten; the added Track is historical from mint.
+    async fn historical_at(
+        &self,
+        cwd: &Path,
+        key: &str,
+        text: &str,
+    ) -> Result<String, calm_server::plugin_host::mcp::RpcError> {
+        use calm_server::mcp_server::tools::track_add::{TOOL_TRACK_ADD, register_into};
+        use calm_server::mcp_server::{ToolCallIdentity, ToolRegistry};
+        let identity =
+            self.historical_creator
+                .get_or_init(|| async {
+                    let (status, created) = self.as_user("POST", "/api/tracks", json!({
+                "planner_provider":"codex", "area_id":self.area_id, "admin":true,
+                "title":"historical creator", "theme":{"fg":[255,255,255],"bg":[0,0,0]},
+            })).await;
+                    assert_eq!(status, StatusCode::CREATED, "{created}");
+                    let track = created["id"].as_str().unwrap();
+                    let card = self
+                        .repo
+                        .cards_by_track(track)
+                        .await
+                        .unwrap()
+                        .into_iter()
+                        .find(|card| {
+                            self.state.card_role_cache.get(&card.id)
+                                == Some(calm_server::model::CardRole::Planner)
+                        })
+                        .unwrap();
+                    let worker = self
+                        .repo
+                        .session_projection_active_for_card(&card.id.to_string())
+                        .await
+                        .unwrap()
+                        .unwrap();
+                    ToolCallIdentity {
+                        card_id: card.id.to_string(),
+                        role: calm_server::model::CardRole::Planner,
+                        provider: calm_server::session_projection_repo::AgentProvider::Codex,
+                        session_id: worker.id,
+                        track_id: Some(track.into()),
+                        area_id: self.area_id.clone(),
+                        thread_id: "creator".into(),
+                    }
+                })
+                .await;
+        let mut registry = ToolRegistry::new();
+        register_into(&mut registry);
+        let result = registry.lookup(TOOL_TRACK_ADD).unwrap()(self.state.mcp_context(), identity.clone(), json!({
+            "template_id":"small-change", "title":"historical attached", "cwd":cwd,
+            "attach_folder":true, "idempotency_key":key, "text":text, "message":"Historical fixture",
+        })).await?.into_structured();
+        Ok(result["track_id"].as_str().unwrap().into())
     }
 
     async fn delete_track(&self, track_id: &str) -> (StatusCode, Value) {
@@ -179,7 +238,7 @@ impl Boot {
             .unwrap()
     }
 
-    /// The `cwd` of every `planner-harness-start` payload of the track, oldest first.
+    /// The `cwd` of every historical `planner-harness-start` payload, oldest first.
     async fn planner_start_cwds(&self, track_id: &str) -> Vec<String> {
         let rows: Vec<String> = sqlx::query_scalar(
             "SELECT payload_json FROM operations WHERE kind = 'planner-harness-start' \
@@ -266,9 +325,11 @@ async fn attached_create_makes_the_track_worktree_at_the_upstream() {
     assert_ne!(clone_head, origin_tip, "premise: the clone is behind");
     let clone_status = porcelain(&up.clone);
 
-    let (status, body) = b.create_at(&up.clone, None, None).await;
-    assert_eq!(status, StatusCode::CREATED, "{body}");
-    let track_id = body["id"].as_str().unwrap().to_string();
+    let track_id = b
+        .historical_at(&up.clone, "worktree-create", "start here")
+        .await
+        .unwrap();
+    let body = serde_json::to_value(b.repo.track_get(&track_id).await.unwrap().unwrap()).unwrap();
     let worktree = expected_worktree(&up.clone, &track_id);
     let (path, stored) = b.workspace_row(&track_id).await;
     assert_eq!(
@@ -327,11 +388,10 @@ async fn a_first_message_create_starts_the_planner_in_the_track_worktree() {
     let up = upstream(b.tmp.path());
     let origin_tip = up.advance_origin("ahead.txt");
 
-    let (status, body) = b
-        .create_at(&up.clone, Some("idem-t1b"), Some("start here"))
-        .await;
-    assert_eq!(status, StatusCode::CREATED, "{body}");
-    let track_id = body["id"].as_str().unwrap().to_string();
+    let track_id = b
+        .historical_at(&up.clone, "idem-t1b", "start here")
+        .await
+        .unwrap();
     let worktree = expected_worktree(&up.clone, &track_id);
     assert!(worktree.is_dir(), "the worktree exists");
     assert_eq!(head(&worktree), origin_tip, "based on the upstream tip");
@@ -414,21 +474,24 @@ async fn a_genuine_retry_reuses_the_registered_track_worktree() {
     b.state
         .shared_codex_appserver
         .fail_next_thread_start_for_test();
-    let (failed, body) = b
-        .create_at(&up.clone, Some("idem-retry"), Some("again"))
-        .await;
-    assert!(!failed.is_success(), "premise: {failed} {body}");
-    let track_id = b.only_track_id().await;
+    b.historical_at(&up.clone, "idem-retry", "again")
+        .await
+        .expect_err("injected native start failure");
+    let track_id: String =
+        sqlx::query_scalar("SELECT id FROM tracks WHERE creator_key='idem-retry'")
+            .fetch_one(b.repo.pool())
+            .await
+            .unwrap();
     let worktree = expected_worktree(&up.clone, &track_id);
     assert!(worktree.is_dir(), "premise: the failed attempt made it");
     std::fs::write(worktree.join("planner-notes.txt"), "kept\n").unwrap();
     let branch_tip = head(&worktree);
 
-    let (retry, body) = b
-        .create_at(&up.clone, Some("idem-retry"), Some("again"))
-        .await;
-    assert_eq!(retry, StatusCode::CREATED, "{body}");
-    assert_eq!(body["id"], json!(track_id));
+    let retry = b
+        .historical_at(&up.clone, "idem-retry", "again")
+        .await
+        .unwrap();
+    assert_eq!(retry, track_id);
     assert_eq!(
         std::fs::read_to_string(worktree.join("planner-notes.txt")).unwrap(),
         "kept\n",

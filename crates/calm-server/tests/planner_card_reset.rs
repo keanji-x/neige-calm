@@ -1786,7 +1786,6 @@ async fn track_delete_shuts_down_active_planner_harness() {
             "planner_provider": "codex",
             "area_id": area.id,
             "title": "delete harness",
-            "cwd": attached_repo_fixture("planner-card-reset-harness-delete"),
             "attach_folder": true,
             "theme": {"fg": [216,219,226], "bg": [15,20,24]}
         }),
@@ -1845,7 +1844,6 @@ async fn acceptance_20_descendant_refusal_preserves_live_track_runtime_and_termi
             "planner_provider": "codex",
             "area_id": area.id,
             "title": "live parent",
-            "cwd": attached_repo_fixture("descendant-refusal-runtime"),
             "attach_folder": true,
             "theme": {"fg": [216,219,226], "bg": [15,20,24]}
         }),
@@ -2860,6 +2858,34 @@ async fn assert_harness_queue_empty(boot: &Boot, card_id: &str, what: &str) {
     );
 }
 
+/// A blank canonical carrier holds no accepted Human input or native effect.
+async fn assert_canonical_no_goal(boot: &Boot, card_id: &str) {
+    let runtime = boot
+        .repo
+        .session_projection_active_for_card(&card_id.to_string())
+        .await
+        .unwrap()
+        .unwrap();
+    let snapshot: calm_types::harness::snapshot::CanonicalHarnessSnapshot =
+        serde_json::from_value(runtime.handle_state_json.unwrap()).unwrap();
+    assert!(snapshot.canonical_inputs.pending.is_empty());
+    assert_eq!(snapshot.canonical_inputs.active, None);
+    let humans: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM conversation_messages WHERE card_id=? AND author_kind='authenticated_human'",
+    )
+    .bind(card_id)
+    .fetch_one(boot.repo.pool())
+    .await
+    .unwrap();
+    assert_eq!(humans, 0);
+    assert!(
+        planner_harness_start_payloads(boot.repo.as_ref(), card_id)
+            .await
+            .is_empty()
+    );
+    assert!(boot.state.harness.get(&runtime.id).is_none());
+}
+
 #[tokio::test]
 async fn track_create_without_title_seeds_no_track_goal() {
     let boot = boot_shared().await;
@@ -2891,11 +2917,7 @@ async fn track_create_without_title_seeds_no_track_goal() {
 
     let track_id = body["id"].as_str().expect("track id").to_string();
     let planner_card = planner_card_of_track(&boot, &track_id).await;
-    assert_no_seeded_goal(
-        &planner_harness_start_payloads(boot.repo.as_ref(), planner_card.id.as_str()).await,
-        "create without title",
-    );
-    assert_harness_queue_empty(&boot, planner_card.id.as_str(), "create without title").await;
+    assert_canonical_no_goal(&boot, planner_card.id.as_str()).await;
 }
 
 #[tokio::test]
@@ -2941,16 +2963,7 @@ async fn track_create_with_title_seeds_no_track_goal() {
         title
     );
     let planner_card = planner_card_of_track(&boot, &track_id).await;
-    assert_no_seeded_goal(
-        &planner_harness_start_payloads(boot.repo.as_ref(), planner_card.id.as_str()).await,
-        "create with non-empty title",
-    );
-    assert_harness_queue_empty(
-        &boot,
-        planner_card.id.as_str(),
-        "create with non-empty title",
-    )
-    .await;
+    assert_canonical_no_goal(&boot, planner_card.id.as_str()).await;
 }
 
 #[tokio::test]
@@ -2975,7 +2988,6 @@ async fn planner_reset_seeds_no_track_goal() {
             "planner_provider": "codex",
             "area_id": area.id,
             "title": "reset keeps quiet",
-            "cwd": attached_repo_fixture("issue-1211-reset"),
             "attach_folder": true,
             "theme": {"fg": [216,219,226], "bg": [15,20,24]}
         }),

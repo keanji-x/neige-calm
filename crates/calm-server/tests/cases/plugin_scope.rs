@@ -12,7 +12,6 @@ use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::EventBus;
 use calm_server::model::{NewArea, NewTrack};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
-use calm_server::routes;
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_server::state::{AppState, DaemonClient};
 use calm_server::track_area_cache::TrackAreaCache;
@@ -77,11 +76,7 @@ async fn boot() -> Boot {
     );
     let shared = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
     let state = state.with_shared_codex_appserver(shared);
-    let app = routes::router()
-        .layer(axum::middleware::from_fn(
-            calm_server::actor::actor_middleware,
-        ))
-        .with_state(state);
+    let app = crate::support::authenticated_router::application(state).await;
     Boot {
         app,
         area_id: area.id.to_string(),

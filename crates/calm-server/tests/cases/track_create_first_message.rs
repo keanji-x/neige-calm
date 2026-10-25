@@ -295,7 +295,7 @@ impl Boot {
     ) -> (StatusCode, Value) {
         if self.historical {
             body["attach_folder"] = json!(true);
-            if body.get("template_id").is_none() {
+            if body.get("template_id").is_none() && body.get("recipe_id").is_none() {
                 body["template_id"] = json!("investigation");
             }
         }
@@ -1897,8 +1897,11 @@ async fn a_key_exhausted_by_64_failed_attempts_answers_409() {
 async fn a_replay_survives_the_attached_directory_being_deleted() {
     let b = boot().await;
     let attached = user_repo(&b.tmp.path().join("my-project"));
+    let request = json!({"planner_provider":"codex", "area_id":b.area_id,
+        "title":"", "cwd":attached, "attach_folder":true, "isolation":"none",
+        "first_message":"ship the thing", "theme":{"fg":[255,255,255],"bg":[0,0,0]}});
     let (first, first_body) = b
-        .create_track_at(Some("idem-deleted-dir"), Some("ship the thing"), &attached)
+        .post_create(Some("idem-deleted-dir"), request.clone())
         .await;
     assert_eq!(first, StatusCode::CREATED, "body={first_body}");
     let track_id = first_body["id"].as_str().unwrap().to_string();
@@ -1920,9 +1923,7 @@ async fn a_replay_survives_the_attached_directory_being_deleted() {
     std::fs::remove_dir_all(&attached).unwrap();
     assert!(!attached.exists(), "premise: the directory really is gone");
 
-    let (replay, replay_body) = b
-        .create_track_at(Some("idem-deleted-dir"), Some("ship the thing"), &attached)
-        .await;
+    let (replay, replay_body) = b.post_create(Some("idem-deleted-dir"), request).await;
     assert_eq!(
         replay,
         StatusCode::CREATED,
@@ -1939,7 +1940,7 @@ async fn a_replay_survives_the_attached_directory_being_deleted() {
         1,
         "and the replay must not deliver the instruction a second time"
     );
-    // The replay 201s and the workspace is still broken: `materialize_workspace` is a no-op for `Attached`.
+    // The replay 201s and the workspace is still broken: isolation=none acknowledges acceptance without worktree repair.
     assert!(
         !attached.exists(),
         "the replay must NOT have recreated the user's directory: that is the deliberate \
@@ -1960,16 +1961,127 @@ async fn a_retry_after_a_failure_fails_once_the_attached_directory_is_no_reposit
     b.state
         .shared_codex_appserver
         .fail_next_thread_start_for_test();
-    let (failed, failed_body) = b
-        .create_track_at(
-            Some("idem-retry-invalid-dir"),
-            Some("second time lucky"),
-            &attached,
+    // Released historical attached receipt: seed its declared workspace/cards/binding
+    // before exercising the real historical start and HTTP retry. Never rewrite V5.
+    use calm_server::db::sqlite::{
+        TrackCreateBindingClaim, TrackWorkspacePlan, card_create_with_id_tx,
+        track_create_idempotency_claim_tx,
+    };
+    use calm_server::model::{CardRole, NewCard, NewTrack};
+    use calm_server::operation::{OperationKey, OperationOutcome};
+    use calm_server::routes::idempotency_key::stable_payload_hash;
+    use sha2::{Digest, Sha256};
+    let track = calm_server::test_seams::create_track_with_workspace_for_test(
+        b.repo.db(),
+        NewTrack {
+            area_id: b.area_id.clone().into(),
+            title: "".into(),
+            sort: None,
+            cwd: attached.to_string_lossy().into(),
+            template_id: None,
+            plugin_scope: None,
+            template_input: None,
+            attach_folder: true,
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
+        },
+        &TrackWorkspacePlan::AttachedWithTrackWorktree(attached.clone()),
+        &b.state.track_area_cache,
+    )
+    .await
+    .unwrap();
+    let planner = calm_server::model::new_id();
+    let report = calm_server::model::new_id();
+    // Literal released request shape; absence stays null and the original bytes bind retry.
+    let create_sha = stable_payload_hash(&json!({"title":"", "sort":null,"cwd":attached,
+        "template_id":null,"recipe_id":null,"template_input":null,"attach_folder":true,
+        "theme":{"fg":[255,255,255],"bg":[0,0,0]},"fork_report_from":null}))
+    .unwrap();
+    let mut tx = b.repo.pool().begin().await.unwrap();
+    for (id, role, kind, payload) in [
+        (
+            &planner,
+            CardRole::Planner,
+            "codex",
+            crate::support::planner::payload(),
+        ),
+        (
+            &report,
+            CardRole::ReportCard,
+            "track-report",
+            serde_json::to_value(calm_server::track_report::TrackReportPayload::initial()).unwrap(),
+        ),
+    ] {
+        card_create_with_id_tx(
+            &mut tx,
+            id.clone(),
+            NewCard {
+                track_id: track.id.clone(),
+                title: None,
+                kind: kind.into(),
+                sort: None,
+                payload,
+            },
+            role,
+            false,
+            &b.state.card_role_cache,
         )
-        .await;
+        .await
+        .unwrap();
+    }
+    track_create_idempotency_claim_tx(
+        &mut tx,
+        &b.area_id,
+        "idem-retry-invalid-dir",
+        &TrackCreateBindingClaim {
+            track_id: track.id.to_string(),
+            planner_card_id: planner.clone(),
+            report_card_id: report.clone(),
+            create_request_sha256: create_sha.clone(),
+            first_message_sha256: Some(hex::encode(Sha256::digest(b"second time lucky"))),
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    let request: calm_server::operation::planner_harness_start_adapter::PlannerHarnessStartOperationPayload =
+        serde_json::from_value(json!({"actor":calm_server::ids::ActorId::User,"wave_id":track.id,
+            "spec_card_id":planner,"report_card_id":report,"cwd":track.workspace.agent_cwd(),"goal":null,
+            "first_message":"second time lucky","create_request_sha256":create_sha})).unwrap();
+    let key = format!(
+        "track-create-{}",
+        hex::encode(Sha256::digest(
+            format!("track-create:{}:idem-retry-invalid-dir", b.area_id).as_bytes()
+        ))
+    );
+    let hash = stable_payload_hash(&json!({"actor":"user","request":request})).unwrap();
+    let op = b
+        .state
+        .operation_runtime
+        .submit(
+            "planner-harness-start",
+            OperationKey {
+                operation_key: key.clone(),
+                idempotency_key: Some(key),
+                payload_hash: hash,
+            },
+            serde_json::to_value(request).unwrap(),
+        )
+        .await
+        .unwrap();
     assert!(
-        !failed.is_success(),
-        "premise: the injected thread/start failure must surface: status={failed} body={failed_body}"
+        matches!(
+            b.state.operation_runtime.wait(&op).await.unwrap().outcome,
+            OperationOutcome::Failed { .. }
+        ),
+        "the real historical native thread/start must fail before the retry"
+    );
+    assert_eq!(
+        b.state
+            .shared_codex_appserver
+            .started_thread_params_for_test()
+            .len(),
+        1,
+        "the seeded historical operation must reach the native thread/start"
     );
     assert_eq!(
         b.track_count().await,
@@ -1997,6 +2109,11 @@ async fn a_retry_after_a_failure_fails_once_the_attached_directory_is_no_reposit
         !retry.is_success(),
         "the retry's track worktree ensure cannot succeed without the repository: \
          status={retry} body={retry_body}"
+    );
+    assert_eq!(
+        retry,
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "resource ensure refusal: {retry_body}"
     );
     assert_ne!(
         retry_body["code"], "idempotency_key_exhausted",

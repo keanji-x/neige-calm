@@ -1417,8 +1417,6 @@ async fn forked_user_tombstone_is_normalized_to_planner_and_stays_planner_editab
     );
 }
 
-const FORKED_PLANNER_SESSION_ID: &str = "forked-planner-session";
-
 /// An MCP tool channel bound to the forked track's own planner card.
 async fn planner_tool_channel(
     boot: &Boot,
@@ -1432,12 +1430,12 @@ async fn planner_tool_channel(
         .into_iter()
         .find(|card| card.kind == "codex")
         .expect("forked track has a planner card");
-    crate::support::planner::start_session(
-        boot.repo.as_ref(),
-        planner_card.id.as_str(),
-        FORKED_PLANNER_SESSION_ID,
-    )
-    .await;
+    let worker = boot
+        .repo
+        .session_projection_active_for_card(&planner_card.id.to_string())
+        .await
+        .unwrap()
+        .expect("forked track's current canonical worker");
 
     let route_repo: Arc<dyn calm_server::db::RouteRepo> = boot.repo.clone();
     let ctx = Arc::new(AppContext {
@@ -1467,7 +1465,7 @@ async fn planner_tool_channel(
         card_id: planner_card.id.as_str().to_string(),
         role: CardRole::Planner,
         provider: AgentProvider::Codex,
-        session_id: FORKED_PLANNER_SESSION_ID.to_string(),
+        session_id: worker.id,
         track_id: Some(track_id.to_string()),
         area_id: boot.area_id.clone(),
         thread_id: "forked-planner-thread".to_string(),

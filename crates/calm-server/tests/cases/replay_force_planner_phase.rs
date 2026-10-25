@@ -98,19 +98,18 @@ async fn boot() -> Boot {
 }
 
 async fn create_track(boot: &Boot) -> (String, String) {
-    let (status, body, text) = post(
-        boot.app.clone(),
-        "/api/tracks",
-        json!({
-            "planner_provider": "codex",
-            "area_id": boot.area_id,
-            "title": "probe track",
-            "cwd": attached_repo_fixture("issue-682-force-planner-phase"),
-            "attach_folder": true,
-            "theme": { "fg": [255, 255, 255], "bg": [0, 0, 0] },
-        }),
-    )
-    .await;
+    create_track_with_storage(boot, false).await
+}
+
+async fn create_track_with_storage(boot: &Boot, historical: bool) -> (String, String) {
+    let mut request = json!({
+        "planner_provider": "codex", "area_id": boot.area_id, "title":"probe track",
+        "attach_folder":true, "theme": {"fg":[255,255,255],"bg":[0,0,0]},
+    });
+    if !historical {
+        request["cwd"] = json!(attached_repo_fixture("issue-682-force-planner-phase"));
+    }
+    let (status, body, text) = post(boot.app.clone(), "/api/tracks", request).await;
     assert!(
         status.is_success(),
         "track create must succeed: status={status} body={text}"
@@ -129,7 +128,7 @@ async fn create_track(boot: &Boot) -> (String, String) {
 #[tokio::test]
 async fn probe_replay_boot_track_create_leaves_planner_card_inert() {
     let boot = boot().await;
-    let (_track_id, planner_card_id) = create_track(&boot).await;
+    let (_track_id, planner_card_id) = create_track_with_storage(&boot, true).await;
 
     let runtime = boot
         .repo
@@ -155,43 +154,54 @@ async fn probe_replay_boot_track_create_leaves_planner_card_inert() {
 
 #[tokio::test]
 async fn area_chat_planner_start_backdoors_are_forbidden_without_runtime_rows() {
-    let boot = boot().await;
-    let (track_id, planner_card_id) = create_track(&boot).await;
-    sqlx::query("UPDATE tracks SET purpose = 'area-chat' WHERE id = ?1")
-        .bind(&track_id)
-        .execute(boot.repo.pool())
-        .await
-        .unwrap();
+    for historical in [true, false] {
+        let boot = boot().await;
+        let (track_id, planner_card_id) = create_track_with_storage(&boot, historical).await;
+        let before: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM worker_sessions WHERE card_id=?")
+                .bind(&planner_card_id)
+                .fetch_one(boot.repo.pool())
+                .await
+                .unwrap();
+        assert_eq!(before, i64::from(!historical));
+        sqlx::query("UPDATE tracks SET purpose = 'area-chat' WHERE id = ?1")
+            .bind(&track_id)
+            .execute(boot.repo.pool())
+            .await
+            .unwrap();
 
-    let (reset_status, _, reset_text) = post(
-        boot.app.clone(),
-        &format!("/api/cards/{planner_card_id}/planner/reset"),
-        json!({}),
-    )
-    .await;
-    assert_eq!(reset_status, StatusCode::FORBIDDEN, "{reset_text}");
-    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM worker_sessions WHERE card_id = ?1")
-        .bind(&planner_card_id)
-        .fetch_one(boot.repo.pool())
-        .await
-        .unwrap();
-    assert_eq!(count, 0, "reset fence must precede runtime creation");
+        let (reset_status, _, reset_text) = post(
+            boot.app.clone(),
+            &format!("/api/cards/{planner_card_id}/planner/reset"),
+            json!({}),
+        )
+        .await;
+        assert_eq!(reset_status, StatusCode::FORBIDDEN, "{reset_text}");
+        let count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM worker_sessions WHERE card_id = ?1")
+                .bind(&planner_card_id)
+                .fetch_one(boot.repo.pool())
+                .await
+                .unwrap();
+        assert_eq!(count, before, "reset fence must precede runtime creation");
 
-    let force_error = replay::force_planner_phase(
-        &boot.state,
-        boot.dyn_repo(),
-        &planner_card_id,
-        HarnessPhaseTag::Idle,
-    )
-    .await
-    .expect_err("the fixtures endpoint engine must reject area-chat planner cards");
-    assert_eq!(force_error.status(), StatusCode::FORBIDDEN);
-    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM worker_sessions WHERE card_id = ?1")
-        .bind(&planner_card_id)
-        .fetch_one(boot.repo.pool())
+        let force_error = replay::force_planner_phase(
+            &boot.state,
+            boot.dyn_repo(),
+            &planner_card_id,
+            HarnessPhaseTag::Idle,
+        )
         .await
-        .unwrap();
-    assert_eq!(count, 0, "force fence must precede runtime creation");
+        .expect_err("the fixtures endpoint engine must reject area-chat planner cards");
+        assert_eq!(force_error.status(), StatusCode::FORBIDDEN);
+        let count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM worker_sessions WHERE card_id = ?1")
+                .bind(&planner_card_id)
+                .fetch_one(boot.repo.pool())
+                .await
+                .unwrap();
+        assert_eq!(count, before, "force fence must precede runtime creation");
+    }
 }
 
 #[tokio::test]
@@ -440,6 +450,11 @@ async fn force_planner_phase_rejects_wedged_with_bad_request() {
     let boot = boot().await;
     let (_track_id, planner_card_id) = create_track(&boot).await;
 
+    let before = boot
+        .repo
+        .session_projection_active_for_card(&planner_card_id)
+        .await
+        .unwrap();
     let err = replay::force_planner_phase(
         &boot.state,
         boot.dyn_repo(),
@@ -474,10 +489,11 @@ async fn force_planner_phase_rejects_wedged_with_bad_request() {
         .session_projection_active_for_card(&planner_card_id)
         .await
         .unwrap();
-    assert!(
-        runtime.is_none(),
-        "wedged guard runs before stand-up; no runtime row may be created, got {runtime:?}"
+    assert_eq!(
+        runtime, before,
+        "wedged refusal preserves the current carrier"
     );
+    assert_eq!(boot.state.harness.len_active(), 0);
 }
 
 /// The dev-stood-up harness must never run the issuing loop against the replay stub daemon:
@@ -597,6 +613,12 @@ async fn assistant_provider_forced_phase_keeps_the_declared_provider_and_never_b
     for provider in AgentProvider::ALL {
         let boot = boot().await;
         let (track, _) = create_track(&boot).await;
+        let root_before: Option<String> =
+            sqlx::query_scalar("SELECT root_session_id FROM tracks WHERE id=?")
+                .bind(&track)
+                .fetch_one(boot.repo.pool())
+                .await
+                .unwrap();
         let id = calm_server::model::new_id();
         let roles = boot.state.card_role_cache.clone();
         let mut tx = boot.repo.pool().begin().await.unwrap();
@@ -623,7 +645,8 @@ async fn assistant_provider_forced_phase_keeps_the_declared_provider_and_never_b
                 .fetch_one(boot.repo.pool())
                 .await
                 .unwrap();
-        assert!(root.is_none());
+        assert_eq!(root, root_before);
+        assert_ne!(root.as_deref(), Some(outcome.worker_session_id.as_str()));
         boot.state
             .harness
             .remove(&outcome.worker_session_id)

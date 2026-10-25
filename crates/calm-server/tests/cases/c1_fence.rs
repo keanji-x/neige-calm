@@ -31,9 +31,27 @@ impl Drop for Pause {
 async fn fixture() -> (Arc<Boot>, String, PathBuf) {
     let b = Arc::new(boot().await);
     let up = upstream(b.tmp.path());
-    let (status, body) = b.create_at(&up.clone, None, None).await;
-    assert_eq!(status, StatusCode::CREATED, "{body}");
-    let track = body["id"].as_str().unwrap().to_owned();
+    let track = b
+        .historical_at(&up.clone, "c1-history", "prepare historical fence")
+        .await
+        .unwrap();
+    // Settle the real historical first turn before making a closed-idle fixture.
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let turns = b.state.shared_codex_appserver.started_turns_for_test();
+            if let Some((thread, _)) = turns.first()
+                && let Some(turn) = b.state.shared_codex_appserver.active_turn_for_test(thread) {
+                b.state.shared_codex_appserver.emit_notification_for_test(
+                    calm_server::codex_appserver::Notification::TurnCompleted {
+                        thread_id:thread.clone(), turn:json!({"id":turn,"status":"completed"}),
+                    });
+            }
+            let busy: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM worker_sessions WHERE track_id=? AND state IN ('starting','running','turn_pending')")
+                .bind(&track).fetch_one(b.repo.pool()).await.unwrap();
+            if !turns.is_empty() && busy == 0 { break; }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }).await.expect("historical first turn settles before closed-idle clean");
     b.shutdown_harnesses().await;
     let path = expected_worktree(&up.clone, &track);
     run_git(&path, ["config", "core.excludesFile", "/dev/null"]);

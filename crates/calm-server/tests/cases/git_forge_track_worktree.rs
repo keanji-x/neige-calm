@@ -4,10 +4,8 @@
 //! socket to the real git-forge plugin. #1830 S3 C3: neither that commit nor its probe shows the
 //! repository's code a GitHub token.
 
-use axum::Extension;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use calm_server::auth::Principal;
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_server::state::{AppState, CodexClient};
 use http_body_util::BodyExt;
@@ -35,17 +33,7 @@ async fn create_attached_track(fx: &Fixture, cwd: &Path) -> String {
     .with_workspace_root(fx._tmp.path().join("workspaces"))
     // Down: the message-less create still answers 201, and no Planner harness outlives the test.
     .with_shared_codex_appserver(SharedCodexAppServer::new_stub_with_pending(repo, None));
-    let app = calm_server::routes::router()
-        .layer(Extension(Principal {
-            user_id: "owner".into(),
-            display_name: "owner".into(),
-            role: "owner".into(),
-            session_id: "test".into(),
-        }))
-        .layer(axum::middleware::from_fn(
-            calm_server::actor::actor_middleware,
-        ))
-        .with_state(state);
+    let app = crate::support::authenticated_router::application(state).await;
     let body = json!({
         "planner_provider": "codex",
         "area_id": fx.area_id,

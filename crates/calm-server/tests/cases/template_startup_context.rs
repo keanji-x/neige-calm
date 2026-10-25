@@ -121,7 +121,7 @@ async fn template_startup_injects_the_creation_snapshot_before_any_report_read()
 
 #[tokio::test]
 async fn template_startup_historical_recipe_snapshot_survives_source_edits_and_reset() {
-    let b = boot().await;
+    let b = historical_boot().await;
     let table = json!({
         "columns": [{"key": "name", "label": "Name", "align": "left"}],
         "rows": [{"name": "preserved evidence"}], "caption": "Evidence",
@@ -131,15 +131,12 @@ async fn template_startup_historical_recipe_snapshot_survives_source_edits_and_r
         recipe_body(),
         calm_types::report_blocks::render_fence("table", &table)
     );
-    // Historical reset retains its released attached-entry contract.
-    let cwd = b.tmp.path().join("historical-recipe");
-    user_repo(&cwd);
+    // Omitted cwd plus attach_folder enters the actual historical Managed owner.
     let recipe = b.create_recipe("Original method", &source).await;
     let (_, original) = b.get_json(&format!("/api/track-recipes/{recipe}")).await;
     let (status, created) = b.post_create(Some("recipe-context"), json!({
         "planner_provider": "codex",
         "area_id": b.area_id, "recipe_id": recipe, "first_message": "Carry out this investigation",
-        "cwd":cwd, "isolation":"none", "attach_folder":true,
         "theme": {"fg": [255, 255, 255], "bg": [0, 0, 0]},
     })).await;
     assert_eq!(status, StatusCode::CREATED, "{created}");

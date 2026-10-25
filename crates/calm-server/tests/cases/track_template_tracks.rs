@@ -186,17 +186,35 @@ async fn get(app: axum::Router, uri: &str) -> (StatusCode, Value) {
     (status, json)
 }
 
-async fn planner_harness_ops_for_track(repo: &Arc<dyn Repo>, track_id: &str) -> i64 {
-    let pool = repo.sqlite_db().expect("sqlite pool");
-    sqlx::query_scalar(
-        "SELECT COUNT(*) FROM operations \
-         WHERE kind = 'planner-harness-start' \
-           AND json_extract(payload_json, '$.wave_id') = ?1",
-    )
-    .bind(track_id)
-    .fetch_one(pool.read_pool())
-    .await
-    .expect("track planner-harness-start count")
+async fn assert_blank_canonical_planner(boot: &Boot, track_id: &str) {
+    let card = boot
+        .repo
+        .cards_by_track(track_id)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|card| {
+            boot.state.card_role_cache.get(&card.id) == Some(calm_server::model::CardRole::Planner)
+        })
+        .unwrap();
+    let worker = boot
+        .repo
+        .session_projection_active_for_card(&card.id.to_string())
+        .await
+        .unwrap()
+        .unwrap();
+    let frame: calm_types::harness::snapshot::CanonicalHarnessSnapshot =
+        serde_json::from_value(worker.handle_state_json.unwrap()).unwrap();
+    assert!(frame.canonical_inputs.pending.is_empty());
+    assert!(frame.canonical_inputs.active.is_none());
+    assert!(boot.state.harness.get(&worker.id).is_none());
+    let messages: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM conversation_messages WHERE card_id=?")
+            .bind(card.id.as_str())
+            .fetch_one(boot.repo.sqlite_db().unwrap().read_pool())
+            .await
+            .unwrap();
+    assert_eq!(messages, 0);
 }
 
 fn create_body(area_id: &str, title: &str, extra: Value) -> Value {
@@ -631,10 +649,7 @@ async fn dev_create_captures_method_without_tasks() {
     assert_eq!(body["template_id"], DEV);
     assert_eq!(body["plugin_scope"], "gitforge");
     let track_id = body["id"].as_str().expect("track id");
-    assert!(
-        planner_harness_ops_for_track(&boot.repo, track_id).await >= 1,
-        "forked user track still starts planner harness"
-    );
+    assert_blank_canonical_planner(&boot, track_id).await;
 
     let (status, detail) = get(boot.app.clone(), &format!("/api/tracks/{track_id}")).await;
     assert_eq!(status, StatusCode::OK, "detail={detail}");
@@ -673,23 +688,8 @@ async fn a_template_and_an_explicit_fork_source_are_a_400() {
     .await;
     assert_eq!(status, StatusCode::CREATED, "body={source}");
     let source_id = source["id"].as_str().unwrap().to_string();
-    // The source track's planner is stopped so its observation-queue persistence cannot race the snapshots.
-    let source_worker_session_id: String = sqlx::query_scalar(
-        "SELECT id FROM worker_sessions WHERE track_id=?1 ORDER BY created_at_ms DESC LIMIT 1",
-    )
-    .bind(&source_id)
-    .fetch_one(boot.repo.sqlite_db().expect("sqlite pool").read_pool())
-    .await
-    .expect("source planner runtime");
-    let source_harness = boot
-        .state
-        .harness
-        .remove(&source_worker_session_id)
-        .expect("source planner harness");
-    source_harness
-        .shutdown()
-        .await
-        .expect("shutdown source planner harness");
+    // A blank canonical carrier has no issuing loop that can race the report snapshots.
+    assert_blank_canonical_planner(&boot, &source_id).await;
     let (source_track, report_card, current) =
         resolve_report_for_track(boot.repo.as_ref(), &source_id)
             .await
