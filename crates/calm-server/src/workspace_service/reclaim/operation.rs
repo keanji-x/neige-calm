@@ -305,7 +305,6 @@ async fn admit(
                 },
             },
             program: ExecutionSpecification {
-                version: calm_session::control::execution::SpecificationVersion::AmbientV2,
                 ambient_environment: calm_session::control::execution::AmbientEnvironment::None,
                 // The executor requires an absolute program. Preserve Command's PATH lookup
                 // through an explicit shell exec; every argument remains positional data.

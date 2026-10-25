@@ -417,7 +417,6 @@ mod tests {
             ),
         };
         let specification = ExecutionSpecification {
-            version: calm_session::control::execution::SpecificationVersion::AmbientV2,
             ambient_environment: calm_session::control::execution::AmbientEnvironment::None,
             program: "/bin/true".into(),
             args: vec![],

@@ -129,9 +129,7 @@ fn native_macos_journal_incomplete_output_never_releases_private_resources() {
 
 #[test]
 fn w_owned_old_journal_keeps_explicit_only() {
-    use calm_session::control::execution::{
-        AmbientEnvironment, AmbientProxyPolicy, SpecificationVersion,
-    };
+    use calm_session::control::execution::{AmbientEnvironment, AmbientProxyPolicy};
     for version in [4, 5] {
         let temp = tempfile::tempdir().unwrap();
         let store = Store::open(temp.path().join("journal")).unwrap();
@@ -148,10 +146,6 @@ fn w_owned_old_journal_keeps_explicit_only() {
             record.request.specification.ambient_environment,
             AmbientEnvironment::None
         );
-        assert_eq!(
-            record.request.specification.version,
-            SpecificationVersion::ExplicitOnlyV1
-        );
         record.request.specification.ambient_environment = AmbientEnvironment::SupervisorAllowed {
             proxy_policy: AmbientProxyPolicy::RejectSecret,
         };
@@ -167,9 +161,7 @@ fn w_owned_none_journal_matches_released_bytes() {
     let temp = tempfile::tempdir().unwrap();
     let store = Store::open(temp.path().join("journal")).unwrap();
     std::fs::write(store.path().join("old.execution"), bytes).unwrap();
-    let mut record = store.load().unwrap().pop().unwrap();
-    record.request.specification.version =
-        calm_session::control::execution::SpecificationVersion::AmbientV2;
+    let record = store.load().unwrap().pop().unwrap();
     assert_eq!(record.version, 5);
     store.write("current.execution", &record).unwrap();
     assert_eq!(

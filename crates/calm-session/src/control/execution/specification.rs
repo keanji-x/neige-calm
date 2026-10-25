@@ -15,14 +15,7 @@ pub enum AmbientProxyPolicy {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum SpecificationVersion {
-    ExplicitOnlyV1,
-    AmbientV2,
-}
-
-#[derive(Clone, Debug, Eq)]
 pub struct ExecutionSpecification {
-    pub version: SpecificationVersion,
     pub program: PathBuf,
     pub args: Vec<String>,
     /// Explicit durable environment; overrides supervisor ambient values at spawn.
@@ -30,21 +23,6 @@ pub struct ExecutionSpecification {
     pub ambient_environment: AmbientEnvironment,
     pub io_mode: IoMode,
     pub replay_bytes: usize,
-}
-
-// The version records the source format. None has one released representation,
-// so its origin marker must not change immutable-input equality after a roundtrip.
-impl PartialEq for ExecutionSpecification {
-    fn eq(&self, other: &Self) -> bool {
-        self.ambient_environment == other.ambient_environment
-            && (self.ambient_environment == AmbientEnvironment::None
-                || self.version == other.version)
-            && self.program == other.program
-            && self.args == other.args
-            && self.environment == other.environment
-            && self.io_mode == other.io_mode
-            && self.replay_bytes == other.replay_bytes
-    }
 }
 
 pub const EXECUTION_SPECIFICATION_VERSION: u32 = 2;
@@ -74,7 +52,6 @@ struct Legacy {
 impl From<Legacy> for ExecutionSpecification {
     fn from(old: Legacy) -> Self {
         Self {
-            version: SpecificationVersion::ExplicitOnlyV1,
             program: old.program,
             args: old.args,
             environment: old.environment,
@@ -86,13 +63,6 @@ impl From<Legacy> for ExecutionSpecification {
 }
 impl Serialize for ExecutionSpecification {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        if self.version == SpecificationVersion::ExplicitOnlyV1
-            && self.ambient_environment != AmbientEnvironment::None
-        {
-            return Err(serde::ser::Error::custom(
-                "legacy specification cannot authorize ambient",
-            ));
-        }
         if self.ambient_environment == AmbientEnvironment::None {
             return Legacy {
                 program: self.program.clone(),
@@ -109,10 +79,7 @@ impl Serialize for ExecutionSpecification {
             ));
         }
         Current {
-            version: match self.version {
-                SpecificationVersion::ExplicitOnlyV1 => 1,
-                SpecificationVersion::AmbientV2 => EXECUTION_SPECIFICATION_VERSION,
-            },
+            version: EXECUTION_SPECIFICATION_VERSION,
             program: self.program.clone(),
             args: self.args.clone(),
             environment: self.environment.clone(),
@@ -142,7 +109,6 @@ impl<'de> Deserialize<'de> for ExecutionSpecification {
             ));
         }
         Ok(Self {
-            version: SpecificationVersion::AmbientV2,
             program: current.program,
             args: current.args,
             environment: current.environment,
@@ -183,11 +149,6 @@ impl EnvironmentPreflight {
 impl ExecutionSpecification {
     /// Check durable public values before preparation/admission. None retains the released contract.
     pub fn validate_environment(&self) -> Result<(), &'static str> {
-        if self.version == SpecificationVersion::ExplicitOnlyV1
-            && self.ambient_environment != AmbientEnvironment::None
-        {
-            return Err("legacy specification cannot authorize ambient");
-        }
         EnvironmentPreflight::from(self).validate()
     }
 }

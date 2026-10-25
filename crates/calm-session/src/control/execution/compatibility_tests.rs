@@ -13,13 +13,9 @@ fn w_owned_none_matches_released_wire_and_specification_bytes() {
     let ControlMsg::Execution(request) = message else {
         panic!()
     };
-    let ExecutionRequest::Prepare(mut request) = *request else {
+    let ExecutionRequest::Prepare(request) = *request else {
         panic!()
     };
-    let released = request.specification.clone();
-    // Current callers may construct the current in-memory version with None.
-    request.specification.version = SpecificationVersion::AmbientV2;
-    assert_eq!(request.specification, released);
     assert_eq!(
         serde_json::to_vec(&request.specification).unwrap(),
         include_bytes!("fixtures/explicit-v10.specification.json")
@@ -76,4 +72,39 @@ async fn w_owned_new_kernel_accepts_released_v10_handshake() {
         .await
         .unwrap();
     peer.await.unwrap();
+}
+
+#[test]
+fn w_owned_specification_roundtrip_preserves_immutable_input() {
+    let explicit: ExecutionSpecification =
+        serde_json::from_slice(include_bytes!("fixtures/explicit-v10.specification.json")).unwrap();
+    for policy in [
+        AmbientEnvironment::None,
+        AmbientEnvironment::SupervisorAllowed {
+            proxy_policy: AmbientProxyPolicy::RejectSecret,
+        },
+        AmbientEnvironment::SupervisorAllowed {
+            proxy_policy: AmbientProxyPolicy::Exclude,
+        },
+    ] {
+        let mut input = explicit.clone();
+        input.ambient_environment = policy;
+        let encoded = serde_json::to_vec(&input).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<ExecutionSpecification>(&encoded).unwrap(),
+            input
+        );
+        if input.ambient_environment == AmbientEnvironment::None {
+            let config = bincode::config::standard();
+            let encoded = bincode::serde::encode_to_vec(&input, config).unwrap();
+            let (decoded, used): (ExecutionSpecification, _) =
+                bincode::serde::decode_from_slice(&encoded, config).unwrap();
+            assert_eq!(used, encoded.len());
+            assert_eq!(decoded, input);
+        } else {
+            let mut value = serde_json::to_value(&input).unwrap();
+            value["version"] = serde_json::json!(EXECUTION_SPECIFICATION_VERSION + 1);
+            assert!(serde_json::from_value::<ExecutionSpecification>(value).is_err());
+        }
+    }
 }

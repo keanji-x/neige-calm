@@ -368,9 +368,7 @@ mod compatibility_tests {
         // Serialized by the production HelperPlan at 88e8615c0 from the same
         // released linux-v4 journal used by the journal contract fixtures.
         let bytes = include_bytes!("fixtures/linux-v10.explicit.helper.json");
-        let mut plan: HelperPlan = serde_json::from_slice(bytes).unwrap();
-        let HelperPlan::Execution { specification, .. } = &mut plan;
-        specification.version = calm_session::control::execution::SpecificationVersion::AmbientV2;
+        let plan: HelperPlan = serde_json::from_slice(bytes).unwrap();
         assert_eq!(serde_json::to_vec(&plan).unwrap(), bytes);
     }
 }
