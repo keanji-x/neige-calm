@@ -10,10 +10,10 @@ const fixtures = resolve(import.meta.dirname, 'fixtures/custom-properties');
 const fixture = (file: string) => ({ file, code: readFileSync(join(fixtures, /\.tsx?$/.test(file) ? `${file}.txt` : file), 'utf8') });
 
 describe('custom property existence gate', () => {
-  it.each(['positive.css', 'quoted-double.css', 'quoted-single.css', 'escaped-double.css', 'escaped-single.css', 'fallback.css', 'quoted-comments.css', 'comments.css', 'url-literal-var.css', 'url-escaped-close.css', 'url-hex-escape.css'])('accepts %s', file => {
+  it.each(['positive.css', 'quoted-double.css', 'quoted-single.css', 'escaped-double.css', 'escaped-single.css', 'fallback.css', 'quoted-comments.css', 'comments.css', 'url-literal-var.css', 'url-escaped-close.css', 'url-hex-escape.css', 'string-continuation-double.css', 'string-continuation-single.css', 'string-hex-double.css', 'string-hex-single.css', 'opaque-var-argument.css'])('accepts %s', file => {
     expect(auditCustomProperties([fixture(file)])).toEqual([]);
   });
-  it.each(['negative.css', 'nested-fallback.css', 'outside-string.css', 'after-escaped-string.css', 'escaped-backslash.css', 'url-escaped-double.css', 'url-escaped-single.css', 'outside-escaped-quote.css', 'outside-hex-escape.css'])('rejects the single undefined reference in %s', file => {
+  it.each(['negative.css', 'nested-fallback.css', 'outside-string.css', 'after-escaped-string.css', 'escaped-backslash.css', 'url-escaped-double.css', 'url-escaped-single.css', 'outside-escaped-quote.css', 'outside-hex-escape.css', 'bad-string-double.css', 'bad-string-single.css', 'comment-quote-before-var.css', 'comment-before-var-name.css'])('rejects the single undefined reference in %s', file => {
     expect(auditCustomProperties([fixture(file)])).toEqual([
       `${file}: undefined custom property --missing without fallback`,
     ]);
@@ -48,7 +48,7 @@ describe('custom property existence gate', () => {
       expectCliViolation(root, '--from-source');
     });
   });
-  it.each(['negative.css', 'nested-fallback.css', 'outside-string.css', 'after-escaped-string.css', 'escaped-backslash.css', 'url-escaped-double.css', 'url-escaped-single.css', 'outside-escaped-quote.css', 'outside-hex-escape.css'])('fails the CLI for the single violation in %s', file => {
+  it.each(['negative.css', 'nested-fallback.css', 'outside-string.css', 'after-escaped-string.css', 'escaped-backslash.css', 'url-escaped-double.css', 'url-escaped-single.css', 'outside-escaped-quote.css', 'outside-hex-escape.css', 'bad-string-double.css', 'bad-string-single.css', 'comment-quote-before-var.css', 'comment-before-var-name.css'])('fails the CLI for the single violation in %s', file => {
     withSourceTree((root, put) => {
       put('web/src/ui/case.module.css', fixture(file).code);
       expectCliViolation(root, '--missing');
