@@ -11,6 +11,8 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use calm_proc_supervisor::test_support::InProcessProcSupervisor;
 use calm_server::test_seams::{PausePoint, VIEWER_REATTACH_PROBED, install_pause_for_test};
+use calm_session::control::{AttachRequest, ControlMsg, ControlReply};
+use calm_session::{read_frame, write_frame};
 use serde_json::json;
 use tokio::sync::Notify;
 use tower::ServiceExt;
@@ -281,7 +283,7 @@ async fn two_concurrent_updates_leave_exactly_one_live_child() {
 }
 
 /// A viewer's reattach that saw a live child, and reaches the supervisor only once that child is
-/// gone (as an Update's stop leaves it), never starts `term.program`: the card's original
+/// published exited (as an Update's stop leaves it), never starts `term.program`: the card's original
 /// `--session-id=` command line runs once, at the card's creation.
 ///
 /// The child is stopped out of band here: a reattach that found no renderer holds the track's
@@ -309,9 +311,49 @@ async fn a_viewer_reattach_never_starts_the_terminal_program() {
     tokio::time::timeout(BUDGET, paused.entered.notified())
         .await
         .expect("the reattach sees the live child");
+    // Observe publication through an independent real Attach stream. PID death alone does not
+    // order the viewer's Attach after the supervisor's sticky exit slot is written.
+    let mut exit_stream = tokio::time::timeout(BUDGET, async {
+        let mut stream = calm_session::control::execution::connect_legacy(live._supervisor.sock())
+            .await
+            .unwrap();
+        write_frame(
+            &mut stream,
+            &ControlMsg::Attach(AttachRequest {
+                proc_id: format!("term:{}", live.terminal_id),
+                from_cursor: None,
+                reader_id: "test-viewer-exit".into(),
+            }),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(
+            read_frame::<ControlReply, _>(&mut stream).await.unwrap(),
+            ControlReply::AttachOk(attached) if attached.running
+        ));
+        stream
+    })
+    .await
+    .expect("attach the independent exit observer while the child runs");
     // SAFETY: a plain signal to the stand-in child this test started.
     assert_eq!(unsafe { libc::kill(old_pid, libc::SIGKILL) }, 0);
-    eventually("the old child is gone", || !alive(old_pid)).await;
+    tokio::time::timeout(BUDGET, async {
+        loop {
+            match read_frame::<ControlReply, _>(&mut exit_stream)
+                .await
+                .unwrap()
+            {
+                ControlReply::Exited { proc_id, .. } => {
+                    assert_eq!(proc_id, format!("term:{}", live.terminal_id));
+                    break;
+                }
+                ControlReply::Output { .. } | ControlReply::Gap { .. } => {}
+                other => panic!("unexpected exit observer reply: {other:?}"),
+            }
+        }
+    })
+    .await
+    .expect("the supervisor publishes the child's exit before viewer reattach");
     paused.release.notify_one();
 
     let reattached = reattach.await.unwrap().unwrap();
