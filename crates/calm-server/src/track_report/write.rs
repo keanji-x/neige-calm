@@ -297,7 +297,8 @@ async fn persist(
     recorder_admission: Option<Arc<dyn RecorderAdmissionGate>>,
     task_admission: TaskWriteAdmission,
 ) -> Result<(Card, ReportOpTrace), CalmError> {
-    write_with_actor_events_typed::<_, _>(repo, None, events, write, move |tx| {
+    let write = write.clone();
+    let (updated, pending, ids) = crate::db::write_in_tx_typed(repo, move |tx| {
         let target = match &target {
             PersistTarget::Resolved(target) => PersistTarget::Resolved(target.clone()),
             PersistTarget::Agent(identity) => PersistTarget::Agent(identity.clone()),
@@ -412,7 +413,7 @@ async fn persist(
                 &op,
             )
             .await?;
-            let (trace, doc_rev) =
+            let (mut trace, doc_rev) =
                 super::ops::apply_persisted_with_knowledge(&mut doc, &op, author, knowledge)?;
             if let Some(before) = tasks_before {
                 let after = doc
@@ -491,23 +492,39 @@ async fn persist(
                     actor.clone(),
                     track_scope,
                     Event::PlanUpdated {
-                        track_id,
+                        track_id: track_id.clone(),
                         changed_keys: task_projection.changed_keys,
                         agent_message: None,
                     },
                 ));
             }
             events.extend(task_projection.kernel_events);
+            let (ids, commits) =
+                crate::db::sqlite::append_actor_events_in_tx(tx, None, &write, &events).await?;
             if let (Some(session), Some(read)) =
-                (knowledge_session.as_deref(), trace.knowledge.as_ref())
+                (knowledge_session.as_deref(), trace.knowledge.as_mut())
             {
+                let commit = commits.get(&track_id).ok_or_else(|| {
+                    CalmError::Internal("Report write produced no history commit".into())
+                })?;
+                crate::report_read_ledger::history::locate_written_tx(
+                    tx,
+                    &track_id,
+                    &id,
+                    commit,
+                    &projected_payload,
+                    &trace.written_block_ids,
+                    read,
+                )
+                .await?;
                 crate::db::sqlite::report_knowledge::save_tx(tx, session, &id, read).await?;
             }
-            Ok(((updated, trace), events))
+            Ok(((updated, trace), events, ids))
         })
     })
-    .await
-    .map(|(updated, _ids)| updated)
+    .await?;
+    crate::db::sqlite::broadcast_actor_events(events, &ids, pending);
+    Ok(updated)
 }
 
 /// What a report write does with a task declaration its projection does not admit.

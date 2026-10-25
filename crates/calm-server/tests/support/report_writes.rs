@@ -117,3 +117,35 @@ pub async fn read_then_write_markdown(
     read_all(ctx, registry, identity.clone()).await;
     call(ctx, registry, TOOL_REPORT_WRITE, identity, args).await
 }
+
+/// Creation fixtures must announce their Report, just as the production track creator does.
+/// This is explicit setup, never a read/write helper that repairs missing history.
+pub async fn announce_report(
+    repo: &dyn calm_server::db::RepoEventWrite,
+    bus: &calm_server::event::EventBus,
+    write: &calm_server::state::WriteContext,
+    report: calm_server::model::Card,
+) {
+    let track = repo
+        .track_get(report.track_id.as_str())
+        .await
+        .unwrap()
+        .unwrap();
+    let scope = calm_server::event::EventScope::Card {
+        card: report.id.clone(),
+        track: report.track_id.clone(),
+        area: track.area_id,
+    };
+    repo.write_with_event(
+        calm_server::ids::ActorId::Kernel,
+        scope,
+        None,
+        bus,
+        write,
+        Box::new(move |_tx| {
+            Box::pin(async move { Ok(calm_server::event::Event::CardAdded(report)) })
+        }),
+    )
+    .await
+    .expect("announce fixture Report through production event/VCS wrapper");
+}

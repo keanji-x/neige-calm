@@ -224,6 +224,13 @@ pub async fn boot_forge_e2e_fixture(
         CardRole::ReportCard,
         track.id.clone(),
     );
+    super::super::report_writes::announce_report(
+        repo_dyn.as_ref(),
+        &events,
+        &write,
+        report_card.clone(),
+    )
+    .await;
     if matches!(fixture.plan_source, PlanSource::Injected) {
         seed_planner_session(&sqlx_repo, track.id.as_str(), planner_card.id.as_str()).await;
     }

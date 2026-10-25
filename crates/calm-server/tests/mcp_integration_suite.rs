@@ -129,3 +129,6 @@ mod objective_dispatch;
 
 #[path = "cases/mcp_report_anchor_knowledge_persistence.rs"]
 mod mcp_report_anchor_knowledge_persistence;
+
+#[path = "cases/mcp_report_anchor_knowledge_history.rs"]
+mod mcp_report_anchor_knowledge_history;

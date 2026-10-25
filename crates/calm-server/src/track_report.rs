@@ -10,7 +10,6 @@ use crate::db::sqlite::{
     project_tasks_with_tree_term_tx, track_tree_budget, track_tree_planner_inventory_by_member,
     tree_share_from_member_inventory,
 };
-use crate::db::write_with_actor_events_typed;
 use crate::error::CalmError;
 use crate::event::{EditAuthor, Event, EventBus, EventScope};
 use crate::ids::ActorId;

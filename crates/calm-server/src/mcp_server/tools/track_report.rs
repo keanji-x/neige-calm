@@ -178,12 +178,21 @@ pub(crate) async fn report_read(
                 )
                 .await?;
                 if let Some((_, ids)) = &text {
-                    let recorded = crate::report_read_ledger::record_read(
+                    let mut recorded = crate::report_read_ledger::record_read(
                         read,
                         snapshot.doc_rev,
                         &snapshot.blocks,
                         ids,
                     );
+                    crate::report_read_ledger::history::locate_read_tx(
+                        tx,
+                        &track.id,
+                        &report_id,
+                        ids,
+                        &snapshot.blocks,
+                        &mut recorded,
+                    )
+                    .await?;
                     crate::db::sqlite::report_knowledge::save_tx(
                         tx,
                         &identity.session_id,

@@ -119,7 +119,10 @@ pub use card_composite::{
 };
 #[cfg(any(test, feature = "test-helpers"))]
 pub use events::append_probe;
-pub use events::{append_decision_event_in_tx, append_decision_events_in_tx};
+pub use events::{
+    append_actor_events_in_tx, append_decision_event_in_tx, append_decision_events_in_tx,
+    broadcast_actor_events,
+};
 pub use infra::{
     ObservedTransaction, SqliteDb, begin_immediate_tx, begin_immediate_tx_once, is_sqlite_busy,
 };

@@ -228,6 +228,9 @@ async fn transactional_failure_rolls_back_report_tasks_events_and_history() {
             .fetch_one(pool.read_pool())
             .await
             .unwrap();
+        let history_counts: (i64, i64) = sqlx::query_as("SELECT (SELECT count(*) FROM track_vcs_commits), (SELECT count(*) FROM track_vcs_objects)")
+            .fetch_one(pool.read_pool()).await.unwrap();
+        let mut receiver = b.ctx.events.subscribe();
         let mut tx = calm_server::db::sqlite::begin_immediate_tx(&pool)
             .await
             .unwrap();
@@ -266,6 +269,12 @@ async fn transactional_failure_rolls_back_report_tasks_events_and_history() {
             .unwrap(),
             head
         );
+        assert_eq!(sqlx::query_as::<_, (i64, i64)>("SELECT (SELECT count(*) FROM track_vcs_commits), (SELECT count(*) FROM track_vcs_objects)")
+            .fetch_one(pool.read_pool()).await.unwrap(), history_counts);
+        assert!(matches!(
+            receiver.try_recv(),
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+        ));
         assert_eq!(payload(&b).await.body, before.body);
         assert_eq!(payload(&b).await.doc_rev, before.doc_rev);
         assert_eq!(
@@ -382,9 +391,7 @@ async fn concurrent_reads_merge_without_lost_knowledge() {
     assert!(read.blocks.contains_key(&a) && read.blocks.contains_key(&c));
     assert!(read.blocks.values().all(|r| matches!(
         r.history_ref,
-        calm_types::report_knowledge::HistoryRef::Unavailable(
-            calm_types::report_knowledge::HistoryUnavailable::NotLocated
-        )
+        calm_types::report_knowledge::HistoryRef::Commit(_)
     )));
     assert!(!read.whole);
 }

@@ -289,6 +289,35 @@ async fn active_diff_endpoint_commits_tx(
         }
     }
 
+    // All surviving knowledge is a diff endpoint, independently of provider or session state.
+    // Share the existing conservative skip and oldest-reference floor with harness endpoints.
+    let rows = sqlx::query(
+        "SELECT DISTINCT b.history_ref FROM cards c \
+         JOIN report_read_ledger l ON l.report_card_id=c.id \
+         JOIN report_read_ledger_blocks b ON b.worker_session_id=l.worker_session_id \
+         AND b.report_card_id=l.report_card_id WHERE c.track_id=?",
+    )
+    .bind(track_id.as_str())
+    .fetch_all(&mut **tx)
+    .await?;
+    for row in rows {
+        let json: String = row.try_get("history_ref")?;
+        let history: calm_types::report_knowledge::HistoryRef = match serde_json::from_str(&json) {
+            Ok(history) => history,
+            Err(error) => {
+                tracing::warn!(track_id = %track_id, %error, "track-vcs prune: invalid knowledge reference; skipping prune");
+                return Ok(ActiveLastSeenHeads::SkipPrune);
+            }
+        };
+        if let calm_types::report_knowledge::HistoryRef::Commit(hash) = history {
+            let Some(record) = load_commit_record_for_track_tx(tx, track_id, &hash).await? else {
+                tracing::warn!(track_id = %track_id, commit_hash = %hash, "track-vcs prune: knowledge references an absent commit; skipping prune");
+                return Ok(ActiveLastSeenHeads::SkipPrune);
+            };
+            records.push(record);
+        }
+    }
+
     Ok(ActiveLastSeenHeads::Safe(records))
 }
 

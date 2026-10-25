@@ -26,7 +26,9 @@ EXPECTED_MODULES="|gated
 pub|append_probe"
 
 EXPECTED_ENTRIES="pub|append_decision_event_in_tx
-pub|append_decision_events_in_tx"
+pub|append_decision_events_in_tx
+pub|append_actor_events_in_tx
+pub|broadcast_actor_events"
 
 EXPECTED_SIG_SINGLE="pub async fn append_decision_event_in_tx( tx: &mut Transaction<'_, Sqlite>, actor: &ActorId, scope: &EventScope, correlation: Option<&str>, event: &Event, ) -> Result<i64> {"
 
@@ -108,13 +110,13 @@ actual:
 $actual_modules"
 fi
 
-# E2: the exported entry set is exactly the two appenders. Column-0 anchored, every `pub` form, every qualifier optional and repeatable.
+# E2: two decision appenders plus the shared actor-batch transaction and publication steps. Column-0 anchored, every `pub` form, every qualifier optional and repeatable.
 actual_entries="$(
   printf '%s' "$CODE" | rg --no-line-number --replace '$1|$2' \
     '^(pub(?:\([^)]*\))?)\s+(?:(?:async|unsafe|const|extern\s+"[^"]*")\s+)*fn\s+([A-Za-z_][A-Za-z0-9_]*).*$' || true
 )"
 if [ "$actual_entries" != "$EXPECTED_ENTRIES" ]; then
-  fail "E2: the exported append-entry set changed. A third door into the seam is a real decision — update EXPECTED_ENTRIES in this gate in the same PR.
+  fail "E2: the exported append-entry set changed. An additional door into the seam is a real decision — update EXPECTED_ENTRIES in this gate in the same PR.
 expected:
 $EXPECTED_ENTRIES
 actual:
@@ -222,4 +224,4 @@ if [ "$failures" -ne 0 ]; then
   exit 1
 fi
 
-echo "OK: the append seam holds its pinned shapes (module set, two entrances and their signatures, the capability type, the transaction census, the test-only gate abstraction's cfg, and the events-insert census)"
+echo "OK: the append seam holds its pinned shapes (module set, registered entrances and decision signatures, the capability type, the transaction census, the test-only gate abstraction's cfg, and the events-insert census)"

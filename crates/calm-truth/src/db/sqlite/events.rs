@@ -217,8 +217,8 @@ pub mod append_probe {
 }
 
 impl SqlxRepo {
-    /// **Private.** The raw events-table insert; only the eventized wrappers reach it, so commit-then-emit is unbypassable
-    /// from the route / plugin host layers. `actor` is stored as JSON; `scope` is decomposed into the `events.scope_*` columns.
+    /// Private raw insert: gated transaction steps supply the exact authorized triple.
+    /// Their callers commit before broadcasting. `actor` is JSON; `scope` fills `events.scope_*`.
     async fn event_append_in_tx(
         tx: &mut Transaction<'_, Sqlite>,
         authorized: &gated::Authorized<'_>,
@@ -520,81 +520,16 @@ impl RepoEventWrite for SqlxRepo {
                 return Err(e);
             }
         };
-        if events.is_empty() {
-            let _ = tx.rollback().await;
-            return Err(CalmError::Internal(
-                "write_with_actor_events: closure returned an empty event batch".into(),
-            ));
-        }
-        let mut authorized_batch = Vec::with_capacity(events.len());
-        for (actor, scope, event) in &events {
-            match gated::authorize_with_caches(
-                &mut tx,
-                actor,
-                scope,
-                event,
-                write.role_cache(),
-                write.area_cache(),
-            )
-            .await
-            {
-                Ok(authorized) => authorized_batch.push(authorized),
-                Err(e) => {
+        let (event_ids, _commits) =
+            match append_actor_events_in_tx(&mut tx, correlation, write, &events).await {
+                Ok(value) => value,
+                Err(error) => {
                     let _ = tx.rollback().await;
-                    return Err(e);
+                    return Err(error);
                 }
-            }
-        }
-        let mut event_ids: Vec<i64> = Vec::with_capacity(events.len());
-        for authorized in &authorized_batch {
-            match Self::event_append_in_tx(&mut tx, authorized, correlation).await {
-                Ok(id) => event_ids.push(id),
-                Err(e) => {
-                    let _ = tx.rollback().await;
-                    return Err(e);
-                }
-            }
-        }
-        let mut track_events = HashMap::<TrackId, (i64, Option<ActorId>, Vec<Event>)>::new();
-        for ((actor, scope, event), event_id) in events.iter().zip(event_ids.iter()) {
-            if let Some(track_id) = scope.track_id() {
-                let entry = track_events
-                    .entry(track_id.clone())
-                    .or_insert_with(|| (*event_id, Some(actor.clone()), Vec::new()));
-                // Commit author is exact only for a single-actor track batch; mixed actor batches
-                // are stored as NULL so the diff renderer leaves them unattributed.
-                entry.0 = *event_id;
-                if !matches!(&entry.1, Some(existing) if existing == actor) {
-                    entry.1 = None;
-                }
-                entry.2.push(event.clone());
-            }
-        }
-        for (track_id, (event_id, author, events_for_track)) in &track_events {
-            if let Err(e) = track_vcs::commit_events_with_author_in_tx(
-                &mut tx,
-                track_id,
-                author.as_ref(),
-                *event_id,
-                events_for_track,
-                track_vcs::MANIFEST_SCHEMA_VERSION,
-            )
-            .await
-            {
-                let _ = tx.rollback().await;
-                return Err(e);
-            }
-        }
+            };
         tx.commit().await?;
-        for (id, (actor, scope, event)) in event_ids.iter().zip(events) {
-            bus.emit_envelope(BroadcastEnvelope {
-                id: *id,
-                event_version: SYNC_EVENT_VERSION,
-                actor,
-                scope,
-                event,
-            });
-        }
+        broadcast_actor_events(bus, &event_ids, events);
         Ok(event_ids)
     }
 
@@ -901,5 +836,97 @@ impl RepoEventWrite for SqlxRepo {
             .fetch_one(self.db.read_pool())
             .await?;
         Ok(row.0)
+    }
+}
+
+/// Authorize the complete batch, append it, then create at most one history commit per track.
+/// The returned map contains only commits actually created by this call, never an existing HEAD.
+/// The caller owns SQL commit/rollback and must broadcast only after a successful SQL commit.
+#[allow(deprecated)] // Shared legacy write-chain glue; preserve the wrappers' cache contract.
+pub async fn append_actor_events_in_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    correlation: Option<&str>,
+    write: &crate::state::WriteContext,
+    events: &[(ActorId, EventScope, Event)],
+) -> Result<(Vec<i64>, HashMap<TrackId, track_vcs::CommitHash>)> {
+    if events.is_empty() {
+        return Err(CalmError::Internal(
+            "write_with_actor_events: closure returned an empty event batch".into(),
+        ));
+    }
+    let mut authorized_batch = Vec::with_capacity(events.len());
+    for (actor, scope, event) in events {
+        match gated::authorize_with_caches(
+            tx,
+            actor,
+            scope,
+            event,
+            write.role_cache(),
+            write.area_cache(),
+        )
+        .await
+        {
+            Ok(authorized) => authorized_batch.push(authorized),
+            Err(e) => {
+                return Err(e);
+            }
+        }
+    }
+    let mut event_ids: Vec<i64> = Vec::with_capacity(events.len());
+    for authorized in &authorized_batch {
+        match SqlxRepo::event_append_in_tx(tx, authorized, correlation).await {
+            Ok(id) => event_ids.push(id),
+            Err(e) => {
+                return Err(e);
+            }
+        }
+    }
+    let mut track_events = HashMap::<TrackId, (i64, Option<ActorId>, Vec<Event>)>::new();
+    for ((actor, scope, event), event_id) in events.iter().zip(event_ids.iter()) {
+        if let Some(track_id) = scope.track_id() {
+            let entry = track_events
+                .entry(track_id.clone())
+                .or_insert_with(|| (*event_id, Some(actor.clone()), Vec::new()));
+            // Commit author is exact only for a single-actor track batch; mixed actor batches
+            // are stored as NULL so the diff renderer leaves them unattributed.
+            entry.0 = *event_id;
+            if !matches!(&entry.1, Some(existing) if existing == actor) {
+                entry.1 = None;
+            }
+            entry.2.push(event.clone());
+        }
+    }
+    let mut commits = HashMap::new();
+    for (track_id, (event_id, author, events_for_track)) in &track_events {
+        if let Some(commit) = track_vcs::commit_events_with_author_in_tx(
+            tx,
+            track_id,
+            author.as_ref(),
+            *event_id,
+            events_for_track,
+            track_vcs::MANIFEST_SCHEMA_VERSION,
+        )
+        .await?
+        {
+            commits.insert(track_id.clone(), commit);
+        }
+    }
+    Ok((event_ids, commits))
+}
+
+/// Publish an already committed actor batch in its original order.
+pub fn broadcast_actor_events(
+    bus: &EventBus,
+    event_ids: &[i64],
+    events: Vec<(ActorId, EventScope, Event)>,
+) {
+    for (id, (actor, scope, event)) in event_ids.iter().zip(events) {
+        bus.emit_envelope(BroadcastEnvelope {
+            id: *id,
+            event_version: SYNC_EVENT_VERSION,
+            actor,
+            scope,
+            event,
+        });
     }
 }

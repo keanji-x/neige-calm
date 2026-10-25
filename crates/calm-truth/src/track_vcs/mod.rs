@@ -36,7 +36,7 @@ pub use read::{
     resolve_commit_prefix, since_last_turn_block, unified_patch,
 };
 pub use snapshot::{backfill_existing_tracks, snapshot_tree};
-pub use store::{canonical_json_bytes, head, put_blob, tree_at};
+pub use store::{blob_at_in_tx, canonical_json_bytes, head, head_in_tx, put_blob, tree_at};
 pub use types::{
     CommitLog, CommitLogEntry, CommitRecord, DiffEntry, DiffStatus, FileDiff, HistoricalBlob,
     ManifestEntry, ReportPatch, SinceLastTurnBlock, TreeManifest, TreeSnapshot,

@@ -40,7 +40,8 @@ async fn ok(boot: &CardBoot, name: &str, args: Value) -> Value {
 
 /// The track's report card, as production mints it with the track.
 async fn add_report(boot: &CardBoot) {
-    boot.repo
+    let report = boot
+        .repo
         .card_create(NewCard {
             track_id: boot.track_id.clone(),
             title: None,
@@ -50,6 +51,13 @@ async fn add_report(boot: &CardBoot) {
         })
         .await
         .unwrap();
+    crate::support::report_writes::announce_report(
+        boot.repo.as_ref(),
+        &boot.events,
+        &boot.ctx.write,
+        report,
+    )
+    .await;
 }
 
 /// Every object key under `value` that is not `[a-z0-9_]+`, as a path. A block's `payload` is

@@ -395,6 +395,9 @@ async fn boot_with_scope(
         gate_run_wait: calm_server::operation::task_gate_run::GateRunWait::DEFAULT,
     });
 
+    report_writes::announce_report(repo.as_ref(), &ctx.events, &ctx.write, report_card.clone())
+        .await;
+
     let mut registry = ToolRegistry::new();
     calm_server::mcp_server::tools::register_default_tools(&mut registry);
     let registry = Arc::new(registry);
@@ -1342,6 +1345,14 @@ async fn planner_from_different_track_cannot_reach_this_track_report() {
         .write
         .role_cache()
         .insert(planner2.id.clone(), CardRole::Planner, track2.id.clone());
+
+    report_writes::announce_report(
+        boot.repo.as_ref(),
+        &boot.ctx.events,
+        &boot.ctx.write,
+        report2.clone(),
+    )
+    .await;
 
     let planner2_identity = ToolCallIdentity {
         card_id: planner2.id.as_str().to_string(),

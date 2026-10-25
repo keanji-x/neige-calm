@@ -171,6 +171,14 @@ async fn boot() -> Boot {
         gate_run_wait: calm_server::operation::task_gate_run::GateRunWait::DEFAULT,
     });
 
+    crate::support::report_writes::announce_report(
+        repo.as_ref(),
+        &ctx.events,
+        &ctx.write,
+        report_card,
+    )
+    .await;
+
     let mut registry = ToolRegistry::new();
     calm_server::mcp_server::tools::register_default_tools(&mut registry);
     let registry = Arc::new(registry);

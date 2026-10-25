@@ -264,7 +264,7 @@ async fn insert_object_at_tx(
     Ok(())
 }
 
-pub(super) async fn head_in_tx(
+pub async fn head_in_tx(
     tx: &mut Transaction<'_, Sqlite>,
     track_id: &TrackId,
 ) -> Result<Option<CommitHash>> {
@@ -503,4 +503,26 @@ fn hash_bytes(kind: &str, bytes: &[u8]) -> ObjectHash {
     hasher.update(b"\0");
     hasher.update(bytes);
     hasher.finalize().to_hex().to_string()
+}
+
+/// Read a stored blob at an exact commit in the caller's transaction and track boundary.
+pub async fn blob_at_in_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    track_id: &TrackId,
+    commit: &str,
+    path: &str,
+) -> Result<Option<Vec<u8>>> {
+    if load_commit_record_for_track_tx(tx, track_id, commit)
+        .await?
+        .is_none()
+    {
+        return Ok(None);
+    }
+    let Some(tree) = tree_at_in_tx(tx, commit).await? else {
+        return Ok(None);
+    };
+    let Some(entry) = tree.entries.get(path) else {
+        return Ok(None);
+    };
+    load_blob_bytes_tx(tx, &entry.blob_hash).await
 }

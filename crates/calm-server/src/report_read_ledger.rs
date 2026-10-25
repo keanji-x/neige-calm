@@ -164,3 +164,5 @@ pub(crate) fn project_commit(
 
 #[cfg(test)]
 mod tests;
+
+pub(crate) mod history;
