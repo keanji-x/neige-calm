@@ -238,11 +238,24 @@ async fn acp_assistant_first_turn_model_prompt_and_restart() {
         &std::fs::read(root.path().join("assistant-mcp-results.json")).unwrap(),
     )
     .unwrap();
-    for result in &mcp[..2] {
+    assert_eq!(mcp.len(), 5);
+    for (index, result) in mcp.iter().enumerate() {
+        assert_eq!(result["jsonrpc"], "2.0");
+        assert_eq!(result["id"], index + 2, "{result}");
         assert!(result.get("error").is_none(), "{result}");
     }
+    for result in &mcp[..2] {
+        assert!(result.get("result").is_some(), "{result}");
+        assert_ne!(result["result"]["isError"], true, "{result}");
+    }
     for result in &mcp[2..] {
-        assert_eq!(result["error"]["code"], -32403, "{result}");
+        assert_eq!(result["result"]["isError"], true, "{result}");
+        let error = &result["result"]["structuredContent"];
+        assert_eq!(error["code"], -32403, "{result}");
+        assert!(error["message"].as_str().is_some_and(|s| !s.is_empty()));
+        assert_eq!(result["result"]["content"][0]["type"], "text");
+        let text = result["result"]["content"][0]["text"].as_str().unwrap();
+        assert_eq!(serde_json::from_str::<Value>(text).unwrap(), *error);
     }
     let prompts = requests(&root, "session/prompt");
     assert_eq!(prompts.len(), 1);

@@ -488,9 +488,17 @@ impl Pump {
     /// kernel may or may not have run it.
     async fn fail_outstanding(&mut self) {
         for request in std::mem::take(&mut self.outstanding) {
-            self.write_stdout(lost_error_frame(&request.id).as_bytes())
-                .await;
+            self.fail_request(request).await;
         }
+    }
+
+    /// Synthesized tool errors use the same model-visible projection as kernel replies.
+    async fn fail_request(&mut self, request: Request) {
+        let mut line = lost_error_frame(&request.id).into_bytes();
+        if request.tool_call {
+            line = self.content.tool_reply(line);
+        }
+        self.write_stdout(&line).await;
     }
 
     /// Lines still unread in the stdin pipe get nothing; the process exit closes stdout
@@ -505,8 +513,7 @@ impl Pump {
             self.write_stdout(frame.as_bytes()).await;
         }
         if let Some((request, _)) = self.held.take() {
-            self.write_stdout(lost_error_frame(&request.id).as_bytes())
-                .await;
+            self.fail_request(request).await;
         }
     }
 

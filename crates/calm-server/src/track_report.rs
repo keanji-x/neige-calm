@@ -485,7 +485,7 @@ pub(crate) fn block_not_found(id: &str) -> CalmError {
 }
 
 /// Execute `op` against the (already migrated) doc. `if_rev` mismatch is `Conflict` naming BOTH
-/// current revisions (block and document) so the RPC mapping can hand a retry without a re-read.
+/// current revisions (block and document) so callers can locate conflicts before re-reading.
 fn check_rev(doc: &ReportDoc, id: &str, expected: u32) -> Result<u32, CalmError> {
     // A malformed doc/rev is Internal (corruption), never folded into "block not found".
     let current = doc
@@ -498,7 +498,7 @@ fn check_rev(doc: &ReportDoc, id: &str, expected: u32) -> Result<u32, CalmError>
             .map_err(|e| CalmError::Internal(format!("track_report: doc rev: {e}")))?;
         return Err(CalmError::Conflict(format!(
             "rev conflict on block {id}: current rev is {current}, expected if_rev {expected}; \
-             current doc_rev is {doc_rev} — re-read the report and retry with the current rev"
+             current doc_rev is {doc_rev} — re-read the affected report text and retry"
         )));
     }
     Ok(current)
@@ -632,7 +632,7 @@ fn check_doc_rev(doc: &ReportDoc, expected: u64) -> Result<(), CalmError> {
     if current != expected {
         return Err(CalmError::Conflict(format!(
             "document revision conflict: current doc_rev is {current}, expected if_doc_rev {expected} \
-             — re-read the report and retry with the current doc_rev"
+             — re-read the report text, merge your changes, and retry"
         )));
     }
     Ok(())

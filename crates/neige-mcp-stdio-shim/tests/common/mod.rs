@@ -256,3 +256,35 @@ pub async fn handshake_then_shut_read(
         .expect("shutdown read side");
     std_stream
 }
+
+/// The shim's reviewed lost-outcome diagnostic must survive either wire envelope.
+pub fn assert_lost_error(frame: &serde_json::Value, id: serde_json::Value, tool: bool) {
+    let error = serde_json::json!({
+        "code": -32000,
+        "message": concat!(
+            "neige-mcp-stdio-shim: connection to kernel lost after the request was sent; ",
+            "outcome unknown — re-read state before retrying"
+        )
+    });
+    assert_eq!(frame["jsonrpc"], "2.0");
+    assert_eq!(frame["id"], id);
+    if tool {
+        assert!(
+            frame.get("error").is_none(),
+            "tool error must be model-visible: {frame}"
+        );
+        assert_eq!(frame["result"]["isError"], true);
+        assert_eq!(frame["result"]["structuredContent"], error);
+        assert_eq!(frame["result"]["content"][0]["type"], "text");
+        let text = frame["result"]["content"][0]["text"]
+            .as_str()
+            .expect("first text");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(text).expect("error JSON"),
+            error
+        );
+    } else {
+        assert_eq!(frame["error"], error);
+        assert!(frame.get("result").is_none());
+    }
+}

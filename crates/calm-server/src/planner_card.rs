@@ -52,7 +52,7 @@ fn planner_wake_authors_prose() -> String {
 /// Substitute per-spawn identity, wake authors, and shared task acceptance guidance.
 pub(crate) fn render_system_prompt(template: &str, track_id: &str) -> String {
     calm_types::observation::render_task_acceptance_guidance(
-        &template
+        &calm_types::report_blocks::tasks::render_task_guidance(template)
             .replace(
                 "{assistant_tool_discovery}",
                 include_str!("../prompts/assistant/discovery-codex.md"),
@@ -67,16 +67,16 @@ const TASK_BLOCK_PROTOCOL_GOLDEN: &str = concat!(
     "   * Maintain task declarations as report `task` blocks. Tasks are in no section and no full ",
     "read: create one (no `position`), or replace one you read by id, with an `upsert` op of ",
     "`neige_report_commit`; pass no revisions; your read anchors the ",
-    "op. To start an authorized Planner task, ",
-    "its payload needs a per-track-unique ",
+    "op. To start a task, ",
+    "its payload needs a unique ",
     "`key`, `kind` (`codex`, `claude`, `terminal`, or `compact`), `ready: true`, ",
-    "and `declared_by: \"spec\"`; it may also carry `acceptance`, `depends_on` ",
+    "and `declared_by: \"spec\"`; optional: `acceptance`, `depends_on` ",
     "sibling keys, `priority`, and usually `gate`. Use `neige_task_cancel` to ",
     "cancel a pending task, or a running codex/claude task whose worker the kernel ",
     "then stops; dispatched, verifying and terminal-kind tasks cannot be canceled. ",
-    "A `codex`/`claude` task requires `goal`, a natural-language objective, and ",
-    "forbids `command`. A `terminal` task requires `command`, the exact Shell ",
-    "command passed verbatim to `/bin/sh -c`, and forbids `goal`."
+    "A `codex`/`claude` task requires `goal` (≤{task_goal_max_chars} chars), and ",
+    "forbids `command`. A `terminal` task requires `command`, ",
+    "passed verbatim to `/bin/sh -c`, and forbids `goal`."
 );
 
 /// Exact paragraph oracle for the static task-block protocol; free-text contradictions cannot be proved absent with a keyword list.
@@ -87,10 +87,11 @@ pub(crate) fn validate_planner_prompt_contract(prompt: &str) -> Result<(), Strin
         .ok_or_else(|| "task-block protocol paragraph is missing".to_string())?;
     let remainder = &prompt[start..];
     let end = remainder
-        .find("\n   * Every codex or claude task")
+        .find("\n   * ")
         .ok_or_else(|| "task-block protocol paragraph terminator is missing".to_string())?;
     let actual = &remainder[..end];
-    if actual != TASK_BLOCK_PROTOCOL_GOLDEN {
+    if actual != calm_types::report_blocks::tasks::render_task_guidance(TASK_BLOCK_PROTOCOL_GOLDEN)
+    {
         return Err(format!(
             "task-block protocol differs from golden\nexpected: {TASK_BLOCK_PROTOCOL_GOLDEN:?}\nactual:   {actual:?}"
         ));
@@ -376,11 +377,17 @@ mod tests {
     const PLANNER_PROMPT_MAX_BYTES: usize = 8_049;
 
     #[test]
-    fn context_usage_planner_prompt_fits_its_byte_budget() {
+    fn planner_diagnostics_regression_prompt_fits_its_byte_budget() {
         // A production-shaped track id (`new_id`, 32 bytes), so the budget measures what ships.
         let track = crate::model::new_id();
         assert_eq!(track.len(), 32);
-        let bytes = render_system_prompt(PLANNER_SYSTEM_PROMPT_TEMPLATE, &track).len();
+        let rendered = render_system_prompt(PLANNER_SYSTEM_PROMPT_TEMPLATE, &track);
+        assert!(rendered.contains(calm_types::report_blocks::tasks::TASK_GATE_GUIDANCE));
+        assert!(rendered.contains(&format!(
+            "≤{} chars",
+            calm_types::report_blocks::MAX_STRING_CHARS
+        )));
+        let bytes = rendered.len();
         assert!(
             bytes >= 3_000,
             "anti-vacuity: planner.md is only {bytes} bytes"
@@ -394,20 +401,24 @@ mod tests {
 
     /// Per-guide and total caps for the guides `guide/<name>.md` serves (#1893).
     #[test]
-    fn every_guide_fits_its_byte_budget() {
+    fn planner_diagnostics_regression_every_guide_fits_its_byte_budget() {
         use crate::mcp_server::tools::track_file::GUIDES;
         const GUIDE_MAX_BYTES: usize = 6_144;
         const GUIDES_TOTAL_MAX_BYTES: usize = 7_500;
 
         assert!(GUIDES.len() >= 4, "anti-vacuity: {} guides", GUIDES.len());
         for (name, text) in GUIDES {
+            let text = calm_types::report_blocks::tasks::render_task_guidance(text);
             assert!(
                 (500..=GUIDE_MAX_BYTES).contains(&text.len()),
                 "guide {name} is {} bytes; each guide holds 500..={GUIDE_MAX_BYTES}",
                 text.len()
             );
         }
-        let total: usize = GUIDES.iter().map(|(_, text)| text.len()).sum();
+        let total: usize = GUIDES
+            .iter()
+            .map(|(_, text)| calm_types::report_blocks::tasks::render_task_guidance(text).len())
+            .sum();
         assert!(
             total <= GUIDES_TOTAL_MAX_BYTES,
             "the guides total {total} bytes, over their {GUIDES_TOTAL_MAX_BYTES} byte budget"
@@ -424,11 +435,11 @@ mod tests {
     fn planner_prompt_contract_rejects_negative_context() {
         let prompt = render_system_prompt(PLANNER_SYSTEM_PROMPT_TEMPLATE, "track-contract");
 
+        let protocol =
+            calm_types::report_blocks::tasks::render_task_guidance(TASK_BLOCK_PROTOCOL_GOLDEN);
         let negated = prompt.replace(
-            TASK_BLOCK_PROTOCOL_GOLDEN,
-            &format!(
-                "Never follow this obsolete rule: {TASK_BLOCK_PROTOCOL_GOLDEN} Swap those anchors instead."
-            ),
+            &protocol,
+            &format!("Never follow this obsolete rule: {protocol} Swap those anchors instead."),
         );
         assert_ne!(
             negated, prompt,

@@ -95,6 +95,7 @@ async fn track_state(
             json!({
                 "id": c.id,
                 "kind": c.kind,
+                "provider": c.runtime.as_ref().and_then(|runtime| runtime.provider.clone()),
                 "role": role,
                 "sort": c.sort,
                 "created_at": crate::time_format::at(c.created_at),

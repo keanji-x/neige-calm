@@ -55,9 +55,15 @@ async fn write_failure_resends_the_frame_after_reconnect() {
 
 #[tokio::test]
 async fn unanswered_request_gets_lost_error_and_is_not_resent() {
+    for mode in [&[][..], &["--structured-content-as-text"][..]] {
+        unanswered_request(mode).await;
+    }
+}
+
+async fn unanswered_request(mode: &[&str]) {
     let (_tmp, socket_path) = common::socket();
     let listener = common::listen(&socket_path);
-    let mut child = common::spawn_shim(&socket_path);
+    let mut child = common::spawn_shim_with_args(&socket_path, mode);
     let mut stdin = child.stdin.take().expect("stdin piped");
     let mut stdout = BufReader::new(child.stdout.take().expect("stdout piped"));
 
@@ -71,18 +77,16 @@ async fn unanswered_request_gets_lost_error_and_is_not_resent() {
     common::write_stdin(&mut stdin, &common::tools_call_line(2)).await;
     let call = conn.read_frame("tools/call").await;
     assert_eq!(call["id"], serde_json::json!(2));
+    common::write_stdin(&mut stdin, &common::request_line(4, "tools/list")).await;
+    let list = conn.read_frame("outstanding tools/list").await;
+    assert_eq!(list["id"], serde_json::json!(4));
     drop(conn);
     drop(listener);
 
     let err = common::read_stdout(&mut stdout, "synthesized error").await;
-    assert_eq!(err["id"], serde_json::json!(2), "got {err}");
-    assert_eq!(err["error"]["code"], serde_json::json!(-32000), "got {err}");
-    let message = err["error"]["message"].as_str().expect("message string");
-    assert!(
-        message.contains("outcome unknown"),
-        "message must say the outcome is unknown: {message:?}"
-    );
-    assert!(err.get("result").is_none());
+    common::assert_lost_error(&err, serde_json::json!(2), true);
+    let err = common::read_stdout(&mut stdout, "non-tool synthesized error").await;
+    common::assert_lost_error(&err, serde_json::json!(4), false);
 
     let listener = common::rebind(&socket_path);
     let mut conn = common::accept(&listener, "reconnect").await;
@@ -108,15 +112,30 @@ async fn unanswered_request_gets_lost_error_and_is_not_resent() {
 
 #[tokio::test]
 async fn replayed_initialize_rejected_fails_requests_and_exits_4() {
+    for mode in [&[][..], &["--structured-content-as-text"][..]] {
+        for tool in [true, false] {
+            rejected_held_request(mode, tool).await;
+        }
+    }
+}
+
+async fn rejected_held_request(mode: &[&str], tool: bool) {
     let (_tmp, socket_path) = common::socket();
     let listener = common::listen(&socket_path);
-    let mut child = common::spawn_shim(&socket_path);
+    let mut child = common::spawn_shim_with_args(&socket_path, mode);
     let mut stdin = child.stdin.take().expect("stdin piped");
     let mut stdout = BufReader::new(child.stdout.take().expect("stdout piped"));
     let mut stderr = BufReader::new(child.stderr.take().expect("stderr piped"));
 
     let old_stream = handshake_then_shut_read(&listener, &mut stdin, &mut stdout).await;
-    common::write_stdin(&mut stdin, &common::tools_call_line(2)).await;
+    let mut request: serde_json::Value = serde_json::from_str(&if tool {
+        common::tools_call_line(2)
+    } else {
+        common::request_line(2, "tools/list")
+    })
+    .expect("request JSON");
+    request["id"] = serde_json::json!("held-request");
+    common::write_stdin(&mut stdin, &format!("{request}\n")).await;
     let lost = read_stderr_line(&mut stderr).await;
     assert!(lost.contains("connection to kernel lost"), "{lost:?}");
 
@@ -128,8 +147,7 @@ async fn replayed_initialize_rejected_fails_requests_and_exits_4() {
         .await;
 
     let err = common::read_stdout(&mut stdout, "synthesized error for held request").await;
-    assert_eq!(err["id"], serde_json::json!(2), "got {err}");
-    assert_eq!(err["error"]["code"], serde_json::json!(-32000), "got {err}");
+    common::assert_lost_error(&err, serde_json::json!("held-request"), tool);
     let rejected = read_stderr_line(&mut stderr).await;
     assert!(rejected.contains("rejected"), "{rejected:?}");
 

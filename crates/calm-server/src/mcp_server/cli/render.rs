@@ -279,6 +279,7 @@ struct StateCard<'a> {
     id: &'a str,
     role: &'a str,
     kind: &'a str,
+    provider: Option<&'a str>,
     /// The worker session's status, `-` without a runtime row.
     status: &'a str,
     /// The runtime is an active worker session.
@@ -318,6 +319,18 @@ fn state_cards<'a>(tool: &str, cards: &'a [Value]) -> Result<Vec<StateCard<'a>>,
                 id,
                 role: required_str(card, "role", tool, "card")?,
                 kind: required_str(card, "kind", tool, "card")?,
+                provider: match card.get("provider") {
+                    Some(Value::Null) => None,
+                    Some(Value::String(provider)) => Some(provider.as_str()),
+                    _ => {
+                        return Err(shape(
+                            format!("{tool} card missing string-or-null provider"),
+                            tool,
+                            "card",
+                            card,
+                        ));
+                    }
+                },
                 status,
                 live,
             })
@@ -325,7 +338,7 @@ fn state_cards<'a>(tool: &str, cards: &'a [Value]) -> Result<Vec<StateCard<'a>>,
         .collect()
 }
 
-/// `id  role  kind  session <status>` (running means an open session, not a running task), columns (escaped first) padded to the widest value; task
+/// `id  role  provider (kind for non-agent sessions)  session <status>` (running means an open session, not a running task), columns (escaped first) padded to the widest value; task
 /// status is the `tasks` block's. The caller's own row shows `(you)` for its session, which is
 /// always mid-turn.
 fn card_lines(cards: &[&StateCard<'_>], caller: &str) -> Vec<String> {
@@ -342,7 +355,8 @@ fn card_lines(cards: &[&StateCard<'_>], caller: &str) -> Vec<String> {
                 };
                 Cow::Owned(format!("session {status}"))
             };
-            let [id, role, kind] = [card.id, card.role, card.kind].map(escape_control);
+            let [id, role, kind] =
+                [card.id, card.role, card.provider.unwrap_or(card.kind)].map(escape_control);
             [id, role, kind, session]
         })
         .collect();

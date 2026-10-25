@@ -57,8 +57,8 @@ pub enum Observation {
         /// observation queued before this field existed.
         #[serde(default)]
         body_before: Option<String>,
-        /// The report's `doc_rev` once this edit had landed, so the turn text can tell the planner whether
-        /// its last `neige_report_read` already contained the edit; best-effort, `None` when unknown.
+        /// The report's document anchor after this edit; it does not certify text coverage.
+        /// Best-effort, `None` when unknown.
         #[serde(default)]
         doc_rev_after: Option<u64>,
         /// `(id, rev)` of each block of `body`, in document order and position-aligned with the diff's
@@ -335,8 +335,8 @@ impl Observation {
                 if let Some(doc_rev) = doc_rev_after {
                     text.push_str(&format!(
                         "After this edit the report is at doc_rev {doc_rev}. \
-                         If your last neige_report_read returned doc_rev >= {doc_rev}, \
-                         this edit is already in what you read.\n"
+                         A doc_rev alone does not prove text coverage; \
+                         check known block revisions and section membership. Index reads add no knowledge.\n"
                     ));
                 }
                 text.push_str(REPORT_EDITED_DATA_LINE);
@@ -1189,7 +1189,7 @@ mod tests {
     }
 
     #[test]
-    fn report_edited_with_refs_names_doc_rev_and_block_ids() {
+    fn planner_diagnostics_regression_report_edit_requires_read_coverage() {
         let obs = Observation::ReportEdited {
             track_id: TrackId::from("track-1"),
             body_sha256: "sha".into(),
@@ -1225,8 +1225,8 @@ mod tests {
         assert_eq!(
             lines.next(),
             Some(
-                "After this edit the report is at doc_rev 8. If your last neige_report_read \
-                 returned doc_rev >= 8, this edit is already in what you read."
+                "After this edit the report is at doc_rev 8. A doc_rev alone does not prove text coverage; \
+                 check known block revisions and section membership. Index reads add no knowledge."
             )
         );
         assert_eq!(lines.next(), Some(DATA_LINE));

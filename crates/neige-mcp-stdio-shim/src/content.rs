@@ -1,6 +1,7 @@
 //! Explicit model-visible representation of an already authorized MCP tool result.
 use serde_json::{Value, json};
 
+/// Successful result projection mode. Tool RPC failures are model-visible in every mode.
 #[derive(Clone, Copy, Default)]
 pub(crate) enum ResultContent {
     #[default]
@@ -12,13 +13,29 @@ pub(crate) enum ResultContent {
 impl ResultContent {
     /// Called only for a response correlated with an outstanding tools/call.
     pub fn tool_reply(self, line: Vec<u8>) -> Vec<u8> {
-        if matches!(self, Self::AsReceived) {
-            return line;
-        }
         let Ok(mut value) = serde_json::from_slice::<Value>(&line) else {
             return line;
         };
-        if value.get("error").is_some() {
+        if let Some(error) = value
+            .get("error")
+            .filter(|error| error.is_object())
+            .cloned()
+        {
+            // Only correlated tools/call replies reach here. Keep the complete RPC
+            // error as data and text; Claude's tool consumer otherwise sees only
+            // the transport exception's message. Initialization and other methods
+            // retain their original JSON-RPC envelopes.
+            value.as_object_mut().expect("RPC object").remove("error");
+            value["result"] = json!({
+                "content": [{"type":"text", "text":error.to_string()}],
+                "structuredContent": error,
+                "isError": true,
+            });
+            let mut bytes = value.to_string().into_bytes();
+            bytes.push(b'\n');
+            return bytes;
+        }
+        if matches!(self, Self::AsReceived) {
             return line;
         }
         let Some(result) = value.get_mut("result").and_then(Value::as_object_mut) else {

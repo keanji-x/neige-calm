@@ -29,7 +29,7 @@ pub const TOOL_REPORT_COMMIT: &str = "neige_report_commit";
 pub const RPC_REV_CONFLICT: i64 = RpcError::CONFLICT;
 
 /// The one `-32409` constructor for every report write. `data` carries the current revisions the message names
-/// (`doc_rev` from `current doc_rev is N`, `rev` from `current rev is N`) so a retry can re-anchor without a full read.
+/// (`doc_rev` from `current doc_rev is N`, `rev` from `current rev is N`) to locate conflicts; they do not grant read knowledge.
 pub(crate) fn rev_conflict_error(message: String) -> RpcError {
     let mut data = serde_json::Map::new();
     if let Some(doc_rev) = number_after(&message, "current doc_rev is ") {

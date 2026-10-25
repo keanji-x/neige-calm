@@ -18,9 +18,15 @@ const EXIT_WAIT: Duration = Duration::from_secs(40);
 
 #[tokio::test]
 async fn stalled_replay_handshake_exhausts_the_budget_and_exits_5() {
+    for mode in [&[][..], &["--structured-content-as-text"][..]] {
+        stalled_replay_handshake(mode).await;
+    }
+}
+
+async fn stalled_replay_handshake(mode: &[&str]) {
     let (_tmp, socket_path) = common::socket();
     let listener = common::listen(&socket_path);
-    let mut child = common::spawn_shim(&socket_path);
+    let mut child = common::spawn_shim_with_args(&socket_path, mode);
     let mut stdin = child.stdin.take().expect("stdin piped");
     let mut stdout = BufReader::new(child.stdout.take().expect("stdout piped"));
     let mut stderr = BufReader::new(child.stderr.take().expect("stderr piped"));
@@ -48,8 +54,7 @@ async fn stalled_replay_handshake_exhausts_the_budget_and_exits_5() {
     );
 
     let err = common::read_stdout(&mut stdout, "-32000 for the held request").await;
-    assert_eq!(err["id"], serde_json::json!(2), "got {err}");
-    assert_eq!(err["error"]["code"], serde_json::json!(-32000), "got {err}");
+    common::assert_lost_error(&err, serde_json::json!(2), true);
     let mut rest = String::new();
     let n = stdout.read_line(&mut rest).await.expect("stdout read ok");
     assert_eq!(
@@ -98,9 +103,15 @@ async fn always_internal_error(listener: &UnixListener, answered: &Cell<u32>) {
 /// initial-connect budget (15 s + 30 s would outlive codex's MCP startup timeout).
 #[tokio::test]
 async fn unacked_initialize_outage_runs_under_the_initial_budget() {
+    for mode in [&[][..], &["--structured-content-as-text"][..]] {
+        unacked_initialize_outage(mode).await;
+    }
+}
+
+async fn unacked_initialize_outage(mode: &[&str]) {
     let (_tmp, socket_path) = common::socket();
     let listener = common::listen(&socket_path);
-    let mut child = common::spawn_shim(&socket_path);
+    let mut child = common::spawn_shim_with_args(&socket_path, mode);
     let mut stdin = child.stdin.take().expect("stdin piped");
     let mut stdout = BufReader::new(child.stdout.take().expect("stdout piped"));
     let mut stderr = BufReader::new(child.stderr.take().expect("stderr piped"));
@@ -125,8 +136,7 @@ async fn unacked_initialize_outage_runs_under_the_initial_budget() {
     );
 
     let err = common::read_stdout(&mut stdout, "synthesized error for the initialize").await;
-    assert_eq!(err["id"], serde_json::json!(1), "got {err}");
-    assert_eq!(err["error"]["code"], serde_json::json!(-32000), "got {err}");
+    common::assert_lost_error(&err, serde_json::json!(1), false);
     let mut rest = String::new();
     let n = stdout.read_line(&mut rest).await.expect("stdout read ok");
     assert_eq!(n, 0, "exactly one initialize response: {rest:?}");

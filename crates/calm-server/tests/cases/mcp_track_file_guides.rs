@@ -1,5 +1,5 @@
 //! The Planner's on-demand guides (#1893): every `neige track cat guide/<name>.md` the rendered Planner
-//! prompt names is served by `neige_track_cat` with that file's exact bytes, and `guide/` lists
+//! prompt names is served by `neige_track_cat` with the shared task guidance rendered, and `guide/` lists
 //! exactly the named set.
 
 use std::collections::BTreeSet;
@@ -22,7 +22,7 @@ fn named_guides(prompt: &str) -> Vec<String> {
 }
 
 #[tokio::test]
-async fn every_guide_named_in_planner_md_is_served() {
+async fn planner_diagnostics_regression_guides_render_shared_task_rules() {
     let boot = boot().await;
     let prompt = render_planner_developer_instructions_for_test(boot.track_id.as_str(), None, None);
     let named = named_guides(&prompt);
@@ -32,6 +32,10 @@ async fn every_guide_named_in_planner_md_is_served() {
     for name in &named {
         let file = std::fs::read_to_string(dir.join(name))
             .unwrap_or_else(|error| panic!("prompts/guides/{name}: {error}"));
+        let file = calm_types::report_blocks::tasks::render_task_guidance(&file);
+        if name == "gates.md" {
+            assert!(file.contains(calm_types::report_blocks::tasks::TASK_GATE_GUIDANCE));
+        }
         for identity in [planner_identity(&boot), worker_identity(&boot)] {
             let served = call_tool(
                 &boot,
@@ -45,7 +49,7 @@ async fn every_guide_named_in_planner_md_is_served() {
             assert_eq!(
                 served["content"].as_str(),
                 Some(file.as_str()),
-                "guide/{name} must serve prompts/guides/{name} byte for byte"
+                "guide/{name} must serve rendered prompts/guides/{name}"
             );
         }
     }

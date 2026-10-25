@@ -62,7 +62,7 @@ async fn structured_text_exposes_report_and_terminal_state_without_changing_othe
 }
 
 #[tokio::test]
-async fn result_projection_is_opt_in_and_keeps_errors_and_unsolicited_frames_unchanged() {
+async fn planner_diagnostics_regression_result_projection_modes() {
     for args in [&[][..], &["--structured-content-as-text"][..]] {
         let (_root, path) = socket();
         let listener = listen(&path);
@@ -103,7 +103,9 @@ async fn result_projection_is_opt_in_and_keeps_errors_and_unsolicited_frames_unc
         stub.read_frame("error request").await;
         let error = json!({"jsonrpc":"2.0","id":6,"error":{"code":-32602,"message":"invalid"}});
         stub.write_frame(&error).await;
-        assert_eq!(read_stdout(&mut stdout, "RPC error").await, error);
+        let actual = read_stdout(&mut stdout, "RPC error").await;
+        assert_eq!(actual["result"]["isError"], true);
+        assert_eq!(actual["result"]["structuredContent"], error["error"]);
         let unsolicited = json!({"jsonrpc":"2.0","id":99,"result":{"content":[{"type":"text","text":"unchanged"}],"structuredContent":{"n":1}}});
         stub.write_frame(&unsolicited).await;
         assert_eq!(
@@ -236,8 +238,53 @@ async fn deduplicate_equivalent_content_preserves_information_and_correlation() 
     stub.read_frame("RPC error request").await;
     let error = json!({"jsonrpc":"2.0","id":10,"error":{"code":-32603,"message":"failure"}});
     stub.write_frame(&error).await;
-    assert_eq!(read_stdout(&mut stdout, "RPC error").await, error);
+    let actual = read_stdout(&mut stdout, "RPC error").await;
+    assert_eq!(actual["jsonrpc"], "2.0");
+    assert_eq!(actual["id"], 10);
+    assert!(actual.get("error").is_none());
+    assert_eq!(actual["result"]["isError"], true);
+    assert_eq!(actual["result"]["structuredContent"], error["error"]);
+    assert_eq!(actual["result"]["content"][0]["type"], "text");
+    let text = actual["result"]["content"][0]["text"].as_str().unwrap();
+    assert_eq!(serde_json::from_str::<Value>(text).unwrap(), error["error"]);
     drop(stdin);
     drop(stub);
     assert_eq!(wait_exit_code(&mut child, "deduplicate results").await, 0);
+}
+
+#[tokio::test]
+async fn planner_diagnostics_regression_tool_error_reaches_model_with_code_and_data() {
+    for args in [&[][..], &["--structured-content-as-text"][..]] {
+        let (_root, path) = socket();
+        let listener = listen(&path);
+        let mut child = spawn_shim_with_args(&path, args);
+        let mut stdin = child.stdin.take().unwrap();
+        let mut stdout = BufReader::new(child.stdout.take().unwrap());
+        let mut stub = accept(&listener, "planner error").await;
+        for (id, method) in [(2, "tools/call"), (3, "other/method")] {
+            let request = json!({"jsonrpc":"2.0","id":id,"method":method,"params":{}});
+            write_stdin(&mut stdin, &format!("{request}\n")).await;
+            assert_eq!(stub.read_frame("request").await, request);
+            let error = json!({"code":-32602,"message":"neige_report_commit: invalid task", "data":{"task_diagnostics":[{"code":"invalid_payload","reason":"goal: 2049 chars","block_id":"b_test"}],"unicode":"中文"}});
+            let response = json!({"jsonrpc":"2.0","id":id,"error":error});
+            stub.write_frame(&response).await;
+            let actual = read_stdout(&mut stdout, "error reply").await;
+            if method != "tools/call" {
+                assert_eq!(actual, response);
+            } else {
+                assert_eq!(actual["id"], id);
+                assert_eq!(actual["result"]["isError"], true);
+                assert_eq!(actual["result"]["content"][0]["type"], "text");
+                let text = actual["result"]["content"][0]["text"]
+                    .as_str()
+                    .expect("model-visible error text");
+                assert_eq!(serde_json::from_str::<Value>(text).unwrap(), error);
+                assert_eq!(actual["result"]["structuredContent"], error);
+                assert!(actual.get("error").is_none());
+            }
+        }
+        drop(stdin);
+        drop(stub);
+        assert_eq!(wait_exit_code(&mut child, "planner error").await, 0);
+    }
 }

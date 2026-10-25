@@ -682,6 +682,23 @@ pub fn unknown_deps(
         .collect()
 }
 
+/// Shared agent guidance owned beside the gate admission rule below. Both the
+/// Planner prompt and gate guide render this text, rather than restating exemptions.
+pub const TASK_GATE_GUIDANCE: &str = "With `require_task_gates`, a codex/claude task in this \
+    checkout needs a `gate`, a `no_gate_reason`, or `access: \"read_only\"`. Read-only tasks \
+    (including writes only to ignored build output) and `spawn: \"sub-track\"` tasks need no gate.";
+
+/// Substitute the two task-contract facts used by agent prose. Keep other prompt
+/// placeholders intact for their owning renderers.
+pub fn render_task_guidance(template: &str) -> String {
+    template
+        .replace(
+            "{task_goal_max_chars}",
+            &super::MAX_STRING_CHARS.to_string(),
+        )
+        .replace("{task_gate_guidance}", TASK_GATE_GUIDANCE)
+}
+
 /// Block ids of declarations that `require_task_gates` refuses for lacking a gate: a codex or
 /// claude task that runs in the track's checkout, is not read-only, and has neither a gate nor a
 /// `no_gate_reason`. Terminal and `sub-track` tasks are exempt; a sub-track task's work is

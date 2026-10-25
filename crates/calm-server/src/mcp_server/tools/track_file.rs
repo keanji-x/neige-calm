@@ -256,7 +256,7 @@ fn guide_ls() -> Result<Value, RpcError> {
         .map(|(name, text)| TrackFsEntry {
             name: (*name).to_string(),
             kind: "file".into(),
-            size: Some(text.len()),
+            size: Some(calm_types::report_blocks::tasks::render_task_guidance(text).len()),
             updated_at: None,
             extra: serde_json::Map::new(),
         })
@@ -275,7 +275,7 @@ fn guide_cat(name: &str) -> Result<Value, RpcError> {
                 names.join(", ")
             ))
         })?;
-    markdown_content((*text).to_string())
+    markdown_content(calm_types::report_blocks::tasks::render_task_guidance(text))
 }
 
 /// A partial report read, the same on every report path and in `neige_report_read`:

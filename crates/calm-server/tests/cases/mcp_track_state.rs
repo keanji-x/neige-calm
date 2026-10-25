@@ -207,7 +207,7 @@ fn worker_identity(boot: &Boot) -> ToolCallIdentity {
 }
 
 #[tokio::test]
-async fn get_track_state_returns_track_and_cards_for_planner() {
+async fn planner_diagnostics_regression_track_status_returns_session_provider() {
     let boot = boot().await;
     let out = call_tool(&boot, TOOL_TRACK_STATUS, planner_identity(&boot), json!({}))
         .await
@@ -244,6 +244,8 @@ async fn get_track_state_returns_track_and_cards_for_planner() {
         serde_json::from_value(planner["runtime"].clone()).expect("runtime field is typed");
     let planner_runtime = planner_runtime.expect("production Planner has a current runtime");
     assert_eq!(planner_runtime.worker_session_id, PLANNER_SESSION_ID);
+    assert_eq!(planner["provider"], "codex");
+
     assert_eq!(
         planner_runtime.kind,
         calm_server::session_projection_repo::WorkerSessionKind::SharedPlanner

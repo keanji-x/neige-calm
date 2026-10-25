@@ -109,10 +109,10 @@ fn draft_track_state() -> Value {
         },
         "caller_card_id": "crd_planner",
         "cards": [
-            { "id": "crd_planner", "kind": "codex", "role": "planner", "sort": 1.0,
+            { "id": "crd_planner", "kind": "codex", "role": "planner", "provider": "codex", "sort": 1.0,
               "created_at": "2026-10-07T09:00:00.000+08:00", "updated_at": "2026-10-07T09:00:00.000+08:00",
               "runtime": { "worker_session_id": "ws_1", "kind": "codex", "status": "running" } },
-            { "id": "crd_report", "kind": "track-report", "role": "reportcard", "sort": 2.0,
+            { "id": "crd_report", "kind": "track-report", "role": "reportcard", "provider": null, "sort": 2.0,
               "created_at": "2026-10-07T09:00:00.000+08:00", "updated_at": "2026-10-07T09:00:00.000+08:00", "runtime": null }
         ],
         "report_startup_read_required": false,
@@ -129,15 +129,15 @@ fn working_track_state() -> Value {
         },
         "caller_card_id": "crd_planner",
         "cards": [
-            { "id": "crd_planner", "kind": "codex", "role": "planner", "sort": 1.0,
+            { "id": "crd_planner", "kind": "codex", "role": "planner", "provider": "codex", "sort": 1.0,
               "created_at": "2026-10-07T09:00:00.000+08:00", "updated_at": "2026-10-07T09:00:00.000+08:00",
               "runtime": { "worker_session_id": "ws_1", "kind": "codex", "status": "idle" } },
-            { "id": "crd_report", "kind": "track-report", "role": "reportcard", "sort": 2.0,
+            { "id": "crd_report", "kind": "track-report", "role": "reportcard", "provider": null, "sort": 2.0,
               "created_at": "2026-10-07T09:00:00.000+08:00", "updated_at": "2026-10-07T09:00:00.000+08:00", "runtime": null },
-            { "id": "crd_worker", "kind": "claude", "role": "worker", "sort": 3.0,
+            { "id": "crd_worker", "kind": "claude", "role": "worker", "provider": "claude", "sort": 3.0,
               "created_at": "2026-10-07T09:00:00.000+08:00", "updated_at": "2026-10-07T09:00:00.000+08:00",
               "runtime": { "worker_session_id": "ws_2", "kind": "claude", "status": "running" } },
-            { "id": "crd_old", "kind": "codex", "role": "worker", "sort": 4.0,
+            { "id": "crd_old", "kind": "codex", "role": "worker", "provider": "codex", "sort": 4.0,
               "created_at": "2026-10-07T09:00:00.000+08:00", "updated_at": "2026-10-07T09:00:00.000+08:00",
               "runtime": { "worker_session_id": "ws_3", "kind": "codex", "status": "exited" } }
         ],
@@ -259,7 +259,7 @@ fn state_text_report_line_is_the_state_only() {
 fn state_text_escapes_control_characters_so_a_title_cannot_forge_a_line() {
     let mut value = working_track_state();
     value["track"]["title"] = json!("Example\nclosed_at  1\r\t\u{7}");
-    value["cards"][2]["kind"] = json!("cl\naude");
+    value["cards"][2]["provider"] = json!("cl\naude");
     value["tasks"][1]["key"] = json!("add\ntest");
     let text = render(Render::Status, "neige_track_status", false, &value).unwrap();
     assert_eq!(
@@ -564,4 +564,13 @@ fn closed_track_keeps_open_sessions_distinct_from_finished_work() {
     assert!(!text.contains("session running"), "{text}");
     let raw = render(Render::Status, "neige_track_status", true, &value).unwrap();
     assert_eq!(serde_json::from_str::<Value>(&raw).unwrap(), value);
+}
+
+#[test]
+fn planner_diagnostics_regression_sessions_show_provider_for_shared_planner() {
+    let mut value = draft_track_state();
+    value["cards"][0]["provider"] = json!("claude");
+    let text = render(Render::Status, "neige_track_status", false, &value).unwrap();
+    assert!(text.contains("planner  claude  (you)"), "{text}");
+    assert!(!text.contains("codex"), "{text}");
 }
