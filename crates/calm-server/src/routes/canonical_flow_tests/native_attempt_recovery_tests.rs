@@ -52,14 +52,34 @@ async fn original_facts(
 }
 
 pub(super) async fn initial_request(peer: &mut Peer) -> Value {
+    initial_request_before_thread_reply(peer, || async {}).await
+}
+
+pub(super) async fn initial_request_before_thread_reply<F: std::future::Future<Output = ()>>(
+    peer: &mut Peer,
+    before_reply: impl FnOnce() -> F,
+) -> Value {
+    let mut before_reply = Some(before_reply);
     let (mut threads, mut turns) = (0, 0);
+    // Local progress only: never retain RPC values or add a scheduling point.
+    let mut progress = ("not polled", 0, Duration::ZERO);
+    let mut iteration = 0;
+    let started = tokio::time::Instant::now();
     let call = tokio::time::timeout(Duration::from_secs(5), async {
         loop {
+            iteration += 1;
+            progress = ("request", iteration, started.elapsed());
             let call = request(peer).await;
             let result = match call["method"].as_str().unwrap() {
-                "config/read" => json!({"config":{}}),
+                "config/read" => {
+                    progress = ("config/read reply", iteration, started.elapsed());
+                    json!({"config":{}})
+                }
                 "thread/start" => {
                     threads += 1;
+                    progress = ("thread/start callback", iteration, started.elapsed());
+                    before_reply.take().expect("one original thread/start")().await;
+                    progress = ("thread/start reply", iteration, started.elapsed());
                     json!({"thread":{"id":THREAD}})
                 }
                 "turn/start" => {
@@ -72,11 +92,53 @@ pub(super) async fn initial_request(peer: &mut Peer) -> Value {
         }
     })
     .await
-    .expect("the original HTTP input must reach the real native transport");
+    .unwrap_or_else(|_| {
+        panic!(
+            "the original HTTP input must reach the real native transport: stage={} iteration={} stage_at_us={} elapsed_us={}",
+            progress.0, progress.1, progress.2.as_micros(), started.elapsed().as_micros()
+        )
+    });
     assert_eq!((threads, turns), (1, 1));
     assert_eq!(call["params"]["threadId"], THREAD);
     assert!(call["params"]["input"].to_string().contains(FIRST_BODY));
     call
+}
+
+#[tokio::test]
+async fn initial_request_timeout_identifies_blocked_callback() {
+    use futures_util::FutureExt;
+    let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
+    let daemon = crate::shared_codex_appserver::SharedCodexAppServer::new_stub(repo);
+    let (client, mut peer) = connect(&daemon).await;
+    let starting = tokio::spawn(async move { client.thread_start(None).await });
+    let failure =
+        std::panic::AssertUnwindSafe(initial_request_before_thread_reply(&mut peer, || async {
+            // Advance only after the real request has reached the callback.
+            tokio::time::pause();
+            std::future::pending::<()>().await;
+        }))
+        .catch_unwind()
+        .await
+        .unwrap_err();
+    starting.abort();
+    let message = failure.downcast_ref::<String>().unwrap();
+    assert!(
+        message.contains("stage=thread/start callback iteration=1"),
+        "{message}"
+    );
+    let micros = |field: &str| -> u128 {
+        message
+            .split_whitespace()
+            .find_map(|part| part.strip_prefix(field))
+            .unwrap()
+            .parse()
+            .unwrap()
+    };
+    let stage_at = micros("stage_at_us=");
+    let elapsed = micros("elapsed_us=");
+    assert!(stage_at < elapsed, "{message}");
+    assert!(elapsed >= 5_000_000, "{message}");
+    peer.close(None).await.unwrap();
 }
 
 async fn without_new_execution<T>(

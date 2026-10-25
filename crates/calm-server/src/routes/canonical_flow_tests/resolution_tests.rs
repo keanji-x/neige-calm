@@ -385,22 +385,14 @@ async fn canonical_keep_access_revoked_before_committed_replay_and_fresh_key() {
     let (_client, mut peer) = connect(&state.shared_codex_appserver).await;
     let created = post(&app, &cookie, "/api/tracks", "create", json!({"area_id":area["id"],"title":"","planner_provider":"codex", "theme":{"fg":[255,255,255],"bg":[0,0,0]},"first_message":FIRST_BODY})).await;
     let track = created["id"].as_str().unwrap();
-    let initial = super::native_attempt_recovery_tests::initial_request(&mut peer).await;
-    send(&mut peer, json!({"id":initial["id"],"result":{"turn":{}}})).await;
-    let (card, worker, held) = tokio::time::timeout(Duration::from_secs(5), async {
-        loop {
-            let facts = fixture.carrier(track).await;
-            if matches!(
-                facts.2.canonical_inputs.attempts[0].delivery,
-                InputDeliveryFact::Unknown
-            ) {
-                break facts;
-            }
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .unwrap();
+    let (card, worker, held) =
+        origin_preparation::original_unknown(&fixture, &state, &mut peer, track).await;
+    let keep_wake = crate::test_seams::PausePoint::default();
+    crate::test_seams::install_pause_for_test(
+        "canonical-human-wake-finished",
+        &card,
+        keep_wake.clone(),
+    );
     let attempt = &held.canonical_inputs.attempts[0];
     let args = json!({"carrier_id":worker,"submission_id":attempt.attempt.submission_id,"attempt_id":attempt.attempt.attempt_id,"revision":attempt.revision.to_string()});
     let uri = format!("/api/cards/{card}/conversation/input/keep");
@@ -419,6 +411,11 @@ async fn canonical_keep_access_revoked_before_committed_replay_and_fresh_key() {
         attempt.revision + 1
     );
 
+    // Join this exact Keep wake before revoking its live source and baseline.
+    tokio::time::timeout(Duration::from_secs(5), keep_wake.entered.notified())
+        .await
+        .expect("the successful Keep wake finished");
+    keep_wake.release.notify_one();
     let token = cookie.split_once('=').unwrap().1;
     let session = auth
         .sessions
@@ -476,3 +473,5 @@ async fn canonical_keep_access_revoked_before_committed_replay_and_fresh_key() {
 
 #[cfg(test)]
 mod retry_http_tests;
+
+mod origin_preparation;

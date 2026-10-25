@@ -550,6 +550,9 @@ async fn dispatch_initial(
         permission,
     )
     .await?;
+    #[cfg(feature = "fixtures")]
+    crate::test_seams::pause_point("canonical-initial-report-returned", inner.card_id.as_str())
+        .await;
     inner
         .inputs
         .canonical()
