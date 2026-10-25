@@ -121,4 +121,19 @@ mod tests {
         let positions = steps.map(|step| body.find(step).expect(step));
         assert!(positions.windows(2).all(|pair| pair[0] < pair[1]));
     }
+
+    #[test]
+    fn recovery_hands_the_reconcile_stale_set_to_claude_auto_resume() {
+        let source = include_str!("application_boot.rs");
+        let function = source.split_once("pub(crate) async fn recover(").unwrap().1;
+        let body = function.split_once("\n    }\n}").unwrap().0;
+        let call = body
+            .split_once("claude_auto_resume::spawn_on_boot(")
+            .unwrap()
+            .1
+            .split_once(')')
+            .unwrap()
+            .0;
+        assert!(call.contains("stale_terminals"), "{call}");
+    }
 }

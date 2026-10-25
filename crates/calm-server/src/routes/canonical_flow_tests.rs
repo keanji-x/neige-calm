@@ -45,6 +45,7 @@ const TURN: &str = "http-canonical-original-turn";
 
 mod archive_start_inventory_tests;
 mod assistant_canonical;
+mod boot_catalog_follower_tests;
 #[cfg(feature = "fixtures")]
 mod catalog_readiness_tests;
 mod claude_creation_tests;

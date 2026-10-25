@@ -1737,13 +1737,6 @@ impl AppState {
         crate::builtin_plugins::spawn_background(&mcp_context);
         // Subscribed before the daemon boots, so its first Running refreshes every thread it
         // adopted; plugin changes from here on are followed.
-        crate::codex_mcp_toolset::CodexMcpToolset {
-            home: codex.shared_codex_home.clone(),
-            appserver: shared_codex_appserver.clone(),
-            plugins: plugin.clone(),
-            debounce: crate::codex_mcp_toolset::DEBOUNCE,
-        }
-        .start(&events);
 
         let worker_flow = WorkerFlowDriver::from_state_parts(
             repo.clone(),
@@ -1844,20 +1837,5 @@ impl FromRef<AppState> for CodexShellState {
 impl FromRef<AppState> for WriteContext {
     fn from_ref(s: &AppState) -> Self {
         s.route.write.clone()
-    }
-}
-
-#[cfg(test)]
-mod catalog_follower_tests {
-    /// Temporary weakest constraint: production boot behavior observing
-    /// config/mcpServer/reload will replace this in a later slice.
-    #[test]
-    fn catalog_follower_is_started_in_app_state_new() {
-        let source = include_str!("state.rs");
-        let function = source.split_once("    async fn new(\n").unwrap().1;
-        let body = function.split_once("\n    }\n}").unwrap().0;
-        assert!(body.split(';').any(|statement| {
-            statement.contains("CodexMcpToolset {") && statement.contains(".start(")
-        }));
     }
 }

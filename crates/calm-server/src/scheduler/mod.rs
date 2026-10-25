@@ -1609,9 +1609,9 @@ impl Scheduler {
                 TaskStatus::Dispatched => {
                     self.resume_dispatched(task).await;
                 }
-                // Must precede both terminal reconciliation and kind-based
-                // timeout arms. Sub-track parents have their own child-state
-                // reconciler and never receive a worker deadline.
+                // Sub-track parents have their own child-state reconciler.
+                // task_has_running_liveness_deadline excludes them from timeout;
+                // kind validation requires Codex, excluding terminal reconciliation.
                 TaskStatus::Running
                     if task.spawn == calm_types::task_recovery::TASK_CHILD_TRACK_ROUTE => {}
                 TaskStatus::Running if task.kind == TaskKind::Terminal => {
