@@ -478,7 +478,7 @@ async fn assert_resumed_context_usage(usage: Option<&str>) {
     let mut contexts = vec![
         SystemRenderContext::new(
             HarnessInputPresentation::SystemPlannerTurnBudget,
-            crate::planner_turn_budget::PlannerTurnBudget::default().initial_input(),
+            "[回合预算] 30 分钟，剩 300 秒时收尾".into(), // Historical persisted plan.
         )
         .unwrap(),
     ];
@@ -588,10 +588,9 @@ async fn context_usage_canonical_freezes_context_at_claim() {
     let call = request(&mut peer).await;
     assert_eq!(call["method"], "turn/start");
     let input = call["params"]["input"][0]["text"].as_str().unwrap();
-    assert!(input.contains("[回合预算]"));
+    assert!(!input.contains("[回合预算]"));
     assert_eq!(input.matches("[上下文]").count(), 1);
     assert!(input.contains("[上下文] 未知（no reading yet）"), "{input}");
-    assert!(input.find("[回合预算]") < input.find("[上下文]"));
     let frozen = fx.frame().await;
     let wire = serde_json::to_string(&frozen).unwrap();
     assert_eq!(

@@ -16,7 +16,6 @@ pub enum LoadError {
 pub(crate) trait PlannerTurnBudgetExt: Sized {
     fn warning_remaining(self) -> Duration;
     fn warning_input(self) -> String;
-    fn initial_input(self) -> String;
     async fn load(repo: &dyn crate::db::RepoRead) -> Result<Self, LoadError>;
 }
 
@@ -26,14 +25,7 @@ impl PlannerTurnBudgetExt for PlannerTurnBudget {
     }
     fn warning_input(self) -> String {
         format!(
-            "[Trusted Planner turn budget reminder]\nAt most {} seconds of execution remain. Wrap up now before the hard stop.",
-            self.warning_remaining().as_secs()
-        )
-    }
-    fn initial_input(self) -> String {
-        format!(
-            "[回合预算] {} 分钟，剩 {} 秒时收尾",
-            u16::from(self),
+            "[Trusted Planner turn budget reminder]\nAt most {} seconds of execution remain. Only this turn ends at the hard stop. The Track stays open; tasks keep running; the next observation wakes you. Save progress in the Report and end this turn. Do not close or hand back the Track because of this notice.",
             self.warning_remaining().as_secs()
         )
     }
@@ -96,23 +88,5 @@ impl BudgetControlNotice {
 
     pub(crate) fn text(&self) -> String {
         self.budget.warning_input()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn turn_budget_initial_is_one_line_and_keeps_final_warning() {
-        let budget = PlannerTurnBudget::default();
-        assert_eq!(
-            budget.initial_input(),
-            "[回合预算] 30 分钟，剩 300 秒时收尾"
-        );
-        assert!(
-            budget
-                .warning_input()
-                .contains("Wrap up now before the hard stop.")
-        );
     }
 }

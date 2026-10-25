@@ -26,7 +26,7 @@ async fn versioned_input_origin_serializes_the_actual_edited_queue_revision() {
     fx.issue().await;
     let segments = fx.projected_segments().await;
     assert_eq!(
-        serde_json::to_value(&segments[2].origin).unwrap(),
+        serde_json::to_value(&segments[1].origin).unwrap(),
         serde_json::json!({
             "observation":"user_message", "event_id":null,
             "queue_entry":{"id":id.as_str(),"rev":edited.rev},
@@ -71,10 +71,13 @@ async fn a_task_completion_turn_records_the_completion_event() {
     fx.issue().await;
     assert_eq!(fx.daemon.turn_start_count_for_test(), 1);
     let segments = fx.projected_segments().await;
-    assert_eq!(segments.len(), 3);
-    assert_initial_budget(&segments[0]);
+    assert_eq!(segments.len(), 2);
     assert_eq!(
-        segments[2].origin,
+        segments[0],
+        super::completed_commit_tests::initial_context_usage_segment()
+    );
+    assert_eq!(
+        segments[1].origin,
         origin("task_completed", Some(event_id)),
         "the receipt enrichment keeps the origin"
     );
@@ -88,9 +91,12 @@ async fn a_mail_wake_turn_records_the_wake_event() {
     fx.issue().await;
     assert_eq!(fx.daemon.turn_start_count_for_test(), 1);
     let segments = fx.projected_segments().await;
-    assert_eq!(segments.len(), 3);
-    assert_initial_budget(&segments[0]);
-    assert_eq!(segments[2].origin, origin("track_wake", Some(event_id)));
+    assert_eq!(segments.len(), 2);
+    assert_eq!(
+        segments[0],
+        super::completed_commit_tests::initial_context_usage_segment()
+    );
+    assert_eq!(segments[1].origin, origin("track_wake", Some(event_id)));
 }
 
 #[tokio::test]
@@ -113,12 +119,6 @@ async fn a_user_message_turn_records_a_user_message_with_no_event() {
     assert_eq!(
         segments,
         vec![
-            HarnessInputSegment {
-                presentation: HarnessInputPresentation::SystemPlannerTurnBudget,
-                text: crate::planner_turn_budget::PlannerTurnBudget::default().initial_input(),
-                attachments: vec![],
-                origin: None,
-            },
             super::completed_commit_tests::initial_context_usage_segment(),
             HarnessInputSegment {
                 presentation: HarnessInputPresentation::User,
@@ -146,8 +146,11 @@ async fn each_segment_of_a_batch_records_its_own_origin_in_order() {
     fx.issue().await;
     assert_eq!(fx.daemon.turn_start_count_for_test(), 1);
     let segments = fx.projected_segments().await;
-    assert_eq!(segments.len(), 4);
-    assert_initial_budget(&segments[0]);
+    assert_eq!(segments.len(), 3);
+    assert_eq!(
+        segments[0],
+        super::completed_commit_tests::initial_context_usage_segment()
+    );
     let origins = segments
         .into_iter()
         .map(|segment| segment.origin)
@@ -155,7 +158,6 @@ async fn each_segment_of_a_batch_records_its_own_origin_in_order() {
     assert_eq!(
         origins,
         vec![
-            None,
             None,
             origin("task_completed", Some(completed_id)),
             origin("track_wake", Some(wake_id)),
@@ -198,19 +200,10 @@ async fn a_folded_entry_records_the_newest_event() {
     fx.issue().await;
     assert_eq!(fx.daemon.turn_start_count_for_test(), 1);
     let segments = fx.projected_segments().await;
-    assert_eq!(segments.len(), 3);
-    assert_initial_budget(&segments[0]);
-    assert_eq!(segments[2].origin, origin("report_edited", Some(newest_id)));
-}
-
-fn assert_initial_budget(segment: &HarnessInputSegment) {
+    assert_eq!(segments.len(), 2);
     assert_eq!(
-        segment,
-        &HarnessInputSegment {
-            presentation: HarnessInputPresentation::SystemPlannerTurnBudget,
-            text: crate::planner_turn_budget::PlannerTurnBudget::default().initial_input(),
-            attachments: vec![],
-            origin: None,
-        }
+        segments[0],
+        super::completed_commit_tests::initial_context_usage_segment()
     );
+    assert_eq!(segments[1].origin, origin("report_edited", Some(newest_id)));
 }

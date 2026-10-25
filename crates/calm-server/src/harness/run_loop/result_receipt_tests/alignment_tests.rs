@@ -107,18 +107,13 @@ async fn mixed_batch(with_timeout: bool) {
     .await;
     maybe_issue_turn(&fx.harness.inner).await.unwrap();
     let segments = fx.projected_segments().await;
-    assert_eq!(segments.len(), if with_timeout { 6 } else { 5 });
-    let budget_index = usize::from(with_timeout);
+    assert_eq!(segments.len(), if with_timeout { 5 } else { 4 });
+    let usage_index = usize::from(with_timeout);
     assert_eq!(
-        segments[budget_index].presentation,
-        crate::model::HarnessInputPresentation::SystemPlannerTurnBudget
-    );
-    assert_eq!(segments[budget_index].origin, None);
-    assert_eq!(
-        segments[budget_index + 1].presentation,
+        segments[usage_index].presentation,
         crate::model::HarnessInputPresentation::SystemPlannerContextUsage
     );
-    assert_eq!(segments[budget_index + 1].origin, None);
+    assert_eq!(segments[usage_index].origin, None);
     if with_timeout {
         assert_eq!(
             segments[0].presentation,
@@ -126,6 +121,7 @@ async fn mixed_batch(with_timeout: bool) {
         );
         assert_eq!(segments[0].origin, None);
         assert!(segments[0].text.contains("Trusted previous turn timeout"));
+        assert!(segments[0].text.contains("the Track was not closed"));
     }
     let sent = fx.daemon.started_turns_for_test();
     assert_eq!(sent.len(), if with_timeout { 2 } else { 1 });

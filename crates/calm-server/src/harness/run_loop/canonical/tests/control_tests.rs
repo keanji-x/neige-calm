@@ -72,9 +72,18 @@ async fn canonical_budget_warns_once_and_hard_stops_the_actual_original_executio
     let original = fx.frame().await;
     let thread = original.header.last_thread_id.as_deref().unwrap();
     let turn = original.header.last_turn_id.as_deref().unwrap();
+    fx.harness
+        .rewind_turn_clock_for_test(Duration::from_secs(46))
+        .await;
+    assert!(
+        tokio::time::timeout(Duration::from_millis(150), request(&mut peer))
+            .await
+            .is_err(),
+        "no warning before limit minus warning_remaining"
+    );
     // The existing timer seam moves only a running turn's monotonic clocks.
     fx.harness
-        .rewind_turn_clock_for_test(Duration::from_secs(49))
+        .rewind_turn_clock_for_test(Duration::from_secs(3))
         .await;
     let warning = tokio::time::timeout(Duration::from_secs(2), request(&mut peer))
         .await
@@ -91,6 +100,11 @@ async fn canonical_budget_warns_once_and_hard_stops_the_actual_original_executio
                 item["text"].as_str().is_some_and(|text| {
                     text.starts_with("[Trusted Planner turn budget reminder]\n")
                         && text.contains("12 seconds of execution remain")
+                        && text.contains("Only this turn ends")
+                        && text.contains("Track stays open")
+                        && text.contains("tasks keep running")
+                        && text.contains("next observation wakes you")
+                        && text.contains("Do not close or hand back the Track")
                 })
             })
     );

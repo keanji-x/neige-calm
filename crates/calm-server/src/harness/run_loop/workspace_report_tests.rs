@@ -1,7 +1,5 @@
 //! Capability context reaches the actual resumed harness turn, independent of startup snapshots.
-use super::completed_commit_tests::{
-    Fixture, initial_budget_segment, initial_context_usage_segment,
-};
+use super::completed_commit_tests::{Fixture, initial_context_usage_segment};
 use super::*;
 use crate::model::CardRole;
 
@@ -24,7 +22,6 @@ async fn resumed_planner_and_assistant_receive_live_workspace_report_instruction
         let mut expected = input_segments_for_entries(&inner.card_id, std::slice::from_ref(&user));
         if role == CardRole::Planner {
             expected.insert(0, initial_context_usage_segment());
-            expected.insert(0, initial_budget_segment());
         }
         fx.enqueue(vec![user]).await;
         fx.issue().await;

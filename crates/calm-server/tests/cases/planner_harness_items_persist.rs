@@ -394,7 +394,6 @@ async fn issued_mixed_observation_segments_are_on_the_projection_row_and_survive
             .map(|segment| segment.presentation)
             .collect::<Vec<_>>(),
         vec![
-            HarnessInputPresentation::SystemPlannerTurnBudget,
             HarnessInputPresentation::SystemPlannerContextUsage,
             HarnessInputPresentation::SystemTaskCompleted,
             HarnessInputPresentation::User,
@@ -403,13 +402,13 @@ async fn issued_mixed_observation_segments_are_on_the_projection_row_and_survive
     );
     assert_eq!(
         issued_segments[0],
-        crate::support::oracle::initial_planner_budget()
+        crate::support::oracle::initial_planner_context_usage()
     );
     assert_eq!(
         serde_json::to_value(
             issued_segments
                 .iter()
-                .skip(2)
+                .skip(1)
                 .map(|segment| &segment.origin)
                 .collect::<Vec<_>>()
         )
@@ -425,7 +424,7 @@ async fn issued_mixed_observation_segments_are_on_the_projection_row_and_survive
             .iter()
             .all(|segment| segment.attachments.is_empty())
     );
-    assert_eq!(issued_segments[3].text, "User says:\nwhat changed?");
+    assert_eq!(issued_segments[2].text, "User says:\nwhat changed?");
     assert_eq!(
         issued_text,
         issued_segments

@@ -24,8 +24,7 @@ async fn context_usage_replace_refuses_nonregenerable_context_even_with_a_user_m
         .await
         .unwrap();
         let mut segments: Value = serde_json::from_str(&raw).unwrap();
-        assert_eq!(segments[0]["presentation"], "system_planner_turn_budget");
-        assert_eq!(segments[1]["presentation"], "system_planner_context_usage");
+        assert_eq!(segments[0]["presentation"], "system_planner_context_usage");
         segments[0] = context;
         sqlx::query("UPDATE harness_items SET input_segments=?1 WHERE id=?2")
             .bind(segments.to_string())
@@ -82,7 +81,7 @@ async fn context_usage_and_budget_never_count_as_a_user_message() {
                 )
             })
             .collect();
-        assert_eq!(segments.len(), 2);
+        assert_eq!(segments.len(), 1);
         sqlx::query("UPDATE harness_items SET input_segments=?1 WHERE id=?2")
             .bind(serde_json::to_string(&segments).unwrap())
             .bind(id)

@@ -456,14 +456,7 @@ pub(super) async fn tick(inner: &Arc<Inner>, ingress_empty: bool) -> Result<()> 
         }
     }
     let mut contexts = vec![];
-    if let Some(budget) = budget {
-        contexts.push(
-            SystemRenderContext::new(
-                HarnessInputPresentation::SystemPlannerTurnBudget,
-                budget.initial_input(),
-            )
-            .map_err(|error| CalmError::Conflict(error.into()))?,
-        );
+    if budget.is_some() {
         contexts.push(
             SystemRenderContext::new(
                 HarnessInputPresentation::SystemPlannerContextUsage,

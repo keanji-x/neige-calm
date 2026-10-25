@@ -425,8 +425,8 @@ pub enum HarnessInputPresentation {
     SystemTaskCompleted,
     SystemTaskFailed,
     SystemMail,
-    /// Kernel-generated initial Planner budget, rebuilt on each replacement turn.
-    /// Warnings and one-shot observations must retain their ordinary System presentation.
+    /// Retained for decoding historical initial Planner budget segments.
+    /// New turns do not emit this value; warnings retain ordinary System presentation.
     SystemPlannerTurnBudget,
     /// Kernel-generated context occupancy frozen with the initial Planner input.
     SystemPlannerContextUsage,

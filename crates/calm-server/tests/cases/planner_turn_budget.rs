@@ -61,13 +61,29 @@ async fn planner_turn_budget_rest_existing_harness_warns_and_stops() {
     .await;
     let input = format!("{:?}", boot.daemon.started_turns_for_test());
     assert!(
-        input.contains("[回合预算] 1 分钟，剩 12 秒时收尾"),
-        "initial trusted budget missing: {input}"
+        !input.contains("[回合预算]") && !input.contains("Trusted Planner turn budget"),
+        "new turns must not receive a budget notice: {input}"
     );
+    boot.harness
+        .rewind_turn_clock_for_test(Duration::from_secs(46))
+        .await;
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    assert!(boot.daemon.steered_turns_for_test().is_empty());
     setting(&boot, json!("240")).await; // The running one-minute budget stays frozen.
     boot.harness
-        .rewind_turn_clock_for_test(Duration::from_secs(49))
+        .rewind_turn_clock_for_test(Duration::from_secs(3))
         .await;
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    let warnings = format!("{:?}", boot.daemon.steered_turns_for_test());
+    for phrase in [
+        "Only this turn ends",
+        "Track stays open",
+        "tasks keep running",
+        "next observation wakes you",
+        "Do not close or hand back the Track",
+    ] {
+        assert!(warnings.contains(phrase), "{warnings}");
+    }
     tokio::time::sleep(Duration::from_millis(150)).await;
     assert_eq!(boot.daemon.steered_turns_for_test().len(), 1);
     boot.harness
@@ -179,7 +195,12 @@ async fn planner_turn_budget_corrupt_storage_leaves_input_queued_until_reset() {
     .await
     .unwrap();
     let input = format!("{:?}", boot.daemon.started_turns_for_test());
-    assert!(input.contains("30 分钟"));
+    assert!(!input.contains("[回合预算]"));
+    assert!(matches!(
+        boot.harness.snapshot().await.unwrap().turn_budget,
+        calm_server::planner_turn_budget::FrozenBudget::Planner { budget, .. }
+            if u16::from(budget) == 30
+    ));
     boot.harness.shutdown().await.unwrap();
 }
 
@@ -381,7 +402,7 @@ async fn planner_turn_budget_only_real_planner_role_and_profile() {
 }
 
 #[tokio::test]
-async fn planner_turn_budget_claude_initial_warning_only() {
+async fn planner_turn_budget_claude_no_initial_budget_notice() {
     use super::claude_planner_stack_fixture::{Root, Stack};
     let root = Root::new("hold");
     let stack = Stack::boot(&root).await;
@@ -399,8 +420,7 @@ async fn planner_turn_budget_claude_initial_warning_only() {
     assert_eq!(status, 200, "{body}");
     super::claude_planner_wiring::wait_file(&root, "stdin").await;
     let stdin = root.read_fake("stdin").unwrap();
-    assert!(stdin.contains("1 分钟"), "{stdin}");
-    assert!(stdin.contains("剩 12 秒时收尾"), "{stdin}");
+    assert!(!stdin.contains("[回合预算]"), "{stdin}");
     assert!(stdin.contains("[上下文]"), "{stdin}");
     assert!(stdin.contains("[上下文] 未知（no reading yet）"), "{stdin}");
     stack.wait_phase(&session.id, "turn_running").await;
@@ -607,8 +627,8 @@ async fn planner_turn_budget_failed_start_replays_its_frozen_attempt() {
     assert_eq!(frozen, boot.harness.snapshot().await.unwrap().turn_budget);
     let input = format!("{:?}", boot.daemon.started_turns_for_test());
     assert!(
-        input.contains("1 分钟"),
-        "the durable attempt must not be resampled: {input}"
+        !input.contains("[回合预算]"),
+        "retried turns must not receive a budget notice: {input}"
     );
     boot.harness.shutdown().await.unwrap();
 }

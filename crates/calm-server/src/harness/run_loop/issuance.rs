@@ -383,14 +383,11 @@ pub(super) async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
 
     // Entry-index consumers must finish before adding kernel-owned context.
     if let Some(sampled) = sampled_budget {
-        let mut context = budget::segment(sampled.budget.initial_input());
-        context.presentation = HarnessInputPresentation::SystemPlannerTurnBudget;
-        segments.insert(0, context);
         match sampled.context_usage {
             FrozenContextUsage::Text(text) => {
                 let mut usage = budget::segment(text);
                 usage.presentation = HarnessInputPresentation::SystemPlannerContextUsage;
-                segments.insert(1, usage);
+                segments.insert(0, usage);
             }
             FrozenContextUsage::LegacyNotRecorded => {}
             FrozenContextUsage::RenderPlan => {

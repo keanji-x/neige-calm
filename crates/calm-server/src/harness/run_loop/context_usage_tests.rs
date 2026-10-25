@@ -6,7 +6,7 @@ const UNKNOWN: &str = "[上下文] 未知（no reading yet）";
 const KNOWN: &str = "[上下文] 50%（142000/272000 tokens）";
 
 #[tokio::test]
-async fn context_usage_historical_is_after_budget_and_unknown_without_reading() {
+async fn context_usage_historical_is_first_and_unknown_without_reading() {
     let fx = Fixture::new().await;
     fx.enqueue(vec![QueueEntry::user_message("hello".into(), None, vec![])])
         .await;
@@ -14,10 +14,10 @@ async fn context_usage_historical_is_after_budget_and_unknown_without_reading() 
     let segments = fx.projected_segments().await;
     assert_eq!(
         segments[0].presentation,
-        HarnessInputPresentation::SystemPlannerTurnBudget
+        HarnessInputPresentation::SystemPlannerContextUsage
     );
-    assert_eq!(segments[1].text, UNKNOWN);
-    assert_eq!(segments.len(), 3);
+    assert_eq!(segments[0].text, UNKNOWN);
+    assert_eq!(segments.len(), 2);
 }
 
 #[tokio::test]
@@ -59,7 +59,7 @@ async fn context_usage_historical_uses_percent_policy_and_freezes_failed_attempt
     );
     fx.daemon.clear_turn_start_failure_for_test();
     maybe_issue_turn(&recovered.inner).await.unwrap();
-    assert_eq!(fx.projected_segments().await[1].text, KNOWN);
+    assert_eq!(fx.projected_segments().await[0].text, KNOWN);
 }
 
 #[tokio::test]
@@ -97,8 +97,7 @@ async fn context_usage_historical_reuses_matching_budget_without_projection_slot
     fx.daemon.clear_turn_start_failure_for_test();
     fx.issue().await;
     let segments = fx.projected_segments().await;
-    assert!(segments[0].text.contains("15 分钟"));
-    assert_eq!(segments[1].text, KNOWN);
+    assert_eq!(segments[0].text, KNOWN);
     assert!(matches!(
         fx.harness.snapshot().await.unwrap().turn_budget,
         budget::FrozenBudget::Planner {
@@ -187,12 +186,8 @@ async fn assert_restored_context_usage(shape: &str) {
     maybe_issue_turn(&recovered.inner).await.unwrap();
     let segments = fx.projected_segments().await;
     let expected_context = if shape == "missing_context_usage" {
-        assert_eq!(segments.len(), 2);
-        assert_eq!(
-            segments[0].presentation,
-            HarnessInputPresentation::SystemPlannerTurnBudget
-        );
-        assert_eq!(segments[1].text, "User says:\nhello");
+        assert_eq!(segments.len(), 1);
+        assert_eq!(segments[0].text, "User says:\nhello");
         assert!(
             segments
                 .iter()
@@ -201,8 +196,8 @@ async fn assert_restored_context_usage(shape: &str) {
         );
         calm_types::harness::budget::FrozenContextUsage::LegacyNotRecorded
     } else {
-        assert_eq!(segments.len(), 3);
-        assert_eq!(segments[1].text, KNOWN);
+        assert_eq!(segments.len(), 2);
+        assert_eq!(segments[0].text, KNOWN);
         calm_types::harness::budget::FrozenContextUsage::Text(KNOWN.into())
     };
     let stored: String =
@@ -257,7 +252,7 @@ async fn context_usage_historical_unknown_never_renders_a_number() {
             .await;
         fx.issue().await;
         assert_eq!(
-            fx.projected_segments().await[1].text,
+            fx.projected_segments().await[0].text,
             format!("[上下文] 未知（{reason}）")
         );
     }

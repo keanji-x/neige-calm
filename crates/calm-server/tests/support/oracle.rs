@@ -118,18 +118,6 @@ pub async fn assert_ordering(repo: &SqlxRepo, edges: &[OrderingEdge]) {
     }
 }
 
-/// Independent literal oracle for the default typed Planner setting (30 minutes).
-/// This describes issued input; it never adds context to a fixture or queue entry.
-pub fn initial_planner_budget() -> calm_server::model::HarnessInputSegment {
-    use calm_server::model::{HarnessInputPresentation, HarnessInputSegment};
-    HarnessInputSegment {
-        presentation: HarnessInputPresentation::SystemPlannerTurnBudget,
-        text: "[回合预算] 30 分钟，剩 300 秒时收尾".into(),
-        attachments: vec![],
-        origin: None,
-    }
-}
-
 /// Independent oracle for a Planner that has not received its first usage reading.
 pub fn initial_planner_context_usage() -> calm_server::model::HarnessInputSegment {
     calm_server::model::HarnessInputSegment {
