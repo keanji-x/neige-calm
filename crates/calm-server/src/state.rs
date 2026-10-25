@@ -1737,6 +1737,13 @@ impl AppState {
         crate::builtin_plugins::spawn_background(&mcp_context);
         // Subscribed before the daemon boots, so its first Running refreshes every thread it
         // adopted; plugin changes from here on are followed.
+        crate::codex_mcp_toolset::CodexMcpToolset {
+            home: codex.shared_codex_home.clone(),
+            appserver: shared_codex_appserver.clone(),
+            plugins: plugin.clone(),
+            debounce: crate::codex_mcp_toolset::DEBOUNCE,
+        }
+        .start(&events);
 
         let worker_flow = WorkerFlowDriver::from_state_parts(
             repo.clone(),
