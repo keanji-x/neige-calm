@@ -137,7 +137,7 @@ async fn post_and_settle_wake(
     accepted
 }
 
-async fn shutdown(state: &AppState, worker: &str, peer: &mut Peer) {
+pub(super) async fn shutdown(state: &AppState, worker: &str, peer: &mut Peer) {
     let Some(handle) = state.harness.remove(worker) else {
         return;
     };

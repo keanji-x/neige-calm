@@ -3,12 +3,12 @@ use super::*;
 use calm_truth::db::RepoRead;
 mod activation;
 
-fn body(area: &Value, provider: &str) -> Value {
+pub(super) fn body(area: &Value, provider: &str) -> Value {
     json!({"area_id":area["id"],"planner_provider":provider,"title":"U8",
         "theme":{"fg":[255,255,255],"bg":[0,0,0]}})
 }
 
-async fn area(app: &axum::Router, cookie: &str, name: &str) -> Value {
+pub(super) async fn area(app: &axum::Router, cookie: &str, name: &str) -> Value {
     post(
         app,
         cookie,
@@ -115,7 +115,7 @@ async fn retained_identity(
     (references, binding, payload)
 }
 
-async fn counts(fixture: &Fixture) -> Vec<i64> {
+pub(super) async fn counts(fixture: &Fixture) -> Vec<i64> {
     let mut result = Vec::new();
     for table in [
         "tracks",
@@ -138,7 +138,12 @@ async fn counts(fixture: &Fixture) -> Vec<i64> {
     result
 }
 
-async fn create(app: &axum::Router, cookie: &str, key: &str, body: Value) -> (StatusCode, Value) {
+pub(super) async fn create(
+    app: &axum::Router,
+    cookie: &str,
+    key: &str,
+    body: Value,
+) -> (StatusCode, Value) {
     let mut builder = Request::builder()
         .method("POST")
         .uri("/api/tracks")
@@ -290,54 +295,6 @@ async fn u8_canonical_admin_requires_original_rest_user_actor() {
             assert_eq!(counts(&fixture).await, before);
         }
         fixture.shutdown_process(&state).await;
-    }
-}
-
-#[tokio::test]
-async fn u8_canonical_resources_and_mixed_admin_keep_historical_storage() {
-    for admin in [false, true] {
-        for shape in ["attached", "worktree", "omitted", "cross", "named-attached"] {
-            let fixture = Fixture::new().await;
-            let (state, app, cookie) = fixture.application_with_historical_native(true).await;
-            let a = area(&app, &cookie, "historical").await;
-            let mut request = body(&a, "codex");
-            request["admin"] = json!(admin);
-            let cwd = fixture.root.path().join("repo");
-            crate::test_support::init_fixture_git_repo(&cwd);
-            match shape {
-                "attached" | "worktree" | "named-attached" => {
-                    request["cwd"] = json!(cwd);
-                    request["attach_folder"] = json!(true);
-                    if shape != "worktree" {
-                        request["isolation"] = json!("none");
-                    }
-                }
-                "omitted" => request["attach_folder"] = json!(true),
-                "cross" => {
-                    request["allow_cross_area_cwd"] = json!({"folder_id":12345,"area_id":a["id"]})
-                }
-                _ => unreachable!(),
-            }
-            if shape == "named-attached" {
-                request["template_id"] = json!("small-change");
-            }
-            let (status, created) = create(&app, &cookie, "resource", request).await;
-            let canonical: i64 = sqlx::query_scalar(
-                "SELECT count(*) FROM worker_sessions WHERE json_valid(handle_state_json) AND \
-                json_extract(handle_state_json,'$.schema_version')>=2",
-            )
-            .fetch_one(fixture.repo.pool())
-            .await
-            .unwrap();
-            assert_eq!(
-                canonical, 0,
-                "fresh {shape} admin={admin} must use historical owner: {status} {created}"
-            );
-            if shape != "cross" {
-                assert_eq!(status, StatusCode::CREATED, "{created}");
-            }
-            shutdown(&fixture, &state).await;
-        }
     }
 }
 

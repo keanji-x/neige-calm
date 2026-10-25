@@ -1,6 +1,6 @@
 //! One creation-owned binding of the original request to pure allocation data.
 //! This is not Workspace preparation or an execution grant. Effects remain with
-//! their actual owners; the dormant path explicitly supports managed blank data.
+//! their actual owners; the dormant path consumes the shared resource preparation.
 use super::super::CreateTrackRequest;
 use super::*;
 use crate::harness::backend::factory::{PlannerFactory, RetainedIdentityPreparation};
@@ -42,8 +42,9 @@ pub(in crate::routes::tracks) async fn creation_plan(
         None => CreateShape::MessageLess(()),
     };
     let workspace_root = state.workspace_root.clone();
+    let teardown_targets = state.teardown_targets.clone();
     let headers = headers.clone();
-    crate::db::write_in_tx_typed(state.repo.as_ref(), move |tx| {
+    let plan = crate::db::write_in_tx_typed(state.repo.as_ref(), move |tx| {
         Box::pin(async move {
             let principal = source.current_principal()?;
             if let Some(key) = &key {
@@ -104,13 +105,50 @@ pub(in crate::routes::tracks) async fn creation_plan(
             if !canonical_creation_supported(&shape, input) {
                 return Ok(CreatePlan::Historical(request));
             }
-            let area = crate::organization_access::require_area_access_tx(
+            let access = crate::organization_access::require_area_access_tx(
                 tx,
                 &area_id,
                 &principal,
                 calm_types::organization::AreaAccess::Collaborate,
             )
-            .await?;
+            .await;
+            let area = match access {
+                Ok(area) => area,
+                Err(error) => {
+                    // Preserve the existing none teardown fence even after its
+                    // Area row disappeared; this refusal never grants admission.
+                    if matches!(error, CalmError::NotFound(_))
+                        && shape.isolation
+                            == super::super::CreateIsolation::Attached(
+                                super::super::AttachedIsolation::None,
+                            )
+                    {
+                        calm_truth::db::sqlite::admit_attached_workspace_tx(
+                            tx,
+                            &super::super::normalize_path(
+                                shape.cwd.as_deref().expect("decoded attached cwd"),
+                            ),
+                            &workspace_root,
+                            &teardown_targets.snapshot(),
+                            &super::super::TrackWorkspacePlan::AttachedFromCwd,
+                        )
+                        .await?;
+                    }
+                    return Err(error);
+                }
+            };
+            if shape.cwd.is_some() {
+                crate::workspace_service::require_borrowed_admission_tx(
+                    tx,
+                    &source,
+                    &area_id,
+                    shape
+                        .allow_cross_area_cwd
+                        .as_ref()
+                        .map(|cross| cross.area_id.as_str()),
+                )
+                .await?;
+            }
             Ok(if area.kind == crate::model::AreaKind::User {
                 CreatePlan::Canonical(KeyedPlan::Mint(prepare_canonical_creation(
                     request,
@@ -122,7 +160,13 @@ pub(in crate::routes::tracks) async fn creation_plan(
             })
         })
     })
-    .await
+    .await?;
+    match plan {
+        CreatePlan::Canonical(KeyedPlan::Mint(plan)) => Ok(CreatePlan::Canonical(KeyedPlan::Mint(
+            plan.prepare_resources(state).await?,
+        ))),
+        other => Ok(other),
+    }
 }
 
 /// Fresh blank managed creation accepts unavailable providers with a retained
@@ -141,7 +185,7 @@ pub(crate) fn accepts_unavailable_blank_track(provider: &AgentProvider) -> bool 
     }
 }
 
-// The creation owner admits blank managed canonical shapes here. Excluded
+// The creation owner admits qualified canonical shapes here. Excluded
 // creation kinds retain historical preparation; receipts retain their own storage.
 fn canonical_creation_supported(request: &CreateRequestShape, input: CreateShape) -> bool {
     // The activation owner queries ACP registration policy. Local bindings are
@@ -158,23 +202,28 @@ fn canonical_creation_supported(request: &CreateRequestShape, input: CreateShape
             provider: request.planner_provider.clone(),
         }) {
             Ok(RetainedIdentityPreparation::NativeThread) => {
-                named || request.admin || matches!(input, CreateShape::WithFirstMessage(()))
+                named
+                    || request.admin
+                    || request.cwd.is_some()
+                    || request.attach_folder
+                    || request.allow_cross_area_cwd.is_some()
+                    || matches!(input, CreateShape::WithFirstMessage(()))
             }
             Ok(RetainedIdentityPreparation::LocalSession) => true,
             Err(_) => false,
         };
-    // This entry rollout admits Codex/OpenCode named/admin sources only. Other
+    // This entry rollout admits Codex/OpenCode named/admin/borrowed sources only. Other
     // bindings retain their explicit historical named-source contract.
     supported
-        && (!(named || request.admin)
+        && (!(named
+            || request.admin
+            || request.cwd.is_some()
+            || request.attach_folder
+            || request.allow_cross_area_cwd.is_some())
             || matches!(
                 request.planner_provider,
                 AgentProvider::Codex | AgentProvider::OpenCode
             ))
-        && request.isolation == super::super::CreateIsolation::Managed
-        && request.cwd.is_none()
-        && !request.attach_folder
-        && request.allow_cross_area_cwd.is_none()
 }
 
 impl CreateRequestShape {
@@ -215,6 +264,8 @@ pub(in crate::routes::tracks) fn prepare_canonical_creation(
         area_id: request.area_id,
         shape,
         workspace_root,
+        conflict: super::super::FolderConflictSlot::default(),
+        preparation: ResourcePreparation::Deferred,
     };
     Ok(match request.first_message {
         Some(text) => {
@@ -243,6 +294,35 @@ struct BlankAllocation {
     area_id: crate::ids::AreaId,
     shape: CreateRequestShape,
     workspace_root: PathBuf,
+    conflict: super::super::FolderConflictSlot,
+    preparation: ResourcePreparation,
+}
+
+enum ResourcePreparation {
+    Deferred,
+    Prepared(Box<super::super::preparation::PreparedCreate>),
+}
+
+impl CreateShape<HumanTrackCreationPlan, EmptyTrackCreationPlan> {
+    async fn prepare_resources(mut self, state: &RouteState) -> Result<Self> {
+        let allocation = match &mut self {
+            Self::WithFirstMessage(plan) => &mut plan.allocation,
+            Self::MessageLess(plan) => &mut plan.allocation,
+        };
+        if allocation.shape.cwd.is_some() {
+            allocation.preparation = ResourcePreparation::Prepared(Box::new(
+                prepare_allocation(state, allocation, crate::model::AreaKind::User).await?,
+            ));
+        }
+        Ok(self)
+    }
+
+    pub(in crate::routes::tracks) fn folder_conflict(&self) -> super::super::FolderConflictSlot {
+        match self {
+            Self::WithFirstMessage(plan) => plan.allocation.conflict.clone(),
+            Self::MessageLess(plan) => plan.allocation.conflict.clone(),
+        }
+    }
 }
 
 pub(in crate::routes::tracks) struct HumanTrackCreationPlan {
@@ -359,54 +439,40 @@ async fn blank_allocation(
     input: CreateShape,
     claim: Option<TrackCreateIdempotencyClaim>,
 ) -> Result<(NewTrack, CreateTrackOptions)> {
-    let BlankAllocation {
-        area_id,
-        shape: request,
-        workspace_root,
-    } = allocation;
-    if !canonical_creation_supported(&request, input) {
+    if !canonical_creation_supported(&allocation.shape, input) {
         return Err(CalmError::BadRequest(
-            "dormant acceptance requires an admitted managed Track Planner".into(),
+            "dormant acceptance requires an admitted Track Planner".into(),
         ));
     }
-    // This configured root is pure allocation data. It neither resolves a
-    // runnable environment nor grants access. No default HOME/cwd is used.
-    if !workspace_root.is_absolute() {
-        return Err(CalmError::BadRequest(
-            "dormant creation requires an absolute configured workspace root".into(),
+    let mut allocation = allocation;
+    if matches!(allocation.preparation, ResourcePreparation::Deferred) {
+        if allocation.shape.cwd.is_some() {
+            return Err(CalmError::BadRequest(
+                "borrowed creation requires preparation outside the allocation transaction".into(),
+            ));
+        }
+        allocation.preparation = ResourcePreparation::Prepared(Box::new(
+            prepare_allocation(state, &allocation, area_kind).await?,
         ));
     }
-    let root = workspace_root.to_str().ok_or_else(|| {
-        CalmError::BadRequest("configured workspace root is not representable as text".into())
-    })?;
-    let normalized_root = super::super::normalize_path(root);
-    let named_source = super::super::preparation::NamedSource::from_request(
-        request.template_id,
-        request.recipe_id,
-        request.fork_report_from,
-    )?;
-    let allocation = NewTrack {
-        area_id,
-        title: request.title,
-        sort: request.sort,
-        // ManagedUnder derives the actual path from the allocated Track ID.
-        cwd: normalized_root.clone(),
-        template_id: None,
-        plugin_scope: None,
-        template_input: request.template_input,
-        attach_folder: false,
-        theme: request.theme,
+    let ResourcePreparation::Prepared(prepared) = allocation.preparation else {
+        unreachable!("preparation completed above");
     };
+    let prepared = *prepared;
+    let request = allocation.shape;
+    let conflict = allocation.conflict;
     let super::super::preparation::PreparedCreate {
         p: allocation,
-        folder_claim,
+        mut folder_claim,
         body_area_id,
         normalized_cwd,
         init,
         workspace_plan,
         ..
-    } = super::super::preparation::prepare_in_area(state, allocation, named_source, area_kind)
-        .await?;
+    } = prepared;
+    if let super::super::FolderClaim::Enforce { conflict: slot, .. } = &mut folder_claim {
+        *slot = conflict;
+    }
     let options = CreateTrackOptions {
         human_source: None,
         admin: request.admin,
@@ -424,4 +490,51 @@ async fn blank_allocation(
         idempotency_claim: claim,
     };
     Ok((allocation, options))
+}
+
+/// Resource validation is outside the writer for borrowed locators; managed
+/// preparation remains process-free. Both consume the original preparation owner.
+async fn prepare_allocation(
+    state: &RouteState,
+    allocation: &BlankAllocation,
+    area_kind: crate::model::AreaKind,
+) -> Result<super::super::preparation::PreparedCreate> {
+    let request = &allocation.shape;
+    // This configured root is pure allocation data. It neither resolves a
+    // runnable environment nor grants access. No default HOME/cwd is used.
+    if !allocation.workspace_root.is_absolute() {
+        return Err(CalmError::BadRequest(
+            "dormant creation requires an absolute configured workspace root".into(),
+        ));
+    }
+    let root = allocation.workspace_root.to_str().ok_or_else(|| {
+        CalmError::BadRequest("configured workspace root is not representable as text".into())
+    })?;
+    let normalized_root = super::super::normalize_path(root);
+    let named_source = super::super::preparation::NamedSource::from_request(
+        request.template_id.clone(),
+        request.recipe_id.clone(),
+        request.fork_report_from.clone(),
+    )?;
+    let allocation = NewTrack {
+        area_id: allocation.area_id.clone(),
+        title: request.title.clone(),
+        sort: request.sort,
+        // ManagedUnder derives the actual path from the allocated Track ID.
+        cwd: request.cwd.clone().unwrap_or(normalized_root),
+        template_id: None,
+        plugin_scope: None,
+        template_input: request.template_input.clone(),
+        attach_folder: request.attach_folder,
+        theme: request.theme,
+    };
+    super::super::preparation::prepare_in_area(
+        state,
+        allocation,
+        named_source,
+        area_kind,
+        request.isolation,
+        request.allow_cross_area_cwd.clone(),
+    )
+    .await
 }

@@ -380,7 +380,12 @@ async fn historical_template_key_replays_through_http(provider: AgentProvider) {
     let (state, app, cookie) = fixture.application().await;
     let mut original = body(&app, &cookie, &provider).await;
     original["template_id"] = json!("small-change");
-    // The released attached entry remains historical during the U7 rollout.
+    // User borrowing is canonical after U8b. System targets retain the actual
+    // historical entry, so this remains an HTTP replay of a historical key.
+    if provider == AgentProvider::OpenCode {
+        original["area_id"] =
+            post(&app, &cookie, "/api/areas/system", "system", json!({})).await["id"].clone();
+    }
     let cwd = fixture.root.path().join("attached");
     crate::test_support::init_fixture_git_repo(&cwd);
     original["cwd"] = json!(cwd);

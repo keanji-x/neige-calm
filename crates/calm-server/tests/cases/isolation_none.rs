@@ -212,16 +212,41 @@ async fn isolation_none_http_create_has_no_effect_and_projects_all_track_reads()
         );
     }
 
-    let payload: String = sqlx::query_scalar(
-        "SELECT payload_json FROM operations WHERE kind='planner-harness-start'",
+    let (card, worker, worker_track): (String, String, String) = sqlx::query_as(
+        "SELECT c.id, ws.id, ws.track_id FROM cards c \
+         JOIN worker_sessions ws ON ws.id=c.session_id AND ws.card_id=c.id \
+         WHERE c.track_id=?1 AND c.role='planner'",
     )
+    .bind(id)
     .fetch_one(b.repo.pool())
     .await
     .unwrap();
-    let payload: calm_server::operation::planner_harness_start_adapter::PlannerHarnessStartOperationPayload =
-        serde_json::from_str(&payload).unwrap();
-    assert_eq!(payload.track_id, id);
-    assert_eq!(payload.cwd, selected.to_str().unwrap());
+    assert_eq!(worker_track, id);
+    let mut tx = b.repo.pool().begin().await.unwrap();
+    let carrier =
+        calm_truth::db::sqlite::conversation::current_input_carrier_tx(&mut tx, &card, &worker)
+            .await
+            .unwrap();
+    assert_eq!(
+        carrier.checkpoint(),
+        &calm_types::conversation::ConversationInputCheckpoint::empty()
+    );
+    tx.rollback().await.unwrap();
+    let worker_workspace = b
+        .repo
+        .track_get(&worker_track)
+        .await
+        .unwrap()
+        .unwrap()
+        .workspace;
+    assert_eq!(worker_workspace, row.workspace);
+    assert_eq!(worker_workspace.agent_cwd(), selected.to_str().unwrap());
+    let historical_starts: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM operations WHERE kind='planner-harness-start'")
+            .fetch_one(b.repo.pool())
+            .await
+            .unwrap();
+    assert_eq!(historical_starts, 0);
     for uri in [
         format!("/api/tracks/{id}"),
         format!("/api/areas/{area}/tracks"),
@@ -437,6 +462,100 @@ async fn keyed_create(b: &Boot, key: &str, body: Value) -> (StatusCode, Value) {
     (status, serde_json::from_slice(&bytes).unwrap())
 }
 
+// Pre-cutover data uses Truth allocation and the released binding shape, never a
+// canonical create followed by a forbidden rewrite of its immutable binding.
+async fn historical_seed(
+    b: &Boot,
+    area: &str,
+    source: &Path,
+    worktree: bool,
+    first: bool,
+    digest: &str,
+) -> Value {
+    use calm_server::db::sqlite::*;
+    use calm_server::model::{CardRole, NewCard, NewTrack};
+    let mut tx = b.repo.pool().begin().await.unwrap();
+    let track = track_create_tx(
+        &mut tx,
+        NewTrack {
+            area_id: area.into(),
+            title: "borrowed".into(),
+            sort: None,
+            cwd: source.to_str().unwrap().into(),
+            template_id: None,
+            plugin_scope: None,
+            template_input: None,
+            attach_folder: true,
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
+        },
+        None,
+        &if worktree {
+            TrackWorkspacePlan::AttachedWithTrackWorktree(source.into())
+        } else {
+            TrackWorkspacePlan::AttachedFromCwd
+        },
+        None,
+        &b.tracks,
+    )
+    .await
+    .unwrap();
+    let host = calm_server::acp_planner::config::AcpPlannerHost::unconfigured_scratch().unwrap();
+    let planner = calm_server::model::new_id();
+    let report = calm_server::model::new_id();
+    for (id, kind, role, payload) in [
+        (
+            &planner,
+            "codex",
+            CardRole::Planner,
+            calm_server::track_creation::planner_harness_card_payload(
+                &host,
+                None,
+                calm_server::session_projection_repo::AgentProvider::Codex,
+            ),
+        ),
+        (
+            &report,
+            "track-report",
+            CardRole::ReportCard,
+            serde_json::to_value(calm_types::track_report::TrackReportPayload::initial()).unwrap(),
+        ),
+    ] {
+        card_create_with_id_tx(
+            &mut tx,
+            id.clone(),
+            NewCard {
+                title: None,
+                track_id: track.id.clone(),
+                kind: kind.into(),
+                sort: None,
+                payload,
+            },
+            role,
+            false,
+            &b.roles,
+        )
+        .await
+        .unwrap();
+    }
+    track_create_idempotency_claim_tx(
+        &mut tx,
+        area,
+        "old-key",
+        &TrackCreateBindingClaim {
+            track_id: track.id.to_string(),
+            planner_card_id: planner,
+            report_card_id: report,
+            create_request_sha256: digest.into(),
+            first_message_sha256: first
+                .then(|| "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824".into()),
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    serde_json::to_value(calm_types::track_wire::TrackWire(track)).unwrap()
+}
+
 #[tokio::test]
 async fn isolation_none_pre_upgrade_binding_replays_and_digest_bytes_are_unchanged() {
     for with_message in [false, true] {
@@ -448,26 +567,16 @@ async fn isolation_none_pre_upgrade_binding_replays_and_digest_bytes_are_unchang
         if with_message {
             body["first_message"] = json!("hello");
         }
-        let (status, first) = keyed_create(&b, "old-key", body.clone()).await;
-        assert_eq!(status, StatusCode::CREATED, "{first}");
-        assert_eq!(first["workspace"]["isolation"], "worktree");
         let old_payload = json!({"title":"borrowed", "sort":null, "cwd":source,
             "template_id":null, "recipe_id":null, "template_input":null, "attach_folder":true,
             "theme":theme(), "fork_report_from":null});
         let old_digest =
             calm_server::routes::idempotency_key::stable_payload_hash(&old_payload).unwrap();
+        let first = historical_seed(&b, &area, &source, true, with_message, &old_digest).await;
+        assert_eq!(first["workspace"]["isolation"], "worktree");
         let actual: String = sqlx::query_scalar("SELECT create_request_sha256 FROM track_create_idempotency WHERE area_id=?1 AND idempotency_key='old-key'")
             .bind(&area).fetch_one(b.repo.pool()).await.unwrap();
         assert_eq!(actual.as_bytes(), old_digest.as_bytes());
-        // Freeze the pre-upgrade value explicitly, independently of the new request decoder.
-        sqlx::query(
-            "UPDATE track_create_idempotency SET create_request_sha256=?1 WHERE area_id=?2",
-        )
-        .bind(&old_digest)
-        .bind(&area)
-        .execute(b.repo.pool())
-        .await
-        .unwrap();
         for explicit in [false, true] {
             let mut replay = body.clone();
             if explicit {
@@ -611,7 +720,63 @@ async fn isolation_none_reset_response_projects_workspace() {
         .fetch_one(b.repo.pool())
         .await
         .unwrap();
+    let original_card = b.repo.card_get(&card).await.unwrap().unwrap();
+    let persisted = b
+        .repo
+        .track_get(track["id"].as_str().unwrap())
+        .await
+        .unwrap()
+        .unwrap();
+    let workers: Vec<(String, String)> =
+        sqlx::query_as("SELECT id,handle_state_json FROM worker_sessions WHERE track_id=?1")
+            .bind(persisted.id.as_str())
+            .fetch_all(b.repo.pool())
+            .await
+            .unwrap();
     let before = fingerprint(&source);
+    let (status, body) = request(
+        b.app.clone(),
+        "POST",
+        &format!("/api/cards/{card}/planner/reset"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(
+        json!(
+            b.repo
+                .track_get(persisted.id.as_str())
+                .await
+                .unwrap()
+                .unwrap()
+        ),
+        json!(persisted)
+    );
+    let after: Vec<(String, String)> =
+        sqlx::query_as("SELECT id,handle_state_json FROM worker_sessions WHERE track_id=?1")
+            .bind(persisted.id.as_str())
+            .fetch_all(b.repo.pool())
+            .await
+            .unwrap();
+    assert_eq!(after, workers);
+    assert_eq!(
+        json!(b.repo.card_get(&card).await.unwrap().unwrap()),
+        json!(original_card)
+    );
+    assert_eq!(fingerprint(&source), before);
+    let digest = calm_server::routes::idempotency_key::stable_payload_hash(&json!({
+        "title":"borrowed", "sort":null, "cwd":source, "isolation":"none",
+        "template_id":null, "recipe_id":null, "template_input":null, "attach_folder":true,
+        "theme":theme(), "fork_report_from":null
+    }))
+    .unwrap();
+    let old = historical_seed(&b, &area, &source, false, false, &digest).await;
+    let card: String =
+        sqlx::query_scalar("SELECT id FROM cards WHERE track_id=?1 AND role='planner'")
+            .bind(old["id"].as_str().unwrap())
+            .fetch_one(b.repo.pool())
+            .await
+            .unwrap();
     let (status, body) = request(
         b.app.clone(),
         "POST",

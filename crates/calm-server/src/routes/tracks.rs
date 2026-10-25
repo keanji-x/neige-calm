@@ -823,11 +823,24 @@ pub(crate) async fn create_track(
             let source = source.ok_or(CalmError::Unauthorized)?;
             #[cfg(feature = "fixtures")]
             crate::test_seams::pause_point("track-canonical-allocation", area_id.as_str()).await;
+            let conflict = plan.folder_conflict();
             let accepted = match plan {
                 create::CreateShape::MessageLess(plan) => {
-                    let track =
-                        create::dormant::allocate_dormant_empty_track(s, source, plan, advice)
-                            .await?;
+                    let result = create::dormant::allocate_dormant_empty_track(
+                        s.clone(),
+                        source.clone(),
+                        plan,
+                        advice,
+                    )
+                    .await;
+                    if let Some(body) = conflict.take() {
+                        return Ok((StatusCode::CONFLICT, Json(body)).into_response());
+                    }
+                    let (track, outcome) = result?;
+                    crate::workspace_service::materialize_borrowed_creation(
+                        &s, &source, &track, outcome,
+                    )
+                    .await?;
                     return Ok((
                         StatusCode::CREATED,
                         Json(calm_types::track_wire::TrackWire(track)),
@@ -835,15 +848,26 @@ pub(crate) async fn create_track(
                         .into_response());
                 }
                 create::CreateShape::WithFirstMessage(plan) => {
-                    create::dormant::accept_dormant_human_track(
+                    let result = create::dormant::accept_dormant_human_track(
                         s.clone(),
                         source.clone(),
                         plan,
                         advice,
                     )
-                    .await?
+                    .await;
+                    if let Some(body) = conflict.take() {
+                        return Ok((StatusCode::CONFLICT, Json(body)).into_response());
+                    }
+                    result?
                 }
             };
+            crate::workspace_service::materialize_borrowed_creation(
+                &s,
+                &source,
+                &accepted.track,
+                accepted.outcome,
+            )
+            .await?;
             let crate::db::sqlite::conversation::HumanTrackCreationAck::V1 {
                 planner_card_id, ..
             } = accepted.ack;
@@ -1517,19 +1541,14 @@ async fn ensure_creation_worktree(
     track: &Track,
     source: Option<&crate::conversation_inputs::HistoricalHumanSource>,
 ) -> Result<()> {
-    workspace_runtime::track_worktree::ensure_track_worktree_admitted(
-        track,
-        crate::workspace_service::ports::ServerWorkspacePorts,
-        crate::workspace_service::ports::observe,
-        || async {
-            if let Some(source) = source {
-                source
-                    .require_track(state.repo.as_ref(), track.id.as_str())
-                    .await?;
-            }
-            Ok(())
-        },
-    )
+    crate::workspace_service::ensure_worktree(track, || async {
+        if let Some(source) = source {
+            source
+                .require_track(state.repo.as_ref(), track.id.as_str())
+                .await?;
+        }
+        Ok(())
+    })
     .await
 }
 

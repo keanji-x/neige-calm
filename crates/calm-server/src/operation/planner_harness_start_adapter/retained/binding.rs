@@ -26,7 +26,7 @@ impl PlannerHarnessStartAdapter {
         let thread_tx = thread.clone();
         write_in_tx_typed(self.repo.as_ref(), move |tx| {
             Box::pin(async move {
-                let target = this.retained_target_tx(tx, &wire_tx).await?;
+                let target = this.retained_admit_tx(tx, &wire_tx).await?;
                 if target.binding != binding || target.snapshot.header.last_thread_id.is_some() {
                     return Err(CalmError::Conflict("retained activation changed".into()));
                 }
@@ -62,6 +62,7 @@ impl PlannerHarnessStartAdapter {
                 )
                 .await?;
                 // Last synchronous source check before the transaction returns to commit.
+                crate::workspace_service::validate_runtime_workspace(&target.workspace)?;
                 this.retained_source()?.0.check_current()?;
                 Ok(())
             })

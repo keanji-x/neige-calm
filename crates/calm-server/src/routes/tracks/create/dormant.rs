@@ -22,6 +22,7 @@ mod tests;
 #[derive(Debug)]
 pub(in crate::routes::tracks) struct HumanTrackCreationResult {
     pub ack: HumanTrackCreationAck,
+    pub outcome: crate::workspace_service::CreationOutcome,
     /// The finite response view read under the same Area/resource decision.
     /// It is transient output, never another persisted acceptance authority.
     pub track: crate::model::Track,
@@ -144,10 +145,18 @@ pub(in crate::routes::tracks) async fn accept_dormant_human_track(
     // Acceptance is already committed. Native availability/wake/report is not
     // part of this acknowledgement and cannot turn it back into "unaccepted".
     match result {
-        Ok(((ack, track), _)) => Ok(HumanTrackCreationResult { ack, track }),
+        Ok(((ack, track), _)) => Ok(HumanTrackCreationResult {
+            ack,
+            track,
+            outcome: crate::workspace_service::CreationOutcome::Mint,
+        }),
         Err(error @ CalmError::Conflict(_)) => replay_rx
             .try_recv()
-            .map(|(ack, track)| HumanTrackCreationResult { ack, track })
+            .map(|(ack, track)| HumanTrackCreationResult {
+                ack,
+                track,
+                outcome: crate::workspace_service::CreationOutcome::Replay,
+            })
             .map_err(|_| error),
         Err(error) => Err(error),
     }
@@ -313,7 +322,10 @@ pub(in crate::routes::tracks) async fn allocate_dormant_empty_track(
     source: HumanInputSource,
     plan: EmptyTrackCreationPlan,
     advice: crate::planner_model::selection_advice::CatalogAdvice,
-) -> Result<crate::model::Track> {
+) -> Result<(
+    crate::model::Track,
+    crate::workspace_service::CreationOutcome,
+)> {
     let preparation_state = s.clone();
     let binding = plan
         .binding()
@@ -407,8 +419,11 @@ pub(in crate::routes::tracks) async fn allocate_dormant_empty_track(
     )
     .await;
     match result {
-        Ok((track, _)) => Ok(track),
-        Err(error @ CalmError::Conflict(_)) => replay_rx.try_recv().map_err(|_| error),
+        Ok((track, _)) => Ok((track, crate::workspace_service::CreationOutcome::Mint)),
+        Err(error @ CalmError::Conflict(_)) => replay_rx
+            .try_recv()
+            .map(|track| (track, crate::workspace_service::CreationOutcome::Replay))
+            .map_err(|_| error),
         Err(error) => Err(error),
     }
 }

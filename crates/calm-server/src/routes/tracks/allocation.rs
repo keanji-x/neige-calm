@@ -65,6 +65,24 @@ pub(super) async fn allocate_track_structure_tx(
             source.require_area_tx(tx, cross.area_id.as_str()).await?;
         }
     }
+    if let CreationContext::Canonical(source) = &owners.context
+        && !matches!(workspace_plan, TrackWorkspacePlan::ManagedUnder(_))
+    {
+        let source_area = match &folder_claim {
+            FolderClaim::Enforce {
+                allow_cross_area_cwd: Some(cross),
+                ..
+            } => Some(cross.area_id.as_str()),
+            _ => None,
+        };
+        crate::workspace_service::require_borrowed_admission_tx(
+            tx,
+            source,
+            &body_area_id,
+            source_area,
+        )
+        .await?;
+    }
     let TrackAllocationOwners {
         context,
         acp_planner,

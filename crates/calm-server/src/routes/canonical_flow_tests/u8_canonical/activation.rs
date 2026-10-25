@@ -27,7 +27,9 @@ async fn u8_canonical_materialization_failure_cold_recovery_retains_acceptance()
         .unwrap();
         fixture.shutdown_process(&state).await;
         drop((state, app));
-        fixture.repo.pool().close().await;
+        tokio::time::timeout(Duration::from_secs(10), fixture.repo.pool().close())
+            .await
+            .expect("U8 cold database connections released");
         fixture.repo = Arc::new(SqlxRepo::open(&fixture.url).await.unwrap());
         if provider == "opencode" {
             super::super::opencode_creation_tests::configure(&mut fixture);
@@ -452,7 +454,13 @@ async fn u8_canonical_active_managed_admin_repoint_retains_worker_and_input() {
             .await
             .unwrap();
         }
-        state.harness.shutdown_and_remove(&worker).await.unwrap();
+        let locks = crate::state::RouteState::from_ref(&state).planner_recovery_locks;
+        let _lifecycle = crate::per_card_lock::lock_card(&locks, &card).await;
+        if let Some((_, peer)) = native.as_mut() {
+            super::super::native_attempt_recovery_tests::shutdown(&state, &worker, peer).await;
+        } else {
+            state.harness.shutdown_and_remove(&worker).await.unwrap();
+        }
         fixture.shutdown_process(&state).await;
     }
 }

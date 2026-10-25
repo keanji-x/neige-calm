@@ -19,7 +19,8 @@ async fn historical_template_first_message_keeps_its_original_creation_and_repla
     let cwd = fixture.root.path().join("attached");
     crate::test_support::init_fixture_git_repo(&cwd);
     let (state, app, cookie) = fixture.application_with_historical_native(true).await;
-    let area = area(&app, &cookie).await;
+    // System resource creation retains the actual historical owner after U8b.
+    let area = post(&app, &cookie, "/api/areas/system", "system", json!({})).await;
     let request = json!({
         "area_id":area["id"], "planner_provider":"codex", "template_id":"small-change",
         "cwd":cwd, "isolation":"none", "attach_folder":true,
@@ -360,7 +361,8 @@ async fn historical_admission_rejects_another_real_user_even_with_owner_profile_
     let cwd = fixture.root.path().join("attached");
     crate::test_support::init_fixture_git_repo(&cwd);
     let (state, app, cookie, auth) = fixture.application_with_auth(true).await;
-    let area = area(&app, &cookie).await;
+    // System resource creation retains the actual historical owner after U8b.
+    let area = post(&app, &cookie, "/api/areas/system", "system", json!({})).await;
     let create = json!({"area_id":area["id"],"planner_provider":"codex","template_id":"small-change",
         "cwd":cwd, "isolation":"none", "attach_folder":true,
         "title":"","theme":{"fg":[255,255,255],"bg":[0,0,0]},"first_message":"Owner's historical input"});
@@ -385,13 +387,8 @@ async fn historical_admission_rejects_another_real_user_even_with_owner_profile_
     crate::db::sqlite::area_membership::application_user_register(&mut tx, "alice", "Owner")
         .await
         .unwrap();
-    sqlx::query(
-        "INSERT INTO area_members(area_id,user_id,role,joined_at) VALUES(?1,'alice','member',0)",
-    )
-    .bind(area["id"].as_str().unwrap())
-    .execute(&mut *tx)
-    .await
-    .unwrap();
+    // System Areas forbid human members. The historical entry must still
+    // reject a different registered identity with a spoofed owner profile.
     tx.commit().await.unwrap();
     let token = auth.sessions.create(
         crate::auth::SessionIdentity {
@@ -637,7 +634,8 @@ async fn historical_daily_start_rechecks_its_real_source_after_the_start_wait() 
 async fn historical_source_revocation_blocks_start_but_preserves_kernel_compensation() {
     let fixture = Fixture::new().await;
     let (state, app, cookie) = fixture.application_with_historical_native(true).await;
-    let area = area(&app, &cookie).await;
+    // System resource creation retains the actual historical owner after U8b.
+    let area = post(&app, &cookie, "/api/areas/system", "system", json!({})).await;
     let gate = state
         .shared_codex_appserver
         .lock_thread_start_serial_for_test()

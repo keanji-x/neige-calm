@@ -12,11 +12,12 @@ struct RetainedRecovery {
 #[async_trait::async_trait]
 impl crate::harness::backend::factory::ActiveRecoveryAdmission for RetainedRecovery {
     fn check_current(&self) -> Result<()> {
+        crate::workspace_service::validate_runtime_workspace(&self.workspace)?;
         self.adapter.retained_source()?.0.check_current()
     }
 
     async fn validate_tx(&self, tx: &mut Tx<'_>) -> Result<()> {
-        let current = self.adapter.retained_target_tx(tx, &self.wire).await?;
+        let current = self.adapter.retained_admit_tx(tx, &self.wire).await?;
         require_restorable(&current)?;
         if current.binding != self.expected.binding
             || current.fence != self.expected.fence
@@ -30,10 +31,7 @@ impl crate::harness::backend::factory::ActiveRecoveryAdmission for RetainedRecov
                 "retained recovery target changed".into(),
             ));
         }
-        let track =
-            calm_truth::db::sqlite::track_get_tx(tx, &TrackId::from(current.track_id.clone()))
-                .await?;
-        if track.workspace != self.workspace {
+        if current.workspace != self.workspace {
             return Err(CalmError::Conflict(
                 "retained recovery workspace changed".into(),
             ));
@@ -88,13 +86,9 @@ impl PlannerHarnessStartAdapter {
         events: &crate::event::EventBus,
         track_delete_locks: &crate::per_card_lock::KeyedLocks,
     ) -> Result<()> {
-        let expected = self.retained_target(wire).await?;
+        let track = self.retained_workspace(wire).await?;
+        let expected = self.retained_admit(wire).await?;
         require_restorable(&expected)?;
-        let track = self
-            .repo
-            .track_get(&expected.track_id)
-            .await?
-            .ok_or_else(|| CalmError::NotFound("conversation track".into()))?;
         if !workspace_runtime::recycle::workspace_allows_runtime_recovery(&track) {
             return Err(CalmError::Conflict(
                 "Restore this conversation's workspace before resuming".into(),

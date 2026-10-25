@@ -51,6 +51,7 @@ impl RetainedPayload {
 
 pub(super) struct Target {
     track_id: String,
+    workspace: crate::model::TrackWorkspace,
     binding: crate::harness::profile::PlannerBinding,
     inputs: crate::conversation_inputs::SourceInputs,
     snapshot: CanonicalHarnessSnapshot,
@@ -96,8 +97,10 @@ impl PlannerHarnessStartAdapter {
                 "retained native association changed".into(),
             ));
         }
+        let track = calm_truth::db::sqlite::track_get_tx(tx, &row.track_id).await?;
         Ok(Target {
             track_id: row.track_id.to_string(),
+            workspace: track.workspace,
             binding,
             inputs,
             snapshot,
@@ -120,6 +123,45 @@ impl PlannerHarnessStartAdapter {
             Box::pin(async move { this.retained_target_tx(tx, &wire).await })
         })
         .await
+    }
+
+    async fn retained_admit_tx(&self, tx: &mut Tx<'_>, wire: &RetainedPayload) -> Result<Target> {
+        let target = self.retained_target_tx(tx, wire).await?;
+        crate::workspace_service::validate_runtime_workspace(&target.workspace)?;
+        self.retained_source()?.0.check_current()?;
+        Ok(target)
+    }
+
+    async fn retained_admit(&self, wire: &RetainedPayload) -> Result<Target> {
+        let this = self.clone();
+        let wire = wire.clone();
+        write_in_tx_typed(self.repo.as_ref(), move |tx| {
+            Box::pin(async move { this.retained_admit_tx(tx, &wire).await })
+        })
+        .await
+    }
+
+    /// All retained lifecycle branches prepare through the same Workspace owner.
+    /// Keep the selected locator and current source/carrier fenced across repair.
+    async fn retained_workspace(&self, wire: &RetainedPayload) -> Result<crate::model::Track> {
+        let target = self.retained_target(wire).await?;
+        let track = self
+            .repo
+            .track_get(&target.track_id)
+            .await?
+            .ok_or_else(|| CalmError::NotFound("track".into()))?;
+        let admit = || async {
+            let current = self.retained_target(wire).await?;
+            if current.track_id != target.track_id || current.workspace != track.workspace {
+                return Err(CalmError::Conflict("retained workspace changed".into()));
+            }
+            self.retained_source()?.0.check_current()
+        };
+        admit().await?;
+        crate::workspace_service::ensure_worktree(&track, &admit).await?;
+        admit().await?;
+        self.retained_admit(wire).await?;
+        Ok(track)
     }
 
     /// The fence owns this complete invocation, including cancellation of its
@@ -160,6 +202,9 @@ impl PlannerHarnessStartAdapter {
         // Association belongs to the accepted worker/input lifecycle. A caller
         // that cannot restore another source's active claim still retains its
         // own exact accepted tail, without authorizing that preceding claim.
+        if self.harness_registry.get(&wire.worker_session_id).is_some() {
+            bound.retained_workspace(&wire).await?;
+        }
         let (source, _) = bound.retained_source()?;
         source.check_current()?;
         let sources = self.harness_registry.canonical_sources(
@@ -205,7 +250,7 @@ impl PlannerHarnessStartAdapter {
         }
         // Re-read all current scope after native/handle awaits. This binds only
         // the exact actual head in the caller's namespace; Unknown is not freed.
-        bound.retained_target(&wire).await?;
+        bound.retained_admit(&wire).await?;
         self.harness_registry
             .get(&wire.worker_session_id)
             .ok_or_else(|| CalmError::Conflict("retained handle is not installed".into()))?;
@@ -262,6 +307,7 @@ impl PlannerHarnessStartAdapter {
     ) -> Result<AppServerInteractOutcome> {
         let target = self.retained_target(wire).await?;
         if let Some(thread) = target.snapshot.header.last_thread_id {
+            self.retained_workspace(wire).await?;
             return Ok(AppServerInteractOutcome::MintedAndAwaited { thread_id: thread });
         }
         if output.data.get("activation").and_then(Value::as_str) != Some("prepared") {
@@ -277,18 +323,13 @@ impl PlannerHarnessStartAdapter {
         .ready_retained(&target.binding.provider)
         .await?;
         let (_, root) = self.retained_source()?;
-        let track = self
-            .repo
-            .track_get(&target.track_id)
-            .await?
-            .ok_or_else(|| CalmError::NotFound("track".into()))?;
-        self.retained_target(wire).await?;
+        let track = self.retained_workspace(wire).await?;
         workspace_runtime::selection::materialize_workspace(
             &track.workspace,
             root,
             &target.track_id,
         )?;
-        self.retained_target(wire).await?;
+        self.retained_admit(wire).await?;
         #[cfg(feature = "fixtures")]
         crate::test_seams::pause_point("retained-workspace-ready", &wire.card_id).await;
         match PlannerFactory::retained_identity(&target.binding)? {
@@ -319,7 +360,7 @@ impl PlannerHarnessStartAdapter {
         let previous_output = output.clone();
         let expected = write_in_tx_typed(self.repo.as_ref(), move |tx| {
             Box::pin(async move {
-                let target = this.retained_target_tx(tx, &wire_tx).await?;
+                let target = this.retained_admit_tx(tx, &wire_tx).await?;
                 if target.snapshot.header.last_thread_id.is_some() {
                     return Err(CalmError::Conflict("retained activation changed".into()));
                 }
@@ -376,7 +417,10 @@ impl PlannerHarnessStartAdapter {
             raw,
             true,
             &crate::harness::native_admission::NativePromptAdmission::new(
-                || self.retained_source()?.0.check_current(),
+                || {
+                    crate::workspace_service::validate_runtime_workspace(&track.workspace)?;
+                    self.retained_source()?.0.check_current()
+                },
                 move || {
                     let admitted = admitted.clone();
                     let wire = admitted_wire.clone();
@@ -389,7 +433,7 @@ impl PlannerHarnessStartAdapter {
                             Box::pin(async move {
                                 super::super::repo_sqlite::require_live_claim_tx(tx, &operation)
                                     .await?;
-                                admitted.retained_target_tx(tx, &wire).await?;
+                                admitted.retained_admit_tx(tx, &wire).await?;
                                 Ok(())
                             })
                         })
@@ -525,7 +569,8 @@ impl PlannerHarnessStartAdapter {
         events: &crate::event::EventBus,
         track_delete_locks: &crate::per_card_lock::KeyedLocks,
     ) -> Result<SpawnOutcome> {
-        let target = self.retained_target(wire).await?;
+        self.retained_workspace(wire).await?;
+        let target = self.retained_admit(wire).await?;
         let thread = target
             .snapshot
             .header
@@ -545,7 +590,7 @@ impl PlannerHarnessStartAdapter {
             .ok_or_else(|| {
                 CalmError::Conflict("retained handle installation is in progress".into())
             })?;
-        self.retained_target(wire).await?;
+        self.retained_admit(wire).await?;
         let backend = PlannerFactory::new(
             Arc::downgrade(&self.daemon),
             &self.claude_host,
@@ -572,7 +617,7 @@ impl PlannerHarnessStartAdapter {
         backend.recover_retained().await?;
         // Recovery may refine a lost private report. Load the committed frame,
         // retaining the same source, worker and workspace fences.
-        let target = self.retained_target(wire).await?;
+        let target = self.retained_admit(wire).await?;
         let handle = PlannerHarness::run(PlannerHarnessParams {
             track_delete_locks: track_delete_locks.clone(),
             worker_session_id: wire.worker_session_id.clone(),
@@ -592,7 +637,7 @@ impl PlannerHarnessStartAdapter {
         })
         .await?;
         let admitted = self
-            .retained_target(wire)
+            .retained_admit(wire)
             .await
             .and_then(|_| self.retained_source()?.0.check_current());
         if let Err(error) = admitted {

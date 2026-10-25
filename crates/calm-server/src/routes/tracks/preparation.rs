@@ -151,13 +151,15 @@ pub(super) async fn prepare_in_area(
     p: NewTrack,
     named_source: NamedSource,
     area_kind: AreaKind,
+    isolation: CreateIsolation,
+    allow_cross_area_cwd: Option<CrossAreaCwdAuthorization>,
 ) -> Result<PreparedCreate> {
     prepare_with_area(
         s,
         p,
         named_source,
-        CreateIsolation::Managed,
-        None,
+        isolation,
+        allow_cross_area_cwd,
         PreparationArea::Admitted(area_kind),
     )
     .await
