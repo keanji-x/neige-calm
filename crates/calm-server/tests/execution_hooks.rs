@@ -798,3 +798,9 @@ mod refusal_order;
 
 #[path = "execution_hooks/c4_recovery_tick.rs"]
 mod c4_recovery_tick;
+
+#[path = "execution_hooks/c5_location.rs"]
+mod c5_location;
+
+#[path = "execution_hooks/c5_admission.rs"]
+mod c5_admission;

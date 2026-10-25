@@ -1257,6 +1257,16 @@ O1 已在 main 实现（`truth/db/sqlite/track.rs:123` 的 `admit_attached_works
      objective 检查的根是它自己的 checkout（C5-D4）；forge 按本条处理。不属于以上任何一类的调用者，在发现它的那一片接入同一个共享围栏，
      不靠代理。
 
+- **C5-D6.5（Planner 决定）：历史 edit 的 RewindCheck 也受 track 围栏。** 实现盘点发现 C5-D6.4 的既有前提不成立：
+  `routes/planner_input_send.rs` → `harness/run_loop/replace_command.rs::handle_replace_admitted` 只持有 `inner.issuance`，
+  经 `claude_planner/session/invocation.rs::prepare_edit` → `claude_planner/rewind.rs::check` 准入 RewindCheck 时没有 track 锁。
+  决定：`handle_replace_admitted` 在 `inner.issuance` **之前**取得以 `inner.track_id` 为键的 `track_delete_locks`，保持
+  track → issuance 顺序；复用 `lock_track_for_issuance` 的 shutdown-select 等锁步骤，但不复用它的 `can_seek_issuance`
+  预检。ShuttingDown 与 Superseded 使用既有 edit refusal。守卫保持到 `prepare_rewind` 返回且 RewindCheck 已结算，
+  或 clean 可见的占用事实已提交。生产 edit 入口的回归测试证明持有 track 锁时不能准入 RewindCheck。
+  同时核实 C5-D6.4 的其余 provider 准入：没有在 track 锁下保持到占用提交的调用者遵守同样的锁序；若既有锁序使其无法
+  取得 track 锁，则停止并提交带源码位置的冲突，不倒置锁序。
+
 - **C5-D7（已决定）：repoint 的目标经同一 O1 准入，在任何生命周期变化之前一次、在绑定写者内再一次（评审 R2-B1）。** 事实：repoint 对目标
   只做 Git 校验（`server/routes/tracks.rs:2032` 的 `validate_attached_workspace`：绝对路径、存在、是目录、Git 工作树、slice 分支命名空间空闲）；
   两次 folder claim（`:2128` 的 `ScanOnly`、`:2262` 的 `Authoritative`）只执行 Area 文件夹归属，不排除内部根；绑定写者（`:2270`）

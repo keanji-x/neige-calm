@@ -97,6 +97,8 @@ pub struct RouteState {
     /// Root for server-managed track workspaces (`<root>/<area_id>/<track_id>`).
     /// Resolved once at boot; never read from env at request time.
     pub workspace_root: PathBuf,
+    /// Kernel-owned temporary objective checkout root, resolved once at state construction.
+    pub objective_checkout_root: PathBuf,
     pub teardown_targets: workspace_runtime::sweep::TeardownTargets,
     pub events: EventBus,
     pub plugin: Arc<PluginHost>,
@@ -171,6 +173,13 @@ pub struct RouteState {
 }
 
 impl RouteState {
+    pub(crate) fn owned_location_roots(&self) -> Vec<PathBuf> {
+        vec![
+            self.workspace_root.clone(),
+            self.objective_checkout_root.clone(),
+        ]
+    }
+
     /// Shared managed-backend wiring for recovery and the start adapter.
     pub(crate) fn planner_wiring(&self) -> PlannerWiring {
         PlannerWiring {
@@ -206,6 +215,8 @@ pub struct BootState {
     pub teardown_targets: workspace_runtime::sweep::TeardownTargets,
     pub repo: Arc<dyn Repo>,
     pub workspace_root: PathBuf,
+    /// Kernel-owned temporary objective checkout root, resolved once at state construction.
+    pub objective_checkout_root: PathBuf,
     /// Owns the auto-allocated workspace root of a test/replay state; `None` in production.
     pub workspace_root_guard: Option<Arc<tempfile::TempDir>>,
     pub events: EventBus,
@@ -252,6 +263,7 @@ impl BootState {
             terminal_renderer: self.terminal_renderer.clone(),
             repo: route_repo.clone(),
             workspace_root: self.workspace_root.clone(),
+            objective_checkout_root: self.objective_checkout_root.clone(),
             teardown_targets: self.teardown_targets,
             events: self.events.clone(),
             plugin: self.plugin.clone(),
@@ -271,7 +283,12 @@ impl BootState {
             planner_input_key_locks: crate::per_card_lock::new_keyed_locks(),
             track_delete_locks: self.operation_runtime.track_delete_locks().clone(),
             thread_seals: self.shared_codex_appserver.thread_seals().clone(),
-            area_delete_locks: crate::per_card_lock::new_keyed_locks(),
+            area_delete_locks: self
+                .operation_runtime
+                .location_admission()
+                .expect("boot location admission")
+                .area_locks
+                .clone(),
             claude_planner: self.claude_planner,
             acp_planner: self.acp_planner,
             provider_availability: Arc::default(),
@@ -430,6 +447,7 @@ struct OperationAdapterInputs {
     mcp_server: Option<Arc<McpServer>>,
     gate_logs_dir: PathBuf,
     workspace_root: PathBuf,
+    objective_checkout_root: PathBuf,
     claude_planner: Arc<ClaudePlannerHost>,
     acp_planner: Arc<AcpPlannerHost>,
     gate_run_wait: GateRunWait,
@@ -564,7 +582,7 @@ fn build_operation_adapters(
         ));
     let objective_check_adapter: Arc<dyn ProviderAdapter> = Arc::new(
         crate::operation::objective_check_run::ObjectiveCheckRunAdapter::new(
-            input.gate_logs_dir.with_file_name("objective-checks"),
+            input.objective_checkout_root.clone(),
             input.gate_logs_dir.join("objective-checks"),
         ),
     );
@@ -579,6 +597,7 @@ fn build_operation_adapters(
             input.card_role_cache.clone(),
             input.track_area_cache.clone(),
             input.workspace_root.clone(),
+            input.objective_checkout_root.clone(),
             input.teardown_targets.clone(),
         )
         .with_selection_context(child_selection),
@@ -681,6 +700,28 @@ impl AppState {
     /// The managed workspace root this process was booted with.
     pub fn workspace_root(&self) -> &std::path::Path {
         &self.route.workspace_root
+    }
+
+    /// Explicitly wire a fixture runtime to this state's real roots and lifecycle locks.
+    #[cfg(feature = "fixtures")]
+    pub fn location_admission_for_test(
+        &self,
+    ) -> crate::operation::location_admission::LocationAdmission {
+        self.operation_runtime
+            .location_admission()
+            .expect("state location admission")
+            .clone()
+    }
+
+    pub fn objective_checkout_root(&self) -> &std::path::Path {
+        &self.route.objective_checkout_root
+    }
+
+    #[cfg(feature = "fixtures")]
+    pub fn with_objective_checkout_root(mut self, root: PathBuf) -> Self {
+        self.route.objective_checkout_root = root;
+        self.rebuild_operation_runtime();
+        self
     }
 
     pub(crate) fn track_delete_locks(&self) -> &crate::per_card_lock::KeyedLocks {
@@ -986,6 +1027,8 @@ impl AppState {
         let execution = crate::execution_quiesce::ExecutionLifecycle::default();
         terminal_renderer.set_execution(execution.clone());
         let teardown_targets = workspace_runtime::sweep::TeardownTargets::default();
+        let objective_checkout_root =
+            TaskVerifyAdapter::default_gate_logs_dir().with_file_name("objective-checks");
         let (adapters, planner_start_adapter) = build_operation_adapters(OperationAdapterInputs {
             teardown_targets: teardown_targets.clone(),
             execution: execution.clone(),
@@ -1003,6 +1046,7 @@ impl AppState {
             mcp_server: None,
             gate_logs_dir: TaskVerifyAdapter::default_gate_logs_dir(),
             workspace_root: workspace_root_sandbox.path().to_path_buf(),
+            objective_checkout_root: objective_checkout_root.clone(),
             claude_planner: claude_planner.clone(),
             acp_planner: acp_planner.clone(),
             gate_run_wait: GateRunWait::DEFAULT,
@@ -1021,6 +1065,13 @@ impl AppState {
                 events.clone(),
                 completion,
             )
+            .with_location_admission(crate::operation::location_admission::LocationAdmission {
+                managed_root: workspace_root_sandbox.path().to_path_buf(),
+                objective_checkout_root: objective_checkout_root.clone(),
+                teardown_targets: teardown_targets.clone(),
+                area_locks: crate::per_card_lock::new_keyed_locks(),
+                track_locks: crate::per_card_lock::new_keyed_locks(),
+            })
             .with_shared_codex_appserver(shared_codex_appserver.clone())
             .with_execution(execution),
         ));
@@ -1072,6 +1123,7 @@ impl AppState {
             teardown_targets,
             repo,
             workspace_root: workspace_root_sandbox.path().to_path_buf(),
+            objective_checkout_root: objective_checkout_root.clone(),
             workspace_root_guard: Some(workspace_root_sandbox),
             events,
             daemon,
@@ -1218,6 +1270,7 @@ impl AppState {
             mcp_server: self.mcp_server.clone(),
             gate_logs_dir: TaskVerifyAdapter::default_gate_logs_dir(),
             workspace_root: self.route.workspace_root.clone(),
+            objective_checkout_root: self.route.objective_checkout_root.clone(),
             claude_planner: self.route.claude_planner.clone(),
             acp_planner: self.route.acp_planner.clone(),
             gate_run_wait: GateRunWait::DEFAULT,
@@ -1236,7 +1289,13 @@ impl AppState {
                 self.events.clone(),
                 completion,
             )
-            .with_track_delete_locks(self.route.track_delete_locks.clone())
+            .with_location_admission(crate::operation::location_admission::LocationAdmission {
+                managed_root: self.route.workspace_root.clone(),
+                objective_checkout_root: self.route.objective_checkout_root.clone(),
+                teardown_targets: self.route.teardown_targets.clone(),
+                area_locks: self.route.area_delete_locks.clone(),
+                track_locks: self.route.track_delete_locks.clone(),
+            })
             .with_shared_codex_appserver(self.shared_codex_appserver.clone())
             .with_execution(execution),
         ));
@@ -1404,6 +1463,7 @@ impl AppState {
         // One resolution of the gate-logs dir, shared by the gate runner and the MCP
         // gate-log view, so writer and reader cannot split.
         let gate_logs_dir = cfg.data_dir_resolved().join("gate-logs");
+        let objective_checkout_root = gate_logs_dir.with_file_name("objective-checks");
         // One context for both readers: the MCP listener and `RouteState::mcp_context` hold the same `Arc`.
         let mcp_context = crate::mcp_server::registry::AppContext::new(
             repo.clone(),
@@ -1569,6 +1629,7 @@ impl AppState {
             mcp_server: Some(mcp_server.clone()),
             gate_logs_dir: gate_logs_dir.clone(),
             workspace_root: workspace_root.clone(),
+            objective_checkout_root: objective_checkout_root.clone(),
             claude_planner: claude_planner.clone(),
             acp_planner: acp_planner.clone(),
             gate_run_wait: GateRunWait::for_idle(cfg.worker_liveness().idle),
@@ -1588,6 +1649,13 @@ impl AppState {
                     events.clone(),
                     completion,
                 )
+                .with_location_admission(crate::operation::location_admission::LocationAdmission {
+                    managed_root: workspace_root.clone(),
+                    objective_checkout_root: objective_checkout_root.clone(),
+                    teardown_targets: teardown_targets.clone(),
+                    area_locks: crate::per_card_lock::new_keyed_locks(),
+                    track_locks: crate::per_card_lock::new_keyed_locks(),
+                })
                 .with_shared_codex_appserver(shared_codex_appserver.clone())
                 .with_execution(execution),
             )
@@ -1677,6 +1745,7 @@ impl AppState {
             teardown_targets,
             repo,
             workspace_root,
+            objective_checkout_root,
             // Production: the root is the user's real directory, never swept.
             workspace_root_guard: None,
             events,

@@ -44,9 +44,18 @@ async fn boot() -> Boot {
 }
 
 async fn boot_with_workspace_root(root: impl FnOnce(&Path) -> PathBuf) -> Boot {
+    boot_with_storage(root, false).await
+}
+
+async fn boot_with_storage(root: impl FnOnce(&Path) -> PathBuf, persistent: bool) -> Boot {
     let tmp = TempDir::new().unwrap();
     let workspace_root = root(tmp.path());
-    let sqlx_repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
+    let url = if persistent {
+        format!("sqlite:{}", tmp.path().join("state.db").display())
+    } else {
+        "sqlite::memory:".into()
+    };
+    let sqlx_repo = Arc::new(SqlxRepo::open(&url).await.unwrap());
     let repo: Arc<dyn Repo> = sqlx_repo.clone();
     let roles = CardRoleCache::new();
     let tracks = TrackAreaCache::new();
@@ -1539,6 +1548,8 @@ async fn support_child_track(b: &Boot, parent_track_id: &str) -> String {
         b.repo.card_role_cache().clone(),
         b.repo.track_area_cache().clone(),
         b.workspace_root.clone(),
+        calm_server::operation::task_verify_adapter::TaskVerifyAdapter::default_gate_logs_dir()
+            .with_file_name("objective-checks"),
         b.teardown_targets.clone(),
     );
     let mut tx = b.repo.pool().begin().await.unwrap();

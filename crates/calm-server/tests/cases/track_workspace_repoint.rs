@@ -75,7 +75,8 @@ async fn boot() -> Boot {
         Some(tracks.clone()),
     )
     .with_shared_codex_appserver(shared_codex.clone())
-    .with_workspace_root(workspace_root.clone());
+    .with_workspace_root(workspace_root.clone())
+    .with_objective_checkout_root(tmp.path().join("objective-checks"));
     let harness = state.harness.clone();
     let state_for_tests = state.clone();
     let app = routes::router()
@@ -1023,7 +1024,8 @@ async fn a_directory_claimed_by_another_area_is_a_structured_conflict() {
     let other = create_area(&b, "other").await;
     let repo = user_repo(&b.tmp.path().join("my-project"));
 
-    // `owner` claims it first, through the create route.
+    // Claim an ordinary attached directory, without an owned worktree in the target.
+    // C5-D7 rejects owned destinations before the separate folder-claim contract.
     let (status, body) = request(
         b.app.clone(),
         "POST",
@@ -1031,7 +1033,7 @@ async fn a_directory_claimed_by_another_area_is_a_structured_conflict() {
         Some(json!({
             "planner_provider": "codex",
             "area_id": owner, "title": "first", "theme": theme(),
-            "cwd": repo.to_string_lossy(), "attach_folder": true,
+            "cwd": repo.to_string_lossy(), "isolation": "none", "attach_folder": true,
         })),
     )
     .await;
@@ -1116,6 +1118,7 @@ async fn a_directory_this_area_already_claims_needs_no_new_claim() {
     let b = boot().await;
     let area = create_area(&b, "c").await;
     let repo = user_repo(&b.tmp.path().join("my-project"));
+    // Keep this a folder-claim reuse case; owned-worktree refusal has separate C5 coverage.
     let (status, body) = request(
         b.app.clone(),
         "POST",
@@ -1123,7 +1126,7 @@ async fn a_directory_this_area_already_claims_needs_no_new_claim() {
         Some(json!({
             "planner_provider": "codex",
             "area_id": area, "title": "first", "theme": theme(),
-            "cwd": repo.to_string_lossy(), "attach_folder": true,
+            "cwd": repo.to_string_lossy(), "isolation": "none", "attach_folder": true,
         })),
     )
     .await;
@@ -1587,4 +1590,122 @@ async fn workspace_repoint_keeps_unrelated_expired_trash_for_maintenance() {
     assert!(!old_path.exists());
     assert!(diff(&before, &fingerprint(&target)).is_empty());
     assert_eq!(workspace_row(&b, &track).await.0, "attached");
+}
+
+#[tokio::test]
+async fn c5_repoint_owned_targets_preserve_live_harness_and_carriers() {
+    for objective in [false, true] {
+        for alias in [false, true] {
+            let b = boot().await;
+            let area = create_area(&b, "owned targets").await;
+            let (track, old_path) = managed_track(&b, &area, "untouched").await;
+            let runtime = install_live_harness(&b, &track).await;
+            let root = if objective {
+                b.state.objective_checkout_root().to_path_buf()
+            } else {
+                b.workspace_root.join(".trash/retired")
+            };
+            let root = user_repo(&root);
+            let target = if alias {
+                let alias = b.tmp.path().join("alias");
+                std::os::unix::fs::symlink(&root, &alias).unwrap();
+                alias
+            } else {
+                root
+            };
+            let before = workspace_row(&b, &track).await;
+            let sessions: Vec<(String, String)> =
+                sqlx::query_as("SELECT id,state FROM worker_sessions ORDER BY id")
+                    .fetch_all(b.repo.pool())
+                    .await
+                    .unwrap();
+            let cards = serde_json::to_value(b.repo.cards_by_track(&track).await.unwrap()).unwrap();
+            let trash = trash_entries(&b.workspace_root);
+            let (status, body) = repoint_to(&b, &track, &target).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+            assert_eq!(workspace_row(&b, &track).await, before);
+            assert_eq!(
+                sqlx::query_as::<_, (String, String)>(
+                    "SELECT id,state FROM worker_sessions ORDER BY id"
+                )
+                .fetch_all(b.repo.pool())
+                .await
+                .unwrap(),
+                sessions
+            );
+            assert_eq!(
+                serde_json::to_value(b.repo.cards_by_track(&track).await.unwrap()).unwrap(),
+                cards
+            );
+            assert!(b.harness.get(&runtime).is_some());
+            assert!(old_path.is_dir());
+            assert_eq!(trash_entries(&b.workspace_root), trash);
+        }
+    }
+}
+
+#[tokio::test]
+async fn c5_repoint_writer_refuses_new_owned_root_and_restarts_old_harness() {
+    let b = boot().await;
+    let area = create_area(&b, "race").await;
+    let (track, old_path) = managed_track(&b, &area, "old").await;
+    let target = user_repo(&b.tmp.path().join("target"));
+    install_live_harness(&b, &track).await;
+    let starts_before = harness_start_payloads(&b).await.len();
+    let before = workspace_row(&b, &track).await;
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    calm_server::routes::tracks::install_workspace_repoint_race_hook_for_test(
+        &track,
+        calm_server::routes::tracks::WorkspaceRepointRaceHook {
+            entered: entered.clone(),
+            release: release.clone(),
+        },
+    );
+    let app = b.app.clone();
+    let track_for_task = track.clone();
+    let target_for_task = target.clone();
+    let patch = tokio::spawn(async move {
+        request(app, "PATCH", &format!("/api/tracks/{track_for_task}"),
+            Some(json!({"workspace":{"kind":"attached","path":target_for_task,"attach_folder":true}}))).await
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(10), entered.notified())
+        .await
+        .unwrap();
+    let create_app = b.app.clone();
+    let create_body = json!({
+        "planner_provider":"codex","area_id":area,"title":"new worktree","cwd":target,
+        "isolation":"worktree","attach_folder":true,"theme":theme()
+    });
+    let creating =
+        tokio::spawn(
+            async move { request(create_app, "POST", "/api/tracks", Some(create_body)).await },
+        );
+    // Creation materializes before starting its Planner. That start waits on the
+    // drive lock held by repoint, so observe the admitted root before releasing it.
+    let materialized = tokio::time::timeout(std::time::Duration::from_secs(15), async {
+        loop {
+            let root: Option<String> = sqlx::query_scalar("SELECT workspace_worktree_path FROM tracks WHERE workspace_path=? AND workspace_worktree_path IS NOT NULL")
+                .bind(target.to_str().unwrap()).fetch_optional(b.repo.pool()).await.unwrap();
+            if root.as_deref().is_some_and(|root| Path::new(root).is_dir()) { break; }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    }).await;
+    release.notify_one();
+    materialized.unwrap();
+    let (status, body) = creating.await.unwrap();
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let (status, body) = patch.await.unwrap();
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(workspace_row(&b, &track).await, before);
+    assert!(old_path.is_dir());
+    assert!(trash_entries(&b.workspace_root).is_empty());
+    let starts = harness_start_payloads(&b).await;
+    assert!(
+        starts.iter().skip(starts_before).any(|payload| {
+            let payload: Value = serde_json::from_str(payload).unwrap();
+            payload["cwd"].as_str() == old_path.to_str()
+        }),
+        "the refused binding writer must restart the old Planner at its old path"
+    );
 }

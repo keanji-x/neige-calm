@@ -248,3 +248,57 @@ async fn a_cut_the_cli_refuses_is_a_409_with_its_reason_and_nothing_changes() {
     assert_eq!(stored_snapshot(&stack, &card_id).await, snapshot_before);
     stack.shutdown().await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn c5_rewind_track_fence_blocks_edit_execution_admission() {
+    use std::time::Duration;
+    let root = Root::new("exit-trailing");
+    let stack = Stack::boot(&root).await;
+    let (card, _, last) = two_turns(&root, &stack).await;
+    let runtime = stack.runtime(&card).await;
+    stack.harness(&runtime.id).pause_issuance_for_dev();
+    let track = stack
+        .repo()
+        .card_get(&card)
+        .await
+        .unwrap()
+        .unwrap()
+        .track_id;
+    let db = stack.repo().sqlite_db().unwrap();
+    let before: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM workspace_executions")
+        .fetch_one(db.read_pool())
+        .await
+        .unwrap();
+    let held = calm_server::per_card_lock::lock_key(
+        stack.state.operation_runtime.track_locks_for_test(),
+        track.as_str(),
+    )
+    .await;
+    let turn = last["id"].as_str().unwrap();
+    let mut edit = Box::pin(replace(&stack, &card, turn, "edited"));
+    let completed = tokio::time::timeout(Duration::from_millis(200), &mut edit).await;
+    let check = root.read_fake("check-argv");
+    let during: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM workspace_executions")
+        .fetch_one(db.read_pool())
+        .await
+        .unwrap();
+    drop(held);
+    assert!(
+        completed.is_err(),
+        "edit crossed the held Track fence: {completed:?}"
+    );
+    assert_eq!(
+        during, before,
+        "no execution may be admitted under the held Track fence"
+    );
+    assert!(
+        check.is_none(),
+        "RewindCheck ran while the Track lock was held"
+    );
+    let (status, body) = tokio::time::timeout(Duration::from_secs(15), edit)
+        .await
+        .unwrap();
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(root.read_fake("check-argv").is_some());
+    stack.shutdown().await;
+}

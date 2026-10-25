@@ -211,7 +211,8 @@ fn install_spawn_runtime_with_hook(
             state.terminal_renderer.clone(),
             events,
             completion,
-        ),
+        )
+        .with_location_admission(state.location_admission_for_test()),
     ));
     state.with_operation_runtime(runtime)
 }

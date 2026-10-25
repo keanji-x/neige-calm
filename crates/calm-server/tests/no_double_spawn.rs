@@ -483,7 +483,8 @@ async fn boot_with_counted_spawn_and_workspace(worktree_name: Option<&str>) -> B
             state.terminal_renderer.clone(),
             events,
             completion,
-        ),
+        )
+        .with_location_admission(state.location_admission_for_test()),
     ));
     let state = state.with_operation_runtime(runtime);
 
@@ -627,7 +628,8 @@ async fn boot_codex_with_counted_spawn_and_lifecycle_timeout(
             state.terminal_renderer.clone(),
             events,
             completion,
-        ),
+        )
+        .with_location_admission(state.location_admission_for_test()),
     ));
     let state = state.with_operation_runtime(runtime);
 
@@ -747,7 +749,8 @@ async fn boot_claude_with_counted_spawn() -> Boot {
             state.terminal_renderer.clone(),
             events,
             completion,
-        ),
+        )
+        .with_location_admission(state.location_admission_for_test()),
     ));
     let state = state.with_operation_runtime(runtime);
 
@@ -826,7 +829,8 @@ async fn boot_codex_with_reversed_spawn_claims_and_thread_notifications() -> Boo
             boot.state.terminal_renderer.clone(),
             boot.state.events.clone(),
             completion,
-        ),
+        )
+        .with_location_admission(boot.state.location_admission_for_test()),
     ));
     boot.state = boot.state.with_operation_runtime(runtime);
     boot
@@ -2293,7 +2297,8 @@ async fn terminal_create_recovery_spawn_failure_clears_stale_pid_before_compensa
             boot.state.terminal_renderer.clone(),
             boot.state.events.clone(),
             completion,
-        ),
+        )
+        .with_location_admission(boot.state.location_admission_for_test()),
     ));
     boot.state = boot.state.with_operation_runtime(runtime);
 
@@ -2491,7 +2496,8 @@ async fn worker_recovery_skips_respawn_when_terminal_already_exited() {
             boot.state.terminal_renderer.clone(),
             boot.state.events.clone(),
             completion,
-        ),
+        )
+        .with_location_admission(boot.state.location_admission_for_test()),
     ));
     boot.state = boot.state.clone().with_operation_runtime(runtime);
 
@@ -2795,7 +2801,8 @@ async fn apply_recovery_continues_after_drive_error_between_items() {
             boot.state.terminal_renderer.clone(),
             boot.state.events.clone(),
             completion,
-        ),
+        )
+        .with_location_admission(boot.state.location_admission_for_test()),
     ));
     boot.state = boot.state.with_operation_runtime(runtime);
 
@@ -3026,7 +3033,8 @@ fn install_terminal_worker_runtime_with_hook(
             boot.state.terminal_renderer.clone(),
             boot.state.events.clone(),
             completion,
-        ),
+        )
+        .with_location_admission(boot.state.location_admission_for_test()),
     ));
     boot.state = boot.state.clone().with_operation_runtime(runtime);
     adapter

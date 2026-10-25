@@ -6,6 +6,50 @@ use sqlx::{Sqlite, Transaction};
 use crate::error::{CalmError, Result};
 use crate::model::{TrackWorkspace, TrackWorkspaceKind};
 
+/// Managed track owners whose retired workspace trash must remain recoverable.
+/// The caller holds the lifecycle fence while sampling this read inventory.
+pub async fn track_workspace_trash_retention_owners(
+    pool: &sqlx::SqlitePool,
+) -> Result<Vec<String>> {
+    Ok(
+        sqlx::query_scalar("SELECT id FROM tracks WHERE workspace_kind = 'managed'")
+            .fetch_all(pool)
+            .await?,
+    )
+}
+
+/// Closed tracks with a worktree and no agent session that may be working in it: the Planner and
+/// conversation agents run there too, and a closed track's idle Planner must not block the clean.
+/// Tasks, leases and deliveries are [`super::checkout_occupancy`]'s to judge.
+const CLOSED_TRACK_WORKTREES_SQL: &str = "SELECT t.* \
+       FROM tracks t \
+      WHERE t.closed_at IS NOT NULL \
+        AND NOT EXISTS (SELECT 1 FROM worker_sessions ws WHERE ws.track_id = t.id \
+                         AND ws.state IN ('starting','running','turn_pending')) \
+      ORDER BY t.id";
+
+/// Closed-track candidates for the workspace owner's close tick.
+pub async fn closed_worktree_candidates(
+    pool: &sqlx::SqlitePool,
+) -> Result<Vec<super::super::rows::TrackRow>> {
+    Ok(sqlx::query_as(CLOSED_TRACK_WORKTREES_SQL)
+        .fetch_all(pool)
+        .await?)
+}
+
+/// Re-read the same eligibility under the caller's lifecycle fence.
+pub async fn closed_worktree_candidate(
+    pool: &sqlx::SqlitePool,
+    track: &str,
+) -> Result<Option<super::super::rows::TrackRow>> {
+    Ok(sqlx::query_as(&format!(
+        "SELECT * FROM ({CLOSED_TRACK_WORKTREES_SQL}) WHERE id=?"
+    ))
+    .bind(track)
+    .fetch_optional(pool)
+    .await?)
+}
+
 /// Write a track's workspace — kind, path, freeze stamp and track worktree — in one statement.
 /// The freeze latch is enforced here, at the bottom of every workspace write.
 /// A frozen row is `Conflict`, told apart from `NotFound` by a second read.

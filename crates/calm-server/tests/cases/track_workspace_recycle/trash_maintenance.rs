@@ -53,7 +53,12 @@ async fn workspace_trash_maintenance_collects_expired_and_preserves_fresh_unowne
         .join(format!("symlink-{old_stamp}"));
     std::os::unix::fs::symlink(&external, &link).unwrap();
 
-    collect_once(b.workspace_root.clone(), b.operation_runtime.clone()).await;
+    collect_once(
+        b.workspace_root.clone(),
+        b.operation_runtime.clone(),
+        b.repo.db().clone(),
+    )
+    .await;
     assert!(!stale.exists());
     assert!(fresh.is_dir());
     assert!(unknown.is_dir());
@@ -66,7 +71,11 @@ async fn workspace_trash_maintenance_waits_for_lifecycle_fence_without_leasing_t
     let b = boot().await;
     let stale = expired_trash(&b.workspace_root);
     let fence = b.operation_runtime.lock_for_track_delete_for_test().await;
-    let pass = collect_once(b.workspace_root.clone(), b.operation_runtime.clone());
+    let pass = collect_once(
+        b.workspace_root.clone(),
+        b.operation_runtime.clone(),
+        b.repo.db().clone(),
+    );
     tokio::pin!(pass);
     let pending = futures::poll!(&mut pass).is_pending();
     tokio::time::sleep(Duration::from_millis(50)).await;
@@ -105,7 +114,8 @@ async fn workspace_trash_maintenance_does_not_hold_lifecycle_fence_or_delay_unre
     );
     let root = b.workspace_root.clone();
     let runtime = b.operation_runtime.clone();
-    let collector = tokio::spawn(async move { collect_once(root, runtime).await });
+    let db = b.repo.db().clone();
+    let collector = tokio::spawn(async move { collect_once(root, runtime, db).await });
     let entered = tokio::time::timeout(LIMIT, pause.entered.notified()).await;
     let fence =
         tokio::time::timeout(LIMIT, b.operation_runtime.lock_for_track_delete_for_test()).await;
@@ -154,4 +164,86 @@ async fn area_delete_keeps_unrelated_expired_trash_for_maintenance() {
     assert!(b.repo.track_get(&track).await.unwrap().is_none());
     assert!(!path.exists());
     assert!(trash_entry_for(&b.workspace_root, &track).is_some());
+}
+
+async fn failed_rollback_gc(occupied: bool) {
+    let b = boot_with_storage(|root| root.join("workspaces"), true).await;
+    let area = create_area(&b, "retention").await;
+    let (track, path) = managed_track(&b, &area, "restore blocked").await;
+    let hook = calm_server::routes::tracks::TrackDeleteCommitHook {
+        entered: Arc::default(),
+        release: Arc::default(),
+        panic_after_release: true,
+    };
+    calm_server::routes::tracks::install_track_delete_commit_hook_for_test(&track, hook.clone());
+    let app = b.app.clone();
+    let id = track.clone();
+    let deletion =
+        tokio::spawn(
+            async move { request(app, "DELETE", &format!("/api/tracks/{id}"), None).await },
+        );
+    tokio::time::timeout(LIMIT, hook.entered.notified())
+        .await
+        .unwrap();
+    let renamed = if occupied {
+        std::fs::create_dir_all(&path).unwrap();
+        None
+    } else {
+        // Inject rename failure: the recorded trash source disappears, while its
+        // owned bytes remain in another correctly named trash entry.
+        let trash = trash_entry_for(&b.workspace_root, &track).unwrap();
+        let moved = b.workspace_root.join(".trash").join(format!("{track}-1"));
+        std::fs::rename(trash, &moved).unwrap();
+        Some(moved)
+    };
+    hook.release.notify_one();
+    let (status, body) = deletion.await.unwrap();
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
+    assert!(b.repo.track_get(&track).await.unwrap().is_some());
+    assert_eq!(path.exists(), occupied);
+    let trash = renamed.unwrap_or_else(|| trash_entry_for(&b.workspace_root, &track).unwrap());
+    let stamp =
+        calm_server::model::now_ms() - workspace_runtime::recycle::TRASH_RETENTION_MS - 60_000;
+    let expired = b
+        .workspace_root
+        .join(".trash")
+        .join(format!("{track}-{stamp}"));
+    std::fs::rename(trash, &expired).unwrap();
+    collect_once(
+        b.workspace_root.clone(),
+        b.operation_runtime.clone(),
+        b.repo.db().clone(),
+    )
+    .await;
+    assert!(expired.is_dir());
+    // A fresh lifecycle runtime has no in-memory rollback state; the durable owner still protects it.
+    let reboot = boot().await;
+    let runtime = reboot.operation_runtime.clone();
+    let reopened = SqlxRepo::open(&format!(
+        "sqlite:{}",
+        b.tmp.path().join("state.db").display()
+    ))
+    .await
+    .unwrap();
+    collect_once(b.workspace_root.clone(), runtime, reopened.db().clone()).await;
+    assert!(expired.is_dir());
+    let (status, body) = delete_track(&b, &track).await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+    collect_once(
+        b.workspace_root.clone(),
+        b.operation_runtime.clone(),
+        b.repo.db().clone(),
+    )
+    .await;
+    assert!(!expired.exists());
+}
+
+#[tokio::test]
+async fn c5_trash_restore_occupied_owner_protects_until_delete() {
+    failed_rollback_gc(true).await;
+}
+
+#[tokio::test]
+async fn c5_trash_restore_rename_failure_owner_protects_until_delete() {
+    failed_rollback_gc(false).await;
 }

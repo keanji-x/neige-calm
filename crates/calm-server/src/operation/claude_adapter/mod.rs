@@ -424,6 +424,12 @@ async fn mint_claude_worker_mcp_token(
 
 #[async_trait]
 impl ProviderAdapter for ClaudeAdapter {
+    async fn preparation_cwd(&self, input: &Value, _ctx: &SpawnCtx) -> Result<Option<String>> {
+        let payload: ClaudeCreateOperationPayload = serde_json::from_value(input.clone())?;
+        Ok(crate::operation::terminal_adapter::explicit_terminal_cwd(
+            payload.request.cwd,
+        ))
+    }
     async fn preparation_track(
         &self,
         input: &Value,

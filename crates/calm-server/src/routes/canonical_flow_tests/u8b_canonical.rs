@@ -3,6 +3,7 @@ use super::u8_canonical::{area, body, counts, create};
 use super::*;
 use calm_truth::db::RepoRead;
 
+mod c5_admission;
 mod recovery;
 mod selection;
 

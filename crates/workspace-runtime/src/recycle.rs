@@ -254,8 +254,13 @@ pub fn finalize_area_recycle(workspace_root: &Path, area_id: &str, report: &mut 
 }
 
 /// Sweep the trash, swallowing failures: GC must never turn a successful delete into a 500.
-pub fn gc_trash_best_effort(workspace_root: &Path, now_ms: i64) {
-    match workspace::recycle::gc_trash(workspace_root, now_ms, TRASH_RETENTION_MS) {
+pub fn gc_trash_best_effort(
+    workspace_root: &Path,
+    now_ms: i64,
+    retained_tracks: &std::collections::HashSet<String>,
+) {
+    match workspace::recycle::gc_trash(workspace_root, now_ms, TRASH_RETENTION_MS, retained_tracks)
+    {
         Ok(removed) if !removed.is_empty() => {
             tracing::info!(count = removed.len(), "trash gc: swept expired workspaces");
         }

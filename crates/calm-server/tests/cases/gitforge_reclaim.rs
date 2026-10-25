@@ -631,3 +631,74 @@ async fn gitforge_reclaim_hidden_index_flags_close_and_delete() {
         assert_eq!(receipts, 0);
     }
 }
+
+#[tokio::test]
+async fn c5_gitforge_reclaim_foreign_execution_retains_extra_on_close() {
+    foreign_execution_retains_extra(false).await;
+}
+
+#[tokio::test]
+async fn c5_gitforge_reclaim_foreign_execution_retains_extra_on_delete() {
+    foreign_execution_retains_extra(true).await;
+}
+
+async fn foreign_execution_retains_extra(delete: bool) {
+    use workspace_runtime::execution::{TrackId, test_support};
+    {
+        let f = Fixture::new().await;
+        let mut intent = test_support::intent(f.clean.clone());
+        intent.metadata.consumer = "gate".into();
+        intent.metadata.track = TrackId("foreign-owner".into());
+        let id = intent.metadata.id.clone();
+        let engine = f._execution.lifecycle.engine().unwrap();
+        let mut tx = calm_server::db::sqlite::begin_immediate_tx(f.b.repo.db())
+            .await
+            .unwrap();
+        let _ticket = engine.admit(&mut tx, intent).await.unwrap();
+        tx.commit().await.unwrap();
+        if delete {
+            let (status, body) = f.b.delete_track(&f.track).await;
+            assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+        } else {
+            f.close().await;
+            f.tick(&mut HashSet::new()).await;
+        }
+        assert!(f.clean.exists(), "occupied extra worktree must be retained");
+        let desired: String =
+            sqlx::query_scalar("SELECT desired FROM workspace_executions WHERE execution_id=?")
+                .bind(id.as_str())
+                .fetch_one(f.b.repo.pool())
+                .await
+                .unwrap();
+        assert_eq!(desired, "run", "foreign occupancy must not be stopped");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn c5_gitforge_reclaim_registers_close_target_for_workspace_admission() {
+    use calm_server::test_seams::{PausePoint, install_pause_for_test};
+    let f = Arc::new(Fixture::new().await);
+    f.close().await;
+    let pause = PausePoint::default();
+    install_pause_for_test(
+        "extra-worktree-remove-attempt",
+        f.clean.to_str().unwrap(),
+        pause.clone(),
+    );
+    let tick = tokio::spawn({
+        let f = f.clone();
+        async move { f.tick(&mut HashSet::new()).await }
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(15), pause.entered.notified())
+        .await
+        .unwrap();
+    let (status, body) = f.b.create_at(&f.clean, None, None).await;
+    pause.release.notify_one();
+    tick.await.unwrap();
+    f.b.shutdown_harnesses().await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(!f.clean.exists());
+}
+
+#[path = "gitforge_reclaim_admission.rs"]
+mod admission;

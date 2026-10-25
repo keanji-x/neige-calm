@@ -255,6 +255,10 @@ fn dispatcher_operation_runtime(
     plugin: Arc<PluginHost>,
     workspace_root: std::path::PathBuf,
 ) -> Arc<OperationRuntime> {
+    let objective_checkout_root =
+        crate::operation::task_verify_adapter::TaskVerifyAdapter::default_gate_logs_dir()
+            .with_file_name("objective-checks");
+    let teardown_targets = workspace_runtime::sweep::TeardownTargets::default();
     let route_repo: Arc<dyn RouteRepo> = repo.clone();
     let operation_repo = Arc::new(SqlxOperationRepo::new(
         repo.sqlite_db()
@@ -374,7 +378,8 @@ fn dispatcher_operation_runtime(
             write.area_cache().clone(),
             workspace_root.clone(),
             // This standalone runtime has no RouteState; AppState injects the routes' registry.
-            workspace_runtime::sweep::TeardownTargets::default(),
+            objective_checkout_root.clone(),
+            teardown_targets.clone(),
         )
         .with_selection_context(child_selection),
     );
@@ -399,7 +404,7 @@ fn dispatcher_operation_runtime(
             task_verify_adapter,
             task_gate_run_adapter,
             Arc::new(crate::operation::objective_check_run::ObjectiveCheckRunAdapter::new(
-                crate::operation::task_verify_adapter::TaskVerifyAdapter::default_gate_logs_dir().with_file_name("objective-checks"),
+                objective_checkout_root.clone(),
                 crate::operation::task_verify_adapter::TaskVerifyAdapter::default_gate_logs_dir().join("objective-checks"),
             )),
             forge_action_adapter,
@@ -417,6 +422,13 @@ fn dispatcher_operation_runtime(
             events,
             completion,
         )
+        .with_location_admission(crate::operation::location_admission::LocationAdmission {
+            managed_root: workspace_root,
+            objective_checkout_root,
+            teardown_targets,
+            area_locks: crate::per_card_lock::new_keyed_locks(),
+            track_locks: crate::per_card_lock::new_keyed_locks(),
+        })
         .with_shared_codex_appserver(shared_codex_appserver.clone()),
     ))
 }

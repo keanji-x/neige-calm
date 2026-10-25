@@ -352,7 +352,8 @@ async fn install_failing_planner_start_runtime(boot: &mut Boot) {
             boot.state.terminal_renderer.clone(),
             boot.state.events.clone(),
             completion,
-        ),
+        )
+        .with_location_admission(boot.state.location_admission_for_test()),
     ));
     boot.state = boot.state.clone().with_operation_runtime(runtime);
     boot.app = crate::support::authenticated_router::application(boot.state.clone()).await;

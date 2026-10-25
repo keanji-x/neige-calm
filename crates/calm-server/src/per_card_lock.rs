@@ -25,6 +25,12 @@ pub struct KeyedLockGuard {
 
 pub type PerCardLockGuard = KeyedLockGuard;
 
+impl KeyedLockGuard {
+    pub(crate) fn key(&self) -> &str {
+        &self.key
+    }
+}
+
 impl Drop for KeyedLockGuard {
     fn drop(&mut self) {
         let _ = self.guard.take();

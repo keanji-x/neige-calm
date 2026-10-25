@@ -45,7 +45,7 @@ pub(in crate::routes::tracks) async fn accept_dormant_human_track(
     let templates = s.templates;
     let acp_planner = s.acp_planner.clone();
     let teardown_targets = s.teardown_targets.clone();
-    let admission_root = s.workspace_root.clone();
+    let admission_root = s.owned_location_roots();
     // Like keyed Area creation, the event owner rolls a read-only replay back.
     // Only a fully checked receipt populates this local result; unrelated
     // failures cannot turn into success or manufacture a creation event.
@@ -337,7 +337,7 @@ pub(in crate::routes::tracks) async fn allocate_dormant_empty_track(
         write: s.write.clone(),
         templates: s.templates,
         teardown_targets: s.teardown_targets.clone(),
-        admission_root: s.workspace_root.clone(),
+        admission_root: s.owned_location_roots(),
     };
     let (replay_tx, mut replay_rx) = tokio::sync::oneshot::channel();
     let result = crate::db::write_with_actor_events_typed(

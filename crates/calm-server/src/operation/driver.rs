@@ -100,6 +100,40 @@ impl OperationRuntime {
         &self.spawn_ctx
     }
 
+    pub(crate) fn location_admission(
+        &self,
+    ) -> Result<&super::location_admission::LocationAdmission> {
+        self.spawn_ctx
+            .location_admission
+            .as_ref()
+            .ok_or_else(|| CalmError::Internal("location admission is not configured".into()))
+    }
+
+    pub(crate) async fn try_location_fence(
+        &self,
+        cwd: &str,
+        held_track: Option<&LaunchFence>,
+    ) -> Result<super::location_admission::LocationFence> {
+        let admission = self.location_admission()?;
+        let db = self.repo.sqlite_db();
+        let mut connection = db.read_pool().acquire().await?;
+        admission
+            .try_fence(
+                &mut connection,
+                std::path::Path::new(cwd),
+                held_track.map(|fence| fence._track.key()),
+            )
+            .await
+    }
+
+    #[cfg(feature = "fixtures")]
+    pub fn area_locks_for_test(&self) -> &crate::per_card_lock::KeyedLocks {
+        &self
+            .location_admission()
+            .expect("test location admission")
+            .area_locks
+    }
+
     #[cfg(feature = "fixtures")]
     pub fn track_locks_for_test(&self) -> &crate::per_card_lock::KeyedLocks {
         self.track_delete_locks()
@@ -530,6 +564,11 @@ impl OperationRuntime {
             .await
     }
 
+    /// Continue ordinary driving under an admission caller's existing drive hold.
+    pub(super) async fn drive_admitted(&self, guard: OperationDriveGuard) -> Result<()> {
+        self.drive_under_lock(guard._guard).await
+    }
+
     /// Periodic recovery must not wait behind a native lifecycle RPC holding
     /// the drive fence. Busy ticks coalesce instead of queuing background waiters.
     pub(crate) fn reconcile_drivable(&self) {
@@ -716,7 +755,7 @@ impl OperationRuntime {
     ) -> Result<()> {
         match op.phase.clone() {
             Phase::Pending => {
-                let _track = if preparation_fence.is_some() {
+                let track_fence = if preparation_fence.is_some() {
                     preparation_fence
                 } else {
                     match adapter
@@ -734,21 +773,40 @@ impl OperationRuntime {
                         None => None,
                     }
                 };
+                let mut location_fence = None;
                 // Facts may change during external I/O. Retry boundedly under this exact
                 // claim; after that leave Pending leased, so wait()'s drive retries on expiry.
                 let mut committed = None;
                 for _ in 0..3 {
-                    let prepared = match adapter
-                        .prepare_external(&op.payload, &op, &self.spawn_ctx)
-                        .await
-                    {
-                        Ok(prepared) => {
-                            self.repo
-                                .prepare_tx_and_advance(&op, adapter.as_ref(), prepared)
-                                .await
+                    let prepared = async {
+                        if location_fence.is_none()
+                            && let Some(cwd) = adapter
+                                .preparation_cwd(&op.payload, &self.spawn_ctx)
+                                .await?
+                        {
+                            location_fence = Some(Arc::new(
+                                self.try_location_fence(&cwd, track_fence.as_ref()).await?,
+                            ));
                         }
-                        Err(error) => Err(error),
-                    };
+                        let prepared = adapter
+                            .prepare_external(&op.payload, &op, &self.spawn_ctx)
+                            .await?;
+                        let prepared = match &location_fence {
+                            Some(fence) => {
+                                Some(Box::new(super::location_admission::FencedPreparation {
+                                    fence: fence.clone(),
+                                    prepared,
+                                    adapter: adapter.clone(),
+                                })
+                                    as Box<dyn super::PreparedTx>)
+                            }
+                            None => prepared,
+                        };
+                        self.repo
+                            .prepare_tx_and_advance(&op, adapter.as_ref(), prepared)
+                            .await
+                    }
+                    .await;
                     match prepared {
                         Ok(super::PrepareAdvance::Committed(next, events)) => {
                             committed = Some((*next, events));

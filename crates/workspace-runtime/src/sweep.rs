@@ -10,6 +10,15 @@ pub struct TeardownTargets(std::sync::Arc<std::sync::Mutex<TargetCounts>>);
 type TargetCounts = std::collections::BTreeMap<(String, PathBuf), usize>;
 
 impl TeardownTargets {
+    pub fn snapshot_with_owners(&self) -> Vec<(String, PathBuf)> {
+        self.0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .keys()
+            .cloned()
+            .collect()
+    }
+
     pub fn snapshot(&self) -> Vec<PathBuf> {
         self.0
             .lock()
@@ -50,21 +59,26 @@ impl TeardownRegistration {
             paths.push(PathBuf::from(sweep.workspace.agent_cwd()));
         }
         for path in paths {
-            let key = (sweep.track_id.clone(), path);
-            *self
-                .0
-                .targets
-                .0
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .entry(key.clone())
-                .or_default() += 1;
-            self.0
-                .roots
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .push(key);
+            self.register_location(&sweep.track_id, path);
         }
+    }
+
+    /// Close/recovery reclamation uses the same counted ownership as post-delete sweeps.
+    pub fn register_location(&self, track: &str, path: PathBuf) {
+        let key = (track.to_owned(), path);
+        *self
+            .0
+            .targets
+            .0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .entry(key.clone())
+            .or_default() += 1;
+        self.0
+            .roots
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(key);
     }
 
     pub fn sweeps(self, sweeps: Vec<WorkspaceTrackSweep>) -> RegisteredSweeps {

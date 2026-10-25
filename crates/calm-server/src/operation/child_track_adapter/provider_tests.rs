@@ -98,6 +98,7 @@ async fn a_parent_planner_without_a_provider_refuses_the_child() {
         repo.card_role_cache().clone(),
         repo.track_area_cache().clone(),
         test_workspace_root(),
+        std::path::PathBuf::from("/unused-objective-checkouts"),
         workspace_runtime::sweep::TeardownTargets::default(),
     );
     let mut tx = repo.pool().begin().await.unwrap();
@@ -476,6 +477,7 @@ async fn child_runtime(
         repo.card_role_cache().clone(),
         repo.track_area_cache().clone(),
         test_workspace_root(),
+        std::path::PathBuf::from("/unused-objective-checkouts"),
         workspace_runtime::sweep::TeardownTargets::default(),
     );
     let adapter = adapter.with_selection_context(selection_context(repo).await);

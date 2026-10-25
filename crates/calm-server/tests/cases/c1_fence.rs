@@ -351,3 +351,57 @@ async fn c3_forge_action_after_clean_check_waits_for_clean() {
     .expect("Busy retry must complete forge after clean");
     assert!(released.exists());
 }
+
+#[tokio::test]
+async fn c5_location_clean_foreign_and_malformed_roots_defer() {
+    for root_kind in 0..4 {
+        let (b, _track, path) = fixture().await;
+        let source = match root_kind {
+            0 => json!({"root": path}),
+            1 => json!({}),
+            2 => json!({"root":null}),
+            _ => json!({"root":42}),
+        };
+        let id = calm_server::model::new_id();
+        sqlx::query("INSERT INTO workspace_executions \
+            (execution_id,track_id,alias,intent_json,secrets_json,desired) VALUES (?,?,?,?,?,'run')")
+            .bind(&id).bind("foreign-owner").bind(format!("foreign:{id}"))
+            .bind(json!({"source":source}).to_string()).bind("{}").execute(b.repo.pool()).await.unwrap();
+        let (count, history) = clean(b.clone()).await.unwrap();
+        assert_eq!(count, 0);
+        assert!(history.is_empty());
+        assert!(path.join("target/ignored").is_file());
+        let desired: String =
+            sqlx::query_scalar("SELECT desired FROM workspace_executions WHERE execution_id=?")
+                .bind(&id)
+                .fetch_one(b.repo.pool())
+                .await
+                .unwrap();
+        assert_eq!(desired, "run");
+    }
+}
+
+#[tokio::test]
+async fn c5_location_foreign_worktree_delete_preserves_branch_and_rows() {
+    let (b, track, path) = fixture().await;
+    let id = calm_server::model::new_id();
+    sqlx::query("INSERT INTO workspace_executions \
+            (execution_id,track_id,alias,intent_json,secrets_json,desired) VALUES (?,?,?,?,?,'run')")
+        .bind(&id).bind("foreign-owner").bind(format!("foreign:{id}"))
+        .bind(json!({"source":{"root":path}}).to_string()).bind("{}").execute(b.repo.pool()).await.unwrap();
+    let (status, body) = b.delete_track(&track).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert!(path.join("target/ignored").is_file());
+    assert!(b.repo.track_get(&track).await.unwrap().is_some());
+    assert!(git_ref_exists(
+        &path,
+        &format!("refs/heads/neige/track-{track}")
+    ));
+    let desired: String =
+        sqlx::query_scalar("SELECT desired FROM workspace_executions WHERE execution_id=?")
+            .bind(&id)
+            .fetch_one(b.repo.pool())
+            .await
+            .unwrap();
+    assert_eq!(desired, "run");
+}

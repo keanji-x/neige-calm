@@ -652,7 +652,6 @@ pub(super) enum TrackIssuance {
 /// cleanable; only the transition to durable turn_pending excludes clean.
 pub(super) async fn lock_track_for_issuance(inner: &Arc<Inner>) -> Result<TrackIssuance> {
     inner.require_unparked()?;
-    let mut shutdown = inner.shutdown.subscribe();
     // Recovery holds track while awaiting this owner's Release acknowledgement.
     // A retained Compact must refuse a failed owner before waiting on that lock.
     // The loop also calls this from ticks; keep one precheck for both entries.
@@ -662,6 +661,18 @@ pub(super) async fn lock_track_for_issuance(inner: &Arc<Inner>) -> Result<TrackI
     }
     if !inner.inputs.can_seek_issuance(inner).await? {
         return Ok(TrackIssuance::Busy);
+    }
+    lock_track_for_admission(inner).await
+}
+
+/// Share the interruptible Track wait with historical edits, which do not seek
+/// ordinary issuance. Call before taking the issuance lock and retain the guard
+/// through the clean-visible occupancy commit (or settled rewind check).
+pub(super) async fn lock_track_for_admission(inner: &Arc<Inner>) -> Result<TrackIssuance> {
+    inner.require_unparked()?;
+    let mut shutdown = inner.shutdown.subscribe();
+    if inner.shutting_down.load(Ordering::SeqCst) {
+        return Ok(TrackIssuance::ShuttingDown);
     }
     crate::conversation_archive::require_unarchived(inner.repo.as_ref(), inner.card_id.as_str())
         .await?;

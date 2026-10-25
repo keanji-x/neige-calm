@@ -63,6 +63,7 @@ pub(crate) fn operation_failure_parts(error: &CalmError) -> Option<(String, &'st
         CalmError::NotFound(message) => Some((message.clone(), "not_found")),
         CalmError::Forbidden(message) => Some((message.clone(), "forbidden")),
         CalmError::Conflict(message) => Some((message.clone(), "conflict")),
+        CalmError::WorkspaceBusy(message) => Some((message.clone(), "workspace_busy")),
         CalmError::Unauthorized => Some(("unauthorized".into(), "unauthorized")),
         _ => None,
     }
@@ -82,6 +83,7 @@ pub(crate) fn calm_error_from_operation_failure(
         Some("not_found") => CalmError::NotFound(last_error),
         Some("forbidden") => CalmError::Forbidden(last_error),
         Some("conflict") => CalmError::Conflict(last_error),
+        Some("workspace_busy") => CalmError::WorkspaceBusy(last_error),
         Some("unauthorized") => CalmError::Unauthorized,
         _ if from_phase == PhaseTag::Pending => CalmError::BadRequest(last_error),
         _ => CalmError::Internal(last_error),

@@ -93,6 +93,8 @@ mod track_recipe;
 mod track_tree;
 mod track_workspace;
 pub mod workspace_execution;
+mod workspace_locations;
+pub use workspace_locations::{OwnedWorkspaceLocation, owned_workspace_locations};
 mod workspace_resource;
 pub use workspace_resource::{
     DirectoryObservation, ObservedDirectory, WorkspaceObservation, WorkspaceOwnership,
@@ -206,7 +208,7 @@ pub use track::{
     admit_attached_workspace_tx, track_create_idempotency_claim_tx,
     track_create_idempotency_get_pool, track_create_idempotency_get_tx, track_create_tx,
     track_delete_tx, track_find_tx, track_get_tx, track_require_leaf_tx,
-    track_require_reopenable_tx, track_update_tx,
+    track_require_reopenable_tx, track_update_tx, track_worktree_locations,
 };
 pub use track_occupancy::{
     CheckoutOccupancy, CheckoutWait, checkout_admission, checkout_occupancy,
@@ -221,7 +223,8 @@ pub use track_tree::{
     tree_share_from_member_inventory,
 };
 pub use track_workspace::{
-    track_workspace_freeze_tx, track_workspace_read_tx, track_workspace_write_tx,
+    closed_worktree_candidate, closed_worktree_candidates, track_workspace_freeze_tx,
+    track_workspace_read_tx, track_workspace_trash_retention_owners, track_workspace_write_tx,
 };
 
 use infra::check_no_unknown_future_migrations;
@@ -472,4 +475,5 @@ mod planner_switch_projection_tests;
 #[cfg(test)]
 mod task_notification_tests;
 
+pub mod path_location;
 pub mod report_knowledge;

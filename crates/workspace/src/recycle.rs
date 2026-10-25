@@ -308,7 +308,12 @@ pub fn remove_empty_area_dir(workspace_root: &Path, area_id: &str) -> bool {
 /// Delete trash entries older than the caller-supplied retention; the one `remove_dir_all` in the module. Looks only at
 /// direct children of the canonical trash, dates entries by the timestamp in their name (`rename` preserves
 /// mtime), and keeps anything it cannot date or that is not a real directory.
-pub fn gc_trash(workspace_root: &Path, now_ms: i64, retention_ms: i64) -> Result<Vec<PathBuf>> {
+pub fn gc_trash(
+    workspace_root: &Path,
+    now_ms: i64,
+    retention_ms: i64,
+    retained_tracks: &std::collections::HashSet<String>,
+) -> Result<Vec<PathBuf>> {
     let real_root = match std::fs::canonicalize(workspace_root) {
         Ok(root) => root,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -349,14 +354,14 @@ pub fn gc_trash(workspace_root: &Path, now_ms: i64, retention_ms: i64) -> Result
             tracing::warn!(path = %path.display(), "trash gc: not a directory, keeping");
             continue;
         }
-        let Some(stamp) = trash_entry_timestamp(&path) else {
+        let Some((track, stamp)) = trash_entry_identity(&path) else {
             tracing::warn!(
                 path = %path.display(),
                 "trash gc: entry name carries no timestamp, keeping"
             );
             continue;
         };
-        if now_ms.saturating_sub(stamp) < retention_ms {
+        if retained_tracks.contains(track) || now_ms.saturating_sub(stamp) < retention_ms {
             continue;
         }
         // Assert containment against the canonical entry too, so a race that swapped it for a link cannot redirect the delete.
@@ -381,10 +386,15 @@ pub fn gc_trash(workspace_root: &Path, now_ms: i64, retention_ms: i64) -> Result
 }
 
 /// `<track_id>-<ts_ms>` → `ts_ms`. `None` for any other shape.
+#[cfg(test)]
 pub(crate) fn trash_entry_timestamp(path: &Path) -> Option<i64> {
+    trash_entry_identity(path).map(|(_, stamp)| stamp)
+}
+
+fn trash_entry_identity(path: &Path) -> Option<(&str, i64)> {
     let name = path.file_name()?.to_str()?;
-    let (_, stamp) = name.rsplit_once('-')?;
-    stamp.parse::<i64>().ok()
+    let (track, stamp) = name.rsplit_once('-')?;
+    Some((track, stamp.parse::<i64>().ok()?))
 }
 
 #[cfg(test)]

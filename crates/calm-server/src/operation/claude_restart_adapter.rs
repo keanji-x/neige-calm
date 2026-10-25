@@ -162,6 +162,20 @@ pub(crate) fn claude_restart_payload(actor: ActorId, card_id: String) -> Result<
 
 #[async_trait]
 impl ProviderAdapter for ClaudeRestartAdapter {
+    async fn preparation_cwd(&self, input: &Value, ctx: &SpawnCtx) -> Result<Option<String>> {
+        let payload: ClaudeRestartOperationPayload = serde_json::from_value(input.clone())?;
+        let card = ctx
+            .repo
+            .card_get(payload.card_id.trim())
+            .await?
+            .ok_or_else(|| CalmError::NotFound(format!("card {}", payload.card_id)))?;
+        Ok(crate::operation::terminal_adapter::explicit_terminal_cwd(
+            card.payload
+                .get("cwd")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned),
+        ))
+    }
     async fn preparation_track(
         &self,
         input: &Value,

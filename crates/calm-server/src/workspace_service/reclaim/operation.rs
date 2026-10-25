@@ -162,6 +162,28 @@ impl ProviderAdapter for Adapter {
                 Some(guard)
             };
             let _reservation = ctx.reclaim_admission.clone().write_owned().await;
+            let admission = ctx.location_admission.as_ref().ok_or_else(|| {
+                CalmError::Internal("location admission is not configured".into())
+            })?;
+            // Publish ownership before proving occupancy. Admission rechecks this same
+            // registry in its writer, including after the track row has been deleted.
+            let registration = admission.teardown_targets.registration();
+            if frozen.target.request.path.is_absolute() {
+                registration
+                    .register_location(&frozen.target.track_id, frozen.target.request.path.clone());
+            }
+            let location = match admission
+                .try_fence(
+                    &mut *ctx.operation_repo.sqlite_db().read_pool().acquire().await?,
+                    &frozen.target.request.repo,
+                    Some(&frozen.target.track_id),
+                )
+                .await
+            {
+                Ok(fence) => fence,
+                Err(CalmError::WorkspaceBusy(_)) => return Ok(ParkedRecovery::LeaveParked),
+                Err(error) => return Err(error),
+            };
             let Some(request) = refresh(&ctx.operation_repo.sqlite_db(), &frozen.target).await?
             else {
                 return Ok(ParkedRecovery::Complete(Box::new((
@@ -190,9 +212,13 @@ impl ProviderAdapter for Adapter {
             let workspace::reclaim::Preparation::Ready(prepared) = prepared else {
                 return Ok(ParkedRecovery::LeaveParked);
             };
-            let id = admit(ctx, op, &frozen.target, &prepared.command).await?;
-            // Both guards outlive the command and its durable settlement. The store remains a
-            // terminal admission fence if transport loss prevents this wait from completing.
+            let Some(id) = admit(ctx, op, &frozen.target, &prepared.command, &location).await?
+            else {
+                return Ok(ParkedRecovery::LeaveParked);
+            };
+            // Live guards cover the command and wait. If the wait fails, the shared owned
+            // location inventory retains the committed target until durable settlement,
+            // including in a fresh runtime with no registration or track lock.
             wait(ctx, op, &id).await?;
             drop(prepared);
             execution = Some(id);
@@ -276,7 +302,8 @@ async fn admit(
     op: &Operation,
     target: &ExtraWorktree,
     command: &std::process::Command,
-) -> Result<ExecutionId> {
+    location: &crate::operation::location_admission::LocationFence,
+) -> Result<Option<ExecutionId>> {
     let engine = owned_execution::engine(ctx)?;
     let id = ExecutionId::fresh()?;
     let utf8 = |s: &std::ffi::OsStr| {
@@ -337,6 +364,16 @@ async fn admit(
     let db = ctx.operation_repo.sqlite_db();
     let mut tx = calm_truth::db::sqlite::begin_immediate_tx(&db).await?;
     crate::operation::require_live_claim_tx(&mut tx, op).await?;
+    location.recheck(&mut tx).await?;
+    let occupants = calm_truth::db::sqlite::workspace_execution::location_occupancy(
+        &mut tx,
+        calm_truth::db::sqlite::workspace_execution::Scope::Track(&target.track_id),
+        std::slice::from_ref(&target.request.path),
+    )
+    .await?;
+    if !occupants.is_empty() {
+        return Ok(None);
+    }
     let ticket = engine.admit(&mut tx, intent).await.map_err(conflict)?;
     let updated = sqlx::query("UPDATE operations SET tx_output_json=json_set(tx_output_json,'$.data.workspace_reclaim',json(?)) WHERE id=? AND json_extract(tx_output_json,'$.data.workspace_reclaim.execution_id') IS NULL")
         .bind(serde_json::to_string(&Record { execution_id: Some(id.clone()) })?).bind(&op.id).execute(&mut **tx).await?;
@@ -345,7 +382,7 @@ async fn admit(
     }
     tx.commit().await?;
     engine.drive(ticket.committed());
-    Ok(id)
+    Ok(Some(id))
 }
 fn is_success(s: &Settlement) -> bool {
     matches!(
@@ -418,9 +455,13 @@ async fn removed_tx(tx: &mut Tx<'_>, target: &ExtraWorktree) -> Result<Vec<Broad
 
 /// A lost live wait cannot release durable admission while the executor may still be removing.
 pub(crate) async fn terminal_admission_tx(tx: &mut Tx<'_>, track: &str) -> Result<()> {
-    let busy: bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM workspace_executions WHERE json_extract(intent_json,'$.consumer')=? AND settled_at_ms IS NULL)")
-        .bind(CONSUMER).fetch_one(&mut **tx).await?;
-    if busy {
+    // Implicit-cwd Terminals can cd anywhere. Preserve their global reservation,
+    // using the same durable targets as explicit-cwd and attached admission.
+    if calm_truth::db::sqlite::owned_workspace_locations(tx)
+        .await?
+        .iter()
+        .any(|location| location.removing)
+    {
         return Err(CalmError::WorkspaceBusy(track.to_owned()));
     }
     Ok(())

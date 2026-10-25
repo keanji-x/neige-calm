@@ -100,7 +100,8 @@ impl TxOnlyAdapter for TerminalExecutionCreate {
 }
 
 /// Endpoint identity spans both Terminal implementations. Typed lookup and admission share the
-/// SQLite write lock; Legacy creation retains the ordinary submit and UNIQUE-index backstop.
+/// SQLite write lock. Explicit Legacy cwd uses the same admission transaction;
+/// default Legacy cwd retains ordinary submit and its UNIQUE-index backstop.
 pub struct CreatedTerminal {
     pub result: super::OperationResult,
     /// This invocation committed the initial typed admission, rather than replaying it.
@@ -117,8 +118,13 @@ pub async fn create(
         PhaseWrite, insert_pending_row, operation_from_row, write_phase_and_tx_output,
     };
     let pool = runtime.repo.sqlite_db();
+    let explicit_cwd = super::terminal_adapter::explicit_terminal_cwd(
+        payload["cwd"].as_str().map(ToOwned::to_owned),
+    );
     let mut validated = false;
     let mut track_fence = None;
+    let mut location_fence = None;
+    let mut legacy_drive = None;
     let mut tx = loop {
         let mut tx = crate::db::sqlite::begin_immediate_tx(&pool).await?;
         if let Some(idempotency_key) = &key.idempotency_key {
@@ -135,13 +141,15 @@ pub async fn create(
                 }
                 tx.rollback().await?;
                 drop(track_fence);
+                drop(location_fence);
+                drop(legacy_drive);
                 return Ok(CreatedTerminal {
                     result: runtime.wait(&id).await?,
                     newly_admitted: false,
                 });
             }
         }
-        if !typed {
+        if !typed && explicit_cwd.is_none() {
             // Keep Legacy's validate/insert/drive path, including concurrent keyed inserts.
             // The endpoint lookup above also permits replay of a typed row after config-off.
             let track = serde_json::from_value::<
@@ -161,6 +169,27 @@ pub async fn create(
                 newly_admitted: false,
             });
         }
+        if !typed && legacy_drive.is_none() {
+            tx.rollback().await?;
+            let request = serde_json::from_value::<
+                super::terminal_adapter::TerminalCreateOperationPayload,
+            >(payload.clone())?
+            .request;
+            // Refuse a busy target before waiting for ordinary Legacy driving.
+            // Release this preliminary observation before drive -> track acquisition;
+            // the actual admission takes the same fence again under drive below.
+            let own = runtime.try_launch_fence(&request.track_id)?;
+            let location = runtime
+                .try_location_fence(
+                    explicit_cwd.as_deref().expect("explicit Legacy cwd"),
+                    Some(&own),
+                )
+                .await?;
+            drop(location);
+            drop(own);
+            legacy_drive = Some(runtime.lock_for_track_delete().await);
+            continue;
+        }
         if validated {
             break tx;
         }
@@ -174,15 +203,28 @@ pub async fn create(
         .request
         .track_id;
         track_fence = Some(runtime.try_launch_fence(&track)?);
+        if let Some(cwd) = &explicit_cwd {
+            location_fence = Some(
+                runtime
+                    .try_location_fence(cwd, track_fence.as_ref())
+                    .await?,
+            );
+        }
         runtime
             .adapter("terminal-create")?
             .validate(&payload)
             .await?;
+        #[cfg(feature = "fixtures")]
+        crate::test_seams::pause_point("c5-terminal-location-fenced", &track).await;
         validated = true;
     };
-    let adapter = runtime.adapter(KIND)?;
+    if let Some(fence) = &location_fence {
+        fence.recheck(&mut tx).await?;
+    }
+    let kind = if typed { KIND } else { "terminal-create" };
+    let adapter = runtime.adapter(kind)?;
     let id = crate::model::new_id();
-    insert_pending_row(&id, KIND, &key, &payload)?
+    insert_pending_row(&id, kind, &key, &payload)?
         .execute(&mut **tx)
         .await?;
     let row = sqlx::query("SELECT * FROM operations WHERE id = ?")
@@ -195,18 +237,26 @@ pub async fn create(
     write_phase_and_tx_output(
         &mut tx,
         PhaseWrite::Inserted(&op),
-        &super::Phase::Succeeded,
+        &if typed {
+            super::Phase::Succeeded
+        } else {
+            super::Phase::TxCommitted
+        },
         &output,
     )
     .await?;
     tx.commit().await?;
     drop(track_fence);
+    drop(location_fence);
     for envelope in envelopes {
         events.emit_envelope(envelope);
     }
+    if let Some(drive) = legacy_drive {
+        runtime.drive_admitted(drive).await?;
+    }
     Ok(CreatedTerminal {
         result: runtime.wait(&id).await?,
-        newly_admitted: true,
+        newly_admitted: typed,
     })
 }
 

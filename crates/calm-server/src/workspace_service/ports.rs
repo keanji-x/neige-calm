@@ -67,16 +67,6 @@ pub(crate) fn observe(point: &str, repo_root: &Path) {
     let _ = (point, repo_root);
 }
 
-/// Closed tracks with a worktree and no agent session that may be working in it: the Planner and
-/// conversation agents run there too, and a closed track's idle Planner must not block the clean.
-/// Tasks, leases and deliveries are [`checkout_occupancy`]'s to judge.
-pub(crate) const CLOSED_TRACK_WORKTREES_SQL: &str = "SELECT t.* \
-       FROM tracks t \
-      WHERE t.closed_at IS NOT NULL \
-        AND NOT EXISTS (SELECT 1 FROM worker_sessions ws WHERE ws.track_id = t.id \
-                         AND ws.state IN ('starting','running','turn_pending')) \
-      ORDER BY t.id";
-
 #[derive(Clone)]
 pub(crate) struct ServerClosedWorktreeFacts {
     pub(crate) receipts: super::reclaim::ServerReclaimPorts,
@@ -113,8 +103,7 @@ impl ClosedWorktreeFacts for ServerClosedWorktreeFacts {
 
     async fn closed_idle_worktrees(&self) -> Result<Vec<ClosedWorktree>> {
         Ok(
-            sqlx::query_as::<_, calm_truth::db::rows::TrackRow>(CLOSED_TRACK_WORKTREES_SQL)
-                .fetch_all(self.receipts.db.read_pool())
+            calm_truth::db::sqlite::closed_worktree_candidates(self.receipts.db.read_pool())
                 .await?
                 .into_iter()
                 .map(|row| {
@@ -151,14 +140,29 @@ pub(super) async fn closed_idle_reclaim_safe(
     track: &str,
     expected_close: Option<i64>,
 ) -> Result<bool> {
-    let current: Option<i64> = sqlx::query_scalar(&format!(
-        "SELECT closed_at FROM ({CLOSED_TRACK_WORKTREES_SQL}) WHERE id=?"
-    ))
-    .bind(track)
-    .fetch_optional(db.read_pool())
-    .await?;
+    let candidate =
+        calm_truth::db::sqlite::closed_worktree_candidate(db.read_pool(), track).await?;
+    let Some(candidate) = candidate else {
+        return Ok(false);
+    };
+    let candidate = crate::model::Track::from(candidate);
+    let targets =
+        crate::operation::terminal_disposal::workspace_effect_targets(&candidate.workspace);
+    let occupied = match calm_truth::db::sqlite::workspace_execution::location_occupancy(
+        &mut *db.read_pool().acquire().await?,
+        calm_truth::db::sqlite::workspace_execution::Scope::Track(track),
+        &targets,
+    )
+    .await
+    {
+        Ok(ids) => !ids.is_empty(),
+        Err(error) => {
+            tracing::warn!(%error, track, "clean deferred: location occupancy unknown");
+            true
+        }
+    };
     Ok(
-        current.is_some_and(|at| expected_close.is_none_or(|expected| at == expected))
+        expected_close.is_none_or(|expected| candidate.closed_at == Some(expected))
             && !crate::operation::workspace_lease::track_has_active_forge_action(
                 db.read_pool(),
                 track,
@@ -166,12 +170,7 @@ pub(super) async fn closed_idle_reclaim_safe(
             .await?
             && checkout_occupancy(&mut *db.read_pool().acquire().await?, track, "").await?
                 == CheckoutOccupancy::Free
-            && calm_truth::db::sqlite::workspace_execution::unsettled_executions(
-                &mut *db.read_pool().acquire().await?,
-                calm_truth::db::sqlite::workspace_execution::Scope::Track(track),
-            )
-            .await?
-            .is_empty(),
+            && !occupied,
     )
 }
 

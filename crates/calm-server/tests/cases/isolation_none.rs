@@ -690,7 +690,11 @@ async fn isolation_none_sibling_lifecycle_preserves_admitted_subdirectory() {
     );
     assert_eq!(root_none["workspace"]["isolation"], "none");
     assert_eq!(delete_area(&b, &area).await.0, StatusCode::NO_CONTENT);
-    workspace_runtime::recycle::gc_trash_best_effort(&b.workspace_root, i64::MAX);
+    workspace_runtime::recycle::gc_trash_best_effort(
+        &b.workspace_root,
+        i64::MAX,
+        &Default::default(),
+    );
     assert_eq!(fingerprint(&borrowed), before);
 }
 

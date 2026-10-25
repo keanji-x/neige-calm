@@ -245,7 +245,8 @@ where
             state.terminal_renderer.clone(),
             events.clone(),
             completion,
-        ),
+        )
+        .with_location_admission(state.location_admission_for_test()),
     ));
     state = state.with_operation_runtime(runtime);
 
@@ -1418,3 +1419,23 @@ mod resume;
 mod version;
 #[path = "claude_card_endpoint/workspace_cwd.rs"]
 mod workspace_cwd;
+
+#[tokio::test]
+async fn c5_internal_claude_cwd_returns_bad_request_before_creation() {
+    let _guard = ENV_LOCK.lock().await;
+    let boot = boot_success().await;
+    let internal = boot.state.workspace_root().join(".trash/retired");
+    std::fs::create_dir_all(&internal).unwrap();
+    let mut request = body(None);
+    request["cwd"] = json!(internal);
+    let (status, response) = post(boot.app.clone(), &boot.track_id, request, None, None).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{response}");
+    assert_eq!(boot.spawn_count.load(Ordering::SeqCst), 0);
+    assert!(
+        boot.repo
+            .cards_by_track(&boot.track_id)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}

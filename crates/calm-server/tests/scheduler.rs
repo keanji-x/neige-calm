@@ -2714,6 +2714,7 @@ async fn every_registered_task_adapter_refuses_material_context() {
             boot.card_role_cache.clone(),
             boot.track_area_cache.clone(),
             child_track_workspace_root(),
+            std::path::PathBuf::from("/unused-objective-checkouts"),
             workspace_runtime::sweep::TeardownTargets::default(),
         )) as Arc<dyn ProviderAdapter>,
         pending_operation("child-track", &child_task_id, child_payload),
@@ -8165,6 +8166,7 @@ async fn frozen_child_refuses_repoint_and_reuses_its_bootstrap() {
         boot.card_role_cache.clone(),
         boot.track_area_cache.clone(),
         child_track_workspace_root(),
+        std::path::PathBuf::from("/unused-objective-checkouts"),
         workspace_runtime::sweep::TeardownTargets::default(),
     )) as Arc<dyn ProviderAdapter>;
     let bootstrap_adapter =
@@ -8287,6 +8289,7 @@ async fn acceptance_19_child_bootstrap_is_before_running_and_exactly_once_after_
         boot.card_role_cache.clone(),
         boot.track_area_cache.clone(),
         child_track_workspace_root(),
+        std::path::PathBuf::from("/unused-objective-checkouts"),
         workspace_runtime::sweep::TeardownTargets::default(),
     )) as Arc<dyn ProviderAdapter>;
     let block = BootstrapBlockHook {
@@ -8426,6 +8429,7 @@ async fn acceptance_19_child_bootstrap_is_before_running_and_exactly_once_after_
                 crash_boot.card_role_cache.clone(),
                 crash_boot.track_area_cache.clone(),
                 child_track_workspace_root(),
+                std::path::PathBuf::from("/unused-objective-checkouts"),
                 workspace_runtime::sweep::TeardownTargets::default(),
             )),
             Arc::new(BootstrapAdapter::new_blocking(
@@ -8474,6 +8478,7 @@ async fn acceptance_19_child_bootstrap_is_before_running_and_exactly_once_after_
                 crash_boot.card_role_cache.clone(),
                 crash_boot.track_area_cache.clone(),
                 child_track_workspace_root(),
+                std::path::PathBuf::from("/unused-objective-checkouts"),
                 workspace_runtime::sweep::TeardownTargets::default(),
             )),
             Arc::new(BootstrapAdapter::new(crash_minted.clone())),
@@ -8548,6 +8553,7 @@ async fn acceptance_13e_failed_and_stuck_at_both_operation_levels_close_once() {
             boot.card_role_cache.clone(),
             boot.track_area_cache.clone(),
             child_track_workspace_root(),
+            std::path::PathBuf::from("/unused-objective-checkouts"),
             workspace_runtime::sweep::TeardownTargets::default(),
         )) as Arc<dyn ProviderAdapter>;
         let bootstrap_adapter = Arc::new(BootstrapAdapter::new(minted)) as Arc<dyn ProviderAdapter>;
@@ -8666,6 +8672,7 @@ async fn acceptance_3b_claim_frozen_spawn_routes_recovery_without_report_reread(
             boot.card_role_cache.clone(),
             boot.track_area_cache.clone(),
             child_track_workspace_root(),
+            std::path::PathBuf::from("/unused-objective-checkouts"),
             workspace_runtime::sweep::TeardownTargets::default(),
         )) as Arc<dyn ProviderAdapter>,
         Arc::new(BootstrapAdapter::new(minted)) as Arc<dyn ProviderAdapter>,
@@ -8746,6 +8753,7 @@ async fn acceptance_3a_claim_frozen_spawn_routes_live_after_post_claim_report_ed
             boot.card_role_cache.clone(),
             boot.track_area_cache.clone(),
             child_track_workspace_root(),
+            std::path::PathBuf::from("/unused-objective-checkouts"),
             workspace_runtime::sweep::TeardownTargets::default(),
         )) as Arc<dyn ProviderAdapter>,
         Arc::new(BootstrapAdapter::new(Arc::new(AtomicUsize::new(0)))) as Arc<dyn ProviderAdapter>,
@@ -8794,6 +8802,7 @@ async fn acceptance_3c_claim_success_uses_transaction_reread_spawn() {
             boot.card_role_cache.clone(),
             boot.track_area_cache.clone(),
             child_track_workspace_root(),
+            std::path::PathBuf::from("/unused-objective-checkouts"),
             workspace_runtime::sweep::TeardownTargets::default(),
         )) as Arc<dyn ProviderAdapter>,
         Arc::new(BootstrapAdapter::new(Arc::new(AtomicUsize::new(0)))) as Arc<dyn ProviderAdapter>,
@@ -8872,6 +8881,7 @@ async fn acceptance_5b_stale_frozen_context_refuses_real_child_operation() {
         boot.card_role_cache.clone(),
         boot.track_area_cache.clone(),
         child_track_workspace_root(),
+        std::path::PathBuf::from("/unused-objective-checkouts"),
         workspace_runtime::sweep::TeardownTargets::default(),
     )) as Arc<dyn ProviderAdapter>;
     let (_runtime, scheduler) = build_scheduler(&boot, vec![child_adapter]);
@@ -8965,6 +8975,7 @@ async fn acceptance_9_depth_exhaustion_fails_parent_without_in_track_fallback() 
         boot.card_role_cache.clone(),
         boot.track_area_cache.clone(),
         child_track_workspace_root(),
+        std::path::PathBuf::from("/unused-objective-checkouts"),
         workspace_runtime::sweep::TeardownTargets::default(),
     )) as Arc<dyn ProviderAdapter>;
     let (_runtime, scheduler) = build_scheduler(&boot, vec![child_adapter]);

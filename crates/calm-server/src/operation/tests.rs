@@ -1918,7 +1918,14 @@ pub(super) fn test_runtime(
             terminal_renderer,
             events,
             completion,
-        ),
+        )
+        .with_location_admission(crate::operation::location_admission::LocationAdmission {
+            managed_root: std::path::PathBuf::from("/unused-managed-workspaces"),
+            objective_checkout_root: std::path::PathBuf::from("/unused-objective-checkouts"),
+            teardown_targets: Default::default(),
+            area_locks: crate::per_card_lock::new_keyed_locks(),
+            track_locks: crate::per_card_lock::new_keyed_locks(),
+        }),
     )
 }
 

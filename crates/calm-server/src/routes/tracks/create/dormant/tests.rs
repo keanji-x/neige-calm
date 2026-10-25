@@ -648,7 +648,7 @@ async fn old_key_replays_historical(provider: AgentProvider) {
     let write = fx.route.write.clone();
     let templates = fx.route.templates;
     let teardown_targets = fx.route.teardown_targets.clone();
-    let admission_root = fx.route.workspace_root.clone();
+    let admission_root = fx.route.owned_location_roots();
     crate::db::write_with_actor_events_typed(
         fx.route.repo.as_ref(),
         None,

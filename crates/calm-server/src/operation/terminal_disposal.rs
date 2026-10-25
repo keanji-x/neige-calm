@@ -113,10 +113,43 @@ pub(crate) async fn require_safe_tx(tx: &mut Tx<'_>, scope: &Scope) -> Result<()
             "unsettled workspace executions; rows and workspace retained".into(),
         ));
     }
+    require_legacy_safe_tx(tx, scope).await
+}
+
+async fn require_legacy_safe_tx(tx: &mut Tx<'_>, scope: &Scope) -> Result<()> {
     if let Some(unresolved) = unresolved_tx(tx, scope).await?.first() {
         return Err(unresolved.error());
     }
     Ok(())
+}
+
+/// Positive proof for Track filesystem effects; quiesce remains owner-scoped.
+pub(crate) async fn require_track_location_safe_tx(tx: &mut Tx<'_>, track: &str) -> Result<()> {
+    let workspace = crate::db::sqlite::track_workspace_read_tx(tx, track).await?;
+    let targets = workspace_effect_targets(&workspace);
+    let ids = calm_truth::db::sqlite::workspace_execution::location_occupancy(
+        tx,
+        calm_truth::db::sqlite::workspace_execution::Scope::Track(track),
+        &targets,
+    )
+    .await?;
+    if !ids.is_empty() {
+        return Err(CalmError::Conflict(format!(
+            "unsettled workspace executions {ids:?}; rows and workspace retained"
+        )));
+    }
+    require_legacy_safe_tx(tx, &Scope::Track(track.into())).await
+}
+
+pub(crate) fn workspace_effect_targets(workspace: &crate::model::TrackWorkspace) -> Vec<PathBuf> {
+    let mut targets = Vec::new();
+    if workspace.kind == crate::model::TrackWorkspaceKind::Managed {
+        targets.push(PathBuf::from(&workspace.path));
+    }
+    if let Some(worktree) = &workspace.worktree {
+        targets.push(PathBuf::from(worktree));
+    }
+    targets
 }
 
 /// Inspect the entire affected scope before touching any member's resources; the durable obligation is kept regardless of reply, missing PID, renderer state or a truthful Probe(false).

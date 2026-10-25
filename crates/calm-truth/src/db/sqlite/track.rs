@@ -1,3 +1,4 @@
+use super::path_location::{PathLocation, paths_overlap};
 use sqlx::Sqlite;
 use sqlx::Transaction;
 
@@ -68,51 +69,19 @@ impl AttachedInheritedPath {
     }
 }
 
-/// The two observed locations used by the one overlap comparison. An admitted
-/// cwd must exist; only owned roots and inherited paths may have missing tails.
-struct PathLocation<'a> {
-    lexical: &'a std::path::Path,
-    physical: std::path::PathBuf,
-}
-
-impl<'a> PathLocation<'a> {
-    fn existing(path: &'a std::path::Path) -> Result<Self> {
-        let physical = std::fs::canonicalize(path).map_err(|error| {
-            CalmError::BadRequest(format!("cannot resolve cwd {}: {error}", path.display()))
-        })?;
-        Ok(Self {
-            lexical: path,
-            physical,
-        })
-    }
-
-    fn allow_missing(path: &'a std::path::Path) -> Result<Self> {
-        Ok(Self {
-            lexical: path,
-            physical: physical_path(path)?,
-        })
-    }
-}
-
-/// Compare lexical and physical locations, preserving a missing tail below the nearest
-/// existing ancestor. Failure to resolve a location is an error, never a disjoint proof.
-fn physical_path(path: &std::path::Path) -> Result<std::path::PathBuf> {
-    workspace::worktree::physical_path(path)
-        .map_err(|workspace::error::Error::Internal(message)| CalmError::BadRequest(message))
-}
-
-fn paths_overlap(
-    candidate: &PathLocation<'_>,
-    owned: &std::path::Path,
-    containing: bool,
-) -> Result<bool> {
-    let overlaps = |a: &std::path::Path, b: &std::path::Path| {
-        a.starts_with(b) || (containing && b.starts_with(a))
-    };
-    if overlaps(candidate.lexical, owned) {
-        return Ok(true);
-    }
-    Ok(overlaps(&candidate.physical, &physical_path(owned)?))
+/// Kernel-recorded locations, with identity retained for lifecycle admission fences.
+pub async fn track_worktree_locations(
+    conn: &mut sqlx::SqliteConnection,
+) -> Result<Vec<(String, std::path::PathBuf)>> {
+    let rows: Vec<(String, String)> = sqlx::query_as(
+        "SELECT id, workspace_worktree_path FROM tracks WHERE workspace_worktree_path IS NOT NULL",
+    )
+    .fetch_all(conn)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(id, path)| (id, path.into()))
+        .collect())
 }
 
 /// Authoritative attached admission under the caller's SQLite write transaction.
@@ -123,7 +92,7 @@ fn paths_overlap(
 pub async fn admit_attached_workspace_tx(
     tx: &mut Transaction<'_, Sqlite>,
     path: &str,
-    managed_root: &std::path::Path,
+    owned_roots: &[std::path::PathBuf],
     teardown_roots: &[std::path::PathBuf],
     plan: &TrackWorkspacePlan,
 ) -> Result<()> {
@@ -145,13 +114,11 @@ pub async fn admit_attached_workspace_tx(
             target.parent().expect("derived worktree has a parent"),
         )?);
     }
-    let live: Vec<String> = sqlx::query_scalar(
-        "SELECT workspace_worktree_path FROM tracks WHERE workspace_worktree_path IS NOT NULL",
-    )
-    .fetch_all(&mut **tx)
-    .await?;
-    for root in std::iter::once(managed_root.to_path_buf())
-        .chain(live.into_iter().map(std::path::PathBuf::from))
+    let live = super::owned_workspace_locations(tx).await?;
+    for root in owned_roots
+        .iter()
+        .cloned()
+        .chain(live.into_iter().map(|location| location.path))
         .chain(teardown_roots.iter().cloned())
     {
         for candidate in &candidates {

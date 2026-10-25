@@ -201,6 +201,52 @@ pub async fn unsettled_executions(
         .collect()
 }
 
+/// Owning-scope executions union unsettled roots inside any destructive target.
+/// Decode every row before filtering: an unknown root cannot prove any target safe.
+pub async fn location_occupancy(
+    conn: &mut sqlx::SqliteConnection,
+    scope: Scope<'_>,
+    targets: &[std::path::PathBuf],
+) -> crate::error::Result<Vec<workspace::execution::ExecutionId>> {
+    use super::path_location::{PathLocation, paths_overlap};
+    #[derive(serde::Deserialize)]
+    struct Source {
+        root: std::path::PathBuf,
+    }
+    #[derive(serde::Deserialize)]
+    struct Intent {
+        source: Source,
+    }
+    let mut occupants = unsettled_executions(conn, scope).await?;
+    let rows = sqlx::query("SELECT execution_id,intent_json FROM workspace_executions WHERE settled_at_ms IS NULL ORDER BY execution_id")
+        .fetch_all(&mut *conn).await?;
+    for row in rows {
+        let id: String = row.try_get("execution_id")?;
+        let json: String = row.try_get("intent_json")?;
+        let root = (|| -> crate::error::Result<_> {
+            let intent: Intent = serde_json::from_str(&json)?;
+            let candidate = PathLocation::allow_missing(&intent.source.root)?;
+            for target in targets {
+                if paths_overlap(&candidate, target, false)? {
+                    return Ok(true);
+                }
+            }
+            Ok(false)
+        })()
+        .map_err(|error| {
+            crate::error::CalmError::Conflict(format!(
+                "unsettled execution {id} has an unreadable source root: {error}"
+            ))
+        })?;
+        if root {
+            occupants.push(id.try_into().map_err(crate::error::CalmError::Internal)?);
+        }
+    }
+    occupants.sort();
+    occupants.dedup();
+    Ok(occupants)
+}
+
 /// Current alias slot, excluding historical retired executions.
 pub async fn current(
     tx: &mut Transaction<'_, Sqlite>,

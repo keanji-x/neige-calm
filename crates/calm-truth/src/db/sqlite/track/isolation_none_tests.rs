@@ -43,7 +43,7 @@ async fn isolation_none_missing_cwd_cannot_use_ancestor_fallback() {
     let error = admit_attached_workspace_tx(
         &mut tx,
         tmp.path().join("missing").to_str().unwrap(),
-        &tmp.path().join("managed"),
+        &[tmp.path().join("managed")],
         &[],
         &TrackWorkspacePlan::AttachedFromCwd,
     )
@@ -72,7 +72,7 @@ async fn isolation_none_unresolvable_owned_symlink_is_refused() {
     let error = admit_attached_workspace_tx(
         &mut tx,
         candidate.to_str().unwrap(),
-        &alias.join("owned-root"),
+        &[alias.join("owned-root")],
         &[],
         &TrackWorkspacePlan::AttachedFromCwd,
     )
@@ -102,7 +102,7 @@ async fn isolation_none_resolution_error_preserves_bad_request_message() {
     let error = admit_attached_workspace_tx(
         &mut tx,
         candidate.to_str().unwrap(),
-        &owned,
+        std::slice::from_ref(&owned),
         &[],
         &TrackWorkspacePlan::AttachedFromCwd,
     )

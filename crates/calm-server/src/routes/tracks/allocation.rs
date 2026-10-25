@@ -18,7 +18,7 @@ pub(super) struct TrackAllocationOwners {
     pub(super) write: WriteContext,
     pub(super) templates: &'static TemplateRoster,
     pub(super) teardown_targets: workspace_runtime::sweep::TeardownTargets,
-    pub(super) admission_root: std::path::PathBuf,
+    pub(super) admission_root: Vec<std::path::PathBuf>,
 }
 
 pub(super) type TrackAllocationWrite = ((Track, bool), Vec<(ActorId, EventScope, Event)>);

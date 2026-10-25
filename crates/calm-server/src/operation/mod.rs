@@ -27,6 +27,7 @@ pub(crate) mod gate_execution;
 pub(crate) mod gate_lifecycle;
 pub(crate) mod gate_ops;
 pub(crate) mod gate_process;
+pub mod location_admission;
 pub mod objective_check_run;
 pub(crate) mod owned_execution;
 pub mod planner_harness_interrupt_adapter;
@@ -282,6 +283,7 @@ impl TxOutput {
 #[derive(Clone)]
 pub struct SpawnCtx {
     pub(crate) reclaim_admission: Arc<tokio::sync::RwLock<()>>,
+    pub location_admission: Option<location_admission::LocationAdmission>,
     pub track_delete_locks: crate::per_card_lock::KeyedLocks,
     pub execution: crate::execution_quiesce::ExecutionLifecycle,
     pub repo: Arc<dyn crate::db::RouteRepo>,
@@ -309,6 +311,7 @@ impl SpawnCtx {
             terminal_renderer,
             events,
             completion,
+            location_admission: None,
             track_delete_locks: crate::per_card_lock::new_keyed_locks(),
             shared_codex_appserver: None,
             execution: Default::default(),
@@ -316,7 +319,19 @@ impl SpawnCtx {
         }
     }
 
+    pub fn with_location_admission(
+        mut self,
+        config: location_admission::LocationAdmission,
+    ) -> Self {
+        self.track_delete_locks = config.track_locks.clone();
+        self.location_admission = Some(config);
+        self
+    }
+
     pub fn with_track_delete_locks(mut self, locks: crate::per_card_lock::KeyedLocks) -> Self {
+        if let Some(admission) = &mut self.location_admission {
+            admission.track_locks = locks.clone();
+        }
         self.track_delete_locks = locks;
         self
     }
@@ -796,6 +811,12 @@ pub trait ProviderAdapter: Send + Sync {
     /// The driver holds its existing track guard through the occupancy commit,
     /// including boot recovery.
     async fn preparation_track(&self, _input: &Value, _ctx: &SpawnCtx) -> Result<Option<String>> {
+        Ok(None)
+    }
+
+    /// Explicit root selected by this owner, requiring location admission in addition to
+    /// the declared preparation track. Defaults consume an already-admitted workspace.
+    async fn preparation_cwd(&self, _input: &Value, _ctx: &SpawnCtx) -> Result<Option<String>> {
         Ok(None)
     }
 

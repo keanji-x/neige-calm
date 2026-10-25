@@ -167,7 +167,8 @@ where
             state.terminal_renderer.clone(),
             events.clone(),
             completion,
-        ),
+        )
+        .with_location_admission(state.location_admission_for_test()),
     ));
     state = state.with_operation_runtime(runtime);
 

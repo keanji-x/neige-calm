@@ -42,6 +42,7 @@ pub(in crate::routes::tracks) async fn creation_plan(
         None => CreateShape::MessageLess(()),
     };
     let workspace_root = state.workspace_root.clone();
+    let admission_root = state.owned_location_roots();
     let teardown_targets = state.teardown_targets.clone();
     let headers = headers.clone();
     let plan = crate::db::write_in_tx_typed(state.repo.as_ref(), move |tx| {
@@ -128,7 +129,7 @@ pub(in crate::routes::tracks) async fn creation_plan(
                             &super::super::normalize_path(
                                 shape.cwd.as_deref().expect("decoded attached cwd"),
                             ),
-                            &workspace_root,
+                            &admission_root,
                             &teardown_targets.snapshot(),
                             &super::super::TrackWorkspacePlan::AttachedFromCwd,
                         )

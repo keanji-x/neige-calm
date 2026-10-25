@@ -884,6 +884,8 @@ pub(crate) async fn create_child_track(b: &Boot, parent_track_id: &str) -> Strin
         b.repo.card_role_cache().clone(),
         b.repo.track_area_cache().clone(),
         b.workspace_root.clone(),
+        calm_server::operation::task_verify_adapter::TaskVerifyAdapter::default_gate_logs_dir()
+            .with_file_name("objective-checks"),
         b.teardown_targets.clone(),
     );
     let mut tx = b.repo.pool().begin().await.unwrap();

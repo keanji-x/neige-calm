@@ -76,6 +76,7 @@ pub struct ChildTrackAdapter {
     track_area_cache: crate::track_area_cache::TrackAreaCache,
     /// The managed workspace root; the child's own workspace is derived under it and materialized in `prepare_tx`.
     workspace_root: std::path::PathBuf,
+    objective_checkout_root: std::path::PathBuf,
     teardown_targets: workspace_runtime::sweep::TeardownTargets,
     selection_context: Option<crate::planner_model::child_selection::ChildSelectionContext>,
 }
@@ -86,6 +87,7 @@ impl ChildTrackAdapter {
         card_role_cache: crate::card_role_cache::CardRoleCache,
         track_area_cache: crate::track_area_cache::TrackAreaCache,
         workspace_root: std::path::PathBuf,
+        objective_checkout_root: std::path::PathBuf,
         teardown_targets: workspace_runtime::sweep::TeardownTargets,
     ) -> Self {
         Self {
@@ -93,6 +95,7 @@ impl ChildTrackAdapter {
             card_role_cache,
             track_area_cache,
             workspace_root,
+            objective_checkout_root,
             teardown_targets,
             selection_context: None,
         }
@@ -159,7 +162,10 @@ impl ChildTrackAdapter {
         calm_truth::db::sqlite::admit_attached_workspace_tx(
             tx,
             &frozen.track.workspace.path,
-            &self.workspace_root,
+            &[
+                self.workspace_root.clone(),
+                self.objective_checkout_root.clone(),
+            ],
             &self.teardown_targets.snapshot(),
             &plan,
         )
@@ -800,6 +806,7 @@ mod tests {
             repo.card_role_cache().clone(),
             repo.track_area_cache().clone(),
             test_workspace_root(),
+            std::path::PathBuf::from("/unused-objective-checkouts"),
             workspace_runtime::sweep::TeardownTargets::default(),
         );
         let mut tx = repo.pool().begin().await.unwrap();
@@ -882,6 +889,7 @@ mod tests {
             repo.card_role_cache().clone(),
             repo.track_area_cache().clone(),
             workspace_root.clone(),
+            std::path::PathBuf::from("/unused-objective-checkouts"),
             workspace_runtime::sweep::TeardownTargets::default(),
         );
         let mut tx = repo.pool().begin().await.unwrap();
@@ -1009,6 +1017,7 @@ mod tests {
             repo.card_role_cache().clone(),
             repo.track_area_cache().clone(),
             workspace_root.clone(),
+            std::path::PathBuf::from("/unused-objective-checkouts"),
             workspace_runtime::sweep::TeardownTargets::default(),
         );
         let mut tx = repo.pool().begin().await.unwrap();
@@ -1167,6 +1176,7 @@ mod tests {
             repo.card_role_cache().clone(),
             repo.track_area_cache().clone(),
             test_workspace_root(),
+            std::path::PathBuf::from("/unused-objective-checkouts"),
             workspace_runtime::sweep::TeardownTargets::default(),
         );
         let mut tx = repo.pool().begin().await.unwrap();
@@ -1263,6 +1273,7 @@ mod tests {
             repo.card_role_cache().clone(),
             repo.track_area_cache().clone(),
             test_workspace_root(),
+            std::path::PathBuf::from("/unused-objective-checkouts"),
             workspace_runtime::sweep::TeardownTargets::default(),
         );
         let mut tx = repo.pool().begin().await.unwrap();
@@ -1399,6 +1410,7 @@ mod tests {
                 repo.card_role_cache().clone(),
                 repo.track_area_cache().clone(),
                 test_workspace_root(),
+                std::path::PathBuf::from("/unused-objective-checkouts"),
                 workspace_runtime::sweep::TeardownTargets::default(),
             );
             let mut tx = repo.pool().begin().await.unwrap();
@@ -1437,6 +1449,7 @@ mod tests {
             repo.card_role_cache().clone(),
             repo.track_area_cache().clone(),
             test_workspace_root(),
+            std::path::PathBuf::from("/unused-objective-checkouts"),
             workspace_runtime::sweep::TeardownTargets::default(),
         );
         let mut tx = repo.pool().begin().await.unwrap();
@@ -1476,6 +1489,7 @@ mod tests {
             repo.card_role_cache().clone(),
             repo.track_area_cache().clone(),
             test_workspace_root(),
+            std::path::PathBuf::from("/unused-objective-checkouts"),
             workspace_runtime::sweep::TeardownTargets::default(),
         );
         let mut tx = repo.pool().begin().await.unwrap();
@@ -1514,6 +1528,7 @@ mod tests {
                 repo.card_role_cache().clone(),
                 repo.track_area_cache().clone(),
                 test_workspace_root(),
+                std::path::PathBuf::from("/unused-objective-checkouts"),
                 workspace_runtime::sweep::TeardownTargets::default(),
             );
             let mut tx = repo.pool().begin().await.unwrap();
@@ -1567,6 +1582,7 @@ mod tests {
             repo.card_role_cache().clone(),
             repo.track_area_cache().clone(),
             test_workspace_root(),
+            std::path::PathBuf::from("/unused-objective-checkouts"),
             workspace_runtime::sweep::TeardownTargets::default(),
         );
         sqlx::query("UPDATE tracks SET tree_task_budget=2 WHERE id=?1")
@@ -1642,6 +1658,7 @@ mod tests {
             repo.card_role_cache().clone(),
             repo.track_area_cache().clone(),
             test_workspace_root(),
+            std::path::PathBuf::from("/unused-objective-checkouts"),
             workspace_runtime::sweep::TeardownTargets::default(),
         );
         let mut tx = repo.pool().begin().await.unwrap();
@@ -1798,6 +1815,7 @@ mod tests {
             repo.card_role_cache().clone(),
             repo.track_area_cache().clone(),
             test_workspace_root(),
+            std::path::PathBuf::from("/unused-objective-checkouts"),
             workspace_runtime::sweep::TeardownTargets::default(),
         );
         let mut tx = repo.pool().begin().await.unwrap();
@@ -1887,6 +1905,7 @@ mod tests {
             repo.card_role_cache().clone(),
             repo.track_area_cache().clone(),
             test_workspace_root(),
+            std::path::PathBuf::from("/unused-objective-checkouts"),
             workspace_runtime::sweep::TeardownTargets::default(),
         );
         let before: i64 = sqlx::query_scalar("SELECT count(*) FROM tracks")

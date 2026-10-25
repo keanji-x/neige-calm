@@ -51,6 +51,7 @@ impl Wiring {
     ) -> calm_server::state::AppState {
         let repo_dyn: Arc<dyn Repo> = repo.clone();
         calm_server::state::BootState {
+            objective_checkout_root: workspace.with_file_name("objective-checks"),
             teardown_targets: Default::default(),
             repo: repo_dyn.clone(),
             workspace_root: workspace,
@@ -119,6 +120,15 @@ pub async fn wire(
         renderer.clone(),
         events.clone(),
         completion.clone(),
+    )
+    .with_location_admission(
+        calm_server::operation::location_admission::LocationAdmission {
+            managed_root: workspace.into(),
+            objective_checkout_root: workspace.with_file_name("objective-checks"),
+            teardown_targets: Default::default(),
+            area_locks: calm_server::per_card_lock::new_keyed_locks(),
+            track_locks: calm_server::per_card_lock::new_keyed_locks(),
+        },
     )
     .with_shared_codex_appserver(shared.clone());
     let harness = HarnessRegistry::new();

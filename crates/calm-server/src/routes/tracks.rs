@@ -900,7 +900,7 @@ pub(crate) async fn create_track(
             && isolation == CreateIsolation::Attached(AttachedIsolation::None)
         {
             let cwd = normalize_path(request.cwd.as_deref().expect("decoded attached cwd"));
-            let admission_root = s.workspace_root.clone();
+            let admission_root = s.owned_location_roots();
             let teardown_targets = s.teardown_targets.clone();
             let source = source.clone();
             crate::db::write_in_tx_typed(s.repo.as_ref(), move |tx| {
@@ -1432,7 +1432,7 @@ async fn create_track_structure(
     let human_source = options.human_source.clone();
     let workspace_root_for_materialize = s.workspace_root.clone();
     let teardown_targets = s.teardown_targets.clone();
-    let admission_root = s.workspace_root.clone();
+    let admission_root = s.owned_location_roots();
     let templates = s.templates;
     let acp_planner = s.acp_planner.clone();
     let planner_card_id = new_id();
@@ -2051,6 +2051,24 @@ async fn repoint_track_workspace(
     let new_path = normalize_path(&requested.path);
     workspace_runtime::selection::validate_attached_workspace(std::path::Path::new(&new_path))?;
 
+    let admission_roots = s.owned_location_roots();
+    let teardown_targets = s.teardown_targets.clone();
+    let admission_path = new_path.clone();
+    crate::db::write_in_tx_typed(s.repo.as_ref(), move |tx| {
+        Box::pin(async move {
+            crate::db::sqlite::admit_attached_workspace_tx(
+                tx,
+                &admission_path,
+                &admission_roots,
+                &teardown_targets.snapshot(),
+                &TrackWorkspacePlan::AttachedFromCwd,
+            )
+            .await?;
+            Ok(())
+        })
+    })
+    .await?;
+
     let workspace_root = s.workspace_root.clone();
     let track_id = track.id.to_string();
     let area_id = track.area_id.as_str().to_string();
@@ -2105,11 +2123,8 @@ async fn repoint_track_workspace(
         Box::pin(async move {
             // Authoritative re-read. The route's unlocked read answered 404
             // and scoped the event; every decision below comes from here.
-            crate::operation::terminal_disposal::require_safe_tx(
-                tx,
-                &crate::operation::terminal_disposal::Scope::Track(track_id.clone()),
-            )
-            .await?;
+            crate::operation::terminal_disposal::require_track_location_safe_tx(tx, &track_id)
+                .await?;
             let old_workspace = crate::db::sqlite::track_workspace_read_tx(tx, &track_id).await?;
             if old_workspace.kind != TrackWorkspaceKind::Managed {
                 return Err(CalmError::Conflict(format!(
@@ -2262,6 +2277,8 @@ async fn repoint_track_workspace(
     let write_track_id = track_id.clone();
     let write_area_id = area_id.clone();
     let write_workspace = new_workspace.clone();
+    let admission_roots = s.owned_location_roots();
+    let teardown_targets = s.teardown_targets.clone();
     let written =
         write_with_actor_events_typed(s.repo.as_ref(), None, &s.events, &s.write, move |tx| {
             let scope = scope.clone();
@@ -2282,9 +2299,14 @@ async fn repoint_track_workspace(
                     FolderClaimPass::Authoritative,
                 )
                 .await?;
-                crate::operation::terminal_disposal::require_safe_tx(
+                crate::operation::terminal_disposal::require_track_location_safe_tx(tx, &track_id)
+                    .await?;
+                crate::db::sqlite::admit_attached_workspace_tx(
                     tx,
-                    &crate::operation::terminal_disposal::Scope::Track(track_id.clone()),
+                    &workspace.path,
+                    &admission_roots,
+                    &teardown_targets.snapshot(),
+                    &TrackWorkspacePlan::AttachedFromCwd,
                 )
                 .await?;
                 crate::db::sqlite::track_workspace_write_tx(tx, &track_id, &workspace).await?;
@@ -2312,6 +2334,9 @@ async fn repoint_track_workspace(
             return folder_conflict_response(&write_conflict, error);
         }
     };
+
+    #[cfg(feature = "fixtures")]
+    crate::test_seams::pause_point("c5-repoint-committed", &track_id).await;
 
     let decision = workspace_recycle::recycle_track_workspace(
         &workspace_root,
@@ -2876,9 +2901,9 @@ async fn finish_track_deletion(
             Box::pin(async move {
                 // A leaf deletion changes N in the root budget's B/N split: resolve the root while the
                 // leaf still exists, then rebuild every survivor. An unresolved tree must fail closed.
-                crate::operation::terminal_disposal::require_safe_tx(
+                crate::operation::terminal_disposal::require_track_location_safe_tx(
                     tx,
-                    &crate::operation::terminal_disposal::Scope::Track(track_id.to_string()),
+                    track_id.as_str(),
                 )
                 .await?;
                 let surviving_root = surviving_root_before_leaf_removal(tx, &track_id).await?;
@@ -3008,12 +3033,23 @@ impl PreparedTrackDeletion {
 }
 
 impl QuiescedTrackDeletion {
-    fn recycle(self, route: &RouteState) -> Result<RecycledTrackDeletion> {
+    async fn recycle(self, route: &RouteState) -> Result<RecycledTrackDeletion> {
         let Self {
             prepared,
             sealed_thread_ids,
         } = self;
+        #[cfg(feature = "fixtures")]
+        crate::test_seams::pause_point("c5-track-before-proof", prepared.track.id.as_str()).await;
+        let track_id = prepared.track.id.to_string();
+        let proof = crate::db::write_in_tx_typed(route.repo.as_ref(), move |tx| {
+            Box::pin(async move {
+                crate::operation::terminal_disposal::require_track_location_safe_tx(tx, &track_id)
+                    .await
+            })
+        })
+        .await;
         let recycled = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            proof?;
             recycle_track_workspace_for_delete(
                 route,
                 &prepared.track,
@@ -3226,7 +3262,8 @@ async fn finish_prepared_track_deletion_owned(
                 let recycled = prepared
                     .quiesce(&route, &worker, &codex)
                     .await?
-                    .recycle(&route)?;
+                    .recycle(&route)
+                    .await?;
                 run_recycled_track_deletion(&route, actor, recycled).await
             })
             .catch_unwind()

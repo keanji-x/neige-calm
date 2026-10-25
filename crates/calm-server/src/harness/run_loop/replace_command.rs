@@ -40,6 +40,20 @@ pub(super) async fn handle_replace_admitted(
     key: &SendKey,
     source: Option<crate::conversation_inputs::HistoricalHumanSource>,
 ) -> Result<DurableAck> {
+    let _track = match super::issuance::lock_track_for_admission(inner).await? {
+        super::issuance::TrackIssuance::Acquired(guard) => guard,
+        super::issuance::TrackIssuance::ShuttingDown => {
+            return Err(refused("the conversation is shutting down"));
+        }
+        super::issuance::TrackIssuance::Superseded => {
+            return Err(refused(
+                "this conversation is no longer the card's active session",
+            ));
+        }
+        super::issuance::TrackIssuance::Busy => {
+            unreachable!("admission wait does not seek issuance")
+        }
+    };
     let _issuance = inner.issuance.lock().await;
     if inner.parked.is_parked() {
         return Err(CalmError::Conflict("carrier is parked".into()));

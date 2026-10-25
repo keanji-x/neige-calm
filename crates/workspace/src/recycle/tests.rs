@@ -379,7 +379,7 @@ fn gc_removes_entries_past_the_retention_window_and_keeps_the_rest() {
     // Exactly at the boundary: retention is "younger than", so this goes.
     let boundary = seed_trash_entry(&f.root, &format!("track-edge-{}", now - TRASH_RETENTION_MS));
 
-    let removed = gc_trash(&f.root, now, TRASH_RETENTION_MS).unwrap();
+    let removed = gc_trash(&f.root, now, TRASH_RETENTION_MS, &Default::default()).unwrap();
 
     assert!(!old.exists());
     assert!(!boundary.exists());
@@ -405,7 +405,7 @@ fn gc_dates_entries_by_name_not_by_mtime() {
         "the fixture must actually have an ancient mtime, or this proves nothing"
     );
 
-    let removed = gc_trash(&f.root, now, TRASH_RETENTION_MS).unwrap();
+    let removed = gc_trash(&f.root, now, TRASH_RETENTION_MS, &Default::default()).unwrap();
     assert!(removed.is_empty(), "removed={removed:?}");
     assert!(entry.exists());
 }
@@ -416,7 +416,7 @@ fn gc_keeps_anything_it_cannot_date() {
     let now = 100 * DAY_MS;
     let undateable = seed_trash_entry(&f.root, "no-timestamp-here");
     let not_a_number = seed_trash_entry(&f.root, "track-1-notanumber");
-    let removed = gc_trash(&f.root, now, TRASH_RETENTION_MS).unwrap();
+    let removed = gc_trash(&f.root, now, TRASH_RETENTION_MS, &Default::default()).unwrap();
     assert!(removed.is_empty(), "removed={removed:?}");
     assert!(undateable.exists());
     assert!(not_a_number.exists());
@@ -436,7 +436,7 @@ fn gc_does_not_follow_a_symlink_planted_in_the_trash() {
         .join(format!("track-1-{}", now - 30 * DAY_MS));
     std::os::unix::fs::symlink(&victim, &link).unwrap();
 
-    let removed = gc_trash(&f.root, now, TRASH_RETENTION_MS).unwrap();
+    let removed = gc_trash(&f.root, now, TRASH_RETENTION_MS, &Default::default()).unwrap();
     assert!(removed.is_empty(), "removed={removed:?}");
     assert_eq!(std::fs::read(victim.join("keep.txt")).unwrap(), b"keep");
 }
@@ -445,15 +445,21 @@ fn gc_does_not_follow_a_symlink_planted_in_the_trash() {
 fn gc_on_a_root_without_a_trash_dir_is_a_no_op() {
     let f = Fixture::new();
     assert!(
-        gc_trash(&f.root, 100 * DAY_MS, TRASH_RETENTION_MS)
-            .unwrap()
-            .is_empty()
+        gc_trash(
+            &f.root,
+            100 * DAY_MS,
+            TRASH_RETENTION_MS,
+            &Default::default()
+        )
+        .unwrap()
+        .is_empty()
     );
     assert!(
         gc_trash(
             &f.root.join("never-created"),
             100 * DAY_MS,
-            TRASH_RETENTION_MS
+            TRASH_RETENTION_MS,
+            &Default::default(),
         )
         .unwrap()
         .is_empty()
