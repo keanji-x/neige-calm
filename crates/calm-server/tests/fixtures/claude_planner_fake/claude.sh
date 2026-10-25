@@ -1,4 +1,5 @@
 #!/bin/bash
+[ "$1" = auth ] && echo "$$" > "${0%/*}/auth-pid"
 # A fake `claude -p` for the #1791 session tests (tests/cases/claude_planner_session.rs). The test
 # copies it into a private directory next to a `scenario` file; the spawn's environment is an
 # allowlist, so everything the fake needs or records lives in that directory:
@@ -23,7 +24,6 @@ if [ "$1" = "auth" ]; then
   # #1817: `auth status --json`. The real CLI prints more fields (auth method, the account's
   # email); neige must read `loggedIn` only, so the logged-in answer carries an email to leak.
   [ "$2 $3" = "status --json" ] || { echo "fake claude: unexpected auth argv: $*" >&2; exit 2; }
-  echo "$$" > "$D/auth-pid"
   echo "$$" >> "$D/auth-calls"
   env > "$D/auth-env"
   case "$(cat "$D/auth" 2>/dev/null || echo logged-in)" in

@@ -97,10 +97,7 @@ async fn a_hanging_auth_status_is_killed_and_reaped_on_timeout() {
         .await
         .expect_err("a hung child is no answer");
     assert!(reason.contains("did not answer within"), "{reason}");
-    assert!(
-        started.elapsed() < timeout * 2,
-        "bounded by the timeout"
-    );
+    assert!(started.elapsed() < timeout * 2, "bounded by the timeout");
     let pid = fake.pid();
     assert!(
         !proc_entry(pid).exists(),
