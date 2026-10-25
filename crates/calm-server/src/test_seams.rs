@@ -1,6 +1,9 @@
 //! `fixtures`-only seams for integration tests: deterministic crash injection and reach-through
 //! to `pub(crate)` production paths. The production binary compiles none of this.
 
+#[cfg(feature = "fixtures")]
+pub mod provider_pass;
+
 /// Crash the process here iff `CALM_TEST_CRASH_AT` equals `point` exactly. Aborts rather than
 /// panics so no destructor runs (SIGKILL durability semantics). Call sites MUST be gated with
 /// `#[cfg(feature = "fixtures")]` as a whole statement.

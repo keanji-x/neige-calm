@@ -376,6 +376,10 @@ impl Stack {
     /// Shut every live harness down (a graceful stop) so another boot of the same root is the
     /// only one issuing turns.
     pub async fn shutdown(self) {
+        self.state
+            .retire_dispatch_and_stop_provider_sweep()
+            .await
+            .expect("provider sweep exited");
         for handle in self.state.harness.drain_all_for_dev() {
             let _ = handle.shutdown().await;
         }

@@ -352,6 +352,7 @@ impl BootState {
             workspace_root_guard: self.workspace_root_guard,
             track_creator: None,
             execution: None,
+            provider_sweep: None,
             route,
             worker,
             codex_shell,
@@ -363,6 +364,7 @@ impl BootState {
 /// `fixtures`-gated [`AppState::raw_repo`].
 #[derive(Clone)]
 pub struct AppState {
+    pub(crate) provider_sweep: Option<crate::provider_execution::sweep::ProviderSweep>,
     /// Registered execution engine; recovery is independent of consumer opt-ins.
     pub execution: Option<Arc<crate::execution_boot::ExecutionEngine>>,
     /// Sync-domain raw writes are unreachable from this handle — handlers must funnel
@@ -1791,7 +1793,13 @@ impl AppState {
         if let Some(engine) = &state.execution
             && let Some(pool) = state.raw.sqlite_db()
         {
-            crate::provider_execution::sweep::spawn(pool, engine.as_ref().clone(), provider_owners);
+            #[cfg(feature = "fixtures")]
+            crate::test_seams::provider_pass::bind_boot(&cfg.db_url, &provider_owners);
+            state.provider_sweep = Some(crate::provider_execution::sweep::spawn(
+                pool,
+                engine.as_ref().clone(),
+                provider_owners,
+            ));
         }
 
         // Orphan-terminal sweeper; emits `TerminalDeleted` through the audited write pipeline. The

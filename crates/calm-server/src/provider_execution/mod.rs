@@ -81,6 +81,17 @@ pub trait ProviderExecutionOwner: Send + Sync {
 #[derive(Clone, Default, Debug)]
 pub struct ProviderDrivers(Arc<Mutex<HashSet<ExecutionId>>>);
 impl ProviderDrivers {
+    /// Identity of this boot's live registry; the sweep owns a clone across shutdown.
+    #[cfg(feature = "fixtures")]
+    pub(crate) fn fixture_key(&self) -> usize {
+        Arc::as_ptr(&self.0) as usize
+    }
+
+    #[cfg(feature = "fixtures")]
+    pub fn is_empty_for_test(&self) -> bool {
+        self.0.lock().unwrap().is_empty()
+    }
+
     pub fn contains(&self, id: &ExecutionId) -> bool {
         self.0.lock().unwrap().contains(id)
     }

@@ -127,7 +127,7 @@ async fn main() -> anyhow::Result<()> {
         None
     };
     let mobile_shutdown = auth_state.mobile.clone();
-    let dispatcher_shutdown = state.dispatcher.clone();
+    let shutdown_state = state.clone();
     let (preview, preview_auth) = (state.preview(), auth_state.clone());
 
     let mut app = routes::application_router(state, auth_state);
@@ -165,19 +165,25 @@ async fn main() -> anyhow::Result<()> {
     )
     .await;
 
-    dispatcher_shutdown.retire();
+    let sweep_join = shutdown_state.retire_dispatch_and_stop_provider_sweep();
     preview_shutdown.cancel();
     // Keep total drain below neige-app's five-second stop grace. Parent-death
     // ownership also kills the tunnel helper if shutdown is abrupt.
-    if !matches!(
-        tokio::time::timeout(
-            std::time::Duration::from_secs(1),
-            mobile_shutdown.shutdown()
-        )
-        .await,
-        Ok(Ok(()))
-    ) {
-        tracing::warn!("mobile ingress cleanup exceeded its shutdown window");
+    let (sweep, mobile) = calm_server::application_boot::cleanup_window(
+        std::time::Duration::from_secs(1),
+        sweep_join,
+        mobile_shutdown.shutdown(),
+    )
+    .await;
+    match sweep {
+        Some(Ok(())) => {}
+        Some(Err(error)) => tracing::warn!(%error, "provider sweep cleanup failed"),
+        None => tracing::warn!("provider sweep exit unconfirmed within shutdown window"),
+    }
+    match mobile {
+        Some(Ok(())) => {}
+        Some(Err(error)) => tracing::warn!(%error, "mobile ingress cleanup failed"),
+        None => tracing::warn!("mobile ingress cleanup exceeded its shutdown window"),
     }
     served?;
 

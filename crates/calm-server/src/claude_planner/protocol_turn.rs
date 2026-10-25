@@ -314,6 +314,14 @@ async fn settle<S: TurnSink>(
     };
     let qualified = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let known = sink.known_end(claim, event, cause, qualified.clone());
+    #[cfg(feature = "fixtures")]
+    let pass = crate::test_seams::provider_pass::driver(
+        owner,
+        &runtime.session,
+        settlement.is_some(),
+        &known,
+    )
+    .await;
     let result = if settlement.is_some() {
         owner
             .finish(pool, Some(engine), &runtime.session, claim, known)
@@ -332,5 +340,7 @@ async fn settle<S: TurnSink>(
     if let Err(error) = result {
         tracing::warn!(%error, "Claude completion retained claim");
     }
+    #[cfg(feature = "fixtures")]
+    pass.returned();
     qualified.load(std::sync::atomic::Ordering::Acquire)
 }

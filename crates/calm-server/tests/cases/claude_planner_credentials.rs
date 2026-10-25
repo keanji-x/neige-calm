@@ -457,3 +457,157 @@ async fn a_failed_reset_compensates_even_when_the_binding_became_unreadable() {
         "compensation ran to the end and restored the old row"
     );
 }
+
+/// A previous boot must not complete a settled turn whose protocol driver belongs to this boot.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn stale_boot_sweep_cannot_finish_rebooted_turn() {
+    use calm_server::provider_execution::{Decision, Purpose, StopReason, execution_id};
+    use calm_server::test_seams::provider_pass::{self, Entered, Exit};
+    use calm_truth::db::sqlite::{provider_execution as claims, workspace_execution as executions};
+    use workspace_runtime::execution::{ExecutionMetadata, ExecutionState, Settlement};
+
+    let root = Root::new("exit");
+    let mut old_pass = provider_pass::hold_next_boot_sweep(&root.db_url(), "claude-planner");
+    let boot1 = Stack::boot(&root).await;
+    let (_, card_id) = boot1.create_claude_track().await;
+    let session = boot1.runtime(&card_id).await.id;
+    let pool = boot1.repo().sqlite_db().unwrap();
+    let old_owner = boot1
+        .state
+        .planner_wiring()
+        .claude
+        .provider_execution
+        .clone();
+    assert!(matches!(
+        (&mut old_pass.entered).await.unwrap(),
+        Entered::Sweep
+    ));
+    boot1.shutdown().await;
+    // This boot had no input/turn. Verify the actual durable claim and the entire old registry,
+    // rather than treating the fixture's non-strict harness shutdown as a settlement proof.
+    assert!(
+        claims::load(pool.read_pool(), &session)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(old_owner.drivers.is_empty_for_test());
+
+    let boot2 = Stack::boot(&root).await;
+    assert_eq!(boot2.runtime(&card_id).await.id, session);
+    let owner = boot2
+        .state
+        .planner_wiring()
+        .claude
+        .provider_execution
+        .clone();
+    let mut driver = provider_pass::hold_driver(&owner, &session);
+    let (status, body) = boot2.post_input(&card_id, "hello").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(matches!(
+        (&mut driver.entered).await.unwrap(),
+        Entered::KnownEnd {
+            settled: true,
+            claude_turn: true
+        }
+    ));
+    let claim = claims::load(pool.read_pool(), &session)
+        .await
+        .unwrap()
+        .expect("new turn claim");
+    let id = execution_id(claim.record()).unwrap();
+    let Purpose::Turn { turn_id } = &claim.record().purpose else {
+        panic!("{claim:?}")
+    };
+    assert!(
+        matches!(
+            claim.record().decision,
+            Decision::Stopping {
+                reason: StopReason::Finished,
+                ..
+            }
+        ),
+        "{claim:?}"
+    );
+    assert!(
+        matches!(claim.record().release, claims::Release::Released { .. }),
+        "{claim:?}"
+    );
+    let row = executions::load(pool.read_pool(), id.as_str())
+        .await
+        .unwrap()
+        .unwrap();
+    let metadata: ExecutionMetadata = serde_json::from_str(&row.intent_json).unwrap();
+    assert_eq!(metadata.id, id);
+    assert_eq!(metadata.consumer.0, owner.owner.consumer());
+    assert_eq!(metadata.alias.0, owner.owner.alias(&session, id.as_str()));
+    let inventory = executions::consumer_inventory(pool.read_pool(), owner.owner.consumer())
+        .await
+        .unwrap();
+    let exact = inventory
+        .into_iter()
+        .find(|(entry_id, _)| entry_id == id.as_str())
+        .expect("exact inventory entry")
+        .1
+        .unwrap();
+    assert_eq!(exact.alias, metadata.alias.0);
+    assert!(exact.settled);
+    let settlement = calm_server::provider_execution::settlement(&pool, &id)
+        .await
+        .unwrap()
+        .expect("real settlement");
+    assert!(
+        matches!(
+            settlement,
+            Settlement::Journal(ExecutionState::Drained { .. })
+        ),
+        "{settlement:?}"
+    );
+    assert!(owner.drivers.contains(&id));
+    assert!(!old_owner.drivers.contains(&id));
+    assert!(
+        boot2.outcomes(&card_id).await.is_empty(),
+        "driver has not completed yet"
+    );
+    eprintln!(
+        "rebooted turn held: session={session} claim={claim:?} alias={} settlement={settlement:?}",
+        metadata.alias.0
+    );
+
+    let old_exit = old_pass
+        .release()
+        .await
+        .expect("old pass returned or dropped");
+    assert!(matches!(old_exit, Exit::Returned | Exit::Dropped));
+    eprintln!("old boot sweep pass exit={old_exit:?}");
+    assert_eq!(driver.release().await.unwrap(), Exit::Returned);
+    let outcomes = boot2.outcomes(&card_id).await;
+    let outcome = outcomes
+        .iter()
+        .find(|outcome| outcome["id"] == *turn_id)
+        .expect("exact rebooted turn outcome");
+    let status = outcome["status"].as_str().expect("outcome status");
+    // Clean up before the intentionally red assertion; no polling for an outcome or timer race.
+    boot2.shutdown().await;
+    assert_eq!(
+        status,
+        "completed",
+        "rebooted turn outcome status={status}; outcome={outcome}; stop reason={:?}; settlement={settlement:?}",
+        claim.record().decision
+    );
+    assert_eq!(old_exit, Exit::Dropped);
+}
+
+#[tokio::test]
+async fn retire_entry_stops_sweep_before_join_is_polled() {
+    use calm_server::test_seams::provider_pass::{self, Entered, Exit};
+    let root = Root::new("exit");
+    let mut pass = provider_pass::hold_next_boot_sweep(&root.db_url(), "claude-planner");
+    let boot = Stack::boot(&root).await;
+    assert!(matches!((&mut pass.entered).await.unwrap(), Entered::Sweep));
+    let join = boot.state.retire_dispatch_and_stop_provider_sweep();
+    let exit = pass.release().await.unwrap();
+    join.await.unwrap();
+    boot.shutdown().await;
+    assert_eq!(exit, Exit::Dropped);
+}
