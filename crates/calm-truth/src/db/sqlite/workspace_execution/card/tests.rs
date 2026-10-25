@@ -208,6 +208,33 @@ async fn w_owned_card_scope_accepts_typed_terminal_checkpoint() {
 }
 
 #[tokio::test]
+async fn w_owned_card_scope_requires_exactly_one_record() {
+    let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
+    let id = "33333333333333333333333333333333";
+    seed(&repo, id, "card", "wanted", "pipe:record-count").await;
+    for output in [
+        None,
+        Some(json!({"data":{}})),
+        Some(json!({"data":{
+            "execution_id":id,
+            "terminal_launch":{"execution_id":id}
+        }})),
+    ] {
+        sqlx::query("UPDATE operations SET tx_output_json=?1 WHERE id=?2")
+            .bind(output.map(|value| value.to_string()))
+            .bind(format!("op-{id}"))
+            .execute(repo.pool())
+            .await
+            .unwrap();
+        let mut conn = repo.pool().acquire().await.unwrap();
+        assert!(matches!(
+            executions(&mut conn, "wanted").await,
+            Err(CalmError::Core(calm_types::error::CoreError::Conflict(_)))
+        ));
+    }
+}
+
+#[tokio::test]
 async fn w_owned_card_scope_rejects_owner_metadata_disagreement() {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
     seed_with_owner(

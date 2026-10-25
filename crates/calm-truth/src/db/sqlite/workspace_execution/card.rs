@@ -55,8 +55,9 @@ pub async fn executions(
                 o.id AS operation_id,o.tx_output_json
          FROM workspace_executions e
          LEFT JOIN operations o ON json_extract(e.intent_json,'$.owner')=o.id
+              AND o.target_type='card' AND o.target_id=?1
          WHERE ({UNFINISHED_SQL})
-           AND ((o.target_type='card' AND o.target_id=?1)
+           AND (o.id IS NOT NULL
                 OR e.alias IN (SELECT {TERMINAL_ALIAS_SQL} FROM terminals WHERE card_id=?1))
          ORDER BY e.execution_id",
     );
@@ -82,8 +83,9 @@ pub async fn executions(
             {
                 return Err(CalmError::Conflict("execution metadata mismatch"));
             }
-            // A terminal alias can have a non-operation owner. An operation-owned row must
-            // retain exactly one registered record naming this execution, even after settlement.
+            // Only the accepted operation target grants owner disposal for this card.
+            // Alias-only terminals keep their existing lifecycle even if their owner joins
+            // an operation elsewhere. Scoped owners retain exactly one record after settlement.
             if let Some(owner) = row.try_get::<Option<String>, _>("operation_id")? {
                 let output: serde_json::Value = serde_json::from_str(
                     row.try_get::<Option<&str>, _>("tx_output_json")?
