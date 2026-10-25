@@ -117,7 +117,8 @@ esac
 echo "$$" >> "$D/spawns"
 echo "$$" > "$D/pid"
 printf '%s\n' "$@" > "$D/argv"
-env > "$D/env"
+# Publish only a complete snapshot: path existence is the readers' readiness fence.
+env > "$D/env.tmp" && mv "$D/env.tmp" "$D/env" || exit 2
 pwd > "$D/pwd"
 SID=""
 PF=""
