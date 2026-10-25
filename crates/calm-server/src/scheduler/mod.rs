@@ -2,6 +2,7 @@
 //! `pending → dispatched → running`. Policy-free: it never re-runs a `failed` task,
 //! never reorders beyond `(priority DESC, created_at ASC, key ASC)`, never edits the plan.
 
+pub(crate) mod card_disposal;
 mod git_delivery;
 mod planner_compaction;
 mod running_worker;

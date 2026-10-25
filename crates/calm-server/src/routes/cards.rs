@@ -573,6 +573,7 @@ pub(crate) async fn delete_card(
         card.track_id.as_str(),
     )
     .await?;
+    crate::execution_quiesce::dispose_card(s.repo.as_ref(), &s.operation_runtime, &id).await?;
     crate::operation::terminal_disposal::require_safe(
         s.repo.as_ref(),
         crate::operation::terminal_disposal::Scope::Card(id.clone()),

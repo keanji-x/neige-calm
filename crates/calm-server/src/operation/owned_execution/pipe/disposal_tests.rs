@@ -48,7 +48,7 @@ struct Harness {
     db: Arc<SqlxRepo>,
     repo: Arc<SqlxOperationRepo>,
     ctx: SpawnCtx,
-    runtime: OperationRuntime,
+    runtime: Arc<OperationRuntime>,
     store: SqliteExecutionStore,
     op: Operation,
     metadata: ExecutionMetadata,
@@ -56,7 +56,15 @@ struct Harness {
 }
 impl Harness {
     async fn new() -> Self {
+        Self::with_card(false).await
+    }
+    async fn with_card(card_target: bool) -> Self {
         let db = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
+        let (track, card) = if card_target {
+            card_tests::seed_card(&db).await
+        } else {
+            ("track".into(), "card".into())
+        };
         let repo = Arc::new(SqlxOperationRepo::new(db.db().clone()));
         let id = repo
             .insert_operation(
@@ -70,7 +78,7 @@ impl Harness {
             )
             .await
             .unwrap();
-        let mut output = TxOutput::new("card", Some("card".into()), json!({}));
+        let mut output = TxOutput::new("card", Some(card.clone()), json!({}));
         output.data = json!({});
         sqlx::query("UPDATE operations SET phase='spawn_started',tx_output_json=?2 WHERE id=?1")
             .bind(&id)
@@ -78,6 +86,14 @@ impl Harness {
             .execute(db.pool())
             .await
             .unwrap();
+        if card_target {
+            sqlx::query("UPDATE operations SET target_type='card',target_id=?2 WHERE id=?1")
+                .bind(&id)
+                .bind(&card)
+                .execute(db.pool())
+                .await
+                .unwrap();
+        }
         let op = repo.claim_drive_operation(&id).await.unwrap().unwrap();
         let executor =
             crate::operation::forge_action_adapter::tests::executor::Executor::new(db.db().clone())
@@ -86,8 +102,13 @@ impl Harness {
             std::fs::File::open(executor._root.path().join("key.json")).unwrap(),
         )
         .unwrap();
+        let projection: Arc<dyn ExecutionProjection> = if card_target {
+            Arc::new(card_tests::WorkerProjection)
+        } else {
+            Arc::new(Projection)
+        };
         let store = SqliteExecutionStore::new(db.db().clone())
-            .with_projection(CONFIG.consumer.into(), Arc::new(Projection));
+            .with_projection(CONFIG.consumer.into(), projection);
         let engine = Arc::new(Engine::new(
             store.clone(),
             session_executor::SessionExecutor::new(
@@ -115,11 +136,18 @@ impl Harness {
             &op,
             &ctx,
             root,
-            "track",
+            &track,
             ExecutionSpecification {
                 ambient_environment: calm_session::control::execution::AmbientEnvironment::None,
                 program: "/bin/sh".into(),
-                args: vec!["-c".into(), "read -r go".into()],
+                args: vec![
+                    "-c".into(),
+                    if card_target {
+                        "trap 'exit 0' TERM; printf ready; read -r go".into()
+                    } else {
+                        "read -r go".into()
+                    },
+                ],
                 environment: vec![],
                 io_mode: calm_session::control::IoMode::Pipe,
                 replay_bytes: 8192,
@@ -153,8 +181,9 @@ impl Harness {
                     Ok(ExecutionReply::Observation {
                         state: ExecutionState::Spawned,
                         receipt: Some(_),
+                        ref output,
                         ..
-                    })
+                    }) if !card_target || output == b"ready"
                 ) {
                     break;
                 }
@@ -163,13 +192,13 @@ impl Harness {
         })
         .await
         .unwrap();
-        let runtime = OperationRuntime::new_unchecked(
+        let runtime = Arc::new(OperationRuntime::new_unchecked(
             repo.clone(),
             vec![],
             ctx.events.clone(),
             ctx.completion.clone(),
             ctx.clone(),
-        );
+        ));
         Self {
             db,
             repo,
@@ -486,3 +515,5 @@ async fn w_owned_disposal_timeout_retains_scope_and_original_claim() {
         Err(CalmError::Conflict(_))
     ));
 }
+
+mod card_tests;

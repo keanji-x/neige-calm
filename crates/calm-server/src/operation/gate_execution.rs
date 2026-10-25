@@ -129,7 +129,9 @@ pub struct Projection;
 #[async_trait::async_trait]
 impl crate::execution_store::ExecutionProjection for Projection {
     fn disposal(&self) -> Option<&dyn crate::execution_quiesce::owned::DisposalOwner> {
-        Some(&CONFIG)
+        static OWNER: crate::scheduler::card_disposal::CardDisposalOwner =
+            crate::scheduler::card_disposal::CardDisposalOwner(CONFIG);
+        Some(&OWNER)
     }
     async fn spawned(
         &self,

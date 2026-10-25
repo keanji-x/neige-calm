@@ -37,6 +37,10 @@ impl<S: Store + 'static, X: Executor + 'static> Engine<S, X> {
             changed: watch::channel(0).0,
         }))
     }
+    /// Registered consumer ports share the same store as lifecycle execution.
+    pub fn store(&self) -> &S {
+        &self.0.store
+    }
     pub fn available(&self) -> bool {
         self.0.executor.available()
     }
