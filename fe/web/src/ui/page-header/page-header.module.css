@@ -91,8 +91,8 @@
   }
 
   /* Receiving side of the shared main-region scroll listener specified by
-     §6.4. When that listener is implemented, delete the temporary no-writer
-     contract test beside this stylesheet. */
+     §6.4. When that listener is implemented, cover its scroll-driven separator
+     with a browser behaviour test. */
   [data-nc-scrolled] .header {
     border-block-end-color: var(--hairline);
   }

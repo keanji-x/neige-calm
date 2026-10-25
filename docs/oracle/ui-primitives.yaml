@@ -78,3 +78,59 @@
   verification_owner: review-waiver
   test_tier: none
   migration: pending
+
+- id: INV-UI-CONFIRM-121
+  kind: invariant
+  family: confirm-label-layout
+  statement: >
+    ConfirmDialog shows exactly one of its ready and busy labels. Switching state keeps
+    the visible text on the same line relative to the button and preserves button width.
+  why: >
+    CR-7 reserves space for the wider label without showing both labels or moving the
+    action text to a second row. Rendered visibility and geometry replace the source pin.
+  source: fe/web/src/styles/dialog.css:104-124; fe/web/src/ui/dialog/public.tsx:224-250
+  authoritative_test: fe/web/src/ui/dialog/dismissal.browser.test.tsx:43-75
+  owner_slice: ui/confirm-dialog
+  intentional_omission: false
+  runtime_layer: ui
+  verification_owner: unit
+  test_tier: browser
+  migration: migrated
+
+- id: INV-APP-MISSING-122
+  kind: invariant
+  family: missing-route-focus
+  statement: >
+    When a Dialog opener has been removed, closing the Dialog restores focus to the
+    rendered missing PendingRoute heading.
+  why: >
+    The missing page must supply a usable fallback to the production Dialog focus
+    restoration path. This component contract does not claim that a real 404 renders
+    PendingRoute: the router currently renders ErrorBox for fetch errors.
+  source: fe/web/src/app/router/pending-route.tsx:7-18; fe/web/src/ui/dialog/public.tsx:175-182
+  authoritative_test: fe/web/src/app/router/pending-route.test.tsx:10-24
+  owner_slice: app/router
+  intentional_omission: false
+  runtime_layer: app
+  verification_owner: unit
+  test_tier: jsdom
+  migration: migrated
+
+- id: INV-UI-TITLE-123
+  kind: invariant
+  family: title-layout
+  statement: >
+    The track header truncates a long EditableTitle in its available inline space
+    while the input notice remains below the header actions.
+  why: >
+    The composed header browser test observes the single-line title behaviour. It
+    catches removing nowrap without pinning stylesheet spelling; ellipsis paint
+    remains a visual concern rather than a source assertion.
+  source: fe/web/src/ui/editable-title/editable-title.module.css:2-17; fe/web/src/ui/editable-title/public.tsx:37-40; fe/web/src/features/track/page/public.tsx:427-432
+  authoritative_test: fe/web/src/features/track/page/header-status.browser.test.tsx:392-416
+  owner_slice: ui/editable-title
+  intentional_omission: false
+  runtime_layer: ui
+  verification_owner: unit
+  test_tier: browser
+  migration: migrated

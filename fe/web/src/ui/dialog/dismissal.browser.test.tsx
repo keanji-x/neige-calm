@@ -1,9 +1,9 @@
 import { page, userEvent } from 'vitest/browser';
 import { DropdownMenu, DropdownMenuItem } from '@astryxdesign/core/DropdownMenu';
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, render, screen, within } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
 import '../../styles/entry.css';
-import { Dialog } from './public.tsx';
+import { ConfirmDialog, Dialog } from './public.tsx';
 
 afterEach(cleanup);
 
@@ -38,4 +38,38 @@ it('dismisses a real nested native menu before its Dialog', async () => {
   await expect.element(page.getByRole('menuitem', { name: 'Native item' })).not.toBeInTheDocument();
   await userEvent.keyboard('{Escape}');
   expect(close).toHaveBeenCalledOnce();
+});
+
+it('keeps exactly one confirm label visible without resizing between ready and busy', async () => {
+  const props = {
+    origin: { kind: 'surface-center' } as const, open: true, title: 'Delete track',
+    confirmLabel: 'Delete track', confirmBusyLabel: 'Deleting…',
+    onConfirm: vi.fn(), onCancel: vi.fn(),
+  };
+  const { rerender } = render(<ConfirmDialog {...props} confirmState="ready" />);
+  const button = screen.getByRole('button', { name: 'Delete track' });
+  const ready = within(button).getByText('Delete track');
+  const busy = within(button).getByText('Deleting…');
+  const settledPlacement = async (visibleLabel: HTMLElement) => {
+    await document.fonts.ready;
+    await expect.poll(() => document.getAnimations().filter(animation => animation.playState === 'running').length).toBe(0);
+    // Allow layout to flush after animation completion before measuring the visible text.
+    await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+    const buttonRect = button.getBoundingClientRect();
+    const labelRect = visibleLabel.getBoundingClientRect();
+    return { width: buttonRect.width, textTop: labelRect.top - buttonRect.top };
+  };
+  expect([ready, busy].map(label => label.checkVisibility({ visibilityProperty: true }))).toEqual([true, false]);
+  const before = await settledPlacement(ready);
+  expect(before.width).toBeGreaterThan(0);
+
+  rerender(<ConfirmDialog {...props} confirmState="busy" />);
+  const busyButton = screen.getByRole('button', { name: 'Deleting…' });
+  const busyLabel = within(busyButton).getByText('Deleting…');
+  expect([within(busyButton).getByText('Delete track'), busyLabel]
+    .map(label => label.checkVisibility({ visibilityProperty: true }))).toEqual([false, true]);
+  const after = await settledPlacement(busyLabel);
+  // One CSS pixel allows fractional layout rounding, far less than a text-line jump.
+  expect(Math.abs(after.textTop - before.textTop)).toBeLessThanOrEqual(1);
+  expect(Math.abs(after.width - before.width)).toBeLessThanOrEqual(1);
 });
