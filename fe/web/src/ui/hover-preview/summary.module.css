@@ -6,7 +6,7 @@
     min-inline-size: 0;
     display: grid;
     gap: var(--space-3);
-    color: var(--text-1);
+    color: var(--text);
     overflow-wrap: anywhere;
   }
   .title { font-weight: 600; font-size: var(--font-step-2-size); }

@@ -1,6 +1,9 @@
 /* The full surface x foreground contrast matrix, measured in a real browser: browsers gamut-map out-of-sRGB oklch differently, so an arithmetic table can pass while the shipped pixel fails. */
 import { beforeAll, describe, expect, it } from 'vitest';
-import './tokens.css';
+import './entry.css';
+import { createElement } from 'react';
+import { render, cleanup } from '@testing-library/react';
+import { Button } from '@astryxdesign/core';
 import tokensSource from './tokens.css?raw';
 
 type Rgb = [number, number, number];
@@ -197,5 +200,20 @@ describe.each(['light', 'dark'] as const)('%s theme contrast matrix', (theme) =>
     const [, groundC] = srgbToOklch(...resolve('--bg', theme));
     const [, cardC] = srgbToOklch(...resolve('--surface-card', theme));
     expect(Math.abs(cardC - groundC)).toBeLessThanOrEqual(0.005);
+  });
+});
+
+
+describe.each(['light', 'dark'] as const)('%s Astryx filled actions', (theme) => {
+  it.each(['primary', 'destructive'] as const)('%s text clears 4.5:1 on its actual fill', (variant) => {
+    document.documentElement.dataset.theme = theme;
+    const { getByRole } = render(createElement(Button, { variant, label: 'Action' }));
+    try {
+      const style = getComputedStyle(getByRole('button', { name: 'Action' }));
+      expect(paint(style.backgroundColor)[3]).toBe(255);
+      const fg = paint(style.color).slice(0, 3) as Rgb;
+      const bg = paint(style.backgroundColor).slice(0, 3) as Rgb;
+      expect(contrast(fg, bg)).toBeGreaterThanOrEqual(AA_TEXT);
+    } finally { cleanup(); }
   });
 });

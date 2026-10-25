@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef } from 'react';
-import { Compartment, EditorState } from '@codemirror/state';
+import { Compartment, EditorState, Prec } from '@codemirror/state';
 import { EditorView, keymap, lineNumbers } from '@codemirror/view';
 import { standardKeymap } from '@codemirror/commands';
 import { githubDark, githubLight } from '@uiw/codemirror-theme-github';
@@ -23,13 +23,13 @@ export function ReadOnlyPane({ text, source, theme }: ReadOnlyCodeProps) {
     EditorView.contentAttributes.of({ 'aria-label': 'Code', 'aria-readonly': 'true', tabindex: '0' }),
     lineNumbers(), keymap.of(standardKeymap),
     theme === 'light' ? githubLight : githubDark,
-    EditorView.theme({
-      '&': { fontSize: 'inherit', backgroundColor: 'var(--surface-code)', color: 'var(--text-1)' },
+    Prec.highest(EditorView.theme({
+      '&': { fontSize: 'inherit', backgroundColor: 'transparent', color: 'var(--text)' },
       '.cm-scroller': { overflow: 'auto', maxHeight: '24rem', fontFamily: 'var(--font-code)' },
-      '.cm-gutters': { backgroundColor: 'var(--bg)', color: 'var(--text-3)', border: 'none' },
+      '.cm-gutters': { backgroundColor: 'transparent', color: 'var(--text-3)', border: 'none' },
       '.cm-content': { padding: 'var(--space-3) 0' },
       '&.cm-focused': { outline: '2px solid var(--accent)', outlineOffset: '-2px' },
-    }),
+    })),
     ...(support === null ? [] : [support]),
   ], [support, theme]);
   useEffect(() => {

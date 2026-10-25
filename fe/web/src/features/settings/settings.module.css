@@ -90,7 +90,7 @@
    * value" without a second channel (italics, quotes) doing the saying.
    */
   .row input::placeholder {
-    color: var(--text-4);
+    color: var(--text-3);
   }
 
   /* A row's own two edges. The text block takes what is left after the control,

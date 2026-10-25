@@ -14,11 +14,11 @@ export function ErrorBox({ message, onRetry, actionLabel = 'Retry', description,
 }) {
   const expanded = description !== undefined || details !== undefined || floating;
   return (
-    <div role="alert" data-nc-error-box="" className={expanded ? `${styles.recovery} ${floating ? styles.floating : ''}` : undefined}>
+    <div role="alert" data-nc-error-box="" className={expanded ? `${styles.recovery} ${floating ? styles.floating : ''}` : styles.compact}>
       {!expanded && <span className={styles.dot} aria-hidden="true" />}
       <span className={expanded ? styles.reason : undefined}>{message}</span>
       {description !== undefined && <p className={styles.description}>{description}</p>}
-      <button type="button" data-nc-action="tertiary" data-nc-state={pending ? 'busy' : undefined}
+      <button type="button" data-nc-action={expanded ? 'tertiary' : 'secondary'} data-nc-state={pending ? 'busy' : undefined}
         aria-disabled={pending || undefined} aria-busy={pending}
         onClick={() => { if (!pending) onRetry(); }}>{actionLabel}</button>
       {details !== undefined && <details className={styles.details}>

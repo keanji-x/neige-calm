@@ -66,7 +66,7 @@
   .floatingAction { position: fixed; inset-inline-end: var(--space-4); inset-block-end: calc(var(--space-4) + env(safe-area-inset-bottom)); display: grid; place-items: center; inline-size: var(--control-h-touch); block-size: var(--control-h-touch); z-index: var(--z-sticky); cursor: pointer; }
   .floatingAction > button { inline-size: 100%; block-size: 100%; display: grid; place-items: center; }
   .floatingAction svg { inline-size: var(--glyph-xl); block-size: var(--glyph-xl); }
-  .floatingAction:has(:disabled) { opacity: 0.5; cursor: default; }
+  .floatingAction:has(:disabled) { cursor: default; }
 
   .navigationHeader { padding-block-end: 0; }
   .navigationHeader :is(h1, h2) { font-size: var(--font-step-3-size); font-weight: var(--weight-medium); line-height: var(--font-step-3-line); }
@@ -104,18 +104,18 @@
 
   .trackRow .track { min-inline-size: 0; }
 
-  .track[aria-current='page'] {
+  .track[aria-current] {
     background: transparent;
     color: var(--accent);
   }
 
-  .track:not([aria-current='page']):focus-visible {
+  .track:not([aria-current]):focus-visible {
     background: var(--overlay-hover-strong);
   }
 
-  @media (hover: hover) and (pointer: fine) { .track:not([aria-current='page']):hover { background: var(--overlay-hover-strong); } }
+  @media (hover: hover) and (pointer: fine) { .track:not([aria-current]):hover { background: var(--overlay-hover-strong); } }
 
-  .track:not([aria-current='page']):active {
+  .track:not([aria-current]):active {
     background-image: linear-gradient(var(--overlay-active), var(--overlay-active));
   }
 
@@ -139,8 +139,8 @@
 
   .trackActions { flex: none; min-inline-size: var(--rail-w-collapsed) !important; min-block-size: var(--rail-w-collapsed) !important; color: var(--text-3); }
   .trackActions svg, .trackActions span:has(> svg) { flex: none; inline-size: var(--glyph-lg) !important; block-size: var(--glyph-lg) !important; }
-  .trackRow:has([aria-current='page']) { background: var(--selection-bg); border-radius: var(--radius-highlight); }
-  .trackRow:has([aria-current='page']):hover { background: var(--selection-hover-bg); }
+  .trackRow:has([aria-current]) { background: var(--selection-bg); border-radius: var(--radius-highlight); }
+  .trackRow:has([aria-current]):hover { background: var(--selection-hover-bg); }
 
   .trackMeta {
     font-size: var(--font-step-2-size);

@@ -79,6 +79,8 @@
     --color-icon-accent: var(--accent);
 
     /* Accent and status */
+    --color-on-accent: var(--text-on-accent);
+    --color-on-error: var(--text-on-accent);
     --color-accent: var(--accent);
     --color-accent-muted: var(--accent-soft);
     --color-success: var(--success);

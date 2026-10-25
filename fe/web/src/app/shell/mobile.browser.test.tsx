@@ -23,6 +23,13 @@ async function openTrackNavigation(): Promise<void> {
   const navigation = await page.getByRole('dialog', { name: 'Tracks and settings' }).findElement();
   const current = navigation.querySelector('button[aria-current="location"]');
   if (!(current instanceof HTMLElement)) throw new Error('Expected the current Area');
+  const probe = document.createElement('span');
+  probe.style.color = 'var(--accent)';
+  probe.style.backgroundColor = 'var(--selection-bg)';
+  navigation.append(probe);
+  expect(getComputedStyle(current).color).toBe(getComputedStyle(probe).color);
+  expect(getComputedStyle(current.parentElement!).backgroundColor).toBe(getComputedStyle(probe).backgroundColor);
+  probe.remove();
   await page.elementLocator(current).click();
   const pane = document.querySelector('[data-nc-workspace-page="tracks"]')!;
   await Promise.all(pane.getAnimations().map((animation) => animation.finished));

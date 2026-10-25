@@ -1,0 +1,1 @@
+.bad { color: var(--optional, var(--missing)); }

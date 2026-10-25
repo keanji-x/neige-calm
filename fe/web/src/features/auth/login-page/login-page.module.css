@@ -4,6 +4,5 @@
   .form h1 { margin-block-end: var(--space-1); }
   .form input { font: var(--type-input); letter-spacing: var(--type-input-tracking); width: 100%; padding-block: var(--space-1); }
   .form button { font: inherit; margin-block-start: var(--space-1); padding: var(--space-1) var(--space-2); }
-  .form button:disabled { cursor: not-allowed; opacity: 0.5; }
   .error { color: var(--warn-text); }
 }

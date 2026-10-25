@@ -170,3 +170,13 @@ it('retains the focused selection when a fence grammar replaces text nodes', asy
   expect(view.hasFocus).toBe(true);
   expect(view.state.selection.main.head).toBe(20);
 });
+
+
+it.each(['light', 'dark'] as const)('%s code uses one host background with transparent editor and gutters', async (theme) => {
+  document.documentElement.dataset.theme = theme;
+  render(<ReadOnlyCode text="const value = 1;" source={{ kind: 'filename', value: 'main.js' }} />);
+  const view = await codeView();
+  await waitFor(() => { expect(view.state.facet(EditorView.darkTheme)).toBe(theme === 'dark'); });
+  expect(getComputedStyle(view.dom).backgroundColor).toBe('rgba(0, 0, 0, 0)');
+  expect(getComputedStyle(view.dom.querySelector('[aria-hidden="true"]')!).backgroundColor).toBe('rgba(0, 0, 0, 0)');
+});

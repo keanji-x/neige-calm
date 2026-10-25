@@ -2,5 +2,5 @@
   .code { min-width: 0; max-width: 100%; overflow: hidden; border-radius: var(--radius-sm); background: var(--surface-code); font: var(--type-code); letter-spacing: var(--type-code-tracking); }
   .toolbar { display: flex; align-items: center; gap: var(--space-4); padding: var(--space-2) var(--space-3); color: var(--text-2); font: var(--type-detail); letter-spacing: var(--type-detail-tracking); }
   .toolbar button { margin-inline-start: auto; color: var(--accent); cursor: pointer; }
-  .fallback { max-height: 24rem; overflow: auto; padding: var(--space-3); border-radius: var(--radius-sm); background: var(--surface-code); color: var(--text-1); font: var(--type-code); letter-spacing: var(--type-code-tracking); white-space: pre; }
+  .fallback { max-height: 24rem; overflow: auto; padding: var(--space-3); border-radius: var(--radius-sm); background: var(--surface-code); color: var(--text); font: var(--type-code); letter-spacing: var(--type-code-tracking); white-space: pre; }
 }

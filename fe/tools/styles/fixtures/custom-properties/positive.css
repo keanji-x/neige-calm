@@ -1,0 +1,2 @@
+:root { --text: #111; }
+.local { --local: 4px; color: var(--text); gap: var(--local); padding: var(--optional, 4px); margin: var(--optional, var(--local)); }
