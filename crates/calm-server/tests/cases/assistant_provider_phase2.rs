@@ -173,7 +173,7 @@ async fn raced_start(prepare_checkpoint: bool, postcommit_error: bool, crash: u8
     let card_id = new_id();
     seed_assistant_card(&repo, &roles, &track, &card_id).await;
     let mut tx = repo.pool().begin().await.unwrap();
-    card_create_with_id_tx(
+    let report = card_create_with_id_tx(
         &mut tx,
         new_id(),
         NewCard {
@@ -191,6 +191,8 @@ async fn raced_start(prepare_checkpoint: bool, postcommit_error: bool, crash: u8
     .await
     .unwrap();
     tx.commit().await.unwrap();
+    crate::report_writes::announce_report(repo.as_ref(), &state.events, state.write(), report)
+        .await;
     let mut payload = serde_json::to_value(terminal_approval::start_payload(
         &track,
         &card_id,

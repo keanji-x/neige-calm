@@ -43,6 +43,10 @@ mod authenticated_router;
 #[path = "support/mcp.rs"]
 mod mcp;
 
+#[allow(dead_code)]
+#[path = "support/report_writes.rs"]
+mod report_writes;
+
 #[path = "cases/assistant_provider_compensation.rs"]
 mod assistant_provider_compensation;
 

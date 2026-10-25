@@ -1417,16 +1417,18 @@ async fn boot_fixture_with_delivery(delivery: bool) -> Fixture {
     )
     .await;
     seed_planner_runtime(&sqlx_repo, &track.id, &planner_card.id).await;
-    repo.card_create(NewCard {
-        track_id: track.id.clone(),
-        title: None,
-        kind: "track-report".into(),
-        sort: None,
-        payload: serde_json::to_value(calm_server::track_report::TrackReportPayload::initial())
-            .unwrap(),
-    })
-    .await
-    .expect("create delivery report");
+    let report = repo
+        .card_create(NewCard {
+            track_id: track.id.clone(),
+            title: None,
+            kind: "track-report".into(),
+            sort: None,
+            payload: serde_json::to_value(calm_server::track_report::TrackReportPayload::initial())
+                .unwrap(),
+        })
+        .await
+        .expect("create delivery report");
+    support::report_writes::announce_report(repo.as_ref(), &events, &write, report).await;
 
     // The worker's checkout is the track worktree (#1830 S2), made as the create route makes it.
     calm_server::test_seams::ensure_track_worktree_for_test(sqlx_repo.db(), track.id.as_str())

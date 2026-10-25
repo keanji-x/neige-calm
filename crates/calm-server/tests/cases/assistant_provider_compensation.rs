@@ -31,7 +31,7 @@ async fn assistant_provider_failed_native_start_restores_only_predecessor_creden
     let card_id = new_id();
     seed_assistant_card(&repo, &role_cache, &track, &card_id).await;
     let mut tx = repo.pool().begin().await.unwrap();
-    card_create_with_id_tx(
+    let report = card_create_with_id_tx(
         &mut tx,
         new_id(),
         NewCard {
@@ -49,6 +49,8 @@ async fn assistant_provider_failed_native_start_restores_only_predecessor_creden
     .await
     .unwrap();
     tx.commit().await.unwrap();
+    crate::report_writes::announce_report(repo.as_ref(), &state.events, state.write(), report)
+        .await;
     // The new wire carries required identity; no fixture token or historical executor row.
     let mut payload = serde_json::to_value(terminal_approval::start_payload(
         &track,

@@ -163,6 +163,21 @@ async fn boot(specs: &[(usize, &str)]) -> Boot {
         Arc::new(tokio::sync::OnceCell::new()),
         std::env::temp_dir().join("neige-area-reports-gate-logs"),
     );
+    for side in &sides {
+        let report = ctx
+            .repo
+            .card_get(side.report.as_str())
+            .await
+            .unwrap()
+            .unwrap();
+        crate::support::report_writes::announce_report(
+            sqlx.as_ref(),
+            &ctx.events,
+            &ctx.write,
+            report,
+        )
+        .await;
+    }
     let mut registry = ToolRegistry::new();
     calm_server::mcp_server::tools::register_default_tools(&mut registry);
     Boot {

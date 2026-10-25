@@ -38,7 +38,8 @@ pub(super) async fn setup_on(boot: Boot) -> (Boot, Value) {
     .await
     .unwrap();
     tx.commit().await.unwrap();
-    boot.repo
+    let report = boot
+        .repo
         .card_create(NewCard {
             track_id: boot.track_id.clone(),
             title: None,
@@ -53,6 +54,13 @@ pub(super) async fn setup_on(boot: Boot) -> (Boot, Value) {
         .seed_card_role_cache(&boot.card_role_cache)
         .await
         .unwrap();
+    crate::support::report_writes::announce_report(
+        boot.repo.as_ref(),
+        &boot.events,
+        &boot.ctx.write,
+        report,
+    )
+    .await;
     let block = define(&boot, None, definition()).await;
     (boot, block)
 }

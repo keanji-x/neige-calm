@@ -560,10 +560,11 @@ async fn prepare_pr(
             let events = calm_server::event::EventBus::new();
             let write = calm_server::state::WriteContext::new(cache.clone(), track_areas.clone());
             let (planner, token) = support::done_delivery::planner(&repo, &cache, &track).await;
-            repo.card_create(calm_server::model::NewCard {
+            let report = repo.card_create(calm_server::model::NewCard {
                 track_id:track.clone().into(), title:None, kind:"track-report".into(), sort:None,
                 payload:serde_json::to_value(calm_server::track_report::TrackReportPayload::initial()).unwrap(),
             }).await.unwrap();
+            support::report_writes::announce_report(repo.as_ref(), &events, &write, report).await;
             let host = Arc::new(calm_server::plugin_host::PluginHost::new_full(
                 Arc::new(calm_server::plugin_host::PluginRegistry::empty().with_builtins()),
                 repo.clone(), tmp.join("prepare-plugins"), tmp.join("prepare-plugin-data"), vec![],

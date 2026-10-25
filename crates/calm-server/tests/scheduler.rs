@@ -547,16 +547,25 @@ async fn seed_projected_task_for(
             .await
             .expect("check report fixture");
     if report_exists == 0 {
+        let report_id = new_id();
         sqlx::query(
             "INSERT INTO cards(id,track_id,kind,sort,payload,role,deletable,created_at,updated_at) \
              VALUES(?1,?2,'track-report',-1,?3,'reportcard',0,1,1)",
         )
-        .bind(new_id())
+        .bind(&report_id)
         .bind(track_id)
         .bind(serde_json::to_string(&TrackReportPayload::initial()).unwrap())
         .execute(pool.writer_pool())
         .await
         .expect("seed report fixture");
+        let report = boot.repo.card_get(&report_id).await.unwrap().unwrap();
+        support::report_writes::announce_report(
+            boot.repo.as_ref(),
+            &boot.events,
+            &boot.ctx.write,
+            report,
+        )
+        .await;
     }
     let mut payload = serde_json::Map::from_iter([
         ("key".into(), json!(task.key)),
@@ -3264,6 +3273,19 @@ async fn insert_report_payload(boot: &Boot, id: &str, payload: Value) {
     .unwrap();
 }
 
+/// Agent-write fixtures need the creation event; raw malformed-payload fixtures do not.
+async fn insert_announced_report_payload(boot: &Boot, id: &str, payload: Value) {
+    insert_report_payload(boot, id, payload).await;
+    let report = boot.repo.card_get(id).await.unwrap().unwrap();
+    support::report_writes::announce_report(
+        boot.repo.as_ref(),
+        &boot.events,
+        &boot.ctx.write,
+        report,
+    )
+    .await;
+}
+
 /// Make the report hold `blocks` through the production writers: the prose by a whole write, which
 /// owns no task block (#2617), then the tasks by one commit — the stored task blocks are upserted in
 /// order, extra ones created and missing ones deleted by id.
@@ -3568,7 +3590,7 @@ async fn deterministic_root_location_failures_do_not_freeze_or_index() {
             "key": key, "kind": "terminal", "command": "true",
             "declared_by": "spec", "ready": true
         });
-        insert_report_payload(
+        insert_announced_report_payload(
             &boot,
             &format!("report-{case}"),
             serde_json::to_value(TrackReportPayload {
@@ -6504,7 +6526,7 @@ async fn a_declared_task_is_claimed_and_plan_list_follows_its_attempt() {
         })],
     );
 
-    insert_report_payload(
+    insert_announced_report_payload(
         &boot,
         "report-planning-claim",
         serde_json::to_value(TrackReportPayload::initial()).unwrap(),
@@ -8784,7 +8806,7 @@ async fn acceptance_3c_claim_success_uses_transaction_reread_spawn() {
 #[tokio::test]
 async fn acceptance_5b_stale_frozen_context_refuses_real_child_operation() {
     let (boot, _parent_repo) = child_track_config::boot_git_parent().await;
-    insert_report_payload(
+    insert_announced_report_payload(
         &boot,
         "stale-child-report",
         serde_json::to_value(TrackReportPayload::initial()).unwrap(),

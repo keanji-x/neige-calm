@@ -266,6 +266,7 @@ async fn boot(start_shared: bool) -> Boot {
     });
     let mut registry = ToolRegistry::new();
     calm_server::mcp_server::tools::register_default_tools(&mut registry);
+    support::report_writes::announce_report(repo.as_ref(), &events, &ctx.write, report_card).await;
 
     Boot {
         repo,
