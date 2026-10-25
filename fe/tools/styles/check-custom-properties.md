@@ -5,9 +5,20 @@ values in the CSS imported from `web/src/styles/entry.css` and recursively
 found CSS Modules. Definitions also come from production `.ts`/`.tsx` under
 `web/src` and `core`: any string literal or template without interpolation whose
 entire value is `--<ident>` counts, including quoted object property names and
-`setProperty` arguments. Imported vendor CSS contributes definitions only. CSS
-quoted strings, including escaped quotes and backslashes, are literal text;
-`var()` inside them is ignored. A reference with an explicit fallback is
+`setProperty` arguments. Imported vendor CSS contributes definitions only.
+A character scanner follows the relevant
+[CSS Syntax Level 3 token rules](https://www.w3.org/TR/css-syntax-3/#tokenization):
+comments and quoted strings are opaque, and backslash escapes consume the next
+Unicode code point both inside and outside strings. Hexadecimal escapes consume
+up to six hex digits and one optional whitespace character. String line
+continuations are consumed; an unescaped newline ends a bad string token.
+Unquoted `url(...)` tokens (including bad-URL remnants) are skipped through the
+first unescaped closing parenthesis, so quotes, comments and `var()` text inside
+them cannot change the surrounding scan. Quoted URL contents use string tokens.
+Only ordinary-context literal `var(` functions followed by an unescaped
+`--<ident>` and `,` or `)` are checked, ignoring intervening whitespace and
+comments. Opaque tokens cannot join the surrounding argument fragments.
+A reference with an explicit fallback is
 accepted, while nested fallback references are checked independently.
 
 ## Silent passes and limits
@@ -29,7 +40,13 @@ accepted, while nested fallback references are checked independently.
 
 The independent fixtures cover both quote forms, escaped quotes, escaped
 backslashes, comments, string-adjacent undefined references, direct fallbacks
-and nested fallback violations. Each negative fixture contains one violation;
+and nested fallback violations. Independent URL fixtures cover escaped single
+and double quotes followed by a real undefined reference, literal `var()` text,
+and escaped closing parentheses (simple and hexadecimal). Outside-string
+fixtures cover escaped quotes and hexadecimal escapes followed by a real
+reference. The quote-after-URL cases previously silently swallowed that reference;
+the URL-literal case previously misclassified URL text as a CSS use.
+Each negative fixture contains one violation;
 the test runs the real CLI with each to assert exit status 1. These fixtures
 prove the supported CSS boundary. Independent source fixtures cover property
 names, `setProperty`, double-quoted literals, static templates and TS files.

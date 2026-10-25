@@ -11,13 +11,7 @@ export function auditCustomProperties(files) {
   const definitions = new Set();
   const uses = [];
   const value = (text, file) => {
-    // Skip CSS string tokens (including escaped quotes) and comments together so
-    // comment-like text inside a string cannot expose a literal var().
-    text = text.replace(/"(?:\\[\s\S]|[^"\\])*"|'(?:\\[\s\S]|[^'\\])*'|\/\*[\s\S]*?\*\//g, ' ');
-    // Walking all var() starts also checks nested fallbacks independently.
-    for (const match of text.matchAll(/\bvar\(\s*(--[\w\u00a0-\uffff-]+)\s*([,)])/g)) {
-      if (match[2] === ')') uses.push({ name: match[1], file });
-    }
+    for (const name of references(text)) uses.push({ name, file });
   };
   for (const { file, code } of files) {
     if (extname(file) === '.css') {
@@ -40,6 +34,91 @@ export function auditCustomProperties(files) {
   }
   return uses.filter(({ name }) => !definitions.has(name))
     .map(({ file, name }) => `${file}: undefined custom property ${name} without fallback`);
+}
+
+// A small CSS Syntax 3 token walk. Keep opaque tokens in the stream so they
+// cannot join the two sides of a var() argument into a reference.
+function* references(text) {
+  const chars = Array.from(text.replace(/\r\n?|\f/g, '\n'));
+  const whitespace = char => char === ' ' || char === '\t' || char === '\n';
+  const nameChar = char => char !== undefined && /[\w\u00a0-\uffff-]/u.test(char);
+  const hex = char => char !== undefined && /[0-9a-f]/i.test(char);
+  let i = 0;
+  const escape = () => {
+    i++; // backslash
+    if (hex(chars[i])) {
+      let count = 0;
+      while (count < 6 && hex(chars[i])) { i++; count++; }
+      if (whitespace(chars[i])) i++;
+    } else if (i < chars.length) i++; // one Unicode code point, also in strings
+  };
+  const skipWhitespace = () => { while (whitespace(chars[i])) i++; };
+  const token = () => {
+    while (i < chars.length) {
+      if (whitespace(chars[i])) { i++; continue; }
+      if (chars[i] === '/' && chars[i + 1] === '*') {
+        i += 2;
+        while (i < chars.length && !(chars[i] === '*' && chars[i + 1] === '/')) i++;
+        i = Math.min(i + 2, chars.length);
+        continue;
+      }
+      break;
+    }
+    if (i === chars.length) return { kind: 'end' };
+    const char = chars[i];
+    if (char === '"' || char === "'") {
+      i++;
+      while (i < chars.length && chars[i] !== char && chars[i] !== '\n') {
+        if (chars[i] === '\\') escape();
+        else i++;
+      }
+      if (chars[i] === char) i++;
+      return { kind: 'opaque' };
+    }
+    if (nameChar(char) || char === '\\') {
+      let name = '';
+      let escaped = false;
+      while (i < chars.length) {
+        if (nameChar(chars[i])) name += chars[i++];
+        else if (chars[i] === '\\' && chars[i + 1] !== '\n') {
+          escaped = true;
+          escape();
+        } else break;
+      }
+      // Invalid escapes outside strings are delimiters; always make progress.
+      if (!name && !escaped) i++;
+      if (chars[i] === '(') {
+        i++;
+        if (!escaped && name.toLowerCase() === 'url') {
+          skipWhitespace();
+          if (chars[i] !== '"' && chars[i] !== "'") {
+            // URL and bad-URL remnants both end at the first unescaped ')'.
+            // Quotes, comments and '(' inside them never open nested tokens.
+            while (i < chars.length && chars[i] !== ')') {
+              if (chars[i] === '\\') escape();
+              else i++;
+            }
+            if (chars[i] === ')') i++;
+            return { kind: 'opaque' };
+          }
+        }
+        return { kind: 'function', name: escaped ? '' : name };
+      }
+      return { kind: 'ident', name: escaped ? '' : name };
+    }
+    i++;
+    return { kind: char };
+  };
+  let argument = false;
+  let reference;
+  while (i < chars.length) {
+    const next = token();
+    if (reference && next.kind === ')') yield reference;
+    reference = argument && next.kind === 'ident' && next.name.startsWith('--')
+      && next.name.length > 2 ? next.name : undefined;
+    // Do not consume a fallback as a unit: its var() calls need their own checks.
+    argument = next.kind === 'function' && next.name === 'var';
+  }
 }
 
 export function checkCustomProperties(root) {
