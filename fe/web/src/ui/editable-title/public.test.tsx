@@ -51,7 +51,7 @@ it('does not pull focus back after Tab leaves an Enter commit that is still pend
   expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Next' }));
 });
 
-it('lets blur leave edit mode after a rejected rename without retrying it', async () => {
+it('retains the rejected draft and alert after blur until explicit Escape', async () => {
   const onCommit = vi.fn(() => Promise.reject(new Error('No permission')));
   render(<><EditableTitle value="Old" editLabel="Rename track" inputLabel="Track title" onCommit={onCommit} readCommitFailure={() => 'failed'} />
     <button type="button">Elsewhere</button></>);
@@ -61,6 +61,9 @@ it('lets blur leave edit mode after a rejected rename without retrying it', asyn
   await screen.findByRole('alert');
   await userEvent.click(screen.getByRole('button', { name: 'Elsewhere' }));
   expect(onCommit).toHaveBeenCalledTimes(1);
+  expect(screen.getByRole<HTMLInputElement>('textbox', { name: 'Track title' }).value).toBe('New');
+  expect(screen.getByRole('alert')).toBeTruthy();
+  fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Escape' });
   expect(screen.getByRole('button', { name: 'Rename track' })).toBeTruthy();
 });
 
@@ -149,4 +152,25 @@ it('suppresses the synthesized click after Enter accepts an unchanged title', as
   await waitFor(() => expect(document.activeElement).toBe(title));
   fireEvent.click(title);
   expect(screen.queryByRole('textbox', { name: 'Title' })).toBeNull();
+});
+
+it.each([{ isComposing: true }, { keyCode: 229 }])('ignores composing Enter %j', async (ime) => {
+  const onCommit = vi.fn();
+  render(<EditableTitle value="Old" editLabel="Rename" inputLabel="Title" onCommit={onCommit} readCommitFailure={() => 'failed'} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Rename' }));
+  const input = screen.getByRole('textbox');
+  fireEvent.change(input, { target: { value: 'Draft' } });
+  fireEvent.keyDown(input, { key: 'Enter', ...ime });
+  await Promise.resolve();
+  expect(onCommit).not.toHaveBeenCalled();
+  expect(screen.getByRole<HTMLInputElement>('textbox').value).toBe('Draft');
+});
+
+it.each([{ isComposing: true }, { keyCode: 229 }])('leaves composing Escape unclaimed %j', (ime) => {
+  render(<EditableTitle value="Old" editLabel="Rename" inputLabel="Title" onCommit={vi.fn()} readCommitFailure={() => 'failed'} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Rename' }));
+  const input = screen.getByRole('textbox');
+  fireEvent.change(input, { target: { value: 'Draft' } });
+  expect(fireEvent.keyDown(input, { key: 'Escape', ...ime })).toBe(true);
+  expect(screen.getByRole<HTMLInputElement>('textbox').value).toBe('Draft');
 });

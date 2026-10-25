@@ -1,3 +1,4 @@
+import { isImeKeyEvent } from '@astryxdesign/core/utils';
 import { useEffect, useRef } from 'react';
 import type { Conversation } from '../../../../core/domain/conversation.ts';
 import { useConversationCommands, useConversationDraftSlot, useConversationOpenRequest, type ConversationDraft, type ConversationRegistry } from './public.tsx';
@@ -67,7 +68,7 @@ export function useConversationEscape({ open, store }: Readonly<{
   useEffect(() => {
     if (open === null) return;
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape' || event.defaultPrevented || event.isComposing || event.keyCode === 229) return;
+      if (event.key !== 'Escape' || event.defaultPrevented || isImeKeyEvent(event)) return;
       if (!store.working || store.stopping) return;
       const target = event.target;
       if (!(target instanceof Element)) return;

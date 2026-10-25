@@ -1,3 +1,4 @@
+import { isImeKeyEvent } from '@astryxdesign/core/utils';
 import { useHistoryPrefetch, type HistoryPrefetch } from './history-prefetch.ts';
 import { PrependReading } from './prepend-reading.tsx';
 import { dispatchComposerCommand, executeComposerCommand } from './composer-command.ts';
@@ -545,7 +546,7 @@ export function ChatComposer({
         if (field === null || !messageInputRef.current?.contains(field)) return;
         if (event.key === 'Escape') {
           /* Esc leaves edit mode, unless it is closing an open `/` or `@` menu; handled, so the drawer stays open. */
-          if (editing === undefined || field.getAttribute('aria-expanded') === 'true' || event.nativeEvent.isComposing) return;
+          if (editing === undefined || field.getAttribute('aria-expanded') === 'true' || isImeKeyEvent(event.nativeEvent)) return;
           event.preventDefault();
           event.stopPropagation();
           editing.onCancel();

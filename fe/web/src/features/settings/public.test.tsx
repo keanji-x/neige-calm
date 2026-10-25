@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -420,4 +420,15 @@ describe('Settings network commits, per row', () => {
     view.unmount();                 // …and only then does the dialog go away.
     expect(onSave).toHaveBeenCalledTimes(1);
   });
+});
+
+it.each([{ isComposing: true }, { keyCode: 229 }])('does not save composing proxy Enter %j', async (ime) => {
+  const p = props({ onSave: vi.fn().mockResolvedValue(undefined) });
+  render(<NetworkPane {...p} />);
+  const field = screen.getByRole('textbox', { name: 'HTTP proxy' });
+  fireEvent.change(field, { target: { value: 'http://proxy:3128' } });
+  fireEvent.keyDown(field, { key: 'Enter', ...ime });
+  expect(p.onSave).not.toHaveBeenCalled();
+  fireEvent.keyDown(field, { key: 'Enter' });
+  await waitFor(() => expect(p.onSave).toHaveBeenCalledTimes(1));
 });

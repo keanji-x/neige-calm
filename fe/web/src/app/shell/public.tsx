@@ -1,3 +1,4 @@
+import { LayerDepthProvider, useLayerDismissal } from '@astryxdesign/core/Layer';
 import type { DialogOrigin } from '../../ui/dialog/public.tsx';
 import { sidebarTrackGroups } from './sidebar-track-groups.ts';
 import { useMobileNavigationPresence } from './mobile-navigation-presence.ts';
@@ -222,6 +223,12 @@ export function AppShell({
   const railCollapsed = manualRailCollapsed ?? narrowRail;
 
   const mobileFocusScope = useRef<Readonly<{ path: string; host: HTMLElement | null; intent: typeof mobileReturnIntent }> | null>(null);
+  useLayerDismissal({
+    isActive: workspaceInteractive,
+    onDismiss: closeMobileSection,
+    getContainer: () => mobileNavigationRef.current,
+  });
+
   useLayoutEffect(() => {
     if (!workspaceInteractive) {
       const scope = mobileFocusScope.current;
@@ -249,11 +256,6 @@ export function AppShell({
       mobileFocusScope.current = { ...mobileFocusScope.current, path: currentPath };
     }
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape' && !event.defaultPrevented) {
-        const layers = document.querySelectorAll<HTMLElement>('[data-nc-escape-layer]');
-        if (layers.item(layers.length - 1) === mobileNavigationRef.current) closeMobileSection();
-        return;
-      }
       if (event.key !== 'Tab') return;
       const focusable = Array.from(mobileNavigationRef.current?.querySelectorAll<HTMLElement>(
         'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
@@ -448,7 +450,7 @@ export function AppShell({
         <div className={styles.navigationPanel}>
           <div className={styles.navigationContent}>
           {narrowRail ? (
-            mobileSection?.kind === 'pages' ? (
+            <LayerDepthProvider>{mobileSection?.kind === 'pages' ? (
               <MobilePages
                 areaId={navigationArea?.id}
                 onEditArea={requestEditArea}
@@ -498,7 +500,7 @@ export function AppShell({
                   go({ name: 'track', trackId, from: areaIdOf(trackId) === undefined ? 'pages' : 'area' });
                 }}
               />
-            ) : null
+            ) : null}</LayerDepthProvider>
           ) : <Sidebar
             trackGroups={trackGroups}
             collapsed={railCollapsed}

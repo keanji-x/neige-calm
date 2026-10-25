@@ -108,3 +108,22 @@ describe('Add a plugin from JSON', () => {
     expect(p.onInstallLocalPath).toHaveBeenCalledWith('/srv/plugins/todo');
   });
 });
+
+it('adds a server directory once on Enter and ignores composing Enter and pending submissions', async () => {
+  let finish!: () => void;
+  const p = props({ onInstallLocalPath: vi.fn(() => new Promise<void>(resolve => { finish = resolve; })) });
+  const view = render(<PluginAddPane {...p} />);
+  await choose('Source', 'Server directory');
+  const field = screen.getByRole('textbox', { name: 'Directory path' });
+  fireEvent.change(field, { target: { value: '/srv/plugins/todo' } });
+  for (const ime of [{ isComposing: true }, { keyCode: 229 }]) fireEvent.keyDown(field, { key: 'Enter', ...ime });
+  expect(p.onInstallLocalPath).not.toHaveBeenCalled();
+  view.rerender(<PluginAddPane {...p} pending />);
+  fireEvent.keyDown(field, { key: 'Enter' });
+  expect(p.onInstallLocalPath).not.toHaveBeenCalled();
+  view.rerender(<PluginAddPane {...p} />);
+  fireEvent.keyDown(field, { key: 'Enter' });
+  expect(p.onInstallLocalPath).toHaveBeenCalledTimes(1);
+  expect(p.onInstallLocalPath).toHaveBeenCalledWith('/srv/plugins/todo');
+  await act(() => { finish(); return Promise.resolve(); });
+});

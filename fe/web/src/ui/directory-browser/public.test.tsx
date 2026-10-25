@@ -157,3 +157,15 @@ it('does not claim an empty directory after navigation fails', async () => {
   expect(screen.queryByRole('heading', { name: '这个文件夹是空的' })).toBeNull();
   expect(screen.queryByRole('heading', { name: 'No matches' })).toBeNull();
 });
+
+it.each([{ isComposing: true }, { keyCode: 229 }])('leaves all composing directory commands untouched %j', async (ime) => {
+  const { input, onCancel, onSelect } = await ready();
+  const active = input.getAttribute('aria-activedescendant');
+  for (const key of ['Enter', 'Escape', 'ArrowDown', 'ArrowUp', '/']) {
+    expect(fireEvent.keyDown(input, { key, ...ime })).toBe(true);
+    expect(input.getAttribute('aria-activedescendant')).toBe(active);
+  }
+  expect(listing).toHaveBeenCalledTimes(1);
+  expect(onCancel).not.toHaveBeenCalled();
+  expect(onSelect).not.toHaveBeenCalled();
+});

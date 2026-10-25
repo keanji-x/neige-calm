@@ -12,12 +12,12 @@ function field(attributes: Readonly<Record<string, string>>, listbox = ''): Elem
   return element;
 }
 
-const typing = { isComposing: false };
+const typing = { isComposing: false, keyCode: 0 };
 const open = { 'aria-expanded': 'true', 'aria-controls': 'menu' };
 
 describe('triggerMenuKeyRoute', () => {
   it('leaves a composing key to the IME, whatever the menu shows', () => {
-    expect(triggerMenuKeyRoute({ isComposing: true }, field({ ...open, 'aria-activedescendant': 'row' },
+    expect(triggerMenuKeyRoute({ isComposing: true, keyCode: 0 }, field({ ...open, 'aria-activedescendant': 'row' },
       '<div id="row" role="option"></div>'))).toBe('composing');
   });
 
@@ -36,4 +36,8 @@ describe('triggerMenuKeyRoute', () => {
     expect(triggerMenuKeyRoute(typing, field({}))).toBe('composer');
     expect(triggerMenuKeyRoute(typing, field(open, '<div>No results</div>'))).toBe('composer');
   });
+});
+
+it('leaves a keyCode-229 key to the IME', () => {
+  expect(triggerMenuKeyRoute({ isComposing: false, keyCode: 229 }, field({}))).toBe('composing');
 });

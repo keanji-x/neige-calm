@@ -1,3 +1,4 @@
+import { isImeKeyEvent } from '@astryxdesign/core/utils';
 import { EmptyState } from '../empty-state/public.tsx';
 // The directory browser: an editable absolute path that is also a combobox over the listing it names. The listbox stays local markup: astryx's `List`/`Item` hard-code roles and cannot host an `aria-activedescendant` list driven from a focused input.
 
@@ -68,6 +69,7 @@ export function DirectoryBrowser({ listDirectory, initialPath, onCancel, onSelec
     if (index >= 0 && index < visible.length) setActiveIndex(index);
   };
   const onKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+    if (isImeKeyEvent(event.nativeEvent)) return;
     const entry = activeIndex === null ? undefined : visible[activeIndex];
     if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); move(event.key === 'ArrowDown' ? 1 : -1); }
     else if (event.key === 'Escape') { event.preventDefault(); onCancel(); }

@@ -1,3 +1,4 @@
+import { LayerDepthProvider, useLayerDismissal } from '@astryxdesign/core/Layer';
 import { ReadOnlyCode } from '../../../ui/code/public.tsx';
 import { useEffect, useMemo, useRef } from 'react';
 
@@ -52,19 +53,14 @@ export function ReportFileViewer({
 
   useEffect(() => { layerRef.current?.focus({ preventScroll: true }); }, []);
 
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape' || event.defaultPrevented) return;
-      const layers = document.querySelectorAll<HTMLElement>('[data-nc-escape-layer]');
-      if (layers.item(layers.length - 1) !== layerRef.current) return;
-      onClose();
-    };
-    document.addEventListener('keydown', onKeyDown);
-    return () => { document.removeEventListener('keydown', onKeyDown); };
-  }, [onClose]);
+  useLayerDismissal({
+    isActive: true,
+    onDismiss: () => onClose(),
+    getContainer: () => layerRef.current,
+  });
 
   return (
-    <div
+    <LayerDepthProvider><div
       ref={layerRef}
       className={styles.layer}
       data-nc-report-file-viewer=""
@@ -123,6 +119,6 @@ export function ReportFileViewer({
           </div>
         )}
       </div>
-    </div>
+    </div></LayerDepthProvider>
   );
 }

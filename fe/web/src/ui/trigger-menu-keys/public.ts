@@ -1,3 +1,4 @@
+import { isImeKeyEvent } from '@astryxdesign/core/utils';
 // Where Enter or Tab in a composer field goes while an Astryx trigger menu (`/`, `@`) may be open.
 // DOM-only: it reads the combobox attributes `useTriggerMenu` publishes on the field.
 
@@ -15,8 +16,8 @@ export type TriggerMenuKeyRoute =
  * In this order: composing; a rendered highlighted option; the menu's `role="status"` loading
  * row (Astryx's own "Searching…", the same for every trigger and source); anything else.
  */
-export function triggerMenuKeyRoute(event: Pick<KeyboardEvent, 'isComposing'>, field: Element): TriggerMenuKeyRoute {
-  if (event.isComposing) return 'composing';
+export function triggerMenuKeyRoute(event: Pick<KeyboardEvent, 'isComposing' | 'keyCode'>, field: Element): TriggerMenuKeyRoute {
+  if (isImeKeyEvent(event)) return 'composing';
   if (field.getAttribute('aria-expanded') !== 'true') return 'composer';
   const document = field.ownerDocument;
   const active = field.getAttribute('aria-activedescendant');

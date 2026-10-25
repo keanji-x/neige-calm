@@ -137,7 +137,7 @@ export function PluginAddPane({ pending, onBack, onCheckConnector, onInstallConn
             )} />}
           </>}
         </> : <SettingRow title="Directory path" description="A directory containing manifest.json on the machine running Neige Calm." control={(
-          <AstryxTextInput label="Directory path" isLabelHidden value={path} width={CONTROL_WIDTH} onChange={(value) => { invalidate(); setPath(value); }} />
+          <AstryxTextInput onEnter={() => { if (!pending) void submit(); }} label="Directory path" isLabelHidden value={path} width={CONTROL_WIDTH} onChange={(value) => { invalidate(); setPath(value); }} />
         )} />}
       </SettingsList>
       {error !== null && <p role="alert">{error}</p>}

@@ -1,3 +1,4 @@
+import { isImeKeyEvent } from '@astryxdesign/core/utils';
 import { EmptyState } from '../../ui/empty-state/public.tsx';
 import { Icon } from '../../ui/icon/public.tsx';
 // The file card's body: a folder on the left, and one file — or one file's two sides — on the right.
@@ -450,6 +451,7 @@ function SearchBar({ query, current, total, onChange, onNext, onPrev, onClose }:
         value={query}
         onChange={(event) => onChange(event.currentTarget.value)}
         onKeyDown={(event) => {
+          if (isImeKeyEvent(event.nativeEvent)) return;
           if (event.key === 'Escape') { event.preventDefault(); onClose(); return; }
           if (event.key !== 'Enter') return;
           event.preventDefault();

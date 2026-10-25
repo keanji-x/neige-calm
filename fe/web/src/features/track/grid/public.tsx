@@ -1,4 +1,5 @@
-import { useEffect, useRef, type ReactNode } from 'react';
+import { LayerDepthProvider, useLayerDismissal } from '@astryxdesign/core/Layer';
+import { useRef, type ReactNode } from 'react';
 
 import { BoardHost, type BoardHostItem, type CardHost } from '../../../systems/cards/public.js';
 import { useState } from '../../../ui/state/public.ts';
@@ -25,22 +26,14 @@ export function CardGridOverlay({
   if (open && !everOpened) setEverOpened(true);
   const layerRef = useRef<HTMLDivElement | null>(null);
 
-  useEffect(() => {
-    if (!open || onClose === undefined) return;
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape' || event.defaultPrevented) return;
-      const target = event.target;
-      if (target instanceof HTMLElement && target.closest('[data-nc-terminal-card]') !== null) return;
-      const layers = document.querySelectorAll<HTMLElement>('[data-nc-escape-layer]');
-      if (layers.item(layers.length - 1) !== layerRef.current) return;
-      onClose();
-    };
-    document.addEventListener('keydown', onKeyDown);
-    return () => { document.removeEventListener('keydown', onKeyDown); };
-  }, [open, onClose]);
+  useLayerDismissal({
+    isActive: open && onClose !== undefined,
+    onDismiss: () => onClose?.(),
+    getContainer: () => layerRef.current,
+  });
 
   return (
-    <div
+    <LayerDepthProvider><div
       ref={layerRef}
       className={open ? styles.open : styles.closed}
       data-nc-card-grid=""
@@ -59,6 +52,6 @@ export function CardGridOverlay({
           />
         )
         : null}
-    </div>
+    </div></LayerDepthProvider>
   );
 }

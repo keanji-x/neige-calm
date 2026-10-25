@@ -317,7 +317,7 @@ export function NetworkPane({
               });
             }}
             onBlur={() => commit(field, draft[field])}
-            onKeyDown={(event) => { if (event.key === 'Enter') commit(field, draft[field]); }}
+            onEnter={() => commit(field, draft[field])}
             width={CONTROL_WIDTH}
             /* The field stays editable while its write is in flight: blocking it would drop the next keystroke. */
             data-nc-state={status[field].phase === 'saving' ? 'busy' : undefined}

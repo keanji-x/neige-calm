@@ -143,7 +143,7 @@ function PlannerTurnDuration({ value, readRevision, loaded, loadError, onRetryLo
             status={inputError === null ? undefined : { type: 'error', message: inputError }}
             onChange={(next) => { setDraft(next); setValidationError(null); }}
             onBlur={() => commit(false, false)}
-            onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); commit(false, true); } }} />
+            onEnter={() => commit(false, true)} />
           <AstryxButton label="Restore default duration" variant="secondary" isDisabled={save.phase === 'pending'}
             onPointerDown={(event) => event.preventDefault()} onClick={() => commit(true, true)}>Restore default</AstryxButton>
           {save.phase === 'failed' && <p className={styles.error} role="alert">{save.value} minutes: {save.message} Press Enter to try again or restore default.</p>}

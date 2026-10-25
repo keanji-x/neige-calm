@@ -286,3 +286,13 @@ it('keeps an unconfirmed reset visible through an unchanged successful read', as
   expect(within(row('Maximum turn duration')).getByRole('alert').textContent).toContain('The save is unconfirmed.');
   expect(props.turnDuration.onSave).toHaveBeenCalledTimes(1);
 });
+
+it.each([{ isComposing: true }, { keyCode: 229 }])('does not save composing duration Enter %j', (ime) => {
+  const p = pane();
+  const field = screen.getByRole('textbox', { name: 'Maximum turn duration (minutes)' });
+  fireEvent.change(field, { target: { value: '45' } });
+  fireEvent.keyDown(field, { key: 'Enter', ...ime });
+  expect(p.turnDuration.onSave).not.toHaveBeenCalled();
+  fireEvent.keyDown(field, { key: 'Enter' });
+  expect(p.turnDuration.onSave).toHaveBeenCalledWith('45');
+});

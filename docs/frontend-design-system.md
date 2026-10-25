@@ -103,3 +103,12 @@ Astryx发布的size/family/unitless-leading由实际使用的role投影，不能
 本轮不修改任何浅深配色、阴影、圆角配置、终端宿主值或交互机制。
 
 Astryx组件内部spacing保留其已发布的独立协议，不按同名编号做全局改写；本轮仅迁移我们拥有的留白，避免改变外部组件固定几何。
+
+## 交互安全
+
+输入框上的 Enter/Esc 命令使用 Astryx TextInput 的 `onEnter`，或在 handler
+首行执行 `if (isImeKeyEvent(e.nativeEvent)) return;`（来自
+`@astryxdesign/core/utils`）。组字中的 Esc 不 preventDefault、不 stopPropagation，
+留给 Astryx Layer 栈认领。关闭浮层统一使用 `useLayerDismissal`，内容包在
+`LayerDepthProvider` 中，使一次 Esc 只关闭最上层。保存失败后保留草稿和就近错误，
+由显式取消或成功保存结束编辑。

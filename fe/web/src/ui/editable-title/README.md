@@ -8,7 +8,10 @@ and the track header.
 Read mode is a `<button>` whose accessible name is the caller-supplied
 `editLabel` ("Rename area"), so a screen reader hears the action, not just the
 current name. Edit mode is an `<input>` labelled by `inputLabel`. F2 enters
-edit mode; Enter commits, Escape cancels, blur commits.
+edit mode; Enter commits, Escape cancels, blur commits. Composing Enter/Escape
+are left to the IME through Astryx’s `isImeKeyEvent`. After a failed save, blur
+keeps the editor, draft and alert in place without retrying. Explicit Escape
+discards the draft; a successful save exits editing.
 
 ## Two carriers: `value` edits, `placeholder` displays
 

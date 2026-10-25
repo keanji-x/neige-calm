@@ -1,3 +1,4 @@
+import { isImeKeyEvent } from '@astryxdesign/core/utils';
 // The one click-or-F2-to-rename title. Committing with Enter fires keyup on the restored title element, which browsers turn into a `click` that would reopen the editor; the suppressor guards that.
 
 import { useCallback, useEffect, useRef, type ReactNode } from 'react';
@@ -119,11 +120,11 @@ export function EditableTitle({
       onMouseDown={(event) => { if (event.target !== inputRef.current) event.preventDefault(); }}
       onBlur={(event) => {
         if (event.currentTarget.contains(event.relatedTarget)) return;
-        if (feedback.error === null) commit(false); else setEditing(false);
+        if (feedback.error === null) commit(false);
       }}
       /* Escape anywhere in the boundary (the input, or Dismiss after a Tab) cancels the edit. */
       onKeyDown={(event) => {
-        if (event.key !== 'Escape') return;
+        if (isImeKeyEvent(event.nativeEvent) || event.key !== 'Escape') return;
         event.preventDefault(); event.stopPropagation(); setEditing(false); restoreTitleFocus();
       }}
     ><input
@@ -133,7 +134,7 @@ export function EditableTitle({
       value={draft}
       onChange={(event) => setDraft(event.target.value)}
       onKeyDown={(event) => {
-        if (event.key === 'Enter') { event.preventDefault(); commit(true); }
+        if (event.key === 'Enter' && !isImeKeyEvent(event.nativeEvent)) { event.preventDefault(); commit(true); }
       }}
     /><OperationFeedback feedback={feedback} /></span>
   );
