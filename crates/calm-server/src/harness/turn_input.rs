@@ -1,9 +1,9 @@
-//! The one owner of "this turn's input" (#2130 D17): the newest turn-input row a Planner session
-//! wrote, and the decode of its stored segments that the rewind planner shares.
+//! The one owner of "this turn's input" (#2130 D17), selected by persistent storage format.
+//! Historical segment decoding is also shared with the rewind planner.
 
 use sqlx::{Sqlite, Transaction};
 
-use crate::db::sqlite::transcript_latest_turn_input_tx;
+use crate::db::sqlite::{conversation, transcript_latest_turn_input_tx};
 use crate::error::{CalmError, Result};
 use crate::model::{HarnessInputPresentation, HarnessInputSegment};
 
@@ -19,13 +19,23 @@ pub(crate) fn segments(json: &str) -> Option<Vec<HarnessInputSegment>> {
     serde_json::from_str(json).ok()
 }
 
-/// The caller session's newest turn input, read in the caller's transaction; `None` when the session
-/// has recorded none (only an older binary's turn in flight at upgrade).
+/// The exact current canonical execution, or newest Historical issuance/steer.
+/// A canonical miss or error never falls back to a Historical projection.
 pub(crate) async fn latest(
     tx: &mut Transaction<'_, Sqlite>,
     card_id: &str,
     worker_session_id: &str,
 ) -> Result<Option<TurnInput>> {
+    if conversation::card_has_canonical_storage(tx, card_id).await? {
+        return Ok(
+            conversation::current_turn_input_tx(tx, card_id, worker_session_id)
+                .await?
+                .map(|(created_at_ms, has_user_segment)| TurnInput {
+                    created_at_ms,
+                    has_user_segment,
+                }),
+        );
+    }
     let Some((created_at_ms, json)) =
         transcript_latest_turn_input_tx(tx, card_id, worker_session_id).await?
     else {

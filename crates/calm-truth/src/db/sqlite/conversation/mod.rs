@@ -46,7 +46,7 @@ pub use messages::{
     StoredMessage, StoredMessageRevision, insert_message_tx, message_tx, revision_tx,
 };
 pub use plans::{
-    OriginalInputExecution, StoredSubmissionIdentity, StoredSubmissionPlan,
+    OriginalInputExecution, StoredSubmissionIdentity, StoredSubmissionPlan, current_turn_input_tx,
     human_plan_for_pending_prefix_tx, original_initial_submission_tx, original_input_execution_tx,
     pending_plan_for_prefix_tx, submission_identity_tx, submission_plan_tx,
 };
@@ -167,3 +167,6 @@ pub use acp_cleanup::settle_kept_acp_receipt_tx;
 
 #[cfg(test)]
 mod planner_switch_tests;
+
+#[cfg(test)]
+mod u9_canonical_turn_owner_tests;

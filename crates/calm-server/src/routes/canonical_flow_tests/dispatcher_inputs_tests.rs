@@ -13,6 +13,7 @@ mod qualification;
 mod recovery;
 mod reliable_results;
 mod retry_read;
+mod u9_canonical;
 
 const SYSTEM_BODY: &str = "System report work queued during the original Human turn";
 const HUMAN_BODY: &str = "A later Human input must continue without another POST";
@@ -71,6 +72,9 @@ impl Flow {
         Self::running_with_model(false).await
     }
     async fn running_with_model(frozen: bool) -> Self {
+        Self::running_with_admission(frozen, false).await
+    }
+    async fn running_with_admission(frozen: bool, admin: bool) -> Self {
         let trace = phase_trace::Trace::new();
         let running = trace.phase("running");
         let setup = trace.phase("running.fixture_application");
@@ -90,6 +94,7 @@ impl Flow {
         connection.complete();
         let mut body = json!({"area_id":area["id"],"title":"","planner_provider":"codex",
             "theme":{"fg":[255,255,255],"bg":[0,0,0]},"first_message":FIRST_BODY});
+        body["admin"] = json!(admin);
         if frozen {
             body["model"] = json!("retry-model");
             body["reasoning_effort"] = json!("high");

@@ -443,3 +443,39 @@ pub async fn submission_plan_tx(
         original_digest,
     })
 }
+/// Current mail turn facts, qualified by exact carrier and actual execution.
+/// The execution resolver follows Turn -> Initial and validates its resolved
+/// frozen plan against immutable refs, including reference-only retry plans.
+/// Delivery evidence alone does not keep a retired claim effective.
+pub async fn current_turn_input_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    card_id: &str,
+    worker_session_id: &str,
+) -> Result<Option<(i64, bool)>> {
+    let carrier = super::current_input_carrier_tx(tx, card_id, worker_session_id).await?;
+    let Some(original) = original_input_execution_tx(tx, &carrier).await? else {
+        return Ok(None);
+    };
+    let refs = original.proof.input_refs();
+    let effective: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM conversation_submission_inputs
+         WHERE submission_id=?1 AND effective=1",
+    )
+    .bind(original.proof.attempt().submission_id.as_str())
+    .fetch_one(&mut **tx)
+    .await?;
+    if refs.is_empty() || usize::try_from(effective).ok() != Some(refs.len()) {
+        return Ok(None);
+    }
+    let created_at_ms = sqlx::query_scalar(
+        "SELECT created_at_ms FROM conversation_turns WHERE id=?1 AND card_id=?2",
+    )
+    .bind(original.identity.logical_turn_id.as_str())
+    .bind(card_id)
+    .fetch_one(&mut **tx)
+    .await?;
+    let human = refs
+        .iter()
+        .any(|input| matches!(input, AcceptedInputRef::Human { .. }));
+    Ok(Some((created_at_ms, human)))
+}
