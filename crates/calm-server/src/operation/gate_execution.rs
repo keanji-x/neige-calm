@@ -128,6 +128,9 @@ impl pipe::ReleaseAuthorization for ReleaseAuthority<'_> {
 pub struct Projection;
 #[async_trait::async_trait]
 impl crate::execution_store::ExecutionProjection for Projection {
+    fn disposal(&self) -> Option<&dyn crate::execution_quiesce::owned::DisposalOwner> {
+        Some(&CONFIG)
+    }
     async fn spawned(
         &self,
         _tx: &mut Tx<'_>,

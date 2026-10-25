@@ -2,6 +2,7 @@
 use crate::{
     db::sqlite::{SqliteDb, begin_immediate_tx},
     error::{CalmError, Result},
+    event::BroadcastEnvelope,
     execution_store::SqliteExecutionStore,
     operation::OperationRuntime,
 };
@@ -18,11 +19,13 @@ pub trait DisposalOwner: Send + Sync {
         tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
         metadata: &ExecutionMetadata,
     ) -> Result<()>;
+    /// Return only envelopes already persisted in this transaction. The coordinator
+    /// broadcasts them after commit, so a failed owner stop cannot publish an outcome.
     async fn stop_tx(
         &self,
         tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
         metadata: &ExecutionMetadata,
-    ) -> Result<()>;
+    ) -> Result<Vec<BroadcastEnvelope>>;
     /// True only after durable owner completion. Never take over a live owner's lease.
     async fn finish(
         &self,
@@ -32,7 +35,9 @@ pub trait DisposalOwner: Send + Sync {
 }
 
 fn conflict(error: impl std::fmt::Display) -> CalmError {
-    CalmError::Conflict(format!("owned execution disposal retained resources: {error}"))
+    CalmError::Conflict(format!(
+        "owned execution disposal retained resources: {error}"
+    ))
 }
 
 /// An execution inventory is not scope authorization: callers must already hold the scope's
@@ -47,7 +52,10 @@ pub async fn dispose(
         return Ok(());
     }
     let ctx = runtime.reclaim_context();
-    let engine = ctx.execution.engine().ok_or_else(|| conflict("missing Engine"))?;
+    let engine = ctx
+        .execution
+        .engine()
+        .ok_or_else(|| conflict("missing Engine"))?;
     let pool = ctx.operation_repo.sqlite_db();
     let mut tx = begin_immediate_tx(&pool).await?;
     let mut owners = Vec::new();
@@ -57,25 +65,42 @@ pub async fn dispose(
             continue;
         }
         let metadata: ExecutionMetadata = serde_json::from_str(
-            &sql::intent_tx(&mut tx, id.as_str()).await.map_err(conflict)?,
-        ).map_err(conflict)?;
+            &sql::intent_tx(&mut tx, id.as_str())
+                .await
+                .map_err(conflict)?,
+        )
+        .map_err(conflict)?;
         if metadata.id != *id {
             return Err(conflict("execution identity mismatch"));
         }
-        let owner = store.projection(&metadata.consumer).map_err(|e| conflict(e.0))?
-            .disposal().ok_or_else(|| conflict("consumer has no disposal ports"))?;
-        owner.prepare_disposal_tx(&mut tx, &metadata).await.map_err(conflict)?;
+        let owner = store
+            .projection(&metadata.consumer)
+            .map_err(|e| conflict(e.0))?
+            .disposal()
+            .ok_or_else(|| conflict("consumer has no disposal ports"))?;
+        owner
+            .prepare_disposal_tx(&mut tx, &metadata)
+            .await
+            .map_err(conflict)?;
         owners.push((metadata, owner));
     }
+    let mut events = Vec::new();
     for (metadata, owner) in &owners {
-        owner.stop_tx(&mut tx, metadata).await.map_err(conflict)?;
+        events.extend(owner.stop_tx(&mut tx, metadata).await.map_err(conflict)?);
     }
     tx.commit().await?;
-    ctx.execution.drive(owners.iter().map(|(metadata, _)| metadata.id.clone()));
+    for event in events {
+        ctx.events.emit_envelope(event);
+    }
+    ctx.execution
+        .drive(owners.iter().map(|(metadata, _)| metadata.id.clone()));
     // Include owner completion and executor retirement in one budget, not only settlement.
     tokio::time::timeout(workspace_runtime::execution::QUIESCE_DEADLINE, async {
         for (metadata, owner) in &owners {
-            engine.wait_settled(&metadata.id).await.map_err(|e| conflict(format!("{e:?}")))?;
+            engine
+                .wait_settled(&metadata.id)
+                .await
+                .map_err(|e| conflict(format!("{e:?}")))?;
             loop {
                 if owner.finish(runtime, metadata).await.map_err(conflict)?
                     && retired(&pool, &metadata.id).await?
@@ -86,11 +111,14 @@ pub async fn dispose(
             }
         }
         Ok(())
-    }).await.map_err(conflict)?
+    })
+    .await
+    .map_err(conflict)?
 }
 
 async fn retired(pool: &SqliteDb, id: &ExecutionId) -> Result<bool> {
-    let row = sql::load(pool.read_pool(), id.as_str()).await?
+    let row = sql::load(pool.read_pool(), id.as_str())
+        .await?
         .ok_or_else(|| conflict("execution disappeared before retirement"))?;
     Ok(row.desired == "retire" && row.settlement_json.is_some() && row.secrets_json.is_none())
 }

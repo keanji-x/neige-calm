@@ -178,7 +178,11 @@ pub(crate) async fn release(
     #[cfg(any(test, feature = "fixtures"))] response: Option<&ReleaseResponseHook>,
 ) -> Result<()> {
     let old = record(config, op)?;
-    if old.decision == (Decision::Stopping { reason: StopReason::Disposed }) {
+    if old.decision
+        == (Decision::Stopping {
+            reason: StopReason::Disposed,
+        })
+    {
         return Err(conflict("execution owner is being disposed"));
     }
     if old.release != Release::Held || old.decision != Decision::Observing {
@@ -231,3 +235,6 @@ pub(crate) async fn retire(config: PipeConfig, tx: &mut Tx<'_>, op: &Operation) 
     .await?;
     Ok(())
 }
+
+#[cfg(test)]
+mod disposal_tests;

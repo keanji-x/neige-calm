@@ -186,7 +186,14 @@ pub(crate) async fn unsettled(
             alias = sql::terminal_alias(id);
             ExecutionScope::Alias(&alias)
         }
-        Scope::Card(id) => ExecutionScope::Card(id),
+        Scope::Card(id) => {
+            let terminal = crate::db::sqlite::terminal_get_by_card_tx(tx, id).await?;
+            let Some(terminal) = terminal else {
+                return Ok(Vec::new());
+            };
+            alias = sql::terminal_alias(&terminal.id);
+            ExecutionScope::Alias(&alias)
+        }
     };
     Ok(sql::unsettled_executions(tx, scope).await?)
 }

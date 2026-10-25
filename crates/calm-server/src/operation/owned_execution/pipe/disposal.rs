@@ -23,28 +23,35 @@ async fn owner_tx(
     {
         return Err(conflict("execution record and metadata disagree"));
     }
-    if !matches!(op.phase, Phase::SpawnStarted | Phase::Parked | Phase::Succeeded | Phase::Failed) {
+    if !matches!(
+        op.phase,
+        Phase::SpawnStarted | Phase::Parked | Phase::Succeeded | Phase::Failed
+    ) {
         return Err(conflict("execution owner is not in a disposable phase"));
     }
     Ok(op)
 }
 
-#[async_trait::async_trait]
-impl DisposalOwner for PipeConfig {
-    async fn prepare_disposal_tx(&self, tx: &mut Tx<'_>, metadata: &ExecutionMetadata) -> Result<()> {
-        owner_tx(*self, tx, metadata).await.map(|_| ())
-    }
-
-    async fn stop_tx(&self, tx: &mut Tx<'_>, metadata: &ExecutionMetadata) -> Result<()> {
+impl PipeConfig {
+    /// True only when this writer wins the disposal decision. The business owner
+    /// must converge its task and append events in this same transaction.
+    pub(crate) async fn stop_for_disposal_tx(
+        &self,
+        tx: &mut Tx<'_>,
+        metadata: &ExecutionMetadata,
+    ) -> Result<bool> {
         let op = owner_tx(*self, tx, metadata).await?;
         // Natural owner completion won before this transaction: preserve it.
         if matches!(op.phase, Phase::Succeeded | Phase::Failed) {
-            return Ok(());
+            return Ok(false);
         }
         let old = record(*self, &op)?;
-        if old.decision == Decision::Observing {
+        let won = old.decision == Decision::Observing;
+        if won {
             let mut new = old.clone();
-            new.decision = Decision::Stopping { reason: StopReason::Disposed };
+            new.decision = Decision::Stopping {
+                reason: StopReason::Disposed,
+            };
             // This is an authorized scope writer, not a replacement observer. Exact record CAS
             // invalidates stale release/completion snapshots; the live lease remains untouched.
             crate::operation::repo_sqlite::require_original_operation_tx(tx, &op).await?;
@@ -54,15 +61,44 @@ impl DisposalOwner for PipeConfig {
                 self.record_key,
                 &serde_json::to_string(&old)?,
                 &serde_json::to_string(&new)?,
-            ).await?;
+            )
+            .await?;
         }
-        calm_truth::db::sqlite::workspace_execution::request(tx, metadata.id.as_str(), "stop").await?;
-        Ok(())
+        calm_truth::db::sqlite::workspace_execution::request(tx, metadata.id.as_str(), "stop")
+            .await?;
+        Ok(won)
+    }
+}
+
+#[async_trait::async_trait]
+impl DisposalOwner for PipeConfig {
+    async fn prepare_disposal_tx(
+        &self,
+        tx: &mut Tx<'_>,
+        metadata: &ExecutionMetadata,
+    ) -> Result<()> {
+        owner_tx(*self, tx, metadata).await.map(|_| ())
     }
 
-    async fn finish(&self, runtime: &OperationRuntime, metadata: &ExecutionMetadata) -> Result<bool> {
+    async fn stop_tx(
+        &self,
+        tx: &mut Tx<'_>,
+        metadata: &ExecutionMetadata,
+    ) -> Result<Vec<crate::event::BroadcastEnvelope>> {
+        self.stop_for_disposal_tx(tx, metadata).await?;
+        Ok(Vec::new())
+    }
+
+    async fn finish(
+        &self,
+        runtime: &OperationRuntime,
+        metadata: &ExecutionMetadata,
+    ) -> Result<bool> {
         let ctx = runtime.reclaim_context();
-        let op = ctx.operation_repo.get_operation(&metadata.owner.0).await?
+        let op = ctx
+            .operation_repo
+            .get_operation(&metadata.owner.0)
+            .await?
             .ok_or_else(|| conflict("execution owner disappeared before completion"))?;
         if record(*self, &op)?.execution_id != metadata.id {
             return Err(conflict("execution owner changed before completion"));
@@ -75,8 +111,12 @@ impl DisposalOwner for PipeConfig {
         {
             let adapter = runtime.adapter(&claimed.kind)?;
             owned_parked::reconcile(
-                adapter.as_ref(), &claimed, RecoveryMode::PreDeadlineProbe, ctx,
-            ).await?;
+                adapter.as_ref(),
+                &claimed,
+                RecoveryMode::PreDeadlineProbe,
+                ctx,
+            )
+            .await?;
         }
         // A live observer finishes under its original claim; a later call checks its commit.
         Ok(false)
