@@ -920,6 +920,23 @@ async fn deleting_a_tree_leaf_readmits_a_survivor_under_its_larger_share() {
 #[tokio::test]
 async fn tightening_root_tree_budget_below_inflight_inventory_is_rejected_atomically() {
     let (state, root_id, repo) = boot().await;
+    let mut parent_block = report_task_block("spawn-child");
+    parent_block.payload["spawn"] = json!("sub-track");
+    let parent_task = write_report_block(&state, &repo, &root_id, parent_block).await;
+    let mut tx = repo
+        .sqlite_db()
+        .unwrap()
+        .writer_pool()
+        .begin()
+        .await
+        .unwrap();
+    assert_eq!(
+        task_claim_pending_tx(&mut tx, &parent_task, 1, &[], false)
+            .await
+            .unwrap(),
+        1
+    );
+    tx.commit().await.unwrap();
     let root = repo.track_get(&root_id).await.unwrap().unwrap();
     let child = repo
         .track_create(NewTrack {
@@ -938,6 +955,12 @@ async fn tightening_root_tree_budget_below_inflight_inventory_is_rejected_atomic
     sqlx::query("UPDATE tracks SET parent_track_id=?1 WHERE id=?2")
         .bind(&root_id)
         .bind(child.id.as_str())
+        .execute(repo.sqlite_db().unwrap().writer_pool())
+        .await
+        .unwrap();
+    sqlx::query("UPDATE tasks SET child_track_id=?1 WHERE id=?2")
+        .bind(child.id.as_str())
+        .bind(&parent_task)
         .execute(repo.sqlite_db().unwrap().writer_pool())
         .await
         .unwrap();
@@ -960,7 +983,9 @@ async fn tightening_root_tree_budget_below_inflight_inventory_is_rejected_atomic
     let before_events = event_count(&repo).await;
     let before_tracks = track_policy_snapshots(&repo, &[&root_id, child.id.as_str()]).await;
     let before_task = task_row_snapshot(&repo, &task_id).await;
-    let response = patch(state, &root_id, None, json!({"tree_task_budget": 0})).await;
+    // One slot covers the live parent binding; the child's in-flight work must
+    // still prevent shrinking the tree to that budget.
+    let response = patch(state, &root_id, None, json!({"tree_task_budget": 1})).await;
     assert_eq!(response.status(), StatusCode::CONFLICT);
     assert_eq!(
         track_policy_snapshots(&repo, &[&root_id, child.id.as_str()]).await,

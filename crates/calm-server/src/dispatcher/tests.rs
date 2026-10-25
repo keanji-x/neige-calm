@@ -4293,6 +4293,15 @@ async fn track_updated_with_closed_at_reconciles_the_child() {
     };
     let parent = repo.track_create(new_track("parent")).await.unwrap();
     let child = repo.track_create(new_track("child")).await.unwrap();
+    repo.card_create(crate::model::NewCard {
+        track_id: child.id.clone(),
+        title: None,
+        kind: "track-report".into(),
+        sort: None,
+        payload: serde_json::to_value(crate::track_report::TrackReportPayload::initial()).unwrap(),
+    })
+    .await
+    .unwrap();
     let task_id = format!("{}:spawn-child", parent.id);
     sqlx::query(
         "INSERT INTO tasks(id,track_id,key,kind,goal,context_json,status,declared_by,spawn,\

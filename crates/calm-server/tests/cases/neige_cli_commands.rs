@@ -880,7 +880,10 @@ async fn help_and_unknown_commands_are_served_by_the_kernel() {
     assert_eq!(
         (stderr.as_str(), exit),
         (
-            "neige: unknown action `cat-at` for `neige track`; expected one of: add, ls, cat, show, diff, log, status, close\n",
+            concat!(
+                "neige: unknown action `cat-at` for `neige track`; expected one of: ",
+                "add, ls, cat, show, diff, log, status, handback, close\n"
+            ),
             1
         )
     );
