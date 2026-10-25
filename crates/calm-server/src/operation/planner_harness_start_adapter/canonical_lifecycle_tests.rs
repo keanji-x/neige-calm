@@ -40,6 +40,7 @@ impl Fixture {
 
     async fn build(fake: bool, provider: AgentProvider, persistent: bool) -> Self {
         let dir = tempfile::tempdir().unwrap();
+        crate::test_support::init_fixture_git_repo(dir.path());
         let uri = if persistent {
             format!(
                 "sqlite://{}?mode=rwc",

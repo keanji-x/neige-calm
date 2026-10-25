@@ -25,6 +25,7 @@ pub(super) async fn seed_with_url(
     provider: AgentProvider,
     db_url: &str,
 ) -> Owner {
+    crate::test_support::init_fixture_git_repo(cwd);
     std::fs::create_dir_all(cwd.join("data")).unwrap();
     let repo = Arc::new(SqlxRepo::open(db_url).await.unwrap());
     let area = repo

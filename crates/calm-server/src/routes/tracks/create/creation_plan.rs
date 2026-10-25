@@ -214,7 +214,10 @@ fn canonical_creation_supported(request: &CreateRequestShape, input: CreateShape
         };
     // This entry rollout admits Codex/OpenCode named/admin/borrowed sources only. Other
     // bindings retain their explicit historical named-source contract.
+    // With no cwd, attachment still selects Managed preparation and borrows
+    // nothing. Preserve that historical shape; explicit locators remain qualified.
     supported
+        && (!request.attach_folder || request.cwd.is_some())
         && (!(named
             || request.admin
             || request.cwd.is_some()

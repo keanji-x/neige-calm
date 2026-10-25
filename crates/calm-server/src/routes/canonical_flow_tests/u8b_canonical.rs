@@ -4,6 +4,7 @@ use super::*;
 use calm_truth::db::RepoRead;
 
 mod recovery;
+mod selection;
 
 const MARKER: &str = "<svg xmlns=\"http://www.w3.org/2000/svg\"><text>committed</text></svg>";
 
