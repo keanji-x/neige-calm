@@ -599,6 +599,8 @@ async fn canonical_installed_live_reply_streams_without_a_native_phase_writer() 
     .await
     .expect("the installed existing live-reply owner must receive canonical native content");
     assert_eq!(fx.frame().await, before);
+    // Subscribe after the streamed delta, so the start's presentation event is past.
+    let mut presentations = fx.harness.inner.events.subscribe();
     notify_thread(
         &fx.daemon,
         &mut peer,
@@ -617,6 +619,31 @@ async fn canonical_installed_live_reply_streams_without_a_native_phase_writer() 
     let params: Value = serde_json::from_str(&params).unwrap();
     assert_eq!(params["_partial"], true);
     assert_eq!(params["item"]["text"], "live answer");
+    let sequence: i64 = sqlx::query_scalar(
+        "SELECT sequence FROM conversation_presentations WHERE card_id=?1 AND native_item_row_id=?2",
+    )
+    .bind(fx.harness.inner.card_id.as_str())
+    .bind(row)
+    .fetch_one(fx.original.repo.pool())
+    .await
+    .unwrap();
+    let partial_cursor = calm_types::conversation_display::ConversationCursor::new(
+        fx.harness.inner.card_id.as_str(),
+        calm_types::conversation_display::ConversationCursorSource::Presentation,
+        sequence,
+    );
+    // The partial row's commit can precede live cleanup; its event follows item_stored.
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if matches!(presentations.recv().await.unwrap().event,
+                Event::HarnessPresentationChanged { cursor, .. } if cursor == partial_cursor)
+            {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("the partial reply must be announced after leaving the live view");
     let live = fx.registry.live_replies().read(&fx.harness.inner.card_id);
     assert!(live.items.is_empty());
     stop(&fx, &mut peer).await;
