@@ -100,7 +100,7 @@ pub(crate) async fn finalize_run(
         Some(StopReason::KernelRestarted) => {
             infra_verdict(super::RUN_KERNEL_RESTARTED, evidence, frozen.run)
         }
-        Some(StopReason::ReleaseRefused) => {
+        Some(StopReason::ReleaseRefused | StopReason::Disposed) => {
             infra(
                 frozen,
                 &log_path,

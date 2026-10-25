@@ -1,4 +1,5 @@
 //! Op-owned Pipe admission and record lifecycle. Business authorization stays with the caller.
+mod disposal;
 use super::{Decision, Release, StopReason, engine};
 use crate::{
     error::{CalmError, Result},
@@ -29,6 +30,7 @@ pub(crate) struct ReleaseRequest<'a> {
 pub(crate) type ReleaseResponseHook =
     std::sync::Arc<dyn Fn() -> futures::future::BoxFuture<'static, Result<()>> + Send + Sync>;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct Record {
     version: u8,
     pub execution_id: ExecutionId,
@@ -176,6 +178,9 @@ pub(crate) async fn release(
     #[cfg(any(test, feature = "fixtures"))] response: Option<&ReleaseResponseHook>,
 ) -> Result<()> {
     let old = record(config, op)?;
+    if old.decision == (Decision::Stopping { reason: StopReason::Disposed }) {
+        return Err(conflict("execution owner is being disposed"));
+    }
     if old.release != Release::Held || old.decision != Decision::Observing {
         return Ok(());
     }

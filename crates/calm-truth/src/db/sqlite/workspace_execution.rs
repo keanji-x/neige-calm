@@ -172,6 +172,7 @@ pub async fn consumer_inventory<'a>(
 
 /// Occupancy scopes; lifecycle policy belongs to callers.
 pub enum Scope<'a> {
+    Card(&'a str),
     Track(&'a str),
     Area(&'a str),
     Alias(&'a str),
@@ -181,7 +182,16 @@ pub async fn unsettled_executions(
     conn: &mut sqlx::SqliteConnection,
     scope: Scope<'_>,
 ) -> crate::error::Result<Vec<workspace::execution::ExecutionId>> {
+    if let Scope::Card(card) = scope {
+        return Ok(card::executions(conn, card)
+            .await?
+            .into_iter()
+            .filter(|execution| !execution.settled)
+            .map(|execution| execution.id)
+            .collect());
+    }
     let (predicate, value) = match scope {
+        Scope::Card(_) => unreachable!("card scope handled above"),
         Scope::Track(id) => ("e.track_id = ?", id),
         Scope::Area(id) => (
             "e.track_id IN (SELECT id FROM tracks WHERE area_id = ?)",
@@ -200,6 +210,9 @@ pub async fn unsettled_executions(
         .map(|id| id.try_into().map_err(crate::error::CalmError::Internal))
         .collect()
 }
+
+mod card;
+pub use card::{CardExecution, executions as card_executions};
 
 /// Owning-scope executions union unsettled roots inside any destructive target.
 /// Decode every row before filtering: an unknown root cannot prove any target safe.

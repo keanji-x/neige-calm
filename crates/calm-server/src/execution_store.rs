@@ -10,6 +10,10 @@ use workspace_runtime::execution::*;
 /// Every consumer requires registration, including an explicit no-op when appropriate.
 #[async_trait]
 pub trait ExecutionProjection: Send + Sync {
+    /// Lifecycle policy belongs to the registered owner. Missing ports fail closed.
+    fn disposal(&self) -> Option<&dyn crate::execution_quiesce::owned::DisposalOwner> {
+        None
+    }
     async fn spawned(
         &self,
         tx: &mut Transaction<'_, Sqlite>,
@@ -57,7 +61,7 @@ impl SqliteExecutionStore {
         );
         self
     }
-    fn projection(
+    pub(crate) fn projection(
         &self,
         consumer: &ExecutionConsumer,
     ) -> Result<&dyn ExecutionProjection, StoreError> {

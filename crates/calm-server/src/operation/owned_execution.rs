@@ -14,6 +14,7 @@ pub(crate) enum Release {
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum StopReason {
+    Disposed,
     Timeout,
     KernelRestarted,
     ReleaseRefused,

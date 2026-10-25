@@ -1,4 +1,5 @@
 //! Deletion callers own Stop and Retire; occupancy predicates never drive lifecycle.
+pub mod owned;
 use crate::{
     db::{RouteRepo, write_in_tx_typed},
     error::{CalmError, Result},
