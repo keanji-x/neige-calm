@@ -309,7 +309,7 @@ impl CardDecisionSink {
         identity: &ToolCallIdentity,
         op: ReportDocOp,
         agent_message: Option<String>,
-    ) -> Result<ReportOpCommit, CalmError> {
+    ) -> Result<ReportOpCommit, track_report::rejection::ReportError> {
         let (card, trace) = track_report::write::agent_report_intent(
             self.repo.as_ref(),
             &self.events,
@@ -743,7 +743,7 @@ mod tests {
         assert!(
             matches!(
                 err,
-                CalmError::Forbidden(ref message) if message.contains("has no session row")
+                track_report::rejection::ReportError::Superseded(CalmError::Forbidden(ref message)) if message.contains("has no session row")
             ),
             "expected the recorder gate's session-resolution denial, got {err:?}"
         );

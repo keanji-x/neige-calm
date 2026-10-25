@@ -70,3 +70,25 @@ pub(crate) fn report_op_attribution(role: CardRole) -> Result<EditAuthor, CalmEr
         }
     })
 }
+
+/// Preserve admission's verdict/code; classify invalid sessions without consulting Report state.
+pub(super) async fn resolve_intent_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    identity: &ToolCallIdentity,
+) -> Result<ReportEditTarget, super::rejection::ReportError> {
+    use calm_truth::decision_gate::WriteTx;
+    match resolve_tx(tx, identity, Access::Write).await {
+        Ok(target) => Ok(target),
+        Err(error @ CalmError::Forbidden(_)) => {
+            let session = tx
+                .read_worker_session(&identity.session_id.as_str().into())
+                .await?;
+            if session.is_none_or(|s| !s.state.is_active_authority()) {
+                Err(super::rejection::ReportError::Superseded(error))
+            } else {
+                Err(error.into())
+            }
+        }
+        Err(error) => Err(error.into()),
+    }
+}

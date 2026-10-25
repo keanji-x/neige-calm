@@ -129,6 +129,7 @@ pub(crate) async fn rest_user_block_op(
     )
     .await
     .map(|(card, trace)| (card, trace.block))
+    .map_err(Into::into)
 }
 
 /// The agent-MCP funnel. Takes its attribution and recorder admission gate
@@ -161,6 +162,7 @@ pub(crate) async fn agent_report_op(
         TaskWriteAdmission::RefuseFixableDeclarations,
     )
     .await
+    .map_err(Into::into)
 }
 
 enum PersistTarget {
@@ -175,7 +177,7 @@ pub(crate) async fn agent_report_intent(
     identity: crate::mcp_server::registry::ToolCallIdentity,
     op: ReportDocOp,
     agent_message: Option<String>,
-) -> Result<(Card, ReportOpTrace), CalmError> {
+) -> Result<(Card, ReportOpTrace), ReportError> {
     let author = super::identity::report_op_attribution(identity.role)?;
     let actor = identity.to_actor_id();
     let session = identity.session_id.clone();
@@ -296,9 +298,9 @@ async fn persist(
     knowledge_session: Option<String>,
     recorder_admission: Option<Arc<dyn RecorderAdmissionGate>>,
     task_admission: TaskWriteAdmission,
-) -> Result<(Card, ReportOpTrace), CalmError> {
+) -> Result<(Card, ReportOpTrace), ReportError> {
     let write = write.clone();
-    let (updated, pending, ids) = crate::db::write_in_tx_typed(repo, move |tx| {
+    let (updated, pending, ids) = calm_truth::db::write_in_tx_typed(repo, move |tx| {
         let target = match &target {
             PersistTarget::Resolved(target) => PersistTarget::Resolved(target.clone()),
             PersistTarget::Agent(identity) => PersistTarget::Agent(identity.clone()),
@@ -314,8 +316,7 @@ async fn persist(
             } = match target {
                 PersistTarget::Resolved(target) => *target,
                 PersistTarget::Agent(identity) => {
-                    super::identity::resolve_tx(tx, &identity, super::identity::Access::Write)
-                        .await?
+                    super::identity::resolve_intent_tx(tx, &identity).await?
                 }
             };
             let id = report_card.id.to_string();
@@ -337,7 +338,7 @@ async fn persist(
             }
             let live_card = crate::db::sqlite::card_for_update_tx(tx, &id).await?;
             if live_card.track_id != track_id || live_card.kind != "track-report" {
-                return Err(CalmError::Forbidden("Report target changed".into()));
+                return Err(CalmError::Forbidden("Report target changed".into()).into());
             }
             let current_payload: TrackReportPayload = serde_json::from_value(live_card.payload)
                 .map_err(|e| CalmError::Internal(format!("track_report: payload: {e}")))?;
@@ -390,7 +391,8 @@ async fn persist(
                 if closed {
                     return Err(CalmError::Forbidden(
                         "Agents may only read this closed report-planning Track.".into(),
-                    ));
+                    )
+                    .into());
                 }
             }
             let tasks_before = if reports_only {
@@ -414,7 +416,8 @@ async fn persist(
             )
             .await?;
             let (mut trace, doc_rev) =
-                super::ops::apply_persisted_with_knowledge(&mut doc, &op, author, knowledge)?;
+                super::ops::apply_persisted_with_knowledge(&mut doc, &op, author, knowledge)
+                    .map_err(|e| e.for_report(&id, &op, &doc))?;
             if let Some(before) = tasks_before {
                 let after = doc
                     .blocks_snapshot()
@@ -425,7 +428,8 @@ async fn persist(
                 if before != after {
                     return Err(CalmError::Forbidden(
                         "This report-planning Track cannot declare or modify worker tasks.".into(),
-                    ));
+                    )
+                    .into());
                 }
             }
             // 4. Project back — the CRDT block map is the source of truth; nothing is re-derived at the JSON layer.
@@ -519,7 +523,7 @@ async fn persist(
                 .await?;
                 crate::db::sqlite::report_knowledge::save_tx(tx, session, &id, read).await?;
             }
-            Ok(((updated, trace), events, ids))
+            Ok::<_, ReportError>(((updated, trace), events, ids))
         })
     })
     .await?;

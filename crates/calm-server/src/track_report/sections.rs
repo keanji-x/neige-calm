@@ -2,6 +2,7 @@
 //! the section's ordered `(id, rev)` list as this session last read it, compared to the doc here.
 //! A section op reaches the section's members only, never a task block in its span (#2598).
 
+use super::rejection::{Reason, ReportError, Scope};
 use super::{DocAnchor, SectionRead, block_op_internal, check_doc_anchor};
 use crate::error::CalmError;
 use crate::report_sections::{
@@ -26,16 +27,29 @@ fn locate_read<'a>(
     blocks: &'a [ReportBlock],
     name: &str,
     read: &SectionRead,
-) -> Result<Option<Section<'a>>, CalmError> {
-    let found = find_section(blocks, name)
-        .map_err(|error| CalmError::BadRequest(section_error_message(blocks, &error)))?;
+) -> Result<Option<Section<'a>>, ReportError> {
+    let found = find_section(blocks, name).map_err(|error| {
+        ReportError::anchor(
+            CalmError::BadRequest(section_error_message(blocks, &error)),
+            if matches!(read, SectionRead::Seen(_)) {
+                Reason::ChangedSince
+            } else {
+                Reason::NeverRead
+            },
+            Scope::Section(name.into()),
+        )
+    })?;
     match (found, read) {
         (Some(section), _) => {
             check_section_read(name, &section.member_blocks(blocks), read).map(|()| Some(section))
         }
-        (None, SectionRead::Seen(_)) => Err(CalmError::Conflict(format!(
-            "section `{name}` was removed since this session read it — re-read the report and retry"
-        ))),
+        (None, SectionRead::Seen(_)) => Err(ReportError::anchor(
+            CalmError::Conflict(format!(
+                "section `{name}` was removed since this session read it — re-read the report and retry"
+            )),
+            Reason::ChangedSince,
+            Scope::Section(name.into()),
+        )),
         (None, SectionRead::Unseen) => Ok(None),
     }
 }
@@ -45,22 +59,30 @@ fn check_section_read(
     name: &str,
     current: &[&ReportBlock],
     read: &SectionRead,
-) -> Result<(), CalmError> {
+) -> Result<(), ReportError> {
     let SectionRead::Seen(seen) = read else {
-        return Err(CalmError::BadRequest(format!(
-            "section `{name}` has not been read by this session — read it first \
+        return Err(ReportError::anchor(
+            CalmError::BadRequest(format!(
+                "section `{name}` has not been read by this session — read it first \
              (neige_report_read {{ sections: [\"{name}\"] }}), then retry"
-        )));
+            )),
+            Reason::NeverRead,
+            Scope::Section(name.into()),
+        ));
     };
     let now: Vec<(String, u32)> = current
         .iter()
         .map(|block| (block.id.clone(), block.rev))
         .collect();
     if *seen != now {
-        return Err(CalmError::Conflict(format!(
-            "section `{name}` changed since this session read it — re-read it \
+        return Err(ReportError::anchor(
+            CalmError::Conflict(format!(
+                "section `{name}` changed since this session read it — re-read it \
              (sections: [\"{name}\"]), merge, and retry"
-        )));
+            )),
+            Reason::ChangedSince,
+            Scope::Section(name.into()),
+        ));
     }
     Ok(())
 }
@@ -75,7 +97,7 @@ pub(super) fn apply_replace_section(
     markdown: &str,
     read: &SectionRead,
     doc_anchor: DocAnchor,
-) -> Result<(Vec<ReportBlock>, Vec<String>, bool), CalmError> {
+) -> Result<(Vec<ReportBlock>, Vec<String>, bool), ReportError> {
     let current = snapshot(doc)?;
     let (section, span, members, checked) = match locate_read(&current, name, read)? {
         Some(found) => (
@@ -85,7 +107,9 @@ pub(super) fn apply_replace_section(
             false,
         ),
         None => {
-            let at = declared_position(&current, name)?;
+            let at = declared_position(&current, name).map_err(|source| {
+                ReportError::anchor(source, Reason::NeverRead, Scope::Section(name.into()))
+            })?;
             // Creating a section places it among the others: a whole-document edit.
             let checked = check_doc_anchor(doc, doc_anchor, true)?;
             (Vec::new(), at..at, Vec::new(), checked)
@@ -106,7 +130,8 @@ pub(super) fn apply_replace_section(
         return Err(CalmError::BadRequest(format!(
             "the markdown of a section replace must start with the line `# {name}` and hold no \
              other H1 line"
-        )));
+        ))
+        .into());
     }
     // Before the marker check: a task copied with its marker gets the `upsert` hint.
     refuse_unsectioned_fences(&marked.slices, "the markdown of a section replace")?;
@@ -119,7 +144,8 @@ pub(super) fn apply_replace_section(
         return Err(CalmError::BadRequest(format!(
             "marker `<!-- neige:{outside} -->` names a block outside section `{name}`; a section \
              replace may pin only that section's own blocks"
-        )));
+        ))
+        .into());
     }
     validate_marked_slices(&marked.cleaned, &marked.slices)?;
     let replaced = doc
@@ -155,13 +181,17 @@ pub(super) fn apply_delete_section(
     doc: &mut ReportDoc,
     name: &str,
     read: &SectionRead,
-) -> Result<Vec<String>, CalmError> {
+) -> Result<Vec<String>, ReportError> {
     let current = snapshot(doc)?;
     let section = locate_read(&current, name, read)?.ok_or_else(|| {
-        CalmError::BadRequest(section_error_message(
-            &current,
-            &crate::report_sections::SectionError::Unknown(name.to_string()),
-        ))
+        ReportError::anchor(
+            CalmError::BadRequest(section_error_message(
+                &current,
+                &crate::report_sections::SectionError::Unknown(name.to_string()),
+            )),
+            Reason::NeverRead,
+            Scope::Section(name.into()),
+        )
     })?;
     let deleted: Vec<String> = section
         .member_blocks(&current)

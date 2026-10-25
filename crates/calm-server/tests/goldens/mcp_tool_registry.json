@@ -506,7 +506,7 @@
   },
   {
     "name": "neige_report_commit",
-    "description_sha256": "fde1713840c94fb8c6c55b535111edc4d38852ff0bd3c57e1f996efc851f025a",
+    "description_sha256": "89f2c1258c4f64b954edd5708442a91b9cb5130cd6a2b7d8ccf8605f0252f85a",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -745,7 +745,7 @@
   },
   {
     "name": "neige_report_write",
-    "description_sha256": "c8c70f6348c45bf101eee01a66ff28e49f707e9a151979ee5486d86c567608da",
+    "description_sha256": "f1ec8eb11cdbe21a160b89614ec6698be7bd1f8a3c31254d77787b7493a7ee88",
     "input_schema": {
       "additionalProperties": false,
       "properties": {

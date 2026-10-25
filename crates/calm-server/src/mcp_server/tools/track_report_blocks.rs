@@ -3,7 +3,6 @@
 //! the persist transaction against CRDT truth; a mismatch is `-32409` and writes nothing.
 
 use crate::decision_sink::{CardDecisionSink, ReportOpCommit};
-use crate::error::CalmError;
 use crate::mcp_server::framing::RpcError;
 use crate::mcp_server::registry::{
     AppContext, ToolCallIdentity, ToolHandler, ToolHandlerFuture, ToolRegistry, refuse_unknown_keys,
@@ -27,29 +26,6 @@ pub const TOOL_REPORT_COMMIT: &str = "neige_report_commit";
 
 /// The §5 conflict code a stale report revision answers.
 pub const RPC_REV_CONFLICT: i64 = RpcError::CONFLICT;
-
-/// The one `-32409` constructor for every report write. `data` carries the current revisions the message names
-/// (`doc_rev` from `current doc_rev is N`, `rev` from `current rev is N`) to locate conflicts; they do not grant read knowledge.
-pub(crate) fn rev_conflict_error(message: String) -> RpcError {
-    let mut data = serde_json::Map::new();
-    if let Some(doc_rev) = number_after(&message, "current doc_rev is ") {
-        data.insert("doc_rev".into(), Value::from(doc_rev));
-    }
-    if let Some(rev) = number_after(&message, "current rev is ") {
-        data.insert("rev".into(), Value::from(rev));
-    }
-    let mut error = RpcError::custom(RPC_REV_CONFLICT, message);
-    if !data.is_empty() {
-        error.data = Some(Value::Object(data));
-    }
-    error
-}
-
-fn number_after(text: &str, marker: &str) -> Option<u64> {
-    let rest = &text[text.find(marker)? + marker.len()..];
-    let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
-    digits.parse().ok()
-}
 
 pub fn register_into(registry: &mut ToolRegistry) {
     registry.register(kinds_descriptor(), wrap(blocks_kinds));
@@ -318,11 +294,30 @@ fn resolve_upsert_content(
     Ok((kind, content))
 }
 
-fn map_commit_err(tool: &str, e: CalmError) -> RpcError {
-    match e {
-        CalmError::Conflict(m) => rev_conflict_error(format!("{tool}: {m}")),
-        other => crate::mcp_server::framing::calm_error(other).for_tool(tool),
-    }
+fn map_commit_err(tool: &str, e: crate::track_report::rejection::ReportError) -> RpcError {
+    use crate::track_report::rejection::{Reason, ReportError};
+    let (source, data, code) = match e {
+        ReportError::Other(e) => return crate::mcp_server::framing::calm_error(e).for_tool(tool),
+        ReportError::Superseded(e) => {
+            let mut error = crate::mcp_server::framing::calm_error(e).for_tool(tool);
+            error.data = Some(json!({"reason_code": Reason::SupersededSession}));
+            return error;
+        }
+        ReportError::Rejected { source, evidence } => {
+            let code = match evidence.reason_code {
+                Reason::ChangedSince => RPC_REV_CONFLICT,
+                Reason::NeverRead | Reason::WholeRequired => -32602,
+                Reason::SupersededSession => unreachable!("session refusals have no evidence"),
+            };
+            (source, evidence, code)
+        }
+        ReportError::Anchor { .. } => {
+            return RpcError::internal("Report refusal lacked transaction evidence").for_tool(tool);
+        }
+    };
+    let mut error = RpcError::custom(code, format!("{tool}: {}", source.reason()));
+    error.data = Some(serde_json::to_value(data).expect("Report evidence is serializable"));
+    error
 }
 
 pub(super) fn require_object<'a>(
@@ -374,43 +369,5 @@ fn optional_index(
                     "{tool}: `{key}` must be a non-negative integer index"
                 ))
             }),
-    }
-}
-
-#[cfg(test)]
-mod rev_conflict_tests {
-    use super::*;
-    use serde_json::json;
-
-    #[test]
-    fn rev_conflict_error_parses_the_current_revisions_it_names() {
-        let doc = rev_conflict_error(
-            "neige_report_commit: document revision conflict: current doc_rev is 12, expected \
-             if_doc_rev 11 — re-read the report and retry with the current doc_rev"
-                .into(),
-        );
-        assert_eq!(doc.code, RPC_REV_CONFLICT);
-        assert!(
-            doc.message
-                .starts_with("neige_report_commit: document revision conflict")
-        );
-        assert_eq!(doc.data, Some(json!({"doc_rev": 12})));
-
-        let block = rev_conflict_error(
-            "neige_report_commit: ops[0]: rev conflict on block b_1: current rev is 7, expected \
-             if_rev 3; current doc_rev is 12 — re-read the report and retry with the current rev"
-                .into(),
-        );
-        assert_eq!(block.data, Some(json!({"doc_rev": 12, "rev": 7})));
-
-        let edit = rev_conflict_error(
-            "document revision conflict: current doc_rev is 3, expected if_doc_rev 2".into(),
-        );
-        assert_eq!(edit.data, Some(json!({"doc_rev": 3})));
-
-        // No `data` at all rather than an empty object a retry might misread as "rev 0".
-        let bare = rev_conflict_error("track_report: something else conflicted".into());
-        assert_eq!(bare.data, None);
-        assert_eq!(bare.message, "track_report: something else conflicted");
     }
 }

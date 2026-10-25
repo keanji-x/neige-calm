@@ -18,7 +18,7 @@ pub(crate) fn apply_report_op_traced(
     op: &ReportDocOp,
     author: EditAuthor,
 ) -> Result<ReportOpTrace, CalmError> {
-    apply_with_knowledge(doc, op, author, None)
+    apply_with_knowledge(doc, op, author, None).map_err(Into::into)
 }
 
 fn apply_with_knowledge(
@@ -26,12 +26,13 @@ fn apply_with_knowledge(
     op: &ReportDocOp,
     author: EditAuthor,
     mut knowledge: Option<crate::report_read_ledger::LastRead>,
-) -> Result<ReportOpTrace, CalmError> {
+) -> Result<ReportOpTrace, ReportError> {
     let raw_ops = match op {
         ReportDocOp::AgentBatch { ops, .. } => Some(ops),
         _ => None,
     };
-    let bound_header = super::intent::header(op, knowledge.as_ref())?;
+    let bound_header = super::intent::header(op, knowledge.as_ref())
+        .map_err(|e| e.freeze(doc, knowledge.as_ref()))?;
     let op = &bound_header;
     let internal = block_op_internal;
     // `summary: None` = keep the current summary, resolved HERE from the doc itself — never from a
@@ -63,7 +64,7 @@ fn apply_with_knowledge(
     let mut section_output_ids = Vec::new();
 
     let mut bound_steps = Vec::new();
-    let outcome: Result<Option<BlockOpOutcome>, CalmError> = match &op {
+    let outcome: Result<Option<BlockOpOutcome>, ReportError> = match &op {
         ReportDocOp::AgentBatch { .. } | ReportDocOp::AgentWrite { .. } => {
             unreachable!("intent header bound")
         }
@@ -85,7 +86,8 @@ fn apply_with_knowledge(
             {
                 return Err(CalmError::BadRequest(
                     "a whole write may not carry objective fences; use an upsert by id".into(),
-                ));
+                )
+                .into());
             }
             guard_non_prose_stomp(doc, &body)?;
             doc.update_with_hints_keeping(summary, &slices, &vec![None; slices.len()], |block| {
@@ -100,7 +102,15 @@ fn apply_with_knowledge(
             body,
             if_doc_rev,
         } => {
-            check_doc_anchor(doc, DocAnchor::LastRead(*if_doc_rev), true)?;
+            check_doc_anchor(doc, DocAnchor::LastRead(*if_doc_rev), true).map_err(|e| {
+                let e = match e {
+                    ReportError::Anchor { source, reason, .. } => {
+                        ReportError::anchor(source, reason, Scope::Whole)
+                    }
+                    other => other,
+                };
+                e.freeze(doc, knowledge.as_ref())
+            })?;
             let summary = tx_summary(doc, summary)?;
             let mut marked = calm_types::report_blocks::strip_markers_and_split(body);
             // Normalize AFTER the markers are stripped: a `with_markers` read puts the marker on line 1
@@ -127,7 +137,8 @@ fn apply_with_knowledge(
                 return Err(CalmError::BadRequest(format!(
                     "marker `<!-- neige:{id} -->` names a {kind} block; a whole write keeps every \
                      {kind} block as it is — change one with an `upsert` op after reading it by id"
-                )));
+                ))
+                .into());
             }
             // Every fence it does carry must be well-formed and schema-valid.
             validate_marked_slices(&marked.cleaned, slices)?;
@@ -164,7 +175,7 @@ fn apply_with_knowledge(
                         CalmError::BadRequest("if_doc_rev is required when creating a block".into())
                     })?;
                     check_doc_rev(doc, expected)?;
-                    apply_upsert_new(doc, kind, content, *position, validate)
+                    apply_upsert_new(doc, kind, content, *position, validate).map_err(Into::into)
                 }
             };
             outcome.map(|outcome| {
@@ -189,7 +200,8 @@ fn apply_with_knowledge(
             if author != EditAuthor::User {
                 return Err(CalmError::Internal(format!(
                     "track_report: ResetToInitial is the user's reset; {author:?} may not apply it"
-                )));
+                ))
+                .into());
             }
             check_doc_rev(doc, *if_doc_rev)?;
             // Every data block is dropped and none can lend its id or kind to the initial prose. A
@@ -221,97 +233,98 @@ fn apply_with_knowledge(
                         )
                     })
                 });
-            check_doc_anchor(doc, *doc_anchor, needs_doc_anchor)?;
+            check_doc_anchor(doc, *doc_anchor, needs_doc_anchor)
+                .map_err(|e| e.freeze(doc, knowledge.as_ref()))?;
             if raw_ops.map_or(ops.len(), Vec::len) > MAX_BATCH_OPS {
                 return Err(CalmError::BadRequest(format!(
                     "batch carries {} ops; at most {MAX_BATCH_OPS} per commit",
                     ops.len()
-                )));
+                ))
+                .into());
             }
             // Ops run in order against the doc as the previous ones left it; batches address existing
             // blocks (a created id is not known to the caller yet). The first `?` aborts the whole tx.
             let mut written_ids = Vec::new();
             for index in 0..raw_ops.map_or(ops.len(), Vec::len) {
-                let step = |e: CalmError| match e {
-                    CalmError::Conflict(m) => CalmError::Conflict(format!("ops[{index}]: {m}")),
-                    CalmError::BadRequest(m) => CalmError::BadRequest(format!("ops[{index}]: {m}")),
-                    other => other,
-                };
-                let block_op = if let Some(raw) = raw_ops {
-                    raw[index].bind(knowledge.as_ref()).map_err(step)?
-                } else {
-                    ops[index].clone()
-                };
-                bound_steps.push(block_op.clone());
-                let block_op = &block_op;
                 let step_before = doc.blocks_snapshot().map_err(internal)?;
                 let written_start = written_block_ids.len();
                 let section_start = section_output_ids.len();
-                match block_op {
-                    BatchBlockOp::Upsert {
-                        id,
-                        kind,
-                        content,
-                        if_rev,
-                        position,
-                    } => {
-                        let outcome = match id {
-                            Some(id) => {
-                                let expected = if_rev.ok_or_else(|| {
-                                    CalmError::BadRequest(
-                                        "if_rev is required when replacing an existing block"
-                                            .into(),
-                                    )
-                                })?;
-                                let outcome =
-                                    apply_upsert_existing(doc, id, kind, content, expected, true)
-                                        .map_err(step)?;
-                                written_block_ids.push(outcome.id.clone());
-                                outcome
+                let result = (|| -> Result<(), ReportError> {
+                    let block_op = if let Some(raw) = raw_ops {
+                        raw[index].bind(knowledge.as_ref())?
+                    } else {
+                        ops[index].clone()
+                    };
+                    bound_steps.push(block_op.clone());
+                    let block_op = &block_op;
+                    match block_op {
+                        BatchBlockOp::Upsert {
+                            id,
+                            kind,
+                            content,
+                            if_rev,
+                            position,
+                        } => {
+                            let outcome = match id {
+                                Some(id) => {
+                                    let expected = if_rev.ok_or_else(|| {
+                                        CalmError::BadRequest(
+                                            "if_rev is required when replacing an existing block"
+                                                .into(),
+                                        )
+                                    })?;
+                                    let outcome = apply_upsert_existing(
+                                        doc, id, kind, content, expected, true,
+                                    )?;
+                                    written_block_ids.push(outcome.id.clone());
+                                    outcome
+                                }
+                                None => {
+                                    let outcome =
+                                        apply_upsert_new(doc, kind, content, *position, true)?;
+                                    written_block_ids.push(outcome.id.clone());
+                                    outcome
+                                }
+                            };
+                            if kind == KIND_PROSE {
+                                written_ids.push(outcome.id);
                             }
-                            None => {
-                                let outcome = apply_upsert_new(doc, kind, content, *position, true)
-                                    .map_err(step)?;
-                                written_block_ids.push(outcome.id.clone());
-                                outcome
-                            }
-                        };
-                        if kind == KIND_PROSE {
-                            written_ids.push(outcome.id);
                         }
-                    }
-                    BatchBlockOp::Move { id, to_index } => {
-                        apply_move(doc, id, *to_index).map_err(step)?;
-                    }
-                    BatchBlockOp::Delete { id, if_rev } => {
-                        apply_delete(doc, id, *if_rev).map_err(step)?;
-                    }
-                    BatchBlockOp::ReplaceSection {
-                        section,
-                        markdown,
-                        read,
-                    } => {
-                        let (replaced, _, _) = sections::apply_replace_section(
-                            doc,
+                        BatchBlockOp::Move { id, to_index } => {
+                            apply_move(doc, id, *to_index)?;
+                        }
+                        BatchBlockOp::Delete { id, if_rev } => {
+                            apply_delete(doc, id, *if_rev)?;
+                        }
+                        BatchBlockOp::ReplaceSection {
                             section,
                             markdown,
                             read,
-                            *doc_anchor,
-                        )
-                        .map_err(step)?;
-                        written_ids.extend(
-                            replaced
-                                .iter()
-                                .filter(|block| block.kind == KIND_PROSE)
-                                .map(|block| block.id.clone()),
-                        );
-                        section_output_ids.extend(replaced.iter().map(|block| block.id.clone()));
-                        written_block_ids.extend(replaced.into_iter().map(|block| block.id));
+                        } => {
+                            let (replaced, _, _) = sections::apply_replace_section(
+                                doc,
+                                section,
+                                markdown,
+                                read,
+                                *doc_anchor,
+                            )?;
+                            written_ids.extend(
+                                replaced
+                                    .iter()
+                                    .filter(|block| block.kind == KIND_PROSE)
+                                    .map(|block| block.id.clone()),
+                            );
+                            section_output_ids
+                                .extend(replaced.iter().map(|block| block.id.clone()));
+                            written_block_ids.extend(replaced.into_iter().map(|block| block.id));
+                        }
+                        BatchBlockOp::DeleteSection { section, read } => {
+                            sections::apply_delete_section(doc, section, read)?;
+                        }
                     }
-                    BatchBlockOp::DeleteSection { section, read } => {
-                        sections::apply_delete_section(doc, section, read).map_err(step)?;
-                    }
-                }
+                    Ok(())
+                })();
+                result.map_err(|e| e.freeze(doc, knowledge.as_ref()).at_step(index))?;
                 if let Some(old) = knowledge.as_ref() {
                     let rev = doc.doc_rev().map_err(internal)?;
                     knowledge = Some(crate::report_read_ledger::project_commit(
@@ -408,7 +421,7 @@ pub(super) fn apply_persisted_report_op(
     op: &ReportDocOp,
     author: EditAuthor,
 ) -> Result<(ReportOpTrace, u64), CalmError> {
-    apply_persisted_with_knowledge(doc, op, author, None)
+    apply_persisted_with_knowledge(doc, op, author, None).map_err(Into::into)
 }
 
 pub(super) fn apply_persisted_with_knowledge(
@@ -416,7 +429,7 @@ pub(super) fn apply_persisted_with_knowledge(
     op: &ReportDocOp,
     author: EditAuthor,
     knowledge: Option<crate::report_read_ledger::LastRead>,
-) -> Result<(ReportOpTrace, u64), CalmError> {
+) -> Result<(ReportOpTrace, u64), ReportError> {
     let before_rev = doc.doc_rev().map_err(block_op_internal)?;
     let mut trace = apply_with_knowledge(doc, op, author, knowledge)?;
     let doc_rev = doc.increment_doc_rev().map_err(|e| {

@@ -168,3 +168,35 @@ mod tests;
 pub(crate) mod history;
 
 pub(crate) mod delta;
+
+/// Revision evidence shared by wake suggestions and Report refusals. Current document order,
+/// followed by deleted ids in sorted order; membership/order alone does not change a revision.
+#[derive(Debug, serde::Serialize)]
+pub(crate) struct ChangedRevision {
+    pub id: String,
+    pub known_rev: Option<u32>,
+    pub current_rev: Option<u32>,
+}
+
+pub(crate) fn changed_revisions(
+    mut known: std::collections::BTreeMap<String, u32>,
+    current: &[&ReportBlock],
+) -> Vec<ChangedRevision> {
+    let mut changed = Vec::new();
+    for block in current {
+        let old = known.remove(&block.id);
+        if old != Some(block.rev) {
+            changed.push(ChangedRevision {
+                id: block.id.clone(),
+                known_rev: old,
+                current_rev: Some(block.rev),
+            });
+        }
+    }
+    changed.extend(known.into_iter().map(|(id, rev)| ChangedRevision {
+        id,
+        known_rev: Some(rev),
+        current_rev: None,
+    }));
+    changed
+}

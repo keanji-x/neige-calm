@@ -7,7 +7,6 @@ use calm_types::observation::{REPORT_EDITED_DATA_LINE, receipt::escape_json};
 use calm_types::report_edit_diff::{MAX_BLOCK_BYTES, MAX_BLOCK_LINES, MAX_TOTAL_BYTES};
 use serde_json::json;
 use sqlx::{Sqlite, Transaction};
-use std::collections::BTreeSet;
 
 /// Both row/CRDT and ledger come from the caller's single transaction, without a HEAD shortcut.
 pub(crate) async fn render_tx(
@@ -45,21 +44,27 @@ pub(crate) async fn render_tx(
         .to_string(),
     ));
     text.push('\n');
-    let mut deleted: BTreeSet<&str> = known
-        .as_ref()
-        .map(|k| k.blocks.keys().map(String::as_str).collect())
-        .unwrap_or_default();
-    let mut changes = Vec::new();
-    for block in &current.blocks {
-        deleted.remove(block.id.as_str());
-        let old = known.as_ref().and_then(|k| k.blocks.get(&block.id));
-        if old.map(|k| k.rev) != Some(block.rev) {
-            changes.push((block.id.as_str(), old, Some(block)));
-        }
-    }
-    for id in deleted {
-        changes.push((id, known.as_ref().and_then(|k| k.blocks.get(id)), None));
-    }
+    let revisions = super::changed_revisions(
+        known
+            .as_ref()
+            .into_iter()
+            .flat_map(|k| k.blocks.iter())
+            .map(|(id, b)| (id.clone(), b.rev))
+            .collect(),
+        &current.blocks.iter().collect::<Vec<_>>(),
+    );
+    let current_by_id: std::collections::HashMap<_, _> =
+        current.blocks.iter().map(|b| (b.id.as_str(), b)).collect();
+    let changes: Vec<_> = revisions
+        .iter()
+        .map(|change| {
+            (
+                change.id.as_str(),
+                known.as_ref().and_then(|k| k.blocks.get(&change.id)),
+                current_by_id.get(change.id.as_str()).copied(),
+            )
+        })
+        .collect();
     if changes.is_empty() && structure_known {
         return Ok(String::new());
     }

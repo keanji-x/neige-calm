@@ -485,20 +485,30 @@ pub(crate) fn block_not_found(id: &str) -> CalmError {
 
 /// Execute `op` against the (already migrated) doc. `if_rev` mismatch is `Conflict` naming BOTH
 /// current revisions (block and document) so callers can locate conflicts before re-reading.
-fn check_rev(doc: &ReportDoc, id: &str, expected: u32) -> Result<u32, CalmError> {
+fn check_rev(doc: &ReportDoc, id: &str, expected: u32) -> Result<u32, ReportError> {
     // A malformed doc/rev is Internal (corruption), never folded into "block not found".
     let current = doc
         .block_rev(id)
         .map_err(|e| CalmError::Internal(format!("track_report: block rev: {e}")))?
-        .ok_or_else(|| block_not_found(id))?;
+        .ok_or_else(|| {
+            ReportError::anchor(
+                block_not_found(id),
+                Reason::ChangedSince,
+                Scope::Block(id.into()),
+            )
+        })?;
     if current != expected {
         let doc_rev = doc
             .doc_rev()
             .map_err(|e| CalmError::Internal(format!("track_report: doc rev: {e}")))?;
-        return Err(CalmError::Conflict(format!(
-            "rev conflict on block {id}: current rev is {current}, expected if_rev {expected}; \
+        return Err(ReportError::anchor(
+            CalmError::Conflict(format!(
+                "rev conflict on block {id}: current rev is {current}, expected if_rev {expected}; \
              current doc_rev is {doc_rev} — re-read the affected report text and retry"
-        )));
+            )),
+            Reason::ChangedSince,
+            Scope::Block(id.into()),
+        ));
     }
     Ok(current)
 }
@@ -516,7 +526,7 @@ fn apply_upsert_existing(
     content: &str,
     expected_rev: u32,
     validate_caller_content: bool,
-) -> Result<BlockOpOutcome, CalmError> {
+) -> Result<BlockOpOutcome, ReportError> {
     check_rev(doc, id, expected_rev)?;
     // After the rev check, so a stale `if_rev` is still a `Conflict` even when the content also
     // carries a malformed header.
@@ -564,16 +574,27 @@ fn apply_upsert_new(
 }
 
 /// Reorder only; rev untouched.
-fn apply_move(doc: &mut ReportDoc, id: &str, to_index: usize) -> Result<BlockOpOutcome, CalmError> {
+fn apply_move(
+    doc: &mut ReportDoc,
+    id: &str,
+    to_index: usize,
+) -> Result<BlockOpOutcome, ReportError> {
     let current = doc
         .block_rev(id)
         .map_err(|e| CalmError::Internal(format!("track_report: block rev: {e}")))?
-        .ok_or_else(|| block_not_found(id))?;
+        .ok_or_else(|| {
+            ReportError::anchor(
+                block_not_found(id),
+                Reason::ChangedSince,
+                Scope::Block(id.into()),
+            )
+        })?;
     let len = doc.block_index().map_err(block_op_internal)?.len();
     if to_index >= len {
         return Err(CalmError::BadRequest(format!(
             "to_index {to_index} out of range (report has {len} blocks)"
-        )));
+        ))
+        .into());
     }
     doc.move_block(id, to_index).map_err(block_op_internal)?;
     Ok(BlockOpOutcome {
@@ -582,9 +603,11 @@ fn apply_move(doc: &mut ReportDoc, id: &str, to_index: usize) -> Result<BlockOpO
     })
 }
 
-fn apply_delete(doc: &mut ReportDoc, id: &str, if_rev: u32) -> Result<(), CalmError> {
+fn apply_delete(doc: &mut ReportDoc, id: &str, if_rev: u32) -> Result<(), ReportError> {
     check_rev(doc, id, if_rev)?;
-    doc.delete_block(id).map_err(block_op_internal)
+    doc.delete_block(id)
+        .map_err(block_op_internal)
+        .map_err(Into::into)
 }
 
 /// Upper bound on the ops one `neige_report_commit` may carry.
@@ -601,25 +624,25 @@ pub(crate) use ops::apply_report_op;
 
 /// A document anchor, checked only when `needed`. `Ok(true)` when the doc is the one the anchor
 /// names (checked, or equal though not needed), so the author knew the whole document before this write.
-fn check_doc_anchor(doc: &ReportDoc, anchor: DocAnchor, needed: bool) -> Result<bool, CalmError> {
+fn check_doc_anchor(doc: &ReportDoc, anchor: DocAnchor, needed: bool) -> Result<bool, ReportError> {
     match anchor {
         DocAnchor::LastRead(read) => {
             let current = doc
                 .doc_rev()
                 .map_err(|e| CalmError::Internal(format!("track_report: doc rev: {e}")))?;
             if needed && current != read {
-                return Err(CalmError::Conflict(format!(
+                return Err(ReportError::anchor(CalmError::Conflict(format!(
                     "document revision conflict: current doc_rev is {current}, this session last \
                      read doc_rev {read} — re-read the report and retry"
-                )));
+                )), Reason::ChangedSince, Scope::Document));
             }
             Ok(current == read)
         }
-        DocAnchor::Unread if needed => Err(CalmError::BadRequest(
+        DocAnchor::Unread if needed => Err(ReportError::anchor(CalmError::BadRequest(
             "this session has not read the report's doc_rev: a summary, a created or moved block \
              and a created section need it — read the report with neige_report_read and retry"
                 .into(),
-        )),
+        ), Reason::NeverRead, Scope::Document)),
         DocAnchor::Unread => Ok(false),
     }
 }
@@ -744,3 +767,6 @@ impl ReportEditTarget {
         (self.track, self.report_card, self.current_payload)
     }
 }
+
+pub mod rejection;
+use rejection::{Reason, ReportError, Scope};
