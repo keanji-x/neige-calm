@@ -1,6 +1,7 @@
 //! Calm kernel: execution, persistence, and scoped capabilities. Compiled components and external plugins share the plugin lifecycle.
 
 pub mod actor;
+pub mod agent_backend_pool;
 pub mod application_boot;
 pub mod auth;
 pub mod builtin_plugins;

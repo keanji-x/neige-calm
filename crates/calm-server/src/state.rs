@@ -1333,6 +1333,16 @@ impl AppState {
     async fn prepare_boot(
         cfg: &Config,
     ) -> anyhow::Result<(Self, crate::auth::ValidatedApplicationAuth)> {
+        let backend_config = crate::agent_backend_pool::config::AgentBackendConfig::for_startup(
+            cfg.agent_backend_config.as_deref(),
+            &cfg.data_dir_resolved(),
+        )?;
+        tracing::info!(
+            policy = ?backend_config.policy,
+            backends = ?backend_config.backends.iter().map(|profile| profile.backend_ref()).collect::<Vec<_>>(),
+            explicit = cfg.agent_backend_config.is_some(),
+            "agent backend configuration validated (selection model only)"
+        );
         let templates = crate::templates::TemplateRoster::for_boot(cfg.templates_dir.as_deref())
             .map_err(|error| anyhow::anyhow!("template roster: {error}"))?;
         let authentication = crate::auth::ValidatedApplicationAuth::from_config(cfg)?;
