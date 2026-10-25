@@ -149,3 +149,62 @@ async fn c4_boot_pass_a_precedes_listener_and_failure_is_covered_by_sweep() {
         stack.shutdown().await;
     }
 }
+
+#[tokio::test]
+async fn c4_claude_boot_revocation_error_prevents_listener() {
+    let root = Root::new("exit");
+    // Observe the socket through the production listener's reported configuration.
+    let first = Stack::boot(&root).await;
+    let socket = first
+        .state
+        .mcp_server
+        .as_ref()
+        .unwrap()
+        .shim_config
+        .socket_path
+        .clone();
+    first.shutdown().await;
+    std::fs::remove_file(&socket).unwrap();
+    let mut cfg = root.config(true);
+    cfg.auth_password = Some("fixture-password".into());
+    let repo = Arc::new(SqlxRepo::open(&root.db_url()).await.unwrap());
+    let (card, _) = planner_card(&repo).await;
+    let session = uuid::Uuid::new_v4().to_string();
+    worker_session_row(&repo, &session, &card, &uuid::Uuid::new_v4().to_string()).await;
+    sqlx::query("UPDATE worker_sessions SET mcp_token_hash='old-token-hash' WHERE id=?")
+        .bind(&session)
+        .execute(repo.pool())
+        .await
+        .unwrap();
+    sqlx::query(
+        "CREATE TRIGGER refuse_claude_revoke BEFORE UPDATE OF mcp_token_hash ON worker_sessions
+         BEGIN SELECT RAISE(ABORT, 'injected Claude revoke failure'); END",
+    )
+    .execute(repo.pool())
+    .await
+    .unwrap();
+    let error = match calm_server::state::AppState::boot(&cfg).await {
+        Err(error) => error,
+        Ok(application) => {
+            if let Some(listener) = application.into_parts().0.mcp_server.as_ref() {
+                listener.stop_listener_for_test().await;
+            }
+            panic!("revocation failure must abort boot before listening");
+        }
+    };
+    assert!(
+        matches!(
+            error.downcast_ref::<calm_server::error::CalmError>(),
+            Some(calm_server::error::CalmError::Db(_))
+        ),
+        "{error:#}"
+    );
+    let token: Option<String> =
+        sqlx::query_scalar("SELECT mcp_token_hash FROM worker_sessions WHERE id=?")
+            .bind(&session)
+            .fetch_one(repo.pool())
+            .await
+            .unwrap();
+    assert_eq!(token.as_deref(), Some("old-token-hash"));
+    assert!(!socket.exists(), "MCP listener must never be created");
+}

@@ -44,6 +44,15 @@ async fn app_state(repo: Arc<SqlxRepo>) -> AppState {
 #[tokio::test]
 async fn boot_assert_card_id_complete_still_runs_post_9b_iv() {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
+    seed_null_card_worker(&repo).await;
+    let state = app_state(repo).await;
+    let err = calm_server::assert_worker_sessions_card_id_complete_on_boot(&state)
+        .await
+        .expect_err("active NULL-card worker session must fail boot assertion");
+    assert!(err.to_string().contains("worker_sessions.card_id"));
+}
+
+async fn seed_null_card_worker(repo: &SqlxRepo) {
     let area = repo
         .area_create(
             LEGACY_OWNER_USER_ID,
@@ -104,15 +113,6 @@ async fn boot_assert_card_id_complete_still_runs_post_9b_iv() {
     .await
     .unwrap();
     tx.commit().await.unwrap();
-
-    let state = app_state(repo).await;
-    let err = calm_server::assert_worker_sessions_card_id_complete_on_boot(&state)
-        .await
-        .expect_err("active NULL-card worker session must fail boot assertion");
-    assert!(
-        err.to_string().contains("worker_sessions.card_id"),
-        "unexpected boot assertion error: {err}"
-    );
 }
 
 /// Seed via the **unchecked** repo primitive, since the checked writer would refuse overlapping rows.
@@ -242,4 +242,68 @@ async fn production_operation_runtime_recognizes_forge_action_kind() {
             .contains("unknown operation kind forge-action"),
         "forge-action must be registered in build_operation_adapters: {err}"
     );
+}
+
+// Separate test identities make each fence's mutation red set observable.
+#[tokio::test]
+async fn fatal_boot_fences_refuse_before_the_shared_daemon_starts_card_id() {
+    fatal_boot_fence("worker_sessions.card_id").await;
+}
+
+#[tokio::test]
+async fn fatal_boot_fences_refuse_before_the_shared_daemon_starts_area_folders() {
+    fatal_boot_fence("area_folders").await;
+}
+
+async fn fatal_boot_fence(fence: &str) {
+    use clap::Parser as _;
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let root = tempfile::tempdir().unwrap();
+    let execution = crate::support::execution::Fixture::start();
+    let mut cfg = calm_server::config::Config::parse_from(["calm-server"]);
+    execution.configure(&mut cfg);
+    cfg.auth_password = Some("fixture-password".into());
+    cfg.db_url = format!(
+        "sqlite://{}?mode=rwc",
+        root.path().join("calm.db").display()
+    );
+    cfg.data_dir = Some(root.path().join("data"));
+    cfg.workspace_root = Some(root.path().join("workspaces"));
+    cfg.plugins_dir = Some(root.path().join("plugins"));
+    cfg.plugins_data_dir = Some(root.path().join("plugins-data"));
+    cfg.claude_bin = root.path().join("no-claude").display().to_string();
+    let log = root.path().join("spawned");
+    let script = root.path().join("codex");
+    std::fs::write(
+        &script,
+        format!("#!/bin/sh\nprintf spawned >> '{}'\nexit 1\n", log.display()),
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+    cfg.codex_bin = script.display().to_string();
+    let repo = SqlxRepo::open(&cfg.db_url).await.unwrap();
+    match fence {
+        "worker_sessions.card_id" => seed_null_card_worker(&repo).await,
+        "area_folders" => {
+            seed_folders(&repo, &["/a", "/a/b"]).await;
+        }
+        _ => unreachable!(),
+    }
+    let error = match AppState::boot(&cfg).await {
+        Err(error) => error,
+        Ok(application) => {
+            if let Some(listener) = application.into_parts().0.mcp_server.as_ref() {
+                listener.stop_listener_for_test().await;
+            }
+            panic!("{fence} must refuse production boot");
+        }
+    };
+    // Both fences use Internal; the table name identifies the failed check without pinning prose.
+    assert!(
+        matches!(error.downcast_ref::<calm_server::error::CalmError>(),
+        Some(calm_server::error::CalmError::Internal(message)) if message.contains(fence)),
+        "{error:#}"
+    );
+    assert!(!log.exists(), "{fence} must refuse before daemon launch");
 }

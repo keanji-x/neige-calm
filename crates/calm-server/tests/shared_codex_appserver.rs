@@ -1132,7 +1132,29 @@ async fn boot_replaces_a_daemon_with_a_stale_env_signature_before_recovery() {
     .await;
 
     let daemon = server(&root, repo.clone()).await;
-    daemon.boot().await.unwrap();
+    let events = calm_server::event::EventBus::new();
+    let state = calm_server::state::AppState::from_parts(
+        repo.clone(),
+        events.clone(),
+        Arc::new(calm_server::state::DaemonClient::new_stub()),
+        Arc::new(calm_server::plugin_host::PluginHost::new_full(
+            Arc::new(calm_server::plugin_host::PluginRegistry::empty()),
+            repo.clone(),
+            root.path().join("plugins"),
+            root.path().join("plugins-data"),
+            Vec::new(),
+            events,
+            calm_server::state::WriteContext::new(
+                calm_server::card_role_cache::CardRoleCache::new(),
+                calm_server::track_area_cache::TrackAreaCache::new(),
+            ),
+        )),
+        Arc::new(calm_server::state::CodexClient::new_stub()),
+        None,
+        None,
+    )
+    .with_shared_codex_appserver(daemon.clone());
+    calm_server::boot_harnesses(&state).await.unwrap();
 
     tokio::time::timeout(Duration::from_secs(5), child.wait())
         .await

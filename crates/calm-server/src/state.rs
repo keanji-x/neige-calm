@@ -1846,3 +1846,18 @@ impl FromRef<AppState> for WriteContext {
         s.route.write.clone()
     }
 }
+
+#[cfg(test)]
+mod catalog_follower_tests {
+    /// Temporary weakest constraint: production boot behavior observing
+    /// config/mcpServer/reload will replace this in a later slice.
+    #[test]
+    fn catalog_follower_is_started_in_app_state_new() {
+        let source = include_str!("state.rs");
+        let function = source.split_once("    async fn new(\n").unwrap().1;
+        let body = function.split_once("\n    }\n}").unwrap().0;
+        assert!(body.split(';').any(|statement| {
+            statement.contains("CodexMcpToolset {") && statement.contains(".start(")
+        }));
+    }
+}

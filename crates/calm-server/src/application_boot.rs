@@ -97,3 +97,28 @@ impl BootedApplication {
         Ok(application)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    /// The weakest feasible constraint for crash recovery's documented ordering.
+    /// It cannot catch regressions that wrap a recovery step in a detached spawn.
+    #[test]
+    fn recovery_steps_keep_their_documented_order() {
+        let source = include_str!("application_boot.rs");
+        let start = source.find("pub(crate) async fn recover(").unwrap();
+        let function = &source[start..];
+        let body =
+            &function[function.find("{\n").unwrap() + 2..function.find("\n    }\n}").unwrap()];
+        let steps = [
+            "boot_harnesses(",
+            "reconcile_supervisor_on_boot(",
+            "task_context_sweep_on_boot(",
+            "recover_operations_on_boot(",
+            "claude_auto_resume::spawn_on_boot(",
+            "reaper_on_boot(",
+            "scheduler_sweep_on_boot(",
+        ];
+        let positions = steps.map(|step| body.find(step).expect(step));
+        assert!(positions.windows(2).all(|pair| pair[0] < pair[1]));
+    }
+}
