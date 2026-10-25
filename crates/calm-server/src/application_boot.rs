@@ -127,6 +127,10 @@ mod tests {
         let source = include_str!("application_boot.rs");
         let function = source.split_once("pub(crate) async fn recover(").unwrap().1;
         let body = function.split_once("\n    }\n}").unwrap().0;
+        assert!(body.contains(
+            "let stale_terminals = calm_server::reconcile_supervisor_on_boot(&state).await;"
+        ));
+        assert_eq!(body.matches("let stale_terminals").count(), 1);
         let call = body
             .split_once("claude_auto_resume::spawn_on_boot(")
             .unwrap()
