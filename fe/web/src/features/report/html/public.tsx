@@ -1,3 +1,4 @@
+import { GuideAnchor } from '../../../ui/floating-control/public.ts';
 // The `html` block (#2585) and the file viewer's page view: one self-contained page from the Track
 // workspace in a frame that may run scripts and nothing else. No `allow-same-origin` (the page is
 // an opaque origin: no cookies, storage or API), no forms, popups, modals or top navigation. The
@@ -70,7 +71,7 @@ export function ReportHtmlBlock({ payload, files, onOpen }: Readonly<{
       <figcaption className={styles.caption}>
         <span className={styles.title}>{title}</span>
         {onOpen !== undefined && (
-          <Button label={`Open ${payload.path}`} variant="ghost" size="sm" onClick={() => { onOpen(payload.path); }}>Open</Button>
+          <GuideAnchor id="preview-open" placement="top">{(anchor, describedBy) => <Button ref={anchor} aria-describedby={describedBy} label={`Open ${payload.path}`} variant="ghost" size="sm" onClick={() => { onOpen(payload.path); }}>Open</Button>}</GuideAnchor>
         )}
       </figcaption>
     </figure>
@@ -82,7 +83,7 @@ function BlockPage({ path, files, title, height }: Readonly<{
 }>) {
   const resource = useReportFileResource(path, files);
   switch (resource.kind) {
-    case 'html': return <ReportHtmlFrame url={resource.url} title={title} height={height} />;
+    case 'html': return <ReportHtmlFrame key={resource.text} url={resource.url} title={title} height={height} />;
     case 'loading': return <p className={styles.note} style={{ blockSize: `${height}px` }} role="status">Loading page…</p>;
     case 'error':
       return <div className={styles.unavailable}>

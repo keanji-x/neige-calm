@@ -1,4 +1,5 @@
 import type { DialogOrigin } from '../../../ui/dialog/public.tsx';
+import { GuideAnchor } from '../../../ui/floating-control/public.ts';
 import { useEffect, useLayoutEffect, useRef, type ComponentProps } from 'react';
 import { flushSync } from 'react-dom';
 import { Button } from '@astryxdesign/core/Button';
@@ -130,7 +131,7 @@ export function ComposerPreferences({ startingPoint, folder, browsing, isolation
     }} /></span>
   </div>;
 
-  return <div ref={hostRef} className={styles.host} data-nc-composer-preferences>
+  return <GuideAnchor id={collapsed ? 'track-options-collapsed' : 'track-options'} disabled={browsing || open} placement="top">{(anchor, describedBy) => <div ref={(node) => { hostRef.current = node; anchor(node); }} aria-describedby={describedBy} tabIndex={-1} className={styles.host} data-nc-composer-preferences>
     {collapsed ? <Popover label="Track options" placement="above" isOpen={open} onOpenChange={setOpen}
       content={<div className={styles.panel}>{preferences}</div>}>
       {(trigger) => <Button {...trigger} ref={(node) => { moreRef.current = node; trigger.ref(node); }}
@@ -138,5 +139,5 @@ export function ComposerPreferences({ startingPoint, folder, browsing, isolation
         icon={<Icon name="more" />} isDisabled={startingPoint.isDisabled} />}
     </Popover> : preferences}
     <div ref={isolationRef} className={styles.isolation}><IsolationPill {...isolation} /></div>
-  </div>;
+  </div>}</GuideAnchor>;
 }

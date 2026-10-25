@@ -1,0 +1,259 @@
+{
+  "version": 1,
+  "tours": [
+    {
+      "id": "area",
+      "title": "建立练习项目",
+      "priority": 100,
+      "steps": [
+        {
+          "id": "area-name",
+          "target": "area-name",
+          "title": "先给练习项目取个名字",
+          "description": "在 Name 中填一个好认的名字，例如“我的练习项目”。这个名字只用来整理工作，不是文件夹路径。",
+          "outcome": "填好后点“下一步”，再选练习方式。",
+          "example": {
+            "label": "填入这个名字",
+            "summary": "我的练习项目",
+            "text": "我的练习项目"
+          },
+          "advance": "next"
+        },
+        {
+          "id": "area-template",
+          "target": "area-template",
+          "title": "这次先做一个本地小练习",
+          "description": "点这个模板按钮，选择 Small change。它适合这次生成一个页面、查看结果的练习。需要代码提交与 PR 流程时，再选择 Development。",
+          "outcome": "选中后，按钮会显示 Small change；再点“下一步”。",
+          "advance": "next"
+        },
+        {
+          "id": "area-defaults",
+          "target": "area-defaults",
+          "title": "选一个可以放心练习的目录",
+          "description": "这次保留 Neige workspace 即可。Demo 中的目录是虚拟的；实际使用时，你可以在这个位置选择自己的仓库。",
+          "advance": "next",
+          "outcome": "选好后点“下一步”，然后创建项目。"
+        },
+        {
+          "id": "area-create",
+          "target": "area-create",
+          "title": "把这个练习项目建好",
+          "description": "点 Create area 建好演示项目。项目名称和选项只保留在这次 Demo 中。",
+          "outcome": "左侧会出现项目名字。下一步点名字旁的 ＋ 写第一条需求。",
+          "advance": "activate"
+        }
+      ],
+      "exclusive": true,
+      "requires": []
+    },
+    {
+      "id": "create-track",
+      "title": "写一条能执行的需求",
+      "priority": 90,
+      "steps": [
+        {
+          "id": "track-request",
+          "target": "track-request",
+          "title": "让 AI 做出第一个可见成果",
+          "description": "可以先用下面的练习需求，也可以写你自己的目标。点“填入练习需求”只会填写草稿；读一遍、按需修改后，仍由你确认发送。",
+          "advance": "next",
+          "outcome": "填写后点“下一步”检查目录，再点发送箭头。",
+          "example": {
+            "label": "填入练习需求",
+            "summary": "做一个带三张卡片和封面图的作品集页面，验证后把真实页面放进报告。",
+            "text": "先阅读当前目录的说明。如果目录为空或只有初始化和说明文件、尚无业务代码，请创建一个自包含的 index.html 作品集页面：主标题“我的作品集”，三张项目卡片和内联 SVG 封面，不使用外部依赖。如果已有业务代码，先说明现状并提出改动建议，不覆盖或删除已有文件。完成后实际验证，并在 Report 展示真实页面；只在本地工作，不 push 或发布。"
+          }
+        },
+        {
+          "id": "track-options-collapsed",
+          "target": "track-options-collapsed",
+          "title": "先展开工作选项",
+          "description": "点左下角的 …，检查这次工作要用的模板和目录。若刚才已经设置好，可直接沿用，不必重新配置。",
+          "advance": "activate",
+          "outcome": "展开后会看到 Template 和 Folder。"
+        },
+        {
+          "id": "track-options",
+          "target": "track-options",
+          "title": "确认工作方式和项目目录",
+          "description": "确认 Template 是刚选的工作方式，Folder 是练习目录或你的仓库。第一次不用调整模型和角色；检查无误后点“下一步”。",
+          "advance": "next",
+          "outcome": "最后点发送箭头，AI 才会开始实际工作。"
+        },
+        {
+          "id": "template-choices",
+          "target": "template-choices",
+          "title": "按目标选择工作流",
+          "description": "这次只做本地页面练习，可以选 Small change。之后需要规范的代码提交或 PR 时，再选 Development；不用先研究其他模板。",
+          "advance": "activate",
+          "outcome": "选中的模板会出现在输入框下方。"
+        },
+        {
+          "id": "track-send",
+          "target": "track-send",
+          "title": "确认后发送这条需求",
+          "description": "点发送箭头，体验一次执行。Demo 会展示预置页面，不调用 AI；输入内容只保留在演示对话中。",
+          "outcome": "报告里会出现预置成果。真实使用时，这一步才会调用你连接的 AI 工具。",
+          "advance": "activate"
+        }
+      ],
+      "exclusive": true,
+      "requires": [
+        "has-projects"
+      ]
+    },
+    {
+      "id": "conversation",
+      "title": "继续对话",
+      "priority": 80,
+      "steps": [
+        {
+          "id": "conversation-input",
+          "target": "conversation-input",
+          "title": "在这里提出修改或回答问题",
+          "description": "看过演示页面后，可以填入下面的改标题需求，再发送一次。Demo 只预置了生成页面和改标题两种结果；已关闭时先点“重新打开并继续”。",
+          "advance": "next",
+          "outcome": "再次发送后，回到 Report 看页面是否随修改更新。",
+          "example": {
+            "label": "填入一次修改需求",
+            "summary": "看过练习页面后，再把主标题改为“我的第一个作品”，保留其他内容。",
+            "text": "请接着刚才的练习页面，把主标题改为“我的第一个作品”，其余内容保持不变。实际验证后更新 Report 中的真实页面预览；只在本地修改，不 push 或发布。"
+          }
+        }
+      ],
+      "exclusive": true,
+      "requires": [
+        "has-work"
+      ]
+    },
+    {
+      "id": "settings",
+      "title": "配置环境",
+      "priority": 70,
+      "steps": [
+        {
+          "id": "settings-plugins",
+          "target": "settings-plugins",
+          "title": "按需要启用工作流能力",
+          "description": "插件为模板和工具提供能力。仅在所选工作流提示缺少插件时再来配置；不用为了开始第一项需求安装全部插件。修改前可先查看插件的说明与配置。",
+          "advance": "next"
+        },
+        {
+          "id": "settings-planners",
+          "target": "settings-planners",
+          "title": "使用已有 AI 编程工具",
+          "description": "这里管理 AI 提供方的连接与可用状态。如果创建工作时提示工具不可用，请根据这里的状态完成登录或配置；引导本身不会提交 AI 请求。",
+          "advance": "next"
+        },
+        {
+          "id": "settings-network",
+          "target": "settings-network",
+          "title": "配置 AI 网络与设备连接",
+          "description": "模型连接需要代理时，在这里填写并保存。等当前工作结束后，用原启动方式重启 Neige，再到 Planners 点 Recheck 确认 Ready。仅连接其他设备时，可按需配对。",
+          "advance": "next"
+        },
+        {
+          "id": "settings-appearance",
+          "target": "settings-appearance",
+          "title": "调整当前设备的显示",
+          "description": "这里设置外观。它只影响当前设备的显示，不会修改项目、工作流或其他设备的设置。",
+          "advance": "next"
+        },
+        {
+          "id": "settings-about",
+          "target": "settings-about",
+          "title": "检查当前版本",
+          "description": "这里显示应用版本与构建信息。排查连接或界面问题时，可以将这些信息提供给维护者。",
+          "advance": "next"
+        }
+      ],
+      "exclusive": true,
+      "requires": []
+    },
+    {
+      "id": "track",
+      "title": "理解这项工作",
+      "priority": 50,
+      "steps": [
+        {
+          "id": "track-actions",
+          "target": "track-actions",
+          "title": "继续当前工作，还是新开一项？",
+          "description": "想调整刚才的成果，点“讨论这项工作”；已关闭则点“重新打开并继续”。例如继续改标题或配色。同一个成果的修改留在这里，新的独立任务再从项目旁的 ＋ 创建。",
+          "advance": "activate",
+          "outcome": "会打开当前工作的对话，已有结果和上下文会保留。"
+        },
+        {
+          "id": "track-report",
+          "target": "track-report",
+          "title": "进展和成果都汇总在这里",
+          "description": "这里展示演示进展和预置成果。先看看结果，再点 Open 打开页面；验证说明会标明哪些内容是演示数据。",
+          "advance": "next",
+          "outcome": "看见页面后点 Open 放大，接着可以要求再改一次。"
+        },
+        {
+          "id": "track-panel",
+          "target": "track-panel",
+          "title": "当前工作的对话与进展",
+          "description": "展开演示任务，可以查看状态和预置的完成说明。真实使用时，还能在这里判断任务是在运行、验证，还是遇到了问题。",
+          "advance": "next",
+          "outcome": "这次是预置的 Completed 状态，并没有实际运行模型或测试。"
+        },
+        {
+          "id": "preview-open",
+          "target": "preview-open",
+          "title": "打开成果预览",
+          "description": "点 Open 打开这次生成的真实页面。核对标题、三张卡片和封面；如果不满意，回到对话说出具体哪里要改。",
+          "advance": "activate",
+          "outcome": "例如发送“把主标题改为我的第一个作品，其他不变”，再看页面更新。"
+        }
+      ],
+      "exclusive": false,
+      "requires": [
+        "has-work"
+      ]
+    },
+    {
+      "id": "workspace",
+      "title": "开始练习",
+      "priority": 20,
+      "steps": [
+        {
+          "id": "workspace-projects",
+          "target": "workspace-projects",
+          "title": "先选择要继续的项目",
+          "description": "要继续已有工作，点它所在的项目名称。要做这次页面练习，也可以在已有项目中点 ＋；使用练习目录时，不会占用你原来的工作。",
+          "advance": "activate",
+          "outcome": "项目展开后，可以打开原工作，或新建一项练习。"
+        },
+        {
+          "id": "workspace-add",
+          "target": "workspace-add",
+          "title": "先做出一个能预览的小作品",
+          "description": "先在 Demo 里做一个作品集，再试一次改标题。点这个 ＋ 建立演示项目；整个练习只使用预置数据，不连接 AI，也不修改你的文件。",
+          "advance": "activate",
+          "outcome": "会打开项目设置窗口，先给练习项目取名。"
+        },
+        {
+          "id": "workspace-new-track",
+          "target": "workspace-new-track",
+          "title": "现在给 AI 一件具体的事做",
+          "description": "点这个 ＋ 写第一条需求。接下来会给你一条可直接填入的页面练习：生成一个作品集，并在报告里看真实成果。",
+          "advance": "activate",
+          "outcome": "会打开输入需求的页面；先不需要添加终端或工具。"
+        },
+        {
+          "id": "workspace-new-track-compact",
+          "target": "workspace-new-track-compact",
+          "title": "现在给 AI 一件具体的事做",
+          "description": "点这个 ＋ 写第一条需求。接下来会给你一条可直接填入的页面练习：生成一个作品集，并在报告里看真实成果。",
+          "advance": "activate",
+          "outcome": "会打开输入需求的页面；先不需要添加终端或工具。"
+        }
+      ],
+      "exclusive": false,
+      "requires": []
+    }
+  ]
+}

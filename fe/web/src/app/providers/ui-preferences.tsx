@@ -4,6 +4,12 @@ import { createStorageKey, DATABASE_ID_KEY } from '../../../../core/keys/storage
 import { sidebarOrder, type SidebarGroupId, type SidebarOrderScope } from '../../../../core/view/sidebar-layout.ts';
 import { useState } from '../../ui/state/public.ts';
 
+export type GuideProgressCommit = Readonly<{
+  version: number; reset: readonly string[]; seen: readonly string[]; enabled: boolean | null;
+}>;
+function guideEnabledKey(database: string): string { return `browser:guide-enabled:${database}`; }
+function guideStepKey(database: string, version: number, id: string): string { return `browser:guide-step:${database}:${version}:${id}`; }
+
 type Preference = boolean | string | null;
 export type UiPreferenceStorage = Pick<Storage, 'getItem' | 'setItem'>;
 export type UiPreferences = ReturnType<typeof createUiPreferences>;
@@ -68,6 +74,7 @@ export function createUiPreferences(storage?: UiPreferenceStorage) {
     if (!notifyLayout) return;
     notify();
   };
+  const guideScope = () => database === null ? null : storageKey(`browser:guide:${database}`);
   return Object.freeze({
     databaseScope: () => database,
     /** The database the visible data belongs to; a `null` scope keeps no per-database choice. */
@@ -117,6 +124,38 @@ export function createUiPreferences(storage?: UiPreferenceStorage) {
       return sidebarOrder(ids, saved);
     },
     setSidebarOrder: (scope: SidebarOrderScope, ids: readonly string[]) => write(`browser:sidebar-order:${scope}`, JSON.stringify(ids), true),
+    /** Optional guide display progress follows the stable database, never a process boot. */
+    guideEnabled(): boolean | null {
+      if (database === null) return null;
+      const value = read(guideEnabledKey(database));
+      return typeof value === 'boolean' ? value : null;
+    },
+    setGuideEnabled(enabled: boolean): void {
+      if (database !== null) write(guideEnabledKey(database), enabled, true);
+    },
+    guideStepSeen(version: number, id: string): boolean {
+      return database !== null && read(guideStepKey(database, version, id)) === true;
+    },
+    setGuideStepSeen(version: number, id: string, seen: boolean): void {
+      if (database !== null) write(guideStepKey(database, version, id), seen, true);
+    },
+    /** Opaque stable identity for this display namespace; null while identity is unconfirmed. */
+    guideScope,
+    commitGuideProgress(expectedScope: string, progress: GuideProgressCommit): boolean {
+      if (database === null || guideScope() !== expectedScope) return false;
+      let changed = false;
+      const stage = (key: string, value: boolean) => {
+        if (read(key) === value) return;
+        write(key, value, false);
+        changed = true;
+      };
+      // No layout notification between fields: all keys belong to this same accepted scope.
+      for (const id of progress.reset) stage(guideStepKey(database, progress.version, id), false);
+      for (const id of progress.seen) stage(guideStepKey(database, progress.version, id), true);
+      if (progress.enabled !== null) stage(guideEnabledKey(database), progress.enabled);
+      if (changed) notify();
+      return guideScope() === expectedScope;
+    },
     conversation(id: string): string | null {
       const value = read(`conversation:${id}`);
       return typeof value === 'string' ? value : null;

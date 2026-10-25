@@ -37,7 +37,7 @@
        definite viewport height — otherwise the rail collapses and the fixed
        account menu sits below it. */
     block-size: 100%;
-    min-block-size: 100dvh;
+    min-block-size: var(--workspace-min-block-size, 100dvh);
     /* Same as `.main`: `hidden` is still a scrollport, and the entering
        drawer overflows this edge too. Rail and page keep their own `auto`. */
     overflow: clip;
@@ -529,7 +529,9 @@
   .areaRowWrap:hover .areaNew,
   .areaRowWrap:focus-within .areaNew,
   .areaRowWrap:hover > .iconButton,
-  .areaRowWrap:focus-within > .iconButton {
+  .areaRowWrap:focus-within > .iconButton,
+  .areaRowWrap > .iconButton[aria-describedby],
+  .areaNew[aria-describedby] {
     opacity: 1;
   }
 

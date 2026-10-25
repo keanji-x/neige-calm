@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>山间工作室 · 作品集</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; background: #f5f4ef; color: #253b33; font: 16px/1.65 system-ui, sans-serif; }
+    main { max-width: 920px; margin: auto; padding: 48px 28px; }
+    header { padding-bottom: 34px; border-bottom: 1px solid #d7dfd5; }
+    .eyebrow { margin: 0 0 14px; font-size: 12px; letter-spacing: .18em; }
+    h1 { margin: 0 0 12px; font-size: clamp(30px, 6vw, 48px); line-height: 1.2; font-weight: 550; }
+    .intro { max-width: 560px; margin: 0; color: #52665a; }
+    .projects { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr)); gap: 24px; padding-top: 30px; }
+    article { min-width: 0; }
+    .cover { display: block; width: 100%; aspect-ratio: 16 / 10; border-radius: 12px; overflow: hidden; }
+    h2 { margin: 14px 0 6px; font-size: 20px; font-weight: 550; }
+    article p { margin: 0; color: #52665a; }
+    footer { margin-top: 42px; font-size: 13px; color: #68786e; }
+    @media (max-width: 520px) { main { padding: 30px 20px; } }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <p class="eyebrow">MOUNTAIN STUDIO / SELECTED WORK</p>
+      <h1>把想法，变成看得见的作品。</h1>
+      <p class="intro">这里记录着两个正在生长的小项目。从一句想法开始，慢慢做成自己喜欢的样子。</p>
+    </header>
+    <section class="projects" aria-label="项目作品">
+      <article>
+        <svg class="cover" viewBox="0 0 480 300" role="img" aria-label="清晨的绿色山峦">
+          <rect width="480" height="300" fill="#dce7d9"/>
+          <circle cx="360" cy="80" r="32" fill="#f5efcf"/>
+          <path d="M0 300 170 65 365 300Z" fill="#9ebba7"/>
+          <path d="M130 300 345 115 480 300Z" fill="#678a77"/>
+          <path d="M0 300 75 195 220 300Z" fill="#486b59"/>
+        </svg>
+        <h2>山间记录</h2>
+        <p>一份关于散步、植物和日常观察的笔记。</p>
+      </article>
+      <article>
+        <svg class="cover" viewBox="0 0 480 300" role="img" aria-label="暮色中的海边日落">
+          <rect width="480" height="300" fill="#e7d2b9"/>
+          <circle cx="310" cy="120" r="48" fill="#e8a578"/>
+          <path d="M0 172 Q100 145 235 180 T480 172 V300 H0Z" fill="#9eafb0"/>
+          <path d="M0 228 Q130 195 260 230 T480 218 V300 H0Z" fill="#6f9092"/>
+          <path d="M220 300 Q325 226 480 244 V300Z" fill="#c2b399"/>
+        </svg>
+        <h2>周末去海边</h2>
+        <p>为一次说走就走的小旅行留下一个位置。</p>
+      </article>
+    </section>
+    <footer>山间工作室 · 从一个小改动开始。</footer>
+  </main>
+</body>
+</html>

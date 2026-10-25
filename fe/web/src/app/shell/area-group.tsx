@@ -1,4 +1,5 @@
 import type { DialogOrigin } from '../../ui/dialog/public.tsx';
+import { GuideAnchor } from '../../ui/floating-control/public.ts';
 // Area-owned membership and actions, composed into the shared sidebar group.
 import { DropdownMenuItem } from '@astryxdesign/core/DropdownMenu';
 
@@ -47,10 +48,10 @@ export function AreaGroup({
       <DropdownMenuItem label="Delete area" onClick={() => onRequestDelete(area.id, origin)} />
     </>}
     actions={
-      <button type="button" data-nc-role="icon" className={`${styles.areaNew} ${rowLayout('outer')}`}
+      <GuideAnchor id="workspace-new-track">{(anchor, describedBy) => <button ref={anchor} aria-describedby={describedBy} type="button" data-nc-role="icon" className={`${styles.areaNew} ${rowLayout('outer')}`}
         aria-label={`New track in ${area.name}`} title="New track" onClick={() => onNewTrack(area.id)}>
         <Icon name="plus" size="sm" />
-      </button>
+      </button>}</GuideAnchor>
     }
     {...rowProps}
   />;
