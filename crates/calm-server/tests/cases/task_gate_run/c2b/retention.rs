@@ -208,9 +208,28 @@ async fn c2b_owned_park_requires_decodable_record() {
         Value::Null,
     ] {
         let (fx, a, _resume) = held("decode-before-park").await;
+        // Join the detached admission drive before exposing a new drivable phase.
+        let drive = fx.runtime.lock_for_track_delete_for_test().await;
         let before = op(&fx, &a.task.id).await;
-        spawn_started(&fx, &before.id).await;
-        rewrite(&fx, &before.id, &value).await;
+        assert_eq!(before.phase.tag(), PhaseTag::Parked);
+        assert!(before.lease_owner.is_none());
+        assert!(before.lease_until_ms.is_none());
+        let mut tx = calm_server::db::sqlite::begin_immediate_tx(&fx.db())
+            .await
+            .unwrap();
+        let changed = sqlx::query(
+            "UPDATE operations SET phase='spawn_started',parked_at_ms=NULL,parked_deadline_ms=NULL, \
+             tx_output_json=json_set(tx_output_json,'$.data.gate_execution',json(?)) \
+             WHERE id=? AND phase='parked' AND lease_owner IS NULL AND lease_until_ms IS NULL",
+        )
+        .bind(value.to_string())
+        .bind(&before.id)
+        .execute(&mut **tx)
+        .await
+        .unwrap();
+        assert_eq!(changed.rows_affected(), 1);
+        tx.commit().await.unwrap();
+        drop(drive);
         fx.runtime.drive().await.unwrap();
         let after = op(&fx, &a.task.id).await;
         assert_eq!(after.phase.tag(), PhaseTag::SpawnStarted);
