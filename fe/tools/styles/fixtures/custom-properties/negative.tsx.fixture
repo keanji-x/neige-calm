@@ -1,1 +1,0 @@
-const inline = <div style={{ color: 'var(--missing)' }} />;

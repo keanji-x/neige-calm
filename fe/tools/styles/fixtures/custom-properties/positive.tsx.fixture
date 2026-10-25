@@ -1,3 +1,0 @@
-const style = { '--inline': '4px', color: 'var(--text)', gap: 'var(--inline)', padding: 'var(--optional, 4px)' };
-node.style.setProperty('--runtime', '8px');
-const inline = <div style={{ margin: 'var(--runtime)' }} />;

@@ -1,0 +1,1 @@
+.example::after { content: 'quoted \'var(--missing)\''; }
