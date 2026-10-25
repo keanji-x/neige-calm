@@ -1,1 +1,2 @@
-.x { content: "a\22 var(--missing)"; }
+.x { content: "a\22
+var(--missing)"; }
