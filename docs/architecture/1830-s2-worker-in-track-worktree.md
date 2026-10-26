@@ -339,7 +339,8 @@ MCP publication uses `neige.track.publish`; the direct `gh.pr.create` tool is re
   the replace routing (`scheduler/mod.rs:1375-1392`), `candidate.carry` (`plan.rs:749-797`), the
   recovery `Replaced` refusal, `WorkerCleanupReason::Superseded`,
   `task_cancel_pending_with_detail_tx`, 2 prompt files and the `planner.md:76` bullet. The
-  `task_replacements` table stays unread (no migration). Gates: `report_write_boundary.sh:26`,
+  `task_replacements` table stays unread (no migration). Entry-point behavior tests replace
+  the former report-write entry census. Remaining gates: `report_write_boundary.sh` (privacy and module drift),
   the MCP tool registry golden, the tool-name lists, `gate_binding.rs:718`, `target.rs:586-590`.
   About 1,500 production and 1,100 test lines.
 - **Delete the budget knob** (D5 is the whole rule): `DEFAULT_TRACK_TASK_BUDGET`, the env var,

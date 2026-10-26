@@ -71,3 +71,12 @@ scan_must_be_empty() {
       ;;
   esac
 }
+
+# no_out_of_line_module <code>: reject textual module escapes, including declarations
+# following attributes/comments on the same line and Rust raw identifiers.
+# Consume the complete here-string: an early reader in a pipe can cause SIGPIPE under pipefail.
+no_out_of_line_module() {
+  scan_must_be_empty "out-of-line module / #[path] / include! extends the module beyond this file" \
+    rg --line-number '\bmod\s+(r#)?[A-Za-z_]\w*\s*;|#\[\s*(r#)?path\s*=|(^|[^[:alnum:]_])(r#)?include!\s*\(' \
+    <<<"${1?code is required}"
+}
