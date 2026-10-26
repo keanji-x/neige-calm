@@ -448,3 +448,6 @@ async fn w_owned_disposal_blocks_release_and_readmission() {
     complete(&h).await;
     assert_eq!(deletion.await, StatusCode::NO_CONTENT);
 }
+
+#[cfg(test)]
+mod scope_tests;

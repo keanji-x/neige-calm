@@ -474,6 +474,12 @@ impl PreparedAreaDeletion {
             )
             .await?;
         }
+        crate::execution_quiesce::dispose_tracks(
+            route.repo.as_ref(),
+            &route.operation_runtime,
+            &self.tracks,
+        )
+        .await?;
         #[cfg(feature = "fixtures")]
         crate::test_seams::pause_point("c5-area-before-generic-stop", &self.id).await;
         crate::execution_quiesce::quiesce(

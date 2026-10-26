@@ -1,11 +1,13 @@
 //! Deletion callers own Stop and Retire; occupancy predicates never drive lifecycle.
 pub mod owned;
+mod scope;
 use crate::{
     db::{RouteRepo, write_in_tx_typed},
     error::{CalmError, Result},
     execution_boot::ExecutionEngine,
     operation::terminal_disposal::{Scope, unsettled},
 };
+pub(crate) use scope::{dispose_cards, dispose_tracks};
 use std::sync::{Arc, OnceLock};
 use workspace_runtime::execution::{DriveTicket, ExecutionId};
 
@@ -84,34 +86,5 @@ pub(crate) async fn dispose_card(
     runtime: &crate::operation::OperationRuntime,
     card: &str,
 ) -> Result<()> {
-    let card = card.to_owned();
-    let ids = write_in_tx_typed(repo, move |tx| {
-        Box::pin(async move {
-            use calm_truth::db::sqlite::workspace_execution as sql;
-            let terminal = crate::db::sqlite::terminal_get_by_card_tx(tx, &card).await?;
-            let alias = terminal.map(|t| sql::terminal_alias(&t.id));
-            let mut ids = Vec::new();
-            for execution in sql::card_executions(tx, &card).await? {
-                let metadata: workspace_runtime::execution::ExecutionMetadata =
-                    serde_json::from_str(&sql::intent_tx(tx, execution.id.as_str()).await?)
-                        .map_err(|e| {
-                            CalmError::Conflict(format!(
-                                "unreadable card execution; resources retained: {e}"
-                            ))
-                        })?;
-                if alias.as_deref() != Some(metadata.alias.0.as_str()) {
-                    ids.push(execution.id);
-                }
-            }
-            Ok(ids)
-        })
-    })
-    .await?;
-    if ids.is_empty() {
-        return Ok(());
-    }
-    let engine = runtime.execution().engine().ok_or_else(|| {
-        CalmError::Conflict("owned execution disposal requires Engine; resources retained".into())
-    })?;
-    owned::dispose(engine.store(), runtime, &ids).await
+    dispose_cards(repo, runtime, vec![card.to_owned()]).await
 }
