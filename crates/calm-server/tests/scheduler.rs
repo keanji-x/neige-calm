@@ -1059,9 +1059,7 @@ impl ProviderAdapter for CardSpawnAdapter {
     }
 }
 
-/// Replay-only fixture for the released child operation result protocol. These
-/// scheduler tests use a stub bootstrap owner and make no provider-storage claims;
-/// canonical activation is exercised by the booted u11_canonical flow tests.
+/// Released-result replay with a stub bootstrap; real activation uses u11_canonical flows.
 async fn historical_child_result(boot: &Boot, task: &str) {
     sqlx::query(
         "UPDATE operations SET tx_output_json=json_remove(tx_output_json,

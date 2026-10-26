@@ -128,10 +128,11 @@ fn workspace_contract(output: &TxOutput) -> Result<Option<Track>> {
     } else if !head.is_null() || frozen.workspace.worktree.is_some() {
         return Err(invalid());
     }
-    if let Some(worker) = data.get("canonical_worker") {
-        if !worker.is_null() && !worker.as_str().is_some_and(|s| !s.is_empty()) {
-            return Err(invalid());
-        }
+    if let Some(worker) = data.get("canonical_worker")
+        && !worker.is_null()
+        && !worker.as_str().is_some_and(|s| !s.is_empty())
+    {
+        return Err(invalid());
     }
     if frozen.id.as_str() != data["child_track_id"].as_str().unwrap()
         || frozen.workspace.agent_cwd() != data["cwd"].as_str().unwrap()

@@ -30,10 +30,10 @@ async fn child_track_continue_reuses_child_and_resumes_claim_rejects_stale_attem
     let child = created["child_track_id"].as_str().unwrap().to_owned();
     let planner = created["planner_card_id"].as_str().unwrap().to_owned();
     let db = boot.repo.sqlite_db().unwrap();
-    support::planner::start_session(boot.repo.as_ref(), &planner, "child-session").await;
+    let worker = created["canonical_worker"].as_str().unwrap();
     let identity = ToolCallIdentity {
         card_id: planner.clone(),
-        session_id: "child-session".into(),
+        session_id: worker.into(),
         track_id: Some(child.clone()),
         ..planner_identity(&boot)
     };
@@ -143,6 +143,8 @@ async fn child_track_continue_reuses_child_and_resumes_claim_rejects_stale_attem
         OperationOutcome::Succeeded { .. } | OperationOutcome::SucceededViaCollision { .. }
     ));
     let wakes = event_rows(&boot, "track.wake_requested").await;
+    assert_eq!(wakes[0].1["source"], "child-bootstrap");
+    let wakes = &wakes[1..];
     assert_eq!(wakes.len(), 1);
     assert_eq!(wakes[0].1["source"], "parent_task");
     assert_eq!(wakes[0].1["key"], id);
