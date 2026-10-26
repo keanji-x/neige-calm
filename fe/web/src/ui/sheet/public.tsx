@@ -1,6 +1,7 @@
+import { LayerDismissal } from '../dialog/layer-dismissal.tsx';
 import { useCallback, useEffect, useEffectEvent, useLayoutEffect, useRef, type CSSProperties, type ReactNode, type Ref, type RefObject } from 'react';
 import { createPortal } from 'react-dom';
-import { LayerDepthProvider, useLayerDismissal } from '@astryxdesign/core/Layer';
+import { LayerDepthProvider, type UseLayerDismissalReturn } from '@astryxdesign/core/Layer';
 import { useState } from '../state/public.ts';
 import { restoreDrawerFocus, usePortalFocusRetention } from '../drawer/restore-focus.ts';
 import { createSheetMotion, type SheetMotion } from './motion.ts';
@@ -71,9 +72,10 @@ export function Sheet(props: SheetProps) {
     // A synchronous controlled commit can revoke this release before returning.
     if (intent.current === token && latest.current.enabled && latest.current.open) settle();
   });
-  const dismissal = useLayerDismissal({ isActive: active, getContainer: () => dialog,
+  const dismissal = useRef<UseLayerDismissalReturn | null>(null);
+  const dismissalLayer = <LayerDismissal {...{ isActive: active, getContainer: () => dialog,
     isPresent: () => latest.current.enabled && latest.current.open && dialog?.open === true,
-    onDismiss: () => props.onCloseRequest('escape') });
+    onDismiss: () => props.onCloseRequest('escape') }} ref={dismissal} />;
   const captureDialog = useCallback((node: HTMLDialogElement | null) => { setDialog(node); }, [setDialog]);
   const capturePanel = useCallback((node: HTMLDivElement | null) => { setPanel(node); }, [setPanel]);
   useLayoutEffect(() => {
@@ -203,8 +205,8 @@ export function Sheet(props: SheetProps) {
     focus(); return stop;
   }, [enabled, open, props.focusInput, attached, dialog, panel, host]);
 
-  return <LayerDepthProvider><dialog ref={captureDialog} className={styles.dialog} aria-label={visible.label}
-    onCancel={event => { event.preventDefault(); if (dismissal.shouldDismissOnCloseRequest()) props.onCloseRequest('platform'); }}>
+  return <>{dismissalLayer}<LayerDepthProvider><dialog ref={captureDialog} className={styles.dialog} aria-label={visible.label}
+    onCancel={event => { event.preventDefault(); if (dismissal.current?.shouldDismissOnCloseRequest()) props.onCloseRequest('platform'); }}>
     {enabled && <div className={styles.frame} data-nc-sheet-frame="" style={{ height: visible.frame.heightPx, bottom: visible.frame.bottomInsetPx, '--sheet-open-top': `calc(100vh - ${visible.frame.heightPx}px - ${visible.frame.bottomInsetPx}px)` } as CSSProperties}>
       <div ref={capturePanel} className={styles.panel} data-nc-sheet-panel="" tabIndex={-1} inert={!active} aria-hidden={!active ? true : undefined}>
         <div className={styles.handle} data-nc-sheet-handle="" aria-hidden="true"
@@ -217,5 +219,5 @@ export function Sheet(props: SheetProps) {
     </div>}
   </dialog>{createPortal(<div className={enabled ? styles.footer : undefined} data-nc-sheet-footer=""
     inert={enabled && !open} aria-hidden={enabled && !open ? true : undefined}
-    style={enabled ? { bottom: visible.frame.bottomInsetPx } : undefined}>{open || (enabled ? present : attached) ? visible.footer : null}</div>, host)}</LayerDepthProvider>;
+    style={enabled ? { bottom: visible.frame.bottomInsetPx } : undefined}>{open || (enabled ? present : attached) ? visible.footer : null}</div>, host)}</LayerDepthProvider></>;
 }

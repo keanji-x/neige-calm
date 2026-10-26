@@ -1,4 +1,5 @@
-import { LayerDepthProvider, useLayerDismissal } from '@astryxdesign/core/Layer';
+import { LayerDismissal } from './layer-dismissal.tsx';
+import { LayerDepthProvider } from '@astryxdesign/core/Layer';
 import { readSurfaceFrame, type LiftOrigin } from '../motion/geometry.ts';
 import { useSurfacePresence } from '../motion/surface-presence.ts';
 import styles from './dialog.module.css';
@@ -120,7 +121,7 @@ export function Dialog({ origin, open, onClose, title, hideTitleRow, hideClose, 
     });
     return () => cancelAnimationFrame(frame);
   }, [open, view?.id, views.length]);
-  useLayerDismissal({ isActive: open,
+  const dismissalLayer = <LayerDismissal {...{ isActive: open,
     onDismiss: () => { if (view) { if (view.onEscape) view.onEscape(); else popView(); } else onClose(); },
     getContainer: () => panelRef.current,
     isPresent: () => {
@@ -128,7 +129,7 @@ export function Dialog({ origin, open, onClose, title, hideTitleRow, hideClose, 
         .filter(layer => layer.closest('[hidden]') === null);
       return open && panelRef.current !== null && layers.at(-1) === panelRef.current;
     },
-  });
+  }} />;
   useEffect(() => {
     if (!open) return;
     const overflow = document.body.style.overflow;
@@ -197,7 +198,7 @@ export function Dialog({ origin, open, onClose, title, hideTitleRow, hideClose, 
       event.preventDefault(); (event.shiftKey ? last : first)?.focus();
     }
   };
-  return createPortal(<LayerDepthProvider><DialogViewContext.Provider value={controller}><div
+  return createPortal(<>{dismissalLayer}<LayerDepthProvider><DialogViewContext.Provider value={controller}><div
     className={showingView || wide ? 'dialog-overlay dialog-overlay-wide' : 'dialog-overlay'} role="presentation"
     style={{ insetBlockStart: viewport.bottomEdge - viewport.height, insetBlockEnd: viewport.bottomInset }}
     onMouseDown={(event) => { if (!showingView && event.target === event.currentTarget) onClose(); }}>
@@ -218,7 +219,7 @@ export function Dialog({ origin, open, onClose, title, hideTitleRow, hideClose, 
       )}
     </CardFrame>
     </div>
-  </div></DialogViewContext.Provider></LayerDepthProvider>, document.body);
+  </div></DialogViewContext.Provider></LayerDepthProvider></>, document.body);
 }
 
 export function ConfirmDialog({ origin, open, title, description, confirmLabel = 'Confirm', cancelLabel = 'Cancel', onConfirm, onCancel, destructive = true, confirmState = 'ready', confirmBusyLabel, initialFocusRef }: ConfirmDialogProps) {

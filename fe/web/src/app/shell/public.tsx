@@ -1,4 +1,5 @@
-import { LayerDepthProvider, useLayerDismissal } from '@astryxdesign/core/Layer';
+import { LayerDismissal } from '../../ui/dialog/layer-dismissal.tsx';
+import { LayerDepthProvider } from '@astryxdesign/core/Layer';
 import type { DialogOrigin } from '../../ui/dialog/public.tsx';
 import { sidebarTrackGroups } from './sidebar-track-groups.ts';
 import { useMobileNavigationPresence } from './mobile-navigation-presence.ts';
@@ -223,11 +224,11 @@ export function AppShell({
   const railCollapsed = manualRailCollapsed ?? narrowRail;
 
   const mobileFocusScope = useRef<Readonly<{ path: string; host: HTMLElement | null; intent: typeof mobileReturnIntent }> | null>(null);
-  useLayerDismissal({
+  const dismissalLayer = <LayerDismissal {...{
     isActive: workspaceInteractive,
     onDismiss: closeMobileSection,
     getContainer: () => mobileNavigationRef.current,
-  });
+  }} />;
 
   useLayoutEffect(() => {
     if (!workspaceInteractive) {
@@ -401,6 +402,7 @@ export function AppShell({
 
   return (
     <div className={`${styles.shell} ${narrowRail ? mobileFontClassName : ''} ${narrowRail && (settingsOpen || mobileOverlayRoute) ? styles.settingsPageShell : ''} ${railCollapsed ? styles.shellCollapsed : styles.shellExpanded}`}>
+      {dismissalLayer}
       {narrowRail && !settingsOpen && !mobileOverlayRoute && <MobileWorkspaceHeader
         areas={areas}
         activeArea={activeArea}

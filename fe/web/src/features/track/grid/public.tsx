@@ -1,4 +1,5 @@
-import { LayerDepthProvider, useLayerDismissal } from '@astryxdesign/core/Layer';
+import { LayerDismissal } from '../../../ui/dialog/layer-dismissal.tsx';
+import { LayerDepthProvider } from '@astryxdesign/core/Layer';
 import { useRef, type ReactNode } from 'react';
 
 import { BoardHost, type BoardHostItem, type CardHost } from '../../../systems/cards/public.js';
@@ -26,14 +27,14 @@ export function CardGridOverlay({
   if (open && !everOpened) setEverOpened(true);
   const layerRef = useRef<HTMLDivElement | null>(null);
 
-  useLayerDismissal({
+  const dismissalLayer = <LayerDismissal {...{
     isActive: open && onClose !== undefined,
     onDismiss: () => onClose?.(),
     getContainer: () => layerRef.current,
-  });
+  }} />;
 
   return (
-    <LayerDepthProvider><div
+    <>{dismissalLayer}<LayerDepthProvider><div
       ref={layerRef}
       className={open ? styles.open : styles.closed}
       data-nc-card-grid=""
@@ -52,6 +53,6 @@ export function CardGridOverlay({
           />
         )
         : null}
-    </div></LayerDepthProvider>
+    </div></LayerDepthProvider></>
   );
 }

@@ -1,8 +1,9 @@
+import { LayerDismissal } from '../dialog/layer-dismissal.tsx';
 import { CardFrame } from '../card-frame/public.tsx';
 // The conversation drawer. It overlays the panel column rather than squeezing the main column, and is deliberately not modal: no focus trap, no inert background. Escape closes it.
 
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, type ReactNode } from 'react';
-import { LayerDepthProvider, useLayerDismissal } from '@astryxdesign/core/Layer';
+import { LayerDepthProvider } from '@astryxdesign/core/Layer';
 
 import { DrawerHeader } from './header.tsx';
 import { MobileHeader } from '../mobile-header/public.tsx';
@@ -127,7 +128,7 @@ export function Drawer({ open, title, mobileBackLabel, mobileHeader, closeLabel 
 
   // Keep the local escape-layer contract for unmigrated Dialog/file-viewer hosts;
   // native Astryx children still dismiss first through the shared layer stack.
-  useLayerDismissal({
+  const dismissalLayer = <LayerDismissal {...{
     isActive: open,
     onDismiss: onClose,
     getContainer: () => panelRef.current,
@@ -136,7 +137,7 @@ export function Drawer({ open, title, mobileBackLabel, mobileHeader, closeLabel 
         .filter(layer => layer.closest('[hidden]') === null);
       return open && panelRef.current !== null && layers.at(-1) === panelRef.current;
     },
-  });
+  }} />;
 
   // `preventScroll` is load-bearing on open: the card enters translated, so a default `focus()` pans the page for a frame. Close restores without it so a scrolled-away opener is brought back into view.
   useEffect(() => {
@@ -225,15 +226,15 @@ export function Drawer({ open, title, mobileBackLabel, mobileHeader, closeLabel 
     </div>
     </>
   );
-  if (companion === undefined && !stacked) return <LayerDepthProvider>{card}</LayerDepthProvider>;
+  if (companion === undefined && !stacked) return <>{dismissalLayer}<LayerDepthProvider>{card}</LayerDepthProvider></>;
   return (
-    <div hidden={!open && !closing && !companionVisible} ref={hostRef} className={styles.stack} data-nc-drawer-stack=""
+    <>{dismissalLayer}<div hidden={!open && !closing && !companionVisible} ref={hostRef} className={styles.stack} data-nc-drawer-stack=""
       data-nc-drawer-resizable={width !== undefined && parentResizeGroup === null && (open || closing || companionVisible) ? '' : undefined}>
       <div className={styles.cell} hidden={!open && !closing}><LayerDepthProvider>{open || closing ? card : null}</LayerDepthProvider></div>
       <div className={styles.cell} hidden={!companionVisible}>{companion?.(ownResizeGroup)}</div>
       {/* The host owns one width/edge while either pane is open. The primary may exit and unmount independently. */}
       {(open || companionVisible) && width !== undefined && parentResizeGroup === null
         && <ResizeEdge resize={width} panelRef={hostRef} scrollRef={scrollRef} group={resizeGroup} />}
-    </div>
+    </div></>
   );
 }

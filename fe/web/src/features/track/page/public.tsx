@@ -1,4 +1,5 @@
-import { LayerDepthProvider, useLayerDismissal } from '@astryxdesign/core/Layer';
+import { LayerDismissal } from '../../../ui/dialog/layer-dismissal.tsx';
+import { LayerDepthProvider } from '@astryxdesign/core/Layer';
 import type { TrackClosedControl } from './closed-control.ts';
 import { NO_ISOLATION_LABEL, NO_ISOLATION_EXPLANATION } from '../../../../../core/domain/workspace-isolation.ts';
 import { ExplanationBadge } from '../../../ui/explanation-badge/public.tsx';
@@ -282,11 +283,11 @@ export function TrackPage({ mobileReportIntro, mobileChatComposer,
   const mobileActionsRef = useRef<HTMLSpanElement | null>(null);
   const previousPanel = useRef<MobilePanelKind | null>(null);
 
-  useLayerDismissal({
+  const dismissalLayer = <LayerDismissal {...{
     isActive: mobilePanelOpen && !mobilePanelObscured,
     onDismiss: () => onClosePanel?.(),
     getContainer: () => mobilePanelRef.current,
-  });
+  }} />;
 
   /* Focus: opening moves it into the panel container; closing returns it to the menu that opened it. Driven off `panel`, not the click, so the hardware Back button and a cold-start `?panel=` deep link behave too. */
   useEffect(() => {
@@ -351,6 +352,7 @@ export function TrackPage({ mobileReportIntro, mobileChatComposer,
       className={`${styles.page} ${boardOpen ? styles.pageBoard : ''}`}
       data-nc-track-page=""
     >
+      {dismissalLayer}
       <PageHeader
         className={styles.workHeader}
         title={

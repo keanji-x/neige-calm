@@ -1,8 +1,9 @@
+import { LayerDismissal } from '../dialog/layer-dismissal.tsx';
 export { PreviewSummary, PreviewTextLink } from './summary.tsx';
 import { useCallback, useEffect, useEffectEvent, useId, useLayoutEffect, useRef, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { isImeKeyEvent } from '@astryxdesign/core/utils';
-import { LayerDepthProvider, useLayer, useLayerDismissal } from '@astryxdesign/core/Layer';
+import { LayerDepthProvider, useLayer } from '@astryxdesign/core/Layer';
 
 import { useSurfacePresence } from '../motion/surface-presence.ts';
 import { readSurfaceFrame, type BindingView } from '../motion/geometry.ts';
@@ -175,10 +176,10 @@ export function HoverPreview({ title, trigger, children, getReadingSurface, getA
     close();
     if (card.current?.contains(document.activeElement)) focusTrigger();
   }, [close, focusTrigger]);
-  useLayerDismissal({
+  const dismissalLayer = <LayerDismissal {...{
     isActive: requested, onDismiss: dismissLayer, getContainer: () => card.current,
     isPresent: () => admitted(),
-  });
+  }} />;
   const delayClose = useCallback((delay: number) => {
     const generation = cycle.current;
     leaveTimer.current = setTimeout(() => { if (cycle.current === generation) close(); }, delay);
@@ -484,6 +485,7 @@ export function HoverPreview({ title, trigger, children, getReadingSurface, getA
       }
       if (event.key === 'Escape' && !admitted() && phase !== 'closed') { event.preventDefault(); close(); }
     }}>
+    {dismissalLayer}
     {trigger(activate, dismissForNavigation)}
     {layerHost !== null && createPortal(layer.render(<LayerDepthProvider>{present && <div ref={attachSlot} className={styles.positioner} data-nc-preview-slot="" inert aria-hidden="true"
       onClickCapture={event => { if (!admitted()) { event.preventDefault(); event.stopPropagation(); } }}

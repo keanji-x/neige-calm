@@ -8,6 +8,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 import '../../../styles/entry.css';
 import { createCardHost, createCardRegistry, type CardEntry } from '../../../systems/cards/public.ts';
 import { useState } from '../../../ui/state/public.ts';
+import { ConfirmDialog } from '../../../ui/dialog/public.tsx';
 import { CardGridOverlay } from './public.tsx';
 
 type MenuCard = Readonly<{ type: 'dismissal-test'; id: string }>;
@@ -66,4 +67,24 @@ it('keeps the grid open when the real terminal consumes Escape', async () => {
   input.focus();
   await userEvent.keyboard('{Escape}');
   expect(close).not.toHaveBeenCalled();
+});
+
+it('dismisses a reopened confirmation before a grid opened after its first close', async () => {
+  const host = createCardHost(createCardRegistry());
+  const closeGrid = vi.fn();
+  const closeDialog = vi.fn();
+  const overlay = (dialog: boolean, grid: boolean) => <>
+    <CardGridOverlay open={grid} host={host} items={[]} activeCardId={null} onClose={closeGrid} />
+    <ConfirmDialog origin={{ kind: 'surface-center' }} open={dialog} title="Delete card"
+      onConfirm={vi.fn()} onCancel={closeDialog} />
+  </>;
+  const view = render(overlay(true, false));
+  await expect.element(page.getByRole('dialog', { name: 'Delete card' })).toBeVisible();
+  view.rerender(overlay(false, false));
+  view.rerender(overlay(false, true));
+  view.rerender(overlay(true, true));
+  await expect.element(page.getByRole('dialog', { name: 'Delete card' })).toBeVisible();
+  await userEvent.keyboard('{Escape}');
+  expect(closeDialog).toHaveBeenCalledOnce();
+  expect(closeGrid).not.toHaveBeenCalled();
 });
