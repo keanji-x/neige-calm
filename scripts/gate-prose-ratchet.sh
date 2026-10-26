@@ -67,6 +67,14 @@
 # existing baseline; ordinary backend/test additions need no inventory edit.
 # The existing 120-character shape and single CI scan remain unchanged.
 
+# #2843 U13-A adds fourteen long_literal matches, all persistence SQL:
+# one required-marker INSERT; seven core fixtures (two consumed keys, marker
+# restoration, backfill trigger, old send receipt, orphan transcript, start journal);
+# four regression INSERTs (ACP, completed activation, creation receipt, retained
+# discriminator collision); two creator
+# boundary queries. Later SQL edits update their owner and this existing occurrence
+# baseline; no scan, excluded path, file/test roster or CI pass is added.
+
 set -uo pipefail
 
 cd "$(git rev-parse --show-toplevel)" || exit 1

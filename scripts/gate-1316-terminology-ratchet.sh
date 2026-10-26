@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# #2843 retained discriminator regression: wave/crates +1 and spec/crates +1
+# are the frozen historical PlainChat wire keys in the untagged control payload.
+# Wire changes edit the fixture and this existing baseline; no new scan, exclusion,
+# domain identifier or test inventory is added.
 # #3176 bounded contract exception: spec/crates 521 -> 523 adds the existing
 # event_spec helper for the remove receipt and its serialized-field assertion.
 # No new domain name, scan rule, exemption or check is introduced; the existing
@@ -193,6 +197,13 @@
 # author, not a domain name. The existing occurrence scan still runs once per
 # ratchet target. A later serialized-author fixture edits its owning test and
 # this existing baseline; no new scan, exclusion, or file/test inventory is added.
+
+# #2843 U13-A bounded contract registration: harness_item/crates 298 -> 302
+# counts two boot-fence reads, one orphan-history fixture INSERT and one
+# terminal-fact fixture UPDATE against the frozen physical transcript table.
+# New Rust names use native/transcript. Later physical-table references update
+# this existing occurrence baseline; no scan rule, excluded path, file/test
+# roster or CI invocation is added.
 
 set -uo pipefail
 

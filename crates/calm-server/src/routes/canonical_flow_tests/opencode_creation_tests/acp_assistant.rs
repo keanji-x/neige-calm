@@ -55,7 +55,9 @@ async fn wait_idle(fixture: &Fixture, card: &str, attempts: usize) -> CanonicalH
 async fn acp_assistant_outage_acceptance_replay_and_retained_activation() {
     let mut fixture = Fixture::new().await;
     let (state, app, cookie) = fixture.application().await;
-    let track = track(&app, &cookie).await;
+    let track =
+        crate::routes::canonical_flow_tests::assistant_canonical::canonical_track(&app, &cookie)
+            .await;
     let uri = format!("/api/tracks/{track}/conversations");
     let body = json!({"provider":"opencode","text":FIRST_BODY});
     let expected_card =
@@ -341,7 +343,9 @@ async fn acp_assistant_lost_response_cold_restart_never_resends() {
     configure(&mut fixture);
     std::fs::write(fixture.root.path().join("scenario"), "lost").unwrap();
     let (state, app, cookie) = fixture.application().await;
-    let track = track(&app, &cookie).await;
+    let track =
+        crate::routes::canonical_flow_tests::assistant_canonical::canonical_track(&app, &cookie)
+            .await;
     let uri = format!("/api/tracks/{track}/conversations");
     let body = json!({"provider":"opencode","text":FIRST_BODY});
     let created = post(&app, &cookie, &uri, "lost", body.clone()).await;

@@ -3,7 +3,43 @@
 use super::*;
 use calm_truth::db::RepoRead;
 
+#[tokio::test]
+async fn u13_empty_canonical_parent_keyed_and_unkeyed_allow_reopen() {
+    for key in ["", "empty-parent"] {
+        let fixture = Fixture::new().await;
+        let (state, app, cookie) = fixture.application().await;
+        let area = super::u8_canonical::area(&app, &cookie, "empty boot").await;
+        let mut body = super::u8_canonical::body(&area, "codex");
+        body["admin"] = json!(true);
+        let (status, created) = super::u8_canonical::create(&app, &cookie, key, body).await;
+        assert_eq!(status, StatusCode::CREATED, "{created}");
+        let (_, _, frame) = fixture.carrier(created["id"].as_str().unwrap()).await;
+        assert!(frame.canonical_inputs.pending.is_empty());
+        let human: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM conversation_human_track_creations")
+                .fetch_one(fixture.repo.pool())
+                .await
+                .unwrap();
+        assert_eq!(human, 0);
+        fixture.shutdown_process(&state).await;
+        drop(app);
+        drop(state);
+        let reopened = SqlxRepo::open(&fixture.url)
+            .await
+            .unwrap_or_else(|error| panic!("canonical empty key={key:?}: {error}"));
+        reopened.db().close().await;
+    }
+}
+
 pub(super) async fn track(app: &axum::Router, cookie: &str) -> String {
+    parent_track(app, cookie, false).await
+}
+
+pub(super) async fn canonical_track(app: &axum::Router, cookie: &str) -> String {
+    parent_track(app, cookie, true).await
+}
+
+async fn parent_track(app: &axum::Router, cookie: &str, canonical: bool) -> String {
     let area = post(
         app,
         cookie,
@@ -12,17 +48,18 @@ pub(super) async fn track(app: &axum::Router, cookie: &str) -> String {
         json!({"name":"Assistant canonical","color":"#123456"}),
     )
     .await;
-    let created = post(
+    let (status, created) = super::u8_canonical::create(
         app,
         cookie,
-        "/api/tracks",
-        "track",
+        if canonical { "" } else { "track" },
         json!({
             "area_id":area["id"],"title":"Assistant parent","planner_provider":"codex",
+            "admin":canonical,
             "theme":{"fg":[255,255,255],"bg":[0,0,0]}
         }),
     )
     .await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
     created["id"].as_str().unwrap().to_owned()
 }
 

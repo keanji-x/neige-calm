@@ -6,11 +6,11 @@ cove	crates	125
 cove	fe	0
 cove	docs	0
 cove	e2e	0
-wave	crates	664
+wave	crates	665
 wave	fe	16
 wave	docs	12
 wave	e2e	0
-spec	crates	523
+spec	crates	524
 spec	fe	65
 spec	docs	0
 spec	e2e	1
@@ -18,7 +18,7 @@ runtime_id	crates	1114
 runtime_id	fe	37
 runtime_id	docs	1
 runtime_id	e2e	4
-harness_item	crates	298
+harness_item	crates	302
 harness_item	fe	139
 harness_item	docs	2
 harness_item	e2e	0

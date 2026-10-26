@@ -37,6 +37,7 @@ mod conversation_archive;
 mod conversation_read;
 pub use conversation_archive::{conversation_archive_set_tx, require_conversation_unarchived_tx};
 mod conversation_title;
+pub mod conversation_upgrade;
 mod database_identity;
 pub mod event_inputs;
 mod events;
@@ -233,6 +234,7 @@ pub use track_workspace::{
     track_workspace_read_tx, track_workspace_trash_retention_owners, track_workspace_write_tx,
 };
 
+#[cfg(test)]
 use infra::check_no_unknown_future_migrations;
 
 pub struct SqlxRepo {
@@ -250,17 +252,11 @@ impl SqlxRepo {
     /// Open / create the SQLite DB at `url`, run pending migrations, and
     /// enable foreign-key enforcement per-connection.
     pub async fn open(url: &str) -> Result<Self> {
-        let db = SqliteDb::connect(url).await?;
+        let db = conversation_upgrade::install_schema(url).await?;
         let pool = db.read_pool();
-
-        // Refuse to boot when the DB carries a migration row this binary doesn't know
-        // about, before sqlx can apply any pending known migration.
-        check_no_unknown_future_migrations(pool, &crate::MIGRATOR).await?;
-
-        crate::MIGRATOR
-            .run(pool)
-            .await
-            .map_err(|e| CalmError::Internal(format!("migrate: {e}")))?;
+        // U13: fail before semantic backfills, either cache, or any caller can
+        // construct recovery, native subscriptions, dispatcher or HTTP/MCP.
+        conversation_upgrade::boot::assert_ready(&db).await?;
 
         canonical_input_revision_migration::migrate(&db).await?;
         subtrack_route_migration::migrate(&db).await?;

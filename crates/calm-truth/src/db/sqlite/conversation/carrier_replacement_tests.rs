@@ -559,3 +559,48 @@ async fn c4_admission_cannot_attach_to_a_replaced_carrier() {
     ));
     assert!(owner::load(&mut **tx, &worker).await.unwrap().is_none());
 }
+
+#[tokio::test]
+async fn u13_real_replacement_keeps_old_v1_and_boot_refuses() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = format!("sqlite://{}", dir.path().join("rotation.db").display());
+    let repo = SqlxRepo::open(&url).await.unwrap();
+    let (_, card) = super::tests::fixture_card(&repo).await;
+    let historical = runtime(&repo, &card).await;
+    let raw = r#"{"schema_version":1,"mode":"harness","pending_queue":[]}"#;
+    let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
+    super::super::session_set_handle_state_tx(
+        &mut tx,
+        &historical,
+        Some(serde_json::from_str(raw).unwrap()),
+    )
+    .await
+    .unwrap();
+    super::super::session_supersede_active_tx(&mut tx, &historical, 1)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    // The primitive only rotates a settled canonical current carrier. An older
+    // historical row is already retired; no claim that V1 itself can rotate.
+    let worker = runtime(&repo, &card).await;
+    let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
+    let before = expected(&mut tx, &card, &worker, &Protected).await;
+    let replacement = replace_idle_carrier_tx(&mut tx, before, binding())
+        .await
+        .unwrap();
+    replacement.repoint_root_tx(&mut tx).await.unwrap();
+    tx.commit().await.unwrap();
+    let old = row(&repo, &historical).await;
+    assert_eq!(old.state, WorkerSessionState::Superseded);
+    assert_eq!(
+        old.handle_state_json,
+        Some(serde_json::from_str(raw).unwrap())
+    );
+    assert_eq!(
+        row(&repo, &worker).await.state,
+        WorkerSessionState::Superseded
+    );
+    repo.db().close().await;
+    assert!(matches!(SqlxRepo::open(&url).await,
+        Err(crate::error::CalmError::Internal(message)) if message.starts_with("conversation upgrade:")));
+}

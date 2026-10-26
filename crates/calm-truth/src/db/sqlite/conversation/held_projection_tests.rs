@@ -1,4 +1,4 @@
-//! Actual protected carrier reads and boot conversion, without runtime handles.
+//! Protected carrier reads and the canonical revision migration owner.
 use super::super::{SqlxRepo, begin_immediate_tx};
 use super::tests::{body, fixture_card, plan};
 use super::transaction_tests::{provenance, runtime};
@@ -146,7 +146,7 @@ fn released(mut frame: Value) -> Value {
 }
 
 #[tokio::test]
-async fn canonical_migration_open_converts_all_retained_states_and_preserves_evidence() {
+async fn canonical_migration_owner_converts_all_retained_states_and_preserves_evidence() {
     let dir = tempfile::tempdir().unwrap();
     let url = format!(
         "sqlite://{}?mode=rwc",
@@ -195,12 +195,13 @@ async fn canonical_migration_open_converts_all_retained_states_and_preserves_evi
         .execute(repo.pool())
         .await
         .unwrap();
-    drop(repo);
-    let reopened = SqlxRepo::open(&url).await.unwrap();
+    super::super::canonical_input_revision_migration::migrate(repo.db())
+        .await
+        .unwrap();
     let unchanged_other: String =
         sqlx::query_scalar("SELECT handle_state_json FROM worker_sessions WHERE id=?1")
             .bind(other_worker)
-            .fetch_one(reopened.pool())
+            .fetch_one(repo.pool())
             .await
             .unwrap();
     assert_eq!(unchanged_other, other_format);
@@ -208,7 +209,7 @@ async fn canonical_migration_open_converts_all_retained_states_and_preserves_evi
         let (raw, actual_state): (String, String) =
             sqlx::query_as("SELECT handle_state_json,state FROM worker_sessions WHERE id=?1")
                 .bind(&worker)
-                .fetch_one(reopened.pool())
+                .fetch_one(repo.pool())
                 .await
                 .unwrap();
         let current: Value = serde_json::from_str(&raw).unwrap();
@@ -224,7 +225,7 @@ async fn canonical_migration_open_converts_all_retained_states_and_preserves_evi
     let unchanged: String =
         sqlx::query_scalar("SELECT handle_state_json FROM worker_sessions WHERE id=?1")
             .bind(old_worker)
-            .fetch_one(reopened.pool())
+            .fetch_one(repo.pool())
             .await
             .unwrap();
     assert_eq!(unchanged, historical);
@@ -240,10 +241,61 @@ async fn canonical_migration_open_converts_all_retained_states_and_preserves_evi
         ..sqlx::migrate::Migrator::DEFAULT
     };
     assert!(
-        super::super::infra::check_no_unknown_future_migrations(reopened.pool(), &old_binary)
+        super::super::infra::check_no_unknown_future_migrations(repo.pool(), &old_binary)
             .await
             .is_err()
     );
+}
+
+#[tokio::test]
+async fn canonical_migration_boot_refuses_historical_and_unknown_without_backfill() {
+    for unproven in [
+        r#"{"schema_version":1,"mode":"harness","pending_queue":[{"text":"private legacy"}]}"#,
+        r#"{"schema_version":2,"mode":"another_component","opaque":true}"#,
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let url = format!(
+            "sqlite://{}?mode=rwc",
+            dir.path().join("blocked.db").display()
+        );
+        let repo = SqlxRepo::open(&url).await.unwrap();
+        let (card, worker, _) = held(&repo).await;
+        let old = released(
+            repo.conversation_read_frame(&card)
+                .await
+                .unwrap()
+                .snapshot
+                .unwrap(),
+        )
+        .to_string();
+        let (_, other) = fixture_card(&repo).await;
+        let other_worker = runtime(&repo, &other).await;
+        for (id, raw) in [(&worker, old.as_str()), (&other_worker, unproven)] {
+            sqlx::query("UPDATE worker_sessions SET handle_state_json=?1 WHERE id=?2")
+                .bind(raw)
+                .bind(id)
+                .execute(repo.pool())
+                .await
+                .unwrap();
+        }
+        let error = SqlxRepo::open(&url)
+            .await
+            .err()
+            .expect("boot refuses unproven evidence");
+        assert!(
+            matches!(error, crate::error::CalmError::Internal(ref message)
+            if message.starts_with("conversation upgrade:"))
+        );
+        for (id, expected) in [(&worker, old.as_str()), (&other_worker, unproven)] {
+            let raw: String =
+                sqlx::query_scalar("SELECT handle_state_json FROM worker_sessions WHERE id=?1")
+                    .bind(id)
+                    .fetch_one(repo.pool())
+                    .await
+                    .unwrap();
+            assert_eq!(raw, expected, "boot must not run the semantic backfill");
+        }
+    }
 }
 
 #[tokio::test]

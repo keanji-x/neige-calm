@@ -74,7 +74,9 @@ pub(in crate::routes::canonical_flow_tests) async fn wait_frame(
 async fn claude_assistant_outage_acceptance_replay_and_retained_activation() {
     let mut fixture = Fixture::new().await;
     let (state, app, cookie) = fixture.application().await;
-    let track = track(&app, &cookie).await;
+    let track =
+        crate::routes::canonical_flow_tests::assistant_canonical::canonical_track(&app, &cookie)
+            .await;
     let uri = format!("/api/tracks/{track}/conversations");
     let body = json!({"provider":"claude","text":FIRST_BODY});
     let expected_card =
@@ -387,7 +389,10 @@ async fn claude_assistant_restart_human_resolution_waits_for_predecessor_settlem
         let mut fixture = Fixture::new().await;
         configure(&mut fixture, "hold");
         let (state, app, cookie) = fixture.application().await;
-        let track = track(&app, &cookie).await;
+        let track = crate::routes::canonical_flow_tests::assistant_canonical::canonical_track(
+            &app, &cookie,
+        )
+        .await;
         sqlx::query("CREATE TRIGGER hold_assistant_marker BEFORE UPDATE OF handle_state_json ON worker_sessions \
             WHEN json_array_length(NEW.handle_state_json,'$.canonical_inputs.attempts') > 0 \
             BEGIN SELECT RAISE(ABORT,'hold crossing'); END").execute(fixture.repo.pool()).await.unwrap();
@@ -576,12 +581,67 @@ async fn claude_assistant_internal_historical_key_replays_original_evidence() {
     fixture.shutdown_process(&state).await;
     drop(app);
     drop(state);
-    fixture.claude_config = None;
-    let (state, app, cookie) = fixture.application().await;
-    let replay = post(&app, &cookie, &uri, "historical-claude", body).await;
-    assert_eq!(replay["initialInput"], original["initialInput"]);
-    assert_eq!(fixture.counts(card).await.0, 0);
-    fixture.shutdown_process(&state).await;
+    // Historical factual replay remains available in-process, but cannot boot
+    // the deployment through the new format barrier. Compare raw durable JSON.
+    // Dispatcher retirement does not join an in-flight historical harness.
+    // Freeze a real crash image so that writer cannot race the boot byte checks.
+    let snapshot = fixture.root.path().join("historical-boot.db");
+    sqlx::query("VACUUM INTO ?1")
+        .bind(snapshot.to_str().unwrap())
+        .execute(fixture.repo.pool())
+        .await
+        .unwrap();
+    let url = format!("sqlite:{}", snapshot.display());
+    let raw = calm_truth::db::sqlite::conversation_upgrade::install_schema(&url)
+        .await
+        .unwrap();
+    let before: Vec<(String, Option<String>)> =
+        sqlx::query_as("SELECT id,handle_state_json FROM worker_sessions ORDER BY id")
+            .fetch_all(raw.read_pool())
+            .await
+            .unwrap();
+    let journals: Vec<(String, String)> =
+        sqlx::query_as("SELECT id,payload_json FROM operations ORDER BY id")
+            .fetch_all(raw.read_pool())
+            .await
+            .unwrap();
+    use clap::Parser;
+    let mut cfg = crate::config::Config::parse_from(["calm-server"]);
+    cfg.db_url = url.clone();
+    cfg.auth_password = Some("fixture-password".into());
+    let error = AppState::boot(&cfg)
+        .await
+        .err()
+        .expect("historical boot refused");
+    assert!(
+        error.to_string().contains("conversation upgrade"),
+        "{error:#}"
+    );
+    let error = SqlxRepo::open(&url)
+        .await
+        .err()
+        .expect("historical repo refused");
+    assert!(
+        error.to_string().contains("conversation upgrade"),
+        "{error}"
+    );
+    assert_eq!(
+        sqlx::query_as::<_, (String, Option<String>)>(
+            "SELECT id,handle_state_json FROM worker_sessions ORDER BY id"
+        )
+        .fetch_all(raw.read_pool())
+        .await
+        .unwrap(),
+        before
+    );
+    assert_eq!(
+        sqlx::query_as::<_, (String, String)>("SELECT id,payload_json FROM operations ORDER BY id")
+            .fetch_all(raw.read_pool())
+            .await
+            .unwrap(),
+        journals
+    );
+    raw.close().await;
 }
 
 #[tokio::test]

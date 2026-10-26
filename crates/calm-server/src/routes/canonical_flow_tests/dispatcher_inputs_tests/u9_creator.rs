@@ -57,6 +57,56 @@ pub(in crate::routes::canonical_flow_tests) async fn attached_mcp_selection() {
 }
 
 #[tokio::test]
+async fn u13_historical_allocation_materialization_failure_refuses_boot() {
+    let mut flow = Flow::running_with_admission(false, true).await;
+    flow.state.dispatcher.abort_event_listener_for_test();
+    let mut state = crate::state::RouteState::from_ref(&flow.state);
+    let blocked = flow.fixture.root.path().join("blocked-workspace-root");
+    std::fs::write(&blocked, b"not a directory").unwrap();
+    state.workspace_root = blocked;
+    let creator = RouteTrackCreator::new(state, 2);
+    assert!(
+        creator
+            .historical_receipt_for_test(input(&flow, "failed-materialize"))
+            .await
+            .is_err()
+    );
+    let facts: (i64, i64, i64) = sqlx::query_as(
+        "SELECT (SELECT count(*) FROM track_create_idempotency b JOIN tracks t ON t.id=b.track_id WHERE t.creator_key='failed-materialize' AND b.first_message_sha256 IS NOT NULL),
+         (SELECT count(*) FROM cards c JOIN tracks t ON t.id=c.track_id WHERE t.creator_key='failed-materialize' AND c.role='planner' AND c.session_id IS NULL),
+         (SELECT count(*) FROM worker_sessions ws JOIN tracks t ON t.id=ws.track_id WHERE t.creator_key='failed-materialize')")
+        .fetch_one(flow.fixture.repo.pool()).await.unwrap();
+    assert_eq!(facts, (1, 1, 0));
+    stop_creator(&mut flow).await;
+    assert!(matches!(SqlxRepo::open(&flow.fixture.url).await,
+        Err(calm_truth::error::CalmError::Internal(message)) if message.starts_with("conversation upgrade:")));
+}
+
+#[tokio::test]
+async fn u13_creator_canonical_before_dispatch_allows_reopen() {
+    let mut flow = Flow::running_with_admission(false, true).await;
+    flow.state.dispatcher.abort_event_listener_for_test();
+    let created = route(&flow, 2)
+        .add(input(&flow, "boot-receipt"))
+        .await
+        .unwrap();
+    assert_eq!(
+        counts(&flow.fixture, created.id.as_str()).await,
+        (1, 1, 0, 0, 0)
+    );
+    let human: i64 = sqlx::query_scalar("SELECT count(*) FROM conversation_human_track_creations a JOIN track_create_idempotency b USING(area_id,idempotency_key) WHERE b.track_id=?1")
+        .bind(created.id.as_str()).fetch_one(flow.fixture.repo.pool()).await.unwrap();
+    assert_eq!(human, 0);
+    // Allocation and its keyed System source committed; dispatcher has not
+    // accepted any input. A restart here is a normal canonical crash boundary.
+    stop_creator(&mut flow).await;
+    let reopened = SqlxRepo::open(&flow.fixture.url)
+        .await
+        .expect("canonical creator allocation");
+    reopened.db().close().await;
+}
+
+#[tokio::test]
 async fn u9_canonical_creator_system_full_text() {
     let mut flow = Flow::running_with_admission(false, true).await;
     flow.state.dispatcher.abort_event_listener_for_test();
