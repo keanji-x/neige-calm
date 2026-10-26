@@ -119,6 +119,8 @@ mod planner_start_fence_invariant;
 mod planner_steer;
 #[path = "cases/planner_transcript_projection.rs"]
 mod planner_transcript_projection;
+#[path = "cases/today_launchpad_adoption.rs"]
+mod today_launchpad_adoption;
 #[path = "cases/today_launchpad_restart_lock.rs"]
 mod today_launchpad_restart_lock;
 #[path = "cases/today_launchpad_start_once.rs"]

@@ -239,8 +239,8 @@ async fn first_ensure_mints_launchpad_with_all_cards_and_idle_planner() {
         .await
         .unwrap();
     let payload: Value = serde_json::from_str(&payload).unwrap();
-    assert_eq!(payload["harness"]["pendingQueue"], serde_json::json!([]));
-    assert!(payload["harness"].get("goal").is_none());
+    assert_eq!(payload["planner_provider"], "codex");
+    assert!(payload.get("prompt").is_none());
 }
 
 #[tokio::test]
@@ -281,7 +281,7 @@ async fn repeated_ensure_preserves_planner_transcript_and_ids_and_singleton() {
 }
 
 #[tokio::test]
-async fn legacy_today_adoption_resets_planner_transcript_and_preserves_terminal() {
+async fn u11_canonical_today_malformed_legacy_refuses_without_erasing_history() {
     let b = boot().await;
     let (_, original) = ensure(b.app.clone()).await;
     sqlx::query("UPDATE tracks SET purpose=NULL WHERE id=?1")
@@ -311,23 +311,13 @@ async fn legacy_today_adoption_resets_planner_transcript_and_preserves_terminal(
         .await
         .unwrap();
 
-    let (status, adopted) = ensure(b.app.clone()).await;
-    assert_eq!(status, StatusCode::CREATED, "body={adopted}");
-    assert_eq!(adopted, original);
-    let items: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM harness_items WHERE card_id=?1")
-        .bind(original["planner_card_id"].as_str().unwrap())
-        .fetch_one(b.repo.pool())
-        .await
-        .unwrap();
-    assert_eq!(items, 0);
-    let purpose: String = sqlx::query_scalar("SELECT purpose FROM tracks WHERE id=?1")
-        .bind(original["track_id"].as_str().unwrap())
-        .fetch_one(b.repo.pool())
-        .await
-        .unwrap();
-    assert_eq!(purpose, "launchpad");
-    assert_eq!(adopted["terminal_card_id"], original["terminal_card_id"]);
-    assert_eq!(adopted["terminal_id"], original["terminal_id"]);
+    let before = snapshot::database(&b.repo).await;
+    let (status, body) = ensure(b.app.clone()).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["code"], "today_adoption_binding_mismatch");
+    let after = snapshot::database(&b.repo).await;
+    assert_eq!(after, before);
+    assert_eq!(count(&b, "SELECT COUNT(*) FROM harness_items").await, 1);
 }
 
 /// The launchpad bypasses `track_create_tx` (raw INSERT/UPDATE with hand-written column lists that
@@ -407,19 +397,13 @@ async fn launchpad_track_carries_an_unfrozen_managed_workspace_on_both_branches(
         .unwrap();
     tx.commit().await.unwrap();
 
-    let (status, adopted) = ensure(b.app.clone()).await;
-    assert_eq!(status, StatusCode::CREATED, "body={adopted}");
-    let (kind, path, frozen_at) = workspace_row(&b.repo, &track_id).await;
-    assert_eq!(kind, "managed", "adoption re-declares the kind");
-    assert_ne!(
-        path, "/also-scrambled",
-        "adoption actually rewrote the path"
-    );
-    assert!(std::path::Path::new(&path).starts_with(&b.workspace_root));
-    assert_eq!(
-        frozen_at, None,
-        "adoption re-points, and re-pointing must never stamp frozen_at"
-    );
+    let before = workspace_row(&b.repo, &track_id).await;
+    let (status, body) = ensure(b.app.clone()).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["code"], "today_adoption_workspace_drift");
+    assert_eq!(workspace_row(&b.repo, &track_id).await, before);
+    let track = b.repo.track_get(&track_id).await.unwrap().unwrap();
+    assert!(track.purpose.is_none());
 }
 
 /// `kind = Managed` ⇒ the path is under `<workspace-root>`, with no exceptions; the recycle path
@@ -595,7 +579,7 @@ async fn launchpad_workspace_is_materialized() {
     assert_eq!(kind, "managed");
     assert_eq!(
         frozen_at, None,
-        "the launchpad stays re-pointable; that D9 exception survives the move \
+        "the launchpad stays unfrozen after the move \
          to a managed root"
     );
     assert_eq!(
@@ -625,161 +609,30 @@ async fn launchpad_workspace_is_materialized() {
     assert_eq!(status, StatusCode::OK, "body={body}");
 }
 
-/// A workspace re-point must not wedge `ensure` on a stale idempotency key: the bootstrap's
-/// operation row is hashed against the old cwd and nothing ever deletes rows from `operations`.
+/// A moved root cannot authorize replacing an existing launchpad's Workspace.
 #[tokio::test]
-async fn repointing_the_workspace_does_not_wedge_ensure_on_a_stale_idempotency_key() {
-    let tmp = TempDir::new().unwrap();
+async fn u11_canonical_today_root_drift_refuses_existing_purpose_without_mutation() {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
-    let before = boot_with(TempDir::new().unwrap(), repo.clone(), "workspaces-old").await;
-    // Hold the old root's tempdir for the lifetime of this test.
-    let _old_tmp = before._tmp;
-
-    let (status, body) = ensure(before.app.clone()).await;
-    assert_eq!(status, StatusCode::CREATED, "body={body}");
-    // Steady state: started at this path already, so this ensure starts nothing (#2251).
-    let (status, body) = ensure(before.app.clone()).await;
-    assert_eq!(status, StatusCode::OK, "body={body}");
-    let old_path: String =
-        sqlx::query_scalar("SELECT workspace_path FROM tracks WHERE purpose='launchpad'")
-            .fetch_one(repo.pool())
-            .await
-            .unwrap();
-    let launchpad_keys = |pattern: &'static str| {
-        let pool = repo.pool().clone();
-        async move {
-            sqlx::query_scalar::<_, i64>(
-                "SELECT COUNT(*) FROM operations WHERE idempotency_key LIKE ?1",
-            )
-            .bind(pattern)
-            .fetch_one(&pool)
-            .await
-            .unwrap()
-        }
-    };
-    assert_eq!(
-        launchpad_keys("today-launchpad:%:bootstrap:%").await,
-        1,
-        "the fixture must have minted the bootstrap's operation row at the OLD path, otherwise \
-         there is no stale key to collide with and this test proves nothing"
-    );
-    assert_eq!(
-        launchpad_keys("today-launchpad:%").await,
-        1,
-        "a steady-state ensure submitted a start of its own"
-    );
-
-    // --- the upgrade ---
-    let after = boot_with(tmp, repo.clone(), "workspaces-new").await;
-
-    // 200, not 201: the launchpad was neither minted nor adopted, only
-    // re-pointed. What matters is that it is a success at all.
-    let (status, body) = ensure(after.app.clone()).await;
-    assert_eq!(
-        status,
-        StatusCode::OK,
-        "first ensure after the re-point must succeed; body={body}"
-    );
-    let new_path: String =
-        sqlx::query_scalar("SELECT workspace_path FROM tracks WHERE purpose='launchpad'")
-            .fetch_one(repo.pool())
-            .await
-            .unwrap();
-    assert_ne!(
-        new_path, old_path,
-        "the fixture must actually re-point the workspace, otherwise the stale \
-         key never collides and this test proves nothing"
-    );
-
-    assert_eq!(
-        launchpad_keys("today-launchpad:%:repoint:%").await,
-        1,
-        "the re-point started the Planner at the new path"
-    );
-
-    // Steady again, now at the new cwd.
-    let (status, body) = ensure(after.app.clone()).await;
-    assert_eq!(
-        status,
-        StatusCode::OK,
-        "second ensure after the re-point 409'd on a stale idempotency key — \
-         the Today panel is wedged with no self-healing path; body={body}"
-    );
-    // And it stays healed, starting nothing more.
-    let (status, body) = ensure(after.app.clone()).await;
-    assert_eq!(status, StatusCode::OK, "body={body}");
-    assert_eq!(launchpad_keys("today-launchpad:%").await, 2);
-}
-
-/// A re-point that fails midway must still re-anchor the planner harness on the next `ensure`:
-/// materialization runs after the transaction commits, so a 500 there must not discard the intent.
-#[tokio::test]
-async fn a_failed_materialize_during_a_repoint_still_re_anchors_the_harness() {
-    let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
-    let before = boot_with(TempDir::new().unwrap(), repo.clone(), "workspaces-old").await;
-    let _old_tmp = before._tmp;
-
-    let (status, body) = ensure(before.app.clone()).await;
-    assert_eq!(status, StatusCode::CREATED, "body={body}");
-    let (status, body) = ensure(before.app.clone()).await;
-    assert_eq!(status, StatusCode::OK, "body={body}");
-
-    // --- the upgrade, with materialization obstructed ---
-    let tmp = TempDir::new().unwrap();
-    let after = boot_with(tmp, repo.clone(), "workspaces-new").await;
-    let area_id: String =
-        sqlx::query_scalar("SELECT area_id FROM tracks WHERE purpose='launchpad'")
-            .fetch_one(repo.pool())
-            .await
-            .unwrap();
-    std::fs::create_dir_all(&after.workspace_root).unwrap();
-    // A plain file where `<root>/<area_id>` must be a directory: `mkdir` gets
-    // ENOTDIR. (Not a read-only parent — CI runs as root, for whom mode bits
-    // are advisory, and that injection would pass vacuously.)
-    std::fs::write(after.workspace_root.join(&area_id), "not a directory").unwrap();
-
-    let (status, _) = ensure(after.app.clone()).await;
-    assert!(
-        !status.is_success(),
-        "materialization was obstructed, so this ensure must fail"
-    );
-
-    std::fs::remove_file(after.workspace_root.join(&area_id)).unwrap();
-    let (status, body) = ensure(after.app.clone()).await;
-    assert!(status.is_success(), "body={body}");
-
-    // The load-bearing assertion: the harness was re-anchored at the new path,
-    // not resumed at the old one.
-    let repoints: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM operations WHERE idempotency_key LIKE 'today-launchpad:%:repoint:%'",
-    )
-    .fetch_one(repo.pool())
-    .await
-    .unwrap();
-    assert!(
-        repoints > 0,
-        "no `:repoint` operation exists: the re-point intent was lost when the \
-         first attempt failed, so the planner harness resumed its thread in the \
-         OLD workspace while every worker uses the new one"
-    );
-
-    // And it settles: once started at this path, later ensures start nothing.
-    let launchpad_starts = || async {
-        sqlx::query_scalar::<_, i64>(
-            "SELECT COUNT(*) FROM operations WHERE idempotency_key LIKE 'today-launchpad:%'",
-        )
-        .fetch_one(repo.pool())
+    let before = boot_with(TempDir::new().unwrap(), repo.clone(), "old").await;
+    let (_, original) = ensure(before.app.clone()).await;
+    let track = repo
+        .track_get(original["track_id"].as_str().unwrap())
         .await
         .unwrap()
-    };
-    let settled = launchpad_starts().await;
-    let (status, body) = ensure(after.app.clone()).await;
-    assert_eq!(status, StatusCode::OK, "body={body}");
-    assert_eq!(
-        launchpad_starts().await,
-        settled,
-        "steady state never resumed: a settled ensure started the Planner again"
-    );
+        .unwrap();
+    let after = boot_with(TempDir::new().unwrap(), repo.clone(), "new").await;
+    for _ in 0..2 {
+        let (status, body) = ensure(after.app.clone()).await;
+        assert_eq!(status, StatusCode::CONFLICT, "{body}");
+        assert_eq!(body["code"], "today_adoption_workspace_drift");
+        assert_eq!(
+            serde_json::to_value(repo.track_get(track.id.as_str()).await.unwrap().unwrap())
+                .unwrap(),
+            serde_json::to_value(&track).unwrap()
+        );
+    }
+    assert_eq!(count(&after, "SELECT COUNT(*) FROM tracks").await, 1);
+    assert_eq!(count(&after, "SELECT COUNT(*) FROM operations").await, 0);
 }
 
 /// `(track id, workspace_kind, workspace_path)`.
@@ -1284,24 +1137,10 @@ async fn today_launchpad_mint_branch_survives_the_column_rename() {
 async fn today_launchpad_adopt_branch_survives_the_column_rename() {
     let b = boot().await;
 
-    // The launchpad lives in the system area; mint it directly.
-    let mut tx = b.repo.pool().begin().await.unwrap();
-    let area = calm_server::db::sqlite::area_create_system_tx(&mut tx)
-        .await
-        .expect("system area");
-    tx.commit().await.unwrap();
-
-    let track_id = "legacy-today-track".to_string();
-    sqlx::query(
-        "INSERT INTO tracks (id, area_id, title, sort, template_id, template_input, \
-         created_at, updated_at) \
-         VALUES (?1, ?2, 'Today', 0, 'small-change', '{\"issue\":1209}', 1, 1)",
-    )
-    .bind(&track_id)
-    .bind(area.id.as_str())
-    .execute(b.repo.pool())
-    .await
-    .expect("seed a legacy Today row carrying both template columns");
+    let (_, dto) = ensure(b.app.clone()).await;
+    let track_id = dto["track_id"].as_str().unwrap().to_owned();
+    sqlx::query("UPDATE tracks SET purpose=NULL,template_id='small-change',template_input='{\"issue\":1209}' WHERE id=?1")
+        .bind(&track_id).execute(b.repo.pool()).await.unwrap();
     let (status, adopted) = ensure(b.app.clone()).await;
     assert_eq!(status, StatusCode::CREATED, "body={adopted}");
     assert_eq!(adopted["track_id"].as_str(), Some(track_id.as_str()));
@@ -1497,3 +1336,6 @@ async fn resetting_without_a_launchpad_is_a_404_and_creates_nothing() {
     assert_eq!(count(&b, "SELECT COUNT(*) FROM tracks").await, 0);
     assert_eq!(count(&b, "SELECT COUNT(*) FROM operations").await, 0);
 }
+
+#[path = "today_launchpad_snapshot.rs"]
+pub(crate) mod snapshot;

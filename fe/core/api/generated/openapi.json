@@ -8564,7 +8564,7 @@
         "operationId": "ensure_today_launchpad",
         "responses": {
           "200": {
-            "description": "Existing live launchpad",
+            "description": "Existing launchpad retained",
             "content": {
               "application/json": {
                 "schema": {
@@ -8574,7 +8574,7 @@
             }
           },
           "201": {
-            "description": "Launchpad minted or adopted; harness start may still be dormant",
+            "description": "Empty canonical launchpad minted or existing Today safely adopted",
             "content": {
               "application/json": {
                 "schema": {
@@ -8603,8 +8603,18 @@
               }
             }
           },
+          "409": {
+            "description": "Today adoption refused; code identifies Workspace, identity, binding, snapshot, phase or native association proof failure. Nothing changed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "500": {
-            "description": "Internal error, including a launchpad whose harness failed to start",
+            "description": "Internal error",
             "content": {
               "application/json": {
                 "schema": {

@@ -35,7 +35,7 @@ struct Boot {
     repo: Arc<SqlxRepo>,
     /// This server's own create-arm counters, per instance so a sibling case cannot move them.
     create_counters: Arc<calm_server::routes::today_summary::TodaySummaryCreateCounters>,
-    _tmp: TempDir,
+    _tmp: Arc<TempDir>,
 }
 
 async fn boot() -> Boot {
@@ -45,13 +45,13 @@ async fn boot() -> Boot {
 
 /// A server over a given database and workspace root; a second server over the same database with a
 /// different root is what a workspace re-point looks like to the rows.
-async fn boot_with(tmp: TempDir, repo: Arc<SqlxRepo>, root_name: &str) -> Boot {
+async fn boot_with(tmp: impl Into<Arc<TempDir>>, repo: Arc<SqlxRepo>, root_name: &str) -> Boot {
     boot_with_rendezvous(tmp, repo, root_name, None).await
 }
 
 /// `boot_with`, plus the option to arm the create-arm rendezvous.
 async fn boot_with_rendezvous(
-    tmp: TempDir,
+    tmp: impl Into<Arc<TempDir>>,
     repo: Arc<SqlxRepo>,
     root_name: &str,
     rendezvous: Option<Arc<tokio::sync::Barrier>>,
@@ -60,12 +60,13 @@ async fn boot_with_rendezvous(
 }
 
 async fn boot_with_rendezvouses(
-    tmp: TempDir,
+    tmp: impl Into<Arc<TempDir>>,
     repo: Arc<SqlxRepo>,
     root_name: &str,
     create_rendezvous: Option<Arc<tokio::sync::Barrier>>,
     bootstrap_rendezvous: Option<Arc<tokio::sync::Barrier>>,
 ) -> Boot {
+    let tmp = tmp.into();
     let repo_dyn: Arc<dyn Repo> = repo.clone();
     let roles = CardRoleCache::new();
     let tracks = TrackAreaCache::new();
@@ -831,10 +832,9 @@ async fn the_first_trigger_sends_bootstrap_and_summary_and_each_later_one_sends_
     );
 }
 
-/// Mixing `workspace_key_digest(cwd)` into the key would derive a *second* conversation card the moment
-/// the workspace moves, with both requests succeeding.
+/// Same-root restart keeps the summary conversation; drift refuses without replacing it.
 #[tokio::test]
-async fn a_repointed_workspace_and_a_different_actor_reuse_the_one_summary_conversation() {
+async fn same_workspace_restart_reuses_summary_and_root_drift_is_refused() {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let before = boot_with(TempDir::new().unwrap(), repo.clone(), "workspaces-old").await;
     let track_id = before.user_track("busy").await;
@@ -865,25 +865,28 @@ async fn a_repointed_workspace_and_a_different_actor_reuse_the_one_summary_conve
          an agent — the endpoint does not forward the header"
     );
 
-    // --- the re-point ---
+    let restarted = boot_with(before._tmp.clone(), repo.clone(), "workspaces-old").await;
+    let (status, same) = restarted.summary(None).await;
+    assert_eq!(status, StatusCode::OK, "{same}");
+    assert_eq!(same["card_id"], json!(card_id));
+    let unchanged = super::today_launchpad::snapshot::database(&repo).await;
+    // A different root cannot adopt or replace this Today.
+
     let after = boot_with(TempDir::new().unwrap(), repo.clone(), "workspaces-new").await;
     let (status, repointed) = after.summary(None).await;
-    assert_eq!(status, StatusCode::OK, "body={repointed}");
+    assert_eq!(status, StatusCode::CONFLICT, "body={repointed}");
+    assert_eq!(repointed["code"], "conflict");
+    assert_eq!(repointed["error"], "today_adoption_workspace_drift");
+    assert_eq!(
+        super::today_launchpad::snapshot::database(&repo).await,
+        unchanged
+    );
     let new_path: String =
         sqlx::query_scalar("SELECT workspace_path FROM tracks WHERE purpose='launchpad'")
             .fetch_one(repo.pool())
             .await
             .unwrap();
-    assert_ne!(
-        new_path, old_path,
-        "the fixture must actually re-point the workspace, or the case proves \
-         nothing about a cwd-keyed derivation"
-    );
-    assert_eq!(
-        repointed["card_id"],
-        json!(card_id),
-        "a re-pointed workspace must reuse the one summary conversation"
-    );
+    assert_eq!(new_path, old_path);
 
     let cards: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM cards WHERE id LIKE 'conv-%'")
         .fetch_one(repo.pool())
@@ -1449,7 +1452,7 @@ async fn two_concurrent_triggers_on_an_empty_transcript_deliver_one_bootstrap() 
 
     let barrier = Arc::new(tokio::sync::Barrier::new(2));
     let b = boot_with_rendezvouses(
-        TempDir::new().unwrap(),
+        staging._tmp.clone(),
         repo.clone(),
         "workspaces",
         None,

@@ -2,24 +2,16 @@
 
 use crate::actor::Actor;
 use crate::db::rows::TRACK_SELECT_COLUMNS;
-use crate::db::{write_in_tx_typed, write_with_event_typed};
+use crate::db::write_in_tx_typed;
 use crate::error::{CalmError, ErrorBody, Result};
 use crate::event::{Event, EventScope};
 use crate::extract::Json;
-use crate::ids::{ActorId, CardId, TrackId};
+use crate::ids::{ActorId, TrackId};
 use crate::model::{
-    Card, CardPatch, CardRole, NewCard, RequestTheme, Terminal, Track, TrackWorkspace,
-    TrackWorkspaceKind, new_id, now_ms,
+    CardRole, NewCard, RequestTheme, Track, TrackWorkspace, TrackWorkspaceKind, new_id, now_ms,
 };
-use crate::operation::planner_harness_start_adapter::PlannerHarnessStartOperationPayload;
-use crate::operation::planner_start_fence::CardStartFence;
-use crate::operation::{OperationKey, OperationOutcome};
-use crate::routes::conversations_shared::{PLANNER_HARNESS_START, retryable_operation_key};
-use crate::routes::idempotency_key::stable_payload_hash;
 use crate::state::{AppState, RouteState};
 use crate::track_report::TrackReportPayload;
-use crate::validation::CODEX_PAYLOAD_SCHEMA_VERSION;
-use crate::workspace_service::workspace_key_digest;
 use axum::{
     Router,
     extract::{FromRef, State},
@@ -27,9 +19,10 @@ use axum::{
     routing::{get, post},
 };
 use calm_truth::db::sqlite::{
-    area_create_system_tx, card_create_with_id_tx, card_update_tx, card_with_terminal_create_tx,
+    area_create_system_tx, card_create_with_id_tx, card_with_terminal_create_tx,
     track_workspace_write_tx,
 };
+use calm_types::card_presentation::{CardCreationSource, TerminalPresentation};
 use serde::Serialize;
 use sqlx::{Sqlite, Transaction};
 use std::path::Path;
@@ -38,7 +31,10 @@ use utoipa::ToSchema;
 
 pub fn router() -> Router<AppState> {
     Router::new()
-        .route("/api/today/launchpad/ensure", post(ensure_today_launchpad))
+        .route(
+            "/api/today/launchpad/ensure",
+            post(ensure_today_launchpad_route),
+        )
         .route("/api/today/launchpad", get(resolve_today_launchpad))
         .route(
             "/api/today/launchpad/report/reset",
@@ -68,7 +64,6 @@ pub struct TodayLaunchpadResolved {
 struct EnsureTxResult {
     dto: TodayLaunchpad,
     track: Track,
-    report_card_id: String,
     created: bool,
     adopted_legacy: bool,
 }
@@ -76,10 +71,11 @@ struct EnsureTxResult {
 /// The `constraint` argument for the system-area race. A COLUMN list, never an index
 /// name: SQLite words a unique violation as `UNIQUE constraint failed: <table>.<column>`
 /// and names the index only for a unique index over expressions.
+#[cfg(test)]
 const SYSTEM_AREA_UNIQUE: &str = "areas.kind";
 
-/// The `constraint` argument for the launchpad-track race. Its retry arm is unreachable
-/// today, so clippy's `dead_code` on the non-test target is the only guard on the call site.
+/// SQLite names the columns for the launchpad singleton index too.
+#[cfg(test)]
 const LAUNCHPAD_UNIQUE: &str = "tracks.purpose";
 
 /// A rendezvous the system-area mint race can be created at. `None` in production; a
@@ -94,10 +90,11 @@ pub struct SystemAreaMintCounters {
     /// Requests that found no system area and therefore tried to mint one. Two means both
     /// read `None` before either wrote — the race actually happened.
     pub attempts: AtomicU64,
-    /// Mints that lost the race and took the retry arm.
+    /// Competing mint attempts that reused the winner under the writer lock.
     pub retries: AtomicU64,
 }
 
+#[cfg(test)]
 fn is_unique_constraint(error: &CalmError, constraint: &str) -> bool {
     let CalmError::Db(sqlx::Error::Database(error)) = error else {
         return false;
@@ -220,413 +217,448 @@ pub(crate) async fn reset_today_launchpad_report(
     }))
 }
 
-/// The launchpad track's workspace: `Managed`, under the workspace root, and never
-/// frozen — the launchpad is the one track whose path the kernel may legally re-point
-/// (the adopt-legacy branch), and re-point + re-stamp is what the `frozen_at` latch
-/// forbids. An old `<data_dir>/../launchpad` directory is deliberately left on disk.
 fn launchpad_workspace(workspace_root: &Path, area_id: &str, track_id: &str) -> TrackWorkspace {
     TrackWorkspace {
         kind: TrackWorkspaceKind::Managed,
         path: workspace::materialize::managed_workspace_path(workspace_root, area_id, track_id)
             .to_string_lossy()
             .into_owned(),
-        // Never `Some(..)`: a stamp here would break monotonicity on re-adoption.
         frozen_at: None,
         worktree: None,
     }
 }
 
-/// The launchpad's Planner is kernel-minted and runs on Codex.
-fn planner_payload(host: &crate::acp_planner::config::AcpPlannerHost) -> serde_json::Value {
-    let mut payload = serde_json::Map::from_iter([
-        (
-            "schemaVersion".to_owned(),
-            serde_json::json!(CODEX_PAYLOAD_SCHEMA_VERSION),
-        ),
-        (
-            "harness".to_owned(),
-            serde_json::json!({ "snapshotVersion": 0, "pendingQueue": [] }),
-        ),
-        (
-            crate::validation::PLANNER_PROVIDER_PAYLOAD_KEY.to_owned(),
-            serde_json::json!("codex"),
-        ),
-    ]);
-    crate::planner_permission_mode::mint_at_creation(
-        &mut payload,
-        crate::planner_permission_mode::CreationSource::Independent,
-        &crate::session_projection_repo::AgentProvider::Codex,
-        host,
-    );
-    serde_json::Value::Object(payload)
+#[derive(Clone, Copy, Debug)]
+enum AdoptionRefusal {
+    WorkspaceDrift,
+    IdentityUnproven,
+    BindingMismatch,
+    NativeAssociationMismatch,
+    SnapshotUnproven,
+    PhaseUnproven,
+}
+impl AdoptionRefusal {
+    fn code(self) -> &'static str {
+        match self {
+            Self::WorkspaceDrift => "today_adoption_workspace_drift",
+            Self::IdentityUnproven => "today_adoption_identity_unproven",
+            Self::BindingMismatch => "today_adoption_binding_mismatch",
+            Self::NativeAssociationMismatch => "today_adoption_native_association_mismatch",
+            Self::SnapshotUnproven => "today_adoption_snapshot_unproven",
+            Self::PhaseUnproven => "today_adoption_phase_unproven",
+        }
+    }
+}
+
+// Creation provenance comes from its typed owner contract, independently of the
+// Workspace and execution graph whose damage must remain visible as a candidate.
+async fn terminal_creation_source_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    track: &Track,
+) -> Result<Option<CardCreationSource>> {
+    let payloads: Vec<String> =
+        sqlx::query_scalar("SELECT payload FROM cards WHERE track_id=?1 AND kind='terminal'")
+            .bind(track.id.as_str())
+            .fetch_all(&mut **tx)
+            .await?;
+    let [payload] = payloads.as_slice() else {
+        return Ok(None);
+    };
+    Ok(serde_json::from_str(payload)
+        .ok()
+        .and_then(|value| TerminalPresentation::from_payload(&value).ok())
+        .map(|presentation| presentation.source))
+}
+
+async fn prove_existing_today_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    track: &Track,
+    area: Option<&str>,
+    root: &Path,
+) -> Result<std::result::Result<TodayLaunchpad, AdoptionRefusal>> {
+    use crate::db::sqlite::conversation;
+    use crate::harness::profile::{HarnessProfile, PlannerBinding};
+    use crate::harness::snapshot::{CanonicalHarnessSnapshot, HarnessPhaseTag, HarnessSnapshot};
+    use AdoptionRefusal::*;
+    if area != Some(track.area_id.as_str())
+        || track.closed_at.is_some()
+        || terminal_creation_source_tx(tx, track).await? != Some(CardCreationSource::System)
+    {
+        return Ok(Err(IdentityUnproven));
+    }
+    if track.workspace != launchpad_workspace(root, track.area_id.as_str(), track.id.as_str()) {
+        return Ok(Err(WorkspaceDrift));
+    }
+    let planners: Vec<(String, Option<String>)> =
+        sqlx::query_as("SELECT id,session_id FROM cards WHERE track_id=?1 AND role='planner'")
+            .bind(track.id.as_str())
+            .fetch_all(&mut **tx)
+            .await?;
+    let [(card, Some(worker))] = planners.as_slice() else {
+        return Ok(Err(IdentityUnproven));
+    };
+    if let Err(error) = conversation::current_native_fact_tx(tx, card, worker, true).await {
+        return match error {
+            calm_truth::error::CalmError::Db(_) => Err(error.into()),
+            _ => Ok(Err(IdentityUnproven)),
+        };
+    }
+    let shape = match crate::db::sqlite::card_execution_shape_tx(tx, card).await {
+        Ok(shape) => shape,
+        Err(calm_truth::error::TruthError::Serde(_)) => return Ok(Err(BindingMismatch)),
+        Err(error) => return Err(error.into()),
+    };
+    let Some(binding) = PlannerBinding::from_shape(&shape.kind, shape.role, &shape.payload)
+        .filter(|b| b.profile == HarnessProfile::Planner)
+    else {
+        return Ok(Err(BindingMismatch));
+    };
+    let row = match crate::db::sqlite::session_get_tx(
+        tx,
+        &calm_types::worker::WorkerSessionId(worker.clone()),
+    )
+    .await
+    {
+        Ok(Some(row)) => row,
+        Ok(None) => return Ok(Err(IdentityUnproven)),
+        Err(calm_truth::error::TruthError::Serde(_)) => return Ok(Err(SnapshotUnproven)),
+        Err(error) => return Err(error.into()),
+    };
+    if !binding.matches_session_contract(&row) {
+        return Ok(Err(BindingMismatch));
+    }
+    let Some(snapshot) = row.handle_state_json else {
+        return Ok(Err(SnapshotUnproven));
+    };
+    // Decode for proof only. Neither codec's serialization or recovery runs here.
+    let thread = if snapshot.get("canonical_inputs").is_some() {
+        let Ok(frame) = serde_json::from_value::<CanonicalHarnessSnapshot>(snapshot) else {
+            return Ok(Err(SnapshotUnproven));
+        };
+        if frame.lifecycle_refusal().is_some() {
+            return Ok(Err(PhaseUnproven));
+        }
+        frame.header.last_thread_id
+    } else {
+        let Ok(frame) = serde_json::from_value::<HarnessSnapshot>(snapshot.clone()) else {
+            return Ok(Err(SnapshotUnproven));
+        };
+        if frame.schema_version != crate::harness::snapshot::HARNESS_SNAPSHOT_SCHEMA_VERSION
+            || frame.mode != crate::harness::HARNESS_MODE
+        {
+            return Ok(Err(SnapshotUnproven));
+        }
+        if !crate::harness::HarnessRuntimeSnapshot::idle_for_lifecycle(snapshot).unwrap_or(false)
+            || !matches!(
+                frame.phase,
+                HarnessPhaseTag::Idle | HarnessPhaseTag::TurnCompleted | HarnessPhaseTag::Resumed
+            )
+            || frame.pending_rewind.is_some()
+            || frame.interruption_intent.is_some()
+            || frame.wedged_reason.is_some()
+        {
+            return Ok(Err(PhaseUnproven));
+        }
+        frame.last_thread_id
+    };
+    if thread != row.thread_id {
+        return Ok(Err(NativeAssociationMismatch));
+    }
+    let reports: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM cards WHERE track_id=?1 AND kind='track-report' AND role='reportcard'",
+    ).bind(track.id.as_str()).fetch_one(&mut **tx).await?;
+    let terminals: Vec<(String, String)> = sqlx::query_as(
+        "SELECT c.id,t.id FROM cards c JOIN terminals t ON t.card_id=c.id WHERE c.track_id=?1 AND c.kind='terminal'",
+    ).bind(track.id.as_str()).fetch_all(&mut **tx).await?;
+    let [(terminal_card, terminal)] = terminals.as_slice() else {
+        return Ok(Err(IdentityUnproven));
+    };
+    if reports != 1 {
+        return Ok(Err(IdentityUnproven));
+    }
+    Ok(Ok(TodayLaunchpad {
+        track_id: track.id.to_string(),
+        planner_card_id: card.clone(),
+        terminal_card_id: terminal_card.clone(),
+        terminal_id: terminal.clone(),
+    }))
 }
 
 #[allow(deprecated)]
 async fn today_launchpad_ensure_tx(
     tx: &mut Transaction<'_, Sqlite>,
     s: &RouteState,
-    area_id: &str,
+    area_id: Option<&str>,
     workspace_root: &Path,
-) -> Result<EnsureTxResult> {
-    let existing = sqlx::query_as::<_, crate::db::rows::TrackRow>(&format!(
-        "SELECT {TRACK_SELECT_COLUMNS} FROM tracks WHERE purpose='launchpad' LIMIT 1"
-    ))
-    .fetch_optional(&mut **tx)
-    .await?
-    .map(Track::from);
-
-    let (mut track, created, adopted_legacy) = if let Some(track) = existing {
-        (track, false, false)
-    } else if let Some(mut track) = sqlx::query_as::<_, crate::db::rows::TrackRow>(&format!(
-        "SELECT {TRACK_SELECT_COLUMNS} FROM tracks WHERE area_id=?1 AND purpose IS NULL AND title='Today' ORDER BY created_at,id LIMIT 1"
-    )).bind(area_id).fetch_optional(&mut **tx).await?.map(Track::from) {
-        // Writes everything except the workspace; the single workspace writer below handles
-        // that in the same tx.
-        sqlx::query("UPDATE tracks SET purpose='launchpad', template_id=NULL, plugin_scope=NULL, template_input=NULL, updated_at=?2 WHERE id=?1")
-            .bind(track.id.as_str()).bind(now_ms()).execute(&mut **tx).await?;
-        track.purpose = Some("launchpad".into());
-        track.template_id = None; track.plugin_scope = None; track.template_input = None;
-        (track, false, true)
+) -> Result<(
+    std::result::Result<EnsureTxResult, AdoptionRefusal>,
+    Vec<(ActorId, EventScope, Event)>,
+)> {
+    let candidates_rows = sqlx::query_as::<_, crate::db::rows::TrackRow>(&format!(
+        "SELECT {TRACK_SELECT_COLUMNS} FROM tracks WHERE purpose='launchpad' OR (purpose IS NULL AND title='Today') ORDER BY (purpose='launchpad') DESC,created_at,id"
+    )).fetch_all(&mut **tx).await?;
+    let mut candidates = Vec::new();
+    for row in candidates_rows {
+        let track = Track::from(row);
+        // Only explicit Manual provenance outside the System Area excludes an
+        // ordinary namesake. Missing/invalid/Unrecorded provenance proves nothing.
+        if track.purpose.is_none()
+            && area_id != Some(track.area_id.as_str())
+            && terminal_creation_source_tx(tx, &track).await? == Some(CardCreationSource::Manual)
+        {
+            continue;
+        }
+        candidates.push(track);
+    }
+    if let Some(mut track) = candidates.pop() {
+        // No ordering can authorize adoption while another candidate is unresolved.
+        let proof = if candidates.is_empty() {
+            prove_existing_today_tx(tx, &track, area_id, workspace_root).await?
+        } else {
+            Err(AdoptionRefusal::IdentityUnproven)
+        };
+        let dto = match proof {
+            Ok(dto) => dto,
+            Err(reason) => {
+                tracing::warn!(track_id = %track.id, candidate_count = candidates.len() + 1, code = reason.code(), "Today adoption refused before mutation");
+                return Ok((Err(reason), vec![]));
+            }
+        };
+        let adopted_legacy = track.purpose.is_none();
+        if adopted_legacy {
+            sqlx::query("UPDATE tracks SET purpose='launchpad',template_id=NULL,plugin_scope=NULL,template_input=NULL,updated_at=?2 WHERE id=?1")
+                .bind(track.id.as_str()).bind(now_ms()).execute(&mut **tx).await?;
+            track.purpose = Some("launchpad".into());
+        }
+        return Ok((
+            Ok(EnsureTxResult {
+                dto,
+                track,
+                created: false,
+                adopted_legacy,
+            }),
+            vec![],
+        ));
+    }
+    let mut events = vec![];
+    let area_id = if let Some(id) = area_id {
+        id.to_owned()
     } else {
-        let id = new_id(); let now = now_ms();
-        let sort: f64 = sqlx::query_scalar("SELECT CAST(COALESCE(MAX(sort),-1)+1 AS REAL) FROM tracks WHERE area_id=?1")
-            .bind(area_id).fetch_one(&mut **tx).await?;
+        let area = area_create_system_tx(tx).await?;
+        let id = area.id.to_string();
+        events.push((
+            ActorId::Kernel,
+            EventScope::System,
+            Event::AreaUpdated(area),
+        ));
+        id
+    };
+    let area_id = area_id.as_str();
+    let mut track = {
+        let id = new_id();
+        let now = now_ms();
+        let sort: f64 = sqlx::query_scalar(
+            "SELECT CAST(COALESCE(MAX(sort),-1)+1 AS REAL) FROM tracks WHERE area_id=?1",
+        )
+        .bind(area_id)
+        .fetch_one(&mut **tx)
+        .await?;
         // `cwd` is off this INSERT's column list; the single workspace writer below writes it.
         sqlx::query("INSERT INTO tracks(id,area_id,title,sort,template_id,purpose,template_input,admin_granted_at,created_at,updated_at) VALUES(?1,?2,'Today',?3,NULL,'launchpad',NULL,NULL,?4,?4)")
             .bind(&id).bind(area_id).bind(sort).bind(now).execute(&mut **tx).await?;
-        s.write.area_cache().insert(TrackId::from(id.clone()), area_id.to_string().into());
-        (Track { id:id.into(), area_id:area_id.to_string().into(), title:"Today".into(), sort,
-            pinned_at:None, closed_at:None, admin_granted_at:None, cwd_wire_alias:String::new(),
-            template_id:None, plugin_scope:None, purpose:Some("launchpad".into()), template_input:None,
-            recipe_id:None, recipe_revision:None, creator_track_id:None, creator_key:None, workspace: TrackWorkspace::default(), created_at:now, updated_at:now }, true, false)
-    };
-
-    // ONE workspace writer for all three branches. The desired workspace is a pure function
-    // of the track id, so this is a no-op on the steady state and a one-time re-point for
-    // an older row.
-    let desired = launchpad_workspace(workspace_root, area_id, track.id.as_str());
-    if track.workspace != desired {
-        track_workspace_write_tx(tx, track.id.as_str(), &desired).await?;
-        track.cwd_wire_alias = desired.path.clone();
-        track.workspace = desired;
-    }
-    let cwd = track.workspace.path.clone();
-    let cwd = cwd.as_str();
-
-    let cards: Vec<Card> = sqlx::query_as::<_, crate::db::rows::CardRow>(
-        "SELECT id,track_id,kind,title,sort,payload,deletable,created_at,updated_at FROM cards WHERE track_id=?1 ORDER BY created_at,id"
-    ).bind(track.id.as_str()).fetch_all(&mut **tx).await?.into_iter().map(Card::from).collect();
-    let planner = if let Some(card) = cards
-        .iter()
-        .find(|c| c.kind == "codex" && s.write.role_cache().get(&c.id) == Some(CardRole::Planner))
-        .cloned()
-    {
-        if adopted_legacy {
-            // Only repurposing a legacy Today track invalidates its old planner thread.
-            sqlx::query("DELETE FROM harness_items WHERE card_id=?1")
-                .bind(card.id.as_str())
-                .execute(&mut **tx)
-                .await?;
-            card_update_tx(
-                tx,
-                card.id.as_str(),
-                CardPatch {
-                    payload: Some(planner_payload(&s.acp_planner)),
-                    ..Default::default()
-                },
-            )
-            .await?
-        } else {
-            card
+        Track {
+            id: id.into(),
+            area_id: area_id.to_string().into(),
+            title: "Today".into(),
+            sort,
+            pinned_at: None,
+            closed_at: None,
+            admin_granted_at: None,
+            cwd_wire_alias: String::new(),
+            template_id: None,
+            plugin_scope: None,
+            purpose: Some("launchpad".into()),
+            template_input: None,
+            recipe_id: None,
+            recipe_revision: None,
+            creator_track_id: None,
+            creator_key: None,
+            workspace: TrackWorkspace::default(),
+            created_at: now,
+            updated_at: now,
         }
-    } else {
-        card_create_with_id_tx(
-            tx,
-            new_id(),
-            NewCard {
-                title: None,
-                track_id: track.id.clone(),
-                kind: "codex".into(),
-                sort: None,
-                payload: planner_payload(&s.acp_planner),
-            },
-            CardRole::Planner,
-            false,
-            s.write.role_cache(),
-        )
-        .await?
     };
-    let report = if let Some(card) = cards.iter().find(|c| c.kind == "track-report").cloned() {
-        card
-    } else {
-        card_create_with_id_tx(
-            tx,
-            new_id(),
-            NewCard {
-                title: None,
-                track_id: track.id.clone(),
-                kind: "track-report".into(),
-                sort: Some(-1.0),
-                payload: serde_json::to_value(TrackReportPayload::initial())?,
-            },
-            CardRole::ReportCard,
-            false,
-            s.write.role_cache(),
-        )
-        .await?
-    };
-    let valid_terminal_card = sqlx::query_as::<_, crate::db::rows::CardRow>(
-        "SELECT c.id,c.track_id,c.kind,c.title,c.sort,c.payload,c.deletable,c.created_at,c.updated_at FROM cards c JOIN terminals t ON t.card_id=c.id WHERE c.track_id=?1 AND c.kind='terminal' ORDER BY c.created_at,c.id LIMIT 1"
-    ).bind(track.id.as_str()).fetch_optional(&mut **tx).await?.map(Card::from);
-    let valid_terminal: Option<(Card, Terminal)> = if let Some(card) = valid_terminal_card {
-        let term = crate::db::sqlite::terminal_get_by_card_tx(tx, card.id.as_str()).await?;
-        term.map(|term| (card, term))
-    } else {
-        None
-    };
-    let (terminal_card, terminal) = if let Some(pair) = valid_terminal {
-        pair
-    } else {
-        card_with_terminal_create_tx(
-            tx,
-            new_id(),
-            &new_id(),
-            None,
-            track.id.clone(),
-            None,
-            None,
-            String::new(),
-            cwd.into(),
-            serde_json::json!({}),
-            CardRole::Worker,
-            false,
-            s.write.role_cache(),
-            RequestTheme::default_dark(),
-            false,
-            calm_types::card_presentation::CardCreationSource::System,
-        )
-        .await?
-    };
-    Ok(EnsureTxResult {
-        dto: TodayLaunchpad {
-            track_id: track.id.to_string(),
-            planner_card_id: planner.id.to_string(),
-            terminal_card_id: terminal_card.id.to_string(),
-            terminal_id: terminal.id,
+
+    let desired = launchpad_workspace(workspace_root, area_id, track.id.as_str());
+    track_workspace_write_tx(tx, track.id.as_str(), &desired).await?;
+    track.cwd_wire_alias = desired.path.clone();
+    track.workspace = desired;
+    workspace_runtime::selection::materialize_workspace(
+        &track.workspace,
+        workspace_root,
+        track.id.as_str(),
+    )?;
+    let cwd = track.workspace.path.as_str();
+    let planner = card_create_with_id_tx(
+        tx,
+        new_id(),
+        NewCard {
+            title: None,
+            track_id: track.id.clone(),
+            kind: "codex".into(),
+            sort: None,
+            payload: crate::track_creation::planner_harness_card_payload(
+                &s.acp_planner,
+                None,
+                crate::session_projection_repo::AgentProvider::Codex,
+            ),
         },
-        track,
-        report_card_id: report.id.to_string(),
-        created,
-        adopted_legacy,
+        CardRole::Planner,
+        false,
+        s.write.role_cache(),
+    )
+    .await?;
+    crate::track_creation::allocate_empty_planner_carrier_tx(
+        tx,
+        planner.id.as_str(),
+        crate::session_projection_repo::AgentProvider::Codex,
+    )
+    .await?;
+    let _report = card_create_with_id_tx(
+        tx,
+        new_id(),
+        NewCard {
+            title: None,
+            track_id: track.id.clone(),
+            kind: "track-report".into(),
+            sort: Some(-1.0),
+            payload: serde_json::to_value(TrackReportPayload::initial())?,
+        },
+        CardRole::ReportCard,
+        false,
+        s.write.role_cache(),
+    )
+    .await?;
+    let (terminal_card, terminal) = card_with_terminal_create_tx(
+        tx,
+        new_id(),
+        &new_id(),
+        None,
+        track.id.clone(),
+        None,
+        None,
+        String::new(),
+        cwd.into(),
+        serde_json::json!({}),
+        CardRole::Worker,
+        false,
+        s.write.role_cache(),
+        RequestTheme::default_dark(),
+        false,
+        calm_types::card_presentation::CardCreationSource::System,
+    )
+    .await?;
+    Ok((
+        Ok(EnsureTxResult {
+            dto: TodayLaunchpad {
+                track_id: track.id.to_string(),
+                planner_card_id: planner.id.to_string(),
+                terminal_card_id: terminal_card.id.to_string(),
+                terminal_id: terminal.id,
+            },
+            track,
+            created: true,
+            adopted_legacy: false,
+        }),
+        events,
+    ))
+}
+
+async fn ensure_today_launchpad_route(
+    State(app): State<AppState>,
+    actor: Actor,
+) -> Result<axum::response::Response> {
+    use axum::response::IntoResponse;
+    Ok(match ensure_today_launchpad_decision(State(app), actor).await? {
+        Ok(reply) => reply.into_response(),
+        Err(reason) => (StatusCode::CONFLICT, Json(ErrorBody {
+            error: "Today could not be adopted safely. Its Workspace and conversation have been preserved.".into(),
+            code: reason.code().into(), field: None,
+        })).into_response(),
     })
 }
 
 #[utoipa::path(post,path="/api/today/launchpad/ensure",tag="tracks",responses(
-    (status=200,description="Existing live launchpad",body=TodayLaunchpad),
-    (status=201,description="Launchpad minted or adopted; harness start may still be dormant",body=TodayLaunchpad),
-    (status=500,description="Internal error, including a launchpad whose harness failed to start",body=ErrorBody)
+    (status=200,description="Existing launchpad retained",body=TodayLaunchpad),
+    (status=201,description="Empty canonical launchpad minted or existing Today safely adopted",body=TodayLaunchpad),
+    (status=409,description="Today adoption refused; code identifies Workspace, identity, binding, snapshot, phase or native association proof failure. Nothing changed.",body=ErrorBody),
+    (status=500,description="Internal error",body=ErrorBody)
 ))]
 pub(crate) async fn ensure_today_launchpad(
+    app: State<AppState>,
+    actor: Actor,
+) -> Result<(StatusCode, Json<TodayLaunchpad>)> {
+    ensure_today_launchpad_decision(app, actor)
+        .await?
+        .map_err(|reason| CalmError::Conflict(reason.code().into()))
+}
+
+async fn ensure_today_launchpad_decision(
     State(app): State<AppState>,
     _actor: Actor,
-) -> Result<(StatusCode, Json<TodayLaunchpad>)> {
-    let area = if let Some(c) = app.repo.area_get_system().await? {
-        c
-    } else {
-        // Counted before the mint so a test can tell "both requests raced" from "the second
-        // read the first's row".
+) -> Result<std::result::Result<(StatusCode, Json<TodayLaunchpad>), AdoptionRefusal>> {
+    let area_absent = app.repo.area_get_system().await?.is_none();
+    if area_absent {
         app.system_area_mint
             .attempts
             .fetch_add(1, Ordering::Relaxed);
-        // Armed only by the concurrency case; `None` everywhere else.
         if let Some(barrier) = &app.system_area_mint_rendezvous {
             barrier.wait().await;
         }
-        let route = RouteState::from_ref(&app);
-        let minted = write_with_event_typed(
-            app.repo.as_ref(),
-            ActorId::Kernel,
-            EventScope::System,
-            None,
-            &app.events,
-            &route.write,
-            |tx| {
-                Box::pin(async move {
-                    let c = area_create_system_tx(tx).await?;
-                    Ok((c.clone(), Event::AreaUpdated(c)))
-                })
-            },
-        )
-        .await;
-        match minted {
-            Ok((c, _)) => c,
-            // The COLUMN form, not the index name. Reachable: `area_get_system()` runs OUTSIDE any
-            // transaction, so two concurrent ensures can both read `None` and both reach the mint.
-            Err(e) if is_unique_constraint(&e, SYSTEM_AREA_UNIQUE) => {
-                app.system_area_mint.retries.fetch_add(1, Ordering::Relaxed);
-                app.repo
-                    .area_get_system()
-                    .await?
-                    .ok_or_else(|| CalmError::Internal("system area race had no winner".into()))?
-            }
-            Err(e) => return Err(e),
-        }
-    };
-    let workspace_root = app.workspace_root().to_path_buf();
+    }
     let route = RouteState::from_ref(&app);
-    let area_id = area.id.to_string();
-    let root_for_tx = workspace_root.clone();
-    let attempt = write_in_tx_typed(app.repo.as_ref(), move |tx| {
-        Box::pin(async move { today_launchpad_ensure_tx(tx, &route, &area_id, &root_for_tx).await })
+    let workspace_root = app.workspace_root().to_path_buf();
+    let root = workspace_root.clone();
+    let counters = app.system_area_mint.clone();
+    let (decision, ids, pending) = write_in_tx_typed(app.repo.as_ref(), move |tx| {
+        Box::pin(async move {
+            let area: Option<String> =
+                sqlx::query_scalar("SELECT id FROM areas WHERE kind='system'")
+                    .fetch_optional(&mut **tx)
+                    .await?;
+            if area_absent && area.is_some() {
+                counters.retries.fetch_add(1, Ordering::Relaxed);
+            }
+            let (decision, pending) =
+                today_launchpad_ensure_tx(tx, &route, area.as_deref(), &root).await?;
+            let ids = if pending.is_empty() {
+                vec![]
+            } else {
+                crate::db::sqlite::append_actor_events_in_tx(tx, None, &route.write, &pending)
+                    .await?
+                    .0
+            };
+            Ok((decision, ids, pending))
+        })
     })
-    .await;
-    let out = match attempt {
-        Ok(v) => v,
-        // The COLUMN form, not the index name. This arm is unreachable today: `write_in_tx`
-        // opens with BEGIN IMMEDIATE, so the SELECT and the INSERT sit in one writer-lock hold.
-        // Kept as a fail-safe against moving that SELECT out of the transaction or a second
-        // writer of `purpose='launchpad'` appearing.
-        Err(e) if is_unique_constraint(&e, LAUNCHPAD_UNIQUE) => {
-            // A concurrent inserter won the partial unique index; retry selects it.
-            let route = RouteState::from_ref(&app);
-            let area_id = area.id.to_string();
-            let root_for_tx = workspace_root.clone();
-            write_in_tx_typed(app.repo.as_ref(), move |tx| {
-                Box::pin(async move {
-                    today_launchpad_ensure_tx(tx, &route, &area_id, &root_for_tx).await
-                })
-            })
-            .await?
-        }
-        Err(e) => return Err(e),
+    .await?;
+    crate::db::sqlite::broadcast_actor_events(&app.events, &ids, pending);
+    let out = match decision {
+        Ok(out) => out,
+        Err(reason) => return Ok(Err(reason)),
     };
-    // The launchpad does not go through `create_track_structure` (raw `INSERT INTO tracks`),
-    // so it carries its own materialize call; skipping it leaves every codex task on the
-    // Today panel dying with `spawn-failed`.
-    workspace_runtime::selection::materialize_workspace(
-        &out.track.workspace,
-        &workspace_root,
-        out.track.id.as_str(),
-    )
-    .map_err(|error| {
-        tracing::error!(
-            track_id = %out.dto.track_id,
-            path = %out.track.workspace.path,
-            error = %error,
-            "today launchpad: workspace materialization failed"
+    if out.created {
+        app.write().remember_track(
+            TrackId::from(out.track.id.to_string()),
+            out.track.area_id.clone(),
         );
-        error
-    })?;
-
-    let planner_card_id = CardId::from(out.dto.planner_card_id.clone());
+    }
     let status = if out.created || out.adopted_legacy {
         StatusCode::CREATED
     } else {
         StatusCode::OK
     };
-    // The card is committed, so a send may be using it: hold its start fence through the
-    // decision and the start, as `/planner/reset` and the workspace re-point do. Nothing else is
-    // held here (`state.rs`).
-    let route = RouteState::from_ref(&app);
-    let fence = CardStartFence::lock(
-        &route.planner_recovery_locks,
-        &route.repo,
-        &route.operation_runtime,
-        &planner_card_id,
-    )
-    .await;
-    // "Does the Planner need a start at this path?" is decided under the fence, after any
-    // concurrent ensure's start has settled (#2251), and from DURABLE state: materialization runs
-    // after the transaction commits, so if it fails or the process dies before the operation is
-    // recorded, an in-memory comparison would read "steady state" next time and pin the
-    // Planner's thread to the OLD cwd forever.
-    let digest = workspace_key_digest(&out.track.workspace.path);
-    if launchpad_started_at_path(&app, &planner_card_id, &digest).await? {
-        return Ok((status, Json(out.dto)));
-    }
-
-    let bootstrap = out.created || out.adopted_legacy;
-    let req = PlannerHarnessStartOperationPayload {
-        actor: ActorId::Kernel,
-        track_id: out.dto.track_id.clone(),
-        planner_card_id: planner_card_id.clone(),
-        report_card_id: Some(out.report_card_id),
-        sort: None,
-        cwd: out.track.workspace.path.clone(),
-        goal: None,
-        reset_harness_items: bootstrap,
-        // A re-point also forces a new thread: the codex thread holds the cwd it was minted
-        // with. The transcript is NOT reset — harness items are persisted per card, not per thread.
-        force_new_thread: true,
-        profile: Default::default(),
-        create_card: None,
-        first_message: None,
-        create_request_sha256: None,
-        opening_briefing: None,
-    };
-    let start_mode = if bootstrap { "bootstrap" } else { "repoint" };
-    let hash = stable_payload_hash(&serde_json::json!({"actor":"kernel","request":&req}))?;
-    // The workspace path is part of the key, not just of the payload: the runtime refuses a key
-    // already used with a different payload hash, and the payload carries `cwd`, so after a
-    // re-point every `ensure` would be a 409 forever (nothing deletes `operations` rows). Keying
-    // on the path mints a new key instead. A failed attempt's key is stepped past (`#N`), or its
-    // permanent row would replay the failure to every later ensure at this path.
-    let base_key = format!(
-        "today-launchpad:{}:{start_mode}:{digest}",
-        out.dto.planner_card_id
-    );
-    let idempotency_key = match retryable_operation_key(&route, &base_key).await {
-        Ok(key) => key,
-        // Not this route's 409: the launchpad's answer to a start it cannot run is a 500.
-        Err(CalmError::IdempotencyKeyExhausted(message)) => {
-            return Err(CalmError::Internal(format!(
-                "launchpad exists but its harness start failed too often at this path: {message}"
-            )));
-        }
-        Err(error) => return Err(error),
-    };
-    let result = fence
-        .start(
-            &req,
-            OperationKey {
-                operation_key: new_id(),
-                idempotency_key: Some(idempotency_key),
-                payload_hash: hash,
-            },
-        )
-        .await?;
-    match result.outcome {
-        OperationOutcome::Succeeded { .. } | OperationOutcome::SucceededViaCollision { .. } => {
-            Ok((status, Json(out.dto)))
-        }
-        _ => Err(CalmError::Internal(format!(
-            "launchpad exists but harness start failed: {}",
-            result.op_id
-        ))),
-    }
-}
-
-/// Whether a launchpad start of `planner_card_id` has succeeded at the workspace whose key digest
-/// is `digest`, under any mode (a legacy `reuse` included) and any stepped `#N` key.
-async fn launchpad_started_at_path(
-    app: &AppState,
-    planner_card_id: &CardId,
-    digest: &str,
-) -> Result<bool> {
-    let pool = app
-        .sqlite_db()
-        .ok_or_else(|| CalmError::Internal("the launchpad requires a sqlite-backed repo".into()))?;
-    let key = format!("today-launchpad:{planner_card_id}:%:{digest}");
-    let started: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM operations \
-         WHERE kind = ?1 AND phase = 'succeeded' \
-           AND (idempotency_key LIKE ?2 OR idempotency_key LIKE ?2 || '#%'))",
-    )
-    .bind(PLANNER_HARNESS_START)
-    .bind(key)
-    .fetch_one(pool.read_pool())
-    .await?;
-    Ok(started)
+    Ok(Ok((status, Json(out.dto))))
 }
 
 #[cfg(test)]

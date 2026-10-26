@@ -1,5 +1,5 @@
 //! #2184 — a send starts a card only when no creator can start it any more. An ordinary create,
-//! its keyed retry and the launchpad's ensure each own their Planner's start, and a send that
+//! its keyed retry each own their Planner's start, and a send that
 //! started a session first would have that session superseded by theirs.
 
 use calm_types::organization::LEGACY_OWNER_USER_ID;
@@ -210,73 +210,25 @@ async fn an_ordinary_track_whose_create_time_start_failed_stays_dormant_for_its_
     assert_eq!(boot.bindings().await, 0, "the message was not stored");
 }
 
-/// Channel A's probe (#2184 r2): the launchpad's bootstrap start fails, leaving only a failed,
-/// threadless row. The launchpad's ensure still owns the start and re-runs it with a new thread,
-/// so a send in between must not start a session that ensure would then supersede.
+/// Today allocates an empty carrier; the first accepted input owns its start.
 #[tokio::test]
-async fn a_send_after_a_failed_launchpad_bootstrap_waits_for_the_launchpads_own_start() {
+async fn a_launchpad_ensure_leaves_the_first_start_to_its_first_input() {
     let (tmp, repo, state) = app_state(AppServer::Running).await;
-    state
-        .shared_codex_appserver
-        .fail_next_thread_start_for_test();
     let app = router(&state).await;
     let (status, body) = ensure_launchpad(app.clone()).await;
-    assert!(
-        status.is_server_error(),
-        "premise: the bootstrap failed: {status} {body}"
-    );
-    let planner_card_id: String = sqlx::query_scalar(
-        "SELECT c.id FROM cards c JOIN tracks t ON t.id = c.track_id \
-          WHERE t.purpose = 'launchpad' AND c.role = 'planner'",
-    )
-    .fetch_one(repo.pool())
-    .await
-    .expect("the launchpad's Planner card");
+    assert_eq!(status, StatusCode::CREATED, "{body}");
     let boot = Boot {
+        planner_card_id: body["planner_card_id"].as_str().unwrap().into(),
         app,
         state,
         repo,
-        planner_card_id,
         _tmp: tmp,
     };
-    assert_eq!(
-        boot.active_session_rows().await,
-        0,
-        "premise: no live session"
-    );
-    let starts = boot.start_ops().await;
-
-    let (status, body) = post_input(
-        boot.app.clone(),
-        &boot.input_uri(),
-        "hello launchpad",
-        &new_id(),
-    )
-    .await;
-    assert_eq!(status, StatusCode::CONFLICT, "body={body}");
-    assert_eq!(
-        body["code"],
-        json!("planner_harness_dormant"),
-        "body={body}"
-    );
-    assert_eq!(
-        boot.start_ops().await,
-        starts,
-        "the send submitted no start"
-    );
-    assert_eq!(boot.active_session_rows().await, 0);
-
-    let (status, body) = ensure_launchpad(boot.app.clone()).await;
-    assert!(
-        status.is_success(),
-        "the launchpad starts its own Planner: {status} {body}"
-    );
-    let active = boot
-        .repo
-        .session_projection_active_for_card(&boot.planner_card_id)
-        .await
-        .unwrap()
-        .expect("the launchpad's session");
+    assert_eq!(boot.start_ops().await, 0);
+    let (status, same) = ensure_launchpad(boot.app.clone()).await;
+    assert_eq!(status, StatusCode::OK, "{same}");
+    assert_eq!(same, body);
+    assert_eq!(boot.start_ops().await, 0);
     let (status, body) = post_input(
         boot.app.clone(),
         &boot.input_uri(),
@@ -285,13 +237,23 @@ async fn a_send_after_a_failed_launchpad_bootstrap_waits_for_the_launchpads_own_
     )
     .await;
     assert_eq!(status, StatusCode::OK, "body={body}");
-    assert_eq!(
-        body["worker_session_id"],
-        json!(active.id),
-        "the launchpad's own session"
-    );
+    let active = boot
+        .repo
+        .session_projection_active_for_card(&boot.planner_card_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(body["worker_session_id"], json!(active.id));
+    assert_eq!(boot.session_rows().await, 1);
     assert_eq!(boot.active_session_rows().await, 1);
-    boot.wait_delivered("hello again").await;
+    crate::planner_repoint_restart_lock::wait_until("first input reaches the native peer", || {
+        format!(
+            "{:?}",
+            boot.state.shared_codex_appserver.started_turns_for_test()
+        )
+        .contains("hello again")
+    })
+    .await;
     boot.shutdown().await;
 }
 

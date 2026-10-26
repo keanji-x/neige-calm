@@ -47,12 +47,6 @@ const ALLOWED: &[(&str, usize, usize, &str)] = &[
         "the keyed create's read-only `find_by_kind_and_idempotency` lookup",
     ),
     (
-        "src/routes/today.rs",
-        0,
-        2,
-        "the launchpad's read-only \"a start succeeded at this path\" lookup",
-    ),
-    (
         "src/operation/planner_start_fence.rs",
         0,
         3,
@@ -78,7 +72,6 @@ const SHAPES: &[(&str, &str)] = &[
         "src/routes/tracks/create.rs",
         "find_by_kind_and_idempotency(PLANNER_HARNESS_START,",
     ),
-    ("src/routes/today.rs", ".bind(PLANNER_HARNESS_START)"),
     (
         "src/operation/planner_start_fence.rs",
         ".submit(PLANNER_HARNESS_START,",
