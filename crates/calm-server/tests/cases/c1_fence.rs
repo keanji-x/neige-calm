@@ -405,3 +405,6 @@ async fn c5_location_foreign_worktree_delete_preserves_branch_and_rows() {
             .unwrap();
     assert_eq!(desired, "run");
 }
+
+#[path = "c1_fence/c5_sessions.rs"]
+mod c5_sessions;

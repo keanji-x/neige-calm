@@ -134,6 +134,7 @@ const POST_0067_MIGRATION_NAMES: &[&str] = &[
     "0194_planner_knowledge_ledger.sql",
     "0195_child_track_assignment_history.sql",
     "0196_imported_conversation_items.sql",
+    "0197_workspace_executions_alias_history_index.sql",
 ];
 
 #[test]

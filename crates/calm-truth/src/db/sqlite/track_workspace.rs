@@ -18,21 +18,31 @@ pub async fn track_workspace_trash_retention_owners(
     )
 }
 
-/// Closed tracks with a worktree and no agent session that may be working in it: the Planner and
-/// conversation agents run there too, and a closed track's idle Planner must not block the clean.
-/// Tasks, leases and deliveries are [`super::checkout_occupancy`]'s to judge.
-const CLOSED_TRACK_WORKTREES_SQL: &str = "SELECT t.* \
-       FROM tracks t \
-      WHERE t.closed_at IS NOT NULL \
-        AND NOT EXISTS (SELECT 1 FROM worker_sessions ws WHERE ws.track_id = t.id \
-                         AND ws.state IN ('starting','running','turn_pending')) \
-      ORDER BY t.id";
+/// Planner and Legacy session state still excludes clean. Typed terminals use
+/// canonical alias history, including settled/retired executions, to identify
+/// their creation-time mode (as Terminal::is_typed does). C5a's execution predicate
+/// re-proves occupancy under the lifecycle fence; session state is only a proxy.
+/// Tasks, leases and deliveries remain checkout_occupancy's responsibility.
+static CLOSED_TRACK_WORKTREES_SQL: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+    let terminal_alias = super::workspace_execution::TERMINAL_ALIAS_SQL;
+    format!(
+        "SELECT t.* FROM tracks t \
+          WHERE t.closed_at IS NOT NULL \
+            AND NOT EXISTS (SELECT 1 FROM worker_sessions \
+              WHERE worker_sessions.track_id = t.id \
+                AND worker_sessions.state IN ('starting','running','turn_pending') \
+                AND NOT EXISTS (SELECT 1 FROM terminals \
+                  JOIN workspace_executions e ON e.alias = {terminal_alias} \
+                  WHERE terminals.id = worker_sessions.terminal_run_id)) \
+          ORDER BY t.id"
+    )
+});
 
 /// Closed-track candidates for the workspace owner's close tick.
 pub async fn closed_worktree_candidates(
     pool: &sqlx::SqlitePool,
 ) -> Result<Vec<super::super::rows::TrackRow>> {
-    Ok(sqlx::query_as(CLOSED_TRACK_WORKTREES_SQL)
+    Ok(sqlx::query_as(&CLOSED_TRACK_WORKTREES_SQL)
         .fetch_all(pool)
         .await?)
 }
@@ -43,7 +53,8 @@ pub async fn closed_worktree_candidate(
     track: &str,
 ) -> Result<Option<super::super::rows::TrackRow>> {
     Ok(sqlx::query_as(&format!(
-        "SELECT * FROM ({CLOSED_TRACK_WORKTREES_SQL}) WHERE id=?"
+        "SELECT * FROM ({}) WHERE id=?",
+        *CLOSED_TRACK_WORKTREES_SQL
     ))
     .bind(track)
     .fetch_optional(pool)
