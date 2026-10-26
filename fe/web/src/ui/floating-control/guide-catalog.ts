@@ -14,7 +14,7 @@ export type GuideCatalog = Readonly<{ version: number; tours: readonly GuideTour
 /** Repository-authored data only: no HTML, scripts, CSS selectors or product actions. */
 export function parseGuideCatalog(input: unknown): GuideCatalog {
   const identifier = z.string().regex(/^[a-z][a-z0-9-]*$/);
-  return z.object({
+  const catalog = z.object({
     version: z.number().int().positive(),
     tours: z.array(z.object({
       id: identifier, title: z.string().min(1), priority: z.number().int(), exclusive: z.boolean(), requires: z.array(identifier),
@@ -38,4 +38,14 @@ export function parseGuideCatalog(input: unknown): GuideCatalog {
       }
     }
   }).parse(input);
+  return freezeCatalog(catalog);
+}
+
+/** Freeze the complete parsed object graph, including optional step metadata. */
+function freezeCatalog<T>(value: T): T {
+  if (value !== null && typeof value === 'object') {
+    for (const child of Object.values(value)) freezeCatalog(child);
+    Object.freeze(value);
+  }
+  return value;
 }

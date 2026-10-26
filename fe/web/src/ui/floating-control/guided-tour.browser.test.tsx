@@ -1,7 +1,7 @@
 import '../../styles/entry.css';
 import { cleanup, render } from '@testing-library/react';
 import { afterEach, expect, it } from 'vitest';
-import { page, commands } from 'vitest/browser';
+import { page, commands, userEvent } from 'vitest/browser';
 import { useState } from '../state/public.ts';
 import { Dialog } from '../dialog/public.tsx';
 import { AnchoredHint } from './anchored-hint.tsx';
@@ -212,4 +212,73 @@ it('continues to a usable lower tour while a completed exclusive target remains 
   await page.getByRole('button', { name: '知道了', exact: true }).click();
   await expect.element(page.getByRole('note', { name: 'Background' })).toBeVisible();
   await expect.element(page.getByRole('button', { name: 'Foreground target' })).toBeVisible();
+});
+
+for (const role of ['menu', 'listbox'] as const) for (const via of [false, true]) it(`yields ${via ? 'via' : 'status'} location help to a visible ${role}`, async () => {
+  const catalog = parseGuideCatalog({ version: 1, tours: [{ id: 'pending', title: 'Pending', priority: 1, exclusive: false, requires: [], steps: [
+    { id: 'pending', target: 'absent', via: ['opener'], locate: 'Open the panel', title: 'Pending action', description: 'Read', advance: 'next' },
+  ] }] });
+  const fixture = (open: boolean) => <GuideProvider catalog={catalog} enabled sessionKey="attention" facts={{}} isSeen={() => false} onSeen={() => {}} onSkip={() => {}}>
+    {via && <GuideAnchor id="opener">{(ref, describedBy) => <button ref={ref} aria-describedby={describedBy}>Open panel</button>}</GuideAnchor>}
+    {open && <div role={role} aria-label="Native picker">Native options</div>}
+  </GuideProvider>;
+  const instruction = via ? page.getByRole('note', { name: 'Pending action' }) : page.getByRole('status', { name: '引导下一步' });
+  const view = render(fixture(false));
+  await expect.element(instruction).toBeVisible();
+  view.rerender(fixture(true));
+  await expect.element(page.getByRole(role, { name: 'Native picker' })).toBeVisible();
+  await expect.element(page.getByRole('status', { name: '引导下一步' })).not.toBeInTheDocument();
+  await expect.element(page.getByRole('note', { name: 'Pending action' })).not.toBeInTheDocument();
+  view.rerender(fixture(false));
+  await expect.element(instruction).toBeVisible();
+});
+
+it('does not invent a location for an unrelated unmounted tour', async () => {
+  const catalog = parseGuideCatalog({ version: 1, tours: [{ id: 'absent', title: 'Absent', priority: 1, exclusive: false, requires: [], steps: [
+    { id: 'absent', target: 'absent', title: 'Unrelated', description: 'Read', advance: 'next' },
+  ] }] });
+  render(<GuideProvider catalog={catalog} enabled sessionKey="absent" facts={{}} isSeen={() => false} onSeen={() => {}} onSkip={() => {}}><button>Product control</button></GuideProvider>);
+  await expect.element(page.getByRole('button', { name: 'Product control' })).toBeVisible();
+  await expect.element(page.getByRole('status', { name: '引导下一步' })).not.toBeInTheDocument();
+});
+
+for (const surface of ['status', 'anchored'] as const) it(`lets pointer input through ${surface} copy while keeping Skip pointer and keyboard reachable`, async () => {
+  await page.viewport(1000, 800);
+  const catalog = parseGuideCatalog({ version: 1, tours: [{ id: 'pending', title: 'Pending', priority: 1, exclusive: false, requires: [], steps: [
+    { id: 'pending', target: surface === 'status' ? 'absent' : 'product', locate: 'Open the panel', title: 'Pending', description: 'Read', advance: 'next' },
+  ] }] });
+  function StatusFixture() {
+    const [enabled, enable] = useState(true);
+    return <GuideProvider catalog={catalog} enabled={enabled} sessionKey="pointer" facts={{}} isSeen={() => false} onSeen={() => {}} onSkip={() => enable(false)}>
+      <button style={{ position: 'fixed', inset: 0 }}>Underlying product</button>
+      <GuideAnchor id="product">{(ref, describedBy) => <button ref={ref} aria-describedby={describedBy} style={{ position: 'fixed', top: 10, left: 10 }}>Anchor</button>}</GuideAnchor>
+    </GuideProvider>;
+  }
+  render(<StatusFixture />);
+  const status = surface === 'status' ? page.getByRole('status', { name: '引导下一步' }) : page.getByRole('note', { name: 'Pending' });
+  await expect.element(status).toBeVisible();
+  const copy = status.element().querySelector('p')!.getBoundingClientRect();
+  const product = page.getByRole('button', { name: 'Underlying product' }).element();
+  expect(product.contains(document.elementFromPoint(copy.x + copy.width / 2, copy.y + copy.height / 2))).toBe(true);
+  const skip = page.getByRole('button', { name: '跳过引导' }).element();
+  const bounds = skip.getBoundingClientRect();
+  expect(skip.contains(document.elementFromPoint(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2))).toBe(true);
+  page.getByRole('button', { name: 'Anchor', exact: true }).element().focus();
+  await userEvent.keyboard('{Tab}');
+  expect(document.activeElement).toBe(skip);
+  await userEvent.keyboard('{Enter}');
+  await expect.element(status).not.toBeInTheDocument();
+});
+
+it('prefers a mounted pending step over an undeclared unmounted step in a started tour', async () => {
+  const catalog = parseGuideCatalog({ version: 1, tours: [{ id: 'started', title: 'Started', priority: 1, exclusive: false, requires: [], steps: [
+    { id: 'read', target: 'read', title: 'Already read', description: 'Read', advance: 'next' },
+    { id: 'absent', target: 'absent', title: 'Unavailable preview', description: 'Read', advance: 'next' },
+    { id: 'mounted', target: 'mounted', title: 'Visible progress', description: 'Read', advance: 'next' },
+  ] }] });
+  render(<GuideProvider catalog={catalog} enabled sessionKey="started" facts={{}} isSeen={id => id === 'read'} onSeen={() => {}} onSkip={() => {}}>
+    <GuideAnchor id="mounted">{(ref, describedBy) => <button ref={ref} aria-describedby={describedBy}>Progress</button>}</GuideAnchor>
+  </GuideProvider>);
+  await expect.element(page.getByRole('note', { name: 'Visible progress' })).toBeVisible();
+  await expect.element(page.getByRole('status', { name: '引导下一步' })).not.toBeInTheDocument();
 });

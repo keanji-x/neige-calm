@@ -3,7 +3,7 @@ import { cleanup, render } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
 import { page } from 'vitest/browser';
 import type { ReactNode } from 'react';
-import { GuideProvider, parseGuideCatalog } from '../../ui/floating-control/public.ts';
+import { GuideAnchor, GuideProvider, parseGuideCatalog } from '../../ui/floating-control/public.ts';
 import { useState } from '../../ui/state/public.ts';
 import { NewTrackForm } from '../../features/area/new-track/public.tsx';
 import { ChatComposer } from '../../features/chat/thread/public.tsx';
@@ -83,4 +83,29 @@ it('fills only the new project name and waits for the native Create action', asy
   await page.getByRole('button', { name: '下一步', exact: true }).click();
   await expect.element(page.getByRole('note', { name: '这次先做一个本地小练习' })).toBeVisible();
   fixture.client.clear();
+});
+
+it('announces demo completion only after the scenario accepts a revision', async () => {
+  const { createOnboardingScenario } = await import('../onboarding-demo/scenario.ts');
+  const { createAreaOperation } = await import('../../../../core/domain/area.ts');
+  const { createTrackOperation, trackDetailOperation } = await import('../../../../core/domain/track.ts');
+  const { sendPlannerInputOperation } = await import('../../../../core/domain/conversation.ts');
+  const { runOperation } = await import('../providers/queries.ts');
+  const lesson = createOnboardingScenario();
+  const catalog = parseGuideCatalog(definition);
+  const fixture = () => <GuideProvider catalog={catalog} enabled sessionKey="demo" facts={{ demo: true, 'demo-revised': lesson.completed() }}
+    isSeen={id => id !== 'demo-complete'} onSeen={() => {}} onSkip={() => {}}>
+    <GuideAnchor id="demo-complete" disabled={!lesson.completed()}>{ref => <button ref={ref}>Restart lesson</button>}</GuideAnchor>
+  </GuideProvider>;
+  const view = render(fixture());
+  await expect.element(page.getByRole('status', { name: '引导下一步' })).not.toBeInTheDocument();
+  const area = await runOperation(lesson.transport, createAreaOperation({ name: 'Practice', color: '#6574cd' }, 'area'), undefined);
+  const track = await runOperation(lesson.transport, createTrackOperation({ area_id: area.id, planner_provider: 'codex',
+    theme: { fg: [0, 0, 0], bg: [255, 255, 255] }, first_message: 'Create page' }, 'track'), undefined);
+  view.rerender(fixture());
+  await expect.element(page.getByRole('status', { name: '引导下一步' })).not.toBeInTheDocument();
+  const card = (await runOperation(lesson.transport, trackDetailOperation(track.id), undefined)).cards.find(card => card.kind === 'codex')!;
+  await runOperation(lesson.transport, sendPlannerInputOperation(card.id, 'Revise page', [], 'revision', null), undefined);
+  view.rerender(fixture());
+  await expect.element(page.getByRole('note', { name: '练习完成，可以重新开始' })).toBeVisible();
 });

@@ -32,3 +32,13 @@ it('accepts variant targets and plain-text location contracts', () => {
     expect(() => parseGuideCatalog(input(value))).toThrow();
   }
 });
+
+it('deep-freezes the parsed catalog including variant and location arrays', () => {
+  const catalog = parseGuideCatalog({ version: 1, tours: [{ id: 'tour', title: 'Tour', priority: 1, exclusive: false, requires: ['ready'], steps: [
+    { id: 'step', target: ['wide', 'compact'], via: ['opener'], title: 'Hi', description: 'Read', advance: 'next', example: { label: 'Fill', summary: 'Example', text: 'Draft' } },
+  ] }] });
+  const tour = catalog.tours[0]; const step = tour.steps[0];
+  for (const value of [catalog, catalog.tours, tour, tour.requires, tour.steps, step, step.target, step.via, step.example]) {
+    expect(Object.isFrozen(value)).toBe(true);
+  }
+});

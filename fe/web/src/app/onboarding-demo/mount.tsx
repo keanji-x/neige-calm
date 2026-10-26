@@ -36,7 +36,7 @@ export function mountOnboardingDemo(root: HTMLElement): void {
   const registry = createCardRegistry(); bootCards(registry);
   const leave = () => window.location.assign('/next/');
   const router = createAppRouter({ transport, unauthorized, client, workspaceFiles, prepareReport: prepareReportDocument,
-    initialWorkspaceGuide: true, guideContent, guideFacts: { demo: true }, uiPreferences: createUiPreferences(storage), recentFiles: createRecentFileHistory(storage),
+    initialWorkspaceGuide: true, guideContent, guideFacts: { demo: true, get 'demo-revised'() { return lesson.completed(); } }, uiPreferences: createUiPreferences(storage), recentFiles: createRecentFileHistory(storage),
     cards: { registry, host: createCardHost(registry) }, onSignOut: leave });
   const history = createHashHistory();
   // Every document visit starts a fresh lesson; hash navigation cannot lose the Demo selector.

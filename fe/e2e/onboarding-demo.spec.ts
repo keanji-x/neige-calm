@@ -15,8 +15,9 @@ const target = async (page: Page) => {
   return page.locator(`[aria-describedby~=${JSON.stringify(id)}]`);
 };
 
-/** Every user transition gets a fresh visible instruction; anchored ones also identify their target. */
-async function continuity(page: Page, timeout = 300) {
+/** Wait for the named instruction and its target/ring geometry after a lesson transition. */
+async function continuity(page: Page, title: string, timeout = 300) {
+  await expect(note(page)).toHaveAccessibleName(title, { timeout });
   await expect.poll(() => page.evaluate(() => {
     const visible = (node: Element | null) => {
       if (node === null || node.closest('[hidden], [inert], [aria-hidden="true"]') !== null) return false;
@@ -24,9 +25,7 @@ async function continuity(page: Page, timeout = 300) {
       return rect.width > 0 && rect.height > 0 && getComputedStyle(node).visibility !== 'hidden';
     };
     const hint = document.querySelector('[data-nc-guide-hint]:popover-open:not([aria-hidden="true"])');
-    // A menu may replace its outgoing callout with a status in the same frame.
-    // Sample the instruction, reference and ring together rather than awaiting a withdrawn note.
-    if (!visible(hint)) return visible(document.querySelector('[role="status"][aria-label="引导下一步"]'));
+    if (!visible(hint)) return false;
     const reference = Array.from(document.querySelectorAll('[aria-describedby]')).find(node =>
       node.getAttribute('aria-describedby')?.split(' ').includes(hint?.id ?? ''));
     if (reference === undefined || !visible(reference)) return false;
@@ -54,62 +53,63 @@ for (const width of [1440, 390]) {
       await page.goto('/next/?demo=onboarding');
       await expect(page.getByRole('complementary', { name: '演示模式', exact: true })).toBeVisible({ timeout: 30_000 });
       let screenshot = 0;
-      const after = async (action: () => Promise<unknown>) => {
+      const after = async (action: () => Promise<unknown>, title: string | null) => {
         await action();
-        await continuity(page);
+        if (title === null) await expect(page.getByRole('menu')).toBeVisible();
+        else await continuity(page, title);
         await page.screenshot({ path: `test-results/guide-flow-after/${width}-${String(++screenshot).padStart(2, '0')}.png` });
       };
-      const advance = () => after(() => note(page).getByRole('button', { name: /^(下一步|知道了)$/ }).click());
-      const activate = () => after(async () => (await target(page)).click());
+      const advance = (title: string) => after(() => note(page).getByRole('button', { name: /^(下一步|知道了)$/ }).click(), title);
+      const activate = (title: string) => after(async () => (await target(page)).click(), title);
       await expect(note(page)).toHaveAccessibleName('先做出一个能预览的小作品');
-      // Cold boot includes loading code and fonts; every lesson transition below retains the 300 ms budget.
-      await continuity(page, 5_000);
-      await activate(); // Areas +, as named by the callout.
-      await after(() => note(page).getByRole('button', { name: '填入这个名字', exact: true }).click());
-      await advance();
-      await after(async () => (await target(page)).getByRole('button').click());
-      await after(() => page.getByRole('menuitem', { name: /^Small change/ }).click());
-      await advance();
-      await advance();
-      await activate(); // Create area.
-      if (width === 390) await activate(); // The callout names the newly created project.
-      await activate(); // Project +.
-      await after(() => note(page).getByRole('button', { name: '填入练习需求', exact: true }).click());
+      // Cold boot includes loading code and fonts.
+      await continuity(page, '先做出一个能预览的小作品', 5_000);
+      await activate('先给练习项目取个名字'); // Areas +, as named by the callout.
+      await after(() => note(page).getByRole('button', { name: '填入这个名字', exact: true }).click(), '先给练习项目取个名字');
+      await advance('这次先做一个本地小练习');
+      await after(async () => (await target(page)).getByRole('button').click(), null);
+      await after(() => page.getByRole('menuitem', { name: /^Small change/ }).click(), '这次先做一个本地小练习');
+      await advance('选一个可以放心练习的目录');
+      await advance('把这个练习项目建好');
+      await activate(width === 390 ? '先选择要继续的项目' : '现在给 AI 一件具体的事做'); // Create area.
+      if (width === 390) await activate('现在给 AI 一件具体的事做'); // The callout names the newly created project.
+      await activate('让 AI 做出第一个可见成果'); // Project +.
+      await after(() => note(page).getByRole('button', { name: '填入练习需求', exact: true }).click(), '让 AI 做出第一个可见成果');
       await expect(page.getByRole('button', { name: /^Track 作品集练习/ })).toHaveCount(0);
-      await advance();
-      if (width === 390) await activate(); // … opens the options the callout asks us to check.
-      await advance();
-      if (width === 390) await after(() => page.keyboard.press('Escape')); // 收起选项.
-      await activate(); // Native create/send control.
+      await advance('确认工作方式和项目目录');
+      if (width === 390) await activate('确认工作方式和项目目录'); // … opens the options the callout asks us to check.
+      await advance('确认后发送这条需求');
+      if (width === 390) await after(() => page.keyboard.press('Escape'), '确认后发送这条需求'); // 收起选项.
+      await activate('进展和成果都汇总在这里'); // Native create/send control.
       // Follow location hints (Close conversation / Back to track) rather than route or store APIs.
       const followLocation = async () => {
         for (let count = 0; count < 3; count++) {
           const label = await (await target(page)).getAttribute('aria-label');
           if (label !== 'Close conversation' && label !== 'Back to track' && label !== 'Back to Report') return;
-          await activate();
+          await activate(await note(page).getAttribute('aria-label') ?? '');
         }
         throw new Error('Location hint did not reach its declared target');
       };
       await followLocation();
       await expect(note(page)).toHaveAccessibleName('进展和成果都汇总在这里');
-      await advance();
+      await advance('打开成果预览');
       await expect(note(page)).toHaveAccessibleName('打开成果预览');
-      await activate();
+      await activate('当前工作的对话与进展');
       await expect(page.frameLocator('iframe[title="index.html"]').getByRole('heading', { name: '我的作品集', exact: true })).toBeVisible();
       await followLocation();
       await expect(note(page)).toHaveAccessibleName('当前工作的对话与进展');
-      await advance();
+      await advance('继续修改同一个成果');
       await expect(note(page)).toHaveAccessibleName('继续修改同一个成果');
       if (width === 390) {
         // The callout points at the dock; focus is the native activation that opens its sheet.
-        await after(async () => (await target(page)).getByRole('textbox').click());
-      } else await activate();
+        await after(async () => (await target(page)).getByRole('textbox').click(), '在这里提出修改或回答问题');
+      } else await activate('在这里提出修改或回答问题');
       await expect(note(page)).toHaveAccessibleName('在这里提出修改或回答问题');
-      await after(() => note(page).getByRole('button', { name: '填入一次修改需求', exact: true }).click());
+      await after(() => note(page).getByRole('button', { name: '填入一次修改需求', exact: true }).click(), '在这里提出修改或回答问题');
       const revision = await page.getByLabel('Message', { exact: true }).innerText();
-      await advance();
+      await advance('发送这次修改');
       await expect(note(page)).toHaveAccessibleName('发送这次修改');
-      await activate();
+      await activate('练习完成，可以重新开始');
       await expect(page.getByText('Waiting for conversation to update.', { exact: true })).toHaveCount(0);
       await expect(page.getByText(revision, { exact: true })).toHaveCount(1);
       await followLocation();

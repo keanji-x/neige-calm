@@ -316,7 +316,8 @@
       "priority": 10,
       "exclusive": false,
       "requires": [
-        "demo"
+        "demo",
+        "demo-revised"
       ],
       "steps": [
         {

@@ -69,7 +69,7 @@ export function GuideProvider({ catalog, enabled, sessionKey, facts, isSeen, onS
     refresh();
     return () => { observer.disconnect(); cancelAnimationFrame(frame); window.removeEventListener('resize', refresh); document.removeEventListener('toggle', refresh, true); };
   }, [running, targets]);
-  const available = (() => {
+  const scenes = (() => {
     if (!running) return [];
     // Native menus and nested pickers temporarily own attention and focus.
     if ([...document.querySelectorAll<HTMLElement>('[role="menu"], [role="listbox"]')].some(visible)) return [];
@@ -81,15 +81,16 @@ export function GuideProvider({ catalog, enabled, sessionKey, facts, isSeen, onS
       const target = usable.find(candidate => ids.includes(candidate.id));
       const via = step.via?.map(id => usable.find(candidate => candidate.id === id)).find(candidate => candidate !== undefined);
       const mounted = registered.some(candidate => ids.includes(candidate.id) && (modal === undefined || modal.contains(candidate.element)));
-      if (!mounted && step.locate === undefined && step.via === undefined) return [];
-      return [{ step, element: target?.element ?? via?.element ?? null, locating: target === undefined }];
+      const started = tour.steps.some(candidate => candidate.id === pinned || isSeen(candidate.id));
+      const available = mounted || step.locate !== undefined || step.via !== undefined;
+      if (!available && !started) return [];
+      return [{ step, element: target?.element ?? via?.element ?? null, locating: target === undefined, available }];
     }) })).filter(entry => entry.steps.length > 0).sort((a, b) => b.tour.priority - a.tour.priority);
   })();
-  // Completed exclusive scenes no longer prevent unseen help elsewhere.
-  const scene = available.find(entry => entry.steps.some(({ step }) => step.id === pinned || !isSeen(step.id)))
-    ?? (running ? [...catalog.tours].filter(tour => tour.requires.every(fact => facts[fact] === true)
-      && tour.steps.some(step => !isSeen(step.id))).sort((a, b) => b.priority - a.priority)
-      .map(tour => ({ tour, steps: tour.steps.map(step => ({ step, element: null, locating: true })) }))[0] : undefined);
+  const available = scenes.map(entry => ({ ...entry, steps: entry.steps.filter(candidate => candidate.available) }));
+  // Prefer applicable help; a started tour's unmounted steps only provide a last-resort location.
+  const pending = (entry: typeof scenes[number]) => entry.steps.some(({ step }) => step.id === pinned || !isSeen(step.id));
+  const scene = available.find(pending) ?? scenes.find(pending);
   const candidates = scene?.steps ?? [];
   const selected = candidates.find(entry => entry.step.id === pinned) ?? candidates.find(entry => !isSeen(entry.step.id));
   const index = selected === undefined ? -1 : candidates.indexOf(selected);
