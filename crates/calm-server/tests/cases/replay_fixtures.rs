@@ -318,36 +318,35 @@ async fn replay_router_terminal_card_create_persists_without_supervisor() {
         .schedule_track(track.id.clone())
         .await;
 
-    let worker_card = timeout(Duration::from_secs(2), async {
+    // Replay boots no Engine and a new terminal task starts only as a Pipe execution, so the
+    // dispatch fails as ExecutionUnavailable before any card, terminal or execution row exists.
+    let failed = timeout(Duration::from_secs(5), async {
         loop {
-            let cards = repo
-                .cards_by_track(&track_id)
-                .await
-                .expect("list track cards");
-            if let Some(card) = cards.into_iter().find(|card| {
-                card.payload.get("idempotency_key").and_then(Value::as_str)
-                    == Some(worker_idempotency_key.as_str())
-            }) {
-                break card;
+            let task = repo.task_get(&worker_idempotency_key).await.expect("task");
+            if let Some(task) = task.filter(|task| task.status == TaskStatus::Failed) {
+                break task;
             }
             tokio::time::sleep(Duration::from_millis(25)).await;
         }
     })
     .await
-    .expect("dispatcher terminal worker should use replay spawn hook");
-    assert_eq!(
-        worker_card.kind, "terminal",
-        "dispatcher should persist the replay terminal worker card"
-    );
-    let worker_terminal = repo
-        .terminal_get_by_card(worker_card.id.as_ref())
-        .await
-        .expect("lookup worker terminal")
-        .expect("worker terminal row");
+    .expect("replay terminal worker dispatch must fail without an Engine");
+    let detail = failed.status_detail.unwrap_or_default();
     assert!(
-        worker_terminal.exit_code.is_none() && !worker_terminal.signal_killed,
-        "replay dispatcher terminal worker should not record a spawn failure: {worker_terminal:?}"
+        detail.starts_with("spawn-failed") && detail.contains("execution unavailable"),
+        "{detail}"
     );
+    for rows in [
+        "cards WHERE kind='terminal'",
+        "terminals",
+        "workspace_executions",
+    ] {
+        let count: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {rows}"))
+            .fetch_one(repo.pool())
+            .await
+            .unwrap();
+        assert_eq!(count, 0, "{rows}");
+    }
 
     let app = routes::router()
         .layer(axum::middleware::from_fn(

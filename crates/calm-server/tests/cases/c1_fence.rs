@@ -158,6 +158,17 @@ async fn c1_fence_reopen_waits_for_clean() {
 }
 async fn preparation(kind: &str, boot: bool) {
     let (b, track, path) = fixture().await;
+    // A new terminal task prepares only an op-owned Pipe execution, so it needs a live Engine.
+    let _execution = if kind == "terminal-worker" {
+        let execution = crate::support::execution::Fixture::new(b.repo.db().clone()).await;
+        b.state
+            .operation_runtime
+            .execution()
+            .bind(Arc::new(execution.lifecycle.engine().unwrap().clone()));
+        Some(execution)
+    } else {
+        None
+    };
     let payload = match kind {
         "terminal-create" => terminal(&track),
         "planner-harness-start" => sqlx::query_scalar::<_, String>(
@@ -235,16 +246,22 @@ async fn preparation(kind: &str, boot: bool) {
     .await
     .expect("Busy operation must retry promptly after clean releases");
     assert_ne!(phase(&b, &op).await, "stuck");
-    let prepared: bool =
-        sqlx::query_scalar("SELECT tx_output_json IS NOT NULL FROM operations WHERE id=?")
+    let output: Option<String> =
+        sqlx::query_scalar("SELECT tx_output_json FROM operations WHERE id=?")
             .bind(&op)
             .fetch_one(b.repo.pool())
             .await
             .unwrap();
-    assert!(
-        prepared,
-        "retry must commit preparation, not merely fail Pending"
-    );
+    let output: Value = serde_json::from_str(
+        &output.expect("retry must commit preparation, not merely fail Pending"),
+    )
+    .unwrap();
+    if kind == "terminal-worker" {
+        assert!(
+            output["data"].get("terminal_worker_pipe").is_some(),
+            "retry must commit the Pipe preparation: {output}"
+        );
+    }
     if boot {
         tokio::time::timeout(Duration::from_secs(5), async {
             while phase(&b, &op).await != "succeeded" {
