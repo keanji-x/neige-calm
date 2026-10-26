@@ -126,7 +126,7 @@ impl FrozenForge {
 pub mod credentials;
 
 #[cfg(test)]
-pub(in crate::operation) mod tests;
+pub(crate) mod tests;
 
 #[derive(Clone, Debug)]
 pub struct ForgeActionAdapter;

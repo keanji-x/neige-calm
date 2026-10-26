@@ -24,6 +24,10 @@ pub async fn recover(
     }
     let store = store
         .with_projection(
+            crate::operation::terminal_adapter::pipe_worker::CONSUMER.into(),
+            Arc::new(crate::operation::terminal_adapter::pipe_worker::Projection),
+        )
+        .with_projection(
             crate::operation::gate_execution::CONSUMER.into(),
             Arc::new(crate::operation::gate_execution::Projection),
         )

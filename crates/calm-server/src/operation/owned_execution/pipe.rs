@@ -60,6 +60,7 @@ pub(crate) async fn admit(
     root: std::path::PathBuf,
     track: &str,
     program: ExecutionSpecification,
+    authority: Option<&dyn ReleaseAuthorization>,
 ) -> Result<Record> {
     let engine = engine(ctx)?;
     if !matches!(program.io_mode, calm_session::control::IoMode::Pipe) {
@@ -104,6 +105,9 @@ pub(crate) async fn admit(
     let pool = ctx.operation_repo.sqlite_db();
     let mut tx = crate::db::sqlite::begin_immediate_tx(&pool).await?;
     crate::operation::repo_sqlite::require_live_claim_tx(&mut tx, op).await?;
+    if let Some(authority) = authority {
+        authority.authorize_tx(&mut tx).await?;
+    }
     let ticket = engine.admit(&mut tx, intent).await.map_err(conflict)?;
     sql::insert(
         &mut tx,

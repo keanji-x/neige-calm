@@ -1,5 +1,7 @@
 #![cfg(unix)]
 
+use calm_server::operation::terminal_adapter::legacy_test_adapter::LegacyPreparedWorker;
+
 use calm_truth::db::RepoOutOfDomain as _;
 use calm_truth::db::RepoRead;
 use calm_types::organization::LEGACY_OWNER_USER_ID;
@@ -3011,13 +3013,15 @@ fn codex_worker_payload(track_id: &str, idempotency_key: &str) -> Value {
 fn install_terminal_worker_runtime_with_hook(
     boot: &mut Boot,
     hook: TestTerminalWorkerSpawnHook,
-) -> Arc<TerminalWorkerAdapter> {
+) -> Arc<LegacyPreparedWorker> {
     let route_repo: Arc<dyn calm_server::db::RouteRepo> = boot.repo.clone();
-    let adapter = Arc::new(TerminalWorkerAdapter::new_with_spawn_hook(
-        route_repo.clone(),
-        boot.state.card_role_cache.clone(),
-        boot.state.track_area_cache.clone(),
-        hook,
+    let adapter = Arc::new(LegacyPreparedWorker(
+        TerminalWorkerAdapter::new_with_spawn_hook(
+            route_repo.clone(),
+            boot.state.card_role_cache.clone(),
+            boot.state.track_area_cache.clone(),
+            hook,
+        ),
     ));
     let operation_repo = Arc::new(SqlxOperationRepo::new(boot.repo.db().clone()));
     let completion = OperationCompletionBus::new();

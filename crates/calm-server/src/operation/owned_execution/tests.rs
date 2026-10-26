@@ -219,6 +219,7 @@ async fn pipe_admission(config: super::pipe::PipeConfig, gate_facade: bool) {
                 io_mode: calm_session::control::IoMode::Pipe,
                 replay_bytes: 8192,
             },
+            None,
         )
         .await
         .unwrap()

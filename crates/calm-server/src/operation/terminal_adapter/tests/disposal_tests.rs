@@ -195,7 +195,27 @@ async fn exercise(history: History, disposal: Disposal) {
     )
     .with_shared_codex_appserver(shared)
     .with_workspace_root(temp.path().join("workspaces"));
-    let runtime = state.operation_runtime.clone();
+    let ops = Arc::new(SqlxOperationRepo::new(repo.db().clone()));
+    let completion = crate::operation::OperationCompletionBus::new();
+    let runtime = Arc::new(crate::operation::OperationRuntime::new_unchecked(
+        ops.clone(),
+        vec![Arc::new(LegacyPreparedWorker(TerminalWorkerAdapter::new(
+            repo.clone(),
+            roles.clone(),
+            areas.clone(),
+        )))],
+        state.events.clone(),
+        completion.clone(),
+        SpawnCtx::new(
+            repo.clone(),
+            ops,
+            state.daemon.clone(),
+            state.terminal_renderer.clone(),
+            state.events.clone(),
+            completion,
+        ),
+    ));
+    let state = state.with_operation_runtime(runtime.clone());
     let app = crate::routes::router()
         .layer(axum::middleware::from_fn_with_state(
             crate::auth::AuthState::new(crate::auth::AuthConfig {
@@ -292,7 +312,7 @@ async fn exercise(history: History, disposal: Disposal) {
         sqlx::query("CREATE TRIGGER reject_terminal_pid BEFORE UPDATE OF pid ON terminals WHEN NEW.pid IS NOT NULL BEGIN SELECT RAISE(FAIL,'fixture pid write failure'); END").execute(repo.pool()).await.unwrap();
     }
     if matches!(history, History::OldPrestart) {
-        let adapter = TerminalWorkerAdapter::new(repo.clone(), roles, areas);
+        let adapter = LegacyPreparedWorker(TerminalWorkerAdapter::new(repo.clone(), roles, areas));
         let id = operations
             .insert_operation(kind, key.clone(), payload.clone())
             .await

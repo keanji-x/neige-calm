@@ -7,6 +7,7 @@ pub const OWNER_STATE_KEYS: &[&str] = &[
     "gate_execution",
     "forge_execution",
     "workspace_reclaim",
+    "terminal_worker_execution",
 ];
 
 fn record_path(key: &str) -> String {

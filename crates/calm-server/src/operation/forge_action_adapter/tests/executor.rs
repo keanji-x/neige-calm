@@ -2,7 +2,7 @@
 use crate::execution_quiesce::ExecutionLifecycle;
 use std::path::PathBuf;
 
-pub(in crate::operation) struct Executor {
+pub(crate) struct Executor {
     pub lifecycle: ExecutionLifecycle,
     pub(in crate::operation) _root: tempfile::TempDir,
     pub(in crate::operation) _socket: tempfile::TempDir,

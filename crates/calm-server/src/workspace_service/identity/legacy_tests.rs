@@ -45,7 +45,7 @@ pub(super) async fn pending_terminal_operation(
         .await
         .unwrap();
     ctx.operation_repo
-        .get_operation(&id)
+        .claim_drive_operation(&id)
         .await
         .unwrap()
         .unwrap()
@@ -129,7 +129,10 @@ async fn workspace_identity_legacy_non_git_terminal_owner_prepares_without_git_a
     let plain = track(&repo, tmp.path(), TrackWorkspacePlan::AttachedFromCwd).await;
     task(&repo, &plain).await;
     let operations = Arc::new(SqlxOperationRepo::new(repo.db().clone()));
-    let ctx = context(repo.clone(), operations);
+    let execution =
+        crate::operation::forge_action_adapter::tests::executor::Executor::new(repo.db().clone())
+            .await;
+    let ctx = context(repo.clone(), operations).with_execution(execution.lifecycle.clone());
     let adapter = TerminalWorkerAdapter::new(
         repo.clone(),
         repo.card_role_cache().clone(),
@@ -216,6 +219,11 @@ async fn workspace_identity_legacy_per_card_submit_replay_keeps_original_source_
             Box::pin(async { Ok(SpawnHandle::NoOp) })
         }),
     ));
+    // Persist the preparation shape an old kernel wrote; replay still uses the new adapter.
+    let legacy_adapter =
+        crate::operation::terminal_adapter::legacy_test_adapter::LegacyPreparedWorker(
+            adapter.as_ref().clone(),
+        );
     let operations = Arc::new(SqlxOperationRepo::new(repo.db().clone()));
     let ctx = context(repo.clone(), operations.clone());
     let payload = serde_json::to_value(TerminalWorkerOperationPayload {
@@ -242,7 +250,7 @@ async fn workspace_identity_legacy_per_card_submit_replay_keeps_original_source_
         .pop()
         .unwrap();
     operations
-        .prepare_tx_and_advance(&claimed, adapter.as_ref(), None)
+        .prepare_tx_and_advance(&claimed, &legacy_adapter, None)
         .await
         .unwrap()
         .committed()
@@ -323,7 +331,7 @@ async fn workspace_identity_legacy_per_card_submit_replay_keeps_original_source_
         observed_root(&repo, &current).await.is_none(),
         "replaying an old external source cannot acquire the current track's identity"
     );
-    adapter
+    legacy_adapter
         .prepare_external(&payload, &claimed, &ctx)
         .await
         .unwrap();

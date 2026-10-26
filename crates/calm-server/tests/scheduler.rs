@@ -42,6 +42,7 @@ use calm_server::operation::codex_adapter::CodexWorkerAdapter;
 use calm_server::operation::task_gate_run::{TaskGateRunAdapter, TaskGateRunPayload};
 use calm_server::operation::task_verify_adapter::{TaskVerifyAdapter, TaskVerifyOperationPayload};
 use calm_server::operation::terminal_adapter::TerminalWorkerAdapter;
+use calm_server::operation::terminal_adapter::legacy_test_adapter::LegacyPreparedWorker;
 use calm_server::operation::{
     AppServerInteractOutcome, CompensationStateVersioned, NON_TASK_BOUND_ADAPTER_KINDS, Operation,
     OperationCompletionBus, OperationKey, OperationOutcome, OperationRepo, OperationRuntime,
@@ -967,11 +968,13 @@ fn context_checked_terminal_adapter(
             })
         }) as futures::future::BoxFuture<'static, CalmResult<SpawnHandle>>
     });
-    Arc::new(TerminalWorkerAdapter::new_with_spawn_hook(
-        route_repo,
-        boot.card_role_cache.clone(),
-        boot.track_area_cache.clone(),
-        hook,
+    Arc::new(LegacyPreparedWorker(
+        TerminalWorkerAdapter::new_with_spawn_hook(
+            route_repo,
+            boot.card_role_cache.clone(),
+            boot.track_area_cache.clone(),
+            hook,
+        ),
     ))
 }
 
@@ -9434,3 +9437,5 @@ async fn aborted_observer_leaves_gate_group_alive_and_reattach_lands_verdict() {
 #[cfg(target_os = "linux")]
 #[path = "scheduler/recovery_3192.rs"]
 mod recovery_3192;
+#[path = "scheduler/terminal_pipe.rs"]
+mod terminal_pipe;

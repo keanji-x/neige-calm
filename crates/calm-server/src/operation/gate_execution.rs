@@ -132,6 +132,7 @@ pub(crate) async fn admit(
             io_mode: calm_session::control::IoMode::Pipe,
             replay_bytes: 8192,
         },
+        None,
     )
     .await
 }

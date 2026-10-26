@@ -40,6 +40,13 @@ async fn unresolved_tx(tx: &mut Tx<'_>, scope: &Scope) -> Result<Vec<Unresolved>
     let mut unresolved = Vec::new();
     for row in rows {
         let op = super::repo_sqlite::operation_from_row(&row)?;
+        if op
+            .tx_output
+            .as_ref()
+            .is_some_and(super::terminal_adapter::pipe_worker::is_pipe)
+        {
+            continue;
+        }
         let started = super::worker_cleanup::may_have_started(&op)?;
         if !started {
             continue;

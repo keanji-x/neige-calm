@@ -385,10 +385,14 @@ async fn workspace_identity_concurrent_terminal_hooks_converge_identical_facts()
         current.id.as_str(),
     )
     .unwrap();
+    let execution =
+        crate::operation::forge_action_adapter::tests::executor::Executor::new(repo.db().clone())
+            .await;
     let ctx = super::legacy_tests::context(
         repo.clone(),
         Arc::new(SqlxOperationRepo::new(repo.db().clone())),
-    );
+    )
+    .with_execution(execution.lifecycle.clone());
     let adapter = TerminalWorkerAdapter::new(
         repo.clone(),
         repo.card_role_cache().clone(),

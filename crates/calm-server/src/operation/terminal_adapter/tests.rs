@@ -1,12 +1,13 @@
+use super::legacy_test_adapter::LegacyPreparedWorker;
 use super::*;
 use crate::db::sqlite::begin_immediate_tx;
 use crate::operation::{OperationKey, OperationRepo, SqlxOperationRepo};
 use std::sync::Arc;
 
-struct TerminalWorkerHarness {
-    repo: Arc<crate::db::sqlite::SqlxRepo>,
-    adapter: TerminalWorkerAdapter,
-    track_id: String,
+pub(super) struct TerminalWorkerHarness {
+    pub(super) repo: Arc<crate::db::sqlite::SqlxRepo>,
+    adapter: LegacyPreparedWorker,
+    pub(super) track_id: String,
 }
 
 const HARNESS_WORKSPACE: &str = "/neige-fixture-workspace";
@@ -15,7 +16,9 @@ async fn terminal_worker_harness() -> TerminalWorkerHarness {
     terminal_worker_harness_with_workspace(HARNESS_WORKSPACE).await
 }
 
-async fn terminal_worker_harness_with_workspace(workspace: &str) -> TerminalWorkerHarness {
+pub(super) async fn terminal_worker_harness_with_workspace(
+    workspace: &str,
+) -> TerminalWorkerHarness {
     let repo = Arc::new(
         crate::db::sqlite::SqlxRepo::open("sqlite::memory:")
             .await
@@ -36,7 +39,7 @@ async fn terminal_worker_harness_with_repo(
     .await
 }
 
-async fn terminal_worker_harness_with_plan(
+pub(super) async fn terminal_worker_harness_with_plan(
     repo: Arc<crate::db::sqlite::SqlxRepo>,
     workspace: &str,
     plan: &crate::db::sqlite::TrackWorkspacePlan,
@@ -72,11 +75,11 @@ async fn terminal_worker_harness_with_plan(
     .unwrap();
     let route_repo: Arc<dyn crate::db::RouteRepo> = repo.clone();
     TerminalWorkerHarness {
-        adapter: TerminalWorkerAdapter::new(
+        adapter: LegacyPreparedWorker(TerminalWorkerAdapter::new(
             route_repo,
             CardRoleCache::new(),
             TrackAreaCache::new(),
-        ),
+        )),
         repo,
         track_id: track.id.to_string(),
     }

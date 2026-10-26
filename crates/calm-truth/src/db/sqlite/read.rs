@@ -555,6 +555,17 @@ impl RepoRead for SqlxRepo {
             .collect())
     }
 
+    async fn terminal_worker_log_path(&self, attempt_id: &str) -> Result<Option<String>> {
+        let row: Option<Option<String>> = sqlx::query_scalar(
+            "SELECT json_extract(tx_output_json,'$.data.terminal_worker_pipe.log_path') \
+             FROM operations WHERE kind='terminal-worker' AND idempotency_key=?1",
+        )
+        .bind(attempt_id)
+        .fetch_optional(self.db.read_pool())
+        .await?;
+        Ok(row.flatten())
+    }
+
     async fn operation_idempotency_key_by_id(&self, op_id: &str) -> Result<Option<String>> {
         let row: Option<Option<String>> =
             sqlx::query_scalar("SELECT idempotency_key FROM operations WHERE id = ?1")

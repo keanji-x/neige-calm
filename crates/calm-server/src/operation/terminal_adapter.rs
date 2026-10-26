@@ -22,7 +22,7 @@ use crate::terminal_hooks::TerminalHookSettings;
 use crate::terminal_sweeper::try_reap_terminal_artifacts_with_renderer;
 use crate::track_area_cache::TrackAreaCache;
 use calm_truth::db::sqlite::{
-    append_decision_event_in_tx, card_update_tx, card_with_terminal_create_tx,
+    append_decision_event_in_tx, card_with_terminal_create_tx,
     session_projection_active_for_card_tx, session_set_status_tx,
 };
 
@@ -31,7 +31,11 @@ use super::{
     ProviderAdapter, SpawnCtx, SpawnHandle, SpawnOutcome, Tx, TxOutput,
 };
 
+#[cfg(any(test, feature = "fixtures"))]
+pub mod legacy_test_adapter;
+pub(crate) mod pipe_worker;
 mod target;
+mod worker_adapter;
 
 pub type SpawnHook = Arc<
     dyn Fn(String, String, String, Value) -> BoxFuture<'static, Result<SpawnHandle>> + Send + Sync,
@@ -57,6 +61,7 @@ pub struct TerminalAdapter {
 
 #[derive(Clone)]
 pub struct TerminalWorkerAdapter {
+    log_directory: std::path::PathBuf,
     repo: Arc<dyn crate::db::RouteRepo>,
     card_role_cache: CardRoleCache,
     track_area_cache: TrackAreaCache,
@@ -124,12 +129,18 @@ impl TerminalAdapter {
 }
 
 impl TerminalWorkerAdapter {
+    pub fn with_log_directory(mut self, directory: std::path::PathBuf) -> Self {
+        self.log_directory = directory;
+        self
+    }
     pub fn new(
         repo: Arc<dyn crate::db::RouteRepo>,
         card_role_cache: CardRoleCache,
         track_area_cache: TrackAreaCache,
     ) -> Self {
         Self {
+            log_directory: super::task_verify_adapter::TaskVerifyAdapter::default_gate_logs_dir()
+                .join("terminal-workers"),
             repo,
             card_role_cache,
             track_area_cache,
@@ -146,6 +157,8 @@ impl TerminalWorkerAdapter {
         spawn_hook: SpawnHook,
     ) -> Self {
         Self {
+            log_directory: super::task_verify_adapter::TaskVerifyAdapter::default_gate_logs_dir()
+                .join("terminal-workers"),
             repo,
             card_role_cache,
             track_area_cache,
@@ -608,362 +621,6 @@ impl ProviderAdapter for TerminalAdapter {
         )
         .await?;
         ctx.execution.drive(deleted.retire);
-        Ok(())
-    }
-}
-
-#[async_trait]
-impl ProviderAdapter for TerminalWorkerAdapter {
-    async fn preparation_cwd(&self, input: &Value, _ctx: &SpawnCtx) -> Result<Option<String>> {
-        let payload: TerminalWorkerOperationPayload = serde_json::from_value(input.clone())?;
-        Ok(explicit_terminal_cwd(payload.cwd))
-    }
-    async fn preparation_track(
-        &self,
-        input: &Value,
-        _ctx: &crate::operation::SpawnCtx,
-    ) -> Result<Option<String>> {
-        Ok(Some(
-            serde_json::from_value::<TerminalWorkerOperationPayload>(input.clone())?.track_id,
-        ))
-    }
-
-    async fn prepare_external(
-        &self,
-        input: &Value,
-        _op: &Operation,
-        ctx: &SpawnCtx,
-    ) -> Result<Option<Box<dyn crate::operation::PreparedTx>>> {
-        let payload: TerminalWorkerOperationPayload = serde_json::from_value(input.clone())?;
-        target::prepare(ctx, &payload.track_id, explicit_terminal_cwd(payload.cwd)).await?;
-        Ok(None)
-    }
-
-    fn kind(&self) -> &'static str {
-        "terminal-worker"
-    }
-
-    fn phases(&self) -> &'static [PhaseTag] {
-        TERMINAL_PHASES
-    }
-
-    async fn validate(&self, input: &Value) -> Result<()> {
-        let payload: TerminalWorkerOperationPayload = serde_json::from_value(input.clone())?;
-        if payload.idempotency_key.trim().is_empty() {
-            return Err(CalmError::BadRequest(
-                "terminal worker idempotency_key must not be empty".into(),
-            ));
-        }
-        if self.repo.track_get(&payload.track_id).await?.is_none() {
-            return Err(CalmError::NotFound(format!("track {}", payload.track_id)));
-        }
-        Ok(())
-    }
-
-    async fn prepare_tx<'tx>(
-        &self,
-        tx: &mut Tx<'tx>,
-        input: &Value,
-        op: &Operation,
-    ) -> Result<TxOutput> {
-        let payload: TerminalWorkerOperationPayload = serde_json::from_value(input.clone())?;
-        crate::workspace_service::reclaim::operation::terminal_admission_tx(tx, &payload.track_id)
-            .await?;
-        super::refuse_if_context_stale(tx, Some(&payload.idempotency_key)).await?;
-        // Derived from the `tasks` row inside this tx (never carried on the payload, which would move `stable_payload_hash`); `None` leaves the card untitled.
-        let card_title = super::task_key_for_card_title(tx, &payload.idempotency_key).await;
-        let card_id = new_id();
-        let runtime_id = new_id();
-        let track_id = TrackId::from(payload.track_id.clone());
-        let cwd = terminal_cwd_or_track_workspace(
-            tx,
-            &payload.track_id,
-            explicit_terminal_cwd(payload.cwd.clone()),
-        )
-        .await?;
-        let mut env = terminal_worker_env(self.repo.as_ref()).await?;
-        // A Planner-dispatched task may run `claude`: auto-memory off, as for every kernel-launched Claude (#1814).
-        let (key, value) = crate::claude_code_env::DISABLE_AUTO_MEMORY;
-        env[key] = Value::String(value.into());
-        let scope = card_scope(
-            self.repo.as_ref(),
-            CardId::from(card_id.clone()),
-            track_id.clone(),
-        )
-        .await?;
-        let (mut card, term) = card_with_terminal_create_tx(
-            tx,
-            card_id,
-            &runtime_id,
-            Some(op.id.as_str()),
-            track_id,
-            None,
-            None,
-            payload.cmd.clone(),
-            cwd.clone(),
-            env.clone(),
-            CardRole::Worker,
-            true,
-            &self.card_role_cache,
-            RequestTheme::default_dark(),
-            false,
-            calm_types::card_presentation::CardCreationSource::Task,
-        )
-        .await?;
-
-        if let Some(existing_map) = card.payload.as_object() {
-            let mut merged = existing_map.clone();
-            merged.insert(
-                "idempotency_key".into(),
-                Value::String(payload.idempotency_key.clone()),
-            );
-            merged.insert("role_request".into(), Value::String("terminal".into()));
-            merged.insert("cmd".into(), Value::String(payload.cmd.clone()));
-            merged.insert("cwd".into(), Value::String(cwd.clone()));
-            card = card_update_tx(
-                tx,
-                card.id.as_ref(),
-                crate::model::CardPatch {
-                    title: card_title,
-                    kind: None,
-                    sort: None,
-                    payload: Some(Value::Object(merged)),
-                    deletable: None,
-                },
-            )
-            .await?;
-        }
-
-        let mut output = TxOutput::new(
-            "card",
-            Some(card.id.to_string()),
-            serde_json::to_value(&card)?,
-        );
-        output.data = json!({
-            "card_id": card.id,
-            "runtime_id": runtime_id,
-            "track_id": card.track_id,
-            "terminal_id": term.id,
-            "cmd": payload.cmd,
-            "cwd": cwd,
-            "env": env,
-            "scope": scope,
-            "terminal_launch": super::terminal_launch::fresh_state(),
-        });
-        Ok(output)
-    }
-
-    async fn app_server_interact(
-        &self,
-        _output: &mut TxOutput,
-        _op: &Operation,
-        _ctx: &SpawnCtx,
-    ) -> Result<AppServerInteractOutcome> {
-        Ok(AppServerInteractOutcome::NotApplicable)
-    }
-
-    async fn spawn_side_effect(
-        &self,
-        output: &TxOutput,
-        _op: &Operation,
-        ctx: &SpawnCtx,
-    ) -> Result<SpawnOutcome> {
-        let card_id = output_card_id(output)?;
-        let terminal_id = output.output_string("terminal_id", "terminal")?;
-        let track_id = TrackId::from(output.output_string("track_id", "terminal")?);
-        let cmd = output.output_string("cmd", "terminal")?;
-        let cwd = output.output_string("cwd", "terminal")?;
-        let env = output.data.get("env").cloned().unwrap_or_else(|| json!({}));
-        super::terminal_launch::require_not_rejected(&output.data, &terminal_id)?;
-        let existing_term = ctx
-            .repo
-            .terminal_get(&terminal_id)
-            .await?
-            .ok_or_else(|| CalmError::Internal(format!("terminal {terminal_id} vanished")))?;
-        if existing_term.exit_code.is_some() || existing_term.signal_killed {
-            tracing::info!(
-                card_id = %card_id,
-                terminal_id = %terminal_id,
-                exit_code = ?existing_term.exit_code,
-                signal_killed = existing_term.signal_killed,
-                "terminal-worker recovery: worker already exited; skipping respawn",
-            );
-            log_terminal_worker_card_added(
-                ctx,
-                &self.card_role_cache,
-                &self.track_area_cache,
-                &card_id,
-                &track_id,
-            )
-            .await
-            .unwrap_or_else(|e| {
-                tracing::error!(
-                    card_id = %card_id,
-                    track_id = %track_id,
-                    error = %e,
-                    "terminal worker CardAdded append failed after recovery exit preservation; continuing"
-                );
-            });
-            return Ok(SpawnOutcome::Ready(SpawnHandle::NoOp));
-        }
-        let payload: TerminalWorkerOperationPayload = serde_json::from_value(_op.payload.clone())?;
-        super::admit_task_side_effect(ctx.repo.as_ref(), &payload.idempotency_key).await?;
-        #[cfg(feature = "fixtures")]
-        if let Some(hook) = &self.preparation_hook {
-            hook().await;
-        }
-        ctx.repo.terminal_clear_exit_for_spawn(&terminal_id).await?;
-        let term = ctx
-            .repo
-            .terminal_get(&terminal_id)
-            .await?
-            .ok_or_else(|| CalmError::Internal(format!("terminal {terminal_id} vanished")))?;
-
-        let launch = super::task_launch::TaskLaunch::new(
-            &payload.idempotency_key,
-            _op,
-            super::task_launch::TerminalLaunchRole::BusinessProcess,
-        );
-        let spawn_result = if let Some(hook) = &self.spawn_hook {
-            launch
-                .run(
-                    ctx.repo.as_ref(),
-                    hook(terminal_id.clone(), cmd.clone(), cwd.clone(), env.clone()),
-                )
-                .await
-        } else {
-            ctx.spawn_task_terminal(&term, &cmd, &cwd, &env, launch)
-                .await
-        };
-
-        match spawn_result {
-            Ok(handle) => {
-                if let Err(e) = ctx
-                    .repo
-                    .session_projection_set_status_for_card(
-                        card_id.as_ref(),
-                        WorkerSessionState::Running,
-                    )
-                    .await
-                {
-                    tracing::warn!(
-                        target: "operation::terminal_worker_adapter::runtime_running_mark_failed",
-                        card_id = %card_id,
-                        terminal_id = %terminal_id,
-                        error = %e,
-                        "failed to mark terminal worker runtime running after spawn; CardAdded still broadcasting",
-                    );
-                }
-                log_terminal_worker_card_added(
-                    ctx,
-                    &self.card_role_cache,
-                    &self.track_area_cache,
-                    &card_id,
-                    &track_id,
-                )
-                .await
-                .unwrap_or_else(|e| {
-                    tracing::error!(
-                        card_id = %card_id,
-                        track_id = %track_id,
-                        error = %e,
-                        "terminal worker CardAdded append failed after live spawn; continuing"
-                    );
-                });
-                Ok(SpawnOutcome::Ready(handle))
-            }
-            Err(e) if worker_spawn_failure_preserved(ctx.repo.as_ref(), &terminal_id).await? => {
-                tracing::info!(
-                    card_id = %card_id,
-                    track_id = %track_id,
-                    terminal_id = %terminal_id,
-                    spawn_err = %e,
-                    "worker terminal fast-exit (sidecar present); preserving card + terminal",
-                );
-                log_terminal_worker_card_added(
-                    ctx,
-                    &self.card_role_cache,
-                    &self.track_area_cache,
-                    &card_id,
-                    &track_id,
-                )
-                .await
-                .unwrap_or_else(|e| {
-                    tracing::error!(
-                        card_id = %card_id,
-                        track_id = %track_id,
-                        error = %e,
-                        "terminal worker CardAdded append failed after fast-exit preservation; continuing"
-                    );
-                });
-                Ok(SpawnOutcome::Ready(SpawnHandle::NoOp))
-            }
-            Err(e) => Err(e),
-        }
-    }
-
-    async fn plan_compensation(
-        &self,
-        from_phase: PhaseTag,
-        reason: &str,
-        output: &TxOutput,
-        _op: &Operation,
-    ) -> Result<CompensationStateVersioned> {
-        Ok(CompensationStateVersioned {
-            version: 1,
-            from_phase,
-            reason: reason.to_string(),
-            steps: vec![CompensationStep {
-                op: "cleanup_terminal_worker".into(),
-                args: json!({
-                    "card_id": output.output_string("card_id", "terminal")?,
-                    "terminal_id": output.output_string("terminal_id", "terminal")?,
-                }),
-                completed: false,
-                attempts: 0,
-                last_error: None,
-            }],
-        })
-    }
-
-    async fn compensate_step(
-        &self,
-        step: &CompensationStep,
-        output: &TxOutput,
-        op: &Operation,
-        ctx: &SpawnCtx,
-    ) -> Result<()> {
-        if step.completed {
-            return Ok(());
-        }
-        super::worker_cleanup::require_cleanup_safe(ctx, op, output, false).await?;
-        if step.op != "cleanup_terminal_worker" {
-            return Err(CalmError::Internal(format!(
-                "unknown terminal worker compensation op {}",
-                step.op
-            )));
-        }
-        let card_id = step
-            .args
-            .get("card_id")
-            .and_then(Value::as_str)
-            .ok_or_else(|| CalmError::Internal("terminal worker cleanup missing card_id".into()))?;
-        let terminal_id = step
-            .args
-            .get("terminal_id")
-            .and_then(Value::as_str)
-            .ok_or_else(|| {
-                CalmError::Internal("terminal worker cleanup missing terminal_id".into())
-            })?;
-        compensate_worker_rows(
-            &ctx.execution,
-            ctx.repo.as_ref(),
-            ctx.terminal_renderer.as_ref(),
-            &self.card_role_cache,
-            card_id,
-            terminal_id,
-        )
-        .await?;
         Ok(())
     }
 }

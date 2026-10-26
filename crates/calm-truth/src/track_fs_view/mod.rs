@@ -23,6 +23,7 @@ use utoipa::ToSchema;
 
 mod gate_logs;
 mod run_status;
+mod terminal_worker_log;
 pub use gate_logs::task_gate_log_path;
 pub(crate) use run_status::run_status;
 use run_status::{FinalRunEvent, latest_final_event};
@@ -199,6 +200,9 @@ impl<'a> TrackFsView<'a> {
             }
             path if path.starts_with("runs/") => {
                 let parts: Vec<&str> = path.split('/').collect();
+                if parts.len() == 3 && parts[2] == "terminal-worker.log" {
+                    return self.cat_terminal_worker_log(track, path, parts[1]).await;
+                }
                 if parts.len() == 4 && parts[2] == "gates" {
                     return self
                         .cat_execution_gate_log(track, path, parts[1], parts[3])

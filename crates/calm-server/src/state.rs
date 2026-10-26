@@ -499,18 +499,24 @@ fn build_operation_adapters(
         };
     let terminal_worker_adapter: Arc<dyn ProviderAdapter> =
         if let Some(spawn_hook) = input.terminal_spawn_hook {
-            Arc::new(TerminalWorkerAdapter::new_with_spawn_hook(
-                input.route_repo.clone(),
-                input.card_role_cache.clone(),
-                input.track_area_cache.clone(),
-                spawn_hook,
-            ))
+            Arc::new(
+                TerminalWorkerAdapter::new_with_spawn_hook(
+                    input.route_repo.clone(),
+                    input.card_role_cache.clone(),
+                    input.track_area_cache.clone(),
+                    spawn_hook,
+                )
+                .with_log_directory(input.gate_logs_dir.join("terminal-workers")),
+            )
         } else {
-            Arc::new(TerminalWorkerAdapter::new(
-                input.route_repo.clone(),
-                input.card_role_cache.clone(),
-                input.track_area_cache.clone(),
-            ))
+            Arc::new(
+                TerminalWorkerAdapter::new(
+                    input.route_repo.clone(),
+                    input.card_role_cache.clone(),
+                    input.track_area_cache.clone(),
+                )
+                .with_log_directory(input.gate_logs_dir.join("terminal-workers")),
+            )
         };
     let codex_adapter: Arc<dyn ProviderAdapter> = Arc::new(CodexAdapter::new(
         input.route_repo.clone(),
