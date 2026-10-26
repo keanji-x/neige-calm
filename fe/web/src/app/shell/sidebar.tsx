@@ -359,7 +359,7 @@ export function Sidebar({
       <DeleteConfirmDialog confirm={trackConfirm} copy={DELETE_TRACK_COPY} />
       {/* Deleting an area cascades to every track inside it: the one operation that
                 earns a typed confirm. */}
-      <DeleteConfirmDialog confirm={areaConfirm} copy={areaCopy} blocked={!typed.matches}
+      <DeleteConfirmDialog confirm={areaConfirm} copy={areaCopy} blocked={!typed.matches} initialFocusRef={typed.inputRef}
         body={<TypedDeleteBody copy={areaCopy} expected={deletingArea?.name ?? ''}
           value={typed.value} inputRef={typed.inputRef} onChange={typed.setValue} />} />
     </nav>

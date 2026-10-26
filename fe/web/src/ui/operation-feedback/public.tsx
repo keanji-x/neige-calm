@@ -1,4 +1,4 @@
-import { useEffect, useRef, type ReactNode } from 'react';
+import { useEffect, useRef, type ReactNode, type RefObject } from 'react';
 import { ConfirmDialog, type DialogOrigin } from '../dialog/public.tsx';
 import { Banner } from '@astryxdesign/core/Banner';
 
@@ -61,18 +61,20 @@ export type DeleteConfirmState = Readonly<{
   confirm: () => void;
 }>;
 
-export function DeleteConfirmDialog({ confirm, copy, busyLabel = 'Deleting…', body, blocked = false }: Readonly<{
+export function DeleteConfirmDialog({ confirm, copy, busyLabel = 'Deleting…', body, blocked = false, initialFocusRef }: Readonly<{
   confirm: DeleteConfirmState;
   copy: Readonly<{ title: string; description?: ReactNode; confirmLabel: string }>;
   busyLabel?: string;
   body?: ReactNode;
   blocked?: boolean;
+  /** Override the initial focus target; defaults to Cancel. */
+  initialFocusRef?: RefObject<HTMLElement | null>;
 }>) {
   return <ConfirmDialog origin={confirm.origin} open={confirm.open} title={copy.title}
     description={<>{body ?? copy.description}<OperationFeedback feedback={confirm.feedback} /></>}
     confirmLabel={copy.confirmLabel} confirmBusyLabel={busyLabel}
     confirmState={confirm.pending ? 'busy' : blocked ? 'blocked' : 'ready'}
-    onConfirm={confirm.confirm} onCancel={confirm.cancel} />;
+    initialFocusRef={initialFocusRef} onConfirm={confirm.confirm} onCancel={confirm.cancel} />;
 }
 
 export function useDeleteConfirm(
