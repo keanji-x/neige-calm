@@ -492,6 +492,38 @@ async fn c2b_unknown_execution_never_completes_op() {
         )
     })
     .await;
+    #[cfg(target_os = "linux")]
+    let helper = {
+        let fact = fx
+            .execution
+            .lifecycle
+            .engine()
+            .unwrap()
+            .output(&id, None)
+            .await
+            .unwrap();
+        let ExecutionReply::Observation {
+            receipt: Some(receipt),
+            ..
+        } = fact
+        else {
+            panic!("missing original helper receipt: {fact:?}");
+        };
+        // The held wrapper exits 75 on stdin EOF when the supervisor dies. Keep its
+        // original helper alive so this exercises Unknown, without releasing the gate.
+        // A stopped helper cannot exit/reuse its PID before this guard resumes it.
+        struct ResumeOnDrop(i32);
+        impl Drop for ResumeOnDrop {
+            fn drop(&mut self) {
+                unsafe {
+                    libc::kill(self.0, libc::SIGCONT);
+                }
+            }
+        }
+        let helper = ResumeOnDrop(receipt.process.pid() as i32);
+        assert_eq!(unsafe { libc::kill(helper.0, libc::SIGSTOP) }, 0);
+        helper
+    };
     fx.execution.restart().await;
     assert!(matches!(
         fx.execution
@@ -521,6 +553,13 @@ async fn c2b_unknown_execution_never_completes_op() {
             .is_none()
     );
     assert_eq!(execution_count(&fx, &before.id).await, 1);
+    #[cfg(target_os = "linux")]
+    {
+        // The resumed helper reaps the EOF-exited wrapper and exits itself.
+        let pid = helper.0;
+        drop(helper);
+        wait_until(async || !Path::new(&format!("/proc/{pid}")).exists()).await;
+    }
 }
 
 #[tokio::test]

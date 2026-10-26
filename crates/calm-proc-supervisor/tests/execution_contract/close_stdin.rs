@@ -240,6 +240,8 @@ async fn c2a_close_refuses_pty_wrong_capabilities_and_revocation() {
 #[tokio::test]
 async fn c2a_close_refuses_unknown_after_supervisor_restart() {
     let mut h = Harness::start().await;
+    // Removing this file releases the original group, including on assertion failure.
+    let alive = tempfile::NamedTempFile::new_in(h.temp.path()).unwrap();
     let mut c = h.connect().await;
     let grant = authority();
     let (scope, registration) = external(h.root("restart", false), &grant);
@@ -250,7 +252,10 @@ async fn c2a_close_refuses_unknown_after_supervisor_restart() {
         grant,
         "restart",
         IoMode::Pipe,
-        "printf ready; cat; printf eof",
+        &format!(
+            "printf ready; cat; while [ -e '{}' ]; do sleep 0.05; done",
+            alive.path().display()
+        ),
     );
     // Before launch there is no process receipt; even a fabricated slot must not ACK.
     assert!(matches!(
@@ -293,6 +298,15 @@ async fn c2a_close_refuses_unknown_after_supervisor_restart() {
         }
     ));
     assert!(c.close_stdin(cap).await.is_err());
+    drop(alive);
+    #[cfg(target_os = "linux")]
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while std::path::Path::new(&format!("/proc/{}", receipt.process.pid())).exists() {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("original helper exits after its EOF-resistant command is released");
 }
 
 #[tokio::test]
