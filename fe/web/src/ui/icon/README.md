@@ -21,3 +21,6 @@ is credited in CODEX-LICENSE.txt; its browser contract pins the complete closed 
 The primitive contains no application policy. Features own kind-to-icon mappings
 and accessible names; core view derivation owns classifications and authoritative
 attention metadata. Unknown kinds preserve their text and actions.
+
+`delete` uses Lucide Trash2 for resource deletion. `close` uses X for closing,
+collapsing or dismissing a surface. Controls keep their descriptive accessible names.

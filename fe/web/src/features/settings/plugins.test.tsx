@@ -256,38 +256,28 @@ describe('Plugins pane — add and remove', () => {
     expect(onAdd.mock.calls.length).toBe(1);
   });
 
-  it('asks before it removes, and removes nothing until the question is answered', async () => {
+  it('requires confirmation before removing a plugin', async () => {
     const onUninstall = vi.fn();
     render(<PluginsPane {...props({ onUninstall })} />);
-
     await userEvent.click(screen.getByRole('button', { name: 'Remove Todo' }));
-    expect(onUninstall.mock.calls).toEqual([]);
-    expect(screen.getByRole('alert').textContent).toContain('Remove this plugin?');
-
-    await userEvent.click(screen.getByRole('button', { name: 'Remove Todo' }));
+    expect(onUninstall).not.toHaveBeenCalled();
+    const dialog = screen.getByRole('dialog', { name: 'Remove Todo?' });
+    expect(dialog.textContent).toContain('This cannot be undone.');
+    await userEvent.click(screen.getByRole('button', { name: 'Remove plugin' }));
     expect(onUninstall.mock.calls).toEqual([['todo']]);
+    expect(screen.queryByRole('dialog')).toBeNull();
   });
 
-  it('takes back the question, and the switch with it, when the answer is no', async () => {
+  it('does not uninstall on a double click and allows Cancel', async () => {
     const onUninstall = vi.fn();
     render(<PluginsPane {...props({ onUninstall })} />);
-    await userEvent.click(screen.getByRole('button', { name: 'Remove Todo' }));
-    expect(screen.queryByRole('switch', { name: 'Enable Todo' })).toBeNull();
-
-    await userEvent.click(screen.getByRole('button', { name: 'Keep Todo' }));
-    expect(onUninstall.mock.calls).toEqual([]);
-    expect(screen.getByRole('switch', { name: 'Enable Todo' })).toBeTruthy();
+    await userEvent.dblClick(screen.getByRole('button', { name: 'Remove Todo' }));
+    expect(onUninstall).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(onUninstall).not.toHaveBeenCalled();
   });
 
-  it('asks on one row at a time', async () => {
-    render(<PluginsPane {...props({
-      plugins: [plugin(), plugin({ id: 'git-forge', manifest_name: 'Git forge' })],
-    })} />);
-    await userEvent.click(screen.getByRole('button', { name: 'Remove Todo' }));
-    expect(screen.getByRole('switch', { name: 'Enable Git forge' })).toBeTruthy();
-    expect(screen.queryByRole('button', { name: 'Keep Git forge' })).toBeNull();
-    expect(screen.getByRole('button', { name: 'Keep Todo' })).toBeTruthy();
-  });
 });
 
 it('shows an always-on lifecycle declaration without an enable switch', () => {

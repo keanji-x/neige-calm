@@ -17,7 +17,7 @@ it('restores focus to the missing PendingRoute title when the Dialog opener is r
   const title = await screen.findByRole('heading', { name: "That track isn't here anymore." });
   const opener = document.body.appendChild(document.createElement('button'));
   opener.focus();
-  const dialog = render(<Dialog origin={{ kind: 'surface-center' }} open title="Confirm" onClose={vi.fn()} />);
+  const dialog = render(<Dialog purpose="info" origin={{ kind: 'surface-center' }} open title="Confirm" onClose={vi.fn()} />);
   opener.remove();
   dialog.unmount();
   expect(document.activeElement).toBe(title);

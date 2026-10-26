@@ -78,13 +78,13 @@ export function CardCell({ host, item, focused, visible, onRemove, header }: {
   if (Component === undefined || capabilities === null) {
     return (
       <CardFrame className="term">
-        {/* No entry claims an unknown card, so the × is drawn here rather than by the absent component. */}
+        {/* No entry claims an unknown card, so the delete action is drawn here rather than by the absent component. */}
         <CardHead
           header={header}
           className="card-drag-handle"
           title={item.title}
-          onClose={onRemove}
-          closeAriaLabel={`Delete card ${item.title}`}
+          onDelete={onRemove}
+          deleteLabel={`Delete card ${item.title}`}
         />
         <div className="term-body">
           <p className="term-line">{Component === undefined ? 'Unknown card' : item.title}</p>

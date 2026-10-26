@@ -99,7 +99,7 @@ function Preview() {
       </div>
     </section>
     <CardMotionPreview />
-    <Dialog origin={{ kind: 'anchor', anchor: { ref: sourceRef }, unavailable: 'surface-center' }} open={dialogOpen} title="创建任务" initialFocusRef={dialogInput} onClose={() => setDialogOpen(false)}>
+    <Dialog purpose="info" origin={{ kind: 'anchor', anchor: { ref: sourceRef }, unavailable: 'surface-center' }} open={dialogOpen} title="创建任务" initialFocusRef={dialogInput} onClose={() => setDialogOpen(false)}>
       <label>任务名称<input ref={dialogInput} defaultValue="整理今天的工作" /></label>
       <p>内容保持清晰，打开时轻柔接入，关闭后回到原来的位置。</p>
       <button data-nc-action="secondary" onClick={() => setDialogOpen(false)}>完成</button>

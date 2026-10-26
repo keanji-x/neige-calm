@@ -27,14 +27,13 @@ import {
 } from '../../../../../core/domain/track.ts';
 import { ActivityIndicator } from '../../../ui/activity-indicator/public.tsx';
 import { DELETE_TRACK_COPY } from '../../../ui/confirm-dialog/copy.ts';
-import { ConfirmDialog } from '../../../ui/dialog/public.tsx';
 import { EditableTitle, type EditableTitleProps } from '../../../ui/editable-title/public.tsx';
 import { Icon } from '../../../ui/icon/public.tsx';
 import { MobileList, MobileListItem, MobileListPage } from '../../../ui/mobile-list/public.tsx';
 import { MobileHeader } from '../../../ui/mobile-header/public.tsx';
 import { PageHeader } from '../../../ui/page-header/public.tsx';
 import {
-  OperationFeedback, useDeleteConfirm, useOperationFeedback,
+  OperationFeedback, DeleteConfirmDialog, useDeleteConfirm, useOperationFeedback,
 } from '../../../ui/operation-feedback/public.tsx';
 import { PanelCard } from '../../../ui/panel-card/public.tsx';
 import { relativeTime } from '../row/public.tsx';
@@ -672,17 +671,7 @@ export function TrackPage({ mobileReportIntro, mobileChatComposer,
         </aside>
       )}
 
-      <ConfirmDialog origin={deletion.origin}
-        open={deletion.open}
-        title={DELETE_TRACK_COPY.title}
-        description={DELETE_TRACK_COPY.description}
-        confirmLabel={DELETE_TRACK_COPY.confirmLabel}
-        confirmBusyLabel="Deleting…"
-        confirmState={deletion.pending ? 'busy' : 'ready'}
-        onConfirm={deletion.confirm}
-        onCancel={deletion.cancel}
-      />
-      <OperationFeedback feedback={deletion.feedback} />
+      <DeleteConfirmDialog confirm={deletion} copy={DELETE_TRACK_COPY} />
       <OperationFeedback feedback={closedControl.feedback} />
       <OperationFeedback feedback={dismissFeedback} />
     </section>

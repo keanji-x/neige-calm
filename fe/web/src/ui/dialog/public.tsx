@@ -26,7 +26,9 @@ export type DialogOrigin = Exclude<LiftOrigin, { kind: 'paired-edge' }>;
 
 export interface DialogChildView { title: ReactNode; body: ReactNode; onEscape?: () => void }
 export interface DialogViewController { pushView: (view: DialogChildView) => () => void; popView: () => void }
+export type DialogPurpose = 'info' | 'form';
 export interface DialogProps {
+  purpose: DialogPurpose;
   origin: DialogOrigin;
   open: boolean; onClose: () => void; title?: string; hideTitleRow?: boolean; children?: ReactNode; wide?: boolean;
   /** Drop the `×` while keeping the title; `hideTitleRow` can only remove both. */
@@ -62,7 +64,7 @@ function isVisibleWithin(element: HTMLElement, panel: HTMLElement): boolean {
   return true;
 }
 
-export function Dialog({ origin, open, onClose, title, hideTitleRow, hideClose, children, wide, initialFocusRef }: DialogProps) {
+export function Dialog({ purpose, origin, open, onClose, title, hideTitleRow, hideClose, children, wide, initialFocusRef }: DialogProps) {
   const viewport = useVisibleViewport(open);
   const [views, setViews] = useState<readonly (DialogChildView & { id: number })[]>([]);
   const nextViewId = useRef(0);
@@ -214,7 +216,7 @@ export function Dialog({ origin, open, onClose, title, hideTitleRow, hideClose, 
   return createPortal(<>{dismissalLayer}<LayerDepthProvider><DialogViewContext.Provider value={controller}><div
     className={showingView || wide ? 'dialog-overlay dialog-overlay-wide' : 'dialog-overlay'} role="presentation"
     style={{ insetBlockStart: viewport.bottomEdge - viewport.height, insetBlockEnd: viewport.bottomInset }}
-    onMouseDown={(event) => { if (!showingView && event.target === event.currentTarget) onClose(); }}>
+    onMouseDown={(event) => { if (purpose === 'info' && !showingView && event.target === event.currentTarget) onClose(); }}>
     <div ref={frameRef} className={`${styles.frame} ${showingView || wide ? styles.wide : ''}`}
       style={{ maxBlockSize: `calc(${viewport.height}px - var(--space-6))` }}>
     <CardFrame ref={panelRef} className={`${styles.panel} ${showingView || wide ? 'dialog-panel dialog-panel-wide' : 'dialog-panel'}`} data-nc-escape-layer=""
@@ -252,7 +254,7 @@ export function ConfirmDialog({ origin, open, title, description, confirmLabel =
       <span aria-hidden={!busy}>{confirmBusyLabel}</span>
     </span>
   );
-  return <Dialog origin={origin} open={open} title={title} onClose={onCancel} hideClose
+  return <Dialog purpose="info" origin={origin} open={open} title={title} onClose={onCancel} hideClose
     initialFocusRef={initialFocusRef ?? cancelRef}>
     {description}{busy && destructive && <p>Closing this dialog cancels the delete request.</p>}
     <div className="confirm-dialog-actions"><button ref={cancelRef} type="button" data-nc-action="secondary"

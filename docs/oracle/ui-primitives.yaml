@@ -88,7 +88,7 @@
   why: >
     CR-7 reserves space for the wider label without showing both labels or moving the
     action text to a second row. Rendered visibility and geometry replace the source pin.
-  source: fe/web/src/styles/dialog.css:104-124; fe/web/src/ui/dialog/public.tsx:224-250
+  source: fe/web/src/styles/dialog.css:104-124; fe/web/src/ui/dialog/public.tsx:226-252
   authoritative_test: fe/web/src/ui/dialog/dismissal.browser.test.tsx:43-75
   owner_slice: ui/confirm-dialog
   intentional_omission: false
@@ -107,7 +107,7 @@
     The missing page must supply a usable fallback to the production Dialog focus
     restoration path. This component contract does not claim that a real 404 renders
     PendingRoute: the router currently renders ErrorBox for fetch errors.
-  source: fe/web/src/app/router/pending-route.tsx:7-18; fe/web/src/ui/dialog/public.tsx:175-182
+  source: fe/web/src/app/router/pending-route.tsx:7-18; fe/web/src/ui/dialog/public.tsx:177-184
   authoritative_test: fe/web/src/app/router/pending-route.test.tsx:10-24
   owner_slice: app/router
   intentional_omission: false
@@ -126,7 +126,7 @@
     The composed header browser test observes the single-line title behaviour. It
     catches removing nowrap without pinning stylesheet spelling; ellipsis paint
     remains a visual concern rather than a source assertion.
-  source: fe/web/src/ui/editable-title/editable-title.module.css:2-17; fe/web/src/ui/editable-title/public.tsx:37-40; fe/web/src/features/track/page/public.tsx:427-432
+  source: fe/web/src/ui/editable-title/editable-title.module.css:2-17; fe/web/src/ui/editable-title/public.tsx:37-40; fe/web/src/features/track/page/public.tsx:426-431
   authoritative_test: fe/web/src/features/track/page/header-status.browser.test.tsx:392-416
   owner_slice: ui/editable-title
   intentional_omission: false

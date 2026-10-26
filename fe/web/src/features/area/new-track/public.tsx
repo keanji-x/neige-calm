@@ -397,7 +397,7 @@ export function NewTrackForm({
 
       {/* The picker as a real modal: `Dialog` renders `null` while closed and owns the
                 focus trap, Escape and click-outside. */}
-      <Dialog
+      <Dialog purpose="form"
         origin={browsing ?? { kind: 'surface-center' }}
         open={browsing !== null}
         onClose={() => setBrowsing(null)}

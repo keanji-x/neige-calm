@@ -13,12 +13,11 @@ import {
   TRACK_PATCH_FAILURES, TRACK_PATCH_TEXT, userVisibleTracks, type Track,
 } from '../../../../core/domain/track.ts';
 import { deleteAreaCopy, DELETE_TRACK_COPY } from '../../ui/confirm-dialog/copy.ts';
-import { ConfirmDialog } from '../../ui/dialog/public.tsx';
 import { Icon } from '../../ui/icon/public.tsx';
 import { Menu } from '../../ui/menu/public.tsx';
 import { ConnectionIndicator } from './connection-indicator.tsx';
 import {
-  OperationFeedback, useDeleteConfirm, useOperationFeedback,
+  OperationFeedback, DeleteConfirmDialog, useDeleteConfirm, useOperationFeedback,
 } from '../../ui/operation-feedback/public.tsx';
 import { useUiPreferences } from '../providers/ui-preferences.tsx';
 import { useReadReceipts } from '../providers/read-receipts.tsx';
@@ -357,39 +356,12 @@ export function Sidebar({
             />
       </div>
 
-      <ConfirmDialog
-        origin={trackConfirm.origin}
-        open={trackConfirm.open}
-        title={DELETE_TRACK_COPY.title}
-        description={DELETE_TRACK_COPY.description}
-        confirmLabel={DELETE_TRACK_COPY.confirmLabel}
-        confirmBusyLabel="Deleting…"
-        confirmState={trackConfirm.pending ? 'busy' : 'ready'}
-        onConfirm={trackConfirm.confirm}
-        onCancel={trackConfirm.cancel}
-      />
-      <OperationFeedback feedback={trackConfirm.feedback} />
-      <OperationFeedback feedback={areaConfirm.feedback} />
+      <DeleteConfirmDialog confirm={trackConfirm} copy={DELETE_TRACK_COPY} />
       {/* Deleting an area cascades to every track inside it: the one operation that
                 earns a typed confirm. */}
-      <ConfirmDialog
-        origin={areaConfirm.origin}
-        open={areaConfirm.open}
-        title={areaCopy.title}
-        description={<TypedDeleteBody
-          copy={areaCopy}
-          expected={deletingArea?.name ?? ''}
-          value={typed.value}
-          inputRef={typed.inputRef}
-          onChange={typed.setValue}
-        />}
-        confirmLabel={areaCopy.confirmLabel}
-        confirmBusyLabel="Deleting…"
-        confirmState={areaConfirm.pending ? 'busy' : (typed.matches ? 'ready' : 'blocked')}
-        initialFocusRef={typed.inputRef}
-        onConfirm={areaConfirm.confirm}
-        onCancel={areaConfirm.cancel}
-      />
+      <DeleteConfirmDialog confirm={areaConfirm} copy={areaCopy} blocked={!typed.matches}
+        body={<TypedDeleteBody copy={areaCopy} expected={deletingArea?.name ?? ''}
+          value={typed.value} inputRef={typed.inputRef} onChange={typed.setValue} />} />
     </nav>
   );
 }

@@ -30,7 +30,7 @@ function Scene({ firstNull = false, center = false, removeOnOpen = false }: { fi
     style={{ position: 'fixed', left: replace ? 160 : 24, top: 60, display: 'inline-flex' }}>
     <button onClick={() => setOpen(true)}>Open source</button></span>}
     {acquired && <span ref={other} style={{ position: 'fixed', left: 300, top: 40 }}>Late source</span>}
-    <Dialog initialFocusRef={input} open={open} origin={origin} title="Origin" wide={wide} onClose={() => setOpen(false)}>
+    <Dialog purpose="info" initialFocusRef={input} open={open} origin={origin} title="Origin" wide={wide} onClose={() => setOpen(false)}>
       <input ref={input} aria-label="Draft" defaultValue="Keep selection" /><Child /><button onClick={() => setAcquired(true)}>Acquire source</button>
       <button onClick={() => setReplace(true)}>Replace source</button>
       <button onClick={() => setSwitchOrigin(true)}>Change declaration</button>
@@ -127,7 +127,7 @@ function ScrollScene() {
     <div style={{ height: 400, paddingTop: 20 }}><span ref={ref} style={{ display: 'inline-flex' }}>
       <button onClick={() => setOpen(true)}>Open scrolling source</button>
     </span></div>
-  </div><Dialog open={open} origin={{ kind: 'anchor', anchor: { ref }, unavailable: 'surface-center' }} title="Origin" onClose={() => setOpen(false)}>
+  </div><Dialog purpose="info" open={open} origin={{ kind: 'anchor', anchor: { ref }, unavailable: 'surface-center' }} title="Origin" onClose={() => setOpen(false)}>
     <button>Ready</button>
   </Dialog></>;
 }

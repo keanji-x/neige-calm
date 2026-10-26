@@ -10,7 +10,7 @@ declare module '../registry.js' { interface CardDataMap { motionPreview: Preview
 
 function PreviewCardView({ card, onRemove, header }: CardComponentProps<PreviewCard>) {
   return <CardFrame className="term">
-    <CardHead header={header} className="card-drag-handle" title={card.title} onClose={onRemove} closeAriaLabel={`删除${card.title}`} />
+    <CardHead header={header} className="card-drag-handle" title={card.title} onDelete={onRemove} deleteLabel={`删除${card.title}`} />
     <div className="term-body"><p>{card.detail}</p></div>
   </CardFrame>;
 }

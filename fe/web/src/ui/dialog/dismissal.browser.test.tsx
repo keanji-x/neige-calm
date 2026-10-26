@@ -9,14 +9,14 @@ afterEach(cleanup);
 
 it('does not dismiss the production Dialog on a composing Escape', () => {
   const close = vi.fn();
-  render(<Dialog origin={{ kind: 'surface-center' }} open title="Composition" onClose={close}><input aria-label="Composition input" /></Dialog>);
+  render(<Dialog purpose="info" origin={{ kind: 'surface-center' }} open title="Composition" onClose={close}><input aria-label="Composition input" /></Dialog>);
   screen.getByRole('textbox').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', isComposing: true, bubbles: true }));
   expect(close).not.toHaveBeenCalled();
 });
 
 it('claims a legacy IME key and then allows a single real Escape', async () => {
   const close = vi.fn();
-  render(<Dialog origin={{ kind: 'surface-center' }} open title="IME" onClose={close}><input aria-label="Composing" /></Dialog>);
+  render(<Dialog purpose="info" origin={{ kind: 'surface-center' }} open title="IME" onClose={close}><input aria-label="Composing" /></Dialog>);
   await page.getByRole('textbox').click();
   const event = new KeyboardEvent('keydown', { key: 'Escape', keyCode: 229, bubbles: true, cancelable: true });
   screen.getByRole('textbox').dispatchEvent(event);
@@ -28,7 +28,7 @@ it('claims a legacy IME key and then allows a single real Escape', async () => {
 
 it('dismisses a real nested native menu before its Dialog', async () => {
   const close = vi.fn();
-  render(<Dialog origin={{ kind: 'surface-center' }} open title="Native child" onClose={close}>
+  render(<Dialog purpose="info" origin={{ kind: 'surface-center' }} open title="Native child" onClose={close}>
     <DropdownMenu button={{ label: 'Nested actions' }}><DropdownMenuItem label="Native item" /></DropdownMenu>
   </Dialog>);
   await page.getByRole('button', { name: 'Nested actions' }).click();
@@ -72,4 +72,13 @@ it('keeps exactly one confirm label visible without resizing between ready and b
   // One CSS pixel allows fractional layout rounding, far less than a text-line jump.
   expect(Math.abs(after.textTop - before.textTop)).toBeLessThanOrEqual(1);
   expect(Math.abs(after.width - before.width)).toBeLessThanOrEqual(1);
+});
+
+
+it('allows explicit Escape from a form dialog', async () => {
+  const close = vi.fn();
+  render(<Dialog purpose="form" origin={{ kind: 'surface-center' }} open title="Draft" onClose={close}><input aria-label="Draft" /></Dialog>);
+  await page.getByRole('textbox').click();
+  await userEvent.keyboard('{Escape}');
+  expect(close).toHaveBeenCalledOnce();
 });

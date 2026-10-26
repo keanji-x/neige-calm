@@ -245,7 +245,7 @@ it.each([1440, 390].flatMap(width => ['refold', 'reopen', 'route', 'modal', 'unm
         if (edge === 'unmount') cleanup();
         else if (edge === 'route') await router.navigate({ to: '/' });
         else {
-          render(<Dialog origin={{ kind: 'surface-center' }} open title="New modal" onClose={() => undefined}>
+          render(<Dialog purpose="info" origin={{ kind: 'surface-center' }} open title="New modal" onClose={() => undefined}>
             <button type="button">New modal owner</button>
           </Dialog>);
           page.getByRole('button', { name: 'New modal owner' }).element().focus();

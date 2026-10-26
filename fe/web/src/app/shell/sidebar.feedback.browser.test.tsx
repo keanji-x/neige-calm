@@ -113,7 +113,7 @@ function CardEntry() {
   const initial = useRef<HTMLInputElement | null>(null);
   const entry: CardAddMenuEntry = { type: 'tool', label: 'Tool', fields: [{ kind: 'text', key: 'title', label: 'Title' }] };
   return <><AddCardMenu entries={[entry]} onSelect={(_entry, _trigger, origin) => setOrigin(origin)} />
-    <Dialog open={origin !== null} origin={origin ?? { kind: 'surface-center' }} title="New tool" initialFocusRef={initial} onClose={() => setOrigin(null)}>
+    <Dialog purpose="info" open={origin !== null} origin={origin ?? { kind: 'surface-center' }} title="New tool" initialFocusRef={initial} onClose={() => setOrigin(null)}>
       <NewCardForm entry={entry} submitting={false} error={null} onRetry={null} listDirectory={() => Promise.resolve({ path: '/', parent: null, entries: [] })}
         firstFieldRef={initial} onCancel={() => setOrigin(null)} onSubmit={vi.fn()} />
     </Dialog></>;
@@ -161,7 +161,7 @@ function AreaEntry({ empty }: { empty: boolean }) {
       onSetPinned={vi.fn()} onDeleteTrack={vi.fn()} onOpenSettings={vi.fn()} onOpenPlugins={vi.fn()} onSignOut={vi.fn()}
       collapsed={false} onToggleCollapsed={vi.fn()} />
   </UiPreferencesProvider>)}
-    <Dialog origin={origin ?? { kind: 'surface-center' }} open={origin !== null} title="New area" onClose={() => setOrigin(null)} initialFocusRef={input}>
+    <Dialog purpose="info" origin={origin ?? { kind: 'surface-center' }} open={origin !== null} title="New area" onClose={() => setOrigin(null)} initialFocusRef={input}>
       <AreaEditorForm initial={{ name: '', defaultTemplateId: null, defaultCwd: null }} submitting={false} locked={false}
         cancelLabel="Cancel" error={null} templates={[]} templatesLoaded templatesError={null}
         listDirectory={() => Promise.resolve({ path: '/', parent: null, entries: [] })}

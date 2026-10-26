@@ -76,7 +76,7 @@ describe('NewCardForm', () => {
   /* This form renders inside `app/router`'s add-card dialog, so the folder control must push into that dialog through `useDialogView` and never open a second one: a nested dialog fights the outer focus trap. */
   it('pushes the folder picker into the surrounding dialog, opening no second one', async () => {
     render(
-      <Dialog origin={{ kind: 'surface-center' }} open onClose={vi.fn()} title="Add card">
+      <Dialog purpose="info" origin={{ kind: 'surface-center' }} open onClose={vi.fn()} title="Add card">
         <NewCardForm
           entry={CODEX}
           submitting={false}

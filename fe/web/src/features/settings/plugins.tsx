@@ -1,3 +1,4 @@
+import { ConfirmDialog, type DialogOrigin } from '../../ui/dialog/public.tsx';
 import { EmptyState } from '../../ui/empty-state/public.tsx';
 // Settings › Plugins — the installed list, and the one write it offers.
 // The state chip is keyed on `state`, not `enabled`: nothing enforces that `enabled === false` never coexists with `crashed`.
@@ -69,7 +70,7 @@ export function PluginsPane({
   plugins, loadError, onRetryLoad, pendingIds, errors, onSetEnabled, onOpenConfig,
   effectBoundaryIds, onAdd, onUninstall,
 }: PluginsPaneProps) {
-  const [confirming, setConfirming] = useState<string | null>(null);
+  const [confirming, setConfirming] = useState<{ id: string; name: string; origin: DialogOrigin } | null>(null);
   return (
     <SettingsPane
       category="plugins"
@@ -118,50 +119,20 @@ export function PluginsPane({
                           : ''}
                       </span>
                       <span className={styles.pluginId}>{plugin.id}</span>
-                      {confirming === plugin.id && plugin.can_uninstall && (
-                        <span className={styles.notice} role="alert">
-                          Remove this plugin? Its stored configuration and, for a remote server, its
-                          saved key are deleted with it.
-                        </span>
-                      )}
                     </span>
                   )}
                   control={(
                     <span className={styles.pluginControls} data-nc-plugin-controls="">
-                      {/* While a row is confirming, the question replaces the row's other controls. Both buttons name the plugin in their accessible name only. */}
-                      {confirming === plugin.id && plugin.can_uninstall ? (
-                        <>
-                          <AstryxButton
-                            label={`Remove ${plugin.manifest_name}`}
-                            variant="destructive"
-                            isLoading={pendingIds.has(plugin.id)}
-                            onClick={() => {
-                              setConfirming(null);
-                              onUninstall(plugin.id);
-                            }}
-                          >
-                            Remove
-                          </AstryxButton>
-                          <AstryxButton
-                            label={`Keep ${plugin.manifest_name}`}
-                            variant="ghost"
-                            onClick={() => setConfirming(null)}
-                          >
-                            Keep
-                          </AstryxButton>
-                        </>
-                      ) : (
-                        <>
-                          {plugin.can_uninstall && (
-                          <AstryxButton
-                            label={`Remove ${plugin.manifest_name}`}
-                            variant="ghost"
-                            isDisabled={pendingIds.has(plugin.id)}
-                            onClick={() => setConfirming(plugin.id)}
-                          >
-                            Remove
-                          </AstryxButton>
-                          )}
+                      {plugin.can_uninstall && (
+                        <AstryxButton
+                          label={`Remove ${plugin.manifest_name}`}
+                          variant="ghost"
+                          isDisabled={pendingIds.has(plugin.id)}
+                          onClick={(event) => setConfirming({ id: plugin.id, name: plugin.manifest_name, origin: { kind: 'anchor', anchor: { ref: { current: event.currentTarget } }, unavailable: 'surface-center' } })}
+                        >
+                          Remove
+                        </AstryxButton>
+                      )}
                       {plugin.has_config && (
                         <AstryxIconButton
                           /* `label` is the whole accessible name (rendered as `aria-label`), so it keeps the plugin's name. */
@@ -172,21 +143,19 @@ export function PluginsPane({
                         />
                       )}
                       {stateBadge(plugin.state)}
-                          {plugin.can_disable ? <AstryxSwitch
-                            // Named after the plugin: a list of switches all called "Enabled" cannot be navigated by a screen reader.
-                            label={`Enable ${plugin.manifest_name}`}
-                            isLabelHidden
-                            value={plugin.enabled}
-                            isLoading={pendingIds.has(plugin.id)}
-                            onChange={(next) => onSetEnabled(plugin.id, next)}
-                          /> : <>
-                            <AstryxText color="secondary">Always on</AstryxText>
-                            {plugin.state !== 'running' && plugin.state !== 'spawning' && plugin.state !== 'installing' && <AstryxButton
-                              label={`Retry ${plugin.manifest_name}`} variant="ghost" size="sm" isLoading={pendingIds.has(plugin.id)}
-                              onClick={() => onSetEnabled(plugin.id, true)}>Retry</AstryxButton>}
-                          </>}
-                        </>
-                      )}
+                      {plugin.can_disable ? <AstryxSwitch
+                        // Named after the plugin: a list of switches all called "Enabled" cannot be navigated by a screen reader.
+                        label={`Enable ${plugin.manifest_name}`}
+                        isLabelHidden
+                        value={plugin.enabled}
+                        isLoading={pendingIds.has(plugin.id)}
+                        onChange={(next) => onSetEnabled(plugin.id, next)}
+                      /> : <>
+                        <AstryxText color="secondary">Always on</AstryxText>
+                        {plugin.state !== 'running' && plugin.state !== 'spawning' && plugin.state !== 'installing' && <AstryxButton
+                          label={`Retry ${plugin.manifest_name}`} variant="ghost" size="sm" isLoading={pendingIds.has(plugin.id)}
+                          onClick={() => onSetEnabled(plugin.id, true)}>Retry</AstryxButton>}
+                      </>}
                     </span>
                   )}
                 />
@@ -194,6 +163,11 @@ export function PluginsPane({
               <SettingRow title="Add a plugin" description={ADD_DESCRIPTION} onOpen={onAdd} />
             </SettingsList>
           )}
+      <ConfirmDialog open={confirming !== null} origin={confirming?.origin ?? { kind: 'surface-center' }}
+        title={`Remove ${confirming?.name ?? ''}?`}
+        description="Its stored configuration and, for a remote server, its saved key are deleted. This cannot be undone."
+        confirmLabel="Remove plugin" onCancel={() => setConfirming(null)}
+        onConfirm={() => { if (confirming === null) return; const { id } = confirming; setConfirming(null); onUninstall(id); }} />
     </SettingsPane>
   );
 }

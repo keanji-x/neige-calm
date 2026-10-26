@@ -176,7 +176,7 @@ describe('Drawer', () => {
     function Layers() {
       const [dialogOpen, setDialogOpen] = useState(true);
       return <><Drawer open title="Drawer" onClose={onDrawerClose}>body</Drawer>
-        <Dialog origin={{ kind: 'surface-center' }} open={dialogOpen} title="Confirm" onClose={() => setDialogOpen(false)} /></>;
+        <Dialog purpose="info" origin={{ kind: 'surface-center' }} open={dialogOpen} title="Confirm" onClose={() => setDialogOpen(false)} /></>;
     }
     render(<Layers />);
     fireEvent.keyDown(document, { key: 'Escape' });
@@ -186,7 +186,7 @@ describe('Drawer', () => {
 
   it('closes the drawer when it is above a dialog', () => {
     const onDrawerClose = vi.fn();
-    render(<Dialog origin={{ kind: 'surface-center' }} open title="Confirm" onClose={vi.fn()} />);
+    render(<Dialog purpose="info" origin={{ kind: 'surface-center' }} open title="Confirm" onClose={vi.fn()} />);
     open({ title: 'Drawer', onClose: onDrawerClose });
     fireEvent.keyDown(document, { key: 'Escape' });
     expect(onDrawerClose).toHaveBeenCalledOnce();

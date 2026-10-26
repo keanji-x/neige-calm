@@ -83,14 +83,14 @@ export function CalendarTasks({ date, timezone, trackCountOn, month, day, enable
       </div>
     </section>
     </section></PanelModule>
-    {grouping !== null && <Dialog origin={grouping.origin} open onClose={() => setGrouping(null)} title={grouping.group.title}>
+    {grouping !== null && <Dialog purpose="info" origin={grouping.origin} open onClose={() => setGrouping(null)} title={grouping.group.title}>
       <p className={styles.time}>{grouping.date} · {timezone} · {groupLabel(grouping.group, grouping.date, timezone)}</p>
       <List density="compact">
         {grouping.group.entries.map((entry) => <CalendarEntryRow key={entry.id} entry={entry} date={grouping.date} timezone={timezone}
           onOpen={(_, origin) => { setEditing({ entry, date: grouping.date, origin }); setGrouping(null); }} />)}
       </List>
     </Dialog>}
-    {editing !== null && <Dialog origin={editing.origin} open onClose={() => { if (!pending) setEditing(null); }} title={weekly ? 'Weekly task' : editing.entry ? 'Edit task' : 'New task'}>
+    {editing !== null && <Dialog purpose="form" origin={editing.origin} open onClose={() => { if (!pending) setEditing(null); }} title={weekly ? 'Weekly task' : editing.entry ? 'Edit task' : 'New task'}>
       {weekly && editing.entry ? <WeeklyEntryDetails task={editing.entry.task} schedule={weekly} />
         : <CalendarEditor key={editing.entry ? `${editing.entry.id}:${editing.entry.version}` : 'new'} entry={editing.entry}
           date={editing.date} timezone={timezone} pending={pending} onClose={() => setEditing(null)} onSave={onSave} />}

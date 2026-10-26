@@ -148,7 +148,7 @@ export function TrackRow(props: TrackRowProps) {
           aria-label={`Delete ${title}`}
           onClick={() => onDelete(track.id, { kind: 'anchor', anchor: { ref: removeRef }, unavailable: 'surface-center' })}
         >
-          <Icon name="close" size="sm" />
+          <Icon name="delete" size="sm" />
         </button></span>
       )}
     </div>

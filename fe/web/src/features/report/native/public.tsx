@@ -97,7 +97,7 @@ export function NativeReportView({ payload, resolveOverlay, onOpenSourceLink, li
     {title !== null && <header className={styles.header}>{title}</header>}
     <Composition renderText={renderText} payload={payload} {...reading} action={<span ref={expandRef} className={styles.expandSource}><button type="button" className={styles.wideToggle}
       aria-label={payload.title === '' ? '放大查看' : `放大查看 ${payload.title}`} title="放大查看" onClick={() => setExpanded(true)}><Icon name="fullscreen" size="sm" />放大查看</button></span>} />
-    <Dialog origin={{ kind: 'anchor', anchor: { ref: expandRef }, unavailable: 'surface-center' }} open={expanded} onClose={() => setExpanded(false)} title={payload.title === '' ? '视图' : payload.title} hideTitleRow wide>
+    <Dialog purpose="info" origin={{ kind: 'anchor', anchor: { ref: expandRef }, unavailable: 'surface-center' }} open={expanded} onClose={() => setExpanded(false)} title={payload.title === '' ? '视图' : payload.title} hideTitleRow wide>
       <div className={styles.root}>
         <header className={styles.header}>{title}<button type="button" className={styles.expand}
           aria-label="Close" title="关闭视图" onClick={() => setExpanded(false)}><Icon name="close" size="sm" /></button></header>

@@ -1,5 +1,5 @@
 import type { ComponentType } from 'react';
-import { ChartColumn, Search, ArrowLeft, ArrowRightLeft, ArrowUp, Bell, Bot, CalendarDays, ChevronLeft, ChevronRight, Circle, CircleCheck, CircleStop, CircleX, Clock3, Ellipsis, File, Folder, Link2, ListChecks, Maximize, Menu, MessageSquare, Minimize, Paperclip, Pin, Plus, SquareTerminal, Wrench, X, Icon as LucideIcon, type LucideProps } from 'lucide-react';
+import { ChartColumn, Search, ArrowLeft, ArrowRightLeft, ArrowUp, Bell, Bot, CalendarDays, ChevronLeft, ChevronRight, Circle, CircleCheck, CircleStop, CircleX, Clock3, Ellipsis, File, Folder, Link2, ListChecks, Maximize, Menu, MessageSquare, Minimize, Paperclip, Pin, Plus, SquareTerminal, Wrench, Trash2, X, Icon as LucideIcon, type LucideProps } from 'lucide-react';
 import { PROVIDER_GLYPHS, type GlyphNode } from './provider-glyphs.ts';
 import styles from './icon.module.css';
 
@@ -13,6 +13,7 @@ const glyphs = Object.freeze({
   'arrow-left': (props: LucideProps) => <ArrowLeft {...props} />,
   'arrow-up': (props: LucideProps) => <ArrowUp {...props} />,
   'plus': (props: LucideProps) => <Plus {...props} />,
+  'delete': (props: LucideProps) => <Trash2 {...props} />,
   'close': (props: LucideProps) => <X {...props} />,
   'more': (props: LucideProps) => <Ellipsis {...props} />,
   'chat': (props: LucideProps) => <MessageSquare {...props} />,

@@ -1,5 +1,5 @@
 import { useEffect, useRef, type ReactNode } from 'react';
-import type { DialogOrigin } from '../dialog/public.tsx';
+import { ConfirmDialog, type DialogOrigin } from '../dialog/public.tsx';
 import { Banner } from '@astryxdesign/core/Banner';
 
 import { useState } from '../state/public.ts';
@@ -53,11 +53,33 @@ export function OperationFeedback({ feedback, action }: {
     data-nc-operation-feedback="" />;
 }
 
+export type DeleteConfirmState = Readonly<{
+  target: string | null; origin: DialogOrigin; open: boolean; pending: boolean;
+  feedback: OperationFeedbackState;
+  request: (id: string, origin: DialogOrigin) => void;
+  cancel: () => void;
+  confirm: () => void;
+}>;
+
+export function DeleteConfirmDialog({ confirm, copy, busyLabel = 'Deleting…', body, blocked = false }: Readonly<{
+  confirm: DeleteConfirmState;
+  copy: Readonly<{ title: string; description?: ReactNode; confirmLabel: string }>;
+  busyLabel?: string;
+  body?: ReactNode;
+  blocked?: boolean;
+}>) {
+  return <ConfirmDialog origin={confirm.origin} open={confirm.open} title={copy.title}
+    description={<>{body ?? copy.description}<OperationFeedback feedback={confirm.feedback} /></>}
+    confirmLabel={copy.confirmLabel} confirmBusyLabel={busyLabel}
+    confirmState={confirm.pending ? 'busy' : blocked ? 'blocked' : 'ready'}
+    onConfirm={confirm.confirm} onCancel={confirm.cancel} />;
+}
+
 export function useDeleteConfirm(
   perform: (id: string, signal: AbortSignal) => void | Promise<void>,
   read: FailureReading,
   onDone?: () => void,
-) {
+): DeleteConfirmState {
   const center: DialogOrigin = { kind: 'surface-center' };
   const [intent, setIntent] = useState<Readonly<{ id: string; origin: DialogOrigin }> | null>(null);
   const [pending, setPending] = useState(false);
@@ -81,11 +103,11 @@ export function useDeleteConfirm(
       void feedback.run(Promise.resolve().then(() => perform(intent.id, controller.signal)), read, () => controller.signal.aborted)
         .then((deleted) => {
           if (active.current !== controller) return;
-          if (deleted) onDone?.();
+          if (deleted) { setIntent(null); onDone?.(); }
         })
         .finally(() => {
           if (active.current !== controller) return;
-          active.current = null; setPending(false); setIntent(null);
+          active.current = null; setPending(false);
         });
     },
   };

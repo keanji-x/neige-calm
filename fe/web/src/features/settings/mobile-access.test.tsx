@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, cleanup } from '@testing-library/react';
+import { fireEvent, render, screen, cleanup, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { MobileAccessPane, type MobileAccessPaneProps } from './mobile-access.tsx';
 
@@ -37,6 +37,8 @@ describe('Mobile access settings', () => {
     render(<MobileAccessPane {...p} />);
     expect(screen.getByRole('alert').textContent).toContain('Connection could not start');
     fireEvent.click(screen.getByRole('button', { name: 'Revoke' }));
+    expect(p.onRevoke).not.toHaveBeenCalled();
+    fireEvent.click(within(screen.getByRole('dialog', { name: 'Revoke My phone?' })).getByRole('button', { name: 'Revoke' }));
     expect(p.onRevoke).toHaveBeenCalledExactlyOnceWith('device-1');
   });
 });
@@ -55,6 +57,8 @@ it('keeps Disable available while a running private node needs login', () => {
   render(<MobileAccessPane {...p} />);
   expect(screen.queryByRole('button', { name: 'Enable' })).toBeNull();
   fireEvent.click(screen.getByRole('button', { name: 'Disable' }));
+  expect(p.onDisable).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole('button', { name: 'Disable remote access' }));
   expect(p.onDisable).toHaveBeenCalledOnce();
   fireEvent.click(screen.getByRole('button', { name: 'Start sign-in' }));
   expect(p.onLogin).toHaveBeenCalledOnce();
@@ -66,5 +70,19 @@ it('shows a login link only for the current explicit login operation', () => {
   render(<MobileAccessPane {...p} />);
   expect(screen.getByRole('link', { name: 'Continue to Tailscale' }).getAttribute('rel')).toBe('noreferrer');
   fireEvent.click(screen.getByRole('button', { name: 'Sign out of Tailnet' }));
+  expect(p.onLogout).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole('button', { name: 'Sign out' }));
   expect(p.onLogout).toHaveBeenCalledOnce();
+});
+
+
+it.each(['Disable', 'Sign out of Tailnet', 'Revoke'])('cancels %s without a write', (label) => {
+  const p = props({ status: { ...privateStatus, publicUrl: 'https://private.example', devices: [{ id: 'phone', deviceName: 'Phone' }] } });
+  render(<MobileAccessPane {...p} />);
+  fireEvent.click(screen.getByRole('button', { name: label }));
+  fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+  expect(screen.queryByRole('dialog')).toBeNull();
+  expect(p.onDisable).not.toHaveBeenCalled();
+  expect(p.onLogout).not.toHaveBeenCalled();
+  expect(p.onRevoke).not.toHaveBeenCalled();
 });

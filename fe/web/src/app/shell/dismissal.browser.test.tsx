@@ -57,7 +57,7 @@ it('does not give the desktop rail an inactive mobile navigation depth', async (
   await page.getByRole('button', { name: 'Actions for track Responsive mobile UI' }).first().click();
   await expect.element(page.getByRole('menuitem', { name: 'Unpin globally' })).toBeVisible();
   const close = vi.fn();
-  render(<Dialog open origin={{ kind: 'surface-center' }} title="Independent dialog" onClose={close}>Dialog content</Dialog>);
+  render(<Dialog purpose="info" open origin={{ kind: 'surface-center' }} title="Independent dialog" onClose={close}>Dialog content</Dialog>);
   await expect.element(page.getByRole('dialog', { name: 'Independent dialog' })
     .getByRole('button', { name: 'Close', exact: true })).toHaveFocus();
   await userEvent.keyboard('{Escape}');

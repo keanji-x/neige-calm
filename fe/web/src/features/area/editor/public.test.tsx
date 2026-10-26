@@ -36,7 +36,7 @@ function renderForm(overrides: Partial<AreaEditorFormProps> = {}) {
   return {
     onSubmit,
     ...render(
-      <Dialog origin={{ kind: 'surface-center' }} open title="Edit Work" onClose={props.onCancel} initialFocusRef={props.nameInputRef}>
+      <Dialog purpose="info" origin={{ kind: 'surface-center' }} open title="Edit Work" onClose={props.onCancel} initialFocusRef={props.nameInputRef}>
         <AreaEditorForm {...props} />
       </Dialog>,
     ),

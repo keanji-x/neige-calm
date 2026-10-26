@@ -286,8 +286,8 @@ describe('BoardHost card removal', () => {
         <CardHead
           className="card-drag-handle"
           title="Build log"
-          onClose={onRemove}
-          closeAriaLabel="Delete card Build log"
+          onDelete={onRemove}
+          deleteLabel="Delete card Build log"
         />
         <div className="term-body">term body</div>
       </div>

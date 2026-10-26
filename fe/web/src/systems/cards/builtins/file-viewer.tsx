@@ -35,8 +35,8 @@ function FileViewerCardView({ card, host, onRemove, header }: CardComponentProps
         header={header}
         className="card-drag-handle"
         title={card.title ?? 'file'}
-        onClose={onRemove}
-        closeAriaLabel={`Delete card ${card.title ?? 'file'}`}
+        onDelete={onRemove}
+        deleteLabel={`Delete card ${card.title ?? 'file'}`}
       />
       {/* The theme is read at render from `<html data-theme>` rather than subscribed to: `systems/**` may not reach `app/theme`. A toggle while a card is open repaints on the next render. */}
       <FileViewer path={card.path} files={host.files} theme={readHostTheme()} slots={host.slots} />

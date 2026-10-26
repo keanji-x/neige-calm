@@ -13,8 +13,8 @@ export function CardHead({
   icon,
   className,
   children,
-  onClose,
-  closeAriaLabel,
+  onDelete,
+  deleteLabel,
   header,
 }: {
   title?: ReactNode;
@@ -22,12 +22,12 @@ export function CardHead({
   icon?: ReactNode;
   className?: string;
   children?: ReactNode;
-  onClose?: () => void;
-  closeAriaLabel?: string;
+  onDelete?: () => void;
+  deleteLabel?: string;
   header?: CardHeaderPresentation;
 }) {
   if (header !== undefined) return <DrawerHeader title={title} status={status} closeLabel={header.hideLabel} onClose={header.onHide}
-    onDelete={onClose} deleteLabel={closeAriaLabel}>{children}</DrawerHeader>;
+    onDelete={onDelete} deleteLabel={deleteLabel}>{children}</DrawerHeader>;
   const rootClass = className ? `card-head ${className}` : 'card-head';
   let iconNode: ReactNode = null;
   if (icon !== undefined) {
@@ -44,19 +44,19 @@ export function CardHead({
       {title !== undefined ? <span className="card-head-title">{title}</span> : null}
       {children}
       {status !== undefined && <span className="card-head-status">{status}</span>}
-      {onClose !== undefined && (
+      {onDelete !== undefined && (
         <button
           className="card-grid-close"
           type="button"
-          aria-label={closeAriaLabel ?? 'Close'}
+          aria-label={deleteLabel ?? 'Delete'}
           onClick={(event) => {
             event.stopPropagation();
-            onClose();
+            onDelete();
           }}
           onKeyDown={(event) => event.stopPropagation()}
           onMouseDown={(event) => event.stopPropagation()}
         >
-          <Icon name="close" size="sm" />
+          <Icon name="delete" size="sm" />
         </button>
       )}
     </div>

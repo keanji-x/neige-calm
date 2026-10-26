@@ -53,7 +53,7 @@ export function mountEmptyFileViewer(tab: 'code' | 'diff') {
 }
 
 export function mountEmptyDirectoryBrowser(filtered: boolean) {
-  mount(<Dialog origin={{ kind: 'surface-center' }} open title="选择文件夹" onClose={noop}><DirectoryBrowser initialPath="/work" listDirectory={()=>Promise.resolve({path:'/work',parent:'/',entries:filtered ? [{name:'src',path:'/work/src',isDirectory:true}] : []})} onCancel={noop} onSelect={noop}/></Dialog>);
+  mount(<Dialog purpose="info" origin={{ kind: 'surface-center' }} open title="选择文件夹" onClose={noop}><DirectoryBrowser initialPath="/work" listDirectory={()=>Promise.resolve({path:'/work',parent:'/',entries:filtered ? [{name:'src',path:'/work/src',isDirectory:true}] : []})} onCancel={noop} onSelect={noop}/></Dialog>);
 }
 
 export function mountReportComponentStates() {

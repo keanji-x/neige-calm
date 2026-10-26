@@ -20,7 +20,7 @@
    * identical boxes with opposite consequences would be a mis-click reported
    * as data loss. `chevron-right` is this app's "collapse it away" word, the
    * same one the rail's collapse uses, and closing a conversation does not
-   * end it. X stays reserved for destruction. Anything added to this row
+   * end it. Trash2 identifies resource deletion. Anything added to this row
    * inherits that obligation.
    *
    * Controls keep `--space-6` from the title, the gap §4.3 asks of

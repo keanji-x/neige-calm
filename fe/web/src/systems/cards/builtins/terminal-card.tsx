@@ -83,8 +83,8 @@ export function TerminalCardView({
           {statusText !== null && <span role="status">{statusText}</span>}
           {headActions}
         </>}
-        onClose={onRemove}
-        closeAriaLabel={`Delete card ${card.title || fallbackTitle}`}
+        onDelete={onRemove}
+        deleteLabel={`Delete card ${card.title || fallbackTitle}`}
         header={header}
       />
       {card.cwd !== null && (

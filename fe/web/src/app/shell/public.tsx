@@ -558,7 +558,7 @@ export function AppShell({
         {/* Above the keyed route stage so settings panes survive tab changes and resizing. */}
         <SettingsOverlay transport={transport} unauthorized={unauthorized} />
       </main>
-      <Dialog origin={areaEditorTarget?.origin ?? { kind: 'surface-center' }}
+      <Dialog purpose="form" origin={areaEditorTarget?.origin ?? { kind: 'surface-center' }}
         open={areaEditorTarget !== null}
         title={areaEditorTarget?.kind === 'edit' ? `Edit ${areaEditorTarget.area.name}` : 'New area'}
         onClose={closeAreaEditor}

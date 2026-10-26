@@ -11,8 +11,7 @@ import { useId, useRef } from 'react';
 import { DELETE_FAILURES, DELETE_TEXT, writeFailureText } from '../../../../../core/domain/failure-class.ts';
 import type { TrackRecipe } from '../../../../../core/domain/track.ts';
 import { ErrorBox } from '../../../ui/error-box/public.tsx';
-import { ConfirmDialog } from '../../../ui/dialog/public.tsx';
-import { useDeleteConfirm } from '../../../ui/operation-feedback/public.tsx';
+import { DeleteConfirmDialog, useDeleteConfirm } from '../../../ui/operation-feedback/public.tsx';
 import { useState } from '../../../ui/state/public.ts';
 import type { RecipeEditorTheme } from './body-editor.tsx';
 import { RecipeBodyLoading } from './body-loading.tsx';
@@ -245,7 +244,6 @@ export function RecipeEditor({ recipe, theme, onWrite, onDelete, onClose, onCrea
       {conflict && <Banner status="warning" title={CONFLICT_NOTICE} />}
       {failure !== null && <Banner status="error" title={failure} endContent={unconfirmed === null ? undefined
         : <Button label="Try again" variant="ghost" isDisabled={saving} onClick={() => { void save(unconfirmed); }} />} />}
-      {deletion.feedback.error !== null && <Banner status="error" title={deletion.feedback.error} />}
 
       {editing
         ? (
@@ -285,16 +283,7 @@ export function RecipeEditor({ recipe, theme, onWrite, onDelete, onClose, onCrea
         )}
 
       {onDelete !== null && (
-        <ConfirmDialog origin={deletion.origin}
-          open={deletion.open}
-          title={DELETE_TITLE}
-          description={DELETE_DESCRIPTION}
-          confirmLabel={DELETE_CONFIRM_LABEL}
-          confirmBusyLabel={DELETE_BUSY_LABEL}
-          confirmState={deletion.pending ? 'busy' : 'ready'}
-          onCancel={deletion.cancel}
-          onConfirm={deletion.confirm}
-        />
+        <DeleteConfirmDialog confirm={deletion} copy={{ title: DELETE_TITLE, description: DELETE_DESCRIPTION, confirmLabel: DELETE_CONFIRM_LABEL }} busyLabel={DELETE_BUSY_LABEL} />
       )}
     </section>
   );

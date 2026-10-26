@@ -89,7 +89,7 @@ for (const theme of ['light', 'dark'] as const) {
 
   it(`shares the conversation frame with modal card surfaces (${theme})`, () => {
     const expected = reference(theme);
-    render(<Dialog origin={{ kind: 'surface-center' }} open title="Files" onClose={() => {}}><button type="button">Choose file</button></Dialog>);
+    render(<Dialog purpose="info" origin={{ kind: 'surface-center' }} open title="Files" onClose={() => {}}><button type="button">Choose file</button></Dialog>);
     expectFrame(screen.getByRole('dialog', { name: 'Files' }), expected);
   });
 

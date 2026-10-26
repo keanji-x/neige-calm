@@ -19,3 +19,9 @@ Consumers locate it by dialog role and accessible name. DOM contract tests asser
 An unanimated CSS Module frame owns final width and height, while its single paint panel uses `useSurfacePresence` lift. Layout/viewport changes rebase through the existing Motion owner; child push/pop keeps the same mounted panel and does not acquire a second entrance. `present=open`: closing cancels effects and unmounts immediately, with no business or resource wait.
 
 Escape uses public Layer dismissal/depth, including IME and nested native layers. The legacy escape marker remains a lazy interoperability fence. Body inert cleanup still precedes focus restoration. Global registered chrome uses existing style tokens; the new local frame requires no manifest entry or caller registry. Ordinary callers edit only their intent/callback and tests, and incur one local stable box/ref, without idle timers.
+
+`purpose` is required: `info` permits backdrop dismissal; `form` protects drafts
+from backdrop clicks. Escape and Close remain explicit dismissal in both modes.
+Pushed child views always block backdrop dismissal. `ConfirmDialog` declares
+`info`: dismissing a confirmation cancels safely. Every new caller selects its
+purpose; TypeScript enforces this without a separate caller registry.

@@ -8,7 +8,7 @@ afterEach(cleanup);
 
 it.each([400, 900])('contains a long wide dialog and its last action within a %ipx viewport', async height => {
   await page.viewport(900, height);
-  render(<Dialog origin={{ kind: 'surface-center' }} open wide title="Long settings" onClose={vi.fn()}>
+  render(<Dialog purpose="info" origin={{ kind: 'surface-center' }} open wide title="Long settings" onClose={vi.fn()}>
     {Array.from({ length: 80 }, (_, index) => <p key={index}>Setting {index + 1}</p>)}
     <button type="button">Complete long dialog</button>
   </Dialog>);

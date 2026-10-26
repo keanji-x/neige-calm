@@ -102,11 +102,11 @@ import {
   type PendingQueueEntry,
   type TranscriptEntry,
 } from '../../../../core/domain/conversation.ts';
-import { ConfirmDialog, Dialog } from '../../ui/dialog/public.tsx';
+import { Dialog } from '../../ui/dialog/public.tsx';
 import { createDirectoryLister, createTrackWorkspaceFilesPort } from '../providers/directory.ts';
 import { useMentionSearch } from '../providers/mentions.ts';
 import { DELETE_CARD_COPY } from '../../ui/confirm-dialog/copy.ts';
-import { OperationFeedback, useDeleteConfirm, useOperationFeedback } from '../../ui/operation-feedback/public.tsx';
+import { OperationFeedback, DeleteConfirmDialog, useDeleteConfirm, useOperationFeedback } from '../../ui/operation-feedback/public.tsx';
 import { useCommittedCallback } from '../../ui/state/committed-callback.ts';
 import { useState } from '../../ui/state/public.ts';
 import {
@@ -1622,7 +1622,7 @@ function TrackRouteBody({
     </TrackStage>
     {/* Keyed by kind: switching kinds is a different form, and a shared mount
         would carry the previous kind's typed values into it. */}
-    <Dialog origin={cardDraft?.origin ?? { kind: 'surface-center' }}
+    <Dialog purpose="form" origin={cardDraft?.origin ?? { kind: 'surface-center' }}
       open={cardDraft !== null}
       onClose={() => setCardDraft(null)}
       title={cardDraft === null ? '' : `New ${cardDraft.label} card`}
@@ -1642,17 +1642,7 @@ function TrackRouteBody({
         />
       )}
     </Dialog>
-    <ConfirmDialog origin={cardDeletion.origin}
-      open={cardDeletion.open}
-      title={DELETE_CARD_COPY.title}
-      description={DELETE_CARD_COPY.description}
-      confirmLabel={DELETE_CARD_COPY.confirmLabel}
-      confirmBusyLabel="Deleting…"
-      confirmState={cardDeletion.pending ? 'busy' : 'ready'}
-      onConfirm={cardDeletion.confirm}
-      onCancel={cardDeletion.cancel}
-    />
-    <OperationFeedback feedback={cardDeletion.feedback} />
+    <DeleteConfirmDialog confirm={cardDeletion} copy={DELETE_CARD_COPY} />
     <OperationFeedback feedback={terminalPlacementFeedback} />
     {/* Only while the dialog is closed: `NewCardForm` renders the same `error` inline. */}
     {cardDraft === null && <OperationFeedback feedback={cardCreateFeedback}

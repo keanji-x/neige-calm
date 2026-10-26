@@ -1,3 +1,5 @@
+import { ConfirmDialog, type DialogOrigin } from '../../ui/dialog/public.tsx';
+import { useState } from '../../ui/state/public.ts';
 import { Button as AstryxButton } from '@astryxdesign/core/Button';
 import { Text as AstryxText } from '@astryxdesign/core/Text';
 import type { MobileAccessStatus, MobileInvitation, TailnetLoginRequest } from '../../../../core/api/mobile-access.ts';
@@ -27,6 +29,13 @@ export type MobileAccessPaneProps = Readonly<{
 }>;
 
 export function MobileAccessPane(props: MobileAccessPaneProps) {
+  const [confirmation, setConfirmation] = useState<Readonly<{
+    title: string; description: string; label: string; run: () => void; origin: DialogOrigin;
+  }> | null>(null);
+  const ask = (button: HTMLElement, title: string, description: string, label: string, run: () => void) => {
+    setConfirmation({ title, description, label, run,
+      origin: { kind: 'anchor', anchor: { ref: { current: button } }, unavailable: 'surface-center' } });
+  };
   const { status, invitation, busy, error } = props;
   const tailnet = status?.tailnet;
   const enabled = tailnet?.desiredEnabled ?? status?.publicUrl !== null;
@@ -40,7 +49,8 @@ export function MobileAccessPane(props: MobileAccessPaneProps) {
           ? status.provider === 'private-tailnet' ? 'Private access through the node bundled with Neige. Disabling keeps its identity for next time.' : 'Uses the explicitly configured public Funnel tunnel.'
           : 'Mobile connection must first be configured on this server.'}
           control={status.available
-            ? <AstryxButton isDisabled={busy} onClick={enabled ? props.onDisable : props.onEnable} label={enabled ? 'Disable' : 'Enable'} />
+            ? <AstryxButton isDisabled={busy} onClick={(event) => { if (!enabled) { props.onEnable(); return; }
+              ask(event.currentTarget, 'Disable remote access?', 'Remote access stops. Phones connected to this workspace will be disconnected.', 'Disable remote access', props.onDisable); }} label={enabled ? 'Disable' : 'Enable'} />
             : <AstryxText>Unavailable</AstryxText>} />
         {tailnet !== null && tailnet !== undefined && <>
           <SettingRow title="Tailnet node" description={tailnet.detail} control={<AstryxText>{tailnet.phase.replaceAll('-', ' ')}</AstryxText>} />
@@ -55,7 +65,7 @@ export function MobileAccessPane(props: MobileAccessPaneProps) {
                 ? <AstryxButton isDisabled={busy} onClick={props.onLogin} label="Start sign-in" />
                 : <a href={props.login.loginUrl} target="_blank" rel="noreferrer">Continue to Tailscale</a>} />}
             <SettingRow title="Sign out of Tailnet" description="Disables remote access and removes this computer’s private node identity."
-              control={<AstryxButton isDisabled={busy || !tailnet.processRunning} onClick={props.onLogout} label="Sign out of Tailnet" />} />
+              control={<AstryxButton isDisabled={busy || !tailnet.processRunning} onClick={(event) => ask(event.currentTarget, 'Sign out of Tailnet?', 'Remote access stops and this computer\'s private node identity is removed. You will need to sign in again.', 'Sign out', props.onLogout)} label="Sign out of Tailnet" />} />
           </>}
         </>}
         {status.provider === 'private-tailnet' && status.publicUrl !== null && <SettingRow title="Add phone"
@@ -87,8 +97,11 @@ export function MobileAccessPane(props: MobileAccessPaneProps) {
       {status !== undefined && status.devices.length > 0 && <SettingsList>
         {status.devices.map((device) => <SettingRow key={device.id} title={device.deviceName}
           description="Connected. Server restarts require a new scan."
-          control={<AstryxButton isDisabled={busy} onClick={() => props.onRevoke(device.id)} label="Revoke" />} />)}
+          control={<AstryxButton isDisabled={busy} onClick={(event) => ask(event.currentTarget, `Revoke ${device.deviceName}?`, 'This phone loses access. Pairing it again needs a new scan.', 'Revoke', () => props.onRevoke(device.id))} label="Revoke" />} />)}
       </SettingsList>}
+      <ConfirmDialog open={confirmation !== null} origin={confirmation?.origin ?? { kind: 'surface-center' }}
+        title={confirmation?.title ?? ''} description={confirmation?.description} confirmLabel={confirmation?.label}
+        onCancel={() => setConfirmation(null)} onConfirm={() => { if (confirmation === null) return; const { run } = confirmation; setConfirmation(null); run(); }} />
     </SettingsPane>
   </>;
 }

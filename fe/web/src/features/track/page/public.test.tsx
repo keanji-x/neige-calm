@@ -18,7 +18,7 @@ it('leaves Escape to a dialog above an open panel', async () => {
   const closePanel = vi.fn();
   const closeDialog = vi.fn();
   renderPage({ panel: 'cards', onClosePanel: closePanel });
-  render(<Dialog origin={{ kind: 'surface-center' }} open title="Confirm action" onClose={closeDialog}><p>Review this action.</p></Dialog>);
+  render(<Dialog purpose="info" origin={{ kind: 'surface-center' }} open title="Confirm action" onClose={closeDialog}><p>Review this action.</p></Dialog>);
   await userEvent.keyboard('{Escape}');
   expect(closeDialog).toHaveBeenCalledOnce();
   expect(closePanel).not.toHaveBeenCalled();

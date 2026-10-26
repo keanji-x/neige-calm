@@ -2,7 +2,7 @@
 //
 // Invariants of the track page a refactor must not quietly drop.
 
-import { cleanup, screen } from '@testing-library/react';
+import { cleanup, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -47,7 +47,7 @@ describe('TrackPage delete confirm contract', () => {
     await screen.findByRole('button', { name: /^Track actions for / });
   });
 
-  it('closes the confirm and clears pending when onDeleteTrack rejects', async () => {
+  it('keeps the confirm and clears pending when onDeleteTrack rejects', async () => {
     const gate = deferred();
     const onDeleteTrack = vi.fn(() => gate.promise);
     renderPage({ onDeleteTrack });
@@ -59,11 +59,7 @@ describe('TrackPage delete confirm contract', () => {
     gate.reject();
     await gate.promise.catch(() => undefined);
 
-    const reopen = await screen.findByRole('button', { name: /^Track actions for / });
-    expect(screen.queryByRole('dialog')).toBeNull();
-    await userEvent.click(reopen);
-    await userEvent.click(screen.getByRole('menuitem', { name: 'Delete track' }));
-    expect(screen.getByRole('dialog')).toBeTruthy();
+    expect(await within(screen.getByRole('dialog')).findByRole('alert')).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Delete track' }).getAttribute('aria-disabled')).toBeNull();
   });
 

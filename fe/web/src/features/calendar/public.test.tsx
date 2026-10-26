@@ -2,6 +2,7 @@ import { cleanup, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, expect, it, vi } from 'vitest';
 import { CalendarTasks, type CalendarTasksProps } from './public.tsx';
+import { Dialog } from '../../ui/dialog/public.tsx';
 import { CalendarEditor } from './editor.tsx';
 import type { CalendarListedEntry } from '../../../../core/domain/calendar.ts';
 
@@ -31,10 +32,19 @@ it('opens a minimal form and resends the same draft after response loss', async 
 });
 it('lets a human cancel an AI entry using its actual revision', async () => {
   const onSave = vi.fn(() => Promise.resolve());
-  render(<CalendarEditor entry={entry} date="2026-10-02" timezone="Asia/Shanghai" pending={false} onClose={() => undefined} onSave={onSave} />);
+  render(<Dialog purpose="form" origin={{ kind: 'surface-center' }} open title="Edit task" onClose={vi.fn()}>
+    <CalendarEditor entry={entry} date="2026-10-02" timezone="Asia/Shanghai" pending={false} onClose={() => undefined} onSave={onSave} />
+  </Dialog>);
   const user = userEvent.setup();
   await user.clear(screen.getByRole('textbox', { name: 'Task title' }));
   await user.click(screen.getByRole('button', { name: 'Cancel task' }));
+  expect(onSave).not.toHaveBeenCalled();
+  await user.click(screen.getByRole('button', { name: 'Keep task' }));
+  expect(screen.getByRole<HTMLInputElement>('textbox', { name: 'Task title' }).value).toBe('');
+  expect(onSave).not.toHaveBeenCalled();
+  await user.click(screen.getByRole('button', { name: 'Cancel task' }));
+  expect(screen.getByRole('dialog', { name: 'Cancel this task?' })).toBeTruthy();
+  await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Cancel task' }));
   expect(onSave).toHaveBeenCalledWith({ id: 'one', expected_version: 3, task: entry.task, cancelled: true });
 });
 it('keeps errors distinct from empty or disabled calendars', () => {

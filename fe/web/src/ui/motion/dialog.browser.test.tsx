@@ -12,7 +12,7 @@ function Scene() {
   const [open, setOpen] = useState(false);
   const input = useRef<HTMLInputElement>(null);
   return <><button type="button" onClick={() => setOpen(true)}>Open dialog</button>
-    <Dialog origin={{ kind: 'surface-center' }} open={open} title="Motion dialog" initialFocusRef={input} onClose={() => setOpen(false)}>
+    <Dialog purpose="info" origin={{ kind: 'surface-center' }} open={open} title="Motion dialog" initialFocusRef={input} onClose={() => setOpen(false)}>
       <label>Task name<input ref={input} defaultValue="Draft a note" /></label>
       <button type="button" onClick={() => setOpen(false)}>Done</button>
     </Dialog></>;

@@ -3,8 +3,7 @@ import { useRef } from 'react';
 import { afterEach, expect, it, vi } from 'vitest';
 import { page } from 'vitest/browser';
 import '../../styles/entry.css';
-import { ConfirmDialog } from '../dialog/public.tsx';
-import { useDeleteConfirm } from './public.tsx';
+import { DeleteConfirmDialog, useDeleteConfirm } from './public.tsx';
 
 afterEach(cleanup);
 it('carries delete identity and explicit origin together while Cancel aborts without waiting for paint', async () => {
@@ -20,8 +19,7 @@ it('carries delete identity and explicit origin together while Cancel aborts wit
     const deletion = useDeleteConfirm(perform, () => 'Delete failed', done);
     return <><span ref={ref} style={{ display: 'inline-flex', margin: 30 }}>
       <button onClick={() => deletion.request('owned-id', { kind: 'anchor', anchor: { ref }, unavailable: 'surface-center' })}>Delete item</button>
-    </span><ConfirmDialog origin={deletion.origin} open={deletion.open} title="Delete owned item" confirmLabel="Delete"
-      confirmState={deletion.pending ? 'busy' : 'ready'} onConfirm={deletion.confirm} onCancel={deletion.cancel} /></>;
+    </span><DeleteConfirmDialog confirm={deletion} copy={{ title: 'Delete owned item', confirmLabel: 'Delete' }} /></>;
   }
   render(<Entry />);
   const opener = screen.getByRole('button', { name: 'Delete item' });

@@ -23,7 +23,7 @@ export function DrawerHeader({ title, titleId, status, children, closeLabel, clo
     {status !== undefined && <span className={styles.status}>{status}</span>}
     {onDelete !== undefined && <button type="button" data-nc-role="icon" className={`${styles.close} ${styles.delete}`}
       aria-label={deleteLabel ?? 'Delete'} title={deleteLabel ?? 'Delete'} onClick={onDelete}>
-      <Icon name="close" size="sm" />
+      <Icon name="delete" size="sm" />
     </button>}
     <button type="button" data-nc-role="icon" className={styles.close} aria-label={closeLabel} title={closeTitle} onClick={onClose}>
       <Icon name="chevron-right" />

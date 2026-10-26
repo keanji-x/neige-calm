@@ -1,3 +1,4 @@
+import { useDialogView } from '../../ui/dialog/public.tsx';
 import { Button } from '@astryxdesign/core/Button';
 import { DateInput } from '@astryxdesign/core/DateInput';
 import { TimeInput } from '@astryxdesign/core/TimeInput';
@@ -17,6 +18,7 @@ import styles from './calendar.module.css';
 export function CalendarEditor({ entry, date, timezone, pending, onClose, onSave }: Readonly<{
   entry: CalendarEntry | null; date: string; timezone: string; pending: boolean; onClose(): void; onSave(write: CalendarEdit): Promise<void>;
 }>) {
+  const view = useDialogView();
   const original = entry?.task.schedule;
   const initialStart = original?.kind === 'timed' ? wallTime(Date.parse(original.start), original.timezone) : '';
   const initialEnd = original?.kind === 'timed' ? wallTime(Date.parse(original.end), original.timezone) : '';
@@ -54,6 +56,15 @@ export function CalendarEditor({ entry, date, timezone, pending, onClose, onSave
     setError(null);
     if (await feedback.run(onSave(write), calendarWriteFailureText(write))) onClose();
   };
+  const requestCancel = () => {
+    view?.pushView({ title: 'Cancel this task?', body: <>
+      <p>It is removed from the calendar and its reminders stop.</p>
+      <div className={styles.actions}>
+        <Button label="Keep task" variant="ghost" onClick={() => view.popView()} />
+        <Button label="Cancel task" variant="destructive" onClick={() => { view.popView(); void save(true); }} />
+      </div>
+    </> });
+  };
   const shown = error ?? feedback.error;
   return <form className={styles.form} onSubmit={(event) => { event.preventDefault(); void save(false); }}>
     <TextInput label="Task title" isLabelHidden placeholder="Task title" hasAutoFocus size="lg" value={title} onChange={setTitle} isDisabled={pending} width="100%" />
@@ -73,7 +84,7 @@ export function CalendarEditor({ entry, date, timezone, pending, onClose, onSave
       : <div><Button label="Add notes" size="sm" variant="ghost" isDisabled={pending} onClick={() => setDetails(true)} /></div>}
     {shown !== null && <Banner status="error" title={shown} />}
     <div className={styles.actions}>
-      {entry && <Button label="Cancel task" variant="destructive" isDisabled={pending} onClick={() => { void save(true); }} />}
+      {entry && <Button label="Cancel task" variant="destructive" isDisabled={pending} onClick={requestCancel} />}
       <div className={styles.saveActions}>
         <Button label="Cancel" variant="ghost" isDisabled={pending} onClick={onClose} />
         <Button label={entry ? 'Save changes' : 'Create task'} type="submit" variant="primary" isDisabled={pending || !title.trim()} isLoading={pending} />

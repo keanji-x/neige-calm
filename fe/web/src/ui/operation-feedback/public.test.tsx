@@ -4,7 +4,7 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, expect, it, vi } from 'vitest';
 
 import { useState } from '../state/public.ts';
-import { OperationFeedback, useDeleteConfirm, useOperationFeedback } from './public.tsx';
+import { DeleteConfirmDialog, OperationFeedback, useDeleteConfirm, useOperationFeedback } from './public.tsx';
 
 afterEach(cleanup);
 
@@ -103,4 +103,25 @@ it('offers the caller’s action and a Dismiss that clears the failure', async (
   /* Cleared, not hidden: the next failure shows again. */
   await userEvent.click(screen.getByRole('button', { name: 'Create' }));
   expect(within(await screen.findByRole('alert')).getByText('Not created.')).toBeTruthy();
+});
+
+
+it('keeps a failed delete and its alert inside the dialog for retry', async () => {
+  const perform = vi.fn().mockRejectedValueOnce(new Error('private')).mockResolvedValueOnce(undefined);
+  const onDone = vi.fn();
+  function DeleteHarness() {
+    const confirm = useDeleteConfirm(perform, () => 'Delete failed. Try again.', onDone);
+    return <><button onClick={() => confirm.request('w1', { kind: 'surface-center' })}>Delete</button>
+      <DeleteConfirmDialog confirm={confirm} copy={{ title: 'Delete item?', confirmLabel: 'Delete item' }} /></>;
+  }
+  render(<DeleteHarness />);
+  await userEvent.click(screen.getByRole('button', { name: 'Delete' }));
+  await userEvent.click(screen.getByRole('button', { name: 'Delete item' }));
+  const dialog = screen.getByRole('dialog');
+  expect((await within(dialog).findByRole('alert')).textContent).toContain('Delete failed. Try again.');
+  expect(onDone).not.toHaveBeenCalled();
+  await userEvent.click(within(dialog).getByRole('button', { name: 'Delete item' }));
+  await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+  expect(onDone).toHaveBeenCalledOnce();
+  expect(perform).toHaveBeenCalledTimes(2);
 });
