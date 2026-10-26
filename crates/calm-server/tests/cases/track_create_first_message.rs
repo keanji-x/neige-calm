@@ -117,7 +117,7 @@ async fn boot() -> Boot {
     boot_with_daemon(true).await
 }
 
-/// Explicit historical Managed entry: attach_folder with omitted cwd claims no folder.
+/// Named attach without cwd retains the upstream historical Managed entry.
 async fn historical_boot() -> Boot {
     let mut boot = boot().await;
     boot.historical = true;
@@ -912,8 +912,7 @@ async fn the_first_message_is_a_user_message_attributed_to_the_human() {
     b.shutdown_harnesses().await;
 }
 
-/// A create with **no** `first_message` **and no `Idempotency-Key`** is unchanged: two identical creates
-/// are two tracks, and the operation payload carries no `first_message` key at all (`skip_serializing_if`).
+/// No first message and no key still mint distinct tracks, without starting a provider.
 #[tokio::test]
 async fn a_message_less_create_without_a_key_is_unchanged() {
     let b = boot().await;
@@ -936,14 +935,11 @@ async fn a_message_less_create_without_a_key_is_unchanged() {
         0,
         "nothing was typed, so nothing may be enqueued"
     );
-    let payloads = b.operation_payloads().await;
-    assert_eq!(payloads.len(), 2, "one start per create: {payloads:?}");
-    for payload in payloads {
-        assert!(
-            payload.get("first_message").is_none(),
-            "the message-less payload must not carry the key at all: {payload}"
-        );
-    }
+    assert_eq!(
+        b.operation_count().await,
+        0,
+        "empty creation starts nothing"
+    );
     b.shutdown_harnesses().await;
 }
 
@@ -1215,7 +1211,7 @@ async fn a_failed_harness_start_fails_a_create_that_carried_a_first_message() {
 /// agent is inert" is a complete and recoverable answer.
 #[tokio::test]
 async fn a_failed_harness_start_still_creates_a_track_without_a_first_message() {
-    let b = boot().await;
+    let b = historical_boot().await;
     b.state
         .shared_codex_appserver
         .fail_next_thread_start_for_test();
@@ -3126,7 +3122,7 @@ async fn every_mint_input_is_bound_to_the_track_create_key() {
 /// bytes, and an operation submitted by an older binary and retried after a deploy would come back 409.
 #[tokio::test]
 async fn a_message_less_create_writes_byte_identical_payload_json() {
-    let mut b = boot().await;
+    let mut b = historical_boot().await;
     let (status, body) = b.create_track(None, None).await;
     assert_eq!(status, StatusCode::CREATED, "body={body}");
     let payloads = b.operation_payloads().await;
@@ -3138,6 +3134,7 @@ async fn a_message_less_create_writes_byte_identical_payload_json() {
         );
     }
 
+    b.historical = false;
     // Human first input binds the original fingerprint in canonical storage,
     // independently of the old start-operation body and native readiness.
     // Only this test gains a real issuer; the shared legacy fixture is unchanged.
@@ -3588,7 +3585,7 @@ async fn a_failed_restart_gives_the_harvested_sentence_back() {
 async fn the_non_deferred_arm_carries_an_undrained_sentence_to_its_successor() {
     const LAUNCHPAD_SENTENCE: &str = "check the overnight builds";
 
-    let b = boot().await;
+    let b = historical_boot().await;
     let (first, first_body) = b.create_track(Some("idem-non-deferred"), None).await;
     assert_eq!(
         first,
@@ -3698,7 +3695,7 @@ async fn a_failed_deferred_mint_gives_the_inherited_sentence_back() {
 /// HANDLE, which is what the route holds once it has resolved a runtime; the loop counter is asserted.
 #[tokio::test]
 async fn a_durable_send_is_on_the_row_or_refused_never_accepted_into_memory() {
-    let b = boot().await;
+    let b = historical_boot().await;
     let (status, body) = b.create_track(Some("idem-1449-durable"), None).await;
     assert_eq!(status, StatusCode::CREATED, "body={body}");
     let (runtime, _card_id) = b.only_runtime().await;
@@ -3766,7 +3763,7 @@ async fn a_durable_send_is_on_the_row_or_refused_never_accepted_into_memory() {
 async fn a_pre_upgrade_sentence_survives_a_failed_mint_that_moved_it() {
     const LEGACY: &str = "typed before the upgrade";
 
-    let b = boot().await;
+    let b = historical_boot().await;
     let (entered, release) = b.hold_the_next_drain();
     let (status, body) = b.create_track(Some("idem-1449-legacy"), None).await;
     assert_eq!(status, StatusCode::CREATED, "body={body}");
@@ -3837,7 +3834,7 @@ async fn a_pre_upgrade_sentence_survives_a_failed_mint_that_moved_it() {
 /// scheduler's child bootstrap and crash re-drives, so the start is submitted the way the scheduler submits it.
 #[tokio::test]
 async fn a_replaced_runtime_keeps_the_evidence_enqueued_against_it() {
-    let b = boot().await;
+    let b = historical_boot().await;
     let (entered, release) = b.hold_the_next_drain();
 
     let (first, first_body) = b.create_track(Some("idem-replaced-runtime"), None).await;
@@ -4030,6 +4027,10 @@ async fn create_model_selection_refuses_agent_before_mint() {
     let b = boot_without_daemon().await;
     for field in ["model", "reasoning_effort"] {
         let mut body = json!({"planner_provider": "codex", "area_id": b.area_id, "theme": {"fg": [255,255,255], "bg": [0,0,0]}});
+        // This pins the historical declared-actor guard. Canonical creation
+        // authenticates HumanInputSource rather than trusting an actor header.
+        body["template_id"] = json!("investigation");
+        body["attach_folder"] = json!(true);
         body[field] = json!("high");
         let response = b
             .app
@@ -4056,3 +4057,6 @@ mod keyed;
 
 #[path = "track_create_retry_live_session.rs"]
 mod retry_live_session;
+
+#[path = "track_create_g1.rs"]
+mod g1;

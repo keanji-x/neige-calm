@@ -154,7 +154,6 @@ async fn canonical_claude_creation_unsupported_shapes_keep_explicit_coverage() {
     for (field, value) in [
         ("admin", serde_json::json!(true)),
         ("cwd", serde_json::json!("/an-attached-directory")),
-        ("attach_folder", serde_json::json!(true)),
         ("template_id", serde_json::json!("small-change")),
         ("recipe_id", serde_json::json!("a-recipe")),
         ("template_input", serde_json::json!({"a":"b"})),

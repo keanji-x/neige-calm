@@ -20,7 +20,7 @@ pub(in crate::routes::tracks) async fn creation_plan(
             return Err(CalmError::Unauthorized);
         }
         let shape = CreateRequestShape::from_request(&request)?;
-        if canonical_creation_supported(&shape, CreateShape::MessageLess(())) {
+        if canonical_creation_supported(&shape) {
             return Err(CalmError::Unauthorized);
         }
         return Ok(CreatePlan::Historical(request));
@@ -37,10 +37,6 @@ pub(in crate::routes::tracks) async fn creation_plan(
     let shape = CreateRequestShape::from_request(&request)?;
     let source = source.clone();
     let area_id = request.area_id.to_string();
-    let input = match &request.first_message {
-        Some(_) => CreateShape::WithFirstMessage(()),
-        None => CreateShape::MessageLess(()),
-    };
     let workspace_root = state.workspace_root.clone();
     let admission_root = state.owned_location_roots();
     let teardown_targets = state.teardown_targets.clone();
@@ -77,7 +73,7 @@ pub(in crate::routes::tracks) async fn creation_plan(
                         },
                     );
                 }
-                if canonical_creation_supported(&shape, input)
+                if canonical_creation_supported(&shape)
                     && super::dormant::prior_start_attempt_tx(tx, &area_id, key).await?
                 {
                     // Preserve the historical owner's retry selection and error
@@ -103,7 +99,7 @@ pub(in crate::routes::tracks) async fn creation_plan(
             // A storage decision grants no resource access. The immutable
             // replay and historical owners recheck their own admission; fresh
             // excluded shapes must retain that owner's error ordering too.
-            if !canonical_creation_supported(&shape, input) {
+            if !canonical_creation_supported(&shape) {
                 return Ok(CreatePlan::Historical(request));
             }
             let access = crate::organization_access::require_area_access_tx(
@@ -171,8 +167,8 @@ pub(in crate::routes::tracks) async fn creation_plan(
 }
 
 /// Fresh blank managed creation accepts unavailable providers with a retained
-/// Planner identity: local sessions allocate canonically without native work;
-/// native threads use historical message-less creation with advisory readiness.
+/// Planner identity. Both local sessions and native threads allocate canonically
+/// without native work; first input owns activation.
 /// This says nothing about excluded creation shapes or live model writes.
 pub(crate) fn accepts_unavailable_blank_track(provider: &AgentProvider) -> bool {
     match PlannerFactory::retained_identity(&crate::harness::profile::PlannerBinding {
@@ -188,41 +184,29 @@ pub(crate) fn accepts_unavailable_blank_track(provider: &AgentProvider) -> bool 
 
 // The creation owner admits qualified canonical shapes here. Excluded
 // creation kinds retain historical preparation; receipts retain their own storage.
-fn canonical_creation_supported(request: &CreateRequestShape, input: CreateShape) -> bool {
+fn canonical_creation_supported(request: &CreateRequestShape) -> bool {
     // The activation owner queries ACP registration policy. Local bindings are
     // process-free: native session/new waits for the first prompt, so an empty
-    // conversation is valid. Named native-thread creation can also retain its
-    // frozen context in an empty carrier; the existing blank policy stays intact.
+    // conversation is valid. Native threads likewise wait for first input; named
+    // creation retains its frozen context in the same empty carrier.
     let named = request.template_id.is_some()
         || request.recipe_id.is_some()
         || request.template_input.is_some()
         || request.fork_report_from.is_some();
-    let supported =
-        match PlannerFactory::retained_identity(&crate::harness::profile::PlannerBinding {
-            profile: crate::harness::profile::HarnessProfile::Planner,
-            provider: request.planner_provider.clone(),
-        }) {
-            Ok(RetainedIdentityPreparation::NativeThread) => {
-                named
-                    || request.admin
-                    || request.cwd.is_some()
-                    || request.attach_folder
-                    || request.allow_cross_area_cwd.is_some()
-                    || matches!(input, CreateShape::WithFirstMessage(()))
-            }
-            Ok(RetainedIdentityPreparation::LocalSession) => true,
-            Err(_) => false,
-        };
+    let supported = PlannerFactory::retained_identity(&crate::harness::profile::PlannerBinding {
+        profile: crate::harness::profile::HarnessProfile::Planner,
+        provider: request.planner_provider.clone(),
+    })
+    .is_ok();
     // This entry rollout admits Codex/OpenCode named/admin/borrowed sources only. Other
     // bindings retain their explicit historical named-source contract.
-    // With no cwd, attachment still selects Managed preparation and borrows
-    // nothing. Preserve that historical shape; explicit locators remain qualified.
+    // Blank attachment without cwd still selects Managed preparation and borrows
+    // nothing. Named/admin attachment retains its existing admission owner.
     supported
-        && (!request.attach_folder || request.cwd.is_some())
+        && (!request.attach_folder || request.cwd.is_some() || (!named && !request.admin))
         && (!(named
             || request.admin
             || request.cwd.is_some()
-            || request.attach_folder
             || request.allow_cross_area_cwd.is_some())
             || matches!(
                 request.planner_provider,
@@ -369,7 +353,6 @@ impl HumanTrackCreationPlan {
             state,
             area_kind,
             self.allocation,
-            CreateShape::WithFirstMessage(()),
             Some(TrackCreateIdempotencyClaim {
                 key: self.raw_key,
                 create_request_sha256: self.create_sha,
@@ -416,7 +399,6 @@ impl EmptyTrackCreationPlan {
             state,
             area_kind,
             self.allocation,
-            CreateShape::MessageLess(()),
             self.claim.map(|claim| TrackCreateIdempotencyClaim {
                 key: claim.key,
                 create_request_sha256: claim.create_sha,
@@ -440,10 +422,9 @@ async fn blank_allocation(
     state: &RouteState,
     area_kind: crate::model::AreaKind,
     allocation: BlankAllocation,
-    input: CreateShape,
     claim: Option<TrackCreateIdempotencyClaim>,
 ) -> Result<(NewTrack, CreateTrackOptions)> {
-    if !canonical_creation_supported(&allocation.shape, input) {
+    if !canonical_creation_supported(&allocation.shape) {
         return Err(CalmError::BadRequest(
             "dormant acceptance requires an admitted Track Planner".into(),
         ));
