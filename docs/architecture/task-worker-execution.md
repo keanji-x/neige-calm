@@ -555,16 +555,35 @@ CLI 自身有没有某种接口，也一律以外部合同或实测为准，不�
 
 ### 5.3 实测清单（固定版本，专用宿主；结论写进 WA0 证据文档）
 
+实测已完成：Claude Code CLI 2.1.280，本机隔离实测，证据见 [WA0 证据文档](task-worker-execution-wa0-evidence.md)
+（命令、输入、输出摘要与限制逐项记录）。下面每项先写原问题，再写实测结论；本文其他位置的〔待实测〕以此处结论与限制为准。
+
 - **E1**：`-p` 加 `--permission-mode auto` 是否被接受；会触发弹框的工具调用在 `--permission-prompts none` 下返回什么。
+  **实测：支持，有效模式须检查 init。** Sonnet 的 init 报 `permissionMode=auto`；需要批准的 Bash 被拒绝回模型（`tool_result.is_error=true`，
+  动作未执行），`result` 仍可为 success，拒绝记在 `permission_denials`。Haiku 接受 auto 参数，但 init 报 `permissionMode=default`。
+  限制：只验证显式 ask 路径。[E1](task-worker-execution-wa0-evidence.md#e1auto-与无批准界面)
 - **E2**：`--settings` 中的 16 个 hook 在 `-p` 下是否都触发，SessionStart 是否带 `transcript_path`。
+  **实测：部分支持，16 个中 12 种实际触发；SessionStart 带 `transcript_path`；resume 时 SessionStart 记 `source=resume`。** PermissionDenied、Notification、
+  Elicitation、StopFailure 未触发，不能依赖它们作为结算或拒绝信号。[E2](task-worker-execution-wa0-evidence.md#e216-个-hook-与-transcript_path)
 - **E3**：在未被信任的 worktree 里，`-p` 是否跳过目录信任对话框。
+  **实测：支持。** 新建的未信任 git 目录中 `-p` 直接完成，无信任确认；这不等于隔离不可信项目配置。[E3](task-worker-execution-wa0-evidence.md#e3未信任目录)
 - **E4**：`-p` 的长 turn 是否会自动压缩，压缩后是否仍可 `--resume`。
+  **实测：部分支持。** 手动 `/compact` 后新进程 `--resume` 成功并保留上下文；长 turn 自动压缩未验证，仍待测。[E4](task-worker-execution-wa0-evidence.md#e4压缩后恢复)
 - **E5**：turn 中途被 Stop 之后，`--resume` 是否可以续跑，未完成的 tool_use 如何呈现。
+  **实测：支持 control interrupt 与 SIGTERM 后的新进程 resume。** 两种停止都让未完成的 tool_use 与同 id 的错误 tool_result 配对；
+  interrupt 有 `error_during_execution` result，SIGTERM 无 result。限制：未测 SIGKILL/断电下悬空的 tool_use。[E5](task-worker-execution-wa0-evidence.md#e5turn-中途停止后恢复)
 - **E6**：在用户 settings 下，`init` 报告的 skills 与 plugins 是什么。
+  **实测：用户 skills/plugins 被加载**，init 报 79 个 skills、7 个 plugins（含用户、插件与内置能力）。MCP 为空，不是 MCP 继承测试。
+  [E6](task-worker-execution-wa0-evidence.md#e6用户-settings-下-init-的-skillsplugins)
 - **E7**（用户输入 1）：stream-json 输入、stdin 保持打开时：进程是否在 `result` 之后继续等待下一条 user 消息；turn 进行中写入一条 user 消息，
   是排队到当前 turn 结束，还是在工具边界注入当前 turn；注入时 transcript 与 `result` 如何呈现。
+  **实测：`result` 后进程继续等待下一输入；工具期间的消息在工具边界被当前 turn 吸收**，只产生一个 `result`，transcript 记为
+  `queue-operation`/`queued_command`（`absorbed_mid_turn`），不是独立 user turn。限制：单次工具边界实测。[E7](task-worker-execution-wa0-evidence.md#e7常驻输入与-turn-中途消息)
 - **E8**：以 `--session-id` 启动、尚未收到任何输入就被停掉的进程，其 session id 能否再次用于 `--session-id`；能否 `--resume`。
+  **实测：同 ID 可再次 `--session-id`；首次 `--resume` 失败**（`No conversation found with session ID`）。[E8](task-worker-execution-wa0-evidence.md#e8没有输入的预分配-session)
 - **E9**：不设与设置 `CLAUDE_CONFIG_DIR` 时，`-p` 使用的登录凭据、用户 settings、skills 与 plugins 分别来自哪里；与同一用户 TUI 的登录是否一致。
+  **实测：凭据、settings、skills 与 plugins 随 `CLAUDE_CONFIG_DIR` 切换**；不设时来自默认配置根，与同用户 TUI 读同一凭据文件；
+  指向空目录时未登录，不回退到用户凭据，仍有内置 skills。限制：仅本机 Linux 文件凭据后端。[E9](task-worker-execution-wa0-evidence.md#e9配置目录登录与-tui)
 
 ### 5.4 开放问题（须用户或 Planner 决定）
 
@@ -573,10 +592,20 @@ terminal-worker 只用 Pipe execution（§5.5）；长时间或交互命令走 W
 下列各项中标“已定（用户）”的按结论执行；未被问到的 OQ5、OQ6、OQ7、OQ9 保持开放，按推荐推进，由对应切片定。
 
 - **OQ1 kernel 重启**（**已定（用户）：(a) 停止 + 续跑行**；(b) 留作可选的 WA4）：选 §3.6 的 (a) 停止 + 续跑行，还是 (b) 重新接管。推荐先 (a)，若 dogfood 部署频繁打断长任务再做 (b)。
+  WA0 证据（不改结论）：E5 支持 control interrupt 与 SIGTERM 后以新进程 `--resume` 续跑，E4 支持手动压缩后 resume，(a) 方向可行；
+  完成消息与进程退出须分别处理，resume 不保证原工具恰好执行一次。E8 表明只预分配 ID、未收到输入的会话不能 `--resume`，
+  同 ID 再次 `--session-id` 则可用：续跑行要区分“仅预分配 ID”与“已持久化会话”（与 §3.6 首 turn 未 stamp 的窗口一起核对）。
+  未验证：SIGKILL/断电、长 turn 自动压缩。见 [E4](task-worker-execution-wa0-evidence.md#e4压缩后恢复)、[E5](task-worker-execution-wa0-evidence.md#e5turn-中途停止后恢复)、[E8](task-worker-execution-wa0-evidence.md#e8没有输入的预分配-session)。
 - **OQ2 用户介入**（**已定（用户）：先只给中断**，输入框另立需求）：是否接受失去 TUI 打字。可选做法：在会话视图加“发给 worker”输入框，经与 Planner 消息相同的绑定校验
   （`server/terminal_interaction/target.rs` 的 `resolve_target`/`check_binding`）写成一条 turn 行。推荐：先只给中断，输入框另立需求。
 - **OQ3 权限请求**（**已定（用户）：拒绝回给模型**）：选拒绝回给模型（简单，与 Planner 的 `never` 一致），还是接入 approvals 通道让人批准（要求 worker 会话有 held-request 宿主，而它今天归 PlannerHarness）。推荐先拒绝。
+  WA0 证据（不改结论）：E1 中需要批准的工具在 `--permission-prompts none` 下被拒绝回模型，动作未执行，进程不因此失败；
+  拒绝记在 `permission_denials`，与 `result` 成功相互独立。init 报告的有效 `permissionMode` 可能不同于 argv（Haiku 报 `default`），
+  须检查 init 而非只看参数。PermissionDenied hook 在该拒绝路径未出现（E2），不能把它当作拒绝信号。见 [E1](task-worker-execution-wa0-evidence.md#e1auto-与无批准界面)。
 - **OQ4 用户设置**（**已定（用户）：保持加载，`UserHome`**）：worker 是否继续加载 HOME 下的 settings、skills 与 plugins（今天加载）。推荐保持，worker 档不套 Planner 的限制；前提是 OQ10 选 `UserHome`。
+  WA0 证据（不改结论）：E6 中用户 settings 下 init 报 79 个 skills、7 个 plugins，worker 的 init 检查不能沿用 Planner 对非内置
+  plugins/skills 的拒绝规则；E2 中 `--settings` 注册的 hook 被继承，SessionStart 带 `transcript_path`，但 16 个 hook 只有 12 种实际触发，
+  应写成“注册 16 个、按条件触发”。MCP 继承未测。见 [E2](task-worker-execution-wa0-evidence.md#e216-个-hook-与-transcript_path)、[E6](task-worker-execution-wa0-evidence.md#e6用户-settings-下-init-的-skillsplugins)。
 - **OQ5 turn 结束未自报**（保持开放：按推荐推进，由对应切片定）：只唤醒 Planner（今天 Stop hook 的语义），还是像 Codex 那样 300s 宽限后失败（`server/scheduler/running_worker.rs:23`）。推荐前者，行为不变。
 - **OQ6 codex viewer**（保持开放：按推荐推进，由对应切片定）：viewer env 里的 MCP token（`codex_adapter/mod.rs:1276-1281`）是否真被 viewer 用到。若不用，viewer 可以 `NotRequired` 迁成 typed PTY；若用到，在 Legacy wind-down 之前保留 Legacy。
 - **OQ7 terminal-worker**（按用户输入 2 改写；只用 Pipe 已定（用户），(i)(ii) 保持开放：按推荐推进，由对应切片定）：方向已定为只用 Pipe execution，不提供 PTY 变体（§5.5）。待确认的只剩两点：
@@ -584,7 +613,13 @@ terminal-worker 只用 Pipe execution（§5.5）；长时间或交互命令走 W
 - **OQ8 无 Engine 的部署**（**已定（用户）：接受 Engine 为硬依赖**）：Claude worker 与 terminal-worker 都将要求 Engine（`server/execution_boot.rs:24-26` 无 key 文件即 None）。未配置 executor 的部署会失去这两种 worker 的新启动。是否接受，还是先确保 Engine 在所有部署上配置。
 - **OQ9 worker 的 turn 发起者**（保持开放：按推荐推进，由对应切片定）：用一个小的 worker 会话控制器加 §3.6 的 turn 行（推荐），还是复用 PlannerHarness 的队列与快照（可以免费得到 approvals 与会话 UI，但要引入 carrier 与 conversation 语义）。
 - **OQ10 worker 的登录与配置来源**（**已定（用户）：`UserHome`**）：`UserHome`（推荐，行为同今天，无需额外登录）还是 `Dedicated`（与 Planner 隔离，需 owner 登录，失去用户设置）。§3.4.1。
+  WA0 证据（不改结论）：E9 中不设 `CLAUDE_CONFIG_DIR` 时 `-p` 与同用户 TUI 读同一凭据文件，无需额外登录；指向空目录时未登录且不回退到
+  用户凭据，用户 settings/skills/plugins 也不再加载，但内置能力仍在。这支持 `UserHome`，也支持 §3.4.1 不共用 Planner Dedicated 配置。
+  临时复制凭据只是定位来源的实验，不是产品设计建议。限制：仅本机 Linux 文件凭据后端。见 [E9](task-worker-execution-wa0-evidence.md#e9配置目录登录与-tui)。
 - **OQ11 每 turn 一 execution 还是常驻 execution**（用户输入 1；**已定（用户）：每 turn 一 execution**，常驻待 E7）：推荐每 turn 一 execution；常驻待 E7 与 §3.1.1 列出的三个问题有答案后再议。
+  WA0 证据（不改结论）：E7 已有答案，stdin 保持打开时进程在 `result` 后继续等待；工具期间写入的消息在工具边界被当前 turn 吸收
+  （steer 语义，只有一个 `result`，transcript 记 `absorbed_mid_turn`），常驻形状技术上可行。§3.1.1 列出的三个问题（逐 turn 授权复核、
+  C5 下空闲占用、重启接管）未由实测回答，所以仍保持每 turn 一 execution。见 [E7](task-worker-execution-wa0-evidence.md#e7常驻输入与-turn-中途消息)。
 - **OQ12 WorkerBench 分层**（Planner 补充的用户输入；**已定（用户）：采纳**，长时间或交互命令走 Workbench 常驻终端卡，本设计不改提示词）：一次性命令走 terminal-worker 的 Pipe execution；长时间或交互命令改为对 Workbench 中常驻 terminal 卡的操作，
   不是 task worker。是否采纳，以及是否同时修改 Planner 指南，见 §5.6。已由用户决定的部分：共享终端的状态冲突接受为已知风险、处置为重试，
   不设计仲裁、加锁或独占；凭据不进共享终端环境，按安全边界处理。
