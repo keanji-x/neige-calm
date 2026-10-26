@@ -122,14 +122,37 @@ impl ClosedWorktreeFacts for ServerClosedWorktreeFacts {
         #[cfg(feature = "fixtures")]
         crate::test_seams::pause_point("c1-clean-sampled", track).await;
         let drive = self.runtime.lock_for_track_delete().await;
+        let targets = &self.runtime.location_admission()?.teardown_targets;
+        // Drive serializes registration, including duplicate clean passes. Use
+        // the row's typed location, exactly as SQL location admission does.
+        if targets
+            .snapshot_with_owners()
+            .iter()
+            .any(|(owner, _)| owner == track)
+        {
+            return Ok(None);
+        }
+        let Some(candidate) =
+            calm_truth::db::sqlite::closed_worktree_candidate(self.receipts.db.read_pool(), track)
+                .await?
+        else {
+            return Ok(None);
+        };
+        let candidate = crate::model::Track::from(candidate);
+        let clean = targets.registration();
+        if candidate.workspace.isolation() == calm_types::model::WorkspaceIsolation::Worktree {
+            clean.register_location(track, candidate.workspace.agent_cwd().into());
+        }
         let guard = crate::per_card_lock::lock_key(self.runtime.track_delete_locks(), track).await;
+        // Drop the metadata before releasing Track on every post-lock exit.
+        let fence = (clean, guard);
         if !closed_idle_reclaim_safe(&self.receipts.db, track, Some(closed_at)).await? {
             return Ok(None);
         }
         drop(drive);
         #[cfg(feature = "fixtures")]
         crate::test_seams::pause_point("c1-clean-fenced", track).await;
-        Ok(Some(Box::new(guard)))
+        Ok(Some(Box::new(fence)))
     }
 }
 

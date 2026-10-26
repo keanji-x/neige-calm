@@ -339,6 +339,8 @@ pub(super) async fn tick(inner: &Arc<Inner>, ingress_empty: bool) -> Result<()> 
         | super::issuance::TrackIssuance::Busy
         | super::issuance::TrackIssuance::Superseded => return Ok(()),
     };
+    #[cfg(feature = "fixtures")]
+    crate::test_seams::pause_point("canonical-issuance-track-held", inner.card_id.as_str()).await;
     let _issuance = inner.issuance.lock().await;
     if inner.parked.is_parked() {
         return Ok(());

@@ -6,6 +6,8 @@ use calm_truth::db::RepoRead;
 mod c5_admission;
 mod recovery;
 mod selection;
+#[cfg(feature = "fixtures")]
+mod u8c_fence;
 
 const MARKER: &str = "<svg xmlns=\"http://www.w3.org/2000/svg\"><text>committed</text></svg>";
 

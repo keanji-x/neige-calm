@@ -86,7 +86,9 @@ impl PlannerHarnessStartAdapter {
         events: &crate::event::EventBus,
         track_delete_locks: &crate::per_card_lock::KeyedLocks,
     ) -> Result<()> {
-        let track = self.retained_workspace(wire).await?;
+        let track = self
+            .retained_workspace(wire, track_delete_locks, RetainedAdmission::Driven)
+            .await?;
         let expected = self.retained_admit(wire).await?;
         require_restorable(&expected)?;
         if !workspace_runtime::recycle::workspace_allows_runtime_recovery(&track) {

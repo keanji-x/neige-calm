@@ -1,6 +1,8 @@
 //! Kernel workspace policy. Mechanisms live in the `workspace` package.
 pub(crate) mod identity;
 pub(crate) mod ports;
+mod repair;
+pub(crate) use repair::{RetainedAdmission, retained_worktree};
 pub(crate) mod reclaim;
 pub(crate) mod sweep;
 pub mod trash;
@@ -90,22 +92,31 @@ pub(crate) async fn materialize_borrowed_creation(
     if track.workspace.kind != crate::model::TrackWorkspaceKind::Attached {
         return Ok(());
     }
-    // A persisted none ACK is a locator, not a renewed filesystem promise.
-    // Worktree replay still repairs through the admitted shared owner below.
-    if outcome == CreationOutcome::Replay && track.workspace.worktree.is_none() {
-        return Ok(());
-    }
     #[cfg(feature = "fixtures")]
     crate::test_seams::pause_point("canonical-workspace-committed", track.area_id.as_str()).await;
-    let admission = || {
+    let repo = state.repo.clone();
+    let source = source.clone();
+    let area = track.area_id.to_string();
+    let admission = move || {
+        let repo = repo.clone();
         let source = source.clone();
-        let area = track.area_id.to_string();
-        crate::db::write_in_tx_typed(state.repo.as_ref(), move |tx| {
-            Box::pin(async move { require_borrowed_admission_tx(tx, &source, &area, None).await })
-        })
+        let area = area.clone();
+        async move {
+            crate::db::write_in_tx_typed(repo.as_ref(), move |tx| {
+                Box::pin(
+                    async move { require_borrowed_admission_tx(tx, &source, &area, None).await },
+                )
+            })
+            .await
+        }
     };
-    admission().await?;
-    ensure_worktree(track, admission).await?;
-    validate_runtime_workspace(&track.workspace)?;
-    Ok(())
+    repair::selected_worktree(
+        state.repo.clone(),
+        &state.track_delete_locks,
+        track,
+        // A persisted none ACK remains a locator, not a renewed filesystem promise.
+        !(outcome == CreationOutcome::Replay && track.workspace.worktree.is_none()),
+        admission,
+    )
+    .await
 }

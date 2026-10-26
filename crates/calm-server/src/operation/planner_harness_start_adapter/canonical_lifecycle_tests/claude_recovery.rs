@@ -142,8 +142,40 @@ async fn canonical_claude_recovery_activation_replay_binds_one_uuid_without_cli(
     let fx = Fixture::claude().await;
     let (thread, op) = fx.bind_with_lost_response().await;
     let (_auth, _token, source) = source().await;
+    let pause = crate::test_seams::PausePoint::default();
+    crate::test_seams::install_pause_for_test(
+        "canonical-issuance-track-held",
+        fx.card.as_str(),
+        pause.clone(),
+    );
     wake(&fx, source.clone()).await.unwrap();
-    wake(&fx, source).await.unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(10), pause.entered.notified())
+        .await
+        .unwrap();
+    // The original loop owns Track here, before its durable claim. Replay must
+    // coexist with that issuance without minting or delivering another input.
+    let waiting = crate::test_seams::PausePoint::default();
+    crate::test_seams::install_pause_for_test(
+        "key-lock-waiting",
+        &fx.payload.track_id,
+        waiting.clone(),
+    );
+    let replay = wake(&fx, source);
+    tokio::pin!(replay);
+    let result = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        tokio::select! {
+            result = &mut replay => result,
+            _ = waiting.entered.notified() => {
+                pause.release.notify_one();
+                waiting.release.notify_one();
+                replay.await
+            }
+        }
+    })
+    .await;
+    pause.release.notify_one();
+    waiting.release.notify_one();
+    result.unwrap().unwrap();
     let row = fx.row().await;
     assert_eq!(row.thread_id.as_deref(), Some(thread.as_str()));
     assert_eq!(row.spawn_op_id.as_deref(), Some(op.as_str()));

@@ -96,7 +96,7 @@ async fn track_delete_observation_distinguishes_operation_lock_from_writer_admis
     let logs = Recorder::default();
     let app = b.app.clone();
     let id = track.clone();
-    let task = tokio::spawn(
+    let mut task = tokio::spawn(
         async move { request(app, "DELETE", &format!("/api/tracks/{id}"), None).await }
             .with_subscriber(logs.dispatch()),
     );
@@ -113,7 +113,16 @@ async fn track_delete_observation_distinguishes_operation_lock_from_writer_admis
     assert!(!task.is_finished());
     assert!(logs.find("reprojection", "ok").is_empty());
     drop(writer);
-    let (status, body) = tokio::time::timeout(LIMIT, task).await.unwrap().unwrap();
+    let (status, body) = tokio::time::timeout(LIMIT, &mut task)
+        .await
+        .unwrap_or_else(|error| {
+            panic!(
+                "DELETE timeout: {error}; task_finished={}; records={:?}",
+                task.is_finished(),
+                logs.records()
+            )
+        })
+        .unwrap();
     assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
     for stage in ["operation_lock", "reprojection"] {
         let row = logs.one(stage, "ok");
