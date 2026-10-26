@@ -1,5 +1,5 @@
 //! Characterization of the observable write semantics at the three report-write decision points.
-//! Every expected value is a literal read off an actual run, not derived from `track_report_origin`.
+//! Expected values come from observed production writes.
 
 #![cfg(unix)]
 

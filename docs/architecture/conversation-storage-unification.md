@@ -458,7 +458,7 @@ behind generic “cache cleanup”.
 | Role wire/DB Y/model.rs:19,29,39 | No encoding/enum change |
 | Actor selection Y/ids.rs:62 | Original attribution unchanged; current execution role resolved by owner |
 | Profile/session/MCP S/harness/profile.rs:23,43,52 | §5 new immutable binding, old context never reused for changed role |
-| Report attribution S/decision_sink.rs:375; track_report_origin.rs:105 | Preserve original author/task/approval/commit/gate/plan attribution |
+| Report attribution S/decision_sink.rs; track_report/identity.rs::report_op_attribution | Preserve original author/task/approval/commit/gate/plan attribution |
 | MCP terminal setup S/mcp_server/wiring.rs:87 | Next authorized activation binds new role surface |
 | Forge cwd S/mcp_server/transport.rs:1110 | Existing current-role/resource policy; no migration authority expansion |
 | Models S/routes/models.rs:226 | #2774 verifies current role/provider model lookup, no copied preferences |

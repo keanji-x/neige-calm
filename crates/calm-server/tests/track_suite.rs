@@ -31,8 +31,6 @@ mod track_recipe_instantiate;
 mod track_recipes;
 #[path = "cases/track_report_fork.rs"]
 mod track_report_fork;
-#[path = "cases/track_report_write_origin.rs"]
-mod track_report_write_origin;
 #[path = "cases/track_template_tracks.rs"]
 mod track_template_tracks;
 
