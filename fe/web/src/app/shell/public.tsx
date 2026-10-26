@@ -2,7 +2,7 @@ import type { DialogOrigin } from '../../ui/dialog/public.tsx';
 import { useWorkspaceGuide, workspaceGuideFacts } from './workspace-guide.tsx';
 import { sidebarTrackGroups } from './sidebar-track-groups.ts';
 import { useMobileNavigationPresence } from './mobile-navigation-presence.ts';
-import { floatingControlClassName, supportsAnchoredHints, GuideProvider } from '../../ui/floating-control/public.ts';
+import { floatingControlClassName, supportsAnchoredHints, GuideProvider, GuideAnchor } from '../../ui/floating-control/public.ts';
 import { Icon } from '../../ui/icon/public.tsx';
 import { useVisibleViewport } from '../../ui/viewport/public.ts';
 import { useCommittedCallback } from '../../ui/state/committed-callback.ts';
@@ -109,6 +109,8 @@ export type AppShellProps = Readonly<{
   nowMs?: number;
   userLabel?: string;
   initialWorkspaceGuide?: boolean;
+  guideContent?: ReactNode;
+  guideFacts?: Readonly<Record<string, boolean>>;
 }>;
 
 /** Routes can reopen an Area's Tracks or recent Pages; the primary entry starts at Areas. */
@@ -148,7 +150,7 @@ export function useOpenMobileSection(): OpenMobileSection {
 }
 
 export function AppShell({
-  transport, unauthorized, onOpenSettings, onOpenPlugins, onSignOut, nowMs, userLabel, initialWorkspaceGuide = false, onOpenDemo,
+  transport, unauthorized, onOpenSettings, onOpenPlugins, onSignOut, nowMs, userLabel, initialWorkspaceGuide = false, onOpenDemo, guideContent, guideFacts,
 }: AppShellProps) {
   const guideSupported = supportsAnchoredHints();
   const workspace = useWorkspace(transport, unauthorized);
@@ -414,7 +416,8 @@ export function AppShell({
   const mobileNavigationLabel = mobileSection?.kind === 'pages' ? 'Pages' : 'Tracks and settings';
 
   return (
-    <GuideProvider facts={workspaceGuideFacts(areas.length > 0, userVisibleTracks(workspace.tracks, workspace.areas).length > 0)} catalog={guide.catalog} sessionKey={guide.sessionKey} enabled={guideEnabled} isSeen={guide.isSeen} onSeen={guide.onSeen} onSkip={guide.skip}>
+    <GuideProvider facts={{ ...workspaceGuideFacts(areas.length > 0, userVisibleTracks(workspace.tracks, workspace.areas).length > 0, userVisibleTracks(workspace.tracks, workspace.areas).find(track => track.id === routeTrackId), settingsOpen), ...guideFacts }} catalog={guide.catalog} sessionKey={guide.sessionKey} enabled={guideEnabled} isSeen={guide.isSeen} onSeen={guide.onSeen} onSkip={guide.skip}>
+    {guideContent}
     <div className={`${styles.shell} ${narrowRail ? mobileFontClassName : ''} ${narrowRail && (settingsOpen || mobileOverlayRoute) ? styles.settingsPageShell : ''} ${railCollapsed ? styles.shellCollapsed : styles.shellExpanded}`}>
       {narrowRail && !settingsOpen && !mobileOverlayRoute && <MobileWorkspaceHeader
         areas={areas}
@@ -431,11 +434,11 @@ export function AppShell({
         actionsHostRef={setMobileHeaderActionsHost}
         titleHostRef={setMobileHeaderTitleHost}
       />}
-      {narrowRail && !settingsOpen && !mobileOverlayRoute && <button type="button"
+      {narrowRail && !settingsOpen && !mobileOverlayRoute && <GuideAnchor id="workspace-open">{(anchor, describedBy) => <button ref={anchor} aria-describedby={describedBy} type="button"
         className={`${styles.workspaceOpener} ${floatingControlClassName}`} aria-label="Open workspace"
         hidden={workspaceInteractive || historyOpen || conversationScope?.conversationOpen === true}
         style={{ bottom: `calc(${visibleViewport.bottomInset}px + var(--space-4) + env(safe-area-inset-bottom))` }}
-        onClick={() => openMobileSection({ kind: 'areas', areaId: activeArea?.id })}><Icon name="folder" /></button>}
+        onClick={() => openMobileSection({ kind: 'areas', areaId: activeArea?.id })}><Icon name="folder" /></button>}</GuideAnchor>}
       <EdgeSwipe enabled={narrowRail && !settingsOpen && !mobileOverlayRoute && !mobileNavOpen && !historyOpen} onSwipe={() => setHistoryOpen(true)} />
       {narrowRail && <MobileHistory owner={historyOwner.token} open={historyOpen} onOpenChange={setHistoryOpen}
         selectedConversationId={conversationScope?.selectedConversationId ?? null}

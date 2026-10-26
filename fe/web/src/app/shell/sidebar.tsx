@@ -33,7 +33,7 @@ import { ListText } from '../../ui/list-typography/public.tsx';
 import revealStyles from './area-group.module.css';
 import styles from './shell.module.css';
 import { navigationRowClass as rowLayout, navigationRowPresentation } from '../../ui/navigation-row/public.ts';
-import { GuideAnchor } from '../../ui/floating-control/public.ts';
+import { GuideAnchor, guideRevealSlot } from '../../ui/floating-control/public.ts';
 
 export type SidebarProps = Readonly<{
   areas: readonly Area[];
@@ -311,7 +311,7 @@ export function Sidebar({
             expanded={areasExpanded}
             onToggle={(value) => preferences.setSidebarGroupExpanded('areas', value)}
             actions={<GuideAnchor id="workspace-add" disabled={userAreas.length > 0}>
-              {(anchor, describedBy) => <span ref={createRef} className={`${styles.iconButton} ${rowLayout('chromeOuter')}`}><button type="button" data-nc-role="icon" className={styles.sourceButton} ref={anchor} aria-describedby={describedBy}
+              {(anchor, describedBy) => <span {...guideRevealSlot} ref={createRef} className={`${styles.iconButton} ${rowLayout('chromeOuter')}`}><button type="button" data-nc-role="icon" className={styles.sourceButton} ref={anchor} aria-describedby={describedBy}
               aria-label="New area" onClick={() => onRequestCreateArea({ kind: 'anchor', anchor: { ref: createRef }, unavailable: 'surface-center' })}><Icon name="plus" /></button></span>}</GuideAnchor>}>
             {readError === null && !readLoading && userAreas.length === 0 && (
               <><div className={styles.emptyArea}>

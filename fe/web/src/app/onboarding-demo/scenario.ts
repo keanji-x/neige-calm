@@ -16,7 +16,7 @@ import { demoPortfolio } from './portfolio.ts';
 const HOME_ID = 'demo-home';
 const SYSTEM_ID = 'demo-system';
 
-type DemoTrack = { wire: TrackWire; revision: number; messages: Array<Readonly<{ text: string; user: boolean }>> };
+type DemoTrack = { wire: TrackWire; revision: number; messages: Array<Readonly<{ text: string; user: true; entryId: string } | { text: string; user: false }>> };
 
 /** The entire lesson is browser memory. No transport, fetch or filesystem fallback is accepted. */
 export function createOnboardingScenario(onChange: () => void = () => undefined) {
@@ -38,18 +38,20 @@ export function createOnboardingScenario(onChange: () => void = () => undefined)
   const trackForCard = (id: string) => [...tracks.values()].find(track => plannerId(track.wire.id) === id);
   const deliver = (track: DemoTrack, text: string) => {
     track.revision += 1;
-    track.wire = { ...track.wire, updated_at: now + track.revision, closed_at: now + track.revision };
-    track.messages.push({ text, user: true }, { user: false, text: track.revision === 1
+    track.wire = { ...track.wire, updated_at: now + track.revision, closed_at: null };
+    const entryId = `demo-entry-${track.revision}`;
+    track.messages.push({ text, user: true, entryId }, { user: false, text: track.revision === 1
       ? '演示回复：预置作品集页面已展示在 Report。这里没有调用模型或运行验证；接下来可以打开页面，再试一次改标题。'
       : '演示回复：已切换到预置的改标题结果。Demo 只有“生成页面”和“改标题”这两种结果，不会理解或执行其他指令。' });
+    return entryId;
   };
   const report = (track: DemoTrack): CardWire => ({
     id: `${track.wire.id}-report`, track_id: track.wire.id, kind: 'track-report', title: null, sort: -1,
     deletable: false, created_at: now, updated_at: now + track.revision,
     payload: { schemaVersion: 3, docRev: track.revision, summary: '', body: '', blocks: track.revision === 0
-      ? [{ id: 'intro', rev: 1, kind: 'prose', payload: { markdown: '# 先在 Demo 里试一次\n\n跟着左侧提示，建一个练习项目。演示数据只保留在当前页面，随时可以重新开始。' } }]
+      ? [{ id: 'intro', rev: 1, kind: 'prose', payload: { markdown: '# 先在 Demo 里试一次\n\n跟着引导提示，建一个练习项目。演示数据只保留在当前页面，随时可以重新开始。' } }]
       : [
-        { id: 'result', rev: track.revision, kind: 'prose', payload: { markdown: `# 演示成果\n\n${track.revision === 1 ? '一个三张卡片的作品集页面已准备好。' : '主标题已切换为“我的第一个作品”。'}\n\n这是预置结果，没有调用 AI、修改真实文件或运行测试。点下方 Open 看页面；要继续练习，点“重新打开并继续”。` } },
+        { id: 'result', rev: track.revision, kind: 'prose', payload: { markdown: `# 演示成果\n\n${track.revision === 1 ? '一个三张卡片的作品集页面已准备好。' : '主标题已切换为“我的第一个作品”。'}\n\n这是预置结果，没有调用 AI、修改真实文件或运行测试。点下方 Open 看页面；要继续练习，打开当前工作的对话。` } },
         { id: 'page', rev: track.revision, kind: 'html', payload: { path: 'index.html', title: '作品集演示', height: 480 } },
         { id: 'demo-task', rev: track.revision, kind: 'task', payload: { key: 'demo-page', kind: 'codex', declared_by: 'user', ready: true,
           goal: '展示预置页面（演示任务）', acceptance: '这里只演示任务状态；未运行模型或测试。' } },
@@ -98,6 +100,8 @@ export function createOnboardingScenario(onChange: () => void = () => undefined)
         turn_id: `demo-turn-${Math.floor(index / 2)}`, turn_error_text: null, item_uuid: `demo-item-${index}`,
         item_type: message.user ? 'userMessage' : 'agentMessage', method: 'item/completed',
         params: JSON.stringify({ item: message.user ? { content: [{ type: 'text', text: message.text }] } : { text: message.text } }),
+        input_segments: message.user ? [{ presentation: 'user' as const, text: message.text, attachments: [],
+          origin: { observation: 'user_message' as const, event_id: null, queue_entry: { id: message.entryId, rev: 0 } } }] : [],
         created_at_ms: now + index,
       }));
       return response({ contract: 'conversation_v1', source: 'historical_raw', next_cursor: null,
@@ -151,9 +155,9 @@ export function createOnboardingScenario(onChange: () => void = () => undefined)
     if (request.method === 'POST' && input) {
       const track = trackForCard(input[1]); const parsed = z.object({ text: z.string().min(1) }).safeParse(request.body);
       if (!track || track.wire.id === HOME_ID || !parsed.success || track.wire.closed_at !== null) return bad();
-      deliver(track, parsed.data.text);
+      const entryId = deliver(track, parsed.data.text);
       onChange();
-      return response({ card_id: input[1], worker_session_id: `demo-session-${track.wire.id}`, entry_id: `demo-entry-${track.revision}` });
+      return response({ card_id: input[1], worker_session_id: `demo-session-${track.wire.id}`, entry_id: entryId });
     }
     const receipt = /^\/api\/read-receipts\/(track|area)\/([^/]+)\/(read|unread)$/.exec(path);
     if (request.method === 'POST' && receipt) {
@@ -189,5 +193,5 @@ export function createOnboardingScenario(onChange: () => void = () => undefined)
     return { readFile: path => Promise.resolve().then(() => { const text = check(path); return { path, size: new TextEncoder().encode(text).length, text, truncated: false }; }),
       rawUrl: path => `data:text/html;charset=utf-8,${encodeURIComponent(check(path))}` };
   };
-  return { transport, workspaceFiles };
+  return { transport, workspaceFiles, completed: () => [...tracks.values()].some(track => track.revision > 1) };
 }

@@ -11,7 +11,7 @@ it('explains the current contextual work card while preserving its native conver
   await page.viewport(1440, 900);
   const preferences = createUiPreferences(); preferences.setDatabaseScope('current-work-card');
   preferences.setGuideEnabled(true);
-  for (const id of ['track-actions', 'track-report']) preferences.setGuideStepSeen(1, id, true);
+  for (const id of ['track-discuss', 'track-report']) preferences.setGuideStepSeen(1, id, true);
   const fixture = renderDailyFixture({ initial: '/track/project', uiPreferences: preferences });
   const hint = page.getByRole('note', { name: '当前工作的对话与进展' });
   await expect.element(hint).toBeVisible();
@@ -49,16 +49,16 @@ it('keeps existing projects ordinary and starts the relevant page guide on reque
   const preferences = createUiPreferences(); preferences.setDatabaseScope('existing-project');
   const fixture = renderDailyFixture({ initial: '/track/project', uiPreferences: preferences });
   await expect.element(page.getByText('Project result', { exact: true })).toBeVisible();
-  await expect.element(page.getByRole('note', { name: '继续当前工作，还是新开一项？' })).not.toBeInTheDocument();
+  await expect.element(page.getByRole('note', { name: '进展和成果都汇总在这里' })).not.toBeInTheDocument();
   expect(preferences.guideEnabled()).toBe(false);
   await page.getByRole('button', { name: 'Account menu for You', exact: true }).click();
   await page.getByRole('menuitem', { name: '入门引导', exact: true }).click();
-  await expect.element(page.getByRole('note', { name: '继续当前工作，还是新开一项？' })).toBeVisible();
-  await expect.element(page.getByRole('note', { name: '先做出一个能预览的小作品' })).not.toBeInTheDocument();
-  await page.getByRole('button', { name: '略过这一步', exact: true }).click();
   await expect.element(page.getByRole('note', { name: '进展和成果都汇总在这里' })).toBeVisible();
+  await expect.element(page.getByRole('note', { name: '先做出一个能预览的小作品' })).not.toBeInTheDocument();
+  await page.getByRole('button', { name: '下一步', exact: true }).click();
+  await expect.element(page.getByRole('note', { name: '当前工作的对话与进展' })).toBeVisible();
   await page.getByRole('button', { name: '上一步', exact: true }).click();
-  await expect.element(page.getByRole('note', { name: '继续当前工作，还是新开一项？' })).toBeVisible();
+  await expect.element(page.getByRole('note', { name: '进展和成果都汇总在这里' })).toBeVisible();
   fixture.client.clear();
 });
 
@@ -164,7 +164,7 @@ it('keeps Skip effective when an explicitly guided visit confirms its database l
 it('continues to visible workspace controls after a report tour and reveals the actual add glyph', async () => {
   await page.viewport(1280, 900);
   const preferences = createUiPreferences(); preferences.setDatabaseScope('continue-tour'); preferences.setGuideEnabled(true);
-  for (const id of ['track-actions', 'track-report', 'track-panel', 'preview-open']) preferences.setGuideStepSeen(1, id, true);
+  for (const id of ['track-discuss', 'track-report', 'track-panel', 'preview-open']) preferences.setGuideStepSeen(1, id, true);
   const fixture = renderDailyFixture({ initial: '/track/project', uiPreferences: preferences });
   await expect.element(page.getByRole('note', { name: '现在给 AI 一件具体的事做' })).toBeVisible();
   const add = page.getByRole('button', { name: 'New track in Project', exact: true });
@@ -185,5 +185,18 @@ it('opens Demo from normal onboarding instead of teaching against the real trans
   await page.getByRole('menuitem', { name: '入门引导', exact: true }).click();
   expect(onOpenDemo).toHaveBeenCalledTimes(2);
   expect(fixture.requests.filter(request => request.method === 'POST' && request.path === '/api/areas')).toHaveLength(0);
+  fixture.client.clear();
+});
+
+it('reveals the New area action slot and its actual glyph while guided', async () => {
+  await page.viewport(1440, 900);
+  const fixture = renderDailyFixture({ emptyWorkspace: true, initialWorkspaceGuide: true });
+  await expect.element(page.getByRole('note', { name: '先做出一个能预览的小作品' })).toBeVisible();
+  const add = page.getByRole('button', { name: 'New area', exact: true }).element();
+  let opacity = 1;
+  for (let node: Element | null = add; node !== null; node = node.parentElement) opacity *= Number(getComputedStyle(node).opacity);
+  expect(opacity).toBe(1);
+  expect(add.querySelector('svg')?.getBoundingClientRect().width).toBeGreaterThan(0);
+  expect(document.querySelector('[data-nc-guide-ring]:popover-open')).not.toBeNull();
   fixture.client.clear();
 });

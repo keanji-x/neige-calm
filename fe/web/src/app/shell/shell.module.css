@@ -529,9 +529,7 @@
   .areaRowWrap:hover .areaNew,
   .areaRowWrap:focus-within .areaNew,
   .areaRowWrap:hover > .iconButton,
-  .areaRowWrap:focus-within > .iconButton,
-  .areaRowWrap > .iconButton[aria-describedby],
-  .areaNew[aria-describedby] {
+  .areaRowWrap:focus-within > .iconButton {
     opacity: 1;
   }
 

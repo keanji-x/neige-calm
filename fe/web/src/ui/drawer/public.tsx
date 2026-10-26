@@ -29,7 +29,7 @@ function focusTook(element: HTMLElement): boolean {
   return document.activeElement === element;
 }
 
-export function Drawer({ open, title, mobileBackLabel, mobileHeader, closeLabel = 'Close conversation', onClose, children, footer, resize, companion, inline = false, id, stacked = false, resizeGroup: suppliedResizeGroup = null, retainCompanion = false, companionVisible: suppliedCompanionVisible }: {
+export function Drawer({ open, title, mobileBackLabel, mobileHeader, closeLabel = 'Close conversation', closeGuideId, onClose, children, footer, resize, companion, inline = false, id, stacked = false, resizeGroup: suppliedResizeGroup = null, retainCompanion = false, companionVisible: suppliedCompanionVisible }: {
   open: boolean;
   /** Keep only the independent companion slot mounted when both panes are closed. */
   retainCompanion?: boolean;
@@ -51,6 +51,7 @@ export function Drawer({ open, title, mobileBackLabel, mobileHeader, closeLabel 
   mobileHeader?: ReactNode;
   /** The desktop close control's accessible name; a drawer holding something other than the conversation says what it closes. */
   closeLabel?: string;
+  closeGuideId?: string;
   onClose: () => void;
   children: ReactNode;
   /** Pinned below the scrolling body; a slot rather than the last child because the body scrolls and this must not. */
@@ -200,7 +201,7 @@ export function Drawer({ open, title, mobileBackLabel, mobileHeader, closeLabel 
           />}
         </div>
       ) : (
-        <DrawerHeader title={frame.title} titleId={titleId} closeLabel={closeLabel} closeTitle="Close" onClose={onClose} />
+        <DrawerHeader title={frame.title} titleId={titleId} closeLabel={closeLabel} closeGuideId={closeGuideId} closeTitle="Close" onClose={onClose} />
       )}
       <div ref={scrollRef} className={styles.scroll} data-nc-drawer-scroll="">
         <div className={styles.bodyInner}>

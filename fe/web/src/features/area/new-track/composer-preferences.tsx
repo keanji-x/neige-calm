@@ -119,7 +119,7 @@ export function ComposerPreferences({ startingPoint, folder, browsing, isolation
     return () => observer.disconnect();
   });
 
-  const preferences = <div ref={itemsRef} className={styles.items}>
+  const preferences = <GuideAnchor id="track-options" disabled={browsing} placement="top">{(anchor, describedBy) => <div ref={node => { itemsRef.current = node; anchor(node); }} aria-describedby={describedBy} tabIndex={-1} className={styles.items}>
     <span ref={startingRef} className={styles.startingPoint}><StartingPointPill {...startingPoint} /></span>
     <span ref={folderRef} className={styles.folder}><FolderPill {...folder} onBrowse={() => {
       // A native top-layer popup must relinquish hits and its focus trap before
@@ -129,12 +129,12 @@ export function ComposerPreferences({ startingPoint, folder, browsing, isolation
       if (open) flushSync(() => setOpen(false));
       folder.onBrowse({ kind: 'anchor', anchor: { ref: folderRef }, unavailable: 'surface-center' });
     }} /></span>
-  </div>;
+  </div>}</GuideAnchor>;
 
-  return <GuideAnchor id={collapsed ? 'track-options-collapsed' : 'track-options'} disabled={browsing || open} placement="top">{(anchor, describedBy) => <div ref={(node) => { hostRef.current = node; anchor(node); }} aria-describedby={describedBy} tabIndex={-1} className={styles.host} data-nc-composer-preferences>
+  return <GuideAnchor id="track-options-trigger" disabled={!collapsed || browsing} placement="top">{(anchor, describedBy) => <div ref={hostRef} tabIndex={-1} className={styles.host} data-nc-composer-preferences>
     {collapsed ? <Popover label="Track options" placement="above" isOpen={open} onOpenChange={setOpen}
       content={<div className={styles.panel}>{preferences}</div>}>
-      {(trigger) => <Button {...trigger} ref={(node) => { moreRef.current = node; trigger.ref(node); }}
+      {(trigger) => <Button {...trigger} ref={(node) => { moreRef.current = node; trigger.ref(node); anchor(node); }} aria-describedby={describedBy}
         label="Track options" variant="secondary" className={styles.trigger} isIconOnly
         icon={<Icon name="more" />} isDisabled={startingPoint.isDisabled} />}
     </Popover> : preferences}

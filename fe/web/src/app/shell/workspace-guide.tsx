@@ -4,8 +4,8 @@ import { useState } from '../../ui/state/public.ts';
 import type { UiPreferences } from '../providers/ui-preferences.tsx';
 import definition from './workspace-guides.json';
 
-export function workspaceGuideFacts(hasProjects: boolean, hasWork: boolean) {
-  return { 'has-projects': hasProjects, 'has-work': hasWork };
+export function workspaceGuideFacts(hasProjects: boolean, hasWork: boolean, work: { closedAt: number | null } | undefined = undefined, settings = false) {
+  return { 'has-projects': hasProjects, 'no-projects': !hasProjects, 'has-work': hasWork, 'routed-work': work !== undefined, 'work-open': work?.closedAt === null, 'work-closed': work !== undefined && work.closedAt !== null, 'settings-open': settings, demo: false };
 }
 
 type GuideSession = Readonly<{ acceptedScope: string | null; decision: boolean | null; epoch: number; resetPending: boolean; seen: ReadonlySet<string> }>;

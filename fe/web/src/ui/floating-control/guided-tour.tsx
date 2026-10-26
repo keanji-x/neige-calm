@@ -54,7 +54,7 @@ export function GuideProvider({ catalog, enabled, sessionKey, facts, isSeen, onS
       cancelAnimationFrame(frame);
       frame = requestAnimationFrame(() => {
         const modal = [...document.querySelectorAll<HTMLElement>('[role="dialog"][aria-modal="true"]')].filter(visible).at(-1);
-        const menu = [...document.querySelectorAll<HTMLElement>('[role="menu"], [role="listbox"], [popover]:popover-open:not([data-nc-guide-hint]):not([data-nc-guide-ring])')].some(visible);
+        const menu = [...document.querySelectorAll<HTMLElement>('[role="menu"], [role="listbox"]')].some(visible);
         const snapshot = [modal, menu, ...[...targets].flatMap(([key, target]) => [key, visible(target.element)])];
         if (snapshot.length === last.length && snapshot.every((value, index) => value === last[index])) return;
         last = snapshot;
@@ -72,7 +72,7 @@ export function GuideProvider({ catalog, enabled, sessionKey, facts, isSeen, onS
   const available = (() => {
     if (!running) return [];
     // Native menus and nested pickers temporarily own attention and focus.
-    if ([...document.querySelectorAll<HTMLElement>('[role="menu"], [role="listbox"], [popover]:popover-open:not([data-nc-guide-hint]):not([data-nc-guide-ring])')].some(visible)) return [];
+    if ([...document.querySelectorAll<HTMLElement>('[role="menu"], [role="listbox"]')].some(visible)) return [];
     const modal = [...document.querySelectorAll<HTMLElement>('[role="dialog"][aria-modal="true"]')].filter(visible).at(-1);
     const registered = [...targets.values()];
     const usable = registered.filter(target => target.ready && visible(target.element) && (modal === undefined || modal.contains(target.element)));

@@ -17,7 +17,7 @@ function Guided({ children }: { children: ReactNode }) {
   const [catalog] = useState(() => parseGuideCatalog(definition));
   const [seen, remember] = useState(() => new Set<string>());
   const [enabled, enable] = useState(true);
-  return <GuideProvider catalog={catalog} enabled={enabled} sessionKey="task" facts={{ 'has-projects': true, 'has-work': true }}
+  return <GuideProvider catalog={catalog} enabled={enabled} sessionKey="task" facts={{ 'has-projects': true, 'has-work': true, 'work-open': true }}
     isSeen={id => seen.has(id)} onSeen={id => remember(current => new Set([...current, id]))} onSkip={() => enable(false)}>
     {children}
   </GuideProvider>;

@@ -15,7 +15,7 @@ export function ChatDock({ text, onChange, onSend, disabled, onBeginInput, comma
   disabled: boolean;
 }>) {
   const [commandError, setCommandError] = useState<string | null>(null);
-  return <GuideAnchor id="track-actions" placement="top">{(anchor, describedBy) => <form ref={anchor} aria-describedby={describedBy} className={`${styles.bar} ${floatingControlClassName}`} aria-label="Quick chat" data-nc-chat-dock="" tabIndex={-1} onSubmit={(event) => {
+  return <GuideAnchor id="track-chat-dock" placement="top">{(anchor, describedBy) => <form ref={anchor} aria-describedby={describedBy} className={`${styles.bar} ${floatingControlClassName}`} aria-label="Quick chat" data-nc-chat-dock="" tabIndex={-1} onSubmit={(event) => {
     event.preventDefault();
     if (disabled || text.trim() === '') return;
     setCommandError(null);

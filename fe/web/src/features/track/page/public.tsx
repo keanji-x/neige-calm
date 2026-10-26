@@ -365,7 +365,7 @@ export function TrackPage({ mobileReportIntro, mobileChatComposer,
         title={
           <>
             {onCloseBoard !== undefined && (
-              <button
+              <GuideAnchor id="file-back">{(anchor, describedBy) => <button ref={anchor} aria-describedby={describedBy}
                 type="button"
                 data-nc-role="icon"
                 className={styles.headerBack}
@@ -374,16 +374,16 @@ export function TrackPage({ mobileReportIntro, mobileChatComposer,
                 onClick={onCloseBoard}
               >
                 <Icon name="arrow-left" />
-              </button>
+              </button>}</GuideAnchor>
             )}
             {/* The raw title, with the fallback as the placeholder. `emptyCommit="clear"`: the planner's `neige_track_rename` succeeds only while the title is empty, so clearing the name is a real request here, not a cancel. */}
             <div className={styles.titleSlot} ref={desktopTitleSlotRef} />
           </>
         }
         actions={(
-          <GuideAnchor id="track-actions" disabled={boardOpen || conversationOpen}>{(anchor, describedBy) => <span ref={anchor} aria-describedby={describedBy} tabIndex={-1} className={styles.headerActions}>
+          <span className={styles.headerActions}>
             {!boardOpen && !conversationOpen && (onReply !== undefined || onStartConversation !== undefined) && (
-              <AstryxButton
+              <GuideAnchor id="track-discuss">{(anchor, describedBy) => <AstryxButton ref={anchor} aria-describedby={describedBy}
                 className={styles.desktopChatAction}
                 label="讨论这项工作"
                 tooltip={onReply === undefined ? 'Open conversation' : 'Open Planner conversation'}
@@ -391,7 +391,7 @@ export function TrackPage({ mobileReportIntro, mobileChatComposer,
                 size="sm"
                 icon={<Icon name="chat" />}
                 onClick={onReply ?? onStartConversation}
-              />
+              />}</GuideAnchor>
             )}
             <span ref={desktopSourceRef} className={styles.trackActions}>
               <AstryxDropdownMenu
@@ -417,11 +417,11 @@ export function TrackPage({ mobileReportIntro, mobileChatComposer,
                 }}
               />
             </span>
-          </span>}</GuideAnchor>
+          </span>
         )}
       />
 
-      {createPortal(<GuideAnchor id="track-report" disabled={conversationOpen}>{(anchor, describedBy) => <div ref={anchor} aria-describedby={describedBy} tabIndex={-1} className={titleInHeader ? styles.mobileHeaderIdentity : styles.titleCluster}
+      {createPortal(<div className={titleInHeader ? styles.mobileHeaderIdentity : styles.titleCluster}
         onFocusCapture={(event) => { lastFocusedTitleRef.current = event.target; }}
         onBlurCapture={(event) => {
           if (relocatingTitleRef.current) event.stopPropagation();
@@ -440,7 +440,7 @@ export function TrackPage({ mobileReportIntro, mobileChatComposer,
         {!titleInHeader && <TrackAdminBadge adminGrantedAt={adminGrantedAt} />}
         {/* The same indicator the rail paints. `unread` is `false` by construction: the page is the reader, and its receipt clears the moment it is visible. The mobile page head carries no indicator. */}
         {!titleInHeader && <ActivityIndicator state={trackActivityState(track, false)} />}
-      </div>}</GuideAnchor>, titleContainer)}
+      </div>, titleContainer)}
       {headerActionsHost !== null && mobileActions !== undefined && createPortal(mobileActions, headerActionsHost)}
       {titleInHeader && !boardOpen ? null : <div className={styles.mobileTrackHeader}>
         <MobileHeader
@@ -448,30 +448,32 @@ export function TrackPage({ mobileReportIntro, mobileChatComposer,
           titleText={<TrackTitle track={track} />}
           meta={<>{track.isolation === 'none' && <ExplanationBadge label={NO_ISOLATION_LABEL}>{NO_ISOLATION_EXPLANATION}</ExplanationBadge>}<TrackClosedBadge closedAt={track.closedAt} /><TrackAdminBadge adminGrantedAt={adminGrantedAt} /></>}
           level={1}
+          backGuideId={boardOpen ? 'file-back' : undefined}
           backLabel={boardOpen ? 'Report' : mobileBackLabel}
           onBack={boardOpen ? onCloseBoard : onMobileBack}
           actions={headerActionsHost === null ? mobileActions : undefined}
         />
       </div>}
 
-      {!boardOpen && canReopenTrack && <div className={styles.continueNotice} role="note">
-        <span>这项工作已关闭，成果已保留。想继续修改？</span>
-        <AstryxButton label="重新打开并继续" variant="ghost" size="sm" isDisabled={closedControl.pending}
-          onClick={() => {
-            void closedControl.setClosed('reopen').then((done) => { if (done) (onReply ?? onStartConversation)?.(); }).catch(() => false);
-          }}>重新打开并继续</AstryxButton>
-      </div>}
       <div className={styles.workspace}>
       <div
         className={styles.content}
         aria-hidden={boardOpen ? true : undefined}
         inert={boardOpen}
       >
-        <div className={styles.doc}>
+        <GuideAnchor id={compactViewport ? 'track-report-compact' : 'track-report'} disabled={boardOpen || (compactViewport && conversationOpen)}>{(anchor, describedBy) => <div ref={anchor} aria-describedby={describedBy} tabIndex={-1} className={styles.doc}>
+          {!boardOpen && canReopenTrack && <div className={styles.continueNotice} role="note">
+            <span>这项工作已关闭，成果已保留。想继续修改？</span>
+            <GuideAnchor id="track-reopen" disabled={conversationOpen}>{(anchor, describedBy) => <AstryxButton ref={anchor} aria-describedby={describedBy} label="重新打开并继续" variant="ghost" size="sm" isDisabled={closedControl.pending}
+              onClick={() => {
+                void closedControl.setClosed('reopen').then((done) => { if (done) (onReply ?? onStartConversation)?.(); }).catch(() => false);
+              }}>重新打开并继续</AstryxButton>}</GuideAnchor>
+          </div>}
+
           {compactViewport && mobileReportIntro}
           {compactViewport && panelContent !== undefined && <div className={styles.compactPanelContent}><PanelCard>{panelContent}</PanelCard></div>}
           {report}
-        </div>
+        </div>}</GuideAnchor>
 
         {/* `data-nc-panel` is how `app/shell` hides this while the conversation
             drawer is open. */}

@@ -33,14 +33,14 @@ export type SettingsSurfaceProps = Readonly<{
 export function SettingsSurface({ presentation, section, onSelectSection, children }: SettingsSurfaceProps) {
   return (
     <div className={`${styles.surface} ${presentation === 'desktop' ? '' : styles.mobileSurface} ${presentation === 'mobile-detail' ? styles.mobileDetail : ''}`}>
-      {presentation === 'mobile-index' && <SettingsIndex onSelectSection={onSelectSection} />}
-      {presentation === 'desktop' && <AstryxSideNav aria-label="Settings sections" className={styles.sectionNav}>
+      {presentation === 'mobile-index' && <GuideAnchor id="settings-categories">{(anchor, describedBy) => <div ref={anchor} aria-describedby={describedBy} tabIndex={-1}><SettingsIndex onSelectSection={onSelectSection} /></div>}</GuideAnchor>}
+      {presentation === 'desktop' && <GuideAnchor id="settings-categories">{(anchor, describedBy) => <AstryxSideNav ref={anchor} aria-describedby={describedBy} aria-label="Settings sections" className={styles.sectionNav}>
         {SETTINGS_SECTIONS.map((entry) => (
           <AstryxSideNavItem key={entry.id} label={entry.label} icon={entry.icon}
             isSelected={entry.id === section} aria-current={entry.id === section ? 'page' : undefined}
             onClick={() => onSelectSection(entry.id)} />
         ))}
-      </AstryxSideNav>}
+      </AstryxSideNav>}</GuideAnchor>}
       <div className={styles.pane} hidden={presentation === 'mobile-index'}>{children}</div>
     </div>
   );

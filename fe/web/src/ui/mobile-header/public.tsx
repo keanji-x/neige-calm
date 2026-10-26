@@ -1,8 +1,8 @@
-import { floatingControlClassName } from '../floating-control/public.ts';
+import { floatingControlClassName, GuideAnchor } from '../floating-control/public.ts';
 import { Heading as AstryxHeading } from '@astryxdesign/core/Heading';
 import { Icon } from '../icon/public.tsx';
 import { IconButton as AstryxIconButton } from '@astryxdesign/core/IconButton';
-import type { ReactNode } from 'react';
+import type { ReactNode, RefCallback } from 'react';
 
 import styles from './mobile-header.module.css';
 
@@ -14,13 +14,15 @@ type MobileHeaderTitle =
   | Readonly<{ titleContent: ReactNode; titleFieldMarker?: never; titleText?: never }>;
 
 export function MobileHeader({
-  title, meta, level = 2, backLabel, onBack, actions, actionsHidden = false, titleFieldMarker, titleContent, titleText, leading, className,
+  title, meta, level = 2, backLabel, backGuideId, onBack, actions, actionsHidden = false, titleFieldMarker, titleContent, titleText, leading, className,
 }: Readonly<{
   title: string;
   className?: string;
   meta?: ReactNode;
   level?: 1 | 2;
   backLabel?: string;
+  /** The host may declare its existing Back control as a guide location. */
+  backGuideId?: string;
   onBack?: () => void;
   actions?: ReactNode;
   /** Keeps a declared action host mounted without reserving a visible column. */
@@ -28,6 +30,15 @@ export function MobileHeader({
   /** Replaces the standard Back control only at a root navigation entry. */
   leading?: ReactNode;
 }> & MobileHeaderTitle) {
+  const back = (anchor?: RefCallback<HTMLElement>, describedBy?: string) => <AstryxIconButton
+    ref={anchor} aria-describedby={describedBy}
+    className={`${styles.back} ${floatingControlClassName}`}
+    label={`Back to ${backLabel ?? 'previous page'}`}
+    variant="ghost"
+    size="lg"
+    icon={<Icon name="chevron-left" />}
+    onClick={onBack}
+  />;
   return (
     <header
       className={[styles.header, className].filter(Boolean).join(' ')}
@@ -35,14 +46,7 @@ export function MobileHeader({
     >
       <span className={styles.leading}>
         {leading ?? (onBack !== undefined && (
-          <AstryxIconButton
-            className={`${styles.back} ${floatingControlClassName}`}
-            label={`Back to ${backLabel ?? 'previous page'}`}
-            variant="ghost"
-            size="lg"
-            icon={<Icon name="chevron-left" />}
-            onClick={onBack}
-          />
+          backGuideId === undefined ? back() : <GuideAnchor id={backGuideId}>{back}</GuideAnchor>
         ))}
       </span>
       <div className={styles.titleGroup}>

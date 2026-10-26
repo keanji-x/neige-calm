@@ -190,6 +190,10 @@ export type AppRouterDeps = Readonly<{
   recentFiles?: RecentFileHistory;
   uiPreferences?: UiPreferences;
   initialWorkspaceGuide?: boolean;
+  /** Optional application composition rendered inside the guide provider (for example a portal to a banner). */
+  guideContent?: ReactNode;
+  /** Enrollment facts supplied by the application composition, never inferred by the UI engine. */
+  guideFacts?: Readonly<Record<string, boolean>>;
 }>;
 
 function renderNothing(): null { return null; }
@@ -200,7 +204,7 @@ export function createRouteTree(deps: AppRouterDeps): AnyRoute {
   const preferences = deps.uiPreferences ?? createUiPreferences();
   const rootRoute = createRootRoute({ component: () => (
     <UiPreferencesProvider preferences={preferences}><ReadReceiptsProvider transport={transport} unauthorized={unauthorized}>
-      <TrackViewProvider><MobileConversationProvider><ShellRoute onOpenDemo={deps.onOpenDemo} transport={transport} unauthorized={unauthorized} onSignOut={onSignOut} initialWorkspaceGuide={deps.initialWorkspaceGuide} /></MobileConversationProvider></TrackViewProvider>
+      <TrackViewProvider><MobileConversationProvider><ShellRoute guideFacts={deps.guideFacts} guideContent={deps.guideContent} onOpenDemo={deps.onOpenDemo} transport={transport} unauthorized={unauthorized} onSignOut={onSignOut} initialWorkspaceGuide={deps.initialWorkspaceGuide} /></MobileConversationProvider></TrackViewProvider>
     </ReadReceiptsProvider></UiPreferencesProvider>
   ) });
 
@@ -307,13 +311,15 @@ export function createAppRouter(deps: AppRouterDeps) {
   });
 }
 
-function ShellRoute({ transport, unauthorized, onSignOut, initialWorkspaceGuide, onOpenDemo }: { transport: ApiTransportPort; unauthorized: UnauthorizedChannel; onSignOut: () => void; initialWorkspaceGuide?: boolean; onOpenDemo?: () => void }) {
+function ShellRoute({ transport, unauthorized, onSignOut, initialWorkspaceGuide, onOpenDemo, guideContent, guideFacts }: { guideFacts?: Readonly<Record<string, boolean>>; guideContent?: ReactNode; transport: ApiTransportPort; unauthorized: UnauthorizedChannel; onSignOut: () => void; initialWorkspaceGuide?: boolean; onOpenDemo?: () => void }) {
   const go = useGo();
   return (
     <ConversationProvider><NewTrackDraftProvider>
       <AppShell
         onOpenDemo={onOpenDemo}
         initialWorkspaceGuide={initialWorkspaceGuide}
+        guideContent={guideContent}
+        guideFacts={guideFacts}
         transport={transport}
         unauthorized={unauthorized}
         onOpenSettings={() => go({ name: 'settings' })}
@@ -780,6 +786,7 @@ function useConversationPane(
         companion={options?.companion}
         companionVisible={options?.companionVisible}
         retainCompanion={options?.retainCompanion}
+        closeGuideId={options?.inline === true ? undefined : 'conversation-close'}
         closeLabel={options?.inline === true ? 'Close side conversation' : 'Close conversation'}
         open={open !== null || draftOpen}
         /* A draft has no name yet, and naming it after the words being typed
