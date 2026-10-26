@@ -877,9 +877,9 @@
   why: >
     #2131 S7：草稿曾显示 "Transport request failed"、"Connection changed. Retry after reconnecting." 与恢复层的原文，
     与 #2128（连接状态只归全局指示器）矛盾；Recheck 与 Copy 也曾显示原始失败文本。
-  source: fe/core/domain/conversation.ts:766-797; fe/web/src/app/conversations/draft-actions.ts:80-85,97-175,178-246;
+  source: fe/core/domain/conversation.ts:887-908; fe/web/src/app/conversations/draft-actions.ts:96-97,132-167,211-219,251-264;
     fe/core/domain/read-failure.ts:46-69; fe/core/domain/agent-providers.ts:34-35; fe/web/src/app/providers/agent-providers.ts:43
-  authoritative_test: fe/web/src/app/router/track-conversation.test.tsx:2882-2959;
+  authoritative_test: fe/web/src/app/router/track-conversation.test.tsx:3452-3565;
     fe/web/src/app/shell/settings-planners.test.tsx:101-117
   owner_slice: app/router
   runtime_layer: app
