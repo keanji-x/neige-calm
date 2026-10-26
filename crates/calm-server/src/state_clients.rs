@@ -122,7 +122,9 @@ impl CodexClient {
                 .clone()
                 .unwrap_or_else(resolve_codex_bridge_bin),
             ingest_url: cfg.codex_ingest_url_resolved(),
-            shared_codex_home: Arc::new(SharedCodexHome::new(data_dir.join("codex-home"))),
+            shared_codex_home: Arc::new(SharedCodexHome::new(
+                crate::agent_backend_pool::paths::BackendPaths::implicit_home(&data_dir),
+            )),
             claude_settings_dir: data_dir.join("claude-settings"),
             terminal_hook_settings_dir: data_dir.join("terminal-hooks"),
             _codex_homes_tempdir: None,

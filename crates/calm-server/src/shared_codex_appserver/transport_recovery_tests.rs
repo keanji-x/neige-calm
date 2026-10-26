@@ -36,8 +36,8 @@ async fn fixture() -> Fixture {
     let cfg = Config::parse_from(["calm-server", "--data-dir", root.path().to_str().unwrap()]);
     let home = Arc::new(SharedCodexHome::new(root.path().join("codex-home")));
     let daemon = SharedCodexAppServer::new(&cfg, home, repo);
-    std::fs::create_dir_all(daemon.sock.parent().unwrap()).unwrap();
-    let socket = UnixListener::bind(&daemon.sock).unwrap();
+    std::fs::create_dir_all(daemon.paths.socket.parent().unwrap()).unwrap();
+    let socket = UnixListener::bind(&daemon.paths.socket).unwrap();
     let seen = Seen::default();
     let closed = Arc::new(StdMutex::new(HashSet::new()));
     let count = Arc::new(AtomicUsize::new(0));
@@ -101,9 +101,12 @@ async fn fixture() -> Fixture {
             }
         }
     });
-    let (client, notifications) = connect_initialized(&daemon.sock, &daemon.approval_routes)
-        .await
-        .unwrap();
+    let (client, notifications) = connect_initialized(
+        &daemon.verify_backend_isolation().await.unwrap(),
+        &daemon.approval_routes,
+    )
+    .await
+    .unwrap();
     let client = Arc::new(client);
     drop(
         daemon
@@ -536,9 +539,12 @@ async fn fresh_process_discards_cancelled_cold_credentials() {
     let f = fixture().await;
     seed_cold_owner(&f).await;
     cancel_after_cold_resume_send(&f).await;
-    let (client, notifications) = connect_initialized(&f.daemon.sock, &f.daemon.approval_routes)
-        .await
-        .unwrap();
+    let (client, notifications) = connect_initialized(
+        &f.daemon.verify_backend_isolation().await.unwrap(),
+        &f.daemon.approval_routes,
+    )
+    .await
+    .unwrap();
     let client = Arc::new(client);
     let transition = f.daemon.transition_serial.lock().await;
     drop(

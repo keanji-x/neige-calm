@@ -301,7 +301,11 @@ impl Config {
     pub fn shared_codex_appserver_log_dir_resolved(&self) -> PathBuf {
         self.shared_codex_appserver_log_dir
             .clone()
-            .unwrap_or_else(|| self.data_dir_resolved().join("logs/shared-codex-appserver"))
+            .unwrap_or_else(|| {
+                crate::agent_backend_pool::paths::BackendPaths::default_logs(
+                    &self.data_dir_resolved(),
+                )
+            })
     }
 }
 

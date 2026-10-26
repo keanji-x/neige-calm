@@ -2,6 +2,8 @@
 //! acquire probe leases, or change the routing of existing sessions.
 
 pub mod config;
+pub mod identity;
+pub mod paths;
 pub mod policy;
 pub mod signals;
 
@@ -59,3 +61,6 @@ mod config_tests;
 mod policy_tests;
 #[cfg(test)]
 mod signals_tests;
+
+#[cfg(test)]
+mod identity_tests;

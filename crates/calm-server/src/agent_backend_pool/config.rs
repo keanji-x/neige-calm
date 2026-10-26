@@ -81,6 +81,10 @@ pub enum ConfigError {
 }
 
 impl AgentBackendConfig {
+    pub(crate) fn is_multi_backend(&self) -> bool {
+        self.backends.len() > 1
+    }
+
     /// Same startup read/parse/validate convention as the planner configurations.
     /// The sole I/O is reading the operator-specified JSON file.
     pub fn read(path: &Path) -> Result<Self, ConfigError> {
@@ -140,7 +144,7 @@ impl AgentBackendConfig {
                     max_inflight: None,
                     accepts_new_sessions: true,
                     credentials: BackendCredentials::CodexHome {
-                        path: data_dir.join("codex-home"),
+                        path: super::paths::BackendPaths::implicit_home(data_dir),
                     },
                 }],
             }),

@@ -1,8 +1,10 @@
 //! Shared `codex app-server` supervisor: starts, supervises, and takes over a single
 //! daemon for the whole server.
+use crate::agent_backend_pool::identity::VerifiedRuntimePaths;
 use crate::harness::native_admission::NativePromptAdmission;
 use provider::codex::delivery::{CompactDelivery, StartDelivery, SteerDelivery};
 use provider::control::NativeInterruptOutcome;
+use std::os::unix::ffi::OsStrExt;
 
 pub mod control;
 #[cfg(target_os = "macos")]
@@ -52,6 +54,7 @@ use tokio::task::JoinHandle;
 
 pub use provider::codex::{other_thread_id, thread_id_from_started};
 
+use crate::agent_backend_pool::paths::BackendPaths;
 use crate::codex_appserver::{
     AccountRead, ApprovalRoutes, ClientInfo, CodexAppServer, CodexConfig, CodexModel, Notification,
     ThreadStartParams, TurnApprovals, redact_thread_start_config,
@@ -60,7 +63,6 @@ use crate::config::Config;
 use crate::db::sqlite::session_projection_active_for_card_tx;
 use crate::db::{Repo, SharedCodexDaemonUpdate, SharedDaemonState, write_in_tx_typed};
 use crate::error::{CalmError, Result};
-use crate::mcp_server::transport;
 use crate::mcp_server::wiring::{card_mcp_thread_start_config, mint_and_persist_card_token};
 use crate::model::{CardRole, now_ms};
 use crate::pending_codex_threads::PendingThreadStartRegistry;
@@ -128,8 +130,9 @@ struct FailedIdentity {
     process_start_time: Option<u64>,
     boot_id: Option<String>,
     started_at: Option<i64>,
-    sock_path: Option<String>,
-    codex_home_path: Option<String>,
+    paths_are_legacy_display: bool,
+    sock_path: Option<Vec<u8>>,
+    codex_home_path: Option<Vec<u8>>,
     daemon_env_signature: Option<String>,
 }
 
@@ -143,8 +146,9 @@ impl FailedIdentity {
             process_start_time: None,
             boot_id: None,
             started_at: None,
-            sock_path: Some(sock.display().to_string()),
-            codex_home_path: Some(codex_home.display().to_string()),
+            paths_are_legacy_display: false,
+            sock_path: Some(sock.as_os_str().as_bytes().to_vec()),
+            codex_home_path: Some(codex_home.as_os_str().as_bytes().to_vec()),
             daemon_env_signature: None,
         }
     }
@@ -158,6 +162,7 @@ impl FailedIdentity {
             process_start_time: record.process_start_time,
             boot_id: record.boot_id.clone(),
             started_at: record.started_at,
+            paths_are_legacy_display: record.paths_are_legacy_display,
             sock_path: record.sock_path.clone(),
             codex_home_path: record.codex_home_path.clone(),
             daemon_env_signature: record.daemon_env_signature.clone(),
@@ -300,6 +305,21 @@ fn proc_pid_present(pid: i32) -> bool {
         return false;
     }
     Path::new(&format!("/proc/{pid}")).exists()
+}
+
+/// Process-only classification, before consulting mutable runtime path evidence.
+/// Keep zombies present: their process group can still contain live descendants.
+pub(crate) fn persisted_process_proven_absent(record: &crate::db::SharedCodexDaemonRecord) -> bool {
+    match (
+        record.pid,
+        record.process_start_time,
+        record.boot_id.as_deref(),
+    ) {
+        (None, None, None) => record.pgid.is_none(),
+        (Some(pid), Some(start_time), Some(boot_id)) => !verify_owned_pid(pid, start_time, boot_id),
+        (Some(pid), _, _) => !proc_pid_present(pid),
+        _ => false,
+    }
 }
 
 /// POST-group-reap "survivor still alive" criterion. Zombie-as-dead is valid here ONLY
@@ -446,8 +466,8 @@ pub struct ConnectionReadGuard<'a> {
 }
 
 pub struct SharedCodexAppServer {
-    sock: PathBuf,
-    kernel_mcp_socket_path: PathBuf,
+    paths: Arc<BackendPaths>,
+    backend_isolation: Option<Arc<crate::agent_backend_pool::identity::BackendIsolation>>,
     home: Arc<SharedCodexHome>,
     repo: Arc<dyn Repo>,
     thread_cache: Arc<DashMap<String, String>>,
@@ -482,7 +502,6 @@ pub struct SharedCodexAppServer {
     /// mutexes are not reentrant. Lock order: `kernel_thread_start_serial` → `resume_replay_serial`.
     resume_replay_serial: Arc<Mutex<()>>,
     codex_bin: String,
-    log_dir: PathBuf,
     restart_count: std::sync::atomic::AtomicU64,
     /// Wall-clock ms of the most recent successful daemon (re)connect; `0` until the first connect.
     daemon_connected_at_ms: AtomicI64,
@@ -695,11 +714,17 @@ impl SharedCodexAppServer {
             "neige-shared-codex-appserver-stub-{}",
             uuid::Uuid::new_v4()
         ));
-        let home = Arc::new(SharedCodexHome::new(root.join("codex-home")));
+        let paths = Arc::new(BackendPaths::new(
+            &root,
+            &crate::agent_backend_pool::identity::default_id(),
+            &BackendPaths::implicit_home(&root),
+            &BackendPaths::default_logs(&root),
+        ));
+        let home = Arc::new(SharedCodexHome::new(paths.home.clone()));
         let (tx, _) = broadcast::channel(16);
         Arc::new(Self {
-            sock: calm_types::runtime_paths::shared_codex_appserver_socket(&root),
-            kernel_mcp_socket_path: transport::default_socket_path(&root),
+            paths,
+            backend_isolation: None,
             home,
             repo,
             thread_cache: Arc::new(DashMap::new()),
@@ -719,7 +744,6 @@ impl SharedCodexAppServer {
             approval_routes: Arc::new(ApprovalRoutes::default()),
             resume_replay_serial: Arc::new(Mutex::new(())),
             codex_bin: "codex".into(),
-            log_dir: root.join("logs/shared-codex-appserver"),
             restart_count: std::sync::atomic::AtomicU64::new(0),
             daemon_connected_at_ms: AtomicI64::new(0),
             needs_respawn_on_next_thread_start: Arc::new(AtomicBool::new(false)),
@@ -751,25 +775,59 @@ impl SharedCodexAppServer {
         })
     }
 
+    #[cfg(feature = "fixtures")]
     pub fn new(cfg: &Config, home: Arc<SharedCodexHome>, repo: Arc<dyn Repo>) -> Arc<Self> {
         Self::new_with_pending(cfg, home, repo, None)
     }
 
+    #[cfg(feature = "fixtures")]
     pub fn new_with_pending(
         cfg: &Config,
         home: Arc<SharedCodexHome>,
         repo: Arc<dyn Repo>,
         pending_codex_threads_handle: Option<Arc<PendingThreadStartRegistry>>,
     ) -> Arc<Self> {
-        let data_dir = cfg.data_dir_resolved();
+        let paths = Arc::new(BackendPaths::new(
+            &cfg.data_dir_resolved(),
+            &crate::agent_backend_pool::identity::default_id(),
+            home.path(),
+            &cfg.shared_codex_appserver_log_dir_resolved(),
+        ));
+        Self::construct(cfg, paths, repo, pending_codex_threads_handle, None)
+    }
+
+    pub fn new_with_isolation(
+        cfg: &Config,
+        repo: Arc<dyn Repo>,
+        pending_codex_threads_handle: Option<Arc<PendingThreadStartRegistry>>,
+        backend_isolation: Arc<crate::agent_backend_pool::identity::BackendIsolation>,
+    ) -> Arc<Self> {
+        let paths = Arc::clone(backend_isolation.default_paths());
+        Self::construct(
+            cfg,
+            paths,
+            repo,
+            pending_codex_threads_handle,
+            Some(backend_isolation),
+        )
+    }
+
+    fn construct(
+        cfg: &Config,
+        paths: Arc<BackendPaths>,
+        repo: Arc<dyn Repo>,
+        pending_codex_threads_handle: Option<Arc<PendingThreadStartRegistry>>,
+        backend_isolation: Option<Arc<crate::agent_backend_pool::identity::BackendIsolation>>,
+    ) -> Arc<Self> {
+        let home = Arc::new(SharedCodexHome::new(paths.home.clone()));
         let authentication = Arc::new(crate::codex_authentication::CodexAuthentication::new(
-            data_dir.join("state/codex-authentication.json"),
-            home.path().to_path_buf(),
+            paths.authentication.clone(),
+            paths.home.clone(),
         ));
         let (tx, _) = broadcast::channel(1024);
         Arc::new(Self {
-            sock: calm_types::runtime_paths::shared_codex_appserver_socket(&data_dir),
-            kernel_mcp_socket_path: transport::default_socket_path(&data_dir),
+            paths,
+            backend_isolation,
             home,
             repo,
             thread_cache: Arc::new(DashMap::new()),
@@ -792,7 +850,6 @@ impl SharedCodexAppServer {
             approval_routes: Arc::new(ApprovalRoutes::default()),
             resume_replay_serial: Arc::new(Mutex::new(())),
             codex_bin: cfg.codex_bin.clone(),
-            log_dir: cfg.shared_codex_appserver_log_dir_resolved(),
             restart_count: std::sync::atomic::AtomicU64::new(0),
             daemon_connected_at_ms: AtomicI64::new(0),
             needs_respawn_on_next_thread_start: Arc::new(AtomicBool::new(false)),
@@ -845,13 +902,14 @@ impl SharedCodexAppServer {
     }
 
     pub async fn start_or_takeover(self: &Arc<Self>) -> Result<()> {
-        self.start_authentication_monitor();
         // The whole boot sequence is ONE serialized transition: the owned serial is threaded down
         // the `_locked` chain by value and released only after the terminal Running/Failed write.
         // Thread resume runs after the serial is released (not a transition).
         let serial = Arc::clone(&self.transition_serial).lock_owned().await;
+        let paths = self.verify_backend_isolation().await?;
+        self.start_authentication_monitor();
         self.rebuild_thread_cache_from_db().await?;
-        let _via = self.start_body_locked(serial, false, None).await?;
+        let _via = self.start_body_locked(serial, paths, false, None).await?;
         self.resume_cached_threads().await;
         Ok(())
     }
@@ -1519,7 +1577,7 @@ impl SharedCodexAppServer {
     }
 
     pub fn remote_uri(&self) -> String {
-        format!("unix://{}", self.sock.display())
+        format!("unix://{}", self.paths.socket.display())
     }
 
     /// Wall-clock ms of the most recent successful daemon (re)connect; `0` before the first connect.
@@ -1540,7 +1598,7 @@ impl SharedCodexAppServer {
         if self.fake.is_some() {
             return SharedDaemonStatus {
                 state: SharedDaemonState::Running,
-                sock: self.sock.display().to_string(),
+                sock: self.paths.socket.display().to_string(),
                 codex_home: self.home.path().display().to_string(),
                 runtime: None,
                 cached_threads: self.thread_cache.len(),
@@ -1570,7 +1628,7 @@ impl SharedCodexAppServer {
             .unwrap_or((SharedDaemonState::Failed, None, None));
         SharedDaemonStatus {
             state,
-            sock: self.sock.display().to_string(),
+            sock: self.paths.socket.display().to_string(),
             codex_home: self.home.path().display().to_string(),
             runtime,
             cached_threads: self.thread_cache.len(),
@@ -1673,10 +1731,15 @@ impl SharedCodexAppServer {
 
     /// The child env is a pure function of typed config: `env_clear()` plus exactly
     /// [`SPAWN_ENV_PASSTHROUGH`], the computed keys, and (fixture builds only) the fake-codex channel.
-    fn apply_spawn_env(&self, cmd: &mut Command, snapshot: &SpawnEnvSnapshot) {
+    fn apply_spawn_env(
+        &self,
+        paths: &VerifiedRuntimePaths,
+        cmd: &mut Command,
+        snapshot: &SpawnEnvSnapshot,
+    ) {
         provider::codex::shared::SpawnEnvironment {
             path: &snapshot.kernel_path.path,
-            home: self.home.path(),
+            home: &paths.paths().home,
             http_proxy: snapshot.http_proxy.as_deref(),
             https_proxy: snapshot.https_proxy.as_deref(),
             application_env: &[("NEIGE_CALM_BASE_URL", self.ingest_url.as_str())],
@@ -1738,6 +1801,7 @@ impl SharedCodexAppServer {
     /// Caller MUST hold `transition_serial`.
     async fn try_takeover_live(
         self: &Arc<Self>,
+        paths: &VerifiedRuntimePaths,
         record: &crate::db::SharedCodexDaemonRecord,
     ) -> Result<bool> {
         let (Some(pid), Some(pgid), Some(start_time), Some(boot_id), Some(started_at)) = (
@@ -1764,6 +1828,10 @@ impl SharedCodexAppServer {
             );
             return Ok(false);
         }
+        let takeover_paths = paths
+            .for_takeover(record)
+            .map_err(|e| CalmError::CodexAppServer(format!("backend isolation refused: {e}")))?;
+        let paths = &takeover_paths;
         // Terminalize a settings-read failure here (in-memory Failed + heal armed), else the serial
         // is released with the state stranded `Restarting`. DB row deliberately untouched: it still
         // truthfully names a live VERIFIED daemon.
@@ -1794,10 +1862,10 @@ impl SharedCodexAppServer {
                  adopting and marking it for replacement"
             );
         }
-        let Some(sock_path) = &record.sock_path else {
+
+        if record.sock_path.is_none() {
             return Ok(false);
-        };
-        let sock = PathBuf::from(sock_path);
+        }
         // A `starting` row names a child still inside its cold-start budget (mid-backfill), so it
         // gets the REMAINING readiness window instead of the instant handshake fast-fail.
         let probe = if matches!(record.state, SharedDaemonState::Starting) {
@@ -1805,12 +1873,12 @@ impl SharedCodexAppServer {
             // to a full or zero window; repeated boots never re-arm the window.
             let elapsed = Duration::from_millis(now_ms().saturating_sub(started_at).max(0) as u64);
             let remaining = self.start_timeout.saturating_sub(elapsed);
-            self.poll_adopt_initialized(&sock, pid, start_time, &boot_id, remaining)
+            self.poll_adopt_initialized(paths, pid, start_time, &boot_id, remaining)
                 .await
         } else {
             // The deadline for this arm lives at the transport (`CodexAppServer::connect`'s
             // `CONNECT_TIMEOUT`); a silent peer lands in `HandshakeFailed`, which reaps and relaunches.
-            match connect_initialized(&sock, &self.approval_routes).await {
+            match connect_initialized(paths, &self.approval_routes).await {
                 Ok(pair) => AdoptProbe::Connected(pair),
                 Err(e) => AdoptProbe::HandshakeFailed(e.to_string()),
             }
@@ -1851,19 +1919,23 @@ impl SharedCodexAppServer {
                 // `needs_respawn` is in-memory and the next boot must re-detect the mismatch.
                 if let Err(e) = self
                     .repo
-                    .shared_daemon_runtime_set(SharedCodexDaemonUpdate {
-                        state: SharedDaemonState::Running,
-                        pid: Some(adopted.pid),
-                        pgid: Some(adopted.pgid),
-                        sock_path: record.sock_path.clone(),
-                        codex_home_path: record.codex_home_path.clone(),
-                        process_start_time: Some(adopted.process_start_time),
-                        boot_id: Some(adopted.boot_id.clone()),
-                        started_at: Some(adopted.started_at),
-                        last_error: record.last_error.clone(),
-                        increment_restart_count: false,
-                        daemon_env_signature: record.daemon_env_signature.clone(),
-                    })
+                    .shared_daemon_runtime_set(
+                        "default",
+                        SharedCodexDaemonUpdate {
+                            state: SharedDaemonState::Running,
+                            pid: Some(adopted.pid),
+                            pgid: Some(adopted.pgid),
+                            paths_are_legacy_display: record.paths_are_legacy_display,
+                            sock_path: record.sock_path.clone(),
+                            codex_home_path: record.codex_home_path.clone(),
+                            process_start_time: Some(adopted.process_start_time),
+                            boot_id: Some(adopted.boot_id.clone()),
+                            started_at: Some(adopted.started_at),
+                            last_error: record.last_error.clone(),
+                            increment_restart_count: false,
+                            daemon_env_signature: record.daemon_env_signature.clone(),
+                        },
+                    )
                     .await
                 {
                     tracing::warn!(
@@ -1889,7 +1961,15 @@ impl SharedCodexAppServer {
                     error = %e,
                     "takeover handshake failed against verified daemon; reaping pgid before relaunch"
                 );
-                reap_verified_process_group(pid, pgid, start_time, &boot_id, self.stop_grace).await;
+                reap_verified_process_group(
+                    paths,
+                    pid,
+                    pgid,
+                    start_time,
+                    &boot_id,
+                    self.stop_grace,
+                )
+                .await;
                 Ok(false)
             }
             AdoptProbe::ChildExited => Ok(false),
@@ -1904,7 +1984,15 @@ impl SharedCodexAppServer {
                 );
                 // The same wall-clock deadline the child's own supervisor would have enforced, just by a
                 // successor process — graceful, never an instant SIGKILL.
-                reap_verified_process_group(pid, pgid, start_time, &boot_id, self.stop_grace).await;
+                reap_verified_process_group(
+                    paths,
+                    pid,
+                    pgid,
+                    start_time,
+                    &boot_id,
+                    self.stop_grace,
+                )
+                .await;
                 Ok(false)
             }
         }
@@ -1922,6 +2010,29 @@ impl SharedCodexAppServer {
     ) -> Result<ReplaceOutcome> {
         let _via = {
             let serial = Arc::clone(&self.transition_serial).lock_owned().await;
+            let paths = match self.verify_backend_isolation().await {
+                Ok(paths) => paths,
+                Err(error) => {
+                    // Only the crash watcher proves death. Hold the transition serial
+                    // while checking its generation and revoking the dead incarnation.
+                    // Preserve the trustworthy DB row; isolation refusal permits no
+                    // process effects, including reaping its recorded group.
+                    let dead_incarnation = {
+                        let core = self.core.lock().await;
+                        matches!(pre, ReplacePrecondition::GenerationIs(generation)
+                        if core.generation == generation
+                            && matches!(core.state, SupervisorState::Running { .. }))
+                    };
+                    if dead_incarnation {
+                        self.fail_in_memory_and_arm_heal(
+                            error.to_string(),
+                            FailureClass::Persistent,
+                        )
+                        .await;
+                    }
+                    return Err(error);
+                }
+            };
             let (running, outgoing_generation) = {
                 let mut core = self.core.lock().await;
                 match pre {
@@ -1976,12 +2087,28 @@ impl SharedCodexAppServer {
             // observe the entry-time window deterministically.
             #[cfg(feature = "fixtures")]
             drop(self.transition_entry_gate.lock().await);
-            self.reap_current_child_or_runtime(running).await;
-            self.start_body_locked(serial, increment_restart_count, last_error)
+            self.reap_current_child_or_runtime(&paths, running).await;
+            self.start_body_locked(serial, paths, increment_restart_count, last_error)
                 .await?
         };
         self.resume_cached_threads().await;
         Ok(ReplaceOutcome::Replaced)
+    }
+
+    /// Called under the transition serial, before observers, state changes or process effects.
+    async fn verify_backend_isolation(&self) -> Result<VerifiedRuntimePaths> {
+        if let Some(isolation) = &self.backend_isolation {
+            return isolation
+                .verify(self.repo.as_ref())
+                .await
+                .map_err(|e| CalmError::CodexAppServer(format!("backend isolation refused: {e}")));
+        }
+        #[cfg(any(test, feature = "fixtures"))]
+        return Ok(VerifiedRuntimePaths::for_fixture(Arc::clone(&self.paths)));
+        #[cfg(not(any(test, feature = "fixtures")))]
+        Err(CalmError::CodexAppServer(
+            "backend isolation is required for process effects".into(),
+        ))
     }
 
     /// The ONE shared start body: guard verify → persisted-record reconciliation → takeover
@@ -1990,19 +2117,22 @@ impl SharedCodexAppServer {
     async fn start_body_locked(
         self: &Arc<Self>,
         serial: tokio::sync::OwnedMutexGuard<()>,
+        paths: VerifiedRuntimePaths,
         increment_restart_count: bool,
         last_error: Option<String>,
     ) -> Result<StartedVia> {
         // Boot guard: refuse before touching the process, and never strand a previously-live
         // polluted daemon running unsupervised.
-        if let Err(guard_err) = self.home.verify_expected_mcp_servers(EXPECTED_MCP_SERVERS) {
+        if let Err(guard_err) = SharedCodexHome::new(paths.paths().home.clone())
+            .verify_expected_mcp_servers(EXPECTED_MCP_SERVERS)
+        {
             let msg = format!("refusing to launch shared codex app-server: {guard_err}");
-            self.record_guard_refusal(&msg).await;
+            self.record_guard_refusal(&paths, &msg).await;
             return Err(CalmError::CodexAppServer(msg));
         }
         // A `failed` row with ANY identity column present is an unreconciled possible survivor;
         // the spawn path is unreachable until the per-shape resolution proves absence.
-        let record = match self.repo.shared_daemon_runtime_get().await {
+        let record = match self.repo.shared_daemon_runtime_get("default").await {
             Ok(record) => record,
             Err(e) => {
                 // Nothing trustworthy to write (the read itself failed):
@@ -2015,7 +2145,7 @@ impl SharedCodexAppServer {
             }
         };
         if failed_row_identity_present(&record) {
-            match self.resolve_persisted_shape(&record).await {
+            match self.resolve_persisted_shape(&paths, &record).await {
                 ShapeResolution::ProvenAbsent => {
                     // Durable proof-of-absence transition: NULL the identity
                     // columns so the row classifies SafeToRetry even if the
@@ -2029,7 +2159,7 @@ impl SharedCodexAppServer {
                     self.persist_failed_deduped(
                         &proven_error,
                         FailureClass::Persistent,
-                        FailedIdentity::proven_absent(&self.sock, self.home.path()),
+                        FailedIdentity::proven_absent(&paths.paths().socket, &paths.paths().home),
                     )
                     .await;
                 }
@@ -2049,18 +2179,22 @@ impl SharedCodexAppServer {
         }
         // `try_takeover_live` skips Idle/Failed rows itself — a refused
         // survivor is never adopted.
-        if self.try_takeover_live(&record).await? {
+        if self.try_takeover_live(&paths, &record).await? {
             return Ok(StartedVia::Takeover);
         }
-        self.spawn_process_transition(serial, increment_restart_count, last_error)
+        self.spawn_process_transition(serial, paths, increment_restart_count, last_error)
             .await?;
         Ok(StartedVia::Spawn)
     }
 
     /// Boot-guard refusal arm (home pollution): a verified owned survivor is reaped; anything
     /// unprovable stays unreconciled with the identity tuple RETAINED as the durable marker.
-    async fn record_guard_refusal(self: &Arc<Self>, guard_error: &str) {
-        let record = match self.repo.shared_daemon_runtime_get().await {
+    async fn record_guard_refusal(
+        self: &Arc<Self>,
+        paths: &VerifiedRuntimePaths,
+        guard_error: &str,
+    ) {
+        let record = match self.repo.shared_daemon_runtime_get("default").await {
             Ok(record) => record,
             Err(e) => {
                 tracing::warn!(
@@ -2076,14 +2210,24 @@ impl SharedCodexAppServer {
                 return;
             }
         };
-        match self.resolve_persisted_shape(&record).await {
+        if !persisted_process_proven_absent(&record)
+            && let Err(error) = paths.check_record(&record)
+        {
+            self.fail_in_memory_and_arm_heal(
+                format!("backend isolation refused: {error}"),
+                FailureClass::Unreconciled,
+            )
+            .await;
+            return;
+        }
+        match self.resolve_persisted_shape(paths, &record).await {
             ShapeResolution::ProvenAbsent => {
                 // No owned process (or the verified reap completed): persist
                 // the refusal with identity NULLed so DB truth reflects it.
                 self.persist_failed_deduped(
                     guard_error,
                     FailureClass::Persistent,
-                    FailedIdentity::proven_absent(&self.sock, self.home.path()),
+                    FailedIdentity::proven_absent(&paths.paths().socket, &paths.paths().home),
                 )
                 .await;
                 self.fail_in_memory_and_arm_heal(guard_error.to_string(), FailureClass::Persistent)
@@ -2108,8 +2252,17 @@ impl SharedCodexAppServer {
     /// not create, never signal a bare pid.
     async fn resolve_persisted_shape(
         &self,
+        paths: &VerifiedRuntimePaths,
         record: &crate::db::SharedCodexDaemonRecord,
     ) -> ShapeResolution {
+        if persisted_process_proven_absent(record) {
+            return ShapeResolution::ProvenAbsent;
+        }
+        if paths.check_record(record).is_err() {
+            return ShapeResolution::Unreconciled {
+                needs_operator: true,
+            };
+        }
         let Some(pid) = record.pid else {
             if record.pgid.is_none()
                 && record.process_start_time.is_none()
@@ -2164,7 +2317,15 @@ impl SharedCodexAppServer {
                     pgid,
                     "reaping verified persisted daemon survivor"
                 );
-                reap_verified_process_group(pid, pgid, start_time, &boot_id, self.stop_grace).await;
+                reap_verified_process_group(
+                    paths,
+                    pid,
+                    pgid,
+                    start_time,
+                    &boot_id,
+                    self.stop_grace,
+                )
+                .await;
                 if survivor_alive_after_group_reap(pid, start_time, &boot_id) {
                     tracing::warn!(
                         target: "shared_codex_daemon::stop",
@@ -2256,19 +2417,23 @@ impl SharedCodexAppServer {
         );
         match self
             .repo
-            .shared_daemon_runtime_set(SharedCodexDaemonUpdate {
-                state: SharedDaemonState::Failed,
-                pid: identity.pid,
-                pgid: identity.pgid,
-                sock_path: identity.sock_path.clone(),
-                codex_home_path: identity.codex_home_path.clone(),
-                process_start_time: identity.process_start_time,
-                boot_id: identity.boot_id.clone(),
-                started_at: identity.started_at,
-                last_error: Some(last_error.to_string()),
-                increment_restart_count: false,
-                daemon_env_signature: identity.daemon_env_signature.clone(),
-            })
+            .shared_daemon_runtime_set(
+                "default",
+                SharedCodexDaemonUpdate {
+                    state: SharedDaemonState::Failed,
+                    pid: identity.pid,
+                    pgid: identity.pgid,
+                    paths_are_legacy_display: identity.paths_are_legacy_display,
+                    sock_path: identity.sock_path.clone(),
+                    codex_home_path: identity.codex_home_path.clone(),
+                    process_start_time: identity.process_start_time,
+                    boot_id: identity.boot_id.clone(),
+                    started_at: identity.started_at,
+                    last_error: Some(last_error.to_string()),
+                    increment_restart_count: false,
+                    daemon_env_signature: identity.daemon_env_signature.clone(),
+                },
+            )
             .await
         {
             Ok(()) => {
@@ -2293,6 +2458,7 @@ impl SharedCodexAppServer {
     async fn spawn_process_transition(
         self: &Arc<Self>,
         serial: tokio::sync::OwnedMutexGuard<()>,
+        paths: VerifiedRuntimePaths,
         increment_restart_count: bool,
         last_error: Option<String>,
     ) -> Result<()> {
@@ -2303,7 +2469,7 @@ impl SharedCodexAppServer {
             let result = this
                 .start_new_process_typestate(move |_| async move {
                     launch_this
-                        .launch_spawned_process(increment_restart_count, last_error)
+                        .launch_spawned_process(&paths, increment_restart_count, last_error)
                         .await
                 })
                 .await;
@@ -2335,12 +2501,13 @@ impl SharedCodexAppServer {
 
     async fn launch_spawned_process(
         self: &Arc<Self>,
+        paths: &VerifiedRuntimePaths,
         increment_restart_count: bool,
         last_error: Option<String>,
     ) -> Result<LaunchedSharedDaemon> {
         // Boot guard on EVERY spawn: pollution written while running is caught at the next launch.
         // The ConfigLock is released between this verification and the exec; accepted residual.
-        self.home
+        SharedCodexHome::new(paths.paths().home.clone())
             .verify_expected_mcp_servers(EXPECTED_MCP_SERVERS)
             .map_err(|e| {
                 CalmError::CodexAppServer(format!(
@@ -2349,19 +2516,19 @@ impl SharedCodexAppServer {
             })?;
         // ONE settings read per spawn: the child env and the persisted signature both derive from it.
         let spawn_env_snapshot = self.load_spawn_env_snapshot().await?;
-        std::fs::create_dir_all(self.sock.parent().unwrap_or_else(|| Path::new(".")))?;
-        std::fs::create_dir_all(&self.log_dir)?;
-        self.remove_stale_socket_before_spawn().await?;
+        std::fs::create_dir_all(&paths.paths().run)?;
+        std::fs::create_dir_all(&paths.paths().logs)?;
+        self.remove_stale_socket_before_spawn(paths).await?;
 
-        let listen = format!("unix://{}", self.sock.display());
+        let listen = format!("unix://{}", paths.paths().socket.display());
         let stdout = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
-            .open(self.log_dir.join("stdout.log"))?;
+            .open(paths.paths().logs.join("stdout.log"))?;
         let stderr = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
-            .open(self.log_dir.join("stderr.log"))?;
+            .open(paths.paths().logs.join("stderr.log"))?;
 
         let mut cmd = Command::new(&self.codex_bin);
         // Deliberately NO `.kill_on_drop(true)`: tokio would SIGKILL the child on every `Child`
@@ -2374,7 +2541,7 @@ impl SharedCodexAppServer {
             .stdout(Stdio::from(stdout))
             .stderr(Stdio::from(stderr))
             .process_group(0);
-        self.apply_spawn_env(&mut cmd, &spawn_env_snapshot);
+        self.apply_spawn_env(paths, &mut cmd, &spawn_env_snapshot);
         let child = cmd.spawn().map_err(|e| {
             CalmError::CodexAppServer(format!("spawn shared codex app-server: {e}"))
         })?;
@@ -2396,32 +2563,39 @@ impl SharedCodexAppServer {
             process_start_time,
             started_at,
         };
-        let mut spawn_guard = SpawnedChildGuard::new(child, pgid);
+        let mut spawn_guard = SpawnedChildGuard::new(child, pgid, paths);
 
         // The fallible tail: every ordinary error path awaits a GRACEFUL reap of the guarded child
         // (full stop grace, even for the cold-start-deadline miss) while still holding the serial.
         let launch = async {
             self.persist_runtime_starting(
+                paths,
                 &runtime,
                 last_error.clone(),
                 daemon_env_signature.clone(),
             )
             .await?;
-            let pair = self.poll_connect_initialized(&mut spawn_guard).await?;
+            let pair = self
+                .poll_connect_initialized(paths, &mut spawn_guard)
+                .await?;
             self.repo
-                .shared_daemon_runtime_set(SharedCodexDaemonUpdate {
-                    state: SharedDaemonState::Running,
-                    pid: Some(pid),
-                    pgid: Some(pgid),
-                    sock_path: Some(self.sock.display().to_string()),
-                    codex_home_path: Some(self.home.path().display().to_string()),
-                    process_start_time: Some(process_start_time),
-                    boot_id: Some(boot_id.clone()),
-                    started_at: Some(started_at),
-                    last_error: last_error.clone(),
-                    increment_restart_count,
-                    daemon_env_signature: Some(daemon_env_signature.clone()),
-                })
+                .shared_daemon_runtime_set(
+                    "default",
+                    SharedCodexDaemonUpdate {
+                        state: SharedDaemonState::Running,
+                        pid: Some(pid),
+                        pgid: Some(pgid),
+                        paths_are_legacy_display: false,
+                        sock_path: Some(paths.paths().socket.as_os_str().as_bytes().to_vec()),
+                        codex_home_path: Some(paths.paths().home.as_os_str().as_bytes().to_vec()),
+                        process_start_time: Some(process_start_time),
+                        boot_id: Some(boot_id.clone()),
+                        started_at: Some(started_at),
+                        last_error: last_error.clone(),
+                        increment_restart_count,
+                        daemon_env_signature: Some(daemon_env_signature.clone()),
+                    },
+                )
                 .await?;
             Ok(pair)
         };
@@ -2463,8 +2637,8 @@ impl SharedCodexAppServer {
             target = "shared_codex_daemon::start",
             boot_id = %boot_id,
             pgid,
-            sock = %self.sock.display(),
-            home = %self.home.path().display(),
+            sock = %paths.paths().socket.display(),
+            home = %paths.paths().home.display(),
             "shared codex app-server running"
         );
         Ok(LaunchedSharedDaemon {
@@ -2508,7 +2682,11 @@ impl SharedCodexAppServer {
 
     /// Both arms go through `terminate_group_with_grace`: SIGTERM → exit-driven wait up to the
     /// stop grace → straggler cleanup.
-    async fn reap_current_child_or_runtime(&self, running: Option<RunningProcessParts>) {
+    async fn reap_current_child_or_runtime(
+        &self,
+        paths: &VerifiedRuntimePaths,
+        running: Option<RunningProcessParts>,
+    ) {
         let Some(RunningProcessParts {
             runtime,
             child,
@@ -2520,6 +2698,7 @@ impl SharedCodexAppServer {
         watcher.handle.abort();
         if let Some(mut child) = child {
             terminate_group_with_grace(
+                paths,
                 SignalScope::Group { pgid: runtime.pgid },
                 ExitWait::Child(&mut child),
                 self.stop_grace,
@@ -2529,6 +2708,7 @@ impl SharedCodexAppServer {
         }
 
         reap_verified_process_group(
+            paths,
             runtime.pid,
             runtime.pgid,
             runtime.process_start_time,
@@ -2538,34 +2718,39 @@ impl SharedCodexAppServer {
         .await;
     }
 
-    async fn remove_stale_socket_before_spawn(&self) -> Result<()> {
-        if self.sock.exists() {
-            reap_listener_if_alive(&self.sock, self.stop_grace).await?;
-            let _ = std::fs::remove_file(&self.sock);
+    async fn remove_stale_socket_before_spawn(&self, paths: &VerifiedRuntimePaths) -> Result<()> {
+        if paths.paths().socket.exists() {
+            reap_listener_if_alive(paths, self.stop_grace).await?;
+            let _ = std::fs::remove_file(&paths.paths().socket);
         }
         Ok(())
     }
 
     async fn persist_runtime_starting(
         &self,
+        paths: &VerifiedRuntimePaths,
         runtime: &SharedDaemonRuntime,
         last_error: Option<String>,
         daemon_env_signature: String,
     ) -> Result<()> {
         self.repo
-            .shared_daemon_runtime_set(SharedCodexDaemonUpdate {
-                state: SharedDaemonState::Starting,
-                pid: Some(runtime.pid),
-                pgid: Some(runtime.pgid),
-                sock_path: Some(self.sock.display().to_string()),
-                codex_home_path: Some(self.home.path().display().to_string()),
-                process_start_time: Some(runtime.process_start_time),
-                boot_id: Some(runtime.boot_id.clone()),
-                started_at: Some(runtime.started_at),
-                last_error,
-                increment_restart_count: false,
-                daemon_env_signature: Some(daemon_env_signature),
-            })
+            .shared_daemon_runtime_set(
+                "default",
+                SharedCodexDaemonUpdate {
+                    state: SharedDaemonState::Starting,
+                    pid: Some(runtime.pid),
+                    pgid: Some(runtime.pgid),
+                    paths_are_legacy_display: false,
+                    sock_path: Some(paths.paths().socket.as_os_str().as_bytes().to_vec()),
+                    codex_home_path: Some(paths.paths().home.as_os_str().as_bytes().to_vec()),
+                    process_start_time: Some(runtime.process_start_time),
+                    boot_id: Some(runtime.boot_id.clone()),
+                    started_at: Some(runtime.started_at),
+                    last_error,
+                    increment_restart_count: false,
+                    daemon_env_signature: Some(daemon_env_signature),
+                },
+            )
             .await?;
         // The DB row is no longer a Failed shape: the dedup cache must not
         // suppress a later Failed write against it.
@@ -2578,7 +2763,8 @@ impl SharedCodexAppServer {
     /// child fails immediately; the deadline is a TOTAL cap that also cuts an in-flight attempt.
     async fn poll_connect_initialized(
         &self,
-        spawn_guard: &mut SpawnedChildGuard,
+        paths: &VerifiedRuntimePaths,
+        spawn_guard: &mut SpawnedChildGuard<'_>,
     ) -> Result<(CodexAppServer, crate::codex_appserver::NotificationStream)> {
         let started = tokio::time::Instant::now();
         let deadline = started + self.start_timeout;
@@ -2587,7 +2773,7 @@ impl SharedCodexAppServer {
             // the socket but never answers cannot stretch it by the 10s per-attempt request timeout.
             let (deadline_hit_in_flight, attempt_err) = match tokio::time::timeout_at(
                 deadline,
-                connect_initialized(&self.sock, &self.approval_routes),
+                connect_initialized(paths, &self.approval_routes),
             )
             .await
             {
@@ -2632,7 +2818,7 @@ impl SharedCodexAppServer {
     /// budget; the deadline is a TOTAL cap that also cuts an in-flight attempt.
     async fn poll_adopt_initialized(
         &self,
-        sock: &Path,
+        paths: &VerifiedRuntimePaths,
         pid: i32,
         start_time: u64,
         boot_id: &str,
@@ -2643,7 +2829,7 @@ impl SharedCodexAppServer {
         loop {
             let (deadline_hit_in_flight, attempt_err) = match tokio::time::timeout_at(
                 deadline,
-                connect_initialized(sock, &self.approval_routes),
+                connect_initialized(paths, &self.approval_routes),
             )
             .await
             {
@@ -2834,11 +3020,10 @@ impl SharedCodexAppServer {
                     );
                 }
                 Err(e) => {
-                    // "recorded", not "persisted": the DB write only happens where a Failed row is trustworthy.
                     tracing::warn!(
                         target = "shared_codex_daemon::restart",
                         error = %e,
-                        "crash restart failed; terminal failed state recorded and heal loop armed"
+                        "crash restart refused or failed; see supervisor state and retained runtime record"
                     );
                 }
             }
@@ -2856,7 +3041,7 @@ impl SharedCodexAppServer {
         F: FnOnce(PathBuf) -> Fut + Send,
         Fut: std::future::Future<Output = Result<LaunchedSharedDaemon>> + Send,
     {
-        let socket_path = self.sock.clone();
+        let socket_path = self.paths.socket.clone();
         {
             let mut core = self.core.lock().await;
             self.native_turns.invalidate();
@@ -2908,7 +3093,7 @@ impl SharedCodexAppServer {
                 self.persist_failed_deduped(
                     &err.to_string(),
                     class,
-                    FailedIdentity::proven_absent(&self.sock, self.home.path()),
+                    FailedIdentity::proven_absent(&self.paths.socket, self.home.path()),
                 )
                 .await;
                 self.schedule_heal();
@@ -3612,7 +3797,7 @@ impl SharedCodexAppServer {
     }
 
     pub fn sock_path(&self) -> &Path {
-        &self.sock
+        &self.paths.socket
     }
 
     pub async fn spawn_env_for_test(
@@ -3620,7 +3805,8 @@ impl SharedCodexAppServer {
     ) -> Result<std::collections::BTreeMap<String, Option<String>>> {
         let snapshot = self.load_spawn_env_snapshot().await?;
         let mut cmd = Command::new(&self.codex_bin);
-        self.apply_spawn_env(&mut cmd, &snapshot);
+        let paths = self.verify_backend_isolation().await?;
+        self.apply_spawn_env(&paths, &mut cmd, &snapshot);
         Ok(cmd
             .as_std()
             .get_envs()
@@ -3698,10 +3884,15 @@ impl SharedCodexAppServer {
         serial: tokio::sync::OwnedMutexGuard<()>,
     ) -> impl std::future::Future<Output = Result<()>> + Send + 'static {
         let this = Arc::clone(self);
-        async move { this.spawn_process_transition(serial, false, None).await }
+        async move {
+            let paths = this.verify_backend_isolation().await?;
+            this.spawn_process_transition(serial, paths, false, None)
+                .await
+        }
     }
 
     /// Drive the atomic replace transition with an explicit precondition.
+    #[cfg(any(test, feature = "fixtures"))]
     pub async fn transition_replace_for_test(
         self: &Arc<Self>,
         reason: &str,
@@ -3737,7 +3928,7 @@ enum SignalScope {
 }
 
 impl SignalScope {
-    fn send(&self, signal: i32) {
+    fn send(&self, _paths: &VerifiedRuntimePaths, signal: i32) {
         match *self {
             SignalScope::Group { pgid } => {
                 signal_process_group(pgid, signal);
@@ -3799,6 +3990,7 @@ enum LeaderExit {
 /// `grace` (a ceiling, not a sleep) → straggler cleanup: group SIGKILL only when the group is
 /// provably pinned (live leader or owned unreaped child), else a per-member verify-then-signal sweep.
 async fn terminate_group_with_grace(
+    _paths: &VerifiedRuntimePaths,
     scope: SignalScope,
     wait: ExitWait<'_>,
     grace: Duration,
@@ -3835,7 +4027,7 @@ async fn terminate_group_with_grace(
         );
         return LeaderExit::FullyGone;
     }
-    scope.send(libc::SIGTERM);
+    scope.send(_paths, libc::SIGTERM);
     let deadline = tokio::time::Instant::now() + grace;
     let (outcome, waited_child) = match wait {
         ExitWait::Child(child) => {
@@ -3897,7 +4089,7 @@ async fn terminate_group_with_grace(
                 scope_id,
                 "owned child exited within the stop grace after SIGTERM; held zombie pins the group — final SIGKILL for stragglers"
             );
-            scope.send(libc::SIGKILL);
+            scope.send(_paths, libc::SIGKILL);
         }
         LeaderExit::AliveAtDeadline => {
             tracing::warn!(
@@ -3907,7 +4099,7 @@ async fn terminate_group_with_grace(
                 grace_ms = grace.as_millis() as u64,
                 "stop-grace ceiling elapsed without a verified exit; escalating to SIGKILL"
             );
-            scope.send(libc::SIGKILL);
+            scope.send(_paths, libc::SIGKILL);
         }
         LeaderExit::FullyGone if owned_child => {
             // Defensive-only arm (the pre-signal early return above
@@ -3985,6 +4177,7 @@ async fn poll_leader_exit(
 /// SIGTERM → exit-driven wait up to `grace` → straggler cleanup (this path does not own the
 /// leader's zombie, so a dead leader triggers the per-member sweep).
 async fn reap_verified_process_group(
+    _paths: &VerifiedRuntimePaths,
     pid: i32,
     pgid: i32,
     start_time: u64,
@@ -3992,6 +4185,7 @@ async fn reap_verified_process_group(
     grace: Duration,
 ) {
     terminate_group_with_grace(
+        _paths,
         SignalScope::Group { pgid },
         ExitWait::VerifiedIdentity {
             pid,
@@ -4106,7 +4300,8 @@ async fn handle_thread_started_notification(
 }
 
 #[cfg(target_os = "linux")]
-async fn reap_listener_if_alive(sock_path: &Path, grace: Duration) -> Result<()> {
+async fn reap_listener_if_alive(paths: &VerifiedRuntimePaths, grace: Duration) -> Result<()> {
+    let sock_path = &paths.paths().socket;
     let Ok(stream) = UnixStream::connect(sock_path).await else {
         return Ok(());
     };
@@ -4143,6 +4338,7 @@ async fn reap_listener_if_alive(sock_path: &Path, grace: Duration) -> Result<()>
         drop(stream);
         // Graceful pid-fallback reap (exit observed via /proc).
         terminate_group_with_grace(
+            paths,
             SignalScope::Pid { pid: peer_pid },
             ExitWait::ProcPresence { pid: peer_pid },
             grace,
@@ -4161,6 +4357,7 @@ async fn reap_listener_if_alive(sock_path: &Path, grace: Duration) -> Result<()>
     drop(stream);
     // Graceful group reap: SIGTERM → exit-driven wait → straggler cleanup.
     terminate_group_with_grace(
+        paths,
         SignalScope::Group { pgid },
         ExitWait::ProcPresence { pid: peer_pid },
         grace,
@@ -4170,7 +4367,8 @@ async fn reap_listener_if_alive(sock_path: &Path, grace: Duration) -> Result<()>
 }
 
 #[cfg(target_os = "macos")]
-async fn reap_listener_if_alive(sock_path: &Path, grace: Duration) -> Result<()> {
+async fn reap_listener_if_alive(paths: &VerifiedRuntimePaths, grace: Duration) -> Result<()> {
+    let sock_path = &paths.paths().socket;
     let Ok(stream) = UnixStream::connect(sock_path).await else {
         return Ok(());
     };
@@ -4218,20 +4416,22 @@ async fn reap_listener_if_alive(sock_path: &Path, grace: Duration) -> Result<()>
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-async fn reap_listener_if_alive(_sock_path: &Path, _grace: Duration) -> Result<()> {
+async fn reap_listener_if_alive(_paths: &VerifiedRuntimePaths, _grace: Duration) -> Result<()> {
     Err(CalmError::CodexAppServer(
         "stale listener reaping requires Linux or macOS".into(),
     ))
 }
 
-struct SpawnedChildGuard {
+struct SpawnedChildGuard<'a> {
+    _paths: &'a VerifiedRuntimePaths,
     spawned_child: Option<Child>,
     pgid: i32,
 }
 
-impl SpawnedChildGuard {
-    fn new(child: Child, pgid: i32) -> Self {
+impl<'a> SpawnedChildGuard<'a> {
+    fn new(child: Child, pgid: i32, paths: &'a VerifiedRuntimePaths) -> Self {
         Self {
+            _paths: paths,
             spawned_child: Some(child),
             pgid,
         }
@@ -4262,6 +4462,7 @@ impl SpawnedChildGuard {
             "spawn failed; reaping child gracefully"
         );
         terminate_group_with_grace(
+            self._paths,
             SignalScope::Group { pgid: self.pgid },
             ExitWait::Child(&mut child),
             grace,
@@ -4270,7 +4471,7 @@ impl SpawnedChildGuard {
     }
 }
 
-impl Drop for SpawnedChildGuard {
+impl Drop for SpawnedChildGuard<'_> {
     /// SIGTERM-only belt: fires only on a panic inside, or a runtime-teardown abort of, the
     /// detached transition task. No SIGKILL here: an instant SIGKILL arms codex's backfill lease.
     /// It does NOT terminalize the supervisor; the durable row still names the child.
@@ -4283,7 +4484,7 @@ impl Drop for SpawnedChildGuard {
             pgid = self.pgid,
             "spawn transition dropped mid-flight (panic/teardown); belt SIGTERM only"
         );
-        signal_process_group(self.pgid, libc::SIGTERM);
+        SignalScope::Group { pgid: self.pgid }.send(self._paths, libc::SIGTERM);
     }
 }
 
@@ -4327,11 +4528,12 @@ impl provider::worker::CodexDaemonProbe for SharedCodexAppServer {
 /// Map the wire `thread/read` response (+ `loaded` flag) into [`CodexLivenessFacts`]; the
 /// "last turn" is the MOST RECENT element of `turns`.
 async fn connect_initialized(
-    sock: &Path,
+    paths: &VerifiedRuntimePaths,
     approval_routes: &Arc<ApprovalRoutes>,
 ) -> Result<(CodexAppServer, crate::codex_appserver::NotificationStream)> {
     let (client, notifications) =
-        CodexAppServer::connect_routed(sock, Arc::clone(approval_routes)).await?;
+        CodexAppServer::connect_routed(paths.connection_socket(), Arc::clone(approval_routes))
+            .await?;
     let client = client.with_request_timeout(Duration::from_secs(10));
     client
         .initialize(ClientInfo {
@@ -4344,7 +4546,13 @@ async fn connect_initialized(
 
 #[cfg(any(test, feature = "fixtures"))]
 pub fn drop_spawned_child_guard_for_test(child: Child, pgid: i32) {
-    let _guard = SpawnedChildGuard::new(child, pgid);
+    let paths = VerifiedRuntimePaths::for_fixture(Arc::new(BackendPaths::new(
+        Path::new("/fixture"),
+        &crate::agent_backend_pool::identity::default_id(),
+        Path::new("/fixture/home"),
+        Path::new("/fixture/logs"),
+    )));
+    let _guard = SpawnedChildGuard::new(child, pgid, &paths);
 }
 
 #[cfg(test)]
@@ -4448,6 +4656,7 @@ mod tests {
             state: SharedDaemonState::Failed,
             pid: None,
             pgid: None,
+            paths_are_legacy_display: false,
             sock_path: None,
             codex_home_path: None,
             process_start_time: None,
@@ -4490,26 +4699,36 @@ mod tests {
             .await
             .unwrap();
 
+        let root = tempfile::tempdir().unwrap();
         let self_pid = i32::try_from(std::process::id()).unwrap();
         let start_time = read_proc_start_time(self_pid).expect("own start time");
         let boot_id = read_boot_id().unwrap_or_default();
-        repo.shared_daemon_runtime_set(SharedCodexDaemonUpdate {
-            state: SharedDaemonState::Running,
-            pid: Some(self_pid),
-            pgid: Some(self_pid),
-            sock_path: Some("/tmp/none.sock".into()),
-            codex_home_path: None,
-            process_start_time: Some(start_time),
-            boot_id: Some(boot_id),
-            started_at: Some(now_ms()),
-            last_error: None,
-            increment_restart_count: false,
-            daemon_env_signature: Some("stale".into()),
-        })
+        repo.shared_daemon_runtime_set(
+            "default",
+            SharedCodexDaemonUpdate {
+                state: SharedDaemonState::Running,
+                pid: Some(self_pid),
+                pgid: Some(self_pid),
+                paths_are_legacy_display: false,
+                sock_path: Some(
+                    root.path()
+                        .join("run/codex-appserver.sock")
+                        .as_os_str()
+                        .as_bytes()
+                        .to_vec(),
+                ),
+                codex_home_path: None,
+                process_start_time: Some(start_time),
+                boot_id: Some(boot_id),
+                started_at: Some(now_ms()),
+                last_error: None,
+                increment_restart_count: false,
+                daemon_env_signature: Some("stale".into()),
+            },
+        )
         .await
         .unwrap();
 
-        let root = tempfile::tempdir().unwrap();
         let cfg = <crate::config::Config as clap::Parser>::parse_from([
             "calm-server",
             "--data-dir",
@@ -4552,7 +4771,7 @@ mod tests {
         );
 
         // Row untouched: it still truthfully names the live verified daemon.
-        let record = repo.shared_daemon_runtime_get().await.unwrap();
+        let record = repo.shared_daemon_runtime_get("default").await.unwrap();
         assert_eq!(
             record.state,
             SharedDaemonState::Running,

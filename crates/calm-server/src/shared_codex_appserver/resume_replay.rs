@@ -167,7 +167,7 @@ impl SharedCodexAppServer {
         card_id: &str,
         previous: Option<PreparedColdResume>,
     ) -> Option<PreparedColdResume> {
-        let socket_path = self.kernel_mcp_socket_path.clone();
+        let socket_path = self.paths.kernel_mcp_socket.clone();
         let result = write_in_tx_typed(self.repo.as_ref(), {
             let thread_id = thread_id.to_owned();
             let card_id = card_id.to_owned();

@@ -59,6 +59,14 @@
 # Schema changes edit the affected fixture and regenerate this existing baseline;
 # adding ordinary tests needs no list update or additional CI scan.
 
+# Backend identity adds four long_literal matches: registry and runtime INSERTs
+# in calm-truth/src/db/sqlite/backend_registry.rs, the legacy runtime UPDATE in
+# backend_registry_tests.rs, and the independent takeover fixture UPDATE in
+# calm-server/tests/cases/agent_backend_upgrade.rs. These are SQL, not agent
+# instructions. Query/fixture changes update their owning source and this
+# existing baseline; ordinary backend/test additions need no inventory edit.
+# The existing 120-character shape and single CI scan remain unchanged.
+
 set -uo pipefail
 
 cd "$(git rev-parse --show-toplevel)" || exit 1

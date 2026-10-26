@@ -1339,12 +1339,6 @@ impl AppState {
             cfg.agent_backend_config.as_deref(),
             &cfg.data_dir_resolved(),
         )?;
-        tracing::info!(
-            policy = ?backend_config.policy,
-            backends = ?backend_config.backends.iter().map(|profile| profile.backend_ref()).collect::<Vec<_>>(),
-            explicit = cfg.agent_backend_config.is_some(),
-            "agent backend configuration validated (selection model only)"
-        );
         let templates = crate::templates::TemplateRoster::for_boot(cfg.templates_dir.as_deref())
             .map_err(|error| anyhow::anyhow!("template roster: {error}"))?;
         let authentication = crate::auth::ValidatedApplicationAuth::from_config(cfg)?;
@@ -1356,7 +1350,7 @@ impl AppState {
         } else {
             Arc::new(crate::db::sqlite::SqlxRepo::open(&cfg.db_url).await?)
         };
-        let state = Self::new(cfg, repo, templates).await?;
+        let state = Self::new(cfg, repo, templates, backend_config).await?;
         Ok((state, authentication))
     }
 
@@ -1367,7 +1361,15 @@ impl AppState {
         cfg: &Config,
         repo: Arc<dyn Repo>,
         templates: &'static crate::templates::TemplateRoster,
+        backend_config: crate::agent_backend_pool::config::AgentBackendConfig,
     ) -> anyhow::Result<Self> {
+        let backend_isolation =
+            crate::agent_backend_pool::identity::BackendIsolation::prepare_config(
+                cfg,
+                &repo,
+                backend_config,
+            )
+            .await?;
         // Reconcile the configured deployment-owner profile before serving. The
         // migration adopted legacy ownership once; startup never repairs membership.
         let pool = repo
@@ -1433,8 +1435,14 @@ impl AppState {
         let write = WriteContext::new(card_role_cache.clone(), track_area_cache.clone());
 
         let daemon = Arc::new(DaemonClient::new(cfg));
-        let codex = Arc::new(CodexClient::new(cfg));
-        if let Err(e) = codex.shared_codex_home.seed() {
+        let mut codex = CodexClient::new(cfg);
+        codex.shared_codex_home = Arc::new(crate::shared_codex_home::SharedCodexHome::new(
+            backend_isolation.default_home().to_owned(),
+        ));
+        let codex = Arc::new(codex);
+        if cfg.agent_backend_config.is_none()
+            && let Err(e) = codex.shared_codex_home.seed()
+        {
             tracing::warn!(
                 error = %e,
                 "shared CODEX_HOME seed failed; continuing; legacy per-card homes still functional"
@@ -1566,11 +1574,11 @@ impl AppState {
             Duration::from_secs(60 * 60 * 6),
         );
         let pending_codex_threads_spawn_serial = Arc::new(Mutex::new(()));
-        let shared_codex_appserver = SharedCodexAppServer::new_with_pending(
+        let shared_codex_appserver = SharedCodexAppServer::new_with_isolation(
             cfg,
-            codex.shared_codex_home.clone(),
             repo.clone(),
             Some(pending_codex_threads.clone()),
+            backend_isolation,
         );
         // One provider registry: the Dispatcher's reaper and the terminal tools' input declarations
         // (#2493).

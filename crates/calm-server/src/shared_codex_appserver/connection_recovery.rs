@@ -52,8 +52,8 @@ impl SharedCodexAppServer {
                 _ => return Ok(None),
             }
         };
-        let (client, notifications) =
-            connect_initialized(&self.sock, &self.approval_routes).await?;
+        let paths = self.verify_backend_isolation().await?;
+        let (client, notifications) = connect_initialized(&paths, &self.approval_routes).await?;
         let client = Arc::new(client);
         drop(self.forward_client(client.clone(), notifications).await?);
         let mut core = self.core.lock().await;

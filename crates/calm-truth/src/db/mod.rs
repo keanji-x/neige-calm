@@ -81,8 +81,10 @@ pub struct SharedCodexDaemonRecord {
     pub state: SharedDaemonState,
     pub pid: Option<i32>,
     pub pgid: Option<i32>,
-    pub sock_path: Option<String>,
-    pub codex_home_path: Option<String>,
+    /// Migrated rows use the old writer's display encoding; new rows use Unix bytes.
+    pub paths_are_legacy_display: bool,
+    pub sock_path: Option<Vec<u8>>,
+    pub codex_home_path: Option<Vec<u8>>,
     pub process_start_time: Option<u64>,
     pub boot_id: Option<String>,
     pub started_at: Option<i64>,
@@ -106,8 +108,10 @@ pub struct SharedCodexDaemonUpdate {
     pub state: SharedDaemonState,
     pub pid: Option<i32>,
     pub pgid: Option<i32>,
-    pub sock_path: Option<String>,
-    pub codex_home_path: Option<String>,
+    /// Migrated rows use the old writer's display encoding; new rows use Unix bytes.
+    pub paths_are_legacy_display: bool,
+    pub sock_path: Option<Vec<u8>>,
+    pub codex_home_path: Option<Vec<u8>>,
     pub process_start_time: Option<u64>,
     pub boot_id: Option<String>,
     pub started_at: Option<i64>,
@@ -402,7 +406,7 @@ pub trait RepoRead: Send + Sync + 'static {
     /// Reload a worker session by id without authority filtering, so per-call revalidation can reject identities whose session left the active set.
     async fn session_get_by_id(&self, id: &WorkerSessionId) -> Result<Option<WorkerSession>>;
 
-    async fn shared_daemon_runtime_get(&self) -> Result<SharedCodexDaemonRecord>;
+    async fn shared_daemon_runtime_get(&self, backend_id: &str) -> Result<SharedCodexDaemonRecord>;
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -589,8 +593,17 @@ pub trait RepoOutOfDomain: RepoRead {
     /// Remove a terminal row by id.
     async fn terminal_delete(&self, id: &str) -> Result<()>;
 
-    async fn shared_daemon_runtime_set(&self, update: SharedCodexDaemonUpdate) -> Result<()>;
-    async fn shared_daemon_record_event(&self, action: &str, error: Option<&str>) -> Result<()>;
+    async fn shared_daemon_runtime_set(
+        &self,
+        backend_id: &str,
+        update: SharedCodexDaemonUpdate,
+    ) -> Result<()>;
+    async fn shared_daemon_record_event(
+        &self,
+        backend_id: &str,
+        action: &str,
+        error: Option<&str>,
+    ) -> Result<()>;
 
     /// Atomically reconcile only receipt-owned item identities in their declared order.
     #[allow(clippy::too_many_arguments)]

@@ -432,30 +432,35 @@ impl RepoOutOfDomain for SqlxRepo {
         Ok(())
     }
 
-    async fn shared_daemon_runtime_set(&self, update: SharedCodexDaemonUpdate) -> Result<()> {
+    async fn shared_daemon_runtime_set(
+        &self,
+        backend_id: &str,
+        update: SharedCodexDaemonUpdate,
+    ) -> Result<()> {
         let now = now_ms();
         let start_time = update
             .process_start_time
             .and_then(|v| i64::try_from(v).ok());
         sqlx::query(
-            r#"INSERT INTO shared_codex_daemon
-                   (id, state, pid, pgid, sock_path, codex_home_path, process_start_time,
+            r#"INSERT INTO codex_backend_daemons
+                   (backend_id, state, pid, pgid, sock_path, codex_home_path, process_start_time,
                     boot_id, started_at, updated_at, restart_count, last_error,
-                    daemon_env_signature)
+                    daemon_env_signature, paths_are_legacy_display)
                VALUES
-                   (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9,
-                    CASE WHEN ?10 THEN 1 ELSE 0 END, ?11, ?12)
-               ON CONFLICT(id) DO UPDATE SET
+                   (?13, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9,
+                    CASE WHEN ?10 THEN 1 ELSE 0 END, ?11, ?12, ?14)
+               ON CONFLICT(backend_id) DO UPDATE SET
                    state = excluded.state,
                    pid = excluded.pid,
                    pgid = excluded.pgid,
+                   paths_are_legacy_display = excluded.paths_are_legacy_display,
                    sock_path = excluded.sock_path,
                    codex_home_path = excluded.codex_home_path,
                    process_start_time = excluded.process_start_time,
                    boot_id = excluded.boot_id,
                    started_at = excluded.started_at,
                    updated_at = excluded.updated_at,
-                   restart_count = shared_codex_daemon.restart_count
+                   restart_count = codex_backend_daemons.restart_count
                        + CASE WHEN ?10 THEN 1 ELSE 0 END,
                    last_error = excluded.last_error,
                    daemon_env_signature = excluded.daemon_env_signature"#,
@@ -472,22 +477,30 @@ impl RepoOutOfDomain for SqlxRepo {
         .bind(update.increment_restart_count)
         .bind(&update.last_error)
         .bind(&update.daemon_env_signature)
+        .bind(backend_id)
+        .bind(update.paths_are_legacy_display)
         .execute(self.db.writer_pool())
         .await?;
         Ok(())
     }
 
-    async fn shared_daemon_record_event(&self, action: &str, error: Option<&str>) -> Result<()> {
+    async fn shared_daemon_record_event(
+        &self,
+        backend_id: &str,
+        action: &str,
+        error: Option<&str>,
+    ) -> Result<()> {
         let now = now_ms();
         let last_error = error.map(|e| format!("{action}: {e}"));
         sqlx::query(
-            r#"UPDATE shared_codex_daemon
+            r#"UPDATE codex_backend_daemons
                   SET updated_at = ?1,
                       last_error = COALESCE(?2, last_error)
-                WHERE id = 1"#,
+                WHERE backend_id = ?3"#,
         )
         .bind(now)
         .bind(last_error)
+        .bind(backend_id)
         .execute(self.db.writer_pool())
         .await?;
         Ok(())

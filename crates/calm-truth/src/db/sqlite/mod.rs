@@ -25,6 +25,9 @@ mod area;
 pub mod area_membership;
 #[cfg(test)]
 mod area_ownership_tests;
+pub mod backend_registry;
+#[cfg(test)]
+mod backend_registry_tests;
 mod card;
 mod child_track_binding;
 pub use child_track_binding::{child_track_handback_targets_sql, task_bind_child_track_tx};

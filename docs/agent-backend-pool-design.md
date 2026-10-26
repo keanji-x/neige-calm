@@ -233,7 +233,7 @@ BackendPool
 ```
 
 - 池只持有句柄和内存信号，不持有队列、轮次状态或第二份 busy 标志。ART §11 规定这些归 `PlannerHarness` 和各 backend。
-- 首次无配置时保留隐式 Codex default；其他协议仍由原登记 owner 管理。本期只接线 Codex，已有持久登记不能以移除配置绕过（§6.3）。
+- 首次无配置时保留隐式 Codex default；其他协议仍由原登记 owner 管理。本期只接线 Codex；仅多后端模式核对持久登记（§6.2）。
 
 ### 4.4 Scheduler / Policy
 
@@ -348,21 +348,27 @@ BackendPool
   检查规范化路径两两不重叠、也不位于另一后端的派生目录中；符号链接/别名不能绕过。
   注册后持久冻结规范化凭据范围（协议、canonical home，ACP 后续用其已定义摘要）；重启及任何 daemon 接管之前核对，
   同名换 home、路径别名/符号链接导致范围变化、删除后复用 id 均拒绝。轮换同一 home 内的登录凭据允许，不把秘密内容当身份。
-- 每个后端的 socket、认证检查点和日志目录由池按 `BackendId` 从 `data_dir` 派生，例如 `run/codex-appserver-<id>.sock`，不可配置。
-  这样少一个出错点。`default` 保持今天的路径，保证接管兼容（§7.3）。
+- `BackendPaths` 是运行路径唯一 owner：从原始配置字节持有 data 根、home、run、state、socket、认证检查点、日志和 kernel MCP socket；
+  运行方与隔离方共享同一个 `Arc<BackendPaths>`，隔离方不从 canonical data 根重新派生路径。
+  非 default 的 socket、认证检查点和日志按 `BackendId` 派生，例如 `run/codex-appserver-<id>.sock`，不可配置。
+  `default` 保留升级前的路径字节（包括相对路径、允许的旧别名和自定义日志目录），保证接管兼容（§7.3）。
 
 ### 6.2 生效时机与移除
 
-只在启动时读取，无热重载。本期收窄为**拒绝移除任何持久登记的 BackendRef**，即使没有活跃会话，避免 server 停止后
-遗留 daemon 无回收 owner。部署删除配置文件也须过同一登记一致性校验，不能切回隐式 default 绕过。保留登记并设置
+只在启动时读取，无热重载。只有 `is_multi_backend()` 为真时才执行持久身份 reconcile，完整核对并拒绝登记变化，
+包括移除任何已登记的 BackendRef。单后端（含无配置）不读取或写入持久身份登记，也不因已有登记拒绝启动；
+单后端内不存在跨后端凭据串用。从单后端切到多后端时，在首次多后端启动时登记并执行 `LegacyDefault` 升级核对，
+不追溯冻结此前单后端的凭据范围。保留登记并设置
 `accepts_new_sessions=false` 可排空，但不代表已退役或删除资源。显式退役（停止/确认进程、清理运行记录、处理历史绑定、
 保留不可复用身份墓碑）另立 L2；本期不提供不完整的 `BackendRetired` 流程。
 
 ### 6.3 缺省与播种（Q8 已定）
 
 全新无配置部署只有隐式 `codex/default`，home 为 `data_dir/codex-home`，沿用既有 default 初始化。
-升级时必须核对旧部署的 home 与 default 的规范化范围一致；示例 `/srv/neige/data` 是 data_dir，占位路径不能覆盖旧 home。
-有历史登记的部署仍受 §6.2 一致性检查约束。
+运行时 home、socket、认证状态和日志路径保留原始路径字节（包括相对路径、data_dir 及 home 本身的符号链接）；
+canonical scope 仅用于登记、升级核对和隔离校验，不能覆盖运行路径。
+首次多后端启动登记时必须核对旧部署的 home 与 default 的规范化范围一致；示例 `/srv/neige/data` 是 data_dir，占位路径不能覆盖旧 home。
+多后端模式下，有历史登记的部署仍受 §6.2 一致性检查约束。
 
 **显式配置的后端不从宿主 `~/.codex` 或 `$CODEX_HOME` 播种**，owner 在各 home 自行登录；也不从 default 复制。
 这包括显式声明的 default。旧 default 已有文件原位保留，未配置的传统单实例首次初始化仍复用现有行为。
@@ -403,11 +409,24 @@ SQLite 迁移具体用表重建或
 
 ### 7.2 登记、运行记录与恢复范围（P2 起）
 
-P2 新增持久登记（BackendRef、规范化凭据范围；本期不删除），与可变运行记录 `codex_backend_daemons` 分开。
-后者以 backend_id 为键，沿用现有运行记录的进程身份、环境签名和接管验证；所有读写带键。登记校验先于任一接管/启动副作用，
-批量校验失败则不部分启动。升级把旧单行 `shared_codex_daemon` 迁为 default，核对其 `codex_home_path` 与原部署 home 的规范化范围；
-旧记录尚未运行、无 home 值时只能使用原配置确定的 `data_dir/codex-home`，不可用新配置的任意路径补齐。不能仅因 socket 同名就接管。
-旧表在同一新迁移中删除，0026/0027 字节冻结。daemon 存活而配置缺项时按 §6.2 拒绝启动，不遗弃进程。
+单后端（`!is_multi_backend()`，含无配置）对持久运行行的处理与 main `b9ae2462d` 完全一致：不比较路径、不解析历史 home、不构造 `LegacyDefault` 证据，存活进程核验 PID/start-time/boot-id 后经记录 socket 接管，成功重写保留原运行身份和路径，退出后按当前配置恢复。
+
+P2 仅在多后端模式新增及核对持久登记（BackendRef、规范化凭据范围；本期不删除）；
+单后端（含无配置）完全跳过登记读写，切换到多后端时才首次登记（§6.2）。登记与可变运行记录 `codex_backend_daemons` 分开。
+后者以 backend_id 为键，沿用现有运行记录的进程身份、环境签名和接管验证；所有读写带键。
+多后端模式下，每个 server 进程首次 prepare 冻结完整 `BackendPaths` 的 canonical 身份；每次连接（含 connection_recovery、connected_client 和 resume_replay 建新连接）、启动、接管、替换和 heal/reap 在原转换锁内，
+从共享 owner 的原始路径重新解析全部命名空间，与首次冻结值逐项比较。冻结值只用于比较，不能作为本次隔离检查的路径输入。
+运行命名空间的冻结是进程内守卫；home 的持久登记继续跨重启核对。登记校验先于任一接管/启动副作用，
+批量校验失败则不部分启动。升级把旧单行 `shared_codex_daemon` 迁为 default，首次多后端登记由 reconcile 的 `LegacyDefault` 核对原部署 home 的规范化范围（旧行取证规则见下）；
+旧记录尚未运行、无 home 值时只能使用原配置确定的 `data_dir/codex-home`，不可用新配置的任意路径补齐。不能仅因 socket 同名就接管。多后端的持久 runtime record 的 sock_path/home 仅作比较证据：核验其原始祖先链，存活记录均与本次已验证身份比较，不同即在连接或 reap 前拒绝，不能从记录取进程操作路径。
+运行记录的新写入将 sock_path/codex_home_path 按 Unix `as_os_str().as_bytes()` 保存为 BLOB，无损保留非 UTF-8 字节。
+0198 将旧 TEXT 字段 CAST 为 BLOB，并将该行的 `paths_are_legacy_display` 标为 true。所有运行行只以 `is_multi_backend()` 区分规则：
+
+- 单后端（含无配置）不比较任何运行行（legacy 或新行）的 socket/home，允许升级时 data_dir 从相对路径改为绝对路径、从 alias 改为 canonical。存活 daemon 仍由 pid/start-time/boot-id 确认后，由身份 owner 将记录 socket 授权为本次接管的 VerifiedRuntimePaths 地址（无损保留字节，有损沿用 main 的字符串语义），连接成功后保留实际连接的 socket、原 home 与 legacy 标记，不与当前路径组合；已退出则按当前配置恢复。单后端不执行 `LegacyDefault` 登记核对。
+- 多后端将不含 U+FFFD 的旧行文字本身作为原始路径，解析规范身份并与已验证身份比较；含 U+FFFD 表示写入时已有损，拒绝并提示运维先停止旧 daemon、清理其运行记录再启用多后端。不按旧 writer 拼写解码，也不尝试双格式 fallback。
+
+两种模式的进程副作用始终只接受 `VerifiedRuntimePaths`，单后端所有存活行均可由身份 owner 授权记录 socket 用于本次接管，并在已安装的进程状态中保留该连接能力供重连复用；多后端继续使用当前验证路径。新启动行显式绑定 false（该列无 SQL DEFAULT），只按原始路径字节解析；未核销的 Failed 身份保留原行的路径和编码标记。多后端永久凭据范围由 prepare 的 reconcile/LegacyDefault 核对，运行期 verify 不重复这项首次登记校验。
+旧表在同一新迁移中删除，0026/0027 字节冻结。多后端模式下，daemon 存活而配置缺项时按 §6.2 拒绝启动。
 
 | 恢复事件 | P2（仅 default 接流量） | P3 放流量前 |
 |---|---|---|
@@ -418,6 +437,12 @@ P2 新增持久登记（BackendRef、规范化凭据范围；本期不删除）�
 `start_or_takeover` 在 `:847-853` 就回填并 resume，故 default-only 过滤和非 default 流量围栏属于 **P2**，不能推迟。
 resume 的现有串行化、sleep exclusion、HotTakeover/ColdRespawn 与 token 生命周期继续复用
 `shared_codex_appserver/resume_replay.rs:45-151`，不在池重写。每个实例独立 readiness 订阅与连接代次。
+崩溃 watcher 已确认当前代次死亡而重启隔离复检拒绝时，由原 supervisor 在转换锁内撤销 readiness、
+转入内存 Failed 并保留 heal 重试；拒绝阶段不 spawn/reap、不覆盖可信持久运行记录，修复隔离后再由原恢复路径核对记录。
+verify 返回私有构造的 VerifiedRuntimePaths；连接、启动和 reap helper 的签名要求该能力，并只从能力取进程相关路径。
+启动将能力与 owned transition guard 一起移入原 detached task；连接恢复在持借用 transition guard 的 task 内重新 verify，
+能力在该锁内覆盖建连。恢复拒绝保持既有 unknown/不重发输入政策。认证检查点写入不新增能力要求，沿用本次 server 进程启动时已验证的路径；
+同一 OS 用户在运行中改链接（含认证写入前）不在本期防护范围，详见 §8。
 
 ### 7.3 升级与恢复备份；不支持降级
 
@@ -431,6 +456,13 @@ resume 的现有串行化、sleep exclusion、HotTakeover/ColdRespawn 与 token 
 
 ## 8. 权限、隔离与凭据
 
+P2a 的文件系统隔离仅在配置了至少两个后端的多后端模式生效，与进程凭据检查共用配置层的同一判定。
+单后端（`!is_multi_backend()`，含无配置）对持久运行行的处理与 main `b9ae2462d` 完全一致，不执行 DB registry reconcile、路径比较、历史 home 解析或 `LegacyDefault` 取证，保留 PID/start-time/boot-id 核验并经记录 socket 接管。
+不新增目录属主、权限或无别名拒绝，
+不为隔离创建运行目录；旧部署 home/state/logs 为 0755 时保持原路径字节、权限及启动/接管行为。
+`VerifiedRuntimePaths` 在两种模式下仍是进程副作用的唯一通行证。下述文件系统要求只约束多后端模式；
+跨 OS 用户竞态加固（包括创建后全端点复核）留作 follow-up。
+
 - **进程级凭据（Q5 已定）**：多后端模式下，只要存在 `OPENAI_API_KEY`、`CODEX_API_KEY`、`CODEX_ACCESS_TOKEN`、
   `OPENAI_ORGANIZATION` 或 `OPENAI_PROJECT` 即启动拒绝（包括空值，不打印值）。完整集合来自
   `provider/codex/shared/environment.rs:36-42`；未来白名单认证键变动时同步所属校验和测试，不复制整张环境表。
@@ -439,8 +471,21 @@ resume 的现有串行化、sleep exclusion、HotTakeover/ColdRespawn 与 token 
   单后端传统模式保持原约定。P2 做启动拒绝，P3 验证全部 TUI 路径。
 - **home**：0700 是新增要求，当前 `home.rs:55,328` 的 `create_dir_all` 不保证这一点；P2 在任何秘密写入、
   接管或 spawn 前创建/核验 home 所有权和权限，不满足则拒绝并给运维修复提示。config 0600 仍复用
-  `write_config_0600`（`:429-449`）。规范化路径隔离和持久身份见 §6–7；不声称能隔离同一 OS 用户的恶意进程。
-- **MCP 授权边界（Q10 待决，默认隔离）**：当前全局 daemon token 的 `ConnectionIdentity::DaemonTrust` 只要求
+  `write_config_0600`（`:429-449`）。filesystem owner 同时核验 home 的祖先链（含持久运行记录保留的旧路径、符号链接的中间目标路径）：属主仅允许当前有效用户或 root；
+  group/other 可写目录仅在 sticky 位及其下组件的可信属主共同保护下允许（例如 `/tmp`）。
+  这项 sticky 例外只适用于高层祖先，不能用来保留缺失端点的名字：socket（含 kernel MCP）、认证检查点、
+  日志目录及 stdout/stderr 文件的直接父目录必须属当前 euid，且无 group/other 写权限。filesystem owner 在发放运行能力前
+  以 0700 创建缺失目录，再检查属主、权限和祖先；已有目录只校验，不自动 chmod。
+  多后端升级影响：home 非 0700 或父目录 group/other 可写的部署会拒绝启动，需运维执行 `chmod 700 <路径>`（属主不符还需修复所有权）；跨用户竞态加固（包括创建后全端点复核）为 follow-up。
+  同样检查所有运行命名空间的原始路径、别名链和目标祖先；每次入口重新解析后，核验权限、跨后端重叠及冻结身份，
+  身份变化在 home 初始化前拒绝，全部隔离校验在新连接、reap 或 spawn 前完成。认证检查点写入不逐次复检、不新增能力参数，沿用本次 server 进程启动时已验证的路径；运行中同一 OS 用户改链接不在防护范围。run/state 和 kernel MCP socket 是有意共享的容器/端点，
+  不能侵入其他后端 home；各后端专属 socket、认证检查点及日志仍两两隔离。不静默修复可被其他 OS 用户替换的祖先。
+  单后端 default 允许原部署的路径别名（包括 home 本身为符号链接），解析 canonical 身份用于进程内冻结及路径比对；
+  多后端启动、接管、替换和 heal 每次重新解析后必须仍指向冻结并登记的 canonical scope，home 拒绝别名。
+  这是基于 Unix 属主和 mode 位的跨用户路径保护，不是目录句柄隔离：不防同一 OS 用户或 root 在校验后替换路径，
+  也不声称隔离同一 OS 用户的恶意进程。
+  规范化路径隔离和持久身份见 §6–7。
+- **MCP 授权边界（Q10 已定：隔离）**：当前全局 daemon token 的 `ConnectionIdentity::DaemonTrust` 只要求
   `_meta.threadId`，在 `server/mcp_server/transport.rs:531-547,1771-1816` 按 provider/thread 解析任意活跃 session。
   把同一 token 复制到多个 home 会扩大信任域，不能声称“不扩大授权面”。默认设计为每 BackendRef 一个 daemon token，
   initialize 后身份带 BackendRef；tools/list、tools/call 及再次 admission 复检 threadId 的持久后端与连接范围一致，
@@ -448,7 +493,7 @@ resume 的现有串行化、sleep exclusion、HotTakeover/ColdRespawn 与 token 
   token 生命周期与存储由现有 MCP wiring owner 扩展；连接身份由 `mcp_server/{handshake,registry}.rs`
   （`:33-63`、`:58-61`）扩展，池不实现第二套认证。旧 default token 升级须经该 owner
   绑定为 default（无法可靠证明则轮换并更新旧 daemon），不得保留无范围 fallback。
-  用户尚未选择共享信任域；在 Q10 明确或默认隔离方案经独立 L2 评审落定之前，**P2 不得启动额外 daemon**。
+  Q10 已定（用户）：不共享信任域；token 绑定各 BackendRef 并校验 threadId 后端。P2a 不启动额外 daemon；P2b 在此隔离实现经 L2 验证后才启动。
 - **MCP follower**：每个 `(home, daemon)` 启动一个原 `CodexMcpToolset`，在该实例 boot 前订阅 plugin events 与自身
   readiness（`server/state.rs:1728-1737`、`codex_mcp_toolset.rs:80-147`）。每次 refresh 仍由原 owner
   `approval_delegated_tools` → generation/grants 写入 → reload；插件读取失败写空 grants，写失败不 reload
@@ -535,7 +580,7 @@ crates/calm-truth/migrations/下一编号_*.sql       P2 登记/运行表，P3 �
 | P2 | `truth/db/mod.rs:403,590`、`sqlite/{out_of_domain,read}.rs` | 接口带键，委托新登记/运行记录模块 | 45–90 |
 | P2 | `server/{state,state_clients,lib}.rs`、`types/runtime_paths.rs` | 全量身份校验先于 boot、组合多实例、逐实例 boot/follower；home 验证/禁止播种 | 100–180 |
 | P2 | `shared_codex_home.rs`、`routes/settings.rs:111` | 每 home 注入本实例 token；代理变更所有实例标记重启 | 20–45 |
-| P2 | `mcp_server/{wiring,handshake,registry,transport}.rs` 及 token 存储 owner | 默认方案：daemon token 范围、initialize、thread 归属及 admission 复检；复用原鉴权 | 100–200（Q10 未定） |
+| P2 | `mcp_server/{wiring,handshake,registry,transport}.rs` 及 token 存储 owner | 默认方案：daemon token 范围、initialize、thread 归属及 admission 复检；复用原鉴权 | 100–200（Q10 已定隔离，P2b） |
 | P3 | `harness/backend/{factory.rs,factory/*}`、operation 的 start/retained/recovery/adapters、`operation/{mod,driver}.rs` | 首副作用前固定后端；按行构造实例；超时停止与恢复同绑定 | 160–280 |
 | P3 | `truth` 的 session row/mirror/repo、server projection 与 pending | 分支必填 BackendRef、HostThreadKey 查写/索引、CAS 与全部写读者；原 pending registry 分区 | 200–340 |
 | P3 | `provider/worker/codex.rs:62-164`、`server/provider_registry.rs`、reaper、`factory/codex_worker.rs`、state/dispatcher 注入 | 含 WorkerIdleWake/idle SQL 的绑定快照，保留死亡/idle 裁决 | 130–220 |
@@ -626,7 +671,23 @@ readiness 是每实例 watch；合流通知保留 BackendRef/连接代次，不�
 加权最少在途与 ordered 的排序/同分规则、Unknown 与软上限场景通过；policy 不分配半开租约。
 L1 理由：不跨持久/进程/权限边界。若路径创建/登记副作用被提前，应留在 P2，不能顺手扩大 P1。
 
-### P2 多实例基础设施，非 default 禁止产品流量（L2）
+### P2a 身份与隔离基础，只启动 default（L2）
+
+范围：§6–§8 的永久 BackendRef→规范化凭据范围登记、keyed runtime 新迁移、旧 default 升级核对，
+以及 home 所有权/0700/canonical/符号链接别名/真实重叠检查。按 BackendId 派生 socket、认证检查点与日志，
+default 保持已有路径（包括既有日志配置）；五个进程级凭据键复用 environment owner 集合，多后端含空值一律拒绝。
+显式配置 home 不播种，只有传统隐式 default 保留播种。非 default 登记校验并记录日志，不构造或启动 daemon。
+启动批量校验先于秘密写入和后台任务；每次 daemon 启动/接管复检登记与文件系统范围。
+不包含 MCP token/follower、多 daemon、线程路由。已发布迁移字节冻结。
+
+退出：登记变化/别名/删减/id 复用、旧库升级（含无 home 的历史 default）、未知迁移拒绝、
+路径隔离/权限与五键逐一拒绝均有 agent_backend 测试；default 运行身份升级不变。
+变异分别去掉同名换 home 校验、让非 default socket 复用 default，预测并核对完整红集后恢复跑绿。
+L2 理由：持久身份与凭据隔离边界。升级与整体备份恢复合同沿用 §7.3；内核 gate 执行 text/contract/quick/聚焦重放。
+
+### P2b 多实例基础设施，非 default 禁止产品流量（L2）
+
+前置 P2a。
 
 范围为 §6–8：持久身份登记与 keyed runtime 迁移、default-only 历史恢复、home/env 隔离、每实例完整 MCP follower、
 共享 seals、各实例 readiness 与生命周期。
@@ -638,7 +699,7 @@ L1 理由：不跨持久/进程/权限边界。若路径创建/登记副作用�
 P3 必须将 T1–T11 一起改成 §4.2 合同后才解禁，P2 的无流量前提不能作为 P3 延后任一键迁移的理由；
 若实施发现 P2 有绕过上述围栏的入口，先堵住围栏，无法封闭则须提前整套范围键迁移并重新 L2，不保留两套表。
 
-Q10 默认隔离方案必须先经 L2 落定，不能以基础设施无流量为由复制全局 token。
+Q10 已定不共享；P2b 必须实现各 BackendRef 的 token 与 threadId 后端校验，不能以基础设施无流量为由复制全局 token。
 P1/P2 先行；M2 基线取 P2 最终树，按 §9 串行协调。
 
 退出必须同时满足：
@@ -725,7 +786,7 @@ gate 按仓库要求拥有 text/contract/quick 和一次拒绝空选择的聚焦
 | R5 | M2 同 owner 冲突及旧行数预算失真 | P1/P2 先行，M2 重定基线，P3 后置独立 L2；§10.2 重估，不用预算压掉接线 |
 | R6 | 降级或备份/home 混用破坏历史归属 | 不支持原库降级；升级前一致备份，停全部进程后整体恢复；接受备份后数据丢失 |
 | R7 | 环境凭据或路径变化使新后端变成旧账号 | 五键启动拒绝；daemon/TUI 环境同检查；规范化范围持久冻结且接管前全量校验；新 home 不播种 |
-| R8 | 全局 daemon token 扩大信任域 | Q10 待决默认按 BackendRef 隔离；P2 额外实例启动前 L2 落定，否则维持单实例 |
+| R8 | 全局 daemon token 扩大信任域 | Q10 已定按 BackendRef 隔离；P2 额外实例启动前 L2 落定，否则维持单实例 |
 | R9 | 配置移除遗留存活 daemon 或复用历史身份 | 本期拒绝移除登记；仅停止接新流量，显式退役另立 L2 |
 | R10 | 删除后忘 seal 太早或失去释放义务 | 删除计划保存相关 owner，全部清理后才 forget；释放义务留在实例，sweeper 全实例重试 |
 
@@ -742,7 +803,7 @@ gate 按仓库要求拥有 text/contract/quick 和一次拒绝空选择的聚焦
 | Q7 | 待决 | 默认手动权重，不按未知账号额度自动调整 |
 | Q8 | **已定（用户）** | 显式配置 home 不播种宿主 ~/.codex；owner 自行登录；传统隐式 default 兼容边界见 §6.3 |
 | Q9 | 已由 TWE OQ10 收敛 | OQ10 已定 UserHome；worker 保持用户登录，多 Claude 凭据档仅 Planner（§9.2） |
-| Q10 | **待决，新增信任域取舍** | 多 home 是否共享全局 daemon 信任域？默认不共享：token 绑定 BackendRef 并校验 threadId 后端；若选共享须明确接受跨后端 threadId 授权面并重新 L2。决定/默认方案评审落定前不启动额外实例（§8、P2） |
+| Q10 | **已定（用户）** | 不共享，token 绑定各 BackendRef 并校验 threadId 后端；P2b 落实范围认证后才启动额外实例（§8、P2b） |
 
 ## 14. 评审处理
 

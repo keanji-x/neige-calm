@@ -85,6 +85,12 @@ async fn reject_identity(child: &mut ProtectedChild, pid: i32, start: u64, boot:
     let pgid = unsafe { libc::getpgid(child.pid) };
     assert!(pgid > 1);
     let outcome = terminate_group_with_grace(
+        &VerifiedRuntimePaths::for_fixture(Arc::new(BackendPaths::new(
+            Path::new("/fixture"),
+            &crate::agent_backend_pool::identity::default_id(),
+            Path::new("/fixture/home"),
+            Path::new("/fixture/logs"),
+        ))),
         SignalScope::Group { pgid },
         ExitWait::VerifiedIdentity {
             pid,
@@ -159,6 +165,12 @@ async fn termination_identity_valid_external_identity_reaps_group() {
     let start = read_proc_start_time(child.pid).expect("native start");
     assert!(verify_owned_pid(child.pid, start, &boot));
     terminate_group_with_grace(
+        &VerifiedRuntimePaths::for_fixture(Arc::new(BackendPaths::new(
+            Path::new("/fixture"),
+            &crate::agent_backend_pool::identity::default_id(),
+            Path::new("/fixture/home"),
+            Path::new("/fixture/logs"),
+        ))),
         SignalScope::Group { pgid: child.pid },
         ExitWait::VerifiedIdentity {
             pid: child.pid,
@@ -181,6 +193,12 @@ async fn termination_identity_valid_external_identity_reaps_group() {
 async fn termination_identity_owned_child_reaps_without_boot_identity() {
     let mut child = ProtectedChild::spawn(0, true).await;
     terminate_group_with_grace(
+        &VerifiedRuntimePaths::for_fixture(Arc::new(BackendPaths::new(
+            Path::new("/fixture"),
+            &crate::agent_backend_pool::identity::default_id(),
+            Path::new("/fixture/home"),
+            Path::new("/fixture/logs"),
+        ))),
         SignalScope::Group { pgid: child.pid },
         ExitWait::Child(&mut child.child),
         Duration::from_millis(100),

@@ -236,7 +236,7 @@ impl RecoveryThread<'_> {
         self.thread_id
     }
     pub(crate) fn socket_path(&self) -> &std::path::Path {
-        &self.daemon.kernel_mcp_socket_path
+        &self.daemon.paths.kernel_mcp_socket
     }
     /// An idle read retires only the unchanged unaddressed start slot. Native
     /// source/ticket/candidate changes during the read continue to hold.

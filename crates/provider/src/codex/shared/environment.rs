@@ -33,6 +33,10 @@ pub const SPAWN_ENV_PASSTHROUGH: &[&str] = &[
     "RUST_LOG",
     "LOG_FORMAT",
     "RUST_BACKTRACE",
+];
+
+/// Process-wide authentication/account scope, forbidden in multi-backend mode.
+pub const CREDENTIAL_ENV_KEYS: &[&str] = &[
     // API-key-mode auth fallbacks; prod uses auth.json, kept so an API-key deployment
     // doesn't silently break. Still an allow-list.
     "OPENAI_API_KEY",
@@ -54,7 +58,7 @@ pub struct SpawnEnvironment<'a> {
 impl SpawnEnvironment<'_> {
     pub fn apply(&self, command: &mut Command) {
         command.env_clear();
-        for key in SPAWN_ENV_PASSTHROUGH {
+        for key in SPAWN_ENV_PASSTHROUGH.iter().chain(CREDENTIAL_ENV_KEYS) {
             if let Some(value) = std::env::var_os(key) {
                 command.env(key, value);
             }

@@ -1,4 +1,5 @@
 use calm_types::organization::LEGACY_OWNER_USER_ID;
+use std::os::unix::ffi::OsStrExt;
 use std::sync::Arc;
 use std::time::Duration;
 use std::{path::Path, process::Stdio};
@@ -190,6 +191,7 @@ async fn spawn_env_explicit_keys_stay_within_allow_list_and_computed_keys() {
     for key in env.keys() {
         let allowed = computed.contains(&key.as_str())
             || SPAWN_ENV_PASSTHROUGH.contains(&key.as_str())
+            || provider::codex::shared::CREDENTIAL_ENV_KEYS.contains(&key.as_str())
             // Fixture channel: exists only because this test binary compiles
             // calm-server with the `fixtures` feature; NOT part of the prod const.
             || key.starts_with("FAKE_CODEX_")
@@ -279,6 +281,7 @@ async fn spawned_daemon_does_not_inherit_parent_canary_env() {
         let key = kv.split_once('=').map(|(k, _)| k).unwrap_or(kv.as_str());
         let allowed = computed.contains(&key)
             || SPAWN_ENV_PASSTHROUGH.contains(&key)
+            || provider::codex::shared::CREDENTIAL_ENV_KEYS.contains(&key)
             || key.starts_with("FAKE_CODEX_")
             || key == "NEIGE_OSC_TRACE_PATH";
         assert!(
@@ -481,7 +484,7 @@ async fn guard_refusal_reaps_verified_daemon_and_persists_failed_record() {
         .expect("guard refusal must reap the verified persisted daemon")
         .expect("wait reaped fake app-server");
 
-    let record = repo.shared_daemon_runtime_get().await.unwrap();
+    let record = repo.shared_daemon_runtime_get("default").await.unwrap();
     assert_eq!(
         record.state,
         SharedDaemonState::Failed,
@@ -538,7 +541,7 @@ async fn guard_refusal_pgid_mismatch_marks_unreconciled_retains_identity_and_nev
     // SAFETY: signal 0 probes liveness without delivering a signal.
     let peer_alive = unsafe { libc::kill(peer_pid, 0) } == 0;
     let launcher_alive = unsafe { libc::kill(pgid, 0) } == 0;
-    let record = repo.shared_daemon_runtime_get().await.unwrap();
+    let record = repo.shared_daemon_runtime_get("default").await.unwrap();
 
     force_cleanup_process_group(launcher, pgid);
 
@@ -612,19 +615,29 @@ async fn persist_running_daemon_with_signature(
     process_start_time: u64,
     daemon_env_signature: Option<String>,
 ) {
-    repo.shared_daemon_runtime_set(SharedCodexDaemonUpdate {
-        state: SharedDaemonState::Running,
-        pid: Some(pid),
-        pgid: Some(pgid),
-        sock_path: Some(sock.display().to_string()),
-        codex_home_path: Some(root.path().join("codex-home").display().to_string()),
-        process_start_time: Some(process_start_time),
-        boot_id: Some(read_boot_id().unwrap_or_default()),
-        started_at: Some(now_ms()),
-        last_error: None,
-        increment_restart_count: false,
-        daemon_env_signature,
-    })
+    repo.shared_daemon_runtime_set(
+        "default",
+        SharedCodexDaemonUpdate {
+            state: SharedDaemonState::Running,
+            pid: Some(pid),
+            pgid: Some(pgid),
+            paths_are_legacy_display: false,
+            sock_path: Some(sock.as_os_str().as_bytes().to_vec()),
+            codex_home_path: Some(
+                root.path()
+                    .join("codex-home")
+                    .as_os_str()
+                    .as_bytes()
+                    .to_vec(),
+            ),
+            process_start_time: Some(process_start_time),
+            boot_id: Some(read_boot_id().unwrap_or_default()),
+            started_at: Some(now_ms()),
+            last_error: None,
+            increment_restart_count: false,
+            daemon_env_signature,
+        },
+    )
     .await
     .unwrap();
 }
@@ -910,19 +923,23 @@ fn thread_resume_token(req: &Value) -> &str {
 async fn stale_daemon_detected_by_boot_id_mismatch() {
     let root = tempfile::tempdir().unwrap();
     let repo = repo().await;
-    repo.shared_daemon_runtime_set(SharedCodexDaemonUpdate {
-        state: SharedDaemonState::Running,
-        pid: Some(999_999),
-        pgid: Some(999_999),
-        sock_path: Some(root.path().join("old.sock").display().to_string()),
-        codex_home_path: Some(root.path().join("old-home").display().to_string()),
-        process_start_time: Some(1),
-        boot_id: Some("definitely-not-this-boot".into()),
-        started_at: Some(1),
-        last_error: None,
-        increment_restart_count: false,
-        daemon_env_signature: None,
-    })
+    repo.shared_daemon_runtime_set(
+        "default",
+        SharedCodexDaemonUpdate {
+            state: SharedDaemonState::Running,
+            pid: Some(999_999),
+            pgid: Some(999_999),
+            paths_are_legacy_display: false,
+            sock_path: Some(root.path().join("old.sock").as_os_str().as_bytes().to_vec()),
+            codex_home_path: Some(root.path().join("old-home").as_os_str().as_bytes().to_vec()),
+            process_start_time: Some(1),
+            boot_id: Some("definitely-not-this-boot".into()),
+            started_at: Some(1),
+            last_error: None,
+            increment_restart_count: false,
+            daemon_env_signature: None,
+        },
+    )
     .await
     .unwrap();
 
@@ -938,19 +955,23 @@ async fn stale_daemon_detected_by_start_time_mismatch() {
     let root = tempfile::tempdir().unwrap();
     let repo = repo().await;
     let live_boot = calm_server::proc_identity::read_boot_id().unwrap_or_default();
-    repo.shared_daemon_runtime_set(SharedCodexDaemonUpdate {
-        state: SharedDaemonState::Running,
-        pid: Some(999_998),
-        pgid: Some(999_998),
-        sock_path: Some(root.path().join("old.sock").display().to_string()),
-        codex_home_path: Some(root.path().join("old-home").display().to_string()),
-        process_start_time: Some(1),
-        boot_id: Some(live_boot),
-        started_at: Some(1),
-        last_error: None,
-        increment_restart_count: false,
-        daemon_env_signature: None,
-    })
+    repo.shared_daemon_runtime_set(
+        "default",
+        SharedCodexDaemonUpdate {
+            state: SharedDaemonState::Running,
+            pid: Some(999_998),
+            pgid: Some(999_998),
+            paths_are_legacy_display: false,
+            sock_path: Some(root.path().join("old.sock").as_os_str().as_bytes().to_vec()),
+            codex_home_path: Some(root.path().join("old-home").as_os_str().as_bytes().to_vec()),
+            process_start_time: Some(1),
+            boot_id: Some(live_boot),
+            started_at: Some(1),
+            last_error: None,
+            increment_restart_count: false,
+            daemon_env_signature: None,
+        },
+    )
     .await
     .unwrap();
 
@@ -1002,7 +1023,7 @@ async fn takeover_handshake_failure_reaps_verified_daemon_before_relaunch() {
         .unwrap();
     assert_ne!(new_pid, old_pid);
 
-    let record = repo.shared_daemon_runtime_get().await.unwrap();
+    let record = repo.shared_daemon_runtime_get("default").await.unwrap();
     assert_eq!(record.pid, Some(new_pid));
     assert_eq!(record.pgid, Some(new_pid));
 }
@@ -1061,7 +1082,7 @@ async fn takeover_adopts_on_env_signature_mismatch_and_marks_drain() {
         "adoption of a mismatched signature must mark needs_respawn (drain)"
     );
 
-    let record = repo.shared_daemon_runtime_get().await.unwrap();
+    let record = repo.shared_daemon_runtime_get("default").await.unwrap();
     assert_eq!(
         record.state,
         SharedDaemonState::Running,
@@ -1172,7 +1193,7 @@ async fn boot_replaces_a_daemon_with_a_stale_env_signature_before_recovery() {
         !daemon.needs_respawn_on_next_thread_start_for_test(),
         "the boot replace must consume the drain flag"
     );
-    let record = repo.shared_daemon_runtime_get().await.unwrap();
+    let record = repo.shared_daemon_runtime_get("default").await.unwrap();
     assert_eq!(record.pid, Some(new_pid));
     assert_eq!(
         record.daemon_env_signature,
@@ -1234,7 +1255,7 @@ async fn boot_adopts_a_daemon_with_the_current_env_signature() {
     assert_eq!(unsafe { libc::kill(old_pid, 0) }, 0);
     assert!(!daemon.needs_respawn_on_next_thread_start_for_test());
     assert_eq!(
-        repo.shared_daemon_runtime_get().await.unwrap().pid,
+        repo.shared_daemon_runtime_get("default").await.unwrap().pid,
         Some(old_pid)
     );
 
@@ -2002,7 +2023,7 @@ async fn concurrent_mark_during_respawn_is_preserved() {
     for _ in 0..200 {
         // Gate on the PERSISTED `starting` row: it is written only AFTER the spawn's settings snapshot was read,
         // so the proxy upsert below postdates it. The in-memory Starting state flips before the read and would race.
-        let record = repo.shared_daemon_runtime_get().await.unwrap();
+        let record = repo.shared_daemon_runtime_get("default").await.unwrap();
         if record.state == SharedDaemonState::Starting
             && !daemon.needs_respawn_on_next_thread_start_for_test()
         {
@@ -2463,7 +2484,7 @@ async fn cold_start_deadline_miss_reaps_child_gracefully() {
         "the deadline-missed child must get its cooperative 1.5s SIGTERM \
          shutdown (marker written) — never the pre-#954 zero-wait SIGKILL"
     );
-    let record = repo.shared_daemon_runtime_get().await.unwrap();
+    let record = repo.shared_daemon_runtime_get("default").await.unwrap();
     assert_eq!(
         record.state,
         SharedDaemonState::Failed,
@@ -2892,7 +2913,7 @@ async fn cold_start_reaps_never_binding_child_at_configured_deadline() {
         reaped,
         "never-binding child must be reaped after the deadline"
     );
-    let record = repo.shared_daemon_runtime_get().await.unwrap();
+    let record = repo.shared_daemon_runtime_get("default").await.unwrap();
     assert_eq!(
         record.state,
         SharedDaemonState::Failed,
@@ -2905,7 +2926,7 @@ async fn cold_start_reaps_never_binding_child_at_configured_deadline() {
 /// Poll for the transient `starting` row's pid while a spawn is in flight.
 async fn wait_for_starting_pid(repo: &SqlxRepo) -> i32 {
     for _ in 0..200 {
-        let record = repo.shared_daemon_runtime_get().await.unwrap();
+        let record = repo.shared_daemon_runtime_get("default").await.unwrap();
         if record.state == SharedDaemonState::Starting
             && let Some(pid) = record.pid
         {
@@ -3089,7 +3110,7 @@ async fn spawn_failure_after_persist_starting_persists_failed_row() {
         "spawn failure must arm the background heal loop"
     );
 
-    let record = repo.shared_daemon_runtime_get().await.unwrap();
+    let record = repo.shared_daemon_runtime_get("default").await.unwrap();
     assert_eq!(
         record.state,
         SharedDaemonState::Failed,
@@ -3122,7 +3143,7 @@ async fn failed_daemon_heals_in_background_without_server_restart() {
         .start_or_takeover()
         .await
         .expect_err("boot spawn must fail with a missing codex bin");
-    let record = repo.shared_daemon_runtime_get().await.unwrap();
+    let record = repo.shared_daemon_runtime_get("default").await.unwrap();
     assert_eq!(
         record.state,
         SharedDaemonState::Failed,
@@ -3151,7 +3172,7 @@ async fn failed_daemon_heals_in_background_without_server_restart() {
          respawn call or a calm-server restart; still {:?}",
         daemon.status_snapshot().state
     );
-    let record = repo.shared_daemon_runtime_get().await.unwrap();
+    let record = repo.shared_daemon_runtime_get("default").await.unwrap();
     assert_eq!(
         record.state,
         SharedDaemonState::Running,
@@ -3444,7 +3465,7 @@ async fn unreconciled_record_fences_spawn_until_survivor_proven_gone() {
         0,
         "the survivor must never be signaled while unreconciled"
     );
-    let record = repo.shared_daemon_runtime_get().await.unwrap();
+    let record = repo.shared_daemon_runtime_get("default").await.unwrap();
     assert_eq!(
         record.pid,
         Some(peer_pid),
@@ -3474,7 +3495,7 @@ async fn unreconciled_record_fences_spawn_until_survivor_proven_gone() {
         .ensure_running()
         .await
         .expect("proven absence must reopen the spawn path");
-    let record = repo.shared_daemon_runtime_get().await.unwrap();
+    let record = repo.shared_daemon_runtime_get("default").await.unwrap();
     assert_eq!(record.state, SharedDaemonState::Running);
     assert_ne!(record.pid, Some(peer_pid), "a fresh daemon must be spawned");
     assert_eq!(daemon.status_snapshot().state, SharedDaemonState::Running);
@@ -3502,7 +3523,7 @@ async fn unreconciled_classification_survives_supervisor_restart() {
         .start_or_takeover()
         .await
         .expect_err("boot guard must refuse the polluted CODEX_HOME");
-    let record = repo.shared_daemon_runtime_get().await.unwrap();
+    let record = repo.shared_daemon_runtime_get("default").await.unwrap();
     assert_eq!(record.pid, Some(peer_pid), "marker must retain identity");
     drop(instance_a);
 
@@ -3535,7 +3556,7 @@ async fn unreconciled_classification_survives_supervisor_restart() {
         .ensure_running()
         .await
         .expect("proven absence must reopen the spawn path after the restart");
-    let record = repo.shared_daemon_runtime_get().await.unwrap();
+    let record = repo.shared_daemon_runtime_get("default").await.unwrap();
     assert_eq!(record.state, SharedDaemonState::Running);
     assert_ne!(record.pid, Some(peer_pid));
 }
@@ -3551,7 +3572,7 @@ async fn identical_consecutive_failures_dedup_to_one_db_write() {
         .start_or_takeover()
         .await
         .expect_err("missing codex bin must fail the start");
-    let first = repo.shared_daemon_runtime_get().await.unwrap();
+    let first = repo.shared_daemon_runtime_get("default").await.unwrap();
     assert_eq!(first.state, SharedDaemonState::Failed);
 
     // Give a differing updated_at time to become visible, then fail twice
@@ -3565,7 +3586,7 @@ async fn identical_consecutive_failures_dedup_to_one_db_write() {
         .ensure_running()
         .await
         .expect_err("bin still missing");
-    let second = repo.shared_daemon_runtime_get().await.unwrap();
+    let second = repo.shared_daemon_runtime_get("default").await.unwrap();
     assert_eq!(second.last_error, first.last_error);
     assert_eq!(
         second.updated_at, first.updated_at,
@@ -3668,7 +3689,7 @@ async fn heal_ok_claim_release_race_rearms_loop_for_failure_that_lost_cas() {
         daemon.status_snapshot().state,
         daemon.heal_active_for_test()
     );
-    let record = repo.shared_daemon_runtime_get().await.unwrap();
+    let record = repo.shared_daemon_runtime_get("default").await.unwrap();
     assert_eq!(
         record.state,
         SharedDaemonState::Running,
@@ -3697,21 +3718,31 @@ async fn takeover_restamps_starting_row_to_running() {
     let process_start_time = wait_for_start_time_and_socket(old_pid, &sock).await;
 
     let repo = repo().await;
-    repo.shared_daemon_runtime_set(SharedCodexDaemonUpdate {
-        state: SharedDaemonState::Starting,
-        pid: Some(old_pid),
-        pgid: Some(old_pid),
-        sock_path: Some(sock.display().to_string()),
-        codex_home_path: Some(root.path().join("codex-home").display().to_string()),
-        process_start_time: Some(process_start_time),
-        boot_id: Some(read_boot_id().unwrap_or_default()),
-        started_at: Some(now_ms()),
-        last_error: None,
-        increment_restart_count: false,
-        daemon_env_signature: Some(effective_test_env_signature(
-            &cfg(&root).codex_ingest_url_resolved(),
-        )),
-    })
+    repo.shared_daemon_runtime_set(
+        "default",
+        SharedCodexDaemonUpdate {
+            state: SharedDaemonState::Starting,
+            pid: Some(old_pid),
+            pgid: Some(old_pid),
+            paths_are_legacy_display: false,
+            sock_path: Some(sock.as_os_str().as_bytes().to_vec()),
+            codex_home_path: Some(
+                root.path()
+                    .join("codex-home")
+                    .as_os_str()
+                    .as_bytes()
+                    .to_vec(),
+            ),
+            process_start_time: Some(process_start_time),
+            boot_id: Some(read_boot_id().unwrap_or_default()),
+            started_at: Some(now_ms()),
+            last_error: None,
+            increment_restart_count: false,
+            daemon_env_signature: Some(effective_test_env_signature(
+                &cfg(&root).codex_ingest_url_resolved(),
+            )),
+        },
+    )
     .await
     .unwrap();
 
@@ -3725,7 +3756,7 @@ async fn takeover_restamps_starting_row_to_running() {
         Some(old_pid),
         "the live daemon must be adopted, not respawned"
     );
-    let record = repo.shared_daemon_runtime_get().await.unwrap();
+    let record = repo.shared_daemon_runtime_get("default").await.unwrap();
     assert_eq!(
         record.state,
         SharedDaemonState::Running,
@@ -3784,21 +3815,31 @@ async fn persist_starting_daemon(
     process_start_time: u64,
     started_at: i64,
 ) {
-    repo.shared_daemon_runtime_set(SharedCodexDaemonUpdate {
-        state: SharedDaemonState::Starting,
-        pid: Some(pid),
-        pgid: Some(pid),
-        sock_path: Some(sock.display().to_string()),
-        codex_home_path: Some(root.path().join("codex-home").display().to_string()),
-        process_start_time: Some(process_start_time),
-        boot_id: Some(read_boot_id().unwrap_or_default()),
-        started_at: Some(started_at),
-        last_error: None,
-        increment_restart_count: false,
-        daemon_env_signature: Some(effective_test_env_signature(
-            &cfg(root).codex_ingest_url_resolved(),
-        )),
-    })
+    repo.shared_daemon_runtime_set(
+        "default",
+        SharedCodexDaemonUpdate {
+            state: SharedDaemonState::Starting,
+            pid: Some(pid),
+            pgid: Some(pid),
+            paths_are_legacy_display: false,
+            sock_path: Some(sock.as_os_str().as_bytes().to_vec()),
+            codex_home_path: Some(
+                root.path()
+                    .join("codex-home")
+                    .as_os_str()
+                    .as_bytes()
+                    .to_vec(),
+            ),
+            process_start_time: Some(process_start_time),
+            boot_id: Some(read_boot_id().unwrap_or_default()),
+            started_at: Some(started_at),
+            last_error: None,
+            increment_restart_count: false,
+            daemon_env_signature: Some(effective_test_env_signature(
+                &cfg(root).codex_ingest_url_resolved(),
+            )),
+        },
+    )
     .await
     .unwrap();
 }
@@ -3835,7 +3876,7 @@ async fn boot_adopts_starting_child_within_readiness_window() {
         "adoption must never signal the child (no SIGTERM marker) — \
          backfill progress is preserved"
     );
-    let record = repo.shared_daemon_runtime_get().await.unwrap();
+    let record = repo.shared_daemon_runtime_get("default").await.unwrap();
     assert_eq!(
         record.state,
         SharedDaemonState::Running,
@@ -3908,7 +3949,7 @@ async fn readiness_window_lapse_reaps_gracefully_then_spawns_fresh() {
         Some(old_pid),
         "a fresh spawn must replace the lapsed child"
     );
-    let record = repo.shared_daemon_runtime_get().await.unwrap();
+    let record = repo.shared_daemon_runtime_get("default").await.unwrap();
     assert_eq!(record.pid, new_pid, "the row must name the fresh spawn");
     drop(child);
 }
@@ -4060,19 +4101,23 @@ async fn partial_identity_pid_only_never_signals_and_recovers_on_exit() {
         .expect("spawn unrelated survivor process");
     let survivor_pid = i32::try_from(survivor.id().expect("survivor pid")).expect("pid fits i32");
 
-    repo.shared_daemon_runtime_set(SharedCodexDaemonUpdate {
-        state: SharedDaemonState::Failed,
-        pid: Some(survivor_pid),
-        pgid: None,
-        sock_path: None,
-        codex_home_path: None,
-        process_start_time: None,
-        boot_id: None,
-        started_at: None,
-        last_error: Some("crash".into()),
-        increment_restart_count: false,
-        daemon_env_signature: None,
-    })
+    repo.shared_daemon_runtime_set(
+        "default",
+        SharedCodexDaemonUpdate {
+            state: SharedDaemonState::Failed,
+            pid: Some(survivor_pid),
+            pgid: None,
+            paths_are_legacy_display: false,
+            sock_path: None,
+            codex_home_path: None,
+            process_start_time: None,
+            boot_id: None,
+            started_at: None,
+            last_error: Some("crash".into()),
+            increment_restart_count: false,
+            daemon_env_signature: None,
+        },
+    )
     .await
     .unwrap();
 
@@ -4088,7 +4133,7 @@ async fn partial_identity_pid_only_never_signals_and_recovers_on_exit() {
         0,
         "the pid-partial survivor must never be signaled"
     );
-    let record = repo.shared_daemon_runtime_get().await.unwrap();
+    let record = repo.shared_daemon_runtime_get("default").await.unwrap();
     assert_eq!(record.pid, Some(survivor_pid), "identity must be retained");
     assert!(
         record
@@ -4112,7 +4157,7 @@ async fn partial_identity_pid_only_never_signals_and_recovers_on_exit() {
         .ensure_running()
         .await
         .expect("proven absence must reopen the spawn path");
-    let record = repo.shared_daemon_runtime_get().await.unwrap();
+    let record = repo.shared_daemon_runtime_get("default").await.unwrap();
     assert_eq!(record.state, SharedDaemonState::Running);
     assert_ne!(record.pid, Some(survivor_pid));
 }
@@ -4121,19 +4166,23 @@ async fn partial_identity_pid_only_never_signals_and_recovers_on_exit() {
 async fn partial_identity_pid_null_operator_shape_requires_manual_clear() {
     let root = tempfile::tempdir().unwrap();
     let repo = repo().await;
-    repo.shared_daemon_runtime_set(SharedCodexDaemonUpdate {
-        state: SharedDaemonState::Failed,
-        pid: None,
-        pgid: None,
-        sock_path: None,
-        codex_home_path: None,
-        process_start_time: Some(12345),
-        boot_id: Some("some-old-boot".into()),
-        started_at: None,
-        last_error: Some("crash".into()),
-        increment_restart_count: false,
-        daemon_env_signature: None,
-    })
+    repo.shared_daemon_runtime_set(
+        "default",
+        SharedCodexDaemonUpdate {
+            state: SharedDaemonState::Failed,
+            pid: None,
+            pgid: None,
+            paths_are_legacy_display: false,
+            sock_path: None,
+            codex_home_path: None,
+            process_start_time: Some(12345),
+            boot_id: Some("some-old-boot".into()),
+            started_at: None,
+            last_error: Some("crash".into()),
+            increment_restart_count: false,
+            daemon_env_signature: None,
+        },
+    )
     .await
     .unwrap();
 
@@ -4146,7 +4195,7 @@ async fn partial_identity_pid_null_operator_shape_requires_manual_clear() {
         err.to_string().contains("unreconciled-needs-operator"),
         "operator shape must be labeled; got: {err}"
     );
-    let record = repo.shared_daemon_runtime_get().await.unwrap();
+    let record = repo.shared_daemon_runtime_get("default").await.unwrap();
     assert!(
         record
             .last_error
@@ -4175,33 +4224,37 @@ async fn partial_identity_pid_null_operator_shape_requires_manual_clear() {
         .ensure_running()
         .await
         .expect_err("still the operator shape");
-    let after_round = repo.shared_daemon_runtime_get().await.unwrap();
+    let after_round = repo.shared_daemon_runtime_get("default").await.unwrap();
     assert_eq!(
         after_round.updated_at, record.updated_at,
         "operator-shape rounds must not rewrite the row"
     );
 
     // Operator remediation: clear the identity columns (manual DB fix).
-    repo.shared_daemon_runtime_set(SharedCodexDaemonUpdate {
-        state: SharedDaemonState::Failed,
-        pid: None,
-        pgid: None,
-        sock_path: None,
-        codex_home_path: None,
-        process_start_time: None,
-        boot_id: None,
-        started_at: None,
-        last_error: Some("operator cleared identity".into()),
-        increment_restart_count: false,
-        daemon_env_signature: None,
-    })
+    repo.shared_daemon_runtime_set(
+        "default",
+        SharedCodexDaemonUpdate {
+            state: SharedDaemonState::Failed,
+            pid: None,
+            pgid: None,
+            paths_are_legacy_display: false,
+            sock_path: None,
+            codex_home_path: None,
+            process_start_time: None,
+            boot_id: None,
+            started_at: None,
+            last_error: Some("operator cleared identity".into()),
+            increment_restart_count: false,
+            daemon_env_signature: None,
+        },
+    )
     .await
     .unwrap();
     daemon
         .ensure_running()
         .await
         .expect("cleared identity must classify SafeToRetry and spawn");
-    let record = repo.shared_daemon_runtime_get().await.unwrap();
+    let record = repo.shared_daemon_runtime_get("default").await.unwrap();
     assert_eq!(record.state, SharedDaemonState::Running);
 }
 
@@ -4219,19 +4272,23 @@ async fn partial_identity_triple_complete_pgid_null_never_signals_and_recovers()
     let start_time = read_proc_start_time(survivor_pid).expect("survivor start time");
     let boot_id = read_boot_id().unwrap_or_default();
 
-    repo.shared_daemon_runtime_set(SharedCodexDaemonUpdate {
-        state: SharedDaemonState::Failed,
-        pid: Some(survivor_pid),
-        pgid: None,
-        sock_path: None,
-        codex_home_path: None,
-        process_start_time: Some(start_time),
-        boot_id: Some(boot_id),
-        started_at: None,
-        last_error: Some("crash".into()),
-        increment_restart_count: false,
-        daemon_env_signature: None,
-    })
+    repo.shared_daemon_runtime_set(
+        "default",
+        SharedCodexDaemonUpdate {
+            state: SharedDaemonState::Failed,
+            pid: Some(survivor_pid),
+            pgid: None,
+            paths_are_legacy_display: false,
+            sock_path: None,
+            codex_home_path: None,
+            process_start_time: Some(start_time),
+            boot_id: Some(boot_id),
+            started_at: None,
+            last_error: Some("crash".into()),
+            increment_restart_count: false,
+            daemon_env_signature: None,
+        },
+    )
     .await
     .unwrap();
 
@@ -4247,7 +4304,7 @@ async fn partial_identity_triple_complete_pgid_null_never_signals_and_recovers()
         0,
         "the pgid-NULL survivor must never be signaled"
     );
-    let record = repo.shared_daemon_runtime_get().await.unwrap();
+    let record = repo.shared_daemon_runtime_get("default").await.unwrap();
     assert_eq!(record.pid, Some(survivor_pid));
     assert!(
         record
@@ -4265,7 +4322,7 @@ async fn partial_identity_triple_complete_pgid_null_never_signals_and_recovers()
         .ensure_running()
         .await
         .expect("verify-false after exit must reopen the spawn path");
-    let record = repo.shared_daemon_runtime_get().await.unwrap();
+    let record = repo.shared_daemon_runtime_get("default").await.unwrap();
     assert_eq!(record.state, SharedDaemonState::Running);
     assert_ne!(record.pid, Some(survivor_pid));
 }
@@ -4324,19 +4381,23 @@ async fn zombie_leader_with_live_group_member_is_group_reaped_not_proven_absent(
         "the live member must sit in the zombie leader's process group"
     );
 
-    repo.shared_daemon_runtime_set(SharedCodexDaemonUpdate {
-        state: SharedDaemonState::Failed,
-        pid: Some(leader_pid),
-        pgid: Some(leader_pid),
-        sock_path: None,
-        codex_home_path: None,
-        process_start_time: Some(start_time),
-        boot_id: Some(read_boot_id().unwrap_or_default()),
-        started_at: None,
-        last_error: Some("crash".into()),
-        increment_restart_count: false,
-        daemon_env_signature: None,
-    })
+    repo.shared_daemon_runtime_set(
+        "default",
+        SharedCodexDaemonUpdate {
+            state: SharedDaemonState::Failed,
+            pid: Some(leader_pid),
+            pgid: Some(leader_pid),
+            paths_are_legacy_display: false,
+            sock_path: None,
+            codex_home_path: None,
+            process_start_time: Some(start_time),
+            boot_id: Some(read_boot_id().unwrap_or_default()),
+            started_at: None,
+            last_error: Some("crash".into()),
+            increment_restart_count: false,
+            daemon_env_signature: None,
+        },
+    )
     .await
     .unwrap();
 
@@ -4361,7 +4422,7 @@ async fn zombie_leader_with_live_group_member_is_group_reaped_not_proven_absent(
         "the live group member must have been reaped with the group; \
          a zombie leader must never yield silent ProvenAbsent without signaling"
     );
-    let record = repo.shared_daemon_runtime_get().await.unwrap();
+    let record = repo.shared_daemon_runtime_get("default").await.unwrap();
     assert_eq!(
         record.state,
         SharedDaemonState::Running,
@@ -4390,19 +4451,23 @@ async fn partial_identity_pid_only_zombie_stays_unreconciled_until_reaped() {
         "the exited-but-unreaped child must show as a zombie"
     );
 
-    repo.shared_daemon_runtime_set(SharedCodexDaemonUpdate {
-        state: SharedDaemonState::Failed,
-        pid: Some(zombie_pid),
-        pgid: None,
-        sock_path: None,
-        codex_home_path: None,
-        process_start_time: None,
-        boot_id: None,
-        started_at: None,
-        last_error: Some("crash".into()),
-        increment_restart_count: false,
-        daemon_env_signature: None,
-    })
+    repo.shared_daemon_runtime_set(
+        "default",
+        SharedCodexDaemonUpdate {
+            state: SharedDaemonState::Failed,
+            pid: Some(zombie_pid),
+            pgid: None,
+            paths_are_legacy_display: false,
+            sock_path: None,
+            codex_home_path: None,
+            process_start_time: None,
+            boot_id: None,
+            started_at: None,
+            last_error: Some("crash".into()),
+            increment_restart_count: false,
+            daemon_env_signature: None,
+        },
+    )
     .await
     .unwrap();
 
@@ -4415,7 +4480,7 @@ async fn partial_identity_pid_only_zombie_stays_unreconciled_until_reaped() {
         err.to_string().contains("unreconciled"),
         "fence error must say unreconciled; got: {err}"
     );
-    let record = repo.shared_daemon_runtime_get().await.unwrap();
+    let record = repo.shared_daemon_runtime_get("default").await.unwrap();
     assert_eq!(
         record.pid,
         Some(zombie_pid),
@@ -4432,7 +4497,7 @@ async fn partial_identity_pid_only_zombie_stays_unreconciled_until_reaped() {
         .ensure_running()
         .await
         .expect("a truly-gone /proc entry must reopen the spawn path");
-    let record = repo.shared_daemon_runtime_get().await.unwrap();
+    let record = repo.shared_daemon_runtime_get("default").await.unwrap();
     assert_eq!(record.state, SharedDaemonState::Running);
     assert_ne!(record.pid, Some(zombie_pid));
 }
@@ -4551,7 +4616,7 @@ async fn adopted_mismatched_daemon_drains_at_first_thread_start() {
     assert_ne!(new_pid, Some(old_pid), "drain must replace the process");
     assert!(!daemon.needs_respawn_on_next_thread_start_for_test());
 
-    let record = repo.shared_daemon_runtime_get().await.unwrap();
+    let record = repo.shared_daemon_runtime_get("default").await.unwrap();
     assert_eq!(record.pid, new_pid);
     let expected_signature = effective_test_env_signature(&cfg(&root).codex_ingest_url_resolved());
     assert_eq!(
@@ -4626,7 +4691,7 @@ async fn adopt_drain_obligation_survives_supervisor_loss() {
         "the fresh supervisor must RE-MARK the drain from the durable \
          old-signature mismatch"
     );
-    let record = repo.shared_daemon_runtime_get().await.unwrap();
+    let record = repo.shared_daemon_runtime_get("default").await.unwrap();
     assert_eq!(
         record.daemon_env_signature.as_deref(),
         Some("stale-env-signature"),
@@ -4672,7 +4737,7 @@ async fn adopt_restamp_failure_keeps_mismatch_durably_detectable() {
     // Force the re-stamp (the sole `running` write on the adoption path)
     // to fail.
     sqlx::query(
-        "CREATE TRIGGER fail_running_stamp BEFORE UPDATE ON shared_codex_daemon \
+        "CREATE TRIGGER fail_running_stamp BEFORE UPDATE ON codex_backend_daemons \
          WHEN NEW.state = 'running' BEGIN SELECT RAISE(ABORT, 'forced re-stamp failure'); END",
     )
     .execute(repo.pool())
@@ -4695,7 +4760,7 @@ async fn adopt_restamp_failure_keeps_mismatch_durably_detectable() {
         instance_a.needs_respawn_on_next_thread_start_for_test(),
         "the in-memory drain must still be armed on re-stamp failure"
     );
-    let record = repo.shared_daemon_runtime_get().await.unwrap();
+    let record = repo.shared_daemon_runtime_get("default").await.unwrap();
     assert_eq!(
         record.daemon_env_signature.as_deref(),
         Some("stale-env-signature"),
@@ -4787,7 +4852,7 @@ async fn aborted_detached_transition_belt_terms_child_and_leaves_starting_row() 
         "the belt must SIGTERM only: the child's 300ms cooperative shutdown \
          must complete (kill_on_drop/SIGKILL would kill it first)"
     );
-    let record = repo.shared_daemon_runtime_get().await.unwrap();
+    let record = repo.shared_daemon_runtime_get("default").await.unwrap();
     assert_eq!(
         record.state,
         SharedDaemonState::Starting,
@@ -4830,7 +4895,7 @@ async fn caller_cancelled_mid_transition_still_reaches_terminal_running() {
          caller; still {:?}",
         daemon.status_snapshot().state
     );
-    let record = repo.shared_daemon_runtime_get().await.unwrap();
+    let record = repo.shared_daemon_runtime_get("default").await.unwrap();
     assert_eq!(record.state, SharedDaemonState::Running);
     assert_eq!(record.pid, Some(pid), "the spawned child owns the row");
 }
@@ -4878,7 +4943,7 @@ async fn concurrent_transition_blocks_until_cancelled_callers_task_terminal() {
     assert_eq!(snapshot.state, SharedDaemonState::Running);
     let second_pid = snapshot.runtime.map(|runtime| runtime.pid);
     assert_ne!(second_pid, Some(first_pid));
-    let record = repo.shared_daemon_runtime_get().await.unwrap();
+    let record = repo.shared_daemon_runtime_get("default").await.unwrap();
     assert_eq!(
         record.pid, second_pid,
         "the row must end as the SECOND transition's write — the first \
@@ -4942,7 +5007,7 @@ async fn forced_running_persist_error_reaps_gracefully_and_terminalizes_failed()
     // The `starting` INSERT passes; only the Running upsert (an UPDATE on
     // the existing row) trips the trigger.
     sqlx::query(
-        "CREATE TRIGGER fail_running_stamp BEFORE UPDATE ON shared_codex_daemon \
+        "CREATE TRIGGER fail_running_stamp BEFORE UPDATE ON codex_backend_daemons \
          WHEN NEW.state = 'running' BEGIN SELECT RAISE(ABORT, 'forced running persist failure'); END",
     )
     .execute(repo.pool())
@@ -4962,7 +5027,7 @@ async fn forced_running_persist_error_reaps_gracefully_and_terminalizes_failed()
         "the Err arm must reap the child gracefully (cooperative marker) \
          before the error surfaces"
     );
-    let record = repo.shared_daemon_runtime_get().await.unwrap();
+    let record = repo.shared_daemon_runtime_get("default").await.unwrap();
     assert_eq!(
         record.state,
         SharedDaemonState::Failed,
@@ -4997,7 +5062,7 @@ async fn spawn_transition_task_outlives_caller_cancelled_at_first_await() {
          must complete the transition; still {:?}",
         daemon.status_snapshot().state
     );
-    let record = repo.shared_daemon_runtime_get().await.unwrap();
+    let record = repo.shared_daemon_runtime_get("default").await.unwrap();
     assert_eq!(record.state, SharedDaemonState::Running);
 }
 
@@ -5171,3 +5236,6 @@ mod thread_release;
 
 #[path = "cases/shared_codex_thread_path.rs"]
 mod thread_path;
+
+#[path = "cases/agent_backend_upgrade.rs"]
+mod agent_backend_upgrade;

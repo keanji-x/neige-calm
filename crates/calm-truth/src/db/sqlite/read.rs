@@ -747,15 +747,15 @@ impl RepoRead for SqlxRepo {
         .await?)
     }
 
-    async fn shared_daemon_runtime_get(&self) -> Result<SharedCodexDaemonRecord> {
+    async fn shared_daemon_runtime_get(&self, backend_id: &str) -> Result<SharedCodexDaemonRecord> {
         let row = sqlx::query_as::<
             _,
             (
                 String,
                 Option<i32>,
                 Option<i32>,
-                Option<String>,
-                Option<String>,
+                Option<Vec<u8>>,
+                Option<Vec<u8>>,
                 Option<i64>,
                 Option<String>,
                 Option<i64>,
@@ -763,14 +763,16 @@ impl RepoRead for SqlxRepo {
                 i64,
                 Option<String>,
                 Option<String>,
+                bool,
             ),
         >(
             r#"SELECT state, pid, pgid, sock_path, codex_home_path, process_start_time,
                       boot_id, started_at, updated_at, restart_count, last_error,
-                      daemon_env_signature
-               FROM shared_codex_daemon
-               WHERE id = 1"#,
+                      daemon_env_signature, paths_are_legacy_display
+               FROM codex_backend_daemons
+               WHERE backend_id = ?1"#,
         )
+        .bind(backend_id)
         .fetch_one(self.db.read_pool())
         .await?;
         Ok(SharedCodexDaemonRecord {
@@ -779,6 +781,7 @@ impl RepoRead for SqlxRepo {
             })?,
             pid: row.1,
             pgid: row.2,
+            paths_are_legacy_display: row.12,
             sock_path: row.3,
             codex_home_path: row.4,
             process_start_time: row.5.and_then(|v| u64::try_from(v).ok()),
