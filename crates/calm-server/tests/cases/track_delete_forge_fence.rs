@@ -30,6 +30,7 @@ struct Boot {
     repo: Arc<dyn Repo>,
     tmp: TempDir,
     state: AppState,
+    execution: crate::support::execution::Fixture,
 }
 
 async fn boot() -> Boot {
@@ -80,6 +81,8 @@ async fn boot() -> Boot {
         Some(track_area_cache),
     );
 
+    let execution =
+        crate::support::execution::Fixture::new(repo.sqlite_db().unwrap().clone()).await;
     let app = routes::router()
         .layer(axum::middleware::from_fn_with_state(
             calm_server::auth::AuthState::new(calm_server::auth::AuthConfig {
@@ -101,6 +104,7 @@ async fn boot() -> Boot {
         repo,
         tmp,
         state,
+        execution,
     }
 }
 
@@ -156,7 +160,12 @@ async fn create_track(boot: &Boot, title: &str) -> String {
     body["id"].as_str().expect("track id").to_string()
 }
 
-async fn insert_spawn_started_forge_action(boot: &Boot, track_id: &str, idem: &str) -> String {
+async fn insert_forge_action(
+    boot: &Boot,
+    track_id: &str,
+    idem: &str,
+    probe: Option<calm_server::operation::forge_action_adapter::ProbeSpec>,
+) -> String {
     let card_id = boot
         .repo
         .cards_by_track(track_id)
@@ -170,19 +179,37 @@ async fn insert_spawn_started_forge_action(boot: &Boot, track_id: &str, idem: &s
     let payload = ForgeActionPayload {
         track_id: track_id.to_string(),
         card_id,
-        subject: None,
+        subject: probe
+            .as_ref()
+            .map(|_| serde_json::from_value(json!({"pr_number":42})).unwrap()),
         argv: vec!["/bin/true".into()],
         idem_key: idem.into(),
-        event_spec: None,
+        event_spec: probe.as_ref().map(|_| {
+            serde_json::from_value(json!({
+                "event_kind":"forge.pr.merged", "fields":{
+                    "head_sha":{"json_field":{"path":"/headRefOid"}},
+                    "merge_sha":{"json_field":{"path":"/oid"}}
+                }
+            }))
+            .unwrap()
+        }),
         context: Map::new(),
-        probe: None,
-        cwd_lease: boot.tmp.path().join(format!("{idem}.cwd")),
+        probe,
+        cwd_lease: PathBuf::from(
+            boot.repo
+                .track_get(track_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .workspace
+                .agent_cwd(),
+        ),
         result_path: boot.tmp.path().join(format!("{idem}.result.json")),
         deadline_ms: now_ms() + 60_000,
     };
     let pool = boot.repo.sqlite_db().expect("sqlite pool");
     let operation_repo = SqlxOperationRepo::new(pool.clone());
-    let op_id = operation_repo
+    operation_repo
         .insert_operation(
             FORGE_ACTION_KIND,
             OperationKey {
@@ -193,13 +220,13 @@ async fn insert_spawn_started_forge_action(boot: &Boot, track_id: &str, idem: &s
             serde_json::to_value(payload).expect("payload json"),
         )
         .await
-        .expect("insert forge action");
-    sqlx::query("UPDATE operations SET phase = 'spawn_started' WHERE id = ?1")
-        .bind(&op_id)
-        .execute(pool.writer_pool())
-        .await
-        .expect("mark forge action active");
-    op_id
+        .expect("insert forge action")
+}
+
+async fn insert_native_forge_action(boot: &Boot, track_id: &str, idem: &str) -> String {
+    let id = insert_forge_action(boot, track_id, idem, None).await;
+    set_operation_phase(boot, &id, "spawn_started").await;
+    id
 }
 
 async fn set_operation_phase(boot: &Boot, op_id: &str, phase: &str) {
@@ -213,30 +240,35 @@ async fn set_operation_phase(boot: &Boot, op_id: &str, phase: &str) {
 }
 
 #[tokio::test]
-async fn delete_track_conflicts_while_forge_action_active_then_allows_terminal_phase() {
+async fn c5_delete_track_forge_unsettled_blocks_settled_parked_allows() {
     let boot = boot().await;
     let track_id = create_track(&boot, "track-active").await;
-    let op_id = insert_spawn_started_forge_action(&boot, &track_id, "track-active-op").await;
+    let op_id = real_forge_action(&boot, &track_id, "track-active-op").await;
 
     let status = delete(boot.app.clone(), &format!("/api/tracks/{track_id}")).await;
     assert_eq!(status, StatusCode::CONFLICT);
 
-    set_operation_phase(&boot, &op_id, "succeeded").await;
+    settle_action(&boot, &op_id).await;
     let status = delete(boot.app.clone(), &format!("/api/tracks/{track_id}")).await;
     assert_eq!(status, StatusCode::NO_CONTENT);
 }
 
 #[tokio::test]
-async fn delete_area_conflicts_when_child_track_has_active_forge_action() {
+async fn c5_delete_area_forge_unsettled_blocks_settled_parked_allows() {
     let boot = boot().await;
     let track_id = create_track(&boot, "area-active").await;
-    insert_spawn_started_forge_action(&boot, &track_id, "area-active-op").await;
+    let op = real_forge_action(&boot, &track_id, "area-active-op").await;
 
     let status = delete(boot.app.clone(), &format!("/api/areas/{}", boot.area_id)).await;
     assert_eq!(status, StatusCode::CONFLICT);
+    settle_action(&boot, &op).await;
+    assert_eq!(
+        delete(boot.app.clone(), &format!("/api/areas/{}", boot.area_id)).await,
+        StatusCode::NO_CONTENT
+    );
 }
 
-async fn assert_closed_worktree_clean_refuses_forge(native_stuck: bool) {
+async fn assert_closed_worktree_clean_refuses_forge(kind: &str) {
     use crate::support::git_helpers::run_git;
     use calm_server::test_seams::clean_closed_worktrees_with_history_for_test as clean;
     use std::collections::HashSet;
@@ -270,8 +302,12 @@ async fn assert_closed_worktree_clean_refuses_forge(native_stuck: bool) {
         .execute(pool)
         .await
         .unwrap();
-    let op = insert_spawn_started_forge_action(&boot, &track, "clean-active-op").await;
-    if native_stuck {
+    let op = if kind != "migrated" {
+        insert_native_forge_action(&boot, &track, "clean-active-op").await
+    } else {
+        real_forge_action(&boot, &track, "clean-active-op").await
+    };
+    if kind == "native-stuck" {
         // Seed the released native checkpoint, then exercise real compensation refusal.
         set_operation_phase(&boot, &op, "pending").await;
         let operations = SqlxOperationRepo::new(db.clone());
@@ -312,6 +348,16 @@ async fn assert_closed_worktree_clean_refuses_forge(native_stuck: bool) {
         );
     }
 
+    if kind == "no-record" {
+        assert_eq!(
+            delete(boot.app.clone(), &format!("/api/tracks/{track}")).await,
+            StatusCode::CONFLICT
+        );
+        assert_eq!(
+            delete(boot.app.clone(), &format!("/api/areas/{}", boot.area_id)).await,
+            StatusCode::CONFLICT
+        );
+    }
     let mut history = HashSet::new();
     assert_eq!(
         clean(&db, &boot.state.operation_runtime, &mut history)
@@ -321,7 +367,11 @@ async fn assert_closed_worktree_clean_refuses_forge(native_stuck: bool) {
     );
     assert!(history.is_empty(), "refused clean must remain retryable");
     assert!(ignored.exists(), "active forge must protect ignored files");
-    set_operation_phase(&boot, &op, "succeeded").await;
+    if kind != "migrated" {
+        set_operation_phase(&boot, &op, "succeeded").await;
+    } else {
+        settle_action(&boot, &op).await;
+    }
     assert_eq!(
         clean(&db, &boot.state.operation_runtime, &mut history)
             .await
@@ -333,10 +383,19 @@ async fn assert_closed_worktree_clean_refuses_forge(native_stuck: bool) {
 }
 
 #[tokio::test]
-async fn c3_closed_worktree_clean_refuses_active_forge_action() {
-    assert_closed_worktree_clean_refuses_forge(false).await;
+async fn c5_clean_forge_unsettled_blocks_settled_parked_allows() {
+    assert_closed_worktree_clean_refuses_forge("migrated").await;
 }
 #[tokio::test]
 async fn c3_closed_worktree_clean_refuses_unresolved_native_stuck_forge_row() {
-    assert_closed_worktree_clean_refuses_forge(true).await;
+    assert_closed_worktree_clean_refuses_forge("native-stuck").await;
+}
+
+#[path = "track_delete_forge_fence/c5_probe.rs"]
+mod c5_probe;
+use c5_probe::{real_forge_action, settle_action};
+
+#[tokio::test]
+async fn c5_no_record_forge_recoverable_phase_blocks_track_area_and_clean() {
+    assert_closed_worktree_clean_refuses_forge("no-record").await;
 }

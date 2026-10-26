@@ -804,3 +804,6 @@ mod c5_location;
 
 #[path = "execution_hooks/c5_admission.rs"]
 mod c5_admission;
+
+#[path = "execution_hooks/c5_area.rs"]
+mod c5_area;

@@ -161,9 +161,28 @@ pub(super) async fn recover(
             },
         );
     }
-    execution::admit_probe(ctx, op, &frozen, Kind::Verdict).await?;
-    Ok(ParkedRecovery::LeaveParked)
+    admit_probe(ctx, op, &frozen, Kind::Verdict).await
 }
+/// Busy leaves the durable record and deadline untouched; the next claimed
+/// observer/sweep step retries. A deleted track is a terminal infrastructure failure.
+async fn admit_probe(
+    ctx: &SpawnCtx,
+    op: &Operation,
+    frozen: &FrozenForge,
+    kind: Kind,
+) -> Result<ParkedRecovery> {
+    match execution::admit_probe(ctx, op, frozen, kind).await {
+        Ok(execution::ProbeAdmission::Admitted) | Err(CalmError::WorkspaceBusy(_)) => {
+            Ok(ParkedRecovery::LeaveParked)
+        }
+        Ok(execution::ProbeAdmission::TrackGone) => Ok(failed(
+            "gate-infra: forge probe track was deleted",
+            "gate-infra",
+        )),
+        Err(error) => Err(error),
+    }
+}
+
 async fn probe_step(
     ctx: &SpawnCtx,
     op: &Operation,
@@ -227,8 +246,7 @@ async fn probe_step(
         ));
     }
     let Some(probe) = &record.probes.output else {
-        execution::admit_probe(ctx, op, frozen, Kind::Output).await?;
-        return Ok(ParkedRecovery::LeaveParked);
+        return admit_probe(ctx, op, frozen, Kind::Output).await;
     };
     let settlement = settlements
         .iter()
@@ -382,6 +400,8 @@ async fn observe_inner(ctx: &SpawnCtx, id: &str) {
         retry_delay = std::time::Duration::from_millis(50);
         if let Some(op) = op {
             let result = observer_step(ctx, &op).await;
+            #[cfg(feature = "fixtures")]
+            crate::test_seams::pause_point("forge-observer-after-step", id).await;
             if let Err(error) = result {
                 // Preserve the error and lease backoff through the same owned recovery path.
                 tracing::warn!(op_id=%id,%error,"forge execution retained");

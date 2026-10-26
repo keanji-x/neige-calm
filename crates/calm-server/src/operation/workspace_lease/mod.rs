@@ -70,18 +70,28 @@ const RECOVERABLE_OPERATION_PHASES: &[PhaseTag] = &[
     PhaseTag::Compensating,
 ];
 
-/// Defensive track/area teardown fence for in-flight forge actions.
-/// Non-transactional read before the teardown transaction, so it has a TOCTOU window; the forge-op parked-recovery contract remains the real backstop.
+/// Logical activity policy for track_close, including migrated forge operations.
 pub(crate) async fn track_has_active_forge_action(
     pool: &SqlitePool,
     track_id: &str,
 ) -> Result<bool> {
-    any_track_has_active_forge_action(pool, &[track_id]).await
+    forge_action_blocks(pool, &[track_id], true).await
 }
 
-pub(crate) async fn any_track_has_active_forge_action(
+/// Destructive effects retain the phase proxy only for operations without an
+/// execution record. Migrated actions/probes use execution occupancy and the
+/// shared probe admission fence; native rows, including Stuck, remain protected.
+pub(crate) async fn any_track_has_unmigrated_forge_action(
     pool: &SqlitePool,
     track_ids: &[&str],
+) -> Result<bool> {
+    forge_action_blocks(pool, track_ids, false).await
+}
+
+async fn forge_action_blocks(
+    pool: &SqlitePool,
+    track_ids: &[&str],
+    include_execution_records: bool,
 ) -> Result<bool> {
     if track_ids.is_empty() {
         return Ok(false);
@@ -93,6 +103,9 @@ pub(crate) async fn any_track_has_active_forge_action(
              WHERE kind = "#,
     );
     query.push_bind(FORGE_ACTION_KIND);
+    if !include_execution_records {
+        query.push(" AND json_type(tx_output_json, '$.data.forge_execution') IS NULL");
+    }
     query.push(" AND target_type = 'track' AND target_id IN (");
     {
         let mut separated = query.separated(", ");

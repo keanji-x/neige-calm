@@ -394,7 +394,16 @@ async fn boot_fixture() -> Fixture {
                 events.clone(),
                 completion,
             )
-            .with_execution(execution.lifecycle.clone()),
+            .with_execution(execution.lifecycle.clone())
+            .with_location_admission(
+                calm_server::operation::location_admission::LocationAdmission {
+                    managed_root: tmp.path().join("managed"),
+                    objective_checkout_root: tmp.path().join("objective-checkouts"),
+                    teardown_targets: Default::default(),
+                    area_locks: calm_server::per_card_lock::new_keyed_locks(),
+                    track_locks: calm_server::per_card_lock::new_keyed_locks(),
+                },
+            ),
         )
         .await
         .expect("operation runtime"),

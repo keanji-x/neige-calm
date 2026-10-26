@@ -247,3 +247,100 @@ async fn c5_trash_restore_occupied_owner_protects_until_delete() {
 async fn c5_trash_restore_rename_failure_owner_protects_until_delete() {
     failed_rollback_gc(false).await;
 }
+
+async fn failed_area_rollback_gc(occupied: bool) {
+    for panicking in [false, true] {
+        let b = boot_with_storage(|root| root.join("workspaces"), true).await;
+        let area = create_area(&b, "Area retention").await;
+        let (track, path) = managed_track(&b, &area, "restore blocked").await;
+        let (other, other_path) = managed_track(&b, &area, "restore succeeds").await;
+        let other_before = fingerprint(&other_path);
+        let hook = calm_server::routes::areas::AreaDeleteCommitHook {
+            entered: Arc::default(),
+            release: Arc::default(),
+            fail_after_release: !panicking,
+            panic_after_release: panicking,
+        };
+        calm_server::routes::areas::install_area_delete_commit_hook_for_test(&area, hook.clone());
+        let app = b.app.clone();
+        let id = area.clone();
+        let deletion =
+            tokio::spawn(
+                async move { request(app, "DELETE", &format!("/api/areas/{id}"), None).await },
+            );
+        tokio::time::timeout(LIMIT, hook.entered.notified())
+            .await
+            .unwrap();
+        assert!(!path.exists());
+        assert!(!other_path.exists());
+        let trash = trash_entry_for(&b.workspace_root, &track).unwrap();
+        let expired = b.workspace_root.join(".trash").join(format!("{track}-1"));
+        if occupied {
+            std::fs::create_dir_all(&path).unwrap();
+        } else {
+            // Inject rename failure while retaining the owned bytes under a valid trash name.
+            std::fs::rename(&trash, &expired).unwrap();
+        }
+        hook.release.notify_one();
+        let (status, body) = deletion.await.unwrap();
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
+        assert!(b.repo.area_get(&area).await.unwrap().is_some());
+        for id in [&track, &other] {
+            assert!(b.repo.track_get(id).await.unwrap().is_some());
+        }
+        assert!(
+            diff(&other_before, &fingerprint(&other_path)).is_empty(),
+            "one failed restore must not skip another member"
+        );
+        assert_eq!(path.exists(), occupied);
+        if occupied {
+            std::fs::rename(&trash, &expired).unwrap();
+        }
+        collect_once(
+            b.workspace_root.clone(),
+            b.operation_runtime.clone(),
+            b.repo.db().clone(),
+        )
+        .await;
+        assert!(
+            expired.is_dir(),
+            "failed Area restore survives retention expiry"
+        );
+        let reboot = boot().await;
+        let reopened = SqlxRepo::open(&format!(
+            "sqlite:{}",
+            b.tmp.path().join("state.db").display()
+        ))
+        .await
+        .unwrap();
+        collect_once(
+            b.workspace_root.clone(),
+            reboot.operation_runtime.clone(),
+            reopened.db().clone(),
+        )
+        .await;
+        assert!(
+            expired.is_dir(),
+            "durable managed members protect trash after restart"
+        );
+        let (status, body) = delete_area(&b, &area).await;
+        assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+        collect_once(
+            b.workspace_root.clone(),
+            b.operation_runtime.clone(),
+            b.repo.db().clone(),
+        )
+        .await;
+        assert!(!expired.exists());
+    }
+}
+
+#[tokio::test]
+async fn c5_area_failed_restore_occupied_owner_protects_until_delete() {
+    failed_area_rollback_gc(true).await;
+}
+
+#[tokio::test]
+async fn c5_area_failed_restore_rename_failure_owner_protects_until_delete() {
+    failed_area_rollback_gc(false).await;
+}

@@ -224,14 +224,20 @@ pub(crate) async fn admit_action(
     Ok(())
 }
 
-/// A live claim and null slot CAS exclude old claimants, boot steals and repeat admission.
+#[derive(Debug)]
+pub(crate) enum ProbeAdmission {
+    Admitted,
+    TrackGone,
+}
+
+/// Lifecycle fences precede the writer; claim, track existence and null-slot CAS
+/// are checked together. Every guard survives through the admission commit.
 pub(crate) async fn admit_probe(
     ctx: &SpawnCtx,
     op: &Operation,
     frozen: &forge::FrozenForge,
     kind: Kind,
-) -> Result<()> {
-    let engine = engine(ctx)?;
+) -> Result<ProbeAdmission> {
     let old = record(op)?;
     if !matches!(op.phase, super::Phase::Parked) {
         return Err(conflict("probe requires parked operation"));
@@ -244,7 +250,50 @@ pub(crate) async fn admit_probe(
     if !absent {
         return Err(conflict("probe already admitted"));
     }
-    let intent = intent(ctx, op, frozen, kind).await?;
+    let admission = ctx.location_admission.as_ref().ok_or_else(|| {
+        CalmError::Internal("forge probe location admission is not configured".into())
+    })?;
+    let _track = crate::per_card_lock::try_lock_key(&admission.track_locks, &frozen.track_id)
+        .ok_or_else(|| CalmError::WorkspaceBusy(frozen.track_id.clone()))?;
+    // Resolve aliases before owner lookup. Missing tails remain resolvable after
+    // deletion, so the writer can report TrackGone even when cwd no longer exists.
+    let pool = ctx.operation_repo.sqlite_db();
+    let location = match async {
+        let root = workspace::worktree::physical_path(&frozen.cwd_lease).map_err(conflict)?;
+        let mut conn = pool.read_pool().acquire().await?;
+        let location = admission
+            .try_fence(&mut conn, &root, Some(&frozen.track_id))
+            .await?;
+        Ok((root, location))
+    }
+    .await
+    {
+        Err(error @ CalmError::WorkspaceBusy(_)) => return Err(error),
+        result => result,
+    };
+    // Collect environment/cwd I/O outside the writer, but defer its error until
+    // the live-claim transaction has distinguished a deleted track.
+    let intent = intent(ctx, op, frozen, kind).await;
+    let mut tx = crate::db::sqlite::begin_immediate_tx(&pool).await?;
+    super::repo_sqlite::require_live_claim_tx(&mut tx, op).await?;
+    if calm_truth::db::sqlite::track_find_tx(&mut tx, &frozen.track_id)
+        .await?
+        .is_none()
+    {
+        return Ok(ProbeAdmission::TrackGone);
+    }
+    // A deleted track also wins over path errors such as a now-dangling cwd alias.
+    let (root, location) = location?;
+    let engine = engine(ctx)?;
+    let intent = intent?;
+    // A cwd alias may have been repointed during intent construction. Never
+    // admit a root different from the one whose owners we fenced.
+    if intent.metadata.source.root != root {
+        return Err(CalmError::WorkspaceBusy(
+            frozen.cwd_lease.display().to_string(),
+        ));
+    }
+    location.recheck(&mut tx).await?;
     let mut new = old.clone();
     new.set(
         kind,
@@ -257,14 +306,11 @@ pub(crate) async fn admit_probe(
     if matches!(kind, Kind::Output) {
         new.verdict = Verdict::Landed;
     }
-    let pool = ctx.operation_repo.sqlite_db();
-    let mut tx = crate::db::sqlite::begin_immediate_tx(&pool).await?;
-    super::repo_sqlite::require_live_claim_tx(&mut tx, op).await?;
     let ticket = engine.admit(&mut tx, intent).await.map_err(conflict)?;
     sql::compare_exchange(&mut tx, &op.id, KEY, &encoded(&old)?, &encoded(&new)?).await?;
     tx.commit().await?;
     engine.drive(ticket.committed());
-    Ok(())
+    Ok(ProbeAdmission::Admitted)
 }
 async fn transition(
     ctx: &SpawnCtx,

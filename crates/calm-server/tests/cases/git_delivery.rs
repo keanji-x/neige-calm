@@ -300,7 +300,16 @@ pub(super) async fn fixture_on_with_runtime(
         events.clone(),
         completion.clone(),
     )
-    .with_execution(execution.lifecycle.clone());
+    .with_execution(execution.lifecycle.clone())
+    .with_location_admission(
+        calm_server::operation::location_admission::LocationAdmission {
+            managed_root: workspace_root.clone(),
+            objective_checkout_root: tmp.path().join("objective-checkouts"),
+            teardown_targets: Default::default(),
+            area_locks: calm_server::per_card_lock::new_keyed_locks(),
+            track_locks: calm_server::per_card_lock::new_keyed_locks(),
+        },
+    );
     if let Some(shared) = shared_codex {
         spawn_ctx = spawn_ctx.with_shared_codex_appserver(shared);
     }

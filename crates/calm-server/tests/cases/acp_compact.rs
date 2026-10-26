@@ -506,3 +506,74 @@ async fn acp_compact_review_auto_start_races_manual() {
 async fn acp_compact_review_replayed_settled_id_restarts() {
     review_unknown("compact-review-replayed-id").await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn c5_area_acp_all_members_revoke_before_generic_stop() {
+    let root = Root::new("unused");
+    let stack = boot(&root).await;
+    let (track, card) = create(&stack).await;
+    let area = stack
+        .repo()
+        .track_get(&track)
+        .await
+        .unwrap()
+        .unwrap()
+        .area_id;
+    let (_, second) = stack
+        .create_claude_track_with(json!({
+            "area_id":area,"planner_provider":"opencode","template_id":null,"attach_folder":false
+        }))
+        .await;
+    std::fs::write(root.path().join("scenario"), "hold").unwrap();
+    for card in [&card, &second] {
+        let (status, body) = stack.post_input(card, "hold").await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let runtime = stack.runtime(card).await;
+        wait_phase(&stack, &runtime.id, "turn_running").await;
+    }
+    let sessions = [
+        stack.runtime(&card).await.id,
+        stack.runtime(&second).await.id,
+    ];
+    // Ensure this is testing revocation, rather than already absent credentials.
+    for id in &sessions {
+        let token: Option<String> =
+            sqlx::query_scalar("SELECT mcp_token_hash FROM worker_sessions WHERE id=?")
+                .bind(id)
+                .fetch_one(stack.repo().sqlite_db().unwrap().read_pool())
+                .await
+                .unwrap();
+        assert!(token.is_some());
+    }
+    let p = calm_server::test_seams::PausePoint::default();
+    calm_server::test_seams::install_pause_for_test(
+        "c5-area-before-generic-stop",
+        area.as_str(),
+        p.clone(),
+    );
+    let observe = async {
+        tokio::time::timeout(Duration::from_secs(15), p.entered.notified())
+            .await
+            .unwrap();
+        let mut tokens = Vec::new();
+        for id in &sessions {
+            let token: Option<String> =
+                sqlx::query_scalar("SELECT mcp_token_hash FROM worker_sessions WHERE id=?")
+                    .bind(id)
+                    .fetch_one(stack.repo().sqlite_db().unwrap().read_pool())
+                    .await
+                    .unwrap();
+            tokens.push(token);
+        }
+        p.release.notify_one();
+        tokens
+    };
+    let url = format!("/api/areas/{area}");
+    let ((status, body), tokens) = tokio::join!(stack.send("DELETE", &url, None), observe);
+    stack.shutdown().await;
+    assert!(
+        tokens.iter().all(Option::is_none),
+        "all ACP credentials must be revoked before generic Stop"
+    );
+    assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+}

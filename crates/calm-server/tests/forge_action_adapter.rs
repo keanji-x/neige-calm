@@ -118,6 +118,13 @@ impl TestBoot {
         let completion = OperationCompletionBus::new();
         let route_repo: Arc<dyn RouteRepo> = repo.clone();
         let terminal_renderer = TerminalRendererRegistry::new_with_repo(route_repo.clone());
+        let admission = calm_server::operation::location_admission::LocationAdmission {
+            managed_root: tmp.path().join("managed"),
+            objective_checkout_root: tmp.path().join("objective-checkouts"),
+            teardown_targets: Default::default(),
+            area_locks: calm_server::per_card_lock::new_keyed_locks(),
+            track_locks: calm_server::per_card_lock::new_keyed_locks(),
+        };
         let runtime = OperationRuntime::new_unchecked(
             operation_repo.clone(),
             vec![Arc::new(ForgeActionAdapter::new())],
@@ -131,7 +138,8 @@ impl TestBoot {
                 events.clone(),
                 completion.clone(),
             )
-            .with_execution(execution.lifecycle.clone()),
+            .with_execution(execution.lifecycle.clone())
+            .with_location_admission(admission.clone()),
         );
         let route_repo: Arc<dyn RouteRepo> = repo.clone();
         let terminal_renderer = TerminalRendererRegistry::new_with_repo(route_repo.clone());
@@ -143,7 +151,8 @@ impl TestBoot {
             events,
             completion,
         )
-        .with_execution(execution.lifecycle.clone());
+        .with_execution(execution.lifecycle.clone())
+        .with_location_admission(admission);
         Self {
             _tmp: tmp,
             _execution: execution,

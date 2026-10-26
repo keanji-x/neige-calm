@@ -163,9 +163,9 @@ pub(super) async fn closed_idle_reclaim_safe(
     };
     Ok(
         expected_close.is_none_or(|expected| candidate.closed_at == Some(expected))
-            && !crate::operation::workspace_lease::track_has_active_forge_action(
+            && !crate::operation::workspace_lease::any_track_has_unmigrated_forge_action(
                 db.read_pool(),
-                track,
+                &[track],
             )
             .await?
             && checkout_occupancy(&mut *db.read_pool().acquire().await?, track, "").await?

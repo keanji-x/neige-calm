@@ -127,10 +127,26 @@ async fn require_legacy_safe_tx(tx: &mut Tx<'_>, scope: &Scope) -> Result<()> {
 pub(crate) async fn require_track_location_safe_tx(tx: &mut Tx<'_>, track: &str) -> Result<()> {
     let workspace = crate::db::sqlite::track_workspace_read_tx(tx, track).await?;
     let targets = workspace_effect_targets(&workspace);
-    let ids = calm_truth::db::sqlite::workspace_execution::location_occupancy(
+    require_location_safe_tx(
         tx,
+        &Scope::Track(track.into()),
         calm_truth::db::sqlite::workspace_execution::Scope::Track(track),
         &targets,
+    )
+    .await
+}
+
+/// One positive proof, retaining the Legacy obligation check for the same scope.
+pub(crate) async fn require_location_safe_tx(
+    tx: &mut Tx<'_>,
+    legacy_scope: &Scope,
+    execution_scope: calm_truth::db::sqlite::workspace_execution::Scope<'_>,
+    targets: &[PathBuf],
+) -> Result<()> {
+    let ids = calm_truth::db::sqlite::workspace_execution::location_occupancy(
+        tx,
+        execution_scope,
+        targets,
     )
     .await?;
     if !ids.is_empty() {
@@ -138,7 +154,7 @@ pub(crate) async fn require_track_location_safe_tx(tx: &mut Tx<'_>, track: &str)
             "unsettled workspace executions {ids:?}; rows and workspace retained"
         )));
     }
-    require_legacy_safe_tx(tx, &Scope::Track(track.into())).await
+    require_legacy_safe_tx(tx, legacy_scope).await
 }
 
 pub(crate) fn workspace_effect_targets(workspace: &crate::model::TrackWorkspace) -> Vec<PathBuf> {

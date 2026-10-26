@@ -667,7 +667,16 @@ async fn forge_runtime_fixture() -> ForgeRuntimeFixture {
                 events,
                 completion,
             )
-            .with_execution(execution.lifecycle.clone()),
+            .with_execution(execution.lifecycle.clone())
+            .with_location_admission(
+                crate::operation::location_admission::LocationAdmission {
+                    managed_root: results.path().join("managed"),
+                    objective_checkout_root: results.path().join("objective-checkouts"),
+                    teardown_targets: Default::default(),
+                    area_locks: crate::per_card_lock::new_keyed_locks(),
+                    track_locks: crate::per_card_lock::new_keyed_locks(),
+                },
+            ),
         )
         .await
         .expect("operation runtime"),

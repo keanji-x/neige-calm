@@ -15,7 +15,7 @@ use crate::extract::{Json, JsonBody, Path, Query};
 use crate::ids::ActorId;
 use crate::model::{Area, AreaKind, AreaPatch, NewArea, Track};
 use crate::operation::workspace_lease::{
-    any_track_has_active_forge_action, release_workspace_leases_for_track_tx,
+    any_track_has_unmigrated_forge_action, release_workspace_leases_for_track_tx,
 };
 use crate::organization_access::{
     require_area_access, require_area_access_tx, require_deployment_owner,
@@ -359,6 +359,7 @@ struct PreparedAreaDeletion {
     id: String,
     area_kind: Option<AreaKind>,
     tracks: Vec<Track>,
+    location_targets: Vec<std::path::PathBuf>,
     actor: ActorId,
     principal: Principal,
     turn_daemon: std::sync::Arc<crate::shared_codex_appserver::SharedCodexAppServer>,
@@ -466,7 +467,15 @@ impl PreparedAreaDeletion {
                 track.id.as_str(),
             )
             .await?;
+            crate::acp_planner::config::sweep_track(
+                route.repo.as_ref(),
+                &route.acp_planner,
+                track.id.as_str(),
+            )
+            .await?;
         }
+        #[cfg(feature = "fixtures")]
+        crate::test_seams::pause_point("c5-area-before-generic-stop", &self.id).await;
         crate::execution_quiesce::quiesce(
             route.repo.as_ref(),
             route.operation_runtime.execution().engine(),
@@ -497,12 +506,6 @@ impl PreparedAreaDeletion {
                     terminal_card_ids.push(terminal.card_id.to_string());
                 }
             }
-            crate::acp_planner::config::sweep_track(
-                route.repo.as_ref(),
-                &route.acp_planner,
-                track.id.as_str(),
-            )
-            .await?;
             for thread_id in worker
                 .harness
                 .shutdown_track(&track.id, route.thread_seals.clone())
@@ -522,7 +525,7 @@ impl PreparedAreaDeletion {
 }
 
 impl QuiescedAreaDeletion {
-    fn recycle(self, route: &RouteState) -> Result<RecycledAreaDeletion> {
+    async fn recycle(self, route: &RouteState) -> Result<RecycledAreaDeletion> {
         let Self {
             prepared,
             terminal_ids,
@@ -530,6 +533,31 @@ impl QuiescedAreaDeletion {
             sealed_thread_ids,
             card_ids,
         } = self;
+        #[cfg(feature = "fixtures")]
+        crate::test_seams::pause_point("c5-area-before-proof", &prepared.id).await;
+        let track_ids = prepared
+            .tracks
+            .iter()
+            .map(|track| track.id.to_string())
+            .collect::<Vec<_>>();
+        let area_id = prepared.id.clone();
+        let location_targets = prepared.location_targets.clone();
+        let proof = crate::db::write_in_tx_typed(route.repo.as_ref(), move |tx| {
+            Box::pin(async move {
+                crate::operation::terminal_disposal::require_location_safe_tx(
+                    tx,
+                    &crate::operation::terminal_disposal::Scope::Area(area_id),
+                    calm_truth::db::sqlite::workspace_execution::Scope::Tracks(&track_ids),
+                    &location_targets,
+                )
+                .await
+            })
+        })
+        .await;
+        #[cfg(feature = "fixtures")]
+        if proof.is_ok() {
+            crate::test_seams::pause_point("c5-area-after-proof", &prepared.id).await;
+        }
         let targets = prepared
             .tracks
             .iter()
@@ -540,6 +568,7 @@ impl QuiescedAreaDeletion {
             .collect::<Vec<_>>();
         let now = crate::model::now_ms();
         let recycled = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            proof?;
             workspace_recycle::recycle_area_workspaces(
                 &route.workspace_root,
                 &prepared.id,
@@ -547,6 +576,7 @@ impl QuiescedAreaDeletion {
                 &targets,
                 now,
             )
+            .map_err(CalmError::from)
         }));
         drop(targets);
         match recycled {
@@ -570,7 +600,7 @@ impl QuiescedAreaDeletion {
                         prepared.thread_seals.unseal_after_rollback(thread_id);
                     }
                 }
-                Err(CalmError::from(error))
+                Err(error)
             }
             Err(_) => {
                 if prepared
@@ -595,6 +625,7 @@ async fn finish_area_deletion(
     route: &RouteState,
     id: String,
     terminal_ids: Vec<String>,
+    location_targets: Vec<std::path::PathBuf>,
     actor: ActorId,
     principal: Principal,
     registration: workspace_runtime::sweep::TeardownRegistration,
@@ -613,9 +644,11 @@ async fn finish_area_deletion(
         move |tx| {
             Box::pin(async move {
                 require_area_access_tx(tx, &id, &principal, AreaAccess::Delete).await?;
-                crate::operation::terminal_disposal::require_safe_tx(
+                crate::operation::terminal_disposal::require_location_safe_tx(
                     tx,
                     &crate::operation::terminal_disposal::Scope::Area(id.clone()),
+                    calm_truth::db::sqlite::workspace_execution::Scope::Area(&id),
+                    &location_targets,
                 )
                 .await?;
                 let mut retire = Vec::new();
@@ -682,6 +715,7 @@ impl RecycledAreaDeletion {
                 route,
                 area_id.clone(),
                 self.quiesced.terminal_ids.clone(),
+                self.quiesced.prepared.location_targets.clone(),
                 self.quiesced.prepared.actor.clone(),
                 self.quiesced.prepared.principal.clone(),
                 registration.clone(),
@@ -775,11 +809,12 @@ async fn run_recycled_area_deletion(
                 for track in &recovery_tracks {
                     route.write.forget_track(&track.id);
                 }
-                let mut committed_report = recovery_report;
-                workspace_recycle::finalize_area_recycle(
-                    &route.workspace_root,
-                    &recovery_area_id,
-                    &mut committed_report,
+                // The saga's area guard was dropped during unwind. Cosmetic rmdir
+                // would no longer be fenced against container-cwd admission.
+                tracing::warn!(
+                    area_id = %recovery_area_id,
+                    path = %route.workspace_root.join(&recovery_area_id).display(),
+                    "area deletion committed before panic; retaining leftover empty area directory"
                 );
             }
             Err(CalmError::Internal(format!(
@@ -806,10 +841,10 @@ async fn finish_prepared_area_deletion_owned(
     let task_area_id = area_id.clone();
     tokio::spawn(async move {
         let workflow = std::panic::AssertUnwindSafe(async {
-            let recycled = prepared
-                .quiesce(&route, &worker, &codex)
-                .await?
-                .recycle(&route)?;
+            #[cfg(feature = "fixtures")]
+            crate::test_seams::pause_point("c5-area-before-quiesce", &prepared.id).await;
+            let quiesced = prepared.quiesce(&route, &worker, &codex).await?;
+            let recycled = quiesced.recycle(&route).await?;
             run_recycled_area_deletion(&route, recycled).await
         })
         .catch_unwind()
@@ -898,11 +933,12 @@ pub(crate) async fn delete_area(
         .iter()
         .map(String::as_str)
         .collect::<Vec<_>>();
-    // Defensive TOCTOU guard only: this non-transactional read happens before the teardown tx, so a forge-action can still become in-flight; durable parked recovery is the backstop.
+    // Record-less operations retain their phase proxy under the lifecycle fences;
+    // migrated executions use the full-Area proof and probe admission fence.
     let pool = w.repo.sqlite_db().ok_or_else(|| {
         CalmError::Internal("delete_area forge-action fence requires sqlite-backed repo".into())
     })?;
-    if any_track_has_active_forge_action(pool.read_pool(), &track_ids).await? {
+    if any_track_has_unmigrated_forge_action(pool.read_pool(), &track_ids).await? {
         return Err(CalmError::Conflict(format!(
             "area {id} has a child track with an in-flight forge-action; retry after it settles"
         )));
@@ -916,6 +952,17 @@ pub(crate) async fn delete_area(
         .await?;
     }
 
+    // Even an empty Area may have an execution rooted at its container.
+    // Managed member directories are covered by that container target.
+    let location_targets = std::iter::once(s.workspace_root.join(&id))
+        .chain(tracks.iter().filter_map(|track| {
+            track
+                .workspace
+                .worktree
+                .as_ref()
+                .map(std::path::PathBuf::from)
+        }))
+        .collect();
     let prepared = PreparedAreaDeletion {
         reclaim_ports: crate::workspace_service::reclaim::ServerReclaimPorts {
             runtime: s.operation_runtime.clone(),
@@ -924,6 +971,7 @@ pub(crate) async fn delete_area(
         id,
         area_kind,
         tracks,
+        location_targets,
         actor: actor.to_actor_id(),
         principal,
         turn_daemon: cs.shared_codex_appserver.clone(),

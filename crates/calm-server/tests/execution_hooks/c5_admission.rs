@@ -2,7 +2,7 @@
 use super::*;
 use calm_server::test_seams::{PausePoint, install_pause_for_test};
 
-async fn typed(f: &mut Fixture) {
+pub(super) async fn typed(f: &mut Fixture) {
     wait(|| async { f.engine.available() }).await;
     f.state = f
         .state
@@ -16,7 +16,7 @@ async fn count(f: &Fixture) -> i64 {
         .await
         .unwrap()
 }
-async fn busy(f: &Fixture, cwd: &Path) {
+pub(super) async fn busy(f: &Fixture, cwd: &Path) {
     let before = count(f).await;
     let (status, body) = tokio::time::timeout(
         Duration::from_secs(5),
@@ -51,7 +51,7 @@ async fn entered(p: &PausePoint) {
         .await
         .unwrap();
 }
-async fn external_worktree(f: &Fixture) -> Track {
+pub(super) async fn external_worktree(f: &Fixture) -> Track {
     let repo = f._temp.path().join(calm_server::model::new_id());
     std::fs::create_dir(&repo).unwrap();
     git(&repo, &["init", "-q"]);

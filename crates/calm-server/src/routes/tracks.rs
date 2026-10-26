@@ -24,7 +24,7 @@ use crate::model::{
 use crate::operation::planner_harness_start_adapter::PlannerHarnessStartOperationPayload;
 use crate::operation::planner_start_fence::CardStartFence;
 use crate::operation::workspace_lease::{
-    release_workspace_leases_for_track_tx, track_has_active_forge_action,
+    any_track_has_unmigrated_forge_action, release_workspace_leases_for_track_tx,
 };
 use crate::operation::{OperationKey, OperationOutcome};
 use crate::plugin_host::manifest::Manifest;
@@ -3094,6 +3094,11 @@ impl QuiescedTrackDeletion {
             })
         })
         .await;
+        #[cfg(feature = "fixtures")]
+        if proof.is_ok() {
+            crate::test_seams::pause_point("c5-track-after-proof", prepared.track.id.as_str())
+                .await;
+        }
         let recycled = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             proof?;
             recycle_track_workspace_for_delete(
@@ -3417,12 +3422,12 @@ pub(crate) async fn delete_track(
         )));
     }
 
-    // Defensive TOCTOU guard only: this non-transactional read happens before the teardown
-    // tx, so a forge-action can still become in-flight before the sweep.
+    // Under the lifecycle fences, record-less operations retain their phase proxy.
+    // Migrated executions are covered by the location proof and probe admission fence.
     let pool = w.repo.sqlite_db().ok_or_else(|| {
         CalmError::Internal("delete_track forge-action fence requires sqlite-backed repo".into())
     })?;
-    if track_has_active_forge_action(pool.read_pool(), track_id.as_str()).await? {
+    if any_track_has_unmigrated_forge_action(pool.read_pool(), &[track_id.as_str()]).await? {
         return Err(CalmError::Conflict(format!(
             "track {id} has an in-flight forge-action; retry after it settles"
         )));

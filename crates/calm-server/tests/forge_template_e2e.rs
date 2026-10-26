@@ -1222,7 +1222,7 @@ async fn ask_answer_recovers_into_pending_queue() {
 }
 
 #[tokio::test]
-async fn fu4_teardown_releases_after_merge_close_and_fences_in_flight_forge_op() {
+async fn fu4_teardown_releases_once_after_merge_and_close() {
     let _env_lock = FORGE_ENV_LOCK
         .get_or_init(|| tokio::sync::Mutex::new(()))
         .lock()
@@ -1243,8 +1243,7 @@ async fn fu4_teardown_releases_after_merge_close_and_fences_in_flight_forge_op()
     let state = shim_state_dir(&fx.origin_repo);
     let block = ShimBlock::new(&state, "pr_merge");
 
-    // The later `NO_CONTENT` teardown assertion depends on *every* forge op of
-    // this track being terminal, so the checks op must be awaited here.
+    // Finish checks so this case isolates the merge and once-only lease teardown.
     run_pr_checks(&fx, 74, &pr.repo_arg, pr.pr_number).await;
     let merge_resp = call_tool(
         &fx,
@@ -1263,8 +1262,9 @@ async fn fu4_teardown_releases_after_merge_close_and_fences_in_flight_forge_op()
     wait_for_operation_phase(&fx.repo, &op_id, "parked").await;
 
     let release_count_before = event_rows(&fx.repo, "workspace.released").await.len();
-    let status = delete_track(&fx).await;
-    assert_eq!(status, StatusCode::CONFLICT);
+    // C5 teardown may Stop and settle migrated actions. Refusal while execution
+    // evidence remains unsettled is covered by track_delete_forge_fence; here
+    // verify that a blocked action retains its lease until this workflow finishes.
     assert_eq!(workspace_lease_state(&fx.repo, &fx.lease_id).await, "held");
     assert_event_count_stays(&fx.repo, "workspace.released", release_count_before).await;
     assert!(
@@ -2277,7 +2277,16 @@ async fn boot_recovery_runtime(fx: &Fixture) -> Arc<OperationRuntime> {
                 fx.events.clone(),
                 completion,
             )
-            .with_execution(fx._execution.lifecycle.clone()),
+            .with_execution(fx._execution.lifecycle.clone())
+            .with_location_admission(
+                calm_server::operation::location_admission::LocationAdmission {
+                    managed_root: fx.lease_abs.join("managed"),
+                    objective_checkout_root: fx.lease_abs.join("objective-checkouts"),
+                    teardown_targets: Default::default(),
+                    area_locks: calm_server::per_card_lock::new_keyed_locks(),
+                    track_locks: calm_server::per_card_lock::new_keyed_locks(),
+                },
+            ),
         )
         .await
         .expect("boot recovery operation runtime"),

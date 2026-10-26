@@ -174,6 +174,8 @@ pub async fn consumer_inventory<'a>(
 pub enum Scope<'a> {
     Card(&'a str),
     Track(&'a str),
+    /// A caller's fenced snapshot, including the empty set.
+    Tracks(&'a [String]),
     Area(&'a str),
     Alias(&'a str),
 }
@@ -192,12 +194,16 @@ pub async fn unsettled_executions(
     }
     let (predicate, value) = match scope {
         Scope::Card(_) => unreachable!("card scope handled above"),
-        Scope::Track(id) => ("e.track_id = ?", id),
+        Scope::Track(id) => ("e.track_id = ?", id.to_owned()),
+        Scope::Tracks(ids) => (
+            "e.track_id IN (SELECT value FROM json_each(?))",
+            serde_json::to_string(ids)?,
+        ),
         Scope::Area(id) => (
             "e.track_id IN (SELECT id FROM tracks WHERE area_id = ?)",
-            id,
+            id.to_owned(),
         ),
-        Scope::Alias(alias) => ("e.alias = ?", alias),
+        Scope::Alias(alias) => ("e.alias = ?", alias.to_owned()),
     };
     let query = format!(
         "SELECT e.execution_id FROM workspace_executions e WHERE e.settled_at_ms IS NULL AND {predicate} ORDER BY e.execution_id"
