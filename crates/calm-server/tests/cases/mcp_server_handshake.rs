@@ -719,47 +719,111 @@ async fn card_bound_connection_rejects_same_card_cross_session_thread_id() {
 }
 
 #[tokio::test]
-async fn planner_role_cannot_call_task_complete_or_fail() {
+async fn unbound_planner_task_reports_reject_binding_and_worker_payloads_without_writes() {
     let b = boot().await;
+    // Unlike read-only handshake probes, outcome admission requires a managed Planner session.
+    b.repo
+        .card_update(
+            &b.card_id,
+            calm_server::model::CardPatch {
+                payload: Some(crate::support::planner::payload()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    let mut tx = begin_immediate_tx(b.sqlx_repo.db()).await.unwrap();
+    let session_id = calm_server::model::new_id();
+    session_supersede_and_start_tx(
+        &mut tx,
+        &b.session_id,
+        crate::support::planner::session_init(
+            &session_id,
+            &b.card_id,
+            Some(b.thread_id.clone()),
+            WorkerSessionState::Running,
+            now_ms(),
+        ),
+    )
+    .await
+    .unwrap();
+    let token = calm_server::mcp_server::auth::CardMcpToken::generate();
+    let hash = calm_server::mcp_server::auth::hash_token(token.as_str());
+    calm_truth::db::sqlite::card_mcp_token_set_tx(&mut tx, &b.card_id, &hash)
+        .await
+        .unwrap();
+    calm_truth::db::sqlite::session_mcp_token_set_tx(&mut tx, &session_id, &hash)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
     let (mut rd, mut wr) = connect(&b.socket_path).await;
-    send_frame(&mut wr, initialize_frame(1, &b.raw_token)).await;
+    send_frame(&mut wr, initialize_frame(1, token.as_str())).await;
     let init_resp = recv_frame(&mut rd).await;
-    assert!(
-        init_resp.get("error").is_none(),
-        "init failed: {init_resp:#?}"
-    );
+    assert!(init_resp.get("error").is_none(), "{init_resp:#?}");
+    let before: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM events")
+        .fetch_one(b.sqlx_repo.pool())
+        .await
+        .unwrap();
 
-    send_frame(
-        &mut wr,
-        tools_call_frame(
-            12,
+    // Planner tools are listed, but only the active bound child can report an assignment.
+    // Worker-owned result fields are rejected independently, before binding admission.
+    for (index, (tool, args, code)) in [
+        (
             "neige_task_done",
-            &b.thread_id,
-            json!({"attempt_id": "tc-planner-refused", "result": "ok"}),
+            json!({"attempt_id": "unbound-assignment"}),
+            RpcError::CONFLICT,
         ),
-    )
-    .await;
-    let completed = recv_frame(&mut rd).await;
-    let err = completed
-        .get("error")
-        .expect("planner task.complete must be rejected");
-    assert_eq!(err["code"], json!(RpcError::FORBIDDEN), "{err:#?}");
-
-    send_frame(
-        &mut wr,
-        tools_call_frame(
-            13,
+        (
             "neige_task_fail",
-            &b.thread_id,
-            json!({"attempt_id": "tf-planner-refused", "reason": "nope"}),
+            json!({"attempt_id": "unbound-assignment", "reason": "blocked"}),
+            RpcError::CONFLICT,
         ),
-    )
-    .await;
-    let failed = recv_frame(&mut rd).await;
-    let err = failed
-        .get("error")
-        .expect("planner task.fail must be rejected");
-    assert_eq!(err["code"], json!(RpcError::FORBIDDEN), "{err:#?}");
+        (
+            "neige_task_done",
+            json!({"attempt_id": "unbound-assignment", "result": "ok"}),
+            RpcError::INVALID_PARAMS,
+        ),
+        (
+            "neige_task_done",
+            json!({"attempt_id": "unbound-assignment", "artifacts": []}),
+            RpcError::INVALID_PARAMS,
+        ),
+        (
+            "neige_task_done",
+            json!({"attempt_id": "unbound-assignment", "commit_message": "test: forged"}),
+            RpcError::INVALID_PARAMS,
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        send_frame(
+            &mut wr,
+            tools_call_frame(index as i64 + 12, tool, &b.thread_id, args),
+        )
+        .await;
+        let response = recv_frame(&mut rd).await;
+        assert_eq!(response["error"]["code"], json!(code), "{response:#?}");
+        assert!(
+            b.repo
+                .track_get(&b.track_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .closed_at
+                .is_none()
+        );
+        let after: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM events")
+            .fetch_one(b.sqlx_repo.pool())
+            .await
+            .unwrap();
+        assert_eq!(after, before, "rejected {tool} must emit no events");
+        let tasks: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tasks")
+            .fetch_one(b.sqlx_repo.pool())
+            .await
+            .unwrap();
+        assert_eq!(tasks, 0, "rejected {tool} must not create an assignment");
+    }
     let _ = (&b.server, &b.repo);
 }
 

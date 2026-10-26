@@ -255,6 +255,15 @@ async fn grok_asks_the_person_for_an_unlisted_tool_and_a_reject_ends_the_turn_wi
     let stack = boot_grok(&root).await;
     let (track, card) = create_grok(&stack).await;
     set_mode(&stack, &card, "ask").await;
+    // Gate execution belongs to Workers; verify the fixture's real tool remains unlisted here.
+    let registry = calm_server::mcp_server::build_default_registry();
+    assert!(registry.lookup("neige_task_gate").is_some());
+    assert!(
+        !registry
+            .descriptors_listed_for(calm_server::model::CardRole::Planner)
+            .iter()
+            .any(|tool| tool.name == "neige_task_gate")
+    );
     std::fs::write(root.path().join("scenario"), "grok-mcp-unlisted").unwrap();
     let (status, body) = stack.post_input(&card, "accept the task").await;
     assert_eq!(status, StatusCode::OK, "{body}");
@@ -277,7 +286,7 @@ async fn grok_asks_the_person_for_an_unlisted_tool_and_a_reject_ends_the_turn_wi
     let calm_server::event::Event::AskRequested { questions, .. } = &asked.event else {
         panic!("{asked:?}");
     };
-    assert_eq!(questions[0].title, format!("{key}__neige_task_done"));
+    assert_eq!(questions[0].title, format!("{key}__neige_task_gate"));
     let (status, body) = stack
         .send(
             "POST",
@@ -290,7 +299,7 @@ async fn grok_asks_the_person_for_an_unlisted_tool_and_a_reject_ends_the_turn_wi
     assert_eq!(outcome["status"], "failed", "{outcome}");
     assert_eq!(
         outcome["error"]["message"],
-        format!("The agent ended the turn because the person declined `{key}__neige_task_done`."),
+        format!("The agent ended the turn because the person declined `{key}__neige_task_gate`."),
         "{outcome}"
     );
     assert_eq!(

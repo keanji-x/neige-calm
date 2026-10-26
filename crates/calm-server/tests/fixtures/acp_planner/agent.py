@@ -467,7 +467,7 @@ for line in sys.stdin:
             if scenario == 'grok-shell':
                 ask_shell(permission)
             else:
-                ask_mcp_tool(permission, 'neige_task_done' if scenario == 'grok-mcp-unlisted' else 'neige_report_commit')
+                ask_mcp_tool(permission, 'neige_task_gate' if scenario == 'grok-mcp-unlisted' else 'neige_report_commit')
         elif scenario in ['permission', 'assistant-canonical']:
             pending, permission = request, 'native-permission'
             emit({'jsonrpc': '2.0', 'id': permission, 'method': 'session/request_permission', 'params': {
