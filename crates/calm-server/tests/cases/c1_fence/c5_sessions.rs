@@ -174,8 +174,35 @@ async fn c5d2_claude_stale_settled_cleans() {
 }
 
 #[tokio::test]
-async fn c5d2_acp_stale_settled_cleans() {
-    planner_stale_clean(AgentProvider::OpenCode).await;
+async fn c5d2_acp_stale_settled_defers() {
+    // ACP discovery still uses a track cwd without execution occupancy. Settled turn
+    // history therefore cannot exempt its active session proxy.
+    for provider in [AgentProvider::OpenCode, AgentProvider::Grok] {
+        for state in ["starting", "running", "turn_pending"] {
+            let (b, track, path) = fixture().await;
+            calm_server::test_seams::boot_planner_upgrade_for_test(&b.state)
+                .await
+                .unwrap();
+            let (id, execution) = session(&b, &track, &path, Some(provider.clone()), true).await;
+            settle(&b, &execution).await;
+            sqlx::query("UPDATE worker_sessions SET state=? WHERE id=?")
+                .bind(state)
+                .bind(&id)
+                .execute(b.repo.pool())
+                .await
+                .unwrap();
+            let (count, history) = clean(b.clone()).await.unwrap();
+            assert_eq!(count, 0, "{provider:?} {state}");
+            assert!(history.is_empty());
+            assert!(path.join("target/ignored").is_file());
+            sqlx::query("UPDATE worker_sessions SET state='exited' WHERE id=?")
+                .bind(id)
+                .execute(b.repo.pool())
+                .await
+                .unwrap();
+            assert_eq!(clean(b.clone()).await.unwrap().0, 1);
+        }
+    }
 }
 
 #[tokio::test]
@@ -224,21 +251,35 @@ async fn c5d2_planner_failed_upgrade_sweep_with_history_defers() {
         assert_eq!(count, 0);
         assert!(history.is_empty());
         assert!(path.join("target/ignored").is_file());
-        // A failed sweep retains only its unproven active proxies.
+        // A failed sweep retains unproven Claude proxies; ACP always retains its proxy.
         sqlx::query("UPDATE worker_sessions SET state='exited' WHERE id=?")
             .bind(id)
             .execute(b.repo.pool())
             .await
             .unwrap();
-        let (_, execution) = session(&b, &track, &path, Some(provider), true).await;
+        let (_, execution) = session(&b, &track, &path, Some(provider.clone()), true).await;
         settle(&b, &execution).await;
-        assert_eq!(clean(b.clone()).await.unwrap().0, 1);
+        assert_eq!(
+            clean(b.clone()).await.unwrap().0,
+            if provider == AgentProvider::Claude {
+                1
+            } else {
+                0
+            }
+        );
     }
 }
 
 #[tokio::test]
 async fn c5d2_alias_session_boundary_defers() {
-    for (id, other) in [("s", "s1"), ("s", "s_x"), ("s_x", "sax")] {
+    for (id, other) in [
+        ("s", "s1"),
+        ("s", "s_x"),
+        ("s_x", "sax"),
+        ("s", "s:x"),
+        ("s:x", "s:x:y"),
+        ("s;x", "s;x:y"),
+    ] {
         let (b, track, path) = fixture().await;
         calm_server::test_seams::boot_planner_upgrade_for_test(&b.state)
             .await
@@ -246,11 +287,20 @@ async fn c5d2_alias_session_boundary_defers() {
         let (_, execution) =
             session_with_id(&b, &track, &path, Some(AgentProvider::Claude), true, other).await;
         settle(&b, &execution).await;
-        session_with_id(&b, &track, &path, Some(AgentProvider::Claude), false, id).await;
-        let (count, history) = clean(b.clone()).await.unwrap();
-        assert_eq!(count, 0, "{id} must not match {other}");
-        assert!(history.is_empty());
-        assert!(path.join("target/ignored").is_file());
+        let (session, _) =
+            session_with_id(&b, &track, &path, Some(AgentProvider::Claude), false, id).await;
+        for provider in ["claude", "codex"] {
+            sqlx::query("UPDATE worker_sessions SET provider=? WHERE id=?")
+                .bind(provider)
+                .bind(&session)
+                .execute(b.repo.pool())
+                .await
+                .unwrap();
+            let (count, history) = clean(b.clone()).await.unwrap();
+            assert_eq!(count, 0, "{provider}: {id} must not match {other}");
+            assert!(history.is_empty());
+            assert!(path.join("target/ignored").is_file());
+        }
     }
 }
 
@@ -288,5 +338,20 @@ async fn c5d2_no_history_planner_codex_and_legacy_defer() {
             .await
             .unwrap();
         assert_eq!(clean(b.clone()).await.unwrap().0, 1);
+    }
+}
+
+#[tokio::test]
+async fn c5d2_delimited_session_own_history_cleans() {
+    for id in ["s:x", "s:x:y", "s;x", "s;x:y"] {
+        let (b, track, path) = fixture().await;
+        calm_server::test_seams::boot_planner_upgrade_for_test(&b.state)
+            .await
+            .unwrap();
+        let (_, execution) =
+            session_with_id(&b, &track, &path, Some(AgentProvider::Claude), true, id).await;
+        settle(&b, &execution).await;
+        assert_eq!(clean(b.clone()).await.unwrap().0, 1, "{id}");
+        assert!(!path.join("target/ignored").exists());
     }
 }

@@ -18,14 +18,19 @@ pub async fn track_workspace_trash_retention_owners(
     )
 }
 
-/// Typed terminals and boot-proven Planner sessions use canonical alias history,
+/// Typed terminals and boot-proven Claude Planner sessions use canonical alias history,
 /// including settled/retired executions. C5a re-proves occupancy under the Track
 /// fence; C5d.1 holds that fence through Planner occupancy commit. Unproven pre-C4
-/// sessions, sessions without history, Codex and Legacy PTYs retain their proxies.
+/// sessions, sessions without history, ACP, Codex and Legacy PTYs retain their proxies.
+/// ACP catalog discovery still uses track cwd outside execution occupancy.
 /// Tasks, leases and deliveries remain checkout_occupancy's responsibility.
 static CLOSED_TRACK_WORKTREES_SQL: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
     let terminal_alias = super::workspace_execution::TERMINAL_ALIAS_SQL;
     let planner = super::workspace_execution::PLANNER_ALIAS_PREFIX;
+    // The range uses the history index; equality attributes the row exactly.
+    // Planner aliases end in ExecutionId (32 lowercase hex, minted and validated
+    // in workspace::execution), so a session containing ':' cannot lend history
+    // to a shorter session. WorkerSessionId itself is opaque.
     format!(
         "SELECT t.* FROM tracks t \
           WHERE t.closed_at IS NOT NULL \
@@ -37,15 +42,17 @@ static CLOSED_TRACK_WORKTREES_SQL: std::sync::LazyLock<String> = std::sync::Lazy
                   WHERE terminals.id = worker_sessions.terminal_run_id) \
                 AND NOT EXISTS (SELECT 1 FROM workspace_executions e \
                   WHERE ?1 IS NOT NULL \
+                    AND worker_sessions.provider = 'claude' \
                     AND worker_sessions.id NOT IN (SELECT value FROM json_each(?1)) \
                     AND e.alias >= '{planner}:' || worker_sessions.id || ':' \
-                    AND e.alias < '{planner}:' || worker_sessions.id || ';')) \
+                    AND e.alias < '{planner}:' || worker_sessions.id || ';' \
+                    AND e.alias = '{planner}:' || worker_sessions.id || ':' || e.execution_id)) \
           ORDER BY t.id"
     )
 });
 
-/// Boot evidence for deleting Planner proxies. Unknown retains every proxy;
-/// a completed sweep retains only sessions whose pre-C4 absence was not proven.
+/// Boot evidence required before deleting a Claude Planner proxy. Unknown retains
+/// every proxy; a completed sweep still retains unproven sessions and other providers.
 pub enum PlannerCleanEvidence<'a> {
     Unknown,
     Swept { unproven: &'a [String] },
