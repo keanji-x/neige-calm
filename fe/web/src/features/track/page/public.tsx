@@ -1,4 +1,4 @@
-import { LayerDismissal } from '../../../ui/dialog/layer-dismissal.tsx';
+import { LayerDismissal } from '../../../ui/dialog/public.tsx';
 import { LayerDepthProvider } from '@astryxdesign/core/Layer';
 import type { TrackClosedControl } from './closed-control.ts';
 import { NO_ISOLATION_LABEL, NO_ISOLATION_EXPLANATION } from '../../../../../core/domain/workspace-isolation.ts';

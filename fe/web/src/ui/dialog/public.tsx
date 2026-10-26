@@ -1,14 +1,27 @@
-import { LayerDismissal } from './layer-dismissal.tsx';
-import { LayerDepthProvider } from '@astryxdesign/core/Layer';
+import { LayerDepthProvider, useLayerDismissal, type UseLayerDismissalOptions, type UseLayerDismissalReturn } from '@astryxdesign/core/Layer';
 import { readSurfaceFrame, type LiftOrigin } from '../motion/geometry.ts';
 import { useSurfacePresence } from '../motion/surface-presence.ts';
 import styles from './dialog.module.css';
 import { CardFrame } from '../card-frame/public.tsx';
-import { createContext, useCallback, useContext, useEffect, useId, useMemo, useRef, type KeyboardEventHandler, type ReactNode, type RefObject } from 'react';
+import { createContext, useCallback, useContext, useEffect, useId, useImperativeHandle, useMemo, useRef, type KeyboardEventHandler, type ReactNode, type Ref, type RefObject } from 'react';
 import { createPortal } from 'react-dom';
 import { Icon } from '../icon/public.tsx';
 import { useVisibleViewport } from '../viewport/public.ts';
 import { useState } from '../state/public.ts';
+type LayerDismissalProps = UseLayerDismissalOptions & { ref?: Ref<UseLayerDismissalReturn> };
+
+/** Each open lifetime gets a new Astryx identity; ordinary rerenders retain its order.
+ * Mount beside (outside) the owner's LayerDepthProvider, just like the hook. */
+export function LayerDismissal(props: LayerDismissalProps) {
+  return props.isActive ? <ActiveLayerDismissal {...props} /> : null;
+}
+
+function ActiveLayerDismissal({ ref, ...options }: LayerDismissalProps) {
+  const dismissal = useLayerDismissal(options);
+  useImperativeHandle(ref, () => dismissal, [dismissal]);
+  return null;
+}
+
 export type DialogOrigin = Exclude<LiftOrigin, { kind: 'paired-edge' }>;
 
 export interface DialogChildView { title: ReactNode; body: ReactNode; onEscape?: () => void }

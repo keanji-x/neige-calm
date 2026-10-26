@@ -1,4 +1,4 @@
-import { LayerDismissal } from '../dialog/layer-dismissal.tsx';
+import { LayerDismissal } from '../dialog/public.tsx';
 import { useCallback, useEffect, useEffectEvent, useLayoutEffect, useRef, type CSSProperties, type ReactNode, type Ref, type RefObject } from 'react';
 import { createPortal } from 'react-dom';
 import { LayerDepthProvider, type UseLayerDismissalReturn } from '@astryxdesign/core/Layer';

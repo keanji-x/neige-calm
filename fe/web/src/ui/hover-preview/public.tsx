@@ -1,4 +1,4 @@
-import { LayerDismissal } from '../dialog/layer-dismissal.tsx';
+import { LayerDismissal } from '../dialog/public.tsx';
 export { PreviewSummary, PreviewTextLink } from './summary.tsx';
 import { useCallback, useEffect, useEffectEvent, useId, useLayoutEffect, useRef, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';

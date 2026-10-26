@@ -1,4 +1,4 @@
-import { LayerDismissal } from '../../../ui/dialog/layer-dismissal.tsx';
+import { LayerDismissal } from '../../../ui/dialog/public.tsx';
 import { LayerDepthProvider } from '@astryxdesign/core/Layer';
 import { useRef, type ReactNode } from 'react';
 

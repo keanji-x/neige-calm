@@ -1,4 +1,4 @@
-import { LayerDismissal } from '../dialog/layer-dismissal.tsx';
+import { LayerDismissal } from '../dialog/public.tsx';
 import { CardFrame } from '../card-frame/public.tsx';
 // The conversation drawer. It overlays the panel column rather than squeezing the main column, and is deliberately not modal: no focus trap, no inert background. Escape closes it.
 

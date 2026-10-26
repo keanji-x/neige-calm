@@ -178,13 +178,19 @@ it('discards a late command failure after switching conversations and restores o
 
 const gestures = ['Enter', 'Tab', 'Shift+Enter', 'Shift+Tab', 'IME Enter', 'click'] as const;
 it.each(['close', 'stop'].flatMap(command => gestures.map(gesture => [command, gesture] as const)))(
-  'menu /%s with %s only completes; submit then executes once', async (command, gesture) => {
+  'menu /%s with %s waits for completion before submit executes once', async (command, gesture) => {
     const fixture = renderCommandFixture({ running: true }); const input = await open();
     await type(input, `/${command}`);
     const option = await screen.findByRole('option', { name: new RegExp(`^${command}`) });
     if (gesture === 'click') await userEvent.click(option);
     else fireEvent.keyDown(input, { key: gesture.includes('Tab') ? 'Tab' : 'Enter',
       shiftKey: gesture.startsWith('Shift'), keyCode: gesture === 'IME Enter' ? 229 : undefined });
+    if (gesture === 'IME Enter') {
+      expect(screen.getByRole('option', { name: new RegExp(`^${command}`) })).toBe(option);
+      expect(input.textContent).toBe(`/${command}`);
+      expect(fixture.requests.filter(request => ['PATCH', 'PUT', 'POST'].includes(request.method))).toHaveLength(0);
+      fireEvent.keyDown(input, { key: 'Enter' });
+    }
     await waitFor(() => expect(screen.queryByRole('listbox', { name: 'Commands' })).toBeNull());
     expect(input.textContent).toBe(`/${command}`);
     expect(fixture.requests.filter(request => ['PATCH', 'PUT', 'POST'].includes(request.method))).toHaveLength(0);

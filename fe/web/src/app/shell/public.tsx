@@ -1,4 +1,4 @@
-import { LayerDismissal } from '../../ui/dialog/layer-dismissal.tsx';
+import { LayerDismissal } from '../../ui/dialog/public.tsx';
 import { LayerDepthProvider } from '@astryxdesign/core/Layer';
 import type { DialogOrigin } from '../../ui/dialog/public.tsx';
 import { sidebarTrackGroups } from './sidebar-track-groups.ts';
