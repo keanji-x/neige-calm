@@ -86,7 +86,7 @@ fn one_terminal(rows: &Rows) {
 
 #[tokio::test]
 async fn canonical_acp_completed_crash_recovery_preserves_receipt_and_projection_windows() {
-    for window in ["receipt", "lost-report", "restored-items", "projected"] {
+    for window in ["receipt", "lost-report", "failed-terminal", "projected"] {
         let fx = Fixture::with_storage("reply", true).await;
         if window != "projected" {
             fail_terminal_outcome(fx.owner.repo.as_ref()).await;
@@ -157,7 +157,7 @@ async fn canonical_acp_completed_crash_recovery_preserves_receipt_and_projection
                 .await
                 .unwrap();
         }
-        if window == "restored-items" {
+        if window == "failed-terminal" {
             let (backend, session, _held) = session_for(&owner, &fx.dir);
             let before = rows(&owner).await;
             let error = backend.recover_retained().await.unwrap_err();
@@ -168,10 +168,13 @@ async fn canonical_acp_completed_crash_recovery_preserves_receipt_and_projection
             );
             let restored = rows(&owner).await;
             preserves_complete(&before, &restored);
-            assert!(restored.iter().any(|row| row.1 == "item/completed"));
+            assert_eq!(
+                restored, before,
+                "failed recovery must not commit receipt items"
+            );
             assert!(!restored.iter().any(|row| row.1 == "turn/completed"));
             assert_eq!(receipt(&owner).await, durable);
-            // Crash again after restore committed, before terminal/certificate.
+            // Crash again after terminal recording failed; items remain in the receipt.
             owner = snapshot(&owner, &fx.dir, "recovery-crash.db").await;
             session.shutdown().await.unwrap();
         }

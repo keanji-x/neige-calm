@@ -48,18 +48,6 @@ impl AcpPlannerSession {
                 "ACP receipt terminal names another turn".into(),
             ));
         }
-        if let Some(items) = outcome.get("items").and_then(Value::as_array) {
-            crate::harness::transcript_receipt::restore(
-                params.repo.as_ref(),
-                &params.worker_session_id,
-                &params.card_id,
-                &params.track_id,
-                &receipt.thread_id,
-                &receipt.turn_id,
-                items,
-            )
-            .await?;
-        }
         crate::harness::turn_outcome::canonical_diagnostic(&mut outcome);
         crate::harness::turn_outcome::record(
             params.repo.as_ref(),

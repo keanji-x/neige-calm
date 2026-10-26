@@ -13,6 +13,7 @@ mod grok;
 mod grok_compact;
 mod profile_storage;
 mod recovery;
+mod recovery_atomic;
 mod recovery_windows;
 mod resolution;
 mod settlement;
