@@ -434,7 +434,8 @@ async fn w_owned_disposal_blocks_release_and_readmission() {
                 &h.ctx,
                 h._executor._root.path().canonicalize().unwrap(),
                 &h.metadata.track.0,
-                h.metadata.program.clone()
+                h.metadata.program.clone(),
+                None
             )
             .await
             .is_err()

@@ -78,6 +78,7 @@ async fn additional_owner(h: &Harness, track: &str) -> (String, ExecutionMetadat
         h._executor._root.path().canonicalize().unwrap(),
         track,
         h.metadata.program.clone(),
+        None,
     )
     .await
     .unwrap();

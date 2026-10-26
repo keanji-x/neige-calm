@@ -152,6 +152,7 @@ impl Harness {
                 io_mode: calm_session::control::IoMode::Pipe,
                 replay_bytes: 8192,
             },
+            None,
         )
         .await
         .unwrap();
@@ -280,7 +281,7 @@ async fn w_owned_pipe_disposal_fences_stale_release_completion_and_readmission()
     let root = h._executor._root.path().canonicalize().unwrap();
     let program = h.metadata.program.clone();
     assert!(
-        admit(CONFIG, &h.op, &h.ctx, root, "track", program)
+        admit(CONFIG, &h.op, &h.ctx, root, "track", program, None)
             .await
             .is_err()
     );

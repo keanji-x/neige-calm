@@ -2,10 +2,7 @@ use super::*;
 use crate::db::RepoOutOfDomain;
 use crate::operation::forge_action_adapter::tests::executor::Executor;
 use crate::{
-    db::{
-        RepoRead,
-        sqlite::{SqlxRepo, begin_immediate_tx},
-    },
+    db::{RepoRead, sqlite::SqlxRepo},
     event::EventBus,
     operation::{
         OperationCompletionBus, OperationKey, OperationRepo, OperationRuntime, Phase,
