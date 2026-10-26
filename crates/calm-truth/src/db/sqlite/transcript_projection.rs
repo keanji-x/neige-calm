@@ -145,6 +145,14 @@ pub(super) async fn restore(
 // Test seeds are not a production reconstruction or ingress API.
 #[cfg(any(test, feature = "fixtures"))]
 impl super::SqlxRepo {
+    pub async fn fixture_transcript_delete(&self, row: i64) -> Result<()> {
+        sqlx::query("DELETE FROM harness_items WHERE id=?1")
+            .bind(row)
+            .execute(self.db.writer_pool())
+            .await?;
+        Ok(())
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub async fn fixture_transcript_insert(
         &self,

@@ -33,10 +33,16 @@ const availabilitySchema = z.discriminatedUnion('kind', [
 ]);
 
 const attachment = z.object({ id: z.string(), size: z.number(), url: z.string(), contentType:z.string() });
+const importedProvenance = z.object({kind:z.literal('unknown_legacy'),original_row_id:z.number().int().positive(),
+  worker_session_id:z.string(),card_id:z.string(),track_id:z.string(),thread_id:z.string(),
+  turn_id:z.string().nullable(),item_uuid:z.string().nullable(),item_type:z.string().nullable(),method:z.string(),
+  created_at_ms:z.number(),original_digest:z.string().regex(/^sha256-v1:[0-9a-f]{64}$/),
+  import_boundary_sequence:z.number().int().nonnegative()}).strict();
 const identity = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('human'), message_id: z.string() }).strict(),
   z.object({ kind: z.literal('system'), observation_id: z.string() }).strict(),
   z.object({ kind: z.literal('native'), thread_id: z.string(), item_id: z.string() }).strict(),
+  z.object({ kind:z.literal('imported'),provenance:importedProvenance }).strict(),
 ]);
 export const conversationPageSchema: z.ZodType<ConversationPage> = z.object({
   contract: z.literal('conversation_v1'), source: z.enum(['presentation', 'historical_raw']),
@@ -47,6 +53,7 @@ export const conversationPageSchema: z.ZodType<ConversationPage> = z.object({
     z.object({ kind: z.literal('system'), observation_id: z.string(), presentation: systemInputPresentationSchema,
       text: z.string(), created_at_ms: z.number() }).strict(),
     z.object({ kind: z.literal('native'), item: transcriptRowSchema }).strict(),
+    z.object({ kind:z.literal('imported_item'),item:transcriptRowSchema,provenance:importedProvenance }).strict(),
     z.object({ kind: z.literal('historical_raw'), item: transcriptRowSchema }).strict(),
     z.object({ kind: z.literal('removed'), identity }).strict(),
   ]) }).strict()), next_cursor: conversationCursorSchema.nullable(),
@@ -55,7 +62,14 @@ export const conversationPageSchema: z.ZodType<ConversationPage> = z.object({
 export function conversationItemsOperation(card: string, cursor: ConversationCursor | null): ApiOperation<ConversationPage> {
   return { method:'GET', path:`/api/cards/${encodeURIComponent(card)}/harness/items?contract=conversation_v1&direction=desc&limit=${TRANSCRIPT_PAGE_LIMIT}${cursor === null ? '' : `&cursor=${encodeURIComponent(JSON.stringify(cursor))}`}`,
     responseSchema:conversationPageSchema.refine(page => page.items.every(item => item.cursor.card_id === card
-      && item.cursor.source === page.source && (page.source === 'historical_raw'
+      && item.cursor.source === page.source
+      && (item.source.kind !== 'imported_item' || (item.source.provenance.card_id === card
+        && item.source.item.card_id === card && item.source.provenance.original_row_id === item.source.item.id
+        && item.cursor.position > item.source.provenance.import_boundary_sequence))
+      && (item.source.kind !== 'removed' || item.source.identity.kind !== 'imported'
+        || (item.source.identity.provenance.card_id === card
+          && item.cursor.position > item.source.identity.provenance.import_boundary_sequence))
+      && (page.source === 'historical_raw'
         ? item.source.kind === 'historical_raw' : item.source.kind !== 'historical_raw'))
       && (page.next_cursor === null || (page.next_cursor.card_id === card && page.next_cursor.source === page.source)),
       'Conversation cursor/source scope mismatch') };
@@ -87,6 +101,15 @@ export function buildConversationTranscript(items: readonly ConversationDisplayI
       human:{ userId:source.author.user_id, displayName:source.author.display_name, messageId:source.message_id, revision:source.revision },
       text:source.text, attachments:source.attachments, atMs:source.created_at_ms, displayPosition:cursor.position,
     }];
+    if (source.kind === 'imported_item') return buildTranscript([source.item]).map((entry,index) => {
+      const position={id:`imported:${source.provenance.original_row_id}:${index}`,displayPosition:cursor.position};
+      if(entry.author === 'system')return {...entry,...position,label:`Imported history · ${entry.label}`};
+      if(entry.author === 'activity')return {...entry,...position,verb:`Imported history · ${entry.verb}`};
+      if(entry.author === 'turn')return {...entry,...position,imported:true};
+      // Native folded segments can carry queue-looking hints, never application acceptance.
+      return { text:entry.text,atMs:entry.atMs,attachments:entry.attachments, author:entry.author === 'you' || entry.author === 'human' ? 'unknown' as const : entry.author,
+        imported:true,...position };
+    });
     if (source.kind !== 'native') throw new Error('Mixed historical/native display contract');
     // The native parser owns provider shapes. A presentation has already paired started/completed;
     // never re-sort by physical row ID or pair equal item IDs from different native threads.

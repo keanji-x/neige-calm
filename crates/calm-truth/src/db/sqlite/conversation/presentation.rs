@@ -51,15 +51,7 @@ pub async fn observe_native_item_tx(
         return Ok(None);
     }
     let identity = native_source_identity(thread, item, kind, method, params)?;
-    let erased: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM conversation_presentations
-         WHERE card_id=?1 AND source_kind='native_item' AND source_identity=?2
-         AND erased_by_operation_id IS NOT NULL)",
-    )
-    .bind(carrier.card_id())
-    .bind(&identity)
-    .fetch_one(&mut **tx)
-    .await?;
+    let erased = native_identity_erased_tx(tx, carrier.card_id(), &identity).await?;
     if erased {
         return Ok(None);
     }
@@ -144,6 +136,25 @@ pub(in crate::db::sqlite) fn native_source_identity(
     Ok(serde_json::to_string(&(thread, item))?)
 }
 
+/// One erasure fence for both representations of the persisted native identity.
+/// Imported provenance survives deletion of the original body row.
+pub(super) async fn native_identity_erased_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    card: &str,
+    identity: &str,
+) -> Result<bool> {
+    Ok(sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM conversation_presentations
+        WHERE card_id=?1 AND erased_by_operation_id IS NOT NULL
+        AND ((source_kind='native_item' AND source_identity=?2)
+          OR (source_kind='imported_item' AND imported_native_identity=?2)))",
+    )
+    .bind(card)
+    .bind(identity)
+    .fetch_one(&mut **tx)
+    .await?)
+}
+
 pub enum PresentationSource<'a> {
     HumanMessage(&'a ConversationMessageId),
     SystemObservation(&'a SystemObservationId),
@@ -174,6 +185,11 @@ pub async fn allocate_presentation_tx(
         ),
         PresentationSource::NativeItem { row_id } => {
             let (identity, current_row) = native_identity_tx(tx, card_id, row_id).await?;
+            if native_identity_erased_tx(tx, card_id, &identity).await? {
+                return Err(CalmError::Conflict(
+                    "erased native identity cannot be resurrected",
+                ));
+            }
             ("native_item", identity, None, None, Some(current_row))
         }
     };

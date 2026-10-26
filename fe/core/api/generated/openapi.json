@@ -14503,6 +14503,24 @@
                 "type": "string"
               }
             }
+          },
+          {
+            "type": "object",
+            "required": [
+              "provenance",
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "imported"
+                ]
+              },
+              "provenance": {
+                "$ref": "#/components/schemas/ImportedProvenance"
+              }
+            }
           }
         ]
       },
@@ -14613,6 +14631,28 @@
                 "enum": [
                   "native"
                 ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "item",
+              "provenance",
+              "kind"
+            ],
+            "properties": {
+              "item": {
+                "$ref": "#/components/schemas/HarnessItem"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "imported_item"
+                ]
+              },
+              "provenance": {
+                "$ref": "#/components/schemas/ImportedProvenance"
               }
             }
           },
@@ -16512,6 +16552,85 @@
           }
         },
         "additionalProperties": false
+      },
+      "ImportedProvenance": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "original_row_id",
+              "worker_session_id",
+              "card_id",
+              "track_id",
+              "thread_id",
+              "turn_id",
+              "item_uuid",
+              "item_type",
+              "method",
+              "created_at_ms",
+              "original_digest",
+              "import_boundary_sequence",
+              "kind"
+            ],
+            "properties": {
+              "card_id": {
+                "type": "string"
+              },
+              "created_at_ms": {
+                "type": "integer",
+                "format": "int64"
+              },
+              "import_boundary_sequence": {
+                "type": "integer",
+                "format": "int64"
+              },
+              "item_type": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "item_uuid": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "unknown_legacy"
+                ]
+              },
+              "method": {
+                "type": "string"
+              },
+              "original_digest": {
+                "type": "string"
+              },
+              "original_row_id": {
+                "type": "integer",
+                "format": "int64"
+              },
+              "thread_id": {
+                "type": "string"
+              },
+              "track_id": {
+                "type": "string"
+              },
+              "turn_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "worker_session_id": {
+                "type": "string"
+              }
+            }
+          }
+        ],
+        "description": "Immutable body-free facts, not an authenticated input origin. Digest v1 is\nSHA-256 of JSON serialization of (original params string, nullable original\ninput_segments string); null and an empty array remain distinct."
       },
       "InitialInputReceiptVersion": {
         "type": "string",

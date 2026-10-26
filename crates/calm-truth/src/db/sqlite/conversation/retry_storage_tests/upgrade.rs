@@ -88,17 +88,18 @@ async fn populated_upgrade(empty_presentations: bool) {
         .transcript_rows_of_thread(&s.card, "thread")
         .await
         .unwrap();
-    let mut tx = begin_immediate_tx(s.repo.db()).await.unwrap();
-    allocate_presentation_tx(
-        &mut tx,
-        &s.card,
-        PresentationSource::NativeItem {
-            row_id: native[0].id,
-        },
+    // Seed the released schema directly: today's allocator requires head columns.
+    sqlx::query(
+        "INSERT INTO conversation_presentations(
+        card_id,source_kind,source_identity,native_item_row_id)
+        VALUES(?1,'native_item',?2,?3)",
     )
+    .bind(&s.card)
+    .bind(serde_json::to_string(&("thread", "reply")).unwrap())
+    .bind(native[0].id)
+    .execute(s.repo.pool())
     .await
     .unwrap();
-    tx.commit().await.unwrap();
     // Leave both historical released and effective claims in the old database.
     sqlx::query(
         "UPDATE conversation_submission_inputs SET effective=0, released_by_attempt_id=?1 WHERE

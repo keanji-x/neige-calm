@@ -365,3 +365,64 @@ async fn historical_card_without_current_runtime_reports_explicit_null_runtime_s
     );
     assert!(run["runtime_state"].is_null(), "no invented Idle runtime");
 }
+
+#[tokio::test]
+async fn u2_imported_http_redacts_original_paths_and_preserves_erased_provenance() {
+    let mut f = Fixture::new().await;
+    let (app, cookie) = f.application().await;
+    let (_, track) = post(&app, &cookie, "/api/tracks", "u2", f.create_body()).await;
+    let (card, worker, _) = f.carrier(track["id"].as_str().unwrap()).await;
+    let row = f.repo.fixture_transcript_insert(&worker,&card,track["id"].as_str().unwrap(),
+        "legacy",None,None,Some("userMessage"),"item/completed",
+        r#"{"item":{"type":"userMessage","content":[{"type":"localImage","path":"/private/history.png"},{"type":"inputText","text":"Imported words"}]}}"#,None).await.unwrap();
+    let mut tx = calm_server::db::sqlite::begin_immediate_tx(f.repo.db())
+        .await
+        .unwrap();
+    let boundary: i64 =
+        sqlx::query_scalar("SELECT MAX(sequence) FROM conversation_presentations WHERE card_id=?1")
+            .bind(&card)
+            .fetch_one(&mut **tx)
+            .await
+            .unwrap();
+    let seq = calm_server::db::sqlite::conversation::import_item_tx(&mut tx, &card, row, boundary)
+        .await
+        .unwrap()
+        .unwrap();
+    tx.commit().await.unwrap();
+    let uri =
+        format!("/api/cards/{card}/harness/items?contract=conversation_v1&direction=desc&limit=1");
+    let (status, before) = get(&app, &cookie, &uri).await;
+    assert_eq!(status, StatusCode::OK, "{before}");
+    assert_eq!(before["items"][0]["source"]["kind"], "imported_item");
+    assert!(!before.to_string().contains("/private/history.png"));
+    assert!(before["items"][0]["source"].get("author").is_none());
+    let provenance = before["items"][0]["source"]["provenance"].clone();
+    assert!(
+        provenance["original_digest"]
+            .as_str()
+            .unwrap()
+            .starts_with("sha256-v1:")
+    );
+    sqlx::query(
+        "UPDATE conversation_presentations SET erased_by_operation_id=?1 WHERE sequence=?2",
+    )
+    .bind("c".repeat(32))
+    .bind(seq)
+    .execute(f.repo.pool())
+    .await
+    .unwrap();
+    f.repo.fixture_transcript_delete(row).await.unwrap();
+    let (status, after) = get(&app, &cookie, &uri).await;
+    assert_eq!(status, StatusCode::OK, "{after}");
+    assert_eq!(
+        after["items"][0]["source"],
+        json!({"kind":"removed","identity":{"kind":"imported","provenance":provenance}})
+    );
+    assert_eq!(after["items"][0]["cursor"], before["items"][0]["cursor"]);
+    assert!(!after.to_string().contains("Imported words"));
+    drop(app);
+    f.repo.pool().close().await;
+    f.repo = Arc::new(SqlxRepo::open(&f.database_url).await.unwrap());
+    let (app, cookie) = f.application().await;
+    assert_eq!(get(&app, &cookie, &uri).await, (StatusCode::OK, after));
+}

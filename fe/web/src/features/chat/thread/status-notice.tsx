@@ -49,9 +49,10 @@ function elapsedText(ms: number): string {
 }
 
 /** One native metadata row; clocks are evidence, never inferred from transcript gaps. */
-export function ThreadStatusNotice({ heading, children, clock, sending = false, tone = 'neutral', outcome, copyAction = null, editAction = null, regenerateAction = null, detailsExpanded, onDetailsExpandedChange }: {
+export function ThreadStatusNotice({ historical = false, heading, children, clock, sending = false, tone = 'neutral', outcome, copyAction = null, editAction = null, regenerateAction = null, detailsExpanded, onDetailsExpandedChange }: {
   detailsExpanded?: boolean;
   onDetailsExpandedChange?: (expanded: boolean) => void;
+  historical?: boolean;
   heading: ReactNode;
   children?: ReactNode;
   clock: ConversationMetaClock;
@@ -87,7 +88,7 @@ export function ThreadStatusNotice({ heading, children, clock, sending = false, 
       : clock.elapsedMs !== null && <span className={styles.clock} data-nc-meta-duration="">· {elapsedText(clock.elapsedMs)}</span>}
   </span>;
   return <div className={`${styles.notice} ${tone === 'warning' ? styles.warning : tone === 'error' ? styles.error : ''}`}
-    role="status" aria-label="Current response status" data-nc-current-meta="" data-nc-turn={outcome === undefined ? undefined : 'outcome'}
+    role="status" aria-label={historical ? "Imported historical response" : "Current response status"} data-nc-current-meta={historical ? undefined : ""} data-nc-turn={outcome === undefined ? undefined : 'outcome'}
     data-nc-turn-outcome={outcome}>
     <Divider />
     <div className={styles.row}>
@@ -103,7 +104,7 @@ export function ThreadStatusNotice({ heading, children, clock, sending = false, 
           : <Collapsible defaultIsOpen={false} isOpen={detailsExpanded} onOpenChange={onDetailsExpandedChange} chevronPosition="start" trigger={title}>{children}</Collapsible>}
         {sending && <div className={styles.label}>Sending…</div>}
       </div>
-      <MessageActions actions={[
+      {!historical && <MessageActions actions={[
         { id: 'copy', kind: feedback?.kind === 'done' ? 'copied' : 'copy',
           label: copyAction === null ? 'Copy response (not available yet)' : feedback === null || feedback.kind === 'pending' ? 'Copy response'
             : feedback.kind === 'done' ? 'Copied response' : 'Could not copy response',
@@ -116,7 +117,7 @@ export function ThreadStatusNotice({ heading, children, clock, sending = false, 
           tooltip: 'Send the original prompt again in this conversation; keep existing history.',
           disabled: regenerateAction === null || regenerate.feedback?.kind === 'pending',
           run: () => { if (regenerateAction !== null) void regenerate.perform(regenerateAction.run); } },
-      ]} />
+      ]} />}
     </div>
   </div>;
 }

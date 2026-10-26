@@ -18,6 +18,7 @@ type MessageEntryProps = Readonly<{
   entryKey: string;
   author: ConversationTurn['author'];
   human: ConversationTurn['human'];
+  imported: boolean;
   text: string;
   attachments: ConversationTurn['attachments'];
   opens: boolean;
@@ -30,7 +31,7 @@ type MessageEntryProps = Readonly<{
   renderLink?: ReplyLinkRenderer;
 }>;
 
-export const MessageEntry = memo(function MessageEntry({ id, entryKey, author, human, text, attachments,
+export const MessageEntry = memo(function MessageEntry({ id, entryKey, author, human, imported, text, attachments,
   opens, gapLabel, queued, edited, replacement, working, imageFiles, renderLink, mobile, atMs, timestampFormatter,
 }: MessageEntryProps) {
   return (
@@ -47,7 +48,8 @@ export const MessageEntry = memo(function MessageEntry({ id, entryKey, author, h
         <>
           <OutgoingMessage speaker={author} text={text} mobile={mobile} queued={queued} edited={edited} replacement={replacement} />
           {/* Attribution follows the bubble so a real source handoff preserves its position. */}
-          {author !== 'you' && <p className={styles.queuedNote}>{author === 'human' ? human?.displayName : 'Unknown author'}</p>}
+          {imported && <p className={styles.queuedNote}>Imported history · Unknown author</p>}
+          {!imported && author !== 'you' && <p className={styles.queuedNote}>{author === 'human' ? human?.displayName : 'Unknown author'}</p>}
           {/* `alt=""` and `aria-hidden`: the transcript has no description of the image to offer, and the count is said once in text above. */}
           {(attachments ?? []).length > 0 && (
             <ul className={styles.attachments} data-nc-turn-attachments="" {...(edited ? { 'data-nc-editing': '' } : {})}>
@@ -68,6 +70,7 @@ export const MessageEntry = memo(function MessageEntry({ id, entryKey, author, h
         </>
       ) : (
         <div className={`${styles.reply} ${mobile ? mobileStyles.reply : ''}`} data-nc-turn="agent">
+          <>{imported && <p className={styles.queuedNote}>Imported history</p>}</>
           <Reply text={text} imageFiles={imageFiles} renderLink={renderLink} />
           {timestampFormatter !== null && <time className={mobileStyles.timestamp} dateTime={new Date(atMs).toISOString()}>{timestampFormatter.format(atMs)}</time>}
           {working && <ActivityIndicator state="working" motion="thinking" />}

@@ -114,6 +114,7 @@ export type ConversationTurn = Readonly<{
   /** Present only for actual canonical Human identity; native user echoes have none. */
   human?: Readonly<{ userId: string; displayName: string; messageId: string; revision: number }>;
   displayPosition?: number;
+  imported?: boolean;
   /** Verbatim. Line breaks are the author's and are preserved on render. */
   text: string;
   atMs: number;
@@ -153,6 +154,7 @@ export type ConversationSystemEntry = Readonly<{
   author: 'system';
   /** Present for a canonical source's actual conversation cursor. */
   displayPosition?: number;
+  imported?: boolean;
   /** Stable short label selected from structured kernel metadata. */
   label: string;
   /** Full rendered observation, retained as disclosure/title context. */
@@ -1107,6 +1109,8 @@ export type ConversationTurnOutcome = Readonly<{
   id: string;
   /** Discriminates against the speakers and the activity line. */
   author: 'turn';
+  /** Historical fact; cannot describe or authorize the current execution. */
+  imported?: boolean;
   turnId: string;
   status: TurnOutcomeStatus;
   /** The recorded `error.message`, verbatim; interrupted turns may also carry a reason. */

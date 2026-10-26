@@ -156,11 +156,11 @@ export type ConversationCursorSource = "presentation" | "historical_raw";
 
 export type ConversationDelivery = "crossing_unknown" | "unknown" | "not_dispatched" | "accepted";
 
-export type ConversationDisplayIdentity = { "kind": "human", message_id: string, } | { "kind": "system", observation_id: string, } | { "kind": "native", thread_id: string, item_id: string, };
+export type ConversationDisplayIdentity = { "kind": "human", message_id: string, } | { "kind": "system", observation_id: string, } | { "kind": "native", thread_id: string, item_id: string, } | { "kind": "imported", provenance: ImportedProvenance, };
 
 export type ConversationDisplayItem = { cursor: ConversationCursor, source: ConversationDisplaySource, };
 
-export type ConversationDisplaySource = { "kind": "human", message_id: string, revision: number, author: ConversationHumanAuthor, text: string, attachments: Array<PlannerAttachment>, created_at_ms: number, } | { "kind": "system", observation_id: string, presentation: SystemInputPresentation, text: string, created_at_ms: number, } | { "kind": "native", item: HarnessItem, } | { "kind": "historical_raw", item: HarnessItem, } | { "kind": "removed", identity: ConversationDisplayIdentity, };
+export type ConversationDisplaySource = { "kind": "human", message_id: string, revision: number, author: ConversationHumanAuthor, text: string, attachments: Array<PlannerAttachment>, created_at_ms: number, } | { "kind": "system", observation_id: string, presentation: SystemInputPresentation, text: string, created_at_ms: number, } | { "kind": "native", item: HarnessItem, } | { "kind": "imported_item", item: HarnessItem, provenance: ImportedProvenance, } | { "kind": "historical_raw", item: HarnessItem, } | { "kind": "removed", identity: ConversationDisplayIdentity, };
 
 export type ConversationHumanAuthor = { user_id: string, display_name: string, };
 
@@ -519,6 +519,13 @@ export type HarnessTimeoutEvidence = { "version": "v1", request: HarnessTimeoutR
  * All facts are sampled by the watchdog before issuing the interrupt.
  */
 export type HarnessTimeoutRequest = { session_id: string, card_id: string, track_id: string, thread_id: string, turn_id: string, reason: HarnessInterruptionReason, requested_at_ms: number, effective_elapsed_ms: number, budget_ms: number, };
+
+/**
+ * Immutable body-free facts, not an authenticated input origin. Digest v1 is
+ * SHA-256 of JSON serialization of (original params string, nullable original
+ * input_segments string); null and an empty array remain distinct.
+ */
+export type ImportedProvenance = { "kind": "unknown_legacy", original_row_id: number, worker_session_id: string, card_id: string, track_id: string, thread_id: string, turn_id: string | null, item_uuid: string | null, item_type: string | null, method: string, created_at_ms: number, original_digest: string, import_boundary_sequence: number, };
 
 export type InitialInputReceiptVersion = "initial-input-v1";
 

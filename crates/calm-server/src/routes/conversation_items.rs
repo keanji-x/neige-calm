@@ -152,6 +152,7 @@ pub(crate) async fn get_harness_items(
 
 fn redact(source: &mut ConversationDisplaySource) {
     if let ConversationDisplaySource::Native { item }
+    | ConversationDisplaySource::ImportedItem { item, .. }
     | ConversationDisplaySource::HistoricalRaw { item } = source
     {
         item.params = crate::planner_attachments::redact_local_image_paths(&item.params);

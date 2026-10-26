@@ -72,12 +72,23 @@ export function CurrentStatusNotice({ outcome, canContinue, live, sending = fals
     heading = 'Sending…';
   } else if (outcome !== null) {
     terminal = outcome.status;
-    heading = terminal === 'completed' ? 'Completed' : terminal === 'interrupted' ? 'Interrupted' : 'Failed';
+    heading = outcomeHeading(terminal);
     tone = terminal === 'completed' ? 'neutral' : terminal === 'interrupted' ? 'warning' : 'error';
     clock = { elapsedMs: outcome.elapsedMs, timestamp: { kind: 'finished', atMs: outcome.atMs } };
     if (terminal !== 'completed') details = <OutcomeDetails outcome={outcome} canContinue={canContinue} />;
   } else return null;
   return <ThreadStatusNotice detailsExpanded={detailsExpanded} onDetailsExpandedChange={onDetailsExpandedChange} heading={heading} sending={sending && heading !== 'Sending…'} tone={tone} clock={clock} outcome={terminal} copyAction={copyAction} editAction={editAction} regenerateAction={regenerateAction}>{details}</ThreadStatusNotice>;
+}
+
+/** Imported outcomes remain at their historical position, with no execution actions. */
+export function HistoricalOutcomeNotice({ outcome }: { outcome: ConversationTurnOutcome }) {
+  return <ThreadStatusNotice historical heading={`Imported history · ${outcomeHeading(outcome.status)}`}
+    outcome={outcome.status} clock={{elapsedMs:outcome.elapsedMs,timestamp:{kind:'finished',atMs:outcome.atMs}}}>
+    {outcome.status === 'completed' ? undefined : <OutcomeDetails outcome={outcome} canContinue={false} />}
+  </ThreadStatusNotice>;
+}
+function outcomeHeading(status: ConversationTurnOutcome['status']): string {
+  return status === 'completed' ? 'Completed' : status === 'interrupted' ? 'Interrupted' : 'Failed';
 }
 
 /** Request feedback is evidence about Stop, independent of whether the current run can be read. */

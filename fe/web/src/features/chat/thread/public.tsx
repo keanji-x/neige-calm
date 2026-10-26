@@ -48,7 +48,7 @@ import type { ReplyImageFiles, ReplyLinkRenderer } from './reply.tsx';
 import { MessageEntry } from './message-entry.tsx';
 import styles from './thread.module.css';
 import { currentResponseMessage, latestUserMessage } from '../../../../../core/domain/conversation-actions.ts';
-import { CurrentStatusNotice } from './outcome-notice.tsx';
+import { CurrentStatusNotice, HistoricalOutcomeNotice } from './outcome-notice.tsx';
 import { SizeMotion } from '../../../ui/motion/size.tsx';
 import { editedTurnMessageIds } from '../../../../../core/domain/conversation-composer.ts';
 import type { ConversationStopFeedback } from '../../../../../core/domain/conversation-stop.ts';
@@ -135,7 +135,7 @@ export const ChatThread = memo(function ChatThread({ conversation, turns, pendin
      Never use `conversation.state`, which can stay at `turn_pending`/`running` after a turn ended. */
   const live = !statusUnconfirmed && !stalled && (pending || cardActivityOf({ cards }, conversation.id) === 'working');
   const lastTurn = turns[turns.length - 1];
-  const currentOutcome = lastTurn?.author === 'turn' ? lastTurn : null;
+  const currentOutcome = lastTurn?.author === 'turn' && lastTurn.imported !== true ? lastTurn : null;
   const copyTarget = currentResponseMessage(turns, currentOutcome !== null && !statusUnconfirmed && !live && !stalled && stopFeedback === null);
   const copyAction = copyText === undefined || copyTarget === null ? null
     : { id: `${conversation.id}:${copyTarget.id}`, text: copyTarget.text, run: () => copyText(copyTarget.text) };
@@ -284,9 +284,9 @@ export const ChatThread = memo(function ChatThread({ conversation, turns, pendin
       );
     }
     // Outcomes retain their grouping boundary; only the current metadata row paints status.
-    if (turn.author === 'turn') return null;
+    if (turn.author === 'turn') return turn.imported === true ? <HistoricalOutcomeNotice key={turn.id} outcome={turn} /> : null;
     return (
-      <MessageEntry key={turn.id} mobile={compactViewport} atMs={turn.atMs} timestampFormatter={turn.author === 'agent' ? compactClock : null} id={turn.id} entryKey={key} author={turn.author} human={turn.human} text={turn.text}
+      <MessageEntry key={turn.id} mobile={compactViewport} atMs={turn.atMs} timestampFormatter={turn.author === 'agent' ? compactClock : null} id={turn.id} entryKey={key} author={turn.author} human={turn.human} imported={turn.imported === true} text={turn.text}
         attachments={turn.attachments} opens={opensExchange(turns, index)}
         gapLabel={opensAfterGap(turns, index) && index > 0 ? clockTime(gapClock, turn.atMs) : null}
         queued={isQueuedConversationTurn(turn)} edited={edited.has(turn.id)} replacement={turn.id === replacement}

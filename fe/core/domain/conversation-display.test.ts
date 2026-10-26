@@ -1,7 +1,7 @@
 import { describe,it,expect } from 'vitest';
 import { keepConversationInputOperation, retryConversationInputOperation, buildConversationTranscript, conversationPageSchema, conversationRunMetadataSchema, orderedPendingInputs, removedHumanIds } from './conversation-display.js';
 import { outboxFactsWithRemovedInputs, matchSendOps, reportedInputSource, withInitialInputFacts, initialInputNeedsObservation, type AcceptedInitialInput, type SendOp } from './conversation-outbox.js';
-import type { ConversationDisplayItem, HarnessItem } from '../api/generated/wire.js';
+import type { ConversationDisplayItem, HarnessItem as HistoricalRow } from '../api/generated/wire.js';
 import { isConversationMessage, SYSTEM_PRESENTATION_LABELS } from './conversation.js';
 const cursor = (position:number) => ({ contract:'conversation_v1',source:'presentation',card_id:'card',position } as const);
 const human = (id:string,uid:string,position:number): ConversationDisplayItem => ({cursor:cursor(position),source:{
@@ -80,7 +80,7 @@ describe('canonical conversation display',()=>{
     expect(facts.blocked).toBe(false);
   });
   it('orders actual native sources by presentation and scopes identical item IDs to their threads',()=>{
-    const raw=(id:number,thread:string,text:string):HarnessItem=>({id,worker_session_id:'runtime',card_id:'card',track_id:'track',thread_id:thread,
+    const raw=(id:number,thread:string,text:string):HistoricalRow=>({id,worker_session_id:'runtime',card_id:'card',track_id:'track',thread_id:thread,
       turn_id:'turn',item_uuid:'same-id',item_type:'agentMessage',method:'item/completed',params:JSON.stringify({item:{type:'agentMessage',text}}),
       created_at_ms:id,turn_error_text:null});
     const entries=buildConversationTranscript([
@@ -170,4 +170,34 @@ it('queued successor uses the ordinary unattempted pending projection', () => {
     pending_inputs:[pending],active_input:null,native_turn_id:null};
   expect(conversationRunMetadataSchema.parse(run)).toMatchObject({pending_inputs:[pending],active_input:null});
   expect(conversationRunMetadataSchema.safeParse({...run,pending_inputs:[{...pending,retry_intent_id:undefined}]}).success).toBe(false);
+});
+
+it('u2_imported_no_human_author_from_viewer_text_or_folded_segments',()=>{
+  const raw:HistoricalRow={id:77,worker_session_id:'original',card_id:'card',track_id:'track',thread_id:'thread',
+    turn_id:null,item_uuid:null,item_type:'userMessage',method:'item/completed',
+    params:JSON.stringify({item:{type:'userMessage',content:[{type:'inputText',text:'same words'}]}}),
+    created_at_ms:1,turn_error_text:null};
+  const provenance={kind:'unknown_legacy' as const,original_row_id:77,worker_session_id:'original',card_id:'card',
+    track_id:'track',thread_id:'thread',turn_id:null,item_uuid:null,item_type:'userMessage',method:'item/completed',
+    created_at_ms:1,original_digest:`sha256-v1:${'a'.repeat(64)}`,import_boundary_sequence:2};
+  for(const viewer of ['jian','alice',null])for(const folded of [false,true]){
+    const item:ConversationDisplayItem={cursor:cursor(3),source:{kind:'imported_item',provenance,item:folded ? {...raw,
+      input_segments:[1,2].map(()=>({presentation:'user' as const,text:'same words',attachments:[],
+        origin:{observation:'user_message',event_id:null,queue_entry:{id:'message-a',rev:1}}}))} : raw}};
+    const entries=buildConversationTranscript([item],viewer);
+    expect(entries).toHaveLength(folded ? 2 : 1);
+    expect(entries.every(entry=>entry.author === 'unknown')).toBe(true);
+    for(const entry of entries){expect(entry).not.toHaveProperty('human');expect(entry).not.toHaveProperty('queueEntryId');
+      expect(entry).not.toHaveProperty('inputSource');expect(reportedInputSource(entry)).toBeNull();}
+    expect(matchSendOps(entries.filter(isConversationMessage),[op],[],'card').size).toBe(0);
+  }
+});
+
+it.each(['failed','interrupted','completed'])('u2_imported_outcome_keeps_historical_source_%s',status=>{
+  const raw:HistoricalRow={id:90,worker_session_id:'old',card_id:'card',track_id:'track',thread_id:'thread',turn_id:'old-turn',
+    item_uuid:null,item_type:null,method:'turn/completed',params:JSON.stringify({status,error:{message:'Old failure'}}),created_at_ms:1,turn_error_text:'Old reason'};
+  const provenance={kind:'unknown_legacy' as const,original_row_id:90,worker_session_id:'old',card_id:'card',track_id:'track',thread_id:'thread',
+    turn_id:'old-turn',item_uuid:null,item_type:null,method:'turn/completed',created_at_ms:1,original_digest:`sha256-v1:${'a'.repeat(64)}`,import_boundary_sequence:0};
+  expect(buildConversationTranscript([{cursor:cursor(1),source:{kind:'imported_item',item:raw,provenance}}],'jian'))
+    .toMatchObject([{author:'turn',status,imported:true,turnId:'old-turn',message:'Old failure',text:'Old reason'}]);
 });

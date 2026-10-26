@@ -173,7 +173,7 @@ pub(super) async fn page_on_connection(
     // execution admission continues to require effective claims in its own owner.
     let sql = format!(
         "SELECT p.sequence,p.source_kind,p.source_identity,p.erased_by_operation_id,
-                p.native_item_row_id AS backing_native_id,
+                p.native_item_row_id AS backing_native_id, p.imported_provenance_json,p.import_boundary_sequence,
                 m.id AS message_id,m.current_revision,m.author_kind,m.author_user_id,m.withdrawn_at_ms,
                 u.display_name,r.body_sha256,r.payload_json,r.created_at_ms AS revision_created,
                 system_pending.value AS system_pending, system_claim.value AS system_claim,
@@ -213,7 +213,17 @@ pub(super) async fn page_on_connection(
          LEFT JOIN application_users u ON u.id=m.author_user_id
          LEFT JOIN conversation_message_revisions r ON r.message_id=m.id AND r.revision=m.current_revision
          LEFT JOIN harness_items i ON i.id=p.native_item_row_id AND i.card_id=p.card_id
-         WHERE p.card_id=?1 AND p.sequence {comparison} ?2 ORDER BY p.sequence {order} LIMIT ?3"
+         WHERE p.card_id=?1 AND p.sequence {comparison} ?2
+           AND (p.source_kind!='imported_item' OR p.erased_by_operation_id IS NOT NULL OR NOT EXISTS (
+             SELECT 1 FROM conversation_presentations native WHERE native.card_id=p.card_id
+             AND native.source_kind='native_item' AND native.source_identity=p.imported_native_identity))
+           AND (p.erased_by_operation_id IS NOT NULL OR NOT EXISTS (
+             SELECT 1 FROM conversation_presentations erased WHERE erased.card_id=p.card_id
+             AND erased.erased_by_operation_id IS NOT NULL AND erased.source_kind='imported_item'
+             AND erased.imported_native_identity IS NOT NULL AND erased.imported_native_identity=
+               CASE p.source_kind WHEN 'native_item' THEN p.source_identity
+                 WHEN 'imported_item' THEN p.imported_native_identity END))
+           ORDER BY p.sequence {order} LIMIT ?3"
     );
     let rows = sqlx::query(&sql)
         .bind(card)
@@ -370,6 +380,47 @@ pub(super) async fn page_on_connection(
                         PrivateHistoryPayload::ErasedByPrivateHistoryOperation { .. } => {
                             ConversationDisplaySource::Removed { identity }
                         }
+                    }
+                }
+            }
+            "imported_item" => {
+                let facts: ImportedProvenance =
+                    serde_json::from_str(row.try_get("imported_provenance_json")?)?;
+                let ImportedProvenance::UnknownLegacy {
+                    original_row_id,
+                    card_id,
+                    import_boundary_sequence,
+                    ..
+                } = &facts;
+                if card_id != card
+                    || original_row_id.to_string() != row.try_get::<String, _>("source_identity")?
+                    || *import_boundary_sequence
+                        != row.try_get::<i64, _>("import_boundary_sequence")?
+                {
+                    return Err(CalmError::Conflict(
+                        "imported presentation provenance mismatch",
+                    ));
+                }
+                if removed {
+                    ConversationDisplaySource::Removed {
+                        identity: ConversationDisplayIdentity::Imported { provenance: facts },
+                    }
+                } else {
+                    let raw = crate::db::rows::HarnessItemRow::from_row(&row)?;
+                    if facts
+                        != super::conversation::imported::provenance(
+                            &raw,
+                            *import_boundary_sequence,
+                        )?
+                    {
+                        return Err(CalmError::Conflict("imported original row changed"));
+                    }
+                    let item = crate::model::HarnessItem::try_from(raw).map_err(|e| {
+                        CalmError::Internal(format!("imported transcript decode: {e}"))
+                    })?;
+                    ConversationDisplaySource::ImportedItem {
+                        item,
+                        provenance: Box::new(facts),
                     }
                 }
             }

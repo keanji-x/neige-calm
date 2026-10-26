@@ -41,6 +41,32 @@ impl ConversationCursor {
     }
 }
 
+/// Immutable body-free facts, not an authenticated input origin. Digest v1 is
+/// SHA-256 of JSON serialization of (original params string, nullable original
+/// input_segments string); null and an empty array remain distinct.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema, TS)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
+pub enum ImportedProvenance {
+    UnknownLegacy {
+        original_row_id: i64,
+        worker_session_id: String,
+        card_id: String,
+        track_id: String,
+        thread_id: String,
+        #[schema(required = true, nullable = true)]
+        turn_id: Option<String>,
+        #[schema(required = true, nullable = true)]
+        item_uuid: Option<String>,
+        #[schema(required = true, nullable = true)]
+        item_type: Option<String>,
+        method: String,
+        created_at_ms: i64,
+        original_digest: String,
+        import_boundary_sequence: i64,
+    },
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema, TS)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 #[ts(export, export_to = "fe/core/api/generated/wire.ts")]
@@ -48,6 +74,7 @@ pub enum ConversationDisplayIdentity {
     Human { message_id: String },
     System { observation_id: String },
     Native { thread_id: String, item_id: String },
+    Imported { provenance: ImportedProvenance },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema, TS)]
@@ -77,6 +104,10 @@ pub enum ConversationDisplaySource {
     },
     Native {
         item: TranscriptRow,
+    },
+    ImportedItem {
+        item: TranscriptRow,
+        provenance: Box<ImportedProvenance>,
     },
     // Original V1 row. Native user text has no proven application author.
     HistoricalRaw {
@@ -352,4 +383,29 @@ pub struct ConversationLiveReplies {
     pub contract: ConversationReadContract,
     #[schema(required = true, nullable = true)]
     pub turn: Option<ConversationLiveTurn>,
+}
+
+#[cfg(test)]
+mod imported_tests {
+    use super::*;
+
+    #[test]
+    fn u2_imported_wire_body_free_identity_rejects_author_and_body() {
+        let facts = serde_json::json!({"kind":"unknown_legacy","original_row_id":7,
+            "worker_session_id":"original","card_id":"card","track_id":"track","thread_id":"thread",
+            "turn_id":null,"item_uuid":null,"item_type":null,"method":"turn/completed","created_at_ms":1,
+            "original_digest":format!("sha256-v1:{}","a".repeat(64)),"import_boundary_sequence":0});
+        let identity = serde_json::json!({"kind":"imported","provenance":facts});
+        let source = serde_json::json!({"kind":"removed","identity":identity});
+        let decoded: ConversationDisplaySource = serde_json::from_value(source.clone()).unwrap();
+        assert_eq!(serde_json::to_value(decoded).unwrap(), source);
+        for field in ["author", "params", "attachments"] {
+            let mut bad = facts.clone();
+            bad[field] = serde_json::json!("invented");
+            assert!(serde_json::from_value::<ImportedProvenance>(bad).is_err());
+        }
+        let mut bad = source;
+        bad["item"] = serde_json::json!({"params":"private"});
+        assert!(serde_json::from_value::<ConversationDisplaySource>(bad).is_err());
+    }
 }
