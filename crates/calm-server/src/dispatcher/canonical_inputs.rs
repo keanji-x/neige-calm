@@ -170,9 +170,48 @@ impl Dispatcher {
             dispatcher: Arc::downgrade(self),
             execution,
         });
+        self.scheduler.bind_child_dispatcher(Arc::downgrade(self));
         // The existing reconcile owner retries held input after native recovery;
         // its declaration is never reconstructed from a row or a readiness flag.
         self.inner.reconcile_canonical_inputs().await
+    }
+
+    /// Scheduler completion waits for activation of the exact creation-time
+    /// worker. Qualification is the same durable event-prefix path as catch-up.
+    pub(crate) async fn bootstrap_canonical_child(
+        &self,
+        card: &CardId,
+        worker: &str,
+    ) -> Result<()> {
+        let worker = worker.to_owned();
+        let current = self
+            .inner
+            .repo
+            .session_projection_active_for_card(&card.to_string())
+            .await?;
+        if current.as_ref().map(|row| row.id.as_str()) != Some(worker.as_str()) {
+            return Err(CalmError::Conflict(
+                "child bootstrap carrier changed".into(),
+            ));
+        }
+        let sources = self.inner.canonical_event_sources(card, None).await?;
+        for (reference, source) in sources {
+            if let Some(handle) = self.inner.harness.get(&worker) {
+                handle.observe_canonical_source(reference, source).await?;
+            } else {
+                let wake = self
+                    .inner
+                    .planner_wake
+                    .read()
+                    .expect("Planner wake context")
+                    .clone()
+                    .ok_or_else(|| {
+                        CalmError::ServiceUnavailable("child activation owner unavailable".into())
+                    })?;
+                wake.wake_canonical(card, source).await?;
+            }
+        }
+        Ok(())
     }
 
     /// Real service retirement revokes sources even when old background Inner or
@@ -267,6 +306,40 @@ impl Inner {
         card: &CardId,
         incoming: Option<(&Event, i64)>,
     ) -> Result<()> {
+        let sources = self.canonical_event_sources(card, incoming).await?;
+        for (reference, source) in sources {
+            let wake = self
+                .planner_wake
+                .read()
+                .expect("Planner wake context")
+                .clone();
+            let worker = match &source {
+                InputSource::Dispatcher(source) => source.binding.worker.clone(),
+                _ => unreachable!("event producer only returns Dispatcher sources"),
+            };
+            let handle = self.harness.get(&worker);
+            let card = card.clone();
+            tokio::spawn(async move {
+                let result = if let Some(handle) = handle {
+                    handle.observe_canonical_source(reference, source).await
+                } else if let Some(wake) = wake {
+                    wake.wake_canonical(&card, source).await
+                } else {
+                    Ok(())
+                };
+                if let Err(error) = result {
+                    tracing::warn!(%card, %error, "accepted System input remains held by its original lifecycle");
+                }
+            });
+        }
+        Ok(())
+    }
+
+    async fn canonical_event_sources(
+        self: &Arc<Self>,
+        card: &CardId,
+        incoming: Option<(&Event, i64)>,
+    ) -> Result<Vec<(AcceptedInputRef, InputSource)>> {
         let producer = self.producer()?;
         let pool = self
             .repo
@@ -294,7 +367,7 @@ impl Inner {
         let worker = admission.worker.clone();
         let track = admission.track.clone();
         if incoming.is_some_and(|(_, id)| id > 0 && id <= admission.baseline) {
-            return Ok(());
+            return Ok(vec![]);
         }
         if let Some((event, id)) = incoming {
             if id <= 0 {
@@ -379,6 +452,7 @@ impl Inner {
         }).await?;
         self.push_cursor.bump(card.clone(), floor);
         // Dedup never bypasses fresh producer admission of already accepted work.
+        let mut sources = vec![];
         for stored in stored {
             let facts = event_inputs::track_prefix(
                 pool.read_pool(),
@@ -422,32 +496,9 @@ impl Inner {
                 }
             })
             .await?;
-            let wake = self
-                .planner_wake
-                .read()
-                .expect("Planner wake context")
-                .clone();
-            let source = InputSource::Dispatcher(Box::new(source));
-            let handle = self.harness.get(&worker);
-            let card = card.clone();
-            // Durable acceptance, not mailbox/native progress, acknowledges this
-            // event. Invocation state retains only weak producer dependencies.
-            tokio::spawn(async move {
-                let result = if let Some(handle) = handle {
-                    handle
-                        .observe_canonical_source(stored.reference, source)
-                        .await
-                } else if let Some(wake) = wake {
-                    wake.wake_canonical(&card, source).await
-                } else {
-                    Ok(())
-                };
-                if let Err(error) = result {
-                    tracing::warn!(%card, %error, "accepted System input remains held by its original lifecycle");
-                }
-            });
+            sources.push((stored.reference, InputSource::Dispatcher(Box::new(source))));
         }
-        Ok(())
+        Ok(sources)
     }
 }
 

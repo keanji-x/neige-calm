@@ -62,6 +62,21 @@ const EXPECTED_OTHER_WRITES: &[(&str, &str, &str)] = &[
          frozen attached row, then redirects a separate parent's core.worktree there. \
          This fixture exercises admission of existing ownership before any child row is minted.",
     ),
+    (
+        "crates/calm-server/src/routes/canonical_flow_tests/child_journal_tests.rs",
+        "update tracks set workspace_kind='attached' where id=?1",
+        "Reconstruct the released borrowed Child's attached parent; no production write.",
+    ),
+    (
+        "crates/calm-server/src/routes/canonical_flow_tests/child_journal_tests.rs",
+        "update tracks set workspace_kind='attached',workspace_path=?2,workspace_worktree_path=null where id=?1",
+        "Reconstruct its released borrowed Workspace, without migrating or repairing it.",
+    ),
+    (
+        "crates/calm-server/src/routes/canonical_flow_tests/child_journal_tests.rs",
+        "update tracks set workspace_frozen_at=1 where id=?1",
+        "Pin the persisted journal fixture's freeze stamp before exercising admission.",
+    ),
 ];
 
 /// This file, skipped by its own scan: its literals are the detector's test vectors.

@@ -61,8 +61,6 @@ mod planner_attachments_guarded_surface;
 mod planner_attachments_rest;
 #[path = "cases/planner_authentication_recovery.rs"]
 mod planner_authentication_recovery;
-#[path = "cases/planner_child_bootstrap_fence.rs"]
-mod planner_child_bootstrap_fence;
 #[path = "cases/planner_codex_approvals.rs"]
 mod planner_codex_approvals;
 #[path = "cases/planner_first_start.rs"]

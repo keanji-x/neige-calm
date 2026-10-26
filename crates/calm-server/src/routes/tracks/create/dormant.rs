@@ -8,9 +8,6 @@ use crate::db::sqlite::conversation::{
     human_track_creation_get_tx, human_track_creation_insert_tx,
 };
 use crate::db::sqlite::track_create_idempotency_get_tx;
-use crate::harness::profile::{HarnessProfile, PlannerBinding};
-use crate::harness::snapshot::CanonicalHarnessSnapshot;
-use crate::session_projection_repo::{WorkerSessionInit, WorkerSessionState};
 use calm_types::conversation::{AcceptedInputRef, HumanPayload};
 use calm_types::organization::AreaAccess;
 use sqlx::{Sqlite, Transaction};
@@ -287,43 +284,7 @@ pub(in crate::routes::tracks) async fn mint_dormant_carrier_tx(
     planner: &str,
     provider: crate::session_projection_repo::AgentProvider,
 ) -> Result<String> {
-    let shape = crate::db::sqlite::card_execution_shape_tx(tx, planner).await?;
-    let actual = PlannerBinding::from_shape(&shape.kind, shape.role, &shape.payload)
-        .ok_or_else(|| CalmError::Conflict("fresh Planner binding is invalid".into()))?;
-    if actual.profile != HarnessProfile::Planner || actual.provider != provider {
-        return Err(CalmError::Conflict(
-            "fresh Planner differs from its requested binding".into(),
-        ));
-    }
-    let already_owned: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM cards WHERE id=?1 AND session_id IS NOT NULL)",
-    )
-    .bind(planner)
-    .fetch_one(&mut **tx)
-    .await?;
-    if already_owned {
-        return Err(CalmError::Conflict(
-            "fresh Planner already has an execution owner".into(),
-        ));
-    }
-    let watermark: i64 = sqlx::query_scalar("SELECT COALESCE(MAX(id),0) FROM events")
-        .fetch_one(&mut **tx)
-        .await?;
-    let runtime = crate::model::new_id();
-    crate::db::sqlite::session_start_runtime_tx(
-        tx,
-        WorkerSessionInit::shared_planner(
-            runtime.clone(),
-            planner.to_owned(),
-            provider,
-            WorkerSessionState::Idle,
-            None,
-            serde_json::to_value(CanonicalHarnessSnapshot::dormant(watermark))?,
-            crate::model::now_ms(),
-        ),
-    )
-    .await?;
-    Ok(runtime)
+    crate::track_creation::allocate_empty_planner_carrier_tx(tx, planner, provider).await
 }
 
 /// Empty is an allocation intent, never an accepted Human message. Its optional

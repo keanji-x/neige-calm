@@ -405,7 +405,7 @@ async fn historical_create_key_is_factual_replay_without_canonical_adoption() {
     fixture.shutdown_process(&state).await;
 }
 
-async fn complete_assistant_turn(
+pub(super) async fn complete_assistant_turn(
     fixture: &Fixture,
     state: &AppState,
     peer: &mut crate::shared_codex_appserver::native_owner_tests::Peer,

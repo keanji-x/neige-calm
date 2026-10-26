@@ -17,9 +17,12 @@ use super::{
     SpawnCtx, SpawnHandle, SpawnOutcome, Tx, TxOutput, refuse_if_context_stale,
 };
 
+#[cfg(test)]
+mod canonical_tests;
 mod configuration;
 mod continuation;
 use configuration::{FrozenParent, PreparedChild, ensure_child_workspace};
+pub(crate) use configuration::{activation_succeeded, workspace_ready_tx};
 
 pub const CHILD_TRACK_KIND: &str = "child-track";
 
@@ -212,6 +215,13 @@ impl ChildTrackAdapter {
             .execute(&mut **tx)
             .await?;
 
+        let canonical = crate::harness::backend::factory::PlannerFactory::canonical_inputs(
+            &crate::harness::profile::PlannerBinding {
+                profile: crate::harness::profile::HarnessProfile::Planner,
+                provider: frozen.provider.clone(),
+            },
+        );
+        let provider = frozen.provider.clone();
         let planner_card_id = new_id();
         let report_card_id = new_id();
         let structure = initialize_track_tx(
@@ -228,6 +238,21 @@ impl ChildTrackAdapter {
             &self.acp_planner,
         )
         .await?;
+
+        // The empty carrier freezes its floor BEFORE this transaction appends
+        // its one bootstrap event. Only this operation transaction mints seed.
+        let canonical_worker = if canonical {
+            Some(
+                crate::track_creation::allocate_empty_planner_carrier_tx(
+                    tx,
+                    &planner_card_id,
+                    provider,
+                )
+                .await?,
+            )
+        } else {
+            None // Explicit historical entry for an undelivered provider lifecycle.
+        };
 
         calm_truth::db::sqlite::task_bind_child_track_tx(
             tx,
@@ -260,6 +285,21 @@ impl ChildTrackAdapter {
             }
             entries.extend(projection.kernel_events);
         }
+        if canonical {
+            entries.push((
+                actor.clone(),
+                EventScope::Track {
+                    track: child.id.clone(),
+                    area: child.area_id.clone(),
+                },
+                Event::TrackWakeRequested {
+                    track_id: child.id.clone(),
+                    source: "child-bootstrap".into(),
+                    key: payload.task_id.clone(),
+                    text: seed.clone(),
+                },
+            ));
+        }
         let mut envelopes = Vec::with_capacity(entries.len());
         for (event_actor, scope, event) in entries {
             let id = append_decision_event_in_tx(tx, &event_actor, &scope, None, &event).await?;
@@ -279,6 +319,7 @@ impl ChildTrackAdapter {
             "planner_card_id": CardId::from(planner_card_id),
             "report_card_id": CardId::from(report_card_id),
             "seed": seed,
+            "canonical_worker": canonical_worker,
             "cwd": child.workspace.agent_cwd(),
             "workspace_track": child,
             "parent_head": frozen.head,
@@ -464,6 +505,15 @@ impl ProviderAdapter for ChildTrackAdapter {
         if ctx.repo.track_get(child_id).await?.is_none() {
             return Err(CalmError::NotFound(format!("child track {child_id}")));
         }
+        if _op.payload["child_track"]["continue"].as_str() == Some(child_id) {
+            return Ok(AppServerInteractOutcome::NotApplicable);
+        }
+        #[cfg(feature = "fixtures")]
+        crate::test_seams::pause_point(
+            "u11-child-workspace",
+            _op.payload["task_id"].as_str().unwrap(),
+        )
+        .await;
         match ensure_child_workspace(output).await {
             Ok(()) => {
                 output
@@ -1301,25 +1351,22 @@ mod tests {
             .fetch_one(repo.pool())
             .await
             .unwrap();
-        for frozen_value in [
-            "frozen-goal",
-            "frozen-acceptance",
-            "frozen",
-            "/task-only-cwd",
-        ] {
-            assert!(planner_payload.contains(frozen_value), "{planner_payload}");
-        }
-        for current_value in [
-            "current-goal",
-            "current-acceptance",
-            "current-cwd",
-            "current",
-        ] {
-            assert!(
-                !planner_payload.contains(current_value),
-                "{planner_payload}"
-            );
-        }
+        let planner_payload: Value = serde_json::from_str(&planner_payload).unwrap();
+        assert!(
+            planner_payload.get("prompt").is_none(),
+            "canonical seed belongs only to its durable System wake"
+        );
+        let wake = output
+            .post_commit_events
+            .iter()
+            .find_map(|envelope| match &envelope.event {
+                Event::TrackWakeRequested { source, text, .. } if source == "child-bootstrap" => {
+                    Some(text)
+                }
+                _ => None,
+            })
+            .expect("the frozen seed must have its durable bootstrap event");
+        assert_eq!(wake, output.data["seed"].as_str().unwrap());
         let child_id = output.data["child_track_id"].as_str().unwrap();
         assert_eq!(
             sqlx::query_scalar::<_, String>("SELECT title FROM tracks WHERE id=?1")

@@ -379,6 +379,7 @@ pub async fn guarded_child_deleted_flip_for_test(
 
 pub struct Scheduler {
     compaction_harness: std::sync::OnceLock<crate::harness::HarnessRegistry>,
+    child_dispatcher: std::sync::OnceLock<Weak<crate::dispatcher::Dispatcher>>,
     repo: Arc<dyn Repo>,
     events: EventBus,
     write: WriteContext,
@@ -458,6 +459,7 @@ impl Scheduler {
     ) -> Arc<Self> {
         Arc::new(Self {
             compaction_harness: Default::default(),
+            child_dispatcher: Default::default(),
             repo,
             events,
             write,
@@ -1199,6 +1201,51 @@ impl Scheduler {
             .ok_or_else(|| {
                 CalmError::Internal("child-track result missing planner_card_id".into())
             })?;
+        if let Some(worker) = result.get("canonical_worker").and_then(Value::as_str) {
+            #[cfg(feature = "fixtures")]
+            crate::test_seams::pause_point("u11-child-result", &task.id).await;
+            // A crash can lose the running stamp after the original activation
+            // succeeded and consumed its input. Read that operation's result;
+            // absence of a pending source is never permission to remint seed.
+            if crate::operation::child_track_adapter::activation_succeeded(
+                self.repo.as_ref(),
+                &runtime,
+                planner_card_id,
+                worker,
+            )
+            .await?
+            {
+                return self.mark_sub_track_running(&task.id).await;
+            }
+            // The actual Dispatcher qualifies the original durable bootstrap;
+            // its original activation owner holds CardStartFence. Do not mint
+            // a replacement start or reinsert seed on retries/cold boot.
+            let Some(dispatcher) = self.child_dispatcher.get().and_then(Weak::upgrade) else {
+                return Ok(());
+            };
+            match dispatcher
+                .bootstrap_canonical_child(&planner_card_id.into(), worker)
+                .await
+            {
+                Ok(()) => {
+                    if crate::operation::child_track_adapter::activation_succeeded(
+                        self.repo.as_ref(),
+                        &runtime,
+                        planner_card_id,
+                        worker,
+                    )
+                    .await?
+                    {
+                        return self.mark_sub_track_running(&task.id).await;
+                    }
+                    return Ok(());
+                }
+                Err(error) => {
+                    tracing::warn!(%child_id, %error, "child bootstrap remains held by its original carrier");
+                    return Ok(());
+                }
+            }
+        }
         let report_card_id = result
             .get("report_card_id")
             .and_then(Value::as_str)
@@ -1645,6 +1692,10 @@ impl Scheduler {
         let facts = task_running_liveness_tx(&mut tx, task_id, worker_card_id).await?;
         tx.commit().await?;
         Ok(facts)
+    }
+
+    pub(crate) fn bind_child_dispatcher(&self, dispatcher: Weak<crate::dispatcher::Dispatcher>) {
+        let _ = self.child_dispatcher.set(dispatcher);
     }
 
     /// When this scheduler booted, or the fixture's stand-in for it.

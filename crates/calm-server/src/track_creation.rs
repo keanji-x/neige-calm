@@ -3,7 +3,7 @@
 
 use crate::card_role_cache::CardRoleCache;
 use crate::db::sqlite::{card_create_with_id_tx, overlay_upsert_tx};
-use crate::error::Result;
+use crate::error::{CalmError, Result};
 use crate::event::{Event, EventScope};
 use crate::ids::ActorId;
 use crate::model::{Card, CardRole, NewCard, NewOverlay, Overlay, Track};
@@ -84,9 +84,15 @@ pub(crate) async fn initialize_track_tx(
             permission,
             selection,
         } => {
+            let canonical = crate::harness::backend::factory::PlannerFactory::canonical_inputs(
+                &crate::harness::profile::PlannerBinding {
+                    profile: crate::harness::profile::HarnessProfile::Planner,
+                    provider: provider.clone(),
+                },
+            );
             let mut payload = planner_payload(
                 host,
-                Some(seed),
+                (!canonical).then_some(seed),
                 provider,
                 crate::planner_permission_mode::CreationSource::Inherited(permission),
             );
@@ -200,4 +206,53 @@ pub(crate) fn planner_harness_layout_payload(
             }
         }
     })
+}
+
+/// Allocate the empty carrier in the caller's creation transaction. This grants no
+/// execution and reads the event floor before the caller appends its first wake.
+pub(crate) async fn allocate_empty_planner_carrier_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    planner: &str,
+    provider: AgentProvider,
+) -> Result<String> {
+    use crate::harness::profile::{HarnessProfile, PlannerBinding};
+    use crate::harness::snapshot::CanonicalHarnessSnapshot;
+    use crate::session_projection_repo::{WorkerSessionInit, WorkerSessionState};
+    let shape = crate::db::sqlite::card_execution_shape_tx(tx, planner).await?;
+    let actual = PlannerBinding::from_shape(&shape.kind, shape.role, &shape.payload)
+        .ok_or_else(|| CalmError::Conflict("fresh Planner binding is invalid".into()))?;
+    if actual.profile != HarnessProfile::Planner || actual.provider != provider {
+        return Err(CalmError::Conflict(
+            "fresh Planner differs from its requested binding".into(),
+        ));
+    }
+    let already_owned: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM cards WHERE id=?1 AND session_id IS NOT NULL)",
+    )
+    .bind(planner)
+    .fetch_one(&mut **tx)
+    .await?;
+    if already_owned {
+        return Err(CalmError::Conflict(
+            "fresh Planner already has an execution owner".into(),
+        ));
+    }
+    let watermark: i64 = sqlx::query_scalar("SELECT COALESCE(MAX(id),0) FROM events")
+        .fetch_one(&mut **tx)
+        .await?;
+    let runtime = crate::model::new_id();
+    crate::db::sqlite::session_start_runtime_tx(
+        tx,
+        WorkerSessionInit::shared_planner(
+            runtime.clone(),
+            planner.to_owned(),
+            provider,
+            WorkerSessionState::Idle,
+            None,
+            serde_json::to_value(CanonicalHarnessSnapshot::dormant(watermark))?,
+            crate::model::now_ms(),
+        ),
+    )
+    .await?;
+    Ok(runtime)
 }

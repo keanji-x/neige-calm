@@ -1059,6 +1059,21 @@ impl ProviderAdapter for CardSpawnAdapter {
     }
 }
 
+/// Replay-only fixture for the released child operation result protocol. These
+/// scheduler tests use a stub bootstrap owner and make no provider-storage claims;
+/// canonical activation is exercised by the booted u11_canonical flow tests.
+async fn historical_child_result(boot: &Boot, task: &str) {
+    sqlx::query(
+        "UPDATE operations SET tx_output_json=json_remove(tx_output_json,
+        '$.result.canonical_worker','$.data.canonical_worker')
+        WHERE kind='child-track' AND idempotency_key=?1",
+    )
+    .bind(task)
+    .execute(boot.repo.sqlite_db().unwrap().writer_pool())
+    .await
+    .unwrap();
+}
+
 struct BootstrapAdapter {
     minted: Arc<AtomicUsize>,
     block: Option<BootstrapBlockHook>,
@@ -8175,6 +8190,8 @@ async fn frozen_child_refuses_repoint_and_reuses_its_bootstrap() {
         Arc::new(BootstrapAdapter::new(minted.clone())) as Arc<dyn ProviderAdapter>;
     let (_runtime, scheduler) = build_scheduler(&boot, vec![child_adapter, bootstrap_adapter]);
     scheduler.sweep_all().await;
+    historical_child_result(&boot, &task_id).await;
+    scheduler.sweep_all().await;
     assert_eq!(
         boot.repo.task_get(&task_id).await.unwrap().unwrap().status,
         TaskStatus::Running
@@ -8331,6 +8348,7 @@ async fn acceptance_19_child_bootstrap_is_before_running_and_exactly_once_after_
         boot.repo.task_get(&task_id).await.unwrap().unwrap().status,
         TaskStatus::Dispatched
     );
+    historical_child_result(&boot, &task_id).await;
     runtime.install_wait_entered_hook_for_test(block.wait_entered.clone());
     let sweep = {
         let scheduler = scheduler.clone();
@@ -8440,6 +8458,8 @@ async fn acceptance_19_child_bootstrap_is_before_running_and_exactly_once_after_
             )),
         ],
     );
+    crash_scheduler.sweep_all().await;
+    historical_child_result(&crash_boot, &crash_task_id).await;
     crash_runtime.install_wait_entered_hook_for_test(crash_block.wait_entered.clone());
     let crashed_sweep = {
         let scheduler = crash_scheduler.clone();
@@ -8565,7 +8585,7 @@ async fn acceptance_13e_failed_and_stuck_at_both_operation_levels_close_once() {
             scheduler.sweep_all().await;
             assert_eq!(
                 boot.repo.task_get(&task_id).await.unwrap().unwrap().status,
-                TaskStatus::Running
+                TaskStatus::Dispatched
             );
             sqlx::query("UPDATE tasks SET status='dispatched' WHERE id=?1")
                 .bind(&task_id)
@@ -8593,6 +8613,8 @@ async fn acceptance_13e_failed_and_stuck_at_both_operation_levels_close_once() {
             .unwrap();
         } else {
             scheduler.schedule_track(boot.track_id.clone()).await;
+            historical_child_result(&boot, &task_id).await;
+            scheduler.sweep_all().await;
             sqlx::query("UPDATE tasks SET status='dispatched' WHERE id=?1")
                 .bind(&task_id)
                 .execute(boot.repo.sqlite_db().unwrap().writer_pool())

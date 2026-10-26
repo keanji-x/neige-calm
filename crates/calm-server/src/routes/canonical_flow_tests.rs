@@ -48,6 +48,8 @@ mod assistant_canonical;
 mod boot_catalog_follower_tests;
 #[cfg(feature = "fixtures")]
 mod catalog_readiness_tests;
+mod child_bootstrap_tests;
+mod child_journal_tests;
 mod claude_creation_tests;
 mod control_tests;
 mod dispatcher_inputs_tests;

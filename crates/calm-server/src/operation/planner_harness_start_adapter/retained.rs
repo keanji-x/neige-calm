@@ -98,6 +98,9 @@ impl PlannerHarnessStartAdapter {
                 "retained native association changed".into(),
             ));
         }
+        let _workspace_ready =
+            crate::operation::child_track_adapter::workspace_ready_tx(tx, row.track_id.as_str())
+                .await?;
         let track = calm_truth::db::sqlite::track_get_tx(tx, &row.track_id).await?;
         Ok(Target {
             track_id: row.track_id.to_string(),
@@ -681,6 +684,8 @@ impl PlannerHarnessStartAdapter {
                 "retained handle installation changed".into(),
             ));
         }
+        #[cfg(feature = "fixtures")]
+        crate::test_seams::pause_point("u11-retained-installed", &wire.card_id).await;
         Ok(SpawnOutcome::Ready(SpawnHandle::Harness {
             worker_session_id: wire.worker_session_id.clone(),
         }))
