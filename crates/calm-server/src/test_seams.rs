@@ -523,3 +523,15 @@ pub async fn historical_daily_for_test(
 ) -> crate::error::Result<crate::model::Track> {
     crate::daily_planner::historical_daily_for_test(state, now).await
 }
+
+/// Allocate or replay a released creator receipt through the Historical owner.
+#[cfg(feature = "fixtures")]
+pub async fn historical_creator_receipt_for_test(
+    route: &crate::state::RouteState,
+    max_open: u32,
+    request: crate::mcp_server::tools::track_add::TrackAddRequest,
+) -> crate::error::Result<crate::model::Track> {
+    crate::routes::tracks::RouteTrackCreator::new(route.clone(), max_open)
+        .historical_receipt_for_test(request)
+        .await
+}

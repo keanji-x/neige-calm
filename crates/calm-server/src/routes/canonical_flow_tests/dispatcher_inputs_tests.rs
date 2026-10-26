@@ -14,6 +14,7 @@ mod recovery;
 mod reliable_results;
 mod retry_read;
 mod u9_canonical;
+pub(super) mod u9_creator;
 
 const SYSTEM_BODY: &str = "System report work queued during the original Human turn";
 const HUMAN_BODY: &str = "A later Human input must continue without another POST";

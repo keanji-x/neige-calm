@@ -10,6 +10,7 @@ pub(super) enum CreationContext {
     Historical,
     /// Trusted managed admission; no Human input or borrowed resource authority.
     ManagedCanonical,
+    CreatorCanonical,
     Canonical(crate::auth::HumanInputSource),
 }
 
@@ -51,6 +52,15 @@ pub(super) async fn allocate_track_structure_tx(
         workspace_plan,
         idempotency_claim,
     } = options;
+    if matches!(owners.context, CreationContext::CreatorCanonical)
+        && let (Some(creator), Some(claim)) = (&creator, &idempotency_claim)
+        && let Some(track) = creator.replay_tx(tx, claim).await?
+    {
+        let _ = replay_tx.set(track.id.to_string());
+        return Err(CalmError::Conflict(
+            "creator allocation already committed".into(),
+        ));
+    }
     if let Some(source) = &human_source {
         source.require_area_tx(tx, &body_area_id).await?;
         if let TrackInit::Fork { source_track_id } = &init {
@@ -287,7 +297,9 @@ pub(super) async fn allocate_track_structure_tx(
     )?;
     if matches!(
         context,
-        CreationContext::Canonical(_) | CreationContext::ManagedCanonical
+        CreationContext::Canonical(_)
+            | CreationContext::ManagedCanonical
+            | CreationContext::CreatorCanonical
     ) {
         super::creation_context::freeze(
             &mut planner_payload,
@@ -342,7 +354,10 @@ pub(super) async fn allocate_track_structure_tx(
         init_projection = Some(projection);
     }
 
-    if matches!(context, CreationContext::ManagedCanonical) {
+    if matches!(
+        context,
+        CreationContext::ManagedCanonical | CreationContext::CreatorCanonical
+    ) {
         super::create::dormant::mint_dormant_carrier_tx(
             tx,
             &planner_card_id_for_tx,
@@ -352,6 +367,13 @@ pub(super) async fn allocate_track_structure_tx(
     }
 
     let mut events = structure.creation_events(&track, &actor_id_for_tx, creation_message);
+    if matches!(context, CreationContext::CreatorCanonical) {
+        let creator = creator
+            .as_ref()
+            .ok_or_else(|| CalmError::Internal("creator admission missing".into()))?;
+        let (scope, event) = creator.first_mail_tx(tx, &track).await?;
+        events.push((ActorId::Kernel, scope, event));
+    }
     if let Some(projection) = init_projection {
         if !projection.changed_keys.is_empty() {
             events.push((

@@ -1,119 +1,57 @@
-//! #2212 on `neige_track_add`: a retried add resumes the Track its key minted, and refuses to
-//! start that Track's Planner again once it has a conversation.
+//! Canonical receipt replay is independent of current native availability.
+use super::*;
 
-use axum::http::StatusCode;
-use calm_truth::db::sqlite::PLANNER_START_CARD_KEY;
-use serde_json::json;
-
-use super::{boot, send};
-
-/// The added Track's start failed, a reset then started its Planner, and the creator retried the
-/// add: a typed `-32409`, with no second start of the card.
-#[tokio::test]
-async fn track_add_admin_retry_onto_a_planner_started_since_is_a_conflict() {
-    let boot = boot(16).await;
-    let (_, planner) = boot.user_track("portfolio").await;
-    boot.codex.fail_next_thread_start_for_test();
-    boot.add(&planner, boot.args("k1"))
-        .await
-        .expect_err("premise: the added Track's start failed");
-    let added: String = boot
-        .scalar("SELECT id FROM tracks WHERE creator_key = ?1", "k1")
-        .await;
-    let card: String = boot
-        .scalar(
-            "SELECT id FROM cards WHERE track_id = ?1 AND role = 'planner'",
-            &added,
-        )
-        .await;
-    let (status, reset) = send(
-        boot.app.clone(),
-        "POST",
-        &format!("/api/cards/{card}/planner/reset"),
-        Some(json!({})),
-    )
-    .await;
-    assert_eq!(
-        status,
-        StatusCode::OK,
-        "premise: the reset starts it: {reset}"
-    );
-    let starts = || async {
-        sqlx::query_scalar::<_, i64>(
-            "SELECT COUNT(*) FROM operations WHERE kind = 'planner-harness-start' \
-               AND json_extract(payload_json, ?2) = ?1",
-        )
-        .bind(&card)
-        .bind(format!("$.{PLANNER_START_CARD_KEY}"))
-        .fetch_one(boot.repo.pool())
-        .await
-        .unwrap()
-    };
-    let before = starts().await;
-
-    let error = boot
-        .add(&planner, boot.args("k1"))
-        .await
-        .expect_err("a retry onto a Planner with a conversation starts nothing");
-    assert_eq!(error.code, -32409, "{error:?}");
-    assert!(
-        error.message.contains("already has a session")
-            && error.message.contains(calm_server::mail::TOOL_MAIL_SEND)
-            && !error.message.contains("planner/input"),
-        "the observed fact, and a send path an agent can take: {error:?}"
-    );
-    assert_eq!(starts().await, before, "no second start of the card");
+impl Boot {
+    pub(super) async fn activate_caller(&self, caller: &Caller) {
+        let response = self
+            .app
+            .clone()
+            .oneshot(
+                Request::post(format!(
+                    "/api/cards/{}/planner/input",
+                    caller.identity.card_id
+                ))
+                .header("content-type", "application/json")
+                .header("Idempotency-Key", "creator-turn")
+                .body(Body::from(
+                    json!({"text":"Create delegated work from this real Human turn"}).to_string(),
+                ))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        tokio::time::timeout(std::time::Duration::from_secs(5),async {
+            loop {
+                let ready: bool = sqlx::query_scalar("SELECT COALESCE(json_array_length(handle_state_json,'$.canonical_inputs.attempts'),0)>0 \
+            FROM worker_sessions WHERE id=?1")
+                    .bind(&caller.identity.session_id).fetch_one(self.repo.pool()).await.unwrap();
+                if ready {break;}
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        }).await.expect("real accepted input must cross before the creator uses tools");
+    }
 }
 
-/// The added Track's start failed and another start of its Planner is still running (another
-/// instance holds its lease): the retried add starts nothing and answers a typed `-32503`.
 #[tokio::test]
-async fn track_add_admin_retry_while_a_start_is_in_flight_is_unavailable() {
+async fn u9_canonical_creator_receipt_does_not_wait_for_native_start() {
     let boot = boot(16).await;
     let (_, planner) = boot.user_track("portfolio").await;
     boot.codex.fail_next_thread_start_for_test();
-    boot.add(&planner, boot.args("k1"))
-        .await
-        .expect_err("premise: the added Track's start failed");
-    let added: String = boot
-        .scalar("SELECT id FROM tracks WHERE creator_key = ?1", "k1")
-        .await;
-    let card: String = boot
-        .scalar(
-            "SELECT id FROM cards WHERE track_id = ?1 AND role = 'planner'",
-            &added,
-        )
-        .await;
-    sqlx::query(
-        "INSERT INTO operations (id, operation_key, kind, payload_hash, target_type, \
-           target_json, payload_json, phase, lease_owner, lease_until_ms, created_at_ms, \
-           updated_at_ms) \
-         VALUES ('in-flight', 'in-flight', 'planner-harness-start', 'h', 'track', '{}', ?1, \
-           'tx_committed', 'elsewhere', 9223372036854775807, 0, 0)",
-    )
-    .bind(json!({ PLANNER_START_CARD_KEY: card }).to_string())
-    .execute(boot.repo.pool())
-    .await
-    .unwrap();
-    let starts = || async {
-        sqlx::query_scalar::<_, i64>(
-            "SELECT COUNT(*) FROM operations WHERE kind = 'planner-harness-start' \
-               AND json_extract(payload_json, ?2) = ?1",
-        )
-        .bind(&card)
-        .bind(format!("$.{PLANNER_START_CARD_KEY}"))
-        .fetch_one(boot.repo.pool())
-        .await
-        .unwrap()
-    };
-    let before = starts().await;
-
-    let error = boot
-        .add(&planner, boot.args("k1"))
-        .await
-        .expect_err("a retry during another start waits for it");
-    assert_eq!(error.code, -32503, "{error:?}");
-    assert_eq!(starts().await, before, "no start was submitted");
+    let operations = boot.count("SELECT count(*) FROM operations").await;
+    let added = boot.add(&planner, boot.args("deferred")).await.unwrap();
+    assert_eq!(
+        boot.add(&planner, boot.args("deferred")).await.unwrap(),
+        added
+    );
+    assert_eq!(
+        boot.count("SELECT count(*) FROM operations").await,
+        operations
+    );
+    assert_eq!(
+        boot.deliveries(added["track_id"].as_str().unwrap()).await,
+        1
+    );
 }
 
 /// Replays select the durable receipt before applying the creator's current
@@ -127,18 +65,25 @@ async fn track_add_admin_replay_wins_over_current_provider_unavailability() {
         .await
         .unwrap();
     let before = boot.track_count().await;
-    sqlx::query("UPDATE cards SET payload=json_set(payload,'$.planner_provider','claude') WHERE track_id=?1 AND role='planner'")
-        .bind(&creator).execute(boot.repo.pool()).await.unwrap();
-    let replay = boot
-        .add(&planner, boot.args("readiness-replay"))
-        .await
-        .unwrap();
-    assert_eq!(replay, created);
+    use calm_server::mcp_server::tools::track_add::{TrackAddArgs, TrackAddRequest};
+    let mut request = TrackAddRequest {
+        creator_track_id: creator,
+        area_id: boot.area_id.clone(),
+        create_actor: planner.identity.to_actor_id(),
+        start_actor: calm_server::ids::ActorId::AiPlanner(planner.identity.card_id.clone().into()),
+        planner_provider: AgentProvider::Claude,
+        args: serde_json::from_value::<TrackAddArgs>(boot.args("readiness-replay")).unwrap(),
+    };
+    // Keep the calling session's real Codex binding intact while the mint's
+    // inherited-provider readiness changes at the route boundary.
+    let creator = boot.ctx.track_creator.get().unwrap().upgrade().unwrap();
+    let replay = creator.add(request.clone()).await.unwrap();
+    assert_eq!(replay.id.as_str(), created["track_id"].as_str().unwrap());
     assert_eq!(boot.track_count().await, before);
-    let error = boot
-        .add(&planner, boot.args("readiness-mint"))
-        .await
-        .unwrap_err();
-    assert_eq!(error.code, -32503, "{error:?}");
+    request.args = serde_json::from_value(boot.args("readiness-mint")).unwrap();
+    assert!(matches!(
+        creator.add(request).await,
+        Err(calm_server::mcp_server::tools::track_add::TrackAddRefusal::ProviderUnavailable(_))
+    ));
     assert_eq!(boot.track_count().await, before);
 }

@@ -256,6 +256,9 @@ impl Boot {
         assert_eq!(status, StatusCode::CREATED, "{track}");
         let track_id = track["id"].as_str().unwrap().to_string();
         let caller = self.planner_of(&track_id).await;
+        if admin {
+            self.activate_caller(&caller).await;
+        }
         (track_id, caller)
     }
 
@@ -376,10 +379,10 @@ impl Boot {
         self.count("SELECT COUNT(*) FROM tracks").await
     }
 
-    /// `harness.user_message.enqueued` rows for `track_id`: one per delivery of a first message.
+    /// Durable initial mail wakes; protocol-flow tests check actual acceptance/delivery.
     async fn deliveries(&self, track_id: &str) -> i64 {
         self.scalar(
-            "SELECT COUNT(*) FROM events WHERE kind = 'harness.user_message.enqueued' \
+            "SELECT COUNT(*) FROM events WHERE kind = 'track.wake_requested' \
              AND scope_track = ?1",
             track_id,
         )
@@ -603,15 +606,14 @@ async fn track_add_admin_delivers_text_once() {
     let added = boot.added(&planner, "k1").await;
     let text = "Start researching for k1.";
     let carrying = || async {
-        let payloads: Vec<String> = sqlx::query_scalar(
-            "SELECT payload_json FROM operations WHERE kind = 'planner-harness-start'",
-        )
-        .fetch_all(boot.repo.pool())
-        .await
-        .unwrap();
+        let payloads: Vec<String> =
+            sqlx::query_scalar("SELECT payload FROM events WHERE kind = 'track.wake_requested'")
+                .fetch_all(boot.repo.pool())
+                .await
+                .unwrap();
         payloads
             .iter()
-            .filter(|p| serde_json::from_str::<Value>(p).unwrap()["first_message"] == json!(text))
+            .filter(|p| serde_json::from_str::<Value>(p).unwrap()["text"] == json!(text))
             .count()
     };
     assert_eq!(boot.deliveries(&added).await, 1);
@@ -713,10 +715,9 @@ async fn track_creator_does_not_keep_the_state_alive() {
     );
 }
 
-/// A creator whose Planner runs on Claude, on a server where Claude is not ready, gets the
-/// dependency refusal: -32503, nothing created.
+/// A changed provider binding revokes the old session's authority before mint.
 #[tokio::test]
-async fn track_add_admin_refuses_while_the_creators_provider_is_unavailable() {
+async fn u9_canonical_creator_refuses_mismatched_live_provider() {
     let boot = boot(16).await;
     let (creator, planner) = boot.user_track("portfolio").await;
     sqlx::query(
@@ -731,8 +732,8 @@ async fn track_add_admin_refuses_while_the_creators_provider_is_unavailable() {
     let error = boot
         .add(&planner, boot.args("k1"))
         .await
-        .expect_err("Claude is not configured here");
-    assert_eq!(error.code, -32503, "{error:?}");
+        .expect_err("the old session cannot impersonate the new provider binding");
+    assert_eq!(error.code, -32403, "{error:?}");
     assert_eq!(boot.track_count().await, before);
 }
 

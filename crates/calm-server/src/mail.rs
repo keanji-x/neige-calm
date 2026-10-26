@@ -246,32 +246,9 @@ pub async fn send(
                         format!("{TOOL}: hop 6/6 reached — hand off with neige_user_ask"),
                     ));
                 }
-                let mail_id = new_id();
-                sqlx::query(
-                    "INSERT INTO mails (id, from_track_id, to_track_id, reply_to, summary, text, hop, \
-                     sent_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-                )
-                .bind(&mail_id)
-                .bind(&caller)
-                .bind(&to_track)
-                .bind(&reply_to)
-                .bind(&request.summary)
-                .bind(&request.text)
-                .bind(hop)
-                .bind(now_ms())
-                .execute(&mut **tx)
-                .await?;
-                let event = Event::TrackWakeRequested {
-                    track_id: recipient.id.clone(),
-                    source: MAIL_WAKE_SOURCE.into(),
-                    key: mail_id.clone(),
-                    text: wake_line(sender.id.as_str(), &sender.title, &request.summary, &mail_id),
-                };
-                let scope = EventScope::Track {
-                    track: recipient.id,
-                    area: recipient.area_id,
-                };
-                Ok((Sent { mail_id, hop }, vec![(scope, event)]))
+                let (sent, event) = write_mail_tx(tx, &sender, &recipient, &request.summary,
+                    &request.text, hop, reply_to.as_deref(), WakeBody::Summary).await?;
+                Ok((sent, vec![event]))
             })
         },
     )
@@ -280,6 +257,78 @@ pub async fn send(
         Ok((sent, _)) => Ok(sent),
         Err(error) => Err(slot.into_rpc(TOOL, error)),
     }
+}
+
+/// The mail owner writes the durable body and its sole wake together. Admission
+/// remains with the entry that owns the transaction; wake shape is explicit.
+pub(crate) enum WakeBody {
+    Summary,
+    FullText,
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn write_mail_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    sender: &crate::model::Track,
+    recipient: &crate::model::Track,
+    summary: &str,
+    text: &str,
+    hop: i64,
+    reply_to: Option<&str>,
+    wake: WakeBody,
+) -> Result<(Sent, (EventScope, Event)), CalmError> {
+    let mail_id = new_id();
+    sqlx::query(
+        "INSERT INTO mails (id, from_track_id, to_track_id, reply_to, summary, text, hop, sent_at)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+    )
+    .bind(&mail_id)
+    .bind(sender.id.as_str())
+    .bind(recipient.id.as_str())
+    .bind(reply_to)
+    .bind(summary)
+    .bind(text)
+    .bind(hop)
+    .bind(now_ms())
+    .execute(&mut **tx)
+    .await?;
+    let event = Event::TrackWakeRequested {
+        track_id: recipient.id.clone(),
+        source: MAIL_WAKE_SOURCE.into(),
+        key: mail_id.clone(),
+        text: match wake {
+            WakeBody::Summary => wake_line(sender.id.as_str(), &sender.title, summary, &mail_id),
+            WakeBody::FullText => text.to_owned(),
+        },
+    };
+    Ok((
+        Sent { mail_id, hop },
+        (
+            EventScope::Track {
+                track: recipient.id.clone(),
+                area: recipient.area_id.clone(),
+            },
+            event,
+        ),
+    ))
+}
+
+/// Creator admission has already proved this session/card. Read the same turn
+/// owner and hop policy as ordinary send; no transported ToolCallIdentity is invented.
+pub(crate) async fn creator_hop_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    track: &str,
+    card: &str,
+    session: &str,
+) -> Result<i64, CalmError> {
+    let turn = turn_input::latest(tx, card, session)
+        .await?
+        .ok_or_else(|| CalmError::Conflict("turn_unrecorded".into()))?;
+    let hop = next_hop(tx, track, turn, None).await?;
+    if hop > MAX_HOP {
+        return Err(CalmError::Conflict("hop_limit".into()));
+    }
+    Ok(hop)
 }
 
 /// §4.5: the one line the recipient's Planner is woken with; no body, no hop. A title's line

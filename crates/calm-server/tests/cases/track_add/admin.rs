@@ -1,10 +1,20 @@
 use super::*;
 
+async fn non_refresh_events(boot: &Boot, caller: &Caller) -> i64 {
+    // The real caller's accepted turn can publish its phase after the request's
+    // baseline. Only that independent refresh is outside the refused add's scope.
+    boot.scalar(
+        "SELECT count(*) FROM events WHERE kind<>'harness.phase.changed' OR scope_card IS NOT ?1",
+        &caller.identity.card_id,
+    )
+    .await
+}
+
 #[tokio::test]
 async fn track_add_refuses_a_non_admin_planner() {
     let boot = boot(16).await;
     let (_, planner) = boot.user_track_admin("ordinary", false).await;
-    let before = boot.count("SELECT COUNT(*) FROM events").await;
+    let before = non_refresh_events(&boot, &planner).await;
     let tracks = boot.track_count().await;
     let operations = boot.count("SELECT COUNT(*) FROM operations").await;
     let error = boot.add(&planner, boot.args("denied")).await.unwrap_err();
@@ -17,7 +27,7 @@ async fn track_add_refuses_a_non_admin_planner() {
         boot.count("SELECT COUNT(*) FROM operations").await,
         operations
     );
-    assert_eq!(boot.count("SELECT COUNT(*) FROM events").await, before);
+    assert_eq!(non_refresh_events(&boot, &planner).await, before);
     assert_eq!(
         boot.count("SELECT COUNT(*) FROM track_create_idempotency")
             .await,
@@ -32,6 +42,7 @@ async fn track_add_after_revoke_commits_nothing() {
     let (id, planner) = boot.user_track("admin").await;
     let tracks = boot.track_count().await;
     let operations = boot.count("SELECT COUNT(*) FROM operations").await;
+    let caller = planner.clone();
     let pending = tokio::spawn({
         let boot = boot.clone();
         async move { boot.add(&planner, boot.args("revoked")).await }
@@ -47,7 +58,7 @@ async fn track_add_after_revoke_commits_nothing() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    let events = boot.count("SELECT COUNT(*) FROM events").await;
+    let events = non_refresh_events(&boot, &caller).await;
     gate.released.wait().await;
     let error = pending.await.unwrap().unwrap_err();
     assert_eq!(error.code, -32403, "{error:?}");
@@ -57,7 +68,7 @@ async fn track_add_after_revoke_commits_nothing() {
         boot.count("SELECT COUNT(*) FROM operations").await,
         operations
     );
-    assert_eq!(boot.count("SELECT COUNT(*) FROM events").await, events);
+    assert_eq!(non_refresh_events(&boot, &caller).await, events);
     assert_eq!(
         boot.count("SELECT COUNT(*) FROM track_create_idempotency")
             .await,

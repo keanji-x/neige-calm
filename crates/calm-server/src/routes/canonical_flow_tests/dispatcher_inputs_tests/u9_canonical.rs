@@ -2,7 +2,7 @@
 use super::*;
 use crate::mcp_server::{registry::ConnectionIdentity, transport::dispatch_tools_call};
 
-async fn tool(
+pub(super) async fn tool(
     flow: &Flow,
     name: &str,
     arguments: Value,
@@ -19,7 +19,7 @@ async fn tool(
         .map_err(|e| crate::mcp_server::framing::RpcError::internal(e.to_string()))
 }
 
-async fn incoming(flow: &Flow, from: &str, hop: i64) -> String {
+pub(super) async fn incoming(flow: &Flow, from: &str, hop: i64) -> String {
     let id = crate::model::new_id();
     sqlx::query("INSERT INTO mails(id,from_track_id,to_track_id,summary,text,hop,sent_at) VALUES(?1,?2,?3,'incoming','body',?4,?5)")
         .bind(&id).bind(from).bind(&flow.track).bind(hop).bind(crate::model::now_ms())
@@ -69,7 +69,17 @@ async fn u9_canonical_creator_real_turn_facts() {
         .wait_phase(&flow.track, HarnessPhaseTag::TurnCompleted)
         .await;
     flow.close().await;
-    assert_eq!(sent.unwrap()["hop"], "1/6");
+    let sent = sent.unwrap();
+    let (body, wake): (String,String) = sqlx::query_as("SELECT m.text,e.payload FROM mails m JOIN events e ON json_extract(e.payload,'$.key')=m.id \
+            WHERE m.id=?1 AND e.kind='track.wake_requested'")
+        .bind(sent["mail_id"].as_str().unwrap()).fetch_one(flow.fixture.repo.pool()).await.unwrap();
+    assert_eq!(body, "ordinary canonical mail");
+    let wake: Value = serde_json::from_str(&wake).unwrap();
+    assert_eq!(
+        wake["text"],
+        crate::mail::wake_line(&flow.track, "", "hello", sent["mail_id"].as_str().unwrap())
+    );
+    assert_eq!(sent["hop"], "1/6");
     assert_eq!(cat["next_hop"], "1/6");
     assert_eq!(cat["refused"], false);
     assert_eq!(

@@ -22,22 +22,11 @@ async fn rebuild_explicit_workspace_claims_and_materialized_agent_cwd() {
         assert_eq!(track.workspace.path, *cwd);
         assert_ne!(track.workspace.agent_cwd(), cwd);
         assert!(std::path::Path::new(track.workspace.agent_cwd()).is_dir());
-        let payloads: Vec<String> = sqlx::query_scalar(
-            "SELECT payload_json FROM operations WHERE kind='planner-harness-start'",
-        )
-        .fetch_all(boot.repo.pool())
-        .await
-        .unwrap();
-        let payload = payloads
-            .iter()
-            .map(|s| serde_json::from_str::<Value>(s).unwrap())
-            .find(|p| p["first_message"] == args["text"])
-            .unwrap();
-        // Harness admission persists the materialized worktree, not the historical repository.
-        assert!(
-            payload.to_string().contains(track.workspace.agent_cwd()),
-            "{payload}"
-        );
+        let runtime: String = boot.scalar("SELECT ws.handle_state_json FROM worker_sessions ws JOIN cards c ON c.session_id=ws.id \
+            WHERE c.track_id=?1 AND c.role='planner'",id).await;
+        let runtime: calm_types::harness::snapshot::CanonicalHarnessSnapshot =
+            serde_json::from_str(&runtime).unwrap();
+        assert!(runtime.canonical_inputs.attempts.is_empty());
         assert_eq!(boot.add(&planner, args.clone()).await.unwrap(), out);
         args["attach_folder"] = json!(!attach);
         assert_eq!(boot.add(&planner, args).await.unwrap_err().code, -32409);

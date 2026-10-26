@@ -187,7 +187,7 @@ async fn require_surviving_allocation_tx(
     require_allocation_resources_tx(tx, area_id, track_id, planner_card_id, report_card_id).await
 }
 
-async fn require_allocation_resources_tx(
+pub(in crate::routes::tracks) async fn require_allocation_resources_tx(
     tx: &mut Transaction<'_, Sqlite>,
     area_id: &str,
     track_id: &str,
@@ -215,7 +215,7 @@ async fn require_allocation_resources_tx(
     Ok(())
 }
 
-pub(super) async fn prior_start_attempt_tx(
+pub(in crate::routes::tracks) async fn prior_start_attempt_tx(
     tx: &mut Transaction<'_, Sqlite>,
     area_id: &str,
     raw_key: &str,

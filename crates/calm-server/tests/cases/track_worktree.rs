@@ -15,6 +15,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use axum::body::Body;
+use axum::extract::FromRef;
 use axum::http::{Request, StatusCode};
 use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
@@ -131,16 +132,16 @@ impl Boot {
             .await
     }
 
-    /// Real non-Human owner for historical start/fence contracts. No canonical
-    /// carrier is removed or rewritten; the added Track is historical from mint.
+    /// Released Historical receipt fixture for start/fence contracts, using the
+    /// real preparation, allocation and delivery owners.
     async fn historical_at(
         &self,
         cwd: &Path,
         key: &str,
         text: &str,
-    ) -> Result<String, calm_server::plugin_host::mcp::RpcError> {
-        use calm_server::mcp_server::tools::track_add::{TOOL_TRACK_ADD, register_into};
-        use calm_server::mcp_server::{ToolCallIdentity, ToolRegistry};
+    ) -> calm_server::error::Result<String> {
+        use calm_server::mcp_server::ToolCallIdentity;
+        use calm_server::mcp_server::tools::track_add::TrackAddRequest;
         let identity =
             self.historical_creator
                 .get_or_init(|| async {
@@ -178,13 +179,22 @@ impl Boot {
                     }
                 })
                 .await;
-        let mut registry = ToolRegistry::new();
-        register_into(&mut registry);
-        let result = registry.lookup(TOOL_TRACK_ADD).unwrap()(self.state.mcp_context(), identity.clone(), json!({
-            "template_id":"small-change", "title":"historical attached", "cwd":cwd,
-            "attach_folder":true, "idempotency_key":key, "text":text, "message":"Historical fixture",
-        })).await?.into_structured();
-        Ok(result["track_id"].as_str().unwrap().into())
+        let track = calm_server::test_seams::historical_creator_receipt_for_test(
+            &calm_server::state::RouteState::from_ref(&self.state),
+            100,
+            TrackAddRequest {
+                creator_track_id: identity.track_id.clone().unwrap(),
+                area_id: identity.area_id.clone(),
+                create_actor: calm_server::ids::ActorId::AiPlannerSession(identity.session_id.clone().into()),
+                start_actor: calm_server::ids::ActorId::AiPlanner(identity.card_id.clone().into()),
+                planner_provider: identity.provider.clone(),
+                args: serde_json::from_value(json!({
+                    "template_id":"small-change", "title":"historical attached", "cwd":cwd,
+                    "attach_folder":true, "idempotency_key":key, "text":text, "message":"Historical fixture",
+                }))?,
+            },
+        ).await?;
+        Ok(track.id.to_string())
     }
 
     async fn delete_track(&self, track_id: &str) -> (StatusCode, Value) {

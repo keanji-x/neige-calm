@@ -267,6 +267,7 @@ async fn plugin_template_track(boot: &Boot, admin: bool) -> (String, Caller) {
     assert_eq!(track["admin_granted_at"].is_i64(), admin);
     let id = track["id"].as_str().unwrap().to_string();
     let caller = boot.planner_of(&id).await;
+    boot.activate_caller(&caller).await;
     (id, caller)
 }
 

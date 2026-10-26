@@ -9,7 +9,7 @@ mod selection;
 
 const MARKER: &str = "<svg xmlns=\"http://www.w3.org/2000/svg\"><text>committed</text></svg>";
 
-fn repo(fixture: &Fixture) -> std::path::PathBuf {
+pub(super) fn repo(fixture: &Fixture) -> std::path::PathBuf {
     let path = fixture.root.path().join("repo");
     crate::test_support::init_fixture_git_repo(&path);
     std::fs::write(path.join("marker.svg"), MARKER).unwrap();
