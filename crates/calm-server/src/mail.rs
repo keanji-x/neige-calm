@@ -1,7 +1,7 @@
 //! Mail between the Tracks of one Area (#2130, `docs/architecture/2130-track-mail.md`). A send
 //! stores one `mails` row and, in the same transaction, the `track.wake_requested` that wakes the
 //! recipient's Planner; the recipient's first `cat` stamps `read_at`. A causal hop count, computed
-//! from the caller's current turn, refuses the seventh hop.
+//! from the caller's current turn, refuses a hop beyond MAX_HOP.
 
 use std::sync::{Arc, Mutex};
 
@@ -24,7 +24,7 @@ pub const TOOL_MAIL_LS: &str = "neige_mail_ls";
 pub const TOOL_MAIL_CAT: &str = "neige_mail_cat";
 
 /// The highest hop a mail may carry; a send that would get a higher one is refused.
-pub const MAX_HOP: i64 = 6;
+pub const MAX_HOP: i64 = 20;
 /// Mail failure does not itself require a user escalation.
 pub(crate) const USER_DECISION_GUIDANCE: &str =
     "use neige_user_ask only for user decisions/approvals";
@@ -51,7 +51,7 @@ pub struct Sent {
     pub hop: i64,
 }
 
-/// `n/6`, the one spelling of a hop in every result.
+/// `n/MAX_HOP`, the one spelling of a hop in every result.
 pub fn hop_label(hop: i64) -> String {
     format!("{hop}/{MAX_HOP}")
 }
@@ -246,7 +246,7 @@ pub async fn send(
                     return Err(slot.refuse(
                         -32409,
                         "hop_limit",
-                        format!("{TOOL}: hop 6/6 reached — {USER_DECISION_GUIDANCE}"),
+                        format!("{TOOL}: hop {MAX_HOP}/{MAX_HOP} reached — {USER_DECISION_GUIDANCE}"),
                     ));
                 }
                 let (sent, event) = write_mail_tx(tx, &sender, &recipient, &request.summary,

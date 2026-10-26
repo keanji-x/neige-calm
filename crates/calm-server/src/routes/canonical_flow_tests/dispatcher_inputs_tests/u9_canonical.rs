@@ -1,5 +1,6 @@
 //! Real boot, authenticated input and MCP identity resolution; only the native peer is mocked.
 use super::*;
+use crate::mail::{MAX_HOP, hop_label};
 use crate::mcp_server::{registry::ConnectionIdentity, transport::dispatch_tools_call};
 
 pub(super) async fn tool(
@@ -35,7 +36,7 @@ async fn u9_canonical_creator_real_turn_facts() {
     let mut body = super::super::u8_canonical::body(&json!({"id":flow.area}), "codex");
     body["admin"] = json!(true);
     let recipient = post(&flow.app, &flow.cookie, "/api/tracks", "recipient", body).await;
-    let mail = incoming(&flow, recipient["id"].as_str().unwrap(), 6).await;
+    let mail = incoming(&flow, recipient["id"].as_str().unwrap(), MAX_HOP).await;
     let cat = tool(&flow, "neige_mail_cat", json!({"mail_id":mail}))
         .await
         .unwrap();
@@ -61,7 +62,7 @@ async fn u9_canonical_creator_real_turn_facts() {
     )
     .await;
     assert!(
-        sent.is_ok() && cat["next_hop"] == "1/6" && cat["refused"] == false,
+        sent.is_ok() && cat["next_hop"] == hop_label(1) && cat["refused"] == false,
         "ordinary mail::send/cat: send={sent:?}; cat={cat:?}"
     );
     flow.end(TURN).await;
@@ -79,8 +80,8 @@ async fn u9_canonical_creator_real_turn_facts() {
         wake["text"],
         crate::mail::wake_line(&flow.track, "", "hello", sent["mail_id"].as_str().unwrap())
     );
-    assert_eq!(sent["hop"], "1/6");
-    assert_eq!(cat["next_hop"], "1/6");
+    assert_eq!(sent["hop"], hop_label(1));
+    assert_eq!(cat["next_hop"], hop_label(1));
     assert_eq!(cat["refused"], false);
     assert_eq!(
         facts.unwrap(),
@@ -100,7 +101,7 @@ async fn u9_canonical_turn_owner_system_hops_and_turn_read_isolation() {
     body["admin"] = json!(true);
     let recipient = post(&flow.app, &flow.cookie, "/api/tracks", "recipient", body).await;
     let other = recipient["id"].as_str().unwrap();
-    let old = incoming(&flow, other, 6).await;
+    let old = incoming(&flow, other, MAX_HOP).await;
     tool(&flow, "neige_mail_cat", json!({"mail_id":old}))
         .await
         .unwrap();
@@ -153,12 +154,12 @@ async fn u9_canonical_turn_owner_system_hops_and_turn_read_isolation() {
     )
     .await
     .unwrap();
-    assert_eq!(first["hop"], "1/6");
+    assert_eq!(first["hop"], hop_label(1));
     let mail = incoming(&flow, other, 3).await;
     let cat = tool(&flow, "neige_mail_cat", json!({"mail_id":mail}))
         .await
         .unwrap();
-    assert_eq!(cat["next_hop"], "4/6");
+    assert_eq!(cat["next_hop"], hop_label(4));
     assert_eq!(cat["refused"], false);
     let stamp: i64 = sqlx::query_scalar("SELECT read_at FROM mails WHERE id=?1")
         .bind(&mail)
@@ -183,12 +184,12 @@ async fn u9_canonical_turn_owner_system_hops_and_turn_read_isolation() {
     )
     .await
     .unwrap();
-    assert_eq!(sent["hop"], "4/6");
-    let limit = incoming(&flow, other, 6).await;
+    assert_eq!(sent["hop"], hop_label(4));
+    let limit = incoming(&flow, other, MAX_HOP).await;
     let refused = tool(
         &flow,
         "neige_mail_send",
-        json!({"mail_id":limit,"summary":"reply","text":"seventh"}),
+        json!({"mail_id":limit,"summary":"reply","text":"over the hop limit"}),
     )
     .await
     .unwrap_err();
@@ -201,7 +202,7 @@ async fn u9_canonical_turn_owner_system_hops_and_turn_read_isolation() {
     let refused = tool(
         &flow,
         "neige_mail_send",
-        json!({"track_id":other,"summary":"send","text":"seventh"}),
+        json!({"track_id":other,"summary":"send","text":"over the hop limit"}),
     )
     .await
     .unwrap_err();
@@ -217,7 +218,7 @@ async fn u9_canonical_turn_owner_system_hops_and_turn_read_isolation() {
     )
     .await
     .unwrap();
-    assert_eq!(sent["hop"], "1/6");
+    assert_eq!(sent["hop"], hop_label(1));
     flow.end("system-mail-turn-two").await;
     flow.fixture
         .wait_phase(&flow.track, HarnessPhaseTag::TurnCompleted)

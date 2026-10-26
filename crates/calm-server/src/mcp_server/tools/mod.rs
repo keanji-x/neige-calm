@@ -299,7 +299,7 @@ mod tests {
     }
 
     /// Every tool's description renders `prompts/tools/<tool name>.md` with shared acceptance
-    /// guidance, and there is no such file without a tool. Trailing whitespace before the final
+    /// guidance and the mail hop limit, and there is no such file without a tool. Trailing whitespace before the final
     /// newline would make the embedded description differ from the file's visible content.
     #[test]
     fn prompt_files_cover_exactly_the_registered_tools() {
@@ -362,7 +362,8 @@ mod tests {
             });
             assert_eq!(
                 descriptor.description,
-                calm_types::observation::render_task_acceptance_guidance(file_body),
+                calm_types::observation::render_task_acceptance_guidance(file_body)
+                    .replace("{max_hop}", &crate::mail::MAX_HOP.to_string()),
                 "{}: description does not render prompts/tools/{}.md",
                 descriptor.name,
                 descriptor.name

@@ -205,7 +205,7 @@
   },
   {
     "name": "neige_mail_send",
-    "description_sha256": "e266afd3e673e694ec958a9fc27fa9205f6589ff3b8f406f3a43f2d1a00d1a8d",
+    "description_sha256": "5616b47a7f2fd67f1f636680b2c0fa37d0119017f500a5fa014a40d050536040",
     "input_schema": {
       "additionalProperties": false,
       "properties": {

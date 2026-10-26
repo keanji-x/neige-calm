@@ -63,6 +63,8 @@ mod acp_cleanup_migration_tests;
 #[cfg(test)]
 mod acp_submission_tests;
 #[cfg(test)]
+mod mail_migration_tests;
+#[cfg(test)]
 mod session_conversation_tests;
 mod session_mirror;
 mod session_projection;
