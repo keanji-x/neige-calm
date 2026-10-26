@@ -88,7 +88,7 @@ pub(super) async fn turn_compaction_turn(rig: &RegisteredRig) {
     let mut events = rig.session().subscribe_events();
     assert!(matches!(
         rig.session()
-            .compact_start(&rig.thread, &TurnModelSelection::default())
+            .compact_start_for_test(&rig.thread, &TurnModelSelection::default())
             .await,
         CompactSubmission::Submitted { .. }
     ));

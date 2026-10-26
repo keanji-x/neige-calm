@@ -85,7 +85,8 @@ async fn historical(failure: Failure) {
         permission: PlannerPermissionMode::Never,
         edit: provider::control::TurnEdit::NoEdit,
     };
-    let issue = session.start_turn(&owner.thread, request, &[]);
+    let handoff = session.handoff_for_test().await;
+    let issue = session.start_turn(&owner.thread, request, &[], &handoff);
     tokio::pin!(issue);
     tokio::select! {
         result = &mut issue => panic!("issue skipped cleanup fault window: {result:?}"),

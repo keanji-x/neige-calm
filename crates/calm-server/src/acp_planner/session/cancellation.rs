@@ -30,6 +30,7 @@ impl IssueGuard {
         token: &str,
         permission: PlannerPermissionMode,
         purpose: crate::provider_execution::Purpose,
+        track_fence: &crate::provider_execution::TrackFenceHandoff,
     ) -> Result<()> {
         use crate::provider_execution::{self as execution, stdio::EngineStdio};
         let params = &self.shared.params;
@@ -61,6 +62,7 @@ impl IssueGuard {
                 &params.worker_session_id,
                 crate::provider_execution::PreparedIntent(intent),
                 purpose,
+                crate::provider_execution::OccupancyFence::ReleaseOnCommit(track_fence),
             )
             .await?;
         self.claim = Some(claim);

@@ -12,6 +12,7 @@ impl ClaudePlannerSession {
         &self,
         thread: &str,
         request: TurnRequest,
+        track_fence: &crate::provider_execution::TrackFenceHandoff,
     ) -> Result<TurnStartOutcome<CalmError, StartDiagnostic>, TurnStartFailure> {
         let truncation = match request.edit {
             TurnEdit::NoEdit => None,
@@ -29,6 +30,7 @@ impl ClaudePlannerSession {
                 &request.selection,
                 request.permission,
                 &historical_admission(),
+                track_fence,
             )
             .await,
         )
@@ -44,6 +46,7 @@ impl ClaudePlannerSession {
         permission: PlannerPermissionMode,
         execution: crate::harness::backend::ExecutionInput,
         admission: &crate::harness::native_admission::NativePromptAdmission<'_>,
+        track_fence: &crate::provider_execution::TrackFenceHandoff,
     ) -> Result<Uuid, SpawnFailure> {
         self.start_spawn(
             thread,
@@ -55,6 +58,7 @@ impl ClaudePlannerSession {
             selection,
             permission,
             admission,
+            track_fence,
         )
         .await
     }
@@ -64,6 +68,7 @@ impl ClaudePlannerSession {
         &self,
         thread: &str,
         target: NativeEditTarget,
+        track_fence: &crate::provider_execution::TrackAdmissionFence,
     ) -> Result<EditPreparation<CalmError>> {
         let cut = truncation(target)?;
         let _issue = self.shared.issue.lock().await;
@@ -78,7 +83,7 @@ impl ClaudePlannerSession {
         }
         let params = &self.shared.params;
         self.provider_admission_gate().await?;
-        super::super::rewind::check(params, thread, &cut).await
+        super::super::rewind::check(params, thread, &cut, track_fence).await
     }
 
     /// All starts call this while holding this session's issue lock.

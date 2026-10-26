@@ -18,6 +18,7 @@ async fn canonical(failure: Failure) {
     }
     let pause = pause_issue(&fx.owner.worker, failure.stage());
     let selection = failure.selection();
+    let handoff = fx.backend.handoff_for_test().await;
     let issue = crate::harness::input_dispatch::initial(
         fx.owner.repo.as_ref(),
         &fx.source,
@@ -27,6 +28,7 @@ async fn canonical(failure: Failure) {
         &fx.backend,
         &selection,
         PlannerPermissionMode::Never,
+        &handoff,
     );
     tokio::pin!(issue);
     tokio::select! {

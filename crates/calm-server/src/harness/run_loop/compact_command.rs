@@ -36,7 +36,7 @@ pub(super) enum Origin {
 /// Holds both existing fences from admission through the Start write.
 pub(super) struct Admitted<'a> {
     thread: String,
-    track_guard: crate::per_card_lock::KeyedLockGuard,
+    track_guard: crate::provider_execution::TrackAdmissionFence,
     _issuance: tokio::sync::MutexGuard<'a, ()>,
 }
 
@@ -160,12 +160,12 @@ pub(super) async fn start(
             });
         }
     }
-    drop(track_guard);
+    let track_fence = crate::provider_execution::TrackFenceHandoff::new(track_guard);
     let submission = match inner.backend.compact_request(inner.as_ref()).await {
         Ok(request) => {
             IssueTurnHandle::from_reconciliation(inner)
                 .await
-                .compact_start(request)
+                .compact_start(request, &track_fence)
                 .await
         }
         Err(error) => Err(error),

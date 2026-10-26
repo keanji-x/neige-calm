@@ -152,6 +152,7 @@ impl AcpPlannerSession {
         thread: &str,
         request: provider::control::TurnRequest,
         claim: &[crate::harness::QueueEntry],
+        track_fence: &crate::provider_execution::TrackFenceHandoff,
     ) -> std::result::Result<
         provider::control::TurnStartOutcome<CalmError, crate::harness::backend::StartDiagnostic>,
         TurnStartFailure,
@@ -164,6 +165,7 @@ impl AcpPlannerSession {
                 request,
                 InputContract::Historical(claim),
                 &mut ReceiptPresence::Unchecked,
+                track_fence,
             )
             .await
             .map(|receipt| receipt.turn),
@@ -180,6 +182,7 @@ impl AcpPlannerSession {
         permission: PlannerPermissionMode,
         execution: crate::harness::backend::ExecutionInput,
         admission: &crate::harness::native_admission::NativePromptAdmission<'_>,
+        track_fence: &crate::provider_execution::TrackFenceHandoff,
     ) -> CanonicalStart {
         let mut receipt_turn = ReceiptPresence::Unchecked;
         let result = self
@@ -199,6 +202,7 @@ impl AcpPlannerSession {
                     admission,
                 },
                 &mut receipt_turn,
+                track_fence,
             )
             .await;
         match result {
@@ -461,3 +465,20 @@ impl AcpPlannerSession {
 
 #[cfg(test)]
 mod compaction_owner_tests;
+
+#[cfg(test)]
+impl AcpPlannerSession {
+    pub(crate) async fn handoff_for_test(&self) -> crate::provider_execution::TrackFenceHandoff {
+        let track = &self.shared.params.track_id;
+        crate::provider_execution::TrackFenceHandoff::new(
+            crate::harness::run_loop::issuance::track_fence_for_test(track).await,
+        )
+    }
+}
+
+#[cfg(test)]
+impl AcpPlannerSession {
+    pub(crate) fn track_for_test(&self) -> &str {
+        &self.shared.params.track_id
+    }
+}

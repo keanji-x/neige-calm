@@ -34,6 +34,7 @@ impl ClaudePlannerSession {
         target: crate::harness::backend::MaintenanceTarget,
         selection: &TurnModelSelection,
         admission: &crate::harness::native_admission::NativePromptAdmission<'_>,
+        track_fence: &crate::provider_execution::TrackFenceHandoff,
     ) -> CompactSubmission<CalmError> {
         if !self.owns_maintenance_target(&target) {
             return submission_result(Err(CalmError::Conflict(
@@ -49,19 +50,33 @@ impl ClaudePlannerSession {
                 selection,
                 PlannerPermissionMode::Never,
                 admission,
+                track_fence,
             )
             .await,
         )
+    }
+
+    #[cfg(feature = "fixtures")]
+    pub async fn compact_start_for_test(
+        &self,
+        thread: &str,
+        selection: &TurnModelSelection,
+    ) -> CompactSubmission<CalmError> {
+        let fence =
+            crate::harness::run_loop::issuance::track_fence_for_test(self.track_for_test()).await;
+        let handoff = crate::provider_execution::TrackFenceHandoff::new(fence);
+        self.compact_start(thread, selection, &handoff).await
     }
 
     /// Start a compaction of `thread`'s session and report its submission. `selection` is the card's
     /// model, so the summary runs on the conversation's own context window. It runs under `never`:
     /// it asks nothing of the person, whatever the card's turns run under. A conversation whose
     /// session does not exist yet is refused.
-    pub async fn compact_start(
+    pub(crate) async fn compact_start(
         &self,
         thread: &str,
         selection: &TurnModelSelection,
+        track_fence: &crate::provider_execution::TrackFenceHandoff,
     ) -> CompactSubmission<CalmError> {
         submission_result(
             self.start_spawn(
@@ -70,6 +85,7 @@ impl ClaudePlannerSession {
                 selection,
                 PlannerPermissionMode::Never,
                 &super::session::historical_admission(),
+                track_fence,
             )
             .await,
         )

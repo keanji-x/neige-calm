@@ -212,12 +212,14 @@ impl PlannerBackend {
         target: MaintenanceTarget,
         request: CompactRequest,
         admission: &crate::harness::native_admission::NativePromptAdmission<'_>,
+        track_fence: &crate::provider_execution::TrackFenceHandoff,
     ) -> Result<CompactSubmission<CalmError>> {
         match &self.0 {
             Arm::Claude(session) => Ok(session
-                .compact_canonical(target, &request.selection, admission)
+                .compact_canonical(target, &request.selection, admission, track_fence)
                 .await),
             Arm::Codex(daemon, owner) => {
+                track_fence.release();
                 if !owner.binding.matches_maintenance(&target) {
                     return Err(CalmError::Conflict("maintenance owner changed".into()));
                 }
@@ -228,7 +230,7 @@ impl PlannerBackend {
                 ))
             }
             Arm::Acp(session) => Ok(session
-                .compact_canonical(target, &request.selection, admission)
+                .compact_canonical(target, &request.selection, admission, track_fence)
                 .await),
         }
     }

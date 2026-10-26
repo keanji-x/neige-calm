@@ -236,7 +236,7 @@ async fn start_with_issuer(inner: &Arc<Inner>, source: Issuer, operation_id: Str
     )
     .await?;
     canonical::publish(inner, committed.clone()).await;
-    drop(track);
+    let track_fence = crate::provider_execution::TrackFenceHandoff::new(track);
     let owner = MaintenanceAdmission {
         inner,
         source: &source,
@@ -251,7 +251,7 @@ async fn start_with_issuer(inner: &Arc<Inner>, source: Issuer, operation_id: Str
         Ok(request) => {
             inner
                 .backend
-                .compact_canonical(maintenance.clone(), request, &admission)
+                .compact_canonical(maintenance.clone(), request, &admission, &track_fence)
                 .await
         }
         Err(error) => Err(error),

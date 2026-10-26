@@ -7,6 +7,7 @@ pub(super) async fn dispatch_pending(
     current: &CommittedFrame,
     source: InputSource,
     id: RetryIntentId,
+    track_fence: &crate::provider_execution::TrackFenceHandoff,
 ) -> Result<()> {
     let card = inner.card_id.to_string();
     let runtime = inner.worker_session_id.clone();
@@ -100,6 +101,7 @@ pub(super) async fn dispatch_pending(
             effort: intent.invocation.effort,
         },
         intent.invocation.permission,
+        track_fence,
     )
     .await
 }

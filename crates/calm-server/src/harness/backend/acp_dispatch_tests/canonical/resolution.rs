@@ -18,6 +18,7 @@ async fn canonical_acp_unknown_keep_is_idempotent_and_forced_retry_has_no_succes
         &fx.backend,
         &selection,
         PlannerPermissionMode::Never,
+        &fx.backend.handoff_for_test().await,
     )
     .await
     .unwrap();

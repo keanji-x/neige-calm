@@ -290,7 +290,8 @@ async fn canonical_acp_sending_unknown_crash_recovery_after_authenticated_keep_s
                     &fx.submission,
                     &backend,
                     &TurnModelSelection::inherit(),
-                    PlannerPermissionMode::Never
+                    PlannerPermissionMode::Never,
+                    &backend.handoff_for_test().await
                 )
                 .await
                 .is_err()

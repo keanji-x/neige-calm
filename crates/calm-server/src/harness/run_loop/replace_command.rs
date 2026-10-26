@@ -120,7 +120,7 @@ pub(super) async fn handle_replace_admitted(
     let preparation = async {
         IssueTurnHandle::from_reconciliation(inner)
             .await
-            .prepare_rewind(target?)
+            .prepare_rewind(target?, &_track)
             .await
     }
     .await;

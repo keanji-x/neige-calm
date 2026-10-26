@@ -137,6 +137,7 @@ async fn canonical_claude_local_write_is_unknown_and_running_without_native_id()
                 || Ok(()),
                 || Box::pin(async { Ok(()) }),
             ),
+            &backend.handoff_for_test().await,
         )
         .await;
     assert!(

@@ -508,6 +508,7 @@ async fn canonical_claude_compact_rejects_other_session_owner() {
                 || Ok(()),
                 || Box::pin(async { Ok(()) }),
             ),
+            &fx.session.handoff_for_test().await,
         )
         .await;
     assert!(matches!(result, CompactSubmission::NotSubmitted { .. }));

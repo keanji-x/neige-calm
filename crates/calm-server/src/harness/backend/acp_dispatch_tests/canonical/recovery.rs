@@ -239,7 +239,8 @@ async fn canonical_acp_retained_recovery_crash_windows_keep_sending_held_without
                 &fx.submission,
                 &backend,
                 &TurnModelSelection::inherit(),
-                PlannerPermissionMode::Never
+                PlannerPermissionMode::Never,
+                &backend.handoff_for_test().await
             )
             .await
             .is_err()
@@ -328,6 +329,7 @@ async fn later_activity(consume_before_shutdown: bool) {
         &fx.backend,
         &TurnModelSelection::inherit(),
         PlannerPermissionMode::Never,
+        &fx.backend.handoff_for_test().await,
     )
     .await
     .unwrap();

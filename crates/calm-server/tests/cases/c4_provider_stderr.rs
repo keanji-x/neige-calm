@@ -49,7 +49,7 @@ async fn start_with_prefix(
     let (claim, guard) = rig
         .host
         .provider_execution
-        .admit(
+        .admit_for_test(
             rig.repo.db(),
             rig.host.execution.engine().unwrap(),
             &rig.worker_session_id,

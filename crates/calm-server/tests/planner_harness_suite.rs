@@ -14,6 +14,8 @@ mod c4_provider_fixture;
 mod c4_provider_stderr;
 #[path = "cases/c4_provider_turn.rs"]
 mod c4_provider_turn;
+#[path = "cases/c5d_admission.rs"]
+mod c5d_admission;
 mod support;
 
 #[path = "cases/planner_release_commit.rs"]

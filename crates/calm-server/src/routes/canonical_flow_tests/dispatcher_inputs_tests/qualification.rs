@@ -136,6 +136,7 @@ async fn installed_system_source_is_refused_by_input_dispatch_in_another_reposit
         &backend,
         &provider::TurnModelSelection::inherit(),
         crate::planner_permission_mode::PlannerPermissionMode::Never,
+        &backend.handoff_for_test().await,
     )
     .await;
     assert!(

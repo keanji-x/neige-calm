@@ -522,15 +522,41 @@ pub async fn call_tool_card_bound(
 }
 
 pub fn locate_shim_bin() -> PathBuf {
-    let mut p = std::env::current_exe().expect("current_exe");
-    p.pop();
-    p.pop();
-    p.push("neige-mcp-stdio-shim");
+    const SHIM: &str = "neige-mcp-stdio-shim";
+    let output = std::process::Command::new("cargo")
+        .args([
+            "build",
+            "--locked",
+            "-p",
+            SHIM,
+            "--bin",
+            SHIM,
+            "--message-format=json-render-diagnostics",
+            "-j",
+            "4",
+        ])
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .env_remove("NEIGE_CODEX_BIN")
+        .env("RUSTC_WRAPPER", "")
+        .output()
+        .unwrap();
     assert!(
-        p.exists(),
-        "neige-mcp-stdio-shim not found at {p:?}; run \
-         `cargo build -p neige-mcp-stdio-shim --bin neige-mcp-stdio-shim` first, or \
-         use `cargo test --workspace` which builds workspace bins",
+        output.status.success(),
+        "shim build: {}",
+        String::from_utf8_lossy(&output.stderr)
     );
-    p
+    String::from_utf8(output.stdout)
+        .unwrap()
+        .lines()
+        .map(|line| {
+            serde_json::from_str::<serde_json::Value>(line).expect("Cargo JSON artifact stream")
+        })
+        .find_map(|artifact| {
+            if artifact["reason"] == "compiler-artifact" && artifact["target"]["name"] == SHIM {
+                artifact["executable"].as_str().map(PathBuf::from)
+            } else {
+                None
+            }
+        })
+        .expect("Cargo reported the shim executable")
 }

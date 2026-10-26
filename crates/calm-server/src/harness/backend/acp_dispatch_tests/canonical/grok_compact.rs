@@ -37,7 +37,12 @@ async fn interrupted(cancel: bool) {
     };
     assert!(matches!(
         fx.backend
-            .compact_canonical(target.clone(), submit(), &admission)
+            .compact_canonical(
+                target.clone(),
+                submit(),
+                &admission,
+                &fx.backend.handoff_for_test().await
+            )
             .await
             .unwrap(),
         CompactSubmission::Submitted { .. }
@@ -103,7 +108,12 @@ async fn interrupted(cancel: bool) {
     assert!(
         matches!(
             fx.backend
-                .compact_canonical(target.clone(), submit(), &admission)
+                .compact_canonical(
+                    target.clone(),
+                    submit(),
+                    &admission,
+                    &fx.backend.handoff_for_test().await
+                )
                 .await
                 .unwrap(),
             CompactSubmission::Unconfirmed { .. }
@@ -204,7 +214,8 @@ async fn send_window(pre_send: bool, response: bool) {
                 CompactRequest {
                     selection: TurnModelSelection::inherit(),
                 },
-                &admission
+                &admission,
+                &fx.backend.handoff_for_test().await
             )
             .await
             .unwrap(),

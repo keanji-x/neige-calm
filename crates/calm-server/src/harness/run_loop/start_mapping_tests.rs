@@ -55,7 +55,12 @@ async fn m1_mapping_start_facade_and_stored_edit_table() {
         }
         let result = IssueTurnHandle::from_reconciliation(&f.harness.inner)
             .await
-            .turn_start(request(rewind.as_ref()), &[], rewind.as_mut())
+            .turn_start(
+                request(rewind.as_ref()),
+                &[],
+                rewind.as_mut(),
+                &f.harness.inner.backend.handoff_for_test().await,
+            )
             .await;
         match (case, &result) {
             (
@@ -146,7 +151,12 @@ async fn m1_mapping_start_facade_and_stored_edit_table() {
             assert!(matches!(
                 IssueTurnHandle::from_reconciliation(&f.harness.inner)
                     .await
-                    .turn_start(request(Some(&restored)), &[], Some(&mut restored))
+                    .turn_start(
+                        request(Some(&restored)),
+                        &[],
+                        Some(&mut restored),
+                        &f.harness.inner.backend.handoff_for_test().await
+                    )
                     .await
                     .unwrap(),
                 TurnStartOutcome::Started { .. }
@@ -186,7 +196,13 @@ async fn m1_mapping_codex_edit_preparation_and_issue_handle() {
         .unwrap();
     let EditPreparation::Prepared { plan } = IssueTurnHandle::from_reconciliation(&f.harness.inner)
         .await
-        .prepare_rewind(target)
+        .prepare_rewind(
+            target,
+            &crate::harness::run_loop::issuance::track_fence_for_test(
+                f.harness.inner.track_id.as_str(),
+            )
+            .await,
+        )
         .await
         .unwrap()
     else {
@@ -213,6 +229,7 @@ async fn m1_mapping_codex_edit_preparation_and_issue_handle() {
                 },
                 &[],
                 Some(&mut rewind),
+                &f.harness.inner.backend.handoff_for_test().await
             )
             .await
             .unwrap(),
@@ -234,9 +251,10 @@ async fn m1_mapping_start_post_ack_fence_preserves_interrupt_error_precedence() 
             },
         );
         f.daemon.fail_turn_interrupt_for_test(interrupt_fails);
+        let handoff = f.harness.inner.backend.handoff_for_test().await;
         let start = IssueTurnHandle::from_reconciliation(&f.harness.inner)
             .await
-            .turn_start(request(None), &[], None);
+            .turn_start(request(None), &[], None, &handoff);
         let (result, ()) = tokio::join!(start, async {
             entered.notified().await;
             f.daemon
@@ -342,7 +360,12 @@ async fn m1_mapping_local_start_admission_and_mismatched_rewind_table() {
             let mut rewind = json.map(|json| serde_json::from_str::<BackendRewind>(json).unwrap());
             let result = IssueTurnHandle::from_reconciliation(&f.harness.inner)
                 .await
-                .turn_start(request(rewind.as_ref()), &[], rewind.as_mut())
+                .turn_start(
+                    request(rewind.as_ref()),
+                    &[],
+                    rewind.as_mut(),
+                    &f.harness.inner.backend.handoff_for_test().await,
+                )
                 .await;
             match (json, &provider, result) {
                 (

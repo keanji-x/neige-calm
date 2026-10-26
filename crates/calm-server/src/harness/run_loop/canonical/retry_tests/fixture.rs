@@ -178,6 +178,7 @@ impl RetryFixture {
                             effort: Some("high".into()),
                         },
                         PlannerPermissionMode::Never,
+                        &backend.handoff_for_test().await,
                     )
                     .await
                 }

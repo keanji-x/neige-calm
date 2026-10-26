@@ -40,7 +40,12 @@ pub(super) async fn retained_operation(grok: bool) {
     };
     assert!(matches!(
         fx.backend
-            .compact_canonical(target.clone(), request(), &admission)
+            .compact_canonical(
+                target.clone(),
+                request(),
+                &admission,
+                &fx.backend.handoff_for_test().await
+            )
             .await
             .unwrap(),
         CompactSubmission::Submitted { .. }
@@ -77,7 +82,12 @@ pub(super) async fn retained_operation(grok: bool) {
     assert_eq!(count(), 1);
     let repeated = fx
         .backend
-        .compact_canonical(target, request(), &admission)
+        .compact_canonical(
+            target,
+            request(),
+            &admission,
+            &fx.backend.handoff_for_test().await,
+        )
         .await
         .unwrap();
     fx.wait_idle().await;
@@ -166,7 +176,8 @@ async fn retained_loss_for(case: LossCase, grok: bool) {
                 CompactRequest {
                     selection: TurnModelSelection::inherit()
                 },
-                &admission
+                &admission,
+                &fx.backend.handoff_for_test().await
             )
             .await
             .unwrap(),
@@ -519,6 +530,7 @@ async fn acp_compact_failed_setup_cleanup_claim_can_recover() {
                 selection: TurnModelSelection::inherit(),
             },
             &admission,
+            &fx.backend.handoff_for_test().await,
         )
         .await
         .unwrap();

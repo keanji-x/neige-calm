@@ -192,6 +192,7 @@ async fn preparation_cleanup_failure(sync: bool) {
             &TurnModelSelection::inherit(),
             PlannerPermissionMode::Never,
             &admission(),
+            &fx.backend.handoff_for_test().await,
         )
         .await;
     assert!(report.outcome().is_err());
@@ -528,6 +529,7 @@ async fn canonical_claude_settled_serializes_with_driver_start() {
                     &TurnModelSelection::inherit(),
                     PlannerPermissionMode::Never,
                     &admission(),
+                    &fx.backend.handoff_for_test().await,
                 )
                 .await
         }
@@ -574,6 +576,7 @@ async fn canonical_claude_settled_refused_new_start_leaves_no_claim() {
             &TurnModelSelection::inherit(),
             PlannerPermissionMode::Never,
             &refused,
+            &fx.backend.handoff_for_test().await,
         )
         .await;
     assert!(report.outcome().is_err());
@@ -637,7 +640,7 @@ async fn canonical_claude_settled_historical_compact_cleanup_qualifies() {
     std::fs::write(fx.dir.path().join("scenario"), "compact").unwrap();
     assert!(matches!(
         fx.session
-            .compact_start(&fx.owner.thread, &TurnModelSelection::inherit())
+            .compact_start_for_test(&fx.owner.thread, &TurnModelSelection::inherit())
             .await,
         provider::control::CompactSubmission::Submitted { .. }
     ));

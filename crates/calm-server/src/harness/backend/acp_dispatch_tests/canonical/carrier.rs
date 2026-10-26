@@ -95,6 +95,7 @@ async fn canonical_acp_parked_issue_refuses_before_sql_without_native_effects() 
             PlannerPermissionMode::Never,
             crate::harness::backend::ExecutionInput::canonical(&identity.logical_turn_id, &proof),
             &admission,
+            &fx.session.handoff_for_test().await,
         ),
     )
     .await

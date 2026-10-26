@@ -179,6 +179,7 @@ async fn canonical_acp_invalid_receipted_turn_is_unknown_with_original_correlati
                 || Ok(()),
                 || Box::pin(async { Ok(()) }),
             ),
+            &fx.backend.handoff_for_test().await,
         )
         .await;
     assert!(matches!(report.delivery(), InputDelivery::Unknown(_)));

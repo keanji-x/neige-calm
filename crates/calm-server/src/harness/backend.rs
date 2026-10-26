@@ -49,7 +49,7 @@ pub(in crate::harness) mod claude_dispatch_tests;
 mod codex_execution_tests;
 mod dispatch;
 #[cfg(all(test, feature = "fixtures"))]
-mod dispatch_fixture;
+pub(crate) mod dispatch_fixture;
 #[cfg(all(test, feature = "fixtures"))]
 mod dispatch_tests;
 mod execution_end;
@@ -574,6 +574,20 @@ impl CarrierIdleGuard<'_> {
             Self::Acp(session, park) => park.is_current() && session.carrier_idle(),
             Self::Claude(session, park) => park.is_current() && session.carrier_idle(),
         }
+    }
+}
+
+#[cfg(test)]
+impl PlannerBackend {
+    pub(crate) async fn handoff_for_test(&self) -> crate::provider_execution::TrackFenceHandoff {
+        let track = match &self.0 {
+            Arm::Claude(s) => s.track_for_test(),
+            Arm::Acp(s) => s.track_for_test(),
+            Arm::Codex(..) => "codex-fixture",
+        };
+        crate::provider_execution::TrackFenceHandoff::new(
+            crate::harness::run_loop::issuance::track_fence_for_test(track).await,
+        )
     }
 }
 

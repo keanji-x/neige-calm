@@ -4713,7 +4713,7 @@ mod conversation_title_tests;
 mod start_mapping_tests;
 
 mod interrupt;
-mod issuance;
+pub(crate) mod issuance;
 use interrupt::issue_interrupt_for_turn;
 
 async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {

@@ -7,7 +7,7 @@ use crate::db::sqlite::{SqlxRepo, card_create_with_id_tx, session_start_runtime_
 use crate::model::{CardRole, NewArea, NewCard, NewTrack, new_id};
 use crate::session_projection_repo::{WorkerSessionInit, WorkerSessionKind, WorkerSessionState};
 
-pub(super) struct Owner {
+pub(crate) struct Owner {
     pub repo: Arc<SqlxRepo>,
     pub card: String,
     pub track: String,
@@ -16,7 +16,7 @@ pub(super) struct Owner {
     pub db_url: String,
 }
 
-pub(super) async fn seed(cwd: &std::path::Path, provider: AgentProvider) -> Owner {
+pub(crate) async fn seed(cwd: &std::path::Path, provider: AgentProvider) -> Owner {
     seed_with_url(cwd, provider, "sqlite::memory:").await
 }
 

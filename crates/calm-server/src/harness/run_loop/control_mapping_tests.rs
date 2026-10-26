@@ -243,7 +243,7 @@ async fn h2_codex_live_interrupt_and_sealed_compact_boundaries() {
     assert!(
         matches!(IssueTurnHandle::from_reconciliation(&f.harness.inner).await.compact_start(CompactRequest {
         selection: provider::TurnModelSelection::inherit(),
-    }).await.unwrap(), CompactSubmission::NotSubmitted { error: CalmError::Conflict(message), reason: provider::control::CompactNotSubmitted::PreparationFailed } if message == "the conversation is being deleted")
+    },&f.harness.inner.backend.handoff_for_test().await).await.unwrap(), CompactSubmission::NotSubmitted { error: CalmError::Conflict(message), reason: provider::control::CompactNotSubmitted::PreparationFailed } if message == "the conversation is being deleted")
     );
 }
 
@@ -289,7 +289,7 @@ async fn m1_mapping_local_backend_host_refusals_and_interrupt_old_projection() {
             .prepare_rewind(NativeEditTarget::BeforeTurn {
                             before_turn_id: "turn".into()
                         }
-                    )
+                    ,&crate::harness::run_loop::issuance::track_fence_for_test(f.harness.inner.track_id.as_str()).await)
                     .await
                     .unwrap(),
                 EditPreparation::Failed { error: CalmError::Conflict(message) } if message == "ACP history replacement is unsupported"
@@ -328,7 +328,7 @@ async fn m1_mapping_local_backend_host_refusals_and_interrupt_old_projection() {
             assert_eq!(request.unwrap_err().to_string(), expected);
         } else {
             assert!(
-                matches!(IssueTurnHandle::from_reconciliation(&f.harness.inner).await.compact_start(request.unwrap()).await,
+                matches!(IssueTurnHandle::from_reconciliation(&f.harness.inner).await.compact_start(request.unwrap(),&f.harness.inner.backend.handoff_for_test().await).await,
                 Err(CalmError::BadRequest(message)) if message == "Manual context compaction is available for Codex and Claude conversations.")
             );
         }
@@ -467,9 +467,15 @@ async fn m2c_two_owner_decoy_is_untouched_by_managed_operations() {
     f.daemon.set_active_turn_for_test("decoy", turn);
     let EditPreparation::Prepared { plan } = IssueTurnHandle::from_reconciliation(&f.harness.inner)
         .await
-        .prepare_rewind(NativeEditTarget::BeforeTurn {
-            before_turn_id: "old-turn".into(),
-        })
+        .prepare_rewind(
+            NativeEditTarget::BeforeTurn {
+                before_turn_id: "old-turn".into(),
+            },
+            &crate::harness::run_loop::issuance::track_fence_for_test(
+                f.harness.inner.track_id.as_str(),
+            )
+            .await,
+        )
         .await
         .unwrap()
     else {
@@ -491,6 +497,7 @@ async fn m2c_two_owner_decoy_is_untouched_by_managed_operations() {
                 },
                 &[],
                 Some(&mut rewind),
+                &f.harness.inner.backend.handoff_for_test().await,
             )
             .await
             .unwrap()
@@ -520,9 +527,12 @@ async fn m2c_two_owner_decoy_is_untouched_by_managed_operations() {
     assert!(matches!(
         IssueTurnHandle::from_reconciliation(&f.harness.inner)
             .await
-            .compact_start(CompactRequest {
-                selection: TurnModelSelection::inherit(),
-            })
+            .compact_start(
+                CompactRequest {
+                    selection: TurnModelSelection::inherit(),
+                },
+                &f.harness.inner.backend.handoff_for_test().await
+            )
             .await
             .unwrap(),
         CompactSubmission::Submitted { .. }

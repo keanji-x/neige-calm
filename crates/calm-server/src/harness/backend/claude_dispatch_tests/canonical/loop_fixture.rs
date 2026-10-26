@@ -9,6 +9,14 @@ impl Fixture {
         &self,
         registry: crate::harness::registry::HarnessRegistry,
     ) -> crate::harness::PlannerHarness {
+        self.start_loop_with_locks(registry, Default::default())
+            .await
+    }
+    pub(super) async fn start_loop_with_locks(
+        &self,
+        registry: crate::harness::registry::HarnessRegistry,
+        locks: crate::per_card_lock::KeyedLocks,
+    ) -> crate::harness::PlannerHarness {
         use crate::harness::{HarnessRuntimeSnapshot, PlannerHarness, PlannerHarnessParams};
         let application =
             crate::auth::ValidatedApplicationAuth::from_state(self.auth.clone()).unwrap();
@@ -46,7 +54,7 @@ impl Fixture {
         let areas = crate::track_area_cache::TrackAreaCache::new();
         areas.seed_from_db(self.owner.repo.pool()).await.unwrap();
         let harness = PlannerHarness::run(PlannerHarnessParams {
-            track_delete_locks: Default::default(),
+            track_delete_locks: locks,
             worker_session_id: self.owner.worker.clone(),
             track_id: crate::ids::TrackId(self.owner.track.clone()),
             card_id: crate::ids::CardId(self.owner.card.clone()),

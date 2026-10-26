@@ -143,6 +143,8 @@ impl ClosedWorktreeFacts for ServerClosedWorktreeFacts {
         if candidate.workspace.isolation() == calm_types::model::WorkspaceIsolation::Worktree {
             clean.register_location(track, candidate.workspace.agent_cwd().into());
         }
+        #[cfg(feature = "fixtures")]
+        crate::test_seams::pause_point("c5d-clean-before-track", track).await;
         let guard = crate::per_card_lock::lock_key(self.runtime.track_delete_locks(), track).await;
         // Drop the metadata before releasing Track on every post-lock exit.
         let fence = (clean, guard);

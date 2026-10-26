@@ -52,6 +52,7 @@ async fn initial(backend: &PlannerBackend, proof: &SubmissionDispatchProof) -> I
                 || Ok(()),
                 || Box::pin(async { Ok(()) }),
             ),
+            &backend.handoff_for_test().await,
         )
         .await
 }

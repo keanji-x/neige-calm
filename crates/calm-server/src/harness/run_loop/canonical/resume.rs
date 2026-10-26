@@ -6,7 +6,11 @@ use super::*;
 /// flow through this path, even when no native turn is currently visible.
 /// Resume the immutable plan as composed, including pre-feature plans without
 /// a context-usage segment. Never add or resample context during replay.
-pub(super) async fn resume_unattempted(inner: &Arc<Inner>, current: &CommittedFrame) -> Result<()> {
+pub(super) async fn resume_unattempted(
+    inner: &Arc<Inner>,
+    current: &CommittedFrame,
+    issuance: tokio::sync::MutexGuard<'_, ()>,
+) -> Result<()> {
     let checkpoint = &current.snapshot.canonical_inputs;
     let Some(active) = &checkpoint.active else {
         return Ok(());
@@ -19,6 +23,21 @@ pub(super) async fn resume_unattempted(inner: &Arc<Inner>, current: &CommittedFr
     {
         return Ok(());
     }
+    // Re-enter in Track → issuance order. The original expected frame below
+    // remains the writer fence if another command changed the head while waiting.
+    drop(issuance);
+    let super::super::issuance::TrackIssuance::Acquired(track) =
+        super::super::issuance::lock_track_for_admission(inner).await?
+    else {
+        return Ok(());
+    };
+    let _issuance = inner.issuance.lock().await;
+    if inner.shutting_down.load(Ordering::SeqCst) || inner.parked.is_parked() {
+        return Ok(());
+    }
+    let track_fence = crate::provider_execution::TrackFenceHandoff::new(track);
+    #[cfg(feature = "fixtures")]
+    crate::test_seams::pause_point("c5d-resume-admission-ready", &inner.worker_session_id).await;
     let card = inner.card_id.to_string();
     let runtime = inner.worker_session_id.clone();
     let expected = current.fence.clone();
@@ -122,6 +141,7 @@ pub(super) async fn resume_unattempted(inner: &Arc<Inner>, current: &CommittedFr
                 effort: invocation.effort,
             },
             invocation.permission,
+            &track_fence,
         )
         .await;
     }
@@ -141,6 +161,7 @@ pub(super) async fn resume_unattempted(inner: &Arc<Inner>, current: &CommittedFr
                 &active.logical_turn_id,
                 &selection,
                 permission,
+                &track_fence,
             )
             .await
         }

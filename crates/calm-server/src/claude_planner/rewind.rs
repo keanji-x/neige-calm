@@ -88,6 +88,7 @@ pub(crate) async fn check(
     params: &ClaudePlannerSessionParams,
     thread: &str,
     cut: &ResumeTruncation,
+    track_fence: &crate::provider_execution::TrackAdmissionFence,
 ) -> Result<EditPreparation<CalmError>> {
     let thread = Uuid::try_parse(thread).map_err(|_| {
         CalmError::BadRequest(format!("claude planner thread {thread} is not a UUID"))
@@ -126,6 +127,7 @@ pub(crate) async fn check(
             &params.worker_session_id,
             crate::provider_execution::PreparedIntent(intent),
             Purpose::RewindCheck,
+            crate::provider_execution::OccupancyFence::Held(track_fence),
         )
         .await
     {
@@ -266,12 +268,15 @@ pub(crate) async fn check(
 #[cfg(feature = "fixtures")]
 impl super::session::ClaudePlannerSession {
     pub async fn prepare_edit_for_test(&self, thread: &str) -> Result<EditPreparation<CalmError>> {
+        let fence =
+            crate::harness::run_loop::issuance::track_fence_for_test(self.track_for_test()).await;
         self.prepare_edit(
             thread,
             NativeEditTarget::TranscriptCut {
                 resume_at: Uuid::from_u128(1),
                 drops_turn: Uuid::from_u128(2),
             },
+            &fence,
         )
         .await
     }

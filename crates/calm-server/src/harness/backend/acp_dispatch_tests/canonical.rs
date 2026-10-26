@@ -144,6 +144,7 @@ impl Fixture {
             &self.backend,
             &TurnModelSelection::inherit(),
             PlannerPermissionMode::Never,
+            &self.backend.handoff_for_test().await,
         )
         .await
     }
@@ -380,6 +381,7 @@ async fn canonical_acp_replay_is_receipt_owned_for_completed_sending_and_unknown
                         || Ok(()),
                         || Box::pin(async { Ok(()) }),
                     ),
+                    &fx.backend.handoff_for_test().await,
                 )
                 .await;
             if changed {
@@ -465,6 +467,7 @@ async fn canonical_acp_source_refusal_before_receipt_has_no_native_effect() {
                     })
                 },
             ),
+            &backend.handoff_for_test().await,
         )
         .await;
     assert!(checked.load(std::sync::atomic::Ordering::SeqCst));
@@ -632,6 +635,7 @@ async fn canonical_acp_reopened_receipt_never_resends_lost_report_or_certifies_m
                     || Ok(()),
                     || Box::pin(async { Ok(()) }),
                 ),
+                &backend.handoff_for_test().await,
             )
             .await;
         assert!(matches!(report.delivery(), InputDelivery::Unknown(_)));
@@ -801,6 +805,7 @@ async fn canonical_acp_historical_entry_cannot_execute_canonical_storage() {
                 edit: provider::control::TurnEdit::NoEdit,
             },
             &[],
+            &fx.session.handoff_for_test().await,
         )
         .await;
     assert!(result.is_err());

@@ -308,7 +308,7 @@ pub(super) async fn tick(inner: &Arc<Inner>, ingress_empty: bool) -> Result<()> 
         return Ok(());
     }
     if checkpoint.active.is_some() && !checkpoint.resolved_execution_without_target() {
-        return resume_unattempted(inner, &current).await;
+        return resume_unattempted(inner, &current, _issuance).await;
     }
     if checkpoint.pending.is_empty()
         || !matches!(
@@ -332,8 +332,19 @@ pub(super) async fn tick(inner: &Arc<Inner>, ingress_empty: bool) -> Result<()> 
     }
     // Like historical issuance, take the track fence before the card issuance
     // lock. Cleaning may run while idle, but not across the durable claim.
+    let retry_pending = checkpoint.pending.first().is_some_and(|pending| {
+        matches!(
+            pending.identity(),
+            CanonicalPendingIdentity::ExplicitSuccessor { .. }
+        )
+    });
     drop(_issuance);
-    let track_guard = match super::issuance::lock_track_for_issuance(inner).await? {
+    let admission = if retry_pending {
+        super::issuance::lock_track_for_admission(inner).await?
+    } else {
+        super::issuance::lock_track_for_issuance(inner).await?
+    };
+    let track_guard = match admission {
         super::issuance::TrackIssuance::Acquired(guard) => guard,
         super::issuance::TrackIssuance::ShuttingDown
         | super::issuance::TrackIssuance::Busy
@@ -384,7 +395,15 @@ pub(super) async fn tick(inner: &Arc<Inner>, ingress_empty: bool) -> Result<()> 
         return Ok(());
     };
     if let CanonicalPendingIdentity::ExplicitSuccessor { retry_intent_id } = &message {
-        return retry::dispatch_pending(inner, &current, source, retry_intent_id.clone()).await;
+        let track_fence = crate::provider_execution::TrackFenceHandoff::new(track_guard);
+        return retry::dispatch_pending(
+            inner,
+            &current,
+            source,
+            retry_intent_id.clone(),
+            &track_fence,
+        )
+        .await;
     }
     let card = inner.card_id.to_string();
     let runtime = inner.worker_session_id.clone();
@@ -523,7 +542,7 @@ pub(super) async fn tick(inner: &Arc<Inner>, ingress_empty: bool) -> Result<()> 
         }
     })
     .await?;
-    drop(track_guard);
+    let track_fence = crate::provider_execution::TrackFenceHandoff::new(track_guard);
     publish(inner, claimed_frame).await;
     dispatch_initial(
         inner,
@@ -532,10 +551,12 @@ pub(super) async fn tick(inner: &Arc<Inner>, ingress_empty: bool) -> Result<()> 
         &claimed.logical_turn_id,
         &selection,
         permission,
+        &track_fence,
     )
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn dispatch_initial(
     inner: &Arc<Inner>,
     source: &InputSource,
@@ -543,6 +564,7 @@ async fn dispatch_initial(
     logical_turn_id: &calm_types::conversation::LogicalTurnId,
     selection: &TurnModelSelection,
     permission: PlannerPermissionMode,
+    track_fence: &crate::provider_execution::TrackFenceHandoff,
 ) -> Result<()> {
     let committed = crate::harness::input_dispatch::initial(
         inner.repo.as_ref(),
@@ -553,6 +575,7 @@ async fn dispatch_initial(
         &inner.backend,
         selection,
         permission,
+        track_fence,
     )
     .await?;
     #[cfg(feature = "fixtures")]

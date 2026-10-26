@@ -93,7 +93,12 @@ async fn acp_same_key_replay_checks_exact_claim_without_spawn_setup_or_prompt() 
         }
         let pause = crate::acp_planner::test_seams::pause_settlement(&row.worker);
         let TurnStartOutcome::Started { turn } = session
-            .start_turn(&row.thread, request("same-key"), &claim)
+            .start_turn(
+                &row.thread,
+                request("same-key"),
+                &claim,
+                &session.handoff_for_test().await,
+            )
             .await
             .unwrap()
         else {
@@ -159,7 +164,12 @@ async fn acp_same_key_replay_checks_exact_claim_without_spawn_setup_or_prompt() 
             requests(&root, "session/prompt"),
         );
         let TurnStartOutcome::Started { turn } = session
-            .start_turn(&row.thread, request("same-key"), &claim)
+            .start_turn(
+                &row.thread,
+                request("same-key"),
+                &claim,
+                &session.handoff_for_test().await,
+            )
             .await
             .unwrap()
         else {
@@ -169,7 +179,12 @@ async fn acp_same_key_replay_checks_exact_claim_without_spawn_setup_or_prompt() 
         let mut revised = claim.clone();
         assert!(revised[1].bump_rev_for_restore());
         let error = session
-            .start_turn(&row.thread, request("same-key"), &revised)
+            .start_turn(
+                &row.thread,
+                request("same-key"),
+                &revised,
+                &session.handoff_for_test().await,
+            )
             .await
             .unwrap_err();
         assert!(format!("{error:?}").contains("ACP receipt ownership or original input changed"));
@@ -178,7 +193,12 @@ async fn acp_same_key_replay_checks_exact_claim_without_spawn_setup_or_prompt() 
             QueueEntry::user_message("same".into(), None, vec![]),
         ];
         let error = session
-            .start_turn(&row.thread, request("same-key"), &replaced)
+            .start_turn(
+                &row.thread,
+                request("same-key"),
+                &replaced,
+                &session.handoff_for_test().await,
+            )
             .await
             .unwrap_err();
         assert!(format!("{error:?}").contains("ACP receipt ownership or original input changed"));
@@ -245,7 +265,12 @@ async fn carrier_quiescence_acp_issuance_before_active_turn_publication() {
     assert!(
         tokio::time::timeout(
             Duration::from_secs(1),
-            session.start_turn(&row.thread, request("parked"), &[])
+            session.start_turn(
+                &row.thread,
+                request("parked"),
+                &[],
+                &session.handoff_for_test().await
+            )
         )
         .await
         .unwrap()
@@ -257,7 +282,12 @@ async fn carrier_quiescence_acp_issuance_before_active_turn_publication() {
         let thread = row.thread.clone();
         async move {
             session
-                .start_turn(&thread, request("quiescence"), &[])
+                .start_turn(
+                    &thread,
+                    request("quiescence"),
+                    &[],
+                    &session.handoff_for_test().await,
+                )
                 .await
         }
     });

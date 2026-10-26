@@ -366,7 +366,7 @@ pub(super) async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
             .unwrap_or(HarnessState::Idle);
         return Ok(());
     }
-    drop(track_guard);
+    let track_fence = crate::provider_execution::TrackFenceHandoff::new(track_guard);
 
     let drained = {
         let mut queue = inner.historical_queue()?.lock().await;
@@ -521,6 +521,7 @@ pub(super) async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
                 },
                 &drained,
                 pending_rewind.as_mut(),
+                &track_fence,
             )
             .await
             .map_err(IssueFailure::Host)?;
@@ -654,15 +655,27 @@ pub(super) async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
     Ok(())
 }
 
+/// Proof that the Planner owns this Track's admission interval.
+/// Production construction stays in lock_track_for_admission.
+pub(crate) struct TrackAdmissionFence {
+    track: crate::ids::TrackId,
+    _guard: crate::per_card_lock::KeyedLockGuard,
+}
+impl TrackAdmissionFence {
+    pub(crate) fn track(&self) -> &crate::ids::TrackId {
+        &self.track
+    }
+}
+
 pub(super) enum TrackIssuance {
-    Acquired(crate::per_card_lock::KeyedLockGuard),
+    Acquired(TrackAdmissionFence),
     ShuttingDown,
     Busy,
     Superseded,
 }
 
 /// No card, drive or issuance lock may be held while waiting here. Idle remains
-/// cleanable; only the transition to durable turn_pending excludes clean.
+/// cleanable; successful issuance retains it through the occupancy commit.
 pub(super) async fn lock_track_for_issuance(inner: &Arc<Inner>) -> Result<TrackIssuance> {
     inner.require_unparked()?;
     // Recovery holds track while awaiting this owner's Release acknowledgement.
@@ -678,23 +691,75 @@ pub(super) async fn lock_track_for_issuance(inner: &Arc<Inner>) -> Result<TrackI
     lock_track_for_admission(inner).await
 }
 
+pub(super) enum TrackAdmissionSource<'a> {
+    Harness(&'a Arc<Inner>),
+    #[cfg(any(test, feature = "fixtures"))]
+    Fixture {
+        track: crate::ids::TrackId,
+        locks: &'a crate::per_card_lock::KeyedLocks,
+    },
+}
+impl<'a> From<&'a Arc<Inner>> for TrackAdmissionSource<'a> {
+    fn from(inner: &'a Arc<Inner>) -> Self {
+        Self::Harness(inner)
+    }
+}
+
 /// Share the interruptible Track wait with historical edits, which do not seek
 /// ordinary issuance. Call before taking the issuance lock and retain the guard
 /// through the clean-visible occupancy commit (or settled rewind check).
-pub(super) async fn lock_track_for_admission(inner: &Arc<Inner>) -> Result<TrackIssuance> {
-    inner.require_unparked()?;
-    let mut shutdown = inner.shutdown.subscribe();
-    if inner.shutting_down.load(Ordering::SeqCst) {
-        return Ok(TrackIssuance::ShuttingDown);
-    }
-    crate::conversation_archive::require_unarchived(inner.repo.as_ref(), inner.card_id.as_str())
-        .await?;
-    if !runtime_is_still_the_live_carrier(inner).await? {
-        return Ok(TrackIssuance::Superseded);
-    }
-    Ok(tokio::select! {
-        biased;
-        _ = shutdown.recv() => TrackIssuance::ShuttingDown,
-        guard = crate::per_card_lock::lock_key(&inner.track_delete_locks, inner.track_id.as_str()) => TrackIssuance::Acquired(guard),
+/// This is the only constructor, including for direct provider fixtures.
+pub(super) async fn lock_track_for_admission<'a>(
+    source: impl Into<TrackAdmissionSource<'a>>,
+) -> Result<TrackIssuance> {
+    let (track, guard) = match source.into() {
+        TrackAdmissionSource::Harness(inner) => {
+            inner.require_unparked()?;
+            let mut shutdown = inner.shutdown.subscribe();
+            if inner.shutting_down.load(Ordering::SeqCst) {
+                return Ok(TrackIssuance::ShuttingDown);
+            }
+            crate::conversation_archive::require_unarchived(
+                inner.repo.as_ref(),
+                inner.card_id.as_str(),
+            )
+            .await?;
+            if !runtime_is_still_the_live_carrier(inner).await? {
+                return Ok(TrackIssuance::Superseded);
+            }
+            let guard = tokio::select! {
+                biased;
+                _ = shutdown.recv() => return Ok(TrackIssuance::ShuttingDown),
+                guard = crate::per_card_lock::lock_key(&inner.track_delete_locks, inner.track_id.as_str()) => guard,
+            };
+            #[cfg(feature = "fixtures")]
+            crate::test_seams::pause_point("c5d-admission-track-held", &inner.worker_session_id)
+                .await;
+            (inner.track_id.clone(), guard)
+        }
+        #[cfg(any(test, feature = "fixtures"))]
+        TrackAdmissionSource::Fixture { track, locks } => {
+            let guard = crate::per_card_lock::lock_key(locks, track.as_str()).await;
+            (track, guard)
+        }
+    };
+    Ok(TrackIssuance::Acquired(TrackAdmissionFence {
+        track,
+        _guard: guard,
+    }))
+}
+
+#[cfg(any(test, feature = "fixtures"))]
+pub(crate) async fn track_fence_for_test(track: &str) -> TrackAdmissionFence {
+    let locks = Default::default();
+    match lock_track_for_admission(TrackAdmissionSource::Fixture {
+        track: track.to_owned().into(),
+        locks: &locks,
     })
+    .await
+    .expect("fixture Track fence")
+    {
+        TrackIssuance::Acquired(fence) => fence,
+        _ => unreachable!("fixture admission has no lifecycle refusals"),
+    }
 }

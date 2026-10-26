@@ -216,7 +216,7 @@ async fn run_minimal(interrupt: bool) {
     ];
     let id = launch.metadata.id.clone();
     let (claim, guard) = owner
-        .admit(
+        .admit_for_test(
             &pool,
             &fixture.engine,
             "protocol-session",

@@ -3,6 +3,7 @@ use super::*;
 
 impl ClaudePlannerSession {
     /// The submission contract for either kind of spawn; see the module docs.
+    #[allow(clippy::too_many_arguments)]
     pub(in crate::claude_planner) async fn start_spawn(
         &self,
         thread: &str,
@@ -10,6 +11,7 @@ impl ClaudePlannerSession {
         selection: &TurnModelSelection,
         mode: PlannerPermissionMode,
         admission: &crate::harness::native_admission::NativePromptAdmission<'_>,
+        track_fence: &crate::provider_execution::TrackFenceHandoff,
     ) -> Result<Uuid, SpawnFailure> {
         let purpose = match &input {
             SpawnInput::Turn { .. } | SpawnInput::Canonical { .. } => SpawnPurpose::Turn,
@@ -266,6 +268,7 @@ impl ClaudePlannerSession {
                 &params.worker_session_id,
                 crate::provider_execution::PreparedIntent(intent),
                 purpose_record,
+                crate::provider_execution::OccupancyFence::ReleaseOnCommit(track_fence),
             )
             .await
         {

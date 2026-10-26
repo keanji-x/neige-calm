@@ -16,7 +16,11 @@ impl PlannerBackend {
         selection: &TurnModelSelection,
         permission: PlannerPermissionMode,
         admission: &crate::harness::native_admission::NativePromptAdmission<'a>,
+        track_fence: &crate::provider_execution::TrackFenceHandoff,
     ) -> InputAttemptReport {
+        if matches!(&self.0, Arm::Codex(..)) {
+            track_fence.release();
+        }
         let correlation = AttemptCorrelation::new(attempt, self.provider(), thread_id);
         if let Some(card) = settlement_card {
             match self.settled_activity(card, thread_id, admission).await {
@@ -86,6 +90,7 @@ impl PlannerBackend {
                         permission,
                         ExecutionInput::canonical(logical_turn_id, proof),
                         admission,
+                        track_fence,
                     )
                     .await
                 {
@@ -120,6 +125,7 @@ impl PlannerBackend {
                         permission,
                         ExecutionInput::canonical(logical_turn_id, proof),
                         admission,
+                        track_fence,
                     )
                     .await
                 {

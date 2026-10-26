@@ -83,6 +83,7 @@ impl Fixture {
                         || Ok(()),
                         || Box::pin(async { Ok(()) }),
                     ),
+                    &backend.handoff_for_test().await,
                 )
                 .await
         })
@@ -761,6 +762,7 @@ async fn canonical_codex_compact_native_boundary_refuses_before_bytes() {
                 selection: TurnModelSelection::inherit(),
             },
             &admission,
+            &fx.backend.handoff_for_test().await,
         ),
     )
     .await

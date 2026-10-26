@@ -29,6 +29,7 @@ pub(super) async fn accepted_initial(
             &backend,
             &TurnModelSelection::inherit(),
             PlannerPermissionMode::Never,
+            &backend.handoff_for_test().await,
         )
         .await
     });

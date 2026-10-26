@@ -226,6 +226,7 @@ async fn a_failed_authentication_revokes_the_turns_issued_context() {
                 None,
                 vec![],
             )],
+            &session.handoff_for_test().await,
         )
         .await
         .unwrap();

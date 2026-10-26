@@ -34,6 +34,7 @@ impl<'a> IssueTurnHandle<'a> {
     pub(in crate::harness) async fn prepare_rewind(
         self,
         target: NativeEditTarget,
+        track_fence: &crate::provider_execution::TrackAdmissionFence,
     ) -> Result<EditPreparation<CalmError>> {
         let thread_id = self.thread()?;
         if let Some(reader) = self.owner.backend.issuance_hold() {
@@ -49,7 +50,7 @@ impl<'a> IssueTurnHandle<'a> {
                 })
             }
             (Arm::Claude(session), NativeEditTarget::TranscriptCut { .. }) => {
-                session.prepare_edit(thread_id, target).await
+                session.prepare_edit(thread_id, target, track_fence).await
             }
             (Arm::Codex(..), NativeEditTarget::TranscriptCut { .. })
             | (Arm::Claude(_), NativeEditTarget::BeforeTurn { .. }) => Err(CalmError::Internal(
@@ -69,6 +70,7 @@ impl<'a> IssueTurnHandle<'a> {
         request: TurnRequest,
         claim: &[QueueEntry],
         rewind: Option<&mut BackendRewind>,
+        track_fence: &crate::provider_execution::TrackFenceHandoff,
     ) -> std::result::Result<TurnStartOutcome<CalmError, StartDiagnostic>, TurnStartFailure> {
         if let Some(reader) = self.owner.backend.issuance_hold() {
             return Err(TurnStartFailure::AwaitingRecovery {
@@ -93,10 +95,11 @@ impl<'a> IssueTurnHandle<'a> {
                     return Err(mismatched_rewind());
                 }
                 session
-                    .start_turn(thread_id, request, invocation.claim)
+                    .start_turn(thread_id, request, invocation.claim, track_fence)
                     .await
             }
             Arm::Codex(daemon, approvals) => {
+                track_fence.release();
                 let TurnRequest {
                     input,
                     selection,
@@ -146,7 +149,7 @@ impl<'a> IssueTurnHandle<'a> {
                 ) {
                     return Err(mismatched_rewind());
                 }
-                session.start_turn(thread_id, request).await
+                session.start_turn(thread_id, request, track_fence).await
             }
         }
     }
@@ -194,13 +197,19 @@ impl<'a> IssueTurnHandle<'a> {
     pub(in crate::harness) async fn compact_start(
         self,
         request: CompactRequest,
+        track_fence: &crate::provider_execution::TrackFenceHandoff,
     ) -> Result<CompactSubmission<CalmError>> {
         let thread_id = self.thread()?;
         match &self.owner.backend.0 {
-            Arm::Codex(daemon, _) => Ok(compact_delivery(
-                daemon.thread_compact_delivery(thread_id).await,
-            )),
-            Arm::Claude(session) => Ok(session.compact_start(thread_id, &request.selection).await),
+            Arm::Codex(daemon, _) => {
+                track_fence.release();
+                Ok(compact_delivery(
+                    daemon.thread_compact_delivery(thread_id).await,
+                ))
+            }
+            Arm::Claude(session) => Ok(session
+                .compact_start(thread_id, &request.selection, track_fence)
+                .await),
             Arm::Acp(_) => Err(CalmError::BadRequest(
                 "Manual context compaction is available for Codex and Claude conversations.".into(),
             )),

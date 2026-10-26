@@ -122,6 +122,7 @@ pub(crate) async fn initial(
     backend: &PlannerBackend,
     selection: &TurnModelSelection,
     permission: PlannerPermissionMode,
+    track_fence: &crate::provider_execution::TrackFenceHandoff,
 ) -> Result<CommittedInputReport> {
     let source = source.into();
     source.require_repo(repo)?;
@@ -158,6 +159,7 @@ pub(crate) async fn initial(
                 || prepared.source.check_current(),
                 || Box::pin(prepared.admit(repo)),
             ),
+            track_fence,
         )
         .await;
     settle(

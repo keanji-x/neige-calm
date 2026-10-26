@@ -83,6 +83,7 @@ impl Fixture {
                 effort: Some("normal".into()),
             },
             PlannerPermissionMode::Never,
+            &self.backend.handoff_for_test().await,
         )
         .await
         .unwrap()

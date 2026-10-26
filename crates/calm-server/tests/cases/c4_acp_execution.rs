@@ -37,7 +37,7 @@ async fn c4_acp_existing_execution_refuses_before_credential_mint() {
     intent.metadata.program.program = "/bin/sh".into();
     intent.metadata.program.args = vec!["-c".into(), "read held".into()];
     let (admitted, guard) = owner
-        .admit(
+        .admit_for_test(
             &pool,
             session.host().execution.engine().unwrap(),
             &worker,
@@ -426,7 +426,7 @@ async fn c4_acp_boot_never_resends_held_or_releasing_payload() {
         intent.metadata.program.args =
             vec!["-c".into(), "read value && touch forbidden-release".into()];
         let (admitted, guard) = owner
-            .admit(
+            .admit_for_test(
                 &pool,
                 engine,
                 &worker,

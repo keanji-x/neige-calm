@@ -28,7 +28,7 @@ fn intent(rig: &RegisteredRig) -> ExecutionIntent {
 async fn admit(rig: &RegisteredRig) -> (owner::Claim, owner::DriverGuard) {
     rig.host
         .provider_execution
-        .admit(
+        .admit_for_test(
             rig.repo.db(),
             rig.host.execution.engine().unwrap(),
             &rig.worker_session_id,
@@ -147,7 +147,7 @@ async fn w_non_planner_owner_cannot_carry_upgrade_markers() {
             .environment
             .push((key.into(), "instance:session".into()));
         assert!(
-            port.admit(
+            port.admit_for_test(
                 rig.repo.db(),
                 rig.host.execution.engine().unwrap(),
                 &rig.worker_session_id,
@@ -175,7 +175,7 @@ async fn w_stop_session_is_shared() {
             .alias(&rig.worker_session_id, intent.metadata.id.as_str()),
     );
     let (claim, guard) = port
-        .admit(
+        .admit_for_test(
             rig.repo.db(),
             rig.host.execution.engine().unwrap(),
             &rig.worker_session_id,
@@ -387,7 +387,7 @@ async fn w_admission_refused_leaves_no_claim_or_intent() {
     let result = rig
         .host
         .provider_execution
-        .admit(
+        .admit_with_track_for_test(
             rig.repo.db(),
             rig.host.execution.engine().unwrap(),
             &rig.worker_session_id,
@@ -395,6 +395,7 @@ async fn w_admission_refused_leaves_no_claim_or_intent() {
                 intent: intent(&rig),
                 built: built.clone(),
             },
+            "test-track",
             owner::Purpose::RewindCheck,
         )
         .await;

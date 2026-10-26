@@ -196,6 +196,7 @@ impl Fixture {
             &self.backend,
             &TurnModelSelection::inherit(),
             PlannerPermissionMode::Never,
+            &self.backend.handoff_for_test().await,
         )
         .await
     }
@@ -532,6 +533,7 @@ async fn canonical_crossing_freezes_actual_invocation() {
         &fx.backend,
         &selection,
         PlannerPermissionMode::Never,
+        &fx.backend.handoff_for_test().await,
     )
     .await
     .unwrap();

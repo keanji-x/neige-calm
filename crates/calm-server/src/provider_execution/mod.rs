@@ -15,6 +15,7 @@ use workspace_runtime::execution::*;
 
 mod admission;
 pub use admission::{Admission, PreparedIntent};
+pub(crate) use admission::{OccupancyFence, TrackAdmissionFence, TrackFenceHandoff};
 mod alias;
 pub use alias::AliasPrefix;
 pub(crate) mod launch;
@@ -258,21 +259,24 @@ impl ProviderExecution {
         admission_gate(pool, engine, session, Some(self)).await
     }
     /// ① Driver registration precedes COMMIT; RAII covers cancellation during commit.
-    pub async fn admit<A: Admission>(
+    pub(crate) async fn admit<A: Admission>(
         &self,
         pool: &SqliteDb,
         engine: &ExecutionEngine,
         session: &str,
         admission: A,
         purpose: Purpose,
+        fence: OccupancyFence<'_>,
     ) -> Result<(Claim, DriverGuard)> {
         let engine = self::engine(Some(engine))?;
         let mut tx = calm_truth::db::sqlite::begin_immediate_tx(pool).await?;
+        let held_fence = fence.claim()?;
         admission.authorize_tx(&mut tx).await?;
         let intent = admission.intent_tx(&mut tx).await?;
         self.owner
             .alias_prefix()
             .validate(self.owner.as_ref(), session, &intent)?;
+        held_fence.check(&intent.metadata.track)?;
         let id = intent.metadata.id.clone();
         let guard = self.drivers.claim(id.clone());
         let sql::Cas::Applied(claim) = sql::admit(
@@ -287,7 +291,11 @@ impl ProviderExecution {
             return Err(conflict("admission lost"));
         };
         let ticket = engine.admit(&mut tx, intent).await.map_err(conflict)?;
+        #[cfg(feature = "fixtures")]
+        crate::test_seams::pause_point("c5d-before-occupancy-commit", session).await;
         tx.commit().await?;
+        drop(held_fence);
+        drop(fence);
         engine.drive(ticket.committed());
         Ok((claim, guard))
     }
@@ -420,5 +428,47 @@ impl Drop for Cancellation {
                 tracing::warn!(%error, "provider cancellation Stop failed; durable sweep will retry");
             }
         });
+    }
+}
+
+#[cfg(feature = "fixtures")]
+impl ProviderExecution {
+    #[allow(clippy::too_many_arguments)]
+    pub async fn admit_with_track_for_test<A: Admission>(
+        &self,
+        pool: &SqliteDb,
+        engine: &ExecutionEngine,
+        session: &str,
+        admission: A,
+        track: &str,
+        purpose: Purpose,
+    ) -> Result<(Claim, DriverGuard)> {
+        let fence = crate::harness::run_loop::issuance::track_fence_for_test(track).await;
+        let handoff = TrackFenceHandoff::new(fence);
+        self.admit(
+            pool,
+            engine,
+            session,
+            admission,
+            purpose,
+            OccupancyFence::ReleaseOnCommit(&handoff),
+        )
+        .await
+    }
+}
+
+#[cfg(feature = "fixtures")]
+impl ProviderExecution {
+    pub async fn admit_for_test(
+        &self,
+        pool: &SqliteDb,
+        engine: &ExecutionEngine,
+        session: &str,
+        admission: PreparedIntent,
+        purpose: Purpose,
+    ) -> Result<(Claim, DriverGuard)> {
+        let track = admission.0.metadata.track.0.clone();
+        self.admit_with_track_for_test(pool, engine, session, admission, &track, purpose)
+            .await
     }
 }

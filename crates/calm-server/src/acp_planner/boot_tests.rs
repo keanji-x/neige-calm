@@ -451,6 +451,7 @@ async fn acp_boot_turn_refuses_unavailable_executor_before_mint() {
                 edit: provider::control::TurnEdit::NoEdit,
             },
             &[],
+            &session.handoff_for_test().await,
         )
         .await;
     close(state).await;

@@ -345,7 +345,7 @@ touch ready; exec sleep 120"#,
     );
     assert!(matches!(
         rig.session()
-            .compact_start(&rig.thread, &provider::TurnModelSelection::default())
+            .compact_start_for_test(&rig.thread, &provider::TurnModelSelection::default())
             .await,
         CompactSubmission::NotSubmitted { .. }
     ));
@@ -408,7 +408,7 @@ async fn admit(rig: &RegisteredRig) -> (sql::Claim, owner::DriverGuard) {
     intent.metadata.program.args = vec!["-c".into(), "exec sleep 120".into()];
     rig.host
         .provider_execution
-        .admit(
+        .admit_for_test(
             rig.repo.db(),
             rig.host.execution.engine().unwrap(),
             &rig.worker_session_id,
@@ -433,7 +433,7 @@ async fn c4_provider_admission_is_exclusive_per_session() {
     assert!(
         rig.host
             .provider_execution
-            .admit(
+            .admit_for_test(
                 rig.repo.db(),
                 rig.host.execution.engine().unwrap(),
                 &rig.worker_session_id,

@@ -334,6 +334,7 @@ async fn canonical_claude_recovery_cancel_before_first_write_survives_database_r
         &backend,
         &TurnModelSelection::inherit(),
         PlannerPermissionMode::Never,
+        &backend.handoff_for_test().await,
     )
     .await;
     session.shutdown().await.unwrap();

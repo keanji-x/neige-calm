@@ -309,7 +309,7 @@ async fn runtime_stop_settles(path: &str) {
         .adapter
         .acp_host
         .provider_execution
-        .admit(
+        .admit_for_test(
             fx.repo.db(),
             &supervisor.engine,
             &worker,

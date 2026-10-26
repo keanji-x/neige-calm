@@ -129,7 +129,12 @@ async fn canonical_grok_historical_storage_keeps_its_historical_entry() {
         vec![],
     )];
     let TurnStartOutcome::Started { .. } = session
-        .start_turn(&owner.thread, request, &claim)
+        .start_turn(
+            &owner.thread,
+            request,
+            &claim,
+            &session.handoff_for_test().await,
+        )
         .await
         .unwrap()
     else {

@@ -1,4 +1,5 @@
 //! Real canonical transactions composed with the fake CLI at its process boundary.
+mod c5d;
 mod compact;
 mod control;
 mod loop_fixture;
@@ -132,6 +133,7 @@ impl Fixture {
             &self.backend,
             selection,
             PlannerPermissionMode::Never,
+            &self.backend.handoff_for_test().await,
         )
         .await
     }

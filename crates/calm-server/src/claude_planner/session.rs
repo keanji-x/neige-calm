@@ -325,7 +325,16 @@ impl ClaudePlannerSession {
         provider::control::TurnStartOutcome<CalmError, crate::harness::backend::StartDiagnostic>,
         crate::harness::backend::TurnStartFailure,
     > {
-        self.start_turn(thread, request).await
+        let fence =
+            crate::harness::run_loop::issuance::track_fence_for_test(&self.shared.params.track_id)
+                .await;
+        let handoff = crate::provider_execution::TrackFenceHandoff::new(fence);
+        self.start_turn(thread, request, &handoff).await
+    }
+
+    #[cfg(any(test, feature = "fixtures"))]
+    pub(crate) fn track_for_test(&self) -> &str {
+        &self.shared.params.track_id
     }
 
     /// Whether the worker-session row still carries an MCP hash.
@@ -480,3 +489,13 @@ fn sealed(thread: &str) -> CalmError {
 
 #[cfg(test)]
 mod interrupt_tests;
+
+#[cfg(test)]
+impl ClaudePlannerSession {
+    pub(crate) async fn handoff_for_test(&self) -> crate::provider_execution::TrackFenceHandoff {
+        let track = self.track_for_test();
+        crate::provider_execution::TrackFenceHandoff::new(
+            crate::harness::run_loop::issuance::track_fence_for_test(track).await,
+        )
+    }
+}

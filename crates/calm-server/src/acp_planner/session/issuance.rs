@@ -8,6 +8,7 @@ impl AcpPlannerSession {
         request: provider::control::TurnRequest,
         input: InputContract<'_, '_>,
         receipt_turn: &mut ReceiptPresence,
+        track_fence: &crate::provider_execution::TrackFenceHandoff,
     ) -> std::result::Result<ReceiptAttempt, StartFailure> {
         let provider::control::TurnRequest {
             input: provider::control::InputRequest { items, correlation },
@@ -186,6 +187,7 @@ impl AcpPlannerSession {
                 crate::provider_execution::Purpose::Turn {
                     turn_id: turn.clone(),
                 },
+                track_fence,
             )
             .await
         {

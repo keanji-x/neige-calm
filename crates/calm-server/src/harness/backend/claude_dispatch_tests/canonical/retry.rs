@@ -8,17 +8,17 @@ use tower::ServiceExt;
 
 #[tokio::test]
 async fn canonical_claude_retry_live_waits_then_dispatches_once() {
-    retry_sequence(false, false).await;
+    retry_sequence(false, false, false).await;
 }
 
 #[tokio::test]
 async fn canonical_claude_retry_uncertain_successor_holds_again() {
-    retry_sequence(true, false).await;
+    retry_sequence(true, false, false).await;
 }
 
 #[tokio::test]
 async fn canonical_claude_recovery_h2_actions_restart_held_keep_and_retry() {
-    retry_sequence(false, true).await;
+    retry_sequence(false, true, false).await;
 }
 
 pub(super) async fn action(
@@ -68,7 +68,7 @@ pub(super) async fn action(
     serde_json::from_slice(&bytes).unwrap()
 }
 
-async fn retry_sequence(uncertain: bool, recover: bool) {
+async fn retry_sequence(uncertain: bool, recover: bool, fenced: bool) {
     let mut fx = if recover {
         Fixture::persistent("stall").await
     } else {
@@ -106,7 +106,10 @@ async fn retry_sequence(uncertain: bool, recover: bool) {
         assert_eq!(fx.checkpoint().await, original);
     }
     let (state, app) = settled::application(&fx).await;
-    let harness = fx.start_loop_in(state.harness.clone()).await;
+    let locks = crate::per_card_lock::KeyedLocks::default();
+    let harness = fx
+        .start_loop_with_locks(state.harness.clone(), locks.clone())
+        .await;
     for _ in 0..10 {
         harness.refresh_canonical_input().await.unwrap();
         assert_eq!(
@@ -174,6 +177,8 @@ async fn retry_sequence(uncertain: bool, recover: bool) {
         "retry cannot run beside original driver"
     );
     assert_eq!(fx.checkpoint().await.attempts.len(), 1);
+    let before_commit =
+        fenced.then(|| super::c5d::Pause::arm("c5d-before-occupancy-commit", &fx.owner.worker));
     std::fs::write(fx.dir.path().join("scenario"), "exit").unwrap();
     let turn = fx
         .session
@@ -184,6 +189,12 @@ async fn retry_sequence(uncertain: bool, recover: bool) {
         provider::control::InterruptOutcome::LocalSignalDelivered
     ));
 
+    if let Some(before) = before_commit {
+        before.entered().await;
+        let held = crate::per_card_lock::try_lock_key(&locks, &fx.owner.track).is_none();
+        drop(before);
+        assert!(held, "retry released Track before occupancy commit");
+    }
     if uncertain {
         tokio::time::timeout(Duration::from_secs(25), pause.entered.notified())
             .await
@@ -291,7 +302,10 @@ async fn recovered_keep() {
     fx.backend = backend;
     fx.session = session;
     let (state, app) = settled::application(&fx).await;
-    let harness = fx.start_loop_in(state.harness.clone()).await;
+    let locks = crate::per_card_lock::KeyedLocks::default();
+    let harness = fx
+        .start_loop_with_locks(state.harness.clone(), locks.clone())
+        .await;
     action(&fx, &app, "keep", "keep-recovered").await;
     tokio::time::timeout(Duration::from_secs(25), async {
         while fx.checkpoint().await.active.is_some() {
@@ -316,4 +330,9 @@ async fn recovered_keep() {
     assert!(!fx.dir.path().join("stdin").exists());
     harness.shutdown().await.unwrap();
     state.dispatcher.retire();
+}
+
+#[tokio::test]
+async fn c5d_claude_retry_holds_fence_and_dispatches_once() {
+    retry_sequence(false, false, true).await;
 }

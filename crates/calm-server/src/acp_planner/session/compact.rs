@@ -23,6 +23,7 @@ impl AcpPlannerSession {
         target: MaintenanceTarget,
         selection: &provider::TurnModelSelection,
         admission: &NativePromptAdmission<'_>,
+        track_fence: &crate::provider_execution::TrackFenceHandoff,
     ) -> CompactSubmission<CalmError> {
         let _issue = self.shared.issue.lock().await;
         if !self.owns_maintenance(&target) {
@@ -39,7 +40,10 @@ impl AcpPlannerSession {
                 evidence: SubmissionEvidence::Unobserved,
             };
         }
-        match self.issue_compact(target, selection, admission).await {
+        match self
+            .issue_compact(target, selection, admission, track_fence)
+            .await
+        {
             Ok(()) => CompactSubmission::Submitted {
                 basis: SubmissionBasis::LocalWrite,
             },
@@ -55,6 +59,7 @@ impl AcpPlannerSession {
         target: MaintenanceTarget,
         selection: &provider::TurnModelSelection,
         admission: &NativePromptAdmission<'_>,
+        track_fence: &crate::provider_execution::TrackFenceHandoff,
     ) -> std::result::Result<(), CompactFailure> {
         let shared = &self.shared;
         let params = &shared.params;
@@ -149,6 +154,7 @@ impl AcpPlannerSession {
                     crate::provider_execution::Purpose::Compaction {
                         turn_id: turn.clone(),
                     },
+                    track_fence,
                 )
                 .await?;
             let capabilities = super::super::process::negotiate(
@@ -639,7 +645,12 @@ mod tests {
         wrong.card_id = crate::model::new_id();
         assert!(matches!(
             session
-                .compact_canonical(wrong, &provider::TurnModelSelection::inherit(), &admission)
+                .compact_canonical(
+                    wrong,
+                    &provider::TurnModelSelection::inherit(),
+                    &admission,
+                    &session.handoff_for_test().await
+                )
                 .await,
             CompactSubmission::NotSubmitted { .. }
         ));
