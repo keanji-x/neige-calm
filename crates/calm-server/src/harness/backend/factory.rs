@@ -55,14 +55,22 @@ impl<'a> PlannerFactory<'a> {
         }
     }
 
-    /// Static storage capability for this exact binding; no readiness probe.
-    pub(crate) fn canonical_inputs(binding: &crate::harness::profile::PlannerBinding) -> bool {
+    pub(crate) fn worker_contract(
+        binding: &crate::harness::profile::PlannerBinding,
+    ) -> Option<calm_types::worker::WorkerContract> {
         use crate::harness::profile::HarnessProfile;
         use calm_types::worker::WorkerContract;
-        let contract = match binding.profile {
-            HarnessProfile::Planner => WorkerContract::Planner,
-            HarnessProfile::Assistant => WorkerContract::Assistant,
-            HarnessProfile::PlainChat => return false,
+        match binding.profile {
+            HarnessProfile::Planner => Some(WorkerContract::Planner),
+            HarnessProfile::Assistant => Some(WorkerContract::Assistant),
+            HarnessProfile::PlainChat => None,
+        }
+    }
+
+    /// Static storage capability for this exact binding; no readiness probe.
+    pub(crate) fn canonical_inputs(binding: &crate::harness::profile::PlannerBinding) -> bool {
+        let Some(contract) = Self::worker_contract(binding) else {
+            return false;
         };
         match binding.provider.protocol() {
             AgentProtocol::Codex => true,

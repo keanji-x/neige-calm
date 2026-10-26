@@ -77,7 +77,7 @@ impl AcpPlannerSession {
         }
         let wire = registration
             .profile
-            .compaction
+            .compaction(row.contract)
             .ok_or_else(|| before("ACP profile does not declare compaction"))?;
         let native = row
             .agent_session_id

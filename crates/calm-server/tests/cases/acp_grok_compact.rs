@@ -140,10 +140,10 @@ async fn acp_grok_compact_cleanup_failure_unconfirmed() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn acp_grok_compact_historical_assistant_refuses() {
-    historical_assistant_refuses().await;
+async fn acp_grok_compact_canonical_assistant_refuses() {
+    canonical_assistant_refuses().await;
 }
-pub(super) async fn historical_assistant_refuses() {
+pub(super) async fn canonical_assistant_refuses() {
     use axum::http::Request;
     let root = Root::new("unused");
     let stack = boot_grok(&root).await;
@@ -162,17 +162,25 @@ pub(super) async fn historical_assistant_refuses() {
     assert_eq!(status, StatusCode::CREATED, "{row}");
     let card = row["id"].as_str().unwrap();
     stack.wait_outcomes(card, 1).await;
-    wait_phase(&stack, &stack.runtime(card).await.id, "turn_completed").await;
+    let runtime = stack.runtime(card).await;
+    wait_phase(&stack, &runtime.id, "turn_completed").await;
     let (status, run) = stack
-        .send("GET", &format!("/api/cards/{card}/planner/run"), None)
+        .send(
+            "GET",
+            &format!("/api/cards/{card}/planner/run?contract=conversation_v1"),
+            None,
+        )
         .await;
     assert_eq!(status, StatusCode::OK, "{run}");
     assert_eq!(run["manual_compact_supported"], false, "{run}");
     let (status, refusal) = compact(&stack, card).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "{refusal}");
+    assert_eq!(status, StatusCode::CONFLICT, "{refusal}");
+    let after = stack.runtime(card).await;
+    assert_eq!(after.id, runtime.id);
+    assert_eq!(after.session_id, runtime.session_id);
     assert!(requests(&root, "_x.ai/compact_conversation").is_empty());
     for request in requests(&root, "initialize") {
-        assert_eq!(request["params"]["clientCapabilities"], json!({}));
+        assert!(request["params"]["clientCapabilities"]["session"]["compaction"].is_null());
     }
     stack.shutdown().await;
 }

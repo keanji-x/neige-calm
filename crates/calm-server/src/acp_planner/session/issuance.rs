@@ -200,7 +200,7 @@ impl AcpPlannerSession {
                 .connection
                 .client,
             registration,
-            registration.profile.compaction
+            registration.profile.compaction(row.contract)
                 == Some(super::super::profile::CompactionWire::StandardPrompt),
         )
         .await;

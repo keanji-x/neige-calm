@@ -300,7 +300,7 @@ async fn acp_compact_requires_declared_command() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn acp_compact_assistant_and_grok_capability_contract() {
+async fn acp_compact_canonical_opencode_and_grok_assistant_capability_contract() {
     use axum::http::Request;
     let root = Root::new("unused");
     let stack = boot(&root).await;
@@ -330,7 +330,7 @@ async fn acp_compact_assistant_and_grok_capability_contract() {
     );
     assert_eq!(compact_prompts(&root).len(), 1);
     stack.shutdown().await;
-    super::acp_grok_compact::historical_assistant_refuses().await;
+    super::acp_grok_compact::canonical_assistant_refuses().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

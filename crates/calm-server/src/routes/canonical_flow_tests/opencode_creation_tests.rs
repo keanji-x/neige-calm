@@ -497,5 +497,6 @@ async fn canonical_opencode_creation_catalog_get_keeps_workspace_scope() {
 }
 
 mod acp_assistant;
+mod g3_assistant;
 
 mod u7_canonical;

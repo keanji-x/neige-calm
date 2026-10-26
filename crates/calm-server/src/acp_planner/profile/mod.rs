@@ -20,9 +20,14 @@ pub(crate) enum CompactionWire {
     XaiExtension,
 }
 
+pub(crate) struct ContractCompaction {
+    pub(crate) planner: Option<CompactionWire>,
+    pub(crate) assistant: Option<CompactionWire>,
+}
+
 pub(crate) struct AcpAgentProfile {
-    /// Native wire consumed by canonical maintenance.
-    pub(crate) compaction: Option<CompactionWire>,
+    /// Native maintenance support declared independently for each worker contract.
+    pub(crate) compaction: ContractCompaction,
     /// Supports receipt-owned canonical Planner input; activation is independently gated.
     pub(crate) canonical_planner_inputs: bool,
     /// Supports receipt-owned canonical Assistant input, independently of Planner policy.
@@ -129,6 +134,22 @@ impl AcpAgentProfile {
         }
     }
 
+    pub(crate) fn compaction(
+        &self,
+        contract: calm_types::worker::WorkerContract,
+    ) -> Option<CompactionWire> {
+        use calm_types::worker::WorkerContract;
+        match contract {
+            WorkerContract::Planner => self.compaction.planner,
+            WorkerContract::Assistant => self.compaction.assistant,
+            WorkerContract::Executor | WorkerContract::Validator => None,
+        }
+    }
+
+    pub(crate) fn manual_compaction(&self) -> bool {
+        self.compaction.planner.is_some() || self.compaction.assistant.is_some()
+    }
+
     /// The profile of `provider`; `None` for one that does not speak ACP.
     pub(crate) fn of(provider: &AgentProvider) -> Option<&'static Self> {
         match provider {
@@ -224,9 +245,22 @@ mod tests {
 
     #[test]
     fn acp_grok_compact_declared_only_for_canonical_planner() {
-        assert_eq!(grok::PROFILE.compaction, Some(CompactionWire::XaiExtension));
-        assert!(grok::PROFILE.canonical_inputs(calm_types::worker::WorkerContract::Planner));
-        assert!(!grok::PROFILE.canonical_inputs(calm_types::worker::WorkerContract::Assistant));
+        use calm_types::worker::WorkerContract;
+        for (profile, planner, assistant) in [
+            (&grok::PROFILE, Some(CompactionWire::XaiExtension), None),
+            (
+                &opencode::PROFILE,
+                Some(CompactionWire::StandardPrompt),
+                Some(CompactionWire::StandardPrompt),
+            ),
+        ] {
+            assert!(profile.canonical_inputs(WorkerContract::Planner));
+            assert!(profile.canonical_inputs(WorkerContract::Assistant));
+            assert_eq!(profile.compaction(WorkerContract::Planner), planner);
+            assert_eq!(profile.compaction(WorkerContract::Assistant), assistant);
+            assert_eq!(profile.compaction(WorkerContract::Executor), None);
+            assert_eq!(profile.compaction(WorkerContract::Validator), None);
+        }
     }
 
     #[test]

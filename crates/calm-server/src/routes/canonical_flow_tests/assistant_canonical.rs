@@ -87,10 +87,7 @@ async fn outage_replay_preserves_original_ack_without_resend() {
             }
         }
     );
-    assert_eq!(
-        created["initialInput"]["receipt"]["initialRuntimeId"],
-        worker
-    );
+    assert_initial_carrier(&created["initialInput"]["receipt"], &worker);
     assert!(before.canonical_inputs.attempts.is_empty());
     // Let the actual post-commit wake finish with the backend down.
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -704,4 +701,8 @@ async fn archived_assistant_refuses_retry_without_changing_history() {
     assert_eq!(replay["initialInput"], created["initialInput"]);
     drop(client);
     fixture.shutdown_process(&state).await;
+}
+
+pub(super) fn assert_initial_carrier(receipt: &Value, worker: &str) {
+    assert_eq!(receipt["initialRuntimeId"], worker);
 }

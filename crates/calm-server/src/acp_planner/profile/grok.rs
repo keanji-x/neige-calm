@@ -12,9 +12,12 @@ use super::{AcpAgentProfile, AgentEntry, AgentIdentity, ModeLaunch, NOTHING};
 use provider::acp::approvals::McpToolRequest;
 
 pub(super) const PROFILE: AcpAgentProfile = AcpAgentProfile {
-    compaction: Some(super::CompactionWire::XaiExtension),
+    compaction: super::ContractCompaction {
+        planner: Some(super::CompactionWire::XaiExtension),
+        assistant: None,
+    },
     canonical_planner_inputs: true,
-    canonical_assistant_inputs: false,
+    canonical_assistant_inputs: true,
     entry: AgentEntry {
         before_options: &["agent"],
         after_options: &["--no-leader", "stdio"],
@@ -50,6 +53,21 @@ pub(super) const PROFILE: AcpAgentProfile = AcpAgentProfile {
 mod tests {
     use super::*;
     use crate::planner_permission_mode::PlannerPermissionMode;
+
+    #[test]
+    fn g3_grok_assistant_registered_capability() {
+        use calm_types::{runtime::AgentProvider, worker::WorkerContract};
+        let profile = AcpAgentProfile::of(&AgentProvider::Grok).unwrap();
+        assert!(profile.canonical_inputs(WorkerContract::Assistant));
+        assert!(profile.canonical_inputs(WorkerContract::Planner));
+        assert!(!profile.canonical_inputs(WorkerContract::Executor));
+        assert!(!profile.canonical_inputs(WorkerContract::Validator));
+        assert_eq!(
+            profile.compaction(WorkerContract::Planner),
+            Some(super::super::CompactionWire::XaiExtension)
+        );
+        assert_eq!(profile.compaction(WorkerContract::Assistant), None);
+    }
 
     /// `agent <options> --no-leader stdio`: `full` adds `--always-approve`, `never` and `ask` add
     /// nothing, and no mode sets the environment.

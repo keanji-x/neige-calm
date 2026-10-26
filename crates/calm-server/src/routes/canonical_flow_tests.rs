@@ -230,17 +230,40 @@ impl Fixture {
     }
 
     async fn counts(&self, card: &str) -> (i64, i64, i64, i64, i64) {
-        sqlx::query_as(
+        let (messages, revisions, workers, submissions) = sqlx::query_as(
             "SELECT
              (SELECT count(*) FROM conversation_messages WHERE card_id=?1),
              (SELECT count(*) FROM conversation_message_revisions r
               JOIN conversation_messages m ON m.id=r.message_id WHERE m.card_id=?1),
              (SELECT count(*) FROM worker_sessions WHERE card_id=?1),
-             (SELECT count(*) FROM conversation_input_submissions WHERE card_id=?1),
-             (SELECT count(*) FROM harness_items
-              WHERE card_id=?1 AND item_uuid='original-native-reply')",
+             (SELECT count(*) FROM conversation_input_submissions WHERE card_id=?1)",
         )
         .bind(card)
+        .fetch_one(self.repo.pool())
+        .await
+        .unwrap();
+        let native = self
+            .transcript_count(card, None, None, Some("original-native-reply"))
+            .await;
+        (messages, revisions, workers, submissions, native)
+    }
+
+    async fn transcript_count(
+        &self,
+        card: &str,
+        worker: Option<&str>,
+        method: Option<&str>,
+        item: Option<&str>,
+    ) -> i64 {
+        sqlx::query_scalar(
+            "SELECT count(*) FROM harness_items WHERE card_id=?1
+             AND (?2 IS NULL OR worker_session_id=?2)
+             AND (?3 IS NULL OR method=?3) AND (?4 IS NULL OR item_uuid=?4)",
+        )
+        .bind(card)
+        .bind(worker)
+        .bind(method)
+        .bind(item)
         .fetch_one(self.repo.pool())
         .await
         .unwrap()

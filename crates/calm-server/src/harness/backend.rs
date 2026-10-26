@@ -217,7 +217,12 @@ impl PlannerBackend {
         match binding.provider.protocol() {
             calm_types::runtime::AgentProtocol::Acp => {
                 factory::PlannerFactory::canonical_inputs(binding)
-                    && crate::acp_planner::wiring::manual_compaction(&binding.provider)
+                    && factory::PlannerFactory::worker_contract(binding).is_some_and(|contract| {
+                        crate::acp_planner::wiring::manual_compaction_for(
+                            &binding.provider,
+                            contract,
+                        )
+                    })
             }
             _ => {
                 Self::metadata(&binding.provider)

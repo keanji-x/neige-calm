@@ -398,34 +398,16 @@ async fn acp_assistant_lost_response_cold_restart_never_resends() {
 }
 
 #[tokio::test]
-async fn acp_assistant_grok_explicitly_retains_historical_format() {
-    let mut fixture = Fixture::new().await;
-    configure(&mut fixture);
-    let (state, app, cookie) = fixture.application().await;
-    let track = track(&app, &cookie).await;
-    let uri = format!("/api/tracks/{track}/conversations");
-    let body = json!({"provider":"grok","text":FIRST_BODY});
-    let created = post(&app, &cookie, &uri, "grok", body.clone()).await;
-    assert_eq!(
-        post(&app, &cookie, &uri, "grok", body).await["initialInput"],
-        created["initialInput"]
-    );
-    let card = created["id"].as_str().unwrap();
-    let mut tx = crate::db::sqlite::begin_immediate_tx(fixture.repo.db())
-        .await
-        .unwrap();
-    assert!(
-        !crate::db::sqlite::conversation::card_has_canonical_storage(&mut tx, card)
-            .await
-            .unwrap()
-    );
-    tx.rollback().await.unwrap();
-    assert_eq!(fixture.counts(card).await.0, 0);
-    fixture.shutdown_process(&state).await;
+async fn acp_assistant_historical_creation_key_replays_original_evidence() {
+    historical_creation_key_replays_original_evidence(AgentProvider::OpenCode).await;
 }
 
 #[tokio::test]
-async fn acp_assistant_historical_creation_key_replays_original_evidence() {
+async fn g3_grok_assistant_historical_key_replays_original_evidence() {
+    historical_creation_key_replays_original_evidence(AgentProvider::Grok).await;
+}
+
+async fn historical_creation_key_replays_original_evidence(provider: AgentProvider) {
     use crate::operation::planner_harness_start_adapter::OpeningBriefing;
     use crate::routes::track_conversations::{
         AssistantCreationEntry, AssistantProviderRequest, NewTrackConversationBody,
@@ -444,9 +426,7 @@ async fn acp_assistant_historical_creation_key_replays_original_evidence() {
             headers,
             track.clone(),
             NewTrackConversationBody {
-                provider: AssistantProviderRequest::Explicit(
-                    calm_types::runtime::AgentProvider::OpenCode,
-                ),
+                provider: AssistantProviderRequest::Explicit(provider.clone()),
                 side: None,
                 text: FIRST_BODY.into(),
                 model: None,
@@ -463,7 +443,7 @@ async fn acp_assistant_historical_creation_key_replays_original_evidence() {
         &cookie,
         &format!("/api/tracks/{track}/conversations"),
         "historical-acp",
-        json!({"provider":"opencode","text":FIRST_BODY}),
+        json!({"provider":provider.wire_name(),"text":FIRST_BODY}),
     )
     .await;
     assert_eq!(replay["id"], original["id"]);

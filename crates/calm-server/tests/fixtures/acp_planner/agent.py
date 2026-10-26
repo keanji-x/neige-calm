@@ -90,7 +90,7 @@ def vendor(method, params=None):
     if xai:
         emit({'jsonrpc': '2.0', 'method': '_x.ai/' + method, 'params': params or {'sessionId': current}})
 
-def call_tools(server, calls):
+def call_tools(server, calls, named=False):
     """Call `calls` in order on one connection to `server`'s stdio command, as the agent's MCP
     client would; the replies in order."""
     env = dict(os.environ)
@@ -107,7 +107,8 @@ def call_tools(server, calls):
             child.stdin.write(json.dumps({'jsonrpc': '2.0', 'id': number, 'method': 'tools/call',
                                           'params': {'name': name, 'arguments': arguments}}) + '\n')
             child.stdin.flush()
-            replies.append(json.loads(child.stdout.readline()))
+            reply = json.loads(child.stdout.readline())
+            replies.append({'tool': name, 'reply': reply} if named else reply)
         return replies
     finally:
         child.stdin.close()
@@ -282,7 +283,9 @@ for line in sys.stdin:
             while not (root / 'release-setup').exists():
                 time.sleep(0.01)
     elif method == 'authenticate':
-        behaviour = os.environ.get('ACP_FIXTURE_AUTHENTICATE', 'ok')
+        # Cached-token login state can recover without changing the registered process config.
+        behaviour = ('error' if xai and (root / 'scenario').read_text().strip() == 'grok-auth-error'
+                     else os.environ.get('ACP_FIXTURE_AUTHENTICATE', 'ok'))
         if behaviour == 'ok':
             result(request, {})
         elif behaviour == 'error':
@@ -460,7 +463,11 @@ for line in sys.stdin:
         if scenario in ['lost', 'checkpoint', 'load-replay-lost']:
             os._exit(0)
         vendor('queue/changed')
-        if scenario == 'grok-mcp' and always_approve:
+        if scenario == 'grok-assistant':
+            assert xai and not always_approve, 'Grok Assistant runs under Never'
+            pending, permission = request, 'grok-assistant-read'
+            ask_mcp_tool(permission, 'neige_report_read')
+        elif scenario == 'grok-mcp' and always_approve:
             write_report(request)
         elif scenario in ['grok-mcp', 'grok-mcp-unlisted', 'grok-shell']:
             pending, permission, cancel_seen = request, 'grok-permission', False
@@ -520,6 +527,31 @@ for line in sys.stdin:
             time.sleep(5.5)
         finish(pending, 'cancelled', 'cancelled')
         pending = None
+    elif method is None and permission in ['grok-assistant-read', 'grok-assistant-commit', 'grok-assistant-shell'] and request.get('id') == permission:
+        outcome = request['result']['outcome']
+        permission_log({'event': 'reply', 'tool': {'grok-assistant-read': 'neige_report_read', 'grok-assistant-commit': 'neige_report_commit', 'grok-assistant-shell': 'run_terminal_command'}[permission], 'outcome': outcome})
+        if permission == 'grok-assistant-shell':
+            assert outcome == {'outcome': 'cancelled'}, 'Assistant shell must be declined'
+            finish(pending, 'declined', 'cancelled')
+            pending = permission = None
+        else:
+            assert outcome == {'outcome': 'selected', 'optionId': 'allow-once'}, 'own Report tool must be approved'
+            if permission == 'grok-assistant-read':
+                replies = call_tools(mcp_servers[0], [('neige_report_read', {'with_markers': True})], named=True)
+                (root / 'grok-assistant-results.json').write_text(json.dumps(replies))
+                permission = 'grok-assistant-commit'
+                ask_mcp_tool(permission, 'neige_report_commit')
+            else:
+                replies = json.loads((root / 'grok-assistant-results.json').read_text())
+                replies.extend(call_tools(mcp_servers[0], [
+                    ('neige_report_commit', {'message': 'Assistant prose', 'ops': [
+                        {'op': 'upsert', 'kind': 'prose', 'markdown': '# Grok Assistant note\n\nWritten through use_tool.\n'}]}),
+                    ('neige_task_accept', {}),
+                    ('neige_terminal_open', {}),
+                    ('neige_track_close', {})], named=True))
+                (root / 'grok-assistant-results.json').write_text(json.dumps(replies))
+                permission = 'grok-assistant-shell'
+                ask_shell(permission)
     elif method is None and permission == 'grok-permission' and request.get('id') == permission:
         outcome = request['result']['outcome']
         permission_log({'event': 'reply', 'outcome': outcome})
