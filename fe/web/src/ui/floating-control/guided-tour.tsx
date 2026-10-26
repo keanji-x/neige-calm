@@ -160,6 +160,7 @@ export function GuideAnchor({ id, disabled = false, reserveSpace = false, placem
   }, [register, id, element, disabled]);
   const active = guide !== null && guide.current !== null && guide.current.element === element && (guide.current.locating ? (guide.current.step.via?.includes(id) ?? false) : targetIds(guide.current.step).includes(id)) && !disabled;
   const advance = guide?.current?.step.advance;
+  const locating = guide?.current?.locating;
   const next = guide?.next;
   const step = active && !guide.current.locating ? guide.current.step : null;
   const example = step?.example;
@@ -176,7 +177,7 @@ export function GuideAnchor({ id, disabled = false, reserveSpace = false, placem
     return () => { element.removeAttribute('data-nc-guide-target'); };
   }, [active, element]);
   useEffect(() => {
-    if (!active || guide?.current?.locating || !canAdvance || element === null || advance !== 'activate' || next === undefined) return;
+    if (!active || locating || !canAdvance || element === null || advance !== 'activate' || next === undefined) return;
     let finished = false;
     const finish = () => { if (!finished) { finished = true; armed.current = null; next(); } };
     let armExpiry: ReturnType<typeof setTimeout> | undefined;
@@ -204,7 +205,7 @@ export function GuideAnchor({ id, disabled = false, reserveSpace = false, placem
 
       }
     };
-  }, [active, canAdvance, element, advance, next, guide?.current?.locating]);
+  }, [active, canAdvance, element, advance, next, locating, id]);
   const act = (action: (() => void) | undefined) => {
     element?.focus({ preventScroll: true });
     action?.();
