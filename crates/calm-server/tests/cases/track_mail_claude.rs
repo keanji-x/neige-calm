@@ -149,11 +149,11 @@ async fn mail_trace_reaches_a_claude_planner() {
 
     // 5–9: the Codex Planner is woken, reads m1 and replies from a task-completion turn.
     w.wait_turn(n, 1).await;
-    assert_eq!(w.cat_json(n, &m1.mail_id).await["next_hop"], json!("2/6"));
+    assert_eq!(w.cat_json(n, &m1.mail_id).await["next_hop"], json!("2/20"));
     w.complete(n).await;
     w.task_turn(n).await;
     let (m2, hop) = w.reply_ok(n, &m1.mail_id).await;
-    assert_eq!(hop, "2/6");
+    assert_eq!(hop, "2/20");
 
     // 10: the reply wakes the Claude Planner with the one line; reading it makes the next hop 3.
     let woken = wait_completed_turn(&harness, &bin, 2).await;
@@ -161,7 +161,7 @@ async fn mail_trace_reaches_a_claude_planner() {
     let read = calm_server::mail::cat(&ctx, &identity, &m2).await.unwrap();
     assert_eq!(
         (&read["state"], &read["next_hop"]),
-        (&json!("read"), &json!("3/6"))
+        (&json!("read"), &json!("3/20"))
     );
     let request = SendRequest {
         to: Recipient::Track(n.track_id.to_string()),

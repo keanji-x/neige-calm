@@ -1,4 +1,4 @@
-//! `mail ls` and `mail cat` text (#2130 §4.3, §4.4). A row is `<mail_id>  out  read  hop 1/6  <title>`,
+//! `mail ls` and `mail cat` text (#2130 §4.3, §4.4). A row is `<mail_id>  out  read  hop 1/20  <title>`,
 //! with `: <summary>` in a listing; `cat` prints that header, `summary:`, the text and one last hop
 //! line. `--json` is the tool result as is.
 
@@ -7,7 +7,7 @@ use serde_json::Value;
 use super::{RenderError, compact, escape_control, required_array, required_str, shape};
 use crate::mail::MAX_HOP;
 
-/// `<mail_id>  <direction>  <state>  hop <n>/6  <title>`, every field on one line; an untitled
+/// `<mail_id>  <direction>  <state>  hop <n>/20  <title>`, every field on one line; an untitled
 /// Track is named by its track id.
 fn header(tool: &str, mail: &Value) -> Result<String, RenderError> {
     let [id, direction, state, hop, title, track] =
@@ -111,12 +111,12 @@ mod tests {
     #[test]
     fn mail_cat_renders_structured_hop_refusal() {
         let mut mail = json!({
-            "mail_id": "m", "direction": "in", "state": "read", "hop": "6/6",
+            "mail_id": "m", "direction": "in", "state": "read", "hop": "20/20",
             "title": "Peer", "track_id": "tr", "summary": "s", "text": "body",
             "next_hop": null, "refused": true
         });
         let rendered = cat("neige_mail_cat", false, &mail).unwrap();
-        assert!(rendered.ends_with("hop 6/6 reached — hand off with neige_user_ask\n"));
+        assert!(rendered.ends_with("hop 20/20 reached — hand off with neige_user_ask\n"));
         assert_eq!(cat("neige_mail_cat", true, &mail).unwrap(), compact(&mail));
         mail["refused"] = json!(false);
         assert!(
@@ -124,11 +124,11 @@ mod tests {
                 .unwrap()
                 .ends_with("body\n")
         );
-        mail["next_hop"] = json!("6/6");
+        mail["next_hop"] = json!("20/20");
         assert!(
             cat("neige_mail_cat", false, &mail)
                 .unwrap()
-                .ends_with("next hop 6/6\n")
+                .ends_with("next hop 20/20\n")
         );
         for bad in [Value::Null, json!("true"), json!(1)] {
             mail["refused"] = bad;
