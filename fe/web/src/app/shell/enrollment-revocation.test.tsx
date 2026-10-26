@@ -80,6 +80,7 @@ it.each(['Add phone','Cancel invitation','Disable'])('offline, %s keeps the live
  const before=writes();
  act(()=>onlineManager.setOnline(false));
  fireEvent.click(screen.getByRole('button',{name}));
+ if(name==='Disable') fireEvent.click(screen.getByRole('button',{name:'Disable remote access'}));
  expect((await screen.findByRole('alert')).textContent).toContain(MOBILE_WRITE_TEXT.refused);
  expect(writes()).toEqual(before);
  expect(screen.getByAltText('Scan once to join and pair this Neige workspace')).toBeTruthy();

@@ -4,7 +4,7 @@ import { prepareReportDocument } from '../../features/report/document/preparatio
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { RouterProvider } from '@tanstack/react-router';
 import { StrictMode } from 'react';
-import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -272,7 +272,7 @@ describe('the recipe editor', () => {
 
   it('says so when the delete fails, instead of closing as if it had worked', async () => {
     const user = userEvent.setup();
-    atRecipes({
+    const { sent } = atRecipes({
       remove: { status: 500, statusText: 'Internal Server Error', body: { error: 'Storage is offline.' } },
     });
     await user.click(await screen.findByRole('button', { name: 'Ship checklist' }));
@@ -280,8 +280,17 @@ describe('the recipe editor', () => {
     await user.click(await screen.findByRole('button', { name: 'Delete recipe' }));
 
     /* A 500 may follow a delete that happened: the fixed unknown state, not the server's words (#2131). */
-    expect(await screen.findByText('The delete is unconfirmed.')).toBeTruthy();
-    // Still on the recipe: nothing was destroyed, so nothing was left behind.
+    const dialog = screen.getByRole('dialog', { name: 'Delete this recipe?' });
+    expect((await within(dialog).findByRole('alert')).textContent).toContain('The delete is unconfirmed.');
+    const confirm = within(dialog).getByRole<HTMLButtonElement>('button', { name: 'Delete recipe' });
+    expect(confirm.disabled).toBe(false);
+    expect(confirm.getAttribute('aria-busy')).toBeNull();
+    await user.click(confirm);
+    await waitFor(() => expect(sent.filter((request) => request.method === 'DELETE')).toHaveLength(2));
+    expect((await within(dialog).findByRole('alert')).textContent).toContain('The delete is unconfirmed.');
+    await user.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+    expect(screen.queryByRole('dialog', { name: 'Delete this recipe?' })).toBeNull();
+    // Cancel returns to the same detail, since the delete remains unconfirmed.
     expect(screen.getByRole('button', { name: 'Delete' })).toBeTruthy();
   });
 });

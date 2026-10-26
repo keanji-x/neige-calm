@@ -126,9 +126,11 @@ describe('a calendar update whose answer was lost', () => {
     });
     const dialog = await openResearch();
     await userEvent.click(dialog.getByRole('button', { name: 'Cancel task' }));
+    await userEvent.click(within(screen.getByRole('dialog', { name: 'Cancel this task?' })).getByRole('button', { name: 'Cancel task' }));
     expect(await alertText()).toBe('Cancelling the task is unconfirmed. Cancel it again to check.');
 
     await userEvent.click(dialog.getByRole('button', { name: 'Cancel task' }));
+    await userEvent.click(within(screen.getByRole('dialog', { name: 'Cancel this task?' })).getByRole('button', { name: 'Cancel task' }));
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
   });
 
@@ -142,9 +144,11 @@ describe('a calendar update whose answer was lost', () => {
     });
     const dialog = await openResearch();
     await userEvent.click(dialog.getByRole('button', { name: 'Cancel task' }));
+    await userEvent.click(within(screen.getByRole('dialog', { name: 'Cancel this task?' })).getByRole('button', { name: 'Cancel task' }));
     expect(await alertText()).toBe('Cancelling the task is unconfirmed. Cancel it again to check.');
 
     await userEvent.click(dialog.getByRole('button', { name: 'Cancel task' }));
+    await userEvent.click(within(screen.getByRole('dialog', { name: 'Cancel this task?' })).getByRole('button', { name: 'Cancel task' }));
     await waitFor(async () => expect(await alertText()).toBe(STALE_TEXT));
   });
 

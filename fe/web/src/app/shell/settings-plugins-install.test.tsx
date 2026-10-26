@@ -4,7 +4,7 @@ import { prepareReportDocument } from '../../features/report/document/preparatio
 // credential is an absent key, not an empty string, and the kernel refuses an empty one.
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { RouterProvider, createMemoryHistory } from '@tanstack/react-router';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -210,7 +210,7 @@ describe('Settings › Plugins › remove, end to end', () => {
 
     await userEvent.click(await screen.findByRole('button', { name: 'Remove Todo' }));
     expect(calls.some((call) => call.method === 'DELETE')).toBe(false);
-    await userEvent.click(screen.getByRole('button', { name: 'Remove Todo' }));
+    await userEvent.click(within(screen.getByRole('dialog', { name: 'Remove Todo?' })).getByRole('button', { name: 'Remove plugin' }));
 
     await screen.findByText('还没有添加插件');
     const deletes = calls.filter((call) => call.method === 'DELETE');

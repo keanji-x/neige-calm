@@ -1,5 +1,5 @@
 import { onlineManager, QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
 import type { ApiRequest, ApiTransportResponse } from '../../../../core/api/types.ts';
 import { createUnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
@@ -60,6 +60,7 @@ it('a double Revoke is done: the second answer, the device already gone, keeps t
   for (const press of [1, 2]) {
     const reads = view.reads();
     fireEvent.click(await screen.findByRole('button', { name: 'Revoke' }));
+    fireEvent.click(within(screen.getByRole('dialog', { name: 'Revoke Phone?' })).getByRole('button', { name: 'Revoke' }));
     await waitFor(() => expect(view.reads()).toBeGreaterThan(reads));
     await waitFor(() => expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Revoke' }).disabled).toBe(false));
     expect(revokes).toHaveLength(press);
@@ -80,6 +81,7 @@ it('a stale Approve shows the server reason in the pane and keeps the session', 
 it('a write with no answer shows the fixed sentence, never the transport text', async () => {
   const view = mount(() => Promise.reject(new TypeError('Failed to fetch')));
   fireEvent.click(await screen.findByRole('button', { name: 'Revoke' }));
+  fireEvent.click(within(screen.getByRole('dialog', { name: 'Revoke Phone?' })).getByRole('button', { name: 'Revoke' }));
   const alert = await screen.findByRole('alert');
   expect(alert.textContent).toContain(MOBILE_WRITE_TEXT.unknown);
   expect(alert.textContent).not.toMatch(/transport|fetch|connection|offline/i);
@@ -110,6 +112,9 @@ it.each(['Revoke', 'Approve 123456', 'Create QR code', 'Disable'])('offline, %s 
   const button = await screen.findByRole('button', { name });
   act(() => onlineManager.setOnline(false));
   fireEvent.click(button);
+  if (name === 'Revoke' || name === 'Disable') {
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: name === 'Disable' ? 'Disable remote access' : 'Revoke' }));
+  }
   expect((await screen.findByRole('alert')).textContent).toContain(MOBILE_WRITE_TEXT.refused);
   expect(view.send.mock.calls.filter(([r]) => r.method !== 'GET').map(([r]) => `${r.method} ${r.path}`)).toEqual([]);
   await waitFor(() => expect(screen.getByRole<HTMLButtonElement>('button', { name }).disabled).toBe(false));

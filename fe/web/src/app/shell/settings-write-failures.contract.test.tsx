@@ -71,7 +71,7 @@ async function alerts(): Promise<string> {
 async function toggle() { await userEvent.click(await screen.findByRole('switch', { name: 'Enable Git forge' })); }
 async function remove() {
   await userEvent.click(await screen.findByRole('button', { name: 'Remove Git forge' }));
-  await userEvent.click(screen.getByRole('button', { name: 'Remove Git forge' }));
+  await userEvent.click(within(screen.getByRole('dialog', { name: 'Remove Git forge?' })).getByRole('button', { name: 'Remove plugin' }));
 }
 async function openAdd() {
   await userEvent.click(await screen.findByText('Add a plugin'));

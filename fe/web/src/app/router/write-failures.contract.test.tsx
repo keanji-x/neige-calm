@@ -152,8 +152,9 @@ describe('a DELETE retried after a lost answer and answered 404 is done', () => 
       return Promise.resolve(notFound);
     });
     await deleteFromRail();
-    expect(await screen.findByText('The delete is unconfirmed.')).toBeTruthy();
-    await deleteFromRail();
+    const dialog = screen.getByRole('dialog', { name: 'Delete this track?' });
+    expect((await within(dialog).findByRole('alert')).textContent).toContain('The delete is unconfirmed.');
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Delete track' }));
     await waitFor(() => expect(within(screen.getByRole('navigation', { name: 'Workspace' })).queryByText('Reliable')).toBeNull());
     expect(screen.queryAllByRole('alert').map((alert) => alert.textContent)).toEqual([]);
     expect(writes.map((request) => `${request.method} ${request.path}`)).toEqual(['DELETE /api/tracks/w1', 'DELETE /api/tracks/w1']);
@@ -175,8 +176,9 @@ describe('a DELETE retried after a lost answer and answered 404 is done', () => 
       await userEvent.click(screen.getByRole('button', { name: 'Delete card' }));
     };
     await deleteCard();
-    expect(await screen.findByText('The delete is unconfirmed.')).toBeTruthy();
-    await deleteCard();
+    const dialog = screen.getByRole('dialog', { name: 'Delete this card?' });
+    expect((await within(dialog).findByRole('alert')).textContent).toContain('The delete is unconfirmed.');
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Delete card' }));
     await waitFor(() => expect(screen.queryByRole('button', { name: 'Actions for Build log' })).toBeNull());
     expect(screen.queryAllByRole('alert').map((alert) => alert.textContent)).toEqual([]);
     expect(writes.map((request) => `${request.method} ${request.path}`)).toEqual(['DELETE /api/cards/k1', 'DELETE /api/cards/k1']);
@@ -193,9 +195,9 @@ describe('a DELETE retried after a lost answer and answered 404 is done', () => 
     });
     await trackMenu('Delete track');
     await userEvent.click(screen.getByRole('button', { name: 'Delete track' }));
-    expect((await screen.findByText('The delete is unconfirmed.'))).toBeTruthy();
-    await trackMenu('Delete track');
-    await userEvent.click(screen.getByRole('button', { name: 'Delete track' }));
+    const dialog = screen.getByRole('dialog', { name: 'Delete this track?' });
+    expect((await within(dialog).findByRole('alert')).textContent).toContain('The delete is unconfirmed.');
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Delete track' }));
     await waitFor(() => expect(router.state.location.pathname).toBe('/'));
     expect(screen.queryByText('The delete is unconfirmed.')).toBeNull();
   });

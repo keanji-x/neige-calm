@@ -91,6 +91,7 @@ it('queries the visible month and selected day separately through the real adapt
   await userEvent.keyboard('{Enter}');
   await page.getByRole('button', { name: /Browser commitment.*All day/ }).click();
   await page.getByRole('button', { name: 'Cancel task', exact: true }).click();
+  await page.getByRole('dialog', { name: 'Cancel this task?' }).getByRole('button', { name: 'Cancel task', exact: true }).click();
   await expect.poll(() => requests.filter((request) => request.method === 'POST').length).toBe(2);
   const writes = requests.filter((request) => request.method === 'POST');
   expect(writes[0].body).toMatchObject({ task: { title: 'Browser commitment', schedule: { kind: 'all_day', date: '2026-10-04' } } });
