@@ -3,9 +3,12 @@
 set -euo pipefail
 
 # Text drift detector, not a security guarantee: keep persist private and its module in one file.
-# Removed R0 syntax/macro restrictions only supported deleted text pins. Entry contracts
-# formerly pinned by R3 have behavior tests (REST user attribution, agent role refusal,
-# MCP Planner attribution, structural init); these do not enforce an exported-name census.
+# R0 was removed as the scan scope narrowed; its macro allowlist also guarded R2 against
+# macro-generated modules. Removing it accepts that text-scan blind spot.
+# Entry coverage: behavior tests (REST user attribution, agent role refusal, MCP Planner
+# attribution); syn source-contract tests in fork_guard_exemption_invariant.rs (structural init).
+# Removing the R3 exported-name census leaves new write entries without a static reminder;
+# review must catch them.
 # rustc E0425 covers R1b (cfg-hidden persist); E0364 covers R2b (private re-export).
 # dead_code under -D warnings covers R4 (persist_report without its cfg) in the default-feature
 # lib build. all-targets clippy enables fixtures through dev dependencies and does not cover it.
