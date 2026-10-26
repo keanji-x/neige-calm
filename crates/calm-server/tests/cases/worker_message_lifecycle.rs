@@ -161,9 +161,24 @@ async fn dispatched_task_without_a_worker_card_is_starting() {
 async fn child_track_task_has_no_worker_in_this_track() {
     let h = Harness::start().await;
     let attempt = unbound(&h, "running", TASK_CHILD_TRACK_ROUTE).await;
+    let child = new_id();
+    sqlx::query(
+        "INSERT INTO tracks(id,area_id,title,sort,created_at,updated_at,parent_track_id) \
+        SELECT ?1,area_id,'child',1,1,1,id FROM tracks WHERE id=?2",
+    )
+    .bind(&child)
+    .bind(&h.track)
+    .execute(h.sql.pool())
+    .await
+    .unwrap();
+    sqlx::query("UPDATE tasks SET child_track_id=?1 WHERE id=?2")
+        .bind(&child)
+        .bind(&attempt)
+        .execute(h.sql.pool())
+        .await
+        .unwrap();
     let text = format!(
-        "attempt {attempt} (task {}) runs as a child Track; its workers belong to that Track, not \
-         to yours",
+        "attempt {attempt} (task {}) runs in child Track {child}; use neige_mail_send to its Planner",
         attempt.split_once(':').unwrap().1
     );
     every_tool_refuses(&h, &attempt, "task_in_child_track", &text).await;

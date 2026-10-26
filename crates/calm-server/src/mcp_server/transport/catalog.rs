@@ -99,7 +99,6 @@ impl SessionToolNames {
 pub(crate) struct SessionCatalog {
     pub(crate) role: CardRole,
     track_is_admin: bool,
-    track_is_child: bool,
     /// Every tool this caller may call, the managed-track restriction applied.
     callable: Vec<ToolDescriptor>,
     /// Kernel tools and running, in-scope natives whose declared `roles` exclude this role: served
@@ -126,16 +125,6 @@ impl SessionCatalog {
             .partition(|descriptor| descriptor.roles.contains(&identity.role));
         Ok(Self {
             role: identity.role,
-            track_is_child: match identity.track_id.as_deref() {
-                Some(id) => match ctx.sqlite_db.as_ref() {
-                    Some(db) => sqlx::query_scalar::<_, bool>(
-                        "SELECT EXISTS(SELECT 1 FROM tracks WHERE id=?1 AND parent_track_id IS NOT NULL)")
-                        .bind(id).fetch_one(db.read_pool()).await
-                        .map_err(|e| RpcError::internal(e.to_string()))?,
-                    None => false,
-                },
-                None => false,
-            },
             track_is_admin: match ctx.sqlite_db.as_ref() {
                 Some(pool) => crate::area_admin::card_is_admin(pool.read_pool(), &identity.card_id)
                     .await
@@ -152,10 +141,6 @@ impl SessionCatalog {
         self.callable
             .iter()
             .filter(|descriptor| descriptor.listed_for.contains(&self.role))
-            .filter(|descriptor| {
-                self.track_is_child
-                    || descriptor.name != crate::mcp_server::tools::track_state::TOOL_TRACK_HANDBACK
-            })
             .filter(|descriptor| {
                 self.track_is_admin
                     || !crate::area_admin::ADMIN_TOOLS.contains(&descriptor.name.as_str())

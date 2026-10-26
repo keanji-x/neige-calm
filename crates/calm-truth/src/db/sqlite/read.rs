@@ -421,6 +421,16 @@ impl RepoRead for SqlxRepo {
         Ok(row)
     }
 
+    async fn task_child_track_id(&self, id: &str) -> Result<Option<String>> {
+        Ok(
+            sqlx::query_scalar::<_, Option<String>>("SELECT child_track_id FROM tasks WHERE id=?1")
+                .bind(id)
+                .fetch_optional(self.db.read_pool())
+                .await?
+                .flatten(),
+        )
+    }
+
     async fn tasks_nonterminal(&self) -> Result<Vec<Task>> {
         let sql = format!(
             "SELECT {TASK_COLUMNS} FROM current_tasks \

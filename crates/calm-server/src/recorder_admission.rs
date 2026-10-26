@@ -12,7 +12,7 @@ use sqlx::{Sqlite, Transaction};
 pub(crate) enum RecorderAdmissionDecisionKind {
     ReportWrite,
     TrackClose,
-    TrackHandback,
+    ChildTaskReport,
     PlannerMessage,
 }
 
@@ -21,7 +21,7 @@ impl RecorderAdmissionDecisionKind {
         match self {
             Self::ReportWrite => "report_write",
             Self::TrackClose => "track_close",
-            Self::TrackHandback => "track_handback",
+            Self::ChildTaskReport => "child_task_report",
             Self::PlannerMessage => "planner_message",
         }
     }
@@ -86,7 +86,11 @@ impl RecorderAdmissionGate for CardDecisionSinkRecorderAdmissionGate {
             ));
         };
         let gate = PrincipalDecisionGate::new(principal.clone());
-        let decision = if decision_kind == RecorderAdmissionDecisionKind::PlannerMessage {
+        let decision = if matches!(
+            decision_kind,
+            RecorderAdmissionDecisionKind::PlannerMessage
+                | RecorderAdmissionDecisionKind::ChildTaskReport
+        ) {
             gate.decide_card_write(tx, &self.track_id, &self.card_id, CardRole::Planner)
                 .await
         } else {

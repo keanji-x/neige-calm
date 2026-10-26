@@ -1,7 +1,7 @@
 //! Track-state tools: `neige_track_status` (Planner or Worker snapshot read, no event emission),
 //! `neige_task_accept` / `neige_task_reject` (Planner-only verdicts, lowered to `TaskCompleted` / `TaskFailed`, scoped to the caller's track),
 //! `neige_task_regate` (Planner-only re-run of a failed gate on the same candidate, #2405)
-//! `neige_track_handback` (return an unmet child assignment), and `neige_track_close`
+//! `neige_track_close`
 //! (own close, returned child, or an Admin closing a Track it added).
 
 use crate::decision_sink::{CardDecisionSink, CardDecisionSinkRecorderAdmissionGate};
@@ -20,8 +20,8 @@ use crate::track_report::TrackReportPayload;
 use serde_json::{Value, json};
 use std::sync::Arc;
 
-mod handback;
-pub use handback::TOOL_TRACK_HANDBACK;
+mod report;
+pub(super) use report::report as report_child_assignment;
 
 pub const TOOL_TRACK_STATUS: &str = "neige_track_status";
 pub const TOOL_TASK_ACCEPT: &str = "neige_task_accept";
@@ -30,7 +30,6 @@ pub const TOOL_TRACK_CLOSE: &str = "neige_track_close";
 pub const TOOL_TASK_REGATE: &str = "neige_task_regate";
 
 pub fn register_into(registry: &mut ToolRegistry) {
-    handback::register_into(registry);
     registry.register(track_state_descriptor(), wrap(track_state));
     for verdict in [Verdict::Accept, Verdict::Reject] {
         registry.register(
@@ -492,6 +491,15 @@ async fn close_authorized_tx(
     recorder
         .require_admission(tx, RecorderAdmissionDecisionKind::TrackClose)
         .await?;
+    if !other {
+        let active: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM current_tasks task JOIN tracks child ON child.id=task.child_track_id AND child.parent_track_id=task.track_id WHERE child.id=?1 AND task.status IN ('dispatched','running'))")
+            .bind(caller.id.as_str()).fetch_one(&mut **tx).await.map_err(CalmError::from)?;
+        if active {
+            return Err(CloseError::Refusal(RpcError::conflict(
+                "active child assignment: use neige_task_done or neige_task_fail with the Parent seed attempt_id",
+            )));
+        }
+    }
     let target = calm_truth::db::sqlite::track_get_tx(tx, &target_id)
         .await
         .map_err(CalmError::from);

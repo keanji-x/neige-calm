@@ -295,9 +295,9 @@ impl TerminalInteraction {
     }
     /// The worker card of an attempt, or the refusal its task row gives before any terminal lookup
     /// (#2554): a pending task, a task that runs as a child Track, or one whose worker card is not
-    /// stamped yet (the scheduler stamps it when the task runs). It reads nothing more: the quiet
+    /// stamped yet (the scheduler stamps it when the task runs). Child IDs come from its binding; the quiet
     /// detector resolves every non-terminal task through here.
-    fn attempt_worker_card(task: &Task) -> Result<&str> {
+    async fn attempt_worker_card<'a>(repo: &dyn RouteRepo, task: &'a Task) -> Result<&'a str> {
         let binding = TaskBinding {
             attempt_id: task.id.clone(),
             task_key: task.key.clone(),
@@ -305,14 +305,16 @@ impl TerminalInteraction {
         let refusal = if task.status == TaskStatus::Pending {
             lifecycle_refusal(&binding, Some(task.status))
         } else if task.spawn == TASK_CHILD_TRACK_ROUTE {
-            refused(
-                "task_in_child_track",
-                format!(
-                    "attempt {} (task {}) runs as a child Track; its workers belong to that \
-                     Track, not to yours",
-                    task.id, task.key
+            match repo.task_child_track_id(&task.id).await? {
+                Some(child) => refused(
+                    "task_in_child_track",
+                    format!(
+                        "attempt {} (task {}) runs in child Track {child}; use neige_mail_send to its Planner",
+                        task.id, task.key
+                    ),
                 ),
-            )
+                None => lifecycle_refusal(&binding, Some(task.status)),
+            }
         } else if let Some(card) = task.worker_card_id.as_deref() {
             return Ok(card);
         } else {
@@ -348,7 +350,7 @@ impl TerminalInteraction {
         let (requested_task, terminal) = match target {
             Target::Attempt(id) => {
                 let task = Self::current_task(repo, track, id).await?;
-                let card = Self::attempt_worker_card(&task)?;
+                let card = Self::attempt_worker_card(repo, &task).await?;
                 let terminal = repo.terminal_get_by_card(card).await?;
                 (Some(task), terminal)
             }

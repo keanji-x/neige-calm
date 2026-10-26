@@ -5,7 +5,7 @@
 use serde_json::Value;
 
 use super::{RenderError, compact, escape_control, required_array, required_str, shape};
-use crate::mail::MAX_HOP;
+use crate::mail::{MAX_HOP, USER_DECISION_GUIDANCE};
 
 /// `<mail_id>  <direction>  <state>  hop <n>/6  <title>`, every field on one line; an untitled
 /// Track is named by its track id.
@@ -85,7 +85,7 @@ pub(super) fn cat(tool: &str, json: bool, value: &Value) -> Result<String, Rende
         })?;
     match (refused, value.get("next_hop")) {
         (true, Some(Value::Null)) => out.push_str(&format!(
-            "hop {MAX_HOP}/{MAX_HOP} reached — hand off with neige_user_ask\n"
+            "hop {MAX_HOP}/{MAX_HOP} reached — {USER_DECISION_GUIDANCE}\n"
         )),
         (false, Some(Value::Null)) => {}
         (false, Some(Value::String(next))) => {
@@ -116,7 +116,11 @@ mod tests {
             "next_hop": null, "refused": true
         });
         let rendered = cat("neige_mail_cat", false, &mail).unwrap();
-        assert!(rendered.ends_with("hop 6/6 reached — hand off with neige_user_ask\n"));
+        assert!(
+            rendered.ends_with(
+                "hop 6/6 reached — use neige_user_ask only for user decisions/approvals\n"
+            )
+        );
         assert_eq!(cat("neige_mail_cat", true, &mail).unwrap(), compact(&mail));
         mail["refused"] = json!(false);
         assert!(

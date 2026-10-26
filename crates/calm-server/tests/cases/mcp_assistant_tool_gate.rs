@@ -63,7 +63,6 @@ const ASSISTANT_DENIED_TOOLS_PLANNER_REACHABLE: &[&str] = &[
     "plugin_opencodehistory_message_cat",
     // Closing the track is a Planner action; only the user reopens.
     "neige_track_close",
-    "neige_track_handback",
     // Closing an objective and freezing its usage is a Planner action.
     "neige_objective_close",
     "neige_objective_evaluate",
@@ -102,8 +101,8 @@ const ASSISTANT_DENIED_TOOLS_PLANNER_REACHABLE: &[&str] = &[
     "neige_admin_vacuum",
 ];
 
-/// Denied tools that only a **Worker** token gets past, so the Planner control does not assert
-/// something false about them.
+/// Denied tools a **Worker** token gets past. Keep the shared child outcome tools here so
+/// Worker control coverage stays intact; Planner outcome admission has child-binding tests.
 const ASSISTANT_DENIED_TOOLS_WORKER_REACHABLE: &[&str] = &[
     "neige_task_done",
     "neige_task_fail",
@@ -449,7 +448,7 @@ async fn planner_token_is_never_refused_for_the_role_reason() {
     .await;
 }
 
-/// Same control for the worker-only completion pair.
+/// Same control for Worker completion, gate and message tools.
 #[tokio::test]
 async fn worker_token_is_never_refused_for_the_role_reason() {
     assert_role_reason_absent(

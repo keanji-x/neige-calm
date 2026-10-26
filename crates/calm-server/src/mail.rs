@@ -25,6 +25,9 @@ pub const TOOL_MAIL_CAT: &str = "neige_mail_cat";
 
 /// The highest hop a mail may carry; a send that would get a higher one is refused.
 pub const MAX_HOP: i64 = 6;
+/// Mail failure does not itself require a user escalation.
+pub(crate) const USER_DECISION_GUIDANCE: &str =
+    "use neige_user_ask only for user decisions/approvals";
 /// Rows per `ls` page.
 pub const PAGE: i64 = 50;
 
@@ -210,21 +213,21 @@ pub async fn send(
                     return Err(slot.refuse(
                         -32409,
                         "closed",
-                        format!("{TOOL}: track {to_track} is closed; hand off with neige_user_ask"),
+                        format!("{TOOL}: track {to_track} is closed; {USER_DECISION_GUIDANCE}"),
                     ));
                 }
                 if recipient.purpose.as_deref() == Some(crate::AREA_CHAT_PURPOSE) {
                     return Err(slot.refuse(
                         -32409,
                         "no_planner",
-                        format!("{TOOL}: track {to_track} has no Planner; hand off with neige_user_ask"),
+                        format!("{TOOL}: track {to_track} has no Planner; {USER_DECISION_GUIDANCE}"),
                     ));
                 }
                 if crate::managed_track::reports_only_track(&mut **tx, &to_track).await? {
                     return Err(slot.refuse(
                         -32409,
                         "reports_only",
-                        format!("{TOOL}: track {to_track} takes no mail; hand off with neige_user_ask"),
+                        format!("{TOOL}: track {to_track} takes no mail; {USER_DECISION_GUIDANCE}"),
                     ));
                 }
                 let Some(turn) =
@@ -243,7 +246,7 @@ pub async fn send(
                     return Err(slot.refuse(
                         -32409,
                         "hop_limit",
-                        format!("{TOOL}: hop 6/6 reached — hand off with neige_user_ask"),
+                        format!("{TOOL}: hop 6/6 reached — {USER_DECISION_GUIDANCE}"),
                     ));
                 }
                 let mail_id = new_id();

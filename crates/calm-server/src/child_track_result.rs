@@ -34,3 +34,70 @@ pub(crate) async fn result_ref_tx(
     }
     Ok(result)
 }
+
+/// Final child-success compare-and-set. The snapshot that selected the
+/// success arm is advisory; this statement is the authority and rechecks that
+/// the child is closed and quiescent in the writer transaction.
+pub(crate) async fn guarded_child_success_flip_tx(
+    tx: &mut Tx<'_>,
+    task_id: &str,
+    child_track_id: &str,
+    target_status: &str,
+    now: i64,
+    finished_at_ms: Option<i64>,
+) -> Result<u64> {
+    Ok(sqlx::query(
+        "UPDATE tasks SET status=?1,status_detail=NULL,worker_card_id=NULL,\
+                running_deadline_ms=NULL,updated_at_ms=?2,finished_at_ms=?3 \
+           WHERE id=?4 AND child_track_id=?5 \
+             AND status IN ('dispatched','running') \
+             AND EXISTS(SELECT 1 FROM tracks child \
+                WHERE child.id=?5 AND child.closed_at IS NOT NULL) \
+             AND NOT EXISTS(SELECT 1 FROM current_tasks ct WHERE ct.track_id=?5 \
+                AND ct.status IN ('pending','dispatched','running','verifying'))",
+    )
+    .bind(target_status)
+    .bind(now)
+    .bind(finished_at_ms)
+    .bind(task_id)
+    .bind(child_track_id)
+    .execute(&mut **tx)
+    .await?
+    .rows_affected())
+}
+
+/// One success writer for explicit child reports and scheduler recovery. The caller owns the
+/// surrounding transaction, including any child close, so failed CAS or event writes roll back.
+pub(crate) async fn success_tx(
+    tx: &mut Tx<'_>,
+    task_id: &str,
+    child_track_id: &str,
+    gated: bool,
+) -> Result<Option<crate::event::Event>> {
+    let now = crate::model::now_ms();
+    let status = if gated { "verifying" } else { "done" };
+    if guarded_child_success_flip_tx(
+        tx,
+        task_id,
+        child_track_id,
+        status,
+        now,
+        (!gated).then_some(now),
+    )
+    .await?
+        != 1
+    {
+        return Ok(None);
+    }
+    Ok(Some(crate::event::Event::TaskCompleted {
+        notification: if gated {
+            calm_types::event::PlannerNotification::Suppress
+        } else {
+            calm_types::event::PlannerNotification::Notify
+        },
+        idempotency_key: task_id.into(),
+        result: result_ref_tx(tx, child_track_id, None).await?,
+        artifacts: vec![],
+        agent_message: None,
+    }))
+}

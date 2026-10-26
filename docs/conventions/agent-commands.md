@@ -52,7 +52,7 @@ model sees    := "mcp__" server_key "__" tool name     e.g. mcp__neige__neige_tr
 - MCP is the complete surface. A CLI row exists only for a shell-native view (`track
   ls/cat/show/diff/log/status`, `catalog ls/cat`, `report find`, `report tag`, `mail ls/cat`, `op show`), a Worker
   attempt tool in CLI mode (`task done/fail/gate`, `message read`), the Admin Planner's ordinary Track creation (`track add`, #2777), the Track's close
-  (`track close --message`, no `--force`), child assignment return (`track handback --blocked-on`), or maintenance that needs `--force` (`admin gc/vacuum`) (#2003 §4.4). `report tag`
+  (`track close --message`, no `--force`), or maintenance that needs `--force` (`admin gc/vacuum`) (#2003 §4.4). `report tag`
   is the one view that also writes: `tag` is a W/V verb (§3), so `--add`/`--remove` are its write.
 
 ## 3. Verb vocabulary (closed)
@@ -85,7 +85,6 @@ Effect classes: **V** view (no state change, no anchor; access metadata excepted
 | `control` | W | claim, release or detach terminal control | none (domain) |
 | `open` | LC | start a terminal | `open(2)` |
 | `close` | LC | end the track | `close(2)` |
-| `handback` | LC | return an unmet child assignment to its parent while keeping the child Track open (child Planner) | none (domain) |
 | `cancel` | LC | stop a pending or running task | `cancel` (lp/CUPS) |
 | `publish` | LC | push the track branch and open or reuse its PR | `npm publish` |
 | `accept` | LC | record that an attempt meets the task (Planner) | none (plain English) |
@@ -95,15 +94,15 @@ Effect classes: **V** view (no state change, no anchor; access metadata excepted
 | `evaluate` | LC | start an evaluation of an approved objective at one revision (Planner, #3126) | none (plain English) |
 | `settle` | LC | record the Planner's closed decision on a ready evaluation: keep, discard or done (#3126) | none (plain English) |
 | `gate` | LC | run the attempt's declared gate now, on the Worker's changes committed as the attempt's commit (Worker, #2464) | none (domain) |
-| `done` | LC | the Worker's claim that its attempt met the task (was `report_success`, #2053) | `task <id> done` (Taskwarrior) |
-| `fail` | LC | the Worker's claim that its attempt cannot meet the task, with a `reason` (was `report_failure`) | none (plain English) |
+| `done` | LC | a Worker or bound child Planner's claim that its attempt met the task (was `report_success`, #2053) | `task <id> done` (Taskwarrior) |
+| `fail` | LC | a Worker or bound child Planner's claim that its attempt cannot meet the task, with a `reason` (was `report_failure`) | none (plain English) |
 | `report` | W | the worker watcher's closed verdict on a quiet task worker; the kernel wakes the Planner with it (#2492) | none (plain English) |
 | `gc` | M | prune history and sweep unreferenced objects | `git gc` |
 | `vacuum` | M | reclaim database pages | SQLite `VACUUM` |
 
 Decisions, one line each:
 
-- **`handback` returns a child assignment** with kernel-owned result references; it leaves the child open and lets its parent decide the next action. `close` ends a Track, while `fail` reports a Worker attempt.
+- **`done` / `fail` report assigned outcomes** for Workers or the currently bound child Planner using its Parent seed attempt_id. Child done atomically closes and completes (or verifies) the parent; fail returns kernel result_ref and keeps the child open. Active children cannot self-close. Task goal alone assigns work (new or continue); mail carries parent/child free text; user_ask is only for user decisions/approvals. The separate handback command is removed without an alias.
 
 - **`evaluate` / `settle` belong to objective measurement** (#3126): start a revision evaluation / decide a ready evaluation; `gate` runs a Worker attempt gate, `report` records the watcher verdict, and `accept` decides whether an attempt meets its task.
 
@@ -127,7 +126,7 @@ Decisions, one line each:
 - **CRUD words retire:** `create`/`register` → `add`, `update` → `set`, `unregister` and
   cancel-by-flag → `rm`. `mv` is not used: no tool moves an entry between containers.
 - **Domain verbs with no Unix equivalent stay** (`capture`, `control`, `ask`, `accept`,
-  `reject`, `publish`, `regate`, `gate`, `rerun`, `handback`), each with one meaning. `gate` is the Worker's
+  `reject`, `publish`, `regate`, `gate`, `rerun`), each with one meaning. `gate` is the Worker's
   run of its attempt's gate before it reports; `regate` is the Planner's re-run of a failed one;
   `rerun` asks the forge to re-run a CI run's failed jobs.
 - **`done` / `fail` replace the two Worker compounds** so every action is one word. The Worker

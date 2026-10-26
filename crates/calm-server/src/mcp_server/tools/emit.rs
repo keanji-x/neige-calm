@@ -1,5 +1,5 @@
-//! Worker outcome tools (`neige_task_done`, `neige_task_fail`). Every emitted event's scope is
-//! anchored on the caller's card.
+//! Worker and child Planner outcome tools (`neige_task_done`, `neige_task_fail`). Workers report
+//! on their own card; child Planners settle their validated parent assignment.
 
 use crate::decision_sink::{CardDecisionSink, CommitMessage, WorkerTaskReport};
 use crate::error::CalmError;
@@ -57,8 +57,8 @@ fn task_done_descriptor() -> ToolDescriptor {
         }),
         annotations: Some(role_gated_write_annotations()),
         // Visible to workers so a codex worker's `tools/list` advertises the native completion tool.
-        roles: &[CardRole::Worker],
-        listed_for: &[CardRole::Worker],
+        roles: &[CardRole::Worker, CardRole::Planner],
+        listed_for: &[CardRole::Worker, CardRole::Planner],
     }
 }
 
@@ -68,6 +68,17 @@ async fn task_done(
     args: Value,
 ) -> Result<Value, RpcError> {
     let attempt_id = required_attempt_id(&args, TOOL_TASK_DONE)?;
+    if identity.role == CardRole::Planner {
+        if ["result", "artifacts", "commit_message"]
+            .iter()
+            .any(|key| args.get(key).is_some())
+        {
+            return Err(RpcError::invalid_params(
+                "child Planner results are kernel-owned; result, artifacts and commit_message are Worker-only",
+            ));
+        }
+        return super::track_state::report_child_assignment(ctx, identity, attempt_id, None).await;
+    }
     let commit_message = CommitMessage::from_tool_arg(&args)
         .map_err(|error| RpcError::invalid_params(format!("{TOOL_TASK_DONE}: {error}")))?;
     let result = args.get("result").cloned().unwrap_or(Value::Null);
@@ -145,8 +156,8 @@ fn task_fail_descriptor() -> ToolDescriptor {
         }),
         annotations: Some(role_gated_write_annotations()),
         // Visible to workers (see `task_done_descriptor`).
-        roles: &[CardRole::Worker],
-        listed_for: &[CardRole::Worker],
+        roles: &[CardRole::Worker, CardRole::Planner],
+        listed_for: &[CardRole::Worker, CardRole::Planner],
     }
 }
 
@@ -162,6 +173,16 @@ async fn task_fail(
         .filter(|s| !s.trim().is_empty())
         .ok_or_else(|| RpcError::invalid_params("neige_task_fail: missing `reason` (non-empty)"))?
         .to_string();
+
+    if identity.role == CardRole::Planner {
+        return super::track_state::report_child_assignment(
+            ctx,
+            identity,
+            attempt_id,
+            Some(reason),
+        )
+        .await;
+    }
 
     let report = WorkerTaskReport::Failed {
         attempt_id: attempt_id.clone(),

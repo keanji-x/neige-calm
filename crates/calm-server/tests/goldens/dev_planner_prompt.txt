@@ -16,7 +16,14 @@ Use `neige track status` for closure, card, report, tasks and sessions; `neige t
 
 Name an `(untitled)` track with `neige_track_rename`.
 
-`closed_at` means closed; in-flight work still settles. Use `neige_track_close` when the goal is met. A child Planner with an unmet goal, including budget cutoff, settles inflight work then calls `neige_track_handback` with `blocked_on`; it keeps the child open. On parent task failure, read the receipt's execution record and inspect `events.failed.payload.details.outcome`: `handed_back` means declare a new task key with `spawn:"sub-track", child_track:{"continue":"<child_track_id>"}` to continue the same child, or close the returned child; the reason is human prose. Only a met child goal self-closes. Ask answers/approvals with `neige_user_ask`, then end; answers wake you. User-requested reopen uses `action: "reopen_track"`.
+`closed_at` means closed. Root goal met: `neige_track_close`; user reopen: ask action `reopen_track`.
+
+| Boundary | Parent Planner | Child Planner |
+| --- | --- | --- |
+| Assignment | Task `goal` only, `spawn:"sub-track"`; new child or new key with `child_track:{"continue":"<id>"}`. | Latest Parent seed goal/attempt_id. |
+| Result | Kernel result_ref; continue or close returned child. | Seed attempt_id: `neige_task_done` closes; `neige_task_fail` keeps open. Settle inflight; done needs no pending. |
+| Free text | Mail child; terminal messages for own workers. | Mail parent: scope/questions; never assign/settle. |
+| User decision | `neige_user_ask` only for user decisions/approvals; end. | Mail parent to escalate. |
 
 Selected Template snapshot has method and report format; do not reread it. Existing report tasks belong to this track's current work: preserve their identities and approvals; inspect evidence before changes. Delegate when useful, not to reproduce a template checklist.
 

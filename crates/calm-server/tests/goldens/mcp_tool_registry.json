@@ -205,7 +205,7 @@
   },
   {
     "name": "neige_mail_send",
-    "description_sha256": "b41f6ad6f422167a279d530b79f218cb6b8f6134b36a8ba26db7b5f83324fa5d",
+    "description_sha256": "e266afd3e673e694ec958a9fc27fa9205f6589ff3b8f406f3a43f2d1a00d1a8d",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -945,7 +945,7 @@
   },
   {
     "name": "neige_task_done",
-    "description_sha256": "f9986e21a67497c4fe0a86f2d070d662e511f4298ff524bd83a9547f17e139e8",
+    "description_sha256": "05f0d12d919a8158b7500d019af891eaebf65d9c5badf496e377fd1a2a5a2fa1",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -972,15 +972,17 @@
       "readOnlyHint": false
     },
     "roles": [
-      "worker"
+      "worker",
+      "planner"
     ],
     "listed_for": [
-      "worker"
+      "worker",
+      "planner"
     ]
   },
   {
     "name": "neige_task_fail",
-    "description_sha256": "830e01307f18a845002b35e2552c64b78fd521486bfbe8530d9a37f2efd8026b",
+    "description_sha256": "8cac4e779b7fc78dc88fe4b6b7158f010d35ed69cfe5e17a6d731c1f3d1ed565",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -1004,10 +1006,12 @@
       "readOnlyHint": false
     },
     "roles": [
-      "worker"
+      "worker",
+      "planner"
     ],
     "listed_for": [
-      "worker"
+      "worker",
+      "planner"
     ]
   },
   {
@@ -1244,7 +1248,7 @@
   },
   {
     "name": "neige_terminal_input",
-    "description_sha256": "1a0c8c156f789d325687280c1741d5e0fd47ae5fb40b185f6f7d041c559e01d3",
+    "description_sha256": "2c1cfb3882516726fd13149c289edc7f2d09f2e9a7789a01e342a39790922e66",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -1752,7 +1756,7 @@
   },
   {
     "name": "neige_track_close",
-    "description_sha256": "28a5dc43676ffb8f9560741b4b3029ac47f4b2f877ace9d049c82bbb6477030c",
+    "description_sha256": "2773eb61aacfe7ceb88f23e254e6acb611b96d7796a98ed1427761cca70c4551",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -1812,34 +1816,6 @@
       "worker"
     ],
     "listed_for": []
-  },
-  {
-    "name": "neige_track_handback",
-    "description_sha256": "31d66bc46aa566e62297cabb3d406ecc4ae203999c081429f6acbac28dde9fb4",
-    "input_schema": {
-      "additionalProperties": false,
-      "properties": {
-        "blocked_on": {
-          "minLength": 1,
-          "type": "string"
-        }
-      },
-      "required": [
-        "blocked_on"
-      ],
-      "type": "object"
-    },
-    "annotations": {
-      "destructiveHint": false,
-      "openWorldHint": false,
-      "readOnlyHint": false
-    },
-    "roles": [
-      "planner"
-    ],
-    "listed_for": [
-      "planner"
-    ]
   },
   {
     "name": "neige_track_log",
@@ -1970,7 +1946,7 @@
   },
   {
     "name": "neige_user_ask",
-    "description_sha256": "b9d29fc9ddda15ef9bbdd3d81188c831427694ad25cd1879c5ae45e56be80f30",
+    "description_sha256": "dafd2573fe565c97856687ac39e060f86f39c42bcf08efe6046ffff8a7b36555",
     "input_schema": {
       "additionalProperties": false,
       "properties": {

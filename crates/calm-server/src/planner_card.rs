@@ -374,9 +374,8 @@ mod tests {
 
     /// One-sided cap (#1893): a change that shrinks `prompts/planner.md` lowers it in the same PR.
     // Fixed compaction advice moved here from every turn (+122 bytes at startup).
-    // Child handback adds the unmet-goal route and the parent's structured-result decision.
-    // The rendered startup prompt now measures 8,455 bytes; details stay in the tool description.
-    const PLANNER_PROMPT_MAX_BYTES: usize = 8_455;
+    // Four parent/child boundaries replace the separate handback lifecycle guidance.
+    const PLANNER_PROMPT_MAX_BYTES: usize = 8_446;
 
     #[test]
     fn planner_diagnostics_regression_prompt_fits_its_byte_budget() {

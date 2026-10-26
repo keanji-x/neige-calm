@@ -882,7 +882,7 @@ async fn help_and_unknown_commands_are_served_by_the_kernel() {
         (
             concat!(
                 "neige: unknown action `cat-at` for `neige track`; expected one of: ",
-                "add, ls, cat, show, diff, log, status, handback, close\n"
+                "add, ls, cat, show, diff, log, status, close\n"
             ),
             1
         )
@@ -905,6 +905,14 @@ async fn help_and_unknown_commands_are_served_by_the_kernel() {
         parsed["error"]["detail"]["usage"],
         json!("neige [--json] <object> <action> [options]")
     );
+    let (_, stderr, exit) = cli(
+        &boot,
+        &["--json", "track", "handback", "--blocked-on", "returned"],
+    )
+    .await;
+    assert_eq!(exit, 1);
+    let parsed: Value = serde_json::from_str(&stderr).expect("removed command usage error");
+    assert_eq!(parsed["error"]["detail"]["kind"], json!("usage"));
     let (_, stderr, exit) = cli(&boot, &["--json", "track", "cat"]).await;
     assert_eq!(exit, 1);
     let parsed: Value = serde_json::from_str(&stderr).expect("JSON usage error");

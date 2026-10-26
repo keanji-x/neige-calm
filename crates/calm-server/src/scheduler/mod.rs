@@ -283,37 +283,6 @@ struct ChildTaskSnapshot {
     pending_count: i64,
 }
 
-/// Final child-success compare-and-set. The snapshot that selected the
-/// success arm is advisory; this statement is the authority and rechecks that
-/// the child is closed and quiescent in the writer transaction.
-async fn guarded_child_success_flip_tx(
-    tx: &mut Tx<'_>,
-    task_id: &str,
-    child_track_id: &str,
-    target_status: &str,
-    now: i64,
-    finished_at_ms: Option<i64>,
-) -> Result<u64> {
-    Ok(sqlx::query(
-        "UPDATE tasks SET status=?1,status_detail=NULL,worker_card_id=NULL,\
-                running_deadline_ms=NULL,updated_at_ms=?2,finished_at_ms=?3 \
-           WHERE id=?4 AND child_track_id=?5 \
-             AND status IN ('dispatched','running') \
-             AND EXISTS(SELECT 1 FROM tracks child \
-                WHERE child.id=?5 AND child.closed_at IS NOT NULL) \
-             AND NOT EXISTS(SELECT 1 FROM current_tasks ct WHERE ct.track_id=?5 \
-                AND ct.status IN ('pending','dispatched','running','verifying'))",
-    )
-    .bind(target_status)
-    .bind(now)
-    .bind(finished_at_ms)
-    .bind(task_id)
-    .bind(child_track_id)
-    .execute(&mut **tx)
-    .await?
-    .rows_affected())
-}
-
 /// Final pending-incomplete compare-and-set, kept separate from the success flip.
 async fn guarded_child_incomplete_flip_tx(
     tx: &mut Tx<'_>,
@@ -375,7 +344,15 @@ pub async fn guarded_child_success_flip_for_test(
     child_track_id: &str,
 ) -> Result<u64> {
     let now = now_ms();
-    guarded_child_success_flip_tx(tx, task_id, child_track_id, "done", now, Some(now)).await
+    crate::child_track_result::guarded_child_success_flip_tx(
+        tx,
+        task_id,
+        child_track_id,
+        "done",
+        now,
+        Some(now),
+    )
+    .await
 }
 
 #[cfg(feature = "fixtures")]
@@ -686,30 +663,9 @@ impl Scheduler {
                         && snapshot.inflight_count == 0
                         && snapshot.pending_count == 0
                     {
-                        let (target_status, finished_at) = if snapshot.gate_json.is_some() {
-                            ("verifying", None)
-                        } else {
-                            ("done", Some(now))
-                        };
-                        let changed = guarded_child_success_flip_tx(
-                            tx,
-                            &snapshot.task_id,
-                            &snapshot.child_track_id,
-                            target_status,
-                            now,
-                            finished_at,
-                        )
-                        .await?;
-                        if changed == 0 {
-                            return Err(race_lost_err());
-                        }
-                        let event = Event::TaskCompleted {
- notification: if target_status == "done" { calm_types::event::PlannerNotification::Notify } else { calm_types::event::PlannerNotification::Suppress },
-                            idempotency_key: snapshot.task_id,
-                            result: crate::child_track_result::result_ref_tx(tx, &snapshot.child_track_id, None).await?,
-                            artifacts: vec![],
-                            agent_message: None,
-                        };
+                        let Some(event) = crate::child_track_result::success_tx(
+                            tx, &snapshot.task_id, &snapshot.child_track_id, snapshot.gate_json.is_some(),
+                        ).await? else { return Err(race_lost_err()); };
                         return Ok(((), vec![(ActorId::KernelDispatcher, scope, event)]));
                     }
 

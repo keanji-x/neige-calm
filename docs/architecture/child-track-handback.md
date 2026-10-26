@@ -1,22 +1,24 @@
-# Child Track handback
+# Child Track boundaries and results
 
-Outcome: a child Planner can return an unmet assignment without closing its Track.
+Outcome: task goals assign child work, task reports settle it, mail carries free text, and user asks request user decisions.
 This is L2: it changes parent/child authority and transactional task admission.
 Continuation reuses the child-track operation; no new API, recovery generation,
 replacement task, or reopen-policy change is needed.
 
 ## Ownership and transaction
 
-`neige_track_handback({blocked_on})` is a Planner tool listed only on child
-Tracks. `blocked_on` is a nonempty human explanation, not a machine protocol.
-The handler resolves the caller and uses the existing event write transaction.
-In that transaction it checks recorder admission, the live parent edge and an
-active (`dispatched` or `running`) parent task bound to this child. It rejects
-inflight child work using `RUNNING_WORK_STATUSES_SQL` with -32409. Pending work
-may remain. A guarded UPDATE flips the bound parent attempt to failed, and the
-same transaction emits kernel TaskFailed to the parent (not a Planner verdict). It leaves child.closed_at NULL.
-Concurrent scheduler/handback calls serialize at the writer and only one
-transition emits a terminal event. No free-form reason string is parsed.
+`neige_task_done({attempt_id})` and `neige_task_fail({attempt_id,reason})` also admit child Planners. Workers retain the existing worker report sink and permissions. The child uses its latest Parent seed attempt_id. The handler resolves the caller, then checks current Planner session/card admission, the live parent edge and active (`dispatched` or `running`) current task binding in the event writer transaction. The requested attempt must equal that binding; parent, sibling, foreign, retired and stale callers cannot settle it.
+
+Failure reuses the handback transaction: nonempty reason, no inflight child work (`RUNNING_WORK_STATUSES_SQL`, -32409), guarded parent failure, kernel TaskFailed in parent scope, child left open and pending work retained. Success also requires no pending work, calls the shared close writer, and uses `child_track_result::success_tx` for the parent CAS, result_ref and TaskCompleted. The scheduler's closed-child recovery calls that same success primitive. Gate presence routes the parent to verifying; otherwise done. Close, CAS, recorder admission and events commit atomically. Event/report failures roll everything back; concurrent reporters settle once. No reason text is parsed. The former separate handback tool has no registration, CLI command or alias.
+
+| Boundary | Parent Planner | Child Planner |
+| --- | --- | --- |
+| Assignment | Task goal, new child or new key continuing a returned child. | Latest Parent seed goal and attempt_id. |
+| Result | Consume kernel result_ref; continue or close returned child. | task_done/task_fail with seed attempt_id. |
+| Free text | Mail child; terminal messages only for own workers. | Mail parent for scope and questions. |
+| User decision | user_ask only when the user must decide or approve. | Mail parent to escalate. |
+
+A running child assignment's terminal refusal names its actual bound child ID and points to neige_mail_send. Mail does not assign work or settle tasks. Mail refusal and CLI hop-limit guidance escalate only for user decisions/approvals; hop admission is unchanged. User-only ask answering and approval authority (#2209) remain unchanged.
 
 ## Result reference
 
@@ -47,8 +49,7 @@ Area admin. Existing authority for non-parent callers remains in force.
 
 Seed observations include a Parent section with parent_track_id, task key and
 attempt_id; at creation the child title uses the parent task key read from the task row.
-Planner guidance teaches self-close only for a met child goal; unmet goals,
-including budget cutoff, hand back. After `handed_back`, the parent either
+Active children cannot self-close: the refusal directs them to task_done/task_fail. Unmet goals, including budget cutoff, use task_fail. After `handed_back`, the parent either
 declares a **new task key** with
 `spawn:"sub-track", child_track:{"continue":"<child_track_id>"}` or closes the
 returned child. `continue` is exclusive with `provider`, `model`, and
@@ -84,8 +85,7 @@ canonical System input, retained Planner wake) delivers it exactly once. Schedul
 marks the new parent task running without `planner-harness-start`; operation replay
 returns the recorded result without another wake. The output carries neither a
 parent HEAD nor a workspace creation plan. Child checkout, uncommitted files,
-Report, model selection and Planner session remain in place. Closing the child
-settles the new binding through the existing scheduler success path.
+Report, model selection and Planner session remain in place. The child reports the new seed attempt through task_done/task_fail; the old attempt cannot settle the continued binding.
 
 ## Verification and maintenance
 

@@ -240,6 +240,8 @@ pub trait RepoRead: Send + Sync + 'static {
     async fn tasks_by_track(&self, track_id: &str) -> Result<Vec<Task>>;
     /// Single-row fetch by the composed `"{track_id}:{key}"` id.
     async fn task_get(&self, id: &str) -> Result<Option<Task>>;
+    /// Kernel-stamped child binding of this execution; None before binding or if the execution is gone.
+    async fn task_child_track_id(&self, id: &str) -> Result<Option<String>>;
     /// Current execution only; None also covers a withdrawn pending projection.
     async fn task_current_get(&self, track_id: &str, key: &str) -> Result<Option<Task>>;
     /// Historical membership matters too: a recovered/withdrawn execution's

@@ -400,7 +400,6 @@ async fn bootstrap_tool_descriptors(
     registry: &ToolRegistry,
 ) -> Vec<ToolDescriptor> {
     let mut descriptors = registry.descriptors_listed_for_any(SHARED_DAEMON_LISTING_ROLES);
-    descriptors.retain(|d| d.name != crate::mcp_server::tools::track_state::TOOL_TRACK_HANDBACK);
     extend_plugin_tool_descriptors(
         ctx,
         &mut descriptors,

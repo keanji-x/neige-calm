@@ -14,7 +14,7 @@ use serde_json::{Value, json};
 
 use super::track_mail_fixture::{Planner, World, mail_and_hop, refusal};
 
-const HANDOFF: &str = "hop 6/6 reached — hand off with neige_user_ask";
+const HANDOFF: &str = "hop 6/6 reached — use neige_user_ask only for user decisions/approvals";
 
 fn line(title: &str, summary: &str, mail_id: &str) -> String {
     format!("Wake from mail ({mail_id}): \"{title}\": {summary} — neige mail cat {mail_id}")
@@ -514,20 +514,24 @@ async fn mail_send_refusals_follow_the_table() {
             to(closed.as_str()),
             "closed",
             -32409,
-            format!("{tool}: track {closed} is closed; hand off with neige_user_ask"),
+            format!(
+                "{tool}: track {closed} is closed; use neige_user_ask only for user decisions/approvals"
+            ),
         ),
         (
             to(chat.as_str()),
             "no_planner",
             -32409,
-            format!("{tool}: track {chat} has no Planner; hand off with neige_user_ask"),
+            format!(
+                "{tool}: track {chat} has no Planner; use neige_user_ask only for user decisions/approvals"
+            ),
         ),
         (
             to(daily.track_id.as_str()),
             "reports_only",
             -32409,
             format!(
-                "{tool}: track {} takes no mail; hand off with neige_user_ask",
+                "{tool}: track {} takes no mail; use neige_user_ask only for user decisions/approvals",
                 daily.track_id
             ),
         ),

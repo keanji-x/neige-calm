@@ -2,7 +2,7 @@
 use super::*;
 
 #[tokio::test]
-async fn child_track_continue_reuses_child_and_resumes_claim() {
+async fn child_track_continue_reuses_child_and_resumes_claim_rejects_stale_attempt() {
     let (boot, _repository) = child_track_config::boot_git_parent().await;
     let (runtime, scheduler) = build_scheduler(&boot, vec![child_adapter(&boot)]);
     let mut first = plan_task(&boot.track_id, "first-round", TaskKind::Codex, &[]);
@@ -47,9 +47,9 @@ async fn child_track_continue_reuses_child_and_resumes_claim() {
     .unwrap();
     call_tool(
         &boot,
-        "neige_track_handback",
+        "neige_task_fail",
         identity.clone(),
-        json!({"blocked_on":"new direction needed"}),
+        json!({"attempt_id":old,"reason":"new direction needed"}),
     )
     .await
     .unwrap();
@@ -178,14 +178,34 @@ async fn child_track_continue_reuses_child_and_resumes_claim() {
         .execute(db.writer_pool())
         .await
         .unwrap();
-    call_tool(
-        &boot,
-        "neige_track_close",
-        identity,
-        json!({"message":"new assignment met"}),
-    )
-    .await
-    .unwrap();
+    for tool in ["neige_task_done", "neige_task_fail"] {
+        let mut args = json!({"attempt_id":old});
+        if tool == "neige_task_fail" {
+            args["reason"] = json!("stale seed");
+        }
+        assert!(
+            call_tool(&boot, tool, identity.clone(), args)
+                .await
+                .is_err(),
+            "{tool} must reject the old seed"
+        );
+        assert_eq!(
+            boot.repo.task_get(&id).await.unwrap().unwrap().status,
+            TaskStatus::Running
+        );
+        assert!(
+            boot.repo
+                .track_get(&child)
+                .await
+                .unwrap()
+                .unwrap()
+                .closed_at
+                .is_none()
+        );
+    }
+    call_tool(&boot, "neige_task_done", identity, json!({"attempt_id":id}))
+        .await
+        .unwrap();
     scheduler
         .reconcile_child_track_for_test(&child)
         .await

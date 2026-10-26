@@ -1,43 +1,18 @@
-//! Explicit return of an unmet child assignment; admission, guard and event share one writer.
+//! Child Planner outcome admission and atomic settlement. Worker reports keep their own sink.
 use super::*;
 
-pub const TOOL_TRACK_HANDBACK: &str = "neige_track_handback";
-
-pub(super) fn register_into(registry: &mut ToolRegistry) {
-    registry.register(
-        ToolDescriptor {
-            name: TOOL_TRACK_HANDBACK.into(),
-            description: include_str!("../../../../prompts/tools/neige_track_handback.md")
-                .trim_end()
-                .into(),
-            input_schema: json!({"type":"object","additionalProperties":false,
-            "required":["blocked_on"],"properties":{"blocked_on":{"type":"string","minLength":1}}}),
-            annotations: Some(role_gated_write_annotations()),
-            roles: &[CardRole::Planner],
-            listed_for: &[CardRole::Planner],
-        },
-        wrap(handback),
-    );
-}
-
-async fn handback(
+pub(in crate::mcp_server::tools) async fn report(
     ctx: Arc<AppContext>,
     identity: ToolCallIdentity,
-    args: Value,
+    requested_attempt_id: String,
+    blocked_on: Option<String>,
 ) -> Result<Value, RpcError> {
-    let blocked_on = args
-        .get("blocked_on")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| RpcError::invalid_params("blocked_on must be non-empty"))?
-        .to_owned();
     let (_, child) = resolve_track_for_identity(&ctx, &identity).await?;
     let recorder = CardDecisionSinkRecorderAdmissionGate::for_identity(&identity, child.id.clone());
     let refusal = Arc::new(std::sync::OnceLock::new());
     let refusal_in_tx = refusal.clone();
-    // The child's recorder authorizes the request. The resulting parent failure is a kernel
-    // lifecycle event, like scheduler success, rather than a parent Planner verdict.
+    // The child's recorder authorizes the request. Parent outcomes are kernel lifecycle
+    // events, like scheduler recovery, rather than parent Planner verdicts.
     let written = crate::db::write_with_events_typed(
         ctx.repo.as_ref(),
         crate::ids::ActorId::KernelDispatcher,
@@ -46,12 +21,12 @@ async fn handback(
         &ctx.write,
         move |tx| {
             Box::pin(async move {
-                let result = handback_tx(tx, recorder, child, blocked_on).await;
+                let result = report_tx(tx, recorder, child, requested_attempt_id, blocked_on).await;
                 result.map_err(|error| match error {
                     CloseError::Storage(error) => error,
                     CloseError::Refusal(error) => {
                         let _ = refusal_in_tx.set(error);
-                        CalmError::Conflict("handback refused".into())
+                        CalmError::Conflict("child report refused".into())
                     }
                     CloseError::AlreadyClosed(_) => CalmError::Conflict("child is closed".into()),
                 })
@@ -68,26 +43,65 @@ async fn handback(
     }
 }
 
-async fn handback_tx(
+async fn report_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     recorder: CardDecisionSinkRecorderAdmissionGate,
     child: Track,
-    blocked_on: String,
+    requested_attempt_id: String,
+    blocked_on: Option<String>,
 ) -> Result<(Value, Vec<(EventScope, Event)>), CloseError> {
     recorder
-        .require_admission(tx, RecorderAdmissionDecisionKind::TrackHandback)
+        .require_admission(tx, RecorderAdmissionDecisionKind::ChildTaskReport)
         .await?;
-    let binding: Option<(String, String, String)> = sqlx::query_as(
-        "SELECT task.id,parent.id,parent.area_id FROM tracks child \
+    let binding: Option<(String, String, String, Option<String>)> = sqlx::query_as(
+        "SELECT task.id,parent.id,parent.area_id,task.gate_json FROM tracks child \
          JOIN current_tasks task ON task.child_track_id=child.id AND task.track_id=child.parent_track_id \
          JOIN tracks parent ON parent.id=task.track_id \
          WHERE child.id=?1 AND child.closed_at IS NULL AND task.status IN ('dispatched','running')")
         .bind(child.id.as_str()).fetch_optional(&mut **tx).await.map_err(CalmError::from)?;
-    let Some((attempt_id, parent_id, area_id)) = binding else {
+    let Some((attempt_id, parent_id, area_id, gate_json)) = binding else {
         return Err(CloseError::Refusal(RpcError::conflict(
             "no active parent assignment",
         )));
     };
+    if requested_attempt_id != attempt_id {
+        return Err(CloseError::Refusal(RpcError::conflict(
+            "attempt is not the active child assignment",
+        )));
+    }
+    if blocked_on.is_none() {
+        let pending: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM current_tasks WHERE track_id=?1 AND status IN ('pending','dispatched','running','verifying'))")
+            .bind(child.id.as_str()).fetch_one(&mut **tx).await.map_err(CalmError::from)?;
+        if pending {
+            return Err(CloseError::Refusal(close_refusal(
+                -32409,
+                "active_work",
+                json!({}),
+            )));
+        }
+        let (_, mut events) = close_tx(tx, child.clone(), "Parent assignment met".into()).await?;
+        let event = crate::child_track_result::success_tx(
+            tx,
+            &attempt_id,
+            child.id.as_str(),
+            gate_json.is_some(),
+        )
+        .await?
+        .ok_or_else(|| CloseError::Refusal(RpcError::conflict("parent assignment changed")))?;
+        let Event::TaskCompleted { ref result, .. } = event else {
+            unreachable!()
+        };
+        let result = result.clone();
+        events.push((
+            EventScope::Track {
+                track: parent_id.into(),
+                area: area_id.into(),
+            },
+            event,
+        ));
+        return Ok((result, events));
+    }
+    let blocked_on = blocked_on.expect("failure reason checked by emit");
     let inflight_sql = format!(
         "SELECT EXISTS(SELECT 1 FROM current_tasks WHERE track_id=?1 AND status IN {})",
         crate::planner_hibernation::RUNNING_WORK_STATUSES_SQL

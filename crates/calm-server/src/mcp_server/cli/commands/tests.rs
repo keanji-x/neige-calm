@@ -572,12 +572,12 @@ fn an_old_spelling_is_a_usage_error_listing_the_objects() {
         refusal(&["track", "cat-at", "c", "p"]),
         concat!(
             "unknown action `cat-at` for `neige track`; expected one of: ",
-            "add, ls, cat, show, diff, log, status, handback, close"
+            "add, ls, cat, show, diff, log, status, close"
         )
     );
     assert_eq!(
         refusal(&["track"]),
-        "`neige track` needs an action: add, ls, cat, show, diff, log, status, handback, close"
+        "`neige track` needs an action: add, ls, cat, show, diff, log, status, close"
     );
 }
 
