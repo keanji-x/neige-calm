@@ -1,4 +1,32 @@
 @layer ui {
+  /* Owners in the higher features layer hide these slots on idle. */
+  [data-nc-guide-reveal]:has([data-nc-guide-target]),
+  [data-nc-guide-reveal][data-nc-guide-target] { opacity: 1 !important; }
+  .ringPositioner {
+    position: fixed;
+    inset: auto;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    overflow: visible;
+    pointer-events: none;
+  }
+  .ring {
+    inline-size: 100%;
+    block-size: 100%;
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+    border-radius: var(--radius-highlight);
+  }
+  .status {
+    position: fixed;
+    inset-inline-end: var(--space-3);
+    inset-block-end: calc(var(--space-9) * 2 + env(safe-area-inset-bottom));
+    inline-size: min(20rem, calc(100dvw - var(--space-5)));
+    z-index: var(--z-overlay);
+  }
+
   .positioner {
     inset: auto;
     inline-size: min(20rem, calc(100dvw - var(--space-5)));

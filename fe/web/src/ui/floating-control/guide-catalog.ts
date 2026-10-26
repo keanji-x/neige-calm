@@ -1,8 +1,10 @@
 import { z } from 'zod';
 
 export type GuideStep = Readonly<{
-  id: string; target: string; title: string; description: string;
+  id: string; target: string | readonly string[]; title: string; description: string;
   advance: 'next' | 'activate';
+  locate?: string;
+  via?: readonly string[];
   outcome?: string;
   example?: Readonly<{ label: string; summary: string; text: string }>;
 }>;
@@ -17,8 +19,9 @@ export function parseGuideCatalog(input: unknown): GuideCatalog {
     tours: z.array(z.object({
       id: identifier, title: z.string().min(1), priority: z.number().int(), exclusive: z.boolean(), requires: z.array(identifier),
       steps: z.array(z.object({
-        id: identifier, target: identifier, title: z.string().min(1),
+        id: identifier, target: z.union([identifier, z.array(identifier).min(1)]), title: z.string().min(1),
         description: z.string().min(1), advance: z.enum(['next', 'activate']),
+        locate: z.string().min(1).optional(), via: z.array(identifier).optional(),
         outcome: z.string().min(1).optional(),
         example: z.object({ label: z.string().min(1), summary: z.string().min(1), text: z.string().min(1) }).strict().optional(),
       }).strict()).min(1),

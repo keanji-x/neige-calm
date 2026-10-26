@@ -23,3 +23,12 @@ it('accepts plain-text outcomes and complete examples but rejects executable or 
     expect(() => parseGuideCatalog({ ...input, tours: [{ ...input.tours[0], steps: [{ ...step, example }] }] })).toThrow();
   }
 });
+
+it('accepts variant targets and plain-text location contracts', () => {
+  const step = { id: 'step', target: ['wide', 'compact'], title: 'Hi', description: 'Read me', advance: 'next', locate: 'Open the sidebar', via: ['sidebar'] };
+  const input = (value: unknown) => ({ version: 1, tours: [{ id: 'tour', title: 'Tour', priority: 1, exclusive: false, requires: [], steps: [value] }] });
+  expect(parseGuideCatalog(input(step)).tours[0].steps[0]).toEqual(step);
+  for (const value of [{ ...step, target: [] }, { ...step, via: ['#selector'] }, { ...step, locate: '' }]) {
+    expect(() => parseGuideCatalog(input(value))).toThrow();
+  }
+});

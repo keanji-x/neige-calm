@@ -7,5 +7,5 @@ export const floatingControlClassName = styles.surface;
 /** Inherited surface parameters for composed controls with their own layout. */
 export const floatingControlMaterialClassName = styles.material;
 
-export { GuideProvider, GuideAnchor, useGuideTargetActive } from './guided-tour.tsx';
+export { GuideProvider, GuideAnchor, guideRevealSlot, useGuideTargetActive } from './guided-tour.tsx';
 export { parseGuideCatalog, type GuideCatalog } from './guide-catalog.ts';
