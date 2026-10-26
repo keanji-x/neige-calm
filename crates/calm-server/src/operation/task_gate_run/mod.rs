@@ -27,7 +27,6 @@ use super::gate_execution::{self as execution, Decision, Release, StopReason};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use workspace_runtime::execution::*;
 
 use super::gate_lifecycle::{GatePaths, GateSpec};
 use super::gate_process::{GateEvidence, GateFiles};
@@ -435,19 +434,22 @@ impl ProviderAdapter for TaskGateRunAdapter {
             step_path: Some(paths.step),
             steps: checkpoint::run_steps(&frozen),
         };
-        let status = match settled.unwrap() {
-            Settlement::Journal(
-                ExecutionState::Drained { status, .. }
-                | ExecutionState::OriginalGroupEmpty { status, .. },
-            ) => status,
-            _ => None,
-        };
+        let settlement = settled.unwrap();
+        let interrupted =
+            execution::interrupted(ctx, &record.execution_id, &settlement, &record.decision).await;
         let reason = match &record.decision {
             Decision::Stopping { reason } => Some(reason.clone()),
             _ => None,
         };
-        let result =
-            finalize::finalize_run(&frozen, &evidence, status, reason, self.refs.clone()).await;
+        let result = finalize::finalize_run(
+            &frozen,
+            &evidence,
+            &settlement,
+            interrupted,
+            reason,
+            self.refs.clone(),
+        )
+        .await;
         #[cfg(any(test, feature = "fixtures"))]
         if let Some(hook) = &self.hooks.before_completion {
             hook().await;

@@ -822,6 +822,18 @@ pub(crate) async fn finalize(
     }
 }
 
+/// An interrupted execution supplies no child verdict or after-sample authority.
+pub(crate) fn interrupted(verdict: GateVerdict, frozen: &FrozenVerify) -> TaskGateResult {
+    TaskGateResult {
+        verdict,
+        cwd: Some(frozen.cwd.clone()),
+        target: frozen_unsampled(&frozen.target, |cwd| SamplePhase::Finalize {
+            cwd,
+            reason: "execution interrupted without child status".into(),
+        }),
+    }
+}
+
 /// P8: the target of the compensation step's `gate-infra` verdict (spawn failed after the
 /// freeze). A frozen `NoCandidate` is unreachable here (its spawn is a no-op) but expressible.
 pub(crate) fn compensation_target(frozen: &FrozenTarget, reason: &str) -> VerifyTarget {

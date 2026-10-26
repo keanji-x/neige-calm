@@ -31,7 +31,7 @@ fn w_owned_none_matches_released_wire_and_specification_bytes() {
 }
 
 #[tokio::test]
-async fn w_owned_new_kernel_accepts_released_v10_handshake() {
+async fn recovery_3192_new_kernel_refuses_released_v10_handshake() {
     let root = tempfile::tempdir().unwrap();
     let path = root.path().join("old-peer.sock");
     let listener = tokio::net::UnixListener::bind(&path).unwrap();
@@ -56,7 +56,7 @@ async fn w_owned_new_kernel_accepts_released_v10_handshake() {
         let ExecutionRequest::Handshake(hello) = *hello else {
             panic!()
         };
-        assert_eq!(hello.required_contract, old.required_contract);
+        assert_eq!(hello.required_contract, EXECUTION_ENVELOPE_VERSION);
         crate::write_frame(
             &mut stream,
             &ControlReply::Execution(Box::new(ExecutionReply::Handshake {
@@ -68,9 +68,11 @@ async fn w_owned_new_kernel_accepts_released_v10_handshake() {
         .await
         .unwrap();
     });
-    RegisteredExecutorConnection::connect(&path, expected_secret)
-        .await
-        .unwrap();
+    assert!(
+        RegisteredExecutorConnection::connect(&path, expected_secret)
+            .await
+            .is_err()
+    );
     peer.await.unwrap();
 }
 

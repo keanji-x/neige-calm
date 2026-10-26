@@ -94,7 +94,7 @@ pub(crate) async fn wait_spawned(engine: &ExecutionEngine, id: &ExecutionId) -> 
             let generation = engine.output_generation().await.map_err(conflict)?;
             match engine.output(id, None).await {
                 Ok(ExecutionReply::Observation { receipt: Some(_), state: ExecutionState::Spawned, .. }) => break,
-                Ok(ExecutionReply::Observation { state: ExecutionState::Exited { .. } | ExecutionState::Drained { .. } | ExecutionState::OriginalGroupEmpty { .. } | ExecutionState::NoChild { .. } | ExecutionState::Revoked, .. }) => return Err(conflict("provider exited before release")),
+                Ok(ExecutionReply::Observation { state: ExecutionState::Exited { .. } | ExecutionState::Drained { .. } | ExecutionState::OriginalGroupEmpty { .. } | ExecutionState::InterruptedQuiescent { .. } | ExecutionState::NoChild { .. } | ExecutionState::Revoked, .. }) => return Err(conflict("provider exited before release")),
                 Err(DriveError::Executor(ExecError::Refused(_))) => {},
                 Err(error) => return Err(conflict(error)),
                 _ => {},

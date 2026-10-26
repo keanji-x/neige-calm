@@ -589,3 +589,5 @@ async fn wait_settled_cancel_keeps_driver() {
         1
     );
 }
+
+mod recovery_3192;

@@ -740,3 +740,7 @@ async fn execution_id_and_ticket_reservations_are_global_across_resources() {
 
 #[path = "execution_contract/close_stdin.rs"]
 mod close_stdin;
+
+#[cfg(target_os = "linux")]
+#[path = "execution_contract/recovery.rs"]
+mod recovery;

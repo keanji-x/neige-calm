@@ -14,6 +14,8 @@ mod monitor;
 mod monitor_tests;
 #[cfg(target_os = "linux")]
 mod native_child;
+#[cfg(target_os = "linux")]
+mod native_recovery;
 mod output;
 mod preparation;
 mod private;
@@ -25,6 +27,7 @@ mod process;
 mod protocol;
 #[cfg(all(test, target_os = "linux"))]
 mod protocol_tests;
+mod recovery;
 #[cfg(target_os = "linux")]
 mod scope_helper;
 mod shutdown;
@@ -177,7 +180,7 @@ impl Executor {
                 }
                 outputs.insert(identity.execution_id.clone(), log);
             }
-            let rebooted = record.host_boot_id != host_boot_id;
+            let rebooted = !record.host_boot_id.is_empty() && record.host_boot_id != host_boot_id;
             // A formerly possible child can have output even when reboot maps it to NoChild.
             if rebooted
                 && !matches!(
@@ -194,7 +197,7 @@ impl Executor {
                 };
             }
             record.phase = match &record.phase {
-                phase if record.host_boot_id != host_boot_id && !phase.state().permits_handoff() => Phase::NoChild {
+                phase if rebooted && !phase.state().permits_handoff() => Phase::NoChild {
                     slot_version: phase.slot_version(), reason: "host_rebooted".into()
                 },
                 Phase::Prepared => { record.interactive_revoked = true; Phase::Revoked },
@@ -363,7 +366,10 @@ impl Executor {
             ExecutionRequest::Prepare(request) | ExecutionRequest::PrepareAmbient(request) => {
                 self.prepare(request).await
             }
-            ExecutionRequest::Inspect(id) => self.inspect(&id),
+            ExecutionRequest::Inspect(id) => {
+                self.reconcile_interrupted(&id).await?;
+                self.inspect(&id)
+            }
             ExecutionRequest::Watch => Ok(self.watch()?.0),
             ExecutionRequest::Retire {
                 execution_id,

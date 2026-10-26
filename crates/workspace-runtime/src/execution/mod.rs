@@ -128,7 +128,8 @@ pub fn next_step(desired: Desired, fact: &Fact) -> Step {
             ExecutionState::Revoked
             | ExecutionState::NoChild { .. }
             | ExecutionState::Drained { .. }
-            | ExecutionState::OriginalGroupEmpty { .. } => Step::Settle,
+            | ExecutionState::OriginalGroupEmpty { .. }
+            | ExecutionState::InterruptedQuiescent { .. } => Step::Settle,
         },
     }
 }

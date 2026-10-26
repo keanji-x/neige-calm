@@ -118,6 +118,10 @@ impl Executor {
                 && report.context.mechanism == receipt.scope_mechanism,
             "helper report identity mismatch"
         );
+        // Durable terminal evidence is absorbing, including late lost-monitor reports.
+        if record.phase.state().permits_handoff() {
+            return Ok(matches!(record.phase, Phase::Drained { .. }));
+        }
         record.phase = match report.event {
             scope_helper::HelperEvent::Ready => anyhow::bail!("duplicate helper readiness report"),
             scope_helper::HelperEvent::Started => {

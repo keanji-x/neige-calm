@@ -9041,7 +9041,7 @@ async fn red_gate_fails_with_failing_step_and_log_tail() {
 }
 
 #[tokio::test]
-async fn gate_timeout_group_kills_and_fails_gate_timeout() {
+async fn recovery_3192_live_timeout_keeps_timeout_verdict() {
     let _guard = GATE_SPAWN_TEST_LOCK.lock().await;
     let boot = boot().await;
     let dir = unique_gate_dir("timeout");
@@ -9410,3 +9410,7 @@ async fn parked_gate_dead_pre_deadline_fails_gate_infra_promptly() {
 async fn aborted_observer_leaves_gate_group_alive_and_reattach_lands_verdict() {
     c2b::released_boot_recovers().await;
 }
+
+#[cfg(target_os = "linux")]
+#[path = "scheduler/recovery_3192.rs"]
+mod recovery_3192;

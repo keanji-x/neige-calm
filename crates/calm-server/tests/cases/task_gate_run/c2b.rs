@@ -198,7 +198,7 @@ async fn c2b_cancel_parked_leaves_typed_op_parked() {
 }
 
 #[tokio::test]
-async fn c2b_timeout_retries_while_probe_holds_claim() {
+async fn recovery_3192_gate_run_live_timeout_retries_while_probe_holds_claim() {
     use calm_server::operation::{OperationRepo, SqlxOperationRepo};
     let fx = world(Duration::from_millis(100)).await;
     let flag = outside(&fx, "timeout-hold");

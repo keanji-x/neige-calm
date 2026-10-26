@@ -369,16 +369,7 @@ pub(super) fn nonblocking(fd: RawFd) -> std::io::Result<()> {
 }
 
 fn start_time(pid: u32) -> anyhow::Result<u64> {
-    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat"))?;
-    let tail = stat
-        .rsplit_once(')')
-        .ok_or_else(|| anyhow::anyhow!("invalid process stat"))?
-        .1;
-    Ok(tail
-        .split_whitespace()
-        .nth(19)
-        .ok_or_else(|| anyhow::anyhow!("missing process start time"))?
-        .parse()?)
+    super::native_recovery::start_time(pid)
 }
 
 fn pin_helper(pid: u32) -> anyhow::Result<File> {

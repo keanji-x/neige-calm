@@ -6,6 +6,43 @@ use workspace_runtime::execution::*;
 
 pub(crate) const KEY: &str = "gate_execution";
 pub(crate) const CONSUMER: &str = "gate";
+
+/// A legacy no-status workspace row alone cannot establish a live timeout drain.
+pub(crate) async fn interrupted(
+    ctx: &SpawnCtx,
+    id: &ExecutionId,
+    settlement: &Settlement,
+    decision: &Decision,
+) -> bool {
+    match settlement {
+        Settlement::Journal(ExecutionState::InterruptedQuiescent { .. }) => true,
+        Settlement::Journal(ExecutionState::Drained { status: None }) => {
+            if !matches!(
+                decision,
+                Decision::Stopping {
+                    reason: StopReason::Timeout
+                }
+            ) {
+                return true;
+            }
+            let Ok(engine) = engine(ctx) else {
+                return true;
+            };
+            // TERM/KILL can leave a genuine helper-proven drain without a child code.
+            // Only the executor's own durable fact qualifies that ordinary timeout;
+            // a manual/legacy settlement, Unknown or restart interruption never does.
+            !matches!(
+                engine.output(id, None).await,
+                Ok(ExecutionReply::Observation {
+                    receipt: Some(_),
+                    state: ExecutionState::Drained { status: None },
+                    ..
+                })
+            )
+        }
+        _ => false,
+    }
+}
 pub(crate) use super::owned_execution::{Decision, Release, StopReason, engine, refresh_claim};
 fn conflict(message: impl std::fmt::Debug) -> CalmError {
     CalmError::Conflict(format!("{message:?}"))

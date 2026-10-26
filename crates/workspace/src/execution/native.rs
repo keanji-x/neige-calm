@@ -140,3 +140,21 @@ impl<'de> Deserialize<'de> for ScopeMechanismIdentity {
         })
     }
 }
+
+/// Restart observation only; excludes descendants which escaped with setsid.
+/// This is deliberately distinct from the helper's descendant drain proof.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InterruptedQuiescenceProof {
+    pub host_boot_id: String,
+    pub helper_process: NativeProcessIdentity,
+    pub mechanism: ScopeMechanismIdentity,
+    pub scope: InterruptedScope,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum InterruptedScope {
+    LinuxOriginalGroupAndSessionEmpty,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ExecutionInterruption {
+    ExecutorInterrupted,
+}

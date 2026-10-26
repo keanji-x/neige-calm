@@ -394,7 +394,7 @@ async fn w_owned_unsupported_peer_refused_before_intent() {
     let socket = socket_root.path().join("old.sock");
     let listener = tokio::net::UnixListener::bind(&socket).unwrap();
     let (seen, mut unsupported) = tokio::sync::mpsc::unbounded_channel();
-    // Released v10 peers close on the unknown additive RPC. None never sends it.
+    // A negotiated peer can refuse an unsupported additive RPC. None never sends it.
     let peer = tokio::spawn(async move {
         loop {
             let (mut stream, _) = listener.accept().await.unwrap();
@@ -408,11 +408,11 @@ async fn w_owned_unsupported_peer_refused_before_intent() {
                 let ExecutionRequest::Handshake(hello) = *hello else {
                     return;
                 };
-                assert_eq!(hello.required_contract, 10);
+                assert_eq!(hello.required_contract, EXECUTION_ENVELOPE_VERSION);
                 write_frame(
                     &mut stream,
                     &ControlReply::Execution(Box::new(ExecutionReply::Handshake {
-                        envelope_version: 10,
+                        envelope_version: EXECUTION_ENVELOPE_VERSION,
                         executor_boot: ExecutorBootId::fresh().unwrap(),
                         mode: hello.mode,
                     })),
@@ -427,7 +427,7 @@ async fn w_owned_unsupported_peer_refused_before_intent() {
                 if matches!(*request, ExecutionRequest::PreflightEnvironment(_)) {
                     let _ = seen.send(());
                 }
-                // An old decoder closes on the unknown preflight ordinal.
+                // A peer without preflight support closes on the unknown ordinal.
             });
         }
     });

@@ -14,6 +14,8 @@ use workspace::execution::{ExecutionId, NativeProcessIdentity, ScopeMechanismIde
 pub(super) const JOURNAL_VERSION: u32 = 5;
 /// Ambient journals must be refused by released explicit-only supervisors.
 pub(super) const AMBIENT_JOURNAL_VERSION: u32 = 6;
+/// New positive restart evidence must be refused by released older readers.
+pub(super) const RECOVERY_JOURNAL_VERSION: u32 = 7;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -33,9 +35,11 @@ impl Journal {
     /// Validate persisted facts without acquiring or reconstructing process authority.
     pub fn validate(&self) -> anyhow::Result<()> {
         anyhow::ensure!(
-            self.version == AMBIENT_JOURNAL_VERSION
-                || self.request.specification.ambient_environment
-                    == calm_session::control::execution::AmbientEnvironment::None,
+            matches!(
+                self.version,
+                AMBIENT_JOURNAL_VERSION | RECOVERY_JOURNAL_VERSION
+            ) || self.request.specification.ambient_environment
+                == calm_session::control::execution::AmbientEnvironment::None,
             "legacy journal cannot authorize ambient environment"
         );
         if let Some(receipt) = self.phase.receipt() {
@@ -67,6 +71,21 @@ impl Journal {
                         }
                     ),
                 "native group observation lacks native receipt identity"
+            );
+        }
+        if let Phase::InterruptedQuiescent { receipt, proof, .. } = &self.phase {
+            anyhow::ensure!(
+                self.version == RECOVERY_JOURNAL_VERSION,
+                "interruption proof requires recovery journal version"
+            );
+            anyhow::ensure!(
+                !self.host_boot_id.is_empty()
+                    && proof.host_boot_id == self.host_boot_id
+                    && proof.helper_process == receipt.process
+                    && proof.mechanism == receipt.scope_mechanism
+                    && matches!(receipt.process, NativeProcessIdentity::LinuxHelper(ref p) if p.pid > 0 && p.start_time_ticks > 0)
+                    && matches!(receipt.scope_mechanism, ScopeMechanismIdentity::LinuxHelper(ref h) if h.protocol_version == 1),
+                "interruption proof does not bind original receipt and host boot"
             );
         }
         if let Phase::Drained { receipt, proof, .. } = &self.phase {
@@ -123,6 +142,11 @@ pub(super) enum Phase {
         status: Option<i32>,
         proof: workspace::execution::ScopeDrainProof,
     },
+    InterruptedQuiescent {
+        receipt: ExecutionReceipt,
+        reason: workspace::execution::ExecutionInterruption,
+        proof: workspace::execution::InterruptedQuiescenceProof,
+    },
     OriginalGroupEmpty {
         receipt: ExecutionReceipt,
         status: Option<i32>,
@@ -147,6 +171,12 @@ impl Phase {
             Self::Spawned(_) => ExecutionState::Spawned,
             Self::Exited { status, .. } => ExecutionState::Exited { status: *status },
             Self::Drained { status, .. } => ExecutionState::Drained { status: *status },
+            Self::InterruptedQuiescent { reason, proof, .. } => {
+                ExecutionState::InterruptedQuiescent {
+                    reason: reason.clone(),
+                    proof: proof.clone(),
+                }
+            }
             Self::OriginalGroupEmpty { status, .. } => {
                 ExecutionState::OriginalGroupEmpty { status: *status }
             }
@@ -163,7 +193,8 @@ impl Phase {
             Self::Spawned(receipt)
             | Self::Exited { receipt, .. }
             | Self::Drained { receipt, .. }
-            | Self::OriginalGroupEmpty { receipt, .. } => Some(receipt),
+            | Self::OriginalGroupEmpty { receipt, .. }
+            | Self::InterruptedQuiescent { receipt, .. } => Some(receipt),
             Self::Unknown { receipt, .. } => receipt.as_ref(),
             _ => None,
         }
@@ -309,7 +340,12 @@ impl Store {
                             "ambient journal requires versioned specification");
                     }
                     anyhow::ensure!(
-                        matches!(probe.version, 4 | JOURNAL_VERSION | AMBIENT_JOURNAL_VERSION),
+                        matches!(
+                            probe.version,
+                            4 | JOURNAL_VERSION
+                                | AMBIENT_JOURNAL_VERSION
+                                | RECOVERY_JOURNAL_VERSION
+                        ),
                         "unsupported execution journal version {}; expected {}; pre-E1a journals require a fresh state directory",
                         probe.version,
                         JOURNAL_VERSION

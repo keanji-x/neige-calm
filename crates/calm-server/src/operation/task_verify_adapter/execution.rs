@@ -116,38 +116,59 @@ impl TaskVerifyAdapter {
         let drained = matches!(
             settled,
             Some(Settlement::Journal(
-                ExecutionState::Drained { .. } | ExecutionState::OriginalGroupEmpty { .. }
+                ExecutionState::Drained { .. }
+                    | ExecutionState::OriginalGroupEmpty { .. }
+                    | ExecutionState::InterruptedQuiescent { .. }
             ))
         );
-        let verdict = match record.decision {
-            Decision::Stopping {
-                reason: StopReason::Timeout,
-            } => timeout_verdict(
+        let interrupted = match &settled {
+            Some(settlement) => {
+                execution::interrupted(ctx, &record.execution_id, settlement, &record.decision)
+                    .await
+            }
+            None => false,
+        };
+        let verdict = if interrupted {
+            infra_verdict(
+                "execution interrupted without child status",
                 &evidence,
                 frozen.attempt,
-                frozen.gate.timeout_secs_clamped(),
-            ),
-            Decision::Stopping { .. } => infra_verdict(
-                "gate release refused or kernel restarted",
-                &evidence,
-                frozen.attempt,
-            ),
-            Decision::Observing => match settled {
-                Some(Settlement::Journal(
-                    ExecutionState::Drained {
-                        status: Some(code), ..
-                    }
-                    | ExecutionState::OriginalGroupEmpty { status: Some(code) },
-                )) => verdict_from_exit_code(code, &evidence, frozen.attempt),
-                _ => infra_verdict("execution has no child status", &evidence, frozen.attempt),
-            },
+            )
+        } else {
+            match record.decision {
+                Decision::Stopping {
+                    reason: StopReason::Timeout,
+                } => timeout_verdict(
+                    &evidence,
+                    frozen.attempt,
+                    frozen.gate.timeout_secs_clamped(),
+                ),
+                Decision::Stopping { .. } => infra_verdict(
+                    "gate release refused or kernel restarted",
+                    &evidence,
+                    frozen.attempt,
+                ),
+                Decision::Observing => match settled {
+                    Some(Settlement::Journal(
+                        ExecutionState::Drained {
+                            status: Some(code), ..
+                        }
+                        | ExecutionState::OriginalGroupEmpty { status: Some(code) },
+                    )) => verdict_from_exit_code(code, &evidence, frozen.attempt),
+                    _ => infra_verdict("execution has no child status", &evidence, frozen.attempt),
+                },
+            }
         };
         let stopped = if drained {
             Ok(())
         } else {
             Err(CalmError::Conflict("execution not Drained".into()))
         };
-        let result = target::finalize(verdict, &frozen, stopped).await;
+        let result = if interrupted {
+            target::interrupted(verdict, &frozen)
+        } else {
+            target::finalize(verdict, &frozen, stopped).await
+        };
         #[cfg(feature = "fixtures")]
         crate::test_seams::crash_point("task-verify-after-sample");
         #[cfg(any(test, feature = "fixtures"))]

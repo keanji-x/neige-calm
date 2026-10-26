@@ -3195,3 +3195,7 @@ mod c3_transport;
 
 #[path = "cases/c3_observer.rs"]
 mod c3_observer;
+
+#[cfg(target_os = "linux")]
+#[path = "cases/recovery_3192_forge.rs"]
+mod recovery_3192;

@@ -22,7 +22,7 @@ pub use watch::ExecutionWatcher;
 pub const STOP_GRACE: std::time::Duration = std::time::Duration::from_millis(200);
 pub const DRAIN_BUDGET: std::time::Duration = std::time::Duration::from_millis(1000);
 
-pub const EXECUTION_ENVELOPE_VERSION: u32 = 10;
+pub const EXECUTION_ENVELOPE_VERSION: u32 = 11;
 
 /// Persisted registration receipt contract; independent of bincode wire ordinals.
 pub const PERSISTED_RECEIPT_CONTRACT_VERSION: u32 = 4;
@@ -228,6 +228,12 @@ pub enum ExecutionState {
     Unknown {
         reason: String,
     },
+    /// Original identity is gone and its original group and session are empty after restart.
+    /// No child exit status or descendant-wide drain proof is implied.
+    InterruptedQuiescent {
+        reason: ExecutionInterruption,
+        proof: InterruptedQuiescenceProof,
+    },
     /// Owned root exited and its pinned original process group was observed empty.
     /// Does not prove absence of descendants which deliberately left that group.
     OriginalGroupEmpty {
@@ -242,6 +248,7 @@ impl ExecutionState {
             Self::Revoked
                 | Self::Drained { .. }
                 | Self::OriginalGroupEmpty { .. }
+                | Self::InterruptedQuiescent { .. }
                 | Self::NoChild { .. }
         )
     }

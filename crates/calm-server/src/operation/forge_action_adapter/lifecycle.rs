@@ -103,6 +103,21 @@ pub(super) async fn recover(
     if waiting {
         return Ok(ParkedRecovery::LeaveParked);
     }
+    // Restart evidence supplies no successful action or probe result, even when
+    // an exit artifact was written before the executor lost its native handles.
+    if settlements.iter().any(|(_, settlement)| {
+        matches!(
+            settlement,
+            Some(Settlement::Journal(
+                ExecutionState::InterruptedQuiescent { .. }
+            ))
+        )
+    }) {
+        return Ok(failed(
+            "forge execution interrupted; gate-infra",
+            "gate-infra",
+        ));
+    }
     if record.release == Release::Held
         || matches!(
             record.decision,

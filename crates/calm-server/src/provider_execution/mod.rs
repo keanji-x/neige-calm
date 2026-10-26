@@ -328,8 +328,15 @@ impl ProviderExecution {
             self.owner.complete(
                 session,
                 claimed.record(),
-                CompletionEvidence::Settled(settled),
-                known,
+                CompletionEvidence::Settled(settled.clone()),
+                if matches!(
+                    settled,
+                    Settlement::Journal(ExecutionState::InterruptedQuiescent { .. })
+                ) {
+                    None
+                } else {
+                    known
+                },
             ),
         )
         .await

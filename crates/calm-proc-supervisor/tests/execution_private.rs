@@ -462,14 +462,12 @@ async fn private_retirement_preserves_peer_and_does_not_grow_fds() {
 }
 
 #[tokio::test]
-async fn w_owned_released_v10_kernel_runs_none_execution() {
+async fn recovery_3192_supervisor_refuses_released_v10_kernel() {
     use calm_session::{
         control::{ControlMsg, ControlReply},
         read_frame, write_frame,
     };
     let harness = Harness::start().await;
-    let client = harness.connect().await;
-    let (request, held) = private_request(&client, harness.root("v10-none", false));
     let mut stream = tokio::net::UnixStream::connect(&harness.socket)
         .await
         .unwrap();
@@ -484,32 +482,6 @@ async fn w_owned_released_v10_kernel_runs_none_execution() {
     .await
     .unwrap();
     assert!(
-        matches!(read_frame::<ControlReply, _>(&mut stream).await.unwrap(), ControlReply::Execution(reply) if matches!(*reply, ExecutionReply::Handshake { envelope_version: 10, .. }))
-    );
-    rights::send(
-        &stream,
-        &ControlMsg::Execution(Box::new(ExecutionRequest::Prepare(request.clone()))),
-        &held.descriptors(),
-    )
-    .await
-    .unwrap();
-    let (reply, _) = rights::receive_without_rights::<ControlReply>(&stream)
-        .await
-        .unwrap();
-    assert!(
-        matches!(reply, ControlReply::Execution(reply) if matches!(*reply, ExecutionReply::Prepared))
-    );
-    rights::send(
-        &stream,
-        &ControlMsg::Execution(Box::new(ExecutionRequest::Launch(consume(&request)))),
-        &[],
-    )
-    .await
-    .unwrap();
-    let (reply, _) = rights::receive_without_rights::<ControlReply>(&stream)
-        .await
-        .unwrap();
-    assert!(
-        matches!(reply, ControlReply::Execution(reply) if matches!(*reply, ExecutionReply::Receipt { state: ExecutionState::Spawned, .. }))
+        matches!(read_frame::<ControlReply, _>(&mut stream).await.unwrap(), ControlReply::Execution(reply) if matches!(*reply, ExecutionReply::Refused { .. }))
     );
 }

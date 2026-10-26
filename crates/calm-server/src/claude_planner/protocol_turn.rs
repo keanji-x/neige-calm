@@ -84,7 +84,7 @@ pub(crate) async fn drive<S: TurnSink, P: ProtocolProfile>(
             },
             _ = ticks.tick(), if exited.is_none() => {
                 if matches!(engine.output(&id, None).await, Ok(ExecutionReply::Observation {
-                    state: ExecutionState::Exited { .. } | ExecutionState::Drained { .. } | ExecutionState::OriginalGroupEmpty { .. } | ExecutionState::NoChild { .. } | ExecutionState::Revoked, ..
+                    state: ExecutionState::Exited { .. } | ExecutionState::Drained { .. } | ExecutionState::OriginalGroupEmpty { .. } | ExecutionState::InterruptedQuiescent { .. } | ExecutionState::NoChild { .. } | ExecutionState::Revoked, ..
                 })) { exited = Some(Instant::now()); }
             }
             _ = sleep_until_opt(drain_until), if drain_until.is_some() => {
@@ -275,6 +275,7 @@ async fn settle<S: TurnSink>(
                             state: ExecutionState::Exited { .. }
                                 | ExecutionState::Drained { .. }
                                 | ExecutionState::OriginalGroupEmpty { .. }
+                                | ExecutionState::InterruptedQuiescent { .. }
                                 | ExecutionState::NoChild { .. }
                                 | ExecutionState::Revoked,
                             ..

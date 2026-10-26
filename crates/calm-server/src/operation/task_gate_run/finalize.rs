@@ -88,35 +88,51 @@ fn checkpoint_sample(frozen: &FrozenRun, commit: &str) -> Sample {
 pub(crate) async fn finalize_run(
     frozen: &FrozenRun,
     evidence: &GateEvidence,
-    status: Option<i32>,
+    settlement: &workspace_runtime::execution::Settlement,
+    interrupted: bool,
     decision: Option<StopReason>,
     refs: Option<String>,
 ) -> GateRunResult {
     let log_path = evidence.log_path.clone();
-    let verdict = match &decision {
-        Some(StopReason::Timeout) => {
-            timeout_verdict(evidence, frozen.run, frozen.gate.timeout_secs_clamped())
-        }
-        Some(StopReason::KernelRestarted) => {
-            infra_verdict(super::RUN_KERNEL_RESTARTED, evidence, frozen.run)
-        }
-        Some(StopReason::ReleaseRefused | StopReason::Disposed) => {
-            infra(
-                frozen,
-                &log_path,
-                "gate-infra: gate release or authorization failed".into(),
-            )
-            .await
-        }
-        None => status
-            .map(|s| verdict_from_exit_code(s, evidence, frozen.run))
-            .unwrap_or_else(|| {
-                infra_verdict(
-                    "gate-infra: execution has no child status",
-                    evidence,
-                    frozen.run,
+    use workspace_runtime::execution::{ExecutionState, Settlement};
+    let status = match settlement {
+        Settlement::Journal(
+            ExecutionState::Drained { status } | ExecutionState::OriginalGroupEmpty { status },
+        ) => *status,
+        _ => None,
+    };
+    let verdict = if interrupted {
+        infra_verdict(
+            "execution interrupted without child status",
+            evidence,
+            frozen.run,
+        )
+    } else {
+        match &decision {
+            Some(StopReason::Timeout) => {
+                timeout_verdict(evidence, frozen.run, frozen.gate.timeout_secs_clamped())
+            }
+            Some(StopReason::KernelRestarted) => {
+                infra_verdict(super::RUN_KERNEL_RESTARTED, evidence, frozen.run)
+            }
+            Some(StopReason::ReleaseRefused | StopReason::Disposed) => {
+                infra(
+                    frozen,
+                    &log_path,
+                    "gate-infra: gate release or authorization failed".into(),
                 )
-            }),
+                .await
+            }
+            None => status
+                .map(|s| verdict_from_exit_code(s, evidence, frozen.run))
+                .unwrap_or_else(|| {
+                    infra_verdict(
+                        "gate-infra: execution has no child status",
+                        evidence,
+                        frozen.run,
+                    )
+                }),
+        }
     };
     let result = |verdict: GateVerdict, commit: Option<String>, evidence| GateRunResult {
         run: frozen.run,
