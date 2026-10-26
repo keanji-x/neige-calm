@@ -226,8 +226,9 @@ pub use track_tree::{
     tree_share_from_member_inventory,
 };
 pub use track_workspace::{
-    closed_worktree_candidate, closed_worktree_candidates, track_workspace_freeze_tx,
-    track_workspace_read_tx, track_workspace_trash_retention_owners, track_workspace_write_tx,
+    PlannerCleanEvidence, closed_worktree_candidate, closed_worktree_candidates,
+    track_workspace_freeze_tx, track_workspace_read_tx, track_workspace_trash_retention_owners,
+    track_workspace_write_tx,
 };
 
 use infra::check_no_unknown_future_migrations;

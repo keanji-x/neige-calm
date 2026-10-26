@@ -68,7 +68,7 @@ impl ProviderExecutionOwner for Owner {
         crate::provider_execution::AliasPrefix::planner()
     }
     fn alias(&self, session: &str, id: &str) -> String {
-        format!("planner:{session}:{id}")
+        self.alias_prefix().alias(session, id)
     }
     async fn complete(
         &self,

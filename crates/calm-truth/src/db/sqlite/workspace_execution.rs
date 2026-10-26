@@ -1,6 +1,9 @@
 //! Execution persistence SQL. Domain transactions reuse these writes; no lifecycle policy here.
 use sqlx::{Row, Sqlite, SqlitePool, Transaction};
 
+/// Planner owner namespace, shared by admission and closed-track clean history.
+pub const PLANNER_ALIAS_PREFIX: &str = "planner";
+
 /// Sole mapping between Terminal identity and the execution alias namespace.
 pub fn terminal_alias(id: &str) -> String {
     format!("term:{id}")

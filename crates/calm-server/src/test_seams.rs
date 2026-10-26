@@ -106,6 +106,35 @@ pub async fn prepare_worker_lease_for_test(
     .map(|plan| plan.path)
 }
 
+/// Run the production pre-C4 boot sweeps for a runtime assembled by a fixture.
+#[cfg(feature = "fixtures")]
+pub async fn boot_planner_upgrade_for_test(
+    state: &crate::state::AppState,
+) -> crate::error::Result<()> {
+    let route: crate::state::RouteState = axum::extract::FromRef::from_ref(state);
+    crate::claude_planner::lifecycle::boot(route.repo.as_ref(), &route.claude_planner).await?;
+    crate::acp_planner::config::boot(route.repo.as_ref(), &route.acp_planner).await
+}
+
+/// Install a failed boot sweep's retained evidence without relying on /proc faults.
+#[cfg(feature = "fixtures")]
+pub fn planner_upgrade_unproven_for_test(
+    state: &crate::state::AppState,
+    claude: &[String],
+    acp: &[String],
+) {
+    let route: crate::state::RouteState = axum::extract::FromRef::from_ref(state);
+    for (slot, ids) in [
+        (&route.claude_planner.pre_c4, claude),
+        (&route.acp_planner.pre_c4, acp),
+    ] {
+        slot.set(crate::provider_execution::PreC4Sweep {
+            unproven: ids.iter().cloned().collect(),
+        })
+        .expect("boot proof initialized once");
+    }
+}
+
 /// One pass of the #2356 closed-track worktree clean with nothing cleaned before it. Returns how
 /// many worktrees it cleaned.
 #[cfg(any(test, feature = "fixtures"))]

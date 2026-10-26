@@ -697,7 +697,7 @@ async fn track_delete_removes_the_track_worktree_and_branch() {
 
 /// #2356 S2: a closed track's worktree drops its ignored files (build output) once nothing runs in
 /// it, and keeps tracked files, untracked work and an ignored nested repository. An open track and
-/// a closed track with a running worker session are left alone.
+/// a closed track with a running Legacy PTY session are left alone.
 #[tokio::test]
 async fn a_closed_idle_track_worktree_drops_its_ignored_files() {
     use calm_server::db::sqlite::session_start_runtime_tx;
@@ -803,7 +803,7 @@ async fn a_closed_idle_track_worktree_drops_its_ignored_files() {
     assert_eq!(
         clean(db, &b.state.operation_runtime).await.unwrap(),
         0,
-        "a running worker session defers the clean"
+        "a running Legacy PTY session without execution history defers the clean"
     );
     assert!(worktree.join("target/debug/app").is_file());
 

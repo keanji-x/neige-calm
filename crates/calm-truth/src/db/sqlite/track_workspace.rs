@@ -18,13 +18,14 @@ pub async fn track_workspace_trash_retention_owners(
     )
 }
 
-/// Planner and Legacy session state still excludes clean. Typed terminals use
-/// canonical alias history, including settled/retired executions, to identify
-/// their creation-time mode (as Terminal::is_typed does). C5a's execution predicate
-/// re-proves occupancy under the lifecycle fence; session state is only a proxy.
+/// Typed terminals and boot-proven Planner sessions use canonical alias history,
+/// including settled/retired executions. C5a re-proves occupancy under the Track
+/// fence; C5d.1 holds that fence through Planner occupancy commit. Unproven pre-C4
+/// sessions, sessions without history, Codex and Legacy PTYs retain their proxies.
 /// Tasks, leases and deliveries remain checkout_occupancy's responsibility.
 static CLOSED_TRACK_WORKTREES_SQL: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
     let terminal_alias = super::workspace_execution::TERMINAL_ALIAS_SQL;
+    let planner = super::workspace_execution::PLANNER_ALIAS_PREFIX;
     format!(
         "SELECT t.* FROM tracks t \
           WHERE t.closed_at IS NOT NULL \
@@ -33,16 +34,38 @@ static CLOSED_TRACK_WORKTREES_SQL: std::sync::LazyLock<String> = std::sync::Lazy
                 AND worker_sessions.state IN ('starting','running','turn_pending') \
                 AND NOT EXISTS (SELECT 1 FROM terminals \
                   JOIN workspace_executions e ON e.alias = {terminal_alias} \
-                  WHERE terminals.id = worker_sessions.terminal_run_id)) \
+                  WHERE terminals.id = worker_sessions.terminal_run_id) \
+                AND NOT EXISTS (SELECT 1 FROM workspace_executions e \
+                  WHERE ?1 IS NOT NULL \
+                    AND worker_sessions.id NOT IN (SELECT value FROM json_each(?1)) \
+                    AND e.alias >= '{planner}:' || worker_sessions.id || ':' \
+                    AND e.alias < '{planner}:' || worker_sessions.id || ';')) \
           ORDER BY t.id"
     )
 });
 
+/// Boot evidence for deleting Planner proxies. Unknown retains every proxy;
+/// a completed sweep retains only sessions whose pre-C4 absence was not proven.
+pub enum PlannerCleanEvidence<'a> {
+    Unknown,
+    Swept { unproven: &'a [String] },
+}
+impl PlannerCleanEvidence<'_> {
+    fn json(&self) -> Result<Option<String>> {
+        Ok(match self {
+            Self::Unknown => None,
+            Self::Swept { unproven } => Some(serde_json::to_string(unproven)?),
+        })
+    }
+}
+
 /// Closed-track candidates for the workspace owner's close tick.
 pub async fn closed_worktree_candidates(
     pool: &sqlx::SqlitePool,
+    planner: PlannerCleanEvidence<'_>,
 ) -> Result<Vec<super::super::rows::TrackRow>> {
     Ok(sqlx::query_as(&CLOSED_TRACK_WORKTREES_SQL)
+        .bind(planner.json()?)
         .fetch_all(pool)
         .await?)
 }
@@ -51,11 +74,13 @@ pub async fn closed_worktree_candidates(
 pub async fn closed_worktree_candidate(
     pool: &sqlx::SqlitePool,
     track: &str,
+    planner: PlannerCleanEvidence<'_>,
 ) -> Result<Option<super::super::rows::TrackRow>> {
     Ok(sqlx::query_as(&format!(
-        "SELECT * FROM ({}) WHERE id=?",
+        "SELECT * FROM ({}) WHERE id=?2",
         *CLOSED_TRACK_WORKTREES_SQL
     ))
+    .bind(planner.json()?)
     .bind(track)
     .fetch_optional(pool)
     .await?)

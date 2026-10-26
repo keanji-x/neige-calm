@@ -17,6 +17,7 @@ mod admission;
 pub use admission::{Admission, PreparedIntent};
 pub(crate) use admission::{OccupancyFence, TrackAdmissionFence, TrackFenceHandoff};
 mod alias;
+pub(crate) mod clean;
 pub use alias::AliasPrefix;
 pub(crate) mod launch;
 pub mod release;

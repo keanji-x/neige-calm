@@ -5,6 +5,7 @@ use crate::operation::workspace_lease::upstream::{
     LeaseStart, choose_lease_start, diverged_refusal, head_upstream, set_branch_upstream,
 };
 use async_trait::async_trait;
+use calm_truth::db::sqlite::PlannerCleanEvidence;
 
 use std::path::Path;
 use workspace_runtime::track_worktree::TrackBranch;
@@ -102,20 +103,22 @@ impl ClosedWorktreeFacts for ServerClosedWorktreeFacts {
     }
 
     async fn closed_idle_worktrees(&self) -> Result<Vec<ClosedWorktree>> {
-        Ok(
-            calm_truth::db::sqlite::closed_worktree_candidates(self.receipts.db.read_pool())
-                .await?
-                .into_iter()
-                .map(|row| {
-                    let track = crate::model::Track::from(row);
-                    ClosedWorktree {
-                        track_id: track.id.to_string(),
-                        workspace: track.workspace,
-                        closed_at: track.closed_at.expect("closed candidate"),
-                    }
-                })
-                .collect(),
+        let unproven = self.runtime.reclaim_context().planner_clean_unproven();
+        Ok(calm_truth::db::sqlite::closed_worktree_candidates(
+            self.receipts.db.read_pool(),
+            planner_evidence(&unproven),
         )
+        .await?
+        .into_iter()
+        .map(|row| {
+            let track = crate::model::Track::from(row);
+            ClosedWorktree {
+                track_id: track.id.to_string(),
+                workspace: track.workspace,
+                closed_at: track.closed_at.expect("closed candidate"),
+            }
+        })
+        .collect())
     }
 
     async fn fence(&self, track: &str, closed_at: i64) -> Result<Option<Box<dyn Send>>> {
@@ -132,9 +135,13 @@ impl ClosedWorktreeFacts for ServerClosedWorktreeFacts {
         {
             return Ok(None);
         }
-        let Some(candidate) =
-            calm_truth::db::sqlite::closed_worktree_candidate(self.receipts.db.read_pool(), track)
-                .await?
+        let unproven = self.runtime.reclaim_context().planner_clean_unproven();
+        let Some(candidate) = calm_truth::db::sqlite::closed_worktree_candidate(
+            self.receipts.db.read_pool(),
+            track,
+            planner_evidence(&unproven),
+        )
+        .await?
         else {
             return Ok(None);
         };
@@ -148,7 +155,8 @@ impl ClosedWorktreeFacts for ServerClosedWorktreeFacts {
         let guard = crate::per_card_lock::lock_key(self.runtime.track_delete_locks(), track).await;
         // Drop the metadata before releasing Track on every post-lock exit.
         let fence = (clean, guard);
-        if !closed_idle_reclaim_safe(&self.receipts.db, track, Some(closed_at)).await? {
+        if !closed_idle_reclaim_safe(self.runtime.reclaim_context(), track, Some(closed_at)).await?
+        {
             return Ok(None);
         }
         drop(drive);
@@ -158,15 +166,28 @@ impl ClosedWorktreeFacts for ServerClosedWorktreeFacts {
     }
 }
 
+fn planner_evidence(unproven: &Option<Vec<String>>) -> PlannerCleanEvidence<'_> {
+    match unproven {
+        None => PlannerCleanEvidence::Unknown,
+        Some(ids) => PlannerCleanEvidence::Swept { unproven: ids },
+    }
+}
+
 /// Sample only while the caller owns the track lifecycle fence. Recovery and the close tick
 /// share the same eligibility policy; neither a parked row nor a closed flag is authority alone.
 pub(super) async fn closed_idle_reclaim_safe(
-    db: &calm_truth::db::sqlite::SqliteDb,
+    ctx: &crate::operation::SpawnCtx,
     track: &str,
     expected_close: Option<i64>,
 ) -> Result<bool> {
-    let candidate =
-        calm_truth::db::sqlite::closed_worktree_candidate(db.read_pool(), track).await?;
+    let db = ctx.operation_repo.sqlite_db();
+    let unproven = ctx.planner_clean_unproven();
+    let candidate = calm_truth::db::sqlite::closed_worktree_candidate(
+        db.read_pool(),
+        track,
+        planner_evidence(&unproven),
+    )
+    .await?;
     let Some(candidate) = candidate else {
         return Ok(false);
     };

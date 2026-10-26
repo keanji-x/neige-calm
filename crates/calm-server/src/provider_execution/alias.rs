@@ -8,10 +8,14 @@ pub struct AliasPrefix {
 }
 impl AliasPrefix {
     pub fn new(prefix: &'static str) -> Result<Self> {
+        let planner = format!(
+            "{}:",
+            calm_truth::db::sqlite::workspace_execution::PLANNER_ALIAS_PREFIX
+        );
         if prefix.is_empty()
             || prefix.contains([':', '=', '\0'])
-            || "planner:".starts_with(prefix)
-            || prefix.starts_with("planner:")
+            || planner.starts_with(prefix)
+            || prefix.starts_with(planner.as_str())
         {
             return Err(conflict(
                 "owner alias prefix overlaps Planner or is invalid",
@@ -24,7 +28,7 @@ impl AliasPrefix {
     }
     pub(crate) fn planner() -> Self {
         Self {
-            prefix: "planner",
+            prefix: calm_truth::db::sqlite::workspace_execution::PLANNER_ALIAS_PREFIX,
             planner: true,
         }
     }

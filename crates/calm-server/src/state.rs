@@ -1075,6 +1075,10 @@ impl AppState {
                 track_locks: crate::per_card_lock::new_keyed_locks(),
             })
             .with_shared_codex_appserver(shared_codex_appserver.clone())
+            .with_planner_clean_proof(crate::provider_execution::clean::PlannerCleanProof::new(
+                claude_planner.clone(),
+                acp_planner.clone(),
+            ))
             .with_execution(execution),
         ));
         let card_kind_registry = Arc::new(CardKindRegistry::builtins());
@@ -1299,6 +1303,10 @@ impl AppState {
                 track_locks: self.route.track_delete_locks.clone(),
             })
             .with_shared_codex_appserver(self.shared_codex_appserver.clone())
+            .with_planner_clean_proof(crate::provider_execution::clean::PlannerCleanProof::new(
+                self.route.claude_planner.clone(),
+                self.route.acp_planner.clone(),
+            ))
             .with_execution(execution),
         ));
         self.operation_runtime = runtime.clone();
@@ -1669,6 +1677,10 @@ impl AppState {
                     track_locks: crate::per_card_lock::new_keyed_locks(),
                 })
                 .with_shared_codex_appserver(shared_codex_appserver.clone())
+                .with_planner_clean_proof(crate::provider_execution::clean::PlannerCleanProof::new(
+                    claude_planner.clone(),
+                    acp_planner.clone(),
+                ))
                 .with_execution(execution),
             )
             .await?,

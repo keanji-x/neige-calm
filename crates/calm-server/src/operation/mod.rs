@@ -282,6 +282,7 @@ impl TxOutput {
 
 #[derive(Clone)]
 pub struct SpawnCtx {
+    pub(crate) planner_clean_proof: Option<crate::provider_execution::clean::PlannerCleanProof>,
     pub(crate) reclaim_admission: Arc<tokio::sync::RwLock<()>>,
     pub location_admission: Option<location_admission::LocationAdmission>,
     pub track_delete_locks: crate::per_card_lock::KeyedLocks,
@@ -316,7 +317,20 @@ impl SpawnCtx {
             shared_codex_appserver: None,
             execution: Default::default(),
             reclaim_admission: Default::default(),
+            planner_clean_proof: None,
         }
+    }
+
+    pub(crate) fn with_planner_clean_proof(
+        mut self,
+        proof: crate::provider_execution::clean::PlannerCleanProof,
+    ) -> Self {
+        self.planner_clean_proof = Some(proof);
+        self
+    }
+
+    pub(crate) fn planner_clean_unproven(&self) -> Option<Vec<String>> {
+        self.planner_clean_proof.as_ref()?.unproven()
     }
 
     pub fn with_location_admission(

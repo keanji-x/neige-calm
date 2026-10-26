@@ -195,7 +195,7 @@ impl ProviderAdapter for Adapter {
             };
             if !frozen.delete_authorized
                 && !crate::workspace_service::ports::closed_idle_reclaim_safe(
-                    &ctx.operation_repo.sqlite_db(),
+                    ctx,
                     &frozen.target.track_id,
                     None,
                 )
