@@ -206,11 +206,9 @@ function policies(): PolicyMap {
     ...conversationInputMetadata(event.data.track_id),
   ], [], event.data.change === 'restored'
     ? [{ key: eventKeys.transcript(event.data.card_id), mode: 'reset-query' }] : [])),
-  /* `eventKeys.todayLaunchpad()` carries `report_has_noninitial_content` (Today's empty-state predicate) and
-   * `eventKeys.trackDetail(id)` is where the document is read from; nothing generated protects either line. */
   'track.report_edited': plan((event) => result([
     eventKeys.trackReportPrefix(), eventKeys.trackBacklinksPrefix(),
-    eventKeys.todayLaunchpad(), eventKeys.trackDetail(event.data.track_id),
+    eventKeys.trackDetail(event.data.track_id),
   ])),
   'overlay.set': plan((event, context) => {
     const keys: QueryKey[] = [];

@@ -29,21 +29,11 @@ describe('invalidation plan contract', () => {
     expect(invalidationPlanFor(event)).toEqual({
       invalidate: [
         ['track-report'], ['track-backlinks'],
-        ['today-launchpad'], ['track', 'track-7'],
+        ['track', 'track-7'],
       ],
       remove: [],
       writeThrough: [],
     });
-  });
-
-  it('refreshes the Today document and its resolve when a report is edited', () => {
-    const event = { ev: 'track.report_edited', data: { track_id: 'lp' } } as Extract<
-      WireEvent,
-      { ev: 'track.report_edited' }
-    >;
-    const keys = invalidationPlanFor(event).invalidate;
-    expect(keys).toContainEqual(['today-launchpad']);
-    expect(keys).toContainEqual(['track', 'lp']);
   });
 
   /* Series keys are per block revision; the event carries no block id, so touching the

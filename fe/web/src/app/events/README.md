@@ -72,7 +72,7 @@ no translation table or silent rejection of an unknown address.
 | accepted-input observation | `['conversation-initial-input', trackId, cardId]`, plus track and global prefixes |
 | transcript / planner run | `['harness-items', cardId]` / `['planner-run', cardId]` |
 | plugins / templates / plugin data | `['plugins']` / `['track-templates']` / `['plugin-data', pluginId]` (all windows) |
-| Today resolve / model catalog | `['today-launchpad']` / `['model-catalog', scope]` |
+| Model catalog | `['model-catalog', scope]` |
 
 The task events with only opaque task ids use the report **prefix**; ids are
 never parsed. `task.git_delivery_settled` is different: its released payload

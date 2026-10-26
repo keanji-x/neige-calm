@@ -161,8 +161,8 @@ describe('query invalidation adapter', () => {
     expect(client.getQueryData(third)).toBeUndefined();
   });
 
-  /* Both links are silent when they break: an unplanned key is discarded here without a warning. */
-  it('turns a report edit into a refresh of the Today document and its resolve', () => {
+  /* Missing links are silent when they break: an unplanned key is discarded here without a warning. */
+  it('turns a report edit into a refresh of reports, backlinks and the edited track', () => {
     const event = wireEventSchema.parse({
       ev: 'track.report_edited',
       data: {
@@ -171,7 +171,8 @@ describe('query invalidation adapter', () => {
       },
     });
     const mapped = invalidationPlanFor(event).invalidate;
-    expect(mapped).toContainEqual(queryKeys.todayLaunchpad());
+    expect(mapped).toContainEqual(queryKeys.trackReportPrefix());
+    expect(mapped).toContainEqual(queryKeys.trackBacklinksPrefix());
     expect(mapped).toContainEqual(queryKeys.trackDetail('lp'));
   });
 

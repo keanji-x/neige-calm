@@ -18,8 +18,7 @@ afterEach(cleanup);
 it.each([390, 1280])('keeps preflight recovery compact and navigation usable at %i px', async (width) => {
   await page.viewport(width, 900);
   const transport: ApiTransportPort = { send: (request) => Promise.resolve({
-    status: 200, statusText: 'OK', body: request.path === '/api/today/launchpad' ? null
-      : request.path === '/api/areas' ? [{
+    status: 200, statusText: 'OK', body: request.path === '/api/areas' ? [{
         id: 'a1', name: 'Product', color: '#123456', sort: 1, kind: 'user',
         default_template_id: null, default_cwd: null, created_at: 1, updated_at: 1,
       }] : [],

@@ -49,10 +49,6 @@ import {
   putSettingsOperation, settingsOperation, type SettingsBag, type SettingsPatch,
 } from '../../../../core/domain/settings.ts';
 import {
-  todayLaunchpadEnsureOperation, todayReportResetOperation,
-  type TodayLaunchpadEnsureWire, type TodayLaunchpadWire, type TodayReportResetWire,
-} from '../../../../core/domain/today.ts';
-import {
   createCardOperation, createClaudeCardOperation, createCodexCardOperation, createTerminalCardOperation, setTerminalWorkbenchOperation, createTrackOperation,
   createTrackRecipeOperation, deleteCardOperation, deleteTrackOperation, deleteTrackRecipeOperation,
   overlaysByKindOperation, recipeSaveAttempts, recipeSaveLanded, toTrack, updateTrackOperation, updateTrackRecipeOperation,
@@ -527,52 +523,6 @@ export function taskVerdictsRefetchInterval(blocks: readonly ReportBlock[] | nul
       ? TASK_VERDICT_RECOVERY_POLL_MS
       : false;
   };
-}
-
-/** Its failure is the caller's to read, through `LAUNCHPAD_ENSURE_FAILURES`. */
-export type TodayLaunchpadEnsureMutation = Readonly<{
-  ensure: () => Promise<TodayLaunchpadEnsureWire>;
-  pending: boolean;
-}>;
-
-/** Materialise the launchpad after the reader presses `+`; the resolve is reconciled in the background because it owns the empty-state predicate. */
-export function useTodayLaunchpadEnsureMutation(
-  transport: ApiTransportPort, unauthorized: UnauthorizedChannel,
-): TodayLaunchpadEnsureMutation {
-  const client = useQueryClient();
-  const mutation = useRecoveryMutation(transport, {
-    mutationFn: (_variables: void, transport: ApiTransportPort): Promise<TodayLaunchpadEnsureWire> =>
-      runOperation(transport, todayLaunchpadEnsureOperation(), unauthorized),
-    onSettled: () => {
-      void client.invalidateQueries({ queryKey: queryKeys.todayLaunchpad() });
-    },
-  });
-  return { ensure: () => mutation.mutateAsync(), pending: mutation.isPending };
-}
-
-/**
- * Reset today's report; its failure is the caller's to read, through `REPORT_RESET_FAILURES`. The document's keys are
- * invalidated on settle: an unknown answer may still follow a reset that happened.
- */
-export type TodayReportResetMutation = Readonly<{
-  /** Awaitable so `useDeleteConfirm` can own the outcome. */
-  reset: () => Promise<void>;
-}>;
-
-export function useTodayReportResetMutation(
-  transport: ApiTransportPort, unauthorized: UnauthorizedChannel,
-): TodayReportResetMutation {
-  const client = useQueryClient();
-  const mutation = useRecoveryMutation(transport, {
-    mutationFn: (_variables: void, transport: ApiTransportPort): Promise<TodayReportResetWire> =>
-      runOperation(transport, todayReportResetOperation(), unauthorized),
-    onSettled: (reset) => {
-      const trackId = reset?.track_id ?? client.getQueryData<TodayLaunchpadWire | null>(queryKeys.todayLaunchpad())?.track_id;
-      void client.invalidateQueries({ queryKey: queryKeys.todayLaunchpad() });
-      if (trackId !== undefined) void client.invalidateQueries({ queryKey: queryKeys.trackDetail(trackId) });
-    },
-  });
-  return { reset: async () => { await mutation.mutateAsync(); } };
 }
 
 export function settingsQueryOptions(transport: ApiTransportPort, unauthorized: UnauthorizedChannel) {

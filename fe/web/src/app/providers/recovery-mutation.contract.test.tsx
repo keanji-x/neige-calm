@@ -9,7 +9,7 @@ import { createRecoveryTransports } from '../../systems/recovery/transport.ts';
 import { NO_UPLOAD, usePlannerAttachments, type AttachmentStore, type UploadState } from '../../features/planner/attachments.tsx';
 import type { PlannerAttachment } from '../../../../core/api/generated/wire.ts';
 import { useState } from '../../ui/state/public.ts';
-import { useTodayReportResetMutation, usePlannerMutations, usePluginMutations, queryKeys } from './queries.ts';
+import { useSettingsMutation, usePlannerMutations, usePluginMutations, queryKeys } from './queries.ts';
 
 
 /** The caller's per-card composer images and uploads, as the router keeps them in the conversation registry. */
@@ -23,15 +23,15 @@ function useCardImages(cardId: string): AttachmentStore {
 }
 
 afterEach(() => { cleanup(); onlineManager.setOnline(true); vi.unstubAllGlobals(); });
-it('offline production reset rejects before mutation admission and never resumes a paused mutation', async () => {
+it('offline production settings write rejects before mutation admission and never resumes a paused mutation', async () => {
   vi.stubGlobal('__NC_BUNDLED__', true); onlineManager.setOnline(false);
   const access = new RecoveryAccess(); access.change('offline'); const send = vi.fn();
   const transport = createRecoveryTransports({ send }, access).business;
   const client = new QueryClient();
-  const { result } = renderHook(() => useTodayReportResetMutation(transport, createUnauthorizedChannel({ enqueue: task => task() })), {
+  const { result } = renderHook(() => useSettingsMutation(transport, createUnauthorizedChannel({ enqueue: task => task() })), {
     wrapper: ({ children }: { children: ReactNode }) => <QueryClientProvider client={client}>{children}</QueryClientProvider>,
   });
-  await expect(result.current.reset()).rejects.toThrow();
+  await expect(result.current({})).rejects.toThrow();
   expect(client.getMutationCache().getAll()).toHaveLength(0);
   access.change('connected'); onlineManager.setOnline(true); await client.resumePausedMutations();
   expect(send).not.toHaveBeenCalled();

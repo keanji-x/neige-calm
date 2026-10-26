@@ -1075,7 +1075,7 @@
       "oracle:CAP-APP-037"
     ],
     "target": "core/events/invalidation-plan.ts",
-    "patch": "diff --git a/core/events/invalidation-plan.ts b/core/events/invalidation-plan.ts\n--- a/core/events/invalidation-plan.ts\n+++ b/core/events/invalidation-plan.ts\n@@ -209,7 +209,7 @@\n   /* `eventKeys.todayLaunchpad()` carries `report_has_noninitial_content` (Today's empty-state predicate) and\n    * `eventKeys.trackDetail(id)` is where the document is read from; nothing generated protects either line. */\n   'track.report_edited': plan((event) => result([\n-    eventKeys.trackReportPrefix(), eventKeys.trackBacklinksPrefix(),\n+    eventKeys.trackBacklinksPrefix(),\n     eventKeys.todayLaunchpad(), eventKeys.trackDetail(event.data.track_id),\n   ])),\n   'overlay.set': plan((event, context) => {\n",
+    "patch": "diff --git a/core/events/invalidation-plan.ts b/core/events/invalidation-plan.ts\n--- a/core/events/invalidation-plan.ts\n+++ b/core/events/invalidation-plan.ts\n@@ -207,7 +207,7 @@\n   ], [], event.data.change === 'restored'\n     ? [{ key: eventKeys.transcript(event.data.card_id), mode: 'reset-query' }] : [])),\n   'track.report_edited': plan((event) => result([\n-    eventKeys.trackReportPrefix(), eventKeys.trackBacklinksPrefix(),\n+    eventKeys.trackBacklinksPrefix(),\n     eventKeys.trackDetail(event.data.track_id),\n   ])),\n   'overlay.set': plan((event, context) => {\n",
     "expected_red": [
       "invalidation plan contract pins ordinary query-key literals independently from production definitions",
       "invalidation plan contract pins track-report invalidation to exactly the task-verdict invalidating kinds"

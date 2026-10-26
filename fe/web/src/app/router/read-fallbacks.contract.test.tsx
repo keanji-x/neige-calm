@@ -31,14 +31,9 @@ const plannerCard = {
 const ok = (body: unknown): ApiTransportResponse => ({ status: 200, statusText: 'OK', body });
 const fail = (message: string): ApiTransportResponse => ({ status: 500, statusText: 'Server Error', body: { error: message } });
 
-/* The Today launchpad resolve is answered here UNCONDITIONALLY (`200 null` is its ordinary "no launchpad yet" answer);
-   a case's own `reply` never sees that path, so a case needing it to differ must change this wrapper. */
-const TODAY_LAUNCHPAD_PATH = '/api/today/launchpad';
-const noLaunchpad = (): ApiTransportResponse => ({ status: 200, statusText: 'OK', body: null });
-
 function renderRoute(path: string, reply: (request: ApiRequest) => ApiTransportResponse | Promise<ApiTransportResponse>) {
   const transport: ApiTransportPort = {
-    send: (request) => Promise.resolve(request.path === TODAY_LAUNCHPAD_PATH ? noLaunchpad() : reply(request)),
+    send: (request) => Promise.resolve(reply(request)),
   };
   const client = new QueryClient({ defaultOptions: { queries: { retryDelay: 0, retry: false } } });
   const router = createAppRouter({ prepareReport: prepareReportDocument, transport: withReadReceipts(transport), unauthorized, client, cards: bootTestCardRuntime(), onSignOut: () => undefined });

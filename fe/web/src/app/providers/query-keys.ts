@@ -2,7 +2,7 @@ import {
   initialInputPrefix, initialInputTrack, initialInput, areas,
   trackLists, tracksInArea, trackDetail, trackBacklinksPrefix,
   trackBacklinks, trackReport, trackReportPrefix, overlaysByKind,
-  plugins, pluginDataPrefix, trackTemplates, todayLaunchpad,
+  plugins, pluginDataPrefix, trackTemplates,
   transcriptPrefix, transcript as harnessItems, plannerRun, modelCatalog,
   modelCatalogPrefix, trackConversations, trackConversationsPrefix,
 } from '../../../../core/events/query-keys.ts';
@@ -53,8 +53,6 @@ export const queryKeys = Object.freeze({
   trackTemplates,
   /* The user's own recipes. Recipe writes emit no `Event`; the mutations below invalidate this key directly. */
   trackRecipes: () => ['track-recipes'] as const,
-  /* The Today launchpad resolve. One entry, not keyed by track: `purpose = 'launchpad'` is a singleton. */
-  todayLaunchpad,
   transcriptPrefix,
   harnessItems,
   /** The running turn's streamed reply text (#1923). Polled while a reply may stream; no event reaches it. */

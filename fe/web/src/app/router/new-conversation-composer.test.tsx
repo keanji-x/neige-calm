@@ -63,9 +63,6 @@ function renderApp(managed = false, createdTitle: string | null = null) {
         minted.set(trackId, [...rows, row]);
         return Promise.resolve({ status: 201, statusText: 'Created', body: { ...row, initialInput: { kind: 'known', receipt: initialReceiptFor(request, 'first-entry', 0) } } });
       }
-      if (request.path === '/api/today/launchpad') {
-        return Promise.resolve(ok({ track_id: 'lp', report_has_noninitial_content: false }));
-      }
       if (request.path === '/api/areas') return Promise.resolve(ok([AREA]));
       if (request.path === '/api/areas/c1/tracks') return Promise.resolve(ok(TRACKS));
       const detail = TRACKS.find((candidate) => request.path === `/api/tracks/${candidate.id}`);

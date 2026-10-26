@@ -20,7 +20,6 @@ export const overlaysByKind = (entityKind: 'track' | 'card') => ['overlays', ent
 export const plugins = () => ['plugins'] as const;
 export const pluginDataPrefix = (id: string) => ['plugin-data', id] as const;
 export const trackTemplates = () => ['track-templates'] as const;
-export const todayLaunchpad = () => ['today-launchpad'] as const;
 export const transcriptPrefix = () => ['harness-items'] as const;
 export const transcript = (cardId: string) => ['harness-items', cardId] as const;
 export const plannerRun = (cardId: string) => ['planner-run', cardId] as const;

@@ -24,7 +24,6 @@ import {
 } from './plugins.js';
 import { SETTINGS_FAILURES } from './settings.js';
 import { PROBE_FAILURES } from './read-failure.js';
-import { LAUNCHPAD_ENSURE_FAILURES, REPORT_RESET_FAILURES } from './today.js';
 import { CARD_CREATE_FAILURES, TRACK_CREATE_FAILURES, TRACK_PATCH_FAILURES } from './track.js';
 
 const http = (status: number, code = 'http_error', message = 'answered'): ApiFailure =>
@@ -185,19 +184,6 @@ const cases: ReadonlyArray<readonly [string, FailureTable<string>, ReadonlyArray
     [http(400, 'bad_request'), 'refused'], [http(403, 'forbidden'), 'refused'], [http(404, 'not_found'), 'refused'],
     [http(413), 'refused'], [http(415), 'refused'], [http(422), 'refused'], [unauthorized, 'refused'],
     [http(500), 'unknown'], [http(503), 'unknown'],
-    [transport, 'unknown'], [decode, 'unknown'], [null, 'unknown'],
-  ]],
-  ['POST /today/launchpad/ensure', LAUNCHPAD_ENSURE_FAILURES, [
-    [http(403, 'forbidden'), 'refused'], [unauthorized, 'refused'],
-    /* A failed assistant start answers 500 after the launchpad may have been made. */
-    [http(400), 'unknown'], [http(404), 'unknown'], [http(500, 'internal'), 'unknown'], [http(503), 'unknown'],
-    [transport, 'unknown'], [decode, 'unknown'], [null, 'unknown'],
-  ]],
-  ['POST /today/launchpad/report/reset', REPORT_RESET_FAILURES, [
-    [http(400, 'bad_request'), 'refused'], [http(403, 'forbidden'), 'refused'], [http(404, 'not_found'), 'refused'],
-    [unauthorized, 'refused'],
-    /* A revision race with a writer: the reset may be tried again. */
-    [http(409, 'conflict'), 'unknown'], [http(500), 'unknown'],
     [transport, 'unknown'], [decode, 'unknown'], [null, 'unknown'],
   ]],
   /* #2131 S6: Settings. `plugin_busy` touched nothing: a refusal with the kernel's reason. */

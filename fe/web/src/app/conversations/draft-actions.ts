@@ -60,8 +60,7 @@ export function createConversationDraftActions({ registry, draft, creating, sour
     withDraft(from, (current) => ({ ...current, text: submitted.text, submitted }));
   };
 
-  /* The `+` opens a draft scoped to one concrete Track; Today materialises the
-       launchpad before calling this, so the scope id is never empty. */
+  /* The `+` opens a draft scoped to one concrete Track. */
   const begin = (text: string | null): boolean => {
     /* A draft that was sent and failed is still open business: reopened with the
            same key, so the next attempt is a retry and not a second conversation. */

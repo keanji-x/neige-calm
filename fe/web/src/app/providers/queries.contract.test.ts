@@ -24,7 +24,7 @@ import {
   areaListQueryOptions, conversationHistoryQueryOptions as transcriptQueryOptions, queryKeys, runOperation, taskVerdictsRefetchInterval,
   trackOverlaysQueryOptions, trackDetailQueryOptions, trackConversationsQueryOptions,
   useAreaMutations, usePlannerMutations, useTrackMutations, useWorkspace, tracksInAreaQueryOptions,
-  useTodayLaunchpadEnsureMutation, useTodayReportResetMutation, useTrackConversationMutations, useTrackRecipeMutations,
+  useTrackConversationMutations, useTrackRecipeMutations,
   seriesRefetchInterval, trackReportSeriesQueryOptions, trackSourceQueryOptions, type SeriesRead,
 } from './queries.ts';
 
@@ -75,8 +75,6 @@ describe('writes never queue an offline submission, in either build', () => {
       track: useTrackMutations(transport, unauthorized),
       recipe: useTrackRecipeMutations(transport, unauthorized),
       conversation: useTrackConversationMutations(transport, 'w1', unauthorized),
-      today: useTodayLaunchpadEnsureMutation(transport, unauthorized),
-      reset: useTodayReportResetMutation(transport, unauthorized),
     };
   }
   const cases: [string, (writes: ReturnType<typeof useWrites>) => Promise<unknown>][] = [
@@ -89,7 +87,6 @@ describe('writes never queue an offline submission, in either build', () => {
     ['recipe create', ({ recipe }) => recipe.create({ title: 'Offline recipe', body: '' }, 'offline-recipe')],
     ['recipe save', ({ recipe }) => recipe.save('recipe-1', { title: 'Offline recipe', body: '', if_revision: 1 })],
     ['conversation create', ({ conversation }) => conversation.create('Offline message', 'offline-key', 'codex', { model: null, reasoning_effort: null }, undefined, () => undefined)],
-    ['Today ensure', ({ today }) => today.ensure()],
     /* The writes that never had a guard of their own: in the web build they used to pause offline and fire on reconnect (#2131). */
     ['track rename', ({ track }) => track.patch('w1', 'c1', { title: 'Offline rename' })],
     ['track pin', ({ track }) => track.setPinned('w1', 'c1', true, 1)],
@@ -100,7 +97,6 @@ describe('writes never queue an offline submission, in either build', () => {
     ['recipe delete', ({ recipe }) => recipe.remove('recipe-1')],
     ['notification dismiss', ({ track }) => track.dismissActivityItem('w1', 'ask:1')],
     ['ask answer', ({ track }) => track.answerAsk('w1', 1, [{ option: 0 }])],
-    ['Today reset', ({ reset }) => reset.reset()],
   ];
   it.each(cases)('rejects %s before dispatch and does not replay it on reconnect', async (_name, submit) => {
     const send = vi.fn(() => Promise.resolve(ok({})));
