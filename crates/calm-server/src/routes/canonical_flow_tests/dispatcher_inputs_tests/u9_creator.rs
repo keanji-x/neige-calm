@@ -613,12 +613,13 @@ async fn u9_canonical_creator_system_turn_uses_real_hops() {
         .await
         .unwrap();
     assert_eq!(hop, 4);
-    let incoming = super::u9_canonical::incoming(&flow, first.id.as_str(), 6).await;
+    let incoming =
+        super::u9_canonical::incoming(&flow, first.id.as_str(), crate::mail::MAX_HOP).await;
     super::u9_canonical::tool(&flow, "neige_mail_cat", json!({"mail_id":incoming}))
         .await
         .unwrap();
     assert!(matches!(
-        route(&flow, 3).add(input(&flow, "seventh-hop")).await,
+        route(&flow, 3).add(input(&flow, "over-hop-limit")).await,
         Err(crate::mcp_server::tools::track_add::TrackAddRefusal::Create(CalmError::Conflict(_)))
     ));
     let allocated: i64 =

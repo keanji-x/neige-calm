@@ -64,3 +64,42 @@ async fn mail_send_refuses_summary_controls_before_trimming() {
         .unwrap();
     assert_eq!(stored, ("中文 résumé".into(), "a\nb\t".into()));
 }
+
+/// The full causal chain crosses the former limit and wakes a real Planner at every hop.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn mail_hops_seven_through_twenty_wake_and_twenty_one_has_no_side_effects() {
+    let w = World::new(&["A", "B"]).await;
+    let (mut from, mut to) = (w.p(0), w.p(1));
+    w.user_turn(from, "start").await;
+    for hop in 1..=20 {
+        let (mail, label) = w.send_ok(from, to, "continue").await;
+        // Keep this test independent of the configured limit so lowering it is observable.
+        assert_eq!(label.split('/').next().unwrap(), hop.to_string());
+        assert_eq!((w.mail_rows().await, w.wake_events().await), (hop, hop));
+        w.complete(from).await;
+        let turn = w.wait_turn(to, (hop / 2 + 1) as usize).await;
+        assert!(turn.contains(&format!("neige mail cat {mail}")), "{turn}");
+        let cat = w.cat_json(to, &mail).await;
+        if hop == 20 {
+            assert_eq!(label, "20/20");
+            assert_eq!(cat["refused"], json!(true));
+            assert_eq!(cat["next_hop"], Value::Null);
+            let error = w
+                .send(
+                    to,
+                    json!({"track_id": from.track_id.as_str(), "summary": "stop", "text": "body"}),
+                )
+                .await
+                .expect_err("hop 21");
+            assert_eq!(
+                refusal(&error, "hop_limit"),
+                (
+                    -32409,
+                    "neige_mail_send: hop 20/20 reached — hand off with neige_user_ask".into()
+                )
+            );
+            assert_eq!((w.mail_rows().await, w.wake_events().await), (20, 20));
+        }
+        std::mem::swap(&mut from, &mut to);
+    }
+}

@@ -43,7 +43,7 @@ fn send_descriptor() -> ToolDescriptor {
         name: TOOL_MAIL_SEND.into(),
         description: include_str!("../../../prompts/tools/neige_mail_send.md")
             .trim_end()
-            .to_string(),
+            .replace("{max_hop}", &mail::MAX_HOP.to_string()),
         input_schema: json!({
             "type": "object",
             "required": ["summary", "text"],
