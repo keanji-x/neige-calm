@@ -20,35 +20,7 @@ pub(super) enum StartInvocation {
     },
 }
 
-#[derive(Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct RetainedPayload {
-    canonical_activation_version: u32,
-    card_id: String,
-    worker_session_id: String,
-}
-
-impl RetainedPayload {
-    pub(super) fn card_id(&self) -> &str {
-        &self.card_id
-    }
-
-    pub(super) fn decode(value: &Value) -> Result<Option<Self>> {
-        if value.get("canonical_activation_version").is_none() {
-            return Ok(None);
-        }
-        let payload: Self = serde_json::from_value(value.clone())?;
-        if payload.canonical_activation_version != 2
-            || payload.card_id.is_empty()
-            || payload.worker_session_id.is_empty()
-        {
-            return Err(CalmError::Conflict(
-                "unsupported retained activation".into(),
-            ));
-        }
-        Ok(Some(payload))
-    }
-}
+pub(super) use calm_types::harness::retained::RetainedPayload;
 
 pub(super) struct Target {
     track_id: String,
