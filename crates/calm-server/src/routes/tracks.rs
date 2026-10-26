@@ -2853,6 +2853,12 @@ async fn teardown_track_deletion(
             ),
         )
         .await?;
+    crate::execution_quiesce::dispose_cards(
+        s.repo.as_ref(),
+        &s.operation_runtime,
+        plan.cards.iter().map(|card| card.id.to_string()).collect(),
+    )
+    .await?;
     observation
         .observe(
             Stage::ExecutionQuiesce,
