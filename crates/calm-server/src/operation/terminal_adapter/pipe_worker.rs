@@ -140,6 +140,17 @@ impl TerminalWorkerAdapter {
         })))
     }
 
+    /// Workspace admission and the stale-context fence, before any preparation write.
+    pub(super) async fn admission_fences_tx(
+        tx: &mut Tx<'_>,
+        input: &Value,
+    ) -> Result<TerminalWorkerOperationPayload> {
+        let payload: TerminalWorkerOperationPayload = serde_json::from_value(input.clone())?;
+        crate::workspace_service::reclaim::operation::terminal_admission_tx(tx, &payload.track_id)
+            .await?;
+        super::super::refuse_if_context_stale(tx, Some(&payload.idempotency_key)).await?;
+        Ok(payload)
+    }
     pub(super) async fn prepare_pipe_tx(
         &self,
         tx: &mut Tx<'_>,
@@ -147,10 +158,7 @@ impl TerminalWorkerAdapter {
         op: &Operation,
         env: Value,
     ) -> Result<TxOutput> {
-        let payload: TerminalWorkerOperationPayload = serde_json::from_value(input.clone())?;
-        crate::workspace_service::reclaim::operation::terminal_admission_tx(tx, &payload.track_id)
-            .await?;
-        super::super::refuse_if_context_stale(tx, Some(&payload.idempotency_key)).await?;
+        let payload = Self::admission_fences_tx(tx, input).await?;
         let cwd = terminal_cwd_or_track_workspace(
             tx,
             &payload.track_id,

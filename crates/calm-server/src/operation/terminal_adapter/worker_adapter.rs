@@ -52,10 +52,12 @@ impl ProviderAdapter for TerminalWorkerAdapter {
 
     async fn prepare_tx<'tx>(
         &self,
-        _tx: &mut Tx<'tx>,
-        _input: &Value,
+        tx: &mut Tx<'tx>,
+        input: &Value,
         _op: &Operation,
     ) -> Result<TxOutput> {
+        // Preparation runs only through the preflighted PreparedTx; this entry keeps the same fences.
+        Self::admission_fences_tx(tx, input).await?;
         Err(CalmError::Internal(
             "terminal worker requires environment preflight".into(),
         ))
