@@ -188,34 +188,19 @@ async fn objective_capability_absent_write_rolls_back_everything() {
     );
 }
 
-struct AllowRecorderAdmission;
-#[async_trait::async_trait]
-impl crate::recorder_admission::RecorderAdmissionGate for AllowRecorderAdmission {
-    async fn require_admission(
-        &self,
-        _: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
-        _: crate::recorder_admission::RecorderAdmissionDecisionKind,
-    ) -> Result<(), CalmError> {
-        Ok(())
-    }
-}
 #[tokio::test]
-async fn objective_agent_write_feeds_definition_in_the_same_tx() {
+async fn objective_report_write_feeds_definition_in_the_same_tx() {
     let (repo, events, write, track) = fixture(true).await;
     let target = ReportEditTarget::resolve(repo.as_ref(), &track)
         .await
         .unwrap();
-    write::agent_report_op(
+    write::test_report_op(
         repo.as_ref(),
         &events,
         &write,
-        crate::ids::ActorId::Kernel,
         crate::event::EditAuthor::Planner,
         target,
         create_op(),
-        None,
-        None,
-        Arc::new(AllowRecorderAdmission),
     )
     .await
     .unwrap();
@@ -254,17 +239,13 @@ async fn objective_agent_write_feeds_definition_in_the_same_tx() {
         .await
         .unwrap();
     assert!(
-        write::agent_report_op(
+        write::test_report_op(
             repo.as_ref(),
             &events,
             &write,
-            crate::ids::ActorId::Kernel,
             crate::event::EditAuthor::Planner,
             target,
             op,
-            None,
-            None,
-            Arc::new(AllowRecorderAdmission)
         )
         .await
         .is_err()
@@ -289,7 +270,7 @@ async fn objective_agent_write_feeds_definition_in_the_same_tx() {
 }
 
 #[tokio::test]
-async fn objective_agent_capability_absence_rolls_back() {
+async fn objective_report_capability_absence_rolls_back() {
     let (repo, events, write, track) = fixture(false).await;
     let before = super::resolve_report_for_track(repo.as_ref(), &track)
         .await
@@ -301,17 +282,13 @@ async fn objective_agent_capability_absence_rolls_back() {
         .await
         .unwrap();
     assert!(
-        write::agent_report_op(
+        write::test_report_op(
             repo.as_ref(),
             &events,
             &write,
-            crate::ids::ActorId::Kernel,
             crate::event::EditAuthor::Planner,
             target,
             create_op(),
-            None,
-            None,
-            Arc::new(AllowRecorderAdmission)
         )
         .await
         .is_err()

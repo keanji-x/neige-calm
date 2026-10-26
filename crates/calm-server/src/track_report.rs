@@ -14,7 +14,6 @@ use crate::error::CalmError;
 use crate::event::{EditAuthor, Event, EventBus, EventScope};
 use crate::ids::ActorId;
 use crate::model::{Card, CardPatch, Track};
-use crate::recorder_admission::{RecorderAdmissionDecisionKind, RecorderAdmissionGate};
 use crate::state::WriteContext;
 use crate::track_report_doc::ReportDoc;
 use calm_types::report_blocks::tasks::normalize_legacy_task_blocks;
@@ -323,7 +322,6 @@ use crate::track_report_guard::{
 use calm_types::report_blocks::{KIND_PROSE, in_sections};
 use calm_types::report_contract::{HeaderError, normalize_header};
 use std::borrow::Cow;
-use std::sync::Arc;
 
 /// A contract header the caller wrote that does not parse: the ingress rejection.
 fn header_bad_request(error: HeaderError) -> CalmError {

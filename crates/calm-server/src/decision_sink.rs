@@ -315,6 +315,7 @@ impl CardDecisionSink {
             &self.events,
             &self.write,
             identity.clone(),
+            track_report::write::AgentReportSource::Interactive,
             op,
             agent_message,
         )

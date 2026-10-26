@@ -73,7 +73,6 @@ pub(crate) async fn rest_user_replace(
         },
         None,
         None,
-        None,
         TaskWriteAdmission::Project,
     )
     .await?;
@@ -97,7 +96,6 @@ pub(crate) async fn rest_user_reset(
         EditAuthor::User,
         PersistTarget::Resolved(Box::new(target)),
         ReportDocOp::ResetToInitial { if_doc_rev },
-        None,
         None,
         None,
         TaskWriteAdmission::Project,
@@ -124,7 +122,6 @@ pub(crate) async fn rest_user_block_op(
         op,
         None,
         None,
-        None,
         TaskWriteAdmission::Project,
     )
     .await
@@ -132,42 +129,47 @@ pub(crate) async fn rest_user_block_op(
     .map_err(Into::into)
 }
 
-/// The agent-MCP funnel. Takes its attribution and recorder admission gate
-/// from the caller and validates none of them: the boundary bounds the set of doors, not what
-/// a caller says when it walks through this one.
-#[allow(clippy::too_many_arguments)]
-pub(crate) async fn agent_report_op(
+/// Tests exercising persist's arbitrary-author policies without a production identity.
+#[cfg(test)]
+pub(super) async fn test_report_op(
     repo: &dyn RouteRepo,
     events: &EventBus,
     write: &WriteContext,
-    actor: ActorId,
     author: EditAuthor,
     target: ReportEditTarget,
     op: ReportDocOp,
-    agent_message: Option<String>,
-    knowledge_session: Option<String>,
-    recorder_admission: Arc<dyn RecorderAdmissionGate>,
-) -> Result<(Card, ReportOpTrace), CalmError> {
+) -> Result<Card, CalmError> {
     persist(
         repo,
         events,
         write,
-        actor,
+        ActorId::KernelDispatcher,
         author,
         PersistTarget::Resolved(Box::new(target)),
         op,
-        agent_message,
-        knowledge_session,
-        Some(recorder_admission),
+        None,
+        None,
         TaskWriteAdmission::RefuseFixableDeclarations,
     )
     .await
+    .map(|(card, _)| card)
     .map_err(Into::into)
+}
+
+/// Evaluator declarations are an effect of the Planner's request, not a Report read.
+/// They retain the requested track and do not certify knowledge for the caller.
+#[derive(Clone)]
+pub(crate) enum AgentReportSource {
+    Interactive,
+    ObjectiveEvaluator(crate::ids::TrackId),
 }
 
 enum PersistTarget {
     Resolved(Box<ReportEditTarget>),
-    Agent(crate::mcp_server::registry::ToolCallIdentity),
+    Agent {
+        identity: crate::mcp_server::registry::ToolCallIdentity,
+        source: AgentReportSource,
+    },
 }
 
 pub(crate) async fn agent_report_intent(
@@ -175,23 +177,34 @@ pub(crate) async fn agent_report_intent(
     events: &EventBus,
     write: &WriteContext,
     identity: crate::mcp_server::registry::ToolCallIdentity,
+    source: AgentReportSource,
     op: ReportDocOp,
     agent_message: Option<String>,
 ) -> Result<(Card, ReportOpTrace), ReportError> {
     let author = super::identity::report_op_attribution(identity.role)?;
     let actor = identity.to_actor_id();
-    let session = identity.session_id.clone();
+    let knowledge_session = match &source {
+        AgentReportSource::Interactive => Some(identity.session_id.clone()),
+        AgentReportSource::ObjectiveEvaluator(_) => {
+            if identity.role != crate::model::CardRole::Planner {
+                return Err(CalmError::Forbidden(
+                    "Evaluator declarations require a Planner".into(),
+                )
+                .into());
+            }
+            None
+        }
+    };
     persist(
         repo,
         events,
         write,
         actor,
         author,
-        PersistTarget::Agent(identity),
+        PersistTarget::Agent { identity, source },
         op,
         agent_message,
-        Some(session),
-        None,
+        knowledge_session,
         TaskWriteAdmission::RefuseFixableDeclarations,
     )
     .await
@@ -296,27 +309,34 @@ async fn persist(
     op: ReportDocOp,
     agent_message: Option<String>,
     knowledge_session: Option<String>,
-    recorder_admission: Option<Arc<dyn RecorderAdmissionGate>>,
     task_admission: TaskWriteAdmission,
 ) -> Result<(Card, ReportOpTrace), ReportError> {
     let write = write.clone();
     let (updated, pending, ids) = calm_truth::db::write_in_tx_typed(repo, move |tx| {
         let target = match &target {
             PersistTarget::Resolved(target) => PersistTarget::Resolved(target.clone()),
-            PersistTarget::Agent(identity) => PersistTarget::Agent(identity.clone()),
+            PersistTarget::Agent { identity, source } => PersistTarget::Agent {
+                identity: identity.clone(),
+                source: source.clone(),
+            },
         };
         let op = op.clone();
         let actor = actor.clone();
         let agent_message = agent_message.clone();
-        let recorder_admission = recorder_admission.clone();
         let knowledge_session = knowledge_session.clone();
         Box::pin(async move {
             let ReportEditTarget {
                 track, report_card, ..
             } = match target {
                 PersistTarget::Resolved(target) => *target,
-                PersistTarget::Agent(identity) => {
-                    super::identity::resolve_intent_tx(tx, &identity).await?
+                PersistTarget::Agent { identity, source } => {
+                    let target = super::identity::resolve_intent_tx(tx, &identity).await?;
+                    if let AgentReportSource::ObjectiveEvaluator(track_id) = source
+                        && target.track.id != track_id
+                    {
+                        return Err(CalmError::Forbidden("Report target changed".into()).into());
+                    }
+                    target
                 }
             };
             let id = report_card.id.to_string();
@@ -332,10 +352,6 @@ async fn persist(
                 area: track.area_id.clone(),
             };
             let mut events: Vec<(ActorId, EventScope, Event)> = Vec::new();
-            if let Some(gate) = recorder_admission.as_ref() {
-                gate.require_admission(tx, RecorderAdmissionDecisionKind::ReportWrite)
-                    .await?;
-            }
             let live_card = crate::db::sqlite::card_for_update_tx(tx, &id).await?;
             if live_card.track_id != track_id || live_card.kind != "track-report" {
                 return Err(CalmError::Forbidden("Report target changed".into()).into());

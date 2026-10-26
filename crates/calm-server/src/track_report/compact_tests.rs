@@ -8,20 +8,6 @@ use crate::{card_role_cache::CardRoleCache, track_area_cache::TrackAreaCache};
 use serde_json::{Value, json};
 use std::sync::Arc;
 
-// The agent boundary accepts caller-provided attribution; the test gate allows admission.
-struct AllowRecorderAdmission;
-
-#[async_trait::async_trait]
-impl RecorderAdmissionGate for AllowRecorderAdmission {
-    async fn require_admission(
-        &self,
-        _: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
-        _: RecorderAdmissionDecisionKind,
-    ) -> Result<(), CalmError> {
-        Ok(())
-    }
-}
-
 struct Fixture {
     repo: Arc<SqlxRepo>,
     events: EventBus,
@@ -98,11 +84,10 @@ impl Fixture {
                 .rev
         });
         let if_doc_rev = id.is_none().then_some(target.current_payload.doc_rev);
-        write::agent_report_op(
+        write::test_report_op(
             self.repo.as_ref(),
             &self.events,
             &self.write,
-            ActorId::KernelDispatcher,
             author,
             target,
             ReportDocOp::UpsertBlock {
@@ -113,12 +98,8 @@ impl Fixture {
                 if_doc_rev,
                 position: None,
             },
-            None,
-            None,
-            Arc::new(AllowRecorderAdmission),
         )
         .await
-        .map(|(card, _)| card)
     }
 }
 

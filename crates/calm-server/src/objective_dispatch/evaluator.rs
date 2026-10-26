@@ -1,13 +1,12 @@
 //! Canonical evaluator declarations use the Planner's existing Report write funnel.
 use super::*;
 use crate::mcp_server::registry::{AppContext, ToolCallIdentity};
-use crate::track_report::{ReportDocOp, ReportEditTarget};
+use crate::track_report::ReportDocOp;
 use calm_truth::objective_host::{LogSeq, check_jobs};
 use calm_types::report_blocks::{parse_fence, render_fence, tasks::task_block_is_live};
 use objective::check::CheckConfig;
 use serde_json::{Value, json};
 use sqlx::{Sqlite, Transaction};
-use std::sync::Arc;
 
 // Like worker_report::REPEATED: abort the event-writer transaction on a proven
 // no-op, because its contract requires a nonempty event batch. Never reaches MCP.
@@ -129,18 +128,16 @@ pub(crate) async fn declare(
     payloads: Vec<Value>,
 ) -> Result<()> {
     for payload in payloads {
-        let (track_row, card, current) =
+        let (_, _, current) =
             crate::track_report::resolve_report_for_track(ctx.repo.as_ref(), track.as_str())
                 .await?;
         let rev = current.doc_rev;
-        let target = ReportEditTarget::for_resolved_parts(track_row, card, current)?;
-        let result = crate::track_report::write::agent_report_op(
+        let result = crate::track_report::write::agent_report_intent(
             ctx.repo.as_ref(),
             &ctx.events,
             &ctx.write,
-            ActorId::AiPlanner(identity.card_id.clone().into()),
-            crate::event::EditAuthor::Planner,
-            target,
+            identity.clone(),
+            crate::track_report::write::AgentReportSource::ObjectiveEvaluator(track.clone()),
             ReportDocOp::UpsertBlock {
                 id: None,
                 kind: "task".into(),
@@ -150,15 +147,9 @@ pub(crate) async fn declare(
                 position: None,
             },
             None,
-            None,
-            Arc::new(
-                crate::decision_sink::CardDecisionSinkRecorderAdmissionGate::for_identity(
-                    identity,
-                    track.clone(),
-                ),
-            ),
         )
-        .await;
+        .await
+        .map_err(CalmError::from);
         match result {
             Ok(_) => {}
             Err(CalmError::IdempotencyCollision(reason)) if reason == ALREADY_DECLARED => {}

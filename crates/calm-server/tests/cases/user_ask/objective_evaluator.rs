@@ -1,6 +1,7 @@
 //! Evaluators cross the production Planner, Report and worker-done boundaries.
 use super::objective_approval::{define, request, setup_on};
 use super::*;
+use calm_server::ids::ActorId;
 use calm_truth::objective_host;
 use calm_types::report_blocks::tasks::PLANNER_DECLARATION_AUTHOR;
 const REV: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -44,6 +45,26 @@ async fn tasks(boot: &Boot) -> Vec<calm_types::track_report::ReportBlock> {
         .into_iter()
         .filter(|b| b.kind == "task")
         .collect()
+}
+// Inspect persisted envelopes, including the session id and report-owned attribution.
+async fn assert_evaluator_attribution(boot: &Boot, session: &str) {
+    let edits = boot
+        .repo
+        .events_for_track(boot.track_id.as_str(), &["track.report_edited"], None)
+        .await
+        .unwrap();
+    let declarations: Vec<_> = edits.iter().rev().take(3).collect();
+    assert_eq!(declarations.len(), 3);
+    for row in declarations {
+        assert_eq!(row.actor, ActorId::AiPlannerSession(session.into()));
+        assert!(matches!(
+            &row.event,
+            Event::TrackReportEdited {
+                author: calm_server::event::EditAuthor::Planner,
+                ..
+            }
+        ));
+    }
 }
 async fn state(boot: &Boot) -> objective::State {
     objective_host::load_state(&boot.repo.sqlite_db().unwrap(), &boot.track_id)
@@ -157,18 +178,15 @@ async fn done(
 #[tokio::test]
 async fn objective_evaluator_done_books_samples_before_verdict_and_moves_baseline() {
     let boot = fixture().await;
+    let knowledge = count(&boot, "SELECT count(*) FROM report_read_ledger_blocks").await;
     evaluate(&boot, REV).await.unwrap();
+    assert_eq!(
+        count(&boot, "SELECT count(*) FROM report_read_ledger_blocks").await,
+        knowledge
+    );
     let ts = tasks(&boot).await;
     assert_eq!(ts.len(), 3);
-    let edits = rows(&boot, "track.report_edited").await;
-    assert_eq!(edits.len(), 5);
-    assert_eq!(
-        edits
-            .iter()
-            .filter(|(actor, _)| actor == "AiPlanner")
-            .count(),
-        3
-    );
+    assert_evaluator_attribution(&boot, PLANNER_SESSION_ID).await;
     for (i, b) in ts.iter().enumerate() {
         let p = &b.payload;
         assert_eq!(p["kind"], "codex");
@@ -303,8 +321,20 @@ async fn objective_evaluator_retry_repairs_crash_without_duplicate_blocks_or_bin
     assert!(wakes.iter().all(|(_, event)| matches!(event, Event::TrackWakeRequested {text,..} if text.contains(REV) && text.contains("kr"))));
     evaluate(&boot, REV).await.unwrap();
     let before = blocks(&boot).await;
+    let edits = rows(&boot, "track.report_edited").await.len();
+    let commits = count(&boot, "SELECT count(*) FROM track_vcs_commits").await;
+    let knowledge = count(&boot, "SELECT count(*) FROM report_read_ledger_blocks").await;
     evaluate(&boot, REV).await.unwrap();
     assert_eq!(blocks(&boot).await, before);
+    assert_eq!(rows(&boot, "track.report_edited").await.len(), edits);
+    assert_eq!(
+        count(&boot, "SELECT count(*) FROM track_vcs_commits").await,
+        commits
+    );
+    assert_eq!(
+        count(&boot, "SELECT count(*) FROM report_read_ledger_blocks").await,
+        knowledge
+    );
     assert_eq!(tasks(&boot).await.len(), 3);
     assert_eq!(
         count(&boot, "SELECT count(*) FROM objective_check_jobs").await,
@@ -458,6 +488,12 @@ async fn objective_evaluator_restarted_planner_repairs_original_binding_identity
     .await
     .unwrap();
     tx.commit().await.unwrap();
+    let edits = rows(&boot, "track.report_edited").await.len();
+    let error = evaluate(&boot, REV).await.unwrap_err();
+    assert_eq!(error.code, -32403);
+    assert!(tasks(&boot).await.is_empty());
+    assert_eq!(rows(&boot, "track.report_edited").await.len(), edits);
+
     let identity = ToolCallIdentity {
         session_id: session.into(),
         ..planner_identity(&boot)
@@ -469,6 +505,7 @@ async fn objective_evaluator_restarted_planner_repairs_original_binding_identity
     )
     .await
     .unwrap();
+    assert_evaluator_attribution(&boot, session).await;
     assert_eq!(tasks(&boot).await.len(), 3);
     assert_eq!(
         count(&boot, "SELECT count(*) FROM objective_check_jobs").await,
