@@ -279,6 +279,23 @@ make e2e-codex-isolated
 
 That target does not replace Tier 2 stack coverage.
 
+For a raw-only developer trace of Planner turns from a database or snapshot:
+
+```bash
+python3 -B scripts/track-trace.py --db /path/to/calm.db TRACK_ID
+python3 -B scripts/track-trace.py --help
+```
+
+The trace reads raw `harness_items`; it is not a settled canonical conversation
+view and does not reconstruct receipt content. After canonical ACP retained
+recovery and before END settlement, including a crash in that window, a turn
+can report `status=completed` while its receipt messages/actions have not yet
+materialized as raw items. Empty `messages`/`actions` arrays do not certify a
+complete empty history. END materializes the retained content through its
+existing owner; re-export from the updated database afterward. An earlier
+export or pre-END database snapshot retains that omission. Use the application's
+canonical conversation view for the published history.
+
 ## Repository layout
 
 ```text

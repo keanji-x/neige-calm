@@ -4,6 +4,13 @@
 One record per line. First one `track` record per Track, then every `turn` record of all the
 Tracks in start order. Every Track kind has the same shape; nothing here knows a domain.
 
+This is a raw-only developer diagnostic, not a settled canonical conversation view. It reads
+harness_items, without reconstructing receipt content or interpreting canonical checkpoints.
+After canonical ACP retained recovery and before END settlement (including a crash in that
+window), turn/completed can already report completed while receipt messages/actions have not
+materialized as raw items. Empty arrays then do not mean a complete empty history. Once END
+materializes those items, a new trace includes them; an earlier export remains incomplete.
+
 The trace has only the turns still in the Planner's transcript. A Planner reset deletes the whole
 transcript (event harness.transcript.cleared) and a rewind deletes the latest turns
 (harness.transcript.rewound); those turns are not printed and not reconstructed, and the events
@@ -306,8 +313,12 @@ def area_tracks(db, area_id):
     return ids
 
 
-def selftest_db():
-    """A database with only the required columns: one Track, its Planner, three turns."""
+def selftest_db(end_materialized=False):
+    """Three raw turns plus a retained receipt; optionally include END-materialized items.
+
+    These are reader snapshots of the window exercised by Rust recovery_atomic.rs, not an
+    implementation of recovery or END. Only the Rust owner qualifies and settles canonical END.
+    """
     db = sqlite3.connect(":memory:")
     for table, columns in REQUIRED_COLUMNS.items():
         db.execute(f"CREATE TABLE {table} ({', '.join(columns)})")
@@ -364,9 +375,27 @@ def selftest_db():
         ("turn-2", "u2", "userMessage", "item/completed", user, 2000, segments_2),
         ("turn-2", "c2", "commandExecution", "item/started", {"item": hung}, 2050, None),
         ("turn-2", "u2b", "userMessage", "item/completed", user, 2100, None),
-        ("turn-3", "u3", "userMessage", "item/completed", user, 3000, None),
-        ("turn-3", None, None, "turn/completed", {"status": "completed", "error": None}, 3200, None),
+        # Recovery can leave only the terminal row; all retained items await END.
+        ("turn-3", None, None, "turn/completed", {"status": "completed", "error": None}, 3000, None),
     ]
+    # Receipt columns needed to describe this fixture only; the reader never queries receipts.
+    # In particular, do not fabricate or interpret the canonical association/checkpoint codec.
+    db.execute("CREATE TABLE acp_submissions (worker_session_id, client_id, turn_id, state, outcome_json)")
+    retained_rows = [
+        ("turn-3", "a3", "agentMessage", "item/completed",
+         {"threadId": "thread", "turnId": "turn-3",
+          "item": {"id": "a3", "type": "agentMessage", "text": "Retained reply."}}, 3300, None),
+        ("turn-3", "c3", "commandExecution", "item/completed",
+         {"threadId": "thread", "turnId": "turn-3",
+          "item": {"id": "c3", "type": "commandExecution", "command": "pwd", "status": "completed",
+                   "aggregatedOutput": "/workspace", "exitCode": 0}}, 3301, None),
+    ]
+    outcome = {"id": "turn-3", "status": "completed", "error": None,
+               "items": [{"method": row[3], "params": row[4]} for row in retained_rows]}
+    db.execute("INSERT INTO acp_submissions VALUES ('worker', 'submission', 'turn-3', 'completed', ?)",
+               (json.dumps(outcome),))
+    if end_materialized:
+        rows += retained_rows
     for n, (turn, uuid, item_type, method, params, at, segs) in enumerate(rows, 1):
         db.execute("INSERT INTO harness_items VALUES (?, 'planner', ?, ?, ?, ?, ?, ?, ?)",
                    (n, turn, uuid, item_type, method, json.dumps(params), at, segs and json.dumps(segs)))
@@ -405,7 +434,7 @@ def selftest():
         {"at": 2000, "presentation": "user", "text": "User says: go", "attachment_count": 1, "origin": None},
         {"at": 2100, "presentation": None, "text": None, "attachment_count": None, "origin": None},
     ])
-    expect("turn 3 trigger (no segments recorded)", three.get("trigger"), None)
+    expect("turn 3 trigger (no raw input recorded)", three.get("trigger"), None)
     acts = one.get("actions") or []
     expect("turn 1 actions", [(a["item_type"], a["tool"], a["finished"], a["ok"], a["error"]) for a in acts], [
         ("mcpToolCall", "neige_task_declare", True, False, "tool call failed: DB locked"),
@@ -440,15 +469,40 @@ def selftest():
     full = trace(db, ["t"], cap=None)
     expect("--full keeps the whole text", [full[1]["tasks"][0]["goal"], full[2]["tasks"][0].get("error")],
            ["x" * 400, "worker: " + "r" * 4100])
+    # Exercise the actual reader on both snapshots, without teaching it a receipt codec or
+    # reproducing the Rust END materializer. Completed alone does not certify complete content.
+    settled_db = selftest_db(end_materialized=True)
+    settled_records = trace(settled_db, ["t"])
+    settled = settled_records[-1]
+    expect("recover before END: terminal exists but raw content is absent",
+           [three.get(k) for k in ("status", "completed_at", "messages", "actions")],
+           ["completed", 3000, [], []])
+    expect("END materialization leaves terminal unchanged",
+           [settled.get(k) for k in ("status", "completed_at")], ["completed", 3000])
+    expect("END-materialized messages", settled.get("messages"), [{"at": 3300, "text": "Retained reply."}])
+    expect("END-materialized actions", settled.get("actions"), [
+        {"at": 3301, "item_type": "commandExecution", "tool": None, "finished": True, "ok": True,
+         "duration_ms": None, "error": None, "args": "pwd", "result": "/workspace"},
+    ])
+    expect("END materialization leaves other turns and header unchanged", settled_records[:-1], records[:-1])
+    expect("receipt remains Completed with original items after END",
+           settled_db.execute("SELECT state, outcome_json FROM acp_submissions").fetchall(),
+           db.execute("SELECT state, outcome_json FROM acp_submissions").fetchall())
     for failure in failures:
         print("FAIL " + failure, file=sys.stderr)
     if failures:
         sys.exit(1)
-    print("OK: the trace records of the three-turn fixture match")
+    print("OK: the three-turn trace and retained-receipt pre/post-END snapshots match")
 
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser = argparse.ArgumentParser(
+        description=__doc__.splitlines()[0],
+        epilog=("Raw-only developer diagnostic, not a settled canonical conversation view. After canonical ACP "
+                "retained recovery and before END settlement (including a crash), completed turns can have "
+                "empty messages/actions until receipt items materialize. Empty arrays do not certify a "
+                "complete history. Re-export after END; see README.md#development."),
+    )
     parser.add_argument("--selftest", action="store_true", help="check the records of a built-in fixture and exit")
     parser.add_argument("--db", help="path to calm.db (opened read-only)")
     parser.add_argument("--since", type=int, metavar="MS", help="first turn start to print (epoch ms)")
