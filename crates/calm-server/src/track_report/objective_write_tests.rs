@@ -311,3 +311,52 @@ async fn objective_report_capability_absence_rolls_back() {
         0
     );
 }
+
+#[tokio::test]
+async fn objective_evaluator_report_intent_refuses_non_planner_roles() {
+    use crate::mcp_server::registry::ToolCallIdentity;
+    use crate::model::CardRole;
+    let (repo, events, write, track) = fixture(true).await;
+    let before = super::resolve_report_for_track(repo.as_ref(), &track)
+        .await
+        .unwrap()
+        .1
+        .payload;
+    let log = repo.events_latest_id().await.unwrap();
+    for role in [CardRole::Assistant, CardRole::Worker, CardRole::ReportCard] {
+        // Role rejection needs no session lookup or Report write.
+        let identity = ToolCallIdentity {
+            card_id: "non-planner".into(),
+            role,
+            provider: crate::session_projection_repo::AgentProvider::Codex,
+            session_id: "non-planner-session".into(),
+            track_id: Some(track.clone()),
+            area_id: "unused".into(),
+            thread_id: "unused".into(),
+        };
+        let error = write::agent_report_intent(
+            repo.as_ref(),
+            &events,
+            &write,
+            identity,
+            write::AgentReportSource::ObjectiveEvaluator(track.clone().into()),
+            create_op(),
+            None,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(CalmError::from(error), CalmError::Forbidden(_)),
+            "{role:?}"
+        );
+    }
+    assert_eq!(repo.events_latest_id().await.unwrap(), log);
+    assert_eq!(
+        super::resolve_report_for_track(repo.as_ref(), &track)
+            .await
+            .unwrap()
+            .1
+            .payload,
+        before
+    );
+}

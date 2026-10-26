@@ -287,7 +287,6 @@ pub async fn persist_report(
         },
         agent_message,
         None,
-        None,
         TaskWriteAdmission::Project,
     )
     .await?;

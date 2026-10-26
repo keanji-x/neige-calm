@@ -179,7 +179,12 @@ async fn done(
 async fn objective_evaluator_done_books_samples_before_verdict_and_moves_baseline() {
     let boot = fixture().await;
     let knowledge = count(&boot, "SELECT count(*) FROM report_read_ledger_blocks").await;
+    let reads = count(&boot, "SELECT count(*) FROM report_read_ledger").await;
     evaluate(&boot, REV).await.unwrap();
+    assert_eq!(
+        count(&boot, "SELECT count(*) FROM report_read_ledger").await,
+        reads
+    );
     assert_eq!(
         count(&boot, "SELECT count(*) FROM report_read_ledger_blocks").await,
         knowledge
