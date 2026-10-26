@@ -19,9 +19,9 @@ use super::tx_only::{KeyedCommit, commit_tx_only};
 use super::workspace_lease::reclaim_dead_workspace_leases_on_boot;
 use super::{
     AppServerInteractOutcome, CompensationStateVersioned, Operation, OperationId, OperationKey,
-    OperationRepo, OperationResult, ParkedClaimMode, ParkedCompletion, ParkedOutcome,
-    ParkedRecovery, Phase, PhaseTag, ProviderAdapter, RecoveryItem, RecoveryMode, RecoveryPlan,
-    SpawnArtifacts, SpawnCtx, SpawnOutcome, TxOutput, complete_parked_tx,
+    OperationRepo, OperationResult, OperationWait, ParkedClaimMode, ParkedCompletion,
+    ParkedOutcome, ParkedRecovery, Phase, PhaseTag, ProviderAdapter, RecoveryItem, RecoveryMode,
+    RecoveryPlan, SpawnArtifacts, SpawnCtx, SpawnOutcome, TxOutput, complete_parked_tx,
     idempotency_payload_conflict, operation_result_from, parked_artifacts_alive, required_output,
 };
 
@@ -457,9 +457,37 @@ impl OperationRuntime {
     }
 
     pub async fn wait(&self, op_id: &OperationId) -> Result<OperationResult> {
+        match self.wait_until(op_id, false).await? {
+            OperationWait::Settled(result) => Ok(result),
+            OperationWait::OwnedParked(_) => {
+                unreachable!("wait returns an owned park only when the caller accepts one")
+            }
+        }
+    }
+
+    /// Like [`Self::wait`], but also returns once the operation is parked on an execution its
+    /// adapter owns, however late that park comes. Such an execution outlives every waiter, so a
+    /// caller that only hands off ownership must not wait for its settlement.
+    pub async fn wait_settled_or_owned_parked(&self, op_id: &OperationId) -> Result<OperationWait> {
+        self.wait_until(op_id, true).await
+    }
+
+    async fn owned_parked(&self, op_id: &OperationId) -> Result<Option<Operation>> {
+        let Some(op) = self.repo.get_operation(op_id).await? else {
+            return Ok(None);
+        };
+        Ok((matches!(op.phase, Phase::Parked)
+            && self.adapter(&op.kind)?.owns_parked_resource().is_some())
+        .then_some(op))
+    }
+
+    async fn wait_until(&self, op_id: &OperationId, owned_park: bool) -> Result<OperationWait> {
         self.refuse_deferred_wait(op_id).await?;
         if let Some(result) = self.repo.operation_result(op_id).await? {
-            return Ok(result);
+            return Ok(OperationWait::Settled(result));
+        }
+        if owned_park && let Some(op) = self.owned_parked(op_id).await? {
+            return Ok(OperationWait::OwnedParked(Box::new(op)));
         }
         let wait_hook = self
             .wait_entered_test_hook
@@ -474,7 +502,9 @@ impl OperationRuntime {
             tokio::select! {
                 received = rx.recv() => {
                     match received {
-                        Ok(result) if result.op_id == *op_id => return Ok(result),
+                        Ok(result) if result.op_id == *op_id => {
+                            return Ok(OperationWait::Settled(result));
+                        }
                         Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => {}
                         Err(broadcast::error::RecvError::Closed) => {
                             return Err(CalmError::Internal("operation completion bus closed".into()));
@@ -483,9 +513,13 @@ impl OperationRuntime {
                 }
                 _ = tokio::time::sleep(std::time::Duration::from_millis(25)) => {
                     if let Some(result) = self.repo.operation_result(op_id).await? {
-                        return Ok(result);
+                        return Ok(OperationWait::Settled(result));
                     }
                     self.refuse_deferred_wait(op_id).await?;
+                    // A deferred preparation can park long after submit returned.
+                    if owned_park && let Some(op) = self.owned_parked(op_id).await? {
+                        return Ok(OperationWait::OwnedParked(Box::new(op)));
+                    }
                     self.enforce_parked_deadline(op_id).await?;
                     self.drive().await?;
                 }

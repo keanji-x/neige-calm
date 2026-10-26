@@ -548,3 +548,5 @@ async fn w_terminal_worker_admission_refuses_verifying() {
 mod disposal;
 
 mod preparation;
+
+mod handoff;

@@ -94,8 +94,19 @@ impl Harness {
         );
         status
     }
+    async fn execution_row(&self) -> (String, Option<String>, Option<String>) {
+        let record = pipe::record(CONFIG, &self.op().await).unwrap();
+        sqlx::query_as(
+            "SELECT desired,settlement_json,secrets_json FROM workspace_executions WHERE execution_id=?1",
+        )
+        .bind(record.execution_id.as_str())
+        .fetch_one(self.db.pool())
+        .await
+        .unwrap()
+    }
 }
 
+/// Completed and its retirement finished: DELETE finds no owned execution to dispose.
 async fn completed_delete(scope: &str) {
     let h = Harness::new("exit 0").await;
     h.park().await;
@@ -103,6 +114,14 @@ async fn completed_delete(scope: &str) {
     h.settled().await;
     h.complete().await;
     assert_eq!(h.status().await, crate::model::TaskStatus::Done);
+    // Completion drives retirement asynchronously; delete only after it finished.
+    tokio::time::timeout(Duration::from_secs(8), async {
+        while h.execution_row().await.2.is_some() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
     let card = output_card_id(&h.op().await.tx_output.unwrap()).unwrap();
     assert_eq!(h.delete(scope).await, StatusCode::NO_CONTENT);
     assert!(h.db.card_get(&card).await.unwrap().is_none());
@@ -119,6 +138,64 @@ async fn w_terminal_worker_completed_delete_track() {
 #[tokio::test]
 async fn w_terminal_worker_completed_delete_area() {
     completed_delete("areas").await;
+}
+
+/// Completed with its retirement not yet finished: DELETE disposes the owned execution.
+async fn retiring_delete(scope: &str) {
+    let h = Harness::new("exit 0").await;
+    h.park().await;
+    h.release().await;
+    h.settled().await;
+    // Fault fixture: refuse the Engine's finish so the retirement window stays open.
+    sqlx::query(
+        "CREATE TRIGGER hold_retirement BEFORE UPDATE OF secrets_json ON workspace_executions \
+         WHEN NEW.secrets_json IS NULL BEGIN SELECT RAISE(ABORT,'retirement held'); END",
+    )
+    .execute(h.db.pool())
+    .await
+    .unwrap();
+    h.complete().await;
+    assert_eq!(h.status().await, crate::model::TaskStatus::Done);
+    let record = pipe::record(CONFIG, &h.op().await).unwrap();
+    let engine = h.ctx.execution.engine().unwrap();
+    // The completion's retirement drive has run and stopped at the refused finish.
+    tokio::time::timeout(Duration::from_secs(8), async {
+        while !engine
+            .error(&record.execution_id)
+            .is_some_and(|error| format!("{error:?}").contains("retirement held"))
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    sqlx::query("DROP TRIGGER hold_retirement")
+        .execute(h.db.pool())
+        .await
+        .unwrap();
+    let row = h.execution_row().await;
+    assert_eq!(row.0, "retire");
+    assert!(row.2.is_some(), "the retirement window is still open");
+    let card = output_card_id(&h.op().await.tx_output.unwrap()).unwrap();
+    assert_eq!(h.delete(scope).await, StatusCode::NO_CONTENT);
+    assert!(h.db.card_get(&card).await.unwrap().is_none());
+    let row = h.execution_row().await;
+    assert_eq!(row.0, "retire");
+    assert!(row.1.is_some());
+    assert!(row.2.is_none());
+}
+
+#[tokio::test]
+async fn w_terminal_worker_retiring_delete_card() {
+    retiring_delete("cards").await;
+}
+#[tokio::test]
+async fn w_terminal_worker_retiring_delete_track() {
+    retiring_delete("tracks").await;
+}
+#[tokio::test]
+async fn w_terminal_worker_retiring_delete_area() {
+    retiring_delete("areas").await;
 }
 
 async fn running_delete(scope: &str) {

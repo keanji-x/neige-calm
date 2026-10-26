@@ -685,6 +685,14 @@ pub struct OperationResult {
     pub outcome: OperationOutcome,
 }
 
+/// What [`OperationRuntime::wait_settled_or_owned_parked`] stopped at.
+#[derive(Debug)]
+pub enum OperationWait {
+    Settled(OperationResult),
+    /// Parked on an execution the adapter owns; the row as read at that moment.
+    OwnedParked(Box<Operation>),
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum ParkedOutcome {
     Succeeded {

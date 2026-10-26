@@ -1043,8 +1043,9 @@ impl Scheduler {
     }
 
     /// Build the deterministic payload, submit the worker operation (`idempotency_key =
-    /// task.id`), `wait()` it to a terminal phase, then reconcile the row with guarded
-    /// writes. Shared between the live dispatch path and the sweep's `dispatched` arm.
+    /// task.id`), `wait()` it to a terminal phase or a Pipe park handed off as Running, then
+    /// reconcile the row with guarded writes. Shared between the live dispatch path and the
+    /// sweep's `dispatched` arm.
     async fn drive_spawn(&self, task: &Task, track: &Track, recovering: bool) -> Result<()> {
         if task.kind == TaskKind::Compact {
             return self.drive_compact(task, track, recovering).await;
@@ -1103,10 +1104,17 @@ impl Scheduler {
             // retry counting) — log-and-leave for the next trigger/sweep.
             Err(e) => return Err(e),
         };
-        if self.acknowledge_pipe_parked(&runtime, task).await? {
-            return Ok(());
-        }
-        let result = runtime.wait(&op_id).await?;
+        // The preparation may be deferred past submit (a Busy fence), so the owned park can come
+        // at any point of the wait; a handed-off execution outlives this dispatch.
+        let result = match runtime.wait_settled_or_owned_parked(&op_id).await? {
+            crate::operation::OperationWait::Settled(result) => result,
+            crate::operation::OperationWait::OwnedParked(op) => {
+                if self.acknowledge_pipe_parked(task, &op).await? {
+                    return Ok(());
+                }
+                runtime.wait(&op_id).await?
+            }
+        };
         let outcome = match result.outcome {
             OperationOutcome::Failed {
                 last_error,

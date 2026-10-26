@@ -130,29 +130,21 @@ pub(super) async fn terminal_task_uses_pipe(repo: &dyn Repo, task_id: &str) -> b
 }
 
 impl Scheduler {
+    /// A terminal task's owned park is its Pipe execution running: hand the row to Running.
     pub(super) async fn acknowledge_pipe_parked(
         &self,
-        runtime: &OperationRuntime,
         task: &Task,
+        op: &crate::operation::Operation,
     ) -> Result<bool> {
-        if task.kind != TaskKind::Terminal {
-            return Ok(false);
-        }
-        let Some(op) = runtime
-            .find_by_kind_and_idempotency("terminal-worker", &task.id)
-            .await?
-        else {
-            return Ok(false);
-        };
-        if op.phase == crate::operation::Phase::Parked
-            && op
+        if task.kind != TaskKind::Terminal
+            || !op
                 .tx_output
                 .as_ref()
                 .is_some_and(crate::operation::terminal_adapter::pipe_worker::is_pipe)
         {
-            self.mark_running(&task.id, op.target_id.as_deref()).await?;
-            return Ok(true);
+            return Ok(false);
         }
-        Ok(false)
+        self.mark_running(&task.id, op.target_id.as_deref()).await?;
+        Ok(true)
     }
 }

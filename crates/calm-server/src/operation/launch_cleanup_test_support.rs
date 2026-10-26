@@ -151,6 +151,36 @@ pub(crate) async fn claimed_task(
     declaration: serde_json::Value,
 ) -> crate::model::Task {
     use crate::db::sqlite::{begin_immediate_tx, task_claim_pending_tx};
+    let pending = declared_task(
+        repo.clone(),
+        events.clone(),
+        write.clone(),
+        track_id,
+        declaration,
+    )
+    .await;
+    let monitor = crate::task_context::TaskContextMonitor::new(repo.clone(), events, write);
+    let closure = monitor
+        .resolve_task_closure(track_id, &pending.key)
+        .await
+        .unwrap();
+    let pool = repo.sqlite_db().unwrap();
+    let mut tx = begin_immediate_tx(&pool).await.unwrap();
+    task_claim_pending_tx(&mut tx, &pending.id, 1, &closure.refs, false)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    repo.task_get(&pending.id).await.unwrap().unwrap()
+}
+
+/// The Track's only task, declared through the user report path and left `pending`.
+pub(crate) async fn declared_task(
+    repo: std::sync::Arc<dyn crate::db::prelude::Repo>,
+    events: crate::event::EventBus,
+    write: crate::state::WriteContext,
+    track_id: &str,
+    declaration: serde_json::Value,
+) -> crate::model::Task {
     use crate::track_report::{ReportDocOp, ReportEditTarget, TrackReportPayload};
     repo.card_create(crate::model::NewCard {
         track_id: track_id.into(),
@@ -181,16 +211,7 @@ pub(crate) async fn claimed_task(
     .await
     .unwrap();
     let key = declaration["key"].as_str().unwrap();
-    let pending = repo.task_current_get(track_id, key).await.unwrap().unwrap();
-    let monitor = crate::task_context::TaskContextMonitor::new(repo.clone(), events, write);
-    let closure = monitor.resolve_task_closure(track_id, key).await.unwrap();
-    let pool = repo.sqlite_db().unwrap();
-    let mut tx = begin_immediate_tx(&pool).await.unwrap();
-    task_claim_pending_tx(&mut tx, &pending.id, 1, &closure.refs, false)
-        .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    repo.task_get(&pending.id).await.unwrap().unwrap()
+    repo.task_current_get(track_id, key).await.unwrap().unwrap()
 }
 
 pub(crate) async fn spawn_sibling(sock: &Path, cwd: &Path) -> String {
