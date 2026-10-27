@@ -4,20 +4,15 @@ use super::*;
 #[tokio::test]
 async fn planner_switch_claude_assistant_next_input() {
     let mut p = Pair::with_provider("claude").await;
-    // Claude deliberately retains Unknown delivery after END. Resolve it through
-    // Human ingress so this canonical Assistant is eligible for replacement.
+    // Exact native acknowledgement makes the completed Assistant eligible for
+    // replacement without manufacturing a Human Keep decision.
     let (_, before) = assistant_canonical::carrier(&p.fixture, &p.cards[1]).await;
     let attempt = &before.canonical_inputs.attempts[0];
-    assert!(matches!(attempt.delivery, InputDeliveryFact::Unknown));
-    post(
-        &p.app,
-        &p.cookie,
-        &format!("/api/cards/{}/conversation/input/keep", p.cards[1]),
-        "keep-claude-history",
-        json!({"carrier_id":p.workers[1],"submission_id":attempt.attempt.submission_id,
-            "attempt_id":attempt.attempt.attempt_id,"revision":attempt.revision.to_string()}),
-    )
-    .await;
+    assert!(matches!(
+        attempt.delivery,
+        InputDeliveryFact::Accepted { .. }
+    ));
+    assert!(before.canonical_inputs.receipts.is_empty());
     claude_creation_tests::assistant::wait_frame(&p.fixture, &p.cards[1], |f| {
         f.idle_for_lifecycle() && f.canonical_inputs.referenced_submissions().is_empty()
     })

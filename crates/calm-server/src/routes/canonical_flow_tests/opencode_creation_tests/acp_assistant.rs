@@ -494,18 +494,13 @@ async fn c4_acp_planner_switch_next_turns_use_engine_and_inherit_permission() {
         .unwrap();
     for card in [&planner, assistant] {
         let (worker, frame) = carrier(&fixture, card).await;
-        // ACP delivery remains Unknown even after a qualified END. Preserve the
-        // switch's receipt fence: resolve that delivery through authenticated Keep.
-        let attempt = &frame.canonical_inputs.attempts[0];
-        post(
-            &app,
-            &cookie,
-            &format!("/api/cards/{card}/conversation/input/keep"),
-            &format!("keep-before-switch-{card}"),
-            json!({"carrier_id":worker,"submission_id":attempt.attempt.submission_id,
-                "attempt_id":attempt.attempt.attempt_id,"revision":attempt.revision.to_string()}),
-        )
-        .await;
+        // The exact completed prompt receipt confirms delivery. Switching must
+        // no longer require a Human decision for an ordinary completed turn.
+        assert!(matches!(
+            frame.canonical_inputs.attempts[0].delivery,
+            InputDeliveryFact::Accepted { .. }
+        ));
+        assert!(frame.canonical_inputs.receipts.is_empty());
         let handle = state.harness.get(&worker).unwrap();
         tokio::time::timeout(Duration::from_secs(10), async {
             while handle.idle_carrier_owner().await.is_err() {
