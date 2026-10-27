@@ -310,12 +310,23 @@ async fn canonical_claude_compact_requires_boundary_and_exact_cleanup() {
 
 #[tokio::test]
 async fn canonical_claude_compact_blocks_pending_and_held_input() {
-    let fx = Fixture::new("stream").await;
-    std::fs::write(fx.dir.path().join("stream"), "").unwrap();
-    std::fs::write(fx.dir.path().join("stream-rest"), "").unwrap();
+    let fx = Fixture::new("hold-input-replay").await;
     let harness = fx.start_loop().await;
     fx.phase("turn_running").await;
+    // The CLI has consumed the line but cannot emit its acknowledgement yet.
+    // Freeze actual uncertainty, rather than race a normal native receipt.
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !fx.dir.path().join("replay-ready").exists() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
     let before = fx.checkpoint().await;
+    assert!(matches!(
+        before.attempts[0].delivery,
+        InputDeliveryFact::Unknown
+    ));
     assert!(harness.compact_canonical(fx.source.clone()).await.is_err());
     assert_eq!(fx.checkpoint().await, before);
     tokio::time::timeout(Duration::from_secs(5), async {
