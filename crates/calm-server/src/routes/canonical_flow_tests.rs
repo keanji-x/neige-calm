@@ -54,6 +54,7 @@ mod claude_creation_tests;
 mod control_tests;
 mod dispatcher_inputs_tests;
 mod dispatcher_report_edit_tests;
+mod input_feedback_tests;
 #[cfg(feature = "fixtures")]
 mod opencode_creation_tests;
 #[cfg(feature = "fixtures")]

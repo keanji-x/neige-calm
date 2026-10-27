@@ -6,7 +6,7 @@ use calm_truth::db::RepoRead;
 use calm_types::runtime::AgentProvider;
 
 /// Each registration's spy logs under its own root: OpenCode's is the fixture root.
-fn peer_root(fixture: &Fixture, provider: &AgentProvider) -> std::path::PathBuf {
+pub(super) fn peer_root(fixture: &Fixture, provider: &AgentProvider) -> std::path::PathBuf {
     match provider {
         AgentProvider::OpenCode => fixture.root.path().into(),
         AgentProvider::Grok => fixture.root.path().join("grok"),

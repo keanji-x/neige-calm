@@ -7,7 +7,7 @@ use crate::extract::Json;
 use crate::harness::token_usage::planner_context_usage_from_header;
 use crate::state::RouteState;
 use axum::response::{IntoResponse, Response};
-use calm_types::conversation::{InputDeliveryFact, PendingInput};
+use calm_types::conversation::PendingInput;
 use calm_types::conversation_display::*;
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
@@ -164,36 +164,17 @@ pub(super) async fn read(
         .await?;
         let selection = crate::planner_model::CardModelSelection::from_payload(&card.payload)
             .unwrap_or_default();
-        let unknown = snapshot
-            .canonical_inputs
-            .active
-            .as_ref()
-            .is_some_and(|active| {
-                snapshot.canonical_inputs.attempts.iter().any(|a| {
-                    active.submission_ids.contains(&a.attempt.submission_id)
-                        && !snapshot.canonical_inputs.is_human_resolved(&a.attempt)
-                        && matches!(
-                            a.delivery,
-                            InputDeliveryFact::CrossingUnknown | InputDeliveryFact::Unknown
-                        )
-                })
-            });
         let usage = planner_context_usage_from_header(header.clone())
             .map(super::planner_cards::PlannerRunTokenUsage::from);
-        let resolved_waiting = snapshot
-            .canonical_inputs
-            .resolved_execution_without_target();
         let blocked_reason = header.wedged_reason.clone().or(issuance_block).or_else(|| {
-            runtime.state.is_terminal().then(|| if runtime.state == calm_types::worker::WorkerSessionState::Failed {
+            runtime.state.is_terminal().then(|| {
+                if runtime.state == calm_types::worker::WorkerSessionState::Failed {
                 "Execution is held after this session failed. Messages remain saved."
             } else {
                 "Execution is held because this session is no longer active. Messages remain saved."
-            }.into())
-        }).or_else(|| resolved_waiting.then(|| "Input resolved by a Human. Further input waits for the original thread to settle.".into()))
-                .or_else(|| unknown.then(||
-                "Delivery could not be confirmed. This message is held to avoid sending it twice.".into()))
-                .or_else(|| (!pending_inputs.is_empty() && handle_fence.is_none())
-                    .then(|| "Message saved. Execution has not started.".into()));
+            }.into()
+            })
+        });
         Json(PlannerRunReadResponse::Conversation(Box::new(
             ConversationRunResponse {
                 native_turn_id: (header.phase == crate::harness::HarnessPhaseTag::TurnRunning)

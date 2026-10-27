@@ -166,7 +166,7 @@ it('does not infer a quiet reply batch from one canonical report observation',as
 it('shows saved messages without a native thread, keeps actual other authors, and rereads the same history',async()=>{
   const errors=vi.spyOn(console,'error');
   await page.viewport(1280,800);
-  const f=fixture([human('message-jian','jian','Jian',1),human('message-alice','alice','Alice',2)],{state:'idle',phase:'idle',blockedReason:'Message saved. Execution has not started.',terminalTimeout:null,pendingInputs:[]});
+  const f=fixture([human('message-jian','jian','Jian',1),human('message-alice','alice','Alice',2)],{state:'idle',phase:'idle',blockedReason:null,terminalTimeout:null,pendingInputs:[]});
   await page.getByRole('button',{name:/Conversation Daily Planner conversation/}).click();
   await waitFor(()=>expect(screen.getAllByText('Same saved words',{exact:true})).toHaveLength(2));
   await expect.element(page.getByText('Alice',{exact:true})).toBeVisible();
@@ -183,7 +183,7 @@ it('shows saved messages without a native thread, keeps actual other authors, an
   expect(errors.mock.calls.filter(args => String(args[0]).includes('Cannot update a component'))).toEqual([]);
 });
 it('an acknowledged message removed before the first read leaves no optimistic or remembered body',async()=>{
-  const f=fixture([],{state:'idle',phase:'idle',blockedReason:'Message saved. Execution has not started.',terminalTimeout:null,pendingInputs:[]},()=>[{cursor:cursor(1),source:{kind:'removed',identity:{kind:'human',message_id:'ack-message'}}}]);
+  const f=fixture([],{state:'idle',phase:'idle',blockedReason:null,terminalTimeout:null,pendingInputs:[]},()=>[{cursor:cursor(1),source:{kind:'removed',identity:{kind:'human',message_id:'ack-message'}}}]);
   await page.getByRole('button',{name:/Conversation Daily Planner conversation/}).click();
   const field=page.getByRole('combobox',{name:'Message'});
   await expect.element(field).toHaveAttribute('contenteditable','true');
@@ -376,4 +376,51 @@ it.each(['failed', 'exited'] as const)('canonical OpenCode Unknown offers Keep w
   expect(screen.queryByRole('button',{name:/Retry/})).toBeNull();
   await page.screenshot({path:`./__screenshots__/canonical-opencode-unknown-${state}.png`});
   f.client.clear();
+});
+
+
+it.each(['codex','claude','opencode','grok'] as const)('keeps %s sending informational while retaining genuine uncertainty',async provider=>{
+  const attempt:NonNullable<ConversationActiveInput['submissions'][number]['attempt']>={
+    attempt_id:'attempt',revision:'1',delivery:'crossing_unknown',
+    target:{provider,thread_id:'thread',native_session_id:null,native_turn_id:null,local_turn_id:null,rpc_request_id:null},
+    invocation:{kind:'prior_invocation_not_recorded'},resolution:null,
+    actions:{keep:{kind:'available'},retry:{kind:'unavailable',reason:'unsupported_source'}},
+  };
+  const run:{provider:AgentProvider;state:WorkerSessionState;phase:HarnessPhaseTag;blockedReason:null;terminalTimeout:null;pendingInputs:ConversationPendingInput[];activeInput:ConversationActiveInput|null}={
+    provider,state:'idle',phase:'idle',blockedReason:null,terminalTimeout:null,
+    pendingInputs:[{kind:'human',message_id:'message',revision:1,queue_position:1,queued_at_ms:1}],activeInput:null,
+  };
+  const f=fixture([human('message','jian','Jian',1,'Follow this saved message')],run);
+  const refresh=async()=>{await f.client.invalidateQueries({queryKey:[...queryKeys.plannerRun('daily-planner'),'conversation_v1']});};
+  const noFalseAlarm=()=>{
+    expect(screen.queryByText('Message saved. Execution has not started.',{exact:true})).toBeNull();
+    expect(screen.queryByText('Delivery could not be confirmed. This message is held to avoid sending it twice.',{exact:true})).toBeNull();
+    expect(screen.queryByText('Delivery not confirmed',{exact:true})).toBeNull();
+    expect(screen.queryByRole('button',{name:'Keep as delivered'})).toBeNull();
+  };
+  try {
+    await page.getByRole('button',{name:/Conversation Daily Planner conversation/}).click();
+    await expect.element(page.getByText('1 input is waiting for execution.',{exact:true})).toBeVisible();
+    noFalseAlarm();
+    run.pendingInputs=[];run.state='running';run.phase='issuing_turn';
+    run.activeInput={current_execution_id:'logical',submissions:[{carrier_id:'original-retained',logical_turn_id:'logical',submission_id:'submission',attempt}]};
+    await refresh();
+    await expect.element(page.getByRole('button',{name:'Stop',exact:true})).toBeVisible();
+    noFalseAlarm();
+    run.phase='turn_running';
+    run.activeInput={...run.activeInput,submissions:[{...run.activeInput.submissions[0],attempt:{...attempt,delivery:'accepted',revision:'2'}}]};
+    await refresh();
+    await expect.element(page.getByText('Running',{exact:true})).toBeVisible();
+    noFalseAlarm();
+    run.state='idle';run.phase='turn_completed';run.activeInput=null;
+    await refresh();
+    await waitFor(()=>expect(screen.queryByRole('button',{name:'Stop'})).toBeNull());
+    noFalseAlarm();
+    // A later attempt ended without a receipt; the accepted attempt is never downgraded.
+    run.activeInput={current_execution_id:null,submissions:[{carrier_id:'original-retained',logical_turn_id:'later-logical',submission_id:'later-submission',attempt:{...attempt,attempt_id:'later-attempt',delivery:'unknown'}}]};
+    await refresh();
+    await expect.element(page.getByText('Delivery not confirmed',{exact:true})).toBeVisible();
+    await expect.element(page.getByRole('button',{name:'Keep as delivered',exact:true})).toBeVisible();
+    await page.screenshot({path:`./__screenshots__/canonical-${provider}-genuine-uncertainty.png`});
+  } finally {cleanup();f.client.clear();}
 });

@@ -36,3 +36,17 @@ implementation. Cover exact and mismatched/missing replays, acknowledgement befo
 the dispatch return, normal continuation, ACP completed vs unknown receipts, and
 failed current carriers. Run focused suites, mutation verification of evidence
 matching, contract/text checks, quick Rust gates and two independent L2 reviews.
+
+## Input feedback ownership
+Canonical queue and delivery feedback have one typed read contract:
+`pending_inputs` carries saved work; `active_input` carries the exact current
+execution, native delivery evidence and Human decisions. A live invocation can
+still be awaiting its native receipt; that fact is not an execution error.
+The shared presentation selector consumes these declared identities and current
+run readiness, retaining real uncertainty after settlement or runtime failure.
+
+`blocked_reason` reports operational issuance/runtime failures only. It must not
+reclassify queue, receipt or Human-resolution facts into a second delivery warning.
+Removing that duplicate projection changes neither dispatch authority nor the
+checkpoint, native evidence, retry barrier or wire schema. The presentation-only
+follow-up is L1 and is verified at authenticated HTTP and browser entry points.
