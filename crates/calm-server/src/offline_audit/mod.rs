@@ -12,3 +12,10 @@ mod root_tests;
 
 #[cfg(test)]
 mod read_error_tests;
+
+#[cfg(target_os = "linux")]
+mod publication;
+#[cfg(target_os = "linux")]
+pub use publication::{
+    BuildError, BuildWriter, PublicationError, PublishedDurable, Publisher, Stage,
+};

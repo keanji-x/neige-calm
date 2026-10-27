@@ -546,12 +546,20 @@ pub(crate) mod read_fault {
     use std::{cell::RefCell, collections::VecDeque, io};
 
     thread_local! {
-        static FAULTS: RefCell<Option<VecDeque<Option<i32>>>> = const { RefCell::new(None) };
+        static FAULTS: RefCell<Option<VecDeque<Option<io::Error>>>> = const { RefCell::new(None) };
     }
 
     pub(crate) struct Scope;
 
     pub(crate) fn install(reads: impl IntoIterator<Item = Option<i32>>) -> Scope {
+        install_errors(
+            reads
+                .into_iter()
+                .map(|errno| errno.map(io::Error::from_raw_os_error)),
+        )
+    }
+
+    pub(crate) fn install_errors(reads: impl IntoIterator<Item = Option<io::Error>>) -> Scope {
         FAULTS.with(|faults| {
             let mut faults = faults.borrow_mut();
             assert!(faults.is_none(), "nested read fault scope");
@@ -575,7 +583,7 @@ pub(crate) mod read_fault {
                 .flatten()
         });
         match fault {
-            Some(errno) => Err(io::Error::from_raw_os_error(errno)),
+            Some(error) => Err(error),
             None => Ok(()),
         }
     }
