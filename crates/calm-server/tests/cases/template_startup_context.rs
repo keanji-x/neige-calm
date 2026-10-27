@@ -288,7 +288,7 @@ async fn template_startup_snapshot_is_server_owned_and_sticky() {
 }
 
 #[tokio::test]
-async fn template_startup_does_not_inject_into_blank_tracks_or_assistants() {
+async fn template_startup_does_not_inject_into_blank_tracks() {
     let b = boot().await;
     let (status, _) = b
         .create_track(Some("blank-context"), Some("Discuss options only"))
@@ -311,40 +311,8 @@ async fn template_startup_does_not_inject_into_blank_tracks_or_assistants() {
             .unwrap()
             .contains("## Selected Template\n")
     );
-    let track = create(&b, "investigation").await;
-    let (status, response) = request(
-        &b,
-        "POST",
-        &format!("/api/tracks/{track}/conversations"),
-        json!({"text": "Explain the findings"}),
-    )
-    .await;
-    assert_eq!(status, StatusCode::CREATED, "{response}");
-    assert!(
-        b.started_turn_text("Explain the findings")
-            .await
-            .contains("Explain the findings")
-    );
-    let starts = b
-        .state
-        .shared_codex_appserver
-        .started_thread_params_for_test();
-    assert_eq!(starts.len(), 3);
-    assert!(
-        !starts[1]
-            .0
-            .as_ref()
-            .unwrap()
-            .contains("## Selected Template\n")
-    );
-    assert!(
-        !starts[2]
-            .0
-            .as_ref()
-            .unwrap()
-            .contains("## Selected Template\n"),
-        "a conversation is not the Planner"
-    );
+    let input = recorded_prompt(&b, "Discuss options only");
+    assert!(!input.contains("## Selected Template\n"));
     b.shutdown_harnesses().await;
 }
 

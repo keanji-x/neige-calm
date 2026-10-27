@@ -4,6 +4,10 @@ use super::*;
 use calm_truth::db::RepoRead;
 
 pub(super) async fn track(app: &axum::Router, cookie: &str) -> String {
+    track_with_template(app, cookie, None).await
+}
+
+async fn track_with_template(app: &axum::Router, cookie: &str, template: Option<&str>) -> String {
     let area = post(
         app,
         cookie,
@@ -12,17 +16,14 @@ pub(super) async fn track(app: &axum::Router, cookie: &str) -> String {
         json!({"name":"Assistant canonical","color":"#123456"}),
     )
     .await;
-    let created = post(
-        app,
-        cookie,
-        "/api/tracks",
-        "track",
-        json!({
-            "area_id":area["id"],"title":"Assistant parent","planner_provider":"codex",
-            "theme":{"fg":[255,255,255],"bg":[0,0,0]}
-        }),
-    )
-    .await;
+    let mut body = json!({
+        "area_id":area["id"],"title":"Assistant parent","planner_provider":"codex",
+        "theme":{"fg":[255,255,255],"bg":[0,0,0]}
+    });
+    if let Some(template) = template {
+        body["template_id"] = json!(template);
+    }
+    let created = post(app, cookie, "/api/tracks", "track", body).await;
     created["id"].as_str().unwrap().to_owned()
 }
 
@@ -138,13 +139,18 @@ async fn outage_replay_preserves_original_ack_without_resend() {
 async fn side_context_activation_uses_assistant_policy_and_original_ack_after_crossing() {
     let fixture = Fixture::new().await;
     let (state, app, cookie) = fixture.application().await;
-    let track = track(&app, &cookie).await;
+    let track = track_with_template(&app, &cookie, Some("investigation")).await;
     let planner: String =
         sqlx::query_scalar("SELECT id FROM cards WHERE track_id=?1 AND role='planner'")
             .bind(&track)
             .fetch_one(fixture.repo.pool())
             .await
             .unwrap();
+    let parent = fixture.repo.card_get(&planner).await.unwrap().unwrap();
+    let snapshot_body = parent.payload["template_context"]["body"]
+        .as_str()
+        .expect("templated parent persists its startup snapshot");
+    assert!(!snapshot_body.is_empty());
     let (client, mut peer) = connect(&state.shared_codex_appserver).await;
     let uri = format!("/api/tracks/{track}/conversations");
     let body = json!({"provider":"codex","text":FIRST_BODY,"side":{"source_card_id":planner,"context":"Frozen side excerpt"}});
@@ -159,6 +165,9 @@ async fn side_context_activation_uses_assistant_policy_and_original_ack_after_cr
                     send(&mut peer, json!({"id":call["id"],"result":{"config":{}}})).await
                 }
                 "thread/start" => {
+                    let instructions = call["params"]["developerInstructions"].as_str().unwrap();
+                    assert!(!instructions.contains("## Selected Template\n"));
+                    assert!(!instructions.contains(snapshot_body));
                     let params = call["params"].to_string();
                     assert!(
                         params.contains("assistant"),
@@ -185,7 +194,16 @@ async fn side_context_activation_uses_assistant_policy_and_original_ack_after_cr
     })
     .await
     .expect("retained Assistant activates accepted input");
-    let input = start["params"]["input"].to_string();
+    // Inspect the raw first Context/Text payload, before JSON/Debug escaping.
+    let items = start["params"]["input"].as_array().unwrap();
+    let mut input = String::new();
+    for item in items {
+        assert_eq!(item["type"], "text");
+        let text = item["text"].as_str().unwrap();
+        assert!(!text.contains("## Selected Template\n"));
+        assert!(!text.contains(snapshot_body));
+        input.push_str(text);
+    }
     assert!(
         input.contains("Frozen side excerpt"),
         "frozen context in the original render plan: {input}"
@@ -193,6 +211,12 @@ async fn side_context_activation_uses_assistant_policy_and_original_ack_after_cr
     assert!(input.contains(FIRST_BODY));
     assert!(input.find("Frozen side excerpt").unwrap() < input.find(FIRST_BODY).unwrap());
     let before = carrier(&fixture, card).await;
+    // Follow this receipt's card -> worker -> native thread, rather than
+    // attributing a thread by global start order or count.
+    assert_initial_carrier(&created["initialInput"]["receipt"], &before.0);
+    let native_thread = before.1.header.last_thread_id.as_deref().unwrap();
+    assert_eq!(native_thread, "assistant-thread");
+    assert_eq!(start["params"]["threadId"], native_thread);
     assert!(before.1.canonical_inputs.pending.is_empty());
     assert_eq!(before.1.canonical_inputs.attempts.len(), 1);
     // Lose the provider answer after crossing. A replay is acceptance evidence only.
