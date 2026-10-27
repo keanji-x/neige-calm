@@ -4,25 +4,35 @@ use super::claude_creation_tests::assistant::{configure, wait_frame};
 use super::*;
 
 async fn run(app: &axum::Router, cookie: &str, uri: &str) -> Value {
-    let response = app
-        .clone()
-        .oneshot(
-            Request::get(uri)
-                .header(header::COOKIE, cookie)
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    let status = response.status();
-    let bytes = response.into_body().collect().await.unwrap().to_bytes();
-    assert_eq!(
-        status,
-        StatusCode::OK,
-        "{}",
-        String::from_utf8_lossy(&bytes)
-    );
-    serde_json::from_slice(&bytes).unwrap()
+    tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::get(uri)
+                        .header(header::COOKIE, cookie)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let status = response.status();
+            let bytes = response.into_body().collect().await.unwrap().to_bytes();
+            let value: Value = serde_json::from_slice(&bytes).unwrap();
+            // The read contract rejects a snapshot whose runtime fence changed mid-read.
+            if status == StatusCode::CONFLICT
+                && value["code"] == "conflict"
+                && value["error"] == "conversation runtime changed while reading"
+            {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+                continue;
+            }
+            assert_eq!(status, StatusCode::OK, "{value}");
+            return value;
+        }
+    })
+    .await
+    .expect("the run projection must reach a stable runtime fence")
 }
 
 async fn wait_run(
