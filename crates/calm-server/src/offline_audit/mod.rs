@@ -19,3 +19,6 @@ mod publication;
 pub use publication::{
     BuildError, BuildWriter, PublicationError, PublishedDurable, Publisher, Stage,
 };
+
+#[cfg(target_os = "linux")]
+pub mod export;

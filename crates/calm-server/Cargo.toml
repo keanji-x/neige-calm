@@ -484,3 +484,11 @@ path = "tests/track_suite.rs"
 [[test]]
 name = "worker_exec_shell_env"
 path = "tests/worker_exec_shell_env.rs"
+
+[[bin]]
+name = "offline-audit"
+path = "src/bin/offline-audit.rs"
+
+[[test]]
+name = "offline_upgrade"
+path = "tests/offline_upgrade.rs"

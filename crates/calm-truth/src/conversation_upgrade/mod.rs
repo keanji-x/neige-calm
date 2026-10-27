@@ -1,5 +1,9 @@
-//! B1a raw offline evidence only. This is not complete B1, classification,
-//! qualification, a seal, or permission to start/apply a deployment.
+//! Complete raw offline BlockedAudit evidence and versioned manifests.
+//! No classification, qualification, or permission to start/apply a deployment.
+mod manifest;
+pub use manifest::{
+    AuditManifest, FileEvidence, ManifestError, SourceDeclaration, evidence_digest,
+};
 mod rows;
 mod schema;
 mod snapshot;
@@ -145,3 +149,6 @@ pub(super) fn unsupported(scope: &str, reason: &str) -> SnapshotError {
 mod boundary_tests;
 #[cfg(test)]
 mod raw_tests;
+
+#[cfg(test)]
+mod manifest_tests;
