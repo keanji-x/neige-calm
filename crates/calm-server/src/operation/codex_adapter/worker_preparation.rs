@@ -18,10 +18,14 @@ impl crate::operation::workspace_lease::worker::preparation::WorkerAdmission
         let card_title =
             crate::operation::task_key_for_card_title(tx, &payload.idempotency_key).await;
         let card_id = new_id();
-        let runtime_id = new_id();
+        let worker_session_id = new_id();
         let track_id = TrackId::from(payload.track_id.clone());
         let cwd = plan.path.to_string_lossy().to_string();
-        let env = build_codex_env(self.repo.as_ref(), self.codex.as_ref(), &card_id).await?;
+        let selection = self.codex_backends.select_new_worker_tx(tx).await?;
+        // Single preserves the legacy client home; pools use the selected daemon home.
+        let legacy_home = self.codex.codex_home_dir();
+        let home = selection.home(legacy_home);
+        let env = build_codex_env(self.repo.as_ref(), self.codex.as_ref(), &card_id, home).await?;
         let rendered_prompt = render_task_worker_prompt_tx(
             tx,
             &payload.idempotency_key,
@@ -42,7 +46,7 @@ impl crate::operation::workspace_lease::worker::preparation::WorkerAdmission
         let (mut card, term, _mcp_token) = card_with_codex_create_tx(
             tx,
             card_id.clone(),
-            &runtime_id,
+            &worker_session_id,
             Some(op.id.as_str()),
             track_id,
             None,
@@ -58,6 +62,8 @@ impl crate::operation::workspace_lease::worker::preparation::WorkerAdmission
             RequestTheme::default_dark(),
         )
         .await?;
+
+        selection.persist_tx(tx, &worker_session_id).await?;
 
         let (lease, lease_event) =
             acquire_workspace_lease_tx(tx, &card_id, card.track_id.as_str(), &op.id, &plan).await?;
@@ -96,7 +102,7 @@ impl crate::operation::workspace_lease::worker::preparation::WorkerAdmission
         );
         output.data = json!({
             "card_id": card.id,
-            "runtime_id": runtime_id,
+            "runtime_id": worker_session_id,
             "track_id": card.track_id,
             "terminal_id": term.id,
             "cwd": cwd,

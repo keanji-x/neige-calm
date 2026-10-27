@@ -19,7 +19,7 @@ use support::worker_flow as wf;
 fn driver(repo: &Arc<SqlxRepo>, shared: Arc<SharedCodexAppServer>) -> Arc<WorkerFlowDriver> {
     WorkerFlowDriver::new_with_flow_options_for_test(
         repo.clone(),
-        shared,
+        calm_server::agent_backend_pool::codex::CodexBackends::single(shared),
         Arc::new(WorkerFlowSink::new(repo.clone())),
         EventBus::new(),
         CodexRolloutFlowSourceOptions {

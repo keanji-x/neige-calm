@@ -328,7 +328,7 @@ pub async fn boot_forge_e2e_fixture(
                 Arc::new(CodexWorkerAdapter::new(
                     route_repo.clone(),
                     codex.clone(),
-                    shared.clone(),
+            calm_server::agent_backend_pool::codex::CodexBackends::single(shared.clone()),
                     Some(server.clone()),
                     cache.clone(),
                     track_area_cache.clone(),

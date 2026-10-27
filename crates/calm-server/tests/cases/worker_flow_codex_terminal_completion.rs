@@ -34,7 +34,9 @@ async fn codex_tail_task_exits_after_terminal_completion_without_event() {
 
     let driver = WorkerFlowDriver::new_with_flow_options_for_test(
         repo.clone(),
-        SharedCodexAppServer::new_stub(repo.clone()),
+        calm_server::agent_backend_pool::codex::CodexBackends::single(
+            SharedCodexAppServer::new_stub(repo.clone()),
+        ),
         Arc::new(WorkerFlowSink::new(repo.clone())),
         EventBus::new(),
         CodexRolloutFlowSourceOptions {

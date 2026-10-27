@@ -25,7 +25,6 @@ use tokio_util::sync::CancellationToken;
 use crate::db::Repo;
 use crate::event::EventBus;
 use crate::model::Card;
-use crate::shared_codex_appserver::SharedCodexAppServer;
 use crate::state::AppState;
 
 use self::claude_transcript::{ClaudeTranscriptFlowSource, ClaudeTranscriptFlowSourceOptions};
@@ -60,15 +59,13 @@ struct SourceTask {
 impl WorkerFlowDriver {
     pub fn new(
         repo: Arc<dyn Repo>,
-        shared_codex_appserver: Arc<SharedCodexAppServer>,
+        codex_backends: Arc<crate::agent_backend_pool::codex::CodexBackends>,
         sink: Arc<dyn WorkerFlowItemSink>,
         events: EventBus,
     ) -> Arc<Self> {
         Arc::new(Self {
             repo,
-            codex_backends: crate::agent_backend_pool::codex::CodexBackends::single(
-                shared_codex_appserver,
-            ),
+            codex_backends,
             sink,
             events,
             tasks: Mutex::new(HashMap::new()),
@@ -82,16 +79,14 @@ impl WorkerFlowDriver {
     #[cfg(any(test, feature = "fixtures"))]
     pub fn new_with_flow_options_for_test(
         repo: Arc<dyn Repo>,
-        shared_codex_appserver: Arc<SharedCodexAppServer>,
+        codex_backends: Arc<crate::agent_backend_pool::codex::CodexBackends>,
         sink: Arc<dyn WorkerFlowItemSink>,
         events: EventBus,
         flow_options: CodexRolloutFlowSourceOptions,
     ) -> Arc<Self> {
         Arc::new(Self {
             repo,
-            codex_backends: crate::agent_backend_pool::codex::CodexBackends::single(
-                shared_codex_appserver,
-            ),
+            codex_backends,
             sink,
             events,
             tasks: Mutex::new(HashMap::new()),
@@ -105,7 +100,7 @@ impl WorkerFlowDriver {
     #[cfg(any(test, feature = "fixtures"))]
     pub fn new_with_source_options_for_test(
         repo: Arc<dyn Repo>,
-        shared_codex_appserver: Arc<SharedCodexAppServer>,
+        codex_backends: Arc<crate::agent_backend_pool::codex::CodexBackends>,
         sink: Arc<dyn WorkerFlowItemSink>,
         events: EventBus,
         flow_options: CodexRolloutFlowSourceOptions,
@@ -113,9 +108,7 @@ impl WorkerFlowDriver {
     ) -> Arc<Self> {
         Arc::new(Self {
             repo,
-            codex_backends: crate::agent_backend_pool::codex::CodexBackends::single(
-                shared_codex_appserver,
-            ),
+            codex_backends,
             sink,
             events,
             tasks: Mutex::new(HashMap::new()),
@@ -131,20 +124,16 @@ impl WorkerFlowDriver {
         backends: Arc<crate::agent_backend_pool::codex::CodexBackends>,
         events: EventBus,
     ) -> Arc<Self> {
-        let mut driver = Self::from_state_parts(repo, backends.default_only().clone(), events);
-        Arc::get_mut(&mut driver)
-            .expect("new driver is exclusive")
-            .codex_backends = backends;
-        driver
+        Self::from_state_parts(repo, backends, events)
     }
 
     pub fn from_state_parts(
         repo: Arc<dyn Repo>,
-        shared_codex_appserver: Arc<SharedCodexAppServer>,
+        codex_backends: Arc<crate::agent_backend_pool::codex::CodexBackends>,
         events: EventBus,
     ) -> Arc<Self> {
         let sink: Arc<dyn WorkerFlowItemSink> = Arc::new(WorkerFlowSink::new(repo.clone()));
-        Self::new(repo, shared_codex_appserver, sink, events)
+        Self::new(repo, codex_backends, sink, events)
     }
 
     pub async fn start_on_boot(self: &Arc<Self>) -> Result<(), CoreError> {

@@ -321,6 +321,30 @@ impl SpawnCtx {
         }
     }
 
+    /// Production composition supplies the complete pool at construction.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_codex_backends(
+        repo: Arc<dyn crate::db::RouteRepo>,
+        operation_repo: Arc<dyn OperationRepo>,
+        daemon: Arc<DaemonClient>,
+        terminal_renderer: Arc<TerminalRendererRegistry>,
+        events: EventBus,
+        completion: OperationCompletionBus,
+        codex_backends: Arc<crate::agent_backend_pool::codex::CodexBackends>,
+    ) -> Self {
+        Self {
+            codex_backends: Some(codex_backends),
+            ..Self::new(
+                repo,
+                operation_repo,
+                daemon,
+                terminal_renderer,
+                events,
+                completion,
+            )
+        }
+    }
+
     pub(crate) fn with_planner_clean_proof(
         mut self,
         proof: crate::provider_execution::clean::PlannerCleanProof,

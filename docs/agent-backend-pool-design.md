@@ -811,6 +811,40 @@ PR1 验收走生产入口，测试名含 `agent_backend`：无配置只有一个
 sweeper、设置变更和删除清理覆盖全部实例；三类触发器不变量各有 truth 回归（thread 唯一性覆盖 UPDATE 和直接 INSERT）。
 不执行变异；交付报告列 B7 单因素过滤删除的预测红集。kernel gate 拥有 text/contract/quick 与聚焦测试，CI 拥有广域套件。
 
+**PR2b 启用**：default 路径须保持原安装的 home；以下示例假定 data-dir 为 `/srv/neige`。
+先为每个独立 home 分别登录（如 `CODEX_HOME=/srv/neige/codex-home codex login`
+和 `CODEX_HOME=/srv/neige/codex-other codex login`），再以
+`calm-server --data-dir /srv/neige --agent-backend-config /srv/neige/backends.json` 启动。显式 home 不会从宿主复制凭据；
+目录由运行服务的用户持有，且不可被其他用户写入。JSON 示例：
+
+```json
+{
+  "policy": "weighted_least_inflight",
+  "cooldown_after_concurrency_limit_secs": 60,
+  "cooldown_default_secs": 300,
+  "cooldown_max_secs": 3600,
+  "backends": [
+    {
+      "provider": "codex", "id": "default", "weight": 1,
+      "accepts_new_sessions": true,
+      "credentials": {"kind": "codex_home", "path": "/srv/neige/codex-home"}
+    },
+    {
+      "provider": "codex", "id": "other", "weight": 2,
+      "accepts_new_sessions": true,
+      "credentials": {"kind": "codex_home", "path": "/srv/neige/codex-other"}
+    }
+  ]
+}
+```
+
+多后端仅对新 Codex task worker 在发布事务内选择并固定绑定；Planner、assistant、交互卡和模型目录继续 default。
+readiness 要求 daemon 正在运行且无认证 hold；冷却和额度观测尚未接入。无候选时事务回滚，不回落 default；
+其错误与 daemon 不可用同为 Internal，沿用 operation 的 stuck/任务失败处理，不自动换账号重试。
+回滚到单后端运行：先结束池中的任务并停止各 daemon，再去掉 `--agent-backend-config` 参数重启；
+保留数据库及原 default home，不能将仍绑定其他账号的存活会话当作 default 恢复。
+这只回滚运行配置，不降级数据库 schema；需继续既有绑定时保留原配置并用 `accepts_new_sessions: false` 停止接新流量。
+
 ## 12. 风险
 
 | # | 风险 | 缓解/停止条件 |

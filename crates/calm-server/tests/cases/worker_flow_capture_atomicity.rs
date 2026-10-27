@@ -494,7 +494,9 @@ async fn boot(claude: bool, card: &str) {
     let repo = open(case.dir.path()).await;
     let driver = WorkerFlowDriver::new_with_source_options_for_test(
         repo.clone(),
-        SharedCodexAppServer::new_stub(repo.clone()),
+        calm_server::agent_backend_pool::codex::CodexBackends::single(
+            SharedCodexAppServer::new_stub(repo.clone()),
+        ),
         Arc::new(WorkerFlowSink::new(repo.clone())),
         EventBus::new(),
         CodexRolloutFlowSourceOptions {

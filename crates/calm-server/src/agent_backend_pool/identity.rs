@@ -317,6 +317,10 @@ impl BackendIsolation {
         self.config.is_multi_backend()
     }
 
+    pub fn selection_policy(&self) -> super::policy::SelectionPolicy {
+        self.config.policy
+    }
+
     pub fn profiles(&self) -> &[super::config::BackendProfile] {
         &self.config.backends
     }

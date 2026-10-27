@@ -1671,7 +1671,9 @@ async fn spawn_failure_status_detail_carries_the_real_reason() {
     let codex: Arc<dyn ProviderAdapter> = Arc::new(CodexWorkerAdapter::new(
         route_repo,
         Arc::new(CodexClient::new_stub()),
-        boot.shared_codex_appserver.clone(),
+        calm_server::agent_backend_pool::codex::CodexBackends::single(
+            boot.shared_codex_appserver.clone(),
+        ),
         None,
         boot.card_role_cache.clone(),
         boot.track_area_cache.clone(),
@@ -2641,7 +2643,9 @@ async fn every_registered_task_adapter_refuses_material_context() {
     let codex: Arc<dyn ProviderAdapter> = Arc::new(CodexWorkerAdapter::new(
         route_repo.clone(),
         Arc::new(CodexClient::new_stub()),
-        boot.shared_codex_appserver.clone(),
+        calm_server::agent_backend_pool::codex::CodexBackends::single(
+            boot.shared_codex_appserver.clone(),
+        ),
         None,
         boot.card_role_cache.clone(),
         boot.track_area_cache.clone(),

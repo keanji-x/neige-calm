@@ -73,7 +73,9 @@ async fn worker_lease_harness_with_disk(disk: bool) -> WorkerLeaseHarness {
         adapter: CodexWorkerAdapter::new(
             route_repo,
             Arc::new(CodexClient::new_stub()),
-            SharedCodexAppServer::new_stub(full_repo),
+            crate::agent_backend_pool::codex::CodexBackends::single(
+                SharedCodexAppServer::new_stub(full_repo),
+            ),
             None,
             CardRoleCache::new(),
             TrackAreaCache::new(),
@@ -756,3 +758,6 @@ async fn worker_prepared_evidence_cannot_be_consumed_by_a_new_claim() {
 
 #[cfg(test)]
 mod agent_backend_tests;
+
+#[cfg(test)]
+mod agent_backend_binding_tests;

@@ -12,27 +12,49 @@ use std::time::Duration;
 
 /// Build real pool instances; only the native endpoints are controlled by fixtures.
 pub(crate) async fn pool_for_repo(repo: Arc<SqlxRepo>) -> (tempfile::TempDir, Arc<CodexBackends>) {
+    pool_with_weights(repo, &[1, 1]).await
+}
+
+pub(crate) async fn pool_with_weights(
+    repo: Arc<SqlxRepo>,
+    weights: &[u32],
+) -> (tempfile::TempDir, Arc<CodexBackends>) {
     let root = tempfile::tempdir().unwrap();
     let mut cfg = crate::config::Config::parse_from(["calm-server", "--codex-bin", "/bin/false"]);
     cfg.data_dir = Some(root.path().into());
     let config = root.path().join("backends.json");
     std::fs::write(&config, json!({
         "cooldown_after_concurrency_limit_secs":60,"cooldown_default_secs":300,"cooldown_max_secs":3600,
-        "backends": (["default", "other"].map(|id| json!({
-            "provider":"codex", "id":id, "weight":1, "accepts_new_sessions":true,
+        "backends": (["default", "other"].into_iter().zip(weights).map(|(id, weight)| json!({
+            "provider":"codex", "id":id, "weight":weight, "accepts_new_sessions":true,
             "credentials":{"kind":"codex_home", "path":root.path().join(if id == "default" { "codex-home" } else { id })}
-        })))
+        })).collect::<Vec<_>>())
     }).to_string()).unwrap();
     cfg.agent_backend_config = Some(config);
+    let pool = build_pool(&cfg, repo).await;
+    (root, pool)
+}
+
+pub(crate) async fn rebuild_pool(
+    root: &std::path::Path,
+    repo: Arc<SqlxRepo>,
+) -> Arc<CodexBackends> {
+    let mut cfg = crate::config::Config::parse_from(["calm-server", "--codex-bin", "/bin/false"]);
+    cfg.data_dir = Some(root.into());
+    cfg.agent_backend_config = Some(root.join("backends.json"));
+    build_pool(&cfg, repo).await
+}
+
+async fn build_pool(cfg: &crate::config::Config, repo: Arc<SqlxRepo>) -> Arc<CodexBackends> {
     let repo: Arc<dyn Repo> = repo;
-    let isolation = BackendIsolation::prepare(&cfg, &repo).await.unwrap();
+    let isolation = BackendIsolation::prepare(cfg, &repo).await.unwrap();
     let pending = Arc::new(
         crate::pending_codex_threads::PendingThreadStartRegistry::new(
             repo.clone(),
             crate::event::EventBus::new(),
         ),
     );
-    (root, CodexBackends::build(&cfg, repo, pending, isolation))
+    CodexBackends::build(cfg, repo, pending, isolation)
 }
 
 pub(crate) async fn bind(repo: &SqlxRepo, session: &str, thread: Option<&str>) {

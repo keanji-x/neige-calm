@@ -71,7 +71,13 @@ impl ProviderAdapter for CodexAdapter {
         let card_id = new_id();
         let runtime_id = payload.worker_session_id.clone().unwrap_or_else(new_id);
         let track_id = payload.request.track_id.clone();
-        let env = build_codex_env(self.repo.as_ref(), self.codex.as_ref(), &card_id).await?;
+        let env = build_codex_env(
+            self.repo.as_ref(),
+            self.codex.as_ref(),
+            &card_id,
+            self.codex.codex_home_dir(),
+        )
+        .await?;
         let scope = card_scope(
             self.repo.as_ref(),
             CardId::from(card_id.clone()),

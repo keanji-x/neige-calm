@@ -9,15 +9,30 @@ use crate::shared_codex_appserver::native_owner_tests::{
 use calm_session::control::{ControlMsg, ControlReply};
 
 #[tokio::test]
-async fn agent_backend_worker_spawn_redrive_mints_and_turns_on_bound_instance() {
+async fn agent_backend_publish_worker_binds_before_thread_start() {
     let mut harness = worker_lease_harness().await;
     let (_root, pool) = pool_for_repo(harness.repo.clone()).await;
-    let (op_repo, op, mut output) = prepare_worker_app_server_interact(&harness, "a").await;
-    let session_id = output.output_string("runtime_id", "test").unwrap();
-    bind(&harness.repo, &session_id, None).await;
-    let (_a, mut default, _fa) = connect_with_reader(pool.default_only()).await;
     let other = pool.instances()[1].clone();
     let (_b, mut peer, _fb) = connect_with_reader(&other).await;
+    harness.adapter.codex_backends = pool.clone();
+    let (op_repo, op, mut output) = prepare_worker_app_server_interact(&harness, "a").await;
+    let session_id = output.output_string("runtime_id", "test").unwrap();
+    let binding: (String, Option<String>) = sqlx::query_as(
+        "SELECT b.backend_id,s.thread_id FROM worker_session_backends b
+         JOIN worker_sessions s ON s.id=b.worker_session_id WHERE s.id=?",
+    )
+    .bind(&session_id)
+    .fetch_one(harness.repo.pool())
+    .await
+    .unwrap();
+    assert_eq!(binding, ("other".into(), None));
+    assert_eq!(
+        output.data["env"]["CODEX_HOME"],
+        other.shared_home().path().to_str().unwrap()
+    );
+    assert_no_request(&mut peer).await;
+    // A becomes ready after commit. The spawn and redrive must retain B.
+    let (_a, mut default, _fa) = connect_with_reader(pool.default_only()).await;
     let dir = calm_test_sockets::socket_dir("pool-viewer");
     let sock = dir.path().join("viewer.sock");
     let listener = tokio::net::UnixListener::bind(&sock).unwrap();

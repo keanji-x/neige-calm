@@ -49,7 +49,9 @@ async fn worker_flow_driver_boot_enumerates_active_codex_and_claude_runtimes() {
 
     let driver = WorkerFlowDriver::new_with_source_options_for_test(
         repo.clone(),
-        SharedCodexAppServer::new_stub(repo.clone()),
+        calm_server::agent_backend_pool::codex::CodexBackends::single(
+            SharedCodexAppServer::new_stub(repo.clone()),
+        ),
         Arc::new(WorkerFlowSink::new(repo)),
         EventBus::new(),
         CodexRolloutFlowSourceOptions {
@@ -283,7 +285,9 @@ async fn worker_flow_driver_captures_legacy_claude_card_from_hook_transcript_pat
 
     let driver = WorkerFlowDriver::new_with_source_options_for_test(
         repo.clone(),
-        SharedCodexAppServer::new_stub(repo.clone()),
+        calm_server::agent_backend_pool::codex::CodexBackends::single(
+            SharedCodexAppServer::new_stub(repo.clone()),
+        ),
         Arc::new(WorkerFlowSink::new(repo.clone())),
         EventBus::new(),
         CodexRolloutFlowSourceOptions {

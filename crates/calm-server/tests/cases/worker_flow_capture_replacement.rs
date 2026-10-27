@@ -23,7 +23,9 @@ pub(super) async fn replacement(claude: bool, card: &str) {
     let (case, repo) = Case::new(claude, false, card).await;
     let driver = WorkerFlowDriver::new_with_source_options_for_test(
         repo.clone(),
-        SharedCodexAppServer::new_stub(repo.clone()),
+        calm_server::agent_backend_pool::codex::CodexBackends::single(
+            SharedCodexAppServer::new_stub(repo.clone()),
+        ),
         Arc::new(WorkerFlowSink::new(repo.clone())),
         EventBus::new(),
         CodexRolloutFlowSourceOptions {

@@ -989,7 +989,9 @@ async fn worker_recovery_compensation_falls_back_to_persisted_turn_interrupt() {
     let adapter = CodexWorkerAdapter::new(
         route_repo.clone(),
         state.codex.clone(),
-        state.shared_codex_appserver.clone(),
+        calm_server::agent_backend_pool::codex::CodexBackends::single(
+            state.shared_codex_appserver.clone(),
+        ),
         None,
         state.card_role_cache.clone(),
         state.track_area_cache.clone(),
@@ -1043,7 +1045,7 @@ async fn worker_recovery_compensation_falls_back_to_persisted_turn_interrupt() {
     let recovered_adapter = CodexWorkerAdapter::new(
         route_repo.clone(),
         state.codex.clone(),
-        recovered_shared.clone(),
+        calm_server::agent_backend_pool::codex::CodexBackends::single(recovered_shared.clone()),
         None,
         state.card_role_cache.clone(),
         state.track_area_cache.clone(),

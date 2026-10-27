@@ -69,13 +69,30 @@ pub(crate) async fn connect_with_reader(
     (client, peer, forwarder)
 }
 
+/// Install the same pending cold replay state as a newly launched daemon.
+pub(crate) async fn connect_for_cold_replay(
+    daemon: &Arc<SharedCodexAppServer>,
+) -> (Arc<CodexAppServer>, Peer, JoinHandle<()>) {
+    let (client, peer, forwarder) = connect_unpublished(daemon).await;
+    publish_replay(
+        daemon,
+        client.clone(),
+        ConnectionReplay::Pending(ReplayPlan::new(ResumeMode::ColdRespawn)),
+    )
+    .await;
+    (client, peer, forwarder)
+}
+
 pub(crate) async fn connect(daemon: &Arc<SharedCodexAppServer>) -> (Arc<CodexAppServer>, Peer) {
     let (client, peer, _forwarder) = connect_with_reader(daemon).await;
     (client, peer)
 }
 
-/// Exercise the actual automatic recovery owner with no request source. Cache
-/// attribution is populated by the real native receipt, never this helper.
+/// Exercise the production cold-boot cache reconstruction from durable sessions.
+pub(crate) async fn rebuild_cache(daemon: &SharedCodexAppServer) {
+    daemon.rebuild_thread_cache_from_db().await.unwrap();
+}
+
 pub(crate) async fn resume_cached_without_source(daemon: &SharedCodexAppServer) {
     daemon.resume_cached_threads().await;
 }

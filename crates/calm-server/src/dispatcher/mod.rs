@@ -294,7 +294,7 @@ fn dispatcher_operation_runtime(
     let codex_worker_adapter = Arc::new(CodexWorkerAdapter::new(
         route_repo.clone(),
         codex.clone(),
-        shared_codex_appserver.clone(),
+        crate::agent_backend_pool::codex::CodexBackends::single(shared_codex_appserver.clone()),
         mcp_server.clone(),
         write.role_cache().clone(),
         write.area_cache().clone(),

@@ -35,7 +35,7 @@ async fn codex_rollout_session_meta_mismatch_exits_without_ingesting_wrong_file(
 
     let driver = WorkerFlowDriver::new_with_flow_options_for_test(
         repo.clone(),
-        shared_codex,
+        calm_server::agent_backend_pool::codex::CodexBackends::single(shared_codex),
         Arc::new(WorkerFlowSink::new(repo.clone())),
         events.clone(),
         CodexRolloutFlowSourceOptions {

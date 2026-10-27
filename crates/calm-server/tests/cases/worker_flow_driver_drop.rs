@@ -21,7 +21,7 @@ async fn worker_flow_driver_drop_cancels_tail_tasks() {
 
     let driver = WorkerFlowDriver::new(
         repo.clone(),
-        shared,
+        calm_server::agent_backend_pool::codex::CodexBackends::single(shared),
         Arc::new(WorkerFlowSink::new(repo)),
         EventBus::new(),
     );
@@ -57,7 +57,7 @@ async fn worker_flow_driver_drop_cancels_start_on_boot_tail_tasks() {
 
     let driver = WorkerFlowDriver::new_with_flow_options_for_test(
         repo.clone(),
-        shared,
+        calm_server::agent_backend_pool::codex::CodexBackends::single(shared),
         Arc::new(WorkerFlowSink::new(repo)),
         EventBus::new(),
         CodexRolloutFlowSourceOptions {

@@ -161,7 +161,7 @@ async fn world_with_options(
             let adapter = CodexWorkerAdapter::new(
                 boot.repo.clone(),
                 Arc::new(CodexClient::new_stub()),
-                worker_shared,
+                calm_server::agent_backend_pool::codex::CodexBackends::single(worker_shared),
                 Some(worker_mcp.clone()),
                 boot.card_role_cache.clone(),
                 track_areas.clone(),

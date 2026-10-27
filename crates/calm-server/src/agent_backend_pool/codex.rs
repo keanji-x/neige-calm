@@ -182,5 +182,8 @@ impl CodexBackends {
     }
 }
 
+#[path = "codex_selection.rs"]
+mod selection;
+
 #[cfg(test)]
 pub(crate) mod codex_route_tests;

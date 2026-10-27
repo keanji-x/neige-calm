@@ -164,13 +164,6 @@ impl CodexAdapter {
 }
 
 impl CodexWorkerAdapter {
-    pub fn with_codex_backends(
-        mut self,
-        backends: Arc<crate::agent_backend_pool::codex::CodexBackends>,
-    ) -> Self {
-        self.codex_backends = backends;
-        self
-    }
     /// The configured wait of one gate-run call (`GateRunWait::DEFAULT` until boot sets it).
     pub fn with_gate_run_wait(mut self, wait: GateRunWait) -> Self {
         self.gate_run_wait = wait;
@@ -181,7 +174,7 @@ impl CodexWorkerAdapter {
     pub fn new(
         repo: Arc<dyn crate::db::RouteRepo>,
         codex: Arc<CodexClient>,
-        shared_codex_appserver: Arc<SharedCodexAppServer>,
+        codex_backends: Arc<crate::agent_backend_pool::codex::CodexBackends>,
         mcp_server: Option<Arc<McpServer>>,
         card_role_cache: CardRoleCache,
         track_area_cache: TrackAreaCache,
@@ -190,9 +183,7 @@ impl CodexWorkerAdapter {
         Self {
             repo,
             codex,
-            codex_backends: crate::agent_backend_pool::codex::CodexBackends::single(
-                shared_codex_appserver,
-            ),
+            codex_backends,
             mcp_server,
             card_role_cache,
             track_area_cache,
@@ -319,12 +310,13 @@ async fn build_codex_env(
     repo: &dyn crate::db::RouteRepo,
     codex: &CodexClient,
     card_id: &str,
+    home: &std::path::Path,
 ) -> Result<Value> {
     let settings = load_settings(repo).await?;
     let mut env_map = serde_json::Map::new();
     env_map.insert(
         "CODEX_HOME".to_string(),
-        Value::String(codex.codex_home_dir().to_string_lossy().to_string()),
+        Value::String(home.to_string_lossy().to_string()),
     );
     env_map.insert(
         "NEIGE_CARD_ID".to_string(),

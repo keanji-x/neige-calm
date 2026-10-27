@@ -87,7 +87,7 @@ impl Wiring {
             planner_start_adapter: self.planner_start_adapter.clone(),
             worker_flow: calm_server::worker_flow::WorkerFlowDriver::from_state_parts(
                 repo_dyn,
-                self.shared.clone(),
+                calm_server::agent_backend_pool::codex::CodexBackends::single(self.shared.clone()),
                 ctx.events.clone(),
             ),
             claude_planner: self.claude_planner.clone(),
@@ -161,7 +161,7 @@ pub async fn wire(
         Arc::new(CodexWorkerAdapter::new(
             repo_dyn.clone(),
             Arc::new(CodexClient::new_stub()),
-            shared.clone(),
+            calm_server::agent_backend_pool::codex::CodexBackends::single(shared.clone()),
             Some(mcp),
             cache,
             track_areas,

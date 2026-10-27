@@ -148,7 +148,7 @@ async fn exercise_viewer_report(expected: crate::model::TaskStatus, restart: Opt
     let mut adapter = CodexWorkerAdapter::new(
         harness.repo.clone(),
         Arc::new(CodexClient::new_stub()),
-        shared.clone(),
+        crate::agent_backend_pool::codex::CodexBackends::single(shared.clone()),
         Some(server),
         harness.adapter.card_role_cache.clone(),
         harness.adapter.track_area_cache.clone(),
@@ -336,7 +336,7 @@ async fn exercise_viewer_report(expected: crate::model::TaskStatus, restart: Opt
         let reboot_adapter = CodexWorkerAdapter::new(
             reboot_repo.clone(),
             Arc::new(CodexClient::new_stub()),
-            shared.clone(),
+            crate::agent_backend_pool::codex::CodexBackends::single(shared.clone()),
             None,
             harness.adapter.card_role_cache.clone(),
             harness.adapter.track_area_cache.clone(),

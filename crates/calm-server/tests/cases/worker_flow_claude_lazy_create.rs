@@ -181,7 +181,9 @@ fn claude_driver_with_path(
 ) -> Arc<WorkerFlowDriver> {
     WorkerFlowDriver::new_with_source_options_for_test(
         repo.clone(),
-        SharedCodexAppServer::new_stub(repo.clone()),
+        calm_server::agent_backend_pool::codex::CodexBackends::single(
+            SharedCodexAppServer::new_stub(repo.clone()),
+        ),
         Arc::new(WorkerFlowSink::new(repo)),
         EventBus::new(),
         CodexRolloutFlowSourceOptions::default(),

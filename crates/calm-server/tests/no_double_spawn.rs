@@ -2478,7 +2478,9 @@ async fn worker_recovery_skips_respawn_when_terminal_already_exited() {
     let codex_adapter = Arc::new(CodexWorkerAdapter::new(
         route_repo.clone(),
         boot.state.codex.clone(),
-        SharedCodexAppServer::new_stub(boot.repo.clone()),
+        calm_server::agent_backend_pool::codex::CodexBackends::single(
+            SharedCodexAppServer::new_stub(boot.repo.clone()),
+        ),
         None,
         boot.state.card_role_cache.clone(),
         boot.state.track_area_cache.clone(),

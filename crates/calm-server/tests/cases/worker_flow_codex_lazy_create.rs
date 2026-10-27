@@ -62,7 +62,7 @@ async fn codex_rollout_driver_waits_past_lazy_file_retry_budget_until_runtime_te
 
     let driver = WorkerFlowDriver::new_with_flow_options_for_test(
         repo.clone(),
-        shared,
+        calm_server::agent_backend_pool::codex::CodexBackends::single(shared),
         Arc::new(WorkerFlowSink::new(repo.clone())),
         EventBus::new(),
         CodexRolloutFlowSourceOptions {

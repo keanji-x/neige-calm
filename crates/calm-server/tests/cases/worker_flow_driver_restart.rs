@@ -44,7 +44,9 @@ async fn worker_flow_driver_replaces_stale_claude_tail_task_when_runtime_id_chan
 
     let driver = WorkerFlowDriver::new_with_source_options_for_test(
         repo.clone(),
-        SharedCodexAppServer::new_stub(repo.clone()),
+        calm_server::agent_backend_pool::codex::CodexBackends::single(
+            SharedCodexAppServer::new_stub(repo.clone()),
+        ),
         Arc::new(WorkerFlowSink::new(repo.clone())),
         events.clone(),
         CodexRolloutFlowSourceOptions::default(),

@@ -538,13 +538,12 @@ fn build_operation_adapters(
         CodexWorkerAdapter::new(
             input.route_repo.clone(),
             input.codex.clone(),
-            input.shared_codex_appserver.clone(),
+            input.codex_backends.clone(),
             input.mcp_server.clone(),
             input.card_role_cache.clone(),
             input.track_area_cache.clone(),
             input.workspace_root.clone(),
         )
-        .with_codex_backends(input.codex_backends.clone())
         .with_gate_run_wait(input.gate_run_wait),
     );
     let claude_adapter: Arc<dyn ProviderAdapter> = Arc::new(ClaudeAdapter::new(
@@ -1075,13 +1074,14 @@ impl AppState {
             adapters,
             events.clone(),
             completion.clone(),
-            SpawnCtx::new(
+            SpawnCtx::new_with_codex_backends(
                 route_repo.clone(),
                 operation_repo,
                 daemon.clone(),
                 terminal_renderer.clone(),
                 events.clone(),
                 completion,
+                codex_backends.clone(),
             )
             .with_location_admission(crate::operation::location_admission::LocationAdmission {
                 managed_root: workspace_root_sandbox.path().to_path_buf(),
@@ -1090,7 +1090,6 @@ impl AppState {
                 area_locks: crate::per_card_lock::new_keyed_locks(),
                 track_locks: crate::per_card_lock::new_keyed_locks(),
             })
-            .with_codex_backends(codex_backends.clone())
             .with_planner_clean_proof(crate::provider_execution::clean::PlannerCleanProof::new(
                 claude_planner.clone(),
                 acp_planner.clone(),
@@ -1194,11 +1193,17 @@ impl AppState {
     }
 
     #[cfg(feature = "fixtures")]
-    pub fn with_shared_codex_appserver(mut self, shared: Arc<SharedCodexAppServer>) -> Self {
+    pub fn with_shared_codex_appserver(self, shared: Arc<SharedCodexAppServer>) -> Self {
+        self.with_codex_backends(CodexBackends::single(shared))
+    }
+
+    #[cfg(feature = "fixtures")]
+    pub fn with_codex_backends(mut self, backends: Arc<CodexBackends>) -> Self {
+        let shared = backends.default_only().clone();
         self.shared_codex_appserver = shared.clone();
         // The routes seal through the registry the daemon's own turn starts consult.
         self.route.thread_seals = shared.thread_seals().clone();
-        self.codex_backends = CodexBackends::single(shared.clone());
+        self.codex_backends = backends;
         self.codex_shell.codex_backends = self.codex_backends.clone();
         self.codex_shell.shared_codex_appserver = shared;
         // An answer about the replaced daemon must not outlive it.
@@ -1305,13 +1310,14 @@ impl AppState {
             adapters,
             self.events.clone(),
             completion.clone(),
-            SpawnCtx::new(
+            SpawnCtx::new_with_codex_backends(
                 route_repo,
                 operation_repo,
                 self.daemon.clone(),
                 self.terminal_renderer.clone(),
                 self.events.clone(),
                 completion,
+                self.codex_backends.clone(),
             )
             .with_location_admission(crate::operation::location_admission::LocationAdmission {
                 managed_root: self.route.workspace_root.clone(),
@@ -1320,7 +1326,6 @@ impl AppState {
                 area_locks: self.route.area_delete_locks.clone(),
                 track_locks: self.route.track_delete_locks.clone(),
             })
-            .with_codex_backends(self.codex_backends.clone())
             .with_planner_clean_proof(crate::provider_execution::clean::PlannerCleanProof::new(
                 self.route.claude_planner.clone(),
                 self.route.acp_planner.clone(),
@@ -1702,13 +1707,14 @@ impl AppState {
                 adapters,
                 events.clone(),
                 completion.clone(),
-                SpawnCtx::new(
+                SpawnCtx::new_with_codex_backends(
                     route_repo.clone(),
                     operation_repo,
                     daemon.clone(),
                     terminal_renderer.clone(),
                     events.clone(),
                     completion,
+                    codex_backends.clone(),
                 )
                 .with_location_admission(crate::operation::location_admission::LocationAdmission {
                     managed_root: workspace_root.clone(),
@@ -1717,7 +1723,6 @@ impl AppState {
                     area_locks: crate::per_card_lock::new_keyed_locks(),
                     track_locks: crate::per_card_lock::new_keyed_locks(),
                 })
-                .with_codex_backends(codex_backends.clone())
                 .with_planner_clean_proof(crate::provider_execution::clean::PlannerCleanProof::new(
                     claude_planner.clone(),
                     acp_planner.clone(),
