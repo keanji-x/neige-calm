@@ -7,6 +7,7 @@
 //! worktree from the production `ensure_track_worktree`, candidates from the real delivery with a
 //! test-played worker. The `gh` shim is first on PATH and takes `--repo` = the bare origin's path;
 //! nothing here reaches a real repository or the network.
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use calm_server::model::TaskStatus;
@@ -176,6 +177,79 @@ fn token_probe_hook(out: &Path) -> String {
     )
 }
 
+/// Preserve empty symrefs: the last field is meaningful even when it is empty.
+fn ref_snapshot(repo: &Path) -> BTreeMap<String, (String, String, String)> {
+    let output = git_output(
+        repo,
+        &[
+            "for-each-ref",
+            "--format=%(refname)%00%(objectname)%00%(objecttype)%00%(symref)",
+        ],
+    );
+    assert!(output.status.success(), "{output:?}");
+    String::from_utf8(output.stdout)
+        .unwrap()
+        .lines()
+        .map(|line| {
+            let fields: Vec<_> = line.split('\0').collect();
+            let [name, oid, kind, symref] = fields.as_slice() else {
+                panic!("invalid ref tuple: {line:?}");
+            };
+            (
+                name.to_string(),
+                (oid.to_string(), kind.to_string(), symref.to_string()),
+            )
+        })
+        .collect()
+}
+
+/// This fixture has one positive single-* fetch mapping, not arbitrary refspecs.
+async fn published_tracking_ref(fx: &Fx, result: &Value) -> String {
+    let payload: String = sqlx::query_scalar("SELECT payload_json FROM operations WHERE id = ?1")
+        .bind(result["op_id"].as_str().unwrap())
+        .fetch_one(&fx.pool())
+        .await
+        .unwrap();
+    let op: calm_server::operation::forge_action_adapter::ForgeActionPayload =
+        serde_json::from_str(&payload).unwrap();
+    assert_eq!(op.cwd_lease, fx.worktree);
+    // The owning publish script's positional contract is sha, branch, URL (§D5).
+    assert_eq!(op.argv[4], result["head_sha"].as_str().unwrap());
+    assert_eq!(op.argv[5], result["branch"].as_str().unwrap());
+    let destination = format!("refs/heads/{}", result["branch"].as_str().unwrap());
+    let remotes = git(&op.cwd_lease, &["remote"]);
+    let matching: Vec<_> = remotes
+        .lines()
+        .filter(|remote| git(&op.cwd_lease, &["ls-remote", "--get-url", remote]) == op.argv[6])
+        .collect();
+    assert_eq!(
+        matching.len(),
+        1,
+        "publish URL must identify one fixture remote"
+    );
+    let fetch = git(
+        &op.cwd_lease,
+        &[
+            "config",
+            "--get-all",
+            &format!("remote.{}.fetch", matching[0]),
+        ],
+    );
+    let rules: Vec<_> = fetch.lines().collect();
+    assert_eq!(rules.len(), 1, "fixture has one fetch rule");
+    let (source, target) = rules[0].strip_prefix('+').unwrap().split_once(':').unwrap();
+    let (source_prefix, source_suffix) = source.split_once('*').unwrap();
+    let (target_prefix, target_suffix) = target.split_once('*').unwrap();
+    assert!(!source_suffix.contains('*') && !target_suffix.contains('*'));
+    assert!(source_prefix.starts_with("refs/") && target_prefix.starts_with("refs/"));
+    let matched = destination
+        .strip_prefix(source_prefix)
+        .unwrap()
+        .strip_suffix(source_suffix)
+        .unwrap();
+    format!("{target_prefix}{matched}{target_suffix}")
+}
+
 /// P1 (D5, D6) — a done attempt's candidate C is pushed, the PR is opened on it, and the one
 /// `forge.pr.published` carries C. The live stdout completed the op: the shim saw no probe. The
 /// user's clone keeps every ref it had.
@@ -185,7 +259,7 @@ async fn publish_pushes_the_candidate_and_opens_its_pr() {
     let w = development_world().await;
     let fx = &w.fx;
     let c = done_candidate(fx, "a").await;
-    let clone_refs = git(&fx.track_root, &["for-each-ref"]);
+    let clone_refs = ref_snapshot(&fx.track_root);
     let clone_head = git(&fx.track_root, &["rev-parse", "HEAD"]);
 
     let result = publish(fx, "p1").await.unwrap();
@@ -201,7 +275,24 @@ async fn publish_pushes_the_candidate_and_opens_its_pr() {
     assert!(log.contains(" pr create "), "{log}");
     assert!(!log.contains("headRefOid,state"), "no probe ran: {log}");
     assert_eq!(shim_pr(fx)["headRefOid"], json!(c));
-    assert_eq!(git(&fx.track_root, &["for-each-ref"]), clone_refs);
+    let tracking = published_tracking_ref(fx, &result).await;
+    assert!(
+        !clone_refs.contains_key(&tracking),
+        "fresh publish destination"
+    );
+    let after = ref_snapshot(&fx.track_root);
+    for (name, tuple) in &clone_refs {
+        assert_eq!(after.get(name), Some(tuple), "existing ref {name}");
+    }
+    let added: Vec<_> = after
+        .iter()
+        .filter(|(name, _)| !clone_refs.contains_key(*name))
+        .collect();
+    assert!(added.len() <= 1, "unexpected new refs: {added:?}");
+    if let Some((name, tuple)) = added.first() {
+        assert_eq!(**name, tracking);
+        assert_eq!(**tuple, (c.clone(), "commit".into(), String::new()));
+    }
     assert_eq!(git(&fx.track_root, &["rev-parse", "HEAD"]), clone_head);
     assert_eq!(git(&fx.track_root, &["status", "--porcelain"]), "");
 }
