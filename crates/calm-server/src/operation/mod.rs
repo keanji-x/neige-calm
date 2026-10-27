@@ -293,7 +293,7 @@ pub struct SpawnCtx {
     pub terminal_renderer: Arc<TerminalRendererRegistry>,
     pub events: EventBus,
     pub completion: OperationCompletionBus,
-    pub shared_codex_appserver: Option<Arc<SharedCodexAppServer>>,
+    pub codex_backends: Option<Arc<crate::agent_backend_pool::codex::CodexBackends>>,
 }
 
 impl SpawnCtx {
@@ -314,7 +314,7 @@ impl SpawnCtx {
             completion,
             location_admission: None,
             track_delete_locks: crate::per_card_lock::new_keyed_locks(),
-            shared_codex_appserver: None,
+            codex_backends: None,
             execution: Default::default(),
             reclaim_admission: Default::default(),
             planner_clean_proof: None,
@@ -367,8 +367,18 @@ impl SpawnCtx {
         self
     }
 
+    pub fn with_codex_backends(
+        mut self,
+        backends: Arc<crate::agent_backend_pool::codex::CodexBackends>,
+    ) -> Self {
+        self.codex_backends = Some(backends);
+        self
+    }
+
     pub fn with_shared_codex_appserver(mut self, shared: Arc<SharedCodexAppServer>) -> Self {
-        self.shared_codex_appserver = Some(shared);
+        self.codex_backends = Some(crate::agent_backend_pool::codex::CodexBackends::single(
+            shared,
+        ));
         self
     }
 

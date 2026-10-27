@@ -73,16 +73,17 @@ fn constraint(error: sqlx::Error) {
 async fn agent_backend_binding_is_immutable_and_cascades() {
     let repo = fixture().await;
     assert_eq!(
-        binding_for_session(repo.db(), "a").await.unwrap(),
-        SessionBackend::Unpooled
+        codex_backend_scope(repo.db(), CodexScopeKey::Session("a"))
+            .await
+            .unwrap(),
+        CodexScope::Bound("default".into())
     );
     bind(&repo, "a", "other").await;
     assert_eq!(
-        binding_for_session(repo.db(), "a").await.unwrap(),
-        SessionBackend::Bound(BackendBinding {
-            provider: "codex".into(),
-            backend_id: "other".into()
-        })
+        codex_backend_scope(repo.db(), CodexScopeKey::Session("a"))
+            .await
+            .unwrap(),
+        CodexScope::Bound("other".into())
     );
     constraint(
         sqlx::query(
@@ -97,9 +98,18 @@ async fn agent_backend_binding_is_immutable_and_cascades() {
         .await
         .unwrap();
     assert_eq!(
-        binding_for_session(repo.db(), "a").await.unwrap(),
-        SessionBackend::Unpooled
+        codex_backend_scope(repo.db(), CodexScopeKey::Session("a"))
+            .await
+            .unwrap(),
+        CodexScope::Absent
     );
+    let bindings: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM worker_session_backends WHERE worker_session_id='a'",
+    )
+    .fetch_one(repo.pool())
+    .await
+    .unwrap();
+    assert_eq!(bindings, 0);
 }
 
 #[tokio::test]
@@ -176,5 +186,112 @@ async fn agent_backend_thread_cannot_cross_bound_or_implicit_default() {
     assert_eq!(
         live_bound_threads(repo.pool(), "codex").await.unwrap(),
         vec![("other-thread".into(), "other".into())]
+    );
+}
+
+#[tokio::test]
+async fn agent_backend_scope_resolves_session_thread_and_implicit_default() {
+    let repo = fixture().await;
+    bind(&repo, "b", "other").await;
+    bind(&repo, "c", "other").await;
+    sqlx::query(
+        "UPDATE worker_sessions SET thread_id=CASE id WHEN 'a' THEN 'legacy' ELSE 'bound' END",
+    )
+    .execute(repo.pool())
+    .await
+    .unwrap();
+    for (key, expected) in [
+        (CodexScopeKey::Session("a"), "default"),
+        (CodexScopeKey::Thread("legacy"), "default"),
+        (CodexScopeKey::Session("b"), "other"),
+        (CodexScopeKey::Thread("bound"), "other"),
+    ] {
+        assert_eq!(
+            codex_backend_scope(repo.db(), key).await.unwrap(),
+            CodexScope::Bound(expected.into())
+        );
+    }
+}
+
+#[tokio::test]
+async fn agent_backend_scope_absent_or_conflict_fails_closed() {
+    let repo = fixture().await;
+    for key in [
+        CodexScopeKey::Session("missing"),
+        CodexScopeKey::Thread("missing"),
+    ] {
+        assert_eq!(
+            codex_backend_scope(repo.db(), key).await.unwrap(),
+            CodexScope::Absent
+        );
+    }
+    bind(&repo, "b", "other").await;
+    // Simulate damaged pre-existing data: normal writes are fenced by migration 0199.
+    let triggers: Vec<String> = sqlx::query_scalar(
+        "SELECT name FROM sqlite_master WHERE type='trigger' AND tbl_name='worker_sessions'",
+    )
+    .fetch_all(repo.pool())
+    .await
+    .unwrap();
+    for name in triggers {
+        sqlx::query(&format!("DROP TRIGGER \"{name}\""))
+            .execute(repo.pool())
+            .await
+            .unwrap();
+    }
+    sqlx::query("UPDATE worker_sessions SET thread_id='collision' WHERE id IN ('a','b')")
+        .execute(repo.pool())
+        .await
+        .unwrap();
+    assert!(matches!(
+        codex_backend_scope(repo.db(), CodexScopeKey::Thread("collision")).await,
+        Err(crate::TruthError::Internal(_))
+    ));
+}
+
+#[tokio::test]
+async fn agent_backend_activity_scope_updates_only_owned_rows() {
+    use crate::session_repo::SessionRepo;
+    let repo = fixture().await;
+    bind(&repo, "b", "other").await;
+    sqlx::query("UPDATE worker_sessions SET thread_id=id, last_activity_ms=10, last_thread_status='idle', last_turn_completed_ms=5")
+        .execute(repo.pool()).await.unwrap();
+    repo.session_record_activity_by_thread("a", 20, "active", Some(20), Some("other"))
+        .await
+        .unwrap();
+    repo.session_record_activity_by_thread("b", 20, "active", Some(20), Some("default"))
+        .await
+        .unwrap();
+    let stamps = || async {
+        sqlx::query_as::<_, (String, i64, String, i64)>("SELECT id, last_activity_ms, last_thread_status, last_turn_completed_ms FROM worker_sessions ORDER BY id")
+        .fetch_all(repo.pool()).await.unwrap()
+    };
+    assert!(
+        stamps()
+            .await
+            .iter()
+            .all(|(_, at, status, done)| (*at, status.as_str(), *done) == (10, "idle", 5))
+    );
+    for (id, backend) in [("a", "default"), ("b", "other")] {
+        repo.session_record_activity_by_thread(id, 30, "active", Some(30), Some(backend))
+            .await
+            .unwrap();
+    }
+    assert!(
+        stamps().await[..2]
+            .iter()
+            .all(|(_, at, status, done)| (*at, status.as_str(), *done) == (30, "active", 30))
+    );
+    // NULL scope preserves main behavior for both bound and historical sessions.
+    for id in ["a", "b", "c"] {
+        repo.session_record_activity_by_thread(id, 40, "idle", None, None)
+            .await
+            .unwrap();
+    }
+    assert!(
+        stamps()
+            .await
+            .iter()
+            .all(|(_, at, status, _)| (*at, status.as_str()) == (40, "idle"))
     );
 }

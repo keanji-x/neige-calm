@@ -487,14 +487,12 @@ async fn task_key_for_card_title_swallows_a_failing_select() {
     tx.rollback().await.unwrap();
 }
 
-/// D3 — the spawn only verifies: the codex spawn entry (`verify_codex_worker_workspace`, carried
-/// to `app_server_interact` with the repo's own transitions so its checkpoint lands) refuses a
-/// checkout whose HEAD moved after the prepare tx recorded its base, naming both commits.
-#[tokio::test]
-async fn codex_spawn_refuses_a_checkout_that_moved_after_prepare() {
-    let harness = worker_lease_harness().await;
+async fn prepare_worker_app_server_interact(
+    harness: &WorkerLeaseHarness,
+    key: &str,
+) -> (Arc<SqlxOperationRepo>, Operation, TxOutput) {
     let op_repo = Arc::new(SqlxOperationRepo::new(harness.repo.db().clone()));
-    let pending = claim_worker_operation(&harness, "pinned", "pinned").await;
+    let pending = claim_worker_operation(harness, key, key).await;
     let evidence = crate::operation::tests::collect_claimed_preparation(
         harness.repo.clone(),
         &harness.adapter,
@@ -508,7 +506,7 @@ async fn codex_spawn_refuses_a_checkout_that_moved_after_prepare() {
         .unwrap()
         .committed()
         .expect("prepare commits its owning operation checkpoint");
-    let mut output = super::super::required_output(&prepared).unwrap().clone();
+    let output = super::super::required_output(&prepared).unwrap().clone();
     let op = op_repo
         .claim_drive_batch(1)
         .await
@@ -517,11 +515,6 @@ async fn codex_spawn_refuses_a_checkout_that_moved_after_prepare() {
         .find(|claimed| claimed.id == prepared.id)
         .expect("the prepared operation is claimed at tx_committed");
     assert_eq!(op.phase, Phase::TxCommitted);
-    let card_id = output.output_string("card_id", "test").unwrap();
-    let cwd = output.output_string("cwd", "test").unwrap();
-    let recorded_base = output.output_string("base_sha", "test").unwrap();
-    assert_eq!(git_head(Path::new(&cwd)), recorded_base);
-
     let kind = harness
         .adapter
         .app_server_interact_kind(&output, &op)
@@ -539,6 +532,21 @@ async fn codex_spawn_refuses_a_checkout_that_moved_after_prepare() {
         .into_iter()
         .find(|claimed| claimed.id == op.id)
         .expect("the op is re-claimed in app_server_interact");
+    (op_repo, op, output)
+}
+
+/// D3 — the spawn only verifies: the codex spawn entry (`verify_codex_worker_workspace`, carried
+/// to `app_server_interact` with the repo's own transitions so its checkpoint lands) refuses a
+/// checkout whose HEAD moved after the prepare tx recorded its base, naming both commits.
+#[tokio::test]
+async fn codex_spawn_refuses_a_checkout_that_moved_after_prepare() {
+    let harness = worker_lease_harness().await;
+    let (op_repo, op, mut output) = prepare_worker_app_server_interact(&harness, "pinned").await;
+    let card_id = output.output_string("card_id", "test").unwrap();
+    let cwd = output.output_string("cwd", "test").unwrap();
+    let recorded_base = output.output_string("base_sha", "test").unwrap();
+    assert_eq!(git_head(Path::new(&cwd)), recorded_base);
+
     let route_repo: Arc<dyn crate::db::RouteRepo> = harness.repo.clone();
     let ctx = SpawnCtx::new(
         route_repo,
@@ -745,3 +753,6 @@ async fn worker_prepared_evidence_cannot_be_consumed_by_a_new_claim() {
     );
     tx.rollback().await.unwrap();
 }
+
+#[cfg(test)]
+mod agent_backend_tests;

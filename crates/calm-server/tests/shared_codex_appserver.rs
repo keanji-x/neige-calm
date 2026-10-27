@@ -5245,3 +5245,6 @@ mod agent_backend_pool;
 
 #[path = "support/authenticated_router.rs"]
 mod agent_backend_auth_router;
+
+#[path = "cases/agent_backend_worker_routing.rs"]
+mod agent_backend_worker_routing;

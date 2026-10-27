@@ -85,15 +85,37 @@ struct PendingStamp {
 }
 
 /// Run the durable liveness feeder loop until the notification channel closes.
+#[derive(Clone)]
+pub enum LivenessScope {
+    All,
+    Backend(crate::agent_backend_pool::BackendId),
+}
+impl LivenessScope {
+    fn backend(&self) -> Option<&str> {
+        match self {
+            Self::All => None,
+            Self::Backend(id) => Some(id.as_str()),
+        }
+    }
+}
+
 pub async fn run_liveness_feeder(
     repo: Arc<dyn Repo>,
     rx: tokio::sync::broadcast::Receiver<Notification>,
+    scope: LivenessScope,
 ) {
     run_feeder_loop(rx, |thread_id, at_ms, status, turn_completed_ms| {
         let repo = repo.clone();
+        let scope = scope.clone();
         async move {
-            repo.session_record_activity_by_thread(&thread_id, at_ms, status, turn_completed_ms)
-                .await
+            repo.session_record_activity_by_thread(
+                &thread_id,
+                at_ms,
+                status,
+                turn_completed_ms,
+                scope.backend(),
+            )
+            .await
         }
     })
     .await
@@ -212,8 +234,9 @@ async fn run_feeder_loop<W, Fut, E>(
 pub fn spawn_liveness_feeder(
     repo: Arc<dyn Repo>,
     rx: tokio::sync::broadcast::Receiver<Notification>,
+    scope: LivenessScope,
 ) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(run_liveness_feeder(repo, rx))
+    tokio::spawn(run_liveness_feeder(repo, rx, scope))
 }
 
 #[cfg(test)]
@@ -636,22 +659,22 @@ mod tests {
         assert_eq!(last_turn_completed_ms(&repo, &ws).await, None);
 
         // Storage layer, pinned instants.
-        repo.session_record_activity_by_thread("th-done", 2_000, "idle", Some(2_000))
+        repo.session_record_activity_by_thread("th-done", 2_000, "idle", Some(2_000), None)
             .await
             .unwrap();
         assert_eq!(last_turn_completed_ms(&repo, &ws).await, Some(2_000));
         // A late replay of an OLDER completion never lowers it.
-        repo.session_record_activity_by_thread("th-done", 1_000, "idle", Some(1_000))
+        repo.session_record_activity_by_thread("th-done", 1_000, "idle", Some(1_000), None)
             .await
             .unwrap();
         assert_eq!(last_turn_completed_ms(&repo, &ws).await, Some(2_000));
         assert_eq!(last_activity(&repo, &ws).await, (1_000, "idle".into()));
         // A stamp without a completion (interrupted turn → idle, failed turn
         // → systemError, plain status) leaves the column alone.
-        repo.session_record_activity_by_thread("th-done", 3_000, "idle", None)
+        repo.session_record_activity_by_thread("th-done", 3_000, "idle", None, None)
             .await
             .unwrap();
-        repo.session_record_activity_by_thread("th-done", 4_000, "systemError", None)
+        repo.session_record_activity_by_thread("th-done", 4_000, "systemError", None, None)
             .await
             .unwrap();
         assert_eq!(last_turn_completed_ms(&repo, &ws).await, Some(2_000));
@@ -673,7 +696,7 @@ mod tests {
         .unwrap();
         drop(tx);
         let repo_dyn: Arc<dyn crate::db::Repo> = repo.clone();
-        run_liveness_feeder(repo_dyn, rx).await;
+        run_liveness_feeder(repo_dyn, rx, LivenessScope::All).await;
         let completed_at = last_turn_completed_ms(&repo, &ws)
             .await
             .expect("the completed turn wrote the column");

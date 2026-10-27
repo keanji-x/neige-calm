@@ -52,6 +52,7 @@ pub trait SessionRepo: Send + Sync {
         last_activity_ms: i64,
         last_thread_status: &str,
         turn_completed_ms: Option<i64>,
+        backend: Option<&str>,
     ) -> Result<()>;
 
     async fn session_state_transition_tx(

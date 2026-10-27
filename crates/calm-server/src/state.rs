@@ -446,6 +446,7 @@ struct OperationAdapterInputs {
     plugin: Arc<PluginHost>,
     codex: Arc<CodexClient>,
     shared_codex_appserver: Arc<SharedCodexAppServer>,
+    codex_backends: Arc<CodexBackends>,
     pending_codex_threads: Arc<PendingThreadStartRegistry>,
     pending_codex_threads_spawn_serial: Arc<Mutex<()>>,
     card_role_cache: CardRoleCache,
@@ -543,6 +544,7 @@ fn build_operation_adapters(
             input.track_area_cache.clone(),
             input.workspace_root.clone(),
         )
+        .with_codex_backends(input.codex_backends.clone())
         .with_gate_run_wait(input.gate_run_wait),
     );
     let claude_adapter: Arc<dyn ProviderAdapter> = Arc::new(ClaudeAdapter::new(
@@ -852,8 +854,8 @@ impl AppState {
             Arc::new(tokio::sync::Semaphore::new(8)),
             TaskVerifyAdapter::default_gate_logs_dir(),
             crate::scheduler::WorkerLiveness::DEFAULT,
-            crate::scheduler::WorkerIdleWake::new(
-                self.shared_codex_appserver.clone(),
+            crate::scheduler::WorkerIdleWake::with_route(
+                self.codex_backends.clone(),
                 crate::scheduler::WORKER_IDLE_TURN_GRACE,
                 crate::scheduler::WORKER_IDLE_PROBE_TIMEOUT,
             ),
@@ -1052,6 +1054,7 @@ impl AppState {
             plugin: plugin.clone(),
             codex: codex.clone(),
             shared_codex_appserver: shared_codex_appserver.clone(),
+            codex_backends: codex_backends.clone(),
             pending_codex_threads: pending_codex_threads.clone(),
             pending_codex_threads_spawn_serial: pending_codex_threads_spawn_serial.clone(),
             card_role_cache: card_role_cache.clone(),
@@ -1087,7 +1090,7 @@ impl AppState {
                 area_locks: crate::per_card_lock::new_keyed_locks(),
                 track_locks: crate::per_card_lock::new_keyed_locks(),
             })
-            .with_shared_codex_appserver(shared_codex_appserver.clone())
+            .with_codex_backends(codex_backends.clone())
             .with_planner_clean_proof(crate::provider_execution::clean::PlannerCleanProof::new(
                 claude_planner.clone(),
                 acp_planner.clone(),
@@ -1110,31 +1113,29 @@ impl AppState {
             TaskVerifyAdapter::default_gate_logs_dir(),
         );
         let planner_recovery_locks = crate::per_card_lock::new_per_card_locks();
-        let dispatcher = Arc::new(
-            Dispatcher::spawn_with_terminal_renderer_and_harness_and_operation_runtime(
-                repo.clone(),
-                events.clone(),
-                write.clone(),
-                codex.clone(),
-                terminal_renderer.clone(),
-                None,
-                harness.clone(),
-                shared_codex_appserver.clone(),
-                operation_runtime.clone(),
-                planner_recovery_locks.clone(),
-                Dispatcher::permits_from_env(8),
-                TaskVerifyAdapter::default_gate_logs_dir(),
-                crate::scheduler::WorkerLiveness::DEFAULT,
-                crate::provider_registry::WorkerProviderRegistry::for_daemon(
-                    &daemon,
-                    shared_codex_appserver.clone(),
-                    harness.clone(),
-                ),
-            ),
-        );
-        let worker_flow = WorkerFlowDriver::from_state_parts(
+        let dispatcher = Arc::new(Dispatcher::spawn_with_codex_backends(
             repo.clone(),
-            shared_codex_appserver.clone(),
+            events.clone(),
+            write.clone(),
+            codex.clone(),
+            terminal_renderer.clone(),
+            None,
+            harness.clone(),
+            codex_backends.clone(),
+            operation_runtime.clone(),
+            planner_recovery_locks.clone(),
+            Dispatcher::permits_from_env(8),
+            TaskVerifyAdapter::default_gate_logs_dir(),
+            crate::scheduler::WorkerLiveness::DEFAULT,
+            crate::provider_registry::WorkerProviderRegistry::for_daemon(
+                &daemon,
+                shared_codex_appserver.clone(),
+                harness.clone(),
+            ),
+        ));
+        let worker_flow = WorkerFlowDriver::from_backend_parts(
+            repo.clone(),
+            codex_backends.clone(),
             events.clone(),
         );
         let database_id = repo.database_id();
@@ -1202,9 +1203,9 @@ impl AppState {
         self.codex_shell.shared_codex_appserver = shared;
         // An answer about the replaced daemon must not outlive it.
         self.route.provider_availability = Arc::default();
-        self.worker_flow = WorkerFlowDriver::from_state_parts(
+        self.worker_flow = WorkerFlowDriver::from_backend_parts(
             self.raw.clone(),
-            self.shared_codex_appserver.clone(),
+            self.codex_backends.clone(),
             self.events.clone(),
         );
         self.rebuild_operation_runtime();
@@ -1283,6 +1284,7 @@ impl AppState {
             plugin: self.plugin.clone(),
             codex: self.codex.clone(),
             shared_codex_appserver: self.shared_codex_appserver.clone(),
+            codex_backends: self.codex_backends.clone(),
             pending_codex_threads: self.pending_codex_threads.clone(),
             pending_codex_threads_spawn_serial: self.pending_codex_threads_spawn_serial.clone(),
             card_role_cache: self.card_role_cache.clone(),
@@ -1318,7 +1320,7 @@ impl AppState {
                 area_locks: self.route.area_delete_locks.clone(),
                 track_locks: self.route.track_delete_locks.clone(),
             })
-            .with_shared_codex_appserver(self.shared_codex_appserver.clone())
+            .with_codex_backends(self.codex_backends.clone())
             .with_planner_clean_proof(crate::provider_execution::clean::PlannerCleanProof::new(
                 self.route.claude_planner.clone(),
                 self.route.acp_planner.clone(),
@@ -1620,9 +1622,9 @@ impl AppState {
         }
         // One provider registry: the Dispatcher's reaper and the terminal tools' input declarations
         // (#2493).
-        let provider_registry = crate::provider_registry::WorkerProviderRegistry::for_daemon(
+        let provider_registry = crate::provider_registry::WorkerProviderRegistry::for_backends(
             &daemon,
-            shared_codex_appserver.clone(),
+            codex_backends.clone(),
             harness.clone(),
         );
         mcp_server
@@ -1678,6 +1680,7 @@ impl AppState {
             plugin: plugin.clone(),
             codex: codex.clone(),
             shared_codex_appserver: shared_codex_appserver.clone(),
+            codex_backends: codex_backends.clone(),
             pending_codex_threads: pending_codex_threads.clone(),
             pending_codex_threads_spawn_serial: pending_codex_threads_spawn_serial.clone(),
             card_role_cache: card_role_cache.clone(),
@@ -1714,7 +1717,7 @@ impl AppState {
                     area_locks: crate::per_card_lock::new_keyed_locks(),
                     track_locks: crate::per_card_lock::new_keyed_locks(),
                 })
-                .with_shared_codex_appserver(shared_codex_appserver.clone())
+                .with_codex_backends(codex_backends.clone())
                 .with_planner_clean_proof(crate::provider_execution::clean::PlannerCleanProof::new(
                     claude_planner.clone(),
                     acp_planner.clone(),
@@ -1728,7 +1731,7 @@ impl AppState {
         // Spawned between role-cache seed and plugin autospawn so the bus has a
         // `*.Requested`-aware listener before plugins start emitting.
         let planner_recovery_locks = crate::per_card_lock::new_per_card_locks();
-        let dispatcher = Arc::new(crate::dispatcher::Dispatcher::spawn_with_terminal_renderer_and_harness_and_operation_runtime(
+        let dispatcher = Arc::new(crate::dispatcher::Dispatcher::spawn_with_codex_backends(
             repo.clone(),
             events.clone(),
             write.clone(),
@@ -1736,7 +1739,7 @@ impl AppState {
             terminal_renderer.clone(),
             Some(mcp_server.clone()),
             harness.clone(),
-            shared_codex_appserver.clone(),
+            codex_backends.clone(),
             operation_runtime.clone(),
             planner_recovery_locks.clone(),
             crate::dispatcher::Dispatcher::permits_from_env(8),
@@ -1800,9 +1803,9 @@ impl AppState {
         }
         dispatcher.subscribe_additional_codex_backends(&codex_backends);
 
-        let worker_flow = WorkerFlowDriver::from_state_parts(
+        let worker_flow = WorkerFlowDriver::from_backend_parts(
             repo.clone(),
-            shared_codex_appserver.clone(),
+            codex_backends.clone(),
             events.clone(),
         );
         let database_id = repo.database_id();

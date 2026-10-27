@@ -5,7 +5,7 @@ use calm_server::agent_backend_pool::{codex::CodexBackends, identity::BackendIso
 use calm_server::event::EventBus;
 use calm_server::pending_codex_threads::PendingThreadStartRegistry;
 
-async fn pool(config: &Config, repo: Arc<dyn Repo>) -> Arc<CodexBackends> {
+pub(super) async fn pool(config: &Config, repo: Arc<dyn Repo>) -> Arc<CodexBackends> {
     let isolation = BackendIsolation::prepare(config, &repo).await.unwrap();
     let pending = Arc::new(PendingThreadStartRegistry::new(
         repo.clone(),
@@ -30,7 +30,7 @@ async fn agent_backend_unconfigured_pool_starts_one_daemon_without_binding_or_re
             .pid,
     );
     assert!(Arc::ptr_eq(
-        backends.for_session("any-worker"),
+        backends.for_session("any-worker").await.unwrap(),
         backends.default_only()
     ));
     for table in ["worker_session_backends", "agent_backend_registry"] {
@@ -83,10 +83,7 @@ async fn agent_backend_two_daemons_keep_runtime_credentials_and_authentication_s
             std::fs::read_to_string(instance.shared_home().path().join("auth.json")).unwrap(),
             marker
         );
-        assert!(Arc::ptr_eq(
-            backends.for_session(instance.backend_id().as_str()),
-            backends.default_only()
-        ));
+        assert!(backends.for_session("absent-worker").await.is_err());
     }
     let default = backends.default_only();
     let other = &backends.instances()[1];
@@ -192,14 +189,14 @@ async fn agent_backend_b7_explicit_bindings_restore_only_their_own_instance() {
             );
         }
     }
-    // PR1 resolution deliberately ignores bindings: no product caller can use other.
+    // Existing sessions resolve their immutable backend.
     assert!(Arc::ptr_eq(
-        backends.for_session(&session),
-        backends.default_only()
+        backends.for_session(&session).await.unwrap(),
+        &backends.instances()[1]
     ));
 }
 
-async fn bind_fixture(repo: &SqlxRepo, session: &str, thread: &str, backend: &str) {
+pub(super) async fn bind_fixture(repo: &SqlxRepo, session: &str, thread: &str, backend: &str) {
     let mut tx = repo.pool().begin().await.unwrap();
     sqlx::query("UPDATE worker_sessions SET thread_id=NULL WHERE id=?")
         .bind(session)

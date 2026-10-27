@@ -485,6 +485,7 @@ impl Dispatcher {
             handles.push(crate::liveness_feeder::spawn_liveness_feeder(
                 self.inner.repo.clone(),
                 instance.subscribe_notifications(),
+                instance.liveness_scope(),
             ));
         }
     }
@@ -676,7 +677,7 @@ impl Dispatcher {
             shared_codex_appserver.clone(),
             harness.clone(),
         );
-        Self::spawn_with_terminal_renderer_and_harness_and_operation_runtime(
+        Self::spawn_with_codex_backends(
             repo,
             events,
             write,
@@ -684,7 +685,7 @@ impl Dispatcher {
             terminal_renderer,
             mcp_server,
             harness.clone(),
-            shared_codex_appserver,
+            crate::agent_backend_pool::codex::CodexBackends::single(shared_codex_appserver),
             operation_runtime,
             // No `RouteState` shares this dispatcher's runtime, so its scheduler fences child
             // bootstraps on a map of its own; `state.rs` passes the routes' map instead.
@@ -715,7 +716,7 @@ impl Dispatcher {
             shared_codex_appserver.clone(),
             harness.clone(),
         );
-        Self::spawn_with_terminal_renderer_and_harness_and_operation_runtime(
+        Self::spawn_with_codex_backends(
             repo,
             events,
             write,
@@ -723,7 +724,7 @@ impl Dispatcher {
             terminal_renderer,
             mcp_server,
             harness.clone(),
-            shared_codex_appserver,
+            crate::agent_backend_pool::codex::CodexBackends::single(shared_codex_appserver),
             operation_runtime,
             // No `RouteState` shares this dispatcher's runtime, so its scheduler fences child
             // bootstraps on a map of its own; `state.rs` passes the routes' map instead.
@@ -769,7 +770,7 @@ impl Dispatcher {
             shared_codex_appserver.clone(),
             harness.clone(),
         );
-        Self::spawn_with_terminal_renderer_and_harness_and_operation_runtime(
+        Self::spawn_with_codex_backends(
             repo,
             events,
             write,
@@ -777,7 +778,7 @@ impl Dispatcher {
             terminal_renderer,
             mcp_server,
             harness,
-            shared_codex_appserver,
+            crate::agent_backend_pool::codex::CodexBackends::single(shared_codex_appserver),
             operation_runtime,
             // No `RouteState` shares this dispatcher's runtime, so its scheduler fences child
             // bootstraps on a map of its own; `state.rs` passes the routes' map instead.
@@ -809,6 +810,42 @@ impl Dispatcher {
         worker_liveness: crate::scheduler::WorkerLiveness,
         provider_registry: WorkerProviderRegistry,
     ) -> Self {
+        Self::spawn_with_codex_backends(
+            repo,
+            events,
+            write,
+            _codex,
+            terminal_renderer,
+            _mcp_server,
+            harness,
+            crate::agent_backend_pool::codex::CodexBackends::single(shared_codex_appserver),
+            operation_runtime,
+            planner_recovery_locks,
+            permits,
+            gate_logs_dir,
+            worker_liveness,
+            provider_registry,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn spawn_with_codex_backends(
+        repo: Arc<dyn Repo>,
+        events: EventBus,
+        write: WriteContext,
+        _codex: Arc<CodexClient>,
+        terminal_renderer: Arc<TerminalRendererRegistry>,
+        _mcp_server: Option<Arc<crate::mcp_server::McpServer>>,
+        harness: HarnessRegistry,
+        codex_backends: Arc<crate::agent_backend_pool::codex::CodexBackends>,
+        operation_runtime: Arc<OperationRuntime>,
+        planner_recovery_locks: crate::per_card_lock::PerCardLocks,
+        permits: usize,
+        gate_logs_dir: PathBuf,
+        worker_liveness: crate::scheduler::WorkerLiveness,
+        provider_registry: WorkerProviderRegistry,
+    ) -> Self {
+        let shared_codex_appserver = codex_backends.default_only();
         let permits = if permits == 0 {
             DEFAULT_PERMITS
         } else {
@@ -824,8 +861,8 @@ impl Dispatcher {
             Arc::clone(&semaphore),
             gate_logs_dir,
             worker_liveness,
-            crate::scheduler::WorkerIdleWake::new(
-                shared_codex_appserver.clone(),
+            crate::scheduler::WorkerIdleWake::with_route(
+                codex_backends.clone(),
                 crate::scheduler::WORKER_IDLE_TURN_GRACE,
                 crate::scheduler::WORKER_IDLE_PROBE_TIMEOUT,
             ),
@@ -837,6 +874,7 @@ impl Dispatcher {
             write.clone(),
             scheduler.context_metrics(),
         ));
+        let liveness_scope = shared_codex_appserver.liveness_scope();
         let liveness_feeder_rx = shared_codex_appserver.subscribe_notifications();
         let liveness_feeder_repo = repo.clone();
         let reaper = Arc::new(Reaper::new(
@@ -962,6 +1000,7 @@ impl Dispatcher {
             Some(crate::liveness_feeder::spawn_liveness_feeder(
                 liveness_feeder_repo,
                 liveness_feeder_rx,
+                liveness_scope,
             ))
         };
 

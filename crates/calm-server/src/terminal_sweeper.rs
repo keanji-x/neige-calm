@@ -277,14 +277,27 @@ where
         "terminal_sweeper: settled task worker session written exited"
     );
 
-    let providers = state.planner_wiring();
-    crate::harness::backend::factory::PlannerFactory::new(
-        std::sync::Arc::downgrade(&state.shared_codex_appserver),
-        &providers.claude,
-        &providers.acp,
-    )
-    .end_settled_worker_resources(session)
-    .await;
+    let provider = calm_truth::worker::WorkerProviderKind::try_from(session.provider.clone());
+    if let Err(error) = &provider {
+        tracing::warn!(worker_session_id = %session.id, %error, "settled-worker provider does not decode");
+    }
+    if matches!(provider, Ok(calm_truth::worker::WorkerProviderKind::Codex)) {
+        match state.codex_backends.for_session(&session.id).await {
+            Ok(daemon) => {
+                let providers = state.planner_wiring();
+                crate::harness::backend::factory::PlannerFactory::new(
+                    std::sync::Arc::downgrade(daemon),
+                    &providers.claude,
+                    &providers.acp,
+                )
+                .end_settled_worker_resources(session)
+                .await;
+            }
+            Err(error) => {
+                tracing::warn!(%error, worker_session_id = %session.id, "settled worker Codex route unresolved")
+            }
+        }
+    }
 
     let Some(term) = state.repo.terminal_get(&session.terminal_id).await? else {
         return Ok(());

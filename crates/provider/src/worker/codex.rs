@@ -70,17 +70,39 @@ pub trait CodexDaemonProbe: Send + Sync {
     async fn read_liveness_facts(&self, thread_id: &str) -> Option<CodexLivenessFacts>;
 }
 
+#[async_trait]
+pub trait CodexDaemonRoute: Send + Sync {
+    async fn for_session(&self, id: &str) -> Option<Arc<dyn CodexDaemonProbe>>;
+    async fn for_thread(&self, id: &str) -> Option<Arc<dyn CodexDaemonProbe>>;
+}
+pub struct FixedCodexDaemon(pub Arc<dyn CodexDaemonProbe>);
+#[async_trait]
+impl CodexDaemonRoute for FixedCodexDaemon {
+    async fn for_session(&self, _: &str) -> Option<Arc<dyn CodexDaemonProbe>> {
+        Some(self.0.clone())
+    }
+    async fn for_thread(&self, _: &str) -> Option<Arc<dyn CodexDaemonProbe>> {
+        Some(self.0.clone())
+    }
+}
+
 #[derive(Clone)]
 pub struct CodexProvider {
     supervisor_sock: PathBuf,
-    daemon: Arc<dyn CodexDaemonProbe>,
+    route: Arc<dyn CodexDaemonRoute>,
 }
 
 impl CodexProvider {
     pub fn new(supervisor_sock: impl Into<PathBuf>, daemon: Arc<dyn CodexDaemonProbe>) -> Self {
+        Self::with_route(supervisor_sock, Arc::new(FixedCodexDaemon(daemon)))
+    }
+    pub fn with_route(
+        supervisor_sock: impl Into<PathBuf>,
+        route: Arc<dyn CodexDaemonRoute>,
+    ) -> Self {
         Self {
             supervisor_sock: supervisor_sock.into(),
-            daemon,
+            route,
         }
     }
 }
@@ -110,17 +132,22 @@ impl WorkerProvider for CodexProvider {
         session: &WorkerSession,
         ctx: &SpawnCtx,
     ) -> Result<Liveness, CoreError> {
+        let Some(daemon) = self.route.for_session(session.id.as_str()).await else {
+            return Ok(Liveness::Unknown {
+                since_ms: ctx.now_ms,
+            });
+        };
         let pty = probe_terminal_liveness(
             &self.supervisor_sock,
             session.terminal_run_id.as_deref(),
             ctx.now_ms,
         )
         .await;
-        let daemon_running = self.daemon.is_running();
+        let daemon_running = daemon.is_running();
         let active_turn_id = session
             .thread_id
             .as_deref()
-            .and_then(|thread_id| self.daemon.active_turn_id_for_thread(thread_id));
+            .and_then(|thread_id| daemon.active_turn_id_for_thread(thread_id));
         Ok(codex_liveness_from_evidence(
             pty,
             daemon_running,
@@ -145,9 +172,12 @@ impl WorkerProvider for CodexProvider {
         now_ms: TimestampMs,
         rebuild_grace_ms: i64,
     ) -> DeathVerdict {
-        let daemon_connected_at_ms = self.daemon.daemon_connected_at_ms();
+        let Some(daemon) = self.route.for_thread(thread_id).await else {
+            return DeathVerdict::Unknown;
+        };
+        let daemon_connected_at_ms = daemon.daemon_connected_at_ms();
         // S1: daemon down — brain gone, no turn can run, nothing resumes.
-        if !self.daemon.is_running() {
+        if !daemon.is_running() {
             return DeathVerdict::Dead;
         }
         // Within rebuild grace: the loaded-thread roster isn't stable yet.
@@ -155,7 +185,7 @@ impl WorkerProvider for CodexProvider {
             return DeathVerdict::Unknown;
         }
         // S2: live, past-grace daemon — pull facts and apply the table.
-        let facts = self.daemon.read_liveness_facts(thread_id).await;
+        let facts = daemon.read_liveness_facts(thread_id).await;
         verdict_from_facts(facts)
     }
 }
@@ -531,5 +561,41 @@ mod tests {
         assert!(tui.takes_message());
         assert_eq!(tui.keys_while_bound(), BoundKeys::Refused);
         assert_eq!(tui.message_ready(), Some(MessageReady::WhenRunning));
+    }
+}
+
+#[cfg(test)]
+mod agent_backend_tests {
+    use super::*;
+    struct Unresolved;
+    #[async_trait]
+    impl CodexDaemonRoute for Unresolved {
+        async fn for_session(&self, _: &str) -> Option<Arc<dyn CodexDaemonProbe>> {
+            None
+        }
+        async fn for_thread(&self, _: &str) -> Option<Arc<dyn CodexDaemonProbe>> {
+            None
+        }
+    }
+    #[tokio::test]
+    async fn agent_backend_codex_provider_unresolved_route_is_unknown() {
+        let provider = CodexProvider::with_route("/missing-supervisor", Arc::new(Unresolved));
+        let session: WorkerSession = serde_json::from_value(serde_json::json!({
+            "id":"worker", "track_id":"track", "provider":"codex", "mode":"resumable",
+            "contract":"executor", "state":"running", "liveness":"unknown", "thread_id":"thread",
+            "created_at_ms":0,"updated_at_ms":0
+        }))
+        .unwrap();
+        assert_eq!(
+            provider
+                .probe_liveness(&session, &SpawnCtx::new(42))
+                .await
+                .unwrap(),
+            Liveness::Unknown { since_ms: 42 }
+        );
+        assert_eq!(
+            provider.confirm_durable_death("thread", 42, 0).await,
+            DeathVerdict::Unknown
+        );
     }
 }

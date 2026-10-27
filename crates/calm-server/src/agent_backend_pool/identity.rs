@@ -313,6 +313,10 @@ impl BackendIsolation {
         Ok(isolation)
     }
 
+    pub fn is_multi_backend(&self) -> bool {
+        self.config.is_multi_backend()
+    }
+
     pub fn profiles(&self) -> &[super::config::BackendProfile] {
         &self.config.backends
     }

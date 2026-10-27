@@ -3,18 +3,6 @@ use super::SqliteDb;
 use crate::error::Result;
 use sqlx::{SqliteConnection, SqlitePool};
 
-#[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
-pub struct BackendBinding {
-    pub provider: String,
-    pub backend_id: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SessionBackend {
-    Bound(BackendBinding),
-    Unpooled,
-}
-
 pub async fn insert_tx(
     conn: &mut SqliteConnection,
     worker_session_id: &str,
@@ -24,19 +12,6 @@ pub async fn insert_tx(
     sqlx::query("INSERT INTO worker_session_backends (worker_session_id, provider, backend_id) VALUES (?, ?, ?)")
         .bind(worker_session_id).bind(provider).bind(backend_id).execute(conn).await?;
     Ok(())
-}
-
-pub async fn binding_for_session(db: &SqliteDb, session: &str) -> Result<SessionBackend> {
-    let binding = sqlx::query_as::<_, BackendBinding>(
-        "SELECT provider, backend_id FROM worker_session_backends WHERE worker_session_id = ?",
-    )
-    .bind(session)
-    .fetch_optional(db.read_pool())
-    .await?;
-    Ok(match binding {
-        Some(binding) => SessionBackend::Bound(binding),
-        None => SessionBackend::Unpooled,
-    })
 }
 
 pub async fn live_bound_counts_tx(
@@ -69,4 +44,38 @@ pub async fn live_bound_threads(
     .bind(provider)
     .fetch_all(pool)
     .await?)
+}
+
+/// The sole Codex scope lookup; historical rows belong to the implicit default.
+pub enum CodexScopeKey<'a> {
+    Session(&'a str),
+    Thread(&'a str),
+}
+#[derive(Debug, PartialEq, Eq)]
+pub enum CodexScope {
+    Bound(String),
+    Absent,
+}
+
+pub async fn codex_backend_scope(db: &SqliteDb, key: CodexScopeKey<'_>) -> Result<CodexScope> {
+    let (session, thread) = match key {
+        CodexScopeKey::Session(id) => (Some(id), None),
+        CodexScopeKey::Thread(id) => (None, Some(id)),
+    };
+    let rows: Vec<String> = sqlx::query_scalar(
+        "SELECT DISTINCT COALESCE(b.backend_id, 'default')
+         FROM worker_sessions s LEFT JOIN worker_session_backends b ON b.worker_session_id = s.id
+         WHERE s.provider = 'codex' AND (s.id = ?1 OR s.thread_id = ?2)",
+    )
+    .bind(session)
+    .bind(thread)
+    .fetch_all(db.read_pool())
+    .await?;
+    match rows.as_slice() {
+        [] => Ok(CodexScope::Absent),
+        [id] => Ok(CodexScope::Bound(id.clone())),
+        _ => Err(crate::TruthError::Internal(
+            "conflicting Codex backend scopes".into(),
+        )),
+    }
 }

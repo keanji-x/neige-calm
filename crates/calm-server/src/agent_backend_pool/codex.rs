@@ -1,4 +1,4 @@
-//! Composition and broadcast only. Each instance retains its original supervisor.
+//! Session routing and broadcast. Each instance retains its original supervisor.
 use std::sync::Arc;
 
 use super::{BackendId, identity::BackendIsolation};
@@ -7,15 +7,19 @@ use crate::{
     shared_codex_appserver::SharedCodexAppServer, thread_seals::ThreadSeals,
 };
 
-/// Temporary rollout policy lives here, rather than in generic providers or callers.
-#[derive(Clone, Copy)]
-pub enum CodexRollout {
-    InfrastructureOnly,
+/// Routing mode is fixed at construction; only a pool needs persistent scope.
+#[derive(Clone)]
+enum CodexRouting {
+    Single,
+    Pooled {
+        db: calm_truth::db::sqlite::SqliteDb,
+        isolation: Arc<BackendIsolation>,
+    },
 }
 
 pub struct CodexBackends {
     instances: Vec<Arc<SharedCodexAppServer>>,
-    rollout: CodexRollout,
+    routing: CodexRouting,
 }
 
 impl CodexBackends {
@@ -25,6 +29,16 @@ impl CodexBackends {
         pending: Arc<PendingThreadStartRegistry>,
         isolation: Arc<BackendIsolation>,
     ) -> Arc<Self> {
+        let routing = if isolation.is_multi_backend() {
+            CodexRouting::Pooled {
+                db: repo
+                    .sqlite_db()
+                    .expect("multi-backend isolation preparation requires SQLite"),
+                isolation: isolation.clone(),
+            }
+        } else {
+            CodexRouting::Single
+        };
         let seals = Arc::new(ThreadSeals::new());
         let instances = isolation
             .profiles()
@@ -40,17 +54,18 @@ impl CodexBackends {
                 )
             })
             .collect();
-        Arc::new(Self {
-            instances,
-            rollout: CodexRollout::InfrastructureOnly,
-        })
+        Arc::new(Self { instances, routing })
     }
 
     pub fn single(instance: Arc<SharedCodexAppServer>) -> Arc<Self> {
         Arc::new(Self {
             instances: vec![instance],
-            rollout: CodexRollout::InfrastructureOnly,
+            routing: CodexRouting::Single,
         })
+    }
+
+    pub(crate) fn is_pooled(&self) -> bool {
+        matches!(self.routing, CodexRouting::Pooled { .. })
     }
 
     pub fn default_only(&self) -> &Arc<SharedCodexAppServer> {
@@ -70,11 +85,10 @@ impl CodexBackends {
             .filter(|instance| !instance.backend_id().is_default())
     }
 
-    /// PR1 has no additional product bindings. PR2 must add ownership filtering
-    /// before enabling these subscriptions; a native thread ID alone is not an owner.
     pub fn additional_product_liveness_enabled(&self) -> bool {
-        match self.rollout {
-            CodexRollout::InfrastructureOnly => false,
+        match &self.routing {
+            CodexRouting::Single => false,
+            CodexRouting::Pooled { isolation, .. } => isolation.is_multi_backend(),
         }
     }
 
@@ -84,11 +98,32 @@ impl CodexBackends {
             .find(|instance| instance.backend_id() == id)
     }
 
-    /// PR2 will resolve a session-owned persisted binding here. PR1 never routes.
-    pub fn for_session(&self, _worker_session_id: &str) -> &Arc<SharedCodexAppServer> {
-        match self.rollout {
-            CodexRollout::InfrastructureOnly => self.default_only(),
-        }
+    pub async fn for_session(&self, id: &str) -> crate::error::Result<&Arc<SharedCodexAppServer>> {
+        self.resolve(calm_truth::db::sqlite::session_backend::CodexScopeKey::Session(id))
+            .await
+    }
+    pub async fn for_thread(&self, id: &str) -> crate::error::Result<&Arc<SharedCodexAppServer>> {
+        self.resolve(calm_truth::db::sqlite::session_backend::CodexScopeKey::Thread(id))
+            .await
+    }
+    async fn resolve(
+        &self,
+        key: calm_truth::db::sqlite::session_backend::CodexScopeKey<'_>,
+    ) -> crate::error::Result<&Arc<SharedCodexAppServer>> {
+        use crate::error::CalmError;
+        use calm_truth::db::sqlite::session_backend::{CodexScope, codex_backend_scope};
+        let db = match &self.routing {
+            CodexRouting::Single => return Ok(self.default_only()),
+            CodexRouting::Pooled { db, .. } => db,
+        };
+        let CodexScope::Bound(id) = codex_backend_scope(db, key).await? else {
+            return Err(CalmError::NotFound("Codex backend scope".into()));
+        };
+        let backend = BackendId::try_from(id.clone()).map_err(|error| {
+            CalmError::Internal(format!("invalid persisted Codex backend: {error}"))
+        })?;
+        self.instance(&backend)
+            .ok_or_else(|| CalmError::NotFound(format!("Codex backend {id}")))
     }
 
     pub fn boot_additional(&self) {
@@ -146,3 +181,6 @@ impl CodexBackends {
         }
     }
 }
+
+#[cfg(test)]
+pub(crate) mod codex_route_tests;

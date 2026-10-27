@@ -842,6 +842,18 @@ impl SharedCodexAppServer {
         )
     }
 
+    pub fn liveness_scope(&self) -> crate::liveness_feeder::LivenessScope {
+        if self
+            .backend_isolation
+            .as_ref()
+            .is_some_and(|isolation| isolation.is_multi_backend())
+        {
+            crate::liveness_feeder::LivenessScope::Backend(self.backend_id().clone())
+        } else {
+            crate::liveness_feeder::LivenessScope::All
+        }
+    }
+
     pub fn backend_id(&self) -> &crate::agent_backend_pool::BackendId {
         &self.backend_id
     }

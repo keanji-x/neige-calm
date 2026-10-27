@@ -5,7 +5,7 @@ use std::sync::Arc;
 use calm_exec::WorkerProvider;
 use calm_types::runtime::AgentProtocol;
 use calm_types::worker::WorkerProviderKind;
-use provider::{ClaudeProvider, CodexDaemonProbe, CodexProvider, TerminalProvider};
+use provider::{ClaudeProvider, CodexProvider, TerminalProvider};
 
 use crate::shared_codex_appserver::SharedCodexAppServer;
 
@@ -32,8 +32,18 @@ impl WorkerProviderRegistry {
         shared_codex_appserver: Arc<SharedCodexAppServer>,
         harness: crate::harness::HarnessRegistry,
     ) -> Self {
+        Self::with_route(
+            supervisor_sock,
+            Arc::new(provider::worker::FixedCodexDaemon(shared_codex_appserver)),
+            harness,
+        )
+    }
+    pub fn with_route(
+        supervisor_sock: impl Into<PathBuf>,
+        route: Arc<dyn provider::worker::CodexDaemonRoute>,
+        harness: crate::harness::HarnessRegistry,
+    ) -> Self {
         let supervisor_sock = supervisor_sock.into();
-        let codex_daemon: Arc<dyn CodexDaemonProbe> = shared_codex_appserver;
         let harness = Arc::new(harness);
         // Every ACP provider's conversations live in the managed Harness.
         let acp = AgentProtocol::Acp.providers().map(|provider| {
@@ -48,7 +58,7 @@ impl WorkerProviderRegistry {
         Self::from_entries(acp.chain([
             (
                 WorkerProviderKind::Codex,
-                Arc::new(CodexProvider::new(supervisor_sock.clone(), codex_daemon))
+                Arc::new(CodexProvider::with_route(supervisor_sock.clone(), route))
                     as Arc<dyn WorkerProvider>,
             ),
             (
@@ -62,6 +72,14 @@ impl WorkerProviderRegistry {
         ]))
     }
 
+    pub fn for_backends(
+        daemon: &crate::state::DaemonClient,
+        backends: Arc<crate::agent_backend_pool::codex::CodexBackends>,
+        harness: crate::harness::HarnessRegistry,
+    ) -> Self {
+        Self::with_route(Self::supervisor_sock(daemon), backends, harness)
+    }
+
     /// The registry for `daemon`'s proc supervisor: the one constructor the Dispatcher and the
     /// terminal tools share.
     pub fn for_daemon(
@@ -69,10 +87,17 @@ impl WorkerProviderRegistry {
         shared_codex_appserver: Arc<SharedCodexAppServer>,
         harness: crate::harness::HarnessRegistry,
     ) -> Self {
-        let supervisor_sock = daemon.proc_supervisor_sock.clone().unwrap_or_else(|| {
+        Self::new(
+            Self::supervisor_sock(daemon),
+            shared_codex_appserver,
+            harness,
+        )
+    }
+
+    fn supervisor_sock(daemon: &crate::state::DaemonClient) -> PathBuf {
+        daemon.proc_supervisor_sock.clone().unwrap_or_else(|| {
             std::env::temp_dir().join("neige-reaper-missing-proc-supervisor.sock")
-        });
-        Self::new(supervisor_sock, shared_codex_appserver, harness)
+        })
     }
 
     pub fn from_entries<I>(entries: I) -> Self

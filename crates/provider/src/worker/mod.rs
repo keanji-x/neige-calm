@@ -8,7 +8,7 @@ pub mod terminal;
 
 pub use claude::ClaudeProvider;
 pub use codex::{
-    CodexDaemonProbe, CodexLivenessFacts, CodexProvider, LastTurnFacts, ThreadStatusLite,
-    TurnStatusLite,
+    CodexDaemonProbe, CodexDaemonRoute, CodexLivenessFacts, CodexProvider, FixedCodexDaemon,
+    LastTurnFacts, ThreadStatusLite, TurnStatusLite,
 };
 pub use terminal::TerminalProvider;

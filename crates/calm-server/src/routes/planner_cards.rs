@@ -36,6 +36,16 @@ pub(crate) fn card_runs_headless_harness(card: &Card, role: CardRole) -> bool {
     crate::harness::profile::PlannerBinding::from_card(card, role).is_some()
 }
 
+async fn card_daemon<'a>(
+    cs: &'a CodexShellState,
+    runtime: Option<&WorkerSessionProjection>,
+) -> Result<&'a std::sync::Arc<crate::shared_codex_appserver::SharedCodexAppServer>> {
+    match runtime {
+        Some(runtime) => cs.codex_backends.for_session(&runtime.id).await,
+        None => Ok(cs.codex_backends.default_only()),
+    }
+}
+
 pub(crate) async fn interrupt_shared_codex_card_active_turn(
     repo: &dyn RouteRepo,
     cs: &CodexShellState,
@@ -51,19 +61,40 @@ pub(crate) async fn interrupt_shared_codex_card_active_turn(
                 target: "session_projection_lookup::fallback",
                 card_id = %card.id,
                 error = %e,
-                "runtime shared-Codex discriminator query failed; falling back to card payload"
+                "runtime shared-Codex discriminator query failed"
             );
+            if cs.codex_backends.is_pooled() {
+                return;
+            }
             None
         }
     };
     if !card_uses_shared_codex(card, active_runtime.as_ref()) {
         return;
     }
-    match cs
-        .shared_codex_appserver
-        .interrupt_active_outcome_for_card(card.id.as_str())
-        .await
-    {
+    let daemon = match card_daemon(cs, active_runtime.as_ref()).await {
+        Ok(daemon) => daemon,
+        Err(error) => {
+            tracing::warn!(%error, card_id = %card.id, "card teardown Codex route unresolved");
+            return;
+        }
+    };
+    let outcome = if cs.codex_backends.is_pooled() {
+        // Keep the thread paired with the runtime used to select this instance.
+        // Re-reading by card could observe a replacement on another backend.
+        let Some(thread_id) = active_runtime
+            .as_ref()
+            .and_then(crate::session_projection_lookup::active_runtime_thread_id)
+        else {
+            return;
+        };
+        Ok(daemon.interrupt_active_outcome(thread_id).await)
+    } else {
+        daemon
+            .interrupt_active_outcome_for_card(card.id.as_str())
+            .await
+    };
+    match outcome {
         Ok(NativeInterruptOutcome::NativeAck | NativeInterruptOutcome::NoTarget) => {}
         Ok(NativeInterruptOutcome::Unconfirmed { error: e }) | Err(e) => {
             tracing::warn!(
@@ -89,6 +120,7 @@ pub(crate) async fn quiesce_shared_codex_card_active_turn(
         .session_projection_active_for_card(&card.id.to_string())
         .await?;
     if card_uses_shared_codex(card, active_runtime.as_ref()) {
+        let daemon = card_daemon(cs, active_runtime.as_ref()).await?;
         let thread_id = active_runtime
             .as_ref()
             .and_then(crate::harness::effective_runtime_thread_id);
@@ -97,11 +129,7 @@ pub(crate) async fn quiesce_shared_codex_card_active_turn(
             seals.seal(thread_id);
         }
         if let Some(thread_id) = thread_id.as_deref() {
-            match cs
-                .shared_codex_appserver
-                .interrupt_active_outcome(thread_id)
-                .await
-            {
+            match daemon.interrupt_active_outcome(thread_id).await {
                 NativeInterruptOutcome::NativeAck | NativeInterruptOutcome::NoTarget => {}
                 NativeInterruptOutcome::Unconfirmed { error } => return Err(error),
             }

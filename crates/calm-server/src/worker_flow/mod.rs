@@ -39,7 +39,7 @@ fn parse_timestamp_ms(timestamp: &str) -> Option<i64> {
 
 pub struct WorkerFlowDriver {
     repo: Arc<dyn Repo>,
-    shared_codex_appserver: Arc<SharedCodexAppServer>,
+    codex_backends: Arc<crate::agent_backend_pool::codex::CodexBackends>,
     sink: Arc<dyn WorkerFlowItemSink>,
     events: EventBus,
     tasks: Mutex<HashMap<String, SourceTask>>,
@@ -66,7 +66,9 @@ impl WorkerFlowDriver {
     ) -> Arc<Self> {
         Arc::new(Self {
             repo,
-            shared_codex_appserver,
+            codex_backends: crate::agent_backend_pool::codex::CodexBackends::single(
+                shared_codex_appserver,
+            ),
             sink,
             events,
             tasks: Mutex::new(HashMap::new()),
@@ -87,7 +89,9 @@ impl WorkerFlowDriver {
     ) -> Arc<Self> {
         Arc::new(Self {
             repo,
-            shared_codex_appserver,
+            codex_backends: crate::agent_backend_pool::codex::CodexBackends::single(
+                shared_codex_appserver,
+            ),
             sink,
             events,
             tasks: Mutex::new(HashMap::new()),
@@ -109,7 +113,9 @@ impl WorkerFlowDriver {
     ) -> Arc<Self> {
         Arc::new(Self {
             repo,
-            shared_codex_appserver,
+            codex_backends: crate::agent_backend_pool::codex::CodexBackends::single(
+                shared_codex_appserver,
+            ),
             sink,
             events,
             tasks: Mutex::new(HashMap::new()),
@@ -118,6 +124,18 @@ impl WorkerFlowDriver {
             flow_options,
             claude_flow_options,
         })
+    }
+
+    pub fn from_backend_parts(
+        repo: Arc<dyn Repo>,
+        backends: Arc<crate::agent_backend_pool::codex::CodexBackends>,
+        events: EventBus,
+    ) -> Arc<Self> {
+        let mut driver = Self::from_state_parts(repo, backends.default_only().clone(), events);
+        Arc::get_mut(&mut driver)
+            .expect("new driver is exclusive")
+            .codex_backends = backends;
+        driver
     }
 
     pub fn from_state_parts(
@@ -443,7 +461,11 @@ impl WorkerFlowDriver {
                 let source = CodexRolloutFlowSource::new_with_options(
                     self.repo.clone(),
                     runtime.clone(),
-                    self.shared_codex_appserver.clone(),
+                    self.codex_backends
+                        .for_session(&runtime.id)
+                        .await
+                        .map_err(|error| CoreError::Internal(error.to_string()))?
+                        .clone(),
                     stop.clone(),
                     self.flow_options.clone(),
                 );

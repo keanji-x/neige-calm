@@ -171,7 +171,7 @@ async fn records_activity_by_thread_on_active_session_without_bumping_updated_at
     )
     .await;
 
-    repo.session_record_activity_by_thread("th-active", 5_000, "waitingOnUserInput", None)
+    repo.session_record_activity_by_thread("th-active", 5_000, "waitingOnUserInput", None, None)
         .await
         .unwrap();
 
@@ -200,7 +200,7 @@ async fn record_activity_by_thread_on_terminal_session_is_benign_noop() {
     )
     .await;
 
-    repo.session_record_activity_by_thread("th-exited", 9_000, "idle", None)
+    repo.session_record_activity_by_thread("th-exited", 9_000, "idle", None, None)
         .await
         .unwrap();
 
@@ -225,7 +225,7 @@ async fn record_activity_by_thread_on_unknown_thread_is_ok() {
     )
     .await;
 
-    repo.session_record_activity_by_thread("th-unknown", 7_000, "active", None)
+    repo.session_record_activity_by_thread("th-unknown", 7_000, "active", None, None)
         .await
         .unwrap();
 

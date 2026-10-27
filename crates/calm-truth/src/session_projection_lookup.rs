@@ -24,7 +24,12 @@ pub async fn resolve_active_thread_for_card(
     else {
         return Ok(None);
     };
-    Ok(non_empty(runtime.thread_id.as_deref()).map(ToOwned::to_owned))
+    Ok(active_runtime_thread_id(&runtime).map(ToOwned::to_owned))
+}
+
+/// Current runtime thread only, normalized like the active-card lookup.
+pub fn active_runtime_thread_id(runtime: &WorkerSessionProjection) -> Option<&str> {
+    non_empty(runtime.thread_id.as_deref())
 }
 
 pub async fn resolve_card_for_thread(

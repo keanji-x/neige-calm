@@ -490,6 +490,7 @@ pub async fn session_record_activity_by_thread_tx(
     last_activity_ms: i64,
     last_thread_status: &str,
     turn_completed_ms: Option<i64>,
+    backend: Option<&str>,
 ) -> Result<()> {
     let res = sqlx::query(
         r#"UPDATE worker_sessions
@@ -501,12 +502,15 @@ pub async fn session_record_activity_by_thread_tx(
                   END
             WHERE thread_id = ?3
               AND provider = 'codex'
-              AND state IN ('starting', 'running', 'idle', 'turn_pending')"#,
+              AND state IN ('starting', 'running', 'idle', 'turn_pending')
+              AND (?5 IS NULL OR COALESCE((SELECT b.backend_id FROM worker_session_backends b
+                   WHERE b.worker_session_id = worker_sessions.id), 'default') = ?5)"#,
     )
     .bind(last_activity_ms)
     .bind(last_thread_status)
     .bind(thread_id)
     .bind(turn_completed_ms)
+    .bind(backend)
     .execute(&mut **tx)
     .await?;
     if res.rows_affected() == 0 {

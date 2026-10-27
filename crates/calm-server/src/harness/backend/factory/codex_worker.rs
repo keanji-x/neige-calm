@@ -3,7 +3,10 @@ use super::PlannerFactory;
 use crate::error::{CalmError, Result};
 use crate::model::{Task, TaskKind, now_ms};
 use provider::control::NativeInterruptOutcome;
-use provider::worker::{CodexDaemonProbe, CodexLivenessFacts, ThreadStatusLite, TurnStatusLite};
+use provider::worker::{
+    CodexDaemonProbe, CodexDaemonRoute, CodexLivenessFacts, FixedCodexDaemon, ThreadStatusLite,
+    TurnStatusLite,
+};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -13,7 +16,7 @@ pub type WorkerIdleClock = Arc<dyn Fn() -> i64 + Send + Sync>;
 /// The live recheck behind the idle arm. The persisted `last_thread_status` only selects a
 /// candidate; this probe's `thread/read` is the evidence.
 pub struct WorkerIdleWake {
-    probe: Arc<dyn CodexDaemonProbe>,
+    route: Arc<dyn CodexDaemonRoute>,
     grace: Duration,
     probe_timeout: Duration,
     clock: WorkerIdleClock,
@@ -21,8 +24,15 @@ pub struct WorkerIdleWake {
 
 impl WorkerIdleWake {
     pub fn new(probe: Arc<dyn CodexDaemonProbe>, grace: Duration, probe_timeout: Duration) -> Self {
+        Self::with_route(Arc::new(FixedCodexDaemon(probe)), grace, probe_timeout)
+    }
+    pub fn with_route(
+        route: Arc<dyn CodexDaemonRoute>,
+        grace: Duration,
+        probe_timeout: Duration,
+    ) -> Self {
         Self {
-            probe,
+            route,
             grace,
             probe_timeout,
             clock: Arc::new(now_ms),
@@ -80,9 +90,12 @@ fn turn_ended_past_grace(
 /// The candidate's thread: the card's latest codex session, only while its persisted status is
 /// `idle` or `systemError` (the liveness feeder's spelling for a thread whose turn failed). Each
 /// execution gets a fresh card and thread, so this thread is this execution's.
-async fn idle_candidate_thread(pool: &sqlx::SqlitePool, card_id: &str) -> Result<Option<String>> {
-    let latest: Option<(Option<String>, Option<String>)> = sqlx::query_as(
-        "SELECT thread_id, last_thread_status FROM worker_sessions \
+async fn idle_candidate_thread(
+    pool: &sqlx::SqlitePool,
+    card_id: &str,
+) -> Result<Option<(String, String)>> {
+    let latest: Option<(String, Option<String>, Option<String>)> = sqlx::query_as(
+        "SELECT id, thread_id, last_thread_status FROM worker_sessions \
          WHERE card_id = ?1 AND provider = 'codex' \
          ORDER BY created_at_ms DESC, id DESC LIMIT 1",
     )
@@ -90,12 +103,12 @@ async fn idle_candidate_thread(pool: &sqlx::SqlitePool, card_id: &str) -> Result
     .fetch_optional(pool)
     .await?;
     Ok(match latest {
-        Some((Some(thread_id), Some(status)))
+        Some((id, Some(thread_id), Some(status)))
             if matches!(status.as_str(), "idle" | "systemError") =>
         {
-            Some(thread_id)
+            Some((id, thread_id))
         }
-        Some((None, _)) | Some((Some(_), None)) | Some((Some(_), Some(_))) | None => None,
+        _ => None,
     })
 }
 
@@ -121,7 +134,7 @@ impl WorkerIdleWake {
         task: &Task,
         card_id: &str,
     ) -> Option<TurnEnd> {
-        let thread_id = match idle_candidate_thread(pool, card_id).await {
+        let (session_id, thread_id) = match idle_candidate_thread(pool, card_id).await {
             Ok(Some(thread_id)) => thread_id,
             Ok(None) => return None,
             Err(error) => {
@@ -129,9 +142,10 @@ impl WorkerIdleWake {
                 return None;
             }
         };
+        let probe = self.route.for_session(&session_id).await?;
         let facts = match tokio::time::timeout(
             self.probe_timeout,
-            self.probe.read_liveness_facts(&thread_id),
+            probe.read_liveness_facts(&thread_id),
         )
         .await
         {
@@ -145,7 +159,7 @@ impl WorkerIdleWake {
                 return None;
             }
         };
-        let active_turn_id = self.probe.active_turn_id_for_thread(&thread_id);
+        let active_turn_id = probe.active_turn_id_for_thread(&thread_id);
         turn_ended_past_grace(
             &facts,
             active_turn_id.as_deref(),

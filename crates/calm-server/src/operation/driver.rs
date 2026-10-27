@@ -419,9 +419,19 @@ impl OperationRuntime {
             .session_projection_active_for_card(&card_id.to_string())
             .await?
         {
+            let shared = if runtime.agent_provider
+                == Some(crate::session_projection_repo::AgentProvider::Codex)
+            {
+                match self.spawn_ctx.codex_backends.as_ref() {
+                    Some(backends) => Some(backends.for_session(&runtime.id).await?),
+                    None => None,
+                }
+            } else {
+                None
+            };
             crate::harness::backend::factory::PlannerFactory::stop_timed_out_worker(
                 &runtime,
-                self.spawn_ctx.shared_codex_appserver.as_deref(),
+                shared.map(|daemon| daemon.as_ref()),
             )
             .await?;
         }

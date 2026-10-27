@@ -247,7 +247,7 @@ impl Fx {
     /// `last_turn_completed_ms` when `turn_completed_ms` is given.
     pub(crate) async fn stamp(&self, thread_id: &str, at_ms: i64, status: &str, done: Option<i64>) {
         self.repo_dyn
-            .session_record_activity_by_thread(thread_id, at_ms, status, done)
+            .session_record_activity_by_thread(thread_id, at_ms, status, done, None)
             .await
             .unwrap();
     }
