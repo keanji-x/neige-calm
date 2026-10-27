@@ -49,7 +49,7 @@ fn failed(status_detail: &str, frozen: &FrozenRun, log_path: &Path, line: String
 }
 
 /// Append the kernel's `line` to the run's log; the tail is the log's as the steps left it, then the
-/// line (the append is not read back: it may still be in flight).
+/// line (constructed directly so a best-effort append failure cannot omit it from the tail).
 async fn tail_with(log_path: &Path, line: &str) -> String {
     let mut tail = read_log_tail(log_path);
     append_log_line(log_path, line).await;

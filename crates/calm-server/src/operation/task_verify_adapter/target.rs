@@ -514,6 +514,12 @@ fn refused_verdict(
     }
 }
 
+// Scoped only around the real helper in owner unit tests; called after open, before write.
+#[cfg(test)]
+tokio::task_local! {
+    static APPEND_AFTER_OPEN: std::cell::RefCell<Option<Box<dyn FnOnce() + Send>>>;
+}
+
 /// Append the refusal line to this attempt's log file so `log_path` names an existing file
 /// (5.1.7); best effort — the verdict carries the line either way.
 pub(crate) async fn append_log_line(log_path: &Path, line: &str) {
@@ -529,8 +535,18 @@ pub(crate) async fn append_log_line(log_path: &Path, line: &str) {
         .await;
     match result {
         Ok(mut file) => {
+            #[cfg(test)]
+            let _ = APPEND_AFTER_OPEN.try_with(|hook| {
+                if let Some(hook) = hook.borrow_mut().take() {
+                    hook();
+                }
+            });
             use tokio::io::AsyncWriteExt;
-            let _ = file.write_all(text.as_bytes()).await;
+            if let Err(error) = file.write_all(text.as_bytes()).await {
+                tracing::warn!(path = %log_path.display(), %error, "gate log line not written");
+            } else if let Err(error) = file.flush().await {
+                tracing::warn!(path = %log_path.display(), %error, "gate log line not flushed");
+            }
         }
         Err(error) => {
             tracing::warn!(path = %log_path.display(), %error, "gate log line not written");
@@ -1013,6 +1029,8 @@ pub(crate) fn target_json(target: &VerifyTarget) -> Value {
 
 #[cfg(test)]
 mod tests {
+    mod append_visibility;
+
     use super::*;
     use crate::model::now_ms;
     use serde_json::json;
