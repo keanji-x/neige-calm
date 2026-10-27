@@ -10,7 +10,7 @@ fn grok() -> Value {
     json!({"ACP_FIXTURE_IDENTITY":"meta","ACP_FIXTURE_VERSION":"1.0.62",
         "ACP_FIXTURE_AUTH_METHODS":"cached_token,grok.com","ACP_FIXTURE_VENDOR":"xai"})
 }
-async fn boot_grok(root: &Root) -> Stack {
+pub(super) async fn boot_grok(root: &Root) -> Stack {
     boot_as(root, "grok", grok(), "1.0.62").await
 }
 pub(super) async fn create_grok(stack: &Stack) -> (String, String) {

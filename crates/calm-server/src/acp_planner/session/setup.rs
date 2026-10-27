@@ -9,6 +9,7 @@ pub(super) async fn attach(
     original_native: Option<String>,
     mcp: &[protocol::McpServer],
     admission: &NativePromptAdmission<'_>,
+    usage: &mut provider::acp::usage::UsageTracker,
 ) -> std::result::Result<(String, provider::acp::configuration::Configuration), StartFailure> {
     let (native, configuration) = match original_native {
         Some(native) => {
@@ -35,6 +36,7 @@ pub(super) async fn attach(
                 admission.gate(),
             )
             .await?;
+            usage.configure(&result);
             (
                 native,
                 provider::acp::configuration::Configuration::from_response(&result)
@@ -50,6 +52,7 @@ pub(super) async fn attach(
                 admission.gate(),
             )
             .await?;
+            usage.configure(&result);
             let configuration = provider::acp::configuration::Configuration::from_response(&result)
                 .map_err(|error| StartFailure::Failed(wire_error(error)))?;
             let native: protocol::NewSessionResponse = protocol::decode(result)
@@ -71,6 +74,7 @@ impl Shared {
         mut configuration: provider::acp::configuration::Configuration,
         selection: &provider::TurnModelSelection,
         admission: &NativePromptAdmission<'_>,
+        usage: &mut provider::acp::usage::UsageTracker,
     ) -> std::result::Result<(), StartFailure> {
         let params = &self.params;
         params
@@ -97,6 +101,7 @@ impl Shared {
                 admission.gate(),
             )
             .await?;
+            usage.configure(&result);
             configuration = provider::acp::configuration::Configuration::from_response(&result)
                 .map_err(|error| StartFailure::Failed(wire_error(error)))?;
             if configuration

@@ -6,6 +6,7 @@ fn translator() -> TurnTranslator {
         thread_id: "thread".into(),
         turn_id: "turn".into(),
         native_session_id: "session".into(),
+        usage: super::usage::UsageTracker::new(super::usage::UsageSource::SessionUsage),
     })
 }
 fn frame(update: Value) -> Value {

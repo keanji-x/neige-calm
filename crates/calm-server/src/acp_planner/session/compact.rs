@@ -144,6 +144,7 @@ impl AcpPlannerSession {
                 return Err(CompactFailure::Before(error));
             }
         };
+        let mut usage = provider::acp::usage::UsageTracker::new(registration.profile.usage);
         let prepared = async {
             guard
                 .launch(
@@ -185,10 +186,18 @@ impl AcpPlannerSession {
                 Some(native.clone()),
                 &mcp,
                 &combined,
+                &mut usage,
             )
             .await?;
             shared
-                .configure(process, &native, configuration, selection, &combined)
+                .configure(
+                    process,
+                    &native,
+                    configuration,
+                    selection,
+                    &combined,
+                    &mut usage,
+                )
                 .await?;
             if !process
                 .commands

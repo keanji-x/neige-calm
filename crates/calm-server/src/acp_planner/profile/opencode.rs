@@ -48,6 +48,7 @@ const FULL_PERMISSION: (&str, &str) = (
 );
 
 pub(super) const PROFILE: AcpAgentProfile = AcpAgentProfile {
+    usage: provider::acp::usage::UsageSource::SessionUsage,
     compaction: super::ContractCompaction {
         planner: Some(super::CompactionWire::StandardPrompt),
         assistant: Some(super::CompactionWire::StandardPrompt),

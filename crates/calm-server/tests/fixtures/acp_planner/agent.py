@@ -78,12 +78,17 @@ def hold_catalog():
         time.sleep(0.01)
 
 def config():
-    return {'configOptions': [
+    result = {'configOptions': [
         {'id': 'declared-model-key', 'type': 'select', 'category': 'model', 'currentValue': model,
          'options': [{'group': 'Fixture', 'options': [
              {'value': 'fixture/model-a', 'name': 'Fixture A'}, {'value': 'fixture/model-b', 'name': 'Fixture B'}]}]},
         {'id': 'declared-effort-key', 'type': 'select', 'category': 'thought_level', 'currentValue': effort,
          'options': [{'value': 'normal', 'name': 'Normal'}, {'value': 'deep', 'name': 'Deep'}]}]}
+    if xai:
+        result['models'] = {'currentModelId': model, 'availableModels': [
+            {'modelId': name, 'name': name, '_meta': {'totalContextTokens': 200000}}
+            for name in ['fixture/model-a', 'fixture/model-b']]}
+    return result
 
 def vendor(method, params=None):
     # Grok Build's own notifications; an ACP client ignores methods it does not know.
@@ -149,8 +154,11 @@ def write_report(request):
     vendor('session/prompt_complete')
     finish(request, 'tools answered')
 
-def update(value):
-    emit({'jsonrpc': '2.0', 'method': 'session/update', 'params': {'sessionId': current, 'update': value}})
+def update(value, meta=None):
+    params = {'sessionId': current, 'update': value}
+    if meta is not None:
+        params['_meta'] = meta
+    emit({'jsonrpc': '2.0', 'method': 'session/update', 'params': params})
 
 def attach_updates():
     scenario = (root / 'scenario').read_text().strip()
@@ -492,9 +500,14 @@ for line in sys.stdin:
                 finish(pending, 'settled')
                 pending = None
         elif scenario == 'usage':
-            update({'sessionUpdate': 'usage_update', 'used': 60200, 'size': 200000})
-            update({'sessionUpdate': 'usage_update', 'used': 24100, 'size': 200000,
-                    'cost': {'amount': 0.012, 'currency': 'USD'}})
+            if xai:
+                for count in [60200, 24100]:
+                    update({'sessionUpdate': 'agent_message_chunk',
+                            'content': {'type': 'text', 'text': 'usage'}}, {'totalTokens': count})
+            else:
+                update({'sessionUpdate': 'usage_update', 'used': 60200, 'size': 200000})
+                update({'sessionUpdate': 'usage_update', 'used': 24100, 'size': 200000,
+                        'cost': {'amount': 0.012, 'currency': 'USD'}})
             finish(request, 'usage reported')
         elif scenario in ['hold', 'server-drain']:
             pending = request

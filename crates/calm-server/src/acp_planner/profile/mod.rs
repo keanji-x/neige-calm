@@ -26,6 +26,7 @@ pub(crate) struct ContractCompaction {
 }
 
 pub(crate) struct AcpAgentProfile {
+    pub(crate) usage: provider::acp::usage::UsageSource,
     /// Native maintenance support declared independently for each worker contract.
     pub(crate) compaction: ContractCompaction,
     /// Supports receipt-owned canonical Planner input; activation is independently gated.

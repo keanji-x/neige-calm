@@ -410,6 +410,7 @@ fn translator() -> translate::TurnTranslator {
         thread_id: "thread".into(),
         turn_id: "turn".into(),
         native_session_id: "native".into(),
+        usage: super::usage::UsageTracker::new(super::usage::UsageSource::SessionUsage),
     })
 }
 
@@ -673,6 +674,7 @@ fn usage_update_emits_context_counts_without_inventing_a_lifetime_total() {
         let PlannerEventKind::TokenUsage { params } = &events[0].kind else {
             panic!("expected context usage event");
         };
+        assert_eq!(params["turnId"], "turn");
         assert_eq!(params["tokenUsage"]["last"]["totalTokens"], used);
         assert_eq!(params["tokenUsage"]["modelContextWindow"], size);
         assert!(params["tokenUsage"].get("total").is_none());

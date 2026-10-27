@@ -12,6 +12,7 @@ use super::{AcpAgentProfile, AgentEntry, AgentIdentity, ModeLaunch, NOTHING};
 use provider::acp::approvals::McpToolRequest;
 
 pub(super) const PROFILE: AcpAgentProfile = AcpAgentProfile {
+    usage: provider::acp::usage::UsageSource::XaiNotificationMeta,
     compaction: super::ContractCompaction {
         planner: Some(super::CompactionWire::XaiExtension),
         assistant: None,

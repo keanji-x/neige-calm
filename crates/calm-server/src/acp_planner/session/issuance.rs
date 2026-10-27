@@ -230,6 +230,7 @@ impl AcpPlannerSession {
         let owner_admission =
             shared.admission(thread, Some(permission), original_native.as_deref(), None);
         let admission = input.admission(&owner_admission);
+        let mut usage = provider::acp::usage::UsageTracker::new(registration.profile.usage);
         let prepared = async {
             let mcp = [params.mcp_server(server.clone(), &token)];
             let (native, configuration) = setup::attach(
@@ -239,6 +240,7 @@ impl AcpPlannerSession {
                 row.agent_session_id,
                 &mcp,
                 &admission,
+                &mut usage,
             )
             .await?;
             {
@@ -246,7 +248,14 @@ impl AcpPlannerSession {
                     shared.admission(thread, Some(permission), Some(&native), None);
                 let admission = input.admission(&owner_admission);
                 shared
-                    .configure(process, &native, configuration, &selection, &admission)
+                    .configure(
+                        process,
+                        &native,
+                        configuration,
+                        &selection,
+                        &admission,
+                        &mut usage,
+                    )
                     .await?;
             }
             if params.seals.is_sealed(thread) || shared.state.lock().expect("ACP state").closed {
@@ -340,6 +349,7 @@ impl AcpPlannerSession {
             thread_id: thread.into(),
             turn_id: turn.clone(),
             native_session_id: native.clone(),
+            usage,
         });
         let _ = shared.events.send(translator.started());
         let client = process.connection.client.clone();
