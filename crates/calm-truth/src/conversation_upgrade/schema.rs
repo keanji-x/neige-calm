@@ -9,7 +9,9 @@ pub(super) fn text(value: &RawCell, encoding: &str) -> Result<String, SnapshotEr
         "UTF-8" => String::from_utf8(bytes.clone()).ok(),
         "UTF-16le" | "UTF-16be" if bytes.len() % 2 == 0 => {
             let words = bytes
-                .chunks_exact(2)
+                .as_chunks::<2>()
+                .0
+                .iter()
                 .map(|b| {
                     if encoding == "UTF-16le" {
                         u16::from_le_bytes([b[0], b[1]])
