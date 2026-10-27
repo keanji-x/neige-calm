@@ -173,6 +173,21 @@ pub async fn consumer_inventory<'a>(
     Ok(inventory)
 }
 
+/// Persisted settlement history in an owner's alias namespace, including retired rows.
+/// Proof strength is classified by the executor contract at the caller.
+pub async fn settlement_history(
+    pool: &SqlitePool,
+    prefix: &str,
+) -> Result<Vec<(String, Option<String>)>, sqlx::Error> {
+    sqlx::query_as(
+        "SELECT execution_id,settlement_json FROM workspace_executions \
+         WHERE alias >= ?1 || ':' AND alias < ?1 || ';' AND settled_at_ms IS NOT NULL",
+    )
+    .bind(prefix)
+    .fetch_all(pool)
+    .await
+}
+
 /// Occupancy scopes; lifecycle policy belongs to callers.
 pub enum Scope<'a> {
     Card(&'a str),

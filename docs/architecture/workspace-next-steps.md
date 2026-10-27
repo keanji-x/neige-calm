@@ -1085,21 +1085,26 @@ O1 已在 main 实现（`truth/db/sqlite/track.rs:123` 的 `admit_attached_works
   的持久输出清理自己的 runtime/card/terminal（含 boot recovery 的同一路径）；child-track adapter 的补偿为空操作。
   这些入口不是 C5 workspace effect；本片不扩大其授权或生命周期。今后若增加 workspace 移动/删除，须另行决定围栏、
   正向证明与 owner 授权，不能从这里的行删除继承权限。
-  **Claude Planner 代理已由 C5d.2 删除（升级残留除外）；ACP 代理保留。** C5d.1 将 Claude/ACP Planner 的 Track fence 延长到
+  **Claude Planner 代理仅在 C5d.2 的 boot 与后代完整结算证明均成立时删除；ACP 代理保留。** C5d.1 将 Claude/ACP Planner 的 Track fence 延长到
   Engine occupancy 提交（rewind 仍 Held 到结算）。C5d.2 用 `planner:{session}:{execution}` 的完整 alias 历史识别
   已迁移 Claude session；范围扫描 `workspace_executions_alias_history`（0197），再要求 alias 等于该 session 前缀与该行 execution_id 的拼接，不用会把 `_` 当通配符的 LIKE。
   `provider_execution/alias.rs` 定义布局，`workspace/src/execution/mod.rs` 的 ExecutionId 是 32 位小写十六进制（mint 与解析均无冒号），因此含冒号或分号的 session 仍精确归属。
-  Claude stale Starting/Running/TurnPending 不再阻塞 clean，未结算 execution 由 C5a 的位置占用谓词阻塞。
+  Claude stale Starting/Running/TurnPending 仅在自身每个历史 execution 均有后代完整结算证明时不阻塞 clean；未结算 execution 仍由 C5a 的位置占用谓词阻塞。
   **升级例外：** boot marker sweep 失败仍允许内核启动，Claude 的 `provider_admission_gate` 与 ACP 的发行路径
   只检查 registered execution，不能证明旧进程不存在；`pre_boot_absent` 用于 settlement，并非所有 admit 的前置条件。
-  因此 clean 的 SQL 仍消费两个 host 的 boot proof：未初始化时保留 Planner 代理；初始化后只对两个
-  `PreC4Sweep::unproven` 集合以外、且 provider 为 Claude 的 session 取消代理。集合为 boot 固定结果，新 session 按构造已知不含 pre-C4 进程。
+  因此 server `provider_execution/clean.rs` 消费两个 host 的 boot proof：未初始化时保留 Planner 代理；初始化后仅声明已审计的 Claude capability，连同两个
+  `PreC4Sweep::unproven` 集合与后代完整 execution ID 传入 typed `PlannerCleanEvidence`。共享 SQL 绑定 provider，不包含 provider 名称；未声明 provider 默认保留代理。集合为 boot 固定结果，新 session 按构造已知不含 pre-C4 进程。
   close tick、围栏内复查与 reclaim 恢复共用同一谓词；无历史 Starting、ACP、Codex、Legacy PTY 与 task worker 仍保留代理。
   **C5d.2 审计收窄（#2666）：** ACP `routes/models.rs` → `planner_model/acquisition.rs` → `acp_planner/catalog.rs`
   在 card workspace 以原生 `Process::spawn` 发现 catalog；delegated-child acquisition 同样传入项目 cwd，均不持 Track fence 或 execution occupancy。
   因此只豁免已审计的 Claude，不扩大 generic execution 合同，也不改变 Q5 的项目配置语义。ACP 的 `check_ready` 在 temp 目录；
   Claude version/auth 继承 kernel cwd，catalog 在 host instructions 目录；二者的 turn、compaction 与 Claude rewind 均走 ProviderExecution 准入。
   后续 provider 默认保留代理；扩大豁免需重新证明该 provider 所有 track cwd 进程路径均有 fence 与 occupancy。
+  **后代证明收窄（round 2）：** `workspace_runtime::execution::Settlement::descendants_complete` 拥有证明强度判断，
+  仅 `Journal(Drained)` 具有 live helper subreaper + ECHILD (`NoChildrenAfterForkEntryClosed`) 的后代完整证明。
+  `InterruptedQuiescent` 只证明原 group/session 为空，setsid 后代可能仍持 track cwd；`OriginalGroupEmpty`、tombstone、缺失或不可解析的 settlement 均不取消代理。
+  clean owner 通过既有 alias-history 索引读取持久结算（包括 retired），调用 typed predicate；SQL 要求精确 session alias 有历史且每条 execution 都在完整证明集合中。
+  close tick、Track fence 内复查与恢复均重新采样，单个 Drained 不能遮住同 session 的弱历史；不新增 migration、持久字段或全局 registry。
   新增测试只在既有 track_suite 中每次 CI nextest 运行一次，无 provider 注册增长列表；新增或重命名测试无需改永久检查。
   typed 终端没有此窗口：`server/operation/terminal_execution_create.rs:205` 取得同一 Track try-lock，`:235` prepare_tx
   同事务调用 `terminal_adapter.rs:309` 创建 session（`truth/db/sqlite/card_composite.rs:117`），再在
@@ -1360,7 +1365,7 @@ main）、Legacy 终端静默（`server/terminal_sweeper.rs:535` 起，typed 已
 | C5b | Area 全量证明与 forge 代理切换 | C5-D5 的 ACP 顺序与全 Area 证明，位置目标为 Area 容器目录与成员 worktree 根；panic 分支删去容器 rmdir（C5-D5.4）；Area 补偿矩阵按 C5-D2 只扩测试、不改 restore。forge 的 probe 准入接入 C5a 的共享围栏，事务内复查 frozen track 行（C5-D6.1–2），**同一片**删除 forge 已迁移类型的阶段代理：三个破坏性调用者（`server/routes/tracks.rs:3317`、`server/routes/areas.rs:902`、`server/workspace_service/ports.rs:125`）不再因带 `forge_execution` 的 op 处于可恢复阶段而阻塞，由执行谓词与 probe 围栏覆盖；无 `forge_execution` 记录的可恢复阶段 op 照旧阻塞（C5-D6.3）；**保留** pre-C3 原生行与原生 Stuck（`server/operation/workspace_lease/mod.rs:102-110` 中 `forge_execution` 缺失的分支），分类留在 forge owner；`track_close`（`server/mcp_server/tools/track_state.rs:390`）的逻辑活动策略不变 | 任一成员（含他 track 拥有、根在成员目录内的执行）未结算时第一个目录不移动，Conflict，全部目录与 branch 保留；A 拥有的 typed 终端以空 Area 和非空 Area 的容器目录为 cwd 时，Area 删除 Conflict、容器保留、A 的 desired 仍为 `run`；Area 删除持 area 锁期间以容器为 cwd 的创建 `WorkspaceBusy`；Area 删除在提交之后、sweep 之前暂停，cwd 在成员 worktree 内 `WorkspaceBusy`；ACP 撤销先于通用 Stop 的顺序测试；提交失败与 panic 照旧恢复全部目录；带 `forge_execution` 且执行已结算、op 仍在可恢复阶段时 Track/Area 删除与 clean 不再被阻塞，执行未结算时被阻塞；action 已结算的 Parked op，在删除的证明与 recycle 之间、以及 clean 持 track 锁期间，驱动 observer 与 boot/sweep 恢复：不准入 verdict 或 output probe（没有新 execution 行），op 仍 Parked；锁释放后 track 仍在则准入 probe，track 已删则 op 以 gate-infra 失败、不准入；原生 Stuck 行照旧 Conflict 且被忽略文件保留（既有 `tests/cases/track_delete_forge_fence.rs` 的原生用例保留，只伪造阶段的用例改为带真实 execution） | C5a |
 | C5c | clean 的 typed 终端 session 代理切换与其余删除入口审计 | `CLOSED_TRACK_WORKTREES_SQL`（`truth/db/sqlite/track_workspace.rs`）只剔除有规范 terminal alias 历史的 typed 终端，含 settled/retired 历史；占用由 C5a 执行谓词覆盖。C5c 当时**保留** Claude/ACP Planner 的 session/TurnPending 代理（C5d.2 仅对 Claude 按 boot proof 切换，ACP 保留）：issuance 释放 Track 早于 Engine 准入（`server/harness/run_loop/issuance.rs:369,507-510`）；独立后续切片延长 guard（C5-D6.4/D6.5）。Legacy task worker、owner 自建 PTY、升级前行与 Codex 线程状态照旧；审计只删行的 Card、plugin 与启动补偿入口，它们不是 C5 effect | typed 终端 stale Running + settled execution 时 clean 进行；Exited/Idle + unsettled execution、无 renderer 时延后；Legacy 无 execution 仍延后；Claude/ACP Planner stale Starting/Running/TurnPending + settled execution 在 C5c 仍延后；C5d.2 仅将 Claude 改为 boot 已证明无 pre-C4 进程时允许 clean，ACP 保留。保留 `tests/cases/track_worktree.rs`、`tests/cases/c1_planner_fence.rs`、`tests/cases/c1_fence.rs` 断言；仅对 no-silent-miss 断言做变异验证 | C5b |
 | C5d.1 | Planner 准入 fence 延长（#2666，PR1） | Claude/ACP 的 historical turn、canonical first/resume/retry 与两种 compaction 路径将 typed Track fence 交给 ProviderExecution；admit 写者核对 intent track，occupancy commit 后释放，错误关闭；Codex 在原生调用前释放，rewind 保持 Held 到结算（D6.5）。保留 CLOSED_TRACK_WORKTREES_SQL 的 Planner session 代理，删除留给 PR2。L2：跨生命周期锁顺序与准入边界 | 生产入口在 occupancy commit 前暂停时 clean/delete 等待；提交后 clean 延后、delete 停止执行且无死锁；错 Track 与空 handoff 返回 Conflict；resume/retry 不重复 dispatch；保留 C1 与 rewind 回归。新增路径由必需参数强制携带 fence，无增长列表；测试每次 CI nextest 运行一次 | C5c |
-| C5d.2 | Planner clean session 代理删除（#2666，PR2） | 复用 C5d.1 fence，以共享 calm-truth Planner prefix 的 alias 范围扫描加 session/execution_id 精确等式识别历史（含 retired）；0197 索引提供范围查找。仅对 boot proof 已证明无 pre-C4 进程的 Claude session 删除代理；ACP 因项目 cwd catalog discovery 不在 occupancy 内而保留代理；缺 proof 或 sweep 的 unproven session 保留代理。L2：clean 删除边界 | Claude stale Starting/Running/TurnPending + settled 历史可 clean；ACP（OpenCode/Grok）同状态即使 settled 仍延后；unsettled、无历史 Starting、Codex turn_pending、Legacy PTY 与未证明升级行延后；s/s1/s_x、s 与 s:x、s:x 与 s:x:y、s;x 与 s;x:y 边界及自身历史控制；删除精确等式、扩大 provider 豁免的变异验证。保留 c1_fence、c1_planner_fence、track_worktree、c5d_。无新增增长列表；CI nextest 每次运行一次；后续新增 provider 默认保留代理，扩大豁免需完整 spawn 审计 | C5d.1 |
+| C5d.2 | Planner clean session 代理删除（#2666，PR2） | 复用 C5d.1 fence，以共享 calm-truth Planner prefix 的 alias 范围扫描加 session/execution_id 精确等式识别历史（含 retired）；0197 索引提供范围查找。server clean-proof owner 声明 Claude capability，SQL 仅绑定 typed evidence；仅 boot proof 已证明无 pre-C4 进程且每条规范 alias 历史的持久 settlement 都通过 executor-owned descendants_complete（仅 Drained）的 session 删除代理。InterruptedQuiescent、OriginalGroupEmpty、tombstone、未知证明保留代理；ACP discovery 及未声明 provider 保留代理。L2：clean 删除边界 | Claude stale Starting/Running/TurnPending + 全 Drained 历史可 clean；同 session 混入一条 InterruptedQuiescent 或未知 settlement 延后；带 Drained 历史的未声明 Codex provider 延后；ACP（OpenCode/Grok）同状态即使 settled 仍延后；unsettled、无历史 Starting、Codex turn_pending、Legacy PTY 与未证明升级行延后；s/s1/s_x、s 与 s:x、s:x 与 s:x:y、s;x 与 s;x:y 边界及自身历史控制；删除精确等式、扩大 provider 豁免的变异验证；round 2 对 server capability 改为 Codex、executor predicate 接受 InterruptedQuiescent 做单因素变异。保留 c1_fence、c1_planner_fence、track_worktree、c5d_。无新增增长列表；CI nextest 每次运行一次；后续新增 provider 默认保留代理，扩大豁免需完整 spawn 审计 | C5d.1 |
 
 之后的 S3（Revision、B pin、7/90）与 S2b（view、WorkspaceRef、WorkspaceContent）沿用各自协议，不在本表。
 

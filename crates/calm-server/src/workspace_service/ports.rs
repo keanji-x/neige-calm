@@ -5,7 +5,6 @@ use crate::operation::workspace_lease::upstream::{
     LeaseStart, choose_lease_start, diverged_refusal, head_upstream, set_branch_upstream,
 };
 use async_trait::async_trait;
-use calm_truth::db::sqlite::PlannerCleanEvidence;
 
 use std::path::Path;
 use workspace_runtime::track_worktree::TrackBranch;
@@ -103,10 +102,14 @@ impl ClosedWorktreeFacts for ServerClosedWorktreeFacts {
     }
 
     async fn closed_idle_worktrees(&self) -> Result<Vec<ClosedWorktree>> {
-        let unproven = self.runtime.reclaim_context().planner_clean_unproven();
+        let evidence = self
+            .runtime
+            .reclaim_context()
+            .planner_clean_evidence()
+            .await?;
         Ok(calm_truth::db::sqlite::closed_worktree_candidates(
             self.receipts.db.read_pool(),
-            planner_evidence(&unproven),
+            evidence,
         )
         .await?
         .into_iter()
@@ -135,11 +138,15 @@ impl ClosedWorktreeFacts for ServerClosedWorktreeFacts {
         {
             return Ok(None);
         }
-        let unproven = self.runtime.reclaim_context().planner_clean_unproven();
+        let evidence = self
+            .runtime
+            .reclaim_context()
+            .planner_clean_evidence()
+            .await?;
         let Some(candidate) = calm_truth::db::sqlite::closed_worktree_candidate(
             self.receipts.db.read_pool(),
             track,
-            planner_evidence(&unproven),
+            evidence,
         )
         .await?
         else {
@@ -166,13 +173,6 @@ impl ClosedWorktreeFacts for ServerClosedWorktreeFacts {
     }
 }
 
-fn planner_evidence(unproven: &Option<Vec<String>>) -> PlannerCleanEvidence<'_> {
-    match unproven {
-        None => PlannerCleanEvidence::Unknown,
-        Some(ids) => PlannerCleanEvidence::Swept { unproven: ids },
-    }
-}
-
 /// Sample only while the caller owns the track lifecycle fence. Recovery and the close tick
 /// share the same eligibility policy; neither a parked row nor a closed flag is authority alone.
 pub(super) async fn closed_idle_reclaim_safe(
@@ -181,13 +181,9 @@ pub(super) async fn closed_idle_reclaim_safe(
     expected_close: Option<i64>,
 ) -> Result<bool> {
     let db = ctx.operation_repo.sqlite_db();
-    let unproven = ctx.planner_clean_unproven();
-    let candidate = calm_truth::db::sqlite::closed_worktree_candidate(
-        db.read_pool(),
-        track,
-        planner_evidence(&unproven),
-    )
-    .await?;
+    let evidence = ctx.planner_clean_evidence().await?;
+    let candidate =
+        calm_truth::db::sqlite::closed_worktree_candidate(db.read_pool(), track, evidence).await?;
     let Some(candidate) = candidate else {
         return Ok(false);
     };

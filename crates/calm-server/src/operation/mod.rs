@@ -329,8 +329,17 @@ impl SpawnCtx {
         self
     }
 
-    pub(crate) fn planner_clean_unproven(&self) -> Option<Vec<String>> {
-        self.planner_clean_proof.as_ref()?.unproven()
+    pub(crate) async fn planner_clean_evidence(
+        &self,
+    ) -> Result<calm_truth::db::sqlite::PlannerCleanEvidence> {
+        match &self.planner_clean_proof {
+            Some(proof) => {
+                proof
+                    .evidence(self.operation_repo.sqlite_db().read_pool())
+                    .await
+            }
+            None => Ok(calm_truth::db::sqlite::PlannerCleanEvidence::Unknown),
+        }
     }
 
     pub fn with_location_admission(

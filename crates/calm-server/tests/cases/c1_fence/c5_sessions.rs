@@ -110,8 +110,14 @@ async fn session_with_id(
 async fn settle(b: &Boot, execution: &str) {
     // Retired history must still identify a typed terminal or Planner session.
     sqlx::query(
-        "UPDATE workspace_executions SET settled_at_ms=1,settlement_json='{}',\
+        "UPDATE workspace_executions SET settled_at_ms=1,settlement_json=?,\
         desired='retire',secrets_json=NULL WHERE execution_id=?",
+    )
+    .bind(
+        serde_json::to_string(&workspace_runtime::execution::Settlement::Journal(
+            workspace_runtime::execution::ExecutionState::Drained { status: Some(0) },
+        ))
+        .unwrap(),
     )
     .bind(execution)
     .execute(b.repo.pool())
@@ -353,5 +359,74 @@ async fn c5d2_delimited_session_own_history_cleans() {
         settle(&b, &execution).await;
         assert_eq!(clean(b.clone()).await.unwrap().0, 1, "{id}");
         assert!(!path.join("target/ignored").exists());
+    }
+}
+
+#[tokio::test]
+async fn c5d2_undeclared_provider_with_drained_history_defers() {
+    let (b, track, path) = fixture().await;
+    calm_server::test_seams::boot_planner_upgrade_for_test(&b.state)
+        .await
+        .unwrap();
+    let (_, execution) = session(&b, &track, &path, Some(AgentProvider::Codex), true).await;
+    settle(&b, &execution).await;
+    let (count, history) = clean(b.clone()).await.unwrap();
+    assert_eq!(count, 0);
+    assert!(history.is_empty());
+    assert!(path.join("target/ignored").is_file());
+}
+
+#[tokio::test]
+async fn c5d2_one_weak_settlement_among_drained_history_defers() {
+    use workspace_runtime::execution::*;
+    let interrupted =
+        serde_json::to_string(&Settlement::Journal(ExecutionState::InterruptedQuiescent {
+            reason: ExecutionInterruption::ExecutorInterrupted,
+            proof: InterruptedQuiescenceProof {
+                host_boot_id: "test-boot".into(),
+                helper_process: NativeProcessIdentity::LinuxHelper(LinuxProcessIdentity {
+                    pid: 12345,
+                    start_time_ticks: 1,
+                    nonce: CapabilityToken::fresh().unwrap(),
+                }),
+                mechanism: ScopeMechanismIdentity::LinuxHelper(LinuxHelperIdentity {
+                    executable_device: 1,
+                    executable_inode: 2,
+                    protocol_version: 1,
+                }),
+                scope: InterruptedScope::LinuxOriginalGroupAndSessionEmpty,
+            },
+        }))
+        .unwrap();
+    let drained = serde_json::to_string(&Settlement::Journal(ExecutionState::Drained {
+        status: Some(0),
+    }))
+    .unwrap();
+    // Settlements are immutable: use independent histories for weak, unknown,
+    // and all-Drained proof rather than upgrading an existing settlement.
+    for (proof, expected) in [(interrupted, 0), ("{}".into(), 0), (drained, 1)] {
+        let (b, track, path) = fixture().await;
+        calm_server::test_seams::boot_planner_upgrade_for_test(&b.state)
+            .await
+            .unwrap();
+        let (_, execution) = session(&b, &track, &path, Some(AgentProvider::Claude), true).await;
+        settle(&b, &execution).await;
+        // A second execution for the SAME session: one strong settlement cannot
+        // hide a weaker historical proof, including retired history.
+        let other = new_id();
+        sqlx::query(
+            "INSERT INTO workspace_executions \
+             (execution_id,track_id,alias,intent_json,secrets_json,desired,settled_at_ms,settlement_json) \
+             SELECT ?,track_id,replace(alias,execution_id,?),intent_json,NULL,'retire',1,? \
+             FROM workspace_executions WHERE execution_id=?",
+        )
+            .bind(&other).bind(&other).bind(proof).bind(&execution)
+            .execute(b.repo.pool()).await.unwrap();
+        let (count, history) = clean(b.clone()).await.unwrap();
+        assert_eq!(count, expected);
+        if expected == 0 {
+            assert!(history.is_empty());
+        }
+        assert_eq!(path.join("target/ignored").is_file(), expected == 0);
     }
 }

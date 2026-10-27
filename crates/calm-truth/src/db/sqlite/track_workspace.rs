@@ -18,11 +18,10 @@ pub async fn track_workspace_trash_retention_owners(
     )
 }
 
-/// Typed terminals and boot-proven Claude Planner sessions use canonical alias history,
+/// Typed terminals and caller-proven Planner sessions use canonical alias history,
 /// including settled/retired executions. C5a re-proves occupancy under the Track
 /// fence; C5d.1 holds that fence through Planner occupancy commit. Unproven pre-C4
-/// sessions, sessions without history, ACP, Codex and Legacy PTYs retain their proxies.
-/// ACP catalog discovery still uses track cwd outside execution occupancy.
+/// sessions, sessions without descendant-complete history and undeclared providers retain proxies.
 /// Tasks, leases and deliveries remain checkout_occupancy's responsibility.
 static CLOSED_TRACK_WORKTREES_SQL: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
     let terminal_alias = super::workspace_execution::TERMINAL_ALIAS_SQL;
@@ -42,26 +41,43 @@ static CLOSED_TRACK_WORKTREES_SQL: std::sync::LazyLock<String> = std::sync::Lazy
                   WHERE terminals.id = worker_sessions.terminal_run_id) \
                 AND NOT EXISTS (SELECT 1 FROM workspace_executions e \
                   WHERE ?1 IS NOT NULL \
-                    AND worker_sessions.provider = 'claude' \
+                    AND worker_sessions.provider = ?2 \
                     AND worker_sessions.id NOT IN (SELECT value FROM json_each(?1)) \
                     AND e.alias >= '{planner}:' || worker_sessions.id || ':' \
                     AND e.alias < '{planner}:' || worker_sessions.id || ';' \
-                    AND e.alias = '{planner}:' || worker_sessions.id || ':' || e.execution_id)) \
+                    AND e.alias = '{planner}:' || worker_sessions.id || ':' || e.execution_id \
+                    AND NOT EXISTS (SELECT 1 FROM workspace_executions weak \
+                      WHERE weak.alias >= '{planner}:' || worker_sessions.id || ':' \
+                        AND weak.alias < '{planner}:' || worker_sessions.id || ';' \
+                        AND weak.alias = '{planner}:' || worker_sessions.id || ':' || weak.execution_id \
+                        AND weak.execution_id NOT IN (SELECT value FROM json_each(?3))))) \
           ORDER BY t.id"
     )
 });
 
-/// Boot evidence required before deleting a Claude Planner proxy. Unknown retains
-/// every proxy; a completed sweep still retains unproven sessions and other providers.
-pub enum PlannerCleanEvidence<'a> {
+/// Provider-scoped evidence supplied by the runtime owner, never inferred by SQL.
+/// Unknown retains every proxy. Missing history or any unproven execution also retains it.
+pub enum PlannerCleanEvidence {
     Unknown,
-    Swept { unproven: &'a [String] },
+    Swept {
+        provider: calm_types::runtime::AgentProvider,
+        unproven: Vec<String>,
+        descendant_complete: Vec<String>,
+    },
 }
-impl PlannerCleanEvidence<'_> {
-    fn json(&self) -> Result<Option<String>> {
+impl PlannerCleanEvidence {
+    fn bindings(&self) -> Result<(Option<String>, Option<&str>, String)> {
         Ok(match self {
-            Self::Unknown => None,
-            Self::Swept { unproven } => Some(serde_json::to_string(unproven)?),
+            Self::Unknown => (None, None, "[]".into()),
+            Self::Swept {
+                provider,
+                unproven,
+                descendant_complete,
+            } => (
+                Some(serde_json::to_string(unproven)?),
+                Some(provider.wire_name()),
+                serde_json::to_string(descendant_complete)?,
+            ),
         })
     }
 }
@@ -69,10 +85,13 @@ impl PlannerCleanEvidence<'_> {
 /// Closed-track candidates for the workspace owner's close tick.
 pub async fn closed_worktree_candidates(
     pool: &sqlx::SqlitePool,
-    planner: PlannerCleanEvidence<'_>,
+    planner: PlannerCleanEvidence,
 ) -> Result<Vec<super::super::rows::TrackRow>> {
+    let (unproven, provider, complete) = planner.bindings()?;
     Ok(sqlx::query_as(&CLOSED_TRACK_WORKTREES_SQL)
-        .bind(planner.json()?)
+        .bind(unproven)
+        .bind(provider)
+        .bind(complete)
         .fetch_all(pool)
         .await?)
 }
@@ -81,13 +100,16 @@ pub async fn closed_worktree_candidates(
 pub async fn closed_worktree_candidate(
     pool: &sqlx::SqlitePool,
     track: &str,
-    planner: PlannerCleanEvidence<'_>,
+    planner: PlannerCleanEvidence,
 ) -> Result<Option<super::super::rows::TrackRow>> {
+    let (unproven, provider, complete) = planner.bindings()?;
     Ok(sqlx::query_as(&format!(
-        "SELECT * FROM ({}) WHERE id=?2",
+        "SELECT * FROM ({}) WHERE id=?4",
         *CLOSED_TRACK_WORKTREES_SQL
     ))
-    .bind(planner.json()?)
+    .bind(unproven)
+    .bind(provider)
+    .bind(complete)
     .bind(track)
     .fetch_optional(pool)
     .await?)

@@ -161,6 +161,12 @@ pub enum Settlement {
     Retired(ExecutionTombstone),
 }
 impl Settlement {
+    /// Live-helper drain proves all descendants gone (subreaper + ECHILD).
+    /// Restart/group-only observations and tombstones do not preserve that proof.
+    pub fn descendants_complete(&self) -> bool {
+        matches!(self, Self::Journal(ExecutionState::Drained { .. }))
+    }
+
     pub(super) fn from_fact(fact: &Fact) -> Self {
         match fact {
             Fact::Journal { state, .. } => Self::Journal(state.clone()),
