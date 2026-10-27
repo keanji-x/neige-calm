@@ -3,22 +3,23 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use calm_exec::SpawnCtx;
 use calm_types::worker::{
-    DeathVerdict, ExitInterpretation, Liveness, SessionMode, WorkerSession, WorkerSessionState,
+    DeathVerdict, ExitInterpretation, Liveness, SessionMode, WorkerSession, WorkerSessionId,
+    WorkerSessionState,
 };
 
 use crate::db::prelude::*;
-use crate::db::sqlite::{TaskReporter, status_detail_with_reason, task_fail_from_worker_tx};
-use crate::db::write_with_actor_events_typed;
+use crate::db::sqlite::{
+    TaskReporter, session_get_tx, status_detail_with_reason, task_fail_from_worker_tx, task_get_tx,
+    track_find_tx, worker_op_targets_card_tx,
+};
+use crate::db::write_in_tx_typed;
 use crate::error::Result;
 use crate::event::{Event, EventBus, EventScope};
 use crate::git_candidate::delivery::AttemptOutcome;
 use crate::ids::ActorId;
 use crate::model::now_ms;
-use crate::operation::workspace_lease::{
-    ReleaseDelivery, release_workspace_lease_for_card_repo, release_workspace_lease_for_card_tx,
-};
+use crate::operation::workspace_lease::{ReleaseDelivery, release_workspace_lease_for_card_tx};
 use crate::provider_registry::WorkerProviderRegistry;
-use crate::scheduler::{is_race_lost, race_lost_err};
 use crate::state::WriteContext;
 
 pub const DEFAULT_REAPER_RECONCILE_SECS: u64 = 30;
@@ -64,6 +65,8 @@ pub struct Reaper {
     deadline_ms: i64,
     /// Daemon-reconnect rebuild grace in ms.
     rebuild_grace_ms: i64,
+    #[cfg(test)]
+    after_probe: Option<(Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>)>,
 }
 
 impl Reaper {
@@ -89,6 +92,8 @@ impl Reaper {
             write,
             deadline_ms,
             rebuild_grace_ms,
+            #[cfg(test)]
+            after_probe: None,
         }
     }
 
@@ -273,7 +278,12 @@ impl Reaper {
                     match verdict {
                         ExitInterpretation::Failed { reason } => {
                             // Converge BEFORE terminalizing so the path is re-drivable: terminalizing first and then crashing would drop the session from `sessions_nonterminal` while the task stayed `running` — a permanent stall. A mid-crash leaves the session active and re-probed next tick.
-                            if let Err(e) = converge_dead_worker(
+                            #[cfg(test)]
+                            if let Some((entered, resume)) = &self.after_probe {
+                                entered.notify_one();
+                                resume.notified().await;
+                            }
+                            match converge_dead_worker(
                                 self.repo.as_ref(),
                                 &self.events,
                                 &self.write,
@@ -282,15 +292,18 @@ impl Reaper {
                             )
                             .await
                             {
-                                tracing::warn!(
-                                    session_id = %session.id,
-                                    provider = session.provider.as_db_str(),
-                                    error = %e,
-                                    "reaper: dead-worker convergence failed"
-                                );
-                                // Leave the session active; next tick re-drives
-                                // convergence before terminalizing.
-                                continue;
+                                Ok(true) => {}
+                                Ok(false) => continue,
+                                Err(e) => {
+                                    tracing::warn!(
+                                        session_id = %session.id,
+                                        provider = session.provider.as_db_str(),
+                                        error = %e,
+                                        "reaper: dead-worker convergence failed"
+                                    );
+                                    // Leave active for the next tick to re-drive convergence.
+                                    continue;
+                                }
                             }
                             match self
                                 .repo
@@ -306,8 +319,7 @@ impl Reaper {
                                 Ok(CommitExitOutcome::Committed(_)) => {}
                                 Ok(CommitExitOutcome::Absorbed) => {
                                     // A live writer already terminalized this
-                                    // session; convergence above was a no-op
-                                    // race-loss. Nothing more to do.
+                                    // session after convergence. Nothing more to do.
                                     tracing::debug!(
                                         session_id = %session.id,
                                         provider = session.provider.as_db_str(),
@@ -371,102 +383,129 @@ impl Reaper {
     }
 }
 
+/// Returns false for superseded discovery; the caller must leave that session alone.
 pub(crate) async fn converge_dead_worker(
     repo: &dyn Repo,
     events: &EventBus,
     write: &WriteContext,
     session: &WorkerSession,
     reason: &str,
-) -> Result<()> {
-    let Some(op_id) = session.spawn_op_id.as_deref() else {
-        release_reaped_worker_workspace_lease(repo, events, session).await?;
-        return Ok(());
-    };
-    let Some(task_id) = repo.operation_idempotency_key_by_id(op_id).await? else {
-        release_reaped_worker_workspace_lease(repo, events, session).await?;
-        return Ok(());
-    };
-    let Some(track) = repo.track_get(session.track_id.as_str()).await? else {
-        release_reaped_worker_workspace_lease(repo, events, session).await?;
-        return Ok(());
-    };
-
-    let scope = EventScope::Track {
-        track: track.id.clone(),
-        area: track.area_id.clone(),
-    };
-    let track_id = track.id.clone();
-    // The kernel `TaskFailed` carries the provider's interpreted reason rather than the raw `-1` probe sentinel.
-    let reason = reason.to_string();
-    let card_id = session.card_id.clone();
-    let result = write_with_actor_events_typed::<(), _>(repo, None, events, write, move |tx| {
-        let card_id = card_id.clone();
+) -> Result<bool> {
+    let session_id = session.id.clone();
+    let reason = reason.to_owned();
+    let write = write.clone();
+    let (applied, ids, pending) = write_in_tx_typed(repo, move |tx| {
         Box::pin(async move {
-            // The `spawn-failed` classifier is knowingly wrong here (a reaped worker died at RUNTIME); correcting the vocabulary has its own consumers (`is_deferred_self_report`). The reason tail at least stops the row from lying silently.
-            let rows = task_fail_from_worker_tx(
-                tx,
-                &task_id,
-                track_id.as_str(),
-                TaskReporter::Kernel,
-                &status_detail_with_reason("spawn-failed", &reason),
-                now_ms(),
-            )
-            .await?;
-            if rows == 0 {
-                return Err(race_lost_err());
-            }
-            let mut events = vec![(
+            let (applied, pending) = converge_dead_worker_tx(tx, &session_id, reason).await?;
+            let ids = if pending.is_empty() {
+                Vec::new()
+            } else {
+                crate::db::sqlite::append_actor_events_in_tx(tx, None, &write, &pending)
+                    .await?
+                    .0
+            };
+            Ok((applied, ids, pending))
+        })
+    })
+    .await?;
+    crate::db::sqlite::broadcast_actor_events(events, &ids, pending);
+    Ok(applied)
+}
+
+async fn converge_dead_worker_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    session_id: &WorkerSessionId,
+    reason: String,
+) -> Result<(bool, Vec<(ActorId, EventScope, Event)>)> {
+    // Discovery and provider probes are hints. Re-read under the write lock before
+    // resolving any task binding or selecting the card's latest lease (WR1/WR4).
+    let Some(session) = session_get_tx(tx, session_id).await? else {
+        return Ok((false, Vec::new()));
+    };
+    let current = if let Some(card_id) = session.card_id.as_ref() {
+        sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS(SELECT 1 FROM cards WHERE id = ?1 AND session_id = ?2 AND track_id = ?3)",
+    )
+    .bind(card_id.as_str())
+    .bind(session.id.as_str())
+    .bind(session.track_id.as_str())
+    .fetch_one(&mut **tx)
+    .await?
+    } else {
+        true
+    };
+    if session.state.is_terminal() || !current {
+        return Ok((false, Vec::new()));
+    }
+
+    let Some(card_id) = session.card_id.as_ref() else {
+        return Ok((true, Vec::new()));
+    };
+    let task_id = if let Some(op_id) = session.spawn_op_id.as_deref() {
+        sqlx::query_scalar::<_, Option<String>>(
+            "SELECT idempotency_key FROM operations WHERE id = ?1",
+        )
+        .bind(op_id)
+        .fetch_optional(&mut **tx)
+        .await?
+        .flatten()
+    } else {
+        None
+    };
+    let track = track_find_tx(tx, session.track_id.as_str()).await?;
+    let mut events = Vec::new();
+    let mut delivery = ReleaseDelivery::CommitAsTaskEnded;
+    if let (Some(task_id), Some(track)) = (task_id, track) {
+        let owns_key = worker_op_targets_card_tx(tx, &task_id, card_id.as_str()).await?;
+        // The legacy probe positively confirmed death. The card guard includes
+        // the scheduler's op-target proof for the first, unstamped report window.
+        let rows = task_fail_from_worker_tx(
+            tx,
+            &task_id,
+            track.id.as_str(),
+            TaskReporter::Card {
+                card_id: card_id.as_str(),
+                owns_key,
+            },
+            &status_detail_with_reason("spawn-failed", &reason),
+            now_ms(),
+        )
+        .await?;
+        if rows == 0
+            && let Some(task) = task_get_tx(tx, &task_id).await?
+            && (matches!(
+                task.status,
+                crate::model::TaskStatus::Dispatched | crate::model::TaskStatus::Running
+            ) || task.track_id != track.id.as_str()
+                || match task.worker_card_id.as_deref() {
+                    Some(owner) => owner != card_id.as_str(),
+                    None => !owns_key,
+                })
+        {
+            // A task owned elsewhere is no authority to release this card's
+            // lease. Only terminal races with a valid binding may converge.
+            return Ok((true, Vec::new()));
+        }
+        if rows != 0 {
+            delivery = ReleaseDelivery::Commit(AttemptOutcome::Failed);
+            events.push((
                 ActorId::KernelDispatcher,
-                scope.clone(),
+                EventScope::Track {
+                    track: track.id,
+                    area: track.area_id,
+                },
                 Event::TaskFailed {
                     notification: calm_types::event::PlannerNotification::Notify,
-                    idempotency_key: task_id.clone(),
+                    idempotency_key: task_id,
                     reason,
                     details: None,
                     agent_message: None,
                 },
-            )];
-            // #1830 S2 D7: the dead worker's lease is released, and its attempt committed as
-            // `failed`, in this fail transaction.
-            if let Some(card_id) = card_id.as_ref() {
-                events.extend(
-                    release_workspace_lease_for_card_tx(
-                        tx,
-                        card_id.as_str(),
-                        ReleaseDelivery::Commit(AttemptOutcome::Failed),
-                    )
-                    .await?,
-                );
-            }
-            Ok(((), events))
-        })
-    })
-    .await;
-    match result {
-        Ok(_) => Ok(()),
-        Err(e) if is_race_lost(&e) => {
-            release_reaped_worker_workspace_lease(repo, events, session).await?;
-            Ok(())
+            ));
         }
-        Err(e) => Err(e),
     }
-}
-
-async fn release_reaped_worker_workspace_lease(
-    repo: &dyn Repo,
-    events: &EventBus,
-    session: &WorkerSession,
-) -> Result<()> {
-    if let Some(card_id) = session.card_id.as_ref() {
-        release_workspace_lease_for_card_repo(
-            repo,
-            events,
-            card_id.as_str(),
-            ReleaseDelivery::CommitAsTaskEnded,
-        )
-        .await?;
-    }
-    Ok(())
+    events.extend(release_workspace_lease_for_card_tx(tx, card_id.as_str(), delivery).await?);
+    Ok((true, events))
 }
 
 #[cfg(test)]
@@ -476,3 +515,10 @@ pub(crate) fn reset_reaper_boot_gate_for_test() {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod fence_tests;
+#[cfg(test)]
+mod liveness_tests;
+#[cfg(test)]
+mod test_support;
