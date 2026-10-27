@@ -105,15 +105,49 @@ impl AsyncRead for EngineStdio {
                                 cursor,
                                 output,
                                 output_end,
+                                state,
                                 ..
                             }) => {
-                                if cursor.checked_sub(output.len() as u64) != Some(from) {
+                                let gap = cursor.checked_sub(output.len() as u64) != Some(from);
+                                let incomplete = matches!(output_end, OutputEnd::Incomplete { .. });
+                                // Record only factual lifecycle metadata, before the caller can
+                                // stop the process. Output bytes and peer-supplied reasons are private.
+                                if gap
+                                    || incomplete
+                                    || matches!(output_end, OutputEnd::Complete { .. })
+                                {
+                                    let (state, exit_status) = state_diagnostic(&state);
+                                    if gap || incomplete {
+                                        tracing::warn!(
+                                            execution_id = id.as_str(),
+                                            from_cursor = from,
+                                            cursor,
+                                            output_bytes = output.len(),
+                                            state,
+                                            exit_status = ?exit_status,
+                                            gap,
+                                            incomplete,
+                                            "provider output continuity failed before cleanup"
+                                        );
+                                    } else {
+                                        tracing::info!(
+                                            execution_id = id.as_str(),
+                                            from_cursor = from,
+                                            cursor,
+                                            output_bytes = output.len(),
+                                            state,
+                                            exit_status = ?exit_status,
+                                            "provider output reached EOF before cleanup"
+                                        );
+                                    }
+                                }
+                                if gap {
                                     return Err(io::Error::new(
                                         io::ErrorKind::InvalidData,
                                         "provider output gap",
                                     ));
                                 }
-                                if matches!(output_end, OutputEnd::Incomplete { .. }) {
+                                if incomplete {
                                     return Err(io::Error::new(
                                         io::ErrorKind::InvalidData,
                                         "provider output incomplete",
@@ -257,5 +291,21 @@ impl AsyncWrite for EngineStdio {
                 Poll::Ready(result)
             }
         }
+    }
+}
+
+/// Process state is evidence from the execution owner, never inferred from pipe EOF.
+fn state_diagnostic(state: &ExecutionState) -> (&'static str, Option<i32>) {
+    match state {
+        ExecutionState::Prepared => ("prepared", None),
+        ExecutionState::Revoked => ("revoked", None),
+        ExecutionState::Forking => ("forking", None),
+        ExecutionState::Spawned => ("spawned", None),
+        ExecutionState::Exited { status } => ("exited", *status),
+        ExecutionState::Drained { status } => ("drained", *status),
+        ExecutionState::NoChild { .. } => ("no_child", None),
+        ExecutionState::Unknown { .. } => ("unknown", None),
+        ExecutionState::InterruptedQuiescent { .. } => ("interrupted_quiescent", None),
+        ExecutionState::OriginalGroupEmpty { status } => ("original_group_empty", *status),
     }
 }

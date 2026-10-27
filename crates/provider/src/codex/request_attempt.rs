@@ -295,9 +295,12 @@ impl CodexAppServer {
                 .transport
                 .sending()
                 .map_err(|error| before(Some(id), error))?;
-            sink.send(Message::Text(text))
-                .await
-                .map_err(|error| after(Error::Transport(format!("send {method}: {error}"))))?;
+            sink.send(Message::Text(text)).await.map_err(|error| {
+                // Publish before the incomplete-send guard drops and fences the socket.
+                self.transport
+                    .close(format!("WebSocket request write failed: {error}"));
+                after(Error::Transport(format!("send {method}: {error}")))
+            })?;
             sending.complete();
         }
         tracing::trace!(id, method, "codex app-server: request sent");

@@ -17,6 +17,15 @@ const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 pub enum Error {
     #[error("ACP connection closed; dispatched request outcomes may be unknown")]
     Closed,
+    #[error("ACP peer output reached EOF")]
+    Eof,
+    #[error("ACP local operation abandoned: {0}")]
+    Abandoned(&'static str),
+    #[error("ACP {operation} failed ({kind:?})")]
+    Io {
+        operation: &'static str,
+        kind: std::io::ErrorKind,
+    },
     #[error("ACP admission refused: {0}")]
     Refused(String),
     #[error("ACP protocol violation: {0}")]
@@ -70,12 +79,12 @@ type Writer = Box<dyn AsyncWrite + Unpin + Send>;
 struct Inner {
     registrations: mpsc::Sender<Registration>,
     writer: Arc<Mutex<Option<Writer>>>,
-    close: watch::Sender<bool>,
+    close: watch::Sender<Option<Error>>,
     next_id: AtomicU64,
 }
 impl Drop for Inner {
     fn drop(&mut self) {
-        let _ = self.close.send(true);
+        record_failure(&self.close, Error::Closed);
     }
 }
 #[derive(Clone)]
@@ -90,23 +99,25 @@ pub struct Connection {
 /// A request fully written to the pipe. This is dispatch evidence, not native acceptance.
 pub struct PendingResponse {
     response: oneshot::Receiver<Result<Value, Error>>,
-    close: watch::Sender<bool>,
+    close: watch::Sender<Option<Error>>,
     settled: bool,
 }
 impl Drop for PendingResponse {
     fn drop(&mut self) {
         if !self.settled {
-            let _ = self.close.send(true);
+            record_failure(&self.close, Error::Abandoned("response wait"));
         }
     }
 }
 impl PendingResponse {
     pub async fn wait(mut self, timeout: Duration) -> Result<Value, Error> {
         let result = match tokio::time::timeout(timeout, &mut self.response).await {
-            Ok(answer) => answer.unwrap_or(Err(Error::Closed)),
+            Ok(answer) => {
+                answer.unwrap_or_else(|_| Err(self.close.borrow().clone().unwrap_or(Error::Closed)))
+            }
             Err(_) => {
-                let _ = self.close.send(true);
-                Err(Error::Timeout)
+                record_failure(&self.close, Error::Timeout);
+                Err(self.close.borrow().clone().expect("timeout published"))
             }
         };
         self.settled = true;
@@ -153,8 +164,16 @@ impl Client {
     pub async fn reject_method(&self, id: Value) -> Result<(), Error> {
         self.write_reply(json!({"jsonrpc":"2.0","id":id,"error":{"code":-32601,"message":"Unsupported client method"}})).await
     }
+    /// The transport owner's first terminal error, published before either consumer closes.
+    /// Diagnostic evidence only: this never proves whether a remote prompt executed.
+    pub fn terminal_error(&self) -> Option<Error> {
+        self.0.close.borrow().clone()
+    }
+    fn closed_error(&self) -> Error {
+        self.terminal_error().unwrap_or(Error::Closed)
+    }
     pub fn close(&self) {
-        let _ = self.0.close.send(true);
+        record_failure(&self.0.close, Error::Closed);
     }
     pub async fn notify_gated(
         &self,
@@ -193,18 +212,17 @@ impl Client {
         let before = |error: String| WriteFailure::BeforeWrite(Error::Refused(error));
         let mut bytes = serde_json::to_vec(&frame).map_err(|error| before(error.to_string()))?;
         if bytes.len() >= FRAME_LIMIT {
-            self.close();
-            return Err(WriteFailure::BeforeWrite(Error::Protocol(
-                "outgoing frame exceeds byte limit",
-            )));
+            let error = Error::Protocol("outgoing frame exceeds byte limit");
+            record_failure(&self.0.close, error.clone());
+            return Err(WriteFailure::BeforeWrite(error));
         }
         bytes.push(b'\n');
         let deadline = tokio::time::Instant::now() + TRANSPORT_WAIT_TIMEOUT;
         let mut guard = tokio::time::timeout_at(deadline, self.0.writer.lock())
             .await
             .map_err(|_| before("writer wait timed out".into()))?;
-        if *self.0.close.borrow() || guard.is_none() {
-            return Err(WriteFailure::BeforeWrite(Error::Closed));
+        if self.0.close.borrow().is_some() || guard.is_none() {
+            return Err(WriteFailure::BeforeWrite(self.closed_error()));
         }
         // The incoming owner registers before any possible write and preserves the
         // pending bound. This queue carries no frames or permission decisions.
@@ -219,8 +237,8 @@ impl Client {
                         registered,
                     })
                     .await
-                    .map_err(|_| Error::Closed)?;
-                receipt.await.unwrap_or(Err(Error::Closed))
+                    .map_err(|_| self.closed_error())?;
+                receipt.await.unwrap_or_else(|_| Err(self.closed_error()))
             })
             .await
             .map_err(|_| before("response registration timed out".into()))?
@@ -235,8 +253,8 @@ impl Client {
         };
         let mut closed = self.0.close.subscribe();
         let write = async {
-            if *closed.borrow() {
-                return Err(WriteFailure::BeforeWrite(Error::Closed));
+            if closed.borrow().is_some() {
+                return Err(WriteFailure::BeforeWrite(self.closed_error()));
             }
             crossing.armed = true;
             let mut writer = guard.take().expect("writer owned under lock");
@@ -251,15 +269,21 @@ impl Client {
                 // Poll these futures directly so the final check is immediately
                 // followed by the first AsyncWrite poll, even with no task budget.
                 match futures_util::future::select(closing, io).await {
-                    futures_util::future::Either::Left(_) => Err(Error::Closed),
+                    futures_util::future::Either::Left(_) => Err(self.closed_error()),
                     futures_util::future::Either::Right((result, _)) => match result {
                         Ok(Ok(())) => Ok(()),
-                        Ok(Err(_)) => Err(Error::Closed),
+                        Ok(Err(error)) => Err(Error::Io {
+                            operation: "write",
+                            kind: error.kind(),
+                        }),
                         Err(_) => Err(Error::Timeout),
                     },
                 }
             };
-            outcome.map_err(WriteFailure::CrossedWrite)?;
+            if let Err(error) = outcome {
+                record_failure(&self.0.close, error.clone());
+                return Err(WriteFailure::CrossedWrite(error));
+            }
             *guard = Some(writer);
             crossing.armed = false;
             Ok(())
@@ -272,15 +296,25 @@ impl Client {
     }
 }
 struct CloseOnDrop<'a> {
-    close: &'a watch::Sender<bool>,
+    close: &'a watch::Sender<Option<Error>>,
     armed: bool,
 }
 impl Drop for CloseOnDrop<'_> {
     fn drop(&mut self) {
         if self.armed {
-            let _ = self.close.send(true);
+            record_failure(self.close, Error::Abandoned("reply or crossed write"));
         }
     }
+}
+fn record_failure(close: &watch::Sender<Option<Error>>, error: Error) {
+    close.send_if_modified(|current| {
+        if current.is_none() {
+            *current = Some(error);
+            true
+        } else {
+            false
+        }
+    });
 }
 fn allow() -> PreSendGate<'static> {
     PreSendGate::new(|| Box::pin(async { Ok(()) }))
@@ -295,7 +329,7 @@ impl Connection {
         let (registrations, registration_rx) = mpsc::channel(64);
         let writer = Arc::new(Mutex::new(Some(Box::new(writer) as Writer)));
         let (incoming, incoming_rx) = mpsc::channel(256);
-        let (close, close_rx) = watch::channel(false);
+        let (close, close_rx) = watch::channel(None);
         let client = Client(Arc::new(Inner {
             registrations,
             writer: writer.clone(),
@@ -327,8 +361,8 @@ async fn run<R>(
     writer: Arc<Mutex<Option<Writer>>>,
     mut registrations: mpsc::Receiver<Registration>,
     incoming: mpsc::Sender<Incoming>,
-    close: watch::Sender<bool>,
-    mut closed: watch::Receiver<bool>,
+    close: watch::Sender<Option<Error>>,
+    mut closed: watch::Receiver<Option<Error>>,
 ) where
     R: AsyncRead + Unpin + Send + 'static,
 {
@@ -342,7 +376,11 @@ async fn run<R>(
                 .read_until(b'\n', &mut bytes)
                 .await
             {
-                Ok(0) | Err(_) => Err(Error::Closed),
+                Ok(0) => Err(Error::Eof),
+                Err(error) => Err(Error::Io {
+                    operation: "read",
+                    kind: error.kind(),
+                }),
                 Ok(_) if bytes.len() > FRAME_LIMIT => {
                     Err(Error::Protocol("frame exceeds byte limit"))
                 }
@@ -360,7 +398,7 @@ async fn run<R>(
     let error = loop {
         tokio::select! {
             biased;
-            _ = closed.changed() => break Error::Closed,
+            _ = closed.changed() => break closed.borrow().clone().unwrap_or(Error::Closed),
             registration = registrations.recv() => {
                 let Some(registration) = registration else { break Error::Closed; };
                 pending.retain(|_, answer| !answer.is_closed());
@@ -381,7 +419,9 @@ async fn run<R>(
             }
         }
     };
-    let _ = close.send(true);
+    record_failure(&close, error);
+    let error = close.borrow().clone().expect("terminal error published");
+    tracing::debug!(error = %error, pending_requests = pending.len(), "ACP transport stopped");
     for (_, answer) in pending {
         let _ = answer.send(Err(error.clone()));
     }
@@ -414,9 +454,12 @@ fn receive(
             Some(_) => return Err(Error::Protocol("invalid request id")),
             None => Incoming::Notification { method, params },
         };
-        return incoming
-            .try_send(message)
-            .map_err(|_| Error::Protocol("incoming event consumer unavailable or lagged"));
+        return incoming.try_send(message).map_err(|error| match error {
+            mpsc::error::TrySendError::Full(_) => Error::Protocol("incoming event queue full"),
+            mpsc::error::TrySendError::Closed(_) => {
+                Error::Protocol("incoming event consumer dropped")
+            }
+        });
     }
     let id = frame["id"]
         .as_u64()

@@ -35,7 +35,8 @@ struct Replies {
 impl Replies {
     fn send(&self, reply: Value) -> bool {
         if self.queue.try_send(reply).is_err() {
-            self.transport.poison();
+            self.transport
+                .close("server reply queue full or closed; pending outcomes unknown".into());
             return false;
         }
         true
@@ -59,7 +60,9 @@ pub(super) struct Dispatch {
 
 impl Drop for Dispatch {
     fn drop(&mut self) {
-        self.replies.transport.poison();
+        self.replies
+            .transport
+            .close("WebSocket reader or dispatch owner dropped; pending outcomes unknown".into());
     }
 }
 
@@ -81,6 +84,8 @@ impl Dispatch {
                         .send(Message::Text(reply.to_string()))
                         .await
                         .map_err(|error| {
+                            writer_transport
+                                .close(format!("WebSocket server reply write failed: {error}"));
                             Error::Transport(format!("server reply write: {error}"))
                         })?;
                     sending.complete();

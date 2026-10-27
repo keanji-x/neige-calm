@@ -95,7 +95,7 @@ async fn dispatched_prompt_disconnect_is_unknown_and_never_resent() {
     assert_eq!(frame["method"], "session/prompt");
     writer.shutdown().await.unwrap();
     drop(writer);
-    assert_eq!(pending.wait(BUDGET).await, Err(Error::Closed));
+    assert_eq!(pending.wait(BUDGET).await, Err(Error::Eof));
     assert_eq!(
         connection
             .client
@@ -103,7 +103,7 @@ async fn dispatched_prompt_disconnect_is_unknown_and_never_resent() {
             .await
             .map_err(WriteFailure::into_error)
             .err(),
-        Some(Error::Closed)
+        Some(Error::Eof)
     );
     let mut residue = String::new();
     assert_eq!(
@@ -135,7 +135,7 @@ async fn timeout_closes_connection_without_retrying() {
             .await
             .map_err(WriteFailure::into_error)
             .err(),
-        Some(Error::Closed)
+        Some(Error::Timeout)
     );
 }
 #[tokio::test]
@@ -154,10 +154,8 @@ async fn malformed_and_uncorrelated_frames_poison_all_pending_requests() {
             .unwrap();
         read(&mut reader).await;
         send(&mut writer, invalid).await;
-        assert!(matches!(
-            pending.wait(BUDGET).await,
-            Err(Error::Protocol(_))
-        ));
+        let error = pending.wait(BUDGET).await.unwrap_err();
+        assert!(matches!(error, Error::Protocol(_)));
         assert_eq!(
             connection
                 .client
@@ -165,7 +163,7 @@ async fn malformed_and_uncorrelated_frames_poison_all_pending_requests() {
                 .await
                 .map_err(WriteFailure::into_error)
                 .err(),
-            Some(Error::Closed)
+            Some(error)
         );
     }
 }
@@ -310,7 +308,7 @@ async fn an_unanswered_authenticate_times_out_and_closes_the_connection() {
             .await
             .map_err(WriteFailure::into_error)
             .err(),
-        Some(Error::Closed)
+        Some(Error::Timeout)
     );
 }
 #[tokio::test]
@@ -559,7 +557,7 @@ async fn abandoned_dispatched_response_closes_the_pipe_before_more_requests() {
             .await
             .map_err(WriteFailure::into_error)
             .err(),
-        Some(Error::Closed)
+        Some(Error::Abandoned("response wait"))
     );
     let mut residue = String::new();
     assert_eq!(
@@ -700,3 +698,6 @@ fn invalid_usage_update_is_ignored_without_failing_the_turn() {
         assert!(translator().update(&update(frame), 10).unwrap().is_empty());
     }
 }
+
+#[path = "disconnect_tests.rs"]
+mod disconnect_tests;

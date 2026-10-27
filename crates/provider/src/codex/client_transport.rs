@@ -85,3 +85,24 @@ impl Drop for PendingRequest {
         self.pending.lock().unwrap().remove(&self.id);
     }
 }
+
+/// Constructed before spawning the reader, so even an unpolled task abort records
+/// its cause before dropping the sender and waking notification consumers.
+pub(super) struct ReaderNotifications {
+    pub(super) sender: tokio::sync::mpsc::UnboundedSender<super::Notification>,
+    transport: std::sync::Arc<TransportAbort>,
+}
+impl ReaderNotifications {
+    pub(super) fn new(
+        sender: tokio::sync::mpsc::UnboundedSender<super::Notification>,
+        transport: std::sync::Arc<TransportAbort>,
+    ) -> Self {
+        Self { sender, transport }
+    }
+}
+impl Drop for ReaderNotifications {
+    fn drop(&mut self) {
+        self.transport
+            .close("WebSocket reader or dispatch owner dropped; pending outcomes unknown".into());
+    }
+}

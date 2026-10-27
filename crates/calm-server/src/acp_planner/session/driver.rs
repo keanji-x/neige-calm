@@ -21,6 +21,7 @@ pub(super) async fn drive(
         let pending=pending.await.map_err(|_|CalmError::Conflict("ACP prompt handoff was cancelled".into()))?.map_err(|error| wire_error(error.into_error()))?;
         let response=pending.wait(Duration::from_secs(3600));tokio::pin!(response);
         let mut stop_at=None;
+        let mut incoming_open=true;
         loop {tokio::select! {
             result=&mut response=>{
                 while let Ok(incoming)=process.connection.incoming.try_recv() {
@@ -57,16 +58,26 @@ pub(super) async fn drive(
                 }
             },
             _=async{match stop_at{Some(at)=>tokio::time::sleep_until(at).await,None=>std::future::pending().await}}=>return Err(CalmError::Conflict("ACP cancellation outcome is unknown".into())),
-            incoming=process.connection.incoming.recv()=>match incoming {
+            incoming=process.connection.incoming.recv(),if incoming_open=>match incoming {
                 Some(Incoming::Notification{method,params}) if method=="session/update"=>{
                     for event in translator.update(&params,crate::model::now_ms()).map_err(wire_error)? {retain_item(&mut retained,&event);let _=shared.events.send(event);}
                 },
                 Some(Incoming::Request{id,method,params})=>approvals.request(id,&method,params).await.map_err(wire_error)?,
                 Some(Incoming::Notification{..})=>{},
-                None=>return Err(CalmError::Conflict("ACP prompt connection closed".into())),
+                // The RPC owner publishes its exact result before dropping this sender.
+                // EOF can race with an already queued success or protocol failure.
+                None=>incoming_open=false,
             }
         }}
     }.await;
+    // Preserve the cause before any cleanup can close pipes or terminate the process.
+    // Execution output observations use this same execution identity.
+    if let Err(error) = &outcome {
+        tracing::warn!(%error, provider = ?params.provider, worker = %params.worker_session_id,
+            turn = %receipt.turn_id, execution_id = %claim.record().execution_id,
+            io_stop_reason = ?process.io.stop_reason(), transport_error = ?process.connection.client.terminal_error(),
+            "ACP turn ended without a known outcome before cleanup");
+    }
     // Every frame of this process that will ever be read has been: its requests end here, before
     // any teardown await, so no answer reaches the agent after its turn.
     approvals.close().await;
@@ -104,11 +115,6 @@ pub(super) async fn drive(
         execution::wait_settled(engine, &id, Duration::from_secs(12)).await
     }
     .await;
-    // What leaves the outcome unknown is kept here: the turn only says it is unknown.
-    if let Err(error) = &outcome {
-        tracing::warn!(%error, worker = %params.worker_session_id, turn = %receipt.turn_id,
-            "ACP turn ended without a known outcome");
-    }
     if let Err(error) = &stopped {
         tracing::warn!(%error, worker = %params.worker_session_id, turn = %receipt.turn_id,
             "ACP agent process stop failed; the turn's outcome is unknown");

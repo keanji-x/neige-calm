@@ -130,7 +130,10 @@ async fn flush_failure_is_crossed_and_fences_connection() {
             .client
             .submit_gated("session/new", json!({}), &allow())
             .await,
-        Err(WriteFailure::CrossedWrite(Error::Closed))
+        Err(WriteFailure::CrossedWrite(Error::Io {
+            operation: "write",
+            kind: std::io::ErrorKind::Other
+        }))
     ));
     assert!(matches!(
         connection
@@ -270,7 +273,7 @@ async fn taken_approval_answer_writer_timeout_fails_pending_prompt() {
     drop(lock);
     assert_eq!(
         result,
-        Ok(Err(Error::Closed)),
+        Ok(Err(Error::Abandoned("reply or crossed write"))),
         "a lost answer must fail the prompt, not leave it waiting"
     );
     assert!(matches!(
@@ -278,7 +281,9 @@ async fn taken_approval_answer_writer_timeout_fails_pending_prompt() {
             .client
             .notify_gated("later", json!({}), &allow())
             .await,
-        Err(WriteFailure::BeforeWrite(Error::Closed))
+        Err(WriteFailure::BeforeWrite(Error::Abandoned(
+            "reply or crossed write"
+        )))
     ));
 }
 
@@ -414,7 +419,9 @@ async fn reply_writer_timeout_or_cancellation_fences_connection() {
                     .client
                     .notify_gated("later", json!({}), &allow())
                     .await,
-                Err(WriteFailure::BeforeWrite(Error::Closed))
+                Err(WriteFailure::BeforeWrite(Error::Abandoned(
+                    "reply or crossed write"
+                )))
             ));
         }
     }

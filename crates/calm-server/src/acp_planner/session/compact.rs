@@ -350,6 +350,7 @@ impl AcpPlannerSession {
         ))
     }
 }
+#[derive(Debug)]
 enum CompactFailure {
     Before(CalmError),
     Crossed(CalmError),
@@ -455,6 +456,7 @@ async fn drive_compact(
         let pending = handed.map_err(|_| before("ACP compact handoff lost"))?.map_err(|e| CompactFailure::Crossed(wire_error(e.into_error())))?;
         let response = pending.wait(Duration::from_secs(3600)); tokio::pin!(response);
         let mut correlation = Correlation::default();
+        let mut incoming_open = true;
         loop { tokio::select! {
             result = &mut response => {
                 while let Ok(frame) = process.connection.incoming.try_recv() {
@@ -474,13 +476,19 @@ async fn drive_compact(
                 return Ok(confirmed && correlation.settled == Some(true));
             },
             _ = cancelled.changed() => return Err(before("ACP compact interrupted")),
-            frame = process.connection.incoming.recv() => match frame {
+            frame = process.connection.incoming.recv(), if incoming_open => match frame {
                 Some(Incoming::Notification { method, params }) => correlation.observe(wire, &method, &params, &native).map_err(CompactFailure::Before)?,
                 Some(Incoming::Request { id, method, .. }) => provider::acp::approvals::refuse(&process.connection.client, id, &method).await.map_err(|e| CompactFailure::Crossed(wire_error(e)))?,
-                None => return Err(before("ACP compact connection closed")),
+                None => incoming_open = false,
             }
         }}
     }.await;
+    if !matches!(outcome, Ok(true)) {
+        tracing::warn!(provider = ?shared.params.provider, worker = %shared.params.worker_session_id,
+            execution_id = %claim.record().execution_id, outcome = ?outcome,
+            transport_error = ?process.connection.client.terminal_error(),
+            "ACP compaction ended without confirmation before cleanup");
+    }
     approvals.close().await;
     #[cfg(feature = "fixtures")]
     super::super::test_seams::wait_after_fence(&shared.params.worker_session_id).await;

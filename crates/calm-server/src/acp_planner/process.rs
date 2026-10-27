@@ -227,14 +227,15 @@ pub(super) async fn setup_request(
         .map_err(|error| StartFailure::Failed(CalmError::Conflict(error.to_string())))?;
     let response = response.wait(Duration::from_secs(10));
     tokio::pin!(response);
+    let mut incoming_open = true;
     loop {
         tokio::select! {
             result=&mut response=>return finish_setup(&connection.client,&mut connection.incoming,commands,result).await,
-            incoming=connection.incoming.recv()=>match incoming {
+            incoming=connection.incoming.recv(),if incoming_open=>match incoming {
                 Some(Incoming::Request{id,method,..})=>refuse(&connection.client,id,&method).await.map_err(|error| StartFailure::Failed(CalmError::Conflict(error.to_string())))?,
                 Some(frame @ Incoming::Notification{..})=>observe_commands(commands, &frame), // Replay is setup only.
 
-                None=>return Err(StartFailure::Failed(CalmError::Conflict("ACP setup connection closed".into()))),
+                None=>incoming_open=false,
             }
         }
     }
@@ -537,7 +538,26 @@ sys.stdin.read()
         cleanup(&mut process).await;
         assert!(
             matches!(result, Err(StartFailure::Failed(CalmError::Conflict(message)))
-            if message == "ACP setup connection closed" || message == "ACP connection closed; dispatched request outcomes may be unknown")
+            if message == "ACP peer output reached EOF")
+        );
+    }
+    #[tokio::test]
+    async fn setup_pump_protocol_disconnect_retains_original_cause() {
+        let mut process =
+            peer("import sys\nsys.stdin.readline()\nprint('not-json secret-frame', flush=True)\n")
+                .await;
+        let result = setup_request(
+            &mut process.connection,
+            &mut Vec::new(),
+            "session/load",
+            serde_json::json!({"sessionId":"native"}),
+            &provider::send_boundary::PreSendGate::new(|| Box::pin(async { Ok(()) })),
+        )
+        .await;
+        cleanup(&mut process).await;
+        assert!(
+            matches!(result, Err(StartFailure::Failed(CalmError::Conflict(message)))
+            if message == "ACP protocol violation: invalid JSON frame")
         );
     }
 }

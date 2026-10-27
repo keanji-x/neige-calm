@@ -3305,9 +3305,17 @@ impl SharedCodexAppServer {
         // Construct outside the async body so an unpolled abort also retires
         // this exact owner; the Weak client cannot keep its reader alive.
         let retirement = SourceRetirement::new(native_turns.clone(), client.clone());
+        let backend_id = self.backend_id.clone();
         let forwarder = tokio::spawn(async move {
             let _retirement = retirement;
-            while let Some(notification) = notifications.recv().await {
+            loop {
+                let notification = match notifications.recv_result().await {
+                    Ok(notification) => notification,
+                    Err(error) => {
+                        tracing::warn!(backend_id = backend_id.as_str(), %error, "shared Codex notification stream ended");
+                        break;
+                    }
+                };
                 authentication.observe_from_connection(authentication_epoch, &notification);
                 // Modeled native events require the actual installed source even
                 // when malformed frames omit their thread. Unscoped Other frames
