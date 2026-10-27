@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+# B1a raw fixtures: long_literal/crates/**/*.rs 158 -> 159 counts one SQL
+# fixture in boundary_tests.rs with bad database_identity and _sqlx_migrations rows.
+# The intact SQL exercises raw evidence preservation; it is not agent-facing prose.
+# The existing occurrence scan runs once in CI lint; no extra check is added.
+# Ordinary new tables need no fixed inventory; fixture edits use this same baseline.
 # Prose ratchet: agent-facing prose must not flow back into Rust. Counts two text
 # shapes (`cjk`: a run of ≥4 ideographs; `long_literal`: a `"` followed by 120+ quote-free, backslash-free chars)
 # in `*.rs` under `crates/` (tracked and untracked, not ignored) and fails when a cell rises above the committed

@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+# B1a raw fixtures: harness_item/crates 298 -> 301 counts raw_tests.rs's
+# CREATE, INSERT and independent expected entry for the real harness_items table.
+# Keeping the historical name literal preserves raw coverage; no scan rule changes.
+# The existing occurrence scan runs once in CI lint; no extra check is added.
+# Ordinary new tables need no fixed inventory; references use this same baseline.
 # #3176 bounded contract exception: spec/crates 521 -> 523 adds the existing
 # event_spec helper for the remove receipt and its serialized-field assertion.
 # No new domain name, scan rule, exemption or check is introduced; the existing
