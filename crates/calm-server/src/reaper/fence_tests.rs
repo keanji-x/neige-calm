@@ -271,3 +271,73 @@ async fn w_reaper_task_fail_requires_card_binding() {
 async fn w_reaper_stale_binding_missing_releases_nothing() {
     stale_probe(Change::MissingBinding).await;
 }
+
+#[tokio::test]
+async fn w_reaper_nonterminal_task_race_releases_nothing() {
+    let _guard = REAPER_TEST_LOCK.lock().await;
+    for status in [TaskStatus::Pending, TaskStatus::Verifying] {
+        reset_reaper_boot_gate_for_test();
+        let (repo, track) = seeded_repo_with_plan(|path| {
+            crate::db::sqlite::TrackWorkspacePlan::AttachedWithTrackWorktree(path.into())
+        })
+        .await;
+        let task = insert_task(&repo, &track, "nonterminal", status).await;
+        let card = insert_session(&repo, session("current", track.clone(), 1)).await;
+        let op = insert_spawn_operation(&repo, Some(&task.id), Some(card.id.as_str())).await;
+        sqlx::query("UPDATE worker_sessions SET spawn_op_id = ? WHERE id = 'current'")
+            .bind(&op)
+            .execute(repo.pool())
+            .await
+            .unwrap();
+        sqlx::query("UPDATE tasks SET worker_card_id = ? WHERE id = ?")
+            .bind(card.id.as_str())
+            .bind(&task.id)
+            .execute(repo.pool())
+            .await
+            .unwrap();
+        // Legacy leases have no delivery guard to mask an unauthorized release.
+        let lease_path = tempfile::tempdir().unwrap();
+        let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
+        let (lease, _) = crate::operation::workspace_lease::acquire_plain_workspace_lease_tx(
+            &mut tx,
+            card.id.as_str(),
+            track.as_str(),
+            &op,
+            lease_path.path(),
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+        let lease = lease.lease_id;
+        let before = repo.task_get(&task.id).await.unwrap();
+        let events_before = RepoEventWrite::events_since(repo.as_ref(), 0, i64::MAX)
+            .await
+            .unwrap();
+        let reaper = Reaper::new(
+            repo.clone(),
+            registry(Arc::new(
+                FakeProvider::new().with_probe_script([exited_liveness()]),
+            )),
+            EventBus::new(),
+            write_context(&repo).await,
+        );
+        reaper_on_boot();
+        reaper.sweep_all().await;
+        assert_eq!(repo.task_get(&task.id).await.unwrap(), before);
+        let state: String =
+            sqlx::query_scalar("SELECT state FROM workspace_leases WHERE lease_id = ?")
+                .bind(&lease)
+                .fetch_one(repo.pool())
+                .await
+                .unwrap();
+        assert_eq!(state, "held", "nonterminal task {status:?}");
+        assert_eq!(
+            RepoEventWrite::events_since(repo.as_ref(), 0, i64::MAX)
+                .await
+                .unwrap()
+                .len(),
+            events_before.len()
+        );
+    }
+    reset_reaper_boot_gate_for_test();
+}

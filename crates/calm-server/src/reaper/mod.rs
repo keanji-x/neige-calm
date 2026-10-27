@@ -473,10 +473,8 @@ async fn converge_dead_worker_tx(
         .await?;
         if rows == 0
             && let Some(task) = task_get_tx(tx, &task_id).await?
-            && (matches!(
-                task.status,
-                crate::model::TaskStatus::Dispatched | crate::model::TaskStatus::Running
-            ) || task.track_id != track.id.as_str()
+            && (!task.status.is_terminal()
+                || task.track_id != track.id.as_str()
                 || match task.worker_card_id.as_deref() {
                     Some(owner) => owner != card_id.as_str(),
                     None => !owns_key,
