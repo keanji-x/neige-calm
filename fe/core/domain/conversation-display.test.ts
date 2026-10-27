@@ -1,5 +1,5 @@
 import { describe,it,expect } from 'vitest';
-import { keepConversationInputOperation, retryConversationInputOperation, buildConversationTranscript, conversationPageSchema, conversationRunMetadataSchema, orderedPendingInputs, removedHumanIds } from './conversation-display.js';
+import { heldConversationInputs, keepConversationInputOperation, retryConversationInputOperation, buildConversationTranscript, conversationPageSchema, conversationRunMetadataSchema, orderedPendingInputs, removedHumanIds } from './conversation-display.js';
 import { outboxFactsWithRemovedInputs, matchSendOps, reportedInputSource, withInitialInputFacts, initialInputNeedsObservation, type AcceptedInitialInput, type SendOp } from './conversation-outbox.js';
 import type { ConversationDisplayItem, HarnessItem as HistoricalRow } from '../api/generated/wire.js';
 import { isConversationMessage, SYSTEM_PRESENTATION_LABELS } from './conversation.js';
@@ -200,4 +200,31 @@ it.each(['failed','interrupted','completed'])('u2_imported_outcome_keeps_histori
     turn_id:'old-turn',item_uuid:null,item_type:null,method:'turn/completed',created_at_ms:1,original_digest:`sha256-v1:${'a'.repeat(64)}`,import_boundary_sequence:0};
   expect(buildConversationTranscript([{cursor:cursor(1),source:{kind:'imported_item',item:raw,provenance}}],'jian'))
     .toMatchObject([{author:'turn',status,imported:true,turnId:'old-turn',message:'Old failure',text:'Old reason'}]);
+});
+
+it('separates pending native acknowledgement from unresolved delivery without changing its facts',()=>{
+  const submission: import('../api/generated/wire.js').ConversationSubmissionDelivery={
+    carrier_id:'carrier',logical_turn_id:'logical',submission_id:'submission',attempt:{
+      attempt_id:'attempt',revision:'1',delivery:'crossing_unknown',target:{provider:'opencode',thread_id:'thread',native_session_id:null,native_turn_id:null,local_turn_id:'local',rpc_request_id:null},
+      invocation:{kind:'recorded',configuration:{model:null,effort:null,permission:'never'}},resolution:null,
+      actions:{keep:{kind:'available'},retry:{kind:'unavailable',reason:'invocation_not_fully_frozen'}},
+    },
+  };
+  const input={current_execution_id:'logical',submissions:[submission]};
+  const before=JSON.stringify(input);
+  expect(heldConversationInputs(input,true)).toEqual([]);
+  expect(JSON.stringify(input)).toBe(before);
+  expect(heldConversationInputs(input,false)).toEqual([submission]);
+  expect(heldConversationInputs({...input,current_execution_id:null},true)).toEqual([submission]);
+  expect(heldConversationInputs({...input,current_execution_id:'another'},true)).toEqual([submission]);
+  expect(heldConversationInputs(null,true)).toEqual([]);
+  expect(heldConversationInputs({...input,submissions:[{...submission,attempt:null}]},true)).toEqual([]);
+  const attempt=submission.attempt!;
+  for(const delivery of ['accepted','not_dispatched'] as const) {
+    expect(heldConversationInputs({current_execution_id:null,submissions:[{...submission,attempt:{...attempt,delivery}}]},true)).toEqual([]);
+  }
+  const resolved={...submission,attempt:{...attempt,resolution:{kind:'keep' as const,result:{
+    carrier_id:'carrier',submission_id:'submission',attempt_id:'attempt',revision:'2',waiting_for_settlement:true,
+  }}}};
+  expect(heldConversationInputs({...input,submissions:[resolved]},true)).toEqual([resolved]);
 });

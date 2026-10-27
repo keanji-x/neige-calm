@@ -24,6 +24,7 @@ import {
 } from '@astryxdesign/core/Chat';
 import { Button } from '@astryxdesign/core/Button';
 import { HeldInputStatus } from './held-input.tsx';
+import { heldConversationInputs } from '../../../../../core/domain/conversation-display.ts';
 import type { ConversationActiveInput, ConversationSubmissionDelivery } from '../../../../../core/api/generated/wire.ts';
 import { useIcon } from '@astryxdesign/core/Icon';
 import { VisuallyHidden } from '@astryxdesign/core/VisuallyHidden';
@@ -128,13 +129,12 @@ export const ChatThread = memo(function ChatThread({ conversation, turns, pendin
   const compactClock = useMemo(() => compactViewport ? new Intl.DateTimeFormat('zh-CN', {
     hour: '2-digit', minute: '2-digit', hour12: false, timeZone,
   }) : null, [compactViewport, timeZone]);
-  const heldInputs = activeInput?.submissions.filter(submission => submission.attempt?.delivery === 'crossing_unknown'
-    || submission.attempt?.delivery === 'unknown') ?? [];
   const localReading = useThreadReadingView(conversation.id);
   const reading = readingView ?? localReading;
   /* Only run/activity evidence claims execution. A local outgoing message has its own sending feedback.
      Never use `conversation.state`, which can stay at `turn_pending`/`running` after a turn ended. */
   const live = !statusUnconfirmed && !stalled && (pending || cardActivityOf({ cards }, conversation.id) === 'working');
+  const heldInputs = heldConversationInputs(activeInput, live);
   const lastTurn = turns[turns.length - 1];
   const currentOutcome = lastTurn?.author === 'turn' && lastTurn.imported !== true ? lastTurn : null;
   const copyTarget = currentResponseMessage(turns, currentOutcome !== null && !statusUnconfirmed && !live && !stalled && stopFeedback === null);

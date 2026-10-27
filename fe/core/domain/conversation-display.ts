@@ -2,9 +2,19 @@
 import { z } from 'zod';
 import type { ApiOperation } from '../api/types.js';
 import { agentProviderSchema, conversationCursorSchema, workerSessionStateSchema } from '../api/schemas.js';
-import type { ConversationCursor, ConversationDisplayItem, ConversationPage, ConversationPendingInput, HarnessItem as TranscriptRow } from '../api/generated/wire.js';
+import type { ConversationCursor, ConversationDisplayItem, ConversationPage, ConversationPendingInput, ConversationActiveInput, ConversationSubmissionDelivery, HarnessItem as TranscriptRow } from '../api/generated/wire.js';
 import { plannerPermissionModeSchema } from './planner-permission-mode.js';
 import { SYSTEM_PRESENTATION_LABELS, systemInputPresentationSchema, buildTranscript, retireFollowedThoughts, harnessTimeoutEvidenceSchema, harnessItemSchema as transcriptRowSchema, HARNESS_ITEMS_PAGE_LIMIT as TRANSCRIPT_PAGE_LIMIT, plannerRunOperation, type PlannerRun, type TranscriptEntry } from './conversation.js';
+
+/** Native acknowledgement can arrive at END. Defer intervention for the exact
+ * tracked execution without changing its delivery fact; other held inputs remain visible. */
+export function heldConversationInputs(input: ConversationActiveInput | null, executionRunning: boolean): readonly ConversationSubmissionDelivery[] {
+  return input?.submissions.filter(submission => {
+    const attempt = submission.attempt;
+    return attempt !== null && (attempt.delivery === 'crossing_unknown' || attempt.delivery === 'unknown')
+      && (!executionRunning || attempt.resolution !== null || submission.logical_turn_id !== input.current_execution_id);
+  }) ?? [];
+}
 
 const decimalU64 = z.string().regex(/^(0|[1-9]\d*)$/).pipe(z.string().refine(value => BigInt(value) <= 18446744073709551615n));
 const keepResultSchema = z.object({ carrier_id:z.string(), submission_id:z.string(), attempt_id:z.string(),
