@@ -362,7 +362,7 @@ async fn planner_switch_admitted_mcp_write_blocks_cutover() {
             "message": "admitted-before-cutover"
         }),
     );
-    let writing = tokio::spawn(async move {
+    let mut writing = tokio::spawn(async move {
         dispatch_tools_call(
             &ctx,
             None,
@@ -405,12 +405,20 @@ async fn planner_switch_admitted_mcp_write_blocks_cutover() {
             .unwrap();
     assert_eq!(paused, before, "the admitted mutation has not written yet");
 
-    admitted.release.notify_one();
-    let written = tokio::time::timeout(Duration::from_secs(5), writing)
-        .await
-        .unwrap()
-        .unwrap()
+    let mut completions = RouteState::from_ref(&p.state)
+        .activity_wake
+        .subscribe_report_completions_for_test()
         .unwrap();
+    admitted.release.notify_one();
+    let written = match tokio::time::timeout(Duration::from_secs(5), &mut writing).await {
+        Ok(joined) => joined.unwrap().unwrap(),
+        Err(error) => {
+            writing.abort();
+            let _ = writing.await;
+            p.close().await;
+            panic!("admitted write timed out: {error}");
+        }
+    };
     assert!(written.get("structuredContent").is_some(), "{written}");
     let after: Value =
         sqlx::query_scalar("SELECT payload FROM cards WHERE track_id=?1 AND kind='track-report'")
@@ -423,8 +431,46 @@ async fn planner_switch_admitted_mcp_write_blocks_cutover() {
             .to_string()
             .contains("Preserve the old Planner's accepted mutation.")
     );
-    // Once the request has finished the same switch can commit. The accepted
-    // write belongs to the old tenure; it did not run under a new Planner.
+    // Identify the one durable edit from this old Planner, independently of text/doc_rev.
+    let report = p.report_card_id().await;
+    let area = p
+        .fixture
+        .repo
+        .track_get(&p.track)
+        .await
+        .unwrap()
+        .unwrap()
+        .area_id;
+    let scope = crate::event::EventScope::Card {
+        card: report.clone(),
+        track: p.track.clone().into(),
+        area,
+    };
+    let actor = crate::ids::ActorId::AiPlannerSession(p.workers[0].clone().into());
+    let edits = p
+        .fixture
+        .repo
+        .events_for_track(&p.track, &["track.report_edited"], None)
+        .await
+        .unwrap();
+    let edits: Vec<_> = edits.into_iter().filter(|edit| {
+        edit.actor == actor && edit.scope == scope && matches!(&edit.event,
+            crate::event::Event::TrackReportEdited { track_id, card_id, author: crate::event::EditAuthor::Planner, .. }
+            if track_id.as_str() == p.track && card_id == &report)
+    }).collect();
+    assert_eq!(edits.len(), 1, "one edit from the old Planner");
+    let edit = &edits[0];
+    assert!(edit.id > 0);
+    let completed = tokio::time::timeout(
+        Duration::from_secs(5),
+        crate::track_activity::report_completion_for_test::wait_for_report(&mut completions, edit),
+    )
+    .await;
+    if !matches!(completed, Ok(Ok(_))) {
+        p.close().await;
+        panic!("original activity owner did not complete this edit: {completed:?}");
+    }
+    // This closes only this env, not all background writers. Keep the original CAS.
     p.switch().await.unwrap();
     assert_eq!(http::detail(&p).await["planner_revision"], 1);
     p.close().await;

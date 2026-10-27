@@ -4,7 +4,11 @@
 //! [`ActivityWake`] channel are only wake-ups.
 
 pub mod notifications;
+#[cfg(all(test, feature = "fixtures"))]
+pub(crate) mod report_completion_for_test;
 pub mod sql;
+#[cfg(all(test, feature = "fixtures"))]
+use report_completion_for_test::{ReportCompletion, ReportOutcome};
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
@@ -281,13 +285,23 @@ pub fn fold(track_id: &str, rows: &TrackRows) -> Fold {
 /// the projector recomputes that track. Best effort: a send nobody receives (no projector runs) is
 /// dropped, and the 30 s tick still converges.
 #[derive(Debug, Clone)]
-pub struct ActivityWake(mpsc::UnboundedSender<String>);
+pub struct ActivityWake(
+    mpsc::UnboundedSender<String>,
+    #[cfg(all(test, feature = "fixtures"))] tokio::sync::broadcast::WeakSender<ReportCompletion>,
+);
 
 impl ActivityWake {
     /// A wake no projector receives: the repo is not sqlite-backed, or the state was built without
     /// a projector. Every send is dropped.
     pub fn detached() -> Self {
-        Self(mpsc::unbounded_channel().0)
+        Self(
+            mpsc::unbounded_channel().0,
+            #[cfg(all(test, feature = "fixtures"))]
+            {
+                let (sender, _) = report_completion_for_test::channel();
+                sender.downgrade()
+            },
+        )
     }
 
     pub fn wake(&self, track_id: &str) {
@@ -307,6 +321,12 @@ pub struct TrackActivityProjector {
     /// The sending half of [`Self::wake`]'s channel; held so the receive arm never sees it closed.
     wake: ActivityWake,
     wake_rx: mpsc::UnboundedReceiver<String>,
+    // The owner alone keeps the completion stream alive; wakes carry only a weak reference.
+    #[cfg(all(test, feature = "fixtures"))]
+    report_completions: tokio::sync::broadcast::Sender<ReportCompletion>,
+    // Test scheduling difference: subscribe synchronously before spawn/boot returns.
+    #[cfg(all(test, feature = "fixtures"))]
+    report_input: tokio::sync::broadcast::Receiver<BroadcastEnvelope>,
 }
 
 /// What one recomputation did.
@@ -347,6 +367,10 @@ impl TrackActivityProjector {
     ) -> Option<Self> {
         let pool = repo.sqlite_db()?;
         let (wake_tx, wake_rx) = mpsc::unbounded_channel();
+        #[cfg(all(test, feature = "fixtures"))]
+        let (report_completions, _) = report_completion_for_test::channel();
+        #[cfg(all(test, feature = "fixtures"))]
+        let report_input = bus.subscribe();
         Some(Self {
             repo,
             pool: pool.read_pool().clone(),
@@ -354,8 +378,16 @@ impl TrackActivityProjector {
             write,
             harness,
             renderer,
-            wake: ActivityWake(wake_tx),
+            wake: ActivityWake(
+                wake_tx,
+                #[cfg(all(test, feature = "fixtures"))]
+                report_completions.downgrade(),
+            ),
             wake_rx,
+            #[cfg(all(test, feature = "fixtures"))]
+            report_completions,
+            #[cfg(all(test, feature = "fixtures"))]
+            report_input,
         })
     }
 
@@ -498,6 +530,12 @@ impl TrackActivityProjector {
                         Err(e) => return Err(e),
                     };
                     let o = overlay_upsert_tx(tx, new_overlay).await?;
+                    #[cfg(all(test, feature = "fixtures"))]
+                    crate::test_seams::pause_point(
+                        "activity-overlay-before-commit",
+                        track.as_str(),
+                    )
+                    .await;
                     let scope = EventScope::Track {
                         track: row.id,
                         area: row.area_id,
@@ -591,6 +629,7 @@ impl TrackActivityProjector {
     /// sends and the tick in one `select!` (serial; both wake channels are unbounded FIFOs, so a
     /// wake-up that lands during a recomputation queues instead of being lost).
     pub async fn run(mut self) {
+        #[cfg(not(all(test, feature = "fixtures")))]
         let mut rx = self.bus.subscribe();
         // This clone stays alive for the loop's lifetime so the receive arm can never observe a
         // closed channel.
@@ -604,20 +643,39 @@ impl TrackActivityProjector {
                     // The first tick completes immediately: the boot sweep.
                     self.reconcile_all().await;
                 }
-                received = rx.recv() => match received {
+                received = {
+                    #[cfg(all(test, feature = "fixtures"))]
+                    { self.report_input.recv() }
+                    #[cfg(not(all(test, feature = "fixtures")))]
+                    { rx.recv() }
+                } => match received {
                     Ok(env) => {
-                        if let Some(track_id) = self.track_for_event(&env).await
-                            && let Err(e) = self.recompute_track(&track_id).await
-                        {
-                            tracing::warn!(
-                                track_id = %track_id,
-                                error = %e,
-                                "track_activity: event-driven recompute failed"
-                            );
+                        if let Some(track_id) = self.track_for_event(&env).await {
+                            #[cfg(all(test, feature = "fixtures"))]
+                            if matches!(env.event, Event::TrackReportEdited { .. }) {
+                                crate::test_seams::pause_point("activity-report-before-recompute", &track_id).await;
+                            }
+                            let result = self.recompute_track(&track_id).await;
+                            #[cfg(all(test, feature = "fixtures"))]
+                            if matches!(env.event, Event::TrackReportEdited { .. }) {
+                                let _ = self.report_completions.send(ReportCompletion::Report {
+                                    env: Box::new(env),
+                                    outcome: ReportOutcome::from_result(&result),
+                                });
+                            }
+                            if let Err(e) = result {
+                                tracing::warn!(
+                                    track_id = %track_id,
+                                    error = %e,
+                                    "track_activity: event-driven recompute failed"
+                                );
+                            }
                         }
                     }
                     Err(RecvError::Lagged(n)) => {
                         tracing::warn!(skipped = n, "track_activity event subscriber lagged");
+                        #[cfg(all(test, feature = "fixtures"))]
+                        let _ = self.report_completions.send(ReportCompletion::InputLagged(n));
                     }
                     Err(RecvError::Closed) => break,
                 },
