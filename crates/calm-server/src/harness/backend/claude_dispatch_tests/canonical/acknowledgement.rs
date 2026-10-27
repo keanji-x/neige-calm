@@ -232,15 +232,27 @@ async fn canonical_claude_replay_records_on_failed_current_carrier_without_react
     tx.commit().await.unwrap();
     std::fs::write(fx.dir.path().join("release-replay"), "").unwrap();
     fx.wait_end().await;
-    assert!(matches!(
-        fx.checkpoint().await.attempts[0].delivery,
-        InputDeliveryFact::Accepted { .. }
-    ));
-    let state: String = sqlx::query_scalar("SELECT state FROM worker_sessions WHERE id=?")
-        .bind(&fx.owner.worker)
-        .fetch_one(fx.owner.repo.pool())
+    let mut tx = begin_immediate_tx(fx.owner.repo.db()).await.unwrap();
+    let facts = current_input_fact_carrier_tx(&mut tx, &fx.owner.card, &fx.owner.worker)
         .await
         .unwrap();
+    assert!(matches!(
+        facts.checkpoint().attempts[0].delivery,
+        InputDeliveryFact::Accepted { .. }
+    ));
+    assert!(facts.checkpoint().active.is_none());
+    assert!(
+        current_input_carrier_tx(&mut tx, &fx.owner.card, &fx.owner.worker)
+            .await
+            .is_err(),
+        "native facts must not reopen execution admission"
+    );
+    let state: String = sqlx::query_scalar("SELECT state FROM worker_sessions WHERE id=?")
+        .bind(&fx.owner.worker)
+        .fetch_one(&mut **tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
     assert_eq!(
         state, "failed",
         "factual acknowledgement must not restore execution authority"
