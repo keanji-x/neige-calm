@@ -655,3 +655,46 @@ async fn acp_compaction_initialize_does_not_advertise_capability() {
         .unwrap();
     agent.await.unwrap();
 }
+
+#[test]
+fn usage_update_emits_context_counts_without_inventing_a_lifetime_total() {
+    for (used, size) in [(24_100, 200_000), (0, 200_000), (210_000, 200_000)] {
+        let events = translator()
+            .update(
+                &update(json!({
+                    "sessionUpdate": "usage_update", "used": used, "size": size,
+                    "cost": {"amount": 0.012, "currency": "USD"}
+                })),
+                10,
+            )
+            .unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].thread_id.as_deref(), Some("thread"));
+        let PlannerEventKind::TokenUsage { params } = &events[0].kind else {
+            panic!("expected context usage event");
+        };
+        assert_eq!(params["tokenUsage"]["last"]["totalTokens"], used);
+        assert_eq!(params["tokenUsage"]["modelContextWindow"], size);
+        assert!(params["tokenUsage"].get("total").is_none());
+    }
+}
+
+#[test]
+fn invalid_usage_update_is_ignored_without_failing_the_turn() {
+    for fields in [
+        json!({"used": -1, "size": 200000}),
+        json!({"used": 10, "size": 0}),
+        json!({"used": 10, "size": -1}),
+        json!({"used": 1.5, "size": 200000}),
+        json!({"used": 10, "size": 1.5}),
+        json!({"used": "10", "size": 200000}),
+        json!({"used": null, "size": 200000}),
+        json!({"size": 200000}),
+        json!({"used": 10}),
+        json!({"used": 18446744073709551615_u64, "size": 200000}),
+    ] {
+        let mut frame = fields;
+        frame["sessionUpdate"] = json!("usage_update");
+        assert!(translator().update(&update(frame), 10).unwrap().is_empty());
+    }
+}

@@ -90,3 +90,34 @@ async fn partial_receipt_recovery_restores_native_item_order() {
     );
     stack.shutdown().await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn acp_usage_update_reaches_planner_run_and_survives_restart() {
+    let root = Root::new("unused");
+    let stack = boot(&root).await;
+    let (_, card) = create(&stack).await;
+    std::fs::write(root.path().join("scenario"), "usage").unwrap();
+    assert_eq!(
+        turn(&stack, &card, "report usage", 1).await["status"],
+        "completed"
+    );
+    let path = format!("/api/cards/{card}/planner/run");
+    let (status, run) = stack.send("GET", &path, None).await;
+    assert_eq!(status, StatusCode::OK, "{run}");
+    let usage = run["token_usage"].clone();
+    assert_eq!(
+        usage["used_tokens"], 24_100,
+        "latest occupancy wins, including decreases"
+    );
+    assert_eq!(usage["context_window"], 200_000);
+    let expected = (24_100.0 - 12_000.0) / (200_000.0 - 12_000.0) * 100.0;
+    assert!((usage["percent"].as_f64().unwrap() - expected).abs() < 1e-9);
+    assert!(usage["at_ms"].as_i64().unwrap() > 0);
+    stack.shutdown().await;
+    let stack = boot(&root).await;
+    let (status, restored) = stack.send("GET", &path, None).await;
+    assert_eq!(status, StatusCode::OK, "{restored}");
+    assert_eq!(restored["token_usage"], usage);
+    assert_eq!(requests(&root, "session/prompt").len(), 1);
+    stack.shutdown().await;
+}

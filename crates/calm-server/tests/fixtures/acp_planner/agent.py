@@ -491,6 +491,11 @@ for line in sys.stdin:
                 time.sleep(0.3)
                 finish(pending, 'settled')
                 pending = None
+        elif scenario == 'usage':
+            update({'sessionUpdate': 'usage_update', 'used': 60200, 'size': 200000})
+            update({'sessionUpdate': 'usage_update', 'used': 24100, 'size': 200000,
+                    'cost': {'amount': 0.012, 'currency': 'USD'}})
+            finish(request, 'usage reported')
         elif scenario in ['hold', 'server-drain']:
             pending = request
             if (root / 'prompt-consumption.sock').exists():
