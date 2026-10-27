@@ -101,5 +101,6 @@ pub(super) async fn acknowledge_tx(
             },
         },
     )
-    .await
+    .await?;
+    Ok(())
 }
