@@ -29,7 +29,7 @@ pub use request_attempt::{RequestCrossing, RpcAttemptFailure, RpcRemoteError};
 mod server_request_tests;
 mod server_requests;
 pub mod tool_names;
-use client_transport::{ReaderNotifications, TransportAbort};
+use client_transport::{ReaderLifetime, TransportAbort};
 
 use std::sync::atomic::AtomicU64;
 use std::time::Duration;
@@ -277,8 +277,7 @@ impl CodexAppServer {
         let notifications = notif_tx.downgrade();
         let reader = tokio::spawn(reader_loop(
             read,
-            pending.clone(),
-            ReaderNotifications::new(notif_tx, transport.clone()),
+            ReaderLifetime::new(notif_tx, pending.clone(), transport.clone()),
             sink.clone(),
             transport.clone(),
             routes,
@@ -384,8 +383,7 @@ impl CodexAppServer {
 
         let reader = tokio::spawn(reader_loop(
             read,
-            pending.clone(),
-            ReaderNotifications::new(notif_tx, transport.clone()),
+            ReaderLifetime::new(notif_tx, pending.clone(), transport.clone()),
             sink.clone(),
             transport.clone(),
             routes,
@@ -630,8 +628,7 @@ impl CodexAppServer {
 /// Background reader: demultiplexes inbound frames into responses, server requests and notifications; exits on close, transport error, or when the notification consumer is gone.
 async fn reader_loop(
     mut read: futures_util::stream::SplitStream<WebSocketStream<UnixStream>>,
-    pending: Pending,
-    notif_tx: ReaderNotifications,
+    notif_tx: ReaderLifetime,
     sink: WsSink,
     transport: Arc<TransportAbort>,
     routes: Arc<ApprovalRoutes>,
@@ -694,7 +691,7 @@ async fn reader_loop(
             v.as_u64()
                 .or_else(|| v.as_str().and_then(|s| s.parse::<u64>().ok()))
         }) {
-            let sender = { pending.lock().unwrap().remove(&id) };
+            let sender = { notif_tx.pending.lock().unwrap().remove(&id) };
             if let Some(sender) = sender {
                 let payload = if let Some(err) = obj.get("error") {
                     Err(
@@ -731,9 +728,7 @@ async fn reader_loop(
     }
 
     transport.close("WebSocket reader stopped; pending outcomes unknown".into());
-    // Drain pending requests so their futures resolve with "connection closed" instead of hanging.
-    let mut guard = pending.lock().unwrap();
-    guard.clear();
+    // ReaderLifetime owns retirement for normal return, panic and cancellation.
 }
 
 #[cfg(test)]

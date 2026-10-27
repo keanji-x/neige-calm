@@ -12,8 +12,9 @@ possibly executed submission.
   remain distinguishable. Later cleanup cannot replace the first error.
 - `provider::codex` owns its WebSocket failure. Pending RPCs and notification
   consumers consult the same failure owner. The reader lifetime guard is
-  constructed before spawning, so cancellation before its first poll also
-  records a reason before waking consumers.
+  constructed before spawning and owns both pending RPC retirement and the
+  notification sender. Normal return, panic, and cancellation before the first
+  poll all preserve the cause before waking either group of consumers.
 - The execution owner supplies process state and exit status. Engine stdio logs
   terminal output observations by execution ID before provider cleanup, including
   output continuity failures. Pipe EOF alone is never interpreted as process exit.

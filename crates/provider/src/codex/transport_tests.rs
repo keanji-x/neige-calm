@@ -253,3 +253,28 @@ async fn disconnect_aborted_reader_notifies_consumers_without_hanging() {
         "reader cancellation must have its own reason: {error}"
     );
 }
+
+#[tokio::test]
+async fn disconnect_aborted_reader_fails_pending_rpc_without_waiting_for_deadline() {
+    let (client, _notifications, mut peer, _root) = connection().await;
+    let request = client.thread_start(None);
+    tokio::pin!(request);
+    tokio::select! {
+        result = &mut request => panic!("peer has not replied: {result:?}"),
+        frame = peer.next() => {
+            let frame = frame.unwrap().unwrap();
+            let frame: Value = serde_json::from_str(frame.to_text().unwrap()).unwrap();
+            assert_eq!(frame["method"], "thread/start");
+        }
+    }
+    client.reader.abort();
+    let error = tokio::time::timeout(Duration::from_secs(2), request)
+        .await
+        .expect("reader teardown must release the pending RPC before its 30s deadline")
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("reader or dispatch owner dropped"),
+        "{error}"
+    );
+}
