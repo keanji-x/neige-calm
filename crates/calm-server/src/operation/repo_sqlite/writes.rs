@@ -324,14 +324,29 @@ pub(in crate::operation) async fn write_phase_and_tx_output(
     Ok(result.rows_affected() > 0)
 }
 
+/// The outcome of [`advance_to_tx_committed_tx`]. A lost claim wrote nothing, and the
+/// caller must not commit its other writes as if the operation had advanced.
+#[must_use = "a lost operation claim must abandon the caller's transaction"]
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum TxCommittedAdvance {
+    Advanced,
+    ClaimLost,
+}
+
 /// The preparation CAS to TxCommitted under the original live claim, inside the
 /// caller's writer transaction, so preparation output commits with the caller's writes.
 pub(crate) async fn advance_to_tx_committed_tx(
     tx: &mut Tx<'_>,
     op: &Operation,
     output: &TxOutput,
-) -> Result<bool> {
-    write_phase_and_tx_output(tx, PhaseWrite::Claimed(op), &Phase::TxCommitted, output).await
+) -> Result<TxCommittedAdvance> {
+    let written =
+        write_phase_and_tx_output(tx, PhaseWrite::Claimed(op), &Phase::TxCommitted, output).await?;
+    Ok(if written {
+        TxCommittedAdvance::Advanced
+    } else {
+        TxCommittedAdvance::ClaimLost
+    })
 }
 
 pub(super) async fn read_output_tx(tx: &mut Tx<'_>, id: &str) -> Result<Option<TxOutput>> {

@@ -270,11 +270,11 @@ impl ProviderExecution {
         fence: OccupancyFence<'_>,
     ) -> Result<(Claim, DriverGuard)> {
         let engine = self::engine(Some(engine))?;
-        let mut tx = calm_truth::db::sqlite::begin_immediate_tx(pool).await?;
-        let admitted = self
-            .admit_tx(&mut tx, engine, session, admission, purpose, fence)
-            .await?;
-        admitted.commit(tx).await
+        let tx = calm_truth::db::sqlite::begin_immediate_tx(pool).await?;
+        self.admit_tx(tx, engine, session, admission, purpose, fence)
+            .await?
+            .commit()
+            .await
     }
     /// ③ Re-read on CAS loss; never adopt another execution or overwrite Stopping.
     pub async fn stop(

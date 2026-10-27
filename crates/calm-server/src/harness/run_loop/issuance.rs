@@ -751,10 +751,18 @@ pub(super) async fn lock_track_for_admission<'a>(
 
 #[cfg(any(test, feature = "fixtures"))]
 pub(crate) async fn track_fence_for_test(track: &str) -> TrackAdmissionFence {
-    let locks = Default::default();
+    track_fence_in_for_test(track, &Default::default()).await
+}
+
+/// A fixture fence in caller-shared locks, so a test can observe its release.
+#[cfg(any(test, feature = "fixtures"))]
+pub(crate) async fn track_fence_in_for_test(
+    track: &str,
+    locks: &crate::per_card_lock::KeyedLocks,
+) -> TrackAdmissionFence {
     match lock_track_for_admission(TrackAdmissionSource::Fixture {
         track: track.to_owned().into(),
-        locks: &locks,
+        locks,
     })
     .await
     .expect("fixture Track fence")

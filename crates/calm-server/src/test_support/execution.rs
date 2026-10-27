@@ -120,6 +120,17 @@ impl Fixture {
             .recover(pool, std::time::Duration::from_secs(1))
             .await
     }
+    /// Stop the supervisor; returns once the engine has observed the disconnect.
+    pub async fn disconnect(self) -> Arc<ExecutionEngine> {
+        let watching = self.engine.output_generation().await.unwrap();
+        drop(self.supervisor);
+        tokio::time::timeout(std::time::Duration::from_secs(10), watching.changed())
+            .await
+            .expect("engine must observe supervisor disconnect")
+            .unwrap();
+        assert!(!self.engine.available());
+        self.engine
+    }
 }
 impl Drop for Supervisor {
     fn drop(&mut self) {
