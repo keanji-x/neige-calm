@@ -56,7 +56,13 @@ async fn fixture(
     entry: Entry,
     prime: bool,
 ) -> (Root, Arc<Stack>, String, String, std::path::PathBuf) {
-    let root = Root::new("exit");
+    // Retry races require a genuinely unacknowledged initial input. An ordinary
+    // matching native replay now confirms delivery and correctly refuses Retry.
+    let root = Root::new(if matches!(entry, Entry::Retry) {
+        "no-input-replay"
+    } else {
+        "exit"
+    });
     let mut config = root.config(true);
     if provider == "opencode" {
         let path = root.path().join("acp.json");
@@ -136,6 +142,13 @@ async fn fixture(
         assert!(status.is_success(), "{body}");
         stack.wait_outcomes(&card, 1).await;
         wait_phase(&stack, &card, "turn_completed").await;
+        if matches!(entry, Entry::Retry) {
+            let frame = stack.runtime(&card).await.handle_state_json.unwrap();
+            assert_eq!(
+                frame["canonical_inputs"]["attempts"][0]["delivery"]["kind"],
+                "unknown"
+            );
+        }
     }
     if matches!(entry, Entry::Resume) {
         let pool = stack.repo().sqlite_db().unwrap();

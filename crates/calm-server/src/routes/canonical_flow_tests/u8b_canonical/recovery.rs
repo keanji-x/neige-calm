@@ -248,19 +248,11 @@ async fn u8b_canonical_workspace_failure_holds_v2_and_repairs_once() {
         assert!(done.2.canonical_inputs.pending.is_empty());
         assert!(done.2.canonical_inputs.active.is_none());
         assert_eq!(done.2.canonical_inputs.attempts.len(), 1);
-        if provider == "codex" {
-            assert!(matches!(
-                done.2.canonical_inputs.attempts[0].delivery,
-                InputDeliveryFact::Accepted { .. }
-            ));
-        } else {
-            // ACP reports the receipted local turn as Unknown; END closes the
-            // execution without inventing a provider delivery acknowledgement.
-            assert_eq!(
-                done.2.canonical_inputs.attempts[0].delivery,
-                InputDeliveryFact::Unknown
-            );
-        }
+        assert!(matches!(
+            done.2.canonical_inputs.attempts[0].delivery,
+            InputDeliveryFact::Accepted { .. }
+        ));
+        assert!(done.2.canonical_inputs.receipts.is_empty());
         let mut tx = crate::db::sqlite::begin_immediate_tx(fixture.repo.db())
             .await
             .unwrap();
