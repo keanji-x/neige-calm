@@ -186,9 +186,49 @@ async fn canonical_claude_replay_records_on_failed_current_carrier_without_react
     .await
     .unwrap();
     let mut tx = begin_immediate_tx(fx.owner.repo.db()).await.unwrap();
-    crate::db::sqlite::session_fail_if_active_runtime_tx(&mut tx, &fx.owner.worker)
+    let carrier = current_input_fact_carrier_tx(&mut tx, &fx.owner.card, &fx.owner.worker)
         .await
         .unwrap();
+    let turn = carrier.checkpoint().attempts[0]
+        .correlation
+        .local_turn_id
+        .clone()
+        .unwrap();
+    let mut header = RuntimeExecutionFence::from_carrier(&carrier)
+        .header()
+        .clone();
+    header["phase"] = serde_json::json!("wedged");
+    header["wedged_reason"] = serde_json::json!(calm_types::harness::HARNESS_RUNTIME_FAILED_REASON);
+    header["last_turn_id"] = serde_json::json!(turn);
+    persist_runtime_frame_tx(
+        &mut tx,
+        &fx.owner.card,
+        &fx.owner.worker,
+        &RuntimeExecutionFence::from_carrier(&carrier),
+        header,
+    )
+    .await
+    .unwrap();
+    // The phase mirror permits failure while a provider claim is live; the
+    // compensation writer intentionally refuses that precondition.
+    crate::db::sqlite::session_set_harness_observation_runtime_tx(
+        &mut tx,
+        &fx.owner.worker,
+        calm_types::worker::WorkerSessionState::Failed,
+        Some(&fx.owner.thread),
+        Some(&turn),
+    )
+    .await
+    .unwrap();
+    let failed: String = sqlx::query_scalar("SELECT state FROM worker_sessions WHERE id=?")
+        .bind(&fx.owner.worker)
+        .fetch_one(&mut **tx)
+        .await
+        .unwrap();
+    assert_eq!(
+        failed, "failed",
+        "establish the actual failed-carrier precondition"
+    );
     tx.commit().await.unwrap();
     std::fs::write(fx.dir.path().join("release-replay"), "").unwrap();
     fx.wait_end().await;
