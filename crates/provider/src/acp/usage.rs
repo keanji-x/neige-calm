@@ -44,10 +44,10 @@ impl UsageTracker {
         if let Some(model) = response["models"]["currentModelId"].as_str() {
             self.model = Some(model.to_owned());
         }
-        if let Some(options) = response["configOptions"].as_array() {
-            if let Some(option) = options.iter().find(|option| option["category"] == "model") {
-                self.model = option["currentValue"].as_str().map(str::to_owned);
-            }
+        if let Some(options) = response["configOptions"].as_array()
+            && let Some(option) = options.iter().find(|option| option["category"] == "model")
+        {
+            self.model = option["currentValue"].as_str().map(str::to_owned);
         }
     }
 
