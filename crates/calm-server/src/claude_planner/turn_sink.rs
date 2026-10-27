@@ -47,10 +47,12 @@ pub(crate) struct PlannerSink {
     pub translator: TurnTranslator,
     pub instructions: InstructionsFile,
     pub thread: Uuid,
+    pub turn: Uuid,
     pub purpose: SpawnPurpose,
     pub bind: bool,
     pub approvals: Approvals,
     pub compacted: bool,
+    pub(in crate::claude_planner) execution: super::session::execution_end::Association,
 }
 
 #[async_trait::async_trait]
@@ -97,6 +99,45 @@ impl TurnSink for PlannerSink {
         }
     }
     async fn record(&mut self, line: &str, record: &Record, answering: bool) {
+        if let Record::UserReplay { uuid, .. } = record
+            && let super::session::execution_end::Association::Work(input) = &self.execution
+            && uuid.simple().to_string() == input.proof.attempt().submission_id.as_str()
+        {
+            let params = &self.shared.params;
+            let target = crate::harness::backend::ExecutionEndTarget {
+                card_id: params.card_id.clone(),
+                track_id: params.track_id.clone(),
+                worker_session_id: params.worker_session_id.clone(),
+                logical_turn_id: input.logical_turn_id.clone(),
+                proof: input.proof.clone(),
+                scope: crate::harness::backend::ExecutionEndScope::LocalProcess {
+                    thread_id: self.thread,
+                    local_turn_id: self.turn,
+                },
+            };
+            match self
+                .slot
+                .bounded(
+                    BIND_TIMEOUT,
+                    crate::harness::input_dispatch::acknowledge(
+                        params.repo.as_ref(),
+                        target,
+                        calm_types::runtime::AgentProvider::Claude,
+                        crate::harness::backend::InputAcknowledgementBasis::ClaudeUserReplay
+                            .as_str(),
+                    ),
+                )
+                .await
+            {
+                Some(Ok(())) => {}
+                Some(Err(error)) => {
+                    tracing::warn!(%error, "Claude input acknowledgement retained as uncertain")
+                }
+                None => tracing::warn!(
+                    "Claude input acknowledgement exceeded its bound; retained as uncertain"
+                ),
+            }
+        }
         match record {
             Record::CompactBoundary => self.compacted = true,
             Record::Ignored { kind } => {

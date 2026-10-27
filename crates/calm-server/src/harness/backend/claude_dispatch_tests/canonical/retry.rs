@@ -256,7 +256,11 @@ async fn retry_sequence(uncertain: bool, recover: bool, fenced: bool) {
         predecessor.invocation, successor.invocation,
         "frozen invocation survives retry"
     );
-    assert!(matches!(successor.delivery, InputDeliveryFact::Unknown));
+    assert!(if uncertain {
+        matches!(successor.delivery, InputDeliveryFact::Unknown)
+    } else {
+        matches!(successor.delivery, InputDeliveryFact::Accepted { .. })
+    });
     assert!(after.active.is_none());
     for _ in 0..10 {
         harness.refresh_canonical_input().await.unwrap();

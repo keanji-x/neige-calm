@@ -183,7 +183,16 @@ fi
 if [ "$SCENARIO" = "wrong-replay-session" ]; then
   jq -c '. + {isReplay: true, session_id: "00000000-0000-4000-8000-000000000000"}' <<< "$LINE"
 fi
-jq -c '. + {isReplay: true}' <<< "$LINE"
+if [ "$SCENARIO" = "hold-input-replay" ]; then
+  touch "$D/replay-ready"
+  while [ ! -e "$D/release-replay" ]; do sleep 0.05; done
+fi
+case "$SCENARIO" in
+  no-input-replay) ;;
+  wrong-input-replay) jq -c '. + {isReplay: true, uuid: "00000000-0000-4000-8000-000000000000"}' <<< "$LINE" ;;
+  *) jq -c '. + {isReplay: true}' <<< "$LINE" ;;
+esac
+if [ "$SCENARIO" = "replay-then-stall" ]; then exec sleep 300; fi
 if [ "$SCENARIO" = "slow-bind" ]; then sleep 7; SCENARIO=exit; fi
 
 # #1822: a model the CLI does not list ends the turn as the pinned 2.1.280 does, with an error
@@ -216,7 +225,7 @@ case "$SCENARIO" in
     esac
     cat > /dev/null
     exit 0 ;;
-  exit|receipt-before-init|result-before-init|wrong-init-session|wrong-replay-session)
+  exit|hold-input-replay|no-input-replay|wrong-input-replay|receipt-before-init|result-before-init|wrong-init-session|wrong-replay-session)
     echo "$TEXT"; echo "$SUCCESS"
     cat > /dev/null
     exit 0 ;;

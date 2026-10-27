@@ -28,7 +28,14 @@ pub struct InputCorrelationFact {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum NativeInputAcceptance {
-    NativeTurn { native_turn_id: String },
+    NativeTurn {
+        native_turn_id: String,
+    },
+    /// The native owner acknowledged this exact immutable input, independently
+    /// of whether the protocol exposes a native turn identifier.
+    Submission {
+        submission_id: InputSubmissionId,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -256,6 +263,30 @@ impl ConversationInputCheckpoint {
         {
             return Ok(());
         }
+        if prior.attempt == report.attempt
+            && matches!(prior.delivery, InputDeliveryFact::Accepted { .. })
+            && matches!(report.delivery, InputDeliveryFact::Unknown)
+            && prior.correlation.provider == report.correlation.provider
+            && prior.correlation.thread_id == report.correlation.thread_id
+            && can_refine(
+                &report.correlation.native_session_id,
+                &prior.correlation.native_session_id,
+            )
+            && can_refine(
+                &report.correlation.local_turn_id,
+                &prior.correlation.local_turn_id,
+            )
+            && can_refine(
+                &report.correlation.native_turn_id,
+                &prior.correlation.native_turn_id,
+            )
+            && can_refine(
+                &report.correlation.rpc_request_id,
+                &prior.correlation.rpc_request_id,
+            )
+        {
+            return Ok(());
+        }
         if prior.attempt != report.attempt
             || !matches!(
                 prior.delivery,
@@ -388,15 +419,16 @@ impl ConversationInputCheckpoint {
 
 impl InputAttemptCheckpoint {
     fn validate(&self) -> Result<(), &'static str> {
-        validate_fact(&self.correlation, &self.delivery)
+        validate_fact(&self.attempt, &self.correlation, &self.delivery)
     }
 }
 impl InputAttemptFact {
     fn validate(&self) -> Result<(), &'static str> {
-        validate_fact(&self.correlation, &self.delivery)
+        validate_fact(&self.attempt, &self.correlation, &self.delivery)
     }
 }
 fn validate_fact(
+    attempt: &InputAttempt,
     correlation: &InputCorrelationFact,
     delivery: &InputDeliveryFact,
 ) -> Result<(), &'static str> {
@@ -430,7 +462,13 @@ fn validate_fact(
                 {
                     Err("native turn receipt requires matching positive native correlation")
                 }
-                NativeInputAcceptance::NativeTurn { .. } => Ok(()),
+                NativeInputAcceptance::Submission { submission_id }
+                    if submission_id != &attempt.submission_id =>
+                {
+                    Err("submission receipt requires the exact input identity")
+                }
+                NativeInputAcceptance::Submission { .. }
+                | NativeInputAcceptance::NativeTurn { .. } => Ok(()),
             }
         }
         InputDeliveryFact::NotDispatched { .. }

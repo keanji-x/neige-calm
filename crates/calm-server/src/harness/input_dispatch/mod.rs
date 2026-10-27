@@ -2,7 +2,9 @@
 //! conversation transaction facade owns source/execution admission and claims;
 //! this owner commits the crossing before native effects and the private report
 //! before publishing a result. Missing returns remain frozen in the same snapshot.
+mod acknowledgement;
 mod end_transition;
+pub(crate) use acknowledgement::acknowledge;
 mod hydrate;
 pub(crate) use end_transition::{complete_once, execution_target_tx};
 

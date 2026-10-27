@@ -60,8 +60,8 @@ pub(crate) use attempt::{
 };
 pub(crate) use budget_control::{BudgetControlScope, ControlDelivery};
 pub(crate) use execution_end::{
-    ExecutionEndScope, ExecutionEndTarget, ExecutionInput, MaintenanceObservation,
-    MaintenanceTarget, QualifiedExecutionEnd,
+    ExecutionEndScope, ExecutionEndTarget, ExecutionInput, InputAcknowledgementBasis,
+    MaintenanceObservation, MaintenanceTarget, QualifiedExecutionEnd,
 };
 pub(crate) use settled_activity::SettledActivity;
 

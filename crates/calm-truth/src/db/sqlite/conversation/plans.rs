@@ -3,11 +3,11 @@ use super::digest;
 use crate::error::{CalmError, Result};
 use calm_types::conversation::{
     AcceptedInputRef, ConversationExecutionProvenance, ConversationMessageId,
-    FrozenHumanAttribution, InputCorrelationFact, InputDeliveryFact, InputSubmissionId,
-    LogicalTurnId, MessageAuthor, MessageRevisionRef, PendingInput, PrivateHistoryPayload,
-    SubmissionDispatchProof, SubmissionRenderDigest, SubmissionRenderInput, SubmissionRenderPlan,
-    SubmissionRenderPlanRef, SubmissionRenderPlanVersion, SubmissionRenderSegment,
-    SystemObservationId, SystemRenderContext,
+    FrozenHumanAttribution, InputAttempt, InputCorrelationFact, InputDeliveryFact,
+    InputSubmissionId, LogicalTurnId, MessageAuthor, MessageRevisionRef, PendingInput,
+    PrivateHistoryPayload, SubmissionDispatchProof, SubmissionRenderDigest, SubmissionRenderInput,
+    SubmissionRenderPlan, SubmissionRenderPlanRef, SubmissionRenderPlanVersion,
+    SubmissionRenderSegment, SystemObservationId, SystemRenderContext,
 };
 use sqlx::{Row, Sqlite, Transaction};
 use std::num::NonZeroU32;
@@ -277,20 +277,7 @@ pub async fn original_input_execution_tx(
     ) {
         return Ok(None);
     }
-    let stored = submission_plan_tx(tx, &original_id).await?;
-    // This is reconstruction of existing proof identity, including after payload
-    // erasure. The fresh-dispatch constructor would rehash tombstones instead.
-    let proof = SubmissionDispatchProof::V2 {
-        attempt: initial.attempt.clone(),
-        input_refs: stored.plan.input_refs().map_err(CalmError::Conflict)?,
-        render_plan: SubmissionRenderPlanRef {
-            version: match stored.plan {
-                SubmissionRenderPlan::V1 { .. } => SubmissionRenderPlanVersion::V1,
-            },
-            submission_id: original_id.clone(),
-            sha256: stored.original_digest,
-        },
-    };
+    let proof = submission_dispatch_proof_tx(tx, &initial.attempt).await?;
     let original = OriginalInputExecution {
         identity: submission_identity_tx(tx, &original_id).await?,
         proof,
@@ -478,4 +465,24 @@ pub async fn current_turn_input_tx(
         .iter()
         .any(|input| matches!(input, AcceptedInputRef::Human { .. }));
     Ok(Some((created_at_ms, human)))
+}
+
+/// Reconstruct the original body-free dispatch identity, even after private
+/// erasure. This is correlation only, never permission to redispatch a plan.
+pub async fn submission_dispatch_proof_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    attempt: &InputAttempt,
+) -> Result<SubmissionDispatchProof> {
+    let stored = submission_plan_tx(tx, &attempt.submission_id).await?;
+    Ok(SubmissionDispatchProof::V2 {
+        attempt: attempt.clone(),
+        input_refs: stored.plan.input_refs().map_err(CalmError::Conflict)?,
+        render_plan: SubmissionRenderPlanRef {
+            version: match stored.plan {
+                SubmissionRenderPlan::V1 { .. } => SubmissionRenderPlanVersion::V1,
+            },
+            submission_id: attempt.submission_id.clone(),
+            sha256: stored.original_digest,
+        },
+    })
 }

@@ -705,7 +705,7 @@ async fn dispatch_initial(
                 {
                     next.header.phase = HarnessPhaseTag::Idle;
                 }
-                InputDeliveryFact::Unknown
+                InputDeliveryFact::Unknown | InputDeliveryFact::Accepted { .. }
                     if local_running
                         && local_target.as_ref().is_some_and(|target| {
                             target.logical_turn_id == logical_turn_id

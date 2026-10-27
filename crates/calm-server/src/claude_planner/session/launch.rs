@@ -401,10 +401,12 @@ impl ClaudePlannerSession {
                 translator,
                 instructions,
                 thread: thread_uuid,
+                turn: local_turn,
                 purpose,
                 bind: !row_bound,
                 approvals: Approvals::for_spawn(mode, held, &turn_id),
                 compacted: false,
+                execution: execution.clone(),
             },
             ProtocolTurn {
                 claim,

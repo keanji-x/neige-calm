@@ -69,7 +69,7 @@ async fn canonical_claude_recovery_lost_report_and_failed_fact_commit_stay_held(
 
 #[tokio::test]
 async fn canonical_claude_recovery_exact_finished_local_target_can_close_once() {
-    let fx = Fixture::new("exit").await;
+    let fx = Fixture::new("no-input-replay").await;
     let mut events = fx.session.subscribe_events();
     fx.dispatch().await.unwrap();
     let target = fx.target().await;

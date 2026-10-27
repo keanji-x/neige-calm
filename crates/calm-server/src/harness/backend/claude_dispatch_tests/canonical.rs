@@ -1,4 +1,5 @@
 //! Real canonical transactions composed with the fake CLI at its process boundary.
+mod acknowledgement;
 mod c5d;
 mod compact;
 mod control;
@@ -347,7 +348,7 @@ async fn canonical_claude_gate_rechecks_source_after_spawn_and_writer_wait() {
 
 #[tokio::test]
 async fn canonical_claude_early_finish_commits_one_original_end() {
-    let fx = Arc::new(Fixture::new("exit").await);
+    let fx = Arc::new(Fixture::new("no-input-replay").await);
     let pause = crate::claude_planner::session::SettlePause {
         entered: Arc::default(),
         release: Arc::default(),

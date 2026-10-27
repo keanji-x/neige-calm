@@ -1,5 +1,6 @@
 //! Consume one actual immutable END as a pure canonical transition. This owner
-//! never starts/wakes a backend, alters delivery or grants the next input.
+//! never starts/wakes a backend or grants the next input. Native acknowledgement
+//! evidence, when present, is committed atomically with the original END.
 use calm_types::conversation::ConversationExecutionProvenance;
 use calm_types::runtime::AgentProvider;
 use sqlx::{Sqlite, Transaction};
@@ -94,6 +95,27 @@ async fn consume_tx(
         || current.original != sampled.original
     {
         return Ok(None);
+    }
+    if let Some(basis) = observed.acknowledgement() {
+        super::acknowledgement::acknowledge_tx(tx, &current.target, provider, basis.as_str())
+            .await?;
+        // The factual write changes the checkpoint fence. Re-read our own write
+        // under this same transaction; never relax the pre-observation CAS.
+        let acknowledged = sample_tx(tx, card, runtime, provider)
+            .await?
+            .ok_or_else(|| {
+                crate::error::CalmError::Conflict(
+                    "acknowledged original execution disappeared".into(),
+                )
+            })?;
+        return Ok(complete_input_execution_tx(
+            tx,
+            card,
+            runtime,
+            &acknowledged.fence,
+            &acknowledged.original,
+        )
+        .await?);
     }
     Ok(complete_input_execution_tx(tx, card, runtime, &sampled.fence, &sampled.original).await?)
 }

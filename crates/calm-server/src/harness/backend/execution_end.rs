@@ -6,8 +6,8 @@ use calm_types::conversation::{LogicalTurnId, SubmissionDispatchProof};
 /// owner. Never serialized into the already-versioned provider proof/journal.
 #[derive(Clone)]
 pub(crate) struct ExecutionInput {
-    logical_turn_id: LogicalTurnId,
-    proof: SubmissionDispatchProof,
+    pub(crate) logical_turn_id: LogicalTurnId,
+    pub(crate) proof: SubmissionDispatchProof,
 }
 
 impl ExecutionInput {
@@ -136,6 +136,22 @@ impl ExecutionEndTarget {
 pub(crate) struct QualifiedExecutionEnd {
     target: ExecutionEndTarget,
     terminal: Option<serde_json::Value>,
+    acknowledgement: Option<InputAcknowledgementBasis>,
+}
+
+/// Closed native protocol facts, constructed only by their evidence owners.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum InputAcknowledgementBasis {
+    ClaudeUserReplay,
+    AcpPromptResponse,
+}
+impl InputAcknowledgementBasis {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::ClaudeUserReplay => "claude_user_replay",
+            Self::AcpPromptResponse => "acp_prompt_response",
+        }
+    }
 }
 
 impl std::fmt::Debug for QualifiedExecutionEnd {
@@ -155,6 +171,9 @@ impl QualifiedExecutionEnd {
     pub(crate) fn terminal(&self) -> Option<&serde_json::Value> {
         self.terminal.as_ref()
     }
+    pub(crate) fn acknowledgement(&self) -> Option<InputAcknowledgementBasis> {
+        self.acknowledgement
+    }
 }
 
 impl PlannerBackend {
@@ -171,20 +190,36 @@ impl PlannerBackend {
         target: &ExecutionEndTarget,
     ) -> Result<Option<QualifiedExecutionEnd>> {
         let terminal = match &self.0 {
-            Arm::Claude(session) => session.qualify_execution_end(target).await?.then_some(None),
-            Arm::Acp(session) => session.qualify_execution_end(target).await?.map(Some),
+            Arm::Claude(session) => session
+                .qualify_execution_end(target)
+                .await?
+                .then_some((None, None)),
+            Arm::Acp(session) => session
+                .qualify_execution_end(target)
+                .await?
+                .map(|terminal| {
+                    (
+                        Some(terminal),
+                        Some(InputAcknowledgementBasis::AcpPromptResponse),
+                    )
+                }),
             Arm::Codex(daemon, owner) => {
                 if owner.binding.matches(target) {
-                    daemon.qualified_execution_terminal(target).map(Some)
+                    daemon
+                        .qualified_execution_terminal(target)
+                        .map(|terminal| (Some(terminal), None))
                 } else {
                     None
                 }
             }
         };
-        Ok(terminal.map(|terminal| QualifiedExecutionEnd {
-            target: target.clone(),
-            terminal,
-        }))
+        Ok(
+            terminal.map(|(terminal, acknowledgement)| QualifiedExecutionEnd {
+                target: target.clone(),
+                terminal,
+                acknowledgement,
+            }),
+        )
     }
 }
 

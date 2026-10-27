@@ -576,3 +576,50 @@ fn canonical_resolution_known_local_execution_needs_no_native_activity_probe() {
     checkpoint.validate().unwrap();
     assert!(!checkpoint.requires_settled_activity("thread").unwrap());
 }
+
+#[test]
+fn input_acknowledgement_dominates_only_compatible_late_unknown() {
+    let original = attempt("22222222222222222222222222222222");
+    let mut cp = ConversationInputCheckpoint::empty();
+    cp.begin_attempt(original.clone(), correlation(), invocation())
+        .unwrap();
+    let mut accepted_correlation = correlation();
+    accepted_correlation.local_turn_id = Some("original-local-turn".into());
+    let accepted = InputAttemptFact {
+        attempt: original.clone(),
+        correlation: accepted_correlation,
+        delivery: InputDeliveryFact::Accepted {
+            basis: "input_acknowledgement".into(),
+            evidence: NativeInputAcceptance::Submission {
+                submission_id: original.submission_id.clone(),
+            },
+        },
+    };
+    cp.record_attempt_fact(accepted.clone()).unwrap();
+    let before = cp.clone();
+    let late = InputAttemptFact {
+        attempt: original.clone(),
+        correlation: correlation(),
+        delivery: InputDeliveryFact::Unknown,
+    };
+    cp.record_attempt_fact(late.clone()).unwrap();
+    assert_eq!(cp, before);
+    let mut wrong = late.clone();
+    wrong.correlation.local_turn_id = Some("another-turn".into());
+    assert!(cp.record_attempt_fact(wrong).is_err());
+    let mut wrong = late.clone();
+    wrong.correlation.thread_id = "another-thread".into();
+    assert!(cp.record_attempt_fact(wrong).is_err());
+    let mut wrong = late.clone();
+    wrong.attempt.attempt_id = InputAttemptId::parse("33333333333333333333333333333333").unwrap();
+    assert!(cp.record_attempt_fact(wrong).is_err());
+    let mut wrong = accepted;
+    wrong.delivery = InputDeliveryFact::Accepted {
+        basis: "input_acknowledgement".into(),
+        evidence: NativeInputAcceptance::Submission {
+            submission_id: InputSubmissionId::parse("44444444444444444444444444444444").unwrap(),
+        },
+    };
+    assert!(cp.record_attempt_fact(wrong).is_err());
+    assert_eq!(cp, before);
+}

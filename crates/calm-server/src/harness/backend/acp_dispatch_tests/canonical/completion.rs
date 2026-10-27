@@ -199,3 +199,79 @@ async fn cancelled_receipt(projection_failure: bool) {
     );
     fx.session.shutdown().await.unwrap();
 }
+
+#[tokio::test]
+async fn canonical_acp_prompt_response_removes_delivery_warning_without_keep() {
+    for provider in [AgentProvider::OpenCode, AgentProvider::Grok] {
+        let fx = Fixture::with_provider(provider, "reply", false).await;
+        fx.dispatch().await.unwrap();
+        let frame = fx.wait_end().await;
+        let cp: crate::harness::snapshot::CanonicalHarnessSnapshot =
+            serde_json::from_value(frame.snapshot).unwrap();
+        let cp = cp.canonical_inputs;
+        assert!(matches!(
+            cp.attempts[0].delivery,
+            InputDeliveryFact::Accepted { .. }
+        ));
+        assert!(cp.receipts.is_empty());
+        use crate::db::RepoRead;
+        assert!(
+            fx.owner
+                .repo
+                .conversation_read_frame(&fx.owner.card)
+                .await
+                .unwrap()
+                .active_input
+                .is_none()
+        );
+        fx.session.shutdown().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn canonical_acp_acknowledgement_failure_rolls_back_end_and_retries_once() {
+    let fx = Fixture::new("reply").await;
+    fx.dispatch().await.unwrap();
+    fx.wait_idle().await;
+    sqlx::query("CREATE TRIGGER fail_input_ack BEFORE UPDATE OF handle_state_json ON worker_sessions
+        WHEN json_extract(NEW.handle_state_json,'$.canonical_inputs.attempts[0].delivery.kind')='accepted'
+        BEGIN SELECT RAISE(ABORT,'ack failed'); END")
+        .execute(fx.owner.repo.pool()).await.unwrap();
+    let error = tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            match crate::harness::input_dispatch::complete_once(
+                fx.owner.repo.as_ref(),
+                &fx.backend,
+                &fx.owner.card,
+                &fx.owner.worker,
+            )
+            .await
+            {
+                Err(error) => break error,
+                Ok(None) => tokio::task::yield_now().await,
+                Ok(Some(_)) => panic!("END committed without its input acknowledgement"),
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert!(error.to_string().contains("ack failed"));
+    let mut tx = begin_immediate_tx(fx.owner.repo.db()).await.unwrap();
+    let carrier = current_input_fact_carrier_tx(&mut tx, &fx.owner.card, &fx.owner.worker)
+        .await
+        .unwrap();
+    assert!(carrier.checkpoint().active.is_some());
+    assert!(matches!(
+        carrier.checkpoint().attempts[0].delivery,
+        InputDeliveryFact::Unknown
+    ));
+    tx.commit().await.unwrap();
+    sqlx::query("DROP TRIGGER fail_input_ack")
+        .execute(fx.owner.repo.pool())
+        .await
+        .unwrap();
+    fx.wait_end().await;
+    assert!(fx.complete().await.is_none());
+    assert_eq!(fx.prompts(), 1);
+    fx.session.shutdown().await.unwrap();
+}

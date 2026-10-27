@@ -31,7 +31,7 @@ use provider::claude::protocol::UserLine;
 use provider::claude::translate::{ToolNames, TurnContext, TurnTranslator};
 use provider::events::PlannerEvent;
 
-mod execution_end;
+pub(super) mod execution_end;
 mod process;
 
 /// After an interrupt, the turn is stopped if the CLI has not ended it within this bound.

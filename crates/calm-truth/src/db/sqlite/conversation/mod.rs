@@ -50,7 +50,8 @@ pub use messages::{
 pub use plans::{
     OriginalInputExecution, StoredSubmissionIdentity, StoredSubmissionPlan, current_turn_input_tx,
     human_plan_for_pending_prefix_tx, original_initial_submission_tx, original_input_execution_tx,
-    pending_plan_for_prefix_tx, submission_identity_tx, submission_plan_tx,
+    pending_plan_for_prefix_tx, submission_dispatch_proof_tx, submission_identity_tx,
+    submission_plan_tx,
 };
 pub use presentation::{
     PresentationSource, StoredNativePresentation, allocate_presentation_tx, observe_native_item_tx,

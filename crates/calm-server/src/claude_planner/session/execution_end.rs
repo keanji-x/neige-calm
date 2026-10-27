@@ -1,7 +1,8 @@
 //! Session settlement uses the provider claim and boot proof; retained drivers also route control.
 use super::*;
 
-pub(super) enum Association {
+#[derive(Clone)]
+pub(in crate::claude_planner) enum Association {
     Historical,
     Work(crate::harness::backend::ExecutionInput),
     Maintenance(crate::harness::backend::MaintenanceTarget),
