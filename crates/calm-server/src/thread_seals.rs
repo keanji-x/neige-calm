@@ -1,7 +1,7 @@
 //! Deletion seals: the provider-neutral fence that says "this thread's track or area is being
 //! deleted; start no turn and recover no harness on it" (#1981 S3).
 //!
-//! One [`ThreadSeals`] exists per server. The shared Codex daemon builds it and every other
+//! One [`ThreadSeals`] exists per server. The Codex backend composition root builds it and every other
 //! holder (the deletion routes, the harness registry and recovery, a Claude Planner session) is
 //! handed the same `Arc` by the state wiring.
 
@@ -15,7 +15,7 @@ pub struct ThreadSeals {
 }
 
 impl ThreadSeals {
-    /// Only the shared Codex daemon's constructors call this; everyone else shares its `Arc`.
+    /// The composition root injects this registry into every daemon and its callers.
     pub(crate) fn new() -> Self {
         Self {
             sealed: DashMap::new(),

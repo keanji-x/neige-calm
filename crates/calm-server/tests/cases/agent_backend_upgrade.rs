@@ -2,7 +2,7 @@ use super::*;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::DirBuilderExt;
 
-struct DaemonGroup(i32);
+pub(super) struct DaemonGroup(pub(super) i32);
 impl Drop for DaemonGroup {
     fn drop(&mut self) {
         // SAFETY: this test owns the fake daemon's process group.
@@ -226,7 +226,7 @@ async fn agent_backend_upgrade_preserves_symlinked_legacy_home_and_runtime_direc
     legacy_paths_survive(cfg(&root)).await;
 }
 
-fn multi_backend_cfg(root: &tempfile::TempDir) -> Config {
+pub(super) fn multi_backend_cfg(root: &tempfile::TempDir) -> Config {
     let mut cfg = cfg(root);
     let profiles = root.path().join("backends.json");
     std::fs::write(&profiles, serde_json::to_vec(&json!({

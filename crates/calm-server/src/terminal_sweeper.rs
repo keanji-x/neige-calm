@@ -147,13 +147,10 @@ pub async fn sweep(state: &AppState) -> Result<()> {
     }
 
     // Retry existing obligations before creating new ones, once per tick.
-    state
-        .shared_codex_appserver
-        .retry_hibernating_releases()
-        .await;
+    state.codex_backends.retry_hibernating_releases().await;
     crate::planner_hibernation::sweep(state).await?;
 
-    let released = state.shared_codex_appserver.release_ended_threads().await?;
+    let released = state.codex_backends.release_ended_threads().await?;
     if released > 0 {
         tracing::info!(
             count = released,

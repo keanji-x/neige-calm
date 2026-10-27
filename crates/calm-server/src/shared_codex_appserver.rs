@@ -466,6 +466,7 @@ pub struct ConnectionReadGuard<'a> {
 }
 
 pub struct SharedCodexAppServer {
+    backend_id: crate::agent_backend_pool::BackendId,
     paths: Arc<BackendPaths>,
     backend_isolation: Option<Arc<crate::agent_backend_pool::identity::BackendIsolation>>,
     home: Arc<SharedCodexHome>,
@@ -475,7 +476,7 @@ pub struct SharedCodexAppServer {
     /// hibernation obligation independently until release or successful wake.
     hibernating_releases: DashMap<String, ()>,
     native_turns: Arc<NativeTurns>,
-    /// The server's one deletion-seal registry, built here and shared through [`Self::thread_seals`].
+    /// The server's one injected deletion-seal registry, shared through [`Self::thread_seals`].
     /// A late turn/start response or notification on a sealed thread is interrupted instead of
     /// becoming active after the owning workspace has been recycled.
     thread_seals: Arc<ThreadSeals>,
@@ -723,6 +724,7 @@ impl SharedCodexAppServer {
         let home = Arc::new(SharedCodexHome::new(paths.home.clone()));
         let (tx, _) = broadcast::channel(16);
         Arc::new(Self {
+            backend_id: crate::agent_backend_pool::identity::default_id(),
             paths,
             backend_isolation: None,
             home,
@@ -793,7 +795,15 @@ impl SharedCodexAppServer {
             home.path(),
             &cfg.shared_codex_appserver_log_dir_resolved(),
         ));
-        Self::construct(cfg, paths, repo, pending_codex_threads_handle, None)
+        Self::construct(
+            cfg,
+            paths,
+            repo,
+            pending_codex_threads_handle,
+            None,
+            crate::agent_backend_pool::identity::default_id(),
+            Arc::new(ThreadSeals::new()),
+        )
     }
 
     pub fn new_with_isolation(
@@ -802,14 +812,38 @@ impl SharedCodexAppServer {
         pending_codex_threads_handle: Option<Arc<PendingThreadStartRegistry>>,
         backend_isolation: Arc<crate::agent_backend_pool::identity::BackendIsolation>,
     ) -> Arc<Self> {
-        let paths = Arc::clone(backend_isolation.default_paths());
+        Self::new_for_backend(
+            cfg,
+            repo,
+            pending_codex_threads_handle,
+            backend_isolation,
+            crate::agent_backend_pool::identity::default_id(),
+            Arc::new(ThreadSeals::new()),
+        )
+    }
+
+    pub(crate) fn new_for_backend(
+        cfg: &Config,
+        repo: Arc<dyn Repo>,
+        pending: Option<Arc<PendingThreadStartRegistry>>,
+        isolation: Arc<crate::agent_backend_pool::identity::BackendIsolation>,
+        backend_id: crate::agent_backend_pool::BackendId,
+        seals: Arc<ThreadSeals>,
+    ) -> Arc<Self> {
+        let paths = Arc::clone(isolation.paths(&backend_id));
         Self::construct(
             cfg,
             paths,
             repo,
-            pending_codex_threads_handle,
-            Some(backend_isolation),
+            pending,
+            Some(isolation),
+            backend_id,
+            seals,
         )
+    }
+
+    pub fn backend_id(&self) -> &crate::agent_backend_pool::BackendId {
+        &self.backend_id
     }
 
     fn construct(
@@ -818,6 +852,8 @@ impl SharedCodexAppServer {
         repo: Arc<dyn Repo>,
         pending_codex_threads_handle: Option<Arc<PendingThreadStartRegistry>>,
         backend_isolation: Option<Arc<crate::agent_backend_pool::identity::BackendIsolation>>,
+        backend_id: crate::agent_backend_pool::BackendId,
+        seals: Arc<ThreadSeals>,
     ) -> Arc<Self> {
         let home = Arc::new(SharedCodexHome::new(paths.home.clone()));
         let authentication = Arc::new(crate::codex_authentication::CodexAuthentication::new(
@@ -826,6 +862,7 @@ impl SharedCodexAppServer {
         ));
         let (tx, _) = broadcast::channel(1024);
         Arc::new(Self {
+            backend_id,
             paths,
             backend_isolation,
             home,
@@ -833,7 +870,7 @@ impl SharedCodexAppServer {
             thread_cache: Arc::new(DashMap::new()),
             hibernating_releases: DashMap::new(),
             native_turns: Arc::new(NativeTurns::default()),
-            thread_seals: Arc::new(ThreadSeals::new()),
+            thread_seals: seals,
             restart_backoff: BackoffState::new(
                 Duration::from_millis(cfg.shared_codex_appserver_restart_initial_delay_ms),
                 Duration::from_millis(cfg.shared_codex_appserver_restart_max_delay_ms),
@@ -883,7 +920,7 @@ impl SharedCodexAppServer {
 
     /// The shared CODEX_HOME handle. `GET /api/models` reads its
     /// `config.toml` directly when no daemon connection exists.
-    pub fn shared_home(&self) -> &SharedCodexHome {
+    pub fn shared_home(&self) -> &Arc<SharedCodexHome> {
         &self.home
     }
 
@@ -1920,7 +1957,7 @@ impl SharedCodexAppServer {
                 if let Err(e) = self
                     .repo
                     .shared_daemon_runtime_set(
-                        "default",
+                        self.backend_id.as_str(),
                         SharedCodexDaemonUpdate {
                             state: SharedDaemonState::Running,
                             pid: Some(adopted.pid),
@@ -2099,7 +2136,7 @@ impl SharedCodexAppServer {
     async fn verify_backend_isolation(&self) -> Result<VerifiedRuntimePaths> {
         if let Some(isolation) = &self.backend_isolation {
             return isolation
-                .verify(self.repo.as_ref())
+                .verify_backend(self.repo.as_ref(), &self.backend_id)
                 .await
                 .map_err(|e| CalmError::CodexAppServer(format!("backend isolation refused: {e}")));
         }
@@ -2132,7 +2169,11 @@ impl SharedCodexAppServer {
         }
         // A `failed` row with ANY identity column present is an unreconciled possible survivor;
         // the spawn path is unreachable until the per-shape resolution proves absence.
-        let record = match self.repo.shared_daemon_runtime_get("default").await {
+        let record = match self
+            .repo
+            .shared_daemon_runtime_get(self.backend_id.as_str())
+            .await
+        {
             Ok(record) => record,
             Err(e) => {
                 // Nothing trustworthy to write (the read itself failed):
@@ -2194,7 +2235,11 @@ impl SharedCodexAppServer {
         paths: &VerifiedRuntimePaths,
         guard_error: &str,
     ) {
-        let record = match self.repo.shared_daemon_runtime_get("default").await {
+        let record = match self
+            .repo
+            .shared_daemon_runtime_get(self.backend_id.as_str())
+            .await
+        {
             Ok(record) => record,
             Err(e) => {
                 tracing::warn!(
@@ -2418,7 +2463,7 @@ impl SharedCodexAppServer {
         match self
             .repo
             .shared_daemon_runtime_set(
-                "default",
+                self.backend_id.as_str(),
                 SharedCodexDaemonUpdate {
                     state: SharedDaemonState::Failed,
                     pid: identity.pid,
@@ -2580,7 +2625,7 @@ impl SharedCodexAppServer {
                 .await?;
             self.repo
                 .shared_daemon_runtime_set(
-                    "default",
+                    self.backend_id.as_str(),
                     SharedCodexDaemonUpdate {
                         state: SharedDaemonState::Running,
                         pid: Some(pid),
@@ -2735,7 +2780,7 @@ impl SharedCodexAppServer {
     ) -> Result<()> {
         self.repo
             .shared_daemon_runtime_set(
-                "default",
+                self.backend_id.as_str(),
                 SharedCodexDaemonUpdate {
                     state: SharedDaemonState::Starting,
                     pid: Some(runtime.pid),
@@ -3353,7 +3398,21 @@ impl SharedCodexAppServer {
         self.native_turns.clear();
 
         let active_threads = merge_active_shared_thread_attribution(self.repo.as_ref()).await?;
+        let bindings = if let Some(db) = self.repo.sqlite_db() {
+            calm_truth::db::sqlite::session_backend::live_bound_threads(db.read_pool(), "codex")
+                .await?
+        } else {
+            Vec::new()
+        };
         for (card_id, thread_id) in active_threads {
+            let owner = bindings
+                .iter()
+                .find(|(thread, _)| thread == &thread_id)
+                .map_or("default", |(_, backend)| backend.as_str());
+            if owner != self.backend_id.as_str() {
+                continue;
+            }
+
             if self
                 .repo
                 .conversation_archived_at(&card_id)
@@ -4841,3 +4900,6 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod agent_backend_tests;

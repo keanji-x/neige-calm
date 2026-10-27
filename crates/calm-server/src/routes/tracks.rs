@@ -145,7 +145,7 @@ struct PreparedTrackDeletion {
     track: Track,
     area_kind: Option<AreaKind>,
     plan: TrackDeletePlan,
-    turn_daemon: std::sync::Arc<crate::shared_codex_appserver::SharedCodexAppServer>,
+    codex_backends: std::sync::Arc<crate::agent_backend_pool::codex::CodexBackends>,
     thread_seals: std::sync::Arc<crate::thread_seals::ThreadSeals>,
     _operation_guard: crate::operation::OperationDriveGuard,
     _delete_guard: crate::per_card_lock::KeyedLockGuard,
@@ -3215,13 +3215,13 @@ impl RecycledTrackDeletion {
         // The row delete has COMMITTED, so the daemon's in-memory `thread_id -> card_id`
         // attribution is stale. Post-commit and infallible.
         prepared
-            .turn_daemon
+            .codex_backends
             .forget_threads_for_deleted_cards(&deleted_card_ids)
             .await;
         // Same committed arm; the error arm keeps both entries because its Cards still exist.
         prepared.thread_seals.forget_deleted(&sealed_thread_ids);
         prepared
-            .turn_daemon
+            .codex_backends
             .forget_turn_state_for_deleted_threads(&sealed_thread_ids);
         // The transient plugin-result ring is process memory keyed by track; the row is gone.
         // An area-cascade delete never reaches this arm and relies on the ring's TTL.
@@ -3464,7 +3464,7 @@ pub(crate) async fn delete_track(
         reclaim_ports: crate::workspace_service::reclaim::ServerReclaimPorts {runtime: s.operation_runtime.clone(), db: pool.clone()},
         observation: observation.clone(),
         plan: observation.observe(Stage::Snapshot, snapshot_track_deletion(&s, &track)).await?,
-        turn_daemon: cs.shared_codex_appserver.clone(),
+        codex_backends: cs.codex_backends.clone(),
         thread_seals: s.thread_seals.clone(),
         track,
         area_kind: owning_area.map(|area| area.kind),

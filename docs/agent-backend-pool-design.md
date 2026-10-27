@@ -775,6 +775,42 @@ ACP 多注册：依赖 M3，需检查注册摘要、绑定与持久调用者，�
 本轮只修设计，无 Rust/原生测试；kernel gate 独占执行 doc-exists 与文本 ratchet。实施切片的 worker 跑聚焦验证，
 gate 按仓库要求拥有 text/contract/quick 和一次拒绝空选择的聚焦 replay，CI 拥有广域套件。
 
+### MVP PR1 / PR2：先启动基础设施，再开放 worker 路由
+
+本小节是 P2a（#3274）之后的实施收窄，覆盖前文 P2b/P3 的切片顺序；等级保持 **L2**。
+用户当前确定的底线是：无配置或单后端保持 main 行为（不碰登记、运行行按 main 处理）；
+进程副作用只到对应 daemon；各 home 凭据不串。按后端 MCP token、冷却、退役及 Planner 多后端均为 follow-up。
+PR1 继续共用原 daemon token，不把额外实例接入任何产品流量；这取代前文 Q10 对本切片的启动前置要求。
+
+**PR1（本片）**：新增 `agent_backend_pool/codex.rs` 的 `CodexBackends`，按配置顺序构造每个
+`SharedCodexAppServer`。default 保持原 boot/recovery 与 pending FIFO，其他实例后台 boot，沿用原实例 supervisor；
+boot 失败记录日志，验证或缓存重建等前置失败不保证自动重试。
+每实例使用自己的 backend_id、socket、认证检查点、日志与运行行；身份验证接收 backend_id，验证完成后才允许进程副作用。
+所有实例注入同一份 `ThreadSeals`。B7 冷启动恢复只给 default 无绑定/default 绑定的线程，其他实例只读自身绑定线程；
+PR1 不写任何绑定，因此历史线程不会在其他 home resume。每 home 分别 sanitize、写原 daemon MCP 配置并装配原
+`CodexMcpToolset` follower（不播种非 default）；sweeper、设置重启与删除后的 forget 广播。
+活性 feeder 在 boot 前只订阅 default；`InfrastructureOnly` rollout 禁止额外实例的产品活性订阅，
+因为 PR1 没有非 default 产品绑定，裸 thread ID 碰撞不得改写 default 产品行。
+新增下一可用迁移 `worker_session_backends`，不改 `worker_sessions`、不回填；绑定不可改、只在尚无 thread 且
+provider 一致时插入，并禁止跨后端复用 Codex thread ID。truth owner 提供事务插入、绑定读取、存活计数与线程读取。
+
+**抽象边界**：选择属于池/policy；绑定事务属于会话 owner；唯一会话解析入口是 `CodexBackends::for_session`，
+PR1 始终返回 default。生命周期与失败恢复仍归各实例原 supervisor，不复制状态机。
+临时 worker-only/default-only 范围集中于类型化 rollout policy，通用 kernel/provider 不推断产品角色。
+Planner、交互/assistant、模型目录、认证重试和入站 MCP/hooks 继续原 default 路径。
+
+**PR2 大纲**：由会话 owner 在第一个原生副作用前事务固定 worker 绑定，池只选择新会话；
+既有绑定经 `for_session` 解析且不得迁移。接通 worker 发轮、恢复、事件与 reaper/idle 同实例探测，
+保留 default 专属产品路径；额外实例的活性 feeder 必须先加入后端归属过滤，再开启订阅，复用原活性实现。
+覆盖失败/Unknown 不重选、跨实例恢复与删除隔离后再放流量。
+裸 thread ID 的消费者与共享 seal/活性归属须在开放流量前按前文 T1–T11 复核；不得用 PR1 无流量假设代替 PR2 检查。
+
+PR1 验收走生产入口，测试名含 `agent_backend`：无配置只有一个实例且不写绑定；两个 fixture 实例路径/运行行隔离；
+历史线程不在非 default resume；非 default forwarder 看见 default seal；非 default 同 ID 状态/完成通知不改 default 三个活性字段，default 自身通知仍正常写入；
+插件事件刷新全部 home 且单 home 写失败不阻挡其他；
+sweeper、设置变更和删除清理覆盖全部实例；三类触发器不变量各有 truth 回归（thread 唯一性覆盖 UPDATE 和直接 INSERT）。
+不执行变异；交付报告列 B7 单因素过滤删除的预测红集。kernel gate 拥有 text/contract/quick 与聚焦测试，CI 拥有广域套件。
+
 ## 12. 风险
 
 | # | 风险 | 缓解/停止条件 |

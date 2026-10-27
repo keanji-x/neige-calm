@@ -1,6 +1,7 @@
-//! Host-owned backend configuration and pure selection. P1 does not construct instances,
-//! acquire probe leases, or change the routing of existing sessions.
+//! Host-owned configuration, pure selection and Codex instance composition.
+//! Each supervisor owns its lifecycle; rollout policy keeps product traffic on default.
 
+pub mod codex;
 pub mod config;
 pub mod identity;
 pub mod paths;
@@ -43,6 +44,10 @@ impl From<BackendId> for String {
 impl BackendId {
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+
+    pub fn is_default(&self) -> bool {
+        self.0 == "default"
     }
 }
 

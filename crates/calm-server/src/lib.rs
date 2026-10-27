@@ -672,6 +672,7 @@ pub mod workspace_reports;
 pub mod ws;
 
 pub async fn boot_harnesses(state: &state::AppState) -> error::Result<usize> {
+    state.codex_backends.boot_additional();
     let daemon_start = state.shared_codex_appserver.boot().await;
     recover_harnesses_after_daemon_boot(state, daemon_start).await
 }

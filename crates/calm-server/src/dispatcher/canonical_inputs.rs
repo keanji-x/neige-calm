@@ -218,6 +218,14 @@ impl Dispatcher {
     /// invocation tasks remain alive. Closing the existing admission semaphore
     /// also prevents new event handlers from starting.
     pub fn retire(&self) {
+        for handle in self
+            .additional_liveness_feeders
+            .lock()
+            .expect("liveness followers")
+            .iter()
+        {
+            handle.abort();
+        }
         self.semaphore.close();
         self.handle.abort();
         self.reconcile_handle.abort();

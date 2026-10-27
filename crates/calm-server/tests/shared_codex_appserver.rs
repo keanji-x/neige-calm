@@ -5239,3 +5239,9 @@ mod thread_path;
 
 #[path = "cases/agent_backend_upgrade.rs"]
 mod agent_backend_upgrade;
+
+#[path = "cases/agent_backend_pool.rs"]
+mod agent_backend_pool;
+
+#[path = "support/authenticated_router.rs"]
+mod agent_backend_auth_router;

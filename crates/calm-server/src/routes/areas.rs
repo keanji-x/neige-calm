@@ -362,7 +362,7 @@ struct PreparedAreaDeletion {
     location_targets: Vec<std::path::PathBuf>,
     actor: ActorId,
     principal: Principal,
-    turn_daemon: std::sync::Arc<crate::shared_codex_appserver::SharedCodexAppServer>,
+    codex_backends: std::sync::Arc<crate::agent_backend_pool::codex::CodexBackends>,
     thread_seals: std::sync::Arc<crate::thread_seals::ThreadSeals>,
     _area_guard: crate::per_card_lock::KeyedLockGuard,
     _operation_guard: crate::operation::OperationDriveGuard,
@@ -750,7 +750,7 @@ impl RecycledAreaDeletion {
         // The area delete has COMMITTED. Drop the shared daemon's in-memory thread attribution for every deleted Card so a later reconnect cannot resume a thread with no database owner. Post-commit and infallible.
         self.quiesced
             .prepared
-            .turn_daemon
+            .codex_backends
             .forget_threads_for_deleted_cards(&self.quiesced.card_ids)
             .await;
         // Drop the deletion-time seal verdict and any active turn id for the threads this delete sealed.
@@ -760,7 +760,7 @@ impl RecycledAreaDeletion {
             .forget_deleted(&self.quiesced.sealed_thread_ids);
         self.quiesced
             .prepared
-            .turn_daemon
+            .codex_backends
             .forget_turn_state_for_deleted_threads(&self.quiesced.sealed_thread_ids);
         // Post-commit, best effort: the generated hook settings file of every deleted Terminal card.
         for card_id in &self.quiesced.terminal_card_ids {
@@ -980,7 +980,7 @@ pub(crate) async fn delete_area(
         location_targets,
         actor: actor.to_actor_id(),
         principal,
-        turn_daemon: cs.shared_codex_appserver.clone(),
+        codex_backends: cs.codex_backends.clone(),
         thread_seals: s.thread_seals.clone(),
         _area_guard: area_delete_guard,
         _operation_guard: operation_guard,

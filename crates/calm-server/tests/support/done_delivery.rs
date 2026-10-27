@@ -73,6 +73,9 @@ impl Wiring {
             mcp_context: ctx.clone(),
             harness: self.harness.clone(),
             shared_codex_appserver: self.shared.clone(),
+            codex_backends: calm_server::agent_backend_pool::codex::CodexBackends::single(
+                self.shared.clone(),
+            ),
             pending_codex_threads: Arc::new(
                 calm_server::pending_codex_threads::PendingThreadStartRegistry::new(
                     repo_dyn.clone(),

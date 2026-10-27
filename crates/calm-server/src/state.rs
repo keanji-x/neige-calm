@@ -8,6 +8,7 @@ use crate::dispatcher::Dispatcher;
 use crate::event::{Event, EventBus, EventScope};
 
 use crate::acp_planner::config::{AcpPlannerConfig, AcpPlannerHost};
+use crate::agent_backend_pool::codex::CodexBackends;
 use crate::claude_planner::config::{ClaudePlannerConfig, ClaudePlannerHost};
 use crate::harness::HarnessRegistry;
 use crate::harness::wiring::PlannerWiring;
@@ -205,6 +206,7 @@ pub struct WorkerState {
 pub struct CodexShellState {
     pub codex: Arc<CodexClient>,
     pub shared_codex_appserver: Arc<SharedCodexAppServer>,
+    pub codex_backends: Arc<CodexBackends>,
     pub pending_codex_threads: Arc<PendingThreadStartRegistry>,
     pub pending_codex_threads_spawn_serial: Arc<Mutex<()>>,
     pub plugin: Arc<PluginHost>,
@@ -238,6 +240,7 @@ pub struct BootState {
     pub mcp_context: Arc<crate::mcp_server::registry::AppContext>,
     pub harness: HarnessRegistry,
     pub shared_codex_appserver: Arc<SharedCodexAppServer>,
+    pub codex_backends: Arc<CodexBackends>,
     pub pending_codex_threads: Arc<PendingThreadStartRegistry>,
     pub pending_codex_threads_spawn_serial: Arc<Mutex<()>>,
     pub operation_runtime: Arc<OperationRuntime>,
@@ -309,6 +312,7 @@ impl BootState {
         let codex_shell = CodexShellState {
             codex: self.codex.clone(),
             shared_codex_appserver: self.shared_codex_appserver.clone(),
+            codex_backends: self.codex_backends.clone(),
             pending_codex_threads: self.pending_codex_threads.clone(),
             pending_codex_threads_spawn_serial: self.pending_codex_threads_spawn_serial.clone(),
             plugin: self.plugin.clone(),
@@ -343,6 +347,7 @@ impl BootState {
             dispatcher: self.dispatcher,
             mcp_server: self.mcp_server,
             harness: self.harness,
+            codex_backends: self.codex_backends,
             shared_codex_appserver: self.shared_codex_appserver,
             pending_codex_threads: self.pending_codex_threads,
             pending_codex_threads_spawn_serial: self.pending_codex_threads_spawn_serial,
@@ -408,6 +413,7 @@ pub struct AppState {
     pub mcp_server: Option<Arc<McpServer>>,
     pub harness: HarnessRegistry,
     pub shared_codex_appserver: Arc<SharedCodexAppServer>,
+    pub codex_backends: Arc<CodexBackends>,
     /// FIFO attribution registry for empty cards that fresh-start a thread
     /// through the shared daemon's TUI.
     pub pending_codex_threads: Arc<PendingThreadStartRegistry>,
@@ -1013,6 +1019,7 @@ impl AppState {
         ));
         let pending_codex_threads_spawn_serial = Arc::new(Mutex::new(()));
         let shared_codex_appserver = SharedCodexAppServer::new_stub(repo.clone());
+        let codex_backends = CodexBackends::single(shared_codex_appserver.clone());
         // Allocated before the adapters so the codex-worker adapter and the routes agree on one root.
         let workspace_root_sandbox = Arc::new(
             tempfile::Builder::new()
@@ -1154,6 +1161,7 @@ impl AppState {
             mcp_context,
             harness,
             shared_codex_appserver,
+            codex_backends,
             pending_codex_threads,
             pending_codex_threads_spawn_serial,
             operation_runtime,
@@ -1189,6 +1197,8 @@ impl AppState {
         self.shared_codex_appserver = shared.clone();
         // The routes seal through the registry the daemon's own turn starts consult.
         self.route.thread_seals = shared.thread_seals().clone();
+        self.codex_backends = CodexBackends::single(shared.clone());
+        self.codex_shell.codex_backends = self.codex_backends.clone();
         self.codex_shell.shared_codex_appserver = shared;
         // An answer about the replaced daemon must not outlive it.
         self.route.provider_availability = Arc::default();
@@ -1588,12 +1598,26 @@ impl AppState {
             Duration::from_secs(60 * 60 * 6),
         );
         let pending_codex_threads_spawn_serial = Arc::new(Mutex::new(()));
-        let shared_codex_appserver = SharedCodexAppServer::new_with_isolation(
+        let codex_backends = CodexBackends::build(
             cfg,
             repo.clone(),
-            Some(pending_codex_threads.clone()),
+            pending_codex_threads.clone(),
             backend_isolation,
         );
+        let shared_codex_appserver = codex_backends.default_only().clone();
+        for instance in codex_backends.additional() {
+            let home = instance.shared_home();
+            if let Err(error) =
+                home.sanitize_unexpected_mcp_servers(crate::shared_codex_home::EXPECTED_MCP_SERVERS)
+            {
+                tracing::warn!(backend = instance.backend_id().as_str(), %error, "backend home sanitize failed");
+            }
+            if let Err(error) =
+                home.ensure_daemon_mcp_config(&mcp_server.shim_config, &daemon_mcp_token)
+            {
+                tracing::warn!(backend = instance.backend_id().as_str(), %error, "backend MCP config write failed");
+            }
+        }
         // One provider registry: the Dispatcher's reaper and the terminal tools' input declarations
         // (#2493).
         let provider_registry = crate::provider_registry::WorkerProviderRegistry::for_daemon(
@@ -1765,13 +1789,16 @@ impl AppState {
         crate::builtin_plugins::spawn_background(&mcp_context);
         // Subscribed before the daemon boots, so its first Running refreshes every thread it
         // adopted; plugin changes from here on are followed.
-        crate::codex_mcp_toolset::CodexMcpToolset {
-            home: codex.shared_codex_home.clone(),
-            appserver: shared_codex_appserver.clone(),
-            plugins: plugin.clone(),
-            debounce: crate::codex_mcp_toolset::DEBOUNCE,
+        for instance in codex_backends.instances() {
+            crate::codex_mcp_toolset::CodexMcpToolset {
+                home: instance.shared_home().clone(),
+                appserver: instance.clone(),
+                plugins: plugin.clone(),
+                debounce: crate::codex_mcp_toolset::DEBOUNCE,
+            }
+            .start(&events);
         }
-        .start(&events);
+        dispatcher.subscribe_additional_codex_backends(&codex_backends);
 
         let worker_flow = WorkerFlowDriver::from_state_parts(
             repo.clone(),
@@ -1803,6 +1830,7 @@ impl AppState {
             mcp_context,
             harness,
             shared_codex_appserver,
+            codex_backends,
             pending_codex_threads,
             pending_codex_threads_spawn_serial,
             operation_runtime,

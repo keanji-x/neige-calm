@@ -28,7 +28,7 @@ impl BackendPaths {
     }
 
     pub fn new(data: &Path, id: &BackendId, home: &Path, default_logs: &Path) -> Self {
-        let (socket, authentication, logs) = if id.as_str() == "default" {
+        let (socket, authentication, logs) = if id.is_default() {
             (
                 calm_types::runtime_paths::shared_codex_appserver_socket(data),
                 data.join("state/codex-authentication.json"),

@@ -466,9 +466,29 @@ pub struct Dispatcher {
     /// Durable codex worker-liveness feeder; `None` when the reaper is disabled.
     #[allow(dead_code)]
     liveness_feeder_handle: Option<JoinHandle<()>>,
+    additional_liveness_feeders: std::sync::Mutex<Vec<JoinHandle<()>>>,
 }
 
 impl Dispatcher {
+    pub(crate) fn subscribe_additional_codex_backends(
+        &self,
+        backends: &crate::agent_backend_pool::codex::CodexBackends,
+    ) {
+        if !backends.additional_product_liveness_enabled() || reaper_disabled_from_env() {
+            return;
+        }
+        let mut handles = self
+            .additional_liveness_feeders
+            .lock()
+            .expect("liveness followers");
+        for instance in backends.additional() {
+            handles.push(crate::liveness_feeder::spawn_liveness_feeder(
+                self.inner.repo.clone(),
+                instance.subscribe_notifications(),
+            ));
+        }
+    }
+
     pub(crate) fn bind_planner_wake(&self, wake: crate::planner_hibernation::WakeContext) {
         *self
             .inner
@@ -957,6 +977,7 @@ impl Dispatcher {
             reconcile_handle,
             reaper_handle,
             liveness_feeder_handle,
+            additional_liveness_feeders: std::sync::Mutex::new(Vec::new()),
         }
     }
 }
@@ -1762,3 +1783,6 @@ mod task_completed;
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod agent_backend_tests;

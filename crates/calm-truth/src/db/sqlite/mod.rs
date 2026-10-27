@@ -484,3 +484,7 @@ mod task_notification_tests;
 
 pub mod path_location;
 pub mod report_knowledge;
+
+pub mod session_backend;
+#[cfg(test)]
+mod session_backend_tests;

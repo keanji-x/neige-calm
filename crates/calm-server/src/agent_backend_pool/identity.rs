@@ -273,7 +273,7 @@ impl BackendIsolation {
         }
         std::fs::create_dir_all(&data)?;
         ensure!(
-            config.backends.iter().any(|p| p.id.as_str() == "default"),
+            config.backends.iter().any(|p| p.id.is_default()),
             "P2a requires codex/default"
         );
         let paths: Vec<_> = config
@@ -310,12 +310,46 @@ impl BackendIsolation {
                 .context("backend registry requires SQLite")?;
             backend_registry::reconcile(&db, &identities, legacy.as_os_str().as_bytes()).await?;
         }
-        for profile in &isolation.config.backends {
-            if profile.id.as_str() != "default" {
-                tracing::info!(backend = ?profile.backend_ref(), "backend registered and isolated; daemon disabled in P2a");
-            }
-        }
         Ok(isolation)
+    }
+
+    pub fn profiles(&self) -> &[super::config::BackendProfile] {
+        &self.config.backends
+    }
+
+    fn index(&self, id: &BackendId) -> usize {
+        self.config
+            .backends
+            .iter()
+            .position(|p| &p.id == id)
+            .expect("configured backend")
+    }
+
+    pub fn paths(&self, id: &BackendId) -> &Arc<BackendPaths> {
+        &self.paths[self.index(id)]
+    }
+
+    pub async fn verify_backend(
+        &self,
+        repo: &dyn Repo,
+        id: &BackendId,
+    ) -> anyhow::Result<VerifiedRuntimePaths> {
+        let default = self.verify(repo).await?;
+        if id.is_default() {
+            return Ok(default);
+        }
+        let paths = self.paths(id);
+        let verified = VerifiedRuntimePaths {
+            paths: Arc::clone(paths),
+            identity: self.frozen[self.index(id)].clone(),
+            multi_backend: self.config.is_multi_backend(),
+            adoption_socket: None,
+        };
+        let record = repo.shared_daemon_runtime_get(id.as_str()).await?;
+        if !crate::shared_codex_appserver::persisted_process_proven_absent(&record) {
+            verified.check_record(&record)?;
+        }
+        Ok(verified)
     }
 
     pub fn default_paths(&self) -> &Arc<BackendPaths> {
@@ -323,7 +357,7 @@ impl BackendIsolation {
             .config
             .backends
             .iter()
-            .position(|p| p.id.as_str() == "default")
+            .position(|p| p.id.is_default())
             .expect("verified default");
         &self.paths[index]
     }
@@ -417,7 +451,7 @@ impl BackendIsolation {
             .config
             .backends
             .iter()
-            .position(|profile| profile.id.as_str() == "default")
+            .position(|profile| profile.id.is_default())
             .expect("verified default");
         let record = repo.shared_daemon_runtime_get("default").await?;
         let verified = VerifiedRuntimePaths {

@@ -108,7 +108,7 @@ pub(crate) async fn put_settings(
         }
     }
     if proxy_changed {
-        cs.shared_codex_appserver.mark_needs_respawn();
+        cs.codex_backends.mark_needs_respawn();
     }
     let rows = s.repo.settings_get_all().await?;
     Ok(Json(SettingsBag {
