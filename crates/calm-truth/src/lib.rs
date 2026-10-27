@@ -11,6 +11,7 @@ pub mod capture_test_seam;
 pub mod card_kind;
 pub mod card_role_cache;
 pub mod conversation_title;
+pub mod conversation_upgrade;
 pub mod db;
 pub mod decision_gate;
 pub mod event_bus;
