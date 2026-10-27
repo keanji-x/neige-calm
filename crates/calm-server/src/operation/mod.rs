@@ -53,6 +53,9 @@ pub use repo_sqlite::SqlxOperationRepo;
 #[cfg(any(test, feature = "fixtures"))]
 #[doc(hidden)]
 pub use repo_sqlite::complete_parked_for_test;
+// WA2 turn issuance composes this CAS with provider admission; until then only tests do.
+#[cfg(test)]
+pub(crate) use repo_sqlite::advance_to_tx_committed_tx;
 pub(crate) use repo_sqlite::{
     checkpoint_app_server_interact_tx, complete_parked_tx, require_live_claim_tx,
 };

@@ -1,6 +1,6 @@
 use super::*;
 
-struct Owner;
+pub(super) struct Owner;
 #[async_trait]
 impl ProviderExecutionOwner for Owner {
     fn consumer(&self) -> &'static str {

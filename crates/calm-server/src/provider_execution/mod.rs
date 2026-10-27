@@ -259,7 +259,7 @@ impl ProviderExecution {
     ) -> Result<()> {
         admission_gate(pool, engine, session, Some(self)).await
     }
-    /// ① Driver registration precedes COMMIT; RAII covers cancellation during commit.
+    /// ① Own-transaction wrapper over [`Self::admit_tx`]; it drives only after COMMIT.
     pub(crate) async fn admit<A: Admission>(
         &self,
         pool: &SqliteDb,
@@ -271,34 +271,10 @@ impl ProviderExecution {
     ) -> Result<(Claim, DriverGuard)> {
         let engine = self::engine(Some(engine))?;
         let mut tx = calm_truth::db::sqlite::begin_immediate_tx(pool).await?;
-        let held_fence = fence.claim()?;
-        admission.authorize_tx(&mut tx).await?;
-        let intent = admission.intent_tx(&mut tx).await?;
-        self.owner
-            .alias_prefix()
-            .validate(self.owner.as_ref(), session, &intent)?;
-        held_fence.check(&intent.metadata.track)?;
-        let id = intent.metadata.id.clone();
-        let guard = self.drivers.claim(id.clone());
-        let sql::Cas::Applied(claim) = sql::admit(
-            &mut tx,
-            session,
-            id.as_str().into(),
-            purpose,
-            sql::InitialRelease::Held,
-        )
-        .await?
-        else {
-            return Err(conflict("admission lost"));
-        };
-        let ticket = engine.admit(&mut tx, intent).await.map_err(conflict)?;
-        #[cfg(feature = "fixtures")]
-        crate::test_seams::pause_point("c5d-before-occupancy-commit", session).await;
-        tx.commit().await?;
-        drop(held_fence);
-        drop(fence);
-        engine.drive(ticket.committed());
-        Ok((claim, guard))
+        let admitted = self
+            .admit_tx(&mut tx, engine, session, admission, purpose, fence)
+            .await?;
+        admitted.commit(tx).await
     }
     /// ③ Re-read on CAS loss; never adopt another execution or overwrite Stopping.
     pub async fn stop(

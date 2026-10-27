@@ -79,10 +79,10 @@ impl Supervisor {
         config.kernel_client_key_file = Some(self.key.clone());
         config.proc_supervisor_sock = Some(self.socket.clone());
     }
-    async fn recover(&self, pool: SqliteDb) -> Arc<ExecutionEngine> {
+    async fn recover(&self, pool: SqliteDb, interval: std::time::Duration) -> Arc<ExecutionEngine> {
         let mut config = Config::try_parse_from(["calm-server"]).unwrap();
         self.configure(&mut config);
-        config.execution_recovery_interval = std::time::Duration::from_secs(1);
+        config.execution_recovery_interval = interval;
         let engine =
             crate::execution_boot::recover(&config, pool, &["claude-planner", "acp-planner"])
                 .await
@@ -107,12 +107,18 @@ pub(crate) struct Fixture {
 }
 impl Fixture {
     pub async fn new(pool: SqliteDb) -> Self {
+        Self::new_with_interval(pool, std::time::Duration::from_secs(1)).await
+    }
+    /// A long interval leaves only explicit drives to start admitted executions.
+    pub async fn new_with_interval(pool: SqliteDb, interval: std::time::Duration) -> Self {
         let supervisor = Supervisor::new();
-        let engine = supervisor.recover(pool).await;
+        let engine = supervisor.recover(pool, interval).await;
         Self { engine, supervisor }
     }
     pub async fn new_kernel(&self, pool: SqliteDb) -> Arc<ExecutionEngine> {
-        self.supervisor.recover(pool).await
+        self.supervisor
+            .recover(pool, std::time::Duration::from_secs(1))
+            .await
     }
 }
 impl Drop for Supervisor {

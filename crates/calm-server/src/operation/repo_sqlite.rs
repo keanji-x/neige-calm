@@ -25,8 +25,8 @@ pub(super) use writes::{
     PhaseWrite, record_spawn_artifacts, set_parked, write_phase_and_tx_output,
 };
 pub(crate) use writes::{
-    checkpoint_app_server_interact_tx, complete_parked_tx, has_live_claim_tx,
-    require_live_claim_tx, require_original_operation_tx,
+    advance_to_tx_committed_tx, checkpoint_app_server_interact_tx, complete_parked_tx,
+    has_live_claim_tx, require_live_claim_tx, require_original_operation_tx,
 };
 
 #[cfg(test)]
@@ -318,13 +318,7 @@ impl OperationRepo for SqlxOperationRepo {
             }
         };
         let events = output.post_commit_events.clone();
-        let written = write_phase_and_tx_output(
-            &mut tx,
-            PhaseWrite::Claimed(op),
-            &Phase::TxCommitted,
-            &output,
-        )
-        .await?;
+        let written = advance_to_tx_committed_tx(&mut tx, op, &output).await?;
         if !written {
             let _ = tx.rollback().await;
             return Ok(super::PrepareAdvance::ClaimLost);

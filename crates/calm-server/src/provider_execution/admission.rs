@@ -84,5 +84,99 @@ impl Drop for OccupancyFence<'_> {
     }
 }
 
+/// An admission written into the caller's writer transaction and not yet committed.
+/// [`Admitted::commit`] is the only path to a drive. Dropping it instead (the caller's
+/// transaction then rolls back) releases the driver registration and the Track fence.
+#[must_use = "commit the admitting transaction, or drop to abandon it without a drive"]
+pub(crate) struct Admitted<'a> {
+    session: String,
+    claim: Claim,
+    guard: DriverGuard,
+    ticket: PendingDriveTicket,
+    engine: ExecutionEngine,
+    held_fence: AdmittedFence<'a>,
+    fence: OccupancyFence<'a>,
+}
+
+impl ProviderExecution {
+    /// ① Admission core inside the caller's writer transaction. Policy and intent run
+    /// under the Track fence; driver registration precedes the claim and COMMIT, so RAII
+    /// covers every later failure and cancellation. On error the caller rolls back.
+    pub(crate) async fn admit_tx<'a, A: Admission>(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        engine: &ExecutionEngine,
+        session: &str,
+        admission: A,
+        purpose: Purpose,
+        fence: OccupancyFence<'a>,
+    ) -> Result<Admitted<'a>> {
+        let engine = super::engine(Some(engine))?;
+        let held_fence = fence.claim()?;
+        admission.authorize_tx(tx).await?;
+        let intent = admission.intent_tx(tx).await?;
+        self.owner
+            .alias_prefix()
+            .validate(self.owner.as_ref(), session, &intent)?;
+        held_fence.check(&intent.metadata.track)?;
+        let id = intent.metadata.id.clone();
+        let guard = self.drivers.claim(id.clone());
+        let sql::Cas::Applied(claim) = sql::admit(
+            tx,
+            session,
+            id.as_str().into(),
+            purpose,
+            sql::InitialRelease::Held,
+        )
+        .await?
+        else {
+            return Err(conflict("admission lost"));
+        };
+        let ticket = engine.admit(tx, intent).await.map_err(conflict)?;
+        Ok(Admitted {
+            session: session.into(),
+            claim,
+            guard,
+            ticket,
+            engine: engine.clone(),
+            held_fence,
+            fence,
+        })
+    }
+}
+
+impl Admitted<'_> {
+    /// Commit the transaction that [`ProviderExecution::admit_tx`] wrote, then release
+    /// the Track fence, then drive. A transaction without this claim is refused uncommitted.
+    pub(crate) async fn commit(
+        self,
+        mut tx: calm_truth::db::sqlite::ObservedTransaction<'_>,
+    ) -> Result<(Claim, DriverGuard)> {
+        let Self {
+            session,
+            claim,
+            guard,
+            ticket,
+            engine,
+            held_fence,
+            fence,
+        } = self;
+        let admitted = sql::load(&mut **tx, &session).await?;
+        if admitted.as_ref().map(|c| &c.record().execution_id) != Some(&claim.record().execution_id)
+        {
+            return Err(conflict("admission is not in the committing transaction"));
+        }
+        #[cfg(feature = "fixtures")]
+        crate::test_seams::pause_point("c5d-before-occupancy-commit", &session).await;
+        tx.commit().await?;
+        drop(held_fence);
+        drop(fence);
+        engine.drive(ticket.committed());
+        Ok((claim, guard))
+    }
+}
+
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod turn_tests;

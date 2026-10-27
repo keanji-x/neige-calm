@@ -19,11 +19,25 @@ fn intent(rig: &RegisteredRig) -> ExecutionIntent {
             .alias(&rig.worker_session_id, intent.metadata.id.as_str()),
     );
     intent.metadata.program.program = "/bin/sh".into();
-    intent.metadata.program.args = vec![
-        "-c".into(),
-        "read data; printf '%s' \"$data\" > received; exec sleep 120".into(),
-    ];
+    // Every stdin byte the child accepts is appended to `received` as it arrives.
+    intent.metadata.program.args = vec!["-c".into(), "exec cat > received".into()];
     intent
+}
+/// Poll the child's stdin record; the file exists once the child is recording.
+async fn received(rig: &RegisteredRig, done: impl Fn(&[u8]) -> bool) -> Vec<u8> {
+    let path = rig.dir.path().join("ws/received");
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            if let Ok(bytes) = std::fs::read(&path)
+                && done(&bytes)
+            {
+                return bytes;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("child stdin record")
 }
 async fn admit(rig: &RegisteredRig) -> (owner::Claim, owner::DriverGuard) {
     rig.host
@@ -294,6 +308,8 @@ async fn w_release_runs_caller_authority_in_release_tx() {
     .await
     .unwrap();
     assert_eq!(authority.calls.load(Ordering::SeqCst), 2);
+    // Positive control for the byte record used by the refused case.
+    assert_eq!(received(&rig, |bytes| bytes.len() >= 7).await, b"secret\n");
     assert!(matches!(
         sql::load(rig.repo.pool(), &rig.worker_session_id)
             .await
@@ -309,6 +325,8 @@ async fn w_release_refused_writes_stop_without_bytes() {
     let rig = RegisteredRig::new("exit").await;
     audit(&rig).await;
     let (claim, _guard) = admit(&rig).await;
+    // The child is live and recording before the refused release is attempted.
+    assert_eq!(received(&rig, |_| true).await, b"");
     let authority = Authority {
         calls: 0.into(),
         refuse: true,
@@ -357,8 +375,9 @@ async fn w_release_refused_writes_stop_without_bytes() {
     )
     .await
     .unwrap();
-    assert!(
-        !rig.dir.path().join("ws/received").exists(),
+    assert_eq!(
+        std::fs::read(rig.dir.path().join("ws/received")).unwrap(),
+        b"",
         "no payload byte reaches child"
     );
 }
@@ -421,4 +440,90 @@ async fn w_admission_refused_leaves_no_claim_or_intent() {
         .await
         .unwrap();
     assert_eq!(count, 0);
+}
+struct FailingAdmission {
+    intent: ExecutionIntent,
+    fail_intent: bool,
+}
+#[async_trait::async_trait]
+impl Admission for FailingAdmission {
+    async fn authorize_tx(&self, tx: &mut Tx<'_>) -> Result<()> {
+        sqlx::query("INSERT INTO w_authority VALUES ('admission')")
+            .execute(&mut **tx)
+            .await?;
+        Ok(())
+    }
+    async fn intent_tx(self, tx: &mut Tx<'_>) -> Result<ExecutionIntent> {
+        sqlx::query("INSERT INTO w_authority VALUES ('minted')")
+            .execute(&mut **tx)
+            .await?;
+        if self.fail_intent {
+            return Err(CalmError::Conflict("intent refused".into()));
+        }
+        Ok(self.intent)
+    }
+}
+async fn assert_nothing_admitted(rig: &RegisteredRig) {
+    assert!(
+        sql::load(rig.repo.pool(), &rig.worker_session_id)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    for (table, label) in [
+        ("workspace_executions", "no execution row to drive"),
+        ("w_authority", "authority and mint writes roll back"),
+    ] {
+        let count: i64 = sqlx::query_scalar(&format!("SELECT count(*) FROM {table}"))
+            .fetch_one(rig.repo.pool())
+            .await
+            .unwrap();
+        assert_eq!(count, 0, "{label}");
+    }
+    assert!(
+        rig.host.provider_execution.drivers.is_empty_for_test(),
+        "driver registration released"
+    );
+}
+#[tokio::test]
+async fn w_admission_intent_failure_rolls_back_all() {
+    let rig = RegisteredRig::new("exit").await;
+    audit(&rig).await;
+    let attempt = |fail_intent| {
+        rig.host.provider_execution.admit_with_track_for_test(
+            rig.repo.db(),
+            rig.host.execution.engine().unwrap(),
+            &rig.worker_session_id,
+            FailingAdmission {
+                intent: intent(&rig),
+                fail_intent,
+            },
+            "test-track",
+            owner::Purpose::RewindCheck,
+        )
+    };
+    assert!(matches!(attempt(true).await, Err(CalmError::Conflict(_))));
+    assert_nothing_admitted(&rig).await;
+    // A failure after driver registration and the session claim rolls back too.
+    sqlx::query(concat!(
+        "CREATE TRIGGER w_fail_intent BEFORE INSERT ON workspace_executions ",
+        "BEGIN SELECT RAISE(ABORT, 'test intent rollback'); END",
+    ))
+    .execute(rig.repo.pool())
+    .await
+    .unwrap();
+    assert!(attempt(false).await.is_err());
+    assert_nothing_admitted(&rig).await;
+    sqlx::query("DROP TRIGGER w_fail_intent")
+        .execute(rig.repo.pool())
+        .await
+        .unwrap();
+    // Control: the same admission commits once nothing fails.
+    let (claim, _guard) = attempt(false).await.unwrap();
+    assert!(
+        rig.host
+            .provider_execution
+            .drivers
+            .contains(&owner::execution_id(claim.record()).unwrap())
+    );
 }
