@@ -11,6 +11,8 @@ use crate::model::{TrackWorkspace, TrackWorkspaceKind};
 
 pub mod bind;
 pub mod dir;
+#[cfg(target_os = "linux")]
+pub mod export_read;
 pub mod gc;
 pub mod routes;
 pub mod sniff;

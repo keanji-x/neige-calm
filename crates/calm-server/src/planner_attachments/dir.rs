@@ -364,3 +364,219 @@ fn libc_s_ifmt() -> nix::sys::stat::mode_t {
 fn libc_s_ifreg() -> nix::sys::stat::mode_t {
     nix::libc::S_IFREG
 }
+
+#[cfg(target_os = "linux")]
+pub(super) fn inventory_raw(
+    root: &crate::routes::fs::TrustedReadRoot,
+    bytes: &mut impl FnMut(&Path, &mut dyn std::io::Read) -> std::io::Result<()>,
+) -> std::result::Result<Vec<super::export_read::RawEntry>, super::export_read::PartialRead> {
+    use super::export_read::{Diagnostic, EntryKind, Identity, PartialRead, RawEntry};
+    use crate::routes::fs::TrustedReadRoot;
+    use sha2::{Digest, Sha256};
+    use std::io::{self, Read};
+    use std::os::unix::{ffi::OsStrExt, fs::MetadataExt};
+    use std::path::PathBuf;
+
+    fn identity(meta: std::fs::Metadata) -> Identity {
+        Identity {
+            device: meta.dev(),
+            inode: meta.ino(),
+            mode: meta.mode(),
+            size: meta.size(),
+            modified: (meta.mtime(), meta.mtime_nsec()),
+            changed: (meta.ctime(), meta.ctime_nsec()),
+        }
+    }
+    fn listing(root: &TrustedReadRoot) -> io::Result<Vec<(PathBuf, Identity)>> {
+        use nix::fcntl::AtFlags;
+        use nix::sys::stat::fstatat;
+        // A new open description is required: dup would share the directory offset.
+        let handle = root.directory(Path::new("."))?;
+        let mut dir = nix::dir::Dir::from(OwnedFd::from(handle.0)).map_err(io::Error::from)?;
+        let mut result = Vec::new();
+        for entry in dir.iter() {
+            let entry = entry.map_err(io::Error::from)?;
+            let name = entry.file_name().to_bytes();
+            if name == b"." || name == b".." {
+                continue;
+            }
+            let name = std::ffi::OsStr::from_bytes(name);
+            let stat = fstatat(Some(root.0.as_raw_fd()), name, AtFlags::AT_SYMLINK_NOFOLLOW)
+                .map_err(io::Error::from)?;
+            result.push((
+                PathBuf::from(name),
+                Identity {
+                    device: stat.st_dev,
+                    inode: stat.st_ino,
+                    mode: stat.st_mode,
+                    size: stat.st_size as u64,
+                    modified: (stat.st_mtime, stat.st_mtime_nsec),
+                    changed: (stat.st_ctime, stat.st_ctime_nsec),
+                },
+            ));
+        }
+        result.sort_by(|a, b| a.0.cmp(&b.0));
+        Ok(result)
+    }
+    fn read_source(file: &mut std::fs::File, buffer: &mut [u8]) -> io::Result<usize> {
+        #[cfg(test)]
+        read_fault::before_read()?;
+        file.read(buffer)
+    }
+    struct CheckedRead<'a> {
+        file: &'a mut std::fs::File,
+        hash: Sha256,
+        count: u64,
+        first_error: Option<io::Error>,
+    }
+    impl Read for CheckedRead<'_> {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            let len = match read_source(self.file, buffer) {
+                Ok(len) => len,
+                Err(error) => {
+                    // Retain the original cause for PartialRead, even if the callback retries.
+                    let reported = match error.raw_os_error() {
+                        Some(errno) => io::Error::from_raw_os_error(errno),
+                        None => io::Error::new(error.kind(), error.to_string()),
+                    };
+                    if self.first_error.is_none() {
+                        self.first_error = Some(error);
+                    }
+                    return Err(reported);
+                }
+            };
+            self.count += len as u64;
+            self.hash.update(&buffer[..len]);
+            Ok(len)
+        }
+    }
+    fn changed() -> io::Error {
+        io::Error::other("frozen source changed")
+    }
+    fn walk(
+        root: &TrustedReadRoot,
+        prefix: &Path,
+        result: &mut Vec<RawEntry>,
+        bytes: &mut impl FnMut(&Path, &mut dyn Read) -> io::Result<()>,
+    ) -> std::result::Result<(), PartialRead> {
+        let fail = |error| PartialRead {
+            relative: prefix.to_path_buf(),
+            error,
+        };
+        let before = identity(root.0.metadata().map_err(fail)?);
+        let entries = listing(root).map_err(fail)?;
+        for (name, expected) in &entries {
+            let path = prefix.join(name);
+            let fail = |error| PartialRead {
+                relative: path.clone(),
+                error,
+            };
+            let kind = match expected.mode & nix::libc::S_IFMT {
+                nix::libc::S_IFDIR => EntryKind::Directory,
+                nix::libc::S_IFREG => EntryKind::Regular,
+                nix::libc::S_IFLNK => EntryKind::Symlink,
+                _ => EntryKind::Other,
+            };
+            let mut diagnostics = vec![Diagnostic::UninterpretedOwnership];
+            if name.to_str().is_none() {
+                diagnostics.push(Diagnostic::NonUtf8Name);
+            }
+            let mut sha256 = None;
+            match kind {
+                EntryKind::Directory => {
+                    let child = root.directory(name).map_err(fail)?;
+                    if identity(child.0.metadata().map_err(fail)?) != *expected {
+                        return Err(fail(changed()));
+                    }
+                    walk(&child, &path, result, bytes)?;
+                }
+                EntryKind::Regular => {
+                    let mut file = root.regular(name).map_err(fail)?;
+                    if identity(file.metadata().map_err(fail)?) != *expected {
+                        return Err(fail(changed()));
+                    }
+                    let mut input = CheckedRead {
+                        file: &mut file,
+                        hash: Sha256::new(),
+                        count: 0,
+                        first_error: None,
+                    };
+                    let callback = bytes(&path, &mut input);
+                    if let Some(error) = input.first_error.take() {
+                        return Err(fail(error));
+                    }
+                    callback.map_err(fail)?;
+                    let eof = input.read(&mut [0u8; 1]);
+                    if let Some(error) = input.first_error.take() {
+                        return Err(fail(error));
+                    }
+                    if eof.map_err(fail)? != 0 || input.count != expected.size {
+                        return Err(fail(changed()));
+                    }
+                    sha256 = Some(input.hash.finalize().into());
+                    if identity(file.metadata().map_err(fail)?) != *expected {
+                        return Err(fail(changed()));
+                    }
+                }
+                _ => diagnostics.push(Diagnostic::TargetNotRead),
+            }
+            result.push(RawEntry {
+                relative: path,
+                kind,
+                identity: expected.clone(),
+                sha256,
+                diagnostics,
+            });
+        }
+        if listing(root).map_err(fail)? != entries
+            || identity(root.0.metadata().map_err(fail)?) != before
+        {
+            return Err(fail(changed()));
+        }
+        Ok(())
+    }
+    let mut result = Vec::new();
+    walk(root, Path::new(""), &mut result, bytes)?;
+    Ok(result)
+}
+
+// Only the offline reader's underlying FD read is faultable; production has no switch.
+#[cfg(all(test, target_os = "linux"))]
+pub(crate) mod read_fault {
+    use std::{cell::RefCell, collections::VecDeque, io};
+
+    thread_local! {
+        static FAULTS: RefCell<Option<VecDeque<Option<i32>>>> = const { RefCell::new(None) };
+    }
+
+    pub(crate) struct Scope;
+
+    pub(crate) fn install(reads: impl IntoIterator<Item = Option<i32>>) -> Scope {
+        FAULTS.with(|faults| {
+            let mut faults = faults.borrow_mut();
+            assert!(faults.is_none(), "nested read fault scope");
+            *faults = Some(reads.into_iter().collect());
+        });
+        Scope
+    }
+
+    impl Drop for Scope {
+        fn drop(&mut self) {
+            FAULTS.with(|faults| *faults.borrow_mut() = None);
+        }
+    }
+
+    pub(super) fn before_read() -> io::Result<()> {
+        let fault = FAULTS.with(|faults| {
+            faults
+                .borrow_mut()
+                .as_mut()
+                .and_then(VecDeque::pop_front)
+                .flatten()
+        });
+        match fault {
+            Some(errno) => Err(io::Error::from_raw_os_error(errno)),
+            None => Ok(()),
+        }
+    }
+}

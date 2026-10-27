@@ -610,6 +610,58 @@ async fn open_workspace_regular_file_from_fd(
     .map_err(|error| CalmError::Internal(format!("workspace open task failed: {error}")))?
 }
 
+/// A read-only directory authority opened from the trusted system root.
+/// No descriptor or path-based write capability is exposed by the public API.
+#[cfg(target_os = "linux")]
+#[derive(Debug)]
+pub struct TrustedReadRoot(pub(crate) std::fs::File);
+
+#[cfg(target_os = "linux")]
+impl TrustedReadRoot {
+    /// Caller supplies an explicit source path; freezing and ownership are separate proofs.
+    /// Requires Linux openat2 support; errors have no path-based fallback.
+    /// Every component, including ancestors, must be a real directory.
+    pub fn open_absolute(path: &Path) -> std::io::Result<Self> {
+        use std::path::Component;
+        if !path.is_absolute() {
+            return Err(std::io::ErrorKind::InvalidInput.into());
+        }
+        let anchor = Self(std::fs::File::open("/")?);
+        let mut relative = PathBuf::new();
+        for component in path.components() {
+            match component {
+                Component::RootDir => (),
+                Component::Normal(name) => relative.push(name),
+                _ => return Err(std::io::ErrorKind::InvalidInput.into()),
+            }
+        }
+        anchor.directory(if relative.as_os_str().is_empty() {
+            Path::new(".")
+        } else {
+            &relative
+        })
+    }
+
+    pub(crate) fn directory(&self, relative: &Path) -> std::io::Result<Self> {
+        use nix::fcntl::{OFlag, OpenHow, openat2};
+        use std::os::fd::{AsRawFd, FromRawFd};
+        let raw = openat2(
+            self.0.as_raw_fd(),
+            relative,
+            OpenHow::new()
+                .flags(OFlag::O_RDONLY | OFlag::O_CLOEXEC | OFlag::O_DIRECTORY | OFlag::O_NONBLOCK)
+                .resolve(workspace_resolve_flags(WorkspaceSymlinks::Refused)),
+        )
+        .map_err(std::io::Error::from)?;
+        // SAFETY: openat2 returned a fresh descriptor with one owner.
+        Ok(Self(unsafe { std::fs::File::from_raw_fd(raw) }))
+    }
+
+    pub(crate) fn regular(&self, relative: &Path) -> std::io::Result<std::fs::File> {
+        open_workspace_regular_file_fd(&self.0, relative, WorkspaceSymlinks::Refused)
+    }
+}
+
 /// Synchronous core of the async workspace reads.
 #[cfg(target_os = "linux")]
 fn open_workspace_regular_file_fd(
