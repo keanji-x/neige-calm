@@ -381,6 +381,16 @@ pub const PLANNER_HIBERNATION_QUIESCE: &str = "planner-hibernation-quiesce";
 #[cfg(feature = "fixtures")]
 pub const PLANNER_HIBERNATION_DECIDED: &str = "planner-hibernation-decided";
 
+/// Where a canonical maintenance observation has decided its next frame and
+/// not yet settled it; keyed by card id.
+#[cfg(feature = "fixtures")]
+pub const MAINTENANCE_OBSERVE_DECIDED: &str = "maintenance-observe-decided";
+
+/// Where an owner's lost canonical maintenance is about to settle its frame;
+/// keyed by card id.
+#[cfg(feature = "fixtures")]
+pub const MAINTENANCE_LOST_SETTLING: &str = "maintenance-lost-settling";
+
 /// Fail the existing projection DELETE so all input-owner checkpoints exercise rollback.
 #[cfg(feature = "fixtures")]
 pub async fn reject_projection_retirement_for_test(db: &crate::db::sqlite::SqliteDb) {

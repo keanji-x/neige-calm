@@ -17,6 +17,7 @@ mod recovery_atomic;
 mod recovery_windows;
 mod resolution;
 mod settlement;
+mod settlement_race;
 mod transport;
 use super::*;
 use crate::auth::{AuthConfig, AuthState, SessionAuthority, SessionIdentity};

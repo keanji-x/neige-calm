@@ -361,6 +361,12 @@ pub(in crate::harness::run_loop) async fn observe(inner: &Arc<Inner>) -> Result<
     {
         wedge(&mut next);
     }
+    #[cfg(feature = "fixtures")]
+    crate::test_seams::pause_point(
+        crate::test_seams::MAINTENANCE_OBSERVE_DECIDED,
+        inner.card_id.as_str(),
+    )
+    .await;
     if next != current.snapshot {
         let committed = write(inner, &current, next, TransitionAdmission::Settlement).await?;
         canonical::publish(inner, committed).await;
@@ -400,6 +406,12 @@ pub(in crate::harness::run_loop) async fn lost(
     }
     let mut next = current.snapshot.clone();
     wedge(&mut next);
+    #[cfg(feature = "fixtures")]
+    crate::test_seams::pause_point(
+        crate::test_seams::MAINTENANCE_LOST_SETTLING,
+        inner.card_id.as_str(),
+    )
+    .await;
     if next != current.snapshot {
         let committed = write(inner, &current, next, TransitionAdmission::Settlement).await?;
         canonical::publish(inner, committed).await;
