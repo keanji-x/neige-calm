@@ -247,8 +247,7 @@ async fn current_binding_and_area_reject_new_acceptance_on_original_target() {
     shutdown(&fixture, &state).await;
 }
 
-#[tokio::test]
-async fn area_revocation_during_native_thread_ack_blocks_the_original_turn() {
+async fn native_ack_revocation(corrupt_source: bool) {
     let fixture = Fixture::new().await;
     let (state, app, cookie) = fixture.application().await;
     activity(&app, &cookie).await;
@@ -268,8 +267,18 @@ async fn area_revocation_during_native_thread_ack_blocks_the_original_turn() {
                         .fetch_one(fixture.repo.pool())
                         .await
                         .unwrap();
-                sqlx::query("UPDATE areas SET conversation_history_contract='shared_history' WHERE id=(SELECT t.area_id FROM cards c JOIN tracks t ON t.id=c.track_id WHERE c.id=?1)")
+                if corrupt_source {
+                    let original = recovery::receipts(&fixture, card).await;
+                    sqlx::query("UPDATE events SET actor=?2 WHERE id=?1")
+                        .bind(original[0].event_id)
+                        .bind(serde_json::to_string(&crate::ids::ActorId::User).unwrap())
+                        .execute(fixture.repo.pool())
+                        .await
+                        .unwrap();
+                } else {
+                    sqlx::query("UPDATE areas SET conversation_history_contract='shared_history' WHERE id=(SELECT t.area_id FROM cards c JOIN tracks t ON t.id=c.track_id WHERE c.id=?1)")
                     .bind(card).execute(fixture.repo.pool()).await.unwrap();
+                }
                 send(
                     &mut peer,
                     json!({"id":call["id"],"result":{"thread":{"id":THREAD}}}),
@@ -289,15 +298,30 @@ async fn area_revocation_during_native_thread_ack_blocks_the_original_turn() {
     .await
     .expect("the original native ACK owner must settle after revocation")
     .unwrap();
+    let unexpected = tokio::time::timeout(
+        Duration::from_millis(200),
+        recovery::cold_next(&mut peer, true),
+    )
+    .await;
     assert!(
-        tokio::time::timeout(Duration::from_millis(200), request(&mut peer))
-            .await
-            .is_err()
+        unexpected.is_err(),
+        "revoked source reached native execution: {:?}",
+        unexpected.as_ref().map(|call| &call["method"])
     );
     let after = frame(&fixture, card).await;
     assert_eq!(after.0, before.0);
     assert_eq!(after.1.canonical_inputs, before.1.canonical_inputs);
     shutdown(&fixture, &state).await;
+}
+
+#[tokio::test]
+async fn area_revocation_during_native_thread_ack_blocks_the_original_turn() {
+    native_ack_revocation(false).await;
+}
+
+#[tokio::test]
+async fn original_source_tamper_during_native_thread_ack_blocks_the_original_turn() {
+    native_ack_revocation(true).await;
 }
 
 #[tokio::test]

@@ -8,7 +8,7 @@ pub(super) async fn receipts(
     sqlx::query_scalar::<_,String>("SELECT receipt_json FROM conversation_system_assistant_receipts WHERE card_id=?1 ORDER BY event_id")
         .bind(card).fetch_all(fixture.repo.pool()).await.unwrap().into_iter().map(|value|serde_json::from_str(&value).unwrap()).collect()
 }
-async fn cold_next(peer: &mut Peer, claimed: bool) -> Value {
+pub(super) async fn cold_next(peer: &mut Peer, claimed: bool) -> Value {
     loop {
         let call = request(peer).await;
         let result = match call["method"].as_str().unwrap() {

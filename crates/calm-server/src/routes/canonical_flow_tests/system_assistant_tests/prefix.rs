@@ -155,7 +155,7 @@ async fn live_through_and_positive_cold_tail_keep_exact_target_and_planner_prefi
     shutdown(&fixture, &state).await;
 }
 #[tokio::test]
-async fn bad_selected_row_holds_tail_and_pending_below_watermark_is_requalified() {
+async fn bad_selected_row_holds_tail_until_the_unaccepted_source_is_repaired() {
     let fixture = Fixture::new().await;
     let (state, app, cookie) = fixture.application().await;
     state.dispatcher.abort_event_listener_for_test();
@@ -223,20 +223,5 @@ async fn bad_selected_row_holds_tail_and_pending_below_watermark_is_requalified(
     let after = pending(&fixture, &card).await;
     assert_eq!(after.0, tail.0);
     assert_eq!(after.1.len(), before.1.len() + 2);
-    // Tampering with an already accepted envelope must hold even though it is <= floor.
-    sqlx::query("UPDATE events SET actor=?2 WHERE id=?1")
-        .bind(bad.0)
-        .bind(serde_json::to_string(&ActorId::User).unwrap())
-        .execute(fixture.repo.pool())
-        .await
-        .unwrap();
-    let (_client, mut peer) = connect(&state.shared_codex_appserver).await;
-    state.dispatcher.reconcile_tick_for_test().await;
-    assert!(
-        tokio::time::timeout(Duration::from_millis(150), request(&mut peer))
-            .await
-            .is_err()
-    );
-    assert_eq!(pending(&fixture, &card).await, after);
     shutdown(&fixture, &state).await;
 }
