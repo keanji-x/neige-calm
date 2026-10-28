@@ -278,6 +278,7 @@ pub(super) async fn intent(
         public,
         &keys.read_prefix(),
         payload,
+        calm_session::control::execution::AmbientEnvironment::None,
     )
     .await
 }

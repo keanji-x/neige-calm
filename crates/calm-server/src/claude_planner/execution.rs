@@ -1,8 +1,5 @@
 //! Claude owns provider completion and per-execution diagnostics.
-use crate::{
-    error::{CalmError, Result},
-    provider_execution::*,
-};
+use crate::{error::Result, provider_execution::*};
 use async_trait::async_trait;
 use std::{path::PathBuf, sync::Arc};
 pub const CONSUMER: &str = "claude-planner";
@@ -84,6 +81,7 @@ impl ProviderExecutionOwner for Owner {
                 Some(
                     KnownEnd::ClaudeTurn(_)
                     | KnownEnd::ClaudeRefused
+                    | KnownEnd::ClaudeWorkerTurn(_)
                     | KnownEnd::AcpTurn(_)
                     | KnownEnd::AcpRefused
                     | KnownEnd::AcpCompaction,
@@ -202,6 +200,7 @@ impl ProviderExecutionOwner for Owner {
                     Some(KnownEnd::ClaudeRefused) => {}
                     Some(
                         KnownEnd::RewindCheck
+                        | KnownEnd::ClaudeWorkerTurn(_)
                         | KnownEnd::AcpRefused
                         | KnownEnd::AcpTurn(_)
                         | KnownEnd::AcpCompaction,
@@ -297,40 +296,7 @@ pub(super) async fn intent(
     env: Vec<(String, OsString)>,
     token: Option<String>,
 ) -> Result<(ExecutionIntent, Vec<u8>)> {
-    use crate::execution_environment::{PROXY_KEYS, proxy_value_is_secret};
-    use crate::operation::stdin_payload::{KeySource, PayloadKeys};
-    let mut secrets = std::collections::HashMap::new();
-    if let Some(token) = token {
-        secrets.insert("NEIGE_MCP_TOKEN".to_string(), token.into());
-    }
-    // Command::envs resolves duplicate names with the last value winning.
-    // Resolve that final environment before classifying either side of the payload.
-    let env = env
-        .into_iter()
-        .filter(|(key, _)| key != "NEIGE_MCP_TOKEN")
-        .collect::<std::collections::BTreeMap<_, _>>()
-        .into_iter()
-        .filter_map(|(key, value)| {
-            if PROXY_KEYS.contains(&key.as_str()) && proxy_value_is_secret(&key, &value) {
-                secrets.insert(key, value);
-                None
-            } else {
-                Some((key, value))
-            }
-        })
-        .collect::<Vec<_>>();
-    // Only classified secret keys belong in the read prefix: non-secret proxy
-    // values must retain their environment values rather than be unset.
-    let present = PROXY_KEYS
-        .iter()
-        .copied()
-        .chain(["NEIGE_MCP_TOKEN"])
-        .filter(|key| secrets.contains_key(*key))
-        .collect::<Vec<_>>();
-    let keys = PayloadKeys::new(&present, KeySource::Kernel)?;
-    let payload = keys
-        .render(|key| secrets.get(key).cloned())
-        .map_err(|_| CalmError::BadRequest("invalid Planner release payload".into()))?;
+    let release = execution::launch::Release::split(env, token, "Planner")?;
     execution::launch::intent(
         params.host.provider_execution.owner.as_ref(),
         &params.worker_session_id,
@@ -340,16 +306,17 @@ pub(super) async fn intent(
         dir,
         binary,
         args,
-        env,
-        &keys.read_prefix(),
-        payload,
+        release.public,
+        &release.read_prefix,
+        release.payload,
+        calm_session::control::execution::AmbientEnvironment::None,
     )
     .await
 }
 
 // Claude runs as a foreground command. This consumer accepts platform-specific
 // settlement without turning an original-group observation into a descendant proof.
-fn foreground_settled(evidence: &CompletionEvidence) -> bool {
+pub(crate) fn foreground_settled(evidence: &CompletionEvidence) -> bool {
     matches!(
         evidence,
         CompletionEvidence::Settled(Settlement::Journal(

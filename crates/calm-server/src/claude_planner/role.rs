@@ -1,5 +1,5 @@
-//! Typed Planner startup and init contracts. Worker policy is supplied by WA2.
-use super::spawn::{PRINT_MODE, PermissionRoot, TOOLS, allowed_tools, turn_settings_json};
+//! Typed Planner startup and init contracts; the worker's role lives in `crate::claude_worker`.
+use super::spawn::{PermissionRoot, TOOLS, allowed_tools, stream_json_args, turn_settings_json};
 use super::spawn::{ResumeTruncation, SessionStart, SpawnPurpose};
 use crate::error::CalmError;
 use crate::mcp_server::wiring::MCP_SERVER_KEY;
@@ -45,10 +45,23 @@ pub(crate) struct PlannerArgs<'a> {
 }
 
 /// Configuration is selected explicitly; ambient CLAUDE_CONFIG_DIR is never inherited.
+#[derive(Clone, Copy, Debug)]
 pub(crate) enum ConfigSource<'a> {
-    #[allow(dead_code)] // Selected by WA2; WA1b only installs the Planner Dedicated profile.
+    /// The CLI's own default under HOME: no `CLAUDE_CONFIG_DIR` is set.
+    #[cfg_attr(not(test), allow(dead_code))] // The worker role's default; WA2-D selects it.
     UserHome,
     Dedicated(&'a Path),
+}
+impl ConfigSource<'_> {
+    /// The one environment entry a configuration source adds, if any.
+    pub(crate) fn env(&self) -> Option<(String, OsString)> {
+        match self {
+            Self::UserHome => None,
+            Self::Dedicated(path) => {
+                Some(("CLAUDE_CONFIG_DIR".into(), path.as_os_str().to_owned()))
+            }
+        }
+    }
 }
 
 /// Planner's unchanged environment allowlist. WA2 supplies its own environment role.
@@ -70,13 +83,36 @@ pub(crate) fn init_check(init: &SystemInit, profile: &PlannerRole) -> Result<(),
         version,
         purpose,
     } = profile;
-    let thread = *thread;
     if init.claude_code_version != *version {
         return Err(format!(
             "claude reports version {}, the config pins {version}",
             init.claude_code_version
         ));
     }
+    session_checks(init, *thread)?;
+    match purpose {
+        SpawnPurpose::Turn if !init.skills.is_empty() => {
+            return Err(format!("claude loaded skills {:?}", init.skills));
+        }
+        SpawnPurpose::Turn => {}
+        SpawnPurpose::Compaction => super::compact::init_check(init)?,
+    }
+    if let Some(plugin) = init
+        .plugins
+        .iter()
+        .find(|p| !p.source.ends_with("@builtin"))
+    {
+        return Err(format!(
+            "claude loaded a non-builtin plugin {}",
+            plugin.source
+        ));
+    }
+    Ok(())
+}
+
+/// Checks every role makes of its init: the CLI runs `thread`'s session, can confirm an
+/// interrupt, and connected the kernel's MCP server.
+pub(crate) fn session_checks(init: &SystemInit, thread: Uuid) -> Result<(), String> {
     if init.session_id != thread {
         return Err(format!(
             "claude session {} is not thread {thread}",
@@ -96,23 +132,6 @@ pub(crate) fn init_check(init: &SystemInit, profile: &PlannerRole) -> Result<(),
         .any(|server| server.name == MCP_SERVER_KEY && server.status == "connected")
     {
         return Err("the neige MCP server is not connected".into());
-    }
-    match purpose {
-        SpawnPurpose::Turn if !init.skills.is_empty() => {
-            return Err(format!("claude loaded skills {:?}", init.skills));
-        }
-        SpawnPurpose::Turn => {}
-        SpawnPurpose::Compaction => super::compact::init_check(init)?,
-    }
-    if let Some(plugin) = init
-        .plugins
-        .iter()
-        .find(|p| !p.source.ends_with("@builtin"))
-    {
-        return Err(format!(
-            "claude loaded a non-builtin plugin {}",
-            plugin.source
-        ));
     }
     Ok(())
 }
@@ -148,9 +167,7 @@ impl LaunchRole for PlannerArgs<'_> {
             SessionStart::New => "--session-id",
             SessionStart::Resume => "--resume",
         };
-        let mut args: Vec<OsString> = PRINT_MODE.into_iter().map(OsString::from).collect();
-        args.push("--replay-user-messages".into());
-        args.push("--include-partial-messages".into());
+        let mut args = stream_json_args();
         args.push(session_flag.into());
         args.push(thread.to_string().into());
         if let Some(truncation) = truncation {

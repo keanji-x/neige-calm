@@ -575,6 +575,8 @@ pub mod claude_planner;
 pub mod claude_update;
 /// #2516: the Claude version a card's child started on, and the installed version's cache.
 pub mod claude_version;
+/// WA2: a Claude task worker's headless role, launch environment and turn sink.
+pub(crate) mod claude_worker;
 pub mod codex_appserver;
 pub mod codex_mcp_toolset;
 pub mod config;

@@ -1,4 +1,5 @@
 mod child_environment;
+pub use child_environment::ambient_keys;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub mod execution;
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]

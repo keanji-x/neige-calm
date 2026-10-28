@@ -16,20 +16,20 @@ pub(crate) mod catalog;
 pub mod catalog_fetch;
 pub(crate) mod compact;
 pub mod config;
-mod driver;
+pub(crate) mod driver;
 pub(crate) mod execution;
 pub mod lifecycle;
 pub mod models;
 mod outcome_record;
-mod protocol_turn;
+pub(crate) mod protocol_turn;
 pub mod readiness_command;
 pub(crate) mod recovery;
 pub(crate) mod rewind;
-mod role;
+pub(crate) mod role;
 pub mod session;
 pub mod spawn;
-mod turn_sink;
-mod turn_slot;
+pub(crate) mod turn_sink;
+pub(crate) mod turn_slot;
 pub(crate) mod wiring;
 
 #[cfg(test)]
@@ -49,4 +49,4 @@ mod pre_c4_boot_tests;
 mod readiness_command_tests;
 
 #[cfg(all(test, target_os = "linux"))]
-mod protocol_tests;
+pub(crate) mod protocol_tests;

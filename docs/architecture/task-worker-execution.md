@@ -289,14 +289,28 @@ worker 档是一份**类型化的角色档**（Planner 档的字节由 golden �
 - `config_source`：闭合枚举 `UserHome | Dedicated(path)`，由 worker 档的类型化配置给出，不从环境推断。推荐默认 `UserHome`：
   环境里**不设** `CLAUDE_CONFIG_DIR`，登录与用户配置照今天经 HOME，不需要额外 `/login`；`-p` 下是否沿用 TUI 的同一登录〔待实测 E9〕。
   选 `Dedicated` 则要求 owner 在该目录登录，并且 OQ4 的“保留用户设置”不再成立，须改写 OQ4 与升级说明。列为 **OQ10**。
-- `environment`：worker 档的环境白名单取 supervisor 的同一张表（`child_environment.rs:5-49`，改为可复用的单一来源），加 `build_claude_env` 的
-  worker 键（`claude_adapter/mod.rs:351-381`），值取自 kernel 环境；Planner 的 `base_env` 不变。kernel 与 supervisor 的环境是否同源由实现核对，
-  差异写进升级说明（与起点设计 Wa 的环境对等同一问题）。
+- `environment`（按用户决定沿用 WX1 修订，WA2-C）：worker 的环境分三份，各有唯一来源：
+  - **ambient**：execution 声明 `AmbientEnvironment::SupervisorAllowed{proxy_policy: Exclude}`，由 supervisor 在 spawn 时从**它自己的**环境合并
+    child 白名单，值不进 execution 规格、journal 或任何持久记录。白名单就是 Legacy PTY spawn 用的同一张表，经 `calm_proc_supervisor::ambient_keys`
+    复用（`child_environment.rs`），kernel 不另抄一份；`Exclude` 去掉表中全部代理键；
+  - **kernel**：`build_claude_env` 的 card 与 hook 键（抽成 `claude_card_env`，Legacy 与无界面共用）、`NEIGE_MCP_SOCKET`、kernel-led `PATH`、
+    `config_source` 的 `CLAUDE_CONFIG_DIR`（仅 `Dedicated`），以及代理：HTTP/HTTPS 先取 settings、再取 kernel 环境（Planner 同一个 resolver），
+    其余代理键（`ALL_PROXY`、`NO_PROXY` 及小写）取 kernel 环境；
+  - **释放载荷**：kernel 代理值中判为秘密的（`proxy_value_is_secret`）与 MCP token 一起只进 Held stdin 载荷（`provider_execution::launch::Release`，
+    Planner 与 worker 共用的同一个拆分），不进 argv、显式环境、execution 规格或 `tx_output`；非秘密代理照常是显式环境。秘密代理因此不被拒绝
+    （terminal-worker 的 `RejectSecret` 在准入前拒绝，worker 不同）。启动合同（`WorkerLaunch`：二进制、argv、环境）没有 token 字段，token 只是生成
+    intent 时的参数，由 WA2-D 在准入事务里 mint。
+
+  与原文“值取自 kernel 环境”的差异：白名单键（HOME、USER、`SSH_AUTH_SOCK`、`XDG_*`、`DISPLAY`、CA 证书路径等）的值取自 supervisor 的环境，
+  不再取自 kernel；只有代理值取自 kernel。部署影响：kernel 与 supervisor 由同一 unit、同一用户启动时两者同源，行为与 Legacy 一致；
+  若两者环境不同，白名单键随 supervisor，代理随 kernel。只设在 supervisor 环境里的代理不再到达 worker（Legacy 会经白名单带上），
+  须改在 settings 或 kernel 环境中设置；kernel 的秘密代理以载荷送达，而不像 terminal-worker 那样拒绝启动。Planner 的 `base_env` 不变。
 - 只有 Codex Planner 的部署：worker 不读 Claude Planner 配置，所以不受影响；仍受 OQ8（Engine）约束。
 
 验收：`w_claude_worker_env_uses_user_config`（`UserHome` 下环境无 `CLAUDE_CONFIG_DIR`、含 HOME 与白名单键）、
 `w_claude_worker_env_matches_legacy_allowlist`、`w_planner_env_unchanged`（Planner 环境 golden 不变）、
-`w_claude_worker_dedicated_config_sets_dir`（`Dedicated` 时只设该目录）。
+`w_claude_worker_dedicated_config_sets_dir`（`Dedicated` 时只设该目录）、`w_claude_worker_launch_has_no_token`（token 与秘密代理只在载荷，
+execution 规格、argv 与显式环境都不含，supervisor 预检接受）。
 
 ### 3.5 停止与结算
 

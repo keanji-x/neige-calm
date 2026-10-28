@@ -136,6 +136,15 @@ pub(super) const PRINT_MODE: [&str; 6] = [
     "--verbose",
 ];
 
+/// The stream-json head every turn role's argv starts with: print mode, user-line replay (the
+/// input acknowledgement) and partial messages.
+pub(crate) fn stream_json_args() -> Vec<OsString> {
+    let mut args: Vec<OsString> = PRINT_MODE.into_iter().map(OsString::from).collect();
+    args.push("--replay-user-messages".into());
+    args.push("--include-partial-messages".into());
+    args
+}
+
 /// Where a resumed session is cut before its next turn (a rewind, #1923): the chain is kept up to
 /// and including `at`, and the CLI refuses unless everything after it belongs to the one turn whose
 /// prompt is `drops_turn`.
@@ -229,9 +238,7 @@ pub(crate) fn base_env(
         env.push((lower.clone(), value.into()));
     }
     env.push(("PATH".into(), inputs.path.clone()));
-    if let ConfigSource::Dedicated(path) = &inputs.config_source {
-        env.push(("CLAUDE_CONFIG_DIR".into(), path.as_os_str().to_owned()));
-    }
+    env.extend(inputs.config_source.env());
     env.push((
         "NEIGE_MCP_SOCKET".into(),
         inputs.mcp_socket.as_os_str().to_owned(),

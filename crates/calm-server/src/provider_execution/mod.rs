@@ -59,6 +59,9 @@ pub enum KnownEnd {
     RewindCheck,
     ClaudeTurn(Box<crate::claude_planner::execution::End>),
     ClaudeRefused,
+    /// A Claude task worker's turn, packaged by its own sink (§3.2); no Planner state.
+    #[cfg_attr(not(test), allow(dead_code))] // Produced once WA2-D admits worker turns.
+    ClaudeWorkerTurn(Box<crate::claude_worker::WorkerEnd>),
     AcpTurn(Box<crate::acp_planner::execution::End>),
     AcpRefused,
     AcpCompaction,

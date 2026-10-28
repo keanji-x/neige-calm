@@ -225,14 +225,13 @@ impl PlannerSink {
             connection.open(&self.slot, request_id, can_use_tool);
             return;
         }
-        let mut stop_rx = self.slot.stop_at.subscribe();
-        tokio::select! {
-            biased;
-            _ = deadline_reached(&mut stop_rx, Duration::ZERO) => {
-                tracing::debug!(request_id, "claude planner: control answer abandoned at the stop");
-            }
-            _ = answer_control_request(&self.slot, request_id, can_use_tool.is_ok_and(|request| request.is_none())) => {}
-        }
+        answer_unattended(
+            &self.slot,
+            request_id,
+            can_use_tool.is_ok_and(|request| request.is_none()),
+            NO_APPROVAL_SURFACE,
+        )
+        .await;
     }
 
     /// Persist `agent_session_id` through the attribution bind, so a session opened for this row
@@ -291,9 +290,33 @@ fn usage_total(event: &PlannerEvent) -> Option<i64> {
     }
 }
 
+/// Answer a control request no person sees, unless the turn's stop comes first: a CLI that stopped
+/// reading stdin does not hold the turn past its stop.
+pub(crate) async fn answer_unattended(
+    slot: &TurnSlot,
+    request_id: &str,
+    other_subtype: bool,
+    denial: &str,
+) {
+    let mut stop_rx = slot.stop_at.subscribe();
+    tokio::select! {
+        biased;
+        _ = deadline_reached(&mut stop_rx, Duration::ZERO) => {
+            tracing::debug!(request_id, "claude planner: control answer abandoned at the stop");
+        }
+        _ = answer_control_request(slot, request_id, other_subtype, denial) => {}
+    }
+}
+
 /// A `can_use_tool` answered here (one under `never` or `full`, where `--permission-prompts none`
-/// should not send it, or one without its recorded shape) is denied. Any other request gets an error response.
-async fn answer_control_request(slot: &TurnSlot, request_id: &str, other_subtype: bool) {
+/// should not send it, or one without its recorded shape) is denied with `denial`, which goes back
+/// to the model. Any other request gets an error response.
+async fn answer_control_request(
+    slot: &TurnSlot,
+    request_id: &str,
+    other_subtype: bool,
+    denial: &str,
+) {
     let response = if other_subtype {
         ControlResponseOut::new(ControlResponseOutBody::Error {
             request_id: request_id.to_string(),
@@ -303,7 +326,7 @@ async fn answer_control_request(slot: &TurnSlot, request_id: &str, other_subtype
         permission_response(
             request_id,
             &PermissionDecision::Deny {
-                message: NO_APPROVAL_SURFACE.into(),
+                message: denial.into(),
             },
         )
     };

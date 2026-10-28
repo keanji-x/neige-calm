@@ -50,8 +50,23 @@ const ALLOWED: &[&str] = &[
 ];
 
 pub fn allowed_environment() -> Vec<(OsString, OsString)> {
+    values_of(ALLOWED.iter().copied())
+}
+
+/// The keys a supervisor-allowed ambient environment carries under `policy`: the PTY spawn's
+/// table, without proxy keys under `Exclude`. Callers that declare `SupervisorAllowed` read this
+/// rather than keep a copy of the table.
+pub fn ambient_keys(policy: &AmbientProxyPolicy) -> impl Iterator<Item = &'static str> + '_ {
+    ALLOWED.iter().copied().filter(move |key| match policy {
+        AmbientProxyPolicy::RejectSecret => true,
+        AmbientProxyPolicy::Exclude => !PROXY_KEYS.contains(key),
+    })
+}
+
+fn values_of<'a>(keys: impl Iterator<Item = &'a str>) -> Vec<(OsString, OsString)> {
+    let keys: Vec<&str> = keys.collect();
     std::env::vars_os()
-        .filter(|(name, _)| name.to_str().is_some_and(|name| ALLOWED.contains(&name)))
+        .filter(|(name, _)| name.to_str().is_some_and(|name| keys.contains(&name)))
         .collect()
 }
 
@@ -86,24 +101,20 @@ fn ambient_values(input: &EnvironmentPreflight) -> anyhow::Result<Vec<(OsString,
         return Ok(Vec::new());
     };
     input.validate().map_err(anyhow::Error::msg)?;
-    let mut values = allowed_environment();
+    let mut values = values_of(ambient_keys(proxy_policy));
     values.retain(|(key, _)| {
         !input
             .explicit_environment
             .iter()
             .any(|(explicit, _)| key == explicit.as_str())
     });
-    match proxy_policy {
-        AmbientProxyPolicy::RejectSecret => anyhow::ensure!(
-            !values.iter().any(|(key, value)| key
-                .to_str()
-                .is_some_and(|key| PROXY_KEYS.contains(&key) && proxy_value_is_secret(key, value))),
-            "secret ambient proxy refused"
-        ),
-        AmbientProxyPolicy::Exclude => {
-            values.retain(|(key, _)| !key.to_str().is_some_and(|key| PROXY_KEYS.contains(&key)))
-        }
-    }
+    // `Exclude` already left every proxy key out of `values`.
+    anyhow::ensure!(
+        !values.iter().any(|(key, value)| key
+            .to_str()
+            .is_some_and(|key| PROXY_KEYS.contains(&key) && proxy_value_is_secret(key, value))),
+        "secret ambient proxy refused"
+    );
     Ok(values)
 }
 
@@ -126,4 +137,23 @@ pub(crate) fn launch_environment(
             .map(|(k, v)| (STANDARD.encode(k.as_bytes()), STANDARD.encode(v.as_bytes())))
             .collect(),
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn child_environment_ambient_keys_are_the_pty_table() {
+        let all: Vec<_> = ambient_keys(&AmbientProxyPolicy::RejectSecret).collect();
+        assert_eq!(all, ALLOWED);
+        assert!(PROXY_KEYS.iter().all(|key| ALLOWED.contains(key)));
+        let excluded: Vec<_> = ambient_keys(&AmbientProxyPolicy::Exclude).collect();
+        let expected: Vec<_> = ALLOWED
+            .iter()
+            .copied()
+            .filter(|key| !PROXY_KEYS.contains(key))
+            .collect();
+        assert_eq!(excluded, expected);
+    }
 }

@@ -40,7 +40,7 @@ pub(crate) struct TurnSlot {
 }
 
 impl TurnSlot {
-    pub(super) fn new(
+    pub(crate) fn new(
         stdin: impl tokio::io::AsyncWrite + Send + Unpin + 'static,
         settle_after_stop: Duration,
     ) -> Self {

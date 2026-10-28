@@ -117,13 +117,32 @@ impl TurnSink for MinimalSink {
     }
 }
 
-async fn run_minimal(interrupt: bool) {
+/// One admitted, released execution on the real Engine and supervisor: `files` writes what the
+/// script `cat`s into the execution's directory, and the script runs after reading `start`.
+pub(crate) struct Admitted {
+    pub repo: SqlxRepo,
+    pub pool: crate::db::sqlite::SqliteDb,
+    pub fixture: crate::test_support::execution::Fixture,
+    pub dir: tempfile::TempDir,
+    pub thread: Uuid,
+    pub id: workspace_runtime::execution::ExecutionId,
+    pub claim: execution::Claim,
+    pub guard: execution::DriverGuard,
+}
+
+pub(crate) const SESSION: &str = "protocol-session";
+
+pub(crate) async fn admitted(
+    owner: &execution::ProviderExecution,
+    files: impl FnOnce(&Path, Uuid),
+    script: &str,
+) -> Admitted {
     use crate::model::{CardRole, NewArea, NewCard, NewTrack, RequestTheme, new_id};
     use crate::session_projection_repo::{
         AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
     };
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
-    let pool = repo.sqlite_db().unwrap();
+    let pool = repo.sqlite_db().unwrap().clone();
     let fixture = crate::test_support::execution::Fixture::new(pool.clone()).await;
     let dir = tempfile::tempdir().unwrap();
     let area = repo
@@ -172,7 +191,7 @@ async fn run_minimal(interrupt: bool) {
     crate::db::sqlite::session_start_runtime_tx(
         &mut tx,
         WorkerSessionInit {
-            id: "protocol-session".into(),
+            id: SESSION.into(),
             card_id: card.id.to_string(),
             kind: WorkerSessionKind::ClaudeCard,
             agent_provider: Some(AgentProvider::Claude),
@@ -189,37 +208,18 @@ async fn run_minimal(interrupt: bool) {
     .await
     .unwrap();
     tx.commit().await.unwrap();
-    let observed = Arc::new(Mutex::new(Observed::default()));
-    let owner = execution::ProviderExecution {
-        owner: Arc::new(MinimalOwner(observed.clone())),
-        drivers: Default::default(),
-    };
     let mut launch = intent(dir.path().into());
     launch.metadata.consumer = owner.owner.consumer().into();
-    launch.metadata.alias.0 = owner
-        .owner
-        .alias("protocol-session", launch.metadata.id.as_str());
+    launch.metadata.alias.0 = owner.owner.alias(SESSION, launch.metadata.id.as_str());
     launch.metadata.program.program = "/bin/sh".into();
-    let init = serde_json::json!({"type":"system","subtype":"init","session_id":thread,
-        "claude_code_version":"test","model":"test","capabilities":[],"mcp_servers":[],"slash_commands":[],"skills":[],"plugins":[]});
-    let result = serde_json::json!({"type":"result","subtype":"success","session_id":thread,
-        "is_error":false,"result":"done","usage":{"input_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":0,"iterations":[]},"modelUsage":{}});
-    std::fs::write(dir.path().join("init.json"), format!("{init}\n")).unwrap();
-    std::fs::write(dir.path().join("result.json"), format!("{result}\n")).unwrap();
-    launch.metadata.program.args = vec![
-        "-c".into(),
-        if interrupt {
-            "read start; cat init.json; exec sleep 120".into()
-        } else {
-            "read start; cat init.json result.json".into()
-        },
-    ];
+    files(dir.path(), thread);
+    launch.metadata.program.args = vec!["-c".into(), format!("read start; {script}")];
     let id = launch.metadata.id.clone();
     let (claim, guard) = owner
         .admit_for_test(
             &pool,
             &fixture.engine,
-            "protocol-session",
+            SESSION,
             execution::PreparedIntent(launch),
             execution::Purpose::RewindCheck,
         )
@@ -228,13 +228,57 @@ async fn run_minimal(interrupt: bool) {
     execution::release::send(
         &pool,
         &fixture.engine,
-        "protocol-session",
+        SESSION,
         &claim,
         b"start\n",
         &execution::release::NoAuthority,
     )
     .await
     .unwrap();
+    Admitted {
+        repo,
+        pool,
+        fixture,
+        dir,
+        thread,
+        id,
+        claim,
+        guard,
+    }
+}
+
+async fn run_minimal(interrupt: bool) {
+    let observed = Arc::new(Mutex::new(Observed::default()));
+    let owner = execution::ProviderExecution {
+        owner: Arc::new(MinimalOwner(observed.clone())),
+        drivers: Default::default(),
+    };
+    let Admitted {
+        repo: _repo,
+        pool,
+        fixture,
+        dir: _dir,
+        thread,
+        id,
+        claim,
+        guard,
+    } = admitted(
+        &owner,
+        |dir, thread| {
+            let init = serde_json::json!({"type":"system","subtype":"init","session_id":thread,
+                "claude_code_version":"test","model":"test","capabilities":[],"mcp_servers":[],"slash_commands":[],"skills":[],"plugins":[]});
+            let result = serde_json::json!({"type":"result","subtype":"success","session_id":thread,
+                "is_error":false,"result":"done","usage":{"input_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":0,"iterations":[]},"modelUsage":{}});
+            std::fs::write(dir.join("init.json"), format!("{init}\n")).unwrap();
+            std::fs::write(dir.join("result.json"), format!("{result}\n")).unwrap();
+        },
+        if interrupt {
+            "cat init.json; exec sleep 120"
+        } else {
+            "cat init.json result.json"
+        },
+    )
+    .await;
     let slot = Arc::new(TurnSlot::new(
         EngineStdio::new((*fixture.engine).clone(), id.clone()),
         Duration::from_secs(12),

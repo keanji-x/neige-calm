@@ -348,6 +348,18 @@ pub async fn prepare_claude_create_request(
     })
 }
 
+/// The card and hook keys of every Claude card process, its PTY spawn's and a headless worker's:
+/// the hook bridge reads the card and kernel from them.
+pub(crate) fn claude_card_env(card_id: &str, base_url: &str) -> [(&'static str, String); 4] {
+    let (key, value) = crate::claude_code_env::DISABLE_AUTO_MEMORY;
+    [
+        ("NEIGE_CARD_ID", card_id.to_string()),
+        ("NEIGE_CALM_BASE_URL", base_url.to_string()),
+        ("NEIGE_HOOK_PROVIDER", "claude".into()),
+        (key, value.to_string()),
+    ]
+}
+
 pub async fn build_claude_env(
     repo: &dyn crate::db::RouteRepo,
     codex: &CodexClient,
@@ -355,20 +367,9 @@ pub async fn build_claude_env(
 ) -> Result<Value> {
     let settings = load_settings(repo).await?;
     let mut env_map = serde_json::Map::new();
-    env_map.insert(
-        "NEIGE_CARD_ID".to_string(),
-        Value::String(card_id.to_string()),
-    );
-    env_map.insert(
-        "NEIGE_CALM_BASE_URL".to_string(),
-        Value::String(codex.ingest_url.clone()),
-    );
-    env_map.insert(
-        "NEIGE_HOOK_PROVIDER".to_string(),
-        Value::String("claude".into()),
-    );
-    let (key, value) = crate::claude_code_env::DISABLE_AUTO_MEMORY;
-    env_map.insert(key.to_string(), Value::String(value.to_string()));
+    for (key, value) in claude_card_env(card_id, &codex.ingest_url) {
+        env_map.insert(key.to_string(), Value::String(value));
+    }
     if let Some(p) = settings.http_proxy.as_deref().filter(|s| !s.is_empty()) {
         env_map.insert("HTTP_PROXY".to_string(), Value::String(p.to_string()));
         env_map.insert("http_proxy".to_string(), Value::String(p.to_string()));
