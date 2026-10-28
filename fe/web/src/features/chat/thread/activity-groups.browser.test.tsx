@@ -598,7 +598,7 @@ it('reads OpenCode thoughts and tool details as live items update and a reply fo
   expect(screen.getByText(/inventory.csv/)).toBeTruthy();
   const inputDetail = screen.getByText(/inventory.csv/);
   expect(getComputedStyle(inputDetail).whiteSpace).toBe('pre-wrap');
-  expect(inputDetail.textContent).toContain('Input\n{\n  \"path\": \"inventory.csv\"\n}');
+  expect(inputDetail.textContent).toContain('Input\n{\n  "path": "inventory.csv"\n}');
   const completed = row(2, 'dynamicToolCall', { ...input, status: 'completed',
     result: { content: [{ type: 'text', text: '<script>plain tool output</script>' }] } }, 'item/completed');
   const reply = row(3, 'agentMessage', { text: 'Inventory checked.' }, 'item/completed');

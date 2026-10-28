@@ -1385,10 +1385,12 @@ describe('ACP activity content in the transcript', () => {
   });
 
   it('keeps failure evidence separate from readable tool content', () => {
-    expect(projectActivity(nativeRow(1, 'dynamicToolCall', {
+    const failed = projectActivity(nativeRow(1, 'dynamicToolCall', {
       tool: 'Read inventory', arguments: { path: 'missing.csv' }, status: 'failed',
       error: { message: 'File missing' }, result: { content: [{ type: 'text', text: 'No such file' }] },
-    }))).toMatchObject({ state: 'failed', detail: 'File missing', content: expect.stringContaining('No such file') });
+    }));
+    expect(failed).toMatchObject({ state: 'failed', detail: 'File missing' });
+    expect(failed?.content).toContain('No such file');
   });
 
   it('bounds large content and tolerates empty or malformed optional bodies', () => {
