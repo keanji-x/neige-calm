@@ -272,7 +272,7 @@ async fn canonical_claude_recovery_crossing_and_unknown_never_write_again() {
             .await
             .unwrap();
             tx.commit().await.unwrap();
-            std::fs::write(fx._dir.path().join("scenario"), "stream").unwrap();
+            std::fs::write(fx._dir.path().join("scenario"), "hold-input-replay").unwrap();
         } else {
             let scenario = if crossing { "undecodable" } else { "stall" };
             std::fs::write(fx._dir.path().join("scenario"), scenario).unwrap();
