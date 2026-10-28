@@ -77,7 +77,7 @@ async fn c4_recovery_tick_is_idempotent_with_live_slots() {
         "echo once >> launches; until [ -f exit ]; do sleep 0.01; done",
     )
     .await;
-    wait(|| async { f.root.join("launches").exists() }).await;
+    super::terminal_execution_create::wait_for_marker_line(&f.root.join("launches")).await;
     let before = faults.pending_calls.load(SeqCst);
     wait(|| async { faults.pending_calls.load(SeqCst) >= before + 2 }).await;
     assert!(!settled(&f, &id).await);

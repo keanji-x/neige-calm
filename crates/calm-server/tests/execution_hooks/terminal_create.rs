@@ -30,6 +30,17 @@ pub(super) async fn execution_id(f: &Fixture, term: &Terminal) -> ExecutionId {
             .unwrap();
     id.try_into().unwrap()
 }
+pub(super) async fn wait_for_marker_line(marker: &Path) {
+    wait(|| async {
+        match std::fs::read_to_string(marker) {
+            Ok(text) => text.ends_with('\n'),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+            Err(error) => panic!("read marker {}: {error}", marker.display()),
+        }
+    })
+    .await;
+}
+
 #[tokio::test]
 async fn c1_fence_typed_admit_busy_then_admits_and_drives() {
     let mut f = Fixture::new().await;
@@ -352,7 +363,11 @@ async fn typed_keyed_replay_drives_without_second_admit() {
     wait(|| async { f.engine.available() }).await;
     f.state = f.state.clone().with_terminal_execution(true);
     let marker = f.root.join("launches");
-    let program = format!("echo launch >> '{}'; exec sleep 120", marker.display());
+    let program = format!(
+        "exec 3>> '{}'; printf marker-opened; IFS= read -r release || exit 1; \
+         printf 'launch\\n' >&3 || exit 1; printf marker-written; exec sleep 120",
+        marker.display()
+    );
     let request = normalize_terminal_create_request(TerminalCreateRequestPayload {
         track_id: f.track.clone(),
         title: None,
@@ -403,10 +418,47 @@ async fn typed_keyed_replay_drives_without_second_admit() {
         let term = terminal(&f, &body).await;
         assert_eq!(execution_id(&f, &term).await.as_str(), durable_id);
     }
-    wait(|| async { marker.exists() }).await;
-    assert_eq!(std::fs::read_to_string(marker).unwrap(), "launch\n");
-    assert_eq!(counts(&f).await, (1, 1, 1));
-    f.stop(&durable_id.try_into().unwrap()).await;
+    let id = durable_id.try_into().unwrap();
+    wait(|| async {
+        matches!(f.engine.output(&id, None).await,
+            Ok(ExecutionReply::Observation { ref output, .. })
+                if String::from_utf8_lossy(output).contains("marker-opened"))
+    })
+    .await;
+    assert_eq!(std::fs::read_to_string(&marker).unwrap(), "");
+    let mut waiter = std::pin::pin!(wait_for_marker_line(&marker));
+    let readiness = std::future::poll_fn(|cx| {
+        std::task::Poll::Ready(std::future::Future::poll(waiter.as_mut(), cx))
+    })
+    .await;
+    let was_pending = readiness.is_pending();
+    f.engine
+        .interact(
+            &id,
+            ProcessAction::WriteStdin {
+                bytes: b"release\n".to_vec(),
+            },
+        )
+        .await
+        .unwrap();
+    if was_pending {
+        waiter.await;
+    }
+    wait(|| async {
+        matches!(f.engine.output(&id, None).await,
+            Ok(ExecutionReply::Observation { ref output, .. })
+                if String::from_utf8_lossy(output).contains("marker-written"))
+    })
+    .await;
+    let contents = std::fs::read_to_string(&marker).unwrap();
+    let final_counts = counts(&f).await;
+    f.stop(&id).await;
+    assert!(
+        was_pending,
+        "marker readiness must be Pending while the opened file is empty"
+    );
+    assert_eq!(contents, "launch\n");
+    assert_eq!(final_counts, (1, 1, 1));
 }
 
 #[tokio::test]
