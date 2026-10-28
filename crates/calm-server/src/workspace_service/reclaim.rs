@@ -193,3 +193,61 @@ async fn protection_facts(conn: &mut sqlx::SqliteConnection) -> Result<(Vec<Path
     .await?;
     Ok((protected, terminal))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::operation::location_admission::LocationAdmission;
+
+    #[tokio::test]
+    async fn reclaim_owned_workspace_locations_registered_before_admission() {
+        let repo = calm_truth::db::sqlite::SqlxRepo::open("sqlite::memory:")
+            .await
+            .unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let target = ExtraWorktree {
+            operation_id: "reclaim-registration".into(),
+            provision_id: 1,
+            track_id: "track".into(),
+            card_id: "card".into(),
+            area_id: "area".into(),
+            request: workspace::reclaim::ReclaimRequest {
+                repo: root.path().into(),
+                path: root.path().join("extra"),
+                protected: Vec::new(),
+                excluded_refs: Vec::new(),
+                unknown_terminal: false,
+                ownership_conflict: false,
+            },
+        };
+        let mut tx = repo.pool().begin().await.unwrap();
+        operation::register(&mut tx, &target, true).await.unwrap();
+        tx.commit().await.unwrap();
+        let admission = LocationAdmission {
+            managed_root: root.path().join("managed"),
+            objective_checkout_root: root.path().join("objective"),
+            teardown_targets: Default::default(),
+            area_locks: crate::per_card_lock::new_keyed_locks(),
+            track_locks: crate::per_card_lock::new_keyed_locks(),
+        };
+        let registration = admission.teardown_targets.registration();
+        registration.register_location(&target.track_id, target.request.path.clone());
+        let mut conn = repo.pool().acquire().await.unwrap();
+        let fence = admission
+            .try_fence(&mut conn, &target.request.repo, Some(&target.track_id))
+            .await
+            .unwrap();
+        let mut tx = repo.pool().begin().await.unwrap();
+        fence.recheck(&mut tx).await.unwrap();
+        tx.rollback().await.unwrap();
+        // Before execution admission, the teardown registry supplies the track owner.
+        let _held =
+            crate::per_card_lock::try_lock_key(&admission.track_locks, &target.track_id).unwrap();
+        assert!(matches!(
+            admission
+                .try_fence(&mut conn, &target.request.path, None)
+                .await,
+            Err(CalmError::WorkspaceBusy(_))
+        ));
+    }
+}

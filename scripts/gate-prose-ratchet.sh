@@ -1,4 +1,11 @@
 #!/usr/bin/env bash
+# Owned workspace inventory adds two long_literal SQL fixtures (173 -> 175) in
+# calm-truth/src/db/sqlite/workspace_locations.rs: workspace_executions and
+# operations INSERTs exercise malformed reclaim links through the real reader.
+# These are schema fixtures, not agent-facing prose. Schema/fixture changes edit
+# their source and regenerate this baseline; ordinary test additions need no
+# inventory edit. The existing scan runs once per CI lint workflow, with its
+# existing separate selftest; no check or invocation is added.
 # U12a-1 bounded exception: long_literal/crates/**/*.rs 166 -> 173 is seven
 # SQL occurrences under calm-server/src/, not agent-facing prose:
 # 1. dispatcher/system_assistant.rs submit: historical operation/card existence.
