@@ -87,10 +87,13 @@ pub(crate) const SCHEDULER_TRIGGER_KINDS: &[&str] = &[
 ];
 
 /// The one kind list the dispatcher's `SubscribeFilter` is built from.
+pub(crate) const TARGETED_ASSISTANT_KINDS: &[&str] = &["assistant.input_requested"];
+
 pub(crate) fn dispatcher_subscription_kinds() -> Vec<String> {
     PLANNER_CATCH_UP_KINDS
         .iter()
         .chain(SCHEDULER_TRIGGER_KINDS.iter())
+        .chain(TARGETED_ASSISTANT_KINDS.iter())
         .map(|kind| (*kind).to_string())
         .collect()
 }
@@ -1174,6 +1177,9 @@ impl Inner {
                     }
                 });
             }
+            Event::AssistantInputRequested { track_id, .. } => {
+                self.observe_harness(track_id.clone(), &envelope.event, envelope.id).await;
+            }
             Event::ForgePrMerged { track_id, .. }
             | Event::AskAnswered { track_id, .. }
             | Event::ForgeScanCompleted { track_id, .. }
@@ -1251,8 +1257,7 @@ impl Inner {
             | Event::WorkspaceLeased { .. }
             | Event::WorktreeProvisioned { .. }
             | Event::WorktreeCommitted { .. }
-            | Event::WorktreeRemoved { .. }
-            | Event::AssistantInputRequested { .. } => {
+            | Event::WorktreeRemoved { .. } => {
                 tracing::warn!(
                     kind = envelope.event.kind_tag(),
                     "dispatcher received event with no handler; filter widened unexpectedly",
@@ -1291,6 +1296,21 @@ impl Inner {
         envelope_id: i64,
     ) {
         let track_id = guard.track_id().clone();
+        if let Event::AssistantInputRequested {
+            card_id,
+            track_id: target,
+            ..
+        } = event
+        {
+            if *target == track_id
+                && let Err(error) = self
+                    .accept_canonical_events(card_id, Some((event, envelope_id)))
+                    .await
+            {
+                tracing::warn!(%card_id, %error, "targeted Dispatcher input remains held");
+            }
+            return;
+        }
         let Some(planner_card_id) = self.resolve_planner_card(&track_id).await else {
             return;
         };
@@ -1828,3 +1848,6 @@ mod tests;
 
 #[cfg(test)]
 mod agent_backend_tests;
+
+mod assistant_admission;
+pub(crate) mod system_assistant;

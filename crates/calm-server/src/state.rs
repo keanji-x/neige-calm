@@ -329,6 +329,7 @@ impl BootState {
             events: self.events,
             system_area_mint: Arc::new(crate::routes::today::SystemAreaMintCounters::default()),
             system_area_mint_rendezvous: None,
+            today_summary_issuer: None,
             today_summary_create: Arc::new(
                 crate::routes::today_summary::TodaySummaryCreateCounters::default(),
             ),
@@ -369,6 +370,8 @@ impl BootState {
 /// `fixtures`-gated [`AppState::raw_repo`].
 #[derive(Clone)]
 pub struct AppState {
+    pub(crate) today_summary_issuer:
+        Option<crate::dispatcher::system_assistant::SystemAssistantIssuer>,
     pub(crate) provider_sweep: Option<crate::provider_execution::sweep::ProviderSweep>,
     /// Registered execution engine; recovery is independent of consumer opt-ins.
     pub execution: Option<Arc<crate::execution_boot::ExecutionEngine>>,

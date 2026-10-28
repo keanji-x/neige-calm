@@ -49,6 +49,9 @@ pub(super) async fn accept(
                     let _ = replay_tx.send(original.receipt);
                     return Err(CalmError::Conflict("Assistant acceptance already committed".into()));
                 }
+                if conversation::assistant_key_used_tx(tx, payload.planner_card_id.as_str()).await? {
+                    return Err(CalmError::IdempotencyKeyReused("this key names an original System Assistant".into()));
+                }
                 let seed = payload.create_card.as_ref().ok_or_else(|| CalmError::Internal("Assistant seed missing".into()))?;
                 let key = seed.idempotency_key.as_deref().ok_or_else(|| CalmError::Internal("Assistant key missing".into()))?;
                 let derived = derive_track_conversation_keys(&payload.track_id, key);
@@ -160,10 +163,7 @@ pub(super) async fn require_unused_historical_key(
                 calm_types::organization::AreaAccess::Collaborate,
             )
             .await?;
-            if conversation::assistant_creation_get_tx(tx, &card_id)
-                .await?
-                .is_some()
-            {
+            if conversation::assistant_key_used_tx(tx, &card_id).await? {
                 return Err(CalmError::IdempotencyKeyReused(
                     "this key names an original canonical Assistant request".into(),
                 ));

@@ -559,7 +559,18 @@ async fn dispatcher_subscription_is_push_kinds_plus_scheduler_kinds() {
         subscribed_list.len(),
         "the subscription lists a kind twice: {subscribed_list:?}"
     );
-    let expected: BTreeSet<String> = push_capable.union(&scheduler).cloned().collect();
+    let targeted: BTreeSet<String> = TARGETED_ASSISTANT_KINDS
+        .iter()
+        .map(|kind| kind.to_string())
+        .collect();
+    assert!(targeted.is_disjoint(&push_capable));
+    assert!(targeted.is_disjoint(&scheduler));
+    assert!(targeted.is_subset(&all));
+    let expected: BTreeSet<String> = push_capable
+        .union(&scheduler)
+        .cloned()
+        .chain(targeted)
+        .collect();
     assert_eq!(
         subscribed,
         expected,

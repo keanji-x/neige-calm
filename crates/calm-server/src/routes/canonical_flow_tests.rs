@@ -68,6 +68,7 @@ struct Fixture {
     repo: Arc<SqlxRepo>,
     root: tempfile::TempDir,
     url: String,
+    data_dir: Option<std::path::PathBuf>,
     claude_config: Option<std::path::PathBuf>,
     acp_config: Option<std::path::PathBuf>,
     templates_dir: Option<std::path::PathBuf>,
@@ -85,6 +86,7 @@ impl Fixture {
             repo: Arc::new(SqlxRepo::open(&url).await.unwrap()),
             root,
             url,
+            data_dir: None,
             claude_config: None,
             acp_config: None,
             templates_dir: None,
@@ -136,7 +138,11 @@ impl Fixture {
             if let Some(execution) = &self.execution {
                 execution.configure(&mut cfg);
             }
-            cfg.data_dir = Some(self.root.path().join("data"));
+            cfg.data_dir = Some(
+                self.data_dir
+                    .clone()
+                    .unwrap_or_else(|| self.root.path().join("data")),
+            );
             cfg.workspace_root = Some(self.root.path().join("workspaces"));
             cfg.plugins_dir = Some(self.root.path().join("plugins"));
             cfg.plugins_data_dir = Some(self.root.path().join("plugins-data"));

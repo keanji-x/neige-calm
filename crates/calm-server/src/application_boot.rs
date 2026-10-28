@@ -21,12 +21,12 @@ impl BootedApplication {
         state: AppState,
         authentication: ValidatedApplicationAuth,
     ) -> anyhow::Result<Self> {
-        let application = Self {
+        let mut application = Self {
             state,
             auth: authentication.state,
             execution: authentication.execution,
         };
-        let state = application.state.clone();
+        let mut state = application.state.clone();
         let recovered = async {
             calm_server::assert_worker_sessions_card_id_complete_on_boot(&state).await?;
 
@@ -95,12 +95,16 @@ impl BootedApplication {
             state
                 .harness
                 .activate_maintenance_execution(application.execution.clone())?;
+            state.today_summary_issuer = Some(state.dispatcher.system_assistant_issuer(
+                calm_types::system_assistant::SystemAssistantSource::TodaySummary,
+            )?);
             Ok::<_, anyhow::Error>(())
         }.await;
         if let Err(error) = recovered {
             state.retire_dispatch_and_stop_provider_sweep().await?;
             return Err(error);
         }
+        application.state = state;
         Ok(application)
     }
 }

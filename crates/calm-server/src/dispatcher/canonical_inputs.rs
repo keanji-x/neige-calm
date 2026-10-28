@@ -1,5 +1,6 @@
 //! The actual Dispatcher qualifies persisted event inputs. Its declaration is
 //! installed only after the original production recovery boundary completes.
+use super::assistant_admission::EventAdmission;
 use super::planner_admission::PlannerAdmission;
 use super::*;
 use crate::auth::LegacyPrivateExecution;
@@ -17,11 +18,11 @@ use std::sync::Weak;
 
 #[derive(Clone)]
 pub(super) struct Producer {
-    dispatcher: Weak<Dispatcher>,
-    execution: LegacyPrivateExecution,
+    pub(super) dispatcher: Weak<Dispatcher>,
+    pub(super) execution: LegacyPrivateExecution,
 }
 impl Producer {
-    fn current_owner(&self) -> Result<String> {
+    pub(super) fn current_owner(&self) -> Result<String> {
         let dispatcher = self.dispatcher.upgrade().ok_or(CalmError::Unauthorized)?;
         if dispatcher.semaphore.is_closed() {
             return Err(CalmError::Unauthorized);
@@ -37,7 +38,7 @@ struct EventBinding {
     track: TrackId,
     card: String,
     worker: String,
-    admission: PlannerAdmission,
+    admission: EventAdmission,
     event: EventInputFact,
 }
 impl EventBinding {
@@ -48,7 +49,7 @@ impl EventBinding {
     ) -> Result<String> {
         self.producer.current_owner()?;
         self.admission.authorize_tx(tx).await?;
-        if self.event.envelope.id <= self.admission.baseline {
+        if self.event.envelope.id <= self.admission.baseline() {
             return Err(CalmError::Forbidden("event predates Planner tenure".into()));
         }
         if self.card != carrier.card_id() || self.worker != carrier.worker_session_id() {
@@ -120,6 +121,21 @@ impl DispatcherInputSource {
         carrier: &CurrentInputCarrier,
     ) -> Result<String> {
         let owner = self.binding.authorize_tx(tx, carrier).await?;
+        if let EventAdmission::Assistant(admission) = &self.binding.admission {
+            let Event::AssistantInputRequested { subject, .. } = &self.binding.event.envelope.event
+            else {
+                return Err(CalmError::Forbidden("targeted source kind changed".into()));
+            };
+            conversation::system_assistant_receipt_replay_tx(
+                tx,
+                carrier.card_id(),
+                admission.source,
+                subject,
+                self.binding.event.envelope.id,
+                &self.reference,
+            )
+            .await?;
+        }
         let expected = conversation::event_system_observation_id_tx(
             tx,
             carrier,
@@ -249,7 +265,7 @@ struct StoredSystem {
 }
 
 impl Inner {
-    fn producer(&self) -> Result<Producer> {
+    pub(super) fn producer(&self) -> Result<Producer> {
         let producer = self
             .canonical_producer
             .read()
@@ -306,6 +322,19 @@ impl Inner {
                 tracing::warn!(%card, %error, "Dispatcher canonical input remains held");
             }
         }
+        let db = self
+            .repo
+            .sqlite_db()
+            .ok_or_else(|| CalmError::Internal("Assistant discovery requires SQLite".into()))?;
+        let candidates: Vec<(String, String)> = sqlx::query_as("SELECT track_id,card_id FROM conversation_system_assistant_entries ORDER BY track_id,card_id")
+            .fetch_all(db.read_pool()).await?;
+        for (track, card) in candidates {
+            let _guard = self.acquire_push_lock(&track.into()).await;
+            let card = CardId::from(card);
+            if let Err(error) = self.accept_canonical_events(&card, None).await {
+                tracing::warn!(%card, %error, "Dispatcher Assistant input remains held");
+            }
+        }
         Ok(())
     }
 
@@ -343,50 +372,36 @@ impl Inner {
         Ok(())
     }
 
-    async fn canonical_event_sources(
-        self: &Arc<Self>,
-        card: &CardId,
+    /// One ordered selection for POST, live through hints and cold reconciliation.
+    /// Facts carry fingerprints, never permission to accept or execute.
+    pub(super) async fn read_event_prefix_tx(
+        &self,
+        tx: &mut Transaction<'_, Sqlite>,
+        admission: &EventAdmission,
         incoming: Option<(&Event, i64)>,
-    ) -> Result<Vec<(AcceptedInputRef, InputSource)>> {
-        let producer = self.producer()?;
-        let pool = self
-            .repo
-            .sqlite_db()
-            .ok_or_else(|| CalmError::Internal("event admission requires SQLite".into()))?;
-        let card_name = card.to_string();
-        let (admission, floor) = write_in_tx_typed(self.repo.as_ref(), {
-            let card = card_name.clone();
-            move |tx| {
-                Box::pin(async move {
-                    let carrier = conversation::current_input_content_carrier_tx(tx, &card).await?;
-                    let admission = PlannerAdmission::load_tx(tx, &card).await?;
-                    if admission.worker != carrier.worker_session_id() {
-                        return Err(CalmError::Forbidden("event target worker changed".into()));
-                    }
-                    let floor = carrier.snapshot()["push_watermark"]
-                        .as_i64()
-                        .ok_or_else(|| CalmError::Conflict("missing event watermark".into()))?;
-                    let floor = floor.max(admission.baseline);
-                    Ok((admission, floor))
-                })
-            }
-        })
-        .await?;
-        let worker = admission.worker.clone();
-        let track = admission.track.clone();
-        if incoming.is_some_and(|(_, id)| id > 0 && id <= admission.baseline) {
+    ) -> Result<Vec<EventInputFact>> {
+        if incoming.is_some_and(|(_, id)| id > 0 && id <= admission.baseline()) {
             return Ok(vec![]);
         }
+        let carrier =
+            conversation::current_input_content_carrier_tx(tx, admission.card().as_str()).await?;
+        if admission.worker() != carrier.worker_session_id() {
+            return Err(CalmError::Forbidden("event target worker changed".into()));
+        }
+        let floor = carrier.snapshot()["push_watermark"]
+            .as_i64()
+            .ok_or_else(|| CalmError::Conflict("missing event watermark".into()))?
+            .max(admission.baseline());
         if let Some((event, id)) = incoming {
             if id <= 0 {
                 return Err(CalmError::Forbidden(
                     "event input requires a real persisted envelope".into(),
                 ));
             }
-            let actual = event_inputs::track_prefix(
-                pool.read_pool(),
-                track.as_str(),
-                &PLANNER_CATCH_UP_KINDS,
+            let actual = event_inputs::track_prefix_tx(
+                tx,
+                admission.track().as_str(),
+                admission.kinds(),
                 id - 1,
                 Some(id),
             )
@@ -400,41 +415,131 @@ impl Inner {
             }
         }
         let through = incoming.map(|(_, id)| id);
-        let mut qualified = vec![];
-        for fact in event_inputs::track_prefix(
-            pool.read_pool(),
-            track.as_str(),
-            &PLANNER_CATCH_UP_KINDS,
+        Ok(event_inputs::track_prefix_tx(
+            tx,
+            admission.track().as_str(),
+            admission.kinds(),
             floor,
             through,
         )
-        .await?
-        {
-            if let Some(input) = self.qualify(&track, fact).await? {
-                qualified.push(input);
+        .await?)
+    }
+
+    /// The only event acceptance composition. Captured facts are qualified under
+    /// the outer writer and compared with SQL again before the Truth owner runs.
+    pub(super) async fn accept_event_prefix_tx(
+        &self,
+        tx: &mut Transaction<'_, Sqlite>,
+        producer: &Producer,
+        admission: &EventAdmission,
+        facts: Vec<EventInputFact>,
+    ) -> Result<CurrentInputCarrier> {
+        producer.current_owner()?;
+        admission.authorize_tx(tx).await?;
+        let card = admission.card().to_string();
+        let worker = admission.worker().to_owned();
+        let mut carrier = conversation::current_input_content_carrier_tx(tx, &card).await?;
+        if carrier.worker_session_id() != worker {
+            return Err(CalmError::Conflict("event target changed".into()));
+        }
+        for fact in facts {
+            let Some(observation) = admission.qualify(self.repo.as_ref(), &fact).await? else {
+                continue;
+            };
+            let observation = SystemObservation::try_from(observation)
+                .map_err(|error| CalmError::Forbidden(error.into()))?;
+            let input = QualifiedEvent { fact, observation };
+            let binding = EventBinding {
+                producer: producer.clone(),
+                database: self.repo.database_id(),
+                track: admission.track().clone(),
+                card: card.clone(),
+                worker: worker.clone(),
+                admission: admission.clone(),
+                event: input.fact,
+            };
+            binding.authorize_tx(tx, &carrier).await?;
+            if binding.event.envelope.id
+                <= carrier.snapshot()["push_watermark"].as_i64().unwrap_or(0)
+            {
+                continue;
+            }
+            match admission {
+                EventAdmission::Assistant(_) => {
+                    conversation::system_assistant_accept_tx(tx, &card, binding.event.envelope.id)
+                        .await?;
+                    // The atomic owner reloads privately; our carrier is now stale.
+                    carrier = conversation::current_input_content_carrier_tx(tx, &card).await?;
+                }
+                EventAdmission::Planner(_) => {
+                    let mut observation = input.observation.observation().clone();
+                    crate::report_read_ledger::delta::attach_tx(
+                        tx,
+                        &worker,
+                        &binding.event.envelope.event,
+                        &mut observation,
+                    )
+                    .await?;
+                    let observation = SystemObservation::try_from(observation)
+                        .map_err(|error| CalmError::Forbidden(error.into()))?;
+                    conversation::accept_pending_system_tx(
+                        tx,
+                        &mut carrier,
+                        observation,
+                        &binding.event,
+                    )
+                    .await?;
+                }
             }
         }
+        producer.current_owner()?;
+        Ok(carrier)
+    }
+
+    async fn canonical_event_sources(
+        self: &Arc<Self>,
+        card: &CardId,
+        incoming: Option<(&Event, i64)>,
+    ) -> Result<Vec<(AcceptedInputRef, InputSource)>> {
+        let producer = self.producer()?;
+        let pool = self
+            .repo
+            .sqlite_db()
+            .ok_or_else(|| CalmError::Internal("event admission requires SQLite".into()))?;
+        let card_name = card.to_string();
+        let incoming = incoming.map(|(event, id)| (event.clone(), id));
+        let (admission, facts) = write_in_tx_typed(self.repo.as_ref(), {
+            let (inner, card, incoming) = (self.clone(), card_name.clone(), incoming.clone());
+            move |tx| {
+                Box::pin(async move {
+                    let admission = EventAdmission::load_tx(tx, &card).await?;
+                    let facts = inner
+                        .read_event_prefix_tx(
+                            tx,
+                            &admission,
+                            incoming.as_ref().map(|(event, id)| (event, *id)),
+                        )
+                        .await?;
+                    Ok((admission, facts))
+                })
+            }
+        })
+        .await?;
+        if incoming
+            .as_ref()
+            .is_some_and(|(_, id)| *id > 0 && *id <= admission.baseline())
+        {
+            return Ok(vec![]);
+        }
+        let worker = admission.worker().to_owned();
+        let track = admission.track().clone();
         #[cfg(feature = "fixtures")]
         crate::test_seams::pause_point("planner-events-before-accept", card.as_str()).await;
         let database = self.repo.database_id();
         let (floor, stored) = write_in_tx_typed(self.repo.as_ref(), {
-            let (card, worker, track, database, producer) = (card_name.clone(), worker.clone(), track.clone(), database.clone(), producer.clone());
-            let admission = admission.clone();
+            let (inner, admission, producer) = (self.clone(), admission.clone(), producer.clone());
             move |tx| Box::pin(async move {
-                admission.authorize_tx(tx).await?;
-                let mut carrier = conversation::current_input_content_carrier_tx(tx, &card).await?;
-                if carrier.worker_session_id() != worker { return Err(CalmError::Conflict("event target changed".into())); }
-                for input in qualified {
-                    let binding = EventBinding { producer: producer.clone(), database: database.clone(), track: track.clone(), card: card.clone(), worker: worker.clone(), admission: admission.clone(), event: input.fact };
-                    binding.authorize_tx(tx, &carrier).await?;
-                    if binding.event.envelope.id > carrier.snapshot()["push_watermark"].as_i64().unwrap_or(0) {
-                        let mut observation = input.observation.observation().clone();
-                        crate::report_read_ledger::delta::attach_tx(tx, &worker, &binding.event.envelope.event, &mut observation).await?;
-                        let observation = SystemObservation::try_from(observation)
-                            .map_err(|error| CalmError::Forbidden(error.into()))?;
-                        conversation::accept_pending_system_tx(tx, &mut carrier, observation, &binding.event).await?;
-                    }
-                }
+                let carrier = inner.accept_event_prefix_tx(tx, &producer, &admission, facts).await?;
                 let mut stored = vec![];
                 for input in &carrier.checkpoint().pending {
                     if let PendingInput::System { observation_id, observation, envelope_id: Some(envelope), .. } = input {
@@ -465,7 +570,7 @@ impl Inner {
             let facts = event_inputs::track_prefix(
                 pool.read_pool(),
                 track.as_str(),
-                &PLANNER_CATCH_UP_KINDS,
+                admission.kinds(),
                 stored.envelope - 1,
                 Some(stored.envelope),
             )
@@ -473,7 +578,16 @@ impl Inner {
             let fact = facts.into_iter().next().ok_or_else(|| {
                 CalmError::Conflict("accepted System source event is unavailable".into())
             })?;
-            let Some(qualified) = self.qualify(&track, fact).await? else {
+            let Some(qualified) = admission
+                .qualify(self.repo.as_ref(), &fact)
+                .await?
+                .map(|observation| {
+                    SystemObservation::try_from(observation)
+                        .map(|observation| QualifiedEvent { fact, observation })
+                        .map_err(|error| CalmError::Forbidden(error.into()))
+                })
+                .transpose()?
+            else {
                 return Err(CalmError::Forbidden(
                     "accepted event no longer qualifies this producer".into(),
                 ));
