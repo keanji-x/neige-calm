@@ -501,7 +501,8 @@ pub(super) fn paths_changed_by_event(event: &Event, track_id: &TrackId) -> PathD
         // Operational history: persisted and replayable, no track-fs projection.
         Event::WorkspaceLeased { .. }
         | Event::WorkspaceReleased { .. }
-        | Event::TrackWakeRequested { .. } => {}
+        | Event::TrackWakeRequested { .. }
+        | Event::AssistantInputRequested { .. } => {}
         Event::ForgePrMerged { .. }
         | Event::AskRequested { .. }
         | Event::AskAnswered { .. }

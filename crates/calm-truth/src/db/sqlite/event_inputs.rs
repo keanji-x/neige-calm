@@ -137,3 +137,14 @@ async fn read(connection: &mut SqliteConnection, id: i64) -> Result<EventInputFa
         .ok_or_else(|| CalmError::NotFound(format!("input event {id}")))?;
     decode(row)
 }
+
+/// Current allocated event cutoff, including pruned events. Migration 0004 owns
+/// the AUTOINCREMENT contract: sqlite_sequence survives deletion, unlike MAX(id).
+/// Empty original carriers must be initialized at this cutoff before registration.
+pub async fn event_creation_floor_tx(tx: &mut Transaction<'_, Sqlite>) -> Result<i64> {
+    Ok(sqlx::query_scalar(
+        "SELECT COALESCE((SELECT seq FROM sqlite_sequence WHERE name='events'),0)",
+    )
+    .fetch_one(&mut **tx)
+    .await?)
+}

@@ -41,7 +41,7 @@ pub(super) fn is_explicit_immediate(
     }) if value.value() == "BEGIN IMMEDIATE" && value.suffix().is_empty())
 }
 
-fn call_end(flat: &[(char, usize)], open: usize) -> Option<usize> {
+pub(super) fn call_end(flat: &[(char, usize)], open: usize) -> Option<usize> {
     if flat.get(open)?.0 != '(' {
         return None;
     }

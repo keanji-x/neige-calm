@@ -4,6 +4,11 @@
 # Keeping the historical name literal preserves raw coverage; no scan rule changes.
 # The existing occurrence scan runs once in CI lint; no extra check is added.
 # Ordinary new tables need no fixed inventory; references use this same baseline.
+# System Assistant namespace owner bounded exception: runtime_id/crates 1108 -> 1109
+# is the existing required original-carrier field in a typed Human receipt fixture.
+# The test calls the real Human acceptance/creation owners to prove mutual permanent
+# namespace exclusion. No new domain name, fallback, scan rule or invocation is added;
+# later changes to this frozen receipt contract update its fixture and baseline.
 # #3176 bounded contract exception: spec/crates 521 -> 523 adds the existing
 # event_spec helper for the remove receipt and its serialized-field assertion.
 # No new domain name, scan rule, exemption or check is introduced; the existing

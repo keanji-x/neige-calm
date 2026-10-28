@@ -1,0 +1,15 @@
+{
+  "description": "A registered System Assistant source freezes the exact original target, worker and input subject.",
+  "wire": {
+    "ev": "assistant.input_requested",
+    "data": {
+      "card_id": "card-01",
+      "track_id": "track-01",
+      "original_worker": "worker-01",
+      "source": "today-summary",
+      "subject": "summary-01",
+      "version": 1,
+      "text": "Frozen summary input."
+    }
+  }
+}

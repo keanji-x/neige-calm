@@ -72,6 +72,17 @@
 # existing baseline; ordinary backend/test additions need no inventory edit.
 # The existing 120-character shape and single CI scan remain unchanged.
 
+# System Assistant owner adds six long_literal matches, all persistence queries
+# and real-schema boundary fixtures in conversation/system_assistant.rs and its
+# tests. They are SQL, not agent-facing instructions. Query/fixture changes edit
+# their source and regenerate this existing baseline; ordinary test additions
+# require no new inventory or CI invocation. The single scan is unchanged.
+
+# System Assistant L2 hardening adds one long_literal SQL REPLACE fixture in
+# system_assistant/tests/adversarial.rs. It exercises permanent original ACKs,
+# not agent-facing prose. Changing the query updates its source and this existing
+# baseline; ordinary test additions require no new inventory or scan.
+
 set -uo pipefail
 
 cd "$(git rev-parse --show-toplevel)" || exit 1

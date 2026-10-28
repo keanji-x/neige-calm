@@ -137,6 +137,7 @@ const POST_0067_MIGRATION_NAMES: &[&str] = &[
     "0197_workspace_executions_alias_history_index.sql",
     "0198_agent_backend_registry.sql",
     "0199_worker_session_backends.sql",
+    "0200_system_assistant_entries.sql",
 ];
 
 #[test]

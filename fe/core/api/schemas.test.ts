@@ -3,6 +3,42 @@ import { describe, expect, it } from 'vitest';
 import { decodeWireEvent } from './schemas.js';
 
 describe('core/api wire decode behavior', () => {
+  it('decodes registered Assistant input requests with the Rust wire fields and u32 version', () => {
+    const data = {
+      card_id: 'card-01', track_id: 'track-01', original_worker: 'worker-01',
+      source: 'today-summary', subject: 'summary-01', version: 1, text: 'Frozen summary input.',
+    };
+    for (const version of [0, 1, 4294967295]) {
+      const payload = { ev: 'assistant.input_requested', data: { ...data, version } };
+      expect(decodeWireEvent(payload)).toEqual({ status: 'ready', value: payload });
+    }
+    // These are String fields on Event; producer acceptance rules belong to the Rust owner.
+    expect(decodeWireEvent({ ev: 'assistant.input_requested', data: {
+      ...data, subject: '', text: '',
+    } }).status).toBe('ready');
+  });
+
+  it('rejects missing or mistyped Assistant input fields, unregistered sources and non-u32 versions', () => {
+    const data = {
+      card_id: 'card-01', track_id: 'track-01', original_worker: 'worker-01',
+      source: 'today-summary', subject: 'summary-01', version: 1, text: 'Frozen summary input.',
+    };
+    const reject = (value: unknown) => {
+      const decoded = decodeWireEvent({ ev: 'assistant.input_requested', data: value });
+      expect(decoded.status).toBe('failed');
+      if (decoded.status === 'failed') expect(decoded.error.kind).toBe('decode');
+    };
+    for (const key of Object.keys(data)) {
+      const missing: Record<string, unknown> = { ...data };
+      delete missing[key];
+      reject(missing);
+      reject({ ...data, [key]: null });
+      reject({ ...data, [key]: key === 'version' ? '1' : 1 });
+    }
+    for (const source of ['TodaySummary', 'today_summary', 'unregistered']) reject({ ...data, source });
+    for (const version of [-1, 0.5, 4294967296, Infinity, NaN]) reject({ ...data, version });
+  });
+
   it('forge_pr_checks preserves diagnostics and independent collection completeness', () => {
     const data = {
       track_id: 'track-01', pr_number: 1, conclusion: 'failure',

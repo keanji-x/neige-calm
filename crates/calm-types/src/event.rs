@@ -491,6 +491,18 @@ pub enum Event {
         text: String,
     },
 
+    /// A registered kernel producer requests input on its original Assistant carrier.
+    #[serde(rename = "assistant.input_requested")]
+    AssistantInputRequested {
+        card_id: CardId,
+        track_id: TrackId,
+        original_worker: String,
+        source: crate::system_assistant::SystemAssistantSource,
+        subject: String,
+        version: u32,
+        text: String,
+    },
+
     #[serde(rename = "overlay.set")]
     OverlaySet(Overlay),
     #[serde(rename = "overlay.deleted")]
@@ -1053,6 +1065,12 @@ impl Event {
                 entity_kind: Some("card".into()),
                 entity_id: Some(card_id.to_string()),
             },
+            Event::AssistantInputRequested { card_id, .. } => EventMetadata {
+                kind_tag,
+                plugin_id: None,
+                entity_kind: Some("card".into()),
+                entity_id: Some(card_id.to_string()),
+            },
             Event::TrackWakeRequested { track_id, .. } => EventMetadata {
                 kind_tag,
                 plugin_id: None,
@@ -1230,6 +1248,7 @@ impl Event {
             Event::HarnessQueueChanged { .. } => "harness.queue.changed",
             Event::TrackReportEdited { .. } => "track.report_edited",
             Event::TrackWakeRequested { .. } => "track.wake_requested",
+            Event::AssistantInputRequested { .. } => "assistant.input_requested",
             Event::OverlaySet(_) => "overlay.set",
             Event::OverlayDeleted { .. } => "overlay.deleted",
             Event::TerminalDeleted { .. } => "terminal.deleted",
@@ -1498,6 +1517,13 @@ pub fn topics(ev: &Event) -> Vec<String> {
             "*".into(),
         ],
 
+        Event::AssistantInputRequested {
+            card_id, track_id, ..
+        } => vec![
+            format!("card:{card_id}"),
+            format!("track:{track_id}"),
+            "*".into(),
+        ],
         Event::PlanUpdated { track_id, .. } | Event::TrackWakeRequested { track_id, .. } => {
             vec![format!("track:{}", track_id), "*".into()]
         }

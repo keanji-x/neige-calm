@@ -8,6 +8,9 @@ use std::path::{Path, PathBuf};
 #[path = "deferred_write_tx_invariant/immediate_constructor.rs"]
 mod owned_constructor;
 
+#[path = "deferred_write_tx_invariant/nested_savepoint.rs"]
+mod nested_savepoint;
+
 /// Production files whose every deferred-begin hit is test-gated at the MODULE REGISTRATION site.
 const TEST_GATED_AT_REGISTRATION: &[(&str, &str, &str)] = &[(
     "calm-truth/src/db/sqlite/runtime_read_flip_support.rs",
@@ -518,6 +521,7 @@ fn scan_deferred_begins(flat: &[(char, usize)]) -> Vec<(usize, &'static str)> {
                             && p > 0
                             && flat[p - 1].0 == ':'
                             && !owned_constructor::is_explicit_immediate(flat, start, k)
+                            && !nested_savepoint::is_explicit_savepoint(flat, start, k)
                         {
                             hits.push((line, "deferred UFCS `::begin(`"));
                         }

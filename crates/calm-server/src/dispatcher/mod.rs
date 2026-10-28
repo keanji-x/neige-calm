@@ -194,7 +194,8 @@ pub(crate) fn event_warrants_planner_push_with_role(
         | Event::ForgeIssueSearched { .. }
         | Event::ProposalSubmitted { .. }
         | Event::ProposalResolved { .. }
-        | Event::WorktreeRemoved { .. } => false,
+        | Event::WorktreeRemoved { .. }
+        | Event::AssistantInputRequested { .. } => false,
     }
 }
 
@@ -1250,7 +1251,8 @@ impl Inner {
             | Event::WorkspaceLeased { .. }
             | Event::WorktreeProvisioned { .. }
             | Event::WorktreeCommitted { .. }
-            | Event::WorktreeRemoved { .. } => {
+            | Event::WorktreeRemoved { .. }
+            | Event::AssistantInputRequested { .. } => {
                 tracing::warn!(
                     kind = envelope.event.kind_tag(),
                     "dispatcher received event with no handler; filter widened unexpectedly",
@@ -1804,7 +1806,8 @@ pub(crate) fn harness_observation_from_event(
         | Event::ForgeIssueSearched { .. }
         | Event::ProposalSubmitted { .. }
         | Event::ProposalResolved { .. }
-        | Event::WorktreeRemoved { .. } => None,
+        | Event::WorktreeRemoved { .. }
+        | Event::AssistantInputRequested { .. } => None,
     }
 }
 

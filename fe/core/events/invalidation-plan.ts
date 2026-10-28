@@ -267,6 +267,7 @@ function policies(): PolicyMap {
   'forge.issue.searched': noop('Issue search has no query consumer.'),
   'forge.issue.closed': noop('Issue-close rows have no query consumer.'),
   'track.wake_requested': noop('A Planner wake changes no queried row; the harness events that follow do.'),
+  'assistant.input_requested': noop('An Assistant input request changes no queried row; the harness events that follow do.'),
   'worktree.provisioned': noop('Worktree rows have no query consumer.'),
   'worktree.committed': noop('Worktree rows have no query consumer.'),
   'worktree.removed': noop('Worktree rows have no query consumer.'),

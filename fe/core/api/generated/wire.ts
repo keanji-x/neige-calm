@@ -263,7 +263,7 @@ removed_item_count: number, } } | { "ev": "harness.user_message.enqueued", "data
 /**
  * Submitting plugin id when `author == EditAuthor::Plugin`; `None` for every other author.
  */
-author_plugin_id?: string, edit_id: string, summary_before: string, summary_after: string, body_before: string, body_after: string, agent_message?: string, } } | { "ev": "track.wake_requested", "data": { track_id: TrackId, source: string, key: string, text: string, } } | { "ev": "overlay.set", "data": Overlay } | { "ev": "overlay.deleted", "data": { plugin_id: string, entity_kind: string, entity_id: string, kind: string, } } | { "ev": "terminal.deleted", "data": { id: string, card_id: CardId, } } | { "ev": "plugin.state", "data": { id: string, state: string, 
+author_plugin_id?: string, edit_id: string, summary_before: string, summary_after: string, body_before: string, body_after: string, agent_message?: string, } } | { "ev": "track.wake_requested", "data": { track_id: TrackId, source: string, key: string, text: string, } } | { "ev": "assistant.input_requested", "data": { card_id: CardId, track_id: TrackId, original_worker: string, source: SystemAssistantSource, subject: string, version: number, text: string, } } | { "ev": "overlay.set", "data": Overlay } | { "ev": "overlay.deleted", "data": { plugin_id: string, entity_kind: string, entity_id: string, kind: string, } } | { "ev": "terminal.deleted", "data": { id: string, card_id: CardId, } } | { "ev": "plugin.state", "data": { id: string, state: string, 
 /**
  * Crash reason / initialize-rejected message, surfaced to the WS so the UI can show it without a
  * separate `/log` fetch; `None` for healthy transitions.
@@ -720,6 +720,8 @@ export type SourceProvenance = "full_text" | "summary" | "web_page" | "manual";
  * One anchor of a source: `text` is a byte-exact substring of the body (`body[start..end]`, UTF-8 byte offsets).
  */
 export type SourceQuote = { id: string, text: string, start: number, end: number, };
+
+export type SystemAssistantSource = "today-summary";
 
 export type SystemInputPresentation = Exclude<HarnessInputPresentation, 'user'>;
 

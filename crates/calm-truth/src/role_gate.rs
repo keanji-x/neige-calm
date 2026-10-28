@@ -76,6 +76,9 @@ pub enum RoleViolation {
     #[error("task.git_delivery_settled requires a kernel actor (actor={actor})")]
     NotKernelForTaskGitDeliverySettled { actor: String },
 
+    #[error("assistant.input_requested requires kernel attribution and exact Card scope")]
+    InvalidAssistantInput,
+
     #[error("track.wake_requested requires a kernel actor (actor={actor})")]
     NotKernelForTrackWakeRequested { actor: String },
 
@@ -357,6 +360,15 @@ pub fn enforce_role(
         });
     }
 
+    if let Event::AssistantInputRequested {
+        card_id, track_id, ..
+    } = event
+        && (!matches!(actor, ActorId::Kernel | ActorId::KernelDispatcher)
+            || scope.card_id() != Some(card_id)
+            || scope.track_id() != Some(track_id))
+    {
+        return Err(RoleViolation::InvalidAssistantInput);
+    }
     if matches!(event, Event::TrackWakeRequested { .. })
         && !matches!(actor, ActorId::Kernel | ActorId::KernelDispatcher)
     {
@@ -1674,6 +1686,58 @@ mod tests {
                 enforce_role(&actor, &event, &track_scope("w", "c"), &cache, &wcc).is_err(),
                 "{actor:?}"
             );
+        }
+    }
+
+    #[test]
+    fn assistant_input_requires_kernel_and_exact_target_scope() {
+        let cache = CardRoleCache::new();
+        let wcc = seeded_wcc();
+        let event = Event::AssistantInputRequested {
+            card_id: "c".into(),
+            track_id: "w".into(),
+            original_worker: "worker".into(),
+            source: calm_types::system_assistant::SystemAssistantSource::TodaySummary,
+            subject: "bootstrap".into(),
+            version: 1,
+            text: "opening".into(),
+        };
+        let scope = EventScope::Card {
+            card: "c".into(),
+            track: "w".into(),
+            area: "a".into(),
+        };
+        for actor in [ActorId::Kernel, ActorId::KernelDispatcher] {
+            enforce_role(&actor, &event, &scope, &cache, &wcc).unwrap();
+            for wrong in [
+                track_scope("w", "a"),
+                EventScope::Card {
+                    card: "other".into(),
+                    track: "w".into(),
+                    area: "a".into(),
+                },
+                EventScope::Card {
+                    card: "c".into(),
+                    track: "other".into(),
+                    area: "a".into(),
+                },
+            ] {
+                assert!(matches!(
+                    enforce_role(&actor, &event, &wrong, &cache, &wcc),
+                    Err(RoleViolation::InvalidAssistantInput)
+                ));
+            }
+        }
+        for actor in [
+            ActorId::User,
+            ActorId::Plugin("p".into()),
+            ActorId::AiPlanner("p".into()),
+            ActorId::AiCodexSession("worker".into()),
+        ] {
+            assert!(matches!(
+                enforce_role(&actor, &event, &scope, &cache, &wcc),
+                Err(RoleViolation::InvalidAssistantInput)
+            ));
         }
     }
 

@@ -372,6 +372,20 @@ export const trackWakeRequestedSchema = z.object({
   }),
 });
 
+/** Registered kernel input request; acceptance policy remains with the Rust Assistant owner. */
+export const assistantInputRequestedSchema = z.object({
+  ev: z.literal('assistant.input_requested'),
+  data: z.object({
+    card_id: z.string(),
+    track_id: z.string(),
+    original_worker: z.string(),
+    source: z.literal('today-summary'),
+    subject: z.string(),
+    version: z.uint32(),
+    text: z.string(),
+  }),
+});
+
 export const overlaySetSchema = z.object({
   ev: z.literal('overlay.set'),
   data: overlaySchema,
@@ -1008,6 +1022,7 @@ export const wireEventSchema = z.discriminatedUnion('ev', [
   harnessQueueChangedSchema,
   trackReportEditedSchema,
   trackWakeRequestedSchema,
+  assistantInputRequestedSchema,
   overlaySetSchema,
   overlayDeletedSchema,
   terminalDeletedSchema,

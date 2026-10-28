@@ -2650,6 +2650,20 @@ async fn planner_push_wiring_table() -> PlannerPushWiringTable {
         ),
         // Never-push kinds: explicit-false on both seams.
         row(
+            Event::AssistantInputRequested {
+                card_id: planner.clone(),
+                track_id: track.clone(),
+                original_worker: "assistant-worker".into(),
+                source: calm_types::system_assistant::SystemAssistantSource::TodaySummary,
+                subject: "summary-01".into(),
+                version: 1,
+                text: "Frozen summary input.".into(),
+            },
+            ActorId::Kernel,
+            false,
+            false,
+        ),
+        row(
             Event::AreaUpdated(crate::model::Area {
                 id: area.clone(),
                 name: "c".into(),

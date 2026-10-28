@@ -144,4 +144,15 @@ describe('invalidation plan contract', () => {
     expectTypeOf<EventKind>().toEqualTypeOf<WireEvent['ev']>();
     expectTypeOf<InvalidationPolicy>().toMatchTypeOf<{ type: string }>();
   });
+
+  it('plans no cache effects for an Assistant input request', () => {
+    const event = wireEventSchema.parse({
+      ev: 'assistant.input_requested',
+      data: {
+        card_id: 'card-01', track_id: 'track-01', original_worker: 'worker-01',
+        source: 'today-summary', subject: 'summary-01', version: 1, text: 'Frozen summary input.',
+      },
+    });
+    expect(invalidationPlanFor(event)).toEqual({ invalidate: [], remove: [], writeThrough: [] });
+  });
 });
