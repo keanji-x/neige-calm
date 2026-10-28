@@ -6,7 +6,6 @@ import '../../../styles/entry.css';
 import { ChatThread } from './public.tsx';
 import drawerStyles from '../../../ui/drawer/drawer.module.css';
 import { buildTranscript } from '../../../../../core/domain/conversation.ts';
-import type { HarnessItem } from '../../../../../core/api/generated/wire.ts';
 import type { Conversation, ConversationActivity, TranscriptEntry } from '../../../../../core/domain/conversation.ts';
 
 afterEach(cleanup);
@@ -578,7 +577,7 @@ describe('what a failed call says to assistive technology', () => {
 
 
 it('reads OpenCode thoughts and tool details as live items update and a reply follows', async () => {
-  function row(id: number, type: string, item: Record<string, unknown>, method = 'item/started'): HarnessItem {
+  function row(id: number, type: string, item: Record<string, unknown>, method = 'item/started'): Parameters<typeof buildTranscript>[0][number] {
     return { id, item_uuid: String(id), item_type: type, method, worker_session_id: 'worker',
       card_id: 'c1', track_id: 'w1', thread_id: 'thread', turn_id: 'turn', created_at_ms: id,
       turn_error_text: null, params: JSON.stringify({ item: { id: String(id), type, ...item } }) };
@@ -597,6 +596,9 @@ it('reads OpenCode thoughts and tool details as live items update and a reply fo
   expect(screen.getByText('Checking the inventory and shop counts')).toBeTruthy();
   await userEvent.click(screen.getByRole('button', { name: /Calling tool.*Read inventory/ }));
   expect(screen.getByText(/inventory.csv/)).toBeTruthy();
+  const inputDetail = screen.getByText(/inventory.csv/);
+  expect(getComputedStyle(inputDetail).whiteSpace).toBe('pre-wrap');
+  expect(inputDetail.textContent).toContain('Input\n{\n  \"path\": \"inventory.csv\"\n}');
   const completed = row(2, 'dynamicToolCall', { ...input, status: 'completed',
     result: { content: [{ type: 'text', text: '<script>plain tool output</script>' }] } }, 'item/completed');
   const reply = row(3, 'agentMessage', { text: 'Inventory checked.' }, 'item/completed');

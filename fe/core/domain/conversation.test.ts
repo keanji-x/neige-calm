@@ -1349,15 +1349,19 @@ it('requires archive metadata on Assistant summaries and retains a saved timesta
 
 
 describe('ACP activity content in the transcript', () => {
-  function nativeRow(id: number, itemType: string, item: Record<string, unknown>, method = 'item/completed'): HarnessItem {
+  function nativeRow(id: number, itemType: string, item: Record<string, unknown>, method = 'item/completed'): Parameters<typeof buildTranscript>[0][number] {
     return { id, worker_session_id: 'worker', card_id: 'card', track_id: 'track', thread_id: 'thread',
       turn_id: 'turn', item_uuid: String(id), item_type: itemType, method,
       params: JSON.stringify({ item: { id: String(id), type: itemType, ...item } }),
       created_at_ms: id, turn_error_text: null };
   }
 
+  function projectActivity(item: Parameters<typeof buildTranscript>[0][number]) {
+    return buildTranscript([item]).find(entry => entry.author === 'activity');
+  }
+
   it('keeps the native tool name, input and output readable after completion', () => {
-    const activity = harnessItemToActivity(nativeRow(1, 'dynamicToolCall', {
+    const activity = projectActivity(nativeRow(1, 'dynamicToolCall', {
       tool: 'Read inventory', arguments: { path: 'inventory.csv' }, status: 'completed',
       result: { content: [{ type: 'text', text: 'Found 42 shops' }], structuredContent: { count: 42 } },
     }));
@@ -1376,7 +1380,25 @@ describe('ACP activity content in the transcript', () => {
     expect(entries[0]).toMatchObject({ author: 'activity', verb: 'Thought', content: 'Checking the current inventory.' });
     expect(mergeTranscript(buildTranscript([thought]), [{ id: 'live', author: 'agent', text: 'Done.', atMs: 4 }])[0])
       .toMatchObject({ author: 'activity', content: 'Checking the current inventory.' });
-    expect(harnessItemToActivity(nativeRow(1, 'reasoning', { summary: ['Checking'], content: [] }, 'item/started')))
+    expect(projectActivity(nativeRow(1, 'reasoning', { summary: ['Checking'], content: [] }, 'item/started')))
       .toMatchObject({ state: 'running', content: 'Checking' });
   });
+
+  it('keeps failure evidence separate from readable tool content', () => {
+    expect(projectActivity(nativeRow(1, 'dynamicToolCall', {
+      tool: 'Read inventory', arguments: { path: 'missing.csv' }, status: 'failed',
+      error: { message: 'File missing' }, result: { content: [{ type: 'text', text: 'No such file' }] },
+    }))).toMatchObject({ state: 'failed', detail: 'File missing', content: expect.stringContaining('No such file') });
+  });
+
+  it('bounds large content and tolerates empty or malformed optional bodies', () => {
+    const large = projectActivity(nativeRow(1, 'reasoning', { summary: ['x'.repeat(40_000)] }));
+    expect(large?.content?.length).toBeLessThan(33_000);
+    expect(large?.content).toContain('(truncated)');
+    for (const item of [{ summary: null }, { summary: [null, 1, {}], content: {} }]) {
+      expect(projectActivity(nativeRow(1, 'reasoning', item))?.content).toBeUndefined();
+    }
+    expect(projectActivity(nativeRow(1, 'dynamicToolCall', { result: { content: null } }))?.content).toBeUndefined();
+  });
+
 });

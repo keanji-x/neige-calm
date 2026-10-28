@@ -1475,7 +1475,7 @@ function placeTurnOutcomes(
 }
 
 /**
- * A finished `Thought` survives only while nothing but turn outcomes follows it. Shared by
+ * Readable thoughts remain available; an empty `Thought` status survives only until later activity. Shared by
  * `buildTranscript` and `mergeTranscript` so the two agree on which thought is "followed".
  */
 export function retireFollowedThoughts(entries: readonly TranscriptEntry[]): readonly TranscriptEntry[] {

@@ -4,6 +4,7 @@ import { Code } from '@astryxdesign/core/Code';
 import type { ConversationActivity } from '../../../../../core/domain/conversation.ts';
 import { ToolCallGroup, withDetailOpen, type ToolCallGroupUi } from './activity-groups.tsx';
 import type { ThreadReadingView } from './reading-view.tsx';
+import styles from './activity-groups.module.css';
 
 /** Single quiet-sync activities keep their existing inline rendering, without a fresh array prop. */
 export const ActivityRun = memo(function ActivityRun({ activities, entry, ui, updateGroup, live }: {
@@ -47,6 +48,6 @@ export function toolCallOf(activity: ConversationActivity): ChatToolCallItem {
     status: activity.state === 'done' ? 'complete' : activity.state === 'failed' ? 'error' : 'running',
     duration,
     errorMessage: activity.detail ?? undefined,
-    resultDetail: body === '' ? undefined : <div data-nc-detail={activity.id}><Code>{body}</Code></div>,
+    resultDetail: body === '' ? undefined : <div className={styles.detail} data-nc-detail={activity.id}><Code>{body}</Code></div>,
   };
 }
