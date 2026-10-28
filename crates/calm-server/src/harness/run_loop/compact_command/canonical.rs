@@ -4,8 +4,7 @@ use crate::auth::HumanInputSource;
 
 pub(in crate::harness::run_loop) mod planner;
 use crate::db::sqlite::conversation::{
-    RuntimeExecutionFence, RuntimeFrameAfterWrite, current_input_carrier_tx,
-    current_input_fact_carrier_tx, persist_runtime_frame_tx,
+    RuntimeExecutionFence, current_input_carrier_tx, persist_runtime_frame_tx,
 };
 use crate::harness::backend::{MaintenanceObservation, MaintenanceTarget};
 use crate::harness::compact_outcome::{CompactOutcome, CompactStatus};
@@ -15,89 +14,13 @@ use crate::harness::snapshot::{CanonicalHarnessSnapshot, canonical_runtime_heade
 use planner::Issuer;
 
 fn target(inner: &Inner, outcome: &CompactOutcome) -> MaintenanceTarget {
-    Owner::of(inner).target(outcome)
-}
-
-/// The runtime frame owner, carried into a transition's transaction.
-struct Owner {
-    card: String,
-    worker: String,
-    track: String,
-}
-
-impl Owner {
-    fn of(inner: &Inner) -> Self {
-        Self {
-            card: inner.card_id.to_string(),
-            worker: inner.worker_session_id.clone(),
-            track: inner.track_id.to_string(),
-        }
+    MaintenanceTarget {
+        card_id: inner.card_id.to_string(),
+        track_id: inner.track_id.to_string(),
+        worker_session_id: inner.worker_session_id.clone(),
+        thread_id: outcome.thread_id.clone(),
+        operation_id: outcome.operation_id.clone(),
     }
-
-    fn target(&self, outcome: &CompactOutcome) -> MaintenanceTarget {
-        MaintenanceTarget {
-            card_id: self.card.clone(),
-            track_id: self.track.clone(),
-            worker_session_id: self.worker.clone(),
-            thread_id: outcome.thread_id.clone(),
-            operation_id: outcome.operation_id.clone(),
-        }
-    }
-
-    async fn current_tx(
-        &self,
-        tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
-    ) -> Result<CommittedFrame> {
-        let carrier = current_input_fact_carrier_tx(tx, &self.card, &self.worker).await?;
-        canonical::written(RuntimeFrameAfterWrite {
-            snapshot: carrier.snapshot().clone(),
-            execution_fence: RuntimeExecutionFence::from_carrier(&carrier),
-        })
-    }
-
-    async fn persist_tx(
-        &self,
-        tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
-        scope: &EventScope,
-        expected: &CommittedFrame,
-        next: &CanonicalHarnessSnapshot,
-        compact_start: bool,
-    ) -> Result<(CommittedFrame, Vec<crate::event::BroadcastEnvelope>)> {
-        let events = planner::append_transition_tx(
-            tx,
-            &TrackId(self.track.clone()),
-            scope,
-            &expected.snapshot.header,
-            &next.header,
-            compact_start,
-        )
-        .await?;
-        let committed = canonical::written(
-            persist_runtime_frame_tx(
-                tx,
-                &self.card,
-                &self.worker,
-                &expected.fence,
-                canonical_runtime_header_value(next)?,
-            )
-            .await?,
-        )?;
-        Ok((committed, events))
-    }
-}
-
-/// A concurrent settler already committed exactly this target. The watermark
-/// is event-acceptance metadata; any other header or input change still conflicts.
-fn already_settled(
-    fresh: &CommittedFrame,
-    expected: &CommittedFrame,
-    next: &CanonicalHarnessSnapshot,
-) -> bool {
-    let mut header = next.header.clone();
-    header.push_watermark = fresh.snapshot.header.push_watermark;
-    fresh.fence != expected.fence
-        && fresh.snapshot.header == header
-        && fresh.snapshot.canonical_inputs == expected.snapshot.canonical_inputs
 }
 
 fn require_idle(snapshot: &CanonicalHarnessSnapshot) -> Result<()> {
@@ -142,9 +65,15 @@ async fn write(
     next: CanonicalHarnessSnapshot,
     admission: TransitionAdmission,
 ) -> Result<CommittedFrame> {
+    let previous_header = expected.snapshot.header.clone();
     let scope = harness_event_scope(inner, "track.wake_requested");
-    let (owner, expected, provider) =
-        (Owner::of(inner), expected.clone(), inner.backend.provider());
+    let (card, worker, fence, provider, track) = (
+        inner.card_id.to_string(),
+        inner.worker_session_id.clone(),
+        expected.fence.clone(),
+        inner.backend.provider(),
+        inner.track_id.to_string(),
+    );
     let (committed, events) = write_in_tx_typed(inner.repo.as_ref(), move |tx| {
         Box::pin(async move {
             let compact_start = matches!(
@@ -156,25 +85,36 @@ async fn write(
             );
             match admission {
                 TransitionAdmission::Start { source, target } => {
-                    let carrier = current_input_carrier_tx(tx, &owner.card, &owner.worker).await?;
+                    let carrier = current_input_carrier_tx(tx, &card, &worker).await?;
                     let current: CanonicalHarnessSnapshot =
                         serde_json::from_value(carrier.snapshot().clone())?;
                     require_idle(&current)?;
-                    require_binding(tx, &carrier, &provider, &owner.track, &target.thread_id)
-                        .await?;
+                    require_binding(tx, &carrier, &provider, &track, &target.thread_id).await?;
                     source.authorize_tx(tx, &carrier).await?;
-                    crate::conversation_archive::require_unarchived_tx(tx, &owner.card).await?;
+                    crate::conversation_archive::require_unarchived_tx(tx, &card).await?;
                 }
-                TransitionAdmission::Settlement => {
-                    let fresh = owner.current_tx(tx).await?;
-                    if already_settled(&fresh, &expected, &next) {
-                        return Ok((fresh, vec![]));
-                    }
-                }
+                TransitionAdmission::Settlement => {}
             }
-            owner
-                .persist_tx(tx, &scope, &expected, &next, compact_start)
-                .await
+            let events = planner::append_transition_tx(
+                tx,
+                &TrackId(track),
+                &scope,
+                &previous_header,
+                &next.header,
+                compact_start,
+            )
+            .await?;
+            let committed = canonical::written(
+                persist_runtime_frame_tx(
+                    tx,
+                    &card,
+                    &worker,
+                    &fence,
+                    canonical_runtime_header_value(&next)?,
+                )
+                .await?,
+            )?;
+            Ok((committed, events))
         })
     })
     .await?;
@@ -437,62 +377,43 @@ pub(in crate::harness::run_loop) async fn observe(inner: &Arc<Inner>) -> Result<
 /// A settled owner with a lost driver cannot certify compaction success. Consume
 /// the exact installed target before its failed join slot is released. After a
 /// restart, only an already-bound exact turn can supply the same correlation.
-/// The decision reads the frame it writes, so a concurrent identical wedge is a no-op.
 pub(in crate::harness::run_loop) async fn lost(
     inner: &Arc<Inner>,
     expected: Option<&MaintenanceTarget>,
     turn: &str,
 ) -> Result<()> {
+    let current = canonical::read_current(inner).await?;
+    let Some(outcome) = current
+        .snapshot
+        .header
+        .compact_outcome
+        .as_ref()
+        .filter(|outcome| unresolved_maintenance(&outcome.status))
+    else {
+        return Ok(());
+    };
+    if !matches!(
+        current.snapshot.header.phase,
+        HarnessPhaseTag::Compacting | HarnessPhaseTag::Wedged
+    ) || expected.is_some_and(|expected| target(inner, outcome) != *expected)
+        || outcome
+            .turn_id
+            .as_deref()
+            .is_some_and(|current| current != turn)
+        || (expected.is_none() && outcome.turn_id.as_deref() != Some(turn))
+    {
+        return Ok(());
+    }
+    let mut next = current.snapshot.clone();
+    wedge(&mut next);
     #[cfg(feature = "fixtures")]
     crate::test_seams::pause_point(
         crate::test_seams::MAINTENANCE_LOST_SETTLING,
         inner.card_id.as_str(),
     )
     .await;
-    let scope = harness_event_scope(inner, "track.wake_requested");
-    let (owner, expected, turn) = (Owner::of(inner), expected.cloned(), turn.to_owned());
-    let settled = write_in_tx_typed(inner.repo.as_ref(), move |tx| {
-        Box::pin(async move {
-            let current = owner.current_tx(tx).await?;
-            let Some(outcome) = current
-                .snapshot
-                .header
-                .compact_outcome
-                .as_ref()
-                .filter(|outcome| unresolved_maintenance(&outcome.status))
-            else {
-                return Ok(None);
-            };
-            if !matches!(
-                current.snapshot.header.phase,
-                HarnessPhaseTag::Compacting | HarnessPhaseTag::Wedged
-            ) || expected
-                .as_ref()
-                .is_some_and(|expected| owner.target(outcome) != *expected)
-                || outcome
-                    .turn_id
-                    .as_deref()
-                    .is_some_and(|current| current != turn)
-                || (expected.is_none() && outcome.turn_id.as_deref() != Some(turn.as_str()))
-            {
-                return Ok(None);
-            }
-            let mut next = current.snapshot.clone();
-            wedge(&mut next);
-            if next == current.snapshot {
-                return Ok(None);
-            }
-            owner
-                .persist_tx(tx, &scope, &current, &next, false)
-                .await
-                .map(Some)
-        })
-    })
-    .await?;
-    if let Some((committed, events)) = settled {
-        for event in events {
-            inner.events.emit_envelope(event);
-        }
+    if next != current.snapshot {
+        let committed = write(inner, &current, next, TransitionAdmission::Settlement).await?;
         canonical::publish(inner, committed).await;
     }
     Ok(())
