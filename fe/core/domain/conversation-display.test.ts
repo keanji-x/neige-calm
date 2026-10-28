@@ -1,5 +1,5 @@
 import { describe,it,expect } from 'vitest';
-import { heldConversationInputs, keepConversationInputOperation, retryConversationInputOperation, buildConversationTranscript, conversationPageSchema, conversationRunMetadataSchema, orderedPendingInputs, removedHumanIds } from './conversation-display.js';
+import { conversationRunOperation, currentConversationOutcome, heldConversationInputs, keepConversationInputOperation, retryConversationInputOperation, buildConversationTranscript, conversationPageSchema, conversationRunMetadataSchema, orderedPendingInputs, removedHumanIds } from './conversation-display.js';
 import { outboxFactsWithRemovedInputs, matchSendOps, reportedInputSource, withInitialInputFacts, initialInputNeedsObservation, type AcceptedInitialInput, type SendOp } from './conversation-outbox.js';
 import type { ConversationDisplayItem, HarnessItem as HistoricalRow } from '../api/generated/wire.js';
 import { isConversationMessage, SYSTEM_PRESENTATION_LABELS } from './conversation.js';
@@ -99,7 +99,7 @@ describe('canonical conversation display',()=>{
 });
 
 it('refuses a canonical run with missing current runtime state instead of treating null as Idle',()=>{
-  const value={input_contract:'canonical',history_replacement_supported:false,terminal_timeout:null,runtime_state:null,pending_inputs:[],active_input:null,native_turn_id:null};
+  const value={input_contract:'canonical',history_replacement_supported:false,terminal_outcome:null,terminal_timeout:null,runtime_state:null,pending_inputs:[],active_input:null,native_turn_id:null};
   expect(conversationRunMetadataSchema.safeParse(value).success).toBe(false);
   expect(conversationRunMetadataSchema.safeParse({...value,runtime_state:'failed'}).success).toBe(true);
   expect(conversationRunMetadataSchema.safeParse({...value,input_contract:'historical'}).success).toBe(true);
@@ -108,7 +108,7 @@ it('refuses a canonical run with missing current runtime state instead of treati
 it('requires one tagged pending input list without losing Human revisions or System queue order',()=>{
   const pending=[{kind:'system',observation_id:'observation',queue_position:3,queued_at_ms:23},
     {kind:'human',message_id:'message',revision:2,queue_position:2,queued_at_ms:22}];
-  const value={input_contract:'canonical',history_replacement_supported:false,terminal_timeout:null,runtime_state:'idle',
+  const value={input_contract:'canonical',history_replacement_supported:false,terminal_outcome:null,terminal_timeout:null,runtime_state:'idle',
     pending_inputs:pending,active_input:null,native_turn_id:null};
   expect(conversationRunMetadataSchema.parse(value)).toMatchObject({pending_inputs:pending});
   const parsed=conversationRunMetadataSchema.parse(value);
@@ -124,7 +124,7 @@ it('rejects missing CAS identity and unknown availability in canonical delivery'
     native_turn_id:null,local_turn_id:null,rpc_request_id:null},invocation:{kind:'prior_invocation_not_recorded'},
     resolution:null,actions:{keep:{kind:'available'},retry:{kind:'unavailable',reason:'unsupported_source'}}};
   const submission={carrier_id:'carrier',logical_turn_id:'logical',submission_id:'submission',attempt};
-  const run={input_contract:'canonical',runtime_state:'failed',history_replacement_supported:false,terminal_timeout:null,
+  const run={input_contract:'canonical',runtime_state:'failed',history_replacement_supported:false,terminal_outcome:null,terminal_timeout:null,
     pending_inputs:[],active_input:{current_execution_id:null,submissions:[submission]},native_turn_id:null};
   expect(conversationRunMetadataSchema.safeParse(run).success).toBe(true);
   const maximum={...run,active_input:{...run.active_input,submissions:[{...submission,attempt:{...attempt,revision:'18446744073709551615'}}]}};
@@ -166,7 +166,7 @@ it('retry operation preserves exact CAS and key', () => {
 });
 it('queued successor uses the ordinary unattempted pending projection', () => {
   const pending={kind:'explicit_successor',retry_intent_id:'intent',queue_position:2,queued_at_ms:22};
-  const run={input_contract:'canonical',runtime_state:'idle',history_replacement_supported:false,terminal_timeout:null,
+  const run={input_contract:'canonical',runtime_state:'idle',history_replacement_supported:false,terminal_outcome:null,terminal_timeout:null,
     pending_inputs:[pending],active_input:null,native_turn_id:null};
   expect(conversationRunMetadataSchema.parse(run)).toMatchObject({pending_inputs:[pending],active_input:null});
   expect(conversationRunMetadataSchema.safeParse({...run,pending_inputs:[{...pending,retry_intent_id:undefined}]}).success).toBe(false);
@@ -227,4 +227,28 @@ it('separates pending native acknowledgement from unresolved delivery without ch
     carrier_id:'carrier',submission_id:'submission',attempt_id:'attempt',revision:'2',waiting_for_settlement:true,
   }}}};
   expect(heldConversationInputs({...input,submissions:[resolved]},true)).toEqual([resolved]);
+});
+
+
+it('adapts only a required typed current terminal fact, without inventing a display identity', () => {
+  expect(currentConversationOutcome(null)).toBeNull();
+  const fact = {worker_session_id:'worker',card_id:'card',track_id:'track',thread_id:'thread',turn_id:'turn',
+    status:'interrupted' as const,created_at_ms:20,duration_ms:null};
+  expect(currentConversationOutcome(fact)).toEqual({turnId:'turn',status:'interrupted',atMs:20,elapsedMs:null});
+  const metadata = {input_contract:'canonical',runtime_state:'idle',history_replacement_supported:false,
+    terminal_timeout:null,terminal_outcome:fact,pending_inputs:[],active_input:null,native_turn_id:null};
+  expect(conversationRunMetadataSchema.safeParse(metadata).success).toBe(true);
+  expect(conversationRunMetadataSchema.safeParse({...metadata,terminal_outcome:{...fact,status:'running'}}).success).toBe(false);
+  const missing: Record<string, unknown> = {...metadata};
+  delete missing.terminal_outcome;
+  expect(conversationRunMetadataSchema.safeParse(missing).success).toBe(false);
+  expect(conversationRunMetadataSchema.safeParse({...metadata,input_contract:'historical'}).success).toBe(false);
+  const run = {...metadata,card_id:'card',worker_session_id:'worker',phase:'turn_completed',
+    model:null,reasoning_effort:null,permission_mode:null,blocked_reason:null,recovery:null,
+    manual_compact_supported:false,compact_outcome:null,context_usage_invalidated:false,running_turn:null};
+  const schema = conversationRunOperation('card').responseSchema;
+  expect(schema.safeParse(run).success).toBe(true);
+  expect(schema.safeParse({...run,terminal_outcome:{...fact,worker_session_id:'other-worker'}}).success).toBe(false);
+  expect(schema.safeParse({...run,terminal_outcome:{...fact,card_id:'other-card'}}).success).toBe(false);
+  expect(schema.safeParse({...run,native_turn_id:'other-turn'}).success).toBe(false);
 });

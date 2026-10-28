@@ -916,7 +916,7 @@ function useConversationPane(
                 conversation={open}
                 imageFiles={imageFiles}
                 renderLink={chatLinks.renderLink}
-                turns={openTurns} editing={edit.marked}
+                currentResponseOutcome={store.currentOutcome} turns={openTurns} editing={edit.marked}
                 sending={store.sending}
                 submissionRequest={submission?.conversationId === open.id ? submission.request : 0}
                 replacement={store.failedSend?.replaces == null ? null : store.failedSend.echo.id}

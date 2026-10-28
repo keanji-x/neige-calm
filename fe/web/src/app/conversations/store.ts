@@ -1,7 +1,7 @@
 import { ApiError } from '../../../../core/domain/failure-class.ts';
 import { mintIdempotencyKey } from '../providers/idempotency-key.ts';
 import { useCurrentUser } from '../auth/current-user.tsx';
-import { buildConversationTranscript, nativeDisplayRows, orderedPendingInputs, removedHumanIds } from '../../../../core/domain/conversation-display.ts';
+import { buildConversationTranscript, currentConversationOutcome, nativeDisplayRows, orderedPendingInputs, removedHumanIds } from '../../../../core/domain/conversation-display.ts';
 import type { ConversationPendingInput } from '../../../../core/api/generated/wire.ts';
 import { useEffect, useMemo, useRef } from 'react';
 import { useQuery } from '@tanstack/react-query';
@@ -187,7 +187,7 @@ export function useConversationStore(
   const working = !executionHeld && !stalled && (phase === 'issuing_turn' || phase === 'compacting' || phase === 'turn_running');
   const stop = useConversationStop({
     cardId, canStop: working && !stalled,
-    responseEnded: phase === 'idle' || phase === 'turn_completed',
+    responseEnded: canonical ? run.error === null && run.data?.terminal_outcome != null : phase === 'idle' || phase === 'turn_completed',
     historyKnown: historyKnown,
     newestRowId: items.reduce((latest, row) => Math.max(latest, row.id), 0),
     completedRowId: items.reduce<number | null>((latest, row) => transcriptRowToTurnOutcome(row) === null
@@ -395,6 +395,7 @@ export function useConversationStore(
     loadEarlier,
     blockedReason: run.data?.blocked_reason ?? null,
     terminalTimeout: run.data?.terminal_timeout ?? null,
+    currentOutcome: run.error !== null || working ? null : currentConversationOutcome(run.data?.terminal_outcome ?? null),
     /* Before the first answer the conversation is following the default, which is
            what a card with no selection really does. */
     model,

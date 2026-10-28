@@ -45,7 +45,7 @@ it.each([
       card_id: 'daily-planner', worker_session_id: 'runtime', phase: 'idle', model: null, reasoning_effort: null,
       permission_mode: 'never', blocked_reason: null, pending: [], pending_overflow: 0, recovery: null, manual_compact_supported: false,
       compact_outcome: null, context_usage_invalidated: false, running_turn: null,
-      input_contract: 'canonical', runtime_state: 'idle', history_replacement_supported: false, terminal_timeout: null,
+      input_contract: 'canonical', runtime_state: 'idle', history_replacement_supported: false, terminal_outcome:null,terminal_timeout: null,
       pending_inputs: [], active_input: null, native_turn_id: null,
     } };
     if (url.pathname.endsWith('/harness/items') && url.searchParams.get('contract') === 'conversation_v1') return { status: 200, statusText: 'OK', body: conversationPage(rows) };
@@ -108,7 +108,7 @@ it('keeps the reading place when an existing send is retried under its same key'
       card_id: 'daily-planner', worker_session_id: 'runtime', phase: 'idle', model: null, reasoning_effort: null,
       permission_mode: 'never', blocked_reason: null, pending: [], pending_overflow: 0, recovery: null, manual_compact_supported: false,
       compact_outcome: null, context_usage_invalidated: false, running_turn: null,
-      input_contract: 'canonical', runtime_state: 'idle', history_replacement_supported: false, terminal_timeout: null,
+      input_contract: 'canonical', runtime_state: 'idle', history_replacement_supported: false, terminal_outcome:null,terminal_timeout: null,
       pending_inputs: [], active_input: null, native_turn_id: null,
     } };
     if (url.pathname.endsWith('/harness/items') && url.searchParams.get('contract') === 'conversation_v1') return { status: 200, statusText: 'OK', body: conversationPage(history) };

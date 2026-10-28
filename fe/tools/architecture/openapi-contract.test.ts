@@ -240,7 +240,7 @@ it('pins negotiated route adapters to their actual generated component schemas',
   expect(composition[0]).toEqual({ $ref: '#/components/schemas/GetPlannerRunResponse' });
   if (!object(composition[1]) || !object(composition[1].properties)) throw new Error('Missing run metadata');
   const fields = ['active_input', 'history_replacement_supported', 'input_contract',
-    'native_turn_id', 'pending_inputs', 'runtime_state', 'terminal_timeout'];
+    'native_turn_id', 'pending_inputs', 'runtime_state', 'terminal_outcome', 'terminal_timeout'];
   expect(Object.keys(composition[1].properties).sort()).toEqual(fields);
   expect(array(composition[1].required).toSorted()).toEqual(fields);
   expect(composition[1].properties.history_replacement_supported).toMatchObject({ type: 'boolean' });

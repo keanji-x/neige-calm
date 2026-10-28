@@ -2,7 +2,7 @@
 use calm_types::harness::HarnessTimeoutEvidence;
 use serde_json::Value;
 
-#[derive(Debug, Clone, sqlx::FromRow)]
+#[derive(Debug, Clone, PartialEq, sqlx::FromRow)]
 pub struct HarnessTerminalOutcome {
     pub id: i64,
     pub worker_session_id: String,
@@ -15,6 +15,46 @@ pub struct HarnessTerminalOutcome {
 }
 
 impl HarnessTerminalOutcome {
+    /// A malformed or unrelated payload is not terminal evidence. Identity comes
+    /// from the durable row; the provider payload must name that same turn.
+    pub fn display(&self) -> Option<calm_types::conversation_display::ConversationTerminalOutcome> {
+        #[derive(serde::Deserialize)]
+        struct Terminal {
+            id: String,
+            status: calm_types::conversation_display::ConversationTerminalStatus,
+            #[serde(rename = "durationMs")]
+            duration_ms: Option<f64>,
+        }
+        let terminal: Terminal = serde_json::from_str(&self.params).ok()?;
+        if terminal.id != self.turn_id
+            || [
+                &self.worker_session_id,
+                &self.card_id,
+                &self.track_id,
+                &self.thread_id,
+                &self.turn_id,
+            ]
+            .iter()
+            .any(|id| id.is_empty())
+        {
+            return None;
+        }
+        Some(
+            calm_types::conversation_display::ConversationTerminalOutcome {
+                worker_session_id: self.worker_session_id.clone(),
+                card_id: self.card_id.clone(),
+                track_id: self.track_id.clone(),
+                thread_id: self.thread_id.clone(),
+                turn_id: self.turn_id.clone(),
+                status: terminal.status,
+                created_at_ms: self.created_at_ms,
+                duration_ms: terminal
+                    .duration_ms
+                    .filter(|ms| ms.is_finite() && *ms >= 0.0),
+            },
+        )
+    }
+
     /// Reserved metadata is authoritative only with its complete persisted row identity.
     pub fn timeout(&self) -> Option<HarnessTimeoutEvidence> {
         let params: Value = serde_json::from_str(&self.params).ok()?;

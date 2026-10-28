@@ -1451,3 +1451,19 @@ it.each(['drop', 'paste'] as const)('accepts files from %s only while the compos
   dispatch();
   expect(onFiles).toHaveBeenCalledExactlyOnceWith([file]);
 });
+
+
+it('shows current canonical terminal metadata without a transcript row and clears it on the next response', () => {
+  const props = {conversation:conversation(),turns:[turn(),turn({id:'reply',author:'agent',text:'Partial reply'})],
+    cards:{},hasPendingMessages:false,stalled:false,canContinue:true};
+  const fact = {turnId:'native-turn',status:'interrupted' as const,elapsedMs:12,atMs:NOW};
+  const view = render(<ChatThread {...props} currentResponseOutcome={fact} />);
+  expect(screen.getByRole('status', {name:'Current response status'}).textContent).toContain('Interrupted');
+  expect(screen.getByText('Partial reply')).toBeTruthy();
+  view.rerender(<ChatThread {...props} currentResponseOutcome={fact} stopFeedback={{kind:'unconfirmed'}} />);
+  expect(screen.getByRole('status', {name:'Current response status'}).textContent).toContain('Stop unconfirmed');
+  view.rerender(<ChatThread {...props} currentResponseOutcome={null} pending />);
+  expect(screen.getByRole('status', {name:'Current response status'}).textContent).toContain('Running');
+  view.rerender(<ChatThread {...props} currentResponseOutcome={null} />);
+  expect(screen.queryByRole('status', {name:'Current response status'})).toBeNull();
+});

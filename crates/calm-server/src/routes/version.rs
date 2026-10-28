@@ -55,7 +55,8 @@ pub use calm_types::compatibility::REST_API_VERSION as API_VERSION;
 // #2836: 59 -> 60 requires canonical held delivery and exact attempt identity.
 // #2836: 60 -> 61 enables canonical Human Keep and checkpoint receipts.
 // #3320: 62 -> 63 adds canonical abandonment and held native-completion recovery declarations.
-pub const WEB_COMPAT_VERSION: u32 = 63;
+// #3279: 63 -> 64 requires exact current terminal outcome metadata in negotiated run reads.
+pub const WEB_COMPAT_VERSION: u32 = 64;
 
 /// Kernel compatibility values sourced from live constants.
 #[derive(Debug, Clone, Serialize)]

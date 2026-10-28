@@ -408,6 +408,11 @@ PY
     if [ "$SCENARIO" = stream-hold ]; then
       IFS= read -r CONTROL || exit 4
       printf '%s\n' "$CONTROL" >> "$D/stdin"
+      # A transport-only barrier lets the HTTP test observe ACK before native END.
+      if [ -e "$D/hold-terminal" ]; then
+        touch "$D/terminal-held"
+        while [ ! -e "$D/release-terminal" ]; do sleep 0.05; done
+      fi
       echo "$ABORTED"
     else
       if [ -e "$D/stream-burst" ]; then

@@ -97,6 +97,7 @@ export type ConversationStore = Readonly<{
   /** Why the queue is not draining, when the reader has to act; a standing condition of the conversation, unlike `actionError`. */
   blockedReason: string | null;
   terminalTimeout: HarnessTimeoutEvidence | null;
+  currentOutcome: import('../../../../core/domain/conversation-display.ts').CurrentConversationOutcome | null;
   /** What this conversation's turns run with. */
   model: ModelSelection;
   /** What may be chosen, or `null` until the catalog has answered once. */

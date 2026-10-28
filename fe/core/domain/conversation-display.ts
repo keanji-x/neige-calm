@@ -2,7 +2,7 @@
 import { z } from 'zod';
 import type { ApiOperation } from '../api/types.js';
 import { agentProviderSchema, conversationCursorSchema, workerSessionStateSchema } from '../api/schemas.js';
-import type { ConversationCursor, ConversationDisplayItem, ConversationPage, ConversationPendingInput, ConversationActiveInput, ConversationSubmissionDelivery, HarnessItem as TranscriptRow } from '../api/generated/wire.js';
+import type { ConversationTerminalOutcome, ConversationCursor, ConversationDisplayItem, ConversationPage, ConversationPendingInput, ConversationActiveInput, ConversationSubmissionDelivery, HarnessItem as TranscriptRow } from '../api/generated/wire.js';
 import { plannerPermissionModeSchema } from './planner-permission-mode.js';
 import { SYSTEM_PRESENTATION_LABELS, systemInputPresentationSchema, buildTranscript, retireFollowedThoughts, harnessTimeoutEvidenceSchema, harnessItemSchema as transcriptRowSchema, HARNESS_ITEMS_PAGE_LIMIT as TRANSCRIPT_PAGE_LIMIT, plannerRunOperation, type PlannerRun, type TranscriptEntry } from './conversation.js';
 
@@ -131,11 +131,24 @@ export function buildConversationTranscript(items: readonly ConversationDisplayI
   return retireFollowedThoughts(entries);
 }
 
+/** Current response metadata has no transcript author, item identity or pagination position. */
+export type CurrentConversationOutcome = Omit<import('./conversation.js').ConversationTurnOutcome, 'id' | 'author' | 'imported'>;
+const terminalOutcomeSchema: z.ZodType<ConversationTerminalOutcome> = z.object({
+  worker_session_id:z.string().min(1), card_id:z.string().min(1), track_id:z.string().min(1),
+  thread_id:z.string().min(1), turn_id:z.string().min(1), status:z.enum(['completed','interrupted','failed']),
+  created_at_ms:z.number(), duration_ms:z.number().nonnegative().nullable(),
+}).strict();
+export function currentConversationOutcome(fact:ConversationTerminalOutcome | null):CurrentConversationOutcome | null {
+  return fact === null ? null : {turnId:fact.turn_id,status:fact.status,atMs:fact.created_at_ms,
+    elapsedMs:fact.duration_ms};
+}
+
 export const conversationRunMetadataSchema = z.object({
   input_contract:z.enum(['canonical','historical']),
   runtime_state:workerSessionStateSchema.nullable(),
   history_replacement_supported:z.boolean(),
   terminal_timeout:harnessTimeoutEvidenceSchema.nullable(),
+  terminal_outcome:terminalOutcomeSchema.nullable(),
   pending_inputs:z.array(z.discriminatedUnion('kind',[
     z.object({kind:z.literal('explicit_successor'),retry_intent_id:z.string().min(1),queue_position:z.number().int().nonnegative(),queued_at_ms:z.number()}).strict(),
     z.object({kind:z.literal('human'),message_id:z.string(),revision:z.number().int().positive(),
@@ -163,7 +176,8 @@ export const conversationRunMetadataSchema = z.object({
   }).strict()) }).strict().nullable(),
   native_turn_id:z.string().nullable(),
 }).refine(run=>run.input_contract !== 'canonical' || run.runtime_state !== null,
-  'Canonical runs require their actual current runtime state');
+  'Canonical runs require their actual current runtime state').refine(run=>run.input_contract !== 'historical' || run.terminal_outcome === null,
+  'Historical runs do not carry a current canonical terminal outcome');
 
 /** Queue references retain their actual kind and version, independently of the loaded body page. */
 export function orderedPendingInputs(inputs: readonly ConversationPendingInput[]): readonly ConversationPendingInput[] {
@@ -173,5 +187,9 @@ export function orderedPendingInputs(inputs: readonly ConversationPendingInput[]
 export function conversationRunOperation(card: string): ApiOperation<PlannerRun & z.infer<typeof conversationRunMetadataSchema>> {
   const original = plannerRunOperation(card);
   return { ...original, path:`${original.path}?contract=conversation_v1`,
-    responseSchema:original.responseSchema.and(conversationRunMetadataSchema) };
+    responseSchema:original.responseSchema.and(conversationRunMetadataSchema).refine(run => run.terminal_outcome === null
+      || (run.input_contract === 'canonical' && run.card_id === card && run.terminal_outcome.card_id === card
+        && run.terminal_outcome.worker_session_id === run.worker_session_id
+        && (run.native_turn_id === null || run.native_turn_id === run.terminal_outcome.turn_id)),
+    'Current terminal outcome scope mismatch') };
 }

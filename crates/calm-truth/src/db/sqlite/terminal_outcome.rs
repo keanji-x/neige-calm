@@ -5,16 +5,22 @@ use crate::error::Result;
 use futures::TryStreamExt;
 use sqlx::SqlitePool;
 
+const SELECT: &str = "SELECT id, worker_session_id, card_id, track_id, thread_id, turn_id, params, created_at_ms \
+     FROM harness_items";
+
 pub async fn latest(
     pool: &SqlitePool,
     card: &str,
     track: &str,
 ) -> Result<Option<HarnessTerminalOutcome>> {
-    Ok(sqlx::query_as(
-        "SELECT id, worker_session_id, card_id, track_id, thread_id, turn_id, params, created_at_ms \
-         FROM harness_items WHERE card_id=?1 AND method='turn/completed' AND track_id=?2 \
+    Ok(sqlx::query_as(&format!(
+        "{SELECT} WHERE card_id=?1 AND method='turn/completed' AND track_id=?2 \
          AND turn_id IS NOT NULL ORDER BY id DESC LIMIT 1"
-    ).bind(card).bind(track).fetch_optional(pool).await?)
+    ))
+    .bind(card)
+    .bind(track)
+    .fetch_optional(pool)
+    .await?)
 }
 
 /// Every confirmed timeout stays visible until a later successful completion.
@@ -41,4 +47,26 @@ pub async fn pending_timeouts(
         }
     }
     Ok(pending)
+}
+
+/// Read the full execution key under the caller's existing current-frame observation.
+pub(super) async fn exact(
+    connection: &mut sqlx::SqliteConnection,
+    worker: &str,
+    card: &str,
+    track: &str,
+    thread: &str,
+    turn: &str,
+) -> Result<Option<HarnessTerminalOutcome>> {
+    Ok(sqlx::query_as(&format!(
+        "{SELECT} WHERE worker_session_id=?1 AND card_id=?2 AND track_id=?3
+         AND thread_id=?4 AND turn_id=?5 AND method='turn/completed' ORDER BY id DESC LIMIT 1",
+    ))
+    .bind(worker)
+    .bind(card)
+    .bind(track)
+    .bind(thread)
+    .bind(turn)
+    .fetch_optional(connection)
+    .await?)
 }

@@ -7,14 +7,14 @@ import { useConversationCommands, type ConversationRegistry } from '../conversat
 import { queryKeys } from '../providers/queries.ts';
 import type { ApiRequest, ApiTransportResponse } from '../../../../core/api/types.ts';
 import { renderDailyFixture } from './daily-planner-fixture.tsx';
-import type { ConversationDisplayItem, ConversationPage, HarnessPhaseTag, WorkerSessionState, HarnessTimeoutEvidence, ConversationPendingInput, ConversationActiveInput, AgentProvider } from '../../../../core/api/generated/wire.ts';
+import type { ConversationTerminalOutcome, ConversationDisplayItem, ConversationPage, HarnessPhaseTag, WorkerSessionState, HarnessTimeoutEvidence, ConversationPendingInput, ConversationActiveInput, AgentProvider } from '../../../../core/api/generated/wire.ts';
 
 const identity={userId:'jian',displayName:'Jian',role:'owner',sessionId:'fixture-jian'};
 const cursor=(position:number)=>({contract:'conversation_v1',source:'presentation',card_id:'daily-planner',position} as const);
 const human=(id:string,uid:string,name:string,position:number,text='Same saved words'):ConversationDisplayItem=>({cursor:cursor(position),source:{
   kind:'human',message_id:id,revision:1,author:{user_id:uid,display_name:name},text,attachments:[],created_at_ms:position,
 }});
-function fixture(items:ConversationDisplayItem[],run:Readonly<{provider?:AgentProvider;state:WorkerSessionState;phase:HarnessPhaseTag;blockedReason:string|null;terminalTimeout:HarnessTimeoutEvidence|null;pendingInputs:readonly ConversationPendingInput[];activeInput?:ConversationActiveInput|null}>,onSend?:()=>ConversationDisplayItem[], onKeep?:(request:ApiRequest)=>ApiTransportResponse) {
+function fixture(items:ConversationDisplayItem[],run:Readonly<{provider?:AgentProvider;state:WorkerSessionState;phase:HarnessPhaseTag;blockedReason:string|null;terminalTimeout:HarnessTimeoutEvidence|null;terminalOutcome?:ConversationTerminalOutcome|null;pendingInputs:readonly ConversationPendingInput[];activeInput?:ConversationActiveInput|null}>,onSend?:()=>ConversationDisplayItem[], onKeep?:(request:ApiRequest)=>ApiTransportResponse) {
   let stored=items;
   return renderDailyFixture({identity,plannerProvider:run.provider,initial:'/track/daily?panel=conversations',reply:request=>{
     if(request.path.includes('/harness/items?contract=conversation_v1')) {
@@ -25,7 +25,7 @@ function fixture(items:ConversationDisplayItem[],run:Readonly<{provider?:AgentPr
       card_id:'daily-planner',worker_session_id:'original-retained',phase:run.phase,model:null,reasoning_effort:null,permission_mode:'never',
       blocked_reason:run.blockedReason,pending:[],pending_overflow:0,recovery: null, manual_compact_supported:false,
       attachments_supported:false,compact_outcome:null,context_usage_invalidated:false,running_turn:null,token_usage:null,
-      input_contract:'canonical',history_replacement_supported:false,terminal_timeout:run.terminalTimeout,runtime_state:run.state,pending_inputs:run.pendingInputs,active_input:run.activeInput ?? null,native_turn_id:null,
+      input_contract:'canonical',history_replacement_supported:false,terminal_outcome:run.terminalOutcome ?? null,terminal_timeout:run.terminalTimeout,runtime_state:run.state,pending_inputs:run.pendingInputs,active_input:run.activeInput ?? null,native_turn_id:null,
     }};
     if((request.path.endsWith('/conversation/input/keep') || request.path.endsWith('/conversation/input/retry')) && onKeep !== undefined) return onKeep(request);
     if(request.path.endsWith('/planner/input')){
@@ -69,7 +69,7 @@ it.each([false,true])('keeps the two canonical pending refs separate from one AC
       card_id:'daily-planner',worker_session_id:'original-retained',phase:'turn_running',model:null,reasoning_effort:null,permission_mode:'never',
       blocked_reason:null,pending:[],pending_overflow:0,recovery: null, manual_compact_supported:false,attachments_supported:false,
       compact_outcome:null,context_usage_invalidated:false,running_turn:{turn_id:'native-h1',elapsed_ms:1000},token_usage:null,
-      input_contract:'canonical',history_replacement_supported:false,terminal_timeout:null,runtime_state:'running',
+      input_contract:'canonical',history_replacement_supported:false,terminal_outcome:null,terminal_timeout:null,runtime_state:'running',
       pending_inputs:sent ? [s1Ref,h2Ref] : [s1Ref],native_turn_id:'native-h1',
       active_input:{current_execution_id:'logical-h1',submissions:[{carrier_id:'original-retained',logical_turn_id:'logical-h1',submission_id:'submission-h1',attempt:{attempt_id:'attempt-h1',revision:'1',delivery:'accepted',target:{provider:'codex',thread_id:'thread-h1',native_session_id:null,local_turn_id:null,native_turn_id:'native-h1',rpc_request_id:null},invocation:{kind:'prior_invocation_not_recorded'},resolution:null,actions:{keep:{kind:'unavailable',reason:'not_held'},retry:{kind:'unavailable',reason:'unsupported_source'}}}}]},
     });
@@ -423,4 +423,25 @@ it.each(['codex','claude','opencode','grok'] as const)('keeps %s sending informa
     await expect.element(page.getByRole('button',{name:'Keep as delivered',exact:true})).toBeVisible();
     await page.screenshot({path:`./__screenshots__/canonical-${provider}-genuine-uncertainty.png`});
   } finally {cleanup();f.client.clear();}
+});
+
+
+it('shows the current canonical END outside pagination and removes it for the next execution',async()=>{
+  const run:{state:WorkerSessionState;phase:HarnessPhaseTag;blockedReason:null;terminalTimeout:null;
+    pendingInputs:ConversationPendingInput[];terminalOutcome:ConversationTerminalOutcome|null}={
+    state:'idle',phase:'turn_completed',blockedReason:null,terminalTimeout:null,pendingInputs:[],terminalOutcome:null};
+  const f=fixture([human('question','jian','Jian',1,'Please answer')],run);
+  await page.getByRole('button',{name:/Conversation Daily Planner conversation/}).click();
+  await screen.findByText('Please answer');
+  expect(screen.queryByText('Interrupted',{exact:true})).toBeNull();
+  run.terminalOutcome={worker_session_id:'original-retained',card_id:'daily-planner',track_id:'daily',thread_id:'native-thread',
+    turn_id:'native-turn',status:'interrupted',created_at_ms:2000,duration_ms:19};
+  await f.client.invalidateQueries({queryKey:queryKeys.plannerRun('daily-planner')});
+  await screen.findByText('Interrupted',{exact:true});
+  expect(screen.getAllByText('Please answer')).toHaveLength(1);
+  await page.screenshot({path:'./__screenshots__/canonical-current-interrupted.png'});
+  run.terminalOutcome=null;run.phase='turn_running';run.state='running';
+  await f.client.invalidateQueries({queryKey:queryKeys.plannerRun('daily-planner')});
+  await screen.findByText('Running',{exact:true});
+  expect(screen.queryByText('Interrupted',{exact:true})).toBeNull();
 });

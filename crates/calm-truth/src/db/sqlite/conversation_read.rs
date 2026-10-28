@@ -13,14 +13,15 @@ pub(super) async fn current_frame(
     // shared-cache R lock across a waiting writer (#930).
     let mut tx = super::begin_immediate_tx(db).await?;
     let row = sqlx::query(
-        "SELECT c.session_id, w.card_id AS runtime_card, w.state, w.handle_state_json,
+        "SELECT c.session_id, c.track_id, w.track_id AS runtime_track, w.card_id AS runtime_card, w.state, w.handle_state_json,
                 EXISTS(SELECT 1 FROM conversation_presentations WHERE card_id=c.id) AS has_presentations
          FROM cards c LEFT JOIN worker_sessions w ON w.id=c.session_id WHERE c.id=?1",
     ).bind(card).fetch_optional(&mut **tx).await?
         .ok_or_else(|| CalmError::NotFound(format!("card {card}")))?;
     let worker_session_id: Option<String> = row.try_get("session_id")?;
     if worker_session_id.is_some()
-        && row.try_get::<Option<String>, _>("runtime_card")?.as_deref() != Some(card)
+        && (row.try_get::<Option<String>, _>("runtime_card")?.as_deref() != Some(card)
+            || row.try_get::<Option<String>, _>("runtime_track")? != Some(row.try_get("track_id")?))
     {
         return Err(CalmError::Conflict(
             "current conversation carrier is missing or mismatched",
@@ -40,13 +41,17 @@ pub(super) async fn current_frame(
         .transpose()?;
     let snapshot: Option<serde_json::Value> =
         raw.as_deref().map(serde_json::from_str).transpose()?;
-    let active_input = match snapshot
+    let canonical = snapshot
         .as_ref()
         .filter(|value| value.get("canonical_inputs").is_some())
-    {
-        Some(value) => {
-            let frame: calm_types::harness::snapshot::CanonicalHarnessSnapshot =
-                serde_json::from_value(value.clone())?;
+        .map(|value| {
+            serde_json::from_value::<calm_types::harness::snapshot::CanonicalHarnessSnapshot>(
+                value.clone(),
+            )
+        })
+        .transpose()?;
+    let active_input = match canonical.as_ref() {
+        Some(frame) => {
             let carrier = runtime
                 .as_ref()
                 .ok_or(CalmError::Conflict("canonical frame lacks its carrier"))?;
@@ -132,8 +137,31 @@ pub(super) async fn current_frame(
         }
         None => None,
     };
+    let terminal_outcome = match (runtime.as_ref(), canonical.as_ref()) {
+        (Some(runtime), Some(frame)) => {
+            match (
+                frame.header.last_thread_id.as_deref(),
+                frame.header.last_turn_id.as_deref(),
+            ) {
+                (Some(thread), Some(turn)) => {
+                    super::terminal_outcome::exact(
+                        &mut tx,
+                        &runtime.id,
+                        card,
+                        row.try_get("track_id")?,
+                        thread,
+                        turn,
+                    )
+                    .await?
+                }
+                _ => None,
+            }
+        }
+        _ => None,
+    };
     tx.commit().await?;
     Ok(crate::db::ConversationReadFrame {
+        terminal_outcome,
         runtime,
         snapshot,
         active_input,

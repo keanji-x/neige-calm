@@ -208,6 +208,13 @@ export type ConversationSubmissionDelivery = { carrier_id: string, logical_turn_
  */
 attempt: ConversationAttemptDelivery | null, };
 
+/**
+ * A current execution's persisted terminal fact, independent of display pagination.
+ */
+export type ConversationTerminalOutcome = { worker_session_id: string, card_id: string, track_id: string, thread_id: string, turn_id: string, status: ConversationTerminalStatus, created_at_ms: number, duration_ms: number | null, };
+
+export type ConversationTerminalStatus = "completed" | "interrupted" | "failed";
+
 export type DailyTrackResolved = { date: string, time_zone: string, track_id: string, };
 
 /**

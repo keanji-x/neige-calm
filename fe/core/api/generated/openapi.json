@@ -15428,6 +15428,59 @@
           }
         }
       },
+      "ConversationTerminalOutcome": {
+        "type": "object",
+        "description": "A current execution's persisted terminal fact, independent of display pagination.",
+        "required": [
+          "worker_session_id",
+          "card_id",
+          "track_id",
+          "thread_id",
+          "turn_id",
+          "status",
+          "created_at_ms",
+          "duration_ms"
+        ],
+        "properties": {
+          "card_id": {
+            "type": "string"
+          },
+          "created_at_ms": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "duration_ms": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "status": {
+            "$ref": "#/components/schemas/ConversationTerminalStatus"
+          },
+          "thread_id": {
+            "type": "string"
+          },
+          "track_id": {
+            "type": "string"
+          },
+          "turn_id": {
+            "type": "string"
+          },
+          "worker_session_id": {
+            "type": "string"
+          }
+        }
+      },
+      "ConversationTerminalStatus": {
+        "type": "string",
+        "enum": [
+          "completed",
+          "interrupted",
+          "failed"
+        ]
+      },
       "CreateAreaRequest": {
         "type": "object",
         "description": "User-facing Area creation. Deliberately permissive about unknown JSON keys: a caller-supplied `kind` must continue to be ignored rather than gaining a path to create a system Area.",
@@ -18165,6 +18218,7 @@
                 "required": [
                   "input_contract",
                   "history_replacement_supported",
+                  "terminal_outcome",
                   "terminal_timeout",
                   "runtime_state",
                   "pending_inputs",
@@ -18212,6 +18266,17 @@
                       }
                     ]
                   },
+                  "terminal_outcome": {
+                    "oneOf": [
+                      {
+                        "type": "null"
+                      },
+                      {
+                        "$ref": "#/components/schemas/ConversationTerminalOutcome",
+                        "description": "Persisted terminal fact for the exact current execution after END consumption."
+                      }
+                    ]
+                  },
                   "terminal_timeout": {
                     "oneOf": [
                       {
@@ -18219,7 +18284,7 @@
                       },
                       {
                         "$ref": "#/components/schemas/HarnessTimeoutEvidence",
-                        "description": "Confirmed timeout for this exact current execution, independent of execution admission."
+                        "description": "Confirmed timeout for this same current execution."
                       }
                     ]
                   }

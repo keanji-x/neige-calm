@@ -40,4 +40,5 @@
 // Revision 37 (#2836): canonical held delivery carries exact attempt identity and typed unavailable actions.
 // Revision 38 (#2836): canonical Human Keep with immutable checkpoint receipts and enabled action availability.
 // Revision 40 (#3320): canonical recovery declarations and explicit Human abandonment.
-pub const REST_API_VERSION: &str = "40";
+// Revision 41 (#3279): negotiated run reads require nullable exact current terminal evidence.
+pub const REST_API_VERSION: &str = "41";

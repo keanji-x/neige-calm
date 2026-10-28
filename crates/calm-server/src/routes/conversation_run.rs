@@ -53,7 +53,10 @@ pub struct ConversationRunResponse {
     pub input_contract: ConversationInputContract,
     /// Current historical edit affordance; every write rechecks its actual source.
     pub history_replacement_supported: bool,
-    /// Confirmed timeout for this exact current execution, independent of execution admission.
+    /// Persisted terminal fact for the exact current execution after END consumption.
+    #[schema(required = true, nullable = true)]
+    pub terminal_outcome: Option<ConversationTerminalOutcome>,
+    /// Confirmed timeout for this same current execution.
     #[schema(required = true, nullable = true)]
     pub terminal_timeout: Option<calm_types::harness::HarnessTimeoutEvidence>,
     /// Actual current worker row state. Canonical is always present; null means no current historical runtime.
@@ -85,6 +88,8 @@ pub(super) async fn read(
         .ok_or_else(|| CalmError::NotFound(format!("card {id}")))?;
     let frame = current_frame(s.repo.as_ref(), &id).await?;
     let runtime_fence = frame.runtime.clone();
+    let snapshot_fence = frame.canonical.clone();
+    let terminal_fence = frame.terminal_outcome.clone();
     let handle_fence = runtime_fence
         .as_ref()
         .and_then(|runtime| s.harness.get(&runtime.id));
@@ -143,18 +148,21 @@ pub(super) async fn read(
             Some(handle) => handle.issuance_block().await,
             None => None,
         };
-        let terminal_timeout = s
-            .repo
-            .harness_latest_terminal(&id, &scope.track)
-            .await?
-            .filter(|outcome| {
-                outcome.worker_session_id == runtime.id
-                    && outcome.card_id == id
-                    && outcome.track_id == scope.track
-                    && Some(outcome.thread_id.as_str()) == header.last_thread_id.as_deref()
-                    && Some(outcome.turn_id.as_str()) == header.last_turn_id.as_deref()
-            })
-            .and_then(|outcome| outcome.timeout());
+        // Only an outcome recorded for this exact execution may describe it.
+        // A still-active or newly queued input cannot inherit the prior result.
+        let terminal_outcome = (snapshot.canonical_inputs.active.is_none()
+            && snapshot.canonical_inputs.pending.is_empty())
+        .then(|| {
+            frame
+                .terminal_outcome
+                .as_ref()
+                .and_then(|row| row.display())
+        })
+        .flatten();
+        let terminal_timeout = frame
+            .terminal_outcome
+            .as_ref()
+            .and_then(|row| row.timeout());
         let active_input = crate::conversation_inputs::resolution::retry_read(
             s.repo.as_ref(),
             source.clone(),
@@ -219,6 +227,7 @@ pub(super) async fn read(
                 },
                 input_contract: ConversationInputContract::Canonical,
                 history_replacement_supported: false,
+                terminal_outcome,
                 terminal_timeout,
                 runtime_state: Some(runtime.state),
                 pending_inputs,
@@ -248,6 +257,7 @@ pub(super) async fn read(
                     run,
                     input_contract: ConversationInputContract::Historical,
                     history_replacement_supported,
+                    terminal_outcome: None,
                     terminal_timeout: None,
                     runtime_state: frame.runtime.map(|runtime| runtime.state),
                     pending_inputs: vec![],
@@ -261,7 +271,10 @@ pub(super) async fn read(
     };
     scope.publish(s.repo.as_ref(), &principal).await?;
     if query.contract.is_some() {
-        let current = s.repo.conversation_read_frame(&id).await?.runtime;
+        let published = current_frame(s.repo.as_ref(), &id).await?;
+        let same_execution =
+            published.canonical == snapshot_fence && published.terminal_outcome == terminal_fence;
+        let current = published.runtime;
         let same_runtime = match (runtime_fence.as_ref(), current.as_ref()) {
             (Some(before), Some(now)) => before.id == now.id && before.state == now.state,
             (None, None) => true,
@@ -275,7 +288,7 @@ pub(super) async fn read(
             (None, None) => true,
             (Some(_), None) | (None, Some(_)) => false,
         };
-        if !same_runtime || !same_handle {
+        if !same_runtime || !same_handle || !same_execution {
             return Err(CalmError::Conflict(
                 "conversation runtime changed while reading".into(),
             ));

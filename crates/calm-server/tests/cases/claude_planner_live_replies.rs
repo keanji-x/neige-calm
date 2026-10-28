@@ -495,3 +495,95 @@ async fn p1_workspace_upload_blank_canonical_claude_is_created() {
     assert!(root.read_fake("spawns").is_none());
     stack.shutdown().await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn p2_terminal_canonical_native_interrupted_end_is_read() {
+    let root = Root::new("stream-hold");
+    write_fake(&root, "stream", &cut_mid_reply().0);
+    let stack = Stack::boot(&root).await;
+    let (_, card) = main_control_blank(&stack, &root).await;
+    let (status, body) = stack.post_input(&card, "what is the secret word?").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    wait_file(&root, "streamed").await;
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let live = loop {
+        let (status, body) = stack
+            .send(
+                "GET",
+                &format!("/api/cards/{card}/harness/live?contract=conversation_v1"),
+                None,
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        if body.to_string().contains(CUT_AT) {
+            break body;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "native live reply not observed: {body}"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
+    eprintln!("P2 live={live}");
+    std::fs::write(root.fake_dir().join("hold-terminal"), "").unwrap();
+    let (status, body) = stack
+        .send(
+            "POST",
+            &format!("/api/cards/{card}/planner/interrupt"),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["stopped"], true);
+    wait_file(&root, "terminal-held").await;
+    let (before_status, before_end) = stack
+        .send(
+            "GET",
+            &format!("/api/cards/{card}/planner/run?contract=conversation_v1"),
+            None,
+        )
+        .await;
+    std::fs::write(root.fake_dir().join("release-terminal"), "").unwrap();
+    let outcomes = stack.wait_outcomes(&card, 1).await;
+    eprintln!("P2 persisted native END={outcomes:?}");
+    assert_eq!(outcomes[0]["status"], "interrupted", "{outcomes:?}");
+    let runtime = stack.runtime(&card).await;
+    stack.wait_provider_clear(&runtime.id).await;
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let current = stack.runtime(&card).await;
+        let frame = current.handle_state_json.unwrap();
+        if frame["phase"] == "turn_completed" && frame["canonical_inputs"]["active"].is_null() {
+            eprintln!("P2 committed END frame={frame}");
+            break;
+        }
+        assert!(Instant::now() < deadline, "END not yet consumed: {frame}");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let (status, run) = stack
+        .send(
+            "GET",
+            &format!("/api/cards/{card}/planner/run?contract=conversation_v1"),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{run}");
+    stack.shutdown().await;
+    assert_eq!(before_status, StatusCode::OK, "{before_end}");
+    assert!(
+        before_end.get("terminal_outcome").is_some(),
+        "required nullable fact: {before_end}"
+    );
+    assert_eq!(
+        before_end["terminal_outcome"],
+        Value::Null,
+        "ACK cannot fabricate END"
+    );
+    assert_eq!(
+        run["terminal_outcome"]["status"], "interrupted",
+        "qualified END missing: {run}"
+    );
+    assert_eq!(run["terminal_outcome"]["worker_session_id"], runtime.id);
+    assert_eq!(run["terminal_outcome"]["card_id"], card);
+    assert_eq!(run["terminal_outcome"]["turn_id"], outcomes[0]["id"]);
+}

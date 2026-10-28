@@ -197,7 +197,11 @@ async fn canonical_run_reads_only_the_exact_current_terminal_timeout_and_still_s
             .await.unwrap();
         assert_eq!(
             read_run(&app, &cookie, &card).await["terminal_timeout"],
-            Value::Null,
+            if changed == "session" {
+                run["terminal_timeout"].clone()
+            } else {
+                Value::Null
+            },
             "{changed}"
         );
     }
@@ -282,4 +286,196 @@ async fn acp_grok_compact_canonical_run_uses_bound_provider_capability() {
         );
     }
     fixture.shutdown_process(&state).await;
+}
+
+/// Storage/read adversaries complement the real native END integration test.
+#[tokio::test]
+async fn p2_terminal_exact_key_and_payload_not_phase_or_latest_card_row() {
+    let fixture = Fixture::new().await;
+    let (_state, app, cookie) = fixture.application().await;
+    let area = post(
+        &app,
+        &cookie,
+        "/api/areas",
+        "p2-read-area",
+        json!({"name":"P2 terminal","color":"#123456"}),
+    )
+    .await;
+    let track = post(
+        &app,
+        &cookie,
+        "/api/tracks",
+        "p2-read",
+        json!({"area_id":area["id"],"planner_provider":"codex",
+        "title":"","theme":{"fg":[255,255,255],"bg":[0,0,0]},"first_message":FIRST_BODY}),
+    )
+    .await;
+    let track = track["id"].as_str().unwrap();
+    let (card, worker, mut frame) = fixture.carrier(track).await;
+    let other_track = post(
+        &app,
+        &cookie,
+        "/api/tracks",
+        "p2-other",
+        json!({"area_id":area["id"],"planner_provider":"codex",
+        "title":"","theme":{"fg":[255,255,255],"bg":[0,0,0]},"first_message":FIRST_BODY}),
+    )
+    .await;
+    let (other_card, other_worker, _) = fixture.carrier(other_track["id"].as_str().unwrap()).await;
+    // Read-only fixture: phase/ACK-looking state alone never manufactures a fact.
+    frame.header.phase = HarnessPhaseTag::TurnCompleted;
+    frame.header.last_thread_id = Some(THREAD.into());
+    frame.header.last_turn_id = Some(TURN.into());
+    frame.canonical_inputs.pending.clear();
+    save_frame(&fixture, &worker, &frame).await;
+    assert_eq!(
+        read_run(&app, &cookie, &card).await["terminal_outcome"],
+        Value::Null
+    );
+    for (session, card_key, track_key, thread, turn) in [
+        ("wrong-worker", card.as_str(), track, THREAD, TURN),
+        (worker.as_str(), other_card.as_str(), track, THREAD, TURN),
+        (worker.as_str(), card.as_str(), "wrong-track", THREAD, TURN),
+        (worker.as_str(), card.as_str(), track, "wrong-thread", TURN),
+        (worker.as_str(), card.as_str(), track, THREAD, "wrong-turn"),
+    ] {
+        fixture
+            .repo
+            .fixture_transcript_insert(
+                session,
+                card_key,
+                track_key,
+                thread,
+                Some(turn),
+                None,
+                None,
+                "turn/completed",
+                &json!({"id":turn,"status":"interrupted"}).to_string(),
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            read_run(&app, &cookie, &card).await["terminal_outcome"],
+            Value::Null
+        );
+    }
+    for payload in [
+        json!({"id":"unrelated","status":"interrupted"}),
+        json!({"id":TURN,"status":"running"}),
+        json!({"id":TURN}),
+        json!({"id":TURN,"status":false}),
+    ] {
+        fixture
+            .repo
+            .fixture_transcript_insert(
+                &worker,
+                &card,
+                track,
+                THREAD,
+                Some(TURN),
+                None,
+                None,
+                "turn/completed",
+                &payload.to_string(),
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            read_run(&app, &cookie, &card).await["terminal_outcome"],
+            Value::Null
+        );
+    }
+    fixture
+        .repo
+        .fixture_transcript_insert(
+            &worker,
+            &card,
+            track,
+            THREAD,
+            Some(TURN),
+            None,
+            None,
+            "turn/completed",
+            &json!({"id":TURN,"status":"interrupted","durationMs":19}).to_string(),
+            None,
+        )
+        .await
+        .unwrap();
+    let expected = read_run(&app, &cookie, &card).await["terminal_outcome"].clone();
+    assert_eq!(expected["status"], "interrupted");
+    assert_eq!(expected["worker_session_id"], worker);
+    assert_eq!(expected["card_id"], card);
+    assert_eq!(expected["track_id"], track);
+    assert_eq!(expected["thread_id"], THREAD);
+    assert_eq!(expected["turn_id"], TURN);
+    assert_eq!(expected["duration_ms"], 19.0);
+    // A later unrelated record must not hide the exact current execution.
+    fixture
+        .repo
+        .fixture_transcript_insert(
+            "wrong-worker",
+            &card,
+            track,
+            "other-thread",
+            Some("other-turn"),
+            None,
+            None,
+            "turn/completed",
+            &json!({"id":"other-turn","status":"completed"}).to_string(),
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        read_run(&app, &cookie, &card).await["terminal_outcome"],
+        expected
+    );
+    frame.header.last_turn_id = Some("next-turn".into());
+    save_frame(&fixture, &worker, &frame).await;
+    assert_eq!(
+        read_run(&app, &cookie, &card).await["terminal_outcome"],
+        Value::Null
+    );
+    // A changed carrier cannot inherit the old execution's terminal row.
+    sqlx::query("UPDATE cards SET session_id=?1 WHERE id=?2")
+        .bind(&other_worker)
+        .bind(&card)
+        .execute(fixture.repo.pool())
+        .await
+        .unwrap();
+    let response = app
+        .clone()
+        .oneshot(
+            Request::get(format!(
+                "/api/cards/{card}/planner/run?contract=conversation_v1"
+            ))
+            .header(header::COOKIE, &cookie)
+            .body(Body::empty())
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    sqlx::query("UPDATE cards SET session_id=?1 WHERE id=?2")
+        .bind(&worker)
+        .bind(&card)
+        .execute(fixture.repo.pool())
+        .await
+        .unwrap();
+    // A current read requires present authorization, even with a stored fact.
+    post(&app, &cookie, "/api/auth/logout", "p2-logout", json!({})).await;
+    let response = app
+        .oneshot(
+            Request::get(format!(
+                "/api/cards/{card}/planner/run?contract=conversation_v1"
+            ))
+            .header(header::COOKIE, cookie)
+            .body(Body::empty())
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }

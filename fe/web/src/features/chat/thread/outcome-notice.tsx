@@ -1,3 +1,4 @@
+import type { CurrentConversationOutcome } from '../../../../../core/domain/conversation-display.ts';
 import type { ReactNode } from 'react';
 import { recoveryStatusNotice, type RunRecovery } from '../../../../../core/domain/conversation-restart.ts';
 import type { ConversationTurnOutcome } from '../../../../../core/domain/conversation.ts';
@@ -19,7 +20,7 @@ const FAILURE_HINTS: Readonly<Record<string, string>> = Object.freeze({
 export function CurrentStatusNotice({ outcome, canContinue, live, sending = false, statusUnconfirmed, statusLoading, stalled, stalledReason, recovery, feedback, copyAction, editAction, regenerateAction, runningAnchor, detailsExpanded, onDetailsExpandedChange }: {
   detailsExpanded?: boolean;
   onDetailsExpandedChange?: (expanded: boolean) => void;
-  outcome: ConversationTurnOutcome | null;
+  outcome: CurrentConversationOutcome | null;
   canContinue: boolean;
   live: boolean;
   sending?: boolean;
@@ -106,7 +107,7 @@ function StopFeedbackDetails({ feedback }: { feedback: ConversationStopFeedback 
 }
 
 /** Recorded diagnostics stay readable even when a run query cannot confirm current execution. */
-function OutcomeDetails({ outcome, canContinue }: { outcome: ConversationTurnOutcome; canContinue: boolean }) {
+function OutcomeDetails({ outcome, canContinue }: { outcome: CurrentConversationOutcome; canContinue: boolean }) {
   if (outcome.status === 'completed') return null;
   const hasReason = outcome.text !== undefined && outcome.text.trim() !== '';
   const hint = outcome.status === 'failed' ? outcomeHintText(outcome.code, outcome.rawStatus) : null;

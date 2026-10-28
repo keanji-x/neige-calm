@@ -917,7 +917,7 @@ describe('track conversations', () => {
             blocked_reason: abandoned ? null : 'Outcome unknown', manual_compact_supported: false,
             recovery: abandoned ? null : { cause: 'unknown_outcome', action: 'abandon_session', request: expected },
             compact_outcome: null, context_usage_invalidated: false, running_turn: null, pending: [], pending_overflow: 0,
-            attachments_supported: false, history_replacement_supported: false, terminal_timeout: null,
+            attachments_supported: false, history_replacement_supported: false, terminal_outcome:null,terminal_timeout: null,
             input_contract: 'canonical', runtime_state: abandoned ? 'idle' : 'running', pending_inputs: [], active_input: null, native_turn_id: null });
         }
         return undefined;

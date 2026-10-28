@@ -28,7 +28,7 @@ it('keeps the composer and message bubble in place through queue acknowledgement
     if (url.pathname.endsWith('/planner/run') && url.searchParams.get('contract') === 'conversation_v1') return ok({ card_id: 'daily-planner', worker_session_id: 'runtime',
       phase: 'idle', model: null, reasoning_effort: null, permission_mode: 'never', blocked_reason: null,
       pending: [], pending_overflow: 0, manual_compact_supported: true, recovery: null, compact_outcome: null, context_usage_invalidated: false, running_turn: null,
-      input_contract: 'canonical', runtime_state: 'idle', history_replacement_supported: false, terminal_timeout: null,
+      input_contract: 'canonical', runtime_state: 'idle', history_replacement_supported: false, terminal_outcome:null,terminal_timeout: null,
       // The run read has caught up with consumption before the body page arrives.
       pending_inputs: [],
       active_input: null, native_turn_id: null });

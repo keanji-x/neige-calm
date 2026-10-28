@@ -409,3 +409,27 @@ mod imported_tests {
         assert!(serde_json::from_value::<ConversationDisplaySource>(bad).is_err());
     }
 }
+
+/// A current execution's persisted terminal fact, independent of display pagination.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ToSchema, TS)]
+#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
+pub struct ConversationTerminalOutcome {
+    pub worker_session_id: String,
+    pub card_id: String,
+    pub track_id: String,
+    pub thread_id: String,
+    pub turn_id: String,
+    pub status: ConversationTerminalStatus,
+    pub created_at_ms: i64,
+    #[schema(required = true, nullable = true)]
+    pub duration_ms: Option<f64>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
+pub enum ConversationTerminalStatus {
+    Completed,
+    Interrupted,
+    Failed,
+}

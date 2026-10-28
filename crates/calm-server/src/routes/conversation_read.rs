@@ -41,6 +41,7 @@ impl ReadScope {
 }
 
 pub(crate) struct CurrentReadFrame {
+    pub terminal_outcome: Option<calm_truth::db::terminal_outcome::HarnessTerminalOutcome>,
     pub runtime: Option<calm_truth::db::CurrentConversationRuntime>,
     pub canonical: Option<CanonicalHarnessSnapshot>,
     pub active_input: Option<calm_types::conversation_display::ConversationActiveInput>,
@@ -79,6 +80,7 @@ pub(crate) async fn current_frame(repo: &dyn RouteRepo, card: &str) -> Result<Cu
         ));
     }
     Ok(CurrentReadFrame {
+        terminal_outcome: facts.terminal_outcome,
         runtime: facts.runtime,
         canonical,
         active_input: facts.active_input,
