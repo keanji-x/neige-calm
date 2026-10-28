@@ -21,6 +21,9 @@ use uuid::Uuid;
 struct Ledger {
     refuse_init: bool,
     refuse_outcome: bool,
+    refuse_result: bool,
+    cancel_after_result: bool,
+    results: Mutex<Vec<(WorkerTurnKey, WorkerTurnOutcome)>>,
     inits: Mutex<Vec<(WorkerTurnKey, WorkerInitRecord)>>,
     outcomes: Mutex<Vec<(WorkerTurnKey, WorkerTurnRecord)>>,
 }
@@ -34,6 +37,13 @@ impl WorkerTurnLedger for Ledger {
             .lock()
             .unwrap()
             .push((turn.clone(), init.clone()));
+        Ok(())
+    }
+    async fn record_result(&self, turn: &WorkerTurnKey, result: &WorkerTurnOutcome) -> Result<()> {
+        if self.refuse_result {
+            return Err(CalmError::Conflict("ledger unavailable".into()));
+        }
+        self.results.lock().unwrap().push((turn.clone(), result.clone()));
         Ok(())
     }
     async fn record_outcome(&self, turn: &WorkerTurnKey, record: &WorkerTurnRecord) -> Result<()> {
@@ -180,6 +190,27 @@ async fn run(
             slot.arm_stop(tokio::time::Instant::now());
         }
     };
+    if ledger.cancel_after_result {
+        drop(stop);
+        {
+            tokio::pin!(drive);
+            tokio::select! {
+                _ = &mut drive => panic!("completed before cancellation"),
+                () = async {
+                    tokio::time::timeout(Duration::from_secs(10), async {
+                        while !dir.path().join("result-read").exists() {
+                            tokio::task::yield_now().await;
+                        }
+                    }).await.unwrap();
+                } => {}
+            }
+            // The child saw EOF on stdin, so the shared loop has read its result, but
+            // the child is still running: KnownEnd and owner.complete cannot exist yet.
+            assert!(ledger.outcomes.lock().unwrap().is_empty());
+        } // Cancellation drops the actual shared-loop future and stops its execution.
+        execution::wait_settled(&fixture.engine, &id, Duration::from_secs(12)).await.unwrap();
+        return Ran { ledger, key, thread, qualified: false, dir };
+    }
     let (qualified, ()) =
         tokio::time::timeout(Duration::from_secs(20), async { tokio::join!(drive, stop) })
             .await
@@ -406,4 +437,52 @@ async fn worker_sink_completion_requires_matching_identity_and_a_durable_write()
         }
         assert!(!qualified.load(Ordering::Acquire));
     }
+}
+
+#[tokio::test]
+async fn worker_sink_result_survives_cancellation_before_known_end() {
+    for is_error in [false, true] {
+        let ran = run(
+            Ledger { cancel_after_result: true, ..Ledger::default() },
+            json!({}),
+            |dir, thread| {
+                let record = if is_error {
+                    json!({"type":"result","subtype":"error_during_execution",
+                        "session_id":thread,"is_error":true,"errors":["test error"],
+                        "usage":{"input_tokens":0,"cache_creation_input_tokens":0,
+                        "cache_read_input_tokens":0,"output_tokens":0,"iterations":[]},"modelUsage":{}})
+                } else { result(thread) };
+                write(dir, "result.json", &[record]);
+            },
+            "cat init.json result.json; cat >/dev/null; touch result-read; exec tail -f /dev/null",
+            false,
+        ).await;
+        assert!(outcome(&ran).is_empty());
+        let expected = if is_error {
+            WorkerTurnOutcome::Failed { message: "test error".into() }
+        } else { WorkerTurnOutcome::Completed };
+        assert_eq!(*ran.ledger.results.lock().unwrap(), [(ran.key.clone(), expected)]);
+    }
+}
+
+#[tokio::test]
+async fn worker_sink_unrecorded_result_stops_without_qualification() {
+    let ran = run(
+        Ledger { refuse_result: true, ..Ledger::default() }, json!({}),
+        |_, _| {}, "cat init.json result.json; exec tail -f /dev/null", false,
+    ).await;
+    assert!(!ran.qualified);
+    assert!(ran.ledger.results.lock().unwrap().is_empty());
+    assert!(matches!(&outcome(&ran)[0].1.outcome, WorkerTurnOutcome::Failed { .. }));
+}
+
+#[tokio::test]
+async fn worker_sink_mismatched_session_fails_before_recording() {
+    let ran = run(
+        Ledger::default(), json!({"session_id":Uuid::new_v4()}),
+        |_, _| {}, "cat init.json result.json", false,
+    ).await;
+    assert!(recorded_init(&ran).is_empty());
+    assert!(ran.ledger.results.lock().unwrap().is_empty());
+    assert!(matches!(&outcome(&ran)[0].1.outcome, WorkerTurnOutcome::Failed { .. }));
 }

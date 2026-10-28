@@ -73,6 +73,7 @@ pub(crate) struct WorkerTurnRecord {
 #[async_trait::async_trait]
 pub(crate) trait WorkerTurnLedger: Send + Sync {
     async fn record_init(&self, turn: &WorkerTurnKey, init: &WorkerInitRecord) -> Result<()>;
+    async fn record_result(&self, turn: &WorkerTurnKey, result: &WorkerTurnOutcome) -> Result<()>;
     async fn record_outcome(&self, turn: &WorkerTurnKey, record: &WorkerTurnRecord) -> Result<()>;
 }
 
