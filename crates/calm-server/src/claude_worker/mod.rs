@@ -10,7 +10,7 @@ mod role;
 mod sink;
 
 pub(crate) use environment::{WorkerEnvironment, WorkerLaunch, WorkerMcpToken, kernel_proxy};
-pub(crate) use role::{WorkerArgs, WorkerRole, WorkerStart};
+pub(crate) use role::{WorkerArgs, WorkerStart};
 pub use sink::WorkerEnd;
 pub(crate) use sink::{
     WorkerInitRecord, WorkerSink, WorkerTurnKey, WorkerTurnLedger, WorkerTurnOutcome,

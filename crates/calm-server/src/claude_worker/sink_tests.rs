@@ -22,6 +22,7 @@ struct Ledger {
     refuse_init: bool,
     refuse_outcome: bool,
     refuse_result: bool,
+    refuse_replay: bool,
     commit_then_err: bool,
     commit_after_timeout: bool,
     result_attempts: std::sync::atomic::AtomicUsize,
@@ -50,6 +51,9 @@ impl WorkerTurnLedger for Ledger {
             .result_attempts
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
             == 0;
+        if !first && self.refuse_replay {
+            return Err(CalmError::Conflict("replay unavailable".into()));
+        }
         if first && self.commit_after_timeout {
             let (sender, receiver) = tokio::sync::oneshot::channel::<()>();
             let results = self.results.clone();
@@ -81,6 +85,15 @@ impl WorkerTurnLedger for Ledger {
     async fn record_outcome(&self, turn: &WorkerTurnKey, record: &WorkerTurnRecord) -> Result<()> {
         if self.refuse_outcome {
             return Err(CalmError::Conflict("ledger unavailable".into()));
+        }
+        if self
+            .results
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(key, result)| key == turn && result != &record.outcome)
+        {
+            return Err(CalmError::Conflict("outcome contradicts result".into()));
         }
         self.outcomes
             .lock()
@@ -208,7 +221,7 @@ async fn run(
         owner.clone(),
         pool.clone(),
         (*fixture.engine).clone(),
-        key.clone(),
+        key.intent_key.clone(),
         ledger.clone(),
     );
     let drive = drive(
@@ -264,16 +277,17 @@ async fn run(
         tokio::time::timeout(Duration::from_secs(20), async { tokio::join!(drive, stop) })
             .await
             .unwrap();
-    // The protocol loop owned the execution end to end: stdin closed, driver gone, claim cleared.
+    // A result whose replay still fails retains its claim; successful completion clears it.
     assert!(slot.stdin.lock().await.is_none());
-    assert_eq!(*slot.settled.borrow(), !ledger.refuse_result);
+    let replay_failed = ledger.refuse_result || ledger.refuse_replay;
+    assert_eq!(*slot.settled.borrow(), !replay_failed);
     assert!(!owner.drivers.contains(&id));
-    assert!(
+    assert_eq!(
         calm_truth::db::sqlite::provider_execution::load(pool.read_pool(), SESSION)
             .await
             .unwrap()
-            .is_none()
-            != ledger.refuse_result
+            .is_some(),
+        replay_failed
     );
     Ran {
         ledger,
@@ -466,7 +480,7 @@ async fn worker_sink_completion_requires_matching_identity_and_a_durable_write()
         let end = WorkerEnd {
             turn: turn.clone(),
             outcome: WorkerTurnOutcome::Completed,
-            result_durable: true,
+            result_observed: true,
             slot: slot.clone(),
             ledger: ledger.clone(),
             qualified: qualified.clone(),
@@ -615,4 +629,24 @@ async fn uncertain_result(ledger: Ledger) {
             .load(std::sync::atomic::Ordering::SeqCst),
         2
     );
+}
+
+/// A committed result with a failed replay must keep its claim rather than write an outcome.
+#[tokio::test]
+async fn w_protocol_worker_uncertain_result_failed_replay_retains_claim() {
+    let ran = run(
+        Ledger {
+            commit_then_err: true,
+            refuse_replay: true,
+            ..Ledger::default()
+        },
+        json!({}),
+        |_, _| {},
+        "cat init.json result.json",
+        Then::Finish,
+    )
+    .await;
+    expect_result(&ran, WorkerTurnOutcome::Completed);
+    assert!(outcome(&ran).is_empty());
+    assert!(!ran.qualified);
 }

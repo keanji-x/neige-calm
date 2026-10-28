@@ -10,7 +10,7 @@ use crate::provider_execution::{self as execution, CompletionEvidence};
 use provider::claude::permission::CanUseTool;
 use provider::claude::protocol::{Record, SystemInit};
 use provider::claude::translate::TurnOutcome;
-use std::sync::{Arc, atomic::AtomicBool};
+use std::sync::{Arc, OnceLock, atomic::AtomicBool};
 use std::time::Duration;
 use uuid::Uuid;
 
@@ -75,7 +75,9 @@ pub(crate) struct WorkerTurnRecord {
 /// Each method holds one fact per turn key and the first write wins: a repeat of the same value
 /// for a key (a retry whose earlier attempt committed but reported an error) succeeds without a
 /// second fact, and a different value for a key that already has one is refused with a conflict,
-/// never overwritten. The three facts are independent; none implies or replaces another.
+/// never overwritten. Init, result and settlement are separate facts; none replaces another.
+/// `record_outcome` must agree with an existing result fact or refuse the write. A result write
+/// may commit despite returning Err or being cancelled, so completion replays that same value.
 #[async_trait::async_trait]
 pub(crate) trait WorkerTurnLedger: Send + Sync {
     /// The session a matching `init` named, written before the role check reads it.
@@ -90,16 +92,17 @@ pub(crate) trait WorkerTurnLedger: Send + Sync {
 }
 
 /// The worker's [`TurnSink`]. It holds no session of its own: the turn's session is the
-/// protocol profile's ([`super::WorkerRole`]), which the shared loop checks every record against.
+/// protocol profile's ([`super::role::WorkerRole`]), which the shared loop checks every record against.
 pub(crate) struct WorkerSink {
     slot: Arc<TurnSlot>,
     owner: execution::ProviderExecution,
     pool: crate::db::sqlite::SqliteDb,
     engine: crate::execution_boot::ExecutionEngine,
-    turn: WorkerTurnKey,
+    intent_key: String,
+    turn: OnceLock<WorkerTurnKey>,
     ledger: Arc<dyn WorkerTurnLedger>,
-    /// The result fact as written: `Err` names why a read result was not recorded.
-    result: Option<std::result::Result<WorkerTurnOutcome, String>>,
+    /// A validated result, retained even when its durable acknowledgement is uncertain.
+    result: Option<WorkerTurnOutcome>,
 }
 
 impl WorkerSink {
@@ -108,7 +111,8 @@ impl WorkerSink {
         owner: execution::ProviderExecution,
         pool: crate::db::sqlite::SqliteDb,
         engine: crate::execution_boot::ExecutionEngine,
-        turn: WorkerTurnKey,
+        // WA2-D will take this from Purpose::WorkerTurn; until then the issuer supplies it.
+        intent_key: String,
         ledger: Arc<dyn WorkerTurnLedger>,
     ) -> Self {
         Self {
@@ -116,10 +120,17 @@ impl WorkerSink {
             owner,
             pool,
             engine,
-            turn,
+            intent_key,
+            turn: OnceLock::new(),
             ledger,
             result: None,
         }
+    }
+
+    fn turn(&self) -> &WorkerTurnKey {
+        self.turn
+            .get()
+            .expect("protocol bound the claim before reading")
     }
 
     /// Stop the turn with `failure`, from a callback that reads output.
@@ -131,29 +142,28 @@ impl WorkerSink {
     /// Write a validated result's outcome through the port before the loop settles anything.
     async fn record_result(&mut self, event: &TerminalEvent) {
         let outcome: WorkerTurnOutcome = decide(self.slot.cause().as_ref(), event).into();
+        self.result = Some(outcome.clone());
         let written = self
             .slot
             .bounded(
                 RECORD_TIMEOUT,
-                self.ledger.record_result(&self.turn, &outcome),
+                self.ledger.record_result(self.turn(), &outcome),
             )
             .await;
         let failure = match written {
             Some(Ok(())) => {
-                self.result = Some(Ok(outcome));
                 return;
             }
             Some(Err(error)) => error.to_string(),
             None => "cut off by its bound".into(),
         };
         tracing::warn!(
-            worker_session_id = %self.turn.worker_session_id,
+            worker_session_id = %self.turn().worker_session_id,
             %failure,
-            "claude worker: result not recorded; stopping the turn"
+            "claude worker: result acknowledgement uncertain; stopping the turn"
         );
-        let failure = format!("result not recorded: {failure}");
-        self.fail(failure.clone());
-        self.result = Some(Err(failure));
+        let failure = format!("result acknowledgement uncertain: {failure}");
+        self.fail(failure);
     }
 }
 
@@ -163,11 +173,17 @@ impl TurnSink for WorkerSink {
         self.slot.clone()
     }
     fn cancellation(&self, claim: &execution::Claim) -> execution::Cancellation {
+        let turn = WorkerTurnKey {
+            worker_session_id: claim.session().into(),
+            intent_key: self.intent_key.clone(),
+            execution_id: claim.record().execution_id.clone(),
+        };
+        self.turn.set(turn).expect("one protocol drive per sink");
         execution::Cancellation {
             owner: self.owner.clone(),
             pool: self.pool.clone(),
             engine: self.engine.clone(),
-            session: self.turn.worker_session_id.clone(),
+            session: self.turn().worker_session_id.clone(),
             claim: claim.clone(),
             armed: true,
         }
@@ -185,7 +201,10 @@ impl TurnSink for WorkerSink {
         };
         let written = self
             .slot
-            .bounded(RECORD_TIMEOUT, self.ledger.record_init(&self.turn, &record))
+            .bounded(
+                RECORD_TIMEOUT,
+                self.ledger.record_init(self.turn(), &record),
+            )
             .await;
         let failure = match written {
             Some(Ok(())) => return,
@@ -193,7 +212,7 @@ impl TurnSink for WorkerSink {
             None => "cut off by its bound".into(),
         };
         tracing::warn!(
-            worker_session_id = %self.turn.worker_session_id,
+            worker_session_id = %self.turn().worker_session_id,
             %failure,
             "claude worker: init not recorded; stopping the turn"
         );
@@ -232,16 +251,14 @@ impl TurnSink for WorkerSink {
         cause: Option<TerminalCause>,
         qualified: Arc<AtomicBool>,
     ) -> Option<execution::KnownEnd> {
-        // The recorded result is the turn's outcome; one that was not recorded never completes it.
-        let (outcome, result_durable) = match self.result {
-            Some(Ok(outcome)) => (outcome, true),
-            Some(Err(message)) => (WorkerTurnOutcome::Failed { message }, false),
-            None => (decide(cause.as_ref(), &event).into(), true),
-        };
+        let result_observed = self.result.is_some();
+        let outcome = self
+            .result
+            .unwrap_or_else(|| decide(cause.as_ref(), &event).into());
         Some(execution::KnownEnd::ClaudeWorkerTurn(Box::new(WorkerEnd {
             outcome,
-            result_durable,
-            turn: self.turn,
+            result_observed,
+            turn: self.turn.into_inner().expect("bound claim"),
             slot: self.slot,
             ledger: self.ledger,
             qualified,
@@ -253,8 +270,8 @@ impl TurnSink for WorkerSink {
 pub struct WorkerEnd {
     pub(super) turn: WorkerTurnKey,
     pub(super) outcome: WorkerTurnOutcome,
-    /// False when a read result could not be recorded: such a turn never qualifies.
-    pub(super) result_durable: bool,
+    /// Replay a read result before recording settlement, including uncertain acknowledgements.
+    pub(super) result_observed: bool,
     pub(super) slot: Arc<TurnSlot>,
     pub(super) ledger: Arc<dyn WorkerTurnLedger>,
     pub(super) qualified: Arc<AtomicBool>,
@@ -263,7 +280,7 @@ pub struct WorkerEnd {
 impl WorkerEnd {
     /// Record the outcome for exactly the execution `record` names; a write failure is returned,
     /// so `finish` keeps the claim and retries. The foreground outcome qualifies only once
-    /// recorded with the Engine's settlement proof, and only if its result, when read, was recorded.
+    /// recorded with the Engine's settlement proof, after any observed result is durably replayed.
     pub(crate) async fn settle(
         self,
         session: &str,
@@ -274,6 +291,9 @@ impl WorkerEnd {
             return Err(execution::conflict(
                 "Claude worker completion identity changed",
             ));
+        }
+        if self.result_observed {
+            self.ledger.record_result(&self.turn, &self.outcome).await?;
         }
         let settled = crate::claude_planner::execution::foreground_settled(evidence);
         self.ledger
@@ -286,10 +306,8 @@ impl WorkerEnd {
             )
             .await?;
         self.slot.settled.send_replace(true);
-        self.qualified.store(
-            settled && self.result_durable,
-            std::sync::atomic::Ordering::Release,
-        );
+        self.qualified
+            .store(settled, std::sync::atomic::Ordering::Release);
         Ok(())
     }
 }
