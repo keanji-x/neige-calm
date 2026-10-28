@@ -189,6 +189,27 @@ fn w_planner_env_unchanged() {
     assert_eq!(env, expected);
 }
 
+#[tokio::test]
+async fn w_claude_worker_legacy_card_environment_is_unchanged() {
+    let repo = crate::db::sqlite::SqlxRepo::open("sqlite::memory:")
+        .await
+        .unwrap();
+    let mut codex = crate::state::CodexClient::new_stub();
+    codex.ingest_url = "http://127.0.0.1:7777".into();
+    let env = crate::operation::claude_adapter::build_claude_env(&repo, &codex, "card-1")
+        .await
+        .unwrap();
+    assert_eq!(
+        env,
+        serde_json::json!({
+            "NEIGE_CARD_ID": "card-1",
+            "NEIGE_CALM_BASE_URL": "http://127.0.0.1:7777",
+            "NEIGE_HOOK_PROVIDER": "claude",
+            "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1"
+        })
+    );
+}
+
 struct LaunchOwner;
 #[async_trait::async_trait]
 impl execution::ProviderExecutionOwner for LaunchOwner {
@@ -280,7 +301,9 @@ async fn w_claude_worker_launch_has_no_token() {
     );
     assert_eq!(
         specification.ambient_environment,
-        WorkerEnvironment::ambient()
+        AmbientEnvironment::SupervisorAllowed {
+            proxy_policy: AmbientProxyPolicy::Exclude,
+        }
     );
     // The supervisor's own preflight accepts it: no secret proxy is explicit.
     assert_eq!(specification.validate_environment(), Ok(()));
