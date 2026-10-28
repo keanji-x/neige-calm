@@ -1,4 +1,23 @@
 #!/usr/bin/env bash
+# U12a-1 bounded exception: long_literal/crates/**/*.rs 166 -> 173 is seven
+# SQL occurrences under calm-server/src/, not agent-facing prose:
+# 1. dispatcher/system_assistant.rs submit: historical operation/card existence.
+# 2. routes/canonical_flow_tests/system_assistant_tests.rs Native::ack: join the
+#    effective submission to its original receipt, observation and worker.
+# In routes/canonical_flow_tests/system_assistant_tests/authority.rs:
+# 3. outer_error_and_cancel_rollback_the_entire_acceptance_before_publication:
+#    receipt INSERT failure trigger on the real schema.
+# 4. assert_empty: six-table rollback absence query.
+# 5. current_binding_and_area_reject_new_acceptance_on_original_target:
+#    set the real area history contract to shared_history before acceptance.
+# 6. native_ack_revocation: the same contract change during native thread ACK.
+# 7. routes/canonical_flow_tests/system_assistant_tests/recovery.rs cold_original:
+#    worker-frame UPDATE failure trigger to retain a claimed, unattempted input.
+# Query/schema-contract changes edit their owning source and regenerate this
+# baseline; ordinary test additions need no inventory edit. No scan rule changes;
+# the existing normal occurrence scan runs once in CI lint, plus its existing
+# separate --selftest step. No new check or invocation is added.
+
 # B1a raw fixtures: long_literal/crates/**/*.rs 158 -> 159 counts one SQL
 # fixture in boundary_tests.rs with bad database_identity and _sqlx_migrations rows.
 # The intact SQL exercises raw evidence preservation; it is not agent-facing prose.

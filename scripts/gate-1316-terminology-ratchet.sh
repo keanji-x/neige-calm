@@ -1,4 +1,16 @@
 #!/usr/bin/env bash
+# U12a-1 bounded historical-contract exception: harness_item/crates 301 -> 303
+# is two SQL reads of the frozen harness_items table in calm-server/src/routes/
+# canonical_flow_tests/system_assistant_tests/authority.rs, in
+# historical_summary_key_requires_explicit_migration_without_erasing_original_work:
+# 1. Read original row ids/params before the System namespace rejection.
+# 2. Read each original row's params afterward to prove history is preserved.
+# These exercise the real historical namespace boundary, not new domain names.
+# Later SQL-contract changes edit that test and regenerate this baseline; ordinary
+# test additions need no inventory edit. Patterns/scopes/exclusions are unchanged.
+# The existing normal occurrence scan runs once in CI lint, plus its existing
+# separate --selftest step; no new check or invocation is added.
+
 # B1a raw fixtures: harness_item/crates 298 -> 301 counts raw_tests.rs's
 # CREATE, INSERT and independent expected entry for the real harness_items table.
 # Keeping the historical name literal preserves raw coverage; no scan rule changes.
