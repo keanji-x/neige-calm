@@ -1346,3 +1346,37 @@ it('requires archive metadata on Assistant summaries and retains a saved timesta
   const missing: Record<string, unknown> = {...row}; delete missing.archivedAt;
   expect(schema.safeParse([missing]).success).toBe(false);
 });
+
+
+describe('ACP activity content in the transcript', () => {
+  function nativeRow(id: number, itemType: string, item: Record<string, unknown>, method = 'item/completed'): HarnessItem {
+    return { id, worker_session_id: 'worker', card_id: 'card', track_id: 'track', thread_id: 'thread',
+      turn_id: 'turn', item_uuid: String(id), item_type: itemType, method,
+      params: JSON.stringify({ item: { id: String(id), type: itemType, ...item } }),
+      created_at_ms: id, turn_error_text: null };
+  }
+
+  it('keeps the native tool name, input and output readable after completion', () => {
+    const activity = harnessItemToActivity(nativeRow(1, 'dynamicToolCall', {
+      tool: 'Read inventory', arguments: { path: 'inventory.csv' }, status: 'completed',
+      result: { content: [{ type: 'text', text: 'Found 42 shops' }], structuredContent: { count: 42 } },
+    }));
+    expect(activity).toMatchObject({ target: 'Read inventory', state: 'done', detail: null });
+    expect(activity?.content).toContain('inventory.csv');
+    expect(activity?.content).toContain('Found 42 shops');
+    expect(activity?.content).toContain('42');
+  });
+
+  it('updates readable thoughts and keeps them when a tool or reply follows', () => {
+    const thought = nativeRow(1, 'reasoning', { summary: ['Checking the current inventory.'], content: [] });
+    const tool = nativeRow(2, 'dynamicToolCall', { tool: 'Read inventory', status: 'completed' });
+    const reply = nativeRow(3, 'agentMessage', { text: 'Done.' });
+    const entries = buildTranscript([thought, tool, reply]);
+    expect(entries).toHaveLength(3);
+    expect(entries[0]).toMatchObject({ author: 'activity', verb: 'Thought', content: 'Checking the current inventory.' });
+    expect(mergeTranscript(buildTranscript([thought]), [{ id: 'live', author: 'agent', text: 'Done.', atMs: 4 }])[0])
+      .toMatchObject({ author: 'activity', content: 'Checking the current inventory.' });
+    expect(harnessItemToActivity(nativeRow(1, 'reasoning', { summary: ['Checking'], content: [] }, 'item/started')))
+      .toMatchObject({ state: 'running', content: 'Checking' });
+  });
+});

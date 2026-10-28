@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { activityContent } from './conversation-activity-content.js';
 import { runRecoverySchema, type RunRecovery } from './conversation-restart.js';
 import { agentProviderSchema } from '../api/schemas.js';
 
@@ -1097,6 +1098,8 @@ export type ConversationActivity = Readonly<{
   durationMs: number | null;
   /** Why it failed, in one clipped line; `null` on anything that did not fail. */
   detail: string | null;
+  /** Optional provider-supplied thinking or tool body, read through the activity disclosure. */
+  content?: string;
   /** The wire name of the tool on an `mcpToolCall` row, verbatim; `null` on every other item type. */
   tool: string | null;
   atMs: number;
@@ -1230,7 +1233,7 @@ function activityShape(itemType: string, item: Record<string, unknown>): Activit
     case 'subAgentActivity':
       return { running: 'Delegating', done: 'Delegated', target: null };
     case 'dynamicToolCall':
-      return { running: 'Calling tool', done: 'Called tool', target: null };
+      return { running: 'Calling tool', done: 'Called tool', target: typeof item.tool === 'string' ? clip(item.tool) : null };
     case 'hookPrompt':
       return { running: 'Prompting', done: 'Prompted', target: null };
     case 'imageView':
@@ -1306,6 +1309,7 @@ export function harnessItemToActivity(item: HarnessItem): ConversationActivity |
       && Number.isFinite(payload.durationMs)
       ? payload.durationMs : null,
     detail: failed ? failureDetail(payload) : null,
+    ...activityContent(item.item_type, payload),
     tool: item.item_type === 'mcpToolCall' && typeof payload.tool === 'string' ? payload.tool : null,
     atMs: typeof envelope.completedAtMs === 'number' && Number.isFinite(envelope.completedAtMs)
       ? envelope.completedAtMs : item.created_at_ms,
@@ -1476,7 +1480,7 @@ function placeTurnOutcomes(
  */
 export function retireFollowedThoughts(entries: readonly TranscriptEntry[]): readonly TranscriptEntry[] {
   return entries.filter((entry, index) => {
-    if (entry.author !== 'activity' || entry.verb !== 'Thought') return true;
+    if (entry.author !== 'activity' || entry.verb !== 'Thought' || entry.content !== undefined) return true;
     return !entries.slice(index + 1).some((later) => later.author !== 'turn');
   });
 }

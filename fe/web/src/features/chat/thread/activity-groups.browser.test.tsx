@@ -5,6 +5,8 @@ import { afterEach, describe, expect, it } from 'vitest';
 import '../../../styles/entry.css';
 import { ChatThread } from './public.tsx';
 import drawerStyles from '../../../ui/drawer/drawer.module.css';
+import { buildTranscript } from '../../../../../core/domain/conversation.ts';
+import type { HarnessItem } from '../../../../../core/api/generated/wire.ts';
 import type { Conversation, ConversationActivity, TranscriptEntry } from '../../../../../core/domain/conversation.ts';
 
 afterEach(cleanup);
@@ -572,4 +574,36 @@ describe('what a failed call says to assistive technology', () => {
     await userEvent.keyboard('{Enter}');
     expect(screen.getByRole('button', said)).toBe(header);
   });
+});
+
+
+it('reads OpenCode thoughts and tool details as live items update and a reply follows', async () => {
+  function row(id: number, type: string, item: Record<string, unknown>, method = 'item/started'): HarnessItem {
+    return { id, item_uuid: String(id), item_type: type, method, worker_session_id: 'worker',
+      card_id: 'c1', track_id: 'w1', thread_id: 'thread', turn_id: 'turn', created_at_ms: id,
+      turn_error_text: null, params: JSON.stringify({ item: { id: String(id), type, ...item } }) };
+  }
+  const thought = row(1, 'reasoning', { summary: ['Checking the inventory'], content: [] });
+  const input = { tool: 'Read inventory', arguments: { path: 'inventory.csv' }, status: 'inProgress' };
+  const tool = row(2, 'dynamicToolCall', input);
+  const props = { hasPendingMessages: false, canContinue: false, cards: {}, stalled: false,
+    pending: true, conversation: conversation({ provider: 'opencode' }) };
+  const { container, rerender } = render(<ChatThread {...props} turns={buildTranscript([thought])} />);
+  await userEvent.click(screen.getByRole('button', { name: /Thinking/ }));
+  expect(screen.getByText('Checking the inventory')).toBeTruthy();
+  const updated = row(1, 'reasoning', { summary: ['Checking the inventory and shop counts'], content: [] }, 'item/completed');
+  rerender(<ChatThread {...props} turns={buildTranscript([updated, tool])} />);
+  await userEvent.click(groupButton(container));
+  expect(screen.getByText('Checking the inventory and shop counts')).toBeTruthy();
+  await userEvent.click(screen.getByRole('button', { name: /Calling tool.*Read inventory/ }));
+  expect(screen.getByText(/inventory.csv/)).toBeTruthy();
+  const completed = row(2, 'dynamicToolCall', { ...input, status: 'completed',
+    result: { content: [{ type: 'text', text: '<script>plain tool output</script>' }] } }, 'item/completed');
+  const reply = row(3, 'agentMessage', { text: 'Inventory checked.' }, 'item/completed');
+  rerender(<ChatThread {...props} pending={false} turns={buildTranscript([updated, completed, reply])} />);
+  expect(screen.getByRole('button', { name: /Called tool.*Read inventory/ })).toBeTruthy();
+  expect(screen.getByText(/<script>plain tool output<\/script>/)).toBeTruthy();
+  expect(container.querySelector('[data-nc-detail] script')).toBeNull();
+  expect(screen.getByText('Checking the inventory and shop counts')).toBeTruthy();
+  expect(screen.getByText('Inventory checked.')).toBeTruthy();
 });
