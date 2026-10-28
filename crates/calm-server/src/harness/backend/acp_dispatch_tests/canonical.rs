@@ -19,6 +19,7 @@ mod recovery_windows;
 mod resolution;
 mod settlement;
 mod settlement_race;
+mod stop_deadline;
 mod transport;
 use super::*;
 use crate::auth::{AuthConfig, AuthState, SessionAuthority, SessionIdentity};

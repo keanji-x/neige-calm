@@ -145,7 +145,7 @@ async fn refused_stop_preserves_held_execution(restarted: bool) {
     let _ = harness.shutdown().await;
 }
 
-fn cancel_count(fx: &Fixture) -> usize {
+pub(super) fn cancel_count(fx: &Fixture) -> usize {
     fx.requests()
         .iter()
         .filter(|request| request["method"] == "session/cancel")
@@ -231,7 +231,17 @@ async fn canonical_acp_prepared_stop_allows_concurrent_driver_observation() {
 }
 
 async fn start_control_loop(fx: &Fixture) -> crate::harness::PlannerHarness {
-    let (harness, registry) = super::compact::control_harness(fx).await;
+    started(fx, super::compact::control_harness(fx).await).await
+}
+
+/// Run the real canonical loop until it publishes the fixture's running original.
+pub(super) async fn started(
+    fx: &Fixture,
+    (harness, registry): (
+        crate::harness::PlannerHarness,
+        crate::harness::HarnessRegistry,
+    ),
+) -> crate::harness::PlannerHarness {
     let application = crate::auth::ValidatedApplicationAuth::from_state(fx.auth.clone()).unwrap();
     registry
         .activate_maintenance_execution(application.execution)

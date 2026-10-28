@@ -154,6 +154,18 @@ pub(crate) async fn wait_issue(worker: &str, stage: IssueStage) {
 }
 
 #[cfg(test)]
+static INTERRUPT_SEND: LazyLock<Mutex<HashMap<String, Hook>>> = LazyLock::new(Mutex::default);
+/// Pause `worker`'s next accepted Stop before its native cancel is written.
+#[cfg(test)]
+pub(crate) fn pause_before_interrupt_send(worker: &str) -> SettlementPause {
+    pause_at(&INTERRUPT_SEND, worker)
+}
+#[cfg(test)]
+pub(crate) async fn wait_before_interrupt_send(worker: &str) {
+    wait_at(&INTERRUPT_SEND, worker).await;
+}
+
+#[cfg(test)]
 type CompactInbox = Arc<dyn Fn() -> usize + Send + Sync>;
 #[cfg(test)]
 static COMPACT_INBOX: LazyLock<Mutex<HashMap<String, CompactInbox>>> =

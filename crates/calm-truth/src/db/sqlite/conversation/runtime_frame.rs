@@ -1,7 +1,7 @@
 //! The runtime owns its whole header; conversation input owns the queue and
 //! claims. A stale cache may preserve newer accepted input, but must never roll
 //! back a same-phase runtime fact such as a budget reminder or native rewind.
-use super::carrier::save_input_carrier_tx;
+use super::carrier::{restore_interrupt_timeout_carrier_tx, save_input_carrier_tx};
 use super::{CurrentInputCarrier, current_input_fact_carrier_tx};
 use crate::error::{CalmError, Result};
 use calm_types::conversation::{
@@ -210,28 +210,38 @@ pub async fn complete_input_execution_tx(
     {
         return Ok(None);
     }
+    // The original's own END, matched above against the retained Stop intent,
+    // resolves what interrupt_timeout stood for: whether it was still live.
+    // system_error and runtime_failed are not resolved by an END.
+    let restore = failed_end
+        && has_intent
+        && wedge == Some(calm_types::harness::HARNESS_INTERRUPT_TIMEOUT_REASON);
     current.checkpoint.active = None;
     current.set_phase(HarnessPhaseTag::TurnCompleted)?;
     current.snapshot["last_turn_id"] = Value::String(turn.to_owned());
     current.snapshot["interruption_intent"] = Value::Null;
     let execution_current = current.is_execution_current();
-    if execution_current {
+    if execution_current || restore {
         current.snapshot["wedged_reason"] = Value::Null;
     }
     save_input_carrier_tx(tx, &mut current).await?;
-    super::super::session_set_harness_observation_runtime_tx(
-        tx,
-        &worker_session_id.to_owned(),
-        if execution_current {
-            calm_types::worker::WorkerSessionState::Idle
-        } else {
-            calm_types::worker::WorkerSessionState::Failed
-        },
-        Some(original.correlation.thread_id.as_str()),
-        None,
-    )
-    .await
-    .map_err(|error| CalmError::Internal(error.to_string()))?;
+    if restore {
+        restore_interrupt_timeout_carrier_tx(tx, &current).await?;
+    } else {
+        super::super::session_set_harness_observation_runtime_tx(
+            tx,
+            &worker_session_id.to_owned(),
+            if execution_current {
+                calm_types::worker::WorkerSessionState::Idle
+            } else {
+                calm_types::worker::WorkerSessionState::Failed
+            },
+            Some(original.correlation.thread_id.as_str()),
+            None,
+        )
+        .await
+        .map_err(|error| CalmError::Internal(error.to_string()))?;
+    }
     Ok(Some(RuntimeFrameAfterWrite {
         snapshot: current.snapshot().clone(),
         execution_fence: RuntimeExecutionFence::from_carrier(&current),

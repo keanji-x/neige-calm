@@ -4,6 +4,7 @@ use super::super::{SqlxRepo, begin_immediate_tx};
 use super::tests::{body, fixture, plan};
 use super::transaction_tests::{provenance, runtime};
 use super::*;
+use crate::error::{CalmError, Result};
 use calm_types::conversation::*;
 use calm_types::organization::LEGACY_OWNER_USER_ID;
 use calm_types::runtime::AgentProvider;
@@ -333,4 +334,191 @@ async fn canonical_claude_original_local_execution_needs_no_native_session() {
             .is_some()
     );
     tx.commit().await.unwrap();
+}
+
+/// The committed shape a Stop deadline (or another failure) leaves behind: the
+/// original still active, its Stop intent retained and the row `failed`.
+async fn wedged_after_stop(repo: &SqlxRepo, card: &str, runtime: &str, reason: &str) {
+    original(repo, card, runtime).await;
+    let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
+    let track: String = sqlx::query_scalar("SELECT track_id FROM worker_sessions WHERE id=?1")
+        .bind(runtime)
+        .fetch_one(&mut **tx)
+        .await
+        .unwrap();
+    let carrier = current_input_carrier_tx(&mut tx, card, runtime)
+        .await
+        .unwrap();
+    let fence = RuntimeExecutionFence::from_carrier(&carrier);
+    let mut header = fence.header().clone();
+    header["phase"] = json!("wedged");
+    header["last_turn_id"] = json!("native-original");
+    header["wedged_reason"] = json!(reason);
+    header["interruption_intent"] =
+        serde_json::to_value(calm_types::harness::HarnessInterruptionIntent::Control(
+            calm_types::harness::HarnessControlIntent::UserStopV1(
+                calm_types::harness::HarnessStopRequest {
+                    session_id: runtime.into(),
+                    card_id: card.into(),
+                    track_id: track,
+                    thread_id: "thread".into(),
+                    turn_id: "native-original".into(),
+                    requested_at_ms: 1,
+                },
+            ),
+        ))
+        .unwrap();
+    persist_runtime_frame_tx(&mut tx, card, runtime, &fence, header)
+        .await
+        .unwrap();
+    super::super::session_set_harness_observation_runtime_tx(
+        &mut tx,
+        &runtime.to_owned(),
+        calm_types::worker::WorkerSessionState::Failed,
+        Some("thread"),
+        Some("native-original"),
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+}
+
+async fn late_end(
+    repo: &SqlxRepo,
+    card: &str,
+    runtime: &str,
+) -> (Result<Option<RuntimeFrameAfterWrite>>, CurrentInputCarrier) {
+    let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
+    let carrier = current_input_fact_carrier_tx(&mut tx, card, runtime)
+        .await
+        .unwrap();
+    let original = original_input_execution_tx(&mut tx, &carrier)
+        .await
+        .unwrap()
+        .unwrap();
+    let fence = RuntimeExecutionFence::from_carrier(&carrier);
+    let result = complete_input_execution_tx(&mut tx, card, runtime, &fence, &original).await;
+    if result.is_ok() {
+        tx.commit().await.unwrap();
+    } else {
+        tx.rollback().await.unwrap();
+    }
+    (result, carrier)
+}
+
+async fn row_state(repo: &SqlxRepo, runtime: &str) -> String {
+    sqlx::query_scalar("SELECT state FROM worker_sessions WHERE id=?1")
+        .bind(runtime)
+        .fetch_one(repo.pool())
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn stop_deadline_late_end_restores_only_an_interrupt_timeout_carrier() {
+    for (reason, restored) in [
+        (calm_types::harness::HARNESS_INTERRUPT_TIMEOUT_REASON, true),
+        (calm_types::harness::HARNESS_SYSTEM_ERROR_REASON, false),
+        (calm_types::harness::HARNESS_RUNTIME_FAILED_REASON, false),
+    ] {
+        let (repo, _, card) = fixture().await;
+        let runtime = runtime(&repo, &card).await;
+        wedged_after_stop(&repo, &card, &runtime, reason).await;
+        let (result, _) = late_end(&repo, &card, &runtime).await;
+        let done = result.unwrap().expect("the exact original END closes");
+        assert!(done.snapshot["canonical_inputs"]["active"].is_null());
+        assert_eq!(done.snapshot["phase"], "turn_completed", "{reason}");
+        assert!(done.snapshot["interruption_intent"].is_null());
+        assert_eq!(
+            done.snapshot["wedged_reason"].is_null(),
+            restored,
+            "{reason}"
+        );
+        assert_eq!(
+            row_state(&repo, &runtime).await,
+            if restored { "idle" } else { "failed" },
+            "{reason}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn stop_deadline_late_end_refuses_a_terminated_failed_carrier_whole() {
+    let (repo, _, card) = fixture().await;
+    let runtime = runtime(&repo, &card).await;
+    wedged_after_stop(
+        &repo,
+        &card,
+        &runtime,
+        calm_types::harness::HARNESS_INTERRUPT_TIMEOUT_REASON,
+    )
+    .await;
+    // Another owner already terminated this failed row; an END cannot revive it.
+    sqlx::query("UPDATE worker_sessions SET completed_at_ms=1 WHERE id=?1")
+        .bind(&runtime)
+        .execute(repo.pool())
+        .await
+        .unwrap();
+    let (result, before) = late_end(&repo, &card, &runtime).await;
+    assert!(matches!(
+        result,
+        Err(CalmError::Core(calm_types::error::CoreError::Conflict(_)))
+    ));
+    assert_eq!(row_state(&repo, &runtime).await, "failed");
+    let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
+    let after = current_input_fact_carrier_tx(&mut tx, &card, &runtime)
+        .await
+        .unwrap();
+    assert_eq!(
+        after.snapshot(),
+        before.snapshot(),
+        "the whole END rolls back"
+    );
+    tx.commit().await.unwrap();
+}
+
+#[tokio::test]
+async fn stop_deadline_late_end_after_successor_carrier_changes_nothing() {
+    let (repo, _, card) = fixture().await;
+    let old = runtime(&repo, &card).await;
+    wedged_after_stop(
+        &repo,
+        &card,
+        &old,
+        calm_types::harness::HARNESS_INTERRUPT_TIMEOUT_REASON,
+    )
+    .await;
+    let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
+    let carrier = current_input_fact_carrier_tx(&mut tx, &card, &old)
+        .await
+        .unwrap();
+    let original = original_input_execution_tx(&mut tx, &carrier)
+        .await
+        .unwrap()
+        .unwrap();
+    let fence = RuntimeExecutionFence::from_carrier(&carrier);
+    tx.commit().await.unwrap();
+    let successor = runtime(&repo, &card).await;
+    let successor_before: (String, String) =
+        sqlx::query_as("SELECT state,handle_state_json FROM worker_sessions WHERE id=?1")
+            .bind(&successor)
+            .fetch_one(repo.pool())
+            .await
+            .unwrap();
+    let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
+    assert!(
+        complete_input_execution_tx(&mut tx, &card, &old, &fence, &original)
+            .await
+            .is_err(),
+        "the old END has no current carrier"
+    );
+    tx.rollback().await.unwrap();
+    let successor_after: (String, String) =
+        sqlx::query_as("SELECT state,handle_state_json FROM worker_sessions WHERE id=?1")
+            .bind(&successor)
+            .fetch_one(repo.pool())
+            .await
+            .unwrap();
+    assert_eq!(successor_after, successor_before);
+    assert_eq!(row_state(&repo, &old).await, "failed");
 }

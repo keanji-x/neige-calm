@@ -551,6 +551,11 @@ impl PreparedInterrupt {
         self,
         admission: &crate::harness::native_admission::NativePromptAdmission<'_>,
     ) -> Result<()> {
+        #[cfg(all(test, feature = "fixtures"))]
+        crate::acp_planner::test_seams::wait_before_interrupt_send(
+            &self.shared.params.worker_session_id,
+        )
+        .await;
         admission.check_local().await?;
         let owner = self
             .shared

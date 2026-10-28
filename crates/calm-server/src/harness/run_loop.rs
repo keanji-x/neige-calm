@@ -1362,6 +1362,12 @@ impl PlannerHarness {
         self.inner.issuance_paused.store(true, Ordering::SeqCst);
     }
 
+    /// Lift a pause set by [`Self::pause_issuance_for_dev`].
+    #[cfg(feature = "fixtures")]
+    pub fn resume_issuance_for_test(&self) {
+        self.inner.issuance_paused.store(false, Ordering::SeqCst);
+    }
+
     /// The debounce arming, read directly rather than inferred from whether a turn fired.
     #[cfg(feature = "fixtures")]
     pub async fn debounce_hard_fire_for_test(&self) -> bool {

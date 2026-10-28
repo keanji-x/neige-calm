@@ -239,3 +239,31 @@ pub(super) async fn save_input_carrier_tx(
     carrier.original_snapshot = serde_json::to_string(&carrier.snapshot)?;
     Ok(())
 }
+
+/// Restores the exact failed carrier whose interrupt_timeout was resolved by
+/// its own original END. Only the still-current, never-terminated row holding
+/// the frame just saved qualifies; anything else refuses the whole END.
+pub(super) async fn restore_interrupt_timeout_carrier_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    carrier: &CurrentInputCarrier,
+) -> Result<()> {
+    let restored = sqlx::query(
+        "UPDATE worker_sessions SET state='idle', active_turn_id=NULL, updated_at_ms=?1
+          WHERE id=?2 AND card_id=?3 AND state='failed' AND completed_at_ms IS NULL
+            AND worker_sessions.handle_state_json=?4
+            AND EXISTS(SELECT 1 FROM cards c WHERE c.id=?3 AND c.session_id=?2 AND c.track_id=worker_sessions.track_id)",
+    )
+    .bind(crate::model::now_ms())
+    .bind(&carrier.worker_session_id)
+    .bind(&carrier.card_id)
+    .bind(&carrier.original_snapshot)
+    .execute(&mut **tx)
+    .await?
+    .rows_affected();
+    if restored != 1 {
+        return Err(CalmError::Conflict(
+            "interrupt_timeout carrier is no longer the restorable failed carrier",
+        ));
+    }
+    Ok(())
+}

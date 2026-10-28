@@ -195,6 +195,10 @@ async fn accepted_stop_drains_its_original_target_after_native_gate_failure_and_
     fx.wait_phase(HarnessPhaseTag::IssuingInterrupt).await;
     let held = fx.wait_phase(HarnessPhaseTag::Wedged).await;
     assert!(held.header.interruption_intent.is_some());
+    assert_eq!(
+        held.header.wedged_reason.as_deref(),
+        Some(calm_types::harness::HARNESS_INTERRUPT_TIMEOUT_REASON)
+    );
     assert_eq!(held.canonical_inputs, original.canonical_inputs);
     fx.auth.sessions.remove(&fx.session).unwrap();
     assert!(fx.source.current_principal().is_err());
@@ -229,6 +233,7 @@ async fn accepted_stop_drains_its_original_target_after_native_gate_failure_and_
     .await;
     let ended = fx.wait_phase(HarnessPhaseTag::TurnCompleted).await;
     assert!(ended.canonical_inputs.active.is_none());
+    assert!(ended.header.wedged_reason.is_none());
     assert_eq!(
         ended.canonical_inputs.attempts,
         original.canonical_inputs.attempts
@@ -242,7 +247,8 @@ async fn accepted_stop_drains_its_original_target_after_native_gate_failure_and_
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(row.state, calm_types::worker::WorkerSessionState::Failed);
+    // The original's own END resolved the interrupt_timeout; nothing is pending.
+    assert_eq!(row.state, calm_types::worker::WorkerSessionState::Idle);
     assert!(
         tokio::time::timeout(Duration::from_millis(100), request(&mut peer))
             .await
@@ -402,16 +408,128 @@ async fn failed_stays_failed_after_end(
     );
 }
 
-#[tokio::test]
-async fn canonical_stop_deadline_is_durable_and_actual_late_end_keeps_runtime_failed() {
-    let fx = Fixture::with_config(HarnessConfig {
-        interrupt_completion_budget: Duration::from_millis(100),
-        ..HarnessConfig::default()
-    })
+/// The original's own END resolves what interrupt_timeout stood for: the
+/// carrier is restored once and its preserved pending input is claimed afresh.
+async fn restored_once_after_end(
+    fx: &Fixture,
+    peer: &mut crate::shared_codex_appserver::native_owner_tests::Peer,
+    original: &CanonicalHarnessSnapshot,
+) {
+    let message = pending(fx).await;
+    fx.harness
+        .observe_canonical_source(message.clone(), fx.source.clone())
+        .await
+        .unwrap();
+    let thread = original.header.last_thread_id.as_deref().unwrap();
+    let turn = original.header.last_turn_id.as_deref().unwrap();
+    notify_thread(
+        &fx.daemon,
+        peer,
+        thread,
+        "turn/completed",
+        json!({"id":turn,"status":"interrupted"}),
+    )
     .await;
+    let done = fx.wait_phase(HarnessPhaseTag::TurnCompleted).await;
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let published = fx
+                .harness
+                .inner
+                .inputs
+                .canonical()
+                .unwrap()
+                .committed()
+                .await;
+            if published.snapshot.header.phase == HarnessPhaseTag::TurnCompleted
+                && fx.harness.issuance_block().await.is_none()
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the restored END must publish and lift the issuance block");
+    assert!(done.header.wedged_reason.is_none());
+    assert!(done.header.interruption_intent.is_none());
+    assert!(done.canonical_inputs.active.is_none());
+    assert_eq!(
+        done.canonical_inputs.attempts,
+        original.canonical_inputs.attempts
+    );
+    assert_eq!(
+        done.canonical_inputs.pending[0]
+            .accepted_input_ref()
+            .unwrap(),
+        AcceptedInputRef::Human { message }
+    );
+    let row = fx
+        .original
+        .repo
+        .session_get(&calm_types::worker::WorkerSessionId(
+            fx.harness.inner.worker_session_id.clone(),
+        ))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.state, calm_types::worker::WorkerSessionState::Idle);
+    fx.harness
+        .inner
+        .issuance_paused
+        .store(false, Ordering::SeqCst);
+    let call = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let call = request(peer).await;
+            match call["method"].as_str().unwrap() {
+                "turn/start" => break call,
+                "config/read" => {
+                    send(peer, json!({"id":call["id"],"result":{"config":{}}})).await;
+                }
+                method => panic!("unexpected native request before redispatch: {method}"),
+            }
+        }
+    })
+    .await
+    .expect("the preserved pending input is dispatched");
+    assert_eq!(call["params"]["threadId"], thread);
+    assert!(call["params"].to_string().contains("pending after control"));
+    notify_thread(
+        &fx.daemon,
+        peer,
+        thread,
+        "turn/started",
+        json!({"id":"restored-next"}),
+    )
+    .await;
+    send(
+        peer,
+        json!({"id":call["id"],"result":{"turn":{"id":"restored-next"}}}),
+    )
+    .await;
+    let next = fx.wait_phase(HarnessPhaseTag::TurnRunning).await;
+    assert!(next.canonical_inputs.pending.is_empty());
+    let active = next.canonical_inputs.active.as_ref().unwrap();
+    assert_eq!(
+        next.canonical_inputs.attempts.len(),
+        original.canonical_inputs.attempts.len() + 1,
+        "the pending input is claimed and attempted exactly once"
+    );
+    assert_ne!(Some(active), original.canonical_inputs.active.as_ref());
+    peer.close(None).await.unwrap();
+    fx.harness.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn canonical_stop_deadline_actual_late_end_restores_the_carrier_once() {
+    let fx = Fixture::new().await;
     let (_client, mut peer) = connect(&fx.daemon).await;
     running(&fx, &mut peer).await;
     let original = fx.frame().await;
+    fx.harness
+        .inner
+        .issuance_paused
+        .store(true, Ordering::SeqCst);
     let stop = tokio::spawn({
         let harness = fx.harness.clone();
         let source = fx.source.clone();
@@ -419,6 +537,7 @@ async fn canonical_stop_deadline_is_durable_and_actual_late_end_keeps_runtime_fa
     });
     let call = request(&mut peer).await;
     assert_eq!(call["method"], "turn/interrupt");
+    fx.harness.expire_interrupt_deadline_for_test().await;
     let wedged = fx.wait_phase(HarnessPhaseTag::Wedged).await;
     assert_eq!(
         wedged.header.wedged_reason.as_deref(),
@@ -436,7 +555,7 @@ async fn canonical_stop_deadline_is_durable_and_actual_late_end_keeps_runtime_fa
     );
     send(&mut peer, json!({"id":call["id"],"result":{}})).await;
     stop.await.unwrap().unwrap();
-    failed_stays_failed_after_end(&fx, &mut peer, &original).await;
+    restored_once_after_end(&fx, &mut peer, &original).await;
 }
 
 #[tokio::test]
