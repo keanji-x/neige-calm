@@ -243,14 +243,27 @@ impl ClaudePlannerSession {
         .is_none())
     }
 
-    pub(crate) async fn interrupt_execution(
+    pub(crate) async fn prepare_interrupt(
         &self,
         target: &crate::harness::backend::ExecutionEndTarget,
-        admission: &crate::harness::native_admission::NativePromptAdmission<'_>,
-    ) -> Result<()> {
-        if !self.owns_local_execution(target).await {
+    ) -> Result<PreparedInterrupt> {
+        let _issue = self.shared.issue.lock().await;
+        if !target.matches_owner(
+            &self.shared.params.card_id,
+            &self.shared.params.track_id,
+            &self.shared.params.worker_session_id,
+        ) {
             return Err(CalmError::Conflict(
                 "control names another Claude execution".into(),
+            ));
+        }
+        let driver = self.shared.driver.lock().await;
+        if !driver
+            .as_ref()
+            .is_some_and(|driver| driver.matches(target) && !driver.completion.is_finished())
+        {
+            return Err(CalmError::Conflict(
+                "Claude original driver is no longer running".into(),
             ));
         }
         let (thread, turn) = target.scope.thread_and_turn();
@@ -262,9 +275,7 @@ impl ClaudePlannerSession {
             .filter(|active| active.thread_id == thread && active.turn_id == turn)
             .map(|active| Arc::clone(&active.slot))
             .ok_or_else(|| CalmError::Conflict("Claude execution already ended".into()))?;
-        super::interrupt_after_admission(&slot, admission.gate())
-            .await
-            .map_err(|(error, _evidence)| admission.take_refusal().unwrap_or(error))
+        Ok(PreparedInterrupt { slot })
     }
 
     /// Harness shutdown: refuse new turns, end the live one as `Interrupted`, and Stop its execution
@@ -463,5 +474,20 @@ impl ClaudePlannerSession {
             Some(driver) => driver.finish().await.unwrap_or(false),
             None => false,
         }
+    }
+}
+
+/// The exact original stdin owner is retained across canonical acceptance.
+pub(crate) struct PreparedInterrupt {
+    slot: Arc<TurnSlot>,
+}
+impl PreparedInterrupt {
+    pub(crate) async fn send(
+        self,
+        admission: &crate::harness::native_admission::NativePromptAdmission<'_>,
+    ) -> Result<()> {
+        super::interrupt_after_admission(&self.slot, admission.gate())
+            .await
+            .map_err(|(error, _evidence)| admission.take_refusal().unwrap_or(error))
     }
 }

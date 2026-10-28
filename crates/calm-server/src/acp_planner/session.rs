@@ -24,6 +24,7 @@ use crate::planner_permission_mode::PlannerPermissionMode;
 use crate::thread_seals::ThreadSeals;
 use calm_types::runtime::AgentProvider;
 use calm_types::worker::{WorkerContract, WorkerSessionId};
+pub(crate) use execution_end::PreparedInterrupt;
 use execution_end::{DriverSlot, join_driver};
 use provider::InputItem;
 use provider::acp::{

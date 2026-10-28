@@ -32,6 +32,7 @@ use provider::claude::translate::{ToolNames, TurnContext, TurnTranslator};
 use provider::events::PlannerEvent;
 
 pub(super) mod execution_end;
+pub(crate) use execution_end::PreparedInterrupt;
 mod process;
 
 /// After an interrupt, the turn is stopped if the CLI has not ended it within this bound.

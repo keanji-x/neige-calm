@@ -470,46 +470,91 @@ impl AcpPlannerSession {
         }
         Ok(outcome)
     }
-    pub(crate) async fn interrupt_execution(
+    /// Retain the exact local owner before the canonical loop accepts Stop.
+    /// This has no native or durable effect. Later writer failures remain
+    /// uncertain after acceptance and never revive a failed carrier.
+    pub(crate) async fn prepare_interrupt(
         &self,
         target: &ExecutionEndTarget,
-        admission: &crate::harness::native_admission::NativePromptAdmission<'_>,
-    ) -> Result<()> {
-        if !self.owns_local_execution(target).await {
+    ) -> Result<PreparedInterrupt> {
+        let _issue = self.shared.issue.lock().await;
+        let params = &self.shared.params;
+        if !target.matches_owner(&params.card_id, &params.track_id, &params.worker_session_id) {
             return Err(CalmError::Conflict(
                 "control names another ACP execution".into(),
             ));
         }
-        admission.check_local().await?;
+        let driver = slot(&self.shared)
+            .ok_or_else(|| CalmError::Conflict("ACP original driver is absent".into()))?;
+        let retained = driver.lock().await;
+        if !retained.matches(target) || retained.completion.is_finished() {
+            return Err(CalmError::Conflict(
+                "ACP original driver is no longer running".into(),
+            ));
+        }
         let (thread, turn) = target.scope.thread_and_turn();
-        let (approvals, native, signal) = {
-            let state = self.shared.state.lock().expect("ACP state");
-            let active = state
-                .active
-                .as_ref()
-                .filter(|active| active.thread == thread && active.turn == turn)
-                .ok_or_else(|| CalmError::Conflict("ACP execution already ended".into()))?;
-            let approvals = active
-                .approvals
-                .upgrade()
-                .ok_or_else(|| CalmError::Conflict("ACP approvals already closed".into()))?;
-            (
-                approvals,
-                active.native_session_id.clone(),
-                active.cancel.clone(),
-            )
-        };
+        let state = self.shared.state.lock().expect("ACP state");
+        let active = state
+            .active
+            .as_ref()
+            .filter(|active| active.thread == thread && active.turn == turn)
+            .ok_or_else(|| CalmError::Conflict("ACP execution already ended".into()))?;
+        let approvals = active
+            .approvals
+            .upgrade()
+            .ok_or_else(|| CalmError::Conflict("ACP approvals already closed".into()))?;
+        Ok(PreparedInterrupt {
+            shared: self.shared.clone(),
+            driver: driver.clone(),
+            approvals,
+            thread,
+            turn,
+            native: active.native_session_id.clone(),
+            signal: active.cancel.clone(),
+        })
+    }
+}
+
+/// A one-use control handle, never a lookup of a replacement execution.
+pub(crate) struct PreparedInterrupt {
+    shared: Arc<Shared>,
+    driver: Arc<tokio::sync::Mutex<DriverSlot>>,
+    approvals: Arc<Approvals>,
+    thread: String,
+    turn: String,
+    native: String,
+    signal: watch::Sender<CancelRequest>,
+}
+
+impl PreparedInterrupt {
+    pub(crate) async fn send(
+        self,
+        admission: &crate::harness::native_admission::NativePromptAdmission<'_>,
+    ) -> Result<()> {
+        admission.check_local().await?;
         let owner = self
             .shared
-            .admission(&thread, None, Some(&native), Some(&turn));
+            .admission(&self.thread, None, Some(&self.native), Some(&self.turn));
         let combined = admission.combined(&owner);
-        approvals
-            .cancel(&native, combined.gate())
+        let gate = combined.gate_with_final_check(|| {
+            // The native cancel is session-scoped: never let an old handle
+            // cancel a successor, including when the native session is reused.
+            let same =
+                slot(&self.shared).is_some_and(|current| Arc::ptr_eq(&current, &self.driver));
+            if !same {
+                return Err(CalmError::Conflict(
+                    "ACP original control driver changed".into(),
+                ));
+            }
+            Ok(())
+        });
+        self.approvals
+            .cancel(&self.native, &gate)
             .await
             .map_err(|error| combined.take_refusal().unwrap_or_else(|| wire_error(error)))?;
-        // The real writer already sent cancel. The same driver owns its deadline,
-        // receipt and cleanup; do not enqueue a second native cancel.
-        signal
+        // The real writer already sent cancel. Its exact driver owns the
+        // deadline, receipt and cleanup; do not enqueue a second native cancel.
+        self.signal
             .send(CancelRequest::Written)
             .map_err(|_| CalmError::Conflict("ACP interrupt handoff ended".into()))
     }

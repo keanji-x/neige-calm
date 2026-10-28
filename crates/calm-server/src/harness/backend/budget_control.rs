@@ -94,20 +94,63 @@ impl PlannerBackend {
         }
     }
 
+    /// Resolve the original local control owner before durable Stop acceptance.
+    /// Preparation grants no permission to write; native sends still consume the
+    /// canonical exact-target/intent admission at their actual writer boundary.
+    pub(crate) async fn prepare_interrupt(
+        &self,
+        target: &ExecutionEndTarget,
+    ) -> Result<PreparedInterrupt> {
+        match &self.0 {
+            Arm::Codex(daemon, owner) if owner.binding.matches(target) => {
+                Ok(PreparedInterrupt::Codex {
+                    daemon: daemon.clone(),
+                    target: Box::new(target.clone()),
+                })
+            }
+            Arm::Claude(session) => session
+                .prepare_interrupt(target)
+                .await
+                .map(PreparedInterrupt::Claude),
+            Arm::Acp(session) => session
+                .prepare_interrupt(target)
+                .await
+                .map(PreparedInterrupt::Acp),
+            Arm::Codex(..) => Err(CalmError::Conflict(
+                "control requires this backend's original native owner".into(),
+            )),
+        }
+    }
+
+    #[cfg(test)]
     pub(crate) async fn interrupt_execution(
         &self,
         target: &ExecutionEndTarget,
         admission: &crate::harness::native_admission::NativePromptAdmission<'_>,
     ) -> Result<()> {
-        match &self.0 {
-            Arm::Codex(daemon, owner) if owner.binding.matches(target) => {
-                daemon.interrupt_execution(target, admission).await
-            }
-            Arm::Claude(session) => session.interrupt_execution(target, admission).await,
-            Arm::Acp(session) => session.interrupt_execution(target, admission).await,
-            Arm::Codex(..) => Err(CalmError::Conflict(
-                "control requires this backend's original native owner".into(),
-            )),
+        self.prepare_interrupt(target).await?.send(admission).await
+    }
+}
+
+pub(crate) enum PreparedInterrupt {
+    Codex {
+        daemon: Arc<SharedCodexAppServer>,
+        target: Box<ExecutionEndTarget>,
+    },
+    Claude(crate::claude_planner::session::PreparedInterrupt),
+    Acp(crate::acp_planner::session::PreparedInterrupt),
+}
+impl PreparedInterrupt {
+    pub(crate) async fn send(
+        self,
+        admission: &crate::harness::native_admission::NativePromptAdmission<'_>,
+    ) -> Result<()> {
+        match self {
+            // Connection acquisition remains after acceptance. The native owner
+            // is still revalidated there; accepted drain semantics are unchanged.
+            Self::Codex { daemon, target } => daemon.interrupt_execution(&target, admission).await,
+            Self::Claude(prepared) => prepared.send(admission).await,
+            Self::Acp(prepared) => prepared.send(admission).await,
         }
     }
 }

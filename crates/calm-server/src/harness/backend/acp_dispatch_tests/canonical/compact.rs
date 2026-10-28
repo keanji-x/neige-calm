@@ -403,15 +403,39 @@ async fn recovery_harness(fx: &Fixture) -> crate::harness::PlannerHarness {
     registered_recovery_harness(fx).await.0
 }
 
-async fn registered_recovery_harness(
+pub(super) async fn control_harness(
     fx: &Fixture,
 ) -> (
     crate::harness::PlannerHarness,
     crate::harness::HarnessRegistry,
 ) {
-    use crate::harness::{
-        HarnessConfig, HarnessRuntimeSnapshot, PlannerHarness, PlannerHarnessParams,
-    };
+    recovery_harness_with_config(
+        fx,
+        crate::harness::HarnessConfig {
+            interrupt_completion_budget: Duration::from_millis(100),
+            ..crate::harness::HarnessConfig::default()
+        },
+    )
+    .await
+}
+
+pub(super) async fn registered_recovery_harness(
+    fx: &Fixture,
+) -> (
+    crate::harness::PlannerHarness,
+    crate::harness::HarnessRegistry,
+) {
+    recovery_harness_with_config(fx, crate::harness::HarnessConfig::default()).await
+}
+
+async fn recovery_harness_with_config(
+    fx: &Fixture,
+    config: crate::harness::HarnessConfig,
+) -> (
+    crate::harness::PlannerHarness,
+    crate::harness::HarnessRegistry,
+) {
+    use crate::harness::{HarnessRuntimeSnapshot, PlannerHarness, PlannerHarnessParams};
     let row = fx
         .owner
         .repo
@@ -438,7 +462,7 @@ async fn registered_recovery_harness(
         track_area_cache: areas,
         backend: fx.backend.clone(),
         registry: registry.clone(),
-        config: HarnessConfig::default(),
+        config,
         snapshot: HarnessRuntimeSnapshot::decode(row.handle_state_json.unwrap()).unwrap(),
     })
     .await

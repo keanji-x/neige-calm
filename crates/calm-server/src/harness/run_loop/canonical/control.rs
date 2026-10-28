@@ -282,6 +282,18 @@ async fn start_interrupt(
     authorization: StopAdmission,
     answer: Option<oneshot::Sender<Result<()>>>,
 ) -> Result<()> {
+    // A missing original process owner refuses Stop before durable acceptance.
+    // Once accepted, uncertain writer outcomes still keep their exact intent.
+    let prepared = match inner.backend.prepare_interrupt(&target).await {
+        Ok(prepared) => prepared,
+        Err(error) => {
+            if let Some(answer) = answer {
+                let _ = answer.send(Err(error));
+                return Ok(());
+            }
+            return Err(error);
+        }
+    };
     if let Err(error) = transition(
         inner,
         Change::Interrupt {
@@ -306,11 +318,8 @@ async fn start_interrupt(
         purpose: Purpose::Interrupt { intent },
     };
     tokio::spawn(async move {
-        let result = admission
-            .inner
-            .backend
-            .interrupt_execution(
-                &admission.target,
+        let result = prepared
+            .send(
                 &crate::harness::native_admission::NativePromptAdmission::new(
                     || Ok(()),
                     || Box::pin(admission.admit()),
