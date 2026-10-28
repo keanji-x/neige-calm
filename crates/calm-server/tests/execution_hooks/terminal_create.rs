@@ -363,10 +363,12 @@ async fn typed_keyed_replay_drives_without_second_admit() {
     wait(|| async { f.engine.available() }).await;
     f.state = f.state.clone().with_terminal_execution(true);
     let marker = f.root.join("launches");
+    let readiness_marker = f.root.join("readiness");
     let program = format!(
-        "exec 3>> '{}'; printf marker-opened; IFS= read -r release || exit 1; \
-         printf 'launch\\n' >&3 || exit 1; printf marker-written; exec sleep 120",
-        marker.display()
+        "printf 'launch\\n' >> '{}' || exit 1; exec 3>> '{}' || exit 1; printf marker-opened; IFS= read -r release || exit 1; \
+         printf 'ready\\n' >&3 || exit 1; printf marker-written; exec sleep 120",
+        marker.display(),
+        readiness_marker.display()
     );
     let request = normalize_terminal_create_request(TerminalCreateRequestPayload {
         track_id: f.track.clone(),
@@ -402,6 +404,7 @@ async fn typed_keyed_replay_drives_without_second_admit() {
         .await
         .unwrap();
     assert!(!marker.exists());
+    assert!(!readiness_marker.exists());
     assert_eq!(counts(&f).await, (1, 1, 1));
     let op = SqlxOperationRepo::new(f.repo.db().clone())
         .get_operation(&result.op_id)
@@ -425,8 +428,8 @@ async fn typed_keyed_replay_drives_without_second_admit() {
                 if String::from_utf8_lossy(output).contains("marker-opened"))
     })
     .await;
-    assert_eq!(std::fs::read_to_string(&marker).unwrap(), "");
-    let mut waiter = std::pin::pin!(wait_for_marker_line(&marker));
+    assert_eq!(std::fs::read_to_string(&readiness_marker).unwrap(), "");
+    let mut waiter = std::pin::pin!(wait_for_marker_line(&readiness_marker));
     let readiness = std::future::poll_fn(|cx| {
         std::task::Poll::Ready(std::future::Future::poll(waiter.as_mut(), cx))
     })
@@ -450,6 +453,9 @@ async fn typed_keyed_replay_drives_without_second_admit() {
                 if String::from_utf8_lossy(output).contains("marker-written"))
     })
     .await;
+    wait_for_marker_line(&readiness_marker).await;
+    wait_for_marker_line(&marker).await;
+    let readiness_contents = std::fs::read_to_string(&readiness_marker).unwrap();
     let contents = std::fs::read_to_string(&marker).unwrap();
     let final_counts = counts(&f).await;
     f.stop(&id).await;
@@ -457,6 +463,7 @@ async fn typed_keyed_replay_drives_without_second_admit() {
         was_pending,
         "marker readiness must be Pending while the opened file is empty"
     );
+    assert_eq!(readiness_contents, "ready\n");
     assert_eq!(contents, "launch\n");
     assert_eq!(final_counts, (1, 1, 1));
 }
