@@ -159,20 +159,7 @@ impl<S: TurnSink, P: ProtocolProfile> Reading<'_, S, P> {
             self.validated_init = true;
         }
         self.sink.record(line, &record, self.answering).await;
-        match record {
-            Record::ResultSuccess(success) => Some(Ending::Result(self.sink.result_event(
-                TerminalEvent::ResultSuccess {
-                    is_error: success.is_error,
-                    result: success.result,
-                },
-            ))),
-            Record::ResultError(error) => Some(Ending::Result(self.sink.result_event(
-                TerminalEvent::ResultError {
-                    errors: error.errors,
-                },
-            ))),
-            _ => None,
-        }
+        TerminalEvent::of_result(&record).map(|event| Ending::Result(self.sink.result_event(event)))
     }
 
     /// Undecodable output, including bytes that are not UTF-8 and read errors, fails the turn.

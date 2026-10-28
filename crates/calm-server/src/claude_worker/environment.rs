@@ -64,6 +64,12 @@ impl WorkerEnvironment<'_> {
 
 /// The kernel's proxy values for a worker: the settings' HTTP and HTTPS proxies over the kernel's
 /// own (the Planner's resolver), then each remaining proxy key from the kernel's environment.
+///
+/// Empty values: an empty settings value counts as set, so the resolver neither passes it nor
+/// falls back to the kernel for that scheme, and an empty kernel value is skipped by the resolver.
+/// The per-key pass then copies, verbatim, every key the resolver did not set and `lookup`
+/// returns, an empty value included. So an empty settings value does not suppress the kernel's
+/// own proxy keys, and a kernel key set to the empty string reaches the worker empty.
 pub(crate) fn kernel_proxy(
     http_settings: Option<&str>,
     https_settings: Option<&str>,

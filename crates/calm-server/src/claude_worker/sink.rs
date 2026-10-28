@@ -14,8 +14,9 @@ use std::sync::{Arc, atomic::AtomicBool};
 use std::time::Duration;
 use uuid::Uuid;
 
-/// The one bound on recording an init; a CLI that keeps writing does not wait on the port.
-const INIT_RECORD_TIMEOUT: Duration = Duration::from_secs(5);
+/// The one bound on each write the sink makes while the CLI runs; a CLI that keeps writing does
+/// not wait on the port.
+const RECORD_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// The denial a worker's model reads when the CLI still asks for a tool approval (OQ3).
 pub(crate) const NO_APPROVER: &str =
@@ -70,21 +71,90 @@ pub(crate) struct WorkerTurnRecord {
 
 /// The worker layer's durable turn port. A kernel restart forgets memory, so a resume decision
 /// and a turn's outcome rest only on what this port wrote. Each write returns only once durable.
+///
+/// Each method holds one fact per turn key and the first write wins: a repeat of the same value
+/// for a key (a retry whose earlier attempt committed but reported an error) succeeds without a
+/// second fact, and a different value for a key that already has one is refused with a conflict,
+/// never overwritten. The three facts are independent; none implies or replaces another.
 #[async_trait::async_trait]
 pub(crate) trait WorkerTurnLedger: Send + Sync {
+    /// The session a matching `init` named, written before the role check reads it.
     async fn record_init(&self, turn: &WorkerTurnKey, init: &WorkerInitRecord) -> Result<()>;
+    /// The outcome a validated `result` gave, written as soon as the sink reads it: before stdin
+    /// closes, the CLI exits, Stop or settlement, so before any [`execution::KnownEnd`] exists. A
+    /// completion without a known end (the kernel restarted after the result, §3.6) reads this
+    /// fact first: present, the turn ended by its result and is not continued.
     async fn record_result(&self, turn: &WorkerTurnKey, result: &WorkerTurnOutcome) -> Result<()>;
+    /// The owner's settlement record, written by [`WorkerEnd::settle`] inside `complete`.
     async fn record_outcome(&self, turn: &WorkerTurnKey, record: &WorkerTurnRecord) -> Result<()>;
 }
 
+/// The worker's [`TurnSink`]. It holds no session of its own: the turn's session is the
+/// protocol profile's ([`super::WorkerRole`]), which the shared loop checks every record against.
 pub(crate) struct WorkerSink {
-    pub slot: Arc<TurnSlot>,
-    pub owner: execution::ProviderExecution,
-    pub pool: crate::db::sqlite::SqliteDb,
-    pub engine: crate::execution_boot::ExecutionEngine,
-    pub turn: WorkerTurnKey,
-    pub thread: Uuid,
-    pub ledger: Arc<dyn WorkerTurnLedger>,
+    slot: Arc<TurnSlot>,
+    owner: execution::ProviderExecution,
+    pool: crate::db::sqlite::SqliteDb,
+    engine: crate::execution_boot::ExecutionEngine,
+    turn: WorkerTurnKey,
+    ledger: Arc<dyn WorkerTurnLedger>,
+    /// The result fact as written: `Err` names why a read result was not recorded.
+    result: Option<std::result::Result<WorkerTurnOutcome, String>>,
+}
+
+impl WorkerSink {
+    pub(crate) fn new(
+        slot: Arc<TurnSlot>,
+        owner: execution::ProviderExecution,
+        pool: crate::db::sqlite::SqliteDb,
+        engine: crate::execution_boot::ExecutionEngine,
+        turn: WorkerTurnKey,
+        ledger: Arc<dyn WorkerTurnLedger>,
+    ) -> Self {
+        Self {
+            slot,
+            owner,
+            pool,
+            engine,
+            turn,
+            ledger,
+            result: None,
+        }
+    }
+
+    /// Stop the turn with `failure`, from a callback that reads output.
+    fn fail(&self, failure: String) {
+        self.slot.record(TerminalCause::Failed(failure));
+        self.slot.arm_stop(tokio::time::Instant::now());
+    }
+
+    /// Write a validated result's outcome through the port before the loop settles anything.
+    async fn record_result(&mut self, event: &TerminalEvent) {
+        let outcome: WorkerTurnOutcome = decide(self.slot.cause().as_ref(), event).into();
+        let written = self
+            .slot
+            .bounded(
+                RECORD_TIMEOUT,
+                self.ledger.record_result(&self.turn, &outcome),
+            )
+            .await;
+        let failure = match written {
+            Some(Ok(())) => {
+                self.result = Some(Ok(outcome));
+                return;
+            }
+            Some(Err(error)) => error.to_string(),
+            None => "cut off by its bound".into(),
+        };
+        tracing::warn!(
+            worker_session_id = %self.turn.worker_session_id,
+            %failure,
+            "claude worker: result not recorded; stopping the turn"
+        );
+        let failure = format!("result not recorded: {failure}");
+        self.fail(failure.clone());
+        self.result = Some(Err(failure));
+    }
 }
 
 #[async_trait::async_trait]
@@ -103,22 +173,19 @@ impl TurnSink for WorkerSink {
         }
     }
     /// Unlike the Planner, which resumes from memory and retries the bind, a worker's next turn
-    /// is chosen from the port alone: an init that cannot be recorded stops the turn, so no
-    /// transcript grows that a later turn would not resume.
+    /// is chosen from the port alone: an init that cannot be recorded stops the turn. The CLI
+    /// sends `init` only once it has the turn's input (E8), so a transcript may already exist that
+    /// the port does not name; how the next turn starts then is the issuing layer's choice (WA2-D).
+    /// The shared loop calls this only for an init naming the profile's thread, the one source of
+    /// the turn's session.
     async fn observe_init(&mut self, init: &SystemInit) {
-        if init.session_id != self.thread {
-            return;
-        }
         let record = WorkerInitRecord {
             session: init.session_id,
             claude_code_version: init.claude_code_version.clone(),
         };
         let written = self
             .slot
-            .bounded(
-                INIT_RECORD_TIMEOUT,
-                self.ledger.record_init(&self.turn, &record),
-            )
+            .bounded(RECORD_TIMEOUT, self.ledger.record_init(&self.turn, &record))
             .await;
         let failure = match written {
             Some(Ok(())) => return,
@@ -130,10 +197,7 @@ impl TurnSink for WorkerSink {
             %failure,
             "claude worker: init not recorded; stopping the turn"
         );
-        self.slot.record(TerminalCause::Failed(format!(
-            "init not recorded: {failure}"
-        )));
-        self.slot.arm_stop(tokio::time::Instant::now());
+        self.fail(format!("init not recorded: {failure}"));
     }
     async fn record(&mut self, _: &str, record: &Record, answering: bool) {
         match record {
@@ -151,7 +215,11 @@ impl TurnSink for WorkerSink {
             Record::Ignored { kind } => {
                 tracing::debug!(kind, "claude worker: ignored stream record")
             }
-            _ => {}
+            record => {
+                if let Some(event) = TerminalEvent::of_result(record) {
+                    self.record_result(&event).await;
+                }
+            }
         }
     }
     fn result_event(&self, event: TerminalEvent) -> TerminalEvent {
@@ -164,8 +232,15 @@ impl TurnSink for WorkerSink {
         cause: Option<TerminalCause>,
         qualified: Arc<AtomicBool>,
     ) -> Option<execution::KnownEnd> {
+        // The recorded result is the turn's outcome; one that was not recorded never completes it.
+        let (outcome, result_durable) = match self.result {
+            Some(Ok(outcome)) => (outcome, true),
+            Some(Err(message)) => (WorkerTurnOutcome::Failed { message }, false),
+            None => (decide(cause.as_ref(), &event).into(), true),
+        };
         Some(execution::KnownEnd::ClaudeWorkerTurn(Box::new(WorkerEnd {
-            outcome: decide(cause.as_ref(), &event).into(),
+            outcome,
+            result_durable,
             turn: self.turn,
             slot: self.slot,
             ledger: self.ledger,
@@ -178,6 +253,8 @@ impl TurnSink for WorkerSink {
 pub struct WorkerEnd {
     pub(super) turn: WorkerTurnKey,
     pub(super) outcome: WorkerTurnOutcome,
+    /// False when a read result could not be recorded: such a turn never qualifies.
+    pub(super) result_durable: bool,
     pub(super) slot: Arc<TurnSlot>,
     pub(super) ledger: Arc<dyn WorkerTurnLedger>,
     pub(super) qualified: Arc<AtomicBool>,
@@ -186,7 +263,7 @@ pub struct WorkerEnd {
 impl WorkerEnd {
     /// Record the outcome for exactly the execution `record` names; a write failure is returned,
     /// so `finish` keeps the claim and retries. The foreground outcome qualifies only once
-    /// recorded with the Engine's settlement proof.
+    /// recorded with the Engine's settlement proof, and only if its result, when read, was recorded.
     pub(crate) async fn settle(
         self,
         session: &str,
@@ -209,8 +286,10 @@ impl WorkerEnd {
             )
             .await?;
         self.slot.settled.send_replace(true);
-        self.qualified
-            .store(settled, std::sync::atomic::Ordering::Release);
+        self.qualified.store(
+            settled && self.result_durable,
+            std::sync::atomic::Ordering::Release,
+        );
         Ok(())
     }
 }

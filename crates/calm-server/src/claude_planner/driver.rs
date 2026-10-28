@@ -20,6 +20,23 @@ pub(crate) enum TerminalEvent {
     Stopped,
 }
 
+impl TerminalEvent {
+    /// The event a validated `result` record carries; `None` for every other record.
+    pub(crate) fn of_result(record: &provider::claude::protocol::Record) -> Option<Self> {
+        use provider::claude::protocol::Record;
+        match record {
+            Record::ResultSuccess(success) => Some(Self::ResultSuccess {
+                is_error: success.is_error,
+                result: success.result.clone(),
+            }),
+            Record::ResultError(error) => Some(Self::ResultError {
+                errors: error.errors.clone(),
+            }),
+            _ => None,
+        }
+    }
+}
+
 /// §6.2: a recorded cause wins over the event that follows it; otherwise the event decides.
 pub(crate) fn decide(cause: Option<&TerminalCause>, event: &TerminalEvent) -> TurnOutcome {
     match (cause, event) {

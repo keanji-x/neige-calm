@@ -22,9 +22,8 @@ struct Ledger {
     refuse_init: bool,
     refuse_outcome: bool,
     refuse_result: bool,
-    cancel_after_result: bool,
-    results: Mutex<Vec<(WorkerTurnKey, WorkerTurnOutcome)>>,
     inits: Mutex<Vec<(WorkerTurnKey, WorkerInitRecord)>>,
+    results: Mutex<Vec<(WorkerTurnKey, WorkerTurnOutcome)>>,
     outcomes: Mutex<Vec<(WorkerTurnKey, WorkerTurnRecord)>>,
 }
 #[async_trait::async_trait]
@@ -43,7 +42,10 @@ impl WorkerTurnLedger for Ledger {
         if self.refuse_result {
             return Err(CalmError::Conflict("ledger unavailable".into()));
         }
-        self.results.lock().unwrap().push((turn.clone(), result.clone()));
+        self.results
+            .lock()
+            .unwrap()
+            .push((turn.clone(), result.clone()));
         Ok(())
     }
     async fn record_outcome(&self, turn: &WorkerTurnKey, record: &WorkerTurnRecord) -> Result<()> {
@@ -118,13 +120,25 @@ struct Ran {
     dir: tempfile::TempDir,
 }
 
-/// Drive one worker turn; with `interrupt`, interrupt it once its init is recorded.
+/// How the test treats the turn it drives.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Then {
+    /// Let the shared loop run to its end.
+    Finish,
+    /// Interrupt the turn once its init is recorded.
+    Interrupt,
+    /// Drop the shared loop, as a kernel death would, once the child has seen stdin close: the
+    /// loop read the result, but no known end or completion exists yet.
+    DieAfterResult,
+}
+
+/// Drive one worker turn.
 async fn run(
     ledger: Ledger,
     init_overrides: Value,
     files: impl FnOnce(&Path, Uuid),
     script: &str,
-    interrupt: bool,
+    then: Then,
 ) -> Ran {
     let ledger = Arc::new(ledger);
     let owner = execution::ProviderExecution {
@@ -159,15 +173,14 @@ async fn run(
         EngineStdio::new((*fixture.engine).clone(), id.clone()),
         Duration::from_secs(12),
     ));
-    let sink = WorkerSink {
-        slot: slot.clone(),
-        owner: owner.clone(),
-        pool: pool.clone(),
-        engine: (*fixture.engine).clone(),
-        turn: key.clone(),
-        thread,
-        ledger: ledger.clone(),
-    };
+    let sink = WorkerSink::new(
+        slot.clone(),
+        owner.clone(),
+        pool.clone(),
+        (*fixture.engine).clone(),
+        key.clone(),
+        ledger.clone(),
+    );
     let drive = drive(
         sink,
         ProtocolTurn {
@@ -178,7 +191,7 @@ async fn run(
         },
     );
     let stop = async {
-        if interrupt {
+        if then == Then::Interrupt {
             tokio::time::timeout(Duration::from_secs(10), async {
                 while ledger.inits.lock().unwrap().is_empty() {
                     tokio::time::sleep(Duration::from_millis(10)).await;
@@ -190,26 +203,32 @@ async fn run(
             slot.arm_stop(tokio::time::Instant::now());
         }
     };
-    if ledger.cancel_after_result {
+    if then == Then::DieAfterResult {
         drop(stop);
-        {
-            tokio::pin!(drive);
-            tokio::select! {
-                _ = &mut drive => panic!("completed before cancellation"),
-                () = async {
-                    tokio::time::timeout(Duration::from_secs(10), async {
-                        while !dir.path().join("result-read").exists() {
-                            tokio::task::yield_now().await;
-                        }
-                    }).await.unwrap();
-                } => {}
-            }
-            // The child saw EOF on stdin, so the shared loop has read its result, but
-            // the child is still running: KnownEnd and owner.complete cannot exist yet.
-            assert!(ledger.outcomes.lock().unwrap().is_empty());
-        } // Cancellation drops the actual shared-loop future and stops its execution.
-        execution::wait_settled(&fixture.engine, &id, Duration::from_secs(12)).await.unwrap();
-        return Ran { ledger, key, thread, qualified: false, dir };
+        let closed = dir.path().join("stdin-closed");
+        tokio::select! {
+            _ = drive => panic!("the turn ended before the kernel died"),
+            () = async {
+                while !closed.exists() {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            } => {}
+            () = tokio::time::sleep(Duration::from_secs(10)) => panic!("stdin never closed"),
+        }
+        // The loop is gone with the child still waiting to exit: no known end was packaged and no
+        // completion ran, so only what the sink wrote while reading survives.
+        assert!(ledger.outcomes.lock().unwrap().is_empty());
+        // The dropped loop's cancellation stops the child; let it settle before the Engine goes.
+        execution::wait_settled(&fixture.engine, &id, Duration::from_secs(12))
+            .await
+            .unwrap();
+        return Ran {
+            ledger,
+            key,
+            thread,
+            qualified: false,
+            dir,
+        };
     }
     let (qualified, ()) =
         tokio::time::timeout(Duration::from_secs(20), async { tokio::join!(drive, stop) })
@@ -236,6 +255,14 @@ async fn run(
 
 fn recorded_init(ran: &Ran) -> Vec<(WorkerTurnKey, WorkerInitRecord)> {
     ran.ledger.inits.lock().unwrap().clone()
+}
+
+fn results(ran: &Ran) -> Vec<(WorkerTurnKey, WorkerTurnOutcome)> {
+    ran.ledger.results.lock().unwrap().clone()
+}
+
+fn expect_result(ran: &Ran, outcome_now: WorkerTurnOutcome) {
+    assert_eq!(results(ran), [(ran.key.clone(), outcome_now)]);
 }
 
 fn outcome(ran: &Ran) -> Vec<(WorkerTurnKey, WorkerTurnRecord)> {
@@ -275,11 +302,12 @@ async fn w_protocol_minimal_sink_worker_result() {
         json!({}),
         |_, _| {},
         "cat init.json result.json",
-        false,
+        Then::Finish,
     )
     .await;
     assert!(ran.qualified);
     expect_init(&ran);
+    expect_result(&ran, WorkerTurnOutcome::Completed);
     expect_outcome(&ran, WorkerTurnOutcome::Completed);
     // A later turn resumes exactly the session the recorded init named.
     assert_eq!(recorded_init(&ran)[0].1.resume().thread(), ran.thread);
@@ -292,11 +320,12 @@ async fn w_protocol_minimal_sink_worker_interrupt() {
         json!({}),
         |_, _| {},
         "cat init.json; exec sleep 120",
-        true,
+        Then::Interrupt,
     )
     .await;
     assert!(ran.qualified);
     expect_init(&ran);
+    assert!(results(&ran).is_empty());
     expect_outcome(&ran, WorkerTurnOutcome::Interrupted);
 }
 
@@ -315,7 +344,7 @@ async fn worker_sink_denies_permission_request_back_to_the_model() {
             )
         },
         "cat init.json control.json; IFS= read -r reply; printf '%s\\n' \"$reply\" > reply.json; cat result.json",
-        false,
+        Then::Finish,
     )
     .await;
     let reply: Value =
@@ -336,7 +365,7 @@ async fn worker_sink_records_init_before_the_check() {
         json!({"mcp_servers": []}),
         |_, _| {},
         "cat init.json; exec sleep 120",
-        false,
+        Then::Finish,
     )
     .await;
     // The CLI named the session, so the next turn may resume it, though this one failed its check.
@@ -359,7 +388,7 @@ async fn worker_sink_unrecorded_init_stops_the_turn() {
         json!({}),
         |_, _| {},
         "cat init.json; exec sleep 120",
-        false,
+        Then::Finish,
     )
     .await;
     assert!(recorded_init(&ran).is_empty());
@@ -406,6 +435,7 @@ async fn worker_sink_completion_requires_matching_identity_and_a_durable_write()
         let end = WorkerEnd {
             turn: turn.clone(),
             outcome: WorkerTurnOutcome::Completed,
+            result_durable: true,
             slot: slot.clone(),
             ledger: ledger.clone(),
             qualified: qualified.clone(),
@@ -439,50 +469,85 @@ async fn worker_sink_completion_requires_matching_identity_and_a_durable_write()
     }
 }
 
+/// The result fact is written while the loop reads the result, so a kernel that dies before the
+/// known end exists (§3.6: after `result`, before `complete`) still leaves it for recovery.
 #[tokio::test]
-async fn worker_sink_result_survives_cancellation_before_known_end() {
-    for is_error in [false, true] {
+async fn w_protocol_worker_result_recorded_before_known_end() {
+    for (record, expected) in [
+        (None, WorkerTurnOutcome::Completed),
+        (
+            Some(
+                json!({"type":"result","subtype":"error_during_execution","is_error":true,
+                "errors":["tool crashed"],"usage":{"input_tokens":0,
+                "cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":0,
+                "iterations":[]},"modelUsage":{}}),
+            ),
+            WorkerTurnOutcome::Failed {
+                message: "tool crashed".into(),
+            },
+        ),
+    ] {
         let ran = run(
-            Ledger { cancel_after_result: true, ..Ledger::default() },
+            Ledger::default(),
             json!({}),
             |dir, thread| {
-                let record = if is_error {
-                    json!({"type":"result","subtype":"error_during_execution",
-                        "session_id":thread,"is_error":true,"errors":["test error"],
-                        "usage":{"input_tokens":0,"cache_creation_input_tokens":0,
-                        "cache_read_input_tokens":0,"output_tokens":0,"iterations":[]},"modelUsage":{}})
-                } else { result(thread) };
-                write(dir, "result.json", &[record]);
+                if let Some(mut record) = record {
+                    record["session_id"] = json!(thread);
+                    write(dir, "result.json", &[record]);
+                }
             },
-            "cat init.json result.json; cat >/dev/null; touch result-read; exec tail -f /dev/null",
-            false,
-        ).await;
-        assert!(outcome(&ran).is_empty());
-        let expected = if is_error {
-            WorkerTurnOutcome::Failed { message: "test error".into() }
-        } else { WorkerTurnOutcome::Completed };
-        assert_eq!(*ran.ledger.results.lock().unwrap(), [(ran.key.clone(), expected)]);
+            // The child outlives the result: it marks stdin's close, then never exits.
+            "cat init.json result.json; cat >/dev/null; : > stdin-closed; exec sleep 120",
+            Then::DieAfterResult,
+        )
+        .await;
+        expect_init(&ran);
+        expect_result(&ran, expected);
     }
 }
 
+/// A result the port cannot record stops the turn, which then neither completes nor qualifies.
 #[tokio::test]
-async fn worker_sink_unrecorded_result_stops_without_qualification() {
+async fn w_protocol_worker_unrecorded_result_never_completes() {
     let ran = run(
-        Ledger { refuse_result: true, ..Ledger::default() }, json!({}),
-        |_, _| {}, "cat init.json result.json; exec tail -f /dev/null", false,
-    ).await;
+        Ledger {
+            refuse_result: true,
+            ..Ledger::default()
+        },
+        json!({}),
+        |_, _| {},
+        "cat init.json result.json; exec sleep 120",
+        Then::Finish,
+    )
+    .await;
     assert!(!ran.qualified);
-    assert!(ran.ledger.results.lock().unwrap().is_empty());
-    assert!(matches!(&outcome(&ran)[0].1.outcome, WorkerTurnOutcome::Failed { .. }));
+    assert!(results(&ran).is_empty());
+    let outcomes = outcome(&ran);
+    assert_eq!(outcomes.len(), 1);
+    assert!(
+        matches!(&outcomes[0].1.outcome, WorkerTurnOutcome::Failed { message } if message.starts_with("result not recorded")),
+        "{outcomes:?}"
+    );
 }
 
+/// The profile's thread is the turn's only session: an init naming another one fails the turn
+/// before the sink records anything.
 #[tokio::test]
-async fn worker_sink_mismatched_session_fails_before_recording() {
+async fn w_protocol_worker_init_for_another_session_fails() {
     let ran = run(
-        Ledger::default(), json!({"session_id":Uuid::new_v4()}),
-        |_, _| {}, "cat init.json result.json", false,
-    ).await;
+        Ledger::default(),
+        json!({"session_id": Uuid::new_v4()}),
+        |_, _| {},
+        "cat init.json result.json",
+        Then::Finish,
+    )
+    .await;
     assert!(recorded_init(&ran).is_empty());
-    assert!(ran.ledger.results.lock().unwrap().is_empty());
-    assert!(matches!(&outcome(&ran)[0].1.outcome, WorkerTurnOutcome::Failed { .. }));
+    assert!(results(&ran).is_empty());
+    let outcomes = outcome(&ran);
+    assert_eq!(outcomes.len(), 1);
+    assert!(
+        matches!(&outcomes[0].1.outcome, WorkerTurnOutcome::Failed { message } if message.starts_with("protocol:")),
+        "{outcomes:?}"
+    );
 }
