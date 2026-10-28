@@ -5,7 +5,15 @@ use crate::harness::PlannerHarness;
 use crate::test_seams::{
     MAINTENANCE_LOST_SETTLING, MAINTENANCE_OBSERVE_DECIDED, PausePoint, install_pause_for_test,
 };
+use calm_truth::session_repo::SessionRepo;
 use serde_json::{Value, json};
+
+/// Every wait in a race is bounded, so a seam or lock deadlock fails fast.
+async fn within<T>(what: &str, future: impl std::future::Future<Output = T>) -> T {
+    tokio::time::timeout(Duration::from_secs(30), future)
+        .await
+        .unwrap_or_else(|_| panic!("timed out waiting for {what}"))
+}
 
 struct Race {
     fx: Fixture,
@@ -20,17 +28,18 @@ impl Race {
     /// Install a started maintenance frame whose driver is absent, with the
     /// loop observation armed to pause after deciding to wedge it.
     async fn new() -> Self {
-        let fx = Fixture::new("unused").await;
-        let (harness, registry) = super::compact::registered_recovery_harness(&fx).await;
+        let fx = within("fixture", Fixture::new("unused")).await;
+        let (harness, registry) =
+            within("harness", super::compact::registered_recovery_harness(&fx)).await;
         let observe = arm(&fx, MAINTENANCE_OBSERVE_DECIDED);
         let (operation, turn) = (crate::model::new_id(), crate::model::new_id());
-        let mut frame = frame(&fx).await;
+        let mut frame = within("frame", frame(&fx)).await;
         frame["phase"] = json!("compacting");
         frame["compact_outcome"] = json!({
             "operation_id": operation, "thread_id": fx.owner.thread,
             "turn_id": turn, "status": "started"
         });
-        store(&fx, frame).await;
+        within("store", store(&fx, frame)).await;
         Self {
             fx,
             harness,
@@ -58,13 +67,18 @@ impl Race {
     }
 
     async fn wait_wedged(&self) {
-        tokio::time::timeout(Duration::from_secs(20), async {
+        within("a settlement to commit the wedge", async {
             while frame(&self.fx).await["phase"] != "wedged" {
                 tokio::task::yield_now().await;
             }
         })
-        .await
-        .expect("a settlement must commit the wedge");
+        .await;
+    }
+
+    async fn shutdown(&self) {
+        within("harness shutdown", self.harness.shutdown())
+            .await
+            .unwrap();
     }
 
     fn assert_settled_once(&self, after: &Value) {
@@ -114,17 +128,19 @@ async fn store(fx: &Fixture, frame: Value) {
 
 #[tokio::test]
 async fn acp_compact_absent_driver_loss_after_observed_wedge_is_idempotent() {
+    // The loss pauses before its read/decide/write transaction, so the
+    // observation's wedge commits first and the loss must read and accept it.
     let race = Race::new().await;
     let lost = arm(&race.fx, MAINTENANCE_LOST_SETTLING);
-    race.observe.entered.notified().await;
+    within("observation decision", race.observe.entered.notified()).await;
     let loss = race.lose();
-    lost.entered.notified().await;
+    within("loss settlement seam", lost.entered.notified()).await;
     race.observe.release.notify_one();
     race.wait_wedged().await;
     lost.release.notify_one();
-    let result = loss.await.unwrap();
-    let after = frame(&race.fx).await;
-    race.harness.shutdown().await.unwrap();
+    let result = within("loss", loss).await.unwrap();
+    let after = within("frame", frame(&race.fx)).await;
+    race.shutdown().await;
     result.expect("loss after the observed wedge is the same settlement");
     race.assert_settled_once(&after);
 }
@@ -132,31 +148,36 @@ async fn acp_compact_absent_driver_loss_after_observed_wedge_is_idempotent() {
 #[tokio::test]
 async fn acp_compact_absent_driver_observation_after_loss_does_not_publish_issuance_conflict() {
     let race = Race::new().await;
-    race.observe.entered.notified().await;
-    race.lose().await.unwrap().unwrap();
+    within("observation decision", race.observe.entered.notified()).await;
+    within("loss", race.lose()).await.unwrap().unwrap();
     race.observe.release.notify_one();
     // Shutdown joins the loop, so the paused tick has published any error.
-    race.harness.shutdown().await.unwrap();
-    assert_eq!(race.harness.issuance_block().await, None);
-    race.assert_settled_once(&frame(&race.fx).await);
+    race.shutdown().await;
+    assert_eq!(
+        within("issuance block", race.harness.issuance_block()).await,
+        None
+    );
+    race.assert_settled_once(&within("frame", frame(&race.fx)).await);
 }
 
 #[tokio::test]
 async fn acp_compact_foreign_settlement_still_conflicts() {
     let race = Race::new().await;
-    race.observe.entered.notified().await;
-    let mut foreign = frame(&race.fx).await;
+    within("observation decision", race.observe.entered.notified()).await;
+    let mut foreign = within("frame", frame(&race.fx)).await;
     foreign["phase"] = json!("wedged");
     foreign["wedged_reason"] = json!("a foreign settlement");
     foreign["compact_outcome"]["status"] = json!("unconfirmed");
-    store(&race.fx, foreign).await;
+    within("store", store(&race.fx, foreign)).await;
     race.observe.release.notify_one();
-    race.harness.shutdown().await.unwrap();
+    race.shutdown().await;
     assert!(
-        race.harness.issuance_block().await.is_some(),
+        within("issuance block", race.harness.issuance_block())
+            .await
+            .is_some(),
         "a different concurrent settlement must keep the frame conflict"
     );
-    let after = frame(&race.fx).await;
+    let after = within("frame", frame(&race.fx)).await;
     assert_eq!(after["wedged_reason"], "a foreign settlement");
     assert_eq!(after["compact_outcome"]["operation_id"], race.operation);
 }
