@@ -98,5 +98,5 @@ async fn refresh_and_wake(
     {
         tracing::warn!(%error, "committed Human resolution awaits canonical refresh");
     }
-    crate::operation::planner_start_fence::wake_canonical_human(state, card, source);
+    crate::operation::planner_start_fence::wake_canonical_human(state, card, source).await;
 }

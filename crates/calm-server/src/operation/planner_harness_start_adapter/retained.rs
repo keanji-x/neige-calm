@@ -160,17 +160,15 @@ impl PlannerHarnessStartAdapter {
         Ok(track)
     }
 
-    /// The fence owns this complete invocation, including cancellation of its
-    /// waiter. The current head is read from SQL, never from an old creation ACK.
-    pub(crate) async fn wake_retained(
-        self: &Arc<Self>,
-        runtime: &Arc<super::super::OperationRuntime>,
+    /// Resolve the current source's exact committed inputs without waiting for
+    /// native or Workspace restoration. This context grants no execution.
+    async fn retained_input_context(
+        &self,
         card_id: &CardId,
         source: InputSource,
         workspace_root: PathBuf,
-        events: &crate::event::EventBus,
-    ) -> Result<()> {
-        let mut bound = self.as_ref().clone();
+    ) -> Result<(Self, RetainedPayload, Target)> {
+        let mut bound = self.clone();
         bound.invocation = StartInvocation::Retained {
             source,
             workspace_root,
@@ -195,6 +193,65 @@ impl PlannerHarnessStartAdapter {
             worker_session_id,
         };
         let target = bound.retained_target(&wire).await?;
+        Ok((bound, wire, target))
+    }
+
+    fn observe_retained_sources(&self, wire: &RetainedPayload, target: &Target) -> Result<()> {
+        let (source, _) = self.retained_source()?;
+        source.check_current()?;
+        let sources = self.harness_registry.canonical_sources(
+            &wire.worker_session_id,
+            &TrackId::from(target.track_id.clone()),
+        );
+        for input in target.inputs.identities() {
+            sources.observe(input.clone(), source.clone());
+        }
+        Ok(())
+    }
+
+    /// A live owner can receive its source before waiting for card restoration,
+    /// after the same Workspace admission used by the fenced lifecycle. Cold
+    /// activation remains owned by wake_retained under the card fence.
+    pub(crate) async fn observe_retained_human(
+        &self,
+        runtime: &super::super::OperationRuntime,
+        card_id: &CardId,
+        source: crate::auth::HumanInputSource,
+        workspace_root: PathBuf,
+    ) -> Result<()> {
+        let (bound, wire, _) = self
+            .retained_input_context(card_id, source.into(), workspace_root)
+            .await?;
+        if self.harness_registry.get(&wire.worker_session_id).is_none() {
+            return Ok(());
+        }
+        bound
+            .retained_workspace(
+                &wire,
+                runtime.track_delete_locks(),
+                RetainedAdmission::Live(runtime.location_admission()?.teardown_targets.clone()),
+            )
+            .await?;
+        let target = bound.retained_target(&wire).await?;
+        if self.harness_registry.get(&wire.worker_session_id).is_none() {
+            return Ok(());
+        }
+        bound.observe_retained_sources(&wire, &target)
+    }
+
+    /// The fence owns this complete invocation, including cancellation of its
+    /// waiter. The current head is read from SQL, never from an old creation ACK.
+    pub(crate) async fn wake_retained(
+        self: &Arc<Self>,
+        runtime: &Arc<super::super::OperationRuntime>,
+        card_id: &CardId,
+        source: InputSource,
+        workspace_root: PathBuf,
+        events: &crate::event::EventBus,
+    ) -> Result<()> {
+        let (bound, wire, target) = self
+            .retained_input_context(card_id, source, workspace_root)
+            .await?;
         // Association belongs to the accepted worker/input lifecycle. A caller
         // that cannot restore another source's active claim still retains its
         // own exact accepted tail, without authorizing that preceding claim.
@@ -207,15 +264,7 @@ impl PlannerHarnessStartAdapter {
                 )
                 .await?;
         }
-        let (source, _) = bound.retained_source()?;
-        source.check_current()?;
-        let sources = self.harness_registry.canonical_sources(
-            &wire.worker_session_id,
-            &TrackId::from(target.track_id.clone()),
-        );
-        for input in target.inputs.identities() {
-            sources.observe(input.clone(), source.clone());
-        }
+        bound.observe_retained_sources(&wire, &target)?;
         if self.harness_registry.get(&wire.worker_session_id).is_none() {
             if target.snapshot.header.last_thread_id.is_none() {
                 if target.activation_operation.is_some() {

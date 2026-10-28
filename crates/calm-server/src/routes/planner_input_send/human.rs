@@ -223,7 +223,8 @@ pub(super) async fn accept(
         state.clone(),
         ack.card_id.clone(),
         source_for_wake,
-    );
+    )
+    .await;
     Ok(ack)
 }
 

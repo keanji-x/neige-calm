@@ -209,13 +209,32 @@ impl CardStartFence {
 }
 
 /// Called only after Human acceptance/ACK commits, for both Fresh and Replayed
-/// requests. The original lifecycle owner re-reads the actual current head.
-pub(crate) fn wake_canonical_human(
+/// requests. Wait only for source handoff, never for lifecycle/native startup.
+/// The detached owner survives cancellation of the HTTP waiter.
+pub(crate) async fn wake_canonical_human(
     state: crate::state::RouteState,
     card_id: CardId,
     source: crate::auth::HumanInputSource,
 ) {
+    let (handed_off, observed) = tokio::sync::oneshot::channel();
     tokio::spawn(async move {
+        #[cfg(feature = "fixtures")]
+        crate::test_seams::pause_point("canonical-human-source-handoff", card_id.as_str()).await;
+        if let Err(error) = state
+            .planner_start_adapter
+            .observe_retained_human(
+                &state.operation_runtime,
+                &card_id,
+                source.clone(),
+                state.workspace_root.clone(),
+            )
+            .await
+        {
+            // Acceptance already committed. The original lifecycle below must
+            // re-read its current target, rather than lose this accepted wake.
+            tracing::debug!(%card_id, reason = canonical_wake_reason(&error), "accepted source awaits retained lifecycle revalidation");
+        }
+        let _ = handed_off.send(());
         let fence = CardStartFence::lock(
             &state.planner_recovery_locks,
             &state.repo,
@@ -232,16 +251,21 @@ pub(crate) fn wake_canonical_human(
             )
             .await
         {
-            let reason = match error {
-                CalmError::Unauthorized | CalmError::Forbidden(_) => "source_refused",
-                CalmError::Conflict(_) => "retained_state_held",
-                _ => "activation_unavailable",
-            };
+            let reason = canonical_wake_reason(&error);
             tracing::warn!(%card_id, reason, "accepted canonical work remains held by its original lifecycle");
         }
         #[cfg(feature = "fixtures")]
         crate::test_seams::pause_point("canonical-human-wake-finished", card_id.as_str()).await;
     });
+    let _ = observed.await;
+}
+
+fn canonical_wake_reason(error: &CalmError) -> &'static str {
+    match error {
+        CalmError::Unauthorized | CalmError::Forbidden(_) => "source_refused",
+        CalmError::Conflict(_) => "retained_state_held",
+        _ => "activation_unavailable",
+    }
 }
 
 fn require_no_start(operations: Vec<super::Operation>, card: &CardId) -> Result<()> {

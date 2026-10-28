@@ -137,7 +137,8 @@ pub(super) async fn accept(
             state.clone(),
             card_id,
             for_wake,
-        );
+        )
+        .await;
     }
     Ok(ConversationInitialInputReceiptResult::Known { receipt })
 }

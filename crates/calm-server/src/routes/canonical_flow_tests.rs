@@ -56,6 +56,8 @@ mod dispatcher_inputs_tests;
 mod dispatcher_report_edit_tests;
 mod input_feedback_tests;
 #[cfg(feature = "fixtures")]
+mod input_source_handoff_tests;
+#[cfg(feature = "fixtures")]
 mod opencode_creation_tests;
 #[cfg(feature = "fixtures")]
 mod planner_switch_tests;

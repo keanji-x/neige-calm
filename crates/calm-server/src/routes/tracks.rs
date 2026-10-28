@@ -875,7 +875,8 @@ pub(crate) async fn create_track(
                 s,
                 CardId::from(planner_card_id),
                 source,
-            );
+            )
+            .await;
             return Ok((
                 StatusCode::CREATED,
                 Json(calm_types::track_wire::TrackWire(accepted.track)),

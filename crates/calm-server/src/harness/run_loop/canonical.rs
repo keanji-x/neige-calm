@@ -566,6 +566,15 @@ async fn dispatch_initial(
     permission: PlannerPermissionMode,
     track_fence: &crate::provider_execution::TrackFenceHandoff,
 ) -> Result<()> {
+    // This dispatch has passed current-source/selection admission and committed
+    // its original claim. Retire only our prior authorization notice; model,
+    // permission, native and unknown-outcome refusals retain their standing.
+    {
+        let mut notice = inner.issuance_block.lock().await;
+        if notice.as_deref() == Some(error_notice(&CalmError::Unauthorized)) {
+            *notice = None;
+        }
+    }
     let committed = crate::harness::input_dispatch::initial(
         inner.repo.as_ref(),
         source,
