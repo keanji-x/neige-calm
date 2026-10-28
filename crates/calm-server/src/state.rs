@@ -572,7 +572,7 @@ fn build_operation_adapters(
     ));
     let planner_harness_start_adapter = Arc::new(PlannerHarnessStartAdapter::new(
         input.repo.clone(),
-        input.shared_codex_appserver.clone(),
+        input.codex_backends.clone(),
         input.shared_codex_appserver.thread_seals().clone(),
         input.harness.clone(),
         input.plugin.clone(),

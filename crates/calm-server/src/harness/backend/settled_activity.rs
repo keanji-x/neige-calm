@@ -50,3 +50,12 @@ impl PlannerBackend {
         }
     }
 }
+
+impl PlannerBackend {
+    pub(crate) async fn restore_normal_join_after_keep(&self) -> Result<()> {
+        match &self.0 {
+            Arm::Acp(session) => session.restore_normal_join_after_keep().await,
+            Arm::Codex(..) | Arm::Claude(_) => Ok(()),
+        }
+    }
+}

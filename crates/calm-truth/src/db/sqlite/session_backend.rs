@@ -58,6 +58,19 @@ pub enum CodexScope {
 }
 
 pub async fn codex_backend_scope(db: &SqliteDb, key: CodexScopeKey<'_>) -> Result<CodexScope> {
+    codex_backend_scope_on(db.read_pool(), key).await
+}
+
+pub async fn codex_backend_scope_tx(
+    conn: &mut SqliteConnection,
+    key: CodexScopeKey<'_>,
+) -> Result<CodexScope> {
+    codex_backend_scope_on(conn, key).await
+}
+async fn codex_backend_scope_on<'a>(
+    executor: impl sqlx::Executor<'a, Database = sqlx::Sqlite>,
+    key: CodexScopeKey<'_>,
+) -> Result<CodexScope> {
     let (session, thread) = match key {
         CodexScopeKey::Session(id) => (Some(id), None),
         CodexScopeKey::Thread(id) => (None, Some(id)),
@@ -69,7 +82,7 @@ pub async fn codex_backend_scope(db: &SqliteDb, key: CodexScopeKey<'_>) -> Resul
     )
     .bind(session)
     .bind(thread)
-    .fetch_all(db.read_pool())
+    .fetch_all(executor)
     .await?;
     match rows.as_slice() {
         [] => Ok(CodexScope::Absent),

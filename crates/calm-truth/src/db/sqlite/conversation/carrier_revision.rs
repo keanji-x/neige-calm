@@ -63,6 +63,17 @@ pub async fn carrier_ingress_revision_tx(
             card,
         ),
         (
+            concat!(
+                "SELECT b.* FROM worker_session_backends b JOIN worker_sessions w ON w.id=b.worker_session_id WHERE ",
+                "w.card_id=?1 ORDER BY b.worker_session_id"
+            ),
+            card,
+        ),
+        (
+            "SELECT * FROM acp_normal_joins WHERE worker_session_id=?1 ORDER BY client_id",
+            worker,
+        ),
+        (
             "SELECT * FROM acp_managed_sessions WHERE worker_session_id=?1",
             worker,
         ),

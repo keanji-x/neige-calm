@@ -143,7 +143,7 @@ pub async fn wire(
     let planner_start_adapter = Arc::new(
         calm_server::operation::planner_harness_start_adapter::PlannerHarnessStartAdapter::new(
             repo_dyn.clone(),
-            shared.clone(),
+            calm_server::agent_backend_pool::codex::CodexBackends::single(shared.clone()),
             shared.thread_seals().clone(),
             harness.clone(),
             plugin.clone(),

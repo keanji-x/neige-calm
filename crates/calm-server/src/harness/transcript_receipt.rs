@@ -29,7 +29,7 @@ pub(crate) async fn settle_canonical(
     turn: &str,
     items: &[Value],
 ) -> Result<()> {
-    use crate::db::sqlite::conversation::{current_input_fact_carrier_tx, observe_native_item_tx};
+    use crate::db::sqlite::conversation::current_input_fact_carrier_tx;
     let frames = decode(thread, turn, items)?;
     let (worker, card, thread, turn) = (
         worker.to_owned(),
@@ -40,15 +40,43 @@ pub(crate) async fn settle_canonical(
     crate::db::write_in_tx_typed(repo, move |tx| {
         Box::pin(async move {
             let carrier = current_input_fact_carrier_tx(tx, &card, &worker).await?;
-            for frame in frames {
-                let params = serde_json::from_str(&frame.params)?;
-                observe_native_item_tx(tx, &carrier, &thread, Some(&turn), &frame.method, &params)
-                    .await?;
-            }
+            apply_canonical_frames_tx(tx, &carrier, &thread, &turn, frames).await?;
             Ok(())
         })
     })
     .await
+}
+
+/// Recovery validates its original source/carrier in this same caller-owned transaction.
+pub(crate) async fn settle_canonical_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    carrier: &crate::db::sqlite::conversation::CurrentInputCarrier,
+    thread: &str,
+    turn: &str,
+    items: &[Value],
+) -> Result<()> {
+    apply_canonical_frames_tx(tx, carrier, thread, turn, decode(thread, turn, items)?).await
+}
+async fn apply_canonical_frames_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    carrier: &crate::db::sqlite::conversation::CurrentInputCarrier,
+    thread: &str,
+    turn: &str,
+    frames: Vec<calm_truth::db::TranscriptReceiptItem>,
+) -> Result<()> {
+    for frame in frames {
+        let params = serde_json::from_str(&frame.params)?;
+        crate::db::sqlite::conversation::observe_native_item_tx(
+            tx,
+            carrier,
+            thread,
+            Some(turn),
+            &frame.method,
+            &params,
+        )
+        .await?;
+    }
+    Ok(())
 }
 
 fn decode(

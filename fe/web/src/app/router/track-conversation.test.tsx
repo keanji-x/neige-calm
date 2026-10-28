@@ -903,6 +903,35 @@ describe('track conversations', () => {
       expect(posts(requests, '/planner/input')).toHaveLength(1);
     });
 
+    it('uses canonical abandonment without enabling historical editing or resending input', async () => {
+      let abandoned = false;
+      const expected = { carrier_id: 'original-worker', submission_id: 'original-input', attempt_id: 'original-attempt', revision: '9007199254740993' };
+      const { requests } = setup((request) => {
+        if (request.path.endsWith('/conversation/abandon')) {
+          abandoned = true;
+          return ok({ card_id: ASSISTANT_CARD.id, old_carrier_id: expected.carrier_id, carrier_id: 'fresh-worker' });
+        }
+        if (request.path.includes(ASSISTANT_CARD.id) && request.path.includes('/planner/run?contract=conversation_v1')) {
+          return ok({ card_id: ASSISTANT_CARD.id, worker_session_id: abandoned ? 'fresh-worker' : expected.carrier_id,
+            phase: abandoned ? 'idle' : 'turn_running', model: null, reasoning_effort: null, permission_mode: null,
+            blocked_reason: abandoned ? null : 'Outcome unknown', manual_compact_supported: false,
+            recovery: abandoned ? null : { cause: 'unknown_outcome', action: 'abandon_session', request: expected },
+            compact_outcome: null, context_usage_invalidated: false, running_turn: null, pending: [], pending_overflow: 0,
+            attachments_supported: false, history_replacement_supported: false, terminal_timeout: null,
+            input_contract: 'canonical', runtime_state: abandoned ? 'idle' : 'running', pending_inputs: [], active_input: null, native_turn_id: null });
+        }
+        return undefined;
+      });
+      await openAssistant();
+      await screen.findByRole('button', { name: 'Start a fresh session, keep history' });
+      await act(async () => { fireEvent.click(restartButton()); await Promise.resolve(); });
+      await screen.findByText('Fresh session started. Earlier messages stay here, but the assistant won’t remember them unless you mention them.');
+      expect(posts(requests, '/conversation/abandon').map(request => request.body)).toEqual([expected]);
+      expect(posts(requests, '/planner/restart')).toHaveLength(0);
+      expect(posts(requests, '/planner/input')).toHaveLength(0);
+      expect(screen.queryByRole('button', { name: 'Edit message' })).toBeNull();
+    });
+
     /* With the historical contract already declared, TanStack can hand an invalidation
        an older refetch still in flight. The restart must stand on a later read. */
     it('settles a restart on a run read started after its answer, not one still out from before', async () => {

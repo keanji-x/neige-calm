@@ -390,6 +390,23 @@ pub async fn session_supersede_active_tx(
     id: &String,
     now: i64,
 ) -> WorkerSessionProjectionResult<()> {
+    supersede_for_lifecycle_tx(tx, id, now, false).await
+}
+
+pub(super) async fn session_supersede_abandoned_tx(
+    tx: &mut WorkerSessionProjectionTx<'_>,
+    id: &String,
+    now: i64,
+) -> WorkerSessionProjectionResult<()> {
+    supersede_for_lifecycle_tx(tx, id, now, true).await
+}
+
+async fn supersede_for_lifecycle_tx(
+    tx: &mut WorkerSessionProjectionTx<'_>,
+    id: &String,
+    now: i64,
+    abandoned: bool,
+) -> WorkerSessionProjectionResult<()> {
     require_provider_unclaimed_tx(tx, id).await?;
     let res = sqlx::query(
         r#"UPDATE worker_sessions
@@ -399,11 +416,12 @@ pub async fn session_supersede_active_tx(
                   mcp_token_hash = CASE WHEN (contract = 'assistant' OR (provider IN (SELECT value FROM json_each(?3)) AND contract = 'planner'))
                                         THEN NULL ELSE mcp_token_hash END
             WHERE id = ?2
-              AND state IN ('starting', 'running', 'idle', 'turn_pending')"#,
+              AND (state IN ('starting', 'running', 'idle', 'turn_pending') OR (?4 AND state='failed'))"#,
     )
     .bind(now)
     .bind(id)
     .bind(agent_provider_db_strings(is_non_codex_agent))
+    .bind(abandoned)
     .execute(&mut **tx)
     .await?;
     if res.rows_affected() == 0 {

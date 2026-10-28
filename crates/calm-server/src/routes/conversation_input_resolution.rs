@@ -43,7 +43,37 @@ pub(crate) async fn keep_conversation_input(
     )
     .await?;
     drop(fence);
+    let recovery_state = state.clone();
+    let recovery_card = card.clone();
+    let recovery_source = source.clone();
+    let worker = result.carrier_id.clone();
     refresh_and_wake(state, card, source, &result.carrier_id, envelope).await;
+    tokio::spawn(async move {
+        let s = recovery_state;
+        let fence = crate::operation::planner_start_fence::CardStartFence::lock(
+            &s.planner_recovery_locks,
+            &s.repo,
+            &s.operation_runtime,
+            &recovery_card,
+        )
+        .await;
+        if fence
+            .wake_retained(
+                s.planner_start_adapter.clone(),
+                recovery_source,
+                s.workspace_root.clone(),
+                s.events.clone(),
+            )
+            .await
+            .is_ok()
+            && let Some(handle) = s.harness.get(&worker)
+        {
+            if let Err(error) = handle.restore_normal_join_after_keep().await {
+                tracing::warn!(%error,"kept ACP normal join recovery remains held");
+            }
+            let _ = handle.refresh_canonical_input().await;
+        }
+    });
     Ok(Json(result))
 }
 

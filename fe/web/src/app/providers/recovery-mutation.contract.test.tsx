@@ -3,7 +3,7 @@ import { renderHook, cleanup, act, waitFor } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import { afterEach, expect, it, vi } from 'vitest';
 import { RecoveryAccess } from '../../../../core/domain/recovery/access.ts';
-import type { ApiTransportResponse } from '../../../../core/api/types.ts';
+import type { ApiRequest, ApiTransportResponse } from '../../../../core/api/types.ts';
 import { createUnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import { createRecoveryTransports } from '../../systems/recovery/transport.ts';
 import { NO_UPLOAD, usePlannerAttachments, type AttachmentStore, type UploadState } from '../../features/planner/attachments.tsx';
@@ -148,4 +148,19 @@ it.each([1, 2])('does not upload %i old picked files after their asynchronous re
   act(() => { access.invalidate('recovering'); access.change('connected'); read(new Uint8Array([1]).buffer); });
   await act(() => done);
   expect(send).not.toHaveBeenCalled(); expect(result.current.items).toHaveLength(0);
+});
+
+it('canonical fresh recovery dispatches declared abandonment and preserves its exact input CAS', async () => {
+  vi.stubGlobal('__NC_BUNDLED__', true);
+  const access = new RecoveryAccess(); access.change('connected');
+  const send = vi.fn<(request: ApiRequest) => Promise<ApiTransportResponse>>(() => Promise.resolve({ status: 200, statusText: 'OK', body: { card_id: 'card-a', old_carrier_id: 'old', carrier_id: 'fresh' } }));
+  const transport = createRecoveryTransports({ send }, access).business;
+  const client = new QueryClient();
+  const { result } = renderHook(() => usePlannerMutations(transport, 'card-a', 'track-a', createUnauthorizedChannel({ enqueue: task => task() })), {
+    wrapper: ({ children }: { children: ReactNode }) => <QueryClientProvider client={client}>{children}</QueryClientProvider>,
+  });
+  const recovery = { cause: 'unknown_outcome', action: 'abandon_session', request: { carrier_id: 'old', submission_id: 'submission', attempt_id: 'attempt', revision: '18446744073709551614' } } as const;
+  await result.current.restart(recovery);
+  expect(send).toHaveBeenCalledOnce();
+  expect(send.mock.calls[0]?.[0]).toMatchObject({ method: 'POST', path: '/api/cards/card-a/conversation/abandon', body: recovery.request });
 });

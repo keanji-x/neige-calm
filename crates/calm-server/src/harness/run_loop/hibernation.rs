@@ -321,3 +321,70 @@ impl PlannerHarness {
 
 #[cfg(test)]
 mod planner_switch_tests;
+
+/// Recovery excludes new issuance while preserving the unresolved canonical frame.
+/// Native idleness is a local fence only; the ACP lifecycle separately proves quiescence.
+pub(crate) struct HeldCarrierOwner<'a> {
+    handle: &'a PlannerHarness,
+    native: crate::harness::backend::CarrierIdleGuard<'a>,
+    park: crate::harness::carrier_park::ParkToken<'a>,
+}
+impl HeldCarrierOwner<'_> {
+    pub(crate) fn recheck(&self) -> Result<()> {
+        let inner = &self.handle.inner;
+        if !self.park.is_current()
+            || !self.native.recheck()
+            || inner.shutting_down.load(Ordering::SeqCst)
+            || !inner.held_requests.is_empty()
+        {
+            return Err(CalmError::Conflict(
+                "recovery owner changed or is still active".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+impl PlannerHarness {
+    pub(crate) async fn held_carrier_owner(&self) -> Result<HeldCarrierOwner<'_>> {
+        let _issuance = self.inner.issuance.lock().await;
+        if !matches!(self.inner.inputs, RuntimeInputs::Canonical(_))
+            || self
+                .inner
+                .planner_compaction
+                .lock()
+                .await
+                .as_ref()
+                .is_some_and(|r| r.pending())
+        {
+            return Err(CalmError::Conflict(
+                "recovery requires a held canonical carrier".into(),
+            ));
+        }
+        let thread = self.inner.thread_id.read().await.clone();
+        let native = self
+            .inner
+            .backend
+            .carrier_idle_for_detach(thread.as_deref())
+            .await
+            .ok_or_else(|| CalmError::Conflict("old native execution is still active".into()))?;
+        let park = self
+            .inner
+            .parked
+            .park()
+            .ok_or_else(|| CalmError::Conflict("carrier is already parked".into()))?;
+        let owner = HeldCarrierOwner {
+            handle: self,
+            native,
+            park,
+        };
+        owner.recheck()?;
+        Ok(owner)
+    }
+}
+
+impl PlannerHarness {
+    pub(crate) async fn restore_normal_join_after_keep(&self) -> Result<()> {
+        let _issuance = self.inner.issuance.lock().await;
+        self.inner.backend.restore_normal_join_after_keep().await
+    }
+}

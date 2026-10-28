@@ -143,6 +143,7 @@ async fn initial_request_timeout_identifies_blocked_callback() {
 
 async fn without_new_execution<T>(
     peer: &mut Peer,
+    outcome: NativeOutcome,
     completed: impl std::future::Future<Output = T>,
 ) -> T {
     tokio::pin!(completed);
@@ -150,11 +151,22 @@ async fn without_new_execution<T>(
         tokio::select! {
             result = &mut completed => return result,
             call = request(peer) => {
-                assert_eq!(
-                    call["method"], "config/read",
-                    "a held attempt must issue zero thread/start, thread/read, thread/resume or turn/start requests: {call}"
-                );
-                send(peer, json!({"id":call["id"],"result":{"config":{}}})).await;
+                let result = match (outcome, call["method"].as_str()) {
+                    (_, Some("config/read")) => json!({"config":{}}),
+                    // #3320 permits exact Accepted-terminal inspection before restore.
+                    // A still-active native turn must keep the original claim held;
+                    // this observation grants neither resume nor another issuance.
+                    (NativeOutcome::Accepted, Some("thread/read")) => {
+                        assert_eq!(call["params"]["threadId"], THREAD);
+                        assert_eq!(call["params"]["includeTurns"], true);
+                        json!({"thread":{"id":THREAD,"status":{"type":"active"},
+                            "turns":[{"id":TURN,"status":"inProgress"}]}})
+                    }
+                    _ => panic!(
+                        "held attempt issued a forbidden native request: {call}"
+                    ),
+                };
+                send(peer, json!({"id":call["id"],"result":result})).await;
             }
         }
     }
@@ -166,12 +178,13 @@ async fn post_and_settle_wake(
     cookie: &str,
     peer: &mut Peer,
     card: &str,
-    input: (&str, &str, Value),
+    input: (&str, &str, Value, NativeOutcome),
 ) -> Value {
     let route = crate::state::RouteState::from_ref(state);
     // Hold the actual recovery drive so this HTTP wake owns its card fence
     // before we wait for that fence's release. No lifecycle state is injected.
     let drive = route.operation_runtime.lock_for_track_delete().await;
+    let outcome = input.3;
     let accepted = post(app, cookie, input.0, input.1, input.2).await;
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {
@@ -189,13 +202,18 @@ async fn post_and_settle_wake(
     let released = crate::per_card_lock::lock_card(&route.planner_recovery_locks, card);
     let guard = tokio::time::timeout(
         Duration::from_secs(5),
-        without_new_execution(peer, released),
+        without_new_execution(peer, outcome, released),
     )
     .await
     .expect("the real cold wake must finish without a new native execution");
     drop(guard);
     // Also observe the installed scheduler, if any, across its normal tick.
-    without_new_execution(peer, tokio::time::sleep(Duration::from_millis(150))).await;
+    without_new_execution(
+        peer,
+        outcome,
+        tokio::time::sleep(Duration::from_millis(150)),
+    )
+    .await;
     accepted
 }
 
@@ -315,7 +333,7 @@ async fn cold_attempt_is_not_readmitted(outcome: NativeOutcome) {
     assert_eq!(
         tokio::time::timeout(
             Duration::from_secs(5),
-            without_new_execution(&mut peer, boot)
+            without_new_execution(&mut peer, NativeOutcome::Unknown, boot)
         )
         .await
         .unwrap()
@@ -328,7 +346,12 @@ async fn cold_attempt_is_not_readmitted(outcome: NativeOutcome) {
     let replay = post(&app, &cookie, "/api/tracks", "first", create).await;
     // This replay has no pending head. Its source lookup can refuse before
     // taking the recovery drive; the later appended wake is fenced below.
-    without_new_execution(&mut peer, tokio::time::sleep(Duration::from_millis(150))).await;
+    without_new_execution(
+        &mut peer,
+        outcome,
+        tokio::time::sleep(Duration::from_millis(150)),
+    )
+    .await;
     assert_eq!(replay["id"], created["id"]);
     assert_eq!(
         fixture.carrier(track).await.2.canonical_inputs,
@@ -375,6 +398,7 @@ async fn cold_attempt_is_not_readmitted(outcome: NativeOutcome) {
             &format!("/api/cards/{card}/planner/input"),
             "new-input",
             json!({"text":"Keep this newer input pending behind the original attempt"}),
+            outcome,
         ),
     )
     .await;

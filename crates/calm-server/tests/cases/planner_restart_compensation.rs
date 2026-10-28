@@ -160,7 +160,9 @@ async fn fail_starts_after_delivering(
     let adapter: Arc<dyn ProviderAdapter> = Arc::new(DeliverThenFailSpawn {
         inner: PlannerHarnessStartAdapter::new(
             boot.repo.clone(),
-            boot.state.shared_codex_appserver.clone(),
+            calm_server::agent_backend_pool::codex::CodexBackends::single(
+                boot.state.shared_codex_appserver.clone(),
+            ),
             boot.state.thread_seals().clone(),
             boot.state.harness.clone(),
             boot.state.plugin.clone(),
@@ -577,7 +579,9 @@ async fn a_redriven_give_back_keeps_what_the_new_session_still_owes() {
     let adapter: Arc<dyn ProviderAdapter> = Arc::new(DropThenFailRedriven {
         inner: PlannerHarnessStartAdapter::new(
             boot.repo.clone(),
-            boot.state.shared_codex_appserver.clone(),
+            calm_server::agent_backend_pool::codex::CodexBackends::single(
+                boot.state.shared_codex_appserver.clone(),
+            ),
             boot.state.thread_seals().clone(),
             boot.state.harness.clone(),
             boot.state.plugin.clone(),

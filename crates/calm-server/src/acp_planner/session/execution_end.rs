@@ -34,12 +34,14 @@ enum Completion {
     /// A durable Completed receipt plus confirmed recovery cleanup, established
     /// under the retained installation reservation. No synthetic task/join.
     RecoveredCompleted,
+    /// A genuine prior normal join, loaded only by a new authenticated Keep.
+    RecoveredUnknown,
 }
 impl Completion {
     fn is_finished(&self) -> bool {
         match self {
             Self::Driver(driver) => driver.is_finished(),
-            Self::RecoveredCompleted => true,
+            Self::RecoveredCompleted | Self::RecoveredUnknown => true,
         }
     }
     async fn finish(&mut self) -> Result<Settlement> {
@@ -48,6 +50,7 @@ impl Completion {
                 CalmError::Conflict("ACP receipt writer did not finish normally".into())
             }),
             Self::RecoveredCompleted => Ok(Settlement::Completed),
+            Self::RecoveredUnknown => Ok(Settlement::CleanUnknown),
         }
     }
 }
@@ -109,6 +112,16 @@ impl DriverSlot {
         Self {
             execution_id: None,
             completion: Completion::RecoveredCompleted,
+            input: DriverInput::Canonical(Box::new(CanonicalDriver {
+                receipt,
+                association,
+            })),
+        }
+    }
+    pub(super) fn from_normal_join(receipt: AcpSubmission, association: AcpCanonicalInput) -> Self {
+        Self {
+            execution_id: None,
+            completion: Completion::RecoveredUnknown,
             input: DriverInput::Canonical(Box::new(CanonicalDriver {
                 receipt,
                 association,
@@ -179,7 +192,13 @@ pub(super) fn install(shared: &Shared, driver: DriverSlot) {
 }
 pub(super) async fn join_driver(shared: &Shared) -> Result<()> {
     if let Some(driver) = slot(shared) {
-        driver.lock().await.finish().await?;
+        let mut driver = driver.lock().await;
+        let observed = driver.finish().await?;
+        if matches!(observed, Settlement::CleanUnknown)
+            && let DriverInput::Canonical(input) = &driver.input
+        {
+            super::normal_join::record(&shared.params, &input.receipt).await?;
+        }
     }
     Ok(())
 }
@@ -270,6 +289,7 @@ async fn settle_kept_under_issue(
         input.receipt.clone()
     };
     let params = &shared.params;
+    super::normal_join::record(params, &receipt).await?;
     let pool = params
         .repo
         .sqlite_db()

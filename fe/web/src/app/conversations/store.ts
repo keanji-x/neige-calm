@@ -24,7 +24,6 @@ import { useConversationCommands, useConversationSendOps, useConversationQueueWr
 import { NO_TURNS } from './registry-owner.ts';
 import { useConversationStop } from './stop.ts';
 import { useConversationRestart } from './restart.ts';
-import { offersFreshSession } from '../../../../core/domain/conversation-restart.ts';
 import { useLiveReplies } from './live-replies.ts';
 import { useConversationOutbox, useRunReads } from './outbox.ts';
 import type { ConversationRouteIntent, ConversationStore, PlannerConversationScope } from './contracts.ts';
@@ -115,7 +114,7 @@ export function useConversationStore(
     : null;
   const phase = run.data?.phase ?? null;
   const recovery = run.data?.recovery ?? null;
-  const stalled = offersFreshSession(recovery);
+  const stalled = recovery !== null;
   const canonical = run.data?.input_contract === 'canonical';
   const inputStalled = stalled && !canonical;
   const executionHeld = run.data?.runtime_state === 'failed' || run.data?.runtime_state === 'exited'
@@ -185,7 +184,7 @@ export function useConversationStore(
     runningTurnId: run.data?.native_turn_id ?? run.data?.running_turn?.turn_id ?? null, nextRead: registry.nextRead,
     transcriptKey: transcriptQuery.queryKey, transcriptReads, items,
   });
-  const working = !executionHeld && (phase === 'issuing_turn' || phase === 'compacting' || phase === 'turn_running');
+  const working = !executionHeld && !stalled && (phase === 'issuing_turn' || phase === 'compacting' || phase === 'turn_running');
   const stop = useConversationStop({
     cardId, canStop: working && !stalled,
     responseEnded: phase === 'idle' || phase === 'turn_completed',
@@ -195,7 +194,7 @@ export function useConversationStore(
       ? latest : Math.max(latest ?? 0, row.id), null),
     requestStop: mutations.interrupt,
   });
-  const restart = useConversationRestart({ cardId, enabled: run.data?.input_contract === 'historical', recovery, restart: mutations.restart });
+  const restart = useConversationRestart({ cardId, enabled: run.data?.input_contract === 'historical' || recovery?.action === 'abandon_session', recovery, restart: () => mutations.restart(recovery) });
   const landedTranscript = transcriptReads.startOf(history.data);
   /* A refetch keeping `run.data` restamps it; this re-renders only because `run.dataUpdatedAt` is read above (#2068). */
   const landed = useMemo(() => ({ transcript: landedTranscript, run: landedRun }), [landedTranscript, landedRun]);

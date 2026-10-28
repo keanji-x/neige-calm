@@ -5,6 +5,7 @@ mod compact;
 mod driver;
 mod input;
 mod issuance;
+mod normal_join;
 mod recovery;
 mod setup;
 use cancellation::IssueGuard;

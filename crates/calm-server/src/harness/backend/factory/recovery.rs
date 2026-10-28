@@ -17,6 +17,12 @@ use std::sync::Arc;
 #[async_trait::async_trait]
 pub(crate) trait ActiveRecoveryAdmission: Send + Sync {
     fn check_current(&self) -> Result<()>;
+    async fn accepted_native_end_tx(
+        &self,
+        _tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    ) -> Result<Option<crate::harness::input_dispatch::end_transition::AcceptedRecovery>> {
+        Ok(None)
+    }
     async fn validate_tx(&self, tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<()>;
 }
 
@@ -310,6 +316,16 @@ impl PlannerFactory<'_> {
                 ))
             },
         );
+        let recovery_admission = admission.clone();
+        let accepted = write_in_tx_typed(repo, move |tx| {
+            Box::pin(async move { recovery_admission.accepted_native_end_tx(tx).await })
+        })
+        .await?;
+        if let Some(accepted) = accepted {
+            native
+                .reconcile_canonical_end(repo, &accepted, &admit, admission.clone())
+                .await?;
+        }
         let before = native.read_active(&admit).await?;
         if before.id.as_deref() != Some(thread_id) {
             return Err(CalmError::Conflict(

@@ -28,7 +28,7 @@ export function useConversationRestart({ cardId, enabled, recovery, restart }: {
   cardId: string;
   /** Server-owned recovery for the current worker. */
   recovery: RunRecovery | null;
-  /** Only the historical contract offers fresh-session recovery. */
+  /** Historical restart or an explicit canonical abandonment declaration. */
   enabled: boolean;
   /** `POST …/planner/restart` for this card, settled once the run state read after it has landed. */
   restart: () => Promise<unknown>;

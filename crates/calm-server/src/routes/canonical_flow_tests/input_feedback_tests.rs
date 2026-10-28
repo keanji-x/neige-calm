@@ -270,6 +270,10 @@ async fn acp_running_input_has_one_typed_delivery_feedback_source(
     fixture.shutdown_process(&state).await;
     assert!(pending["active_input"]["current_execution_id"].is_string());
     assert!(
+        pending["recovery"].is_null(),
+        "live prompt needs no recovery: {pending}"
+    );
+    assert!(
         pending["blocked_reason"].is_null(),
         "native prompt is running and awaiting its receipt: {pending}"
     );

@@ -233,3 +233,21 @@ it.each(['codex','claude','opencode','grok'] as const)('defers intervention whil
   expect(screen.queryByText('Delivery not confirmed')).toBeNull();
   expect(screen.queryByRole('button',{name:'Keep as delivered'})).toBeNull();
 });
+
+it.each([390, 1280])('shows canonical recovery as paused evidence rather than ongoing work (%ipx)', async (width) => {
+  await page.viewport(width, 844);
+  const recovery = { cause: 'native_completion_pending', action: 'held', reason: 'native_completion_unavailable' } as const;
+  const { container } = render(<div style={{ position: 'relative', height: '90dvh', containerType: 'inline-size', overflow: 'clip' }}>
+    <Drawer open title="Review" onClose={() => undefined} footer={<ChatComposer onSend={() => undefined} />}>
+      <ChatThread hasPendingMessages canContinue={false} cards={{}} stalled recovery={recovery} conversation={conversation()}
+        turns={[{ id: 'reply', author: 'agent', text: 'The earlier reply remains here.', atMs: 1 }]} />
+    </Drawer>
+  </div>);
+  const paused = screen.getByRole('button', { name: 'Completion unconfirmed' });
+  await userEvent.click(paused);
+  expect(screen.getByText('Waiting to verify the original native completion. Saved messages remain queued.').checkVisibility()).toBe(true);
+  expect(screen.queryByText('Running', { exact: true })).toBeNull();
+  expect(document.documentElement.scrollWidth).toBe(width);
+  expect(container.querySelector('[data-nc-turn="agent"]')).not.toBeNull();
+  await page.screenshot({ path: `../../../../../test-results/canonical-recovery-${width}.png` });
+});

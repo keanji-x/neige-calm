@@ -9,6 +9,7 @@ pub use calm_truth::card_kind;
 mod conversation_archive;
 pub(crate) mod conversation_inputs;
 mod conversation_metadata;
+mod conversation_recovery;
 pub mod execution_boot;
 mod execution_environment;
 pub mod execution_quiesce;

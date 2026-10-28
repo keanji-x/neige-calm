@@ -332,3 +332,112 @@ impl RecoveryThread<'_> {
         self.daemon.hibernating_releases.remove(self.thread_id);
     }
 }
+
+impl RecoveryThread<'_> {
+    pub(crate) async fn reconcile_canonical_end(
+        &self,
+        repo: &dyn crate::db::Repo,
+        accepted: &crate::harness::input_dispatch::end_transition::AcceptedRecovery,
+        admit: &NativePromptAdmission<'_>,
+        admission: Arc<dyn crate::harness::backend::factory::ActiveRecoveryAdmission>,
+    ) -> Result<()> {
+        use crate::harness::backend::ExecutionEndScope;
+        if accepted.backend_id() != self.daemon.backend_id().as_str() {
+            return Err(CalmError::Conflict(
+                "native recovery backend namespace changed".into(),
+            ));
+        }
+        let target = accepted.target();
+        let ExecutionEndScope::NativeTurn {
+            thread_id,
+            native_turn_id,
+        } = &target.scope
+        else {
+            return Err(CalmError::Conflict(
+                "recovery requires an exact accepted native turn".into(),
+            ));
+        };
+        if thread_id != self.thread_id || target.card_id != self.card_id {
+            return Err(CalmError::Conflict(
+                "native recovery names another conversation".into(),
+            ));
+        }
+        let client = self.client.native()?;
+        let fence = self
+            .daemon
+            .native_turns
+            .settlement_fence(client, self.thread_id)?;
+        // A cold thread can expose its exact past terminal before subscription restore.
+        // This records no live control; ordinary restore still requires idle before issuance.
+        let read = self.read(Some(native_turn_id), admit).await?;
+        if read.state.id.as_deref() != Some(self.thread_id)
+            || !matches!(read.state.status.as_deref(), Some("idle" | "notLoaded"))
+        {
+            return Err(CalmError::Conflict(
+                "original native execution has not confirmed completion".into(),
+            ));
+        }
+        let terminal = read.terminal.ok_or_else(|| {
+            CalmError::Conflict("original native completion is unavailable".into())
+        })?;
+        admit.check_local().await?;
+        if !self
+            .daemon
+            .native_turns
+            .recovery_fence_matches(&fence, target)
+        {
+            return Err(CalmError::Conflict(
+                "native recovery activity changed".into(),
+            ));
+        }
+        let frames = terminal
+            .get("items")
+            .and_then(Value::as_array)
+            .ok_or_else(||CalmError::Conflict("native terminal items are unavailable".into()))?
+            .iter().map(|item|serde_json::json!({"method":"item/completed","params":{"threadId":thread_id,"turnId":native_turn_id,"item":item}})).collect::<Vec<_>>();
+        let target = target.clone();
+        let db = repo.sqlite_db().ok_or(CalmError::ExecutionUnavailable)?;
+        let mut tx = crate::db::sqlite::begin_immediate_tx(&db).await?;
+        admission.validate_tx(&mut tx).await?;
+        accepted.validate_tx(&mut tx).await?;
+        admission.check_current()?;
+        if !self
+            .daemon
+            .native_turns
+            .recovery_fence_matches(&fence, &target)
+        {
+            return Err(CalmError::Conflict("native recovery source changed".into()));
+        }
+        let carrier = crate::db::sqlite::conversation::current_input_fact_carrier_tx(
+            &mut tx,
+            &target.card_id,
+            &target.worker_session_id,
+        )
+        .await?;
+        crate::harness::transcript_receipt::settle_canonical_tx(
+            &mut tx,
+            &carrier,
+            thread_id,
+            native_turn_id,
+            &frames,
+        )
+        .await?;
+        admission.check_current()?;
+        if !self
+            .daemon
+            .native_turns
+            .recovery_fence_matches(&fence, &target)
+        {
+            return Err(CalmError::Conflict("native recovery source changed".into()));
+        }
+        tx.commit().await?;
+        if !self
+            .daemon
+            .native_turns
+            .retain_canonical_recovery(&fence, accepted.target(), &terminal)
+        {
+            return Err(CalmError::Conflict("native recovery source changed".into()));
+        }
+        Ok(())
+    }
+}

@@ -598,6 +598,8 @@ async fn production_http_retry_after_native_unavailability_resumes_original_head
 }
 
 mod carrier_replacement_tests;
+#[cfg(feature = "fixtures")]
+mod unknown_recovery_tests;
 async fn shutdown(fixture: &Fixture, state: &AppState) {
     let ids: Vec<String> = sqlx::query_scalar("SELECT id FROM worker_sessions")
         .fetch_all(fixture.repo.pool())

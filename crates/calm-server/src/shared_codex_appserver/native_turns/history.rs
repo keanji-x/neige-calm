@@ -157,3 +157,83 @@ impl NativeTurns {
             .and_then(|current| current.terminal.clone())
     }
 }
+
+impl NativeTurns {
+    fn recovery_matches(
+        state: &State,
+        expected: &SettlementFence,
+        target: &ExecutionEndTarget,
+    ) -> bool {
+        let Some(slot) = state.slots.get(&expected.thread) else {
+            return false;
+        };
+        let ExecutionEndScope::NativeTurn {
+            thread_id,
+            native_turn_id,
+        } = &target.scope
+        else {
+            return false;
+        };
+        state.is_current(&expected.source)
+            && thread_id == &expected.thread
+            && !state.detaching.contains_key(thread_id)
+            && Arc::ptr_eq(&slot.activity, &expected.activity)
+            && expected.pending.is_none()
+            && slot.pending.is_none()
+            && slot.steering.is_none()
+            && !expected.ambiguous
+            && !expected.unresolved
+            && !slot.unresolved
+            && slot.current.as_ref().map(|c| &c.turn) == expected.current.as_ref()
+            && slot
+                .current
+                .as_ref()
+                .is_none_or(|c| c.turn == *native_turn_id && c.ended && c.input.matches(target))
+            && slot
+                .retired
+                .get(native_turn_id)
+                .is_none_or(|old| old.input.matches(target))
+    }
+    pub(in crate::shared_codex_appserver) fn recovery_fence_matches(
+        &self,
+        expected: &SettlementFence,
+        target: &ExecutionEndTarget,
+    ) -> bool {
+        Self::recovery_matches(&self.lock(), expected, target)
+    }
+    /// A past completion has no reconstructed current start or control authority.
+    pub(in crate::shared_codex_appserver) fn retain_canonical_recovery(
+        &self,
+        expected: &SettlementFence,
+        target: &ExecutionEndTarget,
+        terminal: &Value,
+    ) -> bool {
+        let mut state = self.lock();
+        if !Self::recovery_matches(&state, expected, target) {
+            return false;
+        };
+        let ExecutionEndScope::NativeTurn { native_turn_id, .. } = &target.scope else {
+            return false;
+        };
+        let input = NativeInput::canonical(
+            CodexHarnessBinding::new(&target.card_id, &target.track_id, &target.worker_session_id)
+                .expect("validated recovery identity"),
+            &target.logical_turn_id,
+            &target.proof,
+            false,
+        );
+        state
+            .slots
+            .get_mut(&expected.thread)
+            .expect("checked recovery slot")
+            .retain_observed(NativeExecution {
+                turn: native_turn_id.clone(),
+                source: expected.source.clone(),
+                input,
+                ended: true,
+                terminal: Some(terminal_fact(native_turn_id, terminal)),
+                control_visible: false,
+            });
+        true
+    }
+}

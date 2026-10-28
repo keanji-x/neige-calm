@@ -54,7 +54,8 @@ pub use calm_types::compatibility::REST_API_VERSION as API_VERSION;
 // 58 -> 59: a provider may be `grok`, which older bundles reject wherever they decode a provider.
 // #2836: 59 -> 60 requires canonical held delivery and exact attempt identity.
 // #2836: 60 -> 61 enables canonical Human Keep and checkpoint receipts.
-pub const WEB_COMPAT_VERSION: u32 = 62;
+// #3320: 62 -> 63 adds canonical abandonment and held native-completion recovery declarations.
+pub const WEB_COMPAT_VERSION: u32 = 63;
 
 /// Kernel compatibility values sourced from live constants.
 #[derive(Debug, Clone, Serialize)]

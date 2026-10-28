@@ -69,7 +69,7 @@ import {
 } from '../../../../core/domain/conversation.ts';
 import { harnessLiveOperation } from '../../../../core/domain/conversation-live.ts';
 import { setPlannerPermissionModeOperation } from '../../../../core/domain/planner-permission-mode.ts';
-import { restartPlannerOperation } from '../../../../core/domain/conversation-restart.ts';
+import { abandonConversationOperation, restartPlannerOperation, type RunRecovery } from '../../../../core/domain/conversation-restart.ts';
 import {
   ApiError, classifyFailure, DELETE_FAILURES, DELETE_TEXT, refusalText, writeFailureOf, writeFailureText,
 } from '../../../../core/domain/failure-class.ts';
@@ -248,13 +248,15 @@ export function usePlannerMutations(transport: ApiTransportPort, cardId: string,
       .then((admitted) => runOperation(admitted, interruptPlannerOperation(cardId), unauthorized)).then(refreshAfter),
     /* Settles once the run read started after the answer has landed, so what follows reads the new session, not the
        wedge it replaced (#2192). A failure refreshes too: one whose outcome is unknown may have started a session. */
-    restart: () => {
+    restart: (recovery?: RunRecovery | null) => {
       const reread = () => {
         void refreshTranscript().catch(() => undefined);
         return cancelThenInvalidate(client, queryKeys.plannerRun(cardId));
       };
       return Promise.resolve().then(() => admitTransport(transport))
-        .then((admitted) => runOperation(admitted, restartPlannerOperation(cardId), unauthorized))
+        .then((admitted): Promise<unknown> => recovery?.action === 'abandon_session'
+          ? runOperation(admitted, abandonConversationOperation(cardId, recovery), unauthorized)
+          : runOperation(admitted, restartPlannerOperation(cardId), unauthorized))
         .then(async (restarted) => { await reread(); return restarted; }, async (error: unknown) => { await reread(); throw error; });
     },
     /* Resolves rather than rejects on a refusal: a lost compare-and-swap and a drained entry are answers

@@ -11,6 +11,7 @@ mod control;
 mod failures;
 mod grok;
 mod grok_compact;
+mod normal_join;
 mod profile_storage;
 mod recovery;
 mod recovery_atomic;

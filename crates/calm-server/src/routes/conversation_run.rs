@@ -162,19 +162,32 @@ pub(super) async fn read(
             frame.active_input,
         )
         .await?;
+        let recovery =
+            crate::conversation_recovery::declaration(&s, source.clone(), &id, &runtime.id).await?;
+        let recovery_block=recovery.as_ref().map(|recovery|match recovery {
+            crate::harness::run_recovery::RunRecovery::AbandonSession{..}=>"The previous outcome is unknown. Start a fresh session to continue; history is kept.",
+            crate::harness::run_recovery::RunRecovery::Held{reason:crate::harness::run_recovery::RunHeldReason::PendingInputs,..}=>"Queued observations belong to the old session. Resolve them before starting a fresh session.",
+            crate::harness::run_recovery::RunRecovery::Held{cause:crate::harness::run_recovery::RunRecoveryCause::NativeCompletionPending,..}=>"Native completion is unconfirmed. Saved messages remain queued until reconciliation.",
+            _=>"Execution remains held until safe recovery can be established. History is kept.",
+        }.to_owned());
         let selection = crate::planner_model::CardModelSelection::from_payload(&card.payload)
             .unwrap_or_default();
         let usage = planner_context_usage_from_header(header.clone())
             .map(super::planner_cards::PlannerRunTokenUsage::from);
-        let blocked_reason = header.wedged_reason.clone().or(issuance_block).or_else(|| {
-            runtime.state.is_terminal().then(|| {
-                if runtime.state == calm_types::worker::WorkerSessionState::Failed {
+        let blocked_reason = header
+            .wedged_reason
+            .clone()
+            .or(recovery_block)
+            .or(issuance_block)
+            .or_else(|| {
+                runtime.state.is_terminal().then(|| {
+                    if runtime.state == calm_types::worker::WorkerSessionState::Failed {
                 "Execution is held after this session failed. Messages remain saved."
             } else {
                 "Execution is held because this session is no longer active. Messages remain saved."
             }.into()
-            })
-        });
+                })
+            });
         Json(PlannerRunReadResponse::Conversation(Box::new(
             ConversationRunResponse {
                 native_turn_id: (header.phase == crate::harness::HarnessPhaseTag::TurnRunning)
@@ -191,7 +204,7 @@ pub(super) async fn read(
                     )
                     .then(|| crate::planner_permission_mode::shown_for_planner(&card)),
                     blocked_reason,
-                    recovery: None,
+                    recovery,
                     token_usage: usage,
                     compact_outcome: header.compact_outcome,
                     context_usage_invalidated: header.context_usage_invalidated,

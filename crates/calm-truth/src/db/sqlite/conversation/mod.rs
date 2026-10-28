@@ -1,10 +1,14 @@
 //! Canonical fact storage. These primitives borrow the owner's transaction: the
 //! acceptance/claim owner must commit the sole harness queue, authority checks,
 //! receipts and events with these facts. They neither enqueue nor drive a retry.
+mod abandonment;
 mod acceptance;
 mod assistant_creation;
 mod attempts;
 mod carrier;
+pub use abandonment::{
+    abandon_unresolved_carrier_tx, abandonment_request_tx, replay_abandonment_tx,
+};
 mod claim_storage;
 mod claim_validation;
 mod claims;

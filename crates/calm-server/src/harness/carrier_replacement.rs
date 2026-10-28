@@ -1,6 +1,7 @@
 //! Owner-local precommit proof adapter. Acquire/recheck the native/harness park
 //! before BEGIN; retain it, MCP and caller lifecycle/dispatch fences through
 //! commit and registry publication. No owner await runs inside SQL.
+pub(crate) use super::run_loop::hibernation::HeldCarrierOwner;
 pub use super::run_loop::hibernation::{OwnerProofError, OwnerRefusal};
 use calm_truth::db::sqlite::conversation::{CarrierReplacementGuard, CurrentInputCarrier};
 use calm_truth::error::CalmError as TruthError;

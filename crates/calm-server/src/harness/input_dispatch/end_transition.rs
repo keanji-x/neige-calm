@@ -167,3 +167,82 @@ pub(crate) async fn complete_once(
     })
     .await
 }
+
+/// Accepted original execution, not authority to dispatch or control another turn.
+pub(crate) struct AcceptedRecovery {
+    sample: Sample,
+    backend: String,
+}
+impl AcceptedRecovery {
+    pub(crate) fn target(&self) -> &ExecutionEndTarget {
+        &self.sample.target
+    }
+    pub(crate) fn backend_id(&self) -> &str {
+        &self.backend
+    }
+    pub(crate) async fn validate_tx(&self, tx: &mut Transaction<'_, Sqlite>) -> Result<()> {
+        let scope = crate::db::sqlite::session_backend::codex_backend_scope_tx(
+            tx,
+            crate::db::sqlite::session_backend::CodexScopeKey::Session(
+                &self.sample.target.worker_session_id,
+            ),
+        )
+        .await?;
+        if scope != crate::db::sqlite::session_backend::CodexScope::Bound(self.backend.clone()) {
+            return Err(crate::error::CalmError::Conflict(
+                "original native backend scope changed".into(),
+            ));
+        }
+        let current = sample_tx(
+            tx,
+            &self.sample.target.card_id,
+            &self.sample.target.worker_session_id,
+            &AgentProvider::Codex,
+        )
+        .await?;
+        if current.as_ref().is_none_or(|current| {
+            current.target != self.sample.target
+                || current.fence != self.sample.fence
+                || current.original != self.sample.original
+        }) {
+            return Err(crate::error::CalmError::Conflict(
+                "original accepted recovery execution changed".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+pub(crate) async fn accepted_recovery_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    card: &str,
+    worker: &str,
+    owner: &str,
+) -> Result<Option<AcceptedRecovery>> {
+    use calm_types::conversation::{InputDeliveryFact, NativeInputAcceptance};
+    let Some(sample) = sample_tx(tx, card, worker, &AgentProvider::Codex).await? else {
+        return Ok(None);
+    };
+    let carrier = current_input_fact_carrier_tx(tx, card, worker).await?;
+    let Some(fact) = carrier
+        .checkpoint()
+        .attempt(&sample.original.proof.attempt().submission_id)
+    else {
+        return Ok(None);
+    };
+    let ConversationExecutionProvenance::LegacySingleUserDeployment {
+        deployment_owner_user_id,
+        ..
+    } = &sample.original.identity.execution;
+    let accepted = matches!((&sample.target.scope,&fact.delivery),
+        (ExecutionEndScope::NativeTurn{native_turn_id,..},InputDeliveryFact::Accepted{evidence:NativeInputAcceptance::NativeTurn{native_turn_id:accepted},..}) if native_turn_id==accepted);
+    let scope = crate::db::sqlite::session_backend::codex_backend_scope_tx(
+        tx,
+        crate::db::sqlite::session_backend::CodexScopeKey::Session(worker),
+    )
+    .await?;
+    let crate::db::sqlite::session_backend::CodexScope::Bound(backend) = scope else {
+        return Ok(None);
+    };
+    Ok((accepted && deployment_owner_user_id == owner)
+        .then_some(AcceptedRecovery { sample, backend }))
+}

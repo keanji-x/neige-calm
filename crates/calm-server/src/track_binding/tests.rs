@@ -377,7 +377,7 @@ impl Boot {
         let daemon = SharedCodexAppServer::new_stub(repo_dyn.clone());
         PlannerHarnessStartAdapter::new(
             repo_dyn,
-            daemon.clone(),
+            crate::agent_backend_pool::codex::CodexBackends::single(daemon.clone()),
             daemon.thread_seals().clone(),
             HarnessRegistry::new(),
             host.clone(),

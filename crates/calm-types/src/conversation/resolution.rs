@@ -6,6 +6,23 @@ use utoipa::ToSchema;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema, TS)]
 #[serde(deny_unknown_fields)]
 #[ts(export, export_to = "fe/core/api/generated/wire.ts")]
+pub struct AbandonConversationRequest {
+    pub carrier_id: String,
+    pub submission_id: String,
+    pub attempt_id: String,
+    pub revision: String,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, ToSchema, TS)]
+#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
+pub struct AbandonConversationResult {
+    pub card_id: String,
+    pub old_carrier_id: String,
+    pub carrier_id: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema, TS)]
+#[serde(deny_unknown_fields)]
+#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub struct KeepConversationInputRequest {
     pub carrier_id: String,
     pub submission_id: String,

@@ -99,6 +99,7 @@ pub fn fixture_socket_path() -> std::path::PathBuf {
 pub struct PlannerHarnessStartAdapter {
     repo: Arc<dyn Repo>,
     daemon: Arc<SharedCodexAppServer>,
+    codex_backends: Arc<crate::agent_backend_pool::codex::CodexBackends>,
     /// The server's deletion-seal registry, handed to every Claude Planner session it opens.
     seals: Arc<ThreadSeals>,
     harness_registry: HarnessRegistry,
@@ -136,7 +137,7 @@ impl PlannerHarnessStartAdapter {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         repo: Arc<dyn Repo>,
-        daemon: Arc<SharedCodexAppServer>,
+        codex_backends: Arc<crate::agent_backend_pool::codex::CodexBackends>,
         seals: Arc<ThreadSeals>,
         harness_registry: HarnessRegistry,
         plugin: Arc<PluginHost>,
@@ -148,7 +149,8 @@ impl PlannerHarnessStartAdapter {
     ) -> Self {
         Self {
             repo,
-            daemon,
+            daemon: codex_backends.default_only().clone(),
+            codex_backends,
             seals,
             harness_registry,
             plugin,
@@ -3275,7 +3277,7 @@ mod tests {
         acp.completion.bind(repo_dyn.clone());
         PlannerHarnessStartAdapter::new(
             repo_dyn,
-            daemon.clone(),
+            crate::agent_backend_pool::codex::CodexBackends::single(daemon.clone()),
             daemon.thread_seals().clone(),
             HarnessRegistry::new(),
             plugin,

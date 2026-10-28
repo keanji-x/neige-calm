@@ -346,11 +346,9 @@ async fn acp_assistant_unknown_receipt_is_not_resent_after_boot() {
     let (status, run) = stack.send("GET", &run_uri, None).await;
     assert_eq!(status, StatusCode::OK, "{run}");
     assert_eq!(run["input_contract"], "canonical");
-    assert_eq!(
-        run["recovery"],
-        Value::Null,
-        "no historical restart affordance: {run}"
-    );
+    assert_eq!(run["recovery"]["action"], "abandon_session", "{run}");
+    assert_eq!(run["recovery"]["cause"], "unknown_outcome", "{run}");
+    assert_eq!(run["recovery"]["request"]["carrier_id"], worker);
     assert_eq!(run["history_replacement_supported"], false);
     let before = assistant_frame(&stack, card).await;
     assert!(matches!(
@@ -371,6 +369,8 @@ async fn acp_assistant_unknown_receipt_is_not_resent_after_boot() {
     assert_eq!(status, StatusCode::OK, "{run}");
     assert_eq!(run["input_contract"], "canonical");
     assert_eq!(run["history_replacement_supported"], false);
+    assert_eq!(run["recovery"]["action"], "abandon_session", "{run}");
+    assert_eq!(run["recovery"]["request"]["carrier_id"], worker);
     let (status, response) = stack.post_input(card, "queued after unknown").await;
     assert_eq!(status, StatusCode::OK, "{response}");
     tokio::time::sleep(Duration::from_millis(200)).await;

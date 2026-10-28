@@ -576,6 +576,19 @@ impl HarnessRegistry {
             None => CarrierRetirementSlot::Absent,
         }
     }
+    pub(crate) fn retirement_slot_is_current(
+        &self,
+        worker: &str,
+        expected: &CarrierRetirementSlot,
+    ) -> bool {
+        match (self.carrier_retirement_slot(worker), expected) {
+            (CarrierRetirementSlot::Absent, CarrierRetirementSlot::Absent)
+            | (CarrierRetirementSlot::Dormant, CarrierRetirementSlot::Dormant) => true,
+            (CarrierRetirementSlot::Reserved(a), CarrierRetirementSlot::Reserved(b)) => a == *b,
+            (CarrierRetirementSlot::Live(a), CarrierRetirementSlot::Live(b)) => a.same_instance(b),
+            _ => false,
+        }
+    }
     fn retire_carrier_slot(&self, worker: &str, expected: &CarrierRetirementSlot) {
         if let Entry::Occupied(entry) = self.0.map.entry(worker.to_owned()) {
             let same = match (&entry.get().slot, expected) {

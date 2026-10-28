@@ -32,7 +32,7 @@ use crate::harness::codex_events::CodexEvents;
 use crate::harness::codex_selection;
 use crate::harness::held_requests::HeldRequestSender;
 use crate::harness::issuance::{IssuanceRefusal, SelectionSource};
-use crate::harness::run_recovery::{RunRecovery, RunRecoveryAction, RunRecoveryCause};
+use crate::harness::run_recovery::{RunRecovery, RunRecoveryCause};
 use crate::harness::{HarnessPhaseTag, HarnessSnapshot};
 use crate::session_projection_repo::{AgentProvider, WorkerSessionProjection};
 use crate::shared_codex_appserver::{SharedCodexAppServer, TurnId};
@@ -173,10 +173,7 @@ impl PlannerBackend {
         } else {
             return Ok(None);
         };
-        Ok(Some(RunRecovery {
-            cause,
-            action: RunRecoveryAction::RestartSession,
-        }))
+        Ok(Some(RunRecovery::RestartSession { cause }))
     }
 
     /// Bind this harness to the persisted row used by its construction owner.

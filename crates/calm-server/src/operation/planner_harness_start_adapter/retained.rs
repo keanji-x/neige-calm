@@ -30,6 +30,8 @@ pub(super) struct Target {
     snapshot: CanonicalHarnessSnapshot,
     fence: RuntimeExecutionFence,
     activation_operation: Option<String>,
+    accepted_native_end: bool,
+    native_backend: crate::db::sqlite::session_backend::CodexScope,
 }
 
 impl PlannerHarnessStartAdapter {
@@ -51,7 +53,16 @@ impl PlannerHarnessStartAdapter {
         let carrier =
             conversation::current_input_carrier_tx(tx, &wire.card_id, &wire.worker_session_id)
                 .await?;
-        crate::conversation_inputs::authorize_resource_tx(tx, source, &carrier).await?;
+        let owner = crate::conversation_inputs::authorize_resource_tx(tx, source, &carrier).await?;
+        let accepted_native_end =
+            crate::harness::input_dispatch::end_transition::accepted_recovery_tx(
+                tx,
+                &wire.card_id,
+                &wire.worker_session_id,
+                &owner,
+            )
+            .await?
+            .is_some();
         let (binding, row) =
             crate::harness::profile::input_carrier_binding_tx(tx, &carrier).await?;
         if !matches!(
@@ -62,6 +73,26 @@ impl PlannerHarnessStartAdapter {
                 "retained activation is unavailable for this provider/profile".into(),
             ));
         }
+        let native_backend = if binding.provider.protocol()
+            == calm_types::runtime::AgentProtocol::Codex
+        {
+            let scope = crate::db::sqlite::session_backend::codex_backend_scope_tx(
+                tx,
+                crate::db::sqlite::session_backend::CodexScopeKey::Session(&wire.worker_session_id),
+            )
+            .await?;
+            if matches!(
+                scope,
+                crate::db::sqlite::session_backend::CodexScope::Absent
+            ) {
+                return Err(CalmError::Conflict(
+                    "native backend scope is unavailable".into(),
+                ));
+            };
+            scope
+        } else {
+            crate::db::sqlite::session_backend::CodexScope::Absent
+        };
         let inputs = crate::conversation_inputs::source_inputs_tx(tx, source, &carrier).await?;
         let snapshot: CanonicalHarnessSnapshot =
             serde_json::from_value(carrier.snapshot().clone())?;
@@ -82,6 +113,8 @@ impl PlannerHarnessStartAdapter {
             snapshot,
             fence: RuntimeExecutionFence::from_carrier(&carrier),
             activation_operation: row.spawn_op_id,
+            accepted_native_end,
+            native_backend,
         })
     }
 
@@ -249,9 +282,16 @@ impl PlannerHarnessStartAdapter {
         workspace_root: PathBuf,
         events: &crate::event::EventBus,
     ) -> Result<()> {
-        let (bound, wire, target) = self
+        let (mut bound, wire, target) = self
             .retained_input_context(card_id, source, workspace_root)
             .await?;
+        if target.binding.provider.protocol() == calm_types::runtime::AgentProtocol::Codex {
+            bound.daemon = bound
+                .codex_backends
+                .for_session(&wire.worker_session_id)
+                .await?
+                .clone();
+        }
         // Association belongs to the accepted worker/input lifecycle. A caller
         // that cannot restore another source's active claim still retains its
         // own exact accepted tail, without authorizing that preceding claim.
@@ -626,6 +666,7 @@ impl PlannerHarnessStartAdapter {
         self.retained_workspace(wire, track_delete_locks, RetainedAdmission::Driven)
             .await?;
         let target = self.retained_admit(wire).await?;
+        self.require_retained_backend(&target)?;
         let thread = target
             .snapshot
             .header
@@ -710,5 +751,18 @@ impl PlannerHarnessStartAdapter {
         Ok(SpawnOutcome::Ready(SpawnHandle::Harness {
             worker_session_id: wire.worker_session_id.clone(),
         }))
+    }
+}
+
+impl PlannerHarnessStartAdapter {
+    fn require_retained_backend(&self, target: &Target) -> Result<()> {
+        if let crate::db::sqlite::session_backend::CodexScope::Bound(id) = &target.native_backend
+            && id != self.daemon.backend_id().as_str()
+        {
+            return Err(CalmError::Conflict(
+                "retained native backend namespace changed".into(),
+            ));
+        }
+        Ok(())
     }
 }

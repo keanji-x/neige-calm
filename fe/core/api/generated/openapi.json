@@ -2136,6 +2136,134 @@
         }
       }
     },
+    "/api/cards/{id}/conversation/abandon": {
+      "post": {
+        "tags": [
+          "cards"
+        ],
+        "operationId": "abandon",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AbandonConversationRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AbandonConversationResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "`payload_too_large`: the body is over the request size limit.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "`unsupported_media_type`: the request does not say `Content-Type: application/json`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`invalid_body`: the JSON is not the body's shape (a field missing or of the wrong type).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/cards/{id}/conversation/input/keep": {
       "post": {
         "tags": [
@@ -13237,6 +13365,49 @@
   },
   "components": {
     "schemas": {
+      "AbandonConversationRequest": {
+        "type": "object",
+        "required": [
+          "carrier_id",
+          "submission_id",
+          "attempt_id",
+          "revision"
+        ],
+        "properties": {
+          "attempt_id": {
+            "type": "string"
+          },
+          "carrier_id": {
+            "type": "string"
+          },
+          "revision": {
+            "type": "string"
+          },
+          "submission_id": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "AbandonConversationResult": {
+        "type": "object",
+        "required": [
+          "card_id",
+          "old_carrier_id",
+          "carrier_id"
+        ],
+        "properties": {
+          "card_id": {
+            "type": "string"
+          },
+          "carrier_id": {
+            "type": "string"
+          },
+          "old_carrier_id": {
+            "type": "string"
+          }
+        }
+      },
       "AgentProvider": {
         "type": "string",
         "enum": [
@@ -19089,33 +19260,86 @@
         },
         "additionalProperties": false
       },
-      "RunRecovery": {
-        "type": "object",
-        "description": "An explicit action; lifecycle phase and human-readable block notices are not recovery policy.",
-        "required": [
-          "cause",
-          "action"
-        ],
-        "properties": {
-          "action": {
-            "$ref": "#/components/schemas/RunRecoveryAction"
-          },
-          "cause": {
-            "$ref": "#/components/schemas/RunRecoveryCause"
-          }
-        }
-      },
-      "RunRecoveryAction": {
+      "RunHeldReason": {
         "type": "string",
         "enum": [
-          "restart_session"
+          "pending_inputs",
+          "native_completion_unavailable",
+          "cleanup_required"
+        ]
+      },
+      "RunRecovery": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "cause",
+              "action"
+            ],
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "restart_session"
+                ]
+              },
+              "cause": {
+                "$ref": "#/components/schemas/RunRecoveryCause"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "cause",
+              "request",
+              "action"
+            ],
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "abandon_session"
+                ]
+              },
+              "cause": {
+                "$ref": "#/components/schemas/RunRecoveryCause"
+              },
+              "request": {
+                "$ref": "#/components/schemas/AbandonConversationRequest"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "cause",
+              "reason",
+              "action"
+            ],
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "held"
+                ]
+              },
+              "cause": {
+                "$ref": "#/components/schemas/RunRecoveryCause"
+              },
+              "reason": {
+                "$ref": "#/components/schemas/RunHeldReason"
+              }
+            }
+          }
         ]
       },
       "RunRecoveryCause": {
         "type": "string",
         "enum": [
           "unknown_outcome",
-          "wedged"
+          "wedged",
+          "native_completion_pending"
         ]
       },
       "SendPlannerInputRequest": {

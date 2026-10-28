@@ -27,6 +27,7 @@ pub mod conversation_initial_input;
 pub(crate) mod conversation_input_resolution;
 pub(crate) mod conversation_items;
 mod conversation_read;
+pub(crate) mod conversation_recovery;
 pub(crate) mod conversation_run;
 pub mod conversations_shared;
 pub mod daily_planner;
@@ -81,6 +82,7 @@ pub fn protected_router() -> Router<AppState> {
         .merge(crate::mentions::router())
         .merge(tracks::router())
         .merge(planner_switch::router())
+        .merge(conversation_recovery::router())
         .merge(activity_dismissals::router())
         .merge(read_receipts::router())
         .merge(track_asks::router())

@@ -42,18 +42,24 @@ export const RESTART_ACTION = 'Start a fresh session, keep history';
  */
 export const DORMANT_NOTICE = 'Not sent. This conversation’s session can’t be resumed. Your history is kept and your message is still below.';
 
-export const runRecoverySchema = z.object({
-  cause: z.enum(['unknown_outcome', 'wedged']),
-  action: z.enum(['restart_session']),
-});
+const recoveryCauseSchema = z.enum(['unknown_outcome', 'wedged', 'native_completion_pending']);
+export const runRecoverySchema = z.discriminatedUnion('action', [
+  z.object({ cause: recoveryCauseSchema, action: z.literal('restart_session') }),
+  z.object({ cause: recoveryCauseSchema, action: z.literal('abandon_session'), request: z.object({
+    carrier_id: z.string(), submission_id: z.string(), attempt_id: z.string(), revision: z.string(),
+  }) }),
+  z.object({ cause: recoveryCauseSchema, action: z.literal('held'), reason: z.enum(['pending_inputs', 'native_completion_unavailable', 'cleanup_required']) }),
+]);
 export type RunRecovery = z.infer<typeof runRecoverySchema>;
 
 /** Only a declared action licenses a fresh-session offer. */
 export function offersFreshSession(recovery: RunRecovery | null): boolean {
-  return recovery?.action === 'restart_session';
+  return recovery?.action === 'restart_session' || recovery?.action === 'abandon_session';
 }
 
 function recoveryReason(recovery: RunRecovery): string {
+  if (recovery.action === 'held' && recovery.reason === 'pending_inputs') return 'Some queued inputs still belong to the previous session. Recovery is held to keep them from being lost or repeated.';
+  if (recovery.cause === 'native_completion_pending') return 'Waiting to verify the original native completion. Saved messages remain queued.';
   return recovery.cause === 'unknown_outcome'
     ? 'The previous request’s outcome is unknown. It won’t be sent again.'
     : 'This conversation’s session is stuck.';
@@ -61,6 +67,7 @@ function recoveryReason(recovery: RunRecovery): string {
 
 /** Declared recovery explains the status; other stalls retain their runtime reason. */
 export function recoveryStatusNotice(recovery: RunRecovery | null, stalledReason: string | null): Readonly<{ heading: string; reason: string }> {
+  if (recovery?.cause === 'native_completion_pending') return { heading: 'Completion unconfirmed', reason: stalledReason ?? recoveryReason(recovery) };
   return recovery?.cause === 'unknown_outcome'
     ? { heading: 'Outcome unknown', reason: recoveryReason(recovery) }
     : { heading: 'Paused', reason: stalledReason ?? 'This conversation is stuck.' };
@@ -77,4 +84,14 @@ export const RESTARTED_NOTICE = 'Fresh session started. Earlier messages stay he
 /** The sentence for a failed restart: the server's reason for a refusal, else the fixed unconfirmed one. */
 export function restartFailureText(failure: ApiFailure | NotSentError | null): string {
   return refusalText(failure, PLANNER_RESTART_FAILURES, RESTART_TEXT.refused) ?? RESTART_TEXT.unknown;
+}
+
+/** Recovery of canonical Unknown is explicit and never calls historical restart. */
+export function abandonConversationOperation(cardId: string, recovery: Extract<RunRecovery, { action: 'abandon_session' }>): ApiOperation<{ carrier_id: string }> {
+  return {
+    method: 'POST', path: `/api/cards/${encodeURIComponent(cardId)}/conversation/abandon`,
+    body: recovery.request,
+    headers: { 'Idempotency-Key': `abandon:${recovery.request.submission_id}:${recovery.request.revision}` },
+    responseSchema: z.object({ card_id: z.string(), old_carrier_id: z.string(), carrier_id: z.string() }),
+  };
 }

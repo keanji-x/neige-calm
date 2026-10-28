@@ -114,7 +114,7 @@ pub(super) async fn transfer_before_issuance(fx: &Fixture) -> PlannerHarness {
     ));
     let adapter = PlannerHarnessStartAdapter::new(
         fx.repo.clone(),
-        fx.daemon.clone(),
+        crate::agent_backend_pool::codex::CodexBackends::single(fx.daemon.clone()),
         fx.daemon.thread_seals().clone(),
         crate::harness::HarnessRegistry::new(),
         plugin,

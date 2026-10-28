@@ -43,7 +43,7 @@ async fn the_adapters_kind_is_the_const() {
     ));
     let adapter = PlannerHarnessStartAdapter::new(
         repo,
-        daemon.clone(),
+        crate::agent_backend_pool::codex::CodexBackends::single(daemon.clone()),
         daemon.thread_seals().clone(),
         HarnessRegistry::new(),
         plugin,

@@ -336,7 +336,7 @@ pub async fn boot_forge_e2e_fixture(
                 )) as Arc<dyn ProviderAdapter>,
                 Arc::new(PlannerHarnessStartAdapter::new(
                     repo_dyn.clone(),
-                    shared.clone(),
+                    calm_server::agent_backend_pool::codex::CodexBackends::single(shared.clone()),
                     shared.thread_seals().clone(),
                     harness.clone(),
                     plugin_host.clone(),

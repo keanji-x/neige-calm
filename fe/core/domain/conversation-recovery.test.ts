@@ -1,6 +1,6 @@
 import { expect, it } from 'vitest';
 import { plannerRunOperation } from './conversation.js';
-import { offersFreshSession, recoveryNotice, recoveryStatusNotice } from './conversation-restart.js';
+import { abandonConversationOperation, runRecoverySchema, offersFreshSession, recoveryNotice, recoveryStatusNotice } from './conversation-restart.js';
 
 const RUN = Object.freeze({ card_id: 'card', phase: 'turn_completed', model: null, reasoning_effort: null,
   permission_mode: null, blocked_reason: null, manual_compact_supported: false, compact_outcome: null,
@@ -39,4 +39,28 @@ it('preserves paused status copy for wedged and non-recovery stalls', () => {
     expect(recoveryStatusNotice(recovery, 'The stop remains unconfirmed.')).toEqual({ heading: 'Paused', reason: 'The stop remains unconfirmed.' });
     expect(recoveryStatusNotice(recovery, null)).toEqual({ heading: 'Paused', reason: 'This conversation is stuck.' });
   }
+});
+
+it('canonical abandonment requires exact declared input and uses its owning endpoint', () => {
+  const recovery = runRecoverySchema.parse({ cause: 'unknown_outcome', action: 'abandon_session', request: {
+    carrier_id: 'old-worker', submission_id: 'original', attempt_id: 'attempt', revision: '9007199254740993',
+  } });
+  expect(offersFreshSession(recovery)).toBe(true);
+  if (recovery.action !== 'abandon_session') throw new Error('missing canonical declaration');
+  const operation = abandonConversationOperation('card/id', recovery);
+  expect(operation.path).toBe('/api/cards/card%2Fid/conversation/abandon');
+  expect(operation.body).toEqual(recovery.request);
+  expect(operation.headers?.['Idempotency-Key']).toBe(abandonConversationOperation('card/id', recovery).headers?.['Idempotency-Key']);
+  expect(runRecoverySchema.safeParse({ cause: 'unknown_outcome', action: 'abandon_session' }).success).toBe(false);
+});
+it('unconfirmed native completion declares a held reason without offering abandonment', () => {
+  const recovery = runRecoverySchema.parse({ cause: 'native_completion_pending', action: 'held', reason: 'native_completion_unavailable' });
+  expect(offersFreshSession(recovery)).toBe(false);
+  expect(recoveryStatusNotice(recovery, 'Waiting for native completion').reason).toContain('Waiting');
+});
+
+it('explains the declared worker-bound pending-input refusal without offering a fresh session', () => {
+  const recovery = runRecoverySchema.parse({ cause: 'unknown_outcome', action: 'held', reason: 'pending_inputs' });
+  expect(offersFreshSession(recovery)).toBe(false);
+  expect(recoveryStatusNotice(recovery, null).reason).toContain('queued inputs still belong to the previous session');
 });

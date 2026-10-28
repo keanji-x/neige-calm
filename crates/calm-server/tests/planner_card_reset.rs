@@ -328,7 +328,9 @@ async fn install_failing_planner_start_runtime(boot: &mut Boot) {
         Arc::new(FailingSpawnPlannerHarnessStartAdapter {
             inner: PlannerHarnessStartAdapter::new(
                 boot.repo.clone(),
-                boot.state.shared_codex_appserver.clone(),
+                calm_server::agent_backend_pool::codex::CodexBackends::single(
+                    boot.state.shared_codex_appserver.clone(),
+                ),
                 boot.state.thread_seals().clone(),
                 boot.state.harness.clone(),
                 boot.state.plugin.clone(),

@@ -186,6 +186,16 @@ pub async fn replace_idle_carrier_tx(
     next: PlannerBinding,
 ) -> Result<CarrierReplacement> {
     check_idle_carrier_tx(tx, &expected).await?;
+    replace_verified_carrier_tx(tx, expected, next, false).await
+}
+
+/// Shared writes; callers first establish their distinct lifecycle preconditions.
+pub(super) async fn replace_verified_carrier_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    expected: ExpectedCarrier<'_>,
+    next: PlannerBinding,
+    abandoned: bool,
+) -> Result<CarrierReplacement> {
     let shape = super::super::card_execution_shape_tx(tx, &expected.card_id).await?;
     let binding = expected.binding.clone();
     let old =
@@ -207,9 +217,17 @@ pub async fn replace_idle_carrier_tx(
     // Owner performs the card-scoped sweep before supersede can clear a subset.
     let (revoked_card_tokens, revoked_session_mirrors) =
         super::super::session_row::revoke_card_credentials_tx(tx, &expected.card_id).await?;
-    super::super::session_supersede_active_tx(tx, &expected.worker_session_id, now)
+    if abandoned {
+        super::super::session_mirror::session_supersede_abandoned_tx(
+            tx,
+            &expected.worker_session_id,
+            now,
+        )
         .await
-        .map_err(|e| CalmError::Internal(e.to_string()))?;
+    } else {
+        super::super::session_supersede_active_tx(tx, &expected.worker_session_id, now).await
+    }
+    .map_err(|e| CalmError::Internal(e.to_string()))?;
     let fresh = WorkerSession {
         id: WorkerSessionId(crate::model::new_id()),
         track_id: old.track_id.clone(),
@@ -240,6 +258,10 @@ pub async fn replace_idle_carrier_tx(
         completed_at_ms: None,
     };
     let fresh = super::super::session_insert_tx(tx, fresh).await?;
+    // Backend namespaces are immutable execution ownership, including on a fresh native identity.
+    sqlx::query(concat!("INSERT INTO worker_session_backends(worker_session_id,provider,backend_id) SELECT ","?1,provider,backend_id FROM worker_session_backends WHERE worker_session_id=?2 AND provider=?3"))
+        .bind(fresh.id.as_str()).bind(&expected.worker_session_id).bind(fresh.provider.as_db_str())
+        .execute(&mut **tx).await?;
     let changed = sqlx::query("UPDATE cards SET session_id=?1,role=?2,payload=?3 WHERE id=?4 AND session_id=?5 AND role=?6")
         .bind(fresh.id.as_str()).bind(role.as_db_str()).bind(serde_json::to_string(&payload)?)
         .bind(&expected.card_id).bind(&expected.worker_session_id).bind(shape.role.as_db_str())

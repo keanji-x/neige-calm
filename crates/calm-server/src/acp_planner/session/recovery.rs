@@ -69,7 +69,7 @@ fn slot_exists(shared: &Shared) -> bool {
     shared.driver.lock().expect("ACP driver").is_some()
 }
 
-async fn canonical_receipt_tx(
+pub(super) async fn canonical_receipt_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     card: &str,
     worker: &str,
