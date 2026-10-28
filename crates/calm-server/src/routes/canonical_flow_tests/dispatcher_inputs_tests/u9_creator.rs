@@ -669,7 +669,7 @@ async fn u9_canonical_creator_historical_receipt_replays_factually() {
     .unwrap();
     assert_eq!(
         serde_json::from_str::<Value>(&snapshot).unwrap()["schema_version"],
-        crate::harness::snapshot::HARNESS_SNAPSHOT_SCHEMA_VERSION
+        crate::harness::snapshot::LEGACY_HARNESS_SNAPSHOT_SCHEMA_VERSION
     );
     let before: i64 = sqlx::query_scalar("SELECT count(*) FROM operations")
         .fetch_one(flow.fixture.repo.pool())

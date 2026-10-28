@@ -303,7 +303,7 @@ async fn object_sweep_manifest_parsing_does_not_hold_database_writer() {
 }
 
 #[tokio::test]
-async fn canonical_retry_v5_preserves_conservative_skip_prune() {
+async fn canonical_retry_v5_has_no_history_endpoints() {
     let f = Fixture::new().await;
     let frame = calm_types::harness::snapshot::CanonicalHarnessSnapshot::dormant(0);
     let mut tx = begin_immediate_tx(f.repo.db()).await.unwrap();
@@ -321,7 +321,7 @@ async fn canonical_retry_v5_preserves_conservative_skip_prune() {
         super::active_diff_endpoint_commits_tx(&mut tx, &f.track)
             .await
             .unwrap(),
-        super::ActiveLastSeenHeads::SkipPrune
+        super::ActiveLastSeenHeads::Safe(records) if records.is_empty()
     ));
     assert_eq!(
         super::prune_track_history_tx(&mut tx, &f.track, 1)

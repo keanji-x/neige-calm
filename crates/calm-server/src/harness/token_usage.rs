@@ -108,7 +108,11 @@ pub(crate) fn planner_context_usage_from_header(
 
 /// Decode either supported storage contract before applying the same visibility policy.
 pub(crate) fn persisted_context_snapshot(value: Value) -> Option<super::HarnessSnapshot> {
-    if value.get("schema_version").and_then(Value::as_u64) == Some(5) {
+    if value.get("schema_version").and_then(Value::as_u64)
+        == Some(u64::from(
+            calm_types::harness::HARNESS_SNAPSHOT_SCHEMA_VERSION,
+        ))
+    {
         let snapshot: super::snapshot::CanonicalHarnessSnapshot =
             serde_json::from_value(value).ok()?;
         Some(super::HarnessSnapshot::from_runtime_header(

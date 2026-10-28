@@ -343,7 +343,7 @@ async fn prove_existing_today_tx(
         let Ok(frame) = serde_json::from_value::<HarnessSnapshot>(snapshot.clone()) else {
             return Ok(Err(SnapshotUnproven));
         };
-        if frame.schema_version != crate::harness::snapshot::HARNESS_SNAPSHOT_SCHEMA_VERSION
+        if frame.schema_version != crate::harness::snapshot::LEGACY_HARNESS_SNAPSHOT_SCHEMA_VERSION
             || frame.mode != crate::harness::HARNESS_MODE
         {
             return Ok(Err(SnapshotUnproven));

@@ -15,7 +15,7 @@ use crate::planner_attachments::bind::BoundAttachment;
 pub use crate::planner_turn_budget::FrozenBudget;
 pub use calm_types::harness::HarnessPhaseTag;
 
-pub use calm_types::harness::{HARNESS_MODE, HARNESS_SNAPSHOT_SCHEMA_VERSION};
+pub use calm_types::harness::{HARNESS_MODE, LEGACY_HARNESS_SNAPSHOT_SCHEMA_VERSION};
 
 mod canonical;
 mod runtime_header;
@@ -265,7 +265,7 @@ impl HarnessSnapshot {
             last_turn_base,
         } = header;
         let mut snapshot = Self {
-            schema_version: HARNESS_SNAPSHOT_SCHEMA_VERSION,
+            schema_version: LEGACY_HARNESS_SNAPSHOT_SCHEMA_VERSION,
             mode: HARNESS_MODE.to_string(),
             phase,
             turn_budget,
@@ -391,7 +391,7 @@ impl HarnessSnapshot {
 
     pub fn assert_known_schema(&self) {
         assert!(
-            self.schema_version == HARNESS_SNAPSHOT_SCHEMA_VERSION,
+            self.schema_version == LEGACY_HARNESS_SNAPSHOT_SCHEMA_VERSION,
             "unknown PlannerHarness snapshot schema_version {}; boot recovery must migrate live schemas",
             self.schema_version
         );
@@ -477,7 +477,7 @@ mod pending_side_array_tests {
 impl HarnessSnapshot {
     pub(crate) fn parse_known(value: Value) -> Option<Self> {
         let snapshot: Self = serde_json::from_value(value).ok()?;
-        (snapshot.schema_version == HARNESS_SNAPSHOT_SCHEMA_VERSION
+        (snapshot.schema_version == LEGACY_HARNESS_SNAPSHOT_SCHEMA_VERSION
             && snapshot.mode == HARNESS_MODE)
             .then_some(snapshot)
     }
@@ -564,7 +564,7 @@ mod tests {
     #[test]
     fn a_pre_1255_snapshot_without_token_usage_still_deserializes() {
         let pre_1255 = json!({
-            "schema_version": HARNESS_SNAPSHOT_SCHEMA_VERSION,
+            "schema_version": LEGACY_HARNESS_SNAPSHOT_SCHEMA_VERSION,
             "mode": HARNESS_MODE,
             "phase": "idle",
             "push_watermark": 42,
@@ -603,7 +603,7 @@ mod tests {
     #[test]
     fn a_pre_1505_snapshot_without_pending_entry_meta_yields_legacy_entries() {
         let pre_1505 = json!({
-            "schema_version": HARNESS_SNAPSHOT_SCHEMA_VERSION,
+            "schema_version": LEGACY_HARNESS_SNAPSHOT_SCHEMA_VERSION,
             "mode": HARNESS_MODE,
             "phase": "turn_running",
             "push_watermark": 7,
@@ -731,7 +731,7 @@ mod tests {
     #[test]
     fn mismatched_parallel_arrays_pad_instead_of_panicking() {
         let ragged = json!({
-            "schema_version": HARNESS_SNAPSHOT_SCHEMA_VERSION,
+            "schema_version": LEGACY_HARNESS_SNAPSHOT_SCHEMA_VERSION,
             "mode": HARNESS_MODE,
             "phase": "idle",
             "push_watermark": 0,
@@ -841,7 +841,7 @@ mod tests {
 
         for (array, planted) in cases {
             let mut row = json!({
-                "schema_version": HARNESS_SNAPSHOT_SCHEMA_VERSION,
+                "schema_version": LEGACY_HARNESS_SNAPSHOT_SCHEMA_VERSION,
                 "mode": HARNESS_MODE,
                 "phase": "idle",
                 "pending_queue": [
@@ -923,7 +923,7 @@ mod tests {
     #[test]
     fn a_meta_slot_a_future_field_broke_degrades_to_legacy_instead_of_panicking() {
         let row = json!({
-            "schema_version": HARNESS_SNAPSHOT_SCHEMA_VERSION,
+            "schema_version": LEGACY_HARNESS_SNAPSHOT_SCHEMA_VERSION,
             "mode": HARNESS_MODE,
             "phase": "idle",
             "pending_queue": [
@@ -957,7 +957,7 @@ mod tests {
     #[test]
     fn an_empty_or_duplicated_entry_id_is_refused_rather_than_addressed() {
         let row = json!({
-            "schema_version": HARNESS_SNAPSHOT_SCHEMA_VERSION,
+            "schema_version": LEGACY_HARNESS_SNAPSHOT_SCHEMA_VERSION,
             "mode": HARNESS_MODE,
             "phase": "idle",
             "pending_queue": [

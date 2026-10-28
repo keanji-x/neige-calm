@@ -1,6 +1,7 @@
 use crate::db::sqlite::begin_immediate_tx;
 use crate::error::Result;
 use crate::ids::TrackId;
+use calm_types::harness::snapshot::history::HarnessHistoryEndpoints;
 use serde_json::Value;
 use sqlx::{QueryBuilder, Row, Sqlite, Transaction};
 use std::collections::BTreeMap;
@@ -253,7 +254,7 @@ async fn active_diff_endpoint_commits_tx(
             }
         };
 
-        let endpoints = match harness_snapshot_diff_endpoints(&value) {
+        let endpoints = match HarnessHistoryEndpoints::from_checkpoint(value) {
             Ok(endpoints) => endpoints,
             Err(reason) => {
                 tracing::warn!(
@@ -267,8 +268,8 @@ async fn active_diff_endpoint_commits_tx(
             }
         };
         for (endpoint_name, endpoint_hash) in [
-            ("last_seen_head", endpoints.last_seen_head),
-            ("issued_turn_head", endpoints.issued_turn_head),
+            ("last_seen_head", endpoints.last_seen_head.as_deref()),
+            ("issued_turn_head", endpoints.issued_turn_head.as_deref()),
         ] {
             let Some(endpoint_hash) = endpoint_hash else {
                 continue;
@@ -319,38 +320,6 @@ async fn active_diff_endpoint_commits_tx(
     }
 
     Ok(ActiveLastSeenHeads::Safe(records))
-}
-
-struct HarnessSnapshotDiffEndpoints<'a> {
-    last_seen_head: Option<&'a str>,
-    issued_turn_head: Option<&'a str>,
-}
-
-fn harness_snapshot_diff_endpoints(
-    value: &Value,
-) -> std::result::Result<HarnessSnapshotDiffEndpoints<'_>, &'static str> {
-    if value.get("schema_version").and_then(Value::as_i64) != Some(1) {
-        return Err("unknown schema_version");
-    }
-    if value.get("mode").and_then(Value::as_str) != Some("harness") {
-        return Err("unknown mode");
-    }
-    Ok(HarnessSnapshotDiffEndpoints {
-        last_seen_head: harness_snapshot_endpoint(value, "last_seen_head")?,
-        issued_turn_head: harness_snapshot_endpoint(value, "issued_turn_head")?,
-    })
-}
-
-fn harness_snapshot_endpoint<'a>(
-    value: &'a Value,
-    field: &'static str,
-) -> std::result::Result<Option<&'a str>, &'static str> {
-    match value.get(field) {
-        None | Some(Value::Null) => Ok(None),
-        Some(Value::String(hash)) => Ok(Some(hash.as_str())),
-        Some(_) if field == "last_seen_head" => Err("invalid last_seen_head"),
-        Some(_) => Err("invalid issued_turn_head"),
-    }
 }
 
 #[cfg(test)]

@@ -109,12 +109,18 @@ async fn old_partial_knowledge_survives_history_prune() {
             .await
             .unwrap();
             assert_eq!(wake.current_head.as_deref(), Some(current.as_str()));
-            // Advance both existing GC endpoints as wake does. The fixture uses the endpoint
-            // frame already recognized by this collector, so skip-prune cannot mask retention.
+            // Advance both endpoints through the real current checkpoint owner so a
+            // conservative skip cannot mask knowledge retention or its later release.
+            let mut frame = calm_types::harness::snapshot::CanonicalHarnessSnapshot::dormant(0);
+            frame.header.last_seen_head = Some(current.clone());
+            frame.header.issued_turn_head = Some(current.clone());
             let mut tx = begin_immediate_tx(&pool).await.unwrap();
             sqlx::query("UPDATE worker_sessions SET handle_state_json=? WHERE track_id=?")
-                .bind(serde_json::json!({"schema_version":1,"mode":"harness","last_seen_head":current,"issued_turn_head":current}).to_string())
-                .bind(b.track_id.as_str()).execute(&mut **tx).await.unwrap();
+                .bind(serde_json::to_string(&frame).unwrap())
+                .bind(b.track_id.as_str())
+                .execute(&mut **tx)
+                .await
+                .unwrap();
             tx.commit().await.unwrap();
             previous = current;
         }

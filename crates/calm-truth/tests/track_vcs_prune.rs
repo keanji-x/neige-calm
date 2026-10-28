@@ -1139,3 +1139,6 @@ async fn prune_no_op_cases_and_keep_zero_clamp() {
         Some(head)
     );
 }
+
+#[path = "track_vcs_prune/checkpoint_history.rs"]
+mod checkpoint_history;

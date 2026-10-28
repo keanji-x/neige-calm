@@ -1,7 +1,8 @@
 //! Explicit human recovery of a current, uncompleted conversation after a
 //! provider system error. This exception does not widen worker transitions.
 use calm_types::harness::{
-    HARNESS_MODE, HARNESS_SNAPSHOT_SCHEMA_VERSION, HARNESS_SYSTEM_ERROR_REASON, HarnessPhaseTag,
+    HARNESS_MODE, HARNESS_SYSTEM_ERROR_REASON, HarnessPhaseTag,
+    LEGACY_HARNESS_SNAPSHOT_SCHEMA_VERSION,
 };
 use serde_json::Value;
 use sqlx::{Executor, Sqlite, SqlitePool, Transaction};
@@ -60,7 +61,7 @@ async fn matches<'e>(
              AND COALESCE(NULLIF(trim(ws.thread_id), ''), json_extract(ws.handle_state_json, '$.last_thread_id')) = ?3
              AND (json_extract(ws.handle_state_json, '$.last_thread_id') IS NULL
                   OR json_extract(ws.handle_state_json, '$.last_thread_id') = ?3)"#,
-    ).bind(card_id).bind(worker_session_id).bind(thread_id).bind(HARNESS_MODE).bind(HARNESS_SNAPSHOT_SCHEMA_VERSION).bind(serde_json::to_string(&HarnessPhaseTag::Wedged)?).bind(HARNESS_SYSTEM_ERROR_REASON).fetch_optional(executor).await?;
+    ).bind(card_id).bind(worker_session_id).bind(thread_id).bind(HARNESS_MODE).bind(LEGACY_HARNESS_SNAPSHOT_SCHEMA_VERSION).bind(serde_json::to_string(&HarnessPhaseTag::Wedged)?).bind(HARNESS_SYSTEM_ERROR_REASON).fetch_optional(executor).await?;
     Ok(raw
         .map(|raw| serde_json::from_str::<Value>(&raw))
         .transpose()?

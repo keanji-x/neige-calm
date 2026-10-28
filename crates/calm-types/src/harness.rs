@@ -4,8 +4,10 @@ pub mod budget;
 pub mod retained;
 pub mod snapshot;
 
-/// Persisted harness header and failure vocabulary used by the codec and transactional recovery guards.
-pub const HARNESS_SNAPSHOT_SCHEMA_VERSION: u32 = 1;
+/// Released V1 adapter and its transactional recovery guards.
+pub const LEGACY_HARNESS_SNAPSHOT_SCHEMA_VERSION: u32 = 1;
+/// Current canonical checkpoint version, owned by `snapshot`.
+pub const HARNESS_SNAPSHOT_SCHEMA_VERSION: u32 = 5;
 pub const HARNESS_MODE: &str = "harness";
 pub const HARNESS_SYSTEM_ERROR_REASON: &str = "system_error";
 pub const HARNESS_RUNTIME_FAILED_REASON: &str = "runtime_failed";

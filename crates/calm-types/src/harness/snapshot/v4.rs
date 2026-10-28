@@ -33,7 +33,7 @@ pub(super) fn upgrade(value: Value) -> Result<CanonicalHarnessSnapshot, String> 
         return Err("released canonical frame requires V4 harness format".into());
     }
     CanonicalHarnessSnapshot::try_from(CanonicalFrameWire {
-        schema_version: 5,
+        schema_version: HARNESS_SNAPSHOT_SCHEMA_VERSION,
         mode: old.mode,
         header: old.header,
         canonical_inputs: ConversationInputCheckpoint {
