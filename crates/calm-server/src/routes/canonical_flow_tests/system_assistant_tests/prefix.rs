@@ -160,7 +160,7 @@ async fn bad_selected_row_holds_tail_until_the_unaccepted_source_is_repaired() {
     let (state, app, cookie) = fixture.application().await;
     state.dispatcher.abort_event_listener_for_test();
     activity(&app, &cookie).await;
-    let accepted = summary(&app, &cookie).await;
+    let accepted = summary(&state, &app, &cookie, "first", &body(1)).await;
     let track = accepted["track_id"].as_str().unwrap().to_owned();
     let card = accepted["card_id"].as_str().unwrap().to_owned();
     let before = pending(&fixture, &card).await;
@@ -175,18 +175,12 @@ async fn bad_selected_row_holds_tail_until_the_unaccepted_source_is_repaired() {
     assert_eq!(pending(&fixture, &card).await, before);
     state.dispatcher.reconcile_tick_for_test().await;
     assert_eq!(pending(&fixture, &card).await, before);
-    assert_eq!(
-        status(
-            &app,
-            &cookie,
-            "/api/today/summary",
-            "must-not-skip",
-            json!(null)
-        )
-        .await,
-        StatusCode::CONFLICT,
-        "new HTTP acceptance must share the strict prefix owner"
-    );
+    assert!(matches!(
+        authority::Requests::new(&state, &track)
+            .submit("must-not-skip", "body")
+            .await,
+        Err(crate::error::CalmError::Conflict(_) | crate::error::CalmError::Forbidden(_))
+    ));
     assert_eq!(pending(&fixture, &card).await, before);
     let planner: String =
         sqlx::query_scalar("SELECT id FROM cards WHERE track_id=?1 AND role='planner'")

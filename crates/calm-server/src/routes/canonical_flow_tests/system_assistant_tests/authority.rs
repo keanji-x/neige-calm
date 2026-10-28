@@ -4,20 +4,20 @@ use crate::state::RouteState;
 
 // Control requests share the application's frozen bootstrap and exact boot binding.
 #[derive(Clone)]
-struct Requests {
+pub(super) struct Requests {
     issuer: crate::dispatcher::system_assistant::SystemAssistantIssuer,
     route: RouteState,
     track: String,
 }
 impl Requests {
-    fn new(state: &AppState, track: &str) -> Self {
+    pub(super) fn new(state: &AppState, track: &str) -> Self {
         Self {
             issuer: state.today_summary_issuer.clone().unwrap(),
             route: RouteState::from_ref(state),
             track: track.into(),
         }
     }
-    async fn submit(
+    pub(super) async fn submit(
         &self,
         subject: &str,
         text: &str,
@@ -251,7 +251,7 @@ async fn native_ack_revocation(corrupt_source: bool) {
     let fixture = Fixture::new().await;
     let (state, app, cookie) = fixture.application().await;
     activity(&app, &cookie).await;
-    let accepted = summary(&app, &cookie).await;
+    let accepted = summary(&state, &app, &cookie, "first", &body(1)).await;
     let card = accepted["card_id"].as_str().unwrap();
     let before = frame(&fixture, card).await;
     let (_client, mut peer) = connect(&state.shared_codex_appserver).await;
@@ -298,16 +298,7 @@ async fn native_ack_revocation(corrupt_source: bool) {
     .await
     .expect("the original native ACK owner must settle after revocation")
     .unwrap();
-    let unexpected = tokio::time::timeout(
-        Duration::from_millis(200),
-        recovery::cold_next(&mut peer, true),
-    )
-    .await;
-    assert!(
-        unexpected.is_err(),
-        "revoked source reached native execution: {:?}",
-        unexpected.as_ref().map(|call| &call["method"])
-    );
+    drain_owners(&state, card, &before.0, None, &mut peer).await;
     let after = frame(&fixture, card).await;
     assert_eq!(after.0, before.0);
     assert_eq!(after.1.canonical_inputs, before.1.canonical_inputs);
@@ -373,10 +364,10 @@ async fn historical_summary_key_requires_explicit_migration_without_erasing_orig
             .fetch_all(fixture.repo.pool())
             .await
             .unwrap();
-    assert_eq!(
-        status(&app, &cookie, "/api/today/summary", "repeat", json!(null)).await,
-        StatusCode::CONFLICT
-    );
+    assert!(matches!(
+        Requests::new(&state, track).submit("new", "body").await,
+        Err(CalmError::IdempotencyKeyExhausted(_))
+    ));
     assert_eq!(
         sqlx::query_scalar::<_, String>("SELECT session_id FROM cards WHERE id=?1")
             .bind(&card)
@@ -397,4 +388,190 @@ async fn historical_summary_key_requires_explicit_migration_without_erasing_orig
         );
     }
     shutdown(&fixture, &state).await;
+}
+
+// Stop and join the actual owners while serving only recovery of the original
+// thread. The sink barrier is meaningful only after those owners have returned.
+async fn drain_owners(
+    state: &AppState,
+    card: &str,
+    worker: &str,
+    completed: Option<&str>,
+    peer: &mut Peer,
+) {
+    let settled = async {
+        let route = RouteState::from_ref(state);
+        // Match the actual lifecycle lock order and wait for prior retained
+        // wakes, including recovery that creates no operation of its own.
+        let card = crate::operation::planner_start_fence::CardStartFence::lock(
+            &route.planner_recovery_locks,
+            &route.repo,
+            &state.operation_runtime,
+            &card.into(),
+        )
+        .await;
+        let operations = state.operation_runtime.lock_for_track_delete().await;
+        if let Some(handle) = state.harness.get(&worker.to_owned()) {
+            handle.shutdown().await.unwrap();
+        }
+        (card, operations)
+    };
+    tokio::pin!(settled);
+    let _held = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            tokio::select! {
+                guards = &mut settled => break guards,
+                call = request(peer) => {
+                    let result = match call["method"].as_str().unwrap() {
+                        "config/read" => json!({"config":{}}),
+                        "thread/read" | "thread/resume" => {
+                            assert_eq!(call["params"]["threadId"], THREAD);
+                            json!({"thread":{"id":THREAD,"status":{"type":"idle"},"turns":[]}})
+                        }
+                        "turn/interrupt" if completed.is_some() => {
+                            // Managed shutdown may interrupt its last known turn
+                            // even after END; it cannot name the refused body.
+                            assert_eq!(call["params"]["threadId"], THREAD);
+                            assert_eq!(call["params"]["turnId"], completed.unwrap());
+                            json!({})
+                        }
+                        method => panic!("revoked input crossed native boundary: {method}"),
+                    };
+                    send(peer, json!({"id":call["id"],"result":result})).await;
+                }
+            }
+        }
+    })
+    .await
+    .unwrap();
+    crate::shared_codex_appserver::native_owner_tests::assert_no_request(peer).await;
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(super) enum Revocation {
+    Role,
+    Worker,
+    Profile,
+    Provider,
+    Producer,
+}
+impl Revocation {
+    pub(super) async fn apply(self, fixture: &Fixture, state: &AppState, card: &str) {
+        let query = match self {
+            Self::Role => "UPDATE cards SET role='worker' WHERE id=?1",
+            Self::Worker => {
+                "UPDATE worker_sessions SET state='failed' WHERE id=(SELECT session_id FROM cards WHERE id=?1)"
+            }
+            Self::Profile => {
+                "UPDATE cards SET payload=json_set(payload,'$.harness_profile','plain_chat') WHERE id=?1"
+            }
+            Self::Provider => {
+                "UPDATE cards SET payload=json_set(payload,'$.assistant_provider','claude') WHERE id=?1"
+            }
+            Self::Producer => {
+                state.dispatcher.retire();
+                return;
+            }
+        };
+        sqlx::query(query)
+            .bind(card)
+            .execute(fixture.repo.pool())
+            .await
+            .unwrap();
+    }
+}
+pub(super) const REVOCATIONS: [Revocation; 5] = [
+    Revocation::Role,
+    Revocation::Worker,
+    Revocation::Profile,
+    Revocation::Provider,
+    Revocation::Producer,
+];
+
+#[tokio::test]
+async fn accepted_system_input_rechecks_authority_after_the_actual_outbound_sink_wait() {
+    for change in REVOCATIONS {
+        let fixture = Fixture::new().await;
+        let (state, app, cookie) = fixture.application().await;
+        let accepted = summary(&state, &app, &cookie, "original", "original frozen body").await;
+        let card = accepted["card_id"].as_str().unwrap();
+        let receipts = recovery::receipts(&fixture, card).await;
+        let (client, mut peer) = connect(&state.shared_codex_appserver).await;
+        state.dispatcher.reconcile_tick_for_test().await;
+        let bootstrap = next(&mut peer, true).await;
+        Native {
+            fixture: &fixture,
+            state: &state,
+            card,
+        }
+        .ack(&mut peer, bootstrap, BOOTSTRAP, "gate-bootstrap")
+        .await;
+        let before = frame(&fixture, card).await;
+        // The accepted body must queue at the actual final native sink, after
+        // bootstrap END; activation/recovery RPCs have already completed.
+        let sink = client.lock_outbound_sink_for_test().await;
+        notify_thread(
+            &state.shared_codex_appserver,
+            &mut peer,
+            THREAD,
+            "turn/completed",
+            json!({"id":"gate-bootstrap","status":"completed"}),
+        )
+        .await;
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let current = frame(&fixture, card).await.1;
+                if current
+                    .canonical_inputs
+                    .attempts
+                    .last()
+                    .is_some_and(|a| a.delivery == InputDeliveryFact::CrossingUnknown)
+                    && client.pending_requests_for_test() > 0
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("original dispatch must queue its native RPC behind the sink");
+        let crossing = frame(&fixture, card).await.1;
+        let original_attempt = crossing.canonical_inputs.attempts.last().unwrap();
+        change.apply(&fixture, &state, card).await;
+        drop(sink);
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let current = frame(&fixture, card).await.1;
+                if let Some(attempt) = current.canonical_inputs.attempts.last()
+                    && matches!(attempt.delivery, InputDeliveryFact::NotDispatched { .. })
+                {
+                    assert_eq!(attempt.attempt, original_attempt.attempt);
+                    assert_eq!(
+                        attempt.correlation.thread_id,
+                        original_attempt.correlation.thread_id
+                    );
+                    assert!(attempt.correlation.rpc_request_id.is_some());
+                    assert_eq!(
+                        attempt.delivery,
+                        InputDeliveryFact::NotDispatched {
+                            basis: "transport_before_send".into()
+                        }
+                    );
+                    assert_eq!(
+                        current.canonical_inputs.pending,
+                        before.1.canonical_inputs.pending
+                    );
+                    assert!(current.canonical_inputs.active.is_none());
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap_or_else(|e| panic!("{change:?}: original dispatch did not settle: {e}"));
+        drain_owners(&state, card, &before.0, Some("gate-bootstrap"), &mut peer).await;
+        assert_eq!(frame(&fixture, card).await.0, before.0);
+        assert_eq!(recovery::receipts(&fixture, card).await, receipts);
+        fixture.shutdown_process(&state).await;
+    }
 }

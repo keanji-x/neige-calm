@@ -1,11 +1,13 @@
 //! `POST /api/today/summary`: ask an agent to write today's progress into Today's
 //! document. An empty day is refused having created nothing; otherwise ensure the
-//! launchpad and durably accept one frozen System input on its original Assistant.
+//! launchpad, create the summary conversation if absent, and unconditionally send one
+//! planner input carrying the activity summary.
 
 use crate::extract::Json;
 use axum::{
     Router,
     extract::{FromRef, State},
+    http::{HeaderMap, HeaderValue},
     routing::post,
 };
 use serde::Serialize;
@@ -16,12 +18,18 @@ use crate::activity_window::{
     WorkspaceActivityWindow, activity_counts_block, todays_workspace_activity,
 };
 use crate::actor::Actor;
-#[cfg(any(test, feature = "fixtures"))]
 use crate::conversation_keys::{DerivedConversationKeys, derive_track_conversation_keys};
 use crate::error::{CalmError, ErrorBody, Result};
+use crate::operation::planner_harness_start_adapter::OpeningBriefing;
+use crate::per_card_lock::lock_card;
 use crate::prompts::render_named;
+use crate::routes::conversations_shared::user_message_enqueued_on_active_runtime;
+use crate::routes::planner_input_send::{SendPlannerInputRequest, send_planner_input_keyed};
 use crate::routes::today::ensure_today_launchpad;
-use crate::state::{AppState, RouteState, WorkerState};
+use crate::routes::track_conversations::{
+    NewTrackConversationBody, create_track_conversation_inner,
+};
+use crate::state::{AppState, CodexShellState, RouteState, WorkerState};
 
 pub fn router() -> Router<AppState> {
     Router::new().route("/api/today/summary", post(write_today_summary))
@@ -35,7 +43,6 @@ pub const TODAY_SUMMARY_CONVERSATION_KEY: &str = "today-summary";
 
 /// The conversation this endpoint talks to, derived; the only route from a track id to
 /// a card id in this module, so a golden on it is a statement about the endpoint.
-#[cfg(any(test, feature = "fixtures"))]
 pub(crate) fn summary_conversation_keys(track_id: &str) -> DerivedConversationKeys {
     derive_track_conversation_keys(track_id, TODAY_SUMMARY_CONVERSATION_KEY)
 }
@@ -47,7 +54,9 @@ pub fn today_summary_card_id_for_test(track_id: &str) -> String {
     summary_conversation_keys(track_id).card_id
 }
 
-/// The original standing instruction, accepted once under the typed bootstrap subject.
+/// The standing instruction the summary conversation is opened with. Sent when the
+/// card's currently ACTIVE runtime has no `harness.user_message.enqueued` row of its
+/// own, and never again while that runtime stays active.
 pub const TODAY_SUMMARY_BOOTSTRAP_TEXT: &str =
     include_str!("../../prompts/today-summary/bootstrap.md");
 
@@ -126,6 +135,7 @@ pub(crate) async fn write_today_summary(
 ) -> Result<Json<TodaySummaryStarted>> {
     let s = RouteState::from_ref(&app);
     let w = WorkerState::from_ref(&app);
+    let cs = CodexShellState::from_ref(&app);
     let pool = w
         .repo
         .sqlite_db()
@@ -158,26 +168,110 @@ pub(crate) async fn write_today_summary(
     let (_status, Json(launchpad)) =
         ensure_today_launchpad(State(app.clone()), Actor::server_send()).await?;
     let track_id = launchpad.track_id;
-    let accepted = app
-        .today_summary_issuer
-        .as_ref()
-        .ok_or_else(|| {
-            CalmError::ServiceUnavailable(
-                "System Assistant issuer is not bound by production boot".into(),
-            )
-        })?
-        .submit(
-            &s,
-            track_id.clone().into(),
-            TODAY_SUMMARY_BOOTSTRAP_TEXT.into(),
-            crate::model::new_id(),
-            summary_prompt(&activity)?,
+    let derived = summary_conversation_keys(&track_id);
+
+    // The branch predicate is "the card exists AND its live runtime has already been sent
+    // a message", not "the card exists": a create that lands `Stuck` leaves the card
+    // behind with its bootstrap stranded on a `failed` session's queue. The recovery is
+    // NOT calling `create_track_conversation` again (the adapter refuses to re-mint); what
+    // is missing is the message, so the message is what gets sent.
+    if s.repo.card_get(&derived.card_id).await?.is_none() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "idempotency-key",
+            HeaderValue::from_static(TODAY_SUMMARY_CONVERSATION_KEY),
+        );
+        // Counted before the rendezvous, so a test can tell "found no card" from "read
+        // someone else's".
+        app.today_summary_create
+            .attempts
+            .fetch_add(1, Ordering::Relaxed);
+        // Armed only by the concurrency case; `None` in production.
+        if let Some(barrier) = &app.today_summary_create_rendezvous {
+            barrier.wait().await;
+        }
+        // The real handler, not a reimplementation of it. `CallerSuppliesItsOwn`: this path
+        // already carries the day's counts in `summary_prompt` below; being briefed as well
+        // would state them twice and leave a third `harness.user_message.enqueued` row.
+        let created = create_track_conversation_inner(
+            s.clone(),
+            w.clone(),
+            Actor::server_send(),
+            headers,
+            track_id.clone(),
+            NewTrackConversationBody {
+                provider: crate::routes::track_conversations::AssistantProviderRequest::Explicit(
+                    crate::session_projection_repo::AgentProvider::Codex,
+                ),
+                side: None,
+                text: TODAY_SUMMARY_BOOTSTRAP_TEXT.to_string(),
+                model: None,
+                reasoning_effort: None,
+            },
+            OpeningBriefing::CallerSuppliesItsOwn,
+            crate::routes::track_conversations::AssistantCreationEntry::InternalHistorical,
         )
-        .await?;
+        .await;
+        // The create-409 fallback: conflict ⇒ resolve the derived card ⇒ carry on to the
+        // planner input, if the card is in fact there. A concurrent request under the same key
+        // can mint the card between the `card_get` above and this create, and the
+        // payload-hash flavour of that 409 is permanent. A 409 with no card is re-raised unchanged.
+        if let Err(error) = created {
+            let card_exists = s.repo.card_get(&derived.card_id).await?.is_some();
+            if !create_conflict_is_recoverable(&error, card_exists) {
+                return Err(error);
+            }
+            app.today_summary_create
+                .conflicts
+                .fetch_add(1, Ordering::Relaxed);
+            tracing::info!(
+                card_id = %derived.card_id,
+                %error,
+                "today summary: create lost a race under the fixed key; the \
+                 derived card exists, continuing to the planner input"
+            );
+        }
+    }
+
+    // The standing instruction has to reach the agent before the day's numbers do, if
+    // nothing has spoken to the session live on this card. Under the per-card first-message
+    // claim: two concurrent requests would both read "no user message yet" and both send.
+    // Lock order: `conversation_first_message_locks` → `planner_input_key_locks` →
+    // `planner_recovery_locks` (`state.rs`); the send below takes the latter two in that order. At-least-once: the audit row is
+    // written after the enqueue.
+    {
+        // Counts requests that reached this block; the barrier below is what creates the race.
+        app.today_summary_create
+            .bootstrap_arrivals
+            .fetch_add(1, Ordering::Relaxed);
+        // Armed only by the concurrency case; `None` in production. Outside the claim on
+        // purpose: parking inside it would serialize the two requests before they can race.
+        if let Some(barrier) = &app.today_summary_bootstrap_rendezvous {
+            barrier.wait().await;
+        }
+        // Held across genuinely blocking work: a send to a card with no thread to preserve submits
+        // a `planner-harness-start` and waits on it, so a wedged app-server holds this claim for
+        // as long as that runs. The blast radius is one card.
+        let _first_message_claim =
+            lock_card(&s.conversation_first_message_locks, &derived.card_id).await;
+        if !user_message_enqueued_on_active_runtime(&w, &track_id, &derived.card_id).await? {
+            send_summary(
+                &s,
+                &w,
+                &cs,
+                &derived.card_id,
+                TODAY_SUMMARY_BOOTSTRAP_TEXT.to_string(),
+            )
+            .await?;
+        }
+    }
+
+    // Unconditional: this is the only channel the summary ever travels on.
+    send_summary(&s, &w, &cs, &derived.card_id, summary_prompt(&activity)?).await?;
 
     Ok(Json(TodaySummaryStarted {
-        track_id: accepted.track_id,
-        card_id: accepted.card_id,
+        track_id,
+        card_id: derived.card_id,
     }))
 }
 
@@ -190,6 +284,34 @@ pub(crate) fn create_conflict_is_recoverable(error: &CalmError, card_exists: boo
         error,
         CalmError::Conflict(_) | CalmError::IdempotencyKeyReused(_)
     ) && card_exists
+}
+
+/// Send one message to the summary conversation under one key. The send path's own session
+/// entry point decides what the card needs first (`planner_session::ensure_planner_session`): a
+/// card with no thread to preserve is started there, a conversation with one is never replaced
+/// here (that is `/planner/reset`, which erases the transcript), and the 503 states are transient.
+async fn send_summary(
+    s: &RouteState,
+    w: &WorkerState,
+    cs: &CodexShellState,
+    card_id: &str,
+    text: String,
+) -> Result<()> {
+    send_planner_input_keyed(
+        s,
+        w,
+        cs,
+        Actor::server_send(),
+        card_id.to_string(),
+        SendPlannerInputRequest {
+            text,
+            attachments: Vec::new(),
+            replaces_turn: None,
+        },
+        crate::model::new_id(),
+    )
+    .await
+    .map(|_| ())
 }
 
 #[cfg(test)]

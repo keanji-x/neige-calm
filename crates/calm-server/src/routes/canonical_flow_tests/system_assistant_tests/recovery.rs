@@ -15,20 +15,36 @@ pub(super) async fn cold_next(peer: &mut Peer, claimed: bool) -> Value {
             "config/read" => json!({"config":{}}),
             "thread/start" if !claimed => json!({"thread":{"id":THREAD}}),
             "thread/read" => {
+                assert_eq!(call["params"]["threadId"], THREAD);
                 json!({"thread":{"id":THREAD,"status":{"type":"notLoaded"},"turns":[]}})
             }
-            "thread/resume" => json!({"thread":{"id":THREAD,"status":{"type":"idle"},"turns":[]}}),
+            "thread/resume" => {
+                assert_eq!(call["params"]["threadId"], THREAD);
+                json!({"thread":{"id":THREAD,"status":{"type":"idle"},"turns":[]}})
+            }
             "turn/start" => return call,
             method => panic!("unexpected cold Assistant request {method}"),
         };
         send(peer, json!({"id":call["id"],"result":result})).await;
     }
 }
-async fn cold_original(claimed: bool, corrupt: bool, drift: bool) {
+async fn boot_reload(peer: &mut Peer) {
+    // As in boot_catalog_follower_tests: readiness owns one catalog reload.
+    let call = native_request(peer).await;
+    assert_eq!(call["method"], "config/mcpServer/reload");
+    assert!(call["params"].is_null());
+    send(peer, json!({"id":call["id"],"result":{}})).await;
+}
+async fn cold_original(
+    claimed: bool,
+    corrupt: bool,
+    drift: bool,
+    revoked: Option<authority::Revocation>,
+) {
     let mut fixture = Fixture::new().await;
     let (state, app, cookie) = fixture.application().await;
     activity(&app, &cookie).await;
-    let accepted = summary(&app, &cookie).await;
+    let accepted = summary(&state, &app, &cookie, "first", &body(1)).await;
     let card = accepted["card_id"].as_str().unwrap().to_owned();
     let original = receipts(&fixture, &card).await;
     let (worker, _) = frame(&fixture, &card).await;
@@ -95,9 +111,15 @@ async fn cold_original(claimed: bool, corrupt: bool, drift: bool) {
         frame(&fixture, &card).await.1.canonical_inputs,
         saved.canonical_inputs
     );
+    if let Some(change) = revoked {
+        change.apply(&fixture, &state, &card).await;
+    }
     let (_client, mut peer) = connect(&state.shared_codex_appserver).await;
+    if drift || corrupt || revoked.is_some() {
+        boot_reload(&mut peer).await;
+    }
     state.dispatcher.reconcile_tick_for_test().await;
-    if drift {
+    if drift || corrupt || revoked.is_some() {
         let card_id = card.clone().into();
         tokio::select! {
             result = state.dispatcher.bootstrap_canonical_child(&card_id, &worker) => assert!(result.is_err()),
@@ -107,19 +129,8 @@ async fn cold_original(claimed: bool, corrupt: bool, drift: bool) {
             frame(&fixture, &card).await.1.canonical_inputs,
             saved.canonical_inputs
         );
-        shutdown(&fixture, &state).await;
-        return;
-    }
-    if corrupt {
-        assert!(
-            tokio::time::timeout(Duration::from_millis(200), request(&mut peer))
-                .await
-                .is_err()
-        );
-        assert_eq!(
-            frame(&fixture, &card).await.1.canonical_inputs,
-            saved.canonical_inputs
-        );
+        crate::shared_codex_appserver::native_owner_tests::assert_no_request(&mut peer).await;
+        assert_eq!(receipts(&fixture, &card).await, original);
         shutdown(&fixture, &state).await;
         return;
     }
@@ -151,11 +162,11 @@ async fn cold_original(claimed: bool, corrupt: bool, drift: bool) {
 }
 #[tokio::test]
 async fn cold_boot_without_broadcast_or_handle_runs_original_bootstrap_and_body() {
-    cold_original(false, false, false).await;
+    cold_original(false, false, false, None).await;
 }
 #[tokio::test]
 async fn cold_unattempted_claim_requalifies_original_plan_and_continues_body() {
-    cold_original(true, false, false).await;
+    cold_original(true, false, false, None).await;
 }
 
 #[tokio::test]
@@ -163,7 +174,7 @@ async fn unknown_native_disconnect_survives_file_reopen_without_resend() {
     let mut fixture = Fixture::new().await;
     let (state, app, cookie) = fixture.application().await;
     activity(&app, &cookie).await;
-    let accepted = summary(&app, &cookie).await;
+    let accepted = summary(&state, &app, &cookie, "first", &body(1)).await;
     let card = accepted["card_id"].as_str().unwrap().to_owned();
     let original = receipts(&fixture, &card).await;
     let (client, mut peer) = connect(&state.shared_codex_appserver).await;
@@ -218,12 +229,16 @@ async fn unknown_native_disconnect_survives_file_reopen_without_resend() {
     fixture.repo = Arc::new(SqlxRepo::open(&fixture.url).await.unwrap());
     let (state, _app, _cookie) = fixture.application().await;
     let (_client, mut peer) = connect(&state.shared_codex_appserver).await;
+    boot_reload(&mut peer).await;
     state.dispatcher.reconcile_tick_for_test().await;
-    assert!(
-        tokio::time::timeout(Duration::from_millis(200), request(&mut peer))
-            .await
-            .is_err()
-    );
+    assert!(matches!(
+        state
+            .dispatcher
+            .bootstrap_canonical_child(&card.clone().into(), &worker)
+            .await,
+        Err(crate::error::CalmError::Conflict(_))
+    ));
+    crate::shared_codex_appserver::native_owner_tests::assert_no_request(&mut peer).await;
     assert_eq!(receipts(&fixture, &card).await, original);
     assert_eq!(frame(&fixture, &card).await.0, worker);
     assert_eq!(
@@ -242,14 +257,27 @@ async fn unknown_native_disconnect_survives_file_reopen_without_resend() {
 
 #[tokio::test]
 async fn cold_pending_below_watermark_rechecks_original_source() {
-    cold_original(false, true, false).await;
+    cold_original(false, true, false, None).await;
 }
 #[tokio::test]
 async fn cold_unattempted_claim_below_watermark_rechecks_original_source() {
-    cold_original(true, true, false).await;
+    cold_original(true, true, false, None).await;
 }
 
 #[tokio::test]
 async fn different_workspace_root_refuses_original_work_without_replacement() {
-    cold_original(false, false, true).await;
+    cold_original(false, false, true, None).await;
+}
+
+#[tokio::test]
+async fn accepted_pending_rechecks_role_worker_profile_provider_and_producer() {
+    for change in authority::REVOCATIONS {
+        cold_original(false, false, false, Some(change)).await;
+    }
+}
+#[tokio::test]
+async fn unattempted_claim_rechecks_role_worker_profile_provider_and_producer() {
+    for change in authority::REVOCATIONS {
+        cold_original(true, false, false, Some(change)).await;
+    }
 }

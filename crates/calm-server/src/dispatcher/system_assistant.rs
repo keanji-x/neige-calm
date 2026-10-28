@@ -6,6 +6,11 @@ use crate::db::sqlite::{self, conversation};
 use crate::error::{CalmError, Result};
 use calm_types::system_assistant::{SystemAssistantReceipt, SystemAssistantSource};
 
+// U12a-1 keeps the recovered capability dormant until U12a-2 wires a caller.
+#[allow(
+    dead_code,
+    reason = "boot-bound owner has no production caller in U12a-1"
+)]
 #[derive(Clone)]
 pub(crate) struct SystemAssistantIssuer {
     producer: Producer,
@@ -24,6 +29,7 @@ impl Dispatcher {
     }
 }
 impl SystemAssistantIssuer {
+    #[allow(dead_code, reason = "HTTP integration belongs to U12a-2")]
     #[allow(deprecated)]
     pub(crate) async fn submit(
         &self,

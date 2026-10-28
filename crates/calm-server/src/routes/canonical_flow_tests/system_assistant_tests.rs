@@ -1,4 +1,4 @@
-//! Complete summary turns over production HTTP/boot and a native protocol peer.
+//! Boot-bound owner acceptance and complete turns over a native protocol peer.
 use super::*;
 use crate::routes::today_summary::TODAY_SUMMARY_BOOTSTRAP_TEXT as BOOTSTRAP;
 use crate::shared_codex_appserver::native_owner_tests::Peer;
@@ -11,19 +11,26 @@ async fn activity(app: &axum::Router, cookie: &str) -> String {
 async fn edit(app: &axum::Router, cookie: &str, track: &str, revision: i64) {
     post(app, cookie, &format!("/api/tracks/{track}/report"), "report", json!({"ifDocRev":revision,"summary":"Real report edit","body":format!("# Activity {revision}\n")})).await;
 }
-async fn summary(app: &axum::Router, cookie: &str) -> Value {
-    tokio::time::timeout(
-        Duration::from_secs(5),
-        post(
-            app,
-            cookie,
-            "/api/today/summary",
-            "same-http-key",
-            json!(null),
-        ),
+async fn summary(
+    state: &AppState,
+    app: &axum::Router,
+    cookie: &str,
+    subject: &str,
+    frozen: &str,
+) -> Value {
+    let launchpad = post(
+        app,
+        cookie,
+        "/api/today/launchpad/ensure",
+        "ensure",
+        json!(null),
     )
-    .await
-    .expect("acceptance does not wait on native effects")
+    .await;
+    let receipt = authority::Requests::new(state, launchpad["track_id"].as_str().unwrap())
+        .submit(subject, frozen)
+        .await
+        .unwrap();
+    json!({"track_id": receipt.track_id, "card_id": receipt.card_id})
 }
 fn body(edits: u32) -> String {
     // Independent activity oracle: the fixture has one user Track and only report edits.
@@ -192,11 +199,11 @@ impl Native<'_> {
 }
 
 #[tokio::test]
-async fn summary_post_runs_bootstrap_end_body_and_later_post() {
+async fn owner_runs_bootstrap_end_frozen_body_and_independent_subject() {
     let fixture = Fixture::new().await;
     let (state, app, cookie) = fixture.application().await;
     let track = activity(&app, &cookie).await;
-    let accepted = summary(&app, &cookie).await;
+    let accepted = summary(&state, &app, &cookie, "first", &body(1)).await;
     let card = accepted["card_id"].as_str().unwrap();
     let (worker, before) = frame(&fixture, card).await;
     assert_eq!(before.canonical_inputs.pending.len(), 2);
@@ -209,7 +216,7 @@ async fn summary_post_runs_bootstrap_end_body_and_later_post() {
         card,
     };
     let first = next(&mut peer, true).await;
-    // Change activity after POST but before bootstrap END: summary1 must stay frozen.
+    // Change activity after acceptance but before bootstrap END: summary1 must stay frozen.
     edit(&app, &cookie, &track, 1).await;
     native
         .complete(&mut peer, first, BOOTSTRAP, "bootstrap")
@@ -219,7 +226,12 @@ async fn summary_post_runs_bootstrap_end_body_and_later_post() {
         .complete(&mut peer, first_body, &body(1), "summary1")
         .await;
     phase(&fixture, card, HarnessPhaseTag::TurnCompleted).await;
-    let later = summary(&app, &cookie).await;
+    assert_eq!(
+        summary(&state, &app, &cookie, "first", &body(1)).await,
+        accepted
+    );
+    assert_eq!(recovery::receipts(&fixture, card).await.len(), 2);
+    let later = summary(&state, &app, &cookie, "second", &body(2)).await;
     assert_eq!(later, accepted);
     let later_body = next(&mut peer, false).await;
     native
@@ -232,45 +244,14 @@ async fn summary_post_runs_bootstrap_end_body_and_later_post() {
     shutdown(&fixture, &state).await;
 }
 
-#[tokio::test]
-async fn summary_post_accepts_original_system_bootstrap_and_frozen_body() {
-    let fixture = Fixture::new().await;
-    let (state, app, cookie) = fixture.application().await;
-    activity(&app, &cookie).await;
-    let summary = tokio::time::timeout(
-        Duration::from_secs(5),
-        post(
-            &app,
-            &cookie,
-            "/api/today/summary",
-            "same-http-key",
-            json!(null),
-        ),
-    )
-    .await
-    .expect("acceptance does not wait on a provider");
-    let card = summary["card_id"].as_str().unwrap();
-    let receipts: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM conversation_system_assistant_receipts WHERE card_id=?1",
-    )
-    .bind(card)
-    .fetch_one(fixture.repo.pool())
-    .await
-    .unwrap();
-    assert_eq!(
-        receipts, 2,
-        "bootstrap and frozen summary use canonical System acceptance"
-    );
-    shutdown(&fixture, &state).await;
-}
-
 mod prefix;
 mod recovery;
 
 mod authority;
 
 #[tokio::test]
-async fn concurrent_http_posts_on_independent_connections_execute_one_bootstrap_and_both_bodies() {
+async fn concurrent_owner_acceptances_on_independent_connections_execute_one_bootstrap_and_both_bodies()
+ {
     let mut fixture = Fixture::new().await;
     let (state, app, cookie) = fixture.application().await;
     activity(&app, &cookie).await;
@@ -284,7 +265,11 @@ async fn concurrent_http_posts_on_independent_connections_execute_one_bootstrap_
     .await;
     fixture.data_dir = Some(fixture.root.path().join("peer-data"));
     let (other_state, other_app, other_cookie) = fixture.application().await;
-    let (a, b) = tokio::join!(summary(&app, &cookie), summary(&other_app, &other_cookie));
+    let frozen = body(1);
+    let (a, b) = tokio::join!(
+        summary(&state, &app, &cookie, "first", &frozen),
+        summary(&other_state, &other_app, &other_cookie, "other", &frozen)
+    );
     assert_eq!(a, b);
     let card = a["card_id"].as_str().unwrap();
     let (worker, before) = frame(&fixture, card).await;
@@ -329,7 +314,7 @@ async fn end_preserves_summary_accepted_while_original_body_is_running() {
     let fixture = Fixture::new().await;
     let (state, app, cookie) = fixture.application().await;
     activity(&app, &cookie).await;
-    let accepted = summary(&app, &cookie).await;
+    let accepted = summary(&state, &app, &cookie, "first", &body(1)).await;
     let card = accepted["card_id"].as_str().unwrap();
     let (_client, mut peer) = connect(&state.shared_codex_appserver).await;
     state.dispatcher.reconcile_tick_for_test().await;
@@ -346,7 +331,10 @@ async fn end_preserves_summary_accepted_while_original_body_is_running() {
     native
         .ack(&mut peer, first_body, &body(1), "merge-first")
         .await;
-    assert_eq!(summary(&app, &cookie).await, accepted);
+    assert_eq!(
+        summary(&state, &app, &cookie, "while-running", &body(1)).await,
+        accepted
+    );
     let receipts = recovery::receipts(&fixture, card).await;
     assert_eq!(receipts.len(), 3);
     notify_thread(
