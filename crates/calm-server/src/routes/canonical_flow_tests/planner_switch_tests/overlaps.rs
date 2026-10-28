@@ -138,14 +138,18 @@ async fn planner_switch_message_after_capture_refused() {
     for index in [0, 1] {
         let p = Pair::new().await;
         let (pause, switching) = captured(&p).await;
-        let sent = post(
-            &p.app,
-            &p.cookie,
-            &format!("/api/cards/{}/planner/input", p.cards[index]),
-            "overlapping-message",
-            json!({"text":"Preserve overlapping input"}),
+        let sent = tokio::time::timeout(
+            Duration::from_secs(5),
+            post(
+                &p.app,
+                &p.cookie,
+                &format!("/api/cards/{}/planner/input", p.cards[index]),
+                "overlapping-message",
+                json!({"text":"Preserve overlapping input"}),
+            ),
         )
-        .await;
+        .await
+        .expect("accepted ingress must not wait for the paused switch");
         assert_eq!(sent["worker_session_id"], p.workers[index]);
         refused_after(&p, pause, switching, "planner_changed").await;
         let text: String = sqlx::query_scalar(

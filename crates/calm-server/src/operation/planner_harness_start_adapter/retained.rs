@@ -229,7 +229,7 @@ impl PlannerHarnessStartAdapter {
             .retained_workspace(
                 &wire,
                 runtime.track_delete_locks(),
-                RetainedAdmission::Live(runtime.location_admission()?.teardown_targets.clone()),
+                RetainedAdmission::Handoff(runtime.location_admission()?.teardown_targets.clone()),
             )
             .await?;
         let target = bound.retained_target(&wire).await?;

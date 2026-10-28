@@ -13,6 +13,9 @@ use crate::{
 #[derive(Clone)]
 pub(crate) enum RetainedAdmission {
     Live(TeardownTargets),
+    // An accepted HTTP send must not wait behind a lifecycle owner that may
+    // itself be waiting for ingress. Busy handoffs defer to the fenced wake.
+    Handoff(TeardownTargets),
     Driven,
 }
 
@@ -28,8 +31,9 @@ where
     A: std::future::Future<Output = Result<()>> + Send,
 {
     let track = selected.id.as_str();
+    let wait = matches!(&admission, RetainedAdmission::Live(_));
     let lifecycle = match admission {
-        RetainedAdmission::Live(targets) => {
+        RetainedAdmission::Live(targets) | RetainedAdmission::Handoff(targets) => {
             // Refuse teardown already admitted, preserving live wake's Busy
             // contract. A clean admitted later may serialize on Track; this
             // check grants no filesystem effect. Only Track and the re-read
@@ -41,7 +45,12 @@ where
             {
                 return Err(CalmError::WorkspaceBusy(track.to_owned()));
             }
-            lock_key(locks, track).await
+            if wait {
+                lock_key(locks, track).await
+            } else {
+                try_lock_key(locks, track)
+                    .ok_or_else(|| CalmError::WorkspaceBusy(track.to_owned()))?
+            }
         }
         RetainedAdmission::Driven => {
             try_lock_key(locks, track).ok_or_else(|| CalmError::WorkspaceBusy(track.to_owned()))?

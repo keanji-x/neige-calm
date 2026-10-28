@@ -567,14 +567,18 @@ async fn archive_rechecks_canonical_input_accepted_after_idle_check() {
     tokio::time::timeout(Duration::from_secs(5), pause.entered.notified())
         .await
         .expect("archive passes its early idle check");
-    let accepted = post(
-        &app,
-        &cookie,
-        &format!("/api/cards/{card}/planner/input"),
-        "archive-race-send",
-        json!({"text":"accepted while archive is paused"}),
+    let accepted = tokio::time::timeout(
+        Duration::from_secs(5),
+        post(
+            &app,
+            &cookie,
+            &format!("/api/cards/{card}/planner/input"),
+            "archive-race-send",
+            json!({"text":"accepted while archive is paused"}),
+        ),
     )
-    .await;
+    .await
+    .expect("accepted ingress must not wait for the paused archive");
     let pending = carrier(&fixture, card).await.1;
     assert_eq!(pending.canonical_inputs.pending.len(), 1);
     assert!(!pending.idle_for_lifecycle());
