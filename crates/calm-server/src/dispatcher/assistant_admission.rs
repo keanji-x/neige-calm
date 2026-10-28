@@ -115,8 +115,9 @@ impl EventAdmission {
             Self::Assistant(_) => TARGETED_ASSISTANT_KINDS,
         }
     }
-    pub(super) async fn qualify(
+    pub(super) async fn qualify_tx(
         &self,
+        tx: &mut Transaction<'_, Sqlite>,
         repo: &dyn Repo,
         fact: &calm_truth::db::sqlite::event_inputs::EventInputFact,
     ) -> Result<Option<HarnessObservation>> {
@@ -138,18 +139,13 @@ impl EventAdmission {
                 } => {
                     // A foreign target is skippable only as an original accepted fact.
                     // Its ACK grants no source or execution authority on this carrier.
-                    let db = repo.sqlite_db().ok_or_else(|| {
-                        CalmError::Internal("targeted prefix requires SQLite".into())
-                    })?;
-                    let mut tx = db.read_pool().begin().await?;
                     let original = conversation::system_assistant_receipt_tx(
-                        &mut tx,
+                        tx,
                         card_id.as_str(),
                         *source,
                         subject,
                     )
                     .await?;
-                    tx.rollback().await?;
                     if original.is_some_and(|receipt| receipt.event_id == fact.envelope.id) {
                         Ok(None)
                     } else {

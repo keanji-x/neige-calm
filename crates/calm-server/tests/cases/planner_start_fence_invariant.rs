@@ -22,6 +22,12 @@ const ALLOWED: &[(&str, usize, usize, &str)] = &[
         "the const's definition, and `retryable_operation_key`'s read-only lookup",
     ),
     (
+        "src/dispatcher/system_assistant.rs",
+        0,
+        1,
+        "read-only historical namespace lookup refusing adoption of an earlier start attempt",
+    ),
+    (
         "src/routes/tracks/create/dormant.rs",
         0,
         1,
@@ -56,6 +62,10 @@ const ALLOWED: &[(&str, usize, usize, &str)] = &[
 
 /// Each allowed mention, as it must read with all whitespace removed.
 const SHAPES: &[(&str, &str)] = &[
+    (
+        "src/dispatcher/system_assistant.rs",
+        ".bind(crate::routes::conversations_shared::PLANNER_HARNESS_START)",
+    ),
     (
         "src/routes/tracks/create/dormant.rs",
         "push_bind(crate::routes::conversations_shared::PLANNER_HARNESS_START)",

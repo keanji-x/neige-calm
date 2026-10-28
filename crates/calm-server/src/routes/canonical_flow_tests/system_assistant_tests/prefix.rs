@@ -219,3 +219,180 @@ async fn bad_selected_row_holds_tail_until_the_unaccepted_source_is_repaired() {
     assert_eq!(after.1.len(), before.1.len() + 2);
     shutdown(&fixture, &state).await;
 }
+
+// Uncommitted foreign receipts must be visible to the production prefix owner.
+#[tokio::test]
+#[allow(
+    deprecated,
+    reason = "allocation uses the production owner legacy DB chain glue"
+)]
+async fn accepted_foreign_target_uses_the_prefix_writer_snapshot() {
+    let fixture = Fixture::new().await;
+    let (state, _app, _cookie) = fixture.application().await;
+    state.dispatcher.abort_event_listener_for_test();
+    let area = fixture
+        .repo
+        .area_create(
+            calm_types::organization::LEGACY_OWNER_USER_ID,
+            crate::model::NewArea {
+                name: "foreign prefix".into(),
+                color: "#123456".into(),
+                sort: None,
+            },
+        )
+        .await
+        .unwrap();
+    let track = fixture
+        .repo
+        .track_create(crate::model::NewTrack {
+            area_id: area.id.clone(),
+            title: "prefix".into(),
+            sort: None,
+            cwd: "/tmp".into(),
+            template_id: None,
+            plugin_scope: None,
+            template_input: None,
+            attach_folder: false,
+            theme: crate::routes::theme::RequestTheme::default_dark(),
+        })
+        .await
+        .unwrap();
+    let original = state
+        .today_summary_issuer
+        .as_ref()
+        .unwrap()
+        .submit(
+            &crate::state::RouteState::from_ref(&state),
+            track.id.clone(),
+            "opening".into(),
+            "first".into(),
+            "body".into(),
+        )
+        .await
+        .unwrap();
+    let db = fixture.repo.db();
+    let mut tx = crate::db::sqlite::begin_immediate_tx(db).await.unwrap();
+    let before = crate::db::sqlite::conversation::current_input_content_carrier_tx(
+        &mut tx,
+        &original.card_id,
+    )
+    .await
+    .unwrap();
+    let before_pending = before.checkpoint().pending.clone();
+    // Use allocation, registration and acceptance owners; no receipt or execution
+    // capability is fabricated. The foreign receipt intentionally is not committed.
+    let foreign = crate::db::sqlite::card_create_with_id_tx(
+        &mut tx, crate::model::new_id(), crate::model::NewCard {
+            track_id: track.id.clone(), kind: "codex".into(), sort: None, title: None,
+            payload: json!({"schemaVersion":1,"harness_profile":"assistant","assistant_provider":"codex"}),
+        }, crate::model::CardRole::Assistant, false, state.write().role_cache(),
+    ).await.unwrap();
+    let floor = calm_truth::db::sqlite::event_inputs::event_creation_floor_tx(&mut tx)
+        .await
+        .unwrap();
+    let worker = crate::model::new_id();
+    crate::db::sqlite::session_start_runtime_tx(
+        &mut tx,
+        crate::session_projection_repo::WorkerSessionInit::managed_assistant(
+            worker.clone(),
+            foreign.id.to_string(),
+            crate::session_projection_repo::AgentProvider::Codex,
+            crate::session_projection_repo::WorkerSessionState::Idle,
+            None,
+            serde_json::to_value(crate::harness::snapshot::CanonicalHarnessSnapshot::dormant(
+                floor,
+            ))
+            .unwrap(),
+            crate::model::now_ms(),
+        ),
+    )
+    .await
+    .unwrap();
+    let source = SystemAssistantSource::TodaySummary;
+    crate::db::sqlite::conversation::system_assistant_entry_insert_tx(
+        &mut tx,
+        foreign.id.as_str(),
+        source,
+        "foreign opening",
+    )
+    .await
+    .unwrap();
+    let foreign_event = Event::AssistantInputRequested {
+        card_id: foreign.id.clone(),
+        track_id: track.id.clone(),
+        original_worker: worker,
+        source,
+        subject: source.bootstrap_subject().into(),
+        version: 1,
+        text: "foreign opening".into(),
+    };
+    let foreign_id = crate::db::sqlite::append_decision_event_in_tx(
+        &mut tx,
+        &ActorId::Kernel,
+        &EventScope::Card {
+            card: foreign.id.clone(),
+            track: track.id.clone(),
+            area: area.id.clone(),
+        },
+        None,
+        &foreign_event,
+    )
+    .await
+    .unwrap();
+    let (_, foreign_ack) = crate::db::sqlite::conversation::system_assistant_accept_tx(
+        &mut tx,
+        foreign.id.as_str(),
+        foreign_id,
+    )
+    .await
+    .unwrap();
+    assert_eq!(foreign_ack.event_id, foreign_id);
+    let tail = Event::AssistantInputRequested {
+        card_id: original.card_id.clone().into(),
+        track_id: track.id.clone(),
+        original_worker: original.original_worker.clone(),
+        source,
+        subject: "tail".into(),
+        version: 1,
+        text: "tail body".into(),
+    };
+    let tail_id = crate::db::sqlite::append_decision_event_in_tx(
+        &mut tx,
+        &ActorId::Kernel,
+        &EventScope::Card {
+            card: original.card_id.clone().into(),
+            track: track.id,
+            area: area.id,
+        },
+        None,
+        &tail,
+    )
+    .await
+    .unwrap();
+    let carrier = state
+        .dispatcher
+        .accept_event_prefix_for_test(&mut tx, &original.card_id, Some((&tail, tail_id)))
+        .await
+        .unwrap();
+    assert_eq!(carrier.snapshot()["push_watermark"], tail_id);
+    assert_eq!(
+        &carrier.checkpoint().pending[..before_pending.len()],
+        before_pending
+    );
+    assert_eq!(carrier.checkpoint().pending.len(), before_pending.len() + 1);
+    let tail_ack = crate::db::sqlite::conversation::system_assistant_receipt_tx(
+        &mut tx,
+        &original.card_id,
+        source,
+        "tail",
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(tail_ack.event_id, tail_id);
+    assert_ne!(tail_ack.observation_id, foreign_ack.observation_id);
+    tx.commit().await.unwrap();
+    // Pending reconstruction and its later authorization use the same production path.
+    state.dispatcher.reconcile_tick_for_test().await;
+    shutdown(&fixture, &state).await;
+}

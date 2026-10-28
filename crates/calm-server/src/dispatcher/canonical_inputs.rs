@@ -443,7 +443,8 @@ impl Inner {
             return Err(CalmError::Conflict("event target changed".into()));
         }
         for fact in facts {
-            let Some(observation) = admission.qualify(self.repo.as_ref(), &fact).await? else {
+            let Some(observation) = admission.qualify_tx(tx, self.repo.as_ref(), &fact).await?
+            else {
                 continue;
             };
             let observation = SystemObservation::try_from(observation)
@@ -502,10 +503,6 @@ impl Inner {
         incoming: Option<(&Event, i64)>,
     ) -> Result<Vec<(AcceptedInputRef, InputSource)>> {
         let producer = self.producer()?;
-        let pool = self
-            .repo
-            .sqlite_db()
-            .ok_or_else(|| CalmError::Internal("event admission requires SQLite".into()))?;
         let card_name = card.to_string();
         let incoming = incoming.map(|(event, id)| (event.clone(), id));
         let (admission, facts) = write_in_tx_typed(self.repo.as_ref(), {
@@ -567,58 +564,62 @@ impl Inner {
         // Dedup never bypasses fresh producer admission of already accepted work.
         let mut sources = vec![];
         for stored in stored {
-            let facts = event_inputs::track_prefix(
-                pool.read_pool(),
-                track.as_str(),
-                admission.kinds(),
-                stored.envelope - 1,
-                Some(stored.envelope),
-            )
-            .await?;
-            let fact = facts.into_iter().next().ok_or_else(|| {
-                CalmError::Conflict("accepted System source event is unavailable".into())
-            })?;
-            let Some(qualified) = admission
-                .qualify(self.repo.as_ref(), &fact)
-                .await?
-                .map(|observation| {
-                    SystemObservation::try_from(observation)
-                        .map(|observation| QualifiedEvent { fact, observation })
-                        .map_err(|error| CalmError::Forbidden(error.into()))
-                })
-                .transpose()?
-            else {
-                return Err(CalmError::Forbidden(
-                    "accepted event no longer qualifies this producer".into(),
-                ));
-            };
-            let source = DispatcherInputSource {
-                binding: EventBinding {
-                    producer: producer.clone(),
-                    database: database.clone(),
-                    track: track.clone(),
-                    card: card_name.clone(),
-                    worker: worker.clone(),
-                    admission: admission.clone(),
-                    event: qualified.fact,
-                },
-                reference: stored.reference.clone(),
-                observation: stored.observation,
-            };
-            write_in_tx_typed(self.repo.as_ref(), {
-                let source = source.clone();
-                let card = card_name.clone();
+            let reference = stored.reference.clone();
+            let source = write_in_tx_typed(self.repo.as_ref(), {
+                let (inner, admission, producer) =
+                    (self.clone(), admission.clone(), producer.clone());
+                let (track, card, worker, database) = (
+                    track.clone(),
+                    card_name.clone(),
+                    worker.clone(),
+                    database.clone(),
+                );
                 move |tx| {
                     Box::pin(async move {
+                        let facts = event_inputs::track_prefix_tx(
+                            tx,
+                            track.as_str(),
+                            admission.kinds(),
+                            stored.envelope - 1,
+                            Some(stored.envelope),
+                        )
+                        .await?;
+                        let fact = facts.into_iter().next().ok_or_else(|| {
+                            CalmError::Conflict(
+                                "accepted System source event is unavailable".into(),
+                            )
+                        })?;
+                        let Some(observation) =
+                            admission.qualify_tx(tx, inner.repo.as_ref(), &fact).await?
+                        else {
+                            return Err(CalmError::Forbidden(
+                                "accepted event no longer qualifies this producer".into(),
+                            ));
+                        };
+                        SystemObservation::try_from(observation)
+                            .map_err(|error| CalmError::Forbidden(error.into()))?;
+                        let source = DispatcherInputSource {
+                            binding: EventBinding {
+                                producer,
+                                database,
+                                track,
+                                card: card.clone(),
+                                worker,
+                                admission,
+                                event: fact,
+                            },
+                            reference: stored.reference,
+                            observation: stored.observation,
+                        };
                         let carrier =
                             conversation::current_input_content_carrier_tx(tx, &card).await?;
                         source.authorize_resource_tx(tx, &carrier).await?;
-                        Ok(())
+                        Ok(source)
                     })
                 }
             })
             .await?;
-            sources.push((stored.reference, InputSource::Dispatcher(Box::new(source))));
+            sources.push((reference, InputSource::Dispatcher(Box::new(source))));
         }
         Ok(sources)
     }
@@ -658,5 +659,24 @@ impl Dispatcher {
             }
         }
         Ok(false)
+    }
+}
+
+#[cfg(all(test, feature = "fixtures"))]
+impl Dispatcher {
+    pub(crate) async fn accept_event_prefix_for_test(
+        &self,
+        tx: &mut Transaction<'_, Sqlite>,
+        card: &str,
+        incoming: Option<(&Event, i64)>,
+    ) -> Result<CurrentInputCarrier> {
+        let admission = EventAdmission::load_tx(tx, card).await?;
+        let facts = self
+            .inner
+            .read_event_prefix_tx(tx, &admission, incoming)
+            .await?;
+        self.inner
+            .accept_event_prefix_tx(tx, &self.inner.producer()?, &admission, facts)
+            .await
     }
 }
