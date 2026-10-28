@@ -86,14 +86,8 @@ impl Race {
         assert_eq!(after["compact_outcome"]["status"], "unconfirmed");
         assert_eq!(after["compact_outcome"]["operation_id"], self.operation);
         assert_eq!(after["compact_outcome"]["turn_id"], self.turn);
-        assert_eq!(
-            self.fx
-                .requests()
-                .iter()
-                .filter(|frame| frame["method"] == "session/prompt"
-                    && frame["params"]["prompt"] == json!([{"type":"text","text":"/compact"}]))
-                .count(),
-            0,
+        assert!(
+            !self.fx.dir.path().join("requests.jsonl").exists(),
             "lost maintenance is never resubmitted"
         );
     }
