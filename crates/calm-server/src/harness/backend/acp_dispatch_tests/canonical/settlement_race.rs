@@ -29,6 +29,7 @@ impl Race {
     /// loop observation armed to pause after deciding to wedge it.
     async fn new() -> Self {
         let fx = within("fixture", Fixture::new("unused")).await;
+        within("retire fixture claim", neutralize(&fx)).await;
         let (harness, registry) =
             within("harness", super::compact::registered_recovery_harness(&fx)).await;
         let observe = arm(&fx, MAINTENANCE_OBSERVE_DECIDED);
@@ -99,6 +100,70 @@ fn arm(fx: &Fixture, point: &str) -> PausePoint {
     pause
 }
 
+async fn neutralize(fx: &Fixture) {
+    // Fixture starts with an unattempted Initial claim. Retire it through the
+    // repository's confirmed non-delivery path before any loop tick can resume
+    // it without a live source and leave an unrelated issuance block behind.
+    let mut tx = begin_immediate_tx(fx.owner.repo.db()).await.unwrap();
+    let mut carrier = current_input_carrier_tx(&mut tx, &fx.owner.card, &fx.owner.worker)
+        .await
+        .unwrap();
+    let attempt = InputAttempt {
+        submission_id: fx.submission.clone(),
+        attempt_id: InputAttemptId::parse(&crate::model::new_id()).unwrap(),
+    };
+    let correlation = InputCorrelationFact {
+        provider: fx.provider.clone(),
+        thread_id: fx.owner.thread.clone(),
+        native_session_id: None,
+        local_turn_id: None,
+        native_turn_id: None,
+        rpc_request_id: None,
+    };
+    begin_input_attempt_tx(
+        &mut tx,
+        &mut carrier,
+        attempt.clone(),
+        correlation.clone(),
+        FrozenInputInvocation {
+            model: None,
+            effort: None,
+            permission: PlannerPermissionMode::Never,
+        },
+    )
+    .await
+    .unwrap();
+    record_input_attempt_fact_tx(
+        &mut tx,
+        &mut carrier,
+        InputAttemptFact {
+            attempt: attempt.clone(),
+            correlation,
+            delivery: InputDeliveryFact::NotDispatched {
+                basis: "unused race fixture claim".into(),
+            },
+        },
+    )
+    .await
+    .unwrap();
+    release_submission_tx(&mut tx, &mut carrier, &attempt)
+        .await
+        .unwrap();
+    // Keep startup neutral, without the released pending input. Compacting must
+    // be installed only after startup: load_current would wedge it on restart
+    // and bypass the loop observation seam this race exercises.
+    let mut neutral = crate::harness::snapshot::CanonicalHarnessSnapshot::dormant(0);
+    neutral.header.last_thread_id = Some(fx.owner.thread.clone());
+    crate::db::sqlite::session_set_handle_state_tx(
+        &mut tx,
+        &fx.owner.worker,
+        Some(serde_json::to_value(neutral).unwrap()),
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+}
+
 async fn frame(fx: &Fixture) -> Value {
     fx.owner
         .repo
@@ -127,6 +192,14 @@ async fn acp_compact_absent_driver_loss_after_observed_wedge_is_idempotent() {
     let race = Race::new().await;
     let lost = arm(&race.fx, MAINTENANCE_LOST_SETTLING);
     within("observation decision", race.observe.entered.notified()).await;
+    assert_eq!(
+        within(
+            "issuance block at observation",
+            race.harness.issuance_block()
+        )
+        .await,
+        None
+    );
     let loss = race.lose();
     within("loss settlement seam", lost.entered.notified()).await;
     race.observe.release.notify_one();
@@ -143,6 +216,14 @@ async fn acp_compact_absent_driver_loss_after_observed_wedge_is_idempotent() {
 async fn acp_compact_absent_driver_observation_after_loss_does_not_publish_issuance_conflict() {
     let race = Race::new().await;
     within("observation decision", race.observe.entered.notified()).await;
+    assert_eq!(
+        within(
+            "issuance block at observation",
+            race.harness.issuance_block()
+        )
+        .await,
+        None
+    );
     within("loss", race.lose()).await.unwrap().unwrap();
     race.observe.release.notify_one();
     // Shutdown joins the loop, so the paused tick has published any error.
@@ -158,6 +239,14 @@ async fn acp_compact_absent_driver_observation_after_loss_does_not_publish_issua
 async fn acp_compact_foreign_settlement_still_conflicts() {
     let race = Race::new().await;
     within("observation decision", race.observe.entered.notified()).await;
+    assert_eq!(
+        within(
+            "issuance block at observation",
+            race.harness.issuance_block()
+        )
+        .await,
+        None
+    );
     let mut foreign = within("frame", frame(&race.fx)).await;
     foreign["phase"] = json!("wedged");
     foreign["wedged_reason"] = json!("a foreign settlement");
