@@ -6,7 +6,6 @@ use super::spawn::{InstructionsFile, SpawnPurpose};
 use super::turn_slot::{TerminalCause, TurnSlot, deadline_reached};
 use crate::error::CalmError;
 use crate::provider_execution as execution;
-use crate::session_projection_repo::{AgentProvider, ThreadAttribution};
 use calm_types::worker::WorkerSessionId;
 use provider::claude::permission::{CanUseTool, PermissionDecision, permission_response};
 use provider::claude::protocol::{ControlResponseOut, ControlResponseOutBody, Record, SystemInit};
@@ -251,18 +250,7 @@ impl PlannerSink {
                 let row = crate::db::sqlite::session_get_tx(tx, &WorkerSessionId(id.clone()))
                     .await?
                     .ok_or_else(|| CalmError::NotFound(format!("worker session {id}")))?;
-                crate::db::sqlite::session_bind_attribution_tx(
-                    tx,
-                    &id,
-                    ThreadAttribution {
-                        worker_session_id: id.clone(),
-                        provider: AgentProvider::Claude,
-                        thread_id: Some(thread.clone()),
-                        session_id: Some(thread),
-                        active_turn_id: row.active_turn_id,
-                    },
-                )
-                .await?;
+                super::identity::bind_tx(tx, &row, &thread).await?;
                 Ok(())
             })
         })

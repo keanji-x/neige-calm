@@ -223,7 +223,8 @@ mod start;
 pub(crate) use start::{BeforeWriteFailure, SpawnFailure};
 impl ClaudePlannerSession {
     /// Open the session for its worker-session row: a row whose `agent_session_id` is bound
-    /// resumes that Claude session (`--resume`); otherwise the first spawn creates it.
+    /// resumes that Claude session (`--resume`). An unbound canonical row first recovers
+    /// from verified native replay evidence; only a row without that evidence starts new.
     pub async fn open(params: ClaudePlannerSessionParams) -> Result<Self> {
         let row = params
             .repo
@@ -235,7 +236,12 @@ impl ClaudePlannerSession {
                     params.worker_session_id
                 ))
             })?;
-        let row_bound = row.agent_session_id.is_some();
+        let row_bound = row.agent_session_id.is_some()
+            || (row.handle_state_json.as_ref().is_some_and(|snapshot| {
+                snapshot
+                    .get(calm_types::conversation::CONVERSATION_INPUT_CHECKPOINT_KEY)
+                    .is_some()
+            }) && super::identity::recover(&params).await?);
         let start = if row_bound {
             SessionStart::Resume
         } else {

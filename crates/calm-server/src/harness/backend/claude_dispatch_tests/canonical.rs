@@ -3,6 +3,7 @@ mod acknowledgement;
 mod c5d;
 mod compact;
 mod control;
+mod identity_recovery;
 mod loop_fixture;
 mod recovery;
 mod retry;

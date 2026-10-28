@@ -18,6 +18,7 @@ pub(crate) mod compact;
 pub mod config;
 mod driver;
 pub(crate) mod execution;
+mod identity;
 pub mod lifecycle;
 pub mod models;
 mod outcome_record;
