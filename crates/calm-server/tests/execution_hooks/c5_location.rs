@@ -17,7 +17,7 @@ async fn c5_location_occupancy_foreign_execution_keeps_track_without_stop() {
                 alias
             }
         };
-        let mut intent = exec::test_support::intent(root);
+        let mut intent = crate::support::execution::occupancy_intent(root);
         intent.metadata.track = exec::TrackId("foreign-owner".into());
         let id = intent.metadata.id.clone();
         let mut tx = sqlite::begin_immediate_tx(f.repo.db()).await.unwrap();
@@ -91,7 +91,7 @@ async fn c5_repoint_internal_trash_refuses_before_lifecycle() {
 #[tokio::test]
 async fn c5_location_repoint_foreign_without_stop() {
     let f = Fixture::new().await;
-    let mut intent = exec::test_support::intent(f.root.clone());
+    let mut intent = crate::support::execution::occupancy_intent(f.root.clone());
     intent.metadata.track = exec::TrackId("foreign-owner".into());
     let id = intent.metadata.id.clone();
     let mut tx = sqlite::begin_immediate_tx(f.repo.db()).await.unwrap();
@@ -152,7 +152,8 @@ async fn c5_location_malformed_roots_fail_closed_delete_and_repoint() {
 #[tokio::test]
 async fn c5_location_ancestor_root_does_not_block_delete() {
     let f = Fixture::new().await;
-    let mut intent = exec::test_support::intent(f.state.workspace_root().to_path_buf());
+    let mut intent =
+        crate::support::execution::occupancy_intent(f.state.workspace_root().to_path_buf());
     intent.metadata.track = exec::TrackId("foreign-owner".into());
     let id = intent.metadata.id.clone();
     let mut tx = sqlite::begin_immediate_tx(f.repo.db()).await.unwrap();
@@ -179,7 +180,7 @@ async fn c5_track_positive_proof_after_quiesce_precedes_move() {
         tokio::time::timeout(Duration::from_secs(10), pause.entered.notified())
             .await
             .unwrap();
-        let mut intent = exec::test_support::intent(f.root.clone());
+        let mut intent = crate::support::execution::occupancy_intent(f.root.clone());
         intent.metadata.track = exec::TrackId(f.track.clone());
         let id = intent.metadata.id.clone();
         let mut tx = sqlite::begin_immediate_tx(f.repo.db()).await.unwrap();
@@ -214,7 +215,7 @@ async fn c5_track_writer_rechecks_foreign_location() {
             .await
             .unwrap();
         assert!(!f.root.exists());
-        let mut intent = exec::test_support::intent(f.root.clone());
+        let mut intent = crate::support::execution::occupancy_intent(f.root.clone());
         intent.metadata.track = exec::TrackId("foreign-owner".into());
         let id = intent.metadata.id.clone();
         let mut tx = sqlite::begin_immediate_tx(f.repo.db()).await.unwrap();
@@ -247,7 +248,7 @@ async fn c5_repoint_writer_rechecks_foreign_location_without_stop() {
         tokio::time::timeout(Duration::from_secs(10), hook.entered.notified())
             .await
             .unwrap();
-        let mut intent = exec::test_support::intent(f.root.clone());
+        let mut intent = crate::support::execution::occupancy_intent(f.root.clone());
         intent.metadata.track = exec::TrackId("foreign-owner".into());
         let id = intent.metadata.id.clone();
         let mut tx = sqlite::begin_immediate_tx(f.repo.db()).await.unwrap();

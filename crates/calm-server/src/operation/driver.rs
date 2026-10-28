@@ -62,6 +62,17 @@ pub(crate) struct LaunchFence {
     _track: crate::per_card_lock::KeyedLockGuard,
 }
 
+impl LaunchFence {
+    fn into_track_guard(self) -> crate::per_card_lock::KeyedLockGuard {
+        self._track
+    }
+}
+
+pub(crate) enum InvocationTrackFence {
+    ReleaseAfterPreparation,
+    HoldUntilHandoff,
+}
+
 #[derive(Clone)]
 pub struct OperationRuntime {
     pub(super) repo: Arc<dyn OperationRepo>,
@@ -268,6 +279,7 @@ impl OperationRuntime {
         invocation: Arc<dyn ProviderAdapter>,
         key: OperationKey,
         payload: Value,
+        fence_mode: InvocationTrackFence,
     ) -> Result<OperationResult> {
         let installed = self.adapter(registered.kind())?;
         if !Arc::ptr_eq(&installed, &registered)
@@ -318,6 +330,7 @@ impl OperationRuntime {
                     .await?
             }
         };
+        let mut held_track = None;
         loop {
             if let Some(result) = self.repo.operation_result(&op_id).await? {
                 return Ok(result);
@@ -327,12 +340,28 @@ impl OperationRuntime {
                 .claim_drive_operation(&op_id)
                 .await?
                 .ok_or_else(|| CalmError::Conflict("operation is held by another driver".into()))?;
+            if matches!(fence_mode, InvocationTrackFence::HoldUntilHandoff)
+                && !matches!(op.phase, Phase::Pending)
+                && let Some(fence) = preparation_fence.take()
+            {
+                held_track = Some(crate::workspace_service::HeldTrack::new(
+                    fence.into_track_guard(),
+                ));
+            }
+            let ctx = match &held_track {
+                Some(held) => self.spawn_ctx.clone().with_held_track(held.clone()),
+                None => self.spawn_ctx.clone(),
+            };
             self.drive_claimed_with_preparation_fence(
                 invocation.clone(),
                 op,
-                preparation_fence.take(),
+                preparation_fence.as_ref(),
+                &ctx,
             )
             .await?;
+            if matches!(fence_mode, InvocationTrackFence::ReleaseAfterPreparation) {
+                preparation_fence = None;
+            }
         }
     }
 
@@ -647,7 +676,7 @@ impl OperationRuntime {
         adapter: Arc<dyn ProviderAdapter>,
         op: Operation,
     ) -> Result<()> {
-        self.drive_claimed_with_preparation_fence(adapter, op, None)
+        self.drive_claimed_with_preparation_fence(adapter, op, None, &self.spawn_ctx)
             .await
     }
 
@@ -655,11 +684,12 @@ impl OperationRuntime {
         &self,
         adapter: Arc<dyn ProviderAdapter>,
         op: Operation,
-        preparation_fence: Option<LaunchFence>,
+        preparation_fence: Option<&LaunchFence>,
+        ctx: &SpawnCtx,
     ) -> Result<()> {
         let from_phase = op.phase.tag();
         if let Err(error) = self
-            .drive_one(adapter.clone(), op.clone(), preparation_fence)
+            .drive_one(adapter.clone(), op.clone(), preparation_fence, ctx)
             .await
         {
             if let Some(result) = self.leave_write(
@@ -795,17 +825,16 @@ impl OperationRuntime {
         &self,
         adapter: Arc<dyn ProviderAdapter>,
         op: Operation,
-        preparation_fence: Option<LaunchFence>,
+        preparation_fence: Option<&LaunchFence>,
+        ctx: &SpawnCtx,
     ) -> Result<()> {
         match op.phase.clone() {
             Phase::Pending => {
+                let owned_fence;
                 let track_fence = if preparation_fence.is_some() {
                     preparation_fence
                 } else {
-                    match adapter
-                        .preparation_track(&op.payload, &self.spawn_ctx)
-                        .await?
-                    {
+                    owned_fence = match adapter.preparation_track(&op.payload, ctx).await? {
                         Some(track) => match self.try_launch_fence(&track) {
                             Ok(guard) => Some(guard),
                             Err(CalmError::WorkspaceBusy(_)) => {
@@ -815,7 +844,8 @@ impl OperationRuntime {
                             Err(error) => return Err(error),
                         },
                         None => None,
-                    }
+                    };
+                    owned_fence.as_ref()
                 };
                 let mut location_fence = None;
                 // Facts may change during external I/O. Retry boundedly under this exact
@@ -824,17 +854,12 @@ impl OperationRuntime {
                 for _ in 0..3 {
                     let prepared = async {
                         if location_fence.is_none()
-                            && let Some(cwd) = adapter
-                                .preparation_cwd(&op.payload, &self.spawn_ctx)
-                                .await?
+                            && let Some(cwd) = adapter.preparation_cwd(&op.payload, ctx).await?
                         {
-                            location_fence = Some(Arc::new(
-                                self.try_location_fence(&cwd, track_fence.as_ref()).await?,
-                            ));
+                            location_fence =
+                                Some(Arc::new(self.try_location_fence(&cwd, track_fence).await?));
                         }
-                        let prepared = adapter
-                            .prepare_external(&op.payload, &op, &self.spawn_ctx)
-                            .await?;
+                        let prepared = adapter.prepare_external(&op.payload, &op, ctx).await?;
                         let prepared = match &location_fence {
                             Some(fence) => {
                                 Some(Box::new(super::location_admission::FencedPreparation {
@@ -928,10 +953,7 @@ impl OperationRuntime {
                     return Ok(());
                 }
                 if !adapter.phases().contains(&PhaseTag::SpawnStarted) {
-                    match adapter
-                        .spawn_side_effect(&output, &op, &self.spawn_ctx)
-                        .await
-                    {
+                    match adapter.spawn_side_effect(&output, &op, ctx).await {
                         Ok(SpawnOutcome::Ready(_handle)) => {
                             if let Some(result) = self.leave_write(
                                 &op,
@@ -985,10 +1007,7 @@ impl OperationRuntime {
             }
             Phase::AppServerInteract { .. } => {
                 let mut output = required_output(&op)?.clone();
-                match adapter
-                    .app_server_interact(&mut output, &op, &self.spawn_ctx)
-                    .await
-                {
+                match adapter.app_server_interact(&mut output, &op, ctx).await {
                     Ok(AppServerInteractOutcome::AwaitingRetry) => {
                         if !adapter.phases().contains(&PhaseTag::AwaitingRetry) {
                             return Err(CalmError::Internal(
@@ -1051,10 +1070,7 @@ impl OperationRuntime {
             }
             Phase::SpawnStarted => {
                 let output = required_output(&op)?.clone();
-                match adapter
-                    .spawn_side_effect(&output, &op, &self.spawn_ctx)
-                    .await
-                {
+                match adapter.spawn_side_effect(&output, &op, ctx).await {
                     Ok(SpawnOutcome::Ready(_handle)) => {
                         if self
                             .leave_write(
@@ -1657,7 +1673,10 @@ impl OperationRuntime {
                 // The phase the row was claimed at, not the one it was planned at: an earlier item's
                 // drive may have moved it on, and a row stuck from `pending` must have written nothing.
                 let from_phase = op.phase.tag();
-                if let Err(e) = self.drive_one(adapter.clone(), op.clone(), None).await {
+                if let Err(e) = self
+                    .drive_one(adapter.clone(), op.clone(), None, &self.spawn_ctx)
+                    .await
+                {
                     if let Some(result) = self.leave_write(
                         &op,
                         self.repo

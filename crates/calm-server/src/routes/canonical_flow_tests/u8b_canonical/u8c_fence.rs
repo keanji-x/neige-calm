@@ -151,50 +151,70 @@ async fn u8c_fence_replay_repair_waits_for_clean() {
     fixture.shutdown_process(&state).await;
 }
 
-async fn retained_clean_and_delete(cold: bool) {
+struct RetainedFixture {
+    fixture: Fixture,
+    state: AppState,
+    app: axum::Router,
+    cookie: String,
+    source: crate::auth::HumanInputSource,
+    created: Value,
+    card: String,
+    worker: String,
+    peer: crate::shared_codex_appserver::native_owner_tests::Peer,
+    fence: crate::operation::planner_start_fence::CardStartFence,
+}
+
+async fn retained_fixture(cold: bool) -> RetainedFixture {
     let fixture = Fixture::new().await;
     let (state, app, cookie, auth) = fixture.application_with_auth(false).await;
     let a = area(&app, &cookie, "retained fence").await;
     let path = repo(&fixture);
     let mut body = borrowed(&a, "codex", &path, "worktree");
     body["first_message"] = json!(FIRST_BODY);
-    let (_client, mut peer) = connect(&state.shared_codex_appserver).await;
+    // First activation retains accepted input while the backend is down; cold
+    // recovery first completes one real native turn through the same route.
+    let mut native = if cold {
+        Some(connect(&state.shared_codex_appserver).await)
+    } else {
+        None
+    };
     let created = post(&app, &cookie, "/api/tracks", "first", body).await;
     let track = created["id"].as_str().unwrap();
-    let turn = super::super::native_attempt_recovery_tests::initial_request(&mut peer).await;
-    send(
-        &mut peer,
-        json!({"id":turn["id"],"result":{"turn":{"id":TURN}}}),
-    )
-    .await;
-    notify_thread(
-        &state.shared_codex_appserver,
-        &mut peer,
-        THREAD,
-        "turn/started",
-        json!({"id":TURN,"status":"inProgress"}),
-    )
-    .await;
-    fixture
-        .wait_phase(track, HarnessPhaseTag::TurnRunning)
+    if let Some((_, peer)) = &mut native {
+        let turn = super::super::native_attempt_recovery_tests::initial_request(peer).await;
+        send(peer, json!({"id":turn["id"],"result":{"turn":{"id":TURN}}})).await;
+        notify_thread(
+            &state.shared_codex_appserver,
+            peer,
+            THREAD,
+            "turn/started",
+            json!({"id":TURN,"status":"inProgress"}),
+        )
         .await;
-    notify_thread(
-        &state.shared_codex_appserver,
-        &mut peer,
-        THREAD,
-        "turn/completed",
-        json!({"id":TURN,"status":"completed"}),
-    )
-    .await;
-    fixture
-        .wait_phase(track, HarnessPhaseTag::TurnCompleted)
+        fixture
+            .wait_phase(track, HarnessPhaseTag::TurnRunning)
+            .await;
+        notify_thread(
+            &state.shared_codex_appserver,
+            peer,
+            THREAD,
+            "turn/completed",
+            json!({"id":TURN,"status":"completed"}),
+        )
         .await;
-    let (card, worker, _) = fixture.carrier(track).await;
-    let route = crate::state::RouteState::from_ref(&state);
+        fixture
+            .wait_phase(track, HarnessPhaseTag::TurnCompleted)
+            .await;
+    }
+    let (card, worker, snapshot) = fixture.carrier(track).await;
+    if !cold {
+        assert!(snapshot.header.last_thread_id.is_none());
+    }
     let mut headers = axum::http::HeaderMap::new();
     headers.insert(header::COOKIE, cookie.parse().unwrap());
     let (_, source) = crate::auth::authenticated_source(auth, headers).await;
     let source = source.unwrap();
+    let route = crate::state::RouteState::from_ref(&state);
     let fence = crate::operation::planner_start_fence::CardStartFence::lock(
         &route.planner_recovery_locks,
         &route.repo,
@@ -202,6 +222,41 @@ async fn retained_clean_and_delete(cold: bool) {
         &card.clone().into(),
     )
     .await;
+    // Own the original card fence before making a down backend ready, so the
+    // route's asynchronous wake cannot race this invocation's test rendezvous.
+    let (_client, peer) = match native {
+        Some(native) => native,
+        None => connect(&state.shared_codex_appserver).await,
+    };
+    RetainedFixture {
+        fixture,
+        state,
+        app,
+        cookie,
+        source,
+        created,
+        card,
+        worker,
+        peer,
+        fence,
+    }
+}
+
+async fn retained_clean_and_delete(cold: bool) {
+    let RetainedFixture {
+        fixture,
+        state,
+        app,
+        cookie,
+        source,
+        created,
+        card,
+        worker,
+        mut peer,
+        fence,
+    } = retained_fixture(true).await;
+    let track = created["id"].as_str().unwrap();
+    let route = crate::state::RouteState::from_ref(&state);
     if cold {
         super::super::native_attempt_recovery_tests::shutdown(&state, &worker, &mut peer).await;
     }
@@ -441,6 +496,180 @@ async fn u8c_fence_post_rejects_changed_workspace_after_commit() {
     assert_eq!(result.0, StatusCode::CONFLICT, "{result:?}");
     assert!(!std::path::Path::new(track.workspace.agent_cwd()).exists());
     assert!(!changed.exists());
+}
+
+async fn no_activation_requests(
+    peer: &mut crate::shared_codex_appserver::native_owner_tests::Peer,
+) {
+    while let Ok(call) = tokio::time::timeout(Duration::from_millis(100), request(peer)).await {
+        assert!(
+            !matches!(
+                call["method"].as_str(),
+                Some("thread/start" | "thread/resume" | "turn/start")
+            ),
+            "unexpected activation: {call}"
+        );
+        send(peer, json!({"id":call["id"],"result":{}})).await;
+    }
+}
+
+async fn retained_handoff_race(mode: u8, cold: bool) {
+    let RetainedFixture {
+        fixture,
+        state,
+        app,
+        cookie,
+        source,
+        created,
+        card: _,
+        worker,
+        mut peer,
+        fence,
+    } = retained_fixture(cold).await;
+    let track = created["id"].as_str().unwrap();
+    let route = crate::state::RouteState::from_ref(&state);
+    if cold {
+        super::super::native_attempt_recovery_tests::shutdown(&state, &worker, &mut peer).await;
+    }
+
+    let worktree = std::path::PathBuf::from(created["workspace"]["worktree"].as_str().unwrap());
+    let before: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM operations WHERE kind='planner-harness-start'")
+            .fetch_one(fixture.repo.pool())
+            .await
+            .unwrap();
+    if !cold {
+        assert_eq!(before, 0);
+    }
+    let handoff = crate::provider_execution::TrackFenceHandoff::new(
+        crate::harness::run_loop::issuance::track_fence_in_for_test(
+            track,
+            state.operation_runtime.track_delete_locks(),
+        )
+        .await,
+    );
+    let waiting = HeldPause::arm("key-lock-waiting", track);
+    let wake = fence.wake_retained(
+        route.planner_start_adapter.clone(),
+        source,
+        route.workspace_root.clone(),
+        route.events.clone(),
+    );
+    tokio::pin!(wake);
+    tokio::select! {
+        _ = waiting.entered() => {},
+        result = &mut wake => panic!("wake must wait before retained activation: {result:?}"),
+    }
+    drop(
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            state.operation_runtime.lock_for_track_delete(),
+        )
+        .await
+        .unwrap(),
+    );
+    if mode == 0 {
+        drop(waiting);
+        handoff.release();
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                tokio::select! {
+                    result = &mut wake => break result,
+                    call = request(&mut peer) => {
+                        assert!(matches!(call["method"].as_str(), Some("thread/read" | "thread/resume")), "{call}");
+                        send(&mut peer, json!({"id":call["id"],"result":{"thread":{"id":THREAD,"status":{"type":"idle"},"turns":[]}}})).await;
+                    }
+                }
+            }
+        }).await.unwrap().unwrap();
+        assert!(state.harness.get(&worker).is_some());
+        assert!(worktree.is_dir());
+    } else if mode == 1 {
+        sqlx::query("UPDATE tracks SET closed_at=123 WHERE id=?")
+            .bind(track)
+            .execute(fixture.repo.pool())
+            .await
+            .unwrap();
+        let admitted = HeldPause::arm("c5d-clean-before-track", track);
+        let fenced = HeldPause::arm("c1-clean-fenced", track);
+        let cleaning = crate::test_seams::clean_idle_closed_track_worktrees_for_test(
+            fixture.repo.db(),
+            &state.operation_runtime,
+        );
+        tokio::pin!(cleaning);
+        tokio::select! {
+            _ = admitted.entered() => {},
+            result = &mut cleaning => panic!("clean must register before Track: {result:?}"),
+        }
+        drop(waiting);
+        handoff.release();
+        drop(admitted);
+        let ((), refused) = tokio::time::timeout(Duration::from_secs(10), async {
+            tokio::join!(
+                async {
+                    tokio::select! {
+                        _ = fenced.entered() => {},
+                        result = &mut cleaning => panic!("clean must fence: {result:?}"),
+                    }
+                },
+                &mut wake,
+            )
+        })
+        .await
+        .unwrap();
+        assert!(
+            matches!(refused, Err(crate::error::CalmError::WorkspaceBusy(_))),
+            "{refused:?}"
+        );
+        no_activation_requests(&mut peer).await;
+        drop(fenced);
+        assert_eq!(cleaning.await.unwrap(), 1);
+    } else {
+        let delete_waiting = HeldPause::arm("key-lock-waiting", track);
+        let uri = format!("/api/tracks/{track}");
+        let deleting = http(&app, &cookie, "DELETE", &uri);
+        tokio::pin!(deleting);
+        tokio::select! {
+            _ = delete_waiting.entered() => {},
+            result = &mut deleting => panic!("delete must reach Track: {result:?}"),
+        }
+        drop(waiting);
+        drop(delete_waiting);
+        handoff.release();
+        let (deleted, rejected) = tokio::time::timeout(Duration::from_secs(10), async {
+            tokio::join!(deleting, wake)
+        })
+        .await
+        .unwrap();
+        assert_eq!(deleted.0, StatusCode::NO_CONTENT);
+        assert!(rejected.is_err());
+        no_activation_requests(&mut peer).await;
+        let after: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM operations WHERE kind='planner-harness-start'",
+        )
+        .fetch_one(fixture.repo.pool())
+        .await
+        .unwrap();
+        assert_eq!(after, before);
+        assert!(!worktree.exists());
+        assert!(state.harness.get(&worker).is_none());
+    }
+    fixture.shutdown_process(&state).await;
+}
+
+#[tokio::test]
+async fn u8c_fence_retained_recovery_waits_for_planner_handoff() {
+    retained_handoff_race(0, true).await;
+}
+#[tokio::test]
+async fn u8c_fence_retained_recovery_refuses_clean_admitted_after_wait() {
+    retained_handoff_race(1, true).await;
+}
+#[tokio::test]
+async fn u8c_fence_retained_wake_behind_real_delete_holds_nothing() {
+    for cold in [true, false] {
+        retained_handoff_race(2, cold).await;
+    }
 }
 
 mod owner_reuse;

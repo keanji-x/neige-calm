@@ -67,7 +67,7 @@ async fn child_flow(window: Window) {
     .await;
     let mut parent_body = json!({"area_id":area["id"],"title":"parent","planner_provider":"codex",
             "theme":{"fg":[255,255,255],"bg":[0,0,0]}});
-    if window == Window::Workspace {
+    if matches!(window, Window::Workspace | Window::Installed) {
         let repository = fixture.root.path().join("attached");
         std::fs::create_dir(&repository).unwrap();
         for args in [
@@ -400,7 +400,59 @@ async fn child_flow(window: Window) {
             .await
             .unwrap();
         }
+        // Expire the original claim after Track has passed to the installed
+        // harness. Another real owner keeps Track throughout the re-drive:
+        // settlement must reuse the handle without entering workspace repair.
+        let retry_fence = if window == Window::Installed {
+            let fence = crate::per_card_lock::lock_key(
+                state.operation_runtime.track_delete_locks(),
+                &original.0,
+            )
+            .await;
+            let changed = sqlx::query(
+                "UPDATE operations SET lease_until_ms=0 WHERE id=?1 AND phase='spawn_started'",
+            )
+            .bind(&activation)
+            .execute(fixture.repo.pool())
+            .await
+            .unwrap();
+            assert_eq!(changed.rows_affected(), 1);
+            let effects = crate::test_seams::count_workspace_observation_for_test(
+                "track-metadata-before",
+                &fixture.root.path().join("attached"),
+            );
+            Some((fence, effects))
+        } else {
+            None
+        };
         installed.release.notify_one();
+        if let Some((fence, effects)) = retry_fence {
+            until(async || {
+                state
+                    .operation_runtime
+                    .operation_result(&activation)
+                    .await
+                    .unwrap()
+                    .is_some()
+            })
+            .await;
+            assert!(matches!(
+                state
+                    .operation_runtime
+                    .operation_result(&activation)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .outcome,
+                crate::operation::OperationOutcome::Succeeded { .. }
+            ));
+            assert_eq!(
+                effects.load(std::sync::atomic::Ordering::SeqCst),
+                0,
+                "installed re-drive must not run Git repair while another owner holds Track"
+            );
+            drop(fence);
+        }
         if window == Window::Failed {
             until(async || {
                 state

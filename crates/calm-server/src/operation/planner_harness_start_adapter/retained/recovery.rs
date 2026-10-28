@@ -117,12 +117,13 @@ impl PlannerHarnessStartAdapter {
         wire: &RetainedPayload,
         events: &crate::event::EventBus,
         track_delete_locks: &crate::per_card_lock::KeyedLocks,
+        held: HeldTrack,
     ) -> Result<()> {
         let track = self
             .retained_workspace(
                 wire,
                 track_delete_locks,
-                RetainedAdmission::Driven,
+                RetainedAdmission::Held(held.clone()),
                 RetainedPreparation::Locator,
             )
             .await?;
@@ -153,7 +154,7 @@ impl PlannerHarnessStartAdapter {
         )
         .resume_canonical_conversation(self.repo.as_ref(), &runtime, admission)
         .await?;
-        self.retained_spawn(wire, events, track_delete_locks)
+        self.retained_spawn(wire, events, track_delete_locks, held)
             .await?;
         Ok(())
     }

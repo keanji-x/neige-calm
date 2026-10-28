@@ -643,10 +643,10 @@ async fn c5_gitforge_reclaim_foreign_execution_retains_extra_on_delete() {
 }
 
 async fn foreign_execution_retains_extra(delete: bool) {
-    use workspace_runtime::execution::{TrackId, test_support};
+    use workspace_runtime::execution::TrackId;
     {
         let f = Fixture::new().await;
-        let mut intent = test_support::intent(f.clean.clone());
+        let mut intent = crate::support::execution::occupancy_intent(f.clean.clone());
         intent.metadata.consumer = "gate".into();
         intent.metadata.track = TrackId("foreign-owner".into());
         let id = intent.metadata.id.clone();
@@ -654,13 +654,16 @@ async fn foreign_execution_retains_extra(delete: bool) {
         let mut tx = calm_server::db::sqlite::begin_immediate_tx(f.b.repo.db())
             .await
             .unwrap();
-        let _ticket = engine.admit(&mut tx, intent).await.unwrap();
+        let ticket = engine.admit(&mut tx, intent).await.unwrap();
         tx.commit().await.unwrap();
+        engine.drive(ticket.committed());
         if delete {
+            assert_foreign_occupancy(&f, &id).await;
             let (status, body) = f.b.delete_track(&f.track).await;
             assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
         } else {
             f.close().await;
+            assert_foreign_occupancy(&f, &id).await;
             f.tick(&mut HashSet::new()).await;
         }
         assert!(f.clean.exists(), "occupied extra worktree must be retained");
@@ -672,6 +675,21 @@ async fn foreign_execution_retains_extra(delete: bool) {
                 .unwrap();
         assert_eq!(desired, "run", "foreign occupancy must not be stopped");
     }
+}
+
+async fn assert_foreign_occupancy(f: &Fixture, id: &workspace_runtime::execution::ExecutionId) {
+    use calm_truth::db::sqlite::workspace_execution::{Scope, location_occupancy};
+    let occupants = location_occupancy(
+        &mut f.b.repo.pool().acquire().await.unwrap(),
+        Scope::Track(&f.track),
+        std::slice::from_ref(&f.clean),
+    )
+    .await
+    .unwrap();
+    assert!(
+        occupants.contains(id),
+        "foreign execution must still occupy the extra worktree before reclaim"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

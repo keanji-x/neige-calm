@@ -11,6 +11,15 @@ use native_child::SupervisorChild;
 #[cfg(not(target_os = "macos"))]
 use std::process::Child as SupervisorChild;
 
+/// Keep location occupancy live throughout a lifecycle/reclaim assertion window.
+/// The owning supervisor fixture stops and reaps the process during cleanup.
+pub fn occupancy_intent(root: PathBuf) -> workspace_runtime::execution::ExecutionIntent {
+    let mut intent = workspace_runtime::execution::test_support::intent(root);
+    intent.metadata.program.program = "/bin/sleep".into();
+    intent.metadata.program.args = vec!["3600".into()];
+    intent
+}
+
 pub fn supervisor(
     journal_root: &Path,
 ) -> (

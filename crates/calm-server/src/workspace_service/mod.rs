@@ -3,8 +3,8 @@ pub(crate) mod identity;
 pub(crate) mod ports;
 mod repair;
 pub(crate) use repair::{
-    ManagedPreparation, RetainedAdmission, RetainedPreparation, managed_effect, retained_worktree,
-    selected_track,
+    HeldTrack, ManagedPreparation, RetainedAdmission, RetainedPreparation, managed_effect,
+    refuse_admitted_teardown, retained_worktree, selected_track,
 };
 pub(crate) mod reclaim;
 pub(crate) mod sweep;

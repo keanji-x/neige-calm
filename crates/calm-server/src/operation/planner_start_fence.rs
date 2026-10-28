@@ -193,7 +193,13 @@ impl CardStartFence {
             let invocation = registered.historical_human_invocation(source.clone());
             let result = self
                 .operation_runtime
-                .execute_with_adapter(registered.clone(), Arc::new(invocation), key, payload)
+                .execute_with_adapter(
+                    registered.clone(),
+                    Arc::new(invocation),
+                    key,
+                    payload,
+                    super::driver::InvocationTrackFence::ReleaseAfterPreparation,
+                )
                 .await?;
             source
                 .require_card(self.repo.as_ref(), card_id.as_str())

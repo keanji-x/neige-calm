@@ -814,3 +814,6 @@ async fn retained_native_refusal_preserves_original_unknown_without_private_erro
 mod claude_recovery;
 
 mod acp_recovery;
+
+#[path = "canonical_lifecycle_tests/track_contention.rs"]
+mod track_contention;

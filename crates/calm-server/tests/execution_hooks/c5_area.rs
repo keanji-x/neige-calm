@@ -14,7 +14,7 @@ async fn entered(p: &PausePoint) {
         .unwrap();
 }
 async fn admit(f: &Fixture, owner: &str, root: std::path::PathBuf) -> ExecutionId {
-    let mut intent = exec::test_support::intent(root);
+    let mut intent = crate::support::execution::occupancy_intent(root);
     intent.metadata.track = exec::TrackId(owner.into());
     let id = intent.metadata.id.clone();
     let mut tx = sqlite::begin_immediate_tx(f.repo.db()).await.unwrap();

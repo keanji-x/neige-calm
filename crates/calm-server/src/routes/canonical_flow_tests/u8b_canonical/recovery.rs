@@ -2,6 +2,15 @@
 use super::*;
 use crate::test_seams::{PausePoint, install_pause_for_test};
 
+// Release even when a rendezvous timeout or an observation assertion fails.
+struct ReleasePauseOnDrop<'a>(&'a PausePoint);
+
+impl Drop for ReleasePauseOnDrop<'_> {
+    fn drop(&mut self) {
+        self.0.release.notify_one();
+    }
+}
+
 async fn phase(
     events: &mut tokio::sync::broadcast::Receiver<crate::event::BroadcastEnvelope>,
     worker: &str,
@@ -127,6 +136,22 @@ async fn u8b_canonical_workspace_failure_holds_v2_and_repairs_once() {
             super::super::opencode_creation_tests::configure(&mut fixture);
         }
         let (state, app, cookie, auth) = fixture.application_with_auth(false).await;
+        // Keep the cold replay's background wake behind Card until the resource
+        // is restored and the ready rendezvous is armed.
+        let route = crate::state::RouteState::from_ref(&state);
+        let replay_fence = if provider == "opencode" && isolation == "none" {
+            Some(
+                crate::operation::planner_start_fence::CardStartFence::lock(
+                    &route.planner_recovery_locks,
+                    &route.repo,
+                    &route.operation_runtime,
+                    &original.0.clone().into(),
+                )
+                .await,
+            )
+        } else {
+            None
+        };
         assert!(
             create(&app, &cookie, "first", request_body.clone())
                 .await
@@ -178,20 +203,46 @@ async fn u8b_canonical_workspace_failure_holds_v2_and_repairs_once() {
         let mut events = state.events.subscribe();
         let ready = PausePoint::default();
         install_pause_for_test("retained-workspace-ready", &original.0, ready.clone());
+        let release_ready = ReleasePauseOnDrop(&ready);
         let mut native = if provider == "codex" {
             Some(connect(&state.shared_codex_appserver).await)
         } else {
             None
         };
         let began = std::time::Instant::now();
-        let repaired = post(&app, &cookie, "/api/tracks", "first", request_body.clone()).await;
-        tokio::time::timeout(Duration::from_secs(10), ready.entered.notified())
-            .await
-            .expect("actual materialization before retained claim");
-        assert!(worktree.is_dir());
-        read(&app, &cookie, &binding.track_id, MARKER).await;
-        assert_eq!(fixture.carrier(&binding.track_id).await, original);
-        ready.release.notify_one();
+        let old_wake_first = replay_fence.is_some();
+        drop(replay_fence);
+        if old_wake_first {
+            tokio::time::timeout(Duration::from_secs(10), ready.entered.notified())
+                .await
+                .expect("cold replay reaches ready before repair POST");
+        }
+        // Repair may queue behind the earlier wake's Track ownership until
+        // harness installation. Drive HTTP alongside the ready observation and
+        // native replies below, rather than await it while holding up either.
+        let repairing = {
+            let app = app.clone();
+            let cookie = cookie.clone();
+            let body = request_body.clone();
+            tokio::spawn(async move {
+                tokio::time::timeout(
+                    Duration::from_secs(10),
+                    post(&app, &cookie, "/api/tracks", "first", body),
+                )
+                .await
+            })
+        };
+        tokio::time::timeout(Duration::from_secs(10), async {
+            if !old_wake_first {
+                ready.entered.notified().await;
+            }
+            assert!(worktree.is_dir());
+            read(&app, &cookie, &binding.track_id, MARKER).await;
+            assert_eq!(fixture.carrier(&binding.track_id).await, original);
+        })
+        .await
+        .expect("actual materialization before retained claim");
+        drop(release_ready);
         if let Some((_, peer)) = native.as_mut() {
             let turn = tokio::time::timeout(Duration::from_secs(10), async {
                 loop {
@@ -239,6 +290,10 @@ async fn u8b_canonical_workspace_failure_holds_v2_and_repairs_once() {
         // A subscription precedes dispatch: even ACP's transient phase cannot be
         // missed by polling. Durable state below independently proves completion.
         phase(&mut events, &original.1, HarnessPhaseTag::TurnCompleted).await;
+        let repaired = repairing
+            .await
+            .unwrap()
+            .expect("repair POST completes after activation is released");
         eprintln!(
             "{provider} cold repair to durable completed event: {:?}",
             began.elapsed()

@@ -533,10 +533,10 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
     async fn preparation_track(
         &self,
         input: &Value,
-        _ctx: &crate::operation::SpawnCtx,
+        ctx: &crate::operation::SpawnCtx,
     ) -> Result<Option<String>> {
         if let Some(wire) = RetainedPayload::decode(input)? {
-            return Ok(Some(self.retained_preparation_track(&wire).await?));
+            return Ok(Some(self.retained_preparation_track(&wire, ctx).await?));
         }
         Ok(Some(
             super::assistant_start_wire::StartInput::decode(input)?
@@ -1539,7 +1539,12 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
     ) -> Result<SpawnOutcome> {
         if let Some(wire) = RetainedPayload::decode(&_op.payload)? {
             return self
-                .retained_spawn(&wire, &ctx.events, &ctx.track_delete_locks)
+                .retained_spawn(
+                    &wire,
+                    &ctx.events,
+                    &ctx.track_delete_locks,
+                    ctx.held_track()?,
+                )
                 .await;
         }
         let payload = super::assistant_start_wire::StartInput::decode(&_op.payload)?.payload;

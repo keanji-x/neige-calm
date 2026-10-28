@@ -285,6 +285,7 @@ impl TxOutput {
 
 #[derive(Clone)]
 pub struct SpawnCtx {
+    held_track: Option<crate::workspace_service::HeldTrack>,
     pub(crate) planner_clean_proof: Option<crate::provider_execution::clean::PlannerCleanProof>,
     pub(crate) reclaim_admission: Arc<tokio::sync::RwLock<()>>,
     pub location_admission: Option<location_admission::LocationAdmission>,
@@ -300,6 +301,17 @@ pub struct SpawnCtx {
 }
 
 impl SpawnCtx {
+    pub(crate) fn with_held_track(mut self, held: crate::workspace_service::HeldTrack) -> Self {
+        self.held_track = Some(held);
+        self
+    }
+
+    pub(crate) fn held_track(&self) -> Result<crate::workspace_service::HeldTrack> {
+        self.held_track
+            .clone()
+            .ok_or_else(|| CalmError::Conflict("invocation has no Track fence".into()))
+    }
+
     pub fn new(
         repo: Arc<dyn crate::db::RouteRepo>,
         operation_repo: Arc<dyn OperationRepo>,
@@ -321,6 +333,7 @@ impl SpawnCtx {
             execution: Default::default(),
             reclaim_admission: Default::default(),
             planner_clean_proof: None,
+            held_track: None,
         }
     }
 

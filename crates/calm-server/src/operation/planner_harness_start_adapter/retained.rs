@@ -5,7 +5,9 @@ use crate::conversation_inputs::InputSource;
 use crate::db::sqlite::conversation::{self, RuntimeExecutionFence};
 use crate::harness::snapshot::CanonicalHarnessSnapshot;
 use crate::mcp_server::wiring::mint_card_mcp_token_pair;
-use crate::workspace_service::{RetainedAdmission, RetainedPreparation};
+use crate::workspace_service::{
+    HeldTrack, RetainedAdmission, RetainedPreparation, refuse_admitted_teardown,
+};
 
 mod binding;
 mod recovery;
@@ -121,8 +123,15 @@ impl PlannerHarnessStartAdapter {
     pub(super) async fn retained_preparation_track(
         &self,
         wire: &RetainedPayload,
+        ctx: &SpawnCtx,
     ) -> Result<String> {
-        Ok(self.retained_target(wire).await?.track_id)
+        let track = self.retained_target(wire).await?.track_id;
+        let admission = ctx
+            .location_admission
+            .as_ref()
+            .ok_or_else(|| CalmError::Internal("location admission is not configured".into()))?;
+        refuse_admitted_teardown(&admission.teardown_targets, &track)?;
+        Ok(track)
     }
 
     async fn retained_target(&self, wire: &RetainedPayload) -> Result<Target> {
@@ -332,14 +341,34 @@ impl PlannerHarnessStartAdapter {
                     payload_hash: crate::routes::idempotency_key::stable_payload_hash(&payload)?,
                 };
                 runtime
-                    .execute_with_adapter(self.clone(), Arc::new(bound.clone()), key, payload)
+                    .execute_with_adapter(
+                        self.clone(),
+                        Arc::new(bound.clone()),
+                        key,
+                        payload,
+                        super::super::driver::InvocationTrackFence::HoldUntilHandoff,
+                    )
                     .await?;
             } else {
                 // The existing lifecycle order is card -> operation drive. This
                 // recovery creates no operation and cannot re-enter the driver.
-                let _operations = runtime.lock_for_track_delete().await;
+                let (_operations, held) = loop {
+                    let operations = runtime.lock_for_track_delete().await;
+                    let track = bound
+                        .retained_preparation_track(&wire, runtime.reclaim_context())
+                        .await?;
+                    if let Some(guard) =
+                        crate::per_card_lock::try_lock_key(runtime.track_delete_locks(), &track)
+                    {
+                        break (operations, HeldTrack::new(guard));
+                    }
+                    drop(operations);
+                    drop(
+                        crate::per_card_lock::lock_key(runtime.track_delete_locks(), &track).await,
+                    );
+                };
                 bound
-                    .recover_retained(&wire, events, runtime.track_delete_locks())
+                    .recover_retained(&wire, events, runtime.track_delete_locks(), held)
                     .await?;
             }
         }
@@ -400,12 +429,15 @@ impl PlannerHarnessStartAdapter {
         op: &Operation,
         ctx: &SpawnCtx,
     ) -> Result<AppServerInteractOutcome> {
+        #[cfg(feature = "fixtures")]
+        crate::test_seams::pause_point("conversation-start-prepared", &wire.card_id).await;
         let target = self.retained_target(wire).await?;
+        let _track = ctx.held_track()?.require_held(&target.track_id)?;
         if let Some(thread) = target.snapshot.header.last_thread_id {
             self.retained_workspace(
                 wire,
                 &ctx.track_delete_locks,
-                RetainedAdmission::Driven,
+                RetainedAdmission::Held(ctx.held_track()?),
                 RetainedPreparation::Locator,
             )
             .await?;
@@ -427,7 +459,7 @@ impl PlannerHarnessStartAdapter {
             .retained_workspace(
                 wire,
                 &ctx.track_delete_locks,
-                RetainedAdmission::Driven,
+                RetainedAdmission::Held(ctx.held_track()?),
                 RetainedPreparation::Managed(self.retained_source()?.1.to_path_buf()),
             )
             .await?;
@@ -670,15 +702,10 @@ impl PlannerHarnessStartAdapter {
         wire: &RetainedPayload,
         events: &crate::event::EventBus,
         track_delete_locks: &crate::per_card_lock::KeyedLocks,
+        held: HeldTrack,
     ) -> Result<SpawnOutcome> {
-        self.retained_workspace(
-            wire,
-            track_delete_locks,
-            RetainedAdmission::Driven,
-            RetainedPreparation::Locator,
-        )
-        .await?;
-        let target = self.retained_admit(wire).await?;
+        let target = self.retained_target(wire).await?;
+        held.require_track(&target.track_id)?;
         self.require_retained_backend(&target)?;
         let thread = target
             .snapshot
@@ -689,10 +716,31 @@ impl PlannerHarnessStartAdapter {
                 CalmError::Conflict("retained native activation is unresolved".into())
             })?;
         if self.harness_registry.get(&wire.worker_session_id).is_some() {
+            let current = self.retained_admit(wire).await?;
+            held.require_track(&current.track_id)?;
+            let handle = self
+                .harness_registry
+                .get(&wire.worker_session_id)
+                .ok_or_else(|| CalmError::Conflict("retained handle is not installed".into()))?;
+            if handle.track_id().as_str() != current.track_id {
+                return Err(CalmError::Conflict("retained handle Track changed".into()));
+            }
+            held.release();
             return Ok(SpawnOutcome::Ready(SpawnHandle::Harness {
                 worker_session_id: wire.worker_session_id.clone(),
             }));
         }
+        // A replay after handoff may only reuse the validated installed handle.
+        // Missing handles fail closed in Held admission; never wait for Track
+        // while this invocation owns operation drive.
+        self.retained_workspace(
+            wire,
+            track_delete_locks,
+            RetainedAdmission::Held(held.clone()),
+            RetainedPreparation::Locator,
+        )
+        .await?;
+        let target = self.retained_admit(wire).await?;
         let reservation = self
             .harness_registry
             .try_reserve(wire.worker_session_id.clone())
@@ -759,6 +807,10 @@ impl PlannerHarnessStartAdapter {
                 "retained handle installation changed".into(),
             ));
         }
+        // The installed harness acquires Track for its own issuance. Release all
+        // invocation clones before it runs; drive still serializes clean/DELETE
+        // through SpawnSucceeded persistence and operation settlement.
+        held.release();
         #[cfg(feature = "fixtures")]
         crate::test_seams::pause_point("u11-retained-installed", &wire.card_id).await;
         Ok(SpawnOutcome::Ready(SpawnHandle::Harness {

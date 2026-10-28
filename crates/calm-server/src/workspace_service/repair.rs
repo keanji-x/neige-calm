@@ -1,5 +1,5 @@
 //! Lifecycle ownership for canonical locator materialization and retained repair.
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use workspace_runtime::sweep::TeardownTargets;
 
 use crate::{
@@ -9,14 +9,72 @@ use crate::{
     per_card_lock::{KeyedLockGuard, KeyedLocks, lock_key, try_lock_key},
 };
 
-/// Live wake owns no operation drive; driven preparation must never wait for Track.
+/// Shared Track ownership until the invocation hands off to its installed harness.
+#[derive(Clone)]
+pub(crate) struct HeldTrack {
+    track: Arc<str>,
+    guard: Arc<Mutex<TrackOwnership>>,
+}
+// A handed-off invocation retains identity, but cannot authorize effects.
+enum TrackOwnership {
+    Held(Arc<KeyedLockGuard>),
+    HandedOff,
+}
+impl HeldTrack {
+    pub(crate) fn new(guard: KeyedLockGuard) -> Self {
+        Self {
+            track: Arc::from(guard.key()),
+            guard: Arc::new(Mutex::new(TrackOwnership::Held(Arc::new(guard)))),
+        }
+    }
+    /// Release once for every clone, including the driver's settlement context.
+    pub(crate) fn release(&self) {
+        *self.guard.lock().expect("HeldTrack mutex poisoned") = TrackOwnership::HandedOff;
+    }
+    /// Borrow real ownership for the complete effect, including cancellation.
+    /// Release prevents new admissions; an admitted repair keeps its own guard.
+    pub(crate) fn require_held(&self, track: &str) -> Result<Arc<KeyedLockGuard>> {
+        self.require_track(track)?;
+        match &*self.guard.lock().expect("HeldTrack mutex poisoned") {
+            TrackOwnership::Held(guard) => Ok(guard.clone()),
+            TrackOwnership::HandedOff => Err(CalmError::Conflict(
+                "invocation has handed off its Track fence".into(),
+            )),
+        }
+    }
+    /// Identity survives handoff for validating an installed handle, not effects.
+    pub(crate) fn require_track(&self, track: &str) -> Result<()> {
+        if self.track.as_ref() != track {
+            return Err(CalmError::Conflict(
+                "held Track does not match workspace".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone)]
 pub(crate) enum RetainedAdmission {
     Live(TeardownTargets),
-    // An accepted HTTP send must not wait behind a lifecycle owner that may
-    // itself be waiting for ingress. Busy handoffs defer to the fenced wake.
+    // Accepted HTTP sends defer busy repair to the fenced wake.
     Handoff(TeardownTargets),
-    Driven,
+    Held(HeldTrack),
+}
+
+pub(crate) fn refuse_admitted_teardown(targets: &TeardownTargets, track: &str) -> Result<()> {
+    if targets
+        .snapshot_with_owners()
+        .iter()
+        .any(|(owner, _)| owner == track)
+    {
+        return Err(CalmError::WorkspaceBusy(track.to_owned()));
+    }
+    Ok(())
+}
+
+enum TrackHold {
+    Owned { _guard: KeyedLockGuard },
+    Held { _guard: Arc<KeyedLockGuard> },
 }
 
 /// Preserve retained callers' original preparation point. Locator repair alone
@@ -55,23 +113,19 @@ where
             // contract. A clean admitted later may serialize on Track; this
             // check grants no filesystem effect. Only Track and the re-read
             // below authorize repair, including after deletion or repointing.
-            if targets
-                .snapshot_with_owners()
-                .iter()
-                .any(|(owner, _)| owner == track)
-            {
-                return Err(CalmError::WorkspaceBusy(track.to_owned()));
-            }
-            if wait {
-                lock_key(locks, track).await
-            } else {
-                try_lock_key(locks, track)
-                    .ok_or_else(|| CalmError::WorkspaceBusy(track.to_owned()))?
+            refuse_admitted_teardown(&targets, track)?;
+            TrackHold::Owned {
+                _guard: if wait {
+                    lock_key(locks, track).await
+                } else {
+                    try_lock_key(locks, track)
+                        .ok_or_else(|| CalmError::WorkspaceBusy(track.to_owned()))?
+                },
             }
         }
-        RetainedAdmission::Driven => {
-            try_lock_key(locks, track).ok_or_else(|| CalmError::WorkspaceBusy(track.to_owned()))?
-        }
+        RetainedAdmission::Held(held) => TrackHold::Held {
+            _guard: held.require_held(track)?,
+        },
     };
     let workspace_root = match preparation {
         RetainedPreparation::Locator => None,
@@ -81,7 +135,7 @@ where
 }
 
 /// Canonical HTTP creation owns no operation drive and may wait for clean or
-/// deletion. Driven retained callers use non-waiting admission above instead.
+/// deletion. Retained invocations supply their existing Track ownership above.
 pub(super) async fn selected_worktree<F, A>(
     repo: Arc<dyn RouteRepo>,
     locks: &KeyedLocks,
@@ -94,14 +148,22 @@ where
     A: std::future::Future<Output = Result<()>> + Send,
 {
     let lifecycle = lock_key(locks, selected.id.as_str()).await;
-    fenced_worktree(repo, lifecycle, selected, repair, None, admit).await
+    fenced_worktree(
+        repo,
+        TrackHold::Owned { _guard: lifecycle },
+        selected,
+        repair,
+        None,
+        admit,
+    )
+    .await
 }
 
 // Neither admission nor Git re-enters operation drive. Share the same post-lock
 // read and cancellation ownership for both lifecycle admission modes.
 async fn fenced_worktree<F, A>(
     repo: Arc<dyn RouteRepo>,
-    lifecycle: KeyedLockGuard,
+    lifecycle: TrackHold,
     selected: &Track,
     repair: bool,
     workspace_root: Option<std::path::PathBuf>,
@@ -156,7 +218,7 @@ where
     let lifecycle = lock_key(locks, selected.id.as_str()).await;
     fenced_selection(
         repo,
-        lifecycle,
+        TrackHold::Owned { _guard: lifecycle },
         selected,
         move |current, mut cancelled| async move {
             admit().await?;
@@ -190,7 +252,7 @@ pub(crate) async fn selected_track(repo: &dyn RouteRepo, selected: &Track) -> Re
 
 async fn fenced_selection<E, EF, T>(
     repo: Arc<dyn RouteRepo>,
-    lifecycle: KeyedLockGuard,
+    lifecycle: TrackHold,
     selected: &Track,
     effect: E,
 ) -> Result<T>
