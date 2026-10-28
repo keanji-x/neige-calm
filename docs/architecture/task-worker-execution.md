@@ -305,6 +305,9 @@ worker 档是一份**类型化的角色档**（Planner 档的字节由 golden �
   不再取自 kernel；只有代理值取自 kernel。部署影响：kernel 与 supervisor 由同一 unit、同一用户启动时两者同源，行为与 Legacy 一致；
   若两者环境不同，白名单键随 supervisor，代理随 kernel。只设在 supervisor 环境里的代理不再到达 worker（Legacy 会经白名单带上），
   须改在 settings 或 kernel 环境中设置；kernel 的秘密代理以载荷送达，而不像 terminal-worker 那样拒绝启动。Planner 的 `base_env` 不变。
+- **C/D 接缝**：C 提供 `WorkerLaunch`、`WorkerMcpToken` 与 `WorkerTurnLedger` 合同，不切换 Legacy 生产入口，也不把载荷写进 `tx_output`。
+  D 接入 worker owner、持久 ledger 实现、turn 发行与准入/释放授权；在准入事务授权后 mint token，仅把公开启动信息/执行标识写入 `tx_output`，
+  载荷保留内存并只交给 `release::send`。D 的集成测试须核对实际 operations/terminal/execution/输出记录无秘密，不能以 C 的 intent 单测替代。
 - 只有 Codex Planner 的部署：worker 不读 Claude Planner 配置，所以不受影响；仍受 OQ8（Engine）约束。
 
 验收：`w_claude_worker_env_uses_user_config`（`UserHome` 下环境无 `CLAUDE_CONFIG_DIR`、含 HOME 与白名单键）、

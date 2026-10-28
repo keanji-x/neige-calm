@@ -40,9 +40,7 @@ impl WorkerEnvironment<'_> {
     /// The supervisor's allowlist without its proxies: every proxy comes from [`kernel_proxy`], so a
     /// secret one travels in the payload instead of being refused at spawn.
     pub(crate) fn ambient() -> AmbientEnvironment {
-        AmbientEnvironment::SupervisorAllowed {
-            proxy_policy: AmbientProxyPolicy::Exclude,
-        }
+        AmbientEnvironment::None
     }
 
     /// Every kernel-valued entry before the release split.

@@ -20,6 +20,7 @@ use uuid::Uuid;
 #[derive(Default)]
 struct Ledger {
     refuse_init: bool,
+    refuse_outcome: bool,
     inits: Mutex<Vec<(WorkerTurnKey, WorkerInitRecord)>>,
     outcomes: Mutex<Vec<(WorkerTurnKey, WorkerTurnRecord)>>,
 }
@@ -36,6 +37,9 @@ impl WorkerTurnLedger for Ledger {
         Ok(())
     }
     async fn record_outcome(&self, turn: &WorkerTurnKey, record: &WorkerTurnRecord) -> Result<()> {
+        if self.refuse_outcome {
+            return Err(CalmError::Conflict("ledger unavailable".into()));
+        }
         self.outcomes
             .lock()
             .unwrap()
@@ -334,4 +338,72 @@ async fn worker_sink_unrecorded_init_stops_the_turn() {
         matches!(&outcomes[0].1.outcome, WorkerTurnOutcome::Failed { message } if message.starts_with("init not recorded")),
         "{outcomes:?}"
     );
+}
+
+/// Exercise the completion port without a process: persistence failure and identity checks
+/// must leave completion unqualified so the owner retains the claim for recovery.
+#[tokio::test]
+async fn worker_sink_completion_requires_matching_identity_and_a_durable_write() {
+    use super::sink::WorkerEnd;
+    use calm_truth::db::sqlite::provider_execution::{Decision, Purpose, Release, Version};
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let record = execution::Record {
+        version: Version::V1,
+        execution_id: "execution-1".into(),
+        purpose: Purpose::RewindCheck,
+        release: Release::Held,
+        decision: Decision::Observing,
+    };
+    for (session, execution_id, refuse_outcome) in [
+        ("other-session", "execution-1", false),
+        (SESSION, "other-execution", false),
+        (SESSION, "execution-1", true),
+        (SESSION, "execution-1", false),
+    ] {
+        let ledger = Arc::new(Ledger {
+            refuse_outcome,
+            ..Ledger::default()
+        });
+        let slot = Arc::new(TurnSlot::new(tokio::io::sink(), Duration::from_secs(12)));
+        let qualified = Arc::new(AtomicBool::new(false));
+        let turn = WorkerTurnKey {
+            worker_session_id: SESSION.into(),
+            intent_key: "turn-1".into(),
+            execution_id: execution_id.into(),
+        };
+        let end = WorkerEnd {
+            turn: turn.clone(),
+            outcome: WorkerTurnOutcome::Completed,
+            slot: slot.clone(),
+            ledger: ledger.clone(),
+            qualified: qualified.clone(),
+        };
+        let result = end
+            .settle(
+                session,
+                &record,
+                &execution::CompletionEvidence::Unconfirmed,
+            )
+            .await;
+        if session != SESSION || execution_id != record.execution_id || refuse_outcome {
+            assert!(matches!(result, Err(CalmError::Conflict(_))));
+            assert!(ledger.outcomes.lock().unwrap().is_empty());
+            assert!(!*slot.settled.borrow());
+        } else {
+            result.unwrap();
+            assert_eq!(
+                *ledger.outcomes.lock().unwrap(),
+                [(
+                    turn,
+                    WorkerTurnRecord {
+                        outcome: WorkerTurnOutcome::Completed,
+                        settled: false,
+                    }
+                )]
+            );
+            assert!(*slot.settled.borrow());
+        }
+        assert!(!qualified.load(Ordering::Acquire));
+    }
 }
