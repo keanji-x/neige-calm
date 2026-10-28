@@ -14,15 +14,13 @@ use uuid::Uuid;
 /// connected kernel MCP server. The owner's skills and plugins are the worker's own (OQ4, WA0 E6),
 /// and the version is recorded through the turn port, never pinned (§3.4.1, K4). A permission
 /// request the CLI still sends is denied back to the model by the sink (OQ3).
-pub(crate) struct WorkerRole {
-    pub thread: Uuid,
-}
-impl ProtocolProfile for WorkerRole {
+pub(crate) type WorkerRole = WorkerStart;
+impl ProtocolProfile for WorkerStart {
     fn thread(&self) -> Uuid {
-        self.thread
+        WorkerStart::thread(self)
     }
     fn init_check(&self, init: &SystemInit) -> std::result::Result<(), String> {
-        session_checks(init, self.thread)
+        session_checks(init, self.thread())
     }
 }
 
@@ -47,6 +45,10 @@ pub(crate) enum WorkerStart {
     Resume(ReportedSession),
 }
 impl WorkerStart {
+    pub(crate) fn role(self) -> WorkerRole {
+        self
+    }
+
     pub(crate) fn thread(&self) -> Uuid {
         match self {
             Self::New(thread) | Self::Resume(ReportedSession(thread)) => *thread,

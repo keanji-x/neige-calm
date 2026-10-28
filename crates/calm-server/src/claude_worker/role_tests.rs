@@ -1,5 +1,5 @@
 //! The worker argv and init contract, pinned by exact equality (§3.4).
-use super::{WorkerArgs, WorkerInitRecord, WorkerRole, WorkerStart};
+use super::{WorkerArgs, WorkerInitRecord, WorkerStart};
 use crate::claude_planner::role::{LaunchRole, ProtocolProfile};
 use provider::claude::protocol::SystemInit;
 use std::path::Path;
@@ -119,13 +119,13 @@ fn init(json: serde_json::Value) -> SystemInit {
 
 #[test]
 fn w_claude_worker_init_check_accepts_owner_skills_plugins_and_any_version() {
-    let role = WorkerRole { thread: thread() };
+    let role = WorkerStart::New(thread()).role();
     assert_eq!(role.init_check(&init(serde_json::json!({}))), Ok(()));
 }
 
 #[test]
 fn w_claude_worker_init_check_refuses_session_capability_and_mcp() {
-    let role = WorkerRole { thread: thread() };
+    let role = WorkerStart::New(thread()).role();
     for broken in [
         serde_json::json!({"session_id": Uuid::new_v4()}),
         serde_json::json!({"capabilities": []}),
@@ -133,5 +133,21 @@ fn w_claude_worker_init_check_refuses_session_capability_and_mcp() {
         serde_json::json!({"mcp_servers": []}),
     ] {
         assert!(role.init_check(&init(broken.clone())).is_err(), "{broken}");
+    }
+}
+
+#[test]
+fn worker_start_is_the_argv_and_profile_session() {
+    let recorded = WorkerInitRecord {
+        session: thread(),
+        claude_code_version: "any".into(),
+    };
+    for start in [WorkerStart::New(thread()), recorded.resume()] {
+        let role = start.role();
+        assert_eq!(ProtocolProfile::thread(&role), start.thread());
+        assert!(argv(start).windows(2).any(|pair| {
+            matches!(pair[0].as_str(), "--session-id" | "--resume")
+                && pair[1] == ProtocolProfile::thread(&role).to_string()
+        }));
     }
 }

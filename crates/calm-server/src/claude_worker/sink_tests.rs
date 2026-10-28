@@ -3,7 +3,7 @@
 //! durable contract of its turn port.
 use super::sink::NO_APPROVER;
 use super::{
-    WorkerInitRecord, WorkerRole, WorkerSink, WorkerTurnKey, WorkerTurnLedger, WorkerTurnOutcome,
+    WorkerInitRecord, WorkerSink, WorkerStart, WorkerTurnKey, WorkerTurnLedger, WorkerTurnOutcome,
     WorkerTurnRecord,
 };
 use crate::claude_planner::protocol_tests::{Admitted, SESSION, admitted};
@@ -22,8 +22,12 @@ struct Ledger {
     refuse_init: bool,
     refuse_outcome: bool,
     refuse_result: bool,
+    commit_then_err: bool,
+    commit_after_timeout: bool,
+    result_attempts: std::sync::atomic::AtomicUsize,
+    pending_result: tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
     inits: Mutex<Vec<(WorkerTurnKey, WorkerInitRecord)>>,
-    results: Mutex<Vec<(WorkerTurnKey, WorkerTurnOutcome)>>,
+    results: Arc<Mutex<Vec<(WorkerTurnKey, WorkerTurnOutcome)>>>,
     outcomes: Mutex<Vec<(WorkerTurnKey, WorkerTurnRecord)>>,
 }
 #[async_trait::async_trait]
@@ -42,10 +46,36 @@ impl WorkerTurnLedger for Ledger {
         if self.refuse_result {
             return Err(CalmError::Conflict("ledger unavailable".into()));
         }
-        self.results
-            .lock()
-            .unwrap()
-            .push((turn.clone(), result.clone()));
+        let first = self
+            .result_attempts
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+            == 0;
+        if first && self.commit_after_timeout {
+            let (sender, receiver) = tokio::sync::oneshot::channel::<()>();
+            let results = self.results.clone();
+            let fact = (turn.clone(), result.clone());
+            *self.pending_result.lock().await = Some(tokio::spawn(async move {
+                // Cancellation of the timed-out call releases the independent commit.
+                let _ = receiver.await;
+                results.lock().unwrap().push(fact);
+            }));
+            let _sender = sender;
+            std::future::pending::<()>().await;
+        }
+        if let Some(commit) = self.pending_result.lock().await.take() {
+            commit.await.unwrap();
+        }
+        let mut results = self.results.lock().unwrap();
+        if let Some((_, existing)) = results.iter().find(|(key, _)| key == turn) {
+            if existing != result {
+                return Err(CalmError::Conflict("result changed".into()));
+            }
+        } else {
+            results.push((turn.clone(), result.clone()));
+        }
+        if first && self.commit_then_err {
+            return Err(CalmError::Conflict("commit acknowledgement lost".into()));
+        }
         Ok(())
     }
     async fn record_outcome(&self, turn: &WorkerTurnKey, record: &WorkerTurnRecord) -> Result<()> {
@@ -187,7 +217,7 @@ async fn run(
             claim,
             guard,
             stdout: EngineStdio::new((*fixture.engine).clone(), id.clone()),
-            profile: WorkerRole { thread },
+            profile: WorkerStart::New(thread).role(),
         },
     );
     let stop = async {
@@ -236,13 +266,14 @@ async fn run(
             .unwrap();
     // The protocol loop owned the execution end to end: stdin closed, driver gone, claim cleared.
     assert!(slot.stdin.lock().await.is_none());
-    assert!(*slot.settled.borrow());
+    assert_eq!(*slot.settled.borrow(), !ledger.refuse_result);
     assert!(!owner.drivers.contains(&id));
     assert!(
         calm_truth::db::sqlite::provider_execution::load(pool.read_pool(), SESSION)
             .await
             .unwrap()
             .is_none()
+            != ledger.refuse_result
     );
     Ran {
         ledger,
@@ -522,12 +553,7 @@ async fn w_protocol_worker_unrecorded_result_never_completes() {
     .await;
     assert!(!ran.qualified);
     assert!(results(&ran).is_empty());
-    let outcomes = outcome(&ran);
-    assert_eq!(outcomes.len(), 1);
-    assert!(
-        matches!(&outcomes[0].1.outcome, WorkerTurnOutcome::Failed { message } if message.starts_with("result not recorded")),
-        "{outcomes:?}"
-    );
+    assert!(outcome(&ran).is_empty());
 }
 
 /// The profile's thread is the turn's only session: an init naming another one fails the turn
@@ -549,5 +575,44 @@ async fn w_protocol_worker_init_for_another_session_fails() {
     assert!(
         matches!(&outcomes[0].1.outcome, WorkerTurnOutcome::Failed { message } if message.starts_with("protocol:")),
         "{outcomes:?}"
+    );
+}
+
+/// An uncertain acknowledgement cannot change the result fact into a failed outcome.
+#[tokio::test]
+async fn w_protocol_worker_result_commit_then_err_replays_same_outcome() {
+    uncertain_result(Ledger {
+        commit_then_err: true,
+        ..Ledger::default()
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn w_protocol_worker_result_commits_after_timeout_replays_same_outcome() {
+    uncertain_result(Ledger {
+        commit_after_timeout: true,
+        ..Ledger::default()
+    })
+    .await;
+}
+
+async fn uncertain_result(ledger: Ledger) {
+    let ran = run(
+        ledger,
+        json!({}),
+        |_, _| {},
+        "cat init.json result.json",
+        Then::Finish,
+    )
+    .await;
+    expect_result(&ran, WorkerTurnOutcome::Completed);
+    expect_outcome(&ran, WorkerTurnOutcome::Completed);
+    assert!(ran.qualified);
+    assert_eq!(
+        ran.ledger
+            .result_attempts
+            .load(std::sync::atomic::Ordering::SeqCst),
+        2
     );
 }

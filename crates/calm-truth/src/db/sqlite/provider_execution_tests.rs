@@ -661,3 +661,20 @@ async fn c4_admission_refuses_terminal_bound_session() {
     ));
     assert!(load(&mut **tx, "worker").await.unwrap().is_none());
 }
+
+#[tokio::test]
+async fn claim_session_comes_from_its_row_through_admit_load_list_and_replace() {
+    let db = fixture().await;
+    let mut tx = db.writer_pool().begin().await.unwrap();
+    let claim = applied(admission(&mut tx, "exec").await);
+    assert_eq!(claim.session(), "worker");
+    let next = applied(advance_release(&mut tx, "worker", &claim, 7).await.unwrap());
+    assert_eq!(next.session(), "worker");
+    tx.commit().await.unwrap();
+    let loaded = load(db.read_pool(), "worker").await.unwrap().unwrap();
+    assert_eq!(loaded.session(), "worker");
+    assert_eq!(loaded, next);
+    let listed = list(db.read_pool()).await.unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].1.as_ref().unwrap().session(), listed[0].0);
+}

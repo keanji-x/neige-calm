@@ -68,21 +68,28 @@ pub struct Record {
 /// A stale claim must be re-read; it never authorizes adopting another execution.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Claim {
+    session: String,
     record: Record,
     json: String,
 }
 impl Claim {
+    /// The database row that owns this claim; not part of the persisted record JSON.
+    pub fn session(&self) -> &str {
+        &self.session
+    }
     pub fn record(&self) -> &Record {
         &self.record
     }
-    fn decode(json: String) -> Result<Self> {
+    fn decode(session: &str, json: String) -> Result<Self> {
         Ok(Self {
+            session: session.into(),
             record: serde_json::from_str(&json)?,
             json,
         })
     }
-    fn encode(record: Record) -> Result<Self> {
+    fn encode(session: &str, record: Record) -> Result<Self> {
         Ok(Self {
+            session: session.into(),
             json: serde_json::to_string(&record)?,
             record,
         })
@@ -106,7 +113,8 @@ pub async fn load<'a>(
             .bind(worker_session_id)
             .fetch_one(executor)
             .await?;
-    json.map(Claim::decode).transpose()
+    json.map(|json| Claim::decode(worker_session_id, json))
+        .transpose()
 }
 
 /// Durable sweep inventory, including both Observing and Stopping claims.
@@ -123,8 +131,8 @@ pub async fn list<'a>(
     .await?;
     rows.into_iter()
         .map(|row| {
-            let id = row.try_get("id")?;
-            let claim = (|| Claim::decode(row.try_get("provider_execution_json")?))();
+            let id: String = row.try_get("id")?;
+            let claim = (|| Claim::decode(&id, row.try_get("provider_execution_json")?))();
             Ok((id, claim))
         })
         .collect()
@@ -155,16 +163,19 @@ pub async fn admit(
             "terminal-bound session cannot hold a provider execution",
         ));
     }
-    let claim = Claim::encode(Record {
-        version: Version::V1,
-        execution_id,
-        purpose,
-        release: match release {
-            InitialRelease::NotRequired => Release::NotRequired,
-            InitialRelease::Held => Release::Held,
+    let claim = Claim::encode(
+        session,
+        Record {
+            version: Version::V1,
+            execution_id,
+            purpose,
+            release: match release {
+                InitialRelease::NotRequired => Release::NotRequired,
+                InitialRelease::Held => Release::Held,
+            },
+            decision: Decision::Observing,
         },
-        decision: Decision::Observing,
-    })?;
+    )?;
     let changed = sqlx::query(
         "UPDATE worker_sessions SET provider_execution_json = ?
          WHERE id = ? AND provider_execution_json IS NULL
@@ -229,7 +240,7 @@ async fn replace(
     expected: &Claim,
     record: Record,
 ) -> Result<Cas<Claim>> {
-    let next = Claim::encode(record)?;
+    let next = Claim::encode(session, record)?;
     match compare_exchange(tx, session, expected, Some(&next.json)).await? {
         Cas::Applied(()) => Ok(Cas::Applied(next)),
         Cas::LostOwnership => Ok(Cas::LostOwnership),
