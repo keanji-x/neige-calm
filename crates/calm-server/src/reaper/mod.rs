@@ -2,6 +2,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use calm_exec::SpawnCtx;
+use calm_truth::worker_binding::{operation_idempotency_key, session_is_card_current_tx};
 use calm_types::worker::{
     DeathVerdict, ExitInterpretation, Liveness, SessionMode, WorkerSession, WorkerSessionId,
     WorkerSessionState,
@@ -18,7 +19,9 @@ use crate::event::{Event, EventBus, EventScope};
 use crate::git_candidate::delivery::AttemptOutcome;
 use crate::ids::ActorId;
 use crate::model::now_ms;
-use crate::operation::workspace_lease::{ReleaseDelivery, release_workspace_lease_for_card_tx};
+use crate::operation::workspace_lease::{
+    EndedAttempt, ReleaseDelivery, release_ended_attempt_lease_for_card_tx,
+};
 use crate::provider_registry::WorkerProviderRegistry;
 use crate::state::WriteContext;
 
@@ -293,7 +296,25 @@ impl Reaper {
                             .await
                             {
                                 Ok(true) => {}
-                                Ok(false) => continue,
+                                Ok(false) => {
+                                    // Not this session's to converge; still record what was observed.
+                                    let observed = Liveness::Exited {
+                                        evidence: evidence.clone(),
+                                    };
+                                    if let Err(e) = self
+                                        .repo
+                                        .session_set_liveness(&session.id, &observed, now)
+                                        .await
+                                    {
+                                        tracing::warn!(
+                                            session_id = %session.id,
+                                            provider = session.provider.as_db_str(),
+                                            error = %e,
+                                            "reaper: failed to persist superseded-session liveness observation"
+                                        );
+                                    }
+                                    continue;
+                                }
                                 Err(e) => {
                                     tracing::warn!(
                                         session_id = %session.id,
@@ -383,7 +404,8 @@ impl Reaper {
     }
 }
 
-/// Returns false for superseded discovery; the caller must leave that session alone.
+/// Returns false for superseded discovery; the caller must not converge or terminalize that
+/// session.
 pub(crate) async fn converge_dead_worker(
     repo: &dyn Repo,
     events: &EventBus,
@@ -422,17 +444,17 @@ async fn converge_dead_worker_tx(
     let Some(session) = session_get_tx(tx, session_id).await? else {
         return Ok((false, Vec::new()));
     };
-    let current = if let Some(card_id) = session.card_id.as_ref() {
-        sqlx::query_scalar::<_, bool>(
-        "SELECT EXISTS(SELECT 1 FROM cards WHERE id = ?1 AND session_id = ?2 AND track_id = ?3)",
-    )
-    .bind(card_id.as_str())
-    .bind(session.id.as_str())
-    .bind(session.track_id.as_str())
-    .fetch_one(&mut **tx)
-    .await?
-    } else {
-        true
+    let current = match session.card_id.as_ref() {
+        Some(card_id) => {
+            session_is_card_current_tx(
+                tx,
+                card_id.as_str(),
+                session.id.as_str(),
+                session.track_id.as_str(),
+            )
+            .await?
+        }
+        None => true,
     };
     if session.state.is_terminal() || !current {
         return Ok((false, Vec::new()));
@@ -441,27 +463,20 @@ async fn converge_dead_worker_tx(
     let Some(card_id) = session.card_id.as_ref() else {
         return Ok((true, Vec::new()));
     };
-    let task_id = if let Some(op_id) = session.spawn_op_id.as_deref() {
-        sqlx::query_scalar::<_, Option<String>>(
-            "SELECT idempotency_key FROM operations WHERE id = ?1",
-        )
-        .bind(op_id)
-        .fetch_optional(&mut **tx)
-        .await?
-        .flatten()
-    } else {
-        None
+    let task_id = match session.spawn_op_id.as_deref() {
+        Some(op_id) => operation_idempotency_key(&mut **tx, op_id).await?,
+        None => None,
     };
     let track = track_find_tx(tx, session.track_id.as_str()).await?;
     let mut events = Vec::new();
     let mut delivery = ReleaseDelivery::CommitAsTaskEnded;
-    if let (Some(task_id), Some(track)) = (task_id, track) {
-        let owns_key = worker_op_targets_card_tx(tx, &task_id, card_id.as_str()).await?;
+    if let (Some(task_id), Some(track)) = (task_id.as_deref(), track) {
+        let owns_key = worker_op_targets_card_tx(tx, task_id, card_id.as_str()).await?;
         // The legacy probe positively confirmed death. The card guard includes
         // the scheduler's op-target proof for the first, unstamped report window.
         let rows = task_fail_from_worker_tx(
             tx,
-            &task_id,
+            task_id,
             track.id.as_str(),
             TaskReporter::Card {
                 card_id: card_id.as_str(),
@@ -472,7 +487,7 @@ async fn converge_dead_worker_tx(
         )
         .await?;
         if rows == 0
-            && let Some(task) = task_get_tx(tx, &task_id).await?
+            && let Some(task) = task_get_tx(tx, task_id).await?
             && (!task.status.is_terminal()
                 || task.track_id != track.id.as_str()
                 || match task.worker_card_id.as_deref() {
@@ -494,7 +509,7 @@ async fn converge_dead_worker_tx(
                 },
                 Event::TaskFailed {
                     notification: calm_types::event::PlannerNotification::Notify,
-                    idempotency_key: task_id,
+                    idempotency_key: task_id.to_owned(),
                     reason,
                     details: None,
                     agent_message: None,
@@ -502,7 +517,14 @@ async fn converge_dead_worker_tx(
             ));
         }
     }
-    events.extend(release_workspace_lease_for_card_tx(tx, card_id.as_str(), delivery).await?);
+    // Without a spawn-op binding (a legacy restart's session) the reaper owns no attempt: it
+    // releases only a lease whose attempt already ended; a Running one is left to the scheduler.
+    let attempt = task_id
+        .as_deref()
+        .map_or(EndedAttempt::Any, EndedAttempt::Exactly);
+    events.extend(
+        release_ended_attempt_lease_for_card_tx(tx, card_id.as_str(), attempt, delivery).await?,
+    );
     Ok((true, events))
 }
 

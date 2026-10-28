@@ -58,20 +58,63 @@ pub(crate) async fn release_workspace_lease_for_card_tx(
     card_id: &str,
     delivery: ReleaseDelivery,
 ) -> Result<Vec<(ActorId, EventScope, Event)>> {
+    let Some(lease) = latest_active_lease_for_card_tx(tx, card_id).await? else {
+        return Ok(Vec::new());
+    };
+    release_lease_tx(tx, &lease, delivery).await
+}
+
+/// The attempt a cleanup that observed an ended worker is allowed to release a lease for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum EndedAttempt<'a> {
+    /// The attempt the caller's fence bound and ended.
+    Exactly(&'a str),
+    /// The caller holds no attempt binding: whichever attempt the lease belongs to.
+    Any,
+}
+
+/// The card's latest active lease, released as `delivery` says only when it belongs to the
+/// `attempt` the caller ended and that attempt's `tasks` row is terminal. A lease of a live or
+/// another attempt is not the caller's to release: nothing, and no error. A lease no attempt
+/// owns is released for `Any` only.
+pub(crate) async fn release_ended_attempt_lease_for_card_tx(
+    tx: &mut Tx<'_>,
+    card_id: &str,
+    attempt: EndedAttempt<'_>,
+    delivery: ReleaseDelivery,
+) -> Result<Vec<(ActorId, EventScope, Event)>> {
+    let Some(lease) = latest_active_lease_for_card_tx(tx, card_id).await? else {
+        return Ok(Vec::new());
+    };
+    let ended = match (lease_attempt_tx(tx, &lease).await?, attempt) {
+        (Some(owner), EndedAttempt::Exactly(ended)) if owner != ended => false,
+        (Some(owner), _) => task_get_tx(tx, &owner)
+            .await?
+            .is_some_and(|task| task.status.is_terminal()),
+        (None, EndedAttempt::Exactly(_)) => false,
+        (None, EndedAttempt::Any) => true,
+    };
+    if !ended {
+        return Ok(Vec::new());
+    }
+    release_lease_tx(tx, &lease, delivery).await
+}
+
+async fn latest_active_lease_for_card_tx(
+    tx: &mut Tx<'_>,
+    card_id: &str,
+) -> Result<Option<WorkspaceLease>> {
     let sql = format!(
         "SELECT {WORKSPACE_LEASE_COLUMNS} FROM workspace_leases \
          WHERE card_id = ?1 AND state IN ('held','releasing') \
          ORDER BY created_at_ms DESC, lease_id DESC LIMIT 1"
     );
-    let row = sqlx::query(&sql)
+    sqlx::query(&sql)
         .bind(card_id)
         .fetch_optional(&mut **tx)
-        .await?;
-    let Some(row) = row else {
-        return Ok(Vec::new());
-    };
-    let lease = row_to_workspace_lease(row)?;
-    release_lease_tx(tx, &lease, delivery).await
+        .await?
+        .map(row_to_workspace_lease)
+        .transpose()
 }
 
 /// [`release_workspace_lease_for_card_tx`] in a transaction of its own; `true` when a lease was

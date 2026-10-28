@@ -36,6 +36,7 @@ pub mod track_path;
 pub mod track_vcs;
 pub mod track_vcs_repo;
 pub mod validation;
+pub mod worker_binding;
 pub mod worker_flow_sink;
 
 pub mod error;

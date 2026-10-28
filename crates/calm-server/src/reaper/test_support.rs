@@ -269,12 +269,29 @@ pub(super) async fn acquire_test_workspace_lease(
     track_id: &TrackId,
     lease_owner: &str,
 ) -> (String, String) {
+    acquire_test_workspace_lease_as(
+        repo,
+        card_id,
+        track_id,
+        lease_owner,
+        crate::model::TaskAccess::ReadWrite,
+    )
+    .await
+}
+
+pub(super) async fn acquire_test_workspace_lease_as(
+    repo: &SqlxRepo,
+    card_id: &str,
+    track_id: &TrackId,
+    lease_owner: &str,
+    access: crate::model::TaskAccess,
+) -> (String, String) {
     crate::test_support::ensure_track_worktree(repo.db(), track_id.as_str()).await;
     let mut tx = begin_immediate_tx(repo.db()).await.expect("begin tx");
     let plan = crate::operation::workspace_lease::prepare_worker_lease_as_tx(
         &mut tx,
         track_id.as_str(),
-        crate::model::TaskAccess::ReadWrite,
+        access,
         &std::env::temp_dir().join("neige-calm-test-unused-workspace-root"),
     )
     .await

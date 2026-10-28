@@ -7,11 +7,12 @@ use crate::card_role_cache::CardRoleCache;
 use calm_truth::db::RepoEventWrite;
 use calm_truth::db::sqlite::{SqlxRepo, begin_immediate_tx, session_insert_tx};
 use calm_truth_test_harness::FakeProvider;
-use calm_types::worker::WorkerProviderKind;
+use calm_types::worker::{LivenessTag, WorkerProviderKind};
 
 use serde_json::json;
 
 use crate::model::{Card, TaskStatus};
+use crate::operation::workspace_lease::release_workspace_lease_for_card_tx;
 use crate::operation::{OperationRepo, SqlxOperationRepo};
 
 use crate::track_area_cache::TrackAreaCache;
@@ -339,5 +340,136 @@ async fn w_reaper_nonterminal_task_race_releases_nothing() {
             events_before.len()
         );
     }
+    reset_reaper_boot_gate_for_test();
+}
+
+/// A legacy Claude restart's current session carries no spawn op. When it dies while its attempt
+/// is still Running, the reaper retires the session and leaves the attempt and its lease to the
+/// scheduler's timeout; when the attempt already ended, the reaper releases its lease.
+async fn restarted_session_death(access: crate::model::TaskAccess, attempt_ended: bool) {
+    let _guard = REAPER_TEST_LOCK.lock().await;
+    reset_reaper_boot_gate_for_test();
+    let (repo, track) = seeded_repo_with_plan(|path| {
+        crate::db::sqlite::TrackWorkspacePlan::AttachedWithTrackWorktree(path.into())
+    })
+    .await;
+    let task = insert_task(&repo, &track, "restarted", TaskStatus::Running).await;
+    let card = insert_session(&repo, session("old", track.clone(), 1)).await;
+    sqlx::query("UPDATE worker_sessions SET provider = 'claude', agent_session_id = 'legacy-agent' WHERE id = 'old'")
+        .execute(repo.pool()).await.unwrap();
+    let op = insert_spawn_operation(&repo, Some(&task.id), Some(card.id.as_str())).await;
+    sqlx::query("UPDATE worker_sessions SET spawn_op_id = ? WHERE id = 'old'")
+        .bind(&op)
+        .execute(repo.pool())
+        .await
+        .unwrap();
+    sqlx::query("UPDATE tasks SET worker_card_id = ? WHERE id = ?")
+        .bind(card.id.as_str())
+        .bind(&task.id)
+        .execute(repo.pool())
+        .await
+        .unwrap();
+    let (lease, _) =
+        acquire_test_workspace_lease_as(&repo, card.id.as_str(), &track, &op, access).await;
+    legacy_restart(&repo, &card).await;
+    // The replacement spawn came up; its row carries no spawn op.
+    let spawned = sqlx::query("UPDATE worker_sessions SET state = 'running' WHERE id = 'restarted' AND spawn_op_id IS NULL")
+        .execute(repo.pool())
+        .await
+        .unwrap();
+    assert_eq!(spawned.rows_affected(), 1);
+    if attempt_ended {
+        sqlx::query("UPDATE tasks SET status = 'failed' WHERE id = ?")
+            .bind(&task.id)
+            .execute(repo.pool())
+            .await
+            .unwrap();
+    }
+    let task_before = repo.task_get(&task.id).await.unwrap().unwrap();
+    let reaper = Reaper::new(
+        repo.clone(),
+        registry_for(
+            WorkerProviderKind::Claude,
+            Arc::new(FakeProvider::new().with_probe_script([exited_liveness()])),
+        ),
+        EventBus::new(),
+        write_context(&repo).await,
+    );
+    reaper_on_boot();
+    reaper.sweep_all().await;
+    let restarted = repo
+        .session_get(&WorkerSessionId::from("restarted"))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(restarted.state, WorkerSessionState::Failed);
+    assert_eq!(repo.task_get(&task.id).await.unwrap().unwrap(), task_before);
+    let state: String = sqlx::query_scalar("SELECT state FROM workspace_leases WHERE lease_id = ?")
+        .bind(&lease)
+        .fetch_one(repo.pool())
+        .await
+        .unwrap();
+    if attempt_ended {
+        assert_eq!(task_before.status, TaskStatus::Failed);
+        assert_eq!(
+            state, "released",
+            "an ended attempt's {access:?} lease is released"
+        );
+    } else {
+        assert_eq!(task_before.status, TaskStatus::Running);
+        assert_eq!(
+            state, "held",
+            "a Running attempt keeps its {access:?} lease"
+        );
+    }
+    assert!(task_failed_events(&repo, &task.id).await.is_empty());
+    reset_reaper_boot_gate_for_test();
+}
+
+#[tokio::test]
+async fn w_reaper_restarted_session_death_while_running_converges() {
+    restarted_session_death(crate::model::TaskAccess::ReadWrite, false).await;
+}
+
+#[tokio::test]
+async fn w_reaper_restarted_session_death_spares_running_read_only_lease() {
+    restarted_session_death(crate::model::TaskAccess::ReadOnly, false).await;
+}
+
+#[tokio::test]
+async fn w_reaper_restarted_session_death_after_attempt_ended_releases_lease() {
+    restarted_session_death(crate::model::TaskAccess::ReadWrite, true).await;
+}
+
+#[tokio::test]
+async fn w_reaper_stale_nonterminal_session_records_liveness() {
+    let _guard = REAPER_TEST_LOCK.lock().await;
+    reset_reaper_boot_gate_for_test();
+    let (repo, track) = seeded_repo().await;
+    let card = insert_session(&repo, session("stale", track.clone(), 1)).await;
+    // The card no longer names this still-active session as its current one.
+    sqlx::query("UPDATE cards SET session_id = NULL WHERE id = ?")
+        .bind(card.id.as_str())
+        .execute(repo.pool())
+        .await
+        .unwrap();
+    let reaper = Reaper::new(
+        repo.clone(),
+        registry(Arc::new(
+            FakeProvider::new().with_probe_script([exited_liveness()]),
+        )),
+        EventBus::new(),
+        write_context(&repo).await,
+    );
+    reaper_on_boot();
+    reaper.sweep_all().await;
+    let stale = repo
+        .session_get(&WorkerSessionId::from("stale"))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stale.state, WorkerSessionState::Running);
+    assert_eq!(stale.liveness, LivenessTag::Exited);
+    assert!(stale.liveness_probed_at_ms.is_some());
     reset_reaper_boot_gate_for_test();
 }

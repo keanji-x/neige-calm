@@ -567,12 +567,7 @@ impl RepoRead for SqlxRepo {
     }
 
     async fn operation_idempotency_key_by_id(&self, op_id: &str) -> Result<Option<String>> {
-        let row: Option<Option<String>> =
-            sqlx::query_scalar("SELECT idempotency_key FROM operations WHERE id = ?1")
-                .bind(op_id)
-                .fetch_optional(self.db.read_pool())
-                .await?;
-        Ok(row.flatten())
+        crate::worker_binding::operation_idempotency_key(self.db.read_pool(), op_id).await
     }
 
     async fn cards_by_track(&self, track_id: &str) -> Result<Vec<Card>> {

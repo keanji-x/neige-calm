@@ -28,7 +28,8 @@ pub(crate) mod worker;
 
 pub(crate) use base::{DeliveryPolicy, LeaseBase};
 pub(crate) use release::{
-    ReleaseDelivery, reclaim_dead_workspace_leases_on_boot, release_workspace_lease_for_card_repo,
+    EndedAttempt, ReleaseDelivery, reclaim_dead_workspace_leases_on_boot,
+    release_ended_attempt_lease_for_card_tx, release_workspace_lease_for_card_repo,
     release_workspace_lease_for_card_tx,
 };
 #[cfg(any(test, feature = "fixtures"))]
