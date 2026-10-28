@@ -60,6 +60,7 @@ async fn u8c_fence_clean_queued_cancel_and_rejected_candidate_release_owner() {
             runtime.track_delete_locks(),
             &track,
             crate::workspace_service::RetainedAdmission::Live(targets.clone()),
+            crate::workspace_service::RetainedPreparation::Locator,
             || async { Ok(()) },
         );
         assert!(matches!(
@@ -157,6 +158,7 @@ async fn u8c_fence_clean_duplicate_cancel_preserves_location_owner_union() {
         state.operation_runtime.track_delete_locks(),
         &track,
         crate::workspace_service::RetainedAdmission::Live(targets.clone()),
+        crate::workspace_service::RetainedPreparation::Locator,
         || async { Ok(()) },
     )
     .await;

@@ -15,7 +15,6 @@ use calm_server::db::sqlite::{
 use calm_server::event::EventBus;
 use calm_server::model::{Card, CardRole, NewArea, NewCard, NewTrack, TrackWorkspaceKind, new_id};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
-use calm_server::routes;
 use calm_server::state::{AppState, CodexClient, DaemonClient, WriteContext};
 use calm_server::track_area_cache::TrackAreaCache;
 use http_body_util::BodyExt;
@@ -146,11 +145,7 @@ async fn boot_with_kind(kind: TrackWorkspaceKind) -> Boot {
         Some(track_area_cache),
     )
     .with_workspace_root(workspace_root);
-    let app = routes::router()
-        .layer(axum::middleware::from_fn(
-            calm_server::actor::actor_middleware,
-        ))
-        .with_state(state);
+    let app = crate::support::authenticated_router::application(state).await;
 
     Boot {
         app,

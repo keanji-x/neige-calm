@@ -368,3 +368,130 @@ async fn a_claude_delta_writes_no_row_no_event_and_no_snapshot() {
     stack.wait_outcomes(&card_id, 1).await;
     stack.wait_phase(&runtime.id, "turn_completed").await;
 }
+
+// Blank canonical creation uses production owners; only native CLI transport is fake.
+async fn main_control_blank(stack: &Stack, root: &Root) -> (String, String) {
+    let (status, body) = stack
+        .send(
+            "POST",
+            "/api/tracks",
+            Some(json!({
+                "planner_provider":"claude", "area_id":stack.area().await,
+                "title":"", "theme":{"fg":[216,219,226],"bg":[15,20,24]}
+            })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let track = body["id"].as_str().unwrap().to_owned();
+    let card = stack
+        .repo()
+        .cards_by_track(&track)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|c| {
+            stack.state.write().verify_role(&c.id) == Some(calm_server::model::CardRole::Planner)
+        })
+        .unwrap();
+    let runtime = stack.runtime(card.id.as_str()).await;
+    let frame = runtime.handle_state_json.as_ref().unwrap();
+    assert_eq!(frame["canonical_inputs"]["pending"], json!([]));
+    assert_eq!(frame["canonical_inputs"]["active"], Value::Null);
+    assert_eq!(runtime.thread_id, None);
+    assert!(stack.state.harness.get(&runtime.id).is_none());
+    assert!(root.read_fake("spawns").is_none());
+    eprintln!("blank canonical runtime={} frame={frame}", runtime.id);
+    (track, card.id.to_string())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn p1_workspace_upload_blank_canonical_claude_is_created() {
+    use axum::{body::Body, http::Request};
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter("error")
+        .with_test_writer()
+        .try_init();
+    let root = Root::new("exit");
+    let stack = Stack::boot(&root).await;
+    let (track, card) = main_control_blank(&stack, &root).await;
+    let workspace = stack
+        .repo()
+        .track_get(&track)
+        .await
+        .unwrap()
+        .unwrap()
+        .workspace;
+    assert_eq!(
+        workspace.kind,
+        calm_server::model::TrackWorkspaceKind::Managed
+    );
+    assert!(
+        !std::path::Path::new(&workspace.path).exists(),
+        "workspace must still be lazy"
+    );
+    let image = vec![
+        137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1, 8, 6,
+        0, 0, 0, 31, 21, 196, 137, 0, 0, 0, 13, 73, 68, 65, 84, 120, 156, 99, 248, 207, 192, 240,
+        31, 0, 5, 0, 1, 255, 137, 153, 61, 29, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130,
+    ];
+    let before = stack.runtime(&card).await;
+    let response = stack
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/cards/{card}/planner/attachments"))
+                .header("x-calm-actor", "user")
+                .header("content-type", "image/png")
+                .body(Body::from(image.clone()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = response.status();
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    eprintln!(
+        "P1 upload status={status} body={}",
+        String::from_utf8_lossy(&bytes)
+    );
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "{}",
+        String::from_utf8_lossy(&bytes)
+    );
+
+    let stored: Value = serde_json::from_slice(&bytes).unwrap();
+    let response = stack
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(stored["url"].as_str().unwrap())
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes()
+            .as_ref(),
+        image
+    );
+    let after = stack.runtime(&card).await;
+    assert_eq!(after.id, before.id);
+    assert_eq!(after.handle_state_json, before.handle_state_json);
+    assert_eq!(after.thread_id, None);
+    assert!(stack.state.harness.get(&after.id).is_none());
+    assert!(root.read_fake("spawns").is_none());
+    stack.shutdown().await;
+}

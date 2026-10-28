@@ -37,7 +37,7 @@ struct AttachmentContext {
     root: std::path::PathBuf,
     repo_root: std::path::PathBuf,
     role: crate::model::CardRole,
-    workspace: crate::model::TrackWorkspace,
+    track: crate::model::Track,
 }
 
 /// Card admission is the same predicate `GET /api/cards/{id}/harness/items` uses: the door onto an attachment must not be wider than the door onto the conversation.
@@ -65,9 +65,9 @@ async fn attachment_context(s: &RouteState, id: &str) -> Result<AttachmentContex
     Ok(AttachmentContext {
         card,
         role,
-        workspace: track.workspace.clone(),
-        root,
         repo_root: std::path::PathBuf::from(&track.workspace.path),
+        track,
+        root,
     })
 }
 
@@ -93,6 +93,7 @@ async fn attachment_context(s: &RouteState, id: &str) -> Result<AttachmentContex
 pub(crate) async fn upload_planner_attachment(
     State(s): State<RouteState>,
     actor: Actor,
+    source: crate::auth::HumanInputSource,
     Path(id): Path<String>,
     body: Body,
 ) -> Result<(StatusCode, Json<UploadAttachmentResponse>)> {
@@ -105,15 +106,98 @@ pub(crate) async fn upload_planner_attachment(
     let binding =
         crate::harness::profile::checked_card_binding(s.repo.as_ref(), &context.card, context.role)
             .await?;
-    let root = super::image_input_root(&binding.provider, &context.workspace, &s.workspace_root)?;
+    let root = super::image_input_root(
+        &binding.provider,
+        &context.track.workspace,
+        &s.workspace_root,
+    )?;
+    // Only the canonical Planner's lazy resource belongs to this P1 admission.
+    // Other existing upload consumers retain their already-prepared requirement.
+    let preparation = if binding.profile == calm_types::harness::HarnessProfile::Planner
+        && crate::conversation_inputs::has_canonical_storage(
+            s.repo.as_ref(),
+            context.card.id.as_str(),
+        )
+        .await?
+    {
+        crate::workspace_service::ManagedPreparation::InitializeMissing
+    } else {
+        crate::workspace_service::ManagedPreparation::Existing
+    };
     let card_id = context.card.id.clone();
-    let stored = store::store_upload(
-        &root,
-        &context.repo_root,
-        &card_id,
-        &s.planner_attachment_locks,
-        super::UPLOAD_DEADLINE,
-        body,
+    let selected = context.track.clone();
+    let expected_binding = binding.clone();
+    let state = s.clone();
+    let card = card_id.to_string();
+    let admit = move || {
+        let state = state.clone();
+        let source = source.clone();
+        let selected = selected.clone();
+        let expected_binding = expected_binding.clone();
+        let card = card.clone();
+        async move {
+            crate::workspace_service::selected_track(state.repo.as_ref(), &selected).await?;
+            let current = attachment_context(&state, &card).await?;
+            if current.card.track_id != selected.id {
+                return Err(CalmError::Conflict(
+                    "attachment card selection changed".into(),
+                ));
+            }
+            let binding = crate::harness::profile::checked_card_binding(
+                state.repo.as_ref(),
+                &current.card,
+                current.role,
+            )
+            .await?;
+            if binding != expected_binding {
+                return Err(CalmError::Conflict(
+                    "attachment conversation binding changed".into(),
+                ));
+            }
+            super::image_input_root(
+                &binding.provider,
+                &current.track.workspace,
+                &state.workspace_root,
+            )?;
+            crate::db::write_in_tx_typed(state.repo.as_ref(), move |tx| {
+                Box::pin(async move {
+                    crate::workspace_service::require_borrowed_admission_tx(
+                        tx,
+                        &source,
+                        selected.area_id.as_str(),
+                        None,
+                    )
+                    .await
+                })
+            })
+            .await
+        }
+    };
+    #[cfg(feature = "fixtures")]
+    crate::test_seams::pause_point("workspace-upload-selected", card_id.as_str()).await;
+    let before_publish = admit.clone();
+    let upload_card = card_id.clone();
+    let locks = s.planner_attachment_locks.clone();
+    let stored = crate::workspace_service::managed_effect(
+        s.repo.clone(),
+        &s.track_delete_locks,
+        &context.track,
+        s.workspace_root.clone(),
+        preparation,
+        admit,
+        move |cancelled| async move {
+            store::store_upload_checked(
+                &root,
+                &context.repo_root,
+                &upload_card,
+                &locks,
+                super::UPLOAD_DEADLINE,
+                body,
+                before_publish,
+                cancelled,
+            )
+            .await
+        },
     )
     .await?;
     let url = attachment_url(&card_id, &stored.id);

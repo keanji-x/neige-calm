@@ -29,7 +29,12 @@ pub(super) fn repo(fixture: &Fixture) -> std::path::PathBuf {
     path
 }
 
-async fn http(app: &axum::Router, cookie: &str, method: &str, uri: &str) -> (StatusCode, Vec<u8>) {
+pub(super) async fn http(
+    app: &axum::Router,
+    cookie: &str,
+    method: &str,
+    uri: &str,
+) -> (StatusCode, Vec<u8>) {
     let response = app
         .clone()
         .oneshot(

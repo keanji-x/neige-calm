@@ -43,6 +43,12 @@ const WRITER_STATEMENTS: &[(&str, &str)] = &[
 /// Writes expected outside the production writer, by exact normalized text: `(file, statement, why)`.
 const EXPECTED_OTHER_WRITES: &[(&str, &str, &str)] = &[
     (
+        "crates/calm-server/src/routes/canonical_flow_tests/p1_workspace_upload.rs",
+        "update tracks set area_id=?,workspace_path=? where id=?",
+        "Upload regressions change the persisted selection while queued or streaming, \
+         proving no materialization or publication reaches another unauthorized Area.",
+    ),
+    (
         "crates/calm-server/src/routes/canonical_flow_tests/u8b_canonical/u8c_fence.rs",
         "update tracks set workspace_worktree_path=? where id=?",
         "The lifecycle regression changes the persisted selection under the Track fence \

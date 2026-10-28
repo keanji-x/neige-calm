@@ -5,7 +5,7 @@ use crate::conversation_inputs::InputSource;
 use crate::db::sqlite::conversation::{self, RuntimeExecutionFence};
 use crate::harness::snapshot::CanonicalHarnessSnapshot;
 use crate::mcp_server::wiring::mint_card_mcp_token_pair;
-use crate::workspace_service::RetainedAdmission;
+use crate::workspace_service::{RetainedAdmission, RetainedPreparation};
 
 mod binding;
 mod recovery;
@@ -124,6 +124,7 @@ impl PlannerHarnessStartAdapter {
         wire: &RetainedPayload,
         locks: &crate::per_card_lock::KeyedLocks,
         admission: RetainedAdmission,
+        preparation: RetainedPreparation,
     ) -> Result<crate::model::Track> {
         let target = self.retained_target(wire).await?;
         let track = self
@@ -153,6 +154,7 @@ impl PlannerHarnessStartAdapter {
             locks,
             &track,
             admission,
+            preparation,
             admit,
         )
         .await?;
@@ -230,6 +232,7 @@ impl PlannerHarnessStartAdapter {
                 &wire,
                 runtime.track_delete_locks(),
                 RetainedAdmission::Handoff(runtime.location_admission()?.teardown_targets.clone()),
+                RetainedPreparation::Locator,
             )
             .await?;
         let target = bound.retained_target(&wire).await?;
@@ -261,6 +264,7 @@ impl PlannerHarnessStartAdapter {
                     &wire,
                     runtime.track_delete_locks(),
                     RetainedAdmission::Live(runtime.location_admission()?.teardown_targets.clone()),
+                    RetainedPreparation::Locator,
                 )
                 .await?;
         }
@@ -358,8 +362,13 @@ impl PlannerHarnessStartAdapter {
     ) -> Result<AppServerInteractOutcome> {
         let target = self.retained_target(wire).await?;
         if let Some(thread) = target.snapshot.header.last_thread_id {
-            self.retained_workspace(wire, &ctx.track_delete_locks, RetainedAdmission::Driven)
-                .await?;
+            self.retained_workspace(
+                wire,
+                &ctx.track_delete_locks,
+                RetainedAdmission::Driven,
+                RetainedPreparation::Locator,
+            )
+            .await?;
             return Ok(AppServerInteractOutcome::MintedAndAwaited { thread_id: thread });
         }
         if output.data.get("activation").and_then(Value::as_str) != Some("prepared") {
@@ -374,15 +383,14 @@ impl PlannerHarnessStartAdapter {
         )
         .ready_retained(&target.binding.provider)
         .await?;
-        let (_, root) = self.retained_source()?;
         let track = self
-            .retained_workspace(wire, &ctx.track_delete_locks, RetainedAdmission::Driven)
+            .retained_workspace(
+                wire,
+                &ctx.track_delete_locks,
+                RetainedAdmission::Driven,
+                RetainedPreparation::Managed(self.retained_source()?.1.to_path_buf()),
+            )
             .await?;
-        workspace_runtime::selection::materialize_workspace(
-            &track.workspace,
-            root,
-            &target.track_id,
-        )?;
         self.retained_admit(wire).await?;
         #[cfg(feature = "fixtures")]
         crate::test_seams::pause_point("retained-workspace-ready", &wire.card_id).await;
@@ -623,8 +631,13 @@ impl PlannerHarnessStartAdapter {
         events: &crate::event::EventBus,
         track_delete_locks: &crate::per_card_lock::KeyedLocks,
     ) -> Result<SpawnOutcome> {
-        self.retained_workspace(wire, track_delete_locks, RetainedAdmission::Driven)
-            .await?;
+        self.retained_workspace(
+            wire,
+            track_delete_locks,
+            RetainedAdmission::Driven,
+            RetainedPreparation::Locator,
+        )
+        .await?;
         let target = self.retained_admit(wire).await?;
         let thread = target
             .snapshot

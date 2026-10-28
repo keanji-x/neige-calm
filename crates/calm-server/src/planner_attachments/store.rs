@@ -33,6 +33,37 @@ pub async fn store_upload(
     deadline: std::time::Duration,
     body: Body,
 ) -> Result<StoredAttachment> {
+    store_upload_checked(
+        root,
+        repo_root,
+        card_id,
+        locks,
+        deadline,
+        body,
+        || async { Ok(()) },
+        std::future::pending::<()>(),
+    )
+    .await
+}
+
+/// The Workspace owner retains its fence while cancellation only stops the stream.
+/// Final admission precedes publication; neither Git nor rename is abandoned.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn store_upload_checked<F, A, C>(
+    root: &Path,
+    repo_root: &Path,
+    card_id: &CardId,
+    locks: &PerCardLocks,
+    deadline: std::time::Duration,
+    body: Body,
+    before_publish: F,
+    cancelled: C,
+) -> Result<StoredAttachment>
+where
+    F: Fn() -> A,
+    A: std::future::Future<Output = Result<()>>,
+    C: std::future::Future,
+{
     // Fail-closed, and first: a failure here means the file would be visible to git, so it must mean no file exists.
     let repo = repo_root.to_path_buf();
     blocking(move || {
@@ -73,7 +104,15 @@ pub async fn store_upload(
         return Err(budget_exhausted());
     }
 
-    write_body(&dirs, already_used, deadline, body).await
+    write_body(
+        &dirs,
+        already_used,
+        deadline,
+        body,
+        before_publish,
+        cancelled,
+    )
+    .await
 }
 
 /// Run one synchronous step off the runtime; a `JoinError` is a panic or a runtime shutdown and must not be mistaken for success.
@@ -100,25 +139,25 @@ fn budget_exhausted() -> CalmError {
 }
 
 /// Stream the body into `staging/`, sniffing the format from the leading bytes; the temporary is only created once the format is known.
-/// Cleanup is [`OpenPart`]'s destructor, which runs on every exit including a dropped handler. The deadline wraps only `stream_into`, not `finish`: a `spawn_blocking` rename is not cancelled by dropping its future, so a deadline firing mid-`finish` could publish after a refusal.
-async fn write_body(
+/// Cleanup is [`OpenPart`]'s destructor. The Workspace owner stops a cancelled
+/// stream at its socket wait, allowing each filesystem step to return before
+/// cleanup. Publication runs to completion under the owner after final admission.
+async fn write_body<F, A, C>(
     dirs: &std::sync::Arc<dir::CardDirs>,
     already_used: u64,
     deadline: std::time::Duration,
     body: Body,
-) -> Result<StoredAttachment> {
+    before_publish: F,
+    cancelled: C,
+) -> Result<StoredAttachment>
+where
+    F: Fn() -> A,
+    A: std::future::Future<Output = Result<()>>,
+    C: std::future::Future,
+{
     let mut open: Option<OpenPart> = None;
-    // `open` lives here rather than inside the timed future so the part
-    // survives the cancellation and is unlinked by its destructor.
-    let written = match tokio::time::timeout(
-        deadline,
-        stream_into(&mut open, dirs, already_used, body),
-    )
-    .await
-    {
-        Ok(written) => written?,
-        Err(_elapsed) => return Err(upload_timed_out(deadline)),
-    };
+    let written = stream_into(&mut open, dirs, already_used, body, deadline, cancelled).await?;
+    before_publish().await?;
     let mut part = open
         .take()
         .expect("a successful stream leaves an open part");
@@ -138,12 +177,16 @@ fn upload_timed_out(deadline: std::time::Duration) -> CalmError {
 
 /// Consume the body, returning the number of bytes written. On `Ok`, `open`
 /// holds the `.part` still awaiting its fsync and rename.
-async fn stream_into(
+async fn stream_into<C: std::future::Future>(
     open: &mut Option<OpenPart>,
     dirs: &std::sync::Arc<dir::CardDirs>,
     already_used: u64,
     body: Body,
+    deadline: std::time::Duration,
+    cancelled: C,
 ) -> Result<u64> {
+    tokio::pin!(cancelled);
+    let expires = tokio::time::Instant::now() + deadline;
     // One size gate, not two: `Limited` counts data frames as they arrive, so a second lower threshold would make this one unreachable.
     let mut limited = Limited::new(body, MAX_ATTACHMENT_BYTES as usize);
 
@@ -152,7 +195,15 @@ async fn stream_into(
     let mut written: u64 = 0;
 
     loop {
-        let frame = match limited.frame().await {
+        // Only the socket wait is cancellable. Descriptor creation/write must
+        // return to its owner before the part can be dropped and unlinked.
+        let next = tokio::select! {
+            biased;
+            _ = &mut cancelled => return Err(CalmError::BadRequest("attachment upload cancelled".into())),
+            _ = tokio::time::sleep_until(expires) => return Err(upload_timed_out(deadline)),
+            frame = limited.frame() => frame,
+        };
+        let frame = match next {
             Some(frame) => frame.map_err(|error| map_body_error(error.as_ref()))?,
             None => break,
         };
@@ -297,14 +348,20 @@ impl OpenPart {
     }
 
     async fn write(&mut self, bytes: &[u8]) -> Result<()> {
-        self.file
+        let file = self
+            .file
             .as_mut()
-            .expect("an open part still holds its descriptor")
-            .write_all(bytes)
-            .await
-            .map_err(|error| {
-                CalmError::Internal(format!("planner attachment upload: write: {error}"))
-            })
+            .expect("an open part still holds its descriptor");
+        file.write_all(bytes).await.map_err(|error| {
+            CalmError::Internal(format!("planner attachment upload: write: {error}"))
+        })?;
+        #[cfg(feature = "fixtures")]
+        crate::test_seams::pause_point("workspace-upload-write-queued", self.id.as_str()).await;
+        // Tokio may return from write_all with a blocking write still in flight.
+        // Complete it before the next socket wait can cancel and drop the fence.
+        file.flush().await.map_err(|error| {
+            CalmError::Internal(format!("planner attachment upload: flush: {error}"))
+        })
     }
 
     /// `sync_all` then `rename`. Takes `&mut self` so a failure leaves the part owned by its destructor; `published` is set only after the rename returned `Ok`.
@@ -325,6 +382,8 @@ impl OpenPart {
         let final_name = dir::Name::of(&self.id);
         let id = self.id.clone();
         blocking(move || {
+            #[cfg(feature = "fixtures")]
+            crate::test_seams::blocking_pause_point("workspace-upload-publish", id.as_str());
             dir::rename_within_staging(dirs.staging(), &temporary, &final_name).map_err(
                 move |error| {
                     // Names the attachment, not the host paths: this string reaches the client.
