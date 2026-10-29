@@ -461,8 +461,14 @@ impl crate::mcp_server::tools::track_sources::TrackCatalog for RouteTrackCreator
 impl RouteTrackCreator {
     pub(crate) async fn historical_receipt_for_test(
         &self,
-        request: TrackAddRequest,
+        request: impl Into<crate::test_seams::HistoricalReceiptForTest>,
     ) -> Result<Track> {
+        let request = match request.into() {
+            crate::test_seams::HistoricalReceiptForTest::Creator(request) => request,
+            crate::test_seams::HistoricalReceiptForTest::Released { request, key } => {
+                return self.released_receipt_for_test(request, key).await;
+            }
+        };
         let s = &self.route;
         let sha = request.fingerprint()?;
         let (ActorId::AiPlannerSession(session), ActorId::AiPlanner(card)) =
@@ -557,5 +563,93 @@ impl RouteTrackCreator {
             plan,
         )
         .await
+    }
+}
+
+#[cfg(any(test, feature = "fixtures"))]
+impl RouteTrackCreator {
+    /// Reconstruct released REST resources through their allocation and delivery owners.
+    /// No fresh HTTP request can select this fixture path.
+    async fn released_receipt_for_test(
+        &self,
+        mut request: super::CreateTrackRequest,
+        key: Option<String>,
+    ) -> Result<Track> {
+        use super::create::CreateShape;
+        use axum::http::HeaderMap;
+        use http_body_util::BodyExt;
+        let s = &self.route;
+        let mut headers = HeaderMap::new();
+        if let Some(key) = key {
+            headers.insert(
+                "idempotency-key",
+                key.parse()
+                    .map_err(|_| CalmError::BadRequest("invalid fixture key".into()))?,
+            );
+        }
+        let plan = create::plan_first_message(
+            s,
+            &headers,
+            request.first_message.take(),
+            request.area_id.as_str(),
+            create::CreateRequestShape::from_request(&request)?,
+        )
+        .await?;
+        let actor = crate::actor::Actor::server_send();
+        let (first, empty) = match plan {
+            CreateShape::WithFirstMessage(KeyedPlan::Resume(resume)) => {
+                return create::resume_prior_attempt(
+                    s.clone(),
+                    &KeyedActor::rest(&actor, None),
+                    resume,
+                )
+                .await;
+            }
+            CreateShape::MessageLess(KeyedPlan::Resume(resume)) => {
+                let response = create::resume_message_less(s.clone(), actor, resume, None).await?;
+                let bytes = response.into_body().collect().await.unwrap().to_bytes();
+                return Ok(serde_json::from_slice(&bytes)?);
+            }
+            CreateShape::WithFirstMessage(KeyedPlan::Mint(plan)) => (Some(plan), None),
+            CreateShape::MessageLess(KeyedPlan::Mint(plan)) => (None, plan),
+        };
+        let provider = request.planner_provider.clone();
+        let model = request.model.clone();
+        let reasoning_effort = request.reasoning_effort.clone();
+        let isolation = super::CreateIsolation::decode(&request.cwd, request.isolation)?;
+        let cross = request.allow_cross_area_cwd.clone();
+        let admin = request.admin;
+        let (p, named, _) = request.into_parts()?;
+        let prepared = preparation::prepare(s, p, named, isolation, cross).await?;
+        let options = CreateTrackOptions {
+            human_source: None,
+            admin,
+            managed_identity: None,
+            creator: None,
+            creation_message: None,
+            planner_provider: provider,
+            model,
+            reasoning_effort,
+            folder_claim: prepared.folder_claim,
+            body_area_id: prepared.body_area_id,
+            normalized_cwd: prepared.normalized_cwd,
+            init: prepared.init,
+            workspace_plan: prepared.workspace_plan,
+            idempotency_claim: empty.as_ref().map(create::MessageLessPlan::claim),
+        };
+        if let Some(plan) = first {
+            return create::create_track_with_first_message(
+                s.clone(),
+                &KeyedActor::rest(&actor, None),
+                prepared.p,
+                options,
+                plan,
+            )
+            .await;
+        }
+        let response =
+            super::create_track_with_planner_harness(s.clone(), actor, prepared.p, options).await?;
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        Ok(serde_json::from_slice(&bytes)?)
     }
 }

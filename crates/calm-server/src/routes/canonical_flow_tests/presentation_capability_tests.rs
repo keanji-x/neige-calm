@@ -33,13 +33,11 @@ async fn historical_edit_capability_uses_current_private_source_and_actual_backe
         json!({"name":"Private historical editing","color":"#123456"}),
     )
     .await;
-    let track = post(
-        &app,
-        &cookie,
-        "/api/tracks",
-        "historical-edit",
+    let track = crate::test_support::historical_track(
+        &state,
         json!({"area_id":area["id"],"planner_provider":"codex","title":"",
             "theme":{"fg":[255,255,255],"bg":[0,0,0]}}),
+        Some("historical-edit"),
     )
     .await;
     let (card, worker): (String, String) =
@@ -112,13 +110,11 @@ async fn historical_zero_limit_returns_an_empty_page_without_a_cursor() {
         json!({"name":"Historical empty page","color":"#123456"}),
     )
     .await;
-    let track = post(
-        &app,
-        &cookie,
-        "/api/tracks",
-        "empty-page-track",
+    let track = crate::test_support::historical_track(
+        &state,
         json!({"area_id":area["id"],"planner_provider":"codex","title":"",
             "theme":{"fg":[255,255,255],"bg":[0,0,0]}}),
+        Some("empty-page-track"),
     )
     .await;
     let (card, worker): (String, String) =

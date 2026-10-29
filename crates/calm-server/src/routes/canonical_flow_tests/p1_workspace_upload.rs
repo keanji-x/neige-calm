@@ -494,13 +494,12 @@ async fn p1_workspace_upload_existing_owned_repo_does_not_mint_a_commit() {
     let f = Fixture::new().await;
     let (state, app, cookie) = f.application().await;
     let area = u8_canonical::area(&app, &cookie, "existing upload resource").await;
-    // This production historical entry already materializes the owned repository.
-    let created = post(
-        &app,
-        &cookie,
-        "/api/tracks",
-        "existing",
+    // Released creation runs real preparation/allocation and materialization,
+    // establishing Existing before upload rather than InitializeMissing.
+    let created = crate::test_support::historical_track(
+        &state,
         u8_canonical::body(&area, "codex"),
+        Some("existing"),
     )
     .await;
     let track = f

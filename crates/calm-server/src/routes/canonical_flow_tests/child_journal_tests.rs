@@ -1,4 +1,6 @@
-use super::assistant_canonical::{carrier, complete_assistant_turn, track};
+use super::assistant_canonical::{
+    carrier, complete_assistant_turn, prepare_parent_resource, track,
+};
 use super::*;
 use calm_truth::db::RepoRead;
 #[tokio::test]
@@ -13,6 +15,7 @@ async fn journal_flow(damaged: bool) {
     let fixture = Fixture::new().await;
     let (state, app, cookie) = fixture.application().await;
     let parent = track(&app, &cookie).await;
+    prepare_parent_resource(&fixture, &app, &cookie, &parent).await;
     let parent_row = fixture.repo.track_get(&parent).await.unwrap().unwrap();
     let borrowed = parent_row.workspace.path;
     sqlx::query("UPDATE tracks SET workspace_kind='attached' WHERE id=?1")

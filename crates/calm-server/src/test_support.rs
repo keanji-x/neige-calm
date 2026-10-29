@@ -88,3 +88,23 @@ pub(crate) fn init_fixture_git_repo(path: &std::path::Path) {
         );
     }
 }
+
+/// Historical fixture allocation uses the real released receipt owner.
+pub(crate) async fn historical_track(
+    state: &crate::state::AppState,
+    body: serde_json::Value,
+    key: Option<&str>,
+) -> serde_json::Value {
+    use axum::extract::FromRef;
+    let track = crate::test_seams::historical_creator_receipt_for_test(
+        &crate::state::RouteState::from_ref(state),
+        100,
+        crate::test_seams::HistoricalReceiptForTest::Released {
+            request: serde_json::from_value(body).unwrap(),
+            key: key.map(str::to_owned),
+        },
+    )
+    .await
+    .unwrap();
+    serde_json::to_value(track).unwrap()
+}

@@ -5,7 +5,7 @@ use calm_truth::db::RepoRead;
 #[tokio::test]
 async fn conversation_title_planner_fresh_detail() {
     let b = boot().await;
-    let track = b.create_track("unrelated Track name").await;
+    let track = b.historical_track("unrelated Track name").await;
     let card: String =
         sqlx::query_scalar("SELECT id FROM cards WHERE track_id=?1 AND role='planner'")
             .bind(&track)
@@ -32,7 +32,7 @@ async fn conversation_title_planner_fresh_detail() {
 #[tokio::test]
 async fn conversation_title_assistant_fresh_list() {
     let b = boot().await;
-    let track = b.create_track("unrelated Track name").await;
+    let track = b.historical_track("unrelated Track name").await;
     let (status, created) = b
         .create_conversation(
             &track,
@@ -93,7 +93,9 @@ async fn detail_title(b: &Boot, track: &str, card: &str) -> Value {
 #[tokio::test]
 async fn conversation_title_manual_clear_single_card_event_and_track_rename() {
     let b = boot().await;
-    let track = b.create_track("Track never names the conversation").await;
+    let track = b
+        .historical_track("Track never names the conversation")
+        .await;
     let card = planner(&b, &track).await;
     assert_eq!(detail_title(&b, &track, &card).await, Value::Null);
     input(
@@ -151,9 +153,9 @@ async fn conversation_title_manual_clear_single_card_event_and_track_rename() {
 #[tokio::test]
 async fn conversation_title_structured_system_legacy_isolation_and_replacement() {
     let b = boot().await;
-    let track = b.create_track("Unrelated Track").await;
+    let track = b.historical_track("Unrelated Track").await;
     let card = planner(&b, &track).await;
-    let other_track = b.create_track("Another Track").await;
+    let other_track = b.historical_track("Another Track").await;
     let other = planner(&b, &other_track).await;
     input(&b, &other_track, &other, None, "Other card input").await;
     input(
@@ -201,7 +203,7 @@ async fn conversation_title_structured_system_legacy_isolation_and_replacement()
 #[tokio::test]
 async fn conversation_title_assistant_create_replay_pending_and_no_live_session() {
     let b = boot().await;
-    let track = b.create_track("Track title").await;
+    let track = b.historical_track("Track title").await;
     let (status, first) = b
         .create_internal_conversation(&track, "title-replay", "Pending first input\nsecond")
         .await;
@@ -309,7 +311,7 @@ async fn conversation_title_skips_invisible_legacy_and_structured_records() {
         None,
         Some(json!([{"presentation":"user","text":"User says:\n  ","attachments":[]}])),
     ] {
-        let track = b.create_track("Invisible input").await;
+        let track = b.historical_track("Invisible input").await;
         let card = planner(&b, &track).await;
         input(&b, &track, &card, segments, "User says:\n  ").await;
         input(&b, &track, &card, None, "Actual original title").await;
@@ -324,7 +326,7 @@ async fn conversation_title_skips_invisible_legacy_and_structured_records() {
 #[tokio::test]
 async fn conversation_title_skips_empty_segments_in_same_batch() {
     let b = boot().await;
-    let track = b.create_track("Empty segments").await;
+    let track = b.historical_track("Empty segments").await;
     let card = planner(&b, &track).await;
     input(
         &b,

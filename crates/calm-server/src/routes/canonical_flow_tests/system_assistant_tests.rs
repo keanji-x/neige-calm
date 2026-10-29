@@ -3,8 +3,18 @@ use super::*;
 use crate::routes::today_summary::TODAY_SUMMARY_BOOTSTRAP_TEXT as BOOTSTRAP;
 use crate::shared_codex_appserver::native_owner_tests::Peer;
 
-async fn activity(app: &axum::Router, cookie: &str) -> String {
-    let track = assistant_canonical::track(app, cookie).await;
+async fn activity(state: &AppState, app: &axum::Router, cookie: &str) -> String {
+    let area = u8_canonical::area(app, cookie, "Assistant canonical").await;
+    // Summary activity was a released historical Track, not a second canonical
+    // Planner consuming these report edits on the summary's native peer.
+    let created = crate::test_support::historical_track(
+        state,
+        json!({"area_id":area["id"],"title":"Assistant parent","planner_provider":"codex",
+            "theme":{"fg":[255,255,255],"bg":[0,0,0]}}),
+        Some("track"),
+    )
+    .await;
+    let track = created["id"].as_str().unwrap().to_owned();
     edit(app, cookie, &track, 0).await;
     track
 }
@@ -202,7 +212,7 @@ impl Native<'_> {
 async fn owner_runs_bootstrap_end_frozen_body_and_independent_subject() {
     let fixture = Fixture::new().await;
     let (state, app, cookie) = fixture.application().await;
-    let track = activity(&app, &cookie).await;
+    let track = activity(&state, &app, &cookie).await;
     let accepted = summary(&state, &app, &cookie, "first", &body(1)).await;
     let card = accepted["card_id"].as_str().unwrap();
     let (worker, before) = frame(&fixture, card).await;
@@ -254,7 +264,7 @@ async fn concurrent_owner_acceptances_on_independent_connections_execute_one_boo
  {
     let mut fixture = Fixture::new().await;
     let (state, app, cookie) = fixture.application().await;
-    activity(&app, &cookie).await;
+    activity(&state, &app, &cookie).await;
     post(
         &app,
         &cookie,
@@ -313,7 +323,7 @@ async fn concurrent_owner_acceptances_on_independent_connections_execute_one_boo
 async fn end_preserves_summary_accepted_while_original_body_is_running() {
     let fixture = Fixture::new().await;
     let (state, app, cookie) = fixture.application().await;
-    activity(&app, &cookie).await;
+    activity(&state, &app, &cookie).await;
     let accepted = summary(&state, &app, &cookie, "first", &body(1)).await;
     let card = accepted["card_id"].as_str().unwrap();
     let (_client, mut peer) = connect(&state.shared_codex_appserver).await;

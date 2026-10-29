@@ -25,6 +25,7 @@ use tower::ServiceExt;
 use crate::support::git_helpers::attached_repo_fixture;
 
 struct Boot {
+    state: AppState,
     app: axum::Router,
     area_id: String,
     repo: Arc<SqlxRepo>,
@@ -88,8 +89,9 @@ async fn boot() -> Boot {
             }),
             calm_server::auth::require_session,
         ))
-        .with_state(state);
+        .with_state(state.clone());
     Boot {
+        state,
         app,
         area_id: area.id.to_string(),
         repo: sqlx_repo,
@@ -134,12 +136,6 @@ fn head_resolves(path: &std::path::Path) -> bool {
 async fn assert_workspace_is_usable_by_the_first_worker(b: &Boot, track_id: &str) {
     let (_, path, _) = workspace_row(&b.repo, track_id).await;
     let path = PathBuf::from(path);
-    assert!(path.join(".git").is_dir(), "no repository at {path:?}");
-    assert!(
-        head_resolves(&path),
-        "no init commit — the worker has no base to record and never starts"
-    );
-
     let mut tx = b.repo.pool().begin().await.unwrap();
     let checkout = calm_server::test_seams::prepare_worker_lease_for_test(
         &mut tx,
@@ -155,6 +151,12 @@ async fn assert_workspace_is_usable_by_the_first_worker(b: &Boot, track_id: &str
         )
     });
     tx.commit().await.unwrap();
+    assert!(path.join(".git").is_dir(), "no repository at {path:?}");
+    assert!(
+        head_resolves(&path),
+        "no init commit — the worker has no base to record and never starts"
+    );
+
     assert_eq!(
         checkout, path,
         "a managed track's worker runs in its directory"
@@ -187,7 +189,7 @@ async fn workspace_row(repo: &SqlxRepo, track_id: &str) -> (String, String, Opti
 }
 
 #[tokio::test]
-async fn title_only_create_allocates_and_materializes_a_managed_workspace() {
+async fn title_only_create_allocates_then_first_lease_materializes_a_managed_workspace() {
     let b = boot().await;
     let (status, body) = post(
         b.app.clone(),
@@ -334,12 +336,26 @@ async fn materialize_failure_fails_the_create() {
     std::fs::create_dir_all(&b.workspace_root).unwrap();
     std::fs::write(b.workspace_root.join(&b.area_id), "not a directory").unwrap();
 
-    let (status, body) = post(
-        b.app.clone(),
-        "/api/tracks",
-        json!({"planner_provider": "codex", "area_id": b.area_id, "title": "doomed", "theme": theme()}),
+    use axum::response::IntoResponse;
+    let error = crate::support::planner::historical_track(
+        &b.state,
+        json!({"planner_provider":"codex", "area_id":b.area_id, "title":"doomed", "theme":theme()}),
+        None,
     )
-    .await;
+    .await
+    .unwrap_err();
+    let response = error.into_response();
+    let status = response.status();
+    let body = String::from_utf8(
+        response
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes()
+            .to_vec(),
+    )
+    .unwrap();
     assert!(
         !status.is_success(),
         "materialization failed but the route returned {status}; a 2xx here is \
@@ -392,7 +408,8 @@ async fn an_unmaterialized_managed_track_heals_when_a_worker_takes_its_lease() {
     let track_id = track["id"].as_str().unwrap().to_string();
     let (_, path, _) = workspace_row(&b.repo, &track_id).await;
 
-    // Reproduce the orphan state: the row exists, the directory does not.
+    // Prepare the real resource before simulating a lost managed repository.
+    assert_workspace_is_usable_by_the_first_worker(&b, &track_id).await;
     std::fs::remove_dir_all(&path).unwrap();
     assert!(!std::path::Path::new(&path).exists());
 

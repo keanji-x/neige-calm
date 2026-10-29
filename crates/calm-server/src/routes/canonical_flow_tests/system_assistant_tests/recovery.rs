@@ -43,7 +43,7 @@ async fn cold_original(
 ) {
     let mut fixture = Fixture::new().await;
     let (state, app, cookie) = fixture.application().await;
-    activity(&app, &cookie).await;
+    activity(&state, &app, &cookie).await;
     let accepted = summary(&state, &app, &cookie, "first", &body(1)).await;
     let card = accepted["card_id"].as_str().unwrap().to_owned();
     let original = receipts(&fixture, &card).await;
@@ -173,7 +173,7 @@ async fn cold_unattempted_claim_requalifies_original_plan_and_continues_body() {
 async fn unknown_native_disconnect_survives_file_reopen_without_resend() {
     let mut fixture = Fixture::new().await;
     let (state, app, cookie) = fixture.application().await;
-    activity(&app, &cookie).await;
+    activity(&state, &app, &cookie).await;
     let accepted = summary(&state, &app, &cookie, "first", &body(1)).await;
     let card = accepted["card_id"].as_str().unwrap().to_owned();
     let original = receipts(&fixture, &card).await;

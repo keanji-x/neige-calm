@@ -250,7 +250,7 @@ async fn current_binding_and_area_reject_new_acceptance_on_original_target() {
 async fn native_ack_revocation(corrupt_source: bool) {
     let fixture = Fixture::new().await;
     let (state, app, cookie) = fixture.application().await;
-    activity(&app, &cookie).await;
+    activity(&state, &app, &cookie).await;
     let accepted = summary(&state, &app, &cookie, "first", &body(1)).await;
     let card = accepted["card_id"].as_str().unwrap();
     let before = frame(&fixture, card).await;
@@ -321,7 +321,7 @@ async fn historical_summary_key_requires_explicit_migration_without_erasing_orig
     use crate::routes::track_conversations::*;
     let fixture = Fixture::new().await;
     let (state, app, cookie) = fixture.application_with_historical_native(true).await;
-    activity(&app, &cookie).await;
+    activity(&state, &app, &cookie).await;
     let launchpad = post(
         &app,
         &cookie,

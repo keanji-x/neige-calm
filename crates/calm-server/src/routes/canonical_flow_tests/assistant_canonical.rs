@@ -27,6 +27,35 @@ async fn track_with_template(app: &axum::Router, cookie: &str, template: Option<
     created["id"].as_str().unwrap().to_owned()
 }
 
+/// Prepare the lazy parent's resource through its actual public consumer.
+/// Assistant uploads retain their existing already-prepared resource contract.
+pub(super) async fn prepare_parent_resource(
+    fixture: &Fixture,
+    app: &axum::Router,
+    cookie: &str,
+    parent: &str,
+) {
+    let planner: String =
+        sqlx::query_scalar("SELECT id FROM cards WHERE track_id=?1 AND role='planner'")
+            .bind(parent)
+            .fetch_one(fixture.repo.pool())
+            .await
+            .unwrap();
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/cards/{planner}/planner/attachments"))
+                .header(header::COOKIE, cookie)
+                .body(Body::from(b"\x89PNG\r\n\x1a\nreleased parent".to_vec()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED);
+}
+
 pub(super) async fn carrier(fixture: &Fixture, card: &str) -> (String, CanonicalHarnessSnapshot) {
     let (worker, snapshot): (String, String) = sqlx::query_as(
         "SELECT ws.id,ws.handle_state_json FROM cards c JOIN worker_sessions ws ON c.session_id=ws.id WHERE c.id=?1",
@@ -309,6 +338,7 @@ async fn followup_binds_attachment_before_canonical_acceptance() {
     let fixture = Fixture::new().await;
     let (state, app, cookie) = fixture.application().await;
     let track = track(&app, &cookie).await;
+    prepare_parent_resource(&fixture, &app, &cookie, &track).await;
     let created = post(
         &app,
         &cookie,

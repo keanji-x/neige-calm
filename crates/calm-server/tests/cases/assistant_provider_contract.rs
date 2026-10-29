@@ -129,7 +129,7 @@ async fn assistant_provider_codex_failed_carrier_send_preserves_thread_and_queue
     use calm_server::harness::{HarnessPhaseTag, QueueEntry};
     use calm_server::session_projection_repo::WorkerSessionState;
     let b = boot().await;
-    let track = b.create_track("failed Assistant carrier").await;
+    let track = b.historical_track("failed Assistant carrier").await;
     let (status, body) = b
         .create_internal_conversation(&track, "failed-carrier", "initial")
         .await;

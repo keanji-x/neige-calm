@@ -31,15 +31,13 @@ impl LegacyQueue {
             json!({"name":"Legacy addressability","color":"#123456"}),
         )
         .await;
-        let track = post(
-            &app,
-            &cookie,
-            "/api/tracks",
-            "historical",
+        let track = crate::test_support::historical_track(
+            &state,
             json!({
                 "area_id":area["id"],"planner_provider":"codex","title":"",
                 "theme":{"fg":[255,255,255],"bg":[0,0,0]}
             }),
+            Some("historical"),
         )
         .await;
         let (card, worker): (String, String) =

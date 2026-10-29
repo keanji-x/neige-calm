@@ -708,7 +708,7 @@ mod persistence;
 #[tokio::test]
 async fn repeated_archive_stays_idempotent_with_buffered_observations() {
     let b = boot().await;
-    let track = b.create_track("Archived observations").await;
+    let track = b.historical_track("Archived observations").await;
     terminal::join_planner(&b, &track).await;
     let (status, row) = b
         .create_internal_conversation(&track, "observation-archive", "first")

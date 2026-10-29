@@ -159,7 +159,7 @@ async fn bad_selected_row_holds_tail_until_the_unaccepted_source_is_repaired() {
     let fixture = Fixture::new().await;
     let (state, app, cookie) = fixture.application().await;
     state.dispatcher.abort_event_listener_for_test();
-    activity(&app, &cookie).await;
+    activity(&state, &app, &cookie).await;
     let accepted = summary(&state, &app, &cookie, "first", &body(1)).await;
     let track = accepted["track_id"].as_str().unwrap().to_owned();
     let card = accepted["card_id"].as_str().unwrap().to_owned();

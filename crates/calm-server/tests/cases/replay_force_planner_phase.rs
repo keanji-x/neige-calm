@@ -109,11 +109,15 @@ async fn create_track_with_storage(boot: &Boot, historical: bool) -> (String, St
     if !historical {
         request["cwd"] = json!(attached_repo_fixture("issue-682-force-planner-phase"));
     }
-    let (status, body, text) = post(boot.app.clone(), "/api/tracks", request).await;
-    assert!(
-        status.is_success(),
-        "track create must succeed: status={status} body={text}"
-    );
+    let body = if historical {
+        crate::support::planner::historical_track(&boot.state, request, None)
+            .await
+            .unwrap()
+    } else {
+        let (status, body, text) = post(boot.app.clone(), "/api/tracks", request).await;
+        assert!(status.is_success(), "track create: {status} {text}");
+        body
+    };
     let track_id = body["id"].as_str().expect("track id").to_string();
     let cards = boot.repo.cards_by_track(&track_id).await.unwrap();
     let planner_card = cards

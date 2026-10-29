@@ -115,6 +115,20 @@ impl Boot {
         body["id"].as_str().unwrap().to_string()
     }
 
+    async fn historical_track(&self, title: &str) -> String {
+        crate::support::planner::historical_track(
+            &self.state,
+            json!({"planner_provider":"codex", "area_id":self.area_id, "title":title,
+                "theme":{"fg":[255,255,255],"bg":[0,0,0]}}),
+            None,
+        )
+        .await
+        .unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    }
+
     async fn request(
         &self,
         method: &str,

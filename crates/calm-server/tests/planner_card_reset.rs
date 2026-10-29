@@ -1782,9 +1782,8 @@ async fn track_delete_shuts_down_active_planner_harness() {
         )
         .await
         .unwrap();
-    let (status, body) = post_json(
-        boot.app.clone(),
-        "/api/tracks",
+    let body = support::planner::historical_track(
+        &boot.state,
         json!({
             "planner_provider": "codex",
             "area_id": area.id,
@@ -1792,9 +1791,10 @@ async fn track_delete_shuts_down_active_planner_harness() {
             "attach_folder": true,
             "theme": {"fg": [216,219,226], "bg": [15,20,24]}
         }),
+        None,
     )
-    .await;
-    assert_eq!(status, StatusCode::CREATED, "body={body}");
+    .await
+    .unwrap();
 
     let track_id = body["id"].as_str().expect("track id").to_string();
     let cards = boot.repo.cards_by_track(&track_id).await.unwrap();
@@ -1840,9 +1840,8 @@ async fn acceptance_20_descendant_refusal_preserves_live_track_runtime_and_termi
         )
         .await
         .unwrap();
-    let (status, body) = post_json(
-        boot.app.clone(),
-        "/api/tracks",
+    let body = support::planner::historical_track(
+        &boot.state,
         json!({
             "planner_provider": "codex",
             "area_id": area.id,
@@ -1850,9 +1849,10 @@ async fn acceptance_20_descendant_refusal_preserves_live_track_runtime_and_termi
             "attach_folder": true,
             "theme": {"fg": [216,219,226], "bg": [15,20,24]}
         }),
+        None,
     )
-    .await;
-    assert_eq!(status, StatusCode::CREATED, "body={body}");
+    .await
+    .unwrap();
     let parent_id = body["id"].as_str().unwrap().to_string();
     let cards = boot.repo.cards_by_track(&parent_id).await.unwrap();
     let planner_card = cards
@@ -2984,9 +2984,8 @@ async fn planner_reset_seeds_no_track_goal() {
         )
         .await
         .unwrap();
-    let (status, body) = post_json(
-        boot.app.clone(),
-        "/api/tracks",
+    let body = support::planner::historical_track(
+        &boot.state,
         json!({
             "planner_provider": "codex",
             "area_id": area.id,
@@ -2994,9 +2993,10 @@ async fn planner_reset_seeds_no_track_goal() {
             "attach_folder": true,
             "theme": {"fg": [216,219,226], "bg": [15,20,24]}
         }),
+        None,
     )
-    .await;
-    assert_eq!(status, StatusCode::CREATED, "body={body}");
+    .await
+    .unwrap();
     let track_id = body["id"].as_str().expect("track id").to_string();
     let planner_card = planner_card_of_track(&boot, &track_id).await;
 

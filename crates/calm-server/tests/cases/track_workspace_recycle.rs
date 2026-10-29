@@ -26,6 +26,7 @@ use tempfile::TempDir;
 use tower::ServiceExt;
 
 struct Boot {
+    state: AppState,
     app: axum::Router,
     repo: Arc<SqlxRepo>,
     workspace_root: PathBuf,
@@ -106,8 +107,9 @@ async fn boot_with_storage(root: impl FnOnce(&Path) -> PathBuf, persistent: bool
         .layer(axum::middleware::from_fn(
             calm_server::actor::actor_middleware,
         ))
-        .with_state(state);
+        .with_state(state.clone());
     Boot {
+        state,
         app,
         repo: sqlx_repo,
         workspace_root,
@@ -246,11 +248,13 @@ async fn workspace_path(b: &Boot, track_id: &str) -> PathBuf {
 
 /// The single managed track created by `POST /api/tracks` with only a title.
 async fn managed_track(b: &Boot, area_id: &str, title: &str) -> (String, PathBuf) {
-    let track = create_track(
-        b,
-        json!({"planner_provider": "codex", "area_id": area_id, "title": title, "theme": theme()}),
+    let track = crate::support::planner::historical_track(
+        &b.state,
+        json!({"planner_provider":"codex", "area_id":area_id, "title":title, "theme":theme()}),
+        None,
     )
-    .await;
+    .await
+    .unwrap();
     let id = track["id"].as_str().unwrap().to_string();
     let path = workspace_path(b, &id).await;
     assert!(

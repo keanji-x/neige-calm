@@ -96,19 +96,18 @@ async fn a_send_during_the_repoint_restart_waits_on_the_cards_lock() {
         .await
         .unwrap();
     let app = router(&state).await;
-    let (status, track) = request(
-        app.clone(),
-        "POST",
-        "/api/tracks".into(),
+    let track = crate::support::planner::historical_track(
+        &state,
         json!({
             "planner_provider": "codex",
             "area_id": area.id.as_str(),
             "title": "moving",
             "theme": {"fg": [216, 219, 226], "bg": [15, 20, 24]},
         }),
+        None,
     )
-    .await;
-    assert_eq!(status, StatusCode::CREATED, "body={track}");
+    .await
+    .unwrap();
     let track_id = track["id"].as_str().unwrap().to_string();
     let planner_card_id: String =
         sqlx::query_scalar("SELECT id FROM cards WHERE track_id = ?1 AND role = 'planner'")

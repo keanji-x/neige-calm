@@ -1,6 +1,6 @@
 import { historicalConversationPage } from '../web/src/app/router/conversation-read-data.ts';
 import { expect, test } from '@playwright/test';
-import { createArea, createTrack } from './helpers/seed.js';
+import { createArea, createHistoricalTrack, createTrack } from './helpers/seed.js';
 
 test.use({ contextOptions: { reducedMotion: 'reduce' } });
 
@@ -54,7 +54,7 @@ test('copies Markdown and explicitly regenerates while preserving a separate dra
 test('edits the latest message in the composer and replaces it on Send, in one keyed request', async ({ page, request }) => {
   const area = await createArea(request, `Message edit ${Date.now()}`);
   try {
-    const track = await createTrack(request, area.id);
+    const track = await createHistoricalTrack(request, area.id);
     const imageId = '0189bc3f-2b1a-4c7d-9e4f-1a2b3c4d5e6f.png';
     let removed = false;
     const rewinds: unknown[] = [];

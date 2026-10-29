@@ -92,7 +92,7 @@ async fn boot() -> Boot {
         .layer(axum::middleware::from_fn(
             calm_server::actor::actor_middleware,
         ))
-        .with_state(state);
+        .with_state(state.clone());
     Boot {
         app,
         repo: sqlx_repo,
@@ -196,15 +196,13 @@ async fn create_area(b: &Boot, name: &str) -> String {
 
 /// A managed track: the title-only create the new FE sends.
 async fn managed_track(b: &Boot, area_id: &str, title: &str) -> (String, PathBuf) {
-    let (status, text) = request(
-        b.app.clone(),
-        "POST",
-        "/api/tracks",
-        Some(json!({"planner_provider": "codex", "area_id": area_id, "title": title, "theme": theme()})),
+    let track = crate::support::planner::historical_track(
+        &b.state,
+        json!({"planner_provider":"codex", "area_id":area_id, "title":title, "theme":theme()}),
+        None,
     )
-    .await;
-    assert_eq!(status, StatusCode::CREATED, "body={text}");
-    let track: Value = serde_json::from_str(&text).unwrap();
+    .await
+    .unwrap();
     let id = track["id"].as_str().unwrap().to_string();
     let path = workspace_path(b, &id).await;
     assert!(

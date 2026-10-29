@@ -1,7 +1,7 @@
 import { historicalConversationPage } from '../web/src/app/router/conversation-read-data.ts';
 import { expect, test } from '@playwright/test';
 
-import { createArea, createTrack } from './helpers/seed.js';
+import { activatePlanner, createArea, createHistoricalTrack, createTrack } from './helpers/seed.js';
 
 test.use({ contextOptions: { reducedMotion: 'reduce' } });
 
@@ -57,7 +57,7 @@ test('retains a rejected conversation message and retries it once', async ({ pag
 test('explains a paused conversation and retains its blocked draft', async ({ page, request }, testInfo) => {
   const area = await createArea(request, `Stalled recovery ${Date.now()}`);
   try {
-    const track = await createTrack(request, area.id);
+    const track = await createHistoricalTrack(request, area.id);
     let phase = 'turn_running';
     let sends = 0;
     await page.route('**/api/cards/*/planner/input', async (route) => { sends += 1; await route.continue(); });
@@ -103,7 +103,7 @@ test('explains a paused conversation and retains its blocked draft', async ({ pa
 test('offers a fresh session for a dormant send and keeps the history and the words', async ({ page, request }, testInfo) => {
   const area = await createArea(request, `Fresh session ${Date.now()}`);
   try {
-    const track = await createTrack(request, area.id);
+    const track = await createHistoricalTrack(request, area.id);
     let refuseNext = false;
     const inputs: number[] = [];
     const restarts: number[] = [];
@@ -220,7 +220,8 @@ for (const failedFirst of [false, true]) {
   test(`shows an unconfirmed stop without fabricating completion${failedFirst ? ' after a failed request' : ''}`, async ({ page, request }, testInfo) => {
     const area = await createArea(request, `Stop receipt ${Date.now()}`);
     try {
-      const track = await createTrack(request, area.id);
+      const track = await createHistoricalTrack(request, area.id);
+      await activatePlanner(request, track.id);
       let stops = 0;
       let sends = 0;
       // The real harness is idle. A stale working snapshot reproduces a click
@@ -238,7 +239,7 @@ for (const failedFirst of [false, true]) {
       });
       page.on('request', (outgoing) => { if (outgoing.method() === 'POST' && outgoing.url().endsWith('/planner/input')) sends += 1; });
       await page.goto(`/next/track/${track.id}`);
-      await page.getByRole('button', { name: 'Conversation Planner' }).click();
+      await page.getByRole('button', { name: 'Conversation fake-reply: Stop race prepared', exact: true }).click();
       const composer = page.getByRole('combobox', { name: 'Message' });
       await expect(composer).toHaveAttribute('contenteditable', 'true');
       await composer.fill('Keep this stop request draft');

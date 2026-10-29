@@ -27,8 +27,10 @@ async fn historical_template_first_message_keeps_its_original_creation_and_repla
         "title":"", "theme":{"fg":[255,255,255],"bg":[0,0,0]},
         "first_message":"Preserve the released template first message"
     });
-    let created = post(&app, &cookie, "/api/tracks", "template", request.clone()).await;
-    let replay = post(&app, &cookie, "/api/tracks", "template", request.clone()).await;
+    let created =
+        crate::test_support::historical_track(&state, request.clone(), Some("template")).await;
+    let replay =
+        crate::test_support::historical_track(&state, request.clone(), Some("template")).await;
     assert_eq!(created["id"], replay["id"]);
     shutdown(&fixture, &state).await;
     let (offline_state, offline_app, offline_cookie) = fixture.application().await;
@@ -107,15 +109,13 @@ async fn historical_queue_edit_delete_steer_and_running_stop_remain_available() 
     let area = area(&app, &cookie).await;
     let mut cards = vec![];
     for key in ["editable", "running"] {
-        let created = post(
-            &app,
-            &cookie,
-            "/api/tracks",
-            key,
+        let created = crate::test_support::historical_track(
+            &state,
             json!({
                 "area_id":area["id"],"planner_provider":"codex","title":"",
                 "theme":{"fg":[255,255,255],"bg":[0,0,0]}
             }),
+            Some(key),
         )
         .await;
         let (card, worker): (String, String) =
@@ -222,15 +222,13 @@ async fn historical_public_send_keeps_its_v1_key_and_original_acknowledgement() 
     let fixture = Fixture::new().await;
     let (state, app, cookie) = fixture.application_with_historical_native(true).await;
     let area = area(&app, &cookie).await;
-    let created = post(
-        &app,
-        &cookie,
-        "/api/tracks",
-        "message-less",
+    let created = crate::test_support::historical_track(
+        &state,
         json!({
             "area_id":area["id"], "planner_provider":"codex", "title":"",
             "theme":{"fg":[255,255,255],"bg":[0,0,0]}
         }),
+        Some("message-less"),
     )
     .await;
     let card: String =
@@ -366,14 +364,8 @@ async fn historical_admission_rejects_another_real_user_even_with_owner_profile_
     let create = json!({"area_id":area["id"],"planner_provider":"codex","template_id":"small-change",
         "cwd":cwd, "isolation":"none", "attach_folder":true,
         "title":"","theme":{"fg":[255,255,255],"bg":[0,0,0]},"first_message":"Owner's historical input"});
-    let created = post(
-        &app,
-        &cookie,
-        "/api/tracks",
-        "owned-history",
-        create.clone(),
-    )
-    .await;
+    let created =
+        crate::test_support::historical_track(&state, create.clone(), Some("owned-history")).await;
     let card: String =
         sqlx::query_scalar("SELECT id FROM cards WHERE track_id=?1 AND role='planner'")
             .bind(created["id"].as_str().unwrap())

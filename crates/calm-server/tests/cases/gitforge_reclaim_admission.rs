@@ -50,17 +50,14 @@ async fn durable_target_admission(restart: bool) {
             .bind(Arc::new(f._execution.lifecycle.engine().unwrap().clone()));
         f.b.app = crate::support::authenticated_router::application(f.b.state.clone()).await;
     }
-    let (status, other) =
-        f.b.as_user(
-            "POST",
-            "/api/tracks",
-            json!({
-                "area_id":f.b.area_id, "title":"destination owner", "planner_provider":"codex",
-                "theme":calm_server::routes::theme::RequestTheme::default_dark()
-            }),
-        )
-        .await;
-    assert_eq!(status, StatusCode::CREATED, "{other}");
+    let other = crate::support::planner::historical_track(
+        &f.b.state,
+        json!({"area_id":f.b.area_id, "title":"destination owner", "planner_provider":"codex",
+            "theme":calm_server::routes::theme::RequestTheme::default_dark()}),
+        None,
+    )
+    .await
+    .unwrap();
     let other = other["id"].as_str().unwrap().to_owned();
     f.b.shutdown_harnesses().await;
     let before = f.b.repo.track_get(&other).await.unwrap().unwrap().workspace;

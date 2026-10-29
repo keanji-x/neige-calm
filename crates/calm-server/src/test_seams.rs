@@ -566,14 +566,30 @@ pub async fn historical_daily_for_test(
     crate::daily_planner::historical_daily_for_test(state, now).await
 }
 
-/// Allocate or replay a released creator receipt through the Historical owner.
-#[cfg(feature = "fixtures")]
+/// Explicit released storage shapes; never selected by production admission.
+#[cfg(any(test, feature = "fixtures"))]
+pub enum HistoricalReceiptForTest {
+    Creator(crate::mcp_server::tools::track_add::TrackAddRequest),
+    Released {
+        request: crate::routes::tracks::CreateTrackRequest,
+        key: Option<String>,
+    },
+}
+#[cfg(any(test, feature = "fixtures"))]
+impl From<crate::mcp_server::tools::track_add::TrackAddRequest> for HistoricalReceiptForTest {
+    fn from(request: crate::mcp_server::tools::track_add::TrackAddRequest) -> Self {
+        Self::Creator(request)
+    }
+}
+
+/// Allocate or replay a released receipt through the Historical owner.
+#[cfg(any(test, feature = "fixtures"))]
 pub async fn historical_creator_receipt_for_test(
     route: &crate::state::RouteState,
     max_open: u32,
-    request: crate::mcp_server::tools::track_add::TrackAddRequest,
+    request: impl Into<HistoricalReceiptForTest>,
 ) -> crate::error::Result<crate::model::Track> {
     crate::routes::tracks::RouteTrackCreator::new(route.clone(), max_open)
-        .historical_receipt_for_test(request)
+        .historical_receipt_for_test(request.into())
         .await
 }

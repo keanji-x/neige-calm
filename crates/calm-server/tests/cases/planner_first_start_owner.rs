@@ -21,37 +21,19 @@ use crate::planner_first_start::{AppServer, Boot, app_state, post_input, router,
 
 /// `POST /api/tracks`, message-less: the production create, whose Planner start is its own.
 async fn create_ordinary_track(
-    app: axum::Router,
+    state: calm_server::state::AppState,
     area_id: String,
     title: &'static str,
 ) -> (StatusCode, Value) {
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/tracks")
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    json!({
-                        "planner_provider": "codex",
-                        "area_id": area_id,
-                        "title": title,
-                        "cwd": null,
-                        "attach_folder": false,
-                        "theme": {"fg": [216, 219, 226], "bg": [15, 20, 24]},
-                    })
-                    .to_string(),
-                ))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    let status = response.status();
-    let bytes = response.into_body().collect().await.unwrap().to_bytes();
-    (
-        status,
-        serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+    let track = crate::support::planner::historical_track(
+        &state,
+        json!({"planner_provider":"codex", "area_id":area_id, "title":title,
+            "theme":{"fg":[216,219,226],"bg":[15,20,24]}}),
+        None,
     )
+    .await
+    .unwrap();
+    (StatusCode::CREATED, track)
 }
 
 /// Codex review (#2184): an ordinary create commits its cards, then submits its own start. A send
@@ -82,7 +64,7 @@ async fn a_send_between_a_creates_commit_and_its_start_does_not_pre_empt_the_cre
         parked.clone(),
     );
     let create = tokio::spawn(create_ordinary_track(
-        app.clone(),
+        state.clone(),
         area.id.to_string(),
         "racing",
     ));
@@ -162,7 +144,7 @@ async fn an_ordinary_track_whose_create_time_start_failed_stays_dormant_for_its_
         .shared_codex_appserver
         .fail_next_thread_start_for_test();
     let app = router(&state).await;
-    let (status, body) = create_ordinary_track(app.clone(), area.id.to_string(), "inert").await;
+    let (status, body) = create_ordinary_track(state.clone(), area.id.to_string(), "inert").await;
     assert!(
         status.is_success(),
         "the create answers success with an inert Planner: {status} {body}"

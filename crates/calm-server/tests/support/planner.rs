@@ -92,3 +92,22 @@ pub async fn mint_tx(
     session_mcp_token_set_tx(tx, session, &hash).await.unwrap();
     token.into_inner()
 }
+
+/// Released REST receipt, allocated and delivered by the existing creation owner.
+pub async fn historical_track(
+    state: &calm_server::state::AppState,
+    body: Value,
+    key: Option<&str>,
+) -> calm_server::error::Result<Value> {
+    use axum::extract::FromRef;
+    let track = calm_server::test_seams::historical_creator_receipt_for_test(
+        &calm_server::state::RouteState::from_ref(state),
+        100,
+        calm_server::test_seams::HistoricalReceiptForTest::Released {
+            request: serde_json::from_value(body)?,
+            key: key.map(str::to_owned),
+        },
+    )
+    .await?;
+    Ok(serde_json::to_value(track)?)
+}

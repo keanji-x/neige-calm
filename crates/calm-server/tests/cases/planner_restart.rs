@@ -42,19 +42,18 @@ pub(crate) async fn ordinary_track() -> Boot {
         .await
         .unwrap();
     let app = router(&state).await;
-    let (status, track) = request(
-        app.clone(),
-        "POST",
-        "/api/tracks".into(),
+    let track = crate::support::planner::historical_track(
+        &state,
         json!({
             "planner_provider": "codex",
             "area_id": area.id.as_str(),
             "title": "restarting",
             "theme": {"fg": [216, 219, 226], "bg": [15, 20, 24]},
         }),
+        None,
     )
-    .await;
-    assert_eq!(status, StatusCode::CREATED, "body={track}");
+    .await
+    .unwrap();
     let planner_card_id: String =
         sqlx::query_scalar("SELECT id FROM cards WHERE track_id = ?1 AND role = 'planner'")
             .bind(track["id"].as_str().unwrap())

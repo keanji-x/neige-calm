@@ -81,7 +81,7 @@ async fn receipt_bound_preparation_waits_for_original_end_before_archive_baselin
     use calm_server::harness::HarnessPhaseTag;
     use sqlx::Row;
     let b = boot().await;
-    let track = b.create_track("Archived observations").await;
+    let track = b.historical_track("Archived observations").await;
     join_planner(&b, &track).await;
     let (status, row) = b
         .create_internal_conversation(&track, "observation-archive", "first")
