@@ -50,7 +50,7 @@ pub(super) async fn drive(
             changed=cancelled.changed(),if stop_at.is_none()=>{
                 if changed.is_err() || !matches!(*cancelled.borrow(), CancelRequest::Running) {
                     stop_at=Some(tokio::time::Instant::now()+Duration::from_secs(5));
-                    if !matches!(*cancelled.borrow(), CancelRequest::Written) {
+                    if !matches!(*cancelled.borrow(), CancelRequest::Attempted) {
                     tokio::time::timeout(Duration::from_secs(3),async {
                         approvals.cancel(&receipt.native_session_id, shared.admission(&receipt.thread_id, None, Some(&receipt.native_session_id), Some(&receipt.turn_id)).gate()).await.map_err(wire_error)
                     }).await.map_err(|_|CalmError::Conflict("ACP cancellation writes timed out".into()))??;

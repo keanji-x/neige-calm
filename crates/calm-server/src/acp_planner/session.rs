@@ -57,7 +57,9 @@ pub struct SessionParams {
 enum CancelRequest {
     Running,
     Requested,
-    Written,
+    /// The external control owner finished its attempt, with any outcome.
+    /// Bound the original driver without writing a second native cancel.
+    Attempted,
 }
 struct Active {
     thread: String,

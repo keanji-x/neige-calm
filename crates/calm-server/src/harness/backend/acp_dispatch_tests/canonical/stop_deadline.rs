@@ -157,6 +157,60 @@ async fn start_loop(fx: &Fixture) -> (crate::harness::PlannerHarness, CanonicalH
 }
 
 #[tokio::test]
+async fn canonical_acp_accepted_stop_with_refused_cancel_bounds_original_without_end() {
+    let fx = Fixture::new("hold").await;
+    let (harness, original) = start_loop(&fx).await;
+    let unsent = crate::acp_planner::test_seams::pause_before_interrupt_send(&fx.owner.worker);
+    let stop = tokio::spawn({
+        let harness = harness.clone();
+        let source = fx.source.clone();
+        async move { harness.stop_canonical(source).await }
+    });
+    tokio::time::timeout(Duration::from_secs(20), unsent.entered.notified())
+        .await
+        .expect("Stop accepted before native writer admission");
+    let (accepted, _) = observed(&fx).await;
+    assert_eq!(accepted.header.phase, HarnessPhaseTag::IssuingInterrupt);
+    assert!(accepted.header.interruption_intent.is_some());
+    // Native ownership changes after durable Stop acceptance. The real writer
+    // must refuse it, while the exact original driver must still be bounded.
+    sqlx::query("UPDATE worker_sessions SET agent_session_id='changed-native-owner' WHERE id=?1")
+        .bind(&fx.owner.worker)
+        .execute(fx.owner.repo.pool())
+        .await
+        .unwrap();
+    drop(unsent);
+    assert!(matches!(stop.await.unwrap(), Err(CalmError::Conflict(_))));
+    assert_eq!(super::control::cancel_count(&fx), 0);
+    let bounded = tokio::time::timeout(Duration::from_secs(8), async {
+        while !fx.session.driver_finished_for_test() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    // Observe before shutdown: shutdown itself must not satisfy the assertion.
+    let receipt = fx.receipt_bytes(&fx.submission).await;
+    let (after, _) = observed(&fx).await;
+    let _ = harness.shutdown().await;
+    assert!(
+        bounded.is_ok(),
+        "accepted Stop must bound its original driver even when cancel is refused"
+    );
+    assert_ne!(receipt.2, "completed", "no native END may be fabricated");
+    assert_eq!(
+        after.canonical_inputs.active,
+        original.canonical_inputs.active
+    );
+    assert!(after.header.interruption_intent.is_some());
+    assert_eq!(fx.prompts(), 1);
+    assert_eq!(
+        super::control::cancel_count(&fx),
+        0,
+        "no fallback cancel or replay"
+    );
+}
+
+#[tokio::test]
 async fn canonical_acp_stop_deadline_late_end_restores_and_dispatches_pending_once() {
     let fx = Fixture::new("hold").await;
     let (harness, original) = start_loop(&fx).await;

@@ -551,6 +551,21 @@ impl PreparedInterrupt {
         self,
         admission: &crate::harness::native_admission::NativePromptAdmission<'_>,
     ) -> Result<()> {
+        let result = self.send_cancel(admission).await;
+        // Canonical Stop was accepted before consuming this handle. A refusal
+        // or an uncertain writer outcome must still bound the exact original
+        // driver, without asking it to repeat a possibly crossed cancel.
+        let bounded = self
+            .signal
+            .send(CancelRequest::Attempted)
+            .map_err(|_| CalmError::Conflict("ACP interrupt handoff ended".into()));
+        result.and(bounded)
+    }
+
+    async fn send_cancel(
+        &self,
+        admission: &crate::harness::native_admission::NativePromptAdmission<'_>,
+    ) -> Result<()> {
         #[cfg(all(test, feature = "fixtures"))]
         crate::acp_planner::test_seams::wait_before_interrupt_send(
             &self.shared.params.worker_session_id,
@@ -576,12 +591,7 @@ impl PreparedInterrupt {
         self.approvals
             .cancel(&self.native, &gate)
             .await
-            .map_err(|error| combined.take_refusal().unwrap_or_else(|| wire_error(error)))?;
-        // The real writer already sent cancel. Its exact driver owns the
-        // deadline, receipt and cleanup; do not enqueue a second native cancel.
-        self.signal
-            .send(CancelRequest::Written)
-            .map_err(|_| CalmError::Conflict("ACP interrupt handoff ended".into()))
+            .map_err(|error| combined.take_refusal().unwrap_or_else(|| wire_error(error)))
     }
 }
 
