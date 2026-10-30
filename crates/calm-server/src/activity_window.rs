@@ -56,8 +56,8 @@ impl WorkspaceActivityWindow {
 
 /// Aggregate workspace activity over the half-open window `[start_ms, end_ms)`.
 /// `exclude_track` is the reflexive exclusion (writing the summary is itself a `track.report_edited` on the launchpad); defence in depth, since the visibility join already drops the system area.
-pub async fn workspace_activity_window(
-    pool: &Pool<Sqlite>,
+pub async fn workspace_activity_window<'e>(
+    executor: impl sqlx::Executor<'e, Database = Sqlite>,
     start_ms: i64,
     end_ms: i64,
     exclude_track: Option<&str>,
@@ -72,7 +72,7 @@ pub async fn workspace_activity_window(
             .bind(report)
             .bind(completed)
             .bind(failed)
-            .fetch_one(pool)
+            .fetch_one(executor)
             .await?;
 
     Ok(WorkspaceActivityWindow {

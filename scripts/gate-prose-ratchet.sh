@@ -1,4 +1,14 @@
 #!/usr/bin/env bash
+# U12a-2 bounded exception: long_literal/crates/**/*.rs 176 -> 179.
+# Five additions replace two removed V1 HTTP descriptions:
+# 1. calm-truth conversation/system_assistant.rs: permanent subject receipt SQL.
+# 2. calm-server system_assistant_tests/http.rs: real-schema namespace refusal trigger.
+# 3-5. calm-server routes/today_summary.rs: HTTP key, acceptance and refusal
+# descriptions in OpenAPI. These describe the public API, not agent instructions.
+# SQL/HTTP contract changes edit their owning source and regenerate the baseline;
+# ordinary test additions need no inventory edit. No scan rule or exemption changes.
+# The existing scan runs once per CI lint workflow plus its separate selftest;
+# no additional check or invocation is introduced.
 # U12a-2pre bounded exception: long_literal/crates/**/*.rs 175 -> 176 is one
 # SQL fixture under calm-server/src/routes/canonical_flow_tests/:
 # 1. system_assistant_tests/retained_proof_tests.rs: reject_retained_release

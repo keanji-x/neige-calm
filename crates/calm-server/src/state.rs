@@ -330,11 +330,6 @@ impl BootState {
             system_area_mint: Arc::new(crate::routes::today::SystemAreaMintCounters::default()),
             system_area_mint_rendezvous: None,
             today_summary_issuer: None,
-            today_summary_create: Arc::new(
-                crate::routes::today_summary::TodaySummaryCreateCounters::default(),
-            ),
-            today_summary_create_rendezvous: None,
-            today_summary_bootstrap_rendezvous: None,
             daemon: self.daemon,
             terminal_renderer: self.terminal_renderer,
             plugin: self.plugin,
@@ -382,12 +377,6 @@ pub struct AppState {
     pub system_area_mint: Arc<crate::routes::today::SystemAreaMintCounters>,
     /// `None` in production; armed by the system-area concurrency test.
     pub system_area_mint_rendezvous: crate::routes::today::SystemAreaMintRendezvous,
-    pub today_summary_create: Arc<crate::routes::today_summary::TodaySummaryCreateCounters>,
-    /// `None` in production; armed by the create-race test.
-    pub today_summary_create_rendezvous: crate::routes::today_summary::TodaySummaryCreateRendezvous,
-    /// `None` in production; armed by the first-message race test.
-    pub today_summary_bootstrap_rendezvous:
-        crate::routes::today_summary::TodaySummaryBootstrapRendezvous,
     pub daemon: Arc<DaemonClient>,
     pub terminal_renderer: Arc<TerminalRendererRegistry>,
     pub plugin: Arc<PluginHost>,
@@ -765,28 +754,6 @@ impl AppState {
         barrier: std::sync::Arc<tokio::sync::Barrier>,
     ) -> Self {
         self.system_area_mint_rendezvous = Some(barrier);
-        self
-    }
-
-    /// Arm the create-race rendezvous.
-    #[cfg(feature = "fixtures")]
-    #[doc(hidden)]
-    pub fn with_today_summary_create_rendezvous(
-        mut self,
-        barrier: std::sync::Arc<tokio::sync::Barrier>,
-    ) -> Self {
-        self.today_summary_create_rendezvous = Some(barrier);
-        self
-    }
-
-    /// Arm the first-message race rendezvous.
-    #[cfg(feature = "fixtures")]
-    #[doc(hidden)]
-    pub fn with_today_summary_bootstrap_rendezvous(
-        mut self,
-        barrier: std::sync::Arc<tokio::sync::Barrier>,
-    ) -> Self {
-        self.today_summary_bootstrap_rendezvous = Some(barrier);
         self
     }
 

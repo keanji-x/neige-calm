@@ -12,14 +12,12 @@ use axum::{
 };
 use calm_server::auth::Principal;
 use calm_server::db::RepoRead;
-use calm_server::ids::ActorId;
 use calm_server::{
     card_role_cache::CardRoleCache,
     db::{Repo, sqlite::SqlxRepo},
     event::EventBus,
     plugin_host::{PluginHost, PluginRegistry},
     routes,
-    routes::today_summary::TODAY_SUMMARY_BOOTSTRAP_TEXT,
     shared_codex_appserver::SharedCodexAppServer,
     state::{AppState, CodexClient, DaemonClient, WriteContext},
     track_area_cache::TrackAreaCache,
@@ -33,8 +31,6 @@ struct Boot {
     app: axum::Router,
     state: AppState,
     repo: Arc<SqlxRepo>,
-    /// This server's own create-arm counters, per instance so a sibling case cannot move them.
-    create_counters: Arc<calm_server::routes::today_summary::TodaySummaryCreateCounters>,
     _tmp: Arc<TempDir>,
 }
 
@@ -43,29 +39,45 @@ async fn boot() -> Boot {
     boot_with(TempDir::new().unwrap(), repo, "workspaces").await
 }
 
-/// A server over a given database and workspace root; a second server over the same database with a
-/// different root is what a workspace re-point looks like to the rows.
+// Summary-positive generic checks need the actual recovered boot capability.
+async fn boot_production() -> Boot {
+    use clap::Parser;
+    let tmp = Arc::new(TempDir::new().unwrap());
+    let mut cfg = calm_server::config::Config::parse_from(["calm-server"]);
+    cfg.db_url = format!(
+        "sqlite://{}?mode=rwc",
+        tmp.path().join("summary.db").display()
+    );
+    cfg.data_dir = Some(tmp.path().join("data"));
+    cfg.workspace_root = Some(tmp.path().join("workspaces"));
+    cfg.plugins_dir = Some(tmp.path().join("plugins"));
+    cfg.plugins_data_dir = Some(tmp.path().join("plugins-data"));
+    cfg.auth_username = Some("fixture-owner".into());
+    cfg.auth_password = Some("fixture-password".into());
+    cfg.auth_dev_autologin = false;
+    cfg.codex_bin = tmp
+        .path()
+        .join("no-real-codex")
+        .to_string_lossy()
+        .into_owned();
+    cfg.claude_bin = tmp
+        .path()
+        .join("no-real-claude")
+        .to_string_lossy()
+        .into_owned();
+    let (state, auth) = AppState::boot(&cfg).await.unwrap().into_parts();
+    let app =
+        crate::support::authenticated_router::application_with_auth(state.clone(), auth).await;
+    let repo = Arc::new(SqlxRepo::open(&cfg.db_url).await.unwrap());
+    Boot {
+        app,
+        state,
+        repo,
+        _tmp: tmp,
+    }
+}
+
 async fn boot_with(tmp: impl Into<Arc<TempDir>>, repo: Arc<SqlxRepo>, root_name: &str) -> Boot {
-    boot_with_rendezvous(tmp, repo, root_name, None).await
-}
-
-/// `boot_with`, plus the option to arm the create-arm rendezvous.
-async fn boot_with_rendezvous(
-    tmp: impl Into<Arc<TempDir>>,
-    repo: Arc<SqlxRepo>,
-    root_name: &str,
-    rendezvous: Option<Arc<tokio::sync::Barrier>>,
-) -> Boot {
-    boot_with_rendezvouses(tmp, repo, root_name, rendezvous, None).await
-}
-
-async fn boot_with_rendezvouses(
-    tmp: impl Into<Arc<TempDir>>,
-    repo: Arc<SqlxRepo>,
-    root_name: &str,
-    create_rendezvous: Option<Arc<tokio::sync::Barrier>>,
-    bootstrap_rendezvous: Option<Arc<tokio::sync::Barrier>>,
-) -> Boot {
     let tmp = tmp.into();
     let repo_dyn: Arc<dyn Repo> = repo.clone();
     let roles = CardRoleCache::new();
@@ -103,15 +115,6 @@ async fn boot_with_rendezvouses(
         None,
     ))
     .with_workspace_root(tmp.path().join(root_name));
-    let state = match create_rendezvous {
-        Some(barrier) => state.with_today_summary_create_rendezvous(barrier),
-        None => state,
-    };
-    let state = match bootstrap_rendezvous {
-        Some(barrier) => state.with_today_summary_bootstrap_rendezvous(barrier),
-        None => state,
-    };
-    let create_counters = Arc::clone(&state.today_summary_create);
     let app = routes::router()
         .layer(axum::middleware::from_fn_with_state(
             calm_server::auth::AuthState::new(calm_server::auth::AuthConfig {
@@ -137,7 +140,6 @@ async fn boot_with_rendezvouses(
         app,
         state,
         repo,
-        create_counters,
         _tmp: tmp,
     }
 }
@@ -264,55 +266,6 @@ impl Boot {
             .unwrap()
     }
 
-    /// Every `harness.user_message.enqueued` row for **this card**, oldest first, as its `char_count`.
-    /// A COUNT of enqueues only: the lengths are not a discriminator; use [`Boot::delivered`] for "which message".
-    async fn enqueued_char_counts(&self, card_id: &str) -> Vec<i64> {
-        sqlx::query_scalar(
-            "SELECT json_extract(payload, '$.char_count') FROM events \
-              WHERE kind = 'harness.user_message.enqueued' AND scope_card = ?1 \
-              ORDER BY id",
-        )
-        .bind(card_id)
-        .fetch_all(self.repo.pool())
-        .await
-        .unwrap()
-    }
-
-    /// The distinct `events.actor` values behind one event kind, sorted.
-    async fn actors_for(&self, kind: &str) -> Vec<String> {
-        sqlx::query_scalar("SELECT DISTINCT actor FROM events WHERE kind = ?1 ORDER BY actor")
-            .bind(kind)
-            .fetch_all(self.repo.pool())
-            .await
-            .unwrap()
-    }
-
-    /// The **production** predicate statement, run against this server's database:
-    /// `user_message_enqueued_on_active_runtime` is `pub(crate)`, so its SQL is executed verbatim instead.
-    async fn enqueued_on_active_runtime(&self, track_id: &str, card_id: &str) -> bool {
-        sqlx::query_scalar::<_, i64>(
-            &calm_server::routes::conversations_shared::user_message_enqueued_on_active_runtime_sql(
-            ),
-        )
-        .bind(card_id)
-        .bind(track_id)
-        .fetch_optional(self.repo.pool())
-        .await
-        .unwrap()
-        .is_some()
-    }
-
-    /// This card's ACTIVE runtime id, through the production read rather than a
-    /// hand-written state filter.
-    async fn active_runtime(&self, card_id: &str) -> Option<String> {
-        use calm_server::session_projection_repo::WorkerSessionProjectionRepo;
-        self.repo
-            .session_projection_active_for_card(&card_id.to_string())
-            .await
-            .unwrap()
-            .map(|runtime| runtime.id)
-    }
-
     /// How many times each `needle` was **actually delivered**, matched by bytes over this server's turns
     /// (server-wide) plus `card_id`'s NEWEST queue. A message can briefly be in both, so the read is retried until the needles account for exactly `expected_total`.
     async fn delivered(
@@ -338,30 +291,6 @@ impl Boot {
                      snapshot ({}): {queued:#?}\nturn texts ({}): {turns:#?}",
                     queued.len(),
                     turns.len(),
-                );
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-        }
-    }
-
-    /// Block until `needle` has reached this server's fake app-server, and answer how many times it occurs
-    /// there. Sampled at first sighting: the fake never completes a turn, so only the first turn's contents are ever delivered.
-    async fn await_reached_appserver(&self, card_id: &str, needle: &str) -> usize {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-        loop {
-            let texts = self.turn_texts();
-            let count = count_needles(&texts, &[needle])[0];
-            if count > 0 {
-                return count;
-            }
-            if std::time::Instant::now() >= deadline {
-                let queued = self.queued_texts(card_id).await;
-                panic!(
-                    "nothing matching {needle:?} ever reached this server's \
-                     fake app-server\nturn texts ({}): {texts:#?}\nstill queued \
-                     in the persisted snapshot ({}): {queued:#?}",
-                    texts.len(),
-                    queued.len(),
                 );
             }
             tokio::time::sleep(std::time::Duration::from_millis(5)).await;
@@ -409,86 +338,6 @@ impl Boot {
         texts
     }
 
-    /// Every observation still sitting in **any** of this card's persisted harness queues, paired with its
-    /// `worker_sessions` row: the shape [`Boot::quiesce_and_clear_queue`] rewrites.
-    async fn pending_observations(&self, card_id: &str) -> Vec<(String, Value)> {
-        let states: Vec<(String, Option<String>)> =
-            sqlx::query_as("SELECT id, handle_state_json FROM worker_sessions WHERE card_id = ?1")
-                .bind(card_id)
-                .fetch_all(self.repo.pool())
-                .await
-                .unwrap();
-        let mut out = Vec::new();
-        for (id, state) in states {
-            let Some(state) = state else { continue };
-            let parsed: Value = serde_json::from_str(&state).unwrap();
-            for obs in parsed["pending_queue"]
-                .as_array()
-                .cloned()
-                .unwrap_or_default()
-            {
-                out.push((id.clone(), obs));
-            }
-        }
-        out
-    }
-
-    /// Shut this server's harnesses down and clear whatever they left in `card_id`'s persisted queue, so a
-    /// server booted next over the same database inherits nothing. Waiting for a drain would hang (the fake never completes a turn); `abort()` is not a join, so the read-back polls.
-    async fn quiesce_and_clear_queue(&self, card_id: &str, expected: &[&str]) {
-        for harness in self.state.harness.drain_all_for_dev() {
-            harness.shutdown().await.unwrap();
-        }
-        for (session_id, obs) in self.pending_observations(card_id).await {
-            let text = obs["text"].as_str().unwrap_or_default();
-            assert!(
-                obs["type"] == json!("user_message")
-                    && expected.iter().any(|needle| text.contains(needle)),
-                "an observation this fixture did not send is queued on \
-                 {card_id} (worker_sessions row {session_id}); clearing it \
-                 would be deleting evidence, not staging state. \
-                 Observation: {obs:#?}\nexpected a user_message containing one \
-                 of: {expected:?}"
-            );
-        }
-        let states: Vec<(String, Option<String>)> =
-            sqlx::query_as("SELECT id, handle_state_json FROM worker_sessions WHERE card_id = ?1")
-                .bind(card_id)
-                .fetch_all(self.repo.pool())
-                .await
-                .unwrap();
-        for (id, state) in states {
-            let Some(state) = state else { continue };
-            let mut parsed: Value = serde_json::from_str(&state).unwrap();
-            parsed["pending_queue"] = json!([]);
-            parsed["pending_envelope_ids"] = json!([]);
-            // The queue is four parallel arrays, so "clear the queue" has to clear all four.
-            parsed["pending_entry_meta"] = json!([]);
-            parsed["pending_message_ids"] = json!([]);
-            sqlx::query("UPDATE worker_sessions SET handle_state_json = ?1 WHERE id = ?2")
-                .bind(parsed.to_string())
-                .bind(id)
-                .execute(self.repo.pool())
-                .await
-                .unwrap();
-        }
-        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(200);
-        loop {
-            let left = self.pending_observations(card_id).await;
-            assert!(
-                left.is_empty(),
-                "the persisted queue for {card_id} holds {} observation(s) \
-                 after the clear, so a write from this server's shut-down \
-                 harness landed behind it: {left:#?}",
-                left.len()
-            );
-            if std::time::Instant::now() >= deadline {
-                return;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        }
-    }
-
     async fn launchpad_track_id(&self) -> Option<String> {
         self.repo
             .track_get_launchpad()
@@ -496,11 +345,6 @@ impl Boot {
             .unwrap()
             .map(|track| track.id.to_string())
     }
-}
-
-/// How `events.actor` spells one [`ActorId`]: `serde_json::to_string(&actor)`, computed rather than hand-typed.
-fn stored(actor: ActorId) -> String {
-    serde_json::to_string(&actor).unwrap()
 }
 
 /// How many times each needle occurs across `texts`. Occurrences, not messages: the harness joins
@@ -713,7 +557,7 @@ async fn an_ordinary_tracks_conversation_carries_no_activity_briefing() {
 /// Both halves in one case: the refusal assertions alone are satisfied by an endpoint that never works at all.
 #[tokio::test]
 async fn an_empty_activity_window_refuses_without_creating_or_sending_anything() {
-    let b = boot().await;
+    let b = boot_production().await;
     // A track exists, so "nothing happened" is not "nothing exists": `track.created` is not on the allowlist.
     let track_id = b.user_track("quiet").await;
 
@@ -739,7 +583,7 @@ async fn an_empty_activity_window_refuses_without_creating_or_sending_anything()
         "no conversation card may exist after a refusal"
     );
     assert_eq!(
-        b.scalar("SELECT COUNT(*) FROM events WHERE kind = 'harness.user_message.enqueued'")
+        b.scalar("SELECT COUNT(*) FROM events WHERE kind = 'assistant.input_requested'")
             .await,
         0,
         "no message may be enqueued after a refusal — asserted over the whole \
@@ -758,7 +602,7 @@ async fn an_empty_activity_window_refuses_without_creating_or_sending_anything()
         1
     );
     assert_eq!(
-        b.scalar("SELECT COUNT(*) FROM events WHERE kind = 'harness.user_message.enqueued'")
+        b.scalar("SELECT COUNT(*) FROM events WHERE kind = 'assistant.input_requested'")
             .await,
         2,
         "with activity the same endpoint creates the conversation and sends \
@@ -767,150 +611,11 @@ async fn an_empty_activity_window_refuses_without_creating_or_sending_anything()
     );
 }
 
-/// Turns are deliberately not counted: `maybe_issue_turn` drains the whole pending queue into a single
-/// `turn_start`. The assertions are on delivered texts, not row counts, so a second bootstrap cannot pass as a summary.
-#[tokio::test]
-async fn the_first_trigger_sends_bootstrap_and_summary_and_each_later_one_sends_a_summary() {
-    let b = boot().await;
-    let track_id = b.user_track("busy").await;
-    b.edit_report(&track_id, "first").await;
-
-    let (status, body) = b.summary(None).await;
-    assert_eq!(status, StatusCode::OK, "body={body}");
-    let card_id = body["card_id"].as_str().unwrap().to_string();
-    assert_eq!(
-        b.delivered(
-            &card_id,
-            &[TODAY_SUMMARY_BOOTSTRAP_TEXT, summary_marker()],
-            2
-        )
-        .await,
-        vec![1, 1],
-        "the first trigger must deliver the bootstrap AND the summary — matched \
-         by their bytes, because a length check cannot tell the bootstrap from \
-         any other message of a similar size (a sibling case once 'proved' \
-         bootstrap + summary while a foreign message stood in for the bootstrap)"
-    );
-
-    let (status, body) = b.summary(None).await;
-    assert_eq!(status, StatusCode::OK, "body={body}");
-    let (status, body) = b.summary(None).await;
-    assert_eq!(status, StatusCode::OK, "body={body}");
-
-    assert_eq!(
-        b.delivered(
-            &card_id,
-            &[TODAY_SUMMARY_BOOTSTRAP_TEXT, summary_marker()],
-            4
-        )
-        .await,
-        vec![1, 3],
-        "three triggers deliver 2 + 1 + 1 messages: exactly ONE bootstrap, ever, \
-         and one summary per press. A second trigger delivering nothing is the \
-         silent no-op this invariant exists to catch; a second bootstrap is the \
-         race the per-card first-message claim exists to prevent"
-    );
-    assert_eq!(
-        b.enqueued_char_counts(&card_id).await.len(),
-        4,
-        "…and the permanent audit rows agree with the delivered messages"
-    );
-
-    assert_eq!(
-        b.scalar("SELECT COUNT(*) FROM cards WHERE id LIKE 'conv-%'")
-            .await,
-        1,
-        "three triggers, one conversation"
-    );
-
-    // The caller's declared actor never reaches the message: the endpoint has no `Actor` extractor.
-    assert_eq!(
-        b.actors_for("harness.user_message.enqueued").await,
-        vec![stored(ActorId::User)],
-        "every message this endpoint sends is attributed to the human who \
-         pressed the button"
-    );
-}
-
-/// Same-root restart keeps the summary conversation; drift refuses without replacing it.
-#[tokio::test]
-async fn same_workspace_restart_reuses_summary_and_root_drift_is_refused() {
-    let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
-    let before = boot_with(TempDir::new().unwrap(), repo.clone(), "workspaces-old").await;
-    let track_id = before.user_track("busy").await;
-    before.edit_report(&track_id, "first").await;
-
-    let (status, first) = before.summary(None).await;
-    assert_eq!(status, StatusCode::OK, "body={first}");
-    let launchpad = first["track_id"].as_str().unwrap().to_string();
-    let card_id = first["card_id"].as_str().unwrap().to_string();
-    assert_eq!(
-        card_id,
-        calm_server::routes::today_summary::today_summary_card_id_for_test(&launchpad),
-        "the endpoint must land on the card the bare-key derivation names"
-    );
-    let old_path: String =
-        sqlx::query_scalar("SELECT workspace_path FROM tracks WHERE purpose='launchpad'")
-            .fetch_one(repo.pool())
-            .await
-            .unwrap();
-
-    // A declared AI actor must not change the attribution: the endpoint takes no `Actor`.
-    let (status, same) = before.summary(Some("ai:codex")).await;
-    assert_eq!(status, StatusCode::OK, "body={same}");
-    assert_eq!(
-        before.actors_for("harness.user_message.enqueued").await,
-        vec![stored(ActorId::User)],
-        "a caller declaring `ai:codex` must not get the summary attributed to \
-         an agent — the endpoint does not forward the header"
-    );
-
-    let restarted = boot_with(before._tmp.clone(), repo.clone(), "workspaces-old").await;
-    let (status, same) = restarted.summary(None).await;
-    assert_eq!(status, StatusCode::OK, "{same}");
-    assert_eq!(same["card_id"], json!(card_id));
-    let unchanged = super::today_launchpad::snapshot::database(&repo).await;
-    // A different root cannot adopt or replace this Today.
-
-    let after = boot_with(TempDir::new().unwrap(), repo.clone(), "workspaces-new").await;
-    let (status, repointed) = after.summary(None).await;
-    assert_eq!(status, StatusCode::CONFLICT, "body={repointed}");
-    assert_eq!(repointed["code"], "conflict");
-    assert_eq!(repointed["error"], "today_adoption_workspace_drift");
-    assert_eq!(
-        super::today_launchpad::snapshot::database(&repo).await,
-        unchanged
-    );
-    let new_path: String =
-        sqlx::query_scalar("SELECT workspace_path FROM tracks WHERE purpose='launchpad'")
-            .fetch_one(repo.pool())
-            .await
-            .unwrap();
-    assert_eq!(new_path, old_path);
-
-    let cards: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM cards WHERE id LIKE 'conv-%'")
-        .fetch_one(repo.pool())
-        .await
-        .unwrap();
-    assert_eq!(
-        cards, 1,
-        "three requests across two roots, one conversation"
-    );
-    // …and it is still the same conversation, still being talked to: 2 + 1 + 1.
-    let enqueued: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM events WHERE kind = 'harness.user_message.enqueued'",
-    )
-    .fetch_one(repo.pool())
-    .await
-    .unwrap();
-    assert_eq!(enqueued, 4);
-}
-
 /// Drives a production write path and reads the answer out of the endpoint's own gate; the launchpad's
 /// own report edits are in the system area and must never be what keeps the window non-empty.
 #[tokio::test]
 async fn a_real_report_edit_is_counted_as_activity() {
-    let b = boot().await;
+    let b = boot_production().await;
     let track_id = b.user_track("real").await;
 
     // Nothing yet — so the write below is the only reason the gate opens.
@@ -923,595 +628,5 @@ async fn a_real_report_edit_is_counted_as_activity() {
         status,
         StatusCode::OK,
         "a real `track.report_edited` must count as activity: {body}"
-    );
-}
-
-/// A summary conversation whose carrier holds a thread is a conversation: the trigger must
-/// neither replace it with a fresh start nor go through `/planner/reset`, which would erase the
-/// card's harness items (`reset_harness_items: true`). It answers 409 and the transcript stays.
-#[tokio::test]
-async fn a_summary_conversation_with_a_thread_to_preserve_is_dormant_and_keeps_its_transcript() {
-    let b = boot().await;
-    let track_id = b.user_track("dormant").await;
-    b.edit_report(&track_id, "something happened").await;
-
-    let (status, first) = b.summary(None).await;
-    assert_eq!(status, StatusCode::OK, "body={first}");
-    let card_id = first["card_id"].as_str().unwrap().to_string();
-    let launchpad = first["track_id"].as_str().unwrap().to_string();
-
-    // A turn's worth of transcript, kept by IDENTITY, not by count: the live harness writes a transcript row
-    // per drained batch on its own schedule, and `harness_items.id` is `AUTOINCREMENT`.
-    let sentinel = b
-        .repo
-        .fixture_transcript_insert(
-            "runtime-x",
-            &card_id,
-            &launchpad,
-            "thread-x",
-            Some("turn"),
-            Some("item"),
-            Some("agent_message"),
-            "item/completed",
-            "{}",
-            None,
-        )
-        .await
-        .unwrap();
-
-    // Dormancy: no session row in an active state, while the retired row keeps its thread.
-    sqlx::query("UPDATE worker_sessions SET state = 'exited' WHERE card_id = ?1")
-        .bind(&card_id)
-        .execute(b.repo.pool())
-        .await
-        .unwrap();
-    // The card's own starts: the trigger also ensures the launchpad, which runs its own.
-    let starts = format!(
-        "SELECT COUNT(*) FROM operations WHERE kind = 'planner-harness-start' \
-           AND json_extract(payload_json, '$.spec_card_id') = '{card_id}'"
-    );
-    let starts_before = b.scalar(&starts).await;
-
-    let (status, second) = b.summary(None).await;
-    assert_eq!(status, StatusCode::CONFLICT, "body={second}");
-    assert_eq!(
-        second["code"],
-        json!("planner_harness_dormant"),
-        "a conversation with a thread is surfaced, not replaced: {second}"
-    );
-    assert_eq!(
-        b.scalar(&starts).await,
-        starts_before,
-        "no start was submitted over the conversation"
-    );
-    assert_eq!(
-        b.scalar(&format!(
-            "SELECT COUNT(*) FROM harness_items WHERE id = {sentinel} AND card_id = '{card_id}'"
-        ))
-        .await,
-        1,
-        "the transcript must survive — that is the difference between this answer \
-         and going through `/planner/reset`"
-    );
-}
-
-/// No production route is known to reach this state (the bootstrap ships inside the mint transaction); the
-/// fixture stages it by hand and pins the predicate, not a reachable production sequence.
-#[tokio::test]
-async fn a_card_left_with_an_empty_transcript_still_receives_the_bootstrap() {
-    let b = boot().await;
-    let track_id = b.user_track("interrupted").await;
-    b.edit_report(&track_id, "something happened").await;
-
-    // Mint the card through the real endpoint, under the real key.
-    let (status, first) = b.summary(None).await;
-    assert_eq!(status, StatusCode::OK, "body={first}");
-    let card_id = first["card_id"].as_str().unwrap().to_string();
-    assert_eq!(b.enqueued_char_counts(&card_id).await.len(), 2);
-
-    // …then take away the evidence rows that mint wrote — BOTH of them, which
-    // is what "an empty transcript" means to the predicate.
-    let removed = sqlx::query(
-        "DELETE FROM events WHERE kind = 'harness.user_message.enqueued' AND scope_card = ?1",
-    )
-    .bind(&card_id)
-    .execute(b.repo.pool())
-    .await
-    .unwrap()
-    .rows_affected();
-    assert_eq!(removed, 2, "the fixture removes both rows the mint wrote");
-    assert_eq!(
-        b.enqueued_char_counts(&card_id).await,
-        Vec::<i64>::new(),
-        "the fixture must actually reproduce the empty transcript, or this \
-         case proves nothing"
-    );
-    // The mint's own two messages were really delivered; only the audit rows are gone. Baseline them.
-    assert_eq!(
-        b.delivered(
-            &card_id,
-            &[TODAY_SUMMARY_BOOTSTRAP_TEXT, summary_marker()],
-            2
-        )
-        .await,
-        vec![1, 1],
-        "the mint really did deliver both"
-    );
-
-    let (status, second) = b.summary(None).await;
-    assert_eq!(status, StatusCode::OK, "body={second}");
-    assert_eq!(
-        second["card_id"],
-        json!(card_id),
-        "still the one conversation"
-    );
-
-    assert_eq!(
-        b.delivered(
-            &card_id,
-            &[TODAY_SUMMARY_BOOTSTRAP_TEXT, summary_marker()],
-            4
-        )
-        .await,
-        vec![2, 2],
-        "the trigger that finds an empty transcript must deliver BOTH the \
-         bootstrap and the summary — one more of each, matched by their bytes. \
-         A card-only predicate delivers only the summary; a row-count assertion \
-         cannot tell that from a foreign message plus a summary"
-    );
-    assert_eq!(
-        b.scalar("SELECT COUNT(*) FROM cards WHERE id LIKE 'conv-%'")
-            .await,
-        1,
-        "recovering the message must not mint a second conversation — \
-         re-running the create against an existing card is what `validate` \
-         refuses, which is why the message is sent directly instead"
-    );
-}
-
-/// Reachable in production: the mint enqueues the bootstrap in its own transaction, `thread/start` fails,
-/// compensation's `delete_card` fails too, so the card survives with the bootstrap stranded on a `failed` session's queue.
-#[tokio::test]
-async fn a_stranded_bootstrap_on_a_failed_session_is_re_sent_by_the_next_trigger() {
-    let b = boot().await;
-    let track_id = b.user_track("stranded").await;
-    b.edit_report(&track_id, "something happened").await;
-
-    // The launchpad first, through its own endpoint, and **twice**: the first `ensure` runs under the `bootstrap`
-    // key and the second under `reuse`, so an armed failure would otherwise be spent there instead of on the conversation mint.
-    let mut launchpad = Value::Null;
-    for _ in 0..2 {
-        let (status, body) = b
-            .request("POST", "/api/today/launchpad/ensure", None, None)
-            .await;
-        assert!(
-            status.is_success(),
-            "the launchpad must be materialized before the failure is armed: \
-             status={status} body={body}"
-        );
-        launchpad = body;
-    }
-    let launchpad_track = launchpad["track_id"].as_str().unwrap().to_string();
-    let card_id =
-        calm_server::routes::today_summary::today_summary_card_id_for_test(&launchpad_track);
-
-    sqlx::query(
-        "CREATE TRIGGER fixture_block_assistant_card_delete \
-           BEFORE DELETE ON cards WHEN OLD.role = 'assistant' \
-           BEGIN SELECT RAISE(ABORT, 'fixture: delete_card must fail'); END",
-    )
-    .execute(b.repo.pool())
-    .await
-    .unwrap();
-    b.state
-        .shared_codex_appserver
-        .fail_next_thread_start_for_test();
-
-    let (status, failed) = b.summary(None).await;
-    assert!(
-        status.is_server_error(),
-        "a mint whose thread/start failed must not answer 2xx: status={status} \
-         body={failed}"
-    );
-    sqlx::query("DROP TRIGGER fixture_block_assistant_card_delete")
-        .execute(b.repo.pool())
-        .await
-        .unwrap();
-
-    // Premise 1 — compensation really did fail, so the operation is stuck.
-    assert_eq!(
-        b.scalar(
-            "SELECT COUNT(*) FROM operations WHERE kind = 'planner-harness-start' \
-               AND phase = 'stuck'"
-        )
-        .await,
-        1,
-        "premise: `delete_card` was blocked, so `plan_compensation` marks the \
-         operation stuck and never re-drives it"
-    );
-    // Premise 2 — and left the card behind.
-    assert_eq!(
-        b.scalar(&format!(
-            "SELECT COUNT(*) FROM cards WHERE id = '{card_id}'"
-        ))
-        .await,
-        1,
-        "premise: the card the retry re-derives survived the failed compensation"
-    );
-    // Premise 3 — with no active runtime on it.
-    assert_eq!(
-        b.scalar(&format!(
-            "SELECT COUNT(*) FROM worker_sessions WHERE card_id = '{card_id}' \
-               AND state IN ('starting','running','idle','turn_pending')"
-        ))
-        .await,
-        0,
-        "premise: the compensation marked the runtime failed, so the card is \
-         dormant — this is what makes the surviving evidence row point at a \
-         runtime nothing will ever drain"
-    );
-    // Premise 4 — and the stranded evidence row is there. This is the trap: it
-    // is what the old predicate read as "already sent, decline".
-    assert_eq!(
-        b.enqueued_char_counts(&card_id).await.len(),
-        1,
-        "premise: the mint's transaction committed the bootstrap's enqueued row \
-         before `thread/start` failed, and `events` is append-only"
-    );
-
-    // Press 2 — the self-heal.
-    let (status, second) = b.summary(None).await;
-    assert_eq!(status, StatusCode::OK, "body={second}");
-    assert_eq!(
-        second["card_id"],
-        json!(card_id),
-        "the recovery must land on the derived card, not mint a second one"
-    );
-    assert_eq!(
-        b.await_reached_appserver(&card_id, TODAY_SUMMARY_BOOTSTRAP_TEXT)
-            .await,
-        1,
-        "the standing instruction must actually reach the agent — the first \
-         attempt started no thread at all, so every occurrence here belongs to \
-         the restarted session"
-    );
-    assert_eq!(
-        b.delivered(
-            &card_id,
-            &[TODAY_SUMMARY_BOOTSTRAP_TEXT, summary_marker()],
-            2
-        )
-        .await,
-        vec![1, 1],
-        "the trigger after a stranded bootstrap must deliver BOTH the bootstrap \
-         and the summary onto the restarted session. The old predicate delivered \
-         the summary alone, and `delivered` reads the card's NEWEST session queue \
-         — so the copy stranded on the `failed` session is correctly invisible \
-         here rather than being counted as reachable"
-    );
-
-    // Press 3 — and it does not keep re-sending.
-    let (status, third) = b.summary(None).await;
-    assert_eq!(status, StatusCode::OK, "body={third}");
-    assert_eq!(
-        b.delivered(
-            &card_id,
-            &[TODAY_SUMMARY_BOOTSTRAP_TEXT, summary_marker()],
-            3
-        )
-        .await,
-        vec![1, 2],
-        "the runtime has now been spoken to, so a third press sends the summary \
-         only: re-sending on every trigger is what a constant-false predicate does"
-    );
-    assert_eq!(
-        b.enqueued_char_counts(&card_id).await.len(),
-        4,
-        "…and the permanent record holds the stranded row plus the three \
-         messages the two live presses sent"
-    );
-    assert_eq!(
-        b.scalar("SELECT COUNT(*) FROM cards WHERE id LIKE 'conv-%'")
-            .await,
-        1,
-        "healing the conversation must not mint a second one"
-    );
-}
-
-/// `/planner/reset` takes the recovery lock, not the first-message claim, so it can replace the active
-/// runtime under this caller; the predicate is one SQLite statement so it reads one snapshot.
-#[tokio::test]
-async fn evidence_bound_to_a_replaced_runtime_is_not_read_as_evidence() {
-    let b = boot().await;
-    let track_id = b.user_track("replaced").await;
-    b.edit_report(&track_id, "something happened").await;
-
-    let (status, first) = b.summary(None).await;
-    assert_eq!(status, StatusCode::OK, "body={first}");
-    let card_id = first["card_id"].as_str().unwrap().to_string();
-    // The track the predicate is scoped by is the launchpad's, the same one the
-    // handler passes it — not the user track the activity came from.
-    let launchpad = first["track_id"].as_str().unwrap().to_string();
-    assert_eq!(
-        b.enqueued_char_counts(&card_id).await.len(),
-        2,
-        "premise: the mint wrote the bootstrap's and the summary's evidence rows"
-    );
-    let r1 = b
-        .active_runtime(&card_id)
-        .await
-        .expect("premise: the mint leaves an active runtime behind");
-    assert!(
-        b.enqueued_on_active_runtime(&launchpad, &card_id).await,
-        "premise: while R1 is still active its own rows ARE evidence — without \
-         this direction a statement that never matches anything would pass the \
-         assertion below"
-    );
-
-    // The replacement, through the racing endpoint itself.
-    let (status, reset) = b
-        .request(
-            "POST",
-            &format!("/api/cards/{card_id}/planner/reset"),
-            None,
-            None,
-        )
-        .await;
-    assert_eq!(status, StatusCode::OK, "reset={reset}");
-    let r2 = b
-        .active_runtime(&card_id)
-        .await
-        .expect("premise: the reset leaves a new active runtime");
-    assert_ne!(
-        r1, r2,
-        "premise: the reset really replaced the runtime — if it did not, the \
-         predicate below would be answering about R1 and prove nothing"
-    );
-    assert_eq!(
-        b.enqueued_char_counts(&card_id).await.len(),
-        2,
-        "premise: `events` is append-only, so R1's rows survive the reset — they \
-         are exactly what the two-read predicate was fooled by"
-    );
-    assert_eq!(
-        b.scalar(&format!(
-            "SELECT COUNT(*) FROM events \
-               WHERE kind = 'harness.user_message.enqueued' \
-                 AND scope_card = '{card_id}' \
-                 AND json_extract(payload, '$.worker_session_id') = '{r2}'"
-        ))
-        .await,
-        0,
-        "premise: every surviving row names the REPLACED runtime; the new one \
-         has not been spoken to yet"
-    );
-
-    assert!(
-        !b.enqueued_on_active_runtime(&launchpad, &card_id).await,
-        "the whole point: rows bound to a runtime that is no longer active are \
-         not evidence, so the next trigger must re-send rather than skip"
-    );
-
-    // …and the end-to-end half: the bootstrap really is delivered again.
-    let (status, second) = b.summary(None).await;
-    assert_eq!(status, StatusCode::OK, "body={second}");
-    // `await_reached_appserver` is deliberately NOT used here: R1's bootstrap is already in this server's turn
-    // texts, so it would return at once and say nothing about the message this trigger sent.
-    assert_eq!(
-        b.delivered(
-            &card_id,
-            &[TODAY_SUMMARY_BOOTSTRAP_TEXT, summary_marker()],
-            4
-        )
-        .await,
-        vec![2, 2],
-        "the trigger after the replacement must deliver BOTH the bootstrap and \
-         the summary onto the new runtime — `delivered`'s queued half reads the \
-         card's NEWEST session, so those two are R2's, not R1's leftovers (R1 \
-         drained into its turns before the reset)"
-    );
-}
-
-/// The window between `card_get` and the create is created here, not waited for; the interloper uses the
-/// same key with **different text**, so the conflict is a permanent payload-hash 409, not an idempotent replay.
-#[tokio::test]
-async fn a_create_that_loses_the_key_race_resolves_the_card_and_still_sends() {
-    let barrier = Arc::new(tokio::sync::Barrier::new(2));
-    let b = boot_with_rendezvous(
-        TempDir::new().unwrap(),
-        Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap()),
-        "workspaces",
-        Some(barrier.clone()),
-    )
-    .await;
-    let track_id = b.user_track("contended").await;
-    b.edit_report(&track_id, "something happened").await;
-
-    let app = b.app.clone();
-    let trigger = tokio::spawn(async move {
-        let response = app
-            .oneshot(
-                Request::post("/api/today/summary")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        let status = response.status();
-        let bytes = response.into_body().collect().await.unwrap().to_bytes();
-        (
-            status,
-            serde_json::from_slice::<Value>(&bytes).unwrap_or(Value::Null),
-        )
-    });
-
-    // Wait until the request has passed `card_get` and found nothing; planting earlier would take the
-    // "card already exists" path.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    while b.create_counters.snapshot().0 == 0 {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the trigger never entered the create arm; the rendezvous is not \
-             where this case thinks it is"
-        );
-        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-    }
-    let launchpad = b.launchpad_track_id().await.expect("ensure minted it");
-
-    // Another internal creator uses the same historical namespace, with different text.
-    use axum::response::IntoResponse;
-    let mut headers = axum::http::HeaderMap::new();
-    headers.insert(
-        "Idempotency-Key",
-        routes::today_summary::TODAY_SUMMARY_CONVERSATION_KEY
-            .parse()
-            .unwrap(),
-    );
-    let response = routes::track_conversations::create_internal_conversation_for_test(
-        &b.state, headers, launchpad.clone(), serde_json::from_value(json!({"text":"a different first message"})).unwrap(),
-        calm_server::operation::planner_harness_start_adapter::OpeningBriefing::TodaysActivityOnTheLaunchpad,
-    ).await.into_response();
-    let status = response.status();
-    let bytes = response.into_body().collect().await.unwrap().to_bytes();
-    let planted: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
-    assert_eq!(status, StatusCode::CREATED, "planted={planted}");
-    let card_id = planted["id"].as_str().unwrap().to_string();
-
-    // Release the parked request into the conflict.
-    barrier.wait().await;
-    let (status, body) = trigger.await.unwrap();
-    assert_eq!(
-        status,
-        StatusCode::OK,
-        "losing the key race must not fail the trigger — the card it wanted \
-         now exists: {body}"
-    );
-    assert_eq!(body["card_id"], json!(card_id), "and it is that card");
-
-    let (attempts, conflicts, _) = b.create_counters.snapshot();
-    assert_eq!(attempts, 1, "one request entered the create arm");
-    assert_eq!(
-        conflicts, 1,
-        "…and it took the 409 fallback. Without this the assertions above are \
-         all satisfied by a run in which the race never happened"
-    );
-    assert_eq!(
-        b.scalar("SELECT COUNT(*) FROM cards WHERE id LIKE 'conv-%'")
-            .await,
-        1,
-        "the race must not leave two conversations"
-    );
-    // The interloper's own first message, then the summary — asserted by identity. The bootstrap is deliberately
-    // absent (a user speaking first suppresses it), and the interloper also carries the day's opening briefing: three messages.
-    assert_eq!(
-        b.delivered(
-            &card_id,
-            &[
-                TODAY_SUMMARY_BOOTSTRAP_TEXT,
-                summary_marker(),
-                "a different first message",
-                BRIEFING_MARKER,
-            ],
-            3,
-        )
-        .await,
-        vec![0, 1, 1, 1],
-        "the interloper's briefing and message and the trigger's summary — and \
-         no bootstrap, because something had already spoken to this card"
-    );
-}
-
-/// The bootstrap arm is a read followed by a send, serialized only by the per-card first-message claim; the
-/// window is open only in the empty-transcript state. Both requests park at a rendezvous before the claim, so they contend by construction.
-#[tokio::test]
-async fn two_concurrent_triggers_on_an_empty_transcript_deliver_one_bootstrap() {
-    let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
-    let staging = boot_with(TempDir::new().unwrap(), repo.clone(), "workspaces").await;
-    let track_id = staging.user_track("contended-bootstrap").await;
-    staging.edit_report(&track_id, "something happened").await;
-
-    let (status, first) = staging.summary(None).await;
-    assert_eq!(status, StatusCode::OK, "body={first}");
-    let card_id = first["card_id"].as_str().unwrap().to_string();
-    // Decouple the two servers BEFORE `b` exists: `b` recovers its harness from this card's persisted
-    // snapshot, so anything staging left in the queue would be inherited and re-delivered.
-    staging
-        .quiesce_and_clear_queue(&card_id, &[TODAY_SUMMARY_BOOTSTRAP_TEXT, summary_marker()])
-        .await;
-    // The empty-transcript state, staged exactly as the single-request case
-    // stages it (and documented there): the card stays, its evidence rows go.
-    let removed = sqlx::query(
-        "DELETE FROM events WHERE kind = 'harness.user_message.enqueued' AND scope_card = ?1",
-    )
-    .bind(&card_id)
-    .execute(repo.pool())
-    .await
-    .unwrap()
-    .rows_affected();
-    assert_eq!(removed, 2);
-
-    let barrier = Arc::new(tokio::sync::Barrier::new(2));
-    let b = boot_with_rendezvouses(
-        staging._tmp.clone(),
-        repo.clone(),
-        "workspaces",
-        None,
-        Some(barrier.clone()),
-    )
-    .await;
-
-    let one = b.app.clone();
-    let two = b.app.clone();
-    let post = |app: axum::Router| async move {
-        app.oneshot(
-            Request::post("/api/today/summary")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap()
-        .status()
-    };
-    let (left, right) = tokio::join!(post(one), post(two));
-    assert_eq!(left, StatusCode::OK);
-    assert_eq!(right, StatusCode::OK);
-
-    let (_, _, arrivals) = b.create_counters.snapshot();
-    assert_eq!(
-        arrivals, 2,
-        "both triggers reached the bootstrap block. This is a sanity check on \
-         the fixture, NOT the proof that they raced: the counter increments \
-         before the transcript is read, so it cannot witness two requests \
-         seeing an empty transcript. What makes them race is the rendezvous \
-         they both park at — and a missing partner would hang there rather than \
-         reach this line"
-    );
-    // Scoped to THIS server. `expected_total` is the live enqueued-row count rather than a literal, so a run
-    // that delivers a second bootstrap still SETTLES and then fails on the assertion below.
-    // Something actually reached the agent: `delivered` counts queued and delivered together, so on its own it
-    // settles on a run where `b` handed the app-server nothing. Only the bootstrap can be claimed: the fake never completes a turn.
-    let bootstraps_reaching_the_agent = b
-        .await_reached_appserver(&card_id, TODAY_SUMMARY_BOOTSTRAP_TEXT)
-        .await;
-    assert_eq!(
-        bootstraps_reaching_the_agent, 1,
-        "the standing instruction reached the agent exactly once as of the \
-         moment it first appeared there — see `await_reached_appserver` for why \
-         that is the final count here and what it does not cover. Two is the \
-         race delivered rather than merely enqueued"
-    );
-    let enqueued = b.enqueued_char_counts(&card_id).await.len();
-    assert_eq!(
-        b.delivered(
-            &card_id,
-            &[TODAY_SUMMARY_BOOTSTRAP_TEXT, summary_marker()],
-            enqueued
-        )
-        .await,
-        vec![1, 2],
-        "exactly ONE bootstrap across the two concurrent triggers, and one \
-         summary each. Two bootstraps is the race: without the per-card claim \
-         both requests read an empty transcript and both send, and the agent \
-         gets the same standing instruction twice"
     );
 }

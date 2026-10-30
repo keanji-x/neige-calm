@@ -254,6 +254,9 @@ async fn owner_runs_bootstrap_end_frozen_body_and_independent_subject() {
     shutdown(&fixture, &state).await;
 }
 
+#[cfg(test)]
+#[cfg(feature = "fixtures")]
+mod http;
 mod prefix;
 mod recovery;
 #[cfg(test)]

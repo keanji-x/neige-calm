@@ -88,6 +88,23 @@ pub async fn system_assistant_receipt_tx(
     Ok(receipt)
 }
 
+/// Source-scoped operation identity for callers whose first acceptance freezes
+/// server-produced text. Resolve via permanent entries, then validate the same ACK.
+pub async fn system_assistant_subject_receipt_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    source: SystemAssistantSource,
+    subject: &str,
+) -> Result<Option<SystemAssistantReceipt>> {
+    let cards: Vec<String> = sqlx::query_scalar(
+        "SELECT r.card_id FROM conversation_system_assistant_receipts r JOIN conversation_system_assistant_entries e ON e.card_id=r.card_id AND e.source=r.source WHERE r.source=?1 AND r.subject=?2 LIMIT 2",
+    ).bind(source.namespace()).bind(subject).fetch_all(&mut **tx).await?;
+    match cards.as_slice() {
+        [] => Ok(None),
+        [card] => system_assistant_receipt_tx(tx, card, source, subject).await,
+        _ => Err(conflict()),
+    }
+}
+
 /// Validate only an already permanent original ACK. A read result is never a
 /// capability to insert a receipt or accept an input, even after rollback.
 pub async fn system_assistant_receipt_replay_tx(

@@ -9531,13 +9531,37 @@
         ],
         "summary": "Ask the summary conversation to write today's progress.",
         "operationId": "write_today_summary",
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "Identity of one summary operation. Its first acceptance freezes the server-counted body. Reuse returns the original track/card, including on an empty day; omission creates a fresh operation.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
         "responses": {
           "200": {
-            "description": "The summary conversation has been asked to write today's progress. The conversation is created on first use and reused thereafter; the reply arrives asynchronously as a report edit, not in this response.",
+            "description": "Original accepted track/card. Bootstrap is accepted once; a fresh operation accepts today's activity body. Native execution and report edits arrive asynchronously, including when the provider is unavailable.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/TodaySummaryStarted"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid Idempotency-Key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
                 }
               }
             }
@@ -9553,7 +9577,7 @@
             }
           },
           "403": {
-            "description": "`forbidden`: a write whose `Origin` is not one of this server's origins.",
+            "description": "Track access or new-acceptance authority refused",
             "content": {
               "application/json": {
                 "schema": {
@@ -9563,7 +9587,7 @@
             }
           },
           "409": {
-            "description": "Distinguished by the body's `code`:\n* `today_summary_no_activity` — nothing happened in the workspace today, so no conversation was created and no message was sent (INV-TODAYDOC-007).\n* `conflict` / `planner_harness_dormant` — from the underlying conversation create or planner input; a summary conversation with no thread to preserve is started by the send instead.",
+            "description": "A fresh operation found no activity (`today_summary_no_activity`), Today proof failed (`today_adoption_*`), or the original Assistant namespace/current carrier cannot accept. No new acceptance is made. An accepted key returns its original ACK before these checks.",
             "content": {
               "application/json": {
                 "schema": {
@@ -9574,16 +9598,6 @@
           },
           "500": {
             "description": "Internal error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          },
-          "503": {
-            "description": "Shared codex app-server not running, a harness start is still in flight, or the observation queue is saturated — retry shortly",
             "content": {
               "application/json": {
                 "schema": {

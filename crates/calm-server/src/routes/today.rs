@@ -31,10 +31,7 @@ use utoipa::ToSchema;
 
 pub fn router() -> Router<AppState> {
     Router::new()
-        .route(
-            "/api/today/launchpad/ensure",
-            post(ensure_today_launchpad_route),
-        )
+        .route("/api/today/launchpad/ensure", post(ensure_today_launchpad))
         .route("/api/today/launchpad", get(resolve_today_launchpad))
         .route(
             "/api/today/launchpad/report/reset",
@@ -229,7 +226,7 @@ fn launchpad_workspace(workspace_root: &Path, area_id: &str, track_id: &str) -> 
 }
 
 #[derive(Clone, Copy, Debug)]
-enum AdoptionRefusal {
+pub enum AdoptionRefusal {
     WorkspaceDrift,
     IdentityUnproven,
     BindingMismatch,
@@ -238,7 +235,7 @@ enum AdoptionRefusal {
     PhaseUnproven,
 }
 impl AdoptionRefusal {
-    fn code(self) -> &'static str {
+    pub(crate) fn code(self) -> &'static str {
         match self {
             Self::WorkspaceDrift => "today_adoption_workspace_drift",
             Self::IdentityUnproven => "today_adoption_identity_unproven",
@@ -384,16 +381,10 @@ async fn prove_existing_today_tx(
     }))
 }
 
-#[allow(deprecated)]
-async fn today_launchpad_ensure_tx(
+async fn today_candidates_tx(
     tx: &mut Transaction<'_, Sqlite>,
-    s: &RouteState,
     area_id: Option<&str>,
-    workspace_root: &Path,
-) -> Result<(
-    std::result::Result<EnsureTxResult, AdoptionRefusal>,
-    Vec<(ActorId, EventScope, Event)>,
-)> {
+) -> Result<Vec<Track>> {
     let candidates_rows = sqlx::query_as::<_, crate::db::rows::TrackRow>(&format!(
         "SELECT {TRACK_SELECT_COLUMNS} FROM tracks WHERE purpose='launchpad' OR (purpose IS NULL AND title='Today') ORDER BY (purpose='launchpad') DESC,created_at,id"
     )).fetch_all(&mut **tx).await?;
@@ -410,6 +401,55 @@ async fn today_launchpad_ensure_tx(
         }
         candidates.push(track);
     }
+    Ok(candidates)
+}
+
+/// Read-only target resolution reused before and inside the accepting writer.
+/// A reservation is used only when no candidate exists; it grants no adoption proof.
+pub(crate) async fn summary_target_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    reserved: TrackId,
+) -> Result<TrackId> {
+    let area: Option<String> = sqlx::query_scalar("SELECT id FROM areas WHERE kind='system'")
+        .fetch_optional(&mut **tx)
+        .await?;
+    Ok(today_candidates_tx(tx, area.as_deref())
+        .await?
+        .pop()
+        .map(|track| track.id)
+        .unwrap_or(reserved))
+}
+
+/// Summary composition uses the same Today proof/adoption/materialization owner.
+/// Its caller has qualified the namespace before any adoption or file creation.
+pub(crate) async fn prepare_summary_today_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    route: &RouteState,
+    root: &Path,
+    reserved: &TrackId,
+) -> Result<Vec<(ActorId, EventScope, Event)>> {
+    let area: Option<String> = sqlx::query_scalar("SELECT id FROM areas WHERE kind='system'")
+        .fetch_optional(&mut **tx)
+        .await?;
+    let (decision, events) =
+        today_launchpad_ensure_tx(tx, route, area.as_deref(), root, Some(reserved.as_str()))
+            .await?;
+    decision.map_err(CalmError::TodayAdoptionRefused)?;
+    Ok(events)
+}
+
+#[allow(deprecated)]
+async fn today_launchpad_ensure_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    s: &RouteState,
+    area_id: Option<&str>,
+    workspace_root: &Path,
+    new_track_id: Option<&str>,
+) -> Result<(
+    std::result::Result<EnsureTxResult, AdoptionRefusal>,
+    Vec<(ActorId, EventScope, Event)>,
+)> {
+    let mut candidates = today_candidates_tx(tx, area_id).await?;
     if let Some(mut track) = candidates.pop() {
         // No ordering can authorize adoption while another candidate is unresolved.
         let proof = if candidates.is_empty() {
@@ -455,7 +495,7 @@ async fn today_launchpad_ensure_tx(
     };
     let area_id = area_id.as_str();
     let mut track = {
-        let id = new_id();
+        let id = new_track_id.map(str::to_owned).unwrap_or_else(new_id);
         let now = now_ms();
         let sort: f64 = sqlx::query_scalar(
             "SELECT CAST(COALESCE(MAX(sort),-1)+1 AS REAL) FROM tracks WHERE area_id=?1",
@@ -574,7 +614,13 @@ async fn today_launchpad_ensure_tx(
     ))
 }
 
-async fn ensure_today_launchpad_route(
+#[utoipa::path(post,path="/api/today/launchpad/ensure",tag="tracks",responses(
+    (status=200,description="Existing launchpad retained",body=TodayLaunchpad),
+    (status=201,description="Empty canonical launchpad minted or existing Today safely adopted",body=TodayLaunchpad),
+    (status=409,description="Today adoption refused; code identifies Workspace, identity, binding, snapshot, phase or native association proof failure. Nothing changed.",body=ErrorBody),
+    (status=500,description="Internal error",body=ErrorBody)
+))]
+pub(crate) async fn ensure_today_launchpad(
     State(app): State<AppState>,
     actor: Actor,
 ) -> Result<axum::response::Response> {
@@ -586,21 +632,6 @@ async fn ensure_today_launchpad_route(
             code: reason.code().into(), field: None,
         })).into_response(),
     })
-}
-
-#[utoipa::path(post,path="/api/today/launchpad/ensure",tag="tracks",responses(
-    (status=200,description="Existing launchpad retained",body=TodayLaunchpad),
-    (status=201,description="Empty canonical launchpad minted or existing Today safely adopted",body=TodayLaunchpad),
-    (status=409,description="Today adoption refused; code identifies Workspace, identity, binding, snapshot, phase or native association proof failure. Nothing changed.",body=ErrorBody),
-    (status=500,description="Internal error",body=ErrorBody)
-))]
-pub(crate) async fn ensure_today_launchpad(
-    app: State<AppState>,
-    actor: Actor,
-) -> Result<(StatusCode, Json<TodayLaunchpad>)> {
-    ensure_today_launchpad_decision(app, actor)
-        .await?
-        .map_err(|reason| CalmError::Conflict(reason.code().into()))
 }
 
 async fn ensure_today_launchpad_decision(
@@ -630,7 +661,7 @@ async fn ensure_today_launchpad_decision(
                 counters.retries.fetch_add(1, Ordering::Relaxed);
             }
             let (decision, pending) =
-                today_launchpad_ensure_tx(tx, &route, area.as_deref(), &root).await?;
+                today_launchpad_ensure_tx(tx, &route, area.as_deref(), &root, None).await?;
             let ids = if pending.is_empty() {
                 vec![]
             } else {

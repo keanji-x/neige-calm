@@ -78,6 +78,9 @@ pub enum CalmError {
     #[error("no activity today: {0}")]
     TodaySummaryNoActivity(String),
 
+    #[error("Today adoption refused: {}", .0.code())]
+    TodayAdoptionRefused(crate::routes::today::AdoptionRefusal),
+
     #[error("bad request: {0}")]
     BadRequest(String),
 
@@ -219,6 +222,7 @@ impl CalmError {
             CalmError::IdempotencyKeyReused(_) => "idempotency_key_reused",
             CalmError::IdempotencyKeyConcurrent(_) => "idempotency_key_concurrent",
             CalmError::TodaySummaryNoActivity(_) => "today_summary_no_activity",
+            CalmError::TodayAdoptionRefused(reason) => reason.code(),
             CalmError::BadRequest(_) | CalmError::InvalidField { .. } => "bad_request",
             CalmError::InvalidBody(_) => "invalid_body",
             CalmError::UnsupportedMediaType(_) => "unsupported_media_type",
@@ -270,7 +274,8 @@ impl CalmError {
             | CalmError::PlannerHarnessDormant(_)
             | CalmError::PlannerHarnessRuntimeSuperseded(_)
             | CalmError::PlannerTurnNotReplaceable(_)
-            | CalmError::TodaySummaryNoActivity(_) => StatusCode::CONFLICT,
+            | CalmError::TodaySummaryNoActivity(_)
+            | CalmError::TodayAdoptionRefused(_) => StatusCode::CONFLICT,
             CalmError::BadRequest(_)
             | CalmError::InvalidField { .. }
             | CalmError::IdempotencyKeyInvalid(_)
@@ -305,6 +310,7 @@ impl CalmError {
     pub fn reason(&self) -> String {
         match self {
             CalmError::ExecutionUnavailable => "execution unavailable".into(),
+            CalmError::TodayAdoptionRefused(reason) => reason.code().into(),
             CalmError::CodexRefused(m)
             | CalmError::NotFound(m)
             | CalmError::PathNotFound(m)

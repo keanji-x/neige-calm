@@ -1,4 +1,4 @@
-//! Observation of the original owner's Report branch, only in fixture test builds.
+//! Observation of the original owner's Report and phase branches, only in fixture test builds.
 //! No sender escapes the owner; dropping a receiver only cancels observation.
 use super::*;
 use calm_truth::db::TrackEvent;
@@ -27,7 +27,7 @@ impl ReportOutcome {
 
 #[derive(Clone, Debug)]
 pub(crate) enum ReportCompletion {
-    Report {
+    Event {
         env: Box<BroadcastEnvelope>,
         outcome: ReportOutcome,
     },
@@ -68,14 +68,22 @@ pub(crate) async fn wait_for_report(
     receiver: &mut broadcast::Receiver<ReportCompletion>,
     expected: &TrackEvent,
 ) -> Result<ReportOutcome, CompletionError> {
-    assert!(expected.id > 0);
     assert!(matches!(expected.event, Event::TrackReportEdited { .. }));
+    wait_for_event(receiver, &envelope(expected)).await
+}
+
+/// Observe the owner after recomputation of this exact committed envelope.
+pub(crate) async fn wait_for_event(
+    receiver: &mut broadcast::Receiver<ReportCompletion>,
+    expected: &BroadcastEnvelope,
+) -> Result<ReportOutcome, CompletionError> {
+    assert!(expected.id > 0);
     loop {
         match receiver.recv().await {
             Err(RecvError::Closed) => return Err(CompletionError::Closed),
             Err(RecvError::Lagged(n)) => return Err(CompletionError::OutputLagged(n)),
             Ok(ReportCompletion::InputLagged(n)) => return Err(CompletionError::InputLagged(n)),
-            Ok(ReportCompletion::Report { env, outcome }) => {
+            Ok(ReportCompletion::Event { env, outcome }) => {
                 if env.id != expected.id {
                     continue;
                 }

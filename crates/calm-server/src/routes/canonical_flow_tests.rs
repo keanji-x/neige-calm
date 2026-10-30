@@ -72,6 +72,7 @@ struct Fixture {
     root: tempfile::TempDir,
     url: String,
     data_dir: Option<std::path::PathBuf>,
+    workspace_root: Option<std::path::PathBuf>,
     claude_config: Option<std::path::PathBuf>,
     acp_config: Option<std::path::PathBuf>,
     templates_dir: Option<std::path::PathBuf>,
@@ -90,6 +91,7 @@ impl Fixture {
             root,
             url,
             data_dir: None,
+            workspace_root: None,
             claude_config: None,
             acp_config: None,
             templates_dir: None,
@@ -146,7 +148,11 @@ impl Fixture {
                     .clone()
                     .unwrap_or_else(|| self.root.path().join("data")),
             );
-            cfg.workspace_root = Some(self.root.path().join("workspaces"));
+            cfg.workspace_root = Some(
+                self.workspace_root
+                    .clone()
+                    .unwrap_or_else(|| self.root.path().join("workspaces")),
+            );
             cfg.plugins_dir = Some(self.root.path().join("plugins"));
             cfg.plugins_data_dir = Some(self.root.path().join("plugins-data"));
             cfg.auth_username = Some("jian".into());

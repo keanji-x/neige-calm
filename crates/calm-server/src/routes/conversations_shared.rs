@@ -1,12 +1,10 @@
 //! Shared mechanics for lazily minting a Track assistant conversation on its
 //! first message.
 
-use calm_truth::session_projection_row::ACTIVE_CARD_RUNTIME_SELECT;
-
 use crate::error::{CalmError, Result};
 use crate::operation::{Operation, Phase};
 use crate::routes::planner_cards::MAX_PLANNER_INPUT_CHARS;
-use crate::state::{RouteState, WorkerState};
+use crate::state::RouteState;
 
 pub(crate) const PLANNER_HARNESS_START: &str = "planner-harness-start";
 
@@ -70,44 +68,4 @@ pub(crate) async fn lookup_start_operation(s: &RouteState, key: &str) -> Result<
     s.operation_runtime
         .find_by_kind_and_idempotency(PLANNER_HARNESS_START, key)
         .await
-}
-
-/// Has a user message been enqueued onto this card's currently ACTIVE runtime?
-/// No active runtime ⇒ `false` (the re-send direction). Relies on
-/// `harness.user_message.enqueued` never being prunable.
-pub(crate) async fn user_message_enqueued_on_active_runtime(
-    w: &WorkerState,
-    track_id: &str,
-    card_id: &str,
-) -> Result<bool> {
-    let pool = w
-        .repo
-        .sqlite_db()
-        .ok_or_else(|| CalmError::Internal("conversations require a sqlite-backed repo".into()))?;
-    // One autocommit statement: as two reads, `/planner/reset` can supersede the
-    // runtime between them and the bootstrap is skipped forever. The `json_extract`
-    // is CASE-gated because SQLite raises on malformed JSON and does not guarantee
-    // AND-term evaluation order.
-    let found: Option<i64> = sqlx::query_scalar(&user_message_enqueued_on_active_runtime_sql())
-        .bind(card_id)
-        .bind(track_id)
-        .fetch_optional(pool.read_pool())
-        .await?;
-    Ok(found.is_some())
-}
-
-/// `?1` is the card id (bound twice: outer filter and the active-runtime subquery),
-/// `?2` the track id. A function so tests can run the production text.
-pub fn user_message_enqueued_on_active_runtime_sql() -> String {
-    format!(
-        r#"SELECT 1
-             FROM events e
-            WHERE e.kind = 'harness.user_message.enqueued'
-              AND e.scope_card = ?1
-              AND e.scope_track = ?2
-              AND (CASE WHEN json_valid(e.payload)
-                        THEN json_extract(e.payload, '$.worker_session_id') END)
-                  = ({ACTIVE_CARD_RUNTIME_SELECT})
-            LIMIT 1"#,
-    )
 }
