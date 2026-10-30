@@ -56,6 +56,9 @@ Review tier: L2. This changes persisted submissions and current-source authority
   current-session authorization (including cold restoration). Guards are not
   execution grants and never enter persisted queue/order facts. Source changes
   and final guard release wake the same scheduler as the lifecycle timer.
+  Fast handoff returns an explicit Observed/Deferred result: absence of a live
+  consumer is Deferred, never evidence of registration. The guard survives a
+  concurrent reserved-to-live installation until fallback observes sources.
 - Handoffs cover live send/replay, pending edits, Keep/Retry and Dispatcher event
   admission. Fresh dormant creation has no native thread, so its scheduler
   cannot select input before retained activation binds sources. A worker-wide

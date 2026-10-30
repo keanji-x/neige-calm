@@ -3,25 +3,42 @@ use super::*;
 
 #[tokio::test]
 async fn live_send_hands_off_authority_before_waiting_for_lifecycle_fence() {
-    live_send_source_handoff(false, false, false).await;
+    live_send_source_handoff(HandoffCase::Live).await;
 }
 
 #[tokio::test]
 async fn cancelled_http_waiter_keeps_committed_source_handoff_alive() {
-    live_send_source_handoff(true, false, false).await;
+    live_send_source_handoff(HandoffCase::Cancelled).await;
 }
 
 #[tokio::test]
 async fn live_source_handoff_keeps_invalid_attached_workspace_from_native_execution() {
-    live_send_source_handoff(false, true, false).await;
+    live_send_source_handoff(HandoffCase::InvalidWorkspace).await;
 }
 
 #[tokio::test]
 async fn revoked_during_handoff_releases_wait_and_requires_a_current_source() {
-    live_send_source_handoff(false, false, true).await;
+    live_send_source_handoff(HandoffCase::Revoked).await;
 }
 
-async fn live_send_source_handoff(cancel_http: bool, invalid_workspace: bool, revoke: bool) {
+#[tokio::test]
+async fn reserved_owner_keeps_handoff_until_sources_are_actually_observed() {
+    live_send_source_handoff(HandoffCase::Reserved).await;
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum HandoffCase {
+    Live,
+    Cancelled,
+    InvalidWorkspace,
+    Revoked,
+    Reserved,
+}
+
+async fn live_send_source_handoff(case: HandoffCase) {
+    let cancel_http = case == HandoffCase::Cancelled;
+    let invalid_workspace = case == HandoffCase::InvalidWorkspace;
+    let revoke = case == HandoffCase::Revoked;
     let fixture = Fixture::new().await;
     let (state, app, cookie, auth) = fixture.application_with_auth(false).await;
     let attached = fixture.root.path().join("attached-input-handoff");
@@ -87,7 +104,10 @@ async fn live_send_source_handoff(cancel_http: bool, invalid_workspace: bool, re
     }
     let (worker, _) = assistant_canonical::carrier(&fixture, card).await;
     let locks = crate::state::RouteState::from_ref(&state).planner_recovery_locks;
-    let lifecycle = crate::per_card_lock::lock_card(&locks, card).await;
+    let mut lifecycle = Some(crate::per_card_lock::lock_card(&locks, card).await);
+    let original_handle = state.harness.get(&worker).unwrap();
+    let restoration =
+        (case == HandoffCase::Reserved).then(|| state.harness.reserve_replacing(worker.clone()));
     let send_app = app.clone();
     let send_cookie = cookie.clone();
     let uri = format!("/api/cards/{card}/planner/input");
@@ -126,7 +146,7 @@ async fn live_send_source_handoff(cancel_http: bool, invalid_workspace: bool, re
         tokio::time::timeout(Duration::from_secs(5), missing_source.entered.notified())
             .await
             .unwrap();
-        let handle = state.harness.get(&worker).unwrap();
+        let handle = original_handle.clone();
         let notice = handle.issuance_block().await;
         let queued_counts = fixture.counts(card).await;
         missing_source.release.notify_one();
@@ -148,9 +168,27 @@ async fn live_send_source_handoff(cancel_http: bool, invalid_workspace: bool, re
         let ack = sending.await.unwrap();
         assert_eq!(ack["worker_session_id"], worker);
     }
+    let deferred_owned = if let Some((reservation, old_handle)) = restoration {
+        // ACK follows the fast path's no-live result. It must not complete the
+        // handoff while another lifecycle owner still holds the card fence.
+        let (_, frame) = assistant_canonical::carrier(&fixture, card).await;
+        let pending = frame.canonical_inputs.pending.first().unwrap().identity();
+        let sources = state
+            .harness
+            .canonical_sources(&worker, &track.clone().into());
+        let owned = matches!(
+            sources.readiness(&pending),
+            crate::harness::registry::SourceReadiness::AwaitingHandoff
+        );
+        assert!(reservation.install(old_handle.unwrap()));
+        drop(lifecycle.take());
+        Some(owned)
+    } else {
+        None
+    };
     if revoke {
         // The fallback owner must be allowed to finish and release its guard.
-        drop(lifecycle);
+        drop(lifecycle.take());
         let handle = state.harness.get(&worker).unwrap();
         tokio::time::timeout(Duration::from_secs(5), async {
             loop {
@@ -195,7 +233,7 @@ async fn live_send_source_handoff(cancel_http: bool, invalid_workspace: bool, re
     let block = state.harness.get(&worker).unwrap().issuance_block().await;
     let counts = fixture.counts(card).await;
     // Release every real lifecycle/native waiter before reporting a regression.
-    drop(lifecycle);
+    drop(lifecycle.take());
     if let Ok(call) = &next
         && call["method"] == "turn/start"
     {
@@ -228,6 +266,12 @@ async fn live_send_source_handoff(cancel_http: bool, invalid_workspace: bool, re
             "the new input stays saved without a new claim or native attempt"
         );
         return;
+    }
+    if let Some(owned) = deferred_owned {
+        assert!(
+            owned,
+            "no-live observation must defer, not release, the source handoff"
+        );
     }
     let (notice, queued_counts) = pre_handoff.unwrap();
     assert_eq!(notice, None, "source handoff is ordinary pending work");

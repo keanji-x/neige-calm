@@ -73,6 +73,7 @@ mod historical;
 #[cfg(all(test, feature = "fixtures"))]
 mod historical_lifecycle_tests;
 mod retained;
+pub(crate) use retained::RetainedSourceObservation;
 use retained::{RetainedPayload, StartInvocation};
 
 const START_PHASES: &[PhaseTag] = &[

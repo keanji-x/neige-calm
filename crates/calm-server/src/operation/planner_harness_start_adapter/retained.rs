@@ -36,6 +36,13 @@ pub(super) struct Target {
     native_backend: crate::db::sqlite::session_backend::CodexScope,
 }
 
+/// A successful lookup is not evidence that any source reached a consumer.
+#[must_use = "only Observed completes the producer handoff"]
+pub(crate) enum RetainedSourceObservation {
+    Observed,
+    Deferred,
+}
+
 impl PlannerHarnessStartAdapter {
     fn retained_source(&self) -> Result<(&InputSource, &std::path::Path)> {
         match &self.invocation {
@@ -262,12 +269,12 @@ impl PlannerHarnessStartAdapter {
         card_id: &CardId,
         source: crate::auth::HumanInputSource,
         workspace_root: PathBuf,
-    ) -> Result<()> {
+    ) -> Result<RetainedSourceObservation> {
         let (bound, wire, _) = self
             .retained_input_context(card_id, source.into(), workspace_root)
             .await?;
         if self.harness_registry.get(&wire.worker_session_id).is_none() {
-            return Ok(());
+            return Ok(RetainedSourceObservation::Deferred);
         }
         bound
             .retained_workspace(
@@ -279,9 +286,10 @@ impl PlannerHarnessStartAdapter {
             .await?;
         let target = bound.retained_target(&wire).await?;
         if self.harness_registry.get(&wire.worker_session_id).is_none() {
-            return Ok(());
+            return Ok(RetainedSourceObservation::Deferred);
         }
-        bound.observe_retained_sources(&wire, &target)
+        bound.observe_retained_sources(&wire, &target)?;
+        Ok(RetainedSourceObservation::Observed)
     }
 
     /// The fence owns this complete invocation, including cancellation of its
