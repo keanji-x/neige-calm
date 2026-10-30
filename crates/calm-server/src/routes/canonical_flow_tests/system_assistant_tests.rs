@@ -256,6 +256,7 @@ async fn owner_runs_bootstrap_end_frozen_body_and_independent_subject() {
 
 mod prefix;
 mod recovery;
+#[cfg(test)]
 #[cfg(feature = "fixtures")]
 mod retained_proof_tests;
 
