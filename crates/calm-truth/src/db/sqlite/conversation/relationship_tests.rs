@@ -93,12 +93,8 @@ async fn canonical_turn_initial_relationship_checks_kind_with_deferred_child_fir
          render_plan_sha256,created_at_ms)
          VALUES('77777777777777777777777777777777',?1,'88888888888888888888888888888888',?2,?3,?4,?5,1)")
             .bind(&card).bind(ordinal).bind(kind).bind(serde_json::to_string(&render).unwrap()).bind(digest(&render).unwrap()).execute(&mut **tx).await;
-        if !accept {
-            assert!(child.is_err());
-            tx.rollback().await.unwrap();
-            continue;
-        }
-        child.unwrap();
+        // Both are valid children; only Initial may close the Turn's initial relationship.
+        child.expect("a valid submission may precede its Turn with deferred foreign keys");
         let inserted=sqlx::query("INSERT INTO conversation_turns(id,card_id,initiating_runtime_id,initial_submission_id,execution_kind,
          deployment_owner_user_id,provider,profile,created_at_ms)
          VALUES('88888888888888888888888888888888',?1,'runtime','77777777777777777777777777777777',
