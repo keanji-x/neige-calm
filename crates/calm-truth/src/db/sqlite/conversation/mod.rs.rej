@@ -1,0 +1,8 @@
+diff a/crates/calm-truth/src/db/sqlite/conversation/mod.rs b/crates/calm-truth/src/db/sqlite/conversation/mod.rs	(rejected hunks)
+@@ -176,3 +179,6 @@ mod u9_canonical_turn_owner_tests;
+ 
+ #[cfg(test)]
+ mod imported_tests;
++
++#[cfg(test)]
++mod offline_facts_tests;

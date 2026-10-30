@@ -29,6 +29,9 @@ pub(crate) mod gate_ops;
 pub(crate) mod gate_process;
 pub mod location_admission;
 pub mod objective_check_run;
+pub(crate) mod offline_facts;
+#[cfg(test)]
+mod offline_facts_tests;
 pub(crate) mod owned_execution;
 pub mod planner_harness_interrupt_adapter;
 pub mod planner_harness_shutdown_adapter;

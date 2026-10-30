@@ -3,16 +3,13 @@ use crate::conversation_keys::{derive_track_conversation_keys, first_message_dig
 use crate::error::{CalmError, ErrorBody, Result};
 use crate::extract::{Json, Path};
 use crate::harness::{QueueEntryId, run_loop::input_inspection::InputInspection};
-use crate::operation::{
-    Phase, assistant_start_wire::StartInput, planner_harness_start_adapter::HarnessProfile,
-};
 use crate::routes::{
     conversations_shared::retryable_operation, idempotency_key::parse_idempotency_key_header,
 };
 use crate::state::{RouteState, WorkerState};
 use axum::{extract::State, http::HeaderMap};
 use calm_types::conversation_receipt::{
-    ConversationInitialInputObservation as Observation, ConversationInitialInputReceipt,
+    ConversationInitialInputObservation as Observation,
     ConversationInitialInputReceiptResult as ReceiptResult,
     InitialInputUnavailableReason as Reason,
 };
@@ -60,62 +57,14 @@ pub(crate) async fn receipt_from_historical_operation(
     operation_key: &str,
 ) -> Result<std::result::Result<ReceiptResult, Reason>> {
     let (_, op) = retryable_operation(s, operation_key).await?;
-    let Some(op) = op else {
-        return Ok(Err(Reason::CreationIncomplete));
-    };
-    let payload = match StartInput::decode(&op.payload) {
-        Ok(input) => input.payload,
-        Err(_) => return Ok(Err(Reason::Integrity)),
-    };
-    if payload.profile != HarnessProfile::Assistant
-        || payload.track_id != track_id
-        || payload.planner_card_id.as_str() != card_id
-        || payload
-            .create_card
-            .as_ref()
-            .and_then(|seed| seed.idempotency_key.as_deref())
-            != Some(key)
-    {
-        return Ok(Err(Reason::Integrity));
-    }
-    if op.target_type != "card" || op.target_id.as_deref() != Some(card_id) {
-        return Ok(Err(Reason::Integrity));
-    }
-    if op.phase != Phase::Succeeded {
-        return Ok(Err(Reason::CreationIncomplete));
-    }
-    let Some(output) = &op.tx_output else {
-        return Ok(Err(Reason::Integrity));
-    };
-    if output.target_type != "card"
-        || output.target_id.as_deref() != Some(card_id)
-        || output.data.get("card_id").and_then(|v| v.as_str()) != Some(card_id)
-        || output.data.get("track_id").and_then(|v| v.as_str()) != Some(track_id)
-    {
-        return Ok(Err(Reason::Integrity));
-    }
-    let Some(value) = output.data.get("initial_input_receipt") else {
-        return Ok(Ok(ReceiptResult::LegacyUnavailable));
-    };
-    let receipt: ConversationInitialInputReceipt = match serde_json::from_value(value.clone()) {
-        Ok(receipt) => receipt,
-        Err(_) => return Ok(Err(Reason::Integrity)),
-    };
-    if receipt.entry_id.is_empty()
-        || receipt.queued_at_ms < 0
-        || receipt.initial_runtime_id.is_empty()
-        || output.data.get("runtime_id").and_then(|v| v.as_str())
-            != Some(receipt.initial_runtime_id.as_str())
-        || payload
-            .first_message
-            .as_deref()
-            .map(first_message_digest)
-            .as_deref()
-            != Some(receipt.text_sha256.as_str())
-    {
-        return Ok(Err(Reason::Integrity));
-    }
-    Ok(Ok(ReceiptResult::Known { receipt }))
+    Ok(
+        crate::operation::offline_facts::historical_initial_input_receipt(
+            op.as_ref().map(Into::into),
+            track_id,
+            card_id,
+            key,
+        ),
+    )
 }
 
 #[utoipa::path(

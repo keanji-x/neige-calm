@@ -507,6 +507,37 @@ pub enum TrackCreateRequestFingerprint {
     },
 }
 
+impl TrackCreateRequestFingerprint {
+    /// Decode the persisted fingerprint shape, preserving absent digests and legacy rows.
+    pub fn decode(
+        version: i64,
+        create_request_sha256: Option<String>,
+        first_message_sha256: Option<String>,
+    ) -> Result<Self> {
+        match (version, create_request_sha256, first_message_sha256) {
+            (0, None, None) => Ok(TrackCreateRequestFingerprint::LegacyUnknown),
+            (1, Some(create_request_sha256), Some(first_message_sha256)) => {
+                Ok(TrackCreateRequestFingerprint::V1 {
+                    create_request_sha256,
+                    first_message_sha256,
+                })
+            }
+            // The absent digest is the shape: its own variant, never "V1 with something missing".
+            (2, Some(create_request_sha256), None) => {
+                Ok(TrackCreateRequestFingerprint::V2MessageLess {
+                    create_request_sha256,
+                })
+            }
+            (version, create_hash, message_hash) => Err(CalmError::Internal(format!(
+                "track-create idempotency binding has invalid fingerprint state: \
+                         version={version}, create_hash_present={}, message_hash_present={}",
+                create_hash.is_some(),
+                message_hash.is_some()
+            ))),
+        }
+    }
+}
+
 /// What one `(area_id, Idempotency-Key)` pair already minted. Three ids, not
 /// one: `resume_prior_attempt` needs the card ids and may have no operation
 /// payload to read them from.
@@ -614,29 +645,11 @@ async fn track_create_idempotency_get<'e, E: sqlx::SqliteExecutor<'e>>(
             create_request_sha256,
             first_message_sha256,
         )| {
-            let request_fingerprint = match (version, create_request_sha256, first_message_sha256) {
-                (0, None, None) => TrackCreateRequestFingerprint::LegacyUnknown,
-                (1, Some(create_request_sha256), Some(first_message_sha256)) => {
-                    TrackCreateRequestFingerprint::V1 {
-                        create_request_sha256,
-                        first_message_sha256,
-                    }
-                }
-                // The absent digest is the shape: its own variant, never "V1 with something missing".
-                (2, Some(create_request_sha256), None) => {
-                    TrackCreateRequestFingerprint::V2MessageLess {
-                        create_request_sha256,
-                    }
-                }
-                (version, create_hash, message_hash) => {
-                    return Err(CalmError::Internal(format!(
-                        "track-create idempotency binding has invalid fingerprint state: \
-                         version={version}, create_hash_present={}, message_hash_present={}",
-                        create_hash.is_some(),
-                        message_hash.is_some()
-                    )));
-                }
-            };
+            let request_fingerprint = TrackCreateRequestFingerprint::decode(
+                version,
+                create_request_sha256,
+                first_message_sha256,
+            )?;
             Ok(TrackCreateBinding {
                 track_id,
                 planner_card_id,

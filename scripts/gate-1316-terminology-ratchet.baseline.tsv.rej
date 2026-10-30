@@ -1,0 +1,20 @@
+diff a/scripts/gate-1316-terminology-ratchet.baseline.tsv b/scripts/gate-1316-terminology-ratchet.baseline.tsv	(rejected hunks)
+@@ -6,15 +6,15 @@ cove	crates	125
+ cove	fe	0
+ cove	docs	0
+ cove	e2e	0
+-wave	crates	664
++wave	crates	667
+ wave	fe	16
+ wave	docs	12
+ wave	e2e	0
+-spec	crates	523
++spec	crates	526
+ spec	fe	65
+ spec	docs	0
+ spec	e2e	1
+-runtime_id	crates	1114
++runtime_id	crates	1121
+ runtime_id	fe	37
+ runtime_id	docs	1
+ runtime_id	e2e	4

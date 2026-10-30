@@ -27,6 +27,9 @@ pub(super) mod messages;
 mod plans;
 pub(super) mod presentation;
 pub use imported::import_item_tx;
+pub(crate) use presentation::{
+    NativeSourceExclusion, NativeSourceFact, NativeSourceMalformed, native_source_fact,
+};
 mod release;
 mod retry;
 pub(in crate::db::sqlite) use retry::retry_availability_tx;

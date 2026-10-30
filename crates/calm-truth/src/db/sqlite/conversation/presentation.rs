@@ -106,6 +106,70 @@ pub async fn observe_native_item_tx(
     }))
 }
 
+/// Applicability of the native presentation identity contract, without reading or writing storage.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum NativeSourceFact {
+    Identity(String),
+    Excluded { reason: NativeSourceExclusion },
+    Malformed { reason: NativeSourceMalformed },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum NativeSourceExclusion {
+    InputEcho,
+    MissingItemType,
+    InputProjection,
+    UnsupportedMethod,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum NativeSourceMalformed {
+    MissingItemIdentity,
+    MissingThreadIdentity,
+}
+
+pub(crate) fn native_source_fact(
+    thread: &str,
+    item: Option<&str>,
+    kind: Option<&str>,
+    method: &str,
+    params: &serde_json::Value,
+) -> Result<NativeSourceFact> {
+    use super::NativeSourceExclusion as Excluded;
+    use super::NativeSourceMalformed as Malformed;
+    let Some(item) = item.filter(|id| !id.is_empty()) else {
+        return Ok(NativeSourceFact::Malformed {
+            reason: Malformed::MissingItemIdentity,
+        });
+    };
+    if thread.is_empty() {
+        return Ok(NativeSourceFact::Malformed {
+            reason: Malformed::MissingThreadIdentity,
+        });
+    }
+    let reason = if calm_types::harness::is_native_user_message_type(kind) {
+        Some(Excluded::InputEcho)
+    } else if kind.is_none_or(str::is_empty) {
+        Some(Excluded::MissingItemType)
+    } else if params
+        .get("_projection")
+        .and_then(serde_json::Value::as_bool)
+        == Some(true)
+    {
+        Some(Excluded::InputProjection)
+    } else if !matches!(method, "item/started" | "item/completed") {
+        Some(Excluded::UnsupportedMethod)
+    } else {
+        None
+    };
+    if let Some(reason) = reason {
+        return Ok(NativeSourceFact::Excluded { reason });
+    }
+    Ok(NativeSourceFact::Identity(serde_json::to_string(&(
+        thread, item,
+    ))?))
+}
+
 pub(in crate::db::sqlite) fn native_source_identity(
     thread: &str,
     item: Option<&str>,
@@ -113,27 +177,22 @@ pub(in crate::db::sqlite) fn native_source_identity(
     method: &str,
     params: &serde_json::Value,
 ) -> Result<String> {
-    let item = item.filter(|id| !id.is_empty()).ok_or_else(|| {
-        CalmError::Conflict("native presentation requires a persisted native item identity")
-    })?;
-    if thread.is_empty() {
-        return Err(CalmError::Conflict(
+    match super::native_source_fact(thread, item, kind, method, params)? {
+        super::NativeSourceFact::Identity(identity) => Ok(identity),
+        super::NativeSourceFact::Malformed {
+            reason: super::NativeSourceMalformed::MissingItemIdentity,
+        } => Err(CalmError::Conflict(
+            "native presentation requires a persisted native item identity",
+        )),
+        super::NativeSourceFact::Malformed {
+            reason: super::NativeSourceMalformed::MissingThreadIdentity,
+        } => Err(CalmError::Conflict(
             "native presentation requires its persisted thread identity",
-        ));
-    }
-    if calm_types::harness::is_native_user_message_type(kind)
-        || kind.is_none_or(str::is_empty)
-        || params
-            .get("_projection")
-            .and_then(serde_json::Value::as_bool)
-            == Some(true)
-        || !matches!(method, "item/started" | "item/completed")
-    {
-        return Err(CalmError::Conflict(
+        )),
+        super::NativeSourceFact::Excluded { .. } => Err(CalmError::Conflict(
             "input projections and echoes use their canonical source presentation, not NativeItem",
-        ));
+        )),
     }
-    Ok(serde_json::to_string(&(thread, item))?)
 }
 
 /// One erasure fence for both representations of the persisted native identity.
