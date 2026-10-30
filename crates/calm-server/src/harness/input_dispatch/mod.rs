@@ -74,8 +74,8 @@ impl PreparedInputDispatch {
                 if RuntimeExecutionFence::from_carrier(&carrier) != expected {
                     return Err(CalmError::Conflict("native input execution changed".into()));
                 }
-                if let Some(target) = &target {
-                    if carrier.phase()? != HarnessPhaseTag::TurnRunning
+                if let Some(target) = &target
+                    && (carrier.phase()? != HarnessPhaseTag::TurnRunning
                         || retained_target_tx(
                             tx,
                             &card,
@@ -91,12 +91,11 @@ impl PreparedInputDispatch {
                         )
                         .await?
                         .as_ref()
-                            != Some(target)
-                    {
-                        return Err(CalmError::Conflict(
-                            "supplemental native target changed".into(),
-                        ));
-                    }
+                            != Some(target))
+                {
+                    return Err(CalmError::Conflict(
+                        "supplemental native target changed".into(),
+                    ));
                 }
                 let stored = submission_plan_tx(tx, &attempt.submission_id).await?;
                 let retry = crate::db::sqlite::conversation::submission_retry_intent_tx(

@@ -108,10 +108,10 @@ async fn mutate(
             if let Some(event) = event {
                 state.events.emit_envelope(event);
             }
-            if let Some(handle) = state.harness.get(&worker) {
-                if let Err(error) = handle.refresh_canonical_input().await {
-                    tracing::warn!(%error,"committed pending edit awaits runtime refresh");
-                }
+            if let Some(handle) = state.harness.get(&worker)
+                && let Err(error) = handle.refresh_canonical_input().await
+            {
+                tracing::warn!(%error,"committed pending edit awaits runtime refresh");
             }
             let response = Json(PlannerInputMutationResponse {
                 card_id: card_id.clone(),
