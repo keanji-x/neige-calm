@@ -320,19 +320,9 @@ async fn later_activity(consume_before_shutdown: bool) {
         tokio::net::UnixListener::bind(fx.dir.path().join("prompt-consumption.sock")).unwrap();
     // Subscribe before dispatch: a local write receipt cannot prove remote consumption.
     let mut events = fx.session.subscribe_events();
-    let report = crate::harness::input_dispatch::initial(
-        fx.owner.repo.as_ref(),
-        &fx.source,
-        &fx.owner.card,
-        &fx.owner.worker,
-        &claim.submission_id,
-        &fx.backend,
-        &TurnModelSelection::inherit(),
-        PlannerPermissionMode::Never,
-        &fx.backend.handoff_for_test().await,
-    )
-    .await
-    .unwrap();
+    let report = fx
+        .dispatch_submission_with_selection(&claim.submission_id, &TurnModelSelection::inherit())
+        .await;
     assert!(matches!(
         report.report.delivery(),
         InputDelivery::Unknown(_)
@@ -354,18 +344,7 @@ async fn later_activity(consume_before_shutdown: bool) {
         "dispatch returned while the real peer was blocked before reading prompt two"
     );
     if consume_before_shutdown {
-        use tokio::io::AsyncWriteExt;
-        peer.write_all(b"!").await.unwrap();
-        tokio::time::timeout(Duration::from_secs(20), async {
-            loop {
-                let event = events.recv().await.unwrap();
-                if matches!(event.kind, provider::events::PlannerEventKind::ReplyDelta { ref delta, .. }
-                    if delta == "held prompt received") {
-                    assert_eq!(event.thread_id.as_deref(), Some(fx.owner.thread.as_str()));
-                    break;
-                }
-            }
-        }).await.unwrap();
+        fx.consume_held_prompt(&mut peer, &mut events).await;
         fx.session.shutdown().await.unwrap();
         assert_eq!(fx.prompts(), 2);
     } else {

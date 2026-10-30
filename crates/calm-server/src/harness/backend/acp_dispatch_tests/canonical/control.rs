@@ -173,7 +173,24 @@ async fn canonical_acp_prepared_stop_never_cancels_a_successor_reusing_native_se
     fx.wait_end().await;
     std::fs::write(fx.dir.path().join("scenario"), "hold").unwrap();
     let successor = fx.claim_successor().await;
-    fx.dispatch_submission(&successor).await;
+    let listener =
+        tokio::net::UnixListener::bind(fx.dir.path().join("prompt-consumption.sock")).unwrap();
+    // A local send receipt is not proof that the native peer consumed the prompt.
+    let mut events = fx.session.subscribe_events();
+    // Inherit setup so the peer can park before prompt consumption, after configuration.
+    let report = fx
+        .dispatch_submission_with_selection(&successor, &TurnModelSelection::inherit())
+        .await;
+    assert!(report.report.outcome().is_ok());
+    assert!(matches!(
+        report.report.delivery(),
+        InputDelivery::Unknown(_)
+    ));
+    let (mut peer, _) = tokio::time::timeout(Duration::from_secs(20), listener.accept())
+        .await
+        .unwrap()
+        .unwrap();
+    fx.consume_held_prompt(&mut peer, &mut events).await;
     let requests = fx.requests();
     let prompts: Vec<_> = requests
         .iter()

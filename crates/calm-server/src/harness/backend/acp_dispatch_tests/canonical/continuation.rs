@@ -71,6 +71,20 @@ impl Fixture {
         &self,
         submission: &InputSubmissionId,
     ) -> crate::harness::input_dispatch::CommittedInputReport {
+        self.dispatch_submission_with_selection(
+            submission,
+            &TurnModelSelection {
+                model: Some("fixture/model-a".into()),
+                effort: Some("normal".into()),
+            },
+        )
+        .await
+    }
+    pub(super) async fn dispatch_submission_with_selection(
+        &self,
+        submission: &InputSubmissionId,
+        selection: &TurnModelSelection,
+    ) -> crate::harness::input_dispatch::CommittedInputReport {
         crate::harness::input_dispatch::initial(
             self.owner.repo.as_ref(),
             &self.source,
@@ -78,10 +92,7 @@ impl Fixture {
             &self.owner.worker,
             submission,
             &self.backend,
-            &TurnModelSelection {
-                model: Some("fixture/model-a".into()),
-                effort: Some("normal".into()),
-            },
+            selection,
             PlannerPermissionMode::Never,
             &self.backend.handoff_for_test().await,
         )
@@ -93,6 +104,25 @@ impl Fixture {
         submission: &InputSubmissionId,
     ) -> (String, String, String, Option<String>) {
         sqlx::query_as("SELECT turn_id,input_json,state,outcome_json FROM acp_submissions WHERE worker_session_id=?1 AND client_id=?2").bind(&self.owner.worker).bind(submission.as_str()).fetch_one(self.owner.repo.pool()).await.unwrap()
+    }
+    /// Join the existing spy peer's prompt-consumed event before reading its request log.
+    pub(super) async fn consume_held_prompt(
+        &self,
+        peer: &mut tokio::net::UnixStream,
+        events: &mut tokio::sync::broadcast::Receiver<provider::events::PlannerEvent>,
+    ) {
+        use tokio::io::AsyncWriteExt;
+        peer.write_all(b"!").await.unwrap();
+        tokio::time::timeout(Duration::from_secs(20), async {
+            loop {
+                let event = events.recv().await.unwrap();
+                if matches!(event.kind, provider::events::PlannerEventKind::ReplyDelta { ref delta, .. }
+                    if delta == "held prompt received") {
+                    assert_eq!(event.thread_id.as_deref(), Some(self.owner.thread.as_str()));
+                    break;
+                }
+            }
+        }).await.expect("the native peer must confirm prompt consumption");
     }
     pub(super) fn requests(&self) -> Vec<serde_json::Value> {
         std::fs::read_to_string(self.dir.path().join("requests.jsonl"))
