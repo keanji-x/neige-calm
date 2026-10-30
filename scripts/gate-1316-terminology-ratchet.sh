@@ -222,8 +222,8 @@
 # this existing baseline; no new scan, exclusion, or file/test inventory is added.
 
 # B2 P0 bounded historical-wire fixtures: wave/crates 664 -> 667 and
-# spec/crates 523 -> 526 retain the original payload keys in valid, corrupt and
-# missing-field cases. runtime_id/crates 1114 -> 1121 adds seven receipt fixture
+# spec/crates 524 -> 527 retain the original payload keys in valid, corrupt and
+# missing-field cases. runtime_id/crates 1108 -> 1115 adds seven receipt fixture
 # references; moving three existing route references to the owner is net zero.
 # Original fields and receipt bytes stay unchanged; no scan exemption is added.
 # Later contract references edit their owning source/test and this same baseline.

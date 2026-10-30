@@ -190,6 +190,9 @@ mod u9_canonical_turn_owner_tests;
 #[cfg(test)]
 mod imported_tests;
 
+#[cfg(test)]
+mod offline_facts_tests;
+
 mod system_assistant;
 pub use system_assistant::{
     assistant_key_used_tx, system_assistant_accept_tx, system_assistant_entry_insert_tx,
