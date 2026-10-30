@@ -183,7 +183,7 @@ async fn response(app: &axum::Router, cookie: &str, key: Option<&str>) -> (Statu
 
 // Observe the actual boot projectors' committed products before whole-DB
 // assertions. No timed sleep or omitted table can stand in for their completion.
-async fn boot_projectors_ready(fixture: &Fixture, state: &AppState) {
+pub(super) async fn boot_projectors_ready(fixture: &Fixture, state: &AppState) {
     let tracks: Vec<String> = sqlx::query_scalar("SELECT id FROM tracks WHERE closed_at IS NULL")
         .fetch_all(fixture.repo.pool())
         .await
@@ -246,6 +246,7 @@ async fn activity_settled(
         .unwrap();
     let track = activity(state, app, cookie).await;
     projected_report(fixture, &track, &mut ready).await;
+    boot_projectors_ready(fixture, state).await;
     track
 }
 #[tokio::test]
@@ -505,6 +506,11 @@ async fn http_human_and_historical_namespace_refuse_before_legacy_adoption_even_
             calm_types::system_assistant::SystemAssistantSource::TodaySummary.namespace(),
         )
         .card_id;
+        let mut events = state.events.subscribe();
+        let mut projected = crate::state::RouteState::from_ref(&state)
+            .activity_wake
+            .subscribe_report_completions_for_test()
+            .unwrap();
         if historical {
             let mut headers = axum::http::HeaderMap::new();
             headers.insert("Idempotency-Key", "today-summary".parse().unwrap());
@@ -547,6 +553,35 @@ async fn http_human_and_historical_namespace_refuse_before_legacy_adoption_even_
         }
         if let Some(sweep) = &state.provider_sweep {
             sweep.stop().await.unwrap();
+        }
+        // Joining the producer does not join activity projection. Drain its actual
+        // committed envelopes, including an enqueue when shutdown precedes phase issuance.
+        let mut last = None;
+        loop {
+            match events.try_recv() {
+                Ok(env) => {
+                    if matches!(&env.event,
+                        crate::event::Event::HarnessPhaseChanged { card_id, .. }
+                        | crate::event::Event::HarnessUserMessageEnqueued { card_id, .. }
+                        if card_id.as_str() == card)
+                    {
+                        last = Some(env);
+                    }
+                }
+                Err(tokio::sync::broadcast::error::TryRecvError::Empty) => break,
+                Err(error) => panic!("namespace fixture event stream: {error}"),
+            }
+        }
+        if let Some(last) = last {
+            tokio::time::timeout(
+                Duration::from_secs(5),
+                report_completion_for_test::wait_for_event(&mut projected, &last),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        } else {
+            assert!(!historical, "historical mint must publish its enqueue");
         }
         sqlx::query("UPDATE tracks SET purpose=NULL,template_id='small-change',plugin_scope='legacy' WHERE id=?1").bind(track).execute(fixture.repo.pool()).await.unwrap();
         sqlx::query("CREATE TRIGGER refuse_namespace_adoption BEFORE UPDATE OF purpose ON tracks BEGIN SELECT RAISE(ABORT,'namespace must be qualified before adoption'); END").execute(fixture.repo.pool()).await.unwrap();

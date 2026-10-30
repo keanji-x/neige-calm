@@ -1,4 +1,4 @@
-//! Observation of the original owner's Report and phase branches, only in fixture test builds.
+//! Observation of the original owner's Report, phase and enqueue branches, only in fixture test builds.
 //! No sender escapes the owner; dropping a receiver only cancels observation.
 use super::*;
 use calm_truth::db::TrackEvent;

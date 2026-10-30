@@ -657,7 +657,7 @@ impl TrackActivityProjector {
                             }
                             let result = self.recompute_track(&track_id).await;
                             #[cfg(all(test, feature = "fixtures"))]
-                            if matches!(env.event, Event::TrackReportEdited { .. } | Event::HarnessPhaseChanged { .. }) {
+                            if matches!(env.event, Event::TrackReportEdited { .. } | Event::HarnessPhaseChanged { .. } | Event::HarnessUserMessageEnqueued { .. }) {
                                 let _ = self.report_completions.send(ReportCompletion::Event {
                                     env: Box::new(env),
                                     outcome: ReportOutcome::from_result(&result),
