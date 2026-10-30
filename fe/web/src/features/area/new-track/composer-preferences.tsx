@@ -1,4 +1,5 @@
 import type { DialogOrigin } from '../../../ui/dialog/public.tsx';
+import { GuideAnchor } from '../../../ui/floating-control/public.ts';
 import { useEffect, useLayoutEffect, useRef, type ComponentProps } from 'react';
 import { flushSync } from 'react-dom';
 import { Button } from '@astryxdesign/core/Button';
@@ -118,7 +119,7 @@ export function ComposerPreferences({ startingPoint, folder, browsing, isolation
     return () => observer.disconnect();
   });
 
-  const preferences = <div ref={itemsRef} className={styles.items}>
+  const preferences = <GuideAnchor id="track-options" disabled={browsing} placement="top">{(anchor, describedBy) => <div ref={node => { itemsRef.current = node; anchor(node); }} aria-describedby={describedBy} tabIndex={-1} className={styles.items}>
     <span ref={startingRef} className={styles.startingPoint}><StartingPointPill {...startingPoint} /></span>
     <span ref={folderRef} className={styles.folder}><FolderPill {...folder} onBrowse={() => {
       // A native top-layer popup must relinquish hits and its focus trap before
@@ -128,15 +129,15 @@ export function ComposerPreferences({ startingPoint, folder, browsing, isolation
       if (open) flushSync(() => setOpen(false));
       folder.onBrowse({ kind: 'anchor', anchor: { ref: folderRef }, unavailable: 'surface-center' });
     }} /></span>
-  </div>;
+  </div>}</GuideAnchor>;
 
-  return <div ref={hostRef} className={styles.host} data-nc-composer-preferences>
+  return <GuideAnchor id="track-options-trigger" disabled={!collapsed || browsing} placement="top">{(anchor, describedBy) => <div ref={hostRef} tabIndex={-1} className={styles.host} data-nc-composer-preferences>
     {collapsed ? <Popover label="Track options" placement="above" isOpen={open} onOpenChange={setOpen}
       content={<div className={styles.panel}>{preferences}</div>}>
-      {(trigger) => <Button {...trigger} ref={(node) => { moreRef.current = node; trigger.ref(node); }}
+      {(trigger) => <Button {...trigger} ref={(node) => { moreRef.current = node; trigger.ref(node); anchor(node); }} aria-describedby={describedBy}
         label="Track options" variant="secondary" className={styles.trigger} isIconOnly
         icon={<Icon name="more" />} isDisabled={startingPoint.isDisabled} />}
     </Popover> : preferences}
     <div ref={isolationRef} className={styles.isolation}><IsolationPill {...isolation} /></div>
-  </div>;
+  </div>}</GuideAnchor>;
 }

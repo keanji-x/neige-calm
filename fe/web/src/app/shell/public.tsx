@@ -1,9 +1,10 @@
 import { LayerDismissal } from '../../ui/dialog/public.tsx';
 import { LayerDepthProvider } from '@astryxdesign/core/Layer';
 import type { DialogOrigin } from '../../ui/dialog/public.tsx';
+import { useWorkspaceGuide, workspaceGuideFacts } from './workspace-guide.tsx';
 import { sidebarTrackGroups } from './sidebar-track-groups.ts';
 import { useMobileNavigationPresence } from './mobile-navigation-presence.ts';
-import { floatingControlClassName } from '../../ui/floating-control/public.ts';
+import { floatingControlClassName, supportsAnchoredHints, GuideProvider, GuideAnchor } from '../../ui/floating-control/public.ts';
 import { Icon } from '../../ui/icon/public.tsx';
 import { useVisibleViewport } from '../../ui/viewport/public.ts';
 import { useCommittedCallback } from '../../ui/state/committed-callback.ts';
@@ -20,7 +21,7 @@ import { useReadReceipts } from '../providers/read-receipts.tsx';
 import { MARK_UNREAD_TEXT, READ_RECEIPT_FAILURES } from '../../../../core/domain/read-receipts.ts';
 import type { ApiTransportPort } from '../../../../core/api/types.ts';
 import type { UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
-import { TRACK_PATCH_FAILURES, TRACK_PATCH_TEXT, trackDisplayTitle } from '../../../../core/domain/track.ts';
+import { TRACK_PATCH_FAILURES, TRACK_PATCH_TEXT, trackDisplayTitle, userVisibleTracks } from '../../../../core/domain/track.ts';
 import { OperationFeedback, useOperationFeedback } from '../../ui/operation-feedback/public.tsx';
 import type { Track } from '../../../../core/domain/track.ts';
 import { AREA_CREATE_FAILURES, AREA_CREATE_TEXT, AREA_PATCH_FAILURES, AREA_PATCH_TEXT, visibleAreas } from '../../../../core/domain/area.ts';
@@ -99,6 +100,7 @@ export function useMobileConversationOwner(owner: Scope) {
 }
 
 export type AppShellProps = Readonly<{
+  onOpenDemo?: () => void;
   transport: ApiTransportPort;
   unauthorized: UnauthorizedChannel;
   onOpenSettings: () => void;
@@ -108,6 +110,9 @@ export type AppShellProps = Readonly<{
   /** Pinned by tests so `pinned_at` assertions are stable. */
   nowMs?: number;
   userLabel?: string;
+  initialWorkspaceGuide?: boolean;
+  guideContent?: ReactNode;
+  guideFacts?: Readonly<Record<string, boolean>>;
 }>;
 
 /** Routes can reopen an Area's Tracks or recent Pages; the primary entry starts at Areas. */
@@ -147,8 +152,9 @@ export function useOpenMobileSection(): OpenMobileSection {
 }
 
 export function AppShell({
-  transport, unauthorized, onOpenSettings, onOpenPlugins, onSignOut, nowMs, userLabel,
+  transport, unauthorized, onOpenSettings, onOpenPlugins, onSignOut, nowMs, userLabel, initialWorkspaceGuide = false, onOpenDemo, guideContent, guideFacts,
 }: AppShellProps) {
+  const guideSupported = supportsAnchoredHints();
   const workspace = useWorkspace(transport, unauthorized);
   const areaMutations = useAreaMutations(transport, unauthorized);
   const trackMutations = useTrackMutations(transport, unauthorized);
@@ -183,6 +189,10 @@ export function AppShell({
    * element. Tri-state: `null` follows the viewport, either boolean is an explicit
    * choice and wins at every width. */
   const preferences = useUiPreferences();
+  const guide = useWorkspaceGuide(preferences, initialWorkspaceGuide && guideSupported,
+    visibleAreas(workspace.areas).length === 0 && !readLoading && readError === null,
+    onOpenDemo === undefined && guideSupported && !readLoading && readError === null);
+  const guideEnabled = onOpenDemo === undefined && guide.enabled && guideSupported;
   const manualRailCollapsed = preferences.railCollapsed();
   const drawerWidth = useDrawerWidthHost(preferences);
   const narrowRail = useCompactViewport();
@@ -215,13 +225,21 @@ export function AppShell({
   const routeTrackId = routeParamFromPath(currentPath, '/track/');
   const routeAreaId = routeParamFromPath(currentPath, '/area/');
   const areas = visibleAreas(workspace.areas);
+  const mobileGuideRevealed = useRef(false);
+  useEffect(() => {
+    if (!guideEnabled) { mobileGuideRevealed.current = false; return; }
+    if (narrowRail && !readLoading && readError === null && areas.length === 0 && !mobileGuideRevealed.current) {
+      mobileGuideRevealed.current = true;
+      setMobileSection({ kind: 'areas', areaId: undefined });
+    }
+  }, [guideEnabled, narrowRail, areas.length, readLoading, readError]);
   const activeAreaId = routeAreaId ?? workspace.tracks.find((track) => track.id === routeTrackId)?.areaId;
   const activeArea = areas.find((area) => area.id === activeAreaId) ?? areas[0];
   const mobileNavigationFrameRef = useRef<HTMLDivElement | null>(null);
   const mobileNavigationRef = useRef<HTMLDivElement | null>(null);
   const finishMobileClose = useCallback(() => setMobileSection(null), []);
   const { close: closeMobileSection, cancel: cancelMobileExit, interactive: workspaceInteractive } = useMobileNavigationPresence(mobileNavigationRef, mobileNavigationFrameRef, finishMobileClose, narrowRail && mobileNavOpen);
-  const railCollapsed = manualRailCollapsed ?? narrowRail;
+  const railCollapsed = guideEnabled && areas.length === 0 && !narrowRail ? false : manualRailCollapsed ?? narrowRail;
 
   const mobileFocusScope = useRef<Readonly<{ path: string; host: HTMLElement | null; intent: typeof mobileReturnIntent }> | null>(null);
   const dismissalLayer = <LayerDismissal {...{
@@ -401,6 +419,8 @@ export function AppShell({
   const mobileNavigationLabel = mobileSection?.kind === 'pages' ? 'Pages' : 'Tracks and settings';
 
   return (
+    <GuideProvider facts={{ ...workspaceGuideFacts(areas.length > 0, userVisibleTracks(workspace.tracks, workspace.areas).length > 0, userVisibleTracks(workspace.tracks, workspace.areas).find(track => track.id === routeTrackId), settingsOpen), ...guideFacts }} catalog={guide.catalog} sessionKey={guide.sessionKey} enabled={guideEnabled} isSeen={guide.isSeen} onSeen={guide.onSeen} onSkip={guide.skip}>
+    {guideContent}
     <div className={`${styles.shell} ${narrowRail ? mobileFontClassName : ''} ${narrowRail && (settingsOpen || mobileOverlayRoute) ? styles.settingsPageShell : ''} ${railCollapsed ? styles.shellCollapsed : styles.shellExpanded}`}>
       {dismissalLayer}
       {narrowRail && !settingsOpen && !mobileOverlayRoute && <MobileWorkspaceHeader
@@ -418,11 +438,11 @@ export function AppShell({
         actionsHostRef={setMobileHeaderActionsHost}
         titleHostRef={setMobileHeaderTitleHost}
       />}
-      {narrowRail && !settingsOpen && !mobileOverlayRoute && <button type="button"
+      {narrowRail && !settingsOpen && !mobileOverlayRoute && <GuideAnchor id="workspace-open">{(anchor, describedBy) => <button ref={anchor} aria-describedby={describedBy} type="button"
         className={`${styles.workspaceOpener} ${floatingControlClassName}`} aria-label="Open workspace"
         hidden={workspaceInteractive || historyOpen || conversationScope?.conversationOpen === true}
         style={{ bottom: `calc(${visibleViewport.bottomInset}px + var(--space-4) + env(safe-area-inset-bottom))` }}
-        onClick={() => openMobileSection({ kind: 'areas', areaId: activeArea?.id })}><Icon name="folder" /></button>}
+        onClick={() => openMobileSection({ kind: 'areas', areaId: activeArea?.id })}><Icon name="folder" /></button>}</GuideAnchor>}
       <EdgeSwipe enabled={narrowRail && !settingsOpen && !mobileOverlayRoute && !mobileNavOpen && !historyOpen} onSwipe={() => setHistoryOpen(true)} />
       {narrowRail && <MobileHistory owner={historyOwner.token} open={historyOpen} onOpenChange={setHistoryOpen}
         selectedConversationId={conversationScope?.selectedConversationId ?? null}
@@ -473,6 +493,8 @@ export function AppShell({
               />
             ) : mobileSection !== null ? (
               <MobileTracks
+                onOpenDemo={onOpenDemo}
+                onStartGuide={onOpenDemo ?? (guideSupported ? guide.start : undefined)}
                 view={mobileSection.kind === 'tracks' ? 'tracks' : 'areas'}
                 onSelectArea={(areaId) => { cancelMobileExit(); setMobileSection({ kind: 'tracks', areaId }); }}
                 onBack={mobileSection.kind === 'tracks' && mobileSection.returnTo !== 'report' ? () => setMobileSection({ kind: 'areas', areaId: navigationArea?.id }) : closeMobileSection}
@@ -505,6 +527,9 @@ export function AppShell({
             ) : null}</LayerDepthProvider>
           ) : <Sidebar
             trackGroups={trackGroups}
+            onOpenDemo={onOpenDemo}
+            onStartGuide={onOpenDemo ?? (guideSupported ? guide.start : undefined)}
+            guideActive={guideEnabled && areas.length === 0}
             collapsed={railCollapsed}
             onToggleCollapsed={() => preferences.setRailCollapsed(!railCollapsed)}
             areas={workspace.areas}
@@ -601,5 +626,6 @@ export function AppShell({
         )}
       </Dialog>
     </div>
+    </GuideProvider>
   );
 }

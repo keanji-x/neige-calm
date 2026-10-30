@@ -4,7 +4,7 @@ import { trackEmptyContent } from './track-empty-content.tsx';
 import { EmptyState } from '../../ui/empty-state/public.tsx';
 // The workspace rail: shared groups with owner-defined membership and actions.
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useLayoutEffect, useRef } from 'react';
 import { DropdownMenu, DropdownMenuItem, DropdownMenuSubMenu } from '@astryxdesign/core/DropdownMenu';
 
 import { visibleAreas, type Area } from '../../../../core/domain/area.ts';
@@ -29,8 +29,11 @@ import { routeParamFromPath } from '../router/navigation.ts';
 import { SIDEBAR_SECTION_IDS, moveSidebarGroup, type SidebarGroupId, type SidebarMove, type SidebarSectionId } from '../../../../core/view/sidebar-layout.ts';
 import { AreaGroup } from './area-group.tsx';
 import { SidebarGroup, SidebarTrackGroup, type GroupManagement } from './sidebar-group.tsx';
+import { ListText } from '../../ui/list-typography/public.tsx';
+import revealStyles from './area-group.module.css';
 import styles from './shell.module.css';
-import { navigationRowClass as rowLayout } from '../../ui/navigation-row/public.ts';
+import { navigationRowClass as rowLayout, navigationRowPresentation } from '../../ui/navigation-row/public.ts';
+import { GuideAnchor, guideRevealSlot } from '../../ui/floating-control/public.ts';
 
 export type SidebarProps = Readonly<{
   areas: readonly Area[];
@@ -52,6 +55,9 @@ export type SidebarProps = Readonly<{
   onOpenPlugins: () => void;
   /** The shell never signs out itself; the owner of the session does. */
   onSignOut: () => void;
+  onStartGuide?: () => void;
+  onOpenDemo?: () => void;
+  guideActive?: boolean;
   /** Owned by the shell: collapsing changes the shell grid, not just the rail. */
   collapsed: boolean;
   onToggleCollapsed: () => void;
@@ -78,13 +84,25 @@ export function initialsOf(label: string): string {
 export function Sidebar({
   areas, tracksByArea, tracks, trackGroups: memberships, currentPath, onGo,
   onRequestCreateArea, onRequestEditArea, onDeleteArea, onNewTrack, onSetPinned, onDeleteTrack,
-  onOpenSettings, onOpenPlugins, onSignOut, collapsed, onToggleCollapsed,
+  onOpenSettings, onOpenPlugins, onSignOut, collapsed, onToggleCollapsed, onStartGuide, onOpenDemo, guideActive = false,
   userLabel = 'You', nowMs, readError = null, activityError = null,
   readLoading = false, onRetryRead = () => undefined,
 }: SidebarProps) {
   const preferences = useUiPreferences();
+  const demoPresentation = navigationRowPresentation({ kind: 'entry', depth: 1 });
   const createRef = useRef<HTMLSpanElement | null>(null);
   const railRef = useRef<HTMLElement | null>(null);
+  const accountButtonRef = useRef<HTMLButtonElement | null>(null);
+  const areaGuideOpen = guideActive;
+  const previousAreaGuide = useRef(areaGuideOpen);
+  useLayoutEffect(() => {
+    const ended = previousAreaGuide.current && !areaGuideOpen;
+    previousAreaGuide.current = areaGuideOpen;
+    // Restoring a collapsed/hidden section can remove the guide's anchor.
+    if (ended && document.activeElement === document.body) {
+      accountButtonRef.current?.focus({ preventScroll: true });
+    }
+  }, [areaGuideOpen]);
   const areaDisclosureRefs = useRef(new Map<string, HTMLButtonElement>());
   const pendingAreaFocusRef = useRef<string | null>(null);
   const pendingOptionsFocusRef = useRef(false);
@@ -107,7 +125,7 @@ export function Sidebar({
   const sectionOrder = preferences.sidebarOrder('sections', SIDEBAR_SECTION_IDS);
   const sectionVisible = (id: SidebarSectionId) => preferences.sidebarGroupVisible(id)
     && (id === 'areas' || id === 'unread' || id === 'running' || groups.find((group) => group.id === id)!.tracks.length > 0);
-  const shownSections = sectionOrder.filter(sectionVisible);
+  const shownSections = sectionOrder.filter(id => (id === 'areas' && guideActive) || sectionVisible(id));
   const areaOrder = preferences.sidebarOrder('areas', userAreas.map((area) => area.id));
   const orderedAreas = areaOrder.map((id) => userAreas.find((area) => area.id === id)!);
   const shownAreas = orderedAreas.filter((area) => preferences.sidebarGroupVisible(`area:${area.id}`));
@@ -155,7 +173,7 @@ export function Sidebar({
   // Reveal the current row when visible without undoing manual Area collapse.
   const activeAreaId = userTracks.find((track) => track.id === activeTrackId)?.areaId;
   const activeAreaExpanded = activeAreaId === undefined ? true : preferences.areaExpanded(activeAreaId);
-  const areasExpanded = preferences.sidebarGroupExpanded('areas');
+  const areasExpanded = guideActive || preferences.sidebarGroupExpanded('areas');
   useEffect(() => {
     if (collapsed || activeTrackId === null) return;
     railRef.current?.querySelector('[aria-current="page"]')
@@ -292,12 +310,14 @@ export function Sidebar({
             management={management(id, 'Group actions for Areas')}
             expanded={areasExpanded}
             onToggle={(value) => preferences.setSidebarGroupExpanded('areas', value)}
-            actions={<span ref={createRef} className={`${styles.iconButton} ${rowLayout('chromeOuter')}`}><button type="button" data-nc-role="icon" className={styles.sourceButton}
-              aria-label="New area" onClick={() => onRequestCreateArea({ kind: 'anchor', anchor: { ref: createRef }, unavailable: 'surface-center' })}><Icon name="plus" /></button></span>}>
+            actions={<GuideAnchor id="workspace-add" disabled={userAreas.length > 0}>
+              {(anchor, describedBy) => <span {...guideRevealSlot} ref={createRef} className={`${styles.iconButton} ${rowLayout('chromeOuter')}`}><button type="button" data-nc-role="icon" className={styles.sourceButton} ref={anchor} aria-describedby={describedBy}
+              aria-label="New area" onClick={() => onRequestCreateArea({ kind: 'anchor', anchor: { ref: createRef }, unavailable: 'surface-center' })}><Icon name="plus" /></button></span>}</GuideAnchor>}>
             {readError === null && !readLoading && userAreas.length === 0 && (
-              <div className={styles.emptyArea}>
+              <><div className={styles.emptyArea}>
                 <EmptyState variant="compact" icon={<Icon name="folder" />} title="还没有 Area" description="项目与 Track 会按 Area 归类。" />
               </div>
+              {onOpenDemo !== undefined && <button type="button" data-nc-role="row" className={`${revealStyles.showMore} ${demoPresentation.className} ${rowLayout('labelStart')}`} onClick={onOpenDemo}><ListText tone={demoPresentation.tone} className={revealStyles.showMoreLabel}>先体验 Demo</ListText></button>}</>
             )}
 
             {shownAreas.length > 0 && (
@@ -333,11 +353,12 @@ export function Sidebar({
         </>
       )}
 
-      <div className={styles.userRow}>
+      <GuideAnchor id="workspace-account">{(anchor, describedBy) => <div ref={anchor} aria-describedby={describedBy} tabIndex={-1} className={styles.userRow}>
             <Menu
               items={[
                 { label: 'Settings', onSelect: onOpenSettings },
                 { label: 'Plugins', onSelect: onOpenPlugins },
+                ...(onStartGuide === undefined ? [] : [{ label: '入门引导', onSelect: onStartGuide }]),
                 { label: 'Sign out', onSelect: onSignOut },
               ]}
               wrapClassName={styles.menuWrap}
@@ -346,6 +367,7 @@ export function Sidebar({
               trigger={(triggerProps) => (
                 <button
                   {...triggerProps}
+                  ref={(element) => { accountButtonRef.current = element; triggerProps.ref(element); }}
                   type="button"
                   data-nc-role="icon"
                   className={styles.avatar}
@@ -355,7 +377,7 @@ export function Sidebar({
                 </button>
               )}
             />
-      </div>
+      </div>}</GuideAnchor>
 
       <ConfirmDialog
         origin={trackConfirm.origin}

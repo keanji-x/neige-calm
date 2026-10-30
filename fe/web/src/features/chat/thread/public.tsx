@@ -8,7 +8,7 @@ import { withEmptyTrigger } from '../../../ui/empty-state/astryx-trigger.tsx';
 import { EmptyState, type EmptyStateSchema } from '../../../ui/empty-state/public.tsx';
 import { useThreadReadingView, type ThreadReadingView } from './reading-view.tsx';
 import { useCompactViewport } from '../../../ui/viewport/public.ts';
-import { floatingControlClassName, floatingControlMaterialClassName } from '../../../ui/floating-control/public.ts';
+import { floatingControlClassName, floatingControlMaterialClassName, GuideAnchor } from '../../../ui/floating-control/public.ts';
 import mobileStyles from './mobile-composer.module.css';
 // The conversation itself: a transcript and the box you write into. The unit is the
 // exchange — one thing you said and everything that came back.
@@ -527,8 +527,12 @@ export function ChatComposer({
   ) : undefined;
 
   return (
-    <div
-      ref={rootRef}
+    <GuideAnchor id="conversation-input" placement="top"
+      onExample={disabled || sendWaiting || stopShown || editing !== undefined || draft.trim() !== '' ? undefined : (text) => {
+        setDraft(text);
+        messageInputRef.current?.querySelector<HTMLElement>('[contenteditable="true"]')?.focus();
+      }}>{(anchor, describedBy) => <div
+      ref={(node) => { rootRef.current = node; anchor(node); }} aria-describedby={describedBy}
       className={`${styles.composer} ${layout === 'mobile' ? mobileStyles.composer : ''}`}
       data-nc-composer=""
       /* Programmatic focus only: the perch the send effect parks on so focus taken off a disabling Send is not on `<body>`. */
@@ -626,18 +630,18 @@ export function ChatComposer({
           /* Send's availability is Astryx's own (`canSend`). Astryx renders `aria-disabled` only with a `tooltip`, which `ChatSendButton` does not take, so this is a native `disabled` that drops focus to `<body>` — the focus effect above moves it back into the field first. */
           /* Keep the native Send/Stop control mounted. Its public icon slot gives
              immediate decorative feedback; the local status names Sending. */
-          sendButton={editing === undefined ? <ChatSendButton sendIcon={
+          sendButton={editing === undefined ? <GuideAnchor id="conversation-send" disabled={disabled || draft.trim() === ''}>{(anchor, describedBy) => <ChatSendButton ref={anchor} aria-describedby={describedBy} sendIcon={
             <span className={styles.sendGlyph} data-nc-waiting={sendWaiting && !stopShown} aria-hidden="true">
               <span className={styles.sendArrow}>{layout === 'mobile' ? <Icon name="arrow-up" /> : sendIcon}</span>
               <span className={styles.sendWait}><LoadingIndicator active={sendWaiting && !stopShown} /></span>
             </span>
-          } />
+          } />}</GuideAnchor>
             : <Button label={sendWaiting ? 'Sending…' : editing.submitLabel ?? 'Replace message'} variant="primary" isIconOnly icon={sendIcon} className={styles.sendOwn}
               isLoading={sendWaiting} isDisabled={disabled || editing.canSubmit === false || (draft.trim() === '' && !allowEmptyText)}
               onClick={() => { submit(); }} />}
         />
       </SizeMotion>
-    </div>
+    </div>}</GuideAnchor>
   );
 }
 

@@ -8,7 +8,7 @@ import { HoverCard } from '@astryxdesign/core/HoverCard';
 import { Icon as AstryxIcon } from '@astryxdesign/core/Icon';
 import { List, ListItem } from '@astryxdesign/core/List';
 import { VisuallyHidden } from '@astryxdesign/core/VisuallyHidden';
-import { useRef, type KeyboardEvent, type ReactNode } from 'react';
+import { useRef, type KeyboardEvent, type ReactNode, type Ref } from 'react';
 
 import type { TrackRecipe, TrackTemplate } from '../../../../../core/domain/track.ts';
 import { Icon } from '../../../ui/icon/public.tsx';
@@ -178,13 +178,15 @@ export function StartingPointPill({
 
 export function FolderPill({
   value, emptyLabel = 'Neige workspace', controlLabel = 'Folder', clearLabel,
-  buttonId, onBrowse, onClear, isDisabled = false,
+  buttonId, buttonRef, describedBy, onBrowse, onClear, isDisabled = false,
 }: Readonly<{
   value: string;
   emptyLabel?: string;
   controlLabel?: string;
   clearLabel: string;
   buttonId?: string;
+  buttonRef?: Ref<HTMLButtonElement>;
+  describedBy?: string;
   isDisabled?: boolean;
   onBrowse: () => void;
   onClear: () => void;
@@ -195,6 +197,8 @@ export function FolderPill({
       <Button
         type="button"
         id={buttonId}
+        ref={buttonRef}
+        aria-describedby={describedBy}
         variant="secondary"
         size="sm"
         isDisabled={isDisabled}

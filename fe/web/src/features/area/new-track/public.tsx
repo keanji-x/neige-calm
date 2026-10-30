@@ -1,3 +1,4 @@
+import { GuideAnchor } from '../../../ui/floating-control/public.ts';
 import type { DialogOrigin } from '../../../ui/dialog/public.tsx';
 // The new-track page: one thing to say, with compact preferences in its footer. Presentational
 // plus local form state; the caller owns `POST /api/tracks`, `submitting`, `error` and
@@ -264,8 +265,13 @@ export function NewTrackForm({
           An Area groups a project&apos;s work; a Track keeps one request, its conversation and report.
         </p>
 
-        <div
-          ref={composerHostRef}
+        <GuideAnchor id="track-request" disabled={browsing !== null || submitting || locked} canAdvance={!isBlankForKernel(message)}
+          onExample={message.trim() !== '' ? undefined : (text) => {
+            setMessage(text);
+            composerHostRef.current?.querySelector<HTMLElement>('[contenteditable="true"]')?.focus();
+          }}>
+        {(anchor, describedBy) => <div
+          ref={(node) => { composerHostRef.current = node; anchor(node); }} aria-describedby={describedBy} tabIndex={-1}
           className={styles.composer}
           data-nc-new-track-message
           /* Enter is ours: astryx's `ChatComposer.handleSubmit` clears the controlled value unconditionally after calling us, so a refused
@@ -320,7 +326,8 @@ export function NewTrackForm({
             /* Model and Create stay together at the trailing edge. */
             sendActions={modelControls === undefined ? undefined : <span className={styles.modelControls}>{modelControls}</span>}
             sendButton={(
-              <Button
+              <GuideAnchor id="track-send" disabled={browsing !== null || submitting || locked || submitBlocked || !valid} placement="top">
+              {(anchor, describedBy) => <Button ref={anchor} aria-describedby={describedBy}
                 type="button"
                 className={styles.send}
                 variant="primary"
@@ -329,10 +336,10 @@ export function NewTrackForm({
                 label={submitting ? 'Creating…' : 'Create track'}
                 isDisabled={submitting || submitBlocked || !valid}
                 onClick={() => submit(message)}
-              />
+              />}</GuideAnchor>
             )}
           />
-        </div>
+        </div>}</GuideAnchor>
 
         {error !== null && (
           <Banner

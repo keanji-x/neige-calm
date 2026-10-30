@@ -65,6 +65,9 @@
 - { path: fe/web/src/app/shell, type: directory, owner: app/shell, readonly: false, basis: "architecture §2" }
 - { path: fe/web/src/app/events, type: directory, owner: app/events, readonly: false, basis: "architecture §4.7" }
 - { path: fe/web/src/app/auth, type: directory, owner: app/auth, readonly: false, basis: "architecture §2 DI/providers" }
+- { path: fe/web/src/app/onboarding-demo, type: directory, owner: app/onboarding-demo, readonly: false, basis: "offline lesson composition and virtual data ports; architecture #997" }
+- { path: fe/web/src/app/onboarding-entry.ts, type: file, owner: app/bootstrap, readonly: false, basis: "pre-session selection and document isolation for the offline lesson; architecture #997" }
+- { path: fe/web/src/app/onboarding-entry.test.ts, type: file, owner: app/bootstrap, readonly: false, basis: "production bootstrap selection regressions; architecture #997" }
 
 # Feature domains are the closed §4 set; each prefix contains its public entry,
 # colocated behavior/contract tests, render components, and *.module.css files.

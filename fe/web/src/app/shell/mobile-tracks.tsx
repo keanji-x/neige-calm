@@ -1,3 +1,4 @@
+import { GuideAnchor } from '../../ui/floating-control/public.ts';
 import { MobileTrackList } from './mobile-track-list.tsx';
 // Both navigation levels share their header and actions. Choosing an Area
 // scopes the Track list; only opening a Track changes the page underneath.
@@ -9,13 +10,14 @@ import { visibleAreas, type Area } from '../../../../core/domain/area.ts';
 import { areaPinnedTracks, type Track } from '../../../../core/domain/track.ts';
 import { ErrorBox } from '../../ui/error-box/public.tsx';
 import { Icon } from '../../ui/icon/public.tsx';
-import { MobileList, MobileListEmpty, MobileListGroup } from '../../ui/mobile-list/public.tsx';
+import { MobileList, MobileListEmpty, MobileListGroup, MobileListItem } from '../../ui/mobile-list/public.tsx';
 import { MobileNavigationCreateAction, MobileNavigationHeader, type MobileNavigationActions } from './mobile-navigation-header.tsx';
 import styles from './mobile-navigation.module.css';
 import { type TrackActionsProps } from '../../features/track/row/actions.tsx';
 import { useUiPreferences } from '../providers/ui-preferences.tsx';
 
 type MobileTracksProps = Readonly<{
+  onOpenDemo?: () => void;
   view: 'areas' | 'tracks';
   tracksBackLabel?: string;
   areas: readonly Area[];
@@ -60,7 +62,7 @@ export function MobileTracks(props: MobileTracksProps) {
 }
 
 function NavigationPage({
-  view, tracksBackLabel = 'Areas', areas, tracksByArea, areaId, currentTrackId, onBack, onCreateArea, onSelectArea, onEditArea, onOpenTrack, onNewTrack, onOpenSettings,
+  view, tracksBackLabel = 'Areas', areas, tracksByArea, areaId, currentTrackId, onBack, onCreateArea, onSelectArea, onEditArea, onOpenTrack, onNewTrack, onOpenSettings, onStartGuide, onOpenDemo,
   isUnread, trackActions, readError, readLoading, onRetryRead,
 }: MobileTracksProps) {
   const shown = visibleAreas(areas);
@@ -72,14 +74,14 @@ function NavigationPage({
     <MobileNavigationHeader creationScope={view === 'areas' ? 'area' : 'track'} title={view === 'areas' ? 'Areas' : selected?.name ?? 'Tracks'}
       backLabel={view === 'areas' ? 'workspace' : tracksBackLabel} area={view === 'tracks' ? selected : undefined}
       showSettings={false} actionsPlacement="floating"
-      onBack={onBack} onNewTrack={onNewTrack} onCreateArea={onCreateArea} onEditArea={onEditArea} onOpenSettings={onOpenSettings} />
+      onBack={onBack} onNewTrack={onNewTrack} onCreateArea={onCreateArea} onEditArea={onEditArea} onOpenSettings={onOpenSettings} onStartGuide={onStartGuide} />
     <div className={styles.content}>
       {readError !== null && <ErrorBox message={readError} onRetry={onRetryRead} />}
       {readLoading && <p role="status">Loading workspace…</p>}
       <MobileListGroup appearance="plain" label={view === 'areas' ? 'Areas' : 'Tracks'}>
         {view === 'areas' ? <MobileList className={styles.navigationList}>
           {shown.map((area) => <li key={area.id} className={styles.trackRow}>
-            <button type="button" className={styles.track} aria-label={area.name}
+            <GuideAnchor id="workspace-projects">{(anchor, describedBy) => <button ref={anchor} aria-describedby={describedBy} type="button" className={styles.track} aria-label={area.name}
               aria-current={area.id === selected?.id ? 'location' : undefined}
               onClick={() => onSelectArea(area.id)}>
               <span className={styles.trackIcon}><Icon name="folder" /></span>
@@ -87,9 +89,9 @@ function NavigationPage({
                 {tracksByArea.has(area.id) && <span className={styles.trackMeta}>{tracksByArea.get(area.id)!.length} 个 Tracks{area.id === selected?.id && <span> · {new Date(area.updatedAt).toDateString() === new Date().toDateString() ? '今天' : new Date(area.updatedAt).toLocaleDateString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit' }).replaceAll('/', '-')}更新</span>}</span>}
               </span>
               <span className={styles.trackArrow}><Icon name="chevron-right" /></span>
-            </button>
+            </button>}</GuideAnchor>
           </li>)}
-          {shown.length === 0 && !readLoading && readError === null && <MobileListEmpty icon={<Icon name="folder" />} title="还没有 Area" description="项目与 Track 会按 Area 归类。" />}
+          {shown.length === 0 && !readLoading && readError === null && <><MobileListEmpty icon={<Icon name="folder" />} title="还没有 Area" description="项目与 Track 会按 Area 归类。" />{onOpenDemo !== undefined && <MobileListItem title="先体验 Demo" onSelect={onOpenDemo} startContent={<Icon name="chevron-right" />} />}</>}
         </MobileList> : <MobileTrackList tracks={tracks} currentTrackId={currentTrackId} onOpenTrack={onOpenTrack}
           isUnread={isUnread} trackActions={trackActions} emptyState={readError === null && !readLoading ? { icon: <Icon name="file" />, title: '这个 Area 还没有 Track', description: '在此 Area 创建的 Track 会显示在这里。' } : undefined} />}
       </MobileListGroup>

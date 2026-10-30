@@ -1,3 +1,4 @@
+import { GuideAnchor } from '../../ui/floating-control/public.ts';
 // Settings — workspace preferences, and the one row grammar every pane uses.
 // A row is either something you set (`control`) or somewhere you go (`onOpen`), never both.
 
@@ -32,14 +33,14 @@ export type SettingsSurfaceProps = Readonly<{
 export function SettingsSurface({ presentation, section, onSelectSection, children }: SettingsSurfaceProps) {
   return (
     <div className={`${styles.surface} ${presentation === 'desktop' ? '' : styles.mobileSurface} ${presentation === 'mobile-detail' ? styles.mobileDetail : ''}`}>
-      {presentation === 'mobile-index' && <SettingsIndex onSelectSection={onSelectSection} />}
-      {presentation === 'desktop' && <AstryxSideNav aria-label="Settings sections" className={styles.sectionNav}>
+      {presentation === 'mobile-index' && <GuideAnchor id="settings-categories">{(anchor, describedBy) => <div ref={anchor} aria-describedby={describedBy} tabIndex={-1}><SettingsIndex onSelectSection={onSelectSection} /></div>}</GuideAnchor>}
+      {presentation === 'desktop' && <GuideAnchor id="settings-categories">{(anchor, describedBy) => <AstryxSideNav ref={anchor} aria-describedby={describedBy} aria-label="Settings sections" className={styles.sectionNav}>
         {SETTINGS_SECTIONS.map((entry) => (
           <AstryxSideNavItem key={entry.id} label={entry.label} icon={entry.icon}
             isSelected={entry.id === section} aria-current={entry.id === section ? 'page' : undefined}
             onClick={() => onSelectSection(entry.id)} />
         ))}
-      </AstryxSideNav>}
+      </AstryxSideNav>}</GuideAnchor>}
       <div className={styles.pane} hidden={presentation === 'mobile-index'}>{children}</div>
     </div>
   );
@@ -57,8 +58,10 @@ export function SettingsPane({ title, lede, children, category }: Readonly<{
   return (
     <div className={styles.paneBody}>
       <section className={styles.group} aria-labelledby={headingId}>
+        <GuideAnchor id={category === undefined ? 'settings-detail' : `settings-${category}`} placement="bottom">{(anchor, describedBy) => <div ref={anchor} aria-describedby={describedBy} tabIndex={-1} className={styles.guideHeading}>
         <AstryxHeading level={3} id={headingId} className={category === undefined ? undefined : styles.categoryHeading}>{title}</AstryxHeading>
         <AstryxText as="p" color="secondary">{lede}</AstryxText>
+        </div>}</GuideAnchor>
         {children}
       </section>
     </div>
@@ -331,7 +334,7 @@ export function NetworkPane({
     <SettingsPane
       category="network"
       title="Network"
-      lede="Connect your phone and configure proxies used when launching new agent cards. Proxy changes save when you leave the field."
+      lede="连接其他设备，或配置 AI 服务访问网络所需的代理。离开输入框或按 Enter 保存。"
     >
       {loadError !== null && <ErrorBox message={loadError} onRetry={onRetryLoad} />}
       {/* A loading line, never an empty field: an empty form would let the reader save blanks over real values. */}
@@ -340,6 +343,10 @@ export function NetworkPane({
         {PROXY_FIELDS.map((field) => proxyRow(field))}
         <SettingRow title="Mobile connection" description="Pair your phone by scanning a QR code." onOpen={onOpenMobile} />
       </SettingsList>}
+      {loaded && <AstryxText as="p" color="secondary" role="note">
+        修改代理后，先等待当前工作结束，再用安装时的原启动方式重启 Neige，让已有 AI 进程采用新配置。
+        无需重新安装，已有工作会保留。随后打开 Settings → Planners，点 Recheck，确认 Ready 后再继续工作。
+      </AstryxText>}
     </SettingsPane>
   );
 }

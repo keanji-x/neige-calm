@@ -1,8 +1,9 @@
+import { GuideAnchor } from '../../ui/floating-control/public.ts';
 import { useVisibleViewport } from '../../ui/viewport/public.ts';
 import { useState } from '../../ui/state/public.ts';
 import { mobileFontClassName } from '../../ui/mobile-font/public.ts';
 import { Icon } from '../../ui/icon/public.tsx';
-import { useCallback, useLayoutEffect, useMemo, useRef, type ComponentProps } from 'react';
+import { useCallback, useLayoutEffect, useMemo, useRef, type ComponentProps, type RefCallback } from 'react';
 import { Drawer } from '../../ui/drawer/public.tsx';
 import { Sheet } from '../../ui/sheet/public.tsx';
 import styles from './mobile-chat.module.css';
@@ -58,6 +59,7 @@ export function ConversationSurface({ mobileSheet, contextTitle, focusInput = fa
   const requestedHeight = visibleViewport.height * (fullscreen ? 1 : expandedForInput ? 0.92 : 0.8);
   const sheetHeight = fullscreen ? requestedHeight : Math.min(requestedHeight, Math.max(0, visibleViewport.bottomEdge - navigationBottom));
   const frame = { title: props.title, contextTitle, children: props.children };
+  const close = (anchor?: RefCallback<HTMLElement>, describedBy?: string) => <button ref={anchor} aria-describedby={describedBy} type="button" className={styles.close} aria-label={props.closeLabel ?? 'Close conversation'} onClick={props.onClose}><Icon name="close" /></button>;
   return <><Drawer {...props} open={!mobileSheet && props.open} companionVisible={!mobileSheet && props.companionVisible}
     footer={mobileSheet ? undefined : <div ref={setDesktopNode} />}>{mobileSheet ? null : props.children}</Drawer>
     <Sheet enabled={mobileSheet} open={props.open} label={props.title || '对话'} frame={{ heightPx: sheetHeight, bottomInsetPx: visibleViewport.bottomInset }}
@@ -69,7 +71,7 @@ export function ConversationSurface({ mobileSheet, contextTitle, focusInput = fa
       <header className={styles.conversationHeader}>
         <h2 className={styles.conversationHeading}>{frame.contextTitle ?? frame.title}</h2>
         <button type="button" className={styles.close} aria-label={fullscreen ? 'Collapse conversation' : 'Expand conversation'} aria-pressed={fullscreen} onClick={() => setFullscreen(value => !value)}><Icon name={fullscreen ? 'compact' : 'fullscreen'} /></button>
-        <button type="button" className={styles.close} aria-label={props.closeLabel ?? 'Close conversation'} onClick={props.onClose}><Icon name="close" /></button>
+        {props.closeGuideId === undefined ? close() : <GuideAnchor id={props.closeGuideId}>{close}</GuideAnchor>}
       </header>
       <div className={styles.messageViewport}>
         <div className={styles.messages} style={{ paddingBottom: `calc(${footerHeight}px + var(--space-4))`, scrollPaddingBottom: footerHeight }} data-nc-drawer-scroll="">{frame.children}</div>

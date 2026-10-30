@@ -1,7 +1,7 @@
 import { conversationCommands, dispatchComposerCommand, executeComposerCommand, type ComposerCommand } from '../thread/composer-command.ts';
 import type { Dispatch, SetStateAction } from 'react';
 import { useState } from '../../../ui/state/public.ts';
-import { floatingControlClassName } from '../../../ui/floating-control/public.ts';
+import { floatingControlClassName, GuideAnchor } from '../../../ui/floating-control/public.ts';
 import { Icon } from '../../../ui/icon/public.tsx';
 import styles from './dock.module.css';
 
@@ -15,7 +15,7 @@ export function ChatDock({ text, onChange, onSend, disabled, onBeginInput, comma
   disabled: boolean;
 }>) {
   const [commandError, setCommandError] = useState<string | null>(null);
-  return <form className={`${styles.bar} ${floatingControlClassName}`} aria-label="Quick chat" data-nc-chat-dock="" tabIndex={-1} onSubmit={(event) => {
+  return <GuideAnchor id="track-chat-dock" placement="top">{(anchor, describedBy) => <form ref={anchor} aria-describedby={describedBy} className={`${styles.bar} ${floatingControlClassName}`} aria-label="Quick chat" data-nc-chat-dock="" tabIndex={-1} onSubmit={(event) => {
     event.preventDefault();
     if (disabled || text.trim() === '') return;
     setCommandError(null);
@@ -32,5 +32,5 @@ export function ChatDock({ text, onChange, onSend, disabled, onBeginInput, comma
     <button type="submit" className={styles.send} aria-label="Send chat message" disabled={disabled || text.trim() === ''}>
       <Icon name="arrow-up" />
     </button>
-  </form>;
+  </form>}</GuideAnchor>;
 }

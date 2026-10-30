@@ -8,6 +8,7 @@ export const moduleRuntimeStateAllowlist = Object.freeze(moduleRuntimeStateExcep
 
 export const createContextExceptions = Object.freeze([
   Object.freeze({ path: 'web/src/app/auth/current-user.tsx', reason: 'The auth composition projects only UID and display name from the existing verified SessionGate or RecoveryGate identity; it neither probes nor grants authority.' }),
+  Object.freeze({ path: 'web/src/ui/floating-control/guided-tour.tsx', reason: 'The UI-owned optional guide coordinates one callout and native target registrations across forms and portals; application copy, persistence and enrollment stay in app.' }),
   Object.freeze({ path: 'web/src/systems/github-links/public.tsx', reason: 'The GitHub citation system receives the app-owned authenticated read port without coupling chat and report feature domains.' }),
   Object.freeze({ path: 'web/src/app/providers/connection-status.tsx', reason: 'The app-scoped provider exposes live event-stream observations or the recovery owner’s status to the shell without owning socket lifecycle or authorization.' }),
   Object.freeze({ path: 'web/src/app/providers/read-receipts.tsx', reason: 'The app-scoped provider hands the shell and route outlet the app transport for the kernel-owned read receipts (#2596); it keeps no browser storage.' }),
