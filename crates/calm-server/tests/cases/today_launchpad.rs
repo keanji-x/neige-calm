@@ -1337,5 +1337,5 @@ async fn resetting_without_a_launchpad_is_a_404_and_creates_nothing() {
     assert_eq!(count(&b, "SELECT COUNT(*) FROM operations").await, 0);
 }
 
-#[path = "today_launchpad_snapshot.rs"]
+#[path = "../../src/test_support/database_snapshot_tests.rs"]
 pub(crate) mod snapshot;

@@ -1,4 +1,4 @@
-use super::SqlxRepo;
+use calm_truth::db::sqlite::SqlxRepo;
 
 // Snapshot every persisted value, including raw history and exact JSON text.
 pub(crate) async fn database(repo: &SqlxRepo) -> Vec<(String, Vec<String>)> {

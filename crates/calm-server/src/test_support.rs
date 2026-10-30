@@ -1,3 +1,7 @@
+#[cfg(test)]
+#[cfg(feature = "fixtures")]
+pub(crate) mod database_snapshot_tests;
+
 #[cfg(target_os = "linux")]
 pub(crate) mod proc;
 

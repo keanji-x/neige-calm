@@ -1,4 +1,5 @@
 use super::*;
+use crate::test_support::database_snapshot_tests as database_snapshot;
 use crate::track_activity::report_completion_for_test::{self, ReportCompletion};
 use calm_truth::db::{RepoEventWrite, RepoRead};
 
@@ -160,9 +161,6 @@ async fn http_summary_concurrent_keys_on_independent_connections_keep_every_body
     shutdown(&fixture, &state).await;
     shutdown(&fixture, &other).await;
 }
-
-#[path = "../../../../tests/cases/today_launchpad_snapshot.rs"]
-mod database_snapshot;
 
 async fn response(app: &axum::Router, cookie: &str, key: Option<&str>) -> (StatusCode, Value) {
     let mut builder = Request::builder()

@@ -10,7 +10,7 @@ async fn ensure(app: axum::Router) -> (StatusCode, Value) {
     request(app, "POST", "/api/today/launchpad/ensure".into(), json!({})).await
 }
 
-#[path = "today_launchpad_snapshot.rs"]
+#[path = "../../src/test_support/database_snapshot_tests.rs"]
 mod snapshot;
 pub(crate) use snapshot::database;
 
