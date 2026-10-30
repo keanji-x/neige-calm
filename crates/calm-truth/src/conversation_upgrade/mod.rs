@@ -152,3 +152,18 @@ mod raw_tests;
 
 #[cfg(test)]
 mod manifest_tests;
+
+mod coverage;
+mod facts;
+mod strict_json;
+pub use coverage::source_facts;
+pub use facts::{
+    BlockedReason, CompleteSourceFacts, DuplicateMember, FactCoverageError, JsonAddress, JsonKind,
+    JsonStep, RowSource, SourceFact, SourceKind, SourceLocation, SourceRef,
+};
+#[cfg(test)]
+mod fact_oracle;
+#[cfg(test)]
+mod source_coverage_tests;
+#[cfg(test)]
+mod strict_json_tests;
