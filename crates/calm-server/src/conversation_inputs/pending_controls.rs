@@ -4,18 +4,30 @@ use crate::db::{RepoEventWrite, write_in_tx_typed};
 use calm_truth::db::sqlite::conversation::{PendingHumanChange, PendingHumanWrite};
 use calm_types::conversation::MessageRevisionRef;
 
+pub(crate) struct PendingHumanMutation {
+    pub card: String,
+    pub worker: String,
+    pub expected: MessageRevisionRef,
+    pub change: PendingHumanChange,
+}
+
 pub(crate) async fn mutate(
     repo: &dyn RepoEventWrite,
+    registry: crate::harness::registry::HarnessRegistry,
     source: HumanInputSource,
-    card: String,
-    worker: String,
-    expected: MessageRevisionRef,
-    change: PendingHumanChange,
+    mutation: PendingHumanMutation,
 ) -> Result<(
     PendingHumanWrite,
     Option<crate::event::BroadcastEnvelope>,
     crate::ids::TrackId,
+    crate::harness::registry::SourceHandoff,
 )> {
+    let PendingHumanMutation {
+        card,
+        worker,
+        expected,
+        change,
+    } = mutation;
     write_in_tx_typed(repo, move |tx| {
         Box::pin(async move {
             let principal = source.current_principal()?;
@@ -73,7 +85,10 @@ pub(crate) async fn mutate(
             } else {
                 None
             };
-            Ok((result, envelope, runtime.track_id))
+            let handoff = registry
+                .canonical_sources(&runtime.id.0, &runtime.track_id)
+                .begin_handoff();
+            Ok((result, envelope, runtime.track_id, handoff))
         })
     })
     .await

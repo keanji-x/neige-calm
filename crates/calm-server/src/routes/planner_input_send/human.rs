@@ -90,6 +90,7 @@ pub(super) async fn accept(
             (vec![], None)
         }
     };
+    let registry = state.harness.clone();
     let result = crate::db::write_in_tx_typed(state.repo.as_ref(), move |tx| {
         Box::pin(async move {
             let principal = source.current_principal()?;
@@ -142,8 +143,20 @@ pub(super) async fn accept(
                         "canonical send receipt disagrees with its original author".into(),
                     ));
                 }
-                return Ok((response(card_id, binding), None));
+                // A receipt is immutable evidence, independent of whether a
+                // current execution owner remains. This optional pointer lookup
+                // only scopes a transient handoff; it grants no execution.
+                let target: Option<(String, String)> = sqlx::query_as(
+                    "SELECT ws.id,ws.track_id FROM cards c JOIN worker_sessions ws ON ws.id=c.session_id AND ws.card_id=c.id WHERE c.id=?1",
+                ).bind(&card_id).fetch_optional(&mut **tx).await?;
+                let handoff = target.map(|(worker, track)| registry.canonical_sources(&worker, &track.into()).begin_handoff());
+                return Ok((response(card_id, binding), None, handoff));
             }
+            let mut carrier = current_input_content_carrier_tx(tx, &card_id).await?;
+            let current_session = crate::db::sqlite::session_get_tx(
+                tx, &calm_types::worker::WorkerSessionId(carrier.worker_session_id().into()),
+            ).await?.ok_or_else(|| CalmError::Conflict("conversation carrier disappeared".into()))?;
+            let handoff = registry.canonical_sources(carrier.worker_session_id(), &current_session.track_id).begin_handoff();
             // A replay above retains its original acknowledgement. Fresh input
             // requires a statically valid Planner, independently of native readiness.
             let shape = crate::db::sqlite::card_execution_shape_tx(tx, &card_id).await?;
@@ -157,13 +170,6 @@ pub(super) async fn accept(
                         .into(),
                 ));
             }
-            let mut carrier = current_input_content_carrier_tx(tx, &card_id).await?;
-            let current_session = crate::db::sqlite::session_get_tx(
-                tx,
-                &calm_types::worker::WorkerSessionId(carrier.worker_session_id().into()),
-            )
-            .await?
-            .ok_or_else(|| CalmError::Conflict("conversation carrier disappeared".into()))?;
             if let Some((expected, workspace)) = bound_target {
                 let track = crate::db::sqlite::track_get_tx(tx, &current_session.track_id).await?;
                 if binding != expected || track.workspace != workspace {
@@ -211,20 +217,23 @@ pub(super) async fn accept(
                 scope,
                 event,
             };
-            Ok((response(card_id, binding), Some(envelope)))
+            Ok((response(card_id, binding), Some(envelope), Some(handoff)))
         })
     })
     .await?;
-    let (ack, fresh) = result;
+    let (ack, fresh, handoff) = result;
     if let Some(envelope) = fresh {
         state.events.emit_envelope(envelope);
     }
-    crate::operation::planner_start_fence::wake_canonical_human(
-        state.clone(),
-        ack.card_id.clone(),
-        source_for_wake,
-    )
-    .await;
+    if let Some(handoff) = handoff {
+        crate::operation::planner_start_fence::finish_canonical_human_handoff(
+            state.clone(),
+            ack.card_id.clone(),
+            source_for_wake,
+            handoff,
+        )
+        .await;
+    }
     Ok(ack)
 }
 

@@ -58,6 +58,7 @@ async fn canonical_acp_unknown_keep_is_idempotent_and_forced_retry_has_no_succes
     assert!(
         crate::conversation_inputs::resolution::retry(
             fx.owner.repo.as_ref(),
+            fx.registry.clone(),
             fx.source.clone(),
             fx.owner.card.clone(),
             "forced-retry".into(),
@@ -74,6 +75,7 @@ async fn canonical_acp_unknown_keep_is_idempotent_and_forced_retry_has_no_succes
     let keep = KeepConversationInputRequest::from(&retry);
     let first = crate::conversation_inputs::resolution::keep(
         fx.owner.repo.as_ref(),
+        fx.registry.clone(),
         fx.source.clone(),
         fx.owner.card.clone(),
         "keep".into(),
@@ -84,6 +86,7 @@ async fn canonical_acp_unknown_keep_is_idempotent_and_forced_retry_has_no_succes
     .0;
     let second = crate::conversation_inputs::resolution::keep(
         fx.owner.repo.as_ref(),
+        fx.registry.clone(),
         fx.source.clone(),
         fx.owner.card.clone(),
         "keep".into(),

@@ -246,6 +246,7 @@ async fn canonical_acp_sending_unknown_crash_recovery_after_authenticated_keep_s
         });
         let kept = crate::conversation_inputs::resolution::keep(
             fx.owner.repo.as_ref(),
+            fx.registry.clone(),
             fx.source.clone(),
             fx.owner.card.clone(),
             "keep-before-crash".into(),

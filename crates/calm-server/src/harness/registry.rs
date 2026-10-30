@@ -9,7 +9,7 @@ use crate::harness::live_replies::LiveReplies;
 use crate::ids::TrackId;
 
 mod sources;
-pub(crate) use sources::CanonicalSourceIndex;
+pub(crate) use sources::{CanonicalSourceIndex, SourceHandoff, SourceReadiness};
 
 /// Registry-local monotonic reservation identity, never reused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

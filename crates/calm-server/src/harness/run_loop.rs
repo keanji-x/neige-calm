@@ -1880,12 +1880,15 @@ async fn run_loop(
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 }
             }
+            _ = async {
+                match inner.inputs.canonical() {
+                    Some(inputs) => inputs.source_changed().await,
+                    None => std::future::pending::<()>().await,
+                }
+            } => canonical::advance(&inner, observations.is_empty()).await,
             _ = tick.tick() => {
                 if inner.inputs.canonical().is_some() {
-                    if let Err(error) = canonical::tick(&inner, observations.is_empty()).await {
-                        canonical::publish_issuance_error(&inner, &error).await;
-                        tracing::warn!(%error, "canonical harness tick did not advance");
-                    }
+                    canonical::advance(&inner, observations.is_empty()).await;
                     continue;
                 }
                 if let Err(e) = watchdog_tick(&inner).await {

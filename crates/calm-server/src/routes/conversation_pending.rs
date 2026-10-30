@@ -85,13 +85,16 @@ async fn mutate(
         &card_id,
     )
     .await;
-    let (result, event, track) = crate::conversation_inputs::pending_controls::mutate(
+    let (result, event, track, handoff) = crate::conversation_inputs::pending_controls::mutate(
         state.repo.as_ref(),
+        state.harness.clone(),
         source.clone(),
-        card,
-        worker.clone(),
-        expected.clone(),
-        change,
+        crate::conversation_inputs::pending_controls::PendingHumanMutation {
+            card,
+            worker: worker.clone(),
+            expected: expected.clone(),
+            change,
+        },
     )
     .await?;
     match result {
@@ -105,6 +108,7 @@ async fn mutate(
                 sources.observe(current.clone().into(), source.clone().into());
             }
             sources.consumed(&[previous.into()]);
+            drop(handoff);
             if let Some(event) = event {
                 state.events.emit_envelope(event);
             }

@@ -28,6 +28,7 @@ use calm_types::conversation::*;
 use std::time::Duration;
 
 struct Fixture {
+    registry: crate::harness::registry::HarnessRegistry,
     provider: AgentProvider,
     backend: PlannerBackend,
     session: Arc<AcpPlannerSession>,
@@ -125,6 +126,7 @@ impl Fixture {
         .unwrap();
         tx.commit().await.unwrap();
         Self {
+            registry: crate::harness::registry::HarnessRegistry::default(),
             provider,
             backend,
             session,

@@ -125,7 +125,8 @@ it('renders canonical System facts once through the existing disclosure and coun
   await page.getByRole('button',{name:/Conversation Daily Planner conversation/}).click();
   await expect.element(page.getByText('· System update ·',{exact:true})).toBeVisible();
   await expect.element(page.getByText('3 inputs are waiting for execution.',{exact:true})).toBeVisible();
-  await expect.element(page.getByText('Waiting for execution',{exact:true})).toBeVisible();
+  expect(screen.queryByText('Waiting for execution',{exact:true})).toBeNull();
+  expect(screen.queryByRole('status',{name:'Current response status'})).toBeNull();
   const node=document.querySelector('[data-nc-entry="system:observation"]');
   expect(node).not.toBeNull();
   expect(document.querySelectorAll('[data-nc-turn="system"]')).toHaveLength(1);

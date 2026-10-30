@@ -17,6 +17,7 @@ impl Fixture {
         tx.commit().await.unwrap();
         crate::conversation_inputs::resolution::keep(
             self.owner.repo.as_ref(),
+            self.registry.clone(),
             self.source.clone(),
             self.owner.card.clone(),
             key.into(),

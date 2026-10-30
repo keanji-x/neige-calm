@@ -34,8 +34,9 @@ pub(crate) async fn keep_conversation_input(
         &card,
     )
     .await;
-    let (result, envelope) = crate::conversation_inputs::resolution::keep(
+    let (result, envelope, handoff) = crate::conversation_inputs::resolution::keep(
         state.repo.as_ref(),
+        state.harness.clone(),
         source.clone(),
         card_id,
         key,
@@ -47,7 +48,7 @@ pub(crate) async fn keep_conversation_input(
     let recovery_card = card.clone();
     let recovery_source = source.clone();
     let worker = result.carrier_id.clone();
-    refresh_and_wake(state, card, source, &result.carrier_id, envelope).await;
+    refresh_and_wake(state, card, source, &result.carrier_id, envelope, handoff).await;
     tokio::spawn(async move {
         let s = recovery_state;
         let fence = crate::operation::planner_start_fence::CardStartFence::lock(
@@ -101,8 +102,9 @@ pub(crate) async fn retry_conversation_input(
         &card,
     )
     .await;
-    let (result, envelope) = crate::conversation_inputs::resolution::retry(
+    let (result, envelope, handoff) = crate::conversation_inputs::resolution::retry(
         state.repo.as_ref(),
+        state.harness.clone(),
         source.clone(),
         card_id,
         key,
@@ -110,7 +112,7 @@ pub(crate) async fn retry_conversation_input(
     )
     .await?;
     drop(fence);
-    refresh_and_wake(state, card, source, &result.carrier_id, envelope).await;
+    refresh_and_wake(state, card, source, &result.carrier_id, envelope, handoff).await;
     Ok(Json(result))
 }
 
@@ -121,12 +123,19 @@ async fn refresh_and_wake(
     source: HumanInputSource,
     carrier: &String,
     envelope: crate::event::BroadcastEnvelope,
+    handoff: crate::harness::registry::SourceHandoff,
 ) {
     state.events.emit_envelope(envelope);
+    crate::operation::planner_start_fence::finish_canonical_human_handoff(
+        state.clone(),
+        card,
+        source,
+        handoff,
+    )
+    .await;
     if let Some(handle) = state.harness.get(carrier)
         && let Err(error) = handle.refresh_canonical_input().await
     {
         tracing::warn!(%error, "committed Human resolution awaits canonical refresh");
     }
-    crate::operation::planner_start_fence::wake_canonical_human(state, card, source).await;
 }

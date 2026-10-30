@@ -45,8 +45,22 @@ Review tier: L2. This changes persisted submissions and current-source authority
   carrier/revision identities and an exact native turn for steer. They consume
   the canonical transaction owner, with no historical fallback on failure.
   Historical ports and behavior stay intact.
-- Pending inputs have explicit waiting feedback even without a live turn or a
-  terminal outcome. Current terminal facts remain scoped to the execution.
+- The existing pending queue owns ordinary waiting, including an in-flight
+  source handoff. Do not duplicate it with a waiting status row. Actual
+  execution blocks retain status feedback; current terminal facts stay scoped
+  to their execution and cannot describe a newly pending input.
+- The original worker's source index owns transient producer handoff lifetimes.
+  Producers acquire a guard before their mutation commits and retain it through
+  detached source binding. Exact bound sources take precedence over any guard;
+  otherwise an owned handoff waits normally, while no guard/source still needs
+  current-session authorization (including cold restoration). Guards are not
+  execution grants and never enter persisted queue/order facts. Source changes
+  and final guard release wake the same scheduler as the lifecycle timer.
+- Handoffs cover live send/replay, pending edits, Keep/Retry and Dispatcher event
+  admission. Fresh dormant creation has no native thread, so its scheduler
+  cannot select input before retained activation binds sources. A worker-wide
+  guard describes existing source-batch discovery: it may briefly quiet a
+  missing-source notice for an earlier head, but cannot qualify that head.
 
 ## Acceptance and verification
 

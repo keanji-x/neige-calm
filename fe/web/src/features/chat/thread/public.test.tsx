@@ -13,10 +13,30 @@ import { ChatComposer, ChatThread } from './public.tsx';
 
 afterEach(cleanup);
 
-it('keeps a current status while saved input is waiting for execution', () => {
+it('leaves ordinary pending input in the queue without duplicating the status line', () => {
   render(<ChatThread conversation={conversation()} turns={[turn()]} cards={{}} stalled={false}
-    canContinue pendingMessages={<p>Queued message</p>} hasPendingMessages waitingForExecution />);
-  expect(screen.getByRole('status', { name: 'Current response status' }).textContent).toContain('Waiting for execution');
+    canContinue pendingMessages={<p>Queued message</p>} hasPendingMessages hasPendingInputs />);
+  expect(screen.getByText('Queued message')).toBeTruthy();
+  expect(screen.queryByRole('status', { name: 'Current response status' })).toBeNull();
+  expect(screen.queryByText('Waiting for execution')).toBeNull();
+});
+
+it('keeps real execution refusals visible beside the pending queue', () => {
+  const reason = 'A current session must authorize this saved input.';
+  render(<ChatThread conversation={conversation()} turns={[turn()]} cards={{}} stalled={false}
+    canContinue pendingMessages={<p>Queued message</p>} hasPendingMessages hasPendingInputs stalledReason={reason} />);
+  expect(screen.getByRole('status', { name: 'Current response status' }).textContent).toContain('Execution blocked');
+  expect(screen.getByText('Queued message')).toBeTruthy();
+  // Details retain the real refusal, independently of the queue's normal presence.
+  fireEvent.click(screen.getByRole('button', { name: /Execution blocked/ }));
+  expect(screen.getByText(reason)).toBeTruthy();
+});
+
+it('does not label a previous terminal result as current while input is queued', () => {
+  render(<ChatThread conversation={conversation()} turns={[turn()]} cards={{}} stalled={false}
+    canContinue pendingMessages={<p>Queued message</p>} hasPendingMessages hasPendingInputs
+    currentResponseOutcome={{ turnId: 'prior', status: 'completed', elapsedMs: 20, atMs: NOW }} />);
+  expect(screen.queryByRole('status', { name: 'Current response status' })).toBeNull();
 });
 
 const RAIL_FIXTURE_EXCHANGES = 5;

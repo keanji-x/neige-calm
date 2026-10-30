@@ -122,3 +122,9 @@ Both `MessageEntry` and the app's retained first draft consume that visual entry
 a draft needs only its text and viewport, with no invented message ID, timestamp
 or delivery fact. Attachments, exchange grouping and queue explanations remain in
 `MessageEntry`, and dispatch/recovery remain in the app's existing owners.
+
+The pending queue owns ordinary accepted-input waiting, including source handoff.
+`ChatThread.hasPendingInputs` prevents a previous terminal result from appearing
+as current; it does not add a second waiting status. Actual execution refusals
+still appear in the current status, while running and declared recovery states
+keep their existing presentation.

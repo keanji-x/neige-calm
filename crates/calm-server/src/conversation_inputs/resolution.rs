@@ -8,14 +8,27 @@ use calm_types::conversation::{
 
 pub(crate) async fn keep(
     repo: &dyn crate::db::RepoEventWrite,
+    registry: crate::harness::registry::HarnessRegistry,
     source: HumanInputSource,
     card_id: String,
     key: String,
     request: KeepConversationInputRequest,
-) -> Result<(KeepConversationInputResult, crate::event::BroadcastEnvelope)> {
-    let (result, event) = resolve(repo, source, card_id, key, Decision::Keep(request)).await?;
+) -> Result<(
+    KeepConversationInputResult,
+    crate::event::BroadcastEnvelope,
+    crate::harness::registry::SourceHandoff,
+)> {
+    let (result, event, handoff) = resolve(
+        repo,
+        registry,
+        source,
+        card_id,
+        key,
+        Decision::Keep(request),
+    )
+    .await?;
     match result {
-        ConversationInputResolutionResult::Keep { result } => Ok((result, event)),
+        ConversationInputResolutionResult::Keep { result } => Ok((result, event, handoff)),
         ConversationInputResolutionResult::Retry { .. } => {
             Err(CalmError::Internal("Keep returned Retry".into()))
         }
@@ -23,6 +36,7 @@ pub(crate) async fn keep(
 }
 pub(crate) async fn retry(
     repo: &dyn crate::db::RepoEventWrite,
+    registry: crate::harness::registry::HarnessRegistry,
     source: HumanInputSource,
     card_id: String,
     key: String,
@@ -30,10 +44,19 @@ pub(crate) async fn retry(
 ) -> Result<(
     RetryConversationInputResult,
     crate::event::BroadcastEnvelope,
+    crate::harness::registry::SourceHandoff,
 )> {
-    let (result, event) = resolve(repo, source, card_id, key, Decision::Retry(request)).await?;
+    let (result, event, handoff) = resolve(
+        repo,
+        registry,
+        source,
+        card_id,
+        key,
+        Decision::Retry(request),
+    )
+    .await?;
     match result {
-        ConversationInputResolutionResult::Retry { result } => Ok((result, event)),
+        ConversationInputResolutionResult::Retry { result } => Ok((result, event, handoff)),
         ConversationInputResolutionResult::Keep { .. } => {
             Err(CalmError::Internal("Retry returned Keep".into()))
         }
@@ -45,6 +68,7 @@ enum Decision {
 }
 async fn resolve(
     repo: &dyn crate::db::RepoEventWrite,
+    registry: crate::harness::registry::HarnessRegistry,
     source: HumanInputSource,
     card_id: String,
     key: String,
@@ -52,6 +76,7 @@ async fn resolve(
 ) -> Result<(
     ConversationInputResolutionResult,
     crate::event::BroadcastEnvelope,
+    crate::harness::registry::SourceHandoff,
 )> {
     crate::db::write_in_tx_typed(repo, move |tx| {
         Box::pin(async move {
@@ -125,6 +150,9 @@ async fn resolve(
             .await?;
             let frame: calm_types::harness::snapshot::CanonicalHarnessSnapshot =
                 serde_json::from_str(&raw)?;
+            let handoff = registry
+                .canonical_sources(carrier_id, &track.clone().into())
+                .begin_handoff();
             let scope = crate::event::EventScope::Card {
                 card: card_id.clone().into(),
                 track: track.clone().into(),
@@ -155,6 +183,7 @@ async fn resolve(
                     scope,
                     event,
                 },
+                handoff,
             ))
         })
     })

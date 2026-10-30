@@ -92,10 +92,8 @@ pub(super) async fn resume_unattempted(
         .inputs
         .canonical()
         .expect("canonical")
-        .source(&message)
-        .await
+        .execution_source(&message)?
     else {
-        publish_issuance_error(inner, &CalmError::Unauthorized).await;
         return Ok(());
     };
     let read_admission = write_in_tx_typed(inner.repo.as_ref(), {

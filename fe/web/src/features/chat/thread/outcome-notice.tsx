@@ -17,8 +17,8 @@ const FAILURE_HINTS: Readonly<Record<string, string>> = Object.freeze({
 });
 
 /** One stable row across live, request, pause and terminal transitions. */
-export function CurrentStatusNotice({ outcome, canContinue, live, sending = false, waitingForExecution = false, statusUnconfirmed, statusLoading, stalled, stalledReason, recovery, feedback, copyAction, editAction, regenerateAction, runningAnchor, detailsExpanded, onDetailsExpandedChange }: {
-  waitingForExecution?: boolean;
+export function CurrentStatusNotice({ outcome, canContinue, live, sending = false, hasPendingInputs = false, statusUnconfirmed, statusLoading, stalled, stalledReason, recovery, feedback, copyAction, editAction, regenerateAction, runningAnchor, detailsExpanded, onDetailsExpandedChange }: {
+  hasPendingInputs?: boolean;
   detailsExpanded?: boolean;
   onDetailsExpandedChange?: (expanded: boolean) => void;
   outcome: CurrentConversationOutcome | null;
@@ -72,10 +72,10 @@ export function CurrentStatusNotice({ outcome, canContinue, live, sending = fals
   }
   else if (sending) {
     heading = 'Sending…';
-  } else if (waitingForExecution) {
-    heading = 'Waiting for execution';
-    details = <p className={styles.outcomeReason}>{stalledReason ?? 'Your message is saved and waiting to be processed.'}</p>;
-  } else if (outcome !== null) {
+  } else if (hasPendingInputs && stalledReason !== null) {
+    heading = 'Execution blocked'; tone = 'warning';
+    details = <p className={styles.outcomeReason}>{stalledReason}</p>;
+  } else if (outcome !== null && !hasPendingInputs) {
     terminal = outcome.status;
     heading = outcomeHeading(terminal);
     tone = terminal === 'completed' ? 'neutral' : terminal === 'interrupted' ? 'warning' : 'error';

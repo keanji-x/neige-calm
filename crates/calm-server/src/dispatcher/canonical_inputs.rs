@@ -93,6 +93,11 @@ pub(crate) struct DispatcherInputSource {
     reference: AcceptedInputRef,
     observation: SystemObservation,
 }
+struct EventSourceHandoff {
+    sources: Vec<(AcceptedInputRef, InputSource)>,
+    handoff: crate::harness::registry::SourceHandoff,
+}
+
 impl DispatcherInputSource {
     pub(crate) fn require_repo(&self, repo: &dyn crate::db::RepoEventWrite) -> Result<()> {
         let dispatcher = self
@@ -210,7 +215,13 @@ impl Dispatcher {
                 "child bootstrap carrier changed".into(),
             ));
         }
-        let sources = self.inner.canonical_event_sources(card, None).await?;
+        let Some(EventSourceHandoff {
+            sources,
+            handoff: _handoff,
+        }) = self.inner.canonical_event_sources(card, None).await?
+        else {
+            return Ok(());
+        };
         for (reference, source) in sources {
             if let Some(handle) = self.inner.harness.get(&worker) {
                 handle.observe_canonical_source(reference, source).await?;
@@ -343,8 +354,14 @@ impl Inner {
         card: &CardId,
         incoming: Option<(&Event, i64)>,
     ) -> Result<()> {
-        let sources = self.canonical_event_sources(card, incoming).await?;
+        let Some(EventSourceHandoff { sources, handoff }) =
+            self.canonical_event_sources(card, incoming).await?
+        else {
+            return Ok(());
+        };
+        let handoff = Arc::new(handoff);
         for (reference, source) in sources {
+            let handoff = handoff.clone();
             let wake = self
                 .planner_wake
                 .read()
@@ -357,6 +374,7 @@ impl Inner {
             let handle = self.harness.get(&worker);
             let card = card.clone();
             tokio::spawn(async move {
+                let _handoff = handoff;
                 let result = if let Some(handle) = handle {
                     handle.observe_canonical_source(reference, source).await
                 } else if let Some(wake) = wake {
@@ -501,7 +519,7 @@ impl Inner {
         self: &Arc<Self>,
         card: &CardId,
         incoming: Option<(&Event, i64)>,
-    ) -> Result<Vec<(AcceptedInputRef, InputSource)>> {
+    ) -> Result<Option<EventSourceHandoff>> {
         let producer = self.producer()?;
         let card_name = card.to_string();
         let incoming = incoming.map(|(event, id)| (event.clone(), id));
@@ -526,14 +544,14 @@ impl Inner {
             .as_ref()
             .is_some_and(|(_, id)| *id > 0 && *id <= admission.baseline())
         {
-            return Ok(vec![]);
+            return Ok(None);
         }
         let worker = admission.worker().to_owned();
         let track = admission.track().clone();
         #[cfg(feature = "fixtures")]
         crate::test_seams::pause_point("planner-events-before-accept", card.as_str()).await;
         let database = self.repo.database_id();
-        let (floor, stored) = write_in_tx_typed(self.repo.as_ref(), {
+        let (floor, stored, handoff) = write_in_tx_typed(self.repo.as_ref(), {
             let (inner, admission, producer) = (self.clone(), admission.clone(), producer.clone());
             move |tx| Box::pin(async move {
                 let carrier = inner.accept_event_prefix_tx(tx, &producer, &admission, facts).await?;
@@ -557,7 +575,8 @@ impl Inner {
                         }
                     }
                 }
-                Ok((carrier.snapshot()["push_watermark"].as_i64().unwrap_or(0), stored))
+                let handoff = inner.harness.canonical_sources(carrier.worker_session_id(), admission.track()).begin_handoff();
+                Ok((carrier.snapshot()["push_watermark"].as_i64().unwrap_or(0), stored, handoff))
             })
         }).await?;
         self.push_cursor.bump(card.clone(), floor);
@@ -621,7 +640,7 @@ impl Inner {
             .await?;
             sources.push((reference, InputSource::Dispatcher(Box::new(source))));
         }
-        Ok(sources)
+        Ok(Some(EventSourceHandoff { sources, handoff }))
     }
 }
 

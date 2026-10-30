@@ -40,8 +40,29 @@ impl CanonicalInputs {
         self.sources.observe(input, source);
     }
 
+    #[cfg(test)]
     pub async fn source(&self, input: &CanonicalPendingIdentity) -> Option<InputSource> {
         self.sources.source(input)
+    }
+
+    pub(in crate::harness::run_loop) async fn source_changed(&self) {
+        self.sources.changed().await;
+    }
+
+    /// One readiness interpretation for pending selection and restored claims.
+    pub(super) fn execution_source(
+        &self,
+        input: &CanonicalPendingIdentity,
+    ) -> crate::error::Result<Option<InputSource>> {
+        use crate::harness::registry::SourceReadiness;
+        match self.sources.readiness(input) {
+            SourceReadiness::Ready(source) => {
+                source.check_current()?;
+                Ok(Some(source))
+            }
+            SourceReadiness::AwaitingHandoff => Ok(None),
+            SourceReadiness::NeedsSource => Err(crate::error::CalmError::Unauthorized),
+        }
     }
 
     pub async fn committed(&self) -> CommittedFrame {

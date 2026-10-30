@@ -912,7 +912,7 @@ function useConversationPane(
             {!threadPresented && outgoingPreview !== undefined && <OutgoingMessage speaker={outgoingPreview.author} text={outgoingPreview.text} mobile={compactViewport} />}
             {!threadPresented && hasPendingMessages && pendingMessages}
             {threadPresented && (
-              <ChatThread waitingForExecution={store.pendingInputs.length > 0} historyPrefetch={historyPrefetch} readingView={threadReadingView} key={open.id} pendingMessages={pendingMessages} activeInput={store.activeInput} keepInput={keepInput} retryInput={retryInput}
+              <ChatThread hasPendingInputs={store.pendingInputs.length > 0} historyPrefetch={historyPrefetch} readingView={threadReadingView} key={open.id} pendingMessages={pendingMessages} activeInput={store.activeInput} keepInput={keepInput} retryInput={retryInput}
                 hasPendingMessages={hasPendingMessages || (pendingPresentation?.conversationId === existingId && pendingPresentation.visible)}
                 conversation={open}
                 imageFiles={imageFiles}

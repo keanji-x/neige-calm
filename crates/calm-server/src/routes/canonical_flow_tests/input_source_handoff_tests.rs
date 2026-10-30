@@ -3,22 +3,27 @@ use super::*;
 
 #[tokio::test]
 async fn live_send_hands_off_authority_before_waiting_for_lifecycle_fence() {
-    live_send_source_handoff(false, false).await;
+    live_send_source_handoff(false, false, false).await;
 }
 
 #[tokio::test]
 async fn cancelled_http_waiter_keeps_committed_source_handoff_alive() {
-    live_send_source_handoff(true, false).await;
+    live_send_source_handoff(true, false, false).await;
 }
 
 #[tokio::test]
 async fn live_source_handoff_keeps_invalid_attached_workspace_from_native_execution() {
-    live_send_source_handoff(false, true).await;
+    live_send_source_handoff(false, true, false).await;
 }
 
-async fn live_send_source_handoff(cancel_http: bool, invalid_workspace: bool) {
+#[tokio::test]
+async fn revoked_during_handoff_releases_wait_and_requires_a_current_source() {
+    live_send_source_handoff(false, false, true).await;
+}
+
+async fn live_send_source_handoff(cancel_http: bool, invalid_workspace: bool, revoke: bool) {
     let fixture = Fixture::new().await;
-    let (state, app, cookie) = fixture.application().await;
+    let (state, app, cookie, auth) = fixture.application_with_auth(false).await;
     let attached = fixture.root.path().join("attached-input-handoff");
     let track =
         if invalid_workspace {
@@ -87,7 +92,13 @@ async fn live_send_source_handoff(cancel_http: bool, invalid_workspace: bool) {
     let send_cookie = cookie.clone();
     let uri = format!("/api/cards/{card}/planner/input");
     let paused = crate::test_seams::PausePoint::default();
+    let missing_source = crate::test_seams::PausePoint::default();
     if !invalid_workspace {
+        crate::test_seams::install_pause_for_test(
+            "canonical-missing-source-observed",
+            card,
+            missing_source.clone(),
+        );
         crate::test_seams::install_pause_for_test(
             "canonical-human-source-handoff",
             card,
@@ -104,29 +115,27 @@ async fn live_send_source_handoff(cancel_http: bool, invalid_workspace: bool) {
         )
         .await
     });
+    let mut pre_handoff = None;
     if !invalid_workspace {
         tokio::time::timeout(Duration::from_secs(5), paused.entered.notified())
             .await
             .unwrap();
-        // Force the real scheduler to read the committed input before its
-        // source arrives, rather than depending on a particular HTTP/tick race.
-        tokio::time::timeout(Duration::from_secs(5), async {
-            loop {
-                if state
-                    .harness
-                    .get(&worker)
-                    .unwrap()
-                    .issuance_block()
-                    .await
-                    .is_some()
-                {
-                    break;
-                }
-                tokio::time::sleep(Duration::from_millis(5)).await;
-            }
-        })
-        .await
-        .expect("the saved input must reach the real pre-handoff scheduler");
+        // Observe a complete real scheduler decision while the accepted source
+        // handoff is held. Missing context must keep the input queued, not
+        // classify an unchecked session as an authentication failure.
+        tokio::time::timeout(Duration::from_secs(5), missing_source.entered.notified())
+            .await
+            .unwrap();
+        let handle = state.harness.get(&worker).unwrap();
+        let notice = handle.issuance_block().await;
+        let queued_counts = fixture.counts(card).await;
+        missing_source.release.notify_one();
+        pre_handoff = Some((notice, queued_counts));
+    }
+    if revoke {
+        auth.sessions
+            .remove(cookie.split_once('=').unwrap().1)
+            .unwrap();
     }
     if cancel_http {
         sending.abort();
@@ -138,6 +147,34 @@ async fn live_send_source_handoff(cancel_http: bool, invalid_workspace: bool) {
         }
         let ack = sending.await.unwrap();
         assert_eq!(ack["worker_session_id"], worker);
+    }
+    if revoke {
+        // The fallback owner must be allowed to finish and release its guard.
+        drop(lifecycle);
+        let handle = state.harness.get(&worker).unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if handle.issuance_block().await.as_deref()
+                    == Some("A current session must authorize this saved input.")
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("failed handoff must not leave ordinary waiting forever");
+        let unexpected = tokio::time::timeout(Duration::from_millis(150), request(&mut peer)).await;
+        let counts = fixture.counts(card).await;
+        peer.close(None).await.unwrap();
+        fixture.shutdown_process(&state).await;
+        assert!(
+            unexpected.is_err(),
+            "revoked handoff cannot reach private/native reads"
+        );
+        assert_eq!(counts, (2, 2, 1, 1, 0));
+        assert_eq!(pre_handoff.unwrap().0, None);
+        return;
     }
     let next = tokio::time::timeout(Duration::from_secs(4), async {
         loop {
@@ -192,6 +229,13 @@ async fn live_send_source_handoff(cancel_http: bool, invalid_workspace: bool) {
         );
         return;
     }
+    let (notice, queued_counts) = pre_handoff.unwrap();
+    assert_eq!(notice, None, "source handoff is ordinary pending work");
+    assert_eq!(
+        queued_counts,
+        (2, 2, 1, 1, 0),
+        "no claim or native attempt before source handoff"
+    );
     let call = next.expect(
         "a saved live input must receive its source without waiting for lifecycle restoration",
     );
@@ -209,5 +253,82 @@ async fn live_send_source_handoff(cancel_http: bool, invalid_workspace: bool) {
         counts,
         (2, 2, 1, 2, 0),
         "one original message and one new input, each submitted exactly once"
+    );
+}
+
+#[tokio::test]
+async fn accepted_send_replay_keeps_its_receipt_without_a_current_carrier() {
+    let fixture = Fixture::new().await;
+    let (state, app, cookie) = fixture.application().await;
+    let track = assistant_canonical::track(&app, &cookie).await;
+    // No native peer: acceptance is independent of activation readiness.
+    let created = post(
+        &app,
+        &cookie,
+        &format!("/api/tracks/{track}/conversations"),
+        "receipt-create",
+        json!({"provider":"codex","text":FIRST_BODY}),
+    )
+    .await;
+    let card = created["id"].as_str().unwrap();
+    let uri = format!("/api/cards/{card}/planner/input");
+    let body = json!({"text":"Preserve this original send receipt"});
+    let original = post(&app, &cookie, &uri, "original-send", body.clone()).await;
+    let refused = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(&uri)
+                .header(header::COOKIE, &cookie)
+                .header(header::CONTENT_TYPE, "application/json")
+                .header("Idempotency-Key", "unsupported-replacement")
+                .body(Body::from(
+                    json!({"text":"Do not accept this mutation","replaces_turn":"unsupported"})
+                        .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(refused.status(), StatusCode::CONFLICT);
+    let missing: calm_types::conversation::CanonicalPendingIdentity =
+        calm_types::conversation::MessageRevisionRef {
+            message_id: calm_types::conversation::ConversationMessageId::parse(&"f".repeat(32))
+                .unwrap(),
+            revision: std::num::NonZeroU32::new(1).unwrap(),
+        }
+        .into();
+    let index = state.harness.canonical_sources(
+        original["worker_session_id"].as_str().unwrap(),
+        &track.clone().into(),
+    );
+    assert!(
+        matches!(
+            index.readiness(&missing),
+            crate::harness::registry::SourceReadiness::NeedsSource
+        ),
+        "a refused transaction must release its pre-commit handoff guard"
+    );
+    sqlx::query("UPDATE cards SET session_id=NULL WHERE id=?1")
+        .bind(card)
+        .execute(fixture.repo.db().writer_pool())
+        .await
+        .unwrap();
+    let replay = post(&app, &cookie, &uri, "original-send", body).await;
+    let submissions: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM conversation_input_submissions WHERE card_id=?1")
+            .bind(card)
+            .fetch_one(fixture.repo.pool())
+            .await
+            .unwrap();
+    fixture.shutdown_process(&state).await;
+    assert_eq!(
+        replay, original,
+        "a missing execution owner cannot invalidate an accepted receipt"
+    );
+    assert_eq!(
+        submissions, 0,
+        "receipt replay cannot manufacture execution"
     );
 }

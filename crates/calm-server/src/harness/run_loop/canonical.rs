@@ -254,6 +254,14 @@ pub(super) async fn publish_issuance_error(inner: &Inner, error: &CalmError) {
     *inner.issuance_retry_after.lock().await = Some(Instant::now() + TRANSIENT_RETRY_DELAY);
 }
 
+/// Timer and source transitions enter the same scheduler/error owner.
+pub(super) async fn advance(inner: &Arc<Inner>, ingress_empty: bool) {
+    if let Err(error) = tick(inner, ingress_empty).await {
+        publish_issuance_error(inner, &error).await;
+        tracing::warn!(%error, "canonical harness tick did not advance");
+    }
+}
+
 /// Consume the one persisted pending order in the existing scheduler. Live
 /// source entries carry no body, queue order, or reusable execution grant.
 pub(super) async fn tick(inner: &Arc<Inner>, ingress_empty: bool) -> Result<()> {
@@ -323,11 +331,12 @@ pub(super) async fn tick(inner: &Arc<Inner>, ingress_empty: bool) -> Result<()> 
             .inputs
             .canonical()
             .expect("canonical consumer")
-            .source(&pending.identity())
-            .await
+            .execution_source(&pending.identity())?
             .is_none()
     {
-        publish_issuance_error(inner, &CalmError::Unauthorized).await;
+        #[cfg(feature = "fixtures")]
+        crate::test_seams::pause_point("canonical-missing-source-observed", inner.card_id.as_str())
+            .await;
         return Ok(());
     }
     // Like historical issuance, take the track fence before the card issuance
@@ -390,8 +399,7 @@ pub(super) async fn tick(inner: &Arc<Inner>, ingress_empty: bool) -> Result<()> 
     };
     let inputs = inner.inputs.canonical().expect("canonical consumer");
     let message = pending.identity();
-    let Some(source) = inputs.source(&message).await else {
-        publish_issuance_error(inner, &CalmError::Unauthorized).await;
+    let Some(source) = inputs.execution_source(&message)? else {
         return Ok(());
     };
     if let CanonicalPendingIdentity::ExplicitSuccessor { retry_intent_id } = &message {
