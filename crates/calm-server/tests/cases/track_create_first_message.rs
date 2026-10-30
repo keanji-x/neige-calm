@@ -12,6 +12,9 @@ mod planner_provider_identity;
 #[path = "track_create_legacy_binding_fixture.rs"]
 mod legacy_binding_fixture;
 
+#[path = "track_create_first_message/legacy_payload.rs"]
+mod legacy_payload;
+
 use calm_truth::db::RepoRead;
 use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::path::PathBuf;
@@ -502,19 +505,6 @@ impl Boot {
             }
             tokio::time::sleep(std::time::Duration::from_millis(25)).await;
         }
-    }
-
-    /// Every `planner-harness-start` payload as persisted into `operations.payload_json`.
-    async fn operation_payloads(&self) -> Vec<Value> {
-        let rows: Vec<String> = sqlx::query_scalar(
-            "SELECT payload_json FROM operations WHERE kind = 'planner-harness-start'",
-        )
-        .fetch_all(self.repo.pool())
-        .await
-        .unwrap();
-        rows.into_iter()
-            .map(|row| serde_json::from_str(&row).unwrap())
-            .collect()
     }
 
     /// `POST /api/track-recipes`. Returns its id.
@@ -3097,106 +3087,6 @@ async fn every_mint_input_is_bound_to_the_track_create_key() {
         );
     }
     assert_eq!(b.track_count().await, 1);
-    b.shutdown_harnesses().await;
-}
-
-/// `skip_serializing_if` keeps every existing caller's `payload_hash` stable: a `null` digest would move the
-/// bytes, and an operation submitted by an older binary and retried after a deploy would come back 409.
-#[tokio::test]
-async fn a_message_less_create_writes_byte_identical_payload_json() {
-    let mut b = historical_boot().await;
-    let (status, body) = b.create_track(None, None).await;
-    assert_eq!(status, StatusCode::CREATED, "body={body}");
-    let payloads = b.operation_payloads().await;
-    assert_eq!(payloads.len(), 1, "one start: {payloads:?}");
-    for payload in &payloads {
-        assert!(
-            payload.get("create_request_sha256").is_none(),
-            "the message-less payload must not carry the key at all — not even as null: {payload}"
-        );
-    }
-
-    b.historical = false;
-    // Human first input binds the original fingerprint in canonical storage,
-    // independently of the old start-operation body and native readiness.
-    // Only this test gains a real issuer; the shared legacy fixture is unchanged.
-    b.app = b.app.layer(axum::middleware::from_fn_with_state(
-        calm_server::auth::AuthState::new(calm_server::auth::AuthConfig {
-            username: None,
-            password: None,
-            dev_autologin: true,
-            display_name: "fixture owner".into(),
-        }),
-        calm_server::auth::require_session,
-    ));
-    let (status, body) = b
-        .create_track(Some("idem-digest"), Some("ship the thing"))
-        .await;
-    assert_eq!(status, StatusCode::CREATED, "body={body}");
-    assert_eq!(
-        b.operation_payloads().await,
-        payloads,
-        "accepted Human body is not copied into a V1 start operation"
-    );
-    let mut tx = calm_server::db::sqlite::begin_immediate_tx(b.repo.db())
-        .await
-        .unwrap();
-    let original = calm_server::db::sqlite::conversation::human_track_creation_get_tx(
-        &mut tx,
-        &b.area_id,
-        "idem-digest",
-    )
-    .await
-    .unwrap()
-    .unwrap();
-    assert_eq!(original.source_user_id, LEGACY_OWNER_USER_ID);
-    assert_eq!(original.create_request_sha256.len(), 64);
-    let calm_server::db::sqlite::conversation::HumanTrackCreationAck::V1 {
-        track_id,
-        planner_card_id,
-        first_message,
-        ..
-    } = &original.acknowledgement;
-    assert_eq!(track_id, body["id"].as_str().unwrap());
-    let author =
-        calm_server::db::sqlite::conversation::message_tx(&mut tx, &first_message.message_id)
-            .await
-            .unwrap();
-    assert_eq!(author.card_id, *planner_card_id);
-    assert_eq!(
-        author.author,
-        calm_types::conversation::MessageAuthor::AuthenticatedHuman {
-            registered_user_id: LEGACY_OWNER_USER_ID.into(),
-        }
-    );
-    let revision = calm_server::db::sqlite::conversation::revision_tx(&mut tx, first_message)
-        .await
-        .unwrap();
-    assert!(
-        matches!(revision.payload, calm_types::conversation::PrivateHistoryPayload::Present { value } if value.text == "ship the thing")
-    );
-    tx.commit().await.unwrap();
-    let (status, replay) = b
-        .create_track(Some("idem-digest"), Some("ship the thing"))
-        .await;
-    assert_eq!(status, StatusCode::CREATED, "{replay}");
-    assert_eq!(replay["id"], body["id"]);
-    let mut tx = calm_server::db::sqlite::begin_immediate_tx(b.repo.db())
-        .await
-        .unwrap();
-    let retained = calm_server::db::sqlite::conversation::human_track_creation_get_tx(
-        &mut tx,
-        &b.area_id,
-        "idem-digest",
-    )
-    .await
-    .unwrap()
-    .unwrap();
-    assert_eq!(
-        retained, original,
-        "the original fingerprints and ACK survive replay"
-    );
-    tx.commit().await.unwrap();
     b.shutdown_harnesses().await;
 }
 
