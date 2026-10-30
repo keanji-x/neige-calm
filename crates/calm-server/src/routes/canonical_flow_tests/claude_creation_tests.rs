@@ -412,38 +412,46 @@ async fn canonical_claude_creation_first_send_reuses_checkpoint_and_h2_hold() {
             json!({"carrier_id":worker,"submission_id":attempt.attempt.submission_id,"attempt_id":attempt.attempt.attempt_id,"revision":attempt.revision.to_string()})).await;
         assert_eq!(result["waiting_for_settlement"], true);
         if action == "retry" {
-            let after = tokio::time::timeout(Duration::from_secs(30), async {
+            // #3318: the original's `--session-id` launch read its line and nothing confirms
+            // the session, so the retry neither resumes nor launches that session again.
+            let _ = tokio::time::timeout(Duration::from_secs(10), async {
                 loop {
                     let (_, _, frame) = fixture.carrier(track).await;
                     if frame.canonical_inputs.attempts.len() == 2
                         && frame.canonical_inputs.active.is_none()
                     {
-                        break frame;
+                        break;
                     }
-                    tokio::task::yield_now().await;
+                    tokio::time::sleep(Duration::from_millis(10)).await;
                 }
             })
-            .await
-            .unwrap();
-            assert!(after.canonical_inputs.pending.is_empty());
+            .await;
+            let (_, _, after) = fixture.carrier(track).await;
+            for name in ["spawns", "stdin"] {
+                assert_eq!(
+                    std::fs::read_to_string(fake.join(name))
+                        .unwrap()
+                        .lines()
+                        .count(),
+                    1,
+                    "{name}: nothing was launched or sent again"
+                );
+            }
             assert_eq!(
-                std::fs::read_to_string(fake.join("spawns"))
-                    .unwrap()
-                    .lines()
-                    .count(),
-                2
+                after.canonical_inputs.attempts[0].delivery,
+                current.canonical_inputs.attempts[0].delivery,
+                "the original Unknown is preserved"
             );
-            assert_eq!(
-                std::fs::read_to_string(fake.join("stdin"))
-                    .unwrap()
-                    .lines()
-                    .count(),
-                2
+            assert!(
+                after.canonical_inputs.attempts[1..]
+                    .iter()
+                    .all(|a| !matches!(
+                        a.delivery,
+                        InputDeliveryFact::Unknown
+                            | InputDeliveryFact::CrossingUnknown
+                            | InputDeliveryFact::Accepted { .. }
+                    ))
             );
-            let argv = std::fs::read_to_string(fake.join("argv")).unwrap();
-            assert!(argv.lines().collect::<Vec<_>>().windows(2).any(|args| args
-                == ["--resume", attempt.correlation.thread_id.as_str()]
-                || args == ["--session-id", attempt.correlation.thread_id.as_str()]));
             for _ in 0..10 {
                 state
                     .harness

@@ -138,8 +138,20 @@ while [ $# -gt 0 ]; do
 done
 if [ -n "$PF" ]; then cat "$PF" > "$D/instructions"; fi
 
+INIT='{"type":"system","subtype":"init","session_id":"%s","claude_code_version":"2.1.280",'
+INIT+='"model":"claude-haiku-4-5","capabilities":["interrupt_receipt_v1"],'
+# A skill fails the init check after the CLI has already named (and created) the session.
+if [ "$SCENARIO" = "bad-init" ]; then SKILLS='["dataviz"]'; fi
+INIT+='"mcp_servers":[{"name":"neige","status":"connected"}],"slash_commands":'"$COMMANDS"','
+INIT+='"skills":'"$SKILLS"','
+INIT+='"plugins":[{"name":"telemetry","source":"telemetry@builtin"}]}\n'
 case "$SCENARIO" in
   stall) exec sleep 300 ;;
+  # #3318: names (and creates) the session, then stalls before it reads any input.
+  init-stall)
+    # shellcheck disable=SC2059
+    printf "$INIT" "$SID"
+    exec sleep 300 ;;
   immediate-exit) exit 1 ;;
   closed-stdin)
     exec 0<&-
@@ -149,6 +161,15 @@ esac
 
 IFS= read -r LINE || exit 3
 printf '%s\n' "$LINE" >> "$D/stdin"
+# #3318: the line was read and no session is named; the CLI then stalls, exits cleanly, or
+# exits while a child it left behind keeps stdout open.
+case "$SCENARIO" in
+  read-then-stall) exec sleep 300 ;;
+  silent-exit) exit 0 ;;
+  orphan-stdout)
+    sleep 300 &
+    exit 0 ;;
+esac
 
 if [ "$SCENARIO" = "undecodable" ]; then
   echo "this is not a stream-json line"
@@ -164,13 +185,6 @@ if [ "$SCENARIO" = "receipt-before-init" ]; then jq -c '. + {isReplay: true}' <<
 if [ "$SCENARIO" = "result-before-init" ]; then
   echo '{"type":"result","subtype":"success","is_error":false,"result":"done","usage":{"input_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":0,"iterations":[]},"modelUsage":{},"terminal_reason":"completed"}'
 fi
-INIT='{"type":"system","subtype":"init","session_id":"%s","claude_code_version":"2.1.280",'
-INIT+='"model":"claude-haiku-4-5","capabilities":["interrupt_receipt_v1"],'
-# A skill fails the init check after the CLI has already named (and created) the session.
-if [ "$SCENARIO" = "bad-init" ]; then SKILLS='["dataviz"]'; fi
-INIT+='"mcp_servers":[{"name":"neige","status":"connected"}],"slash_commands":'"$COMMANDS"','
-INIT+='"skills":'"$SKILLS"','
-INIT+='"plugins":[{"name":"telemetry","source":"telemetry@builtin"}]}\n'
 # `slow-bind` names the session a second late and then works for seven more seconds, so a test
 # can hold the database across the bind of `agent_session_id` and release it before the result.
 if [ "$SCENARIO" = "slow-bind" ]; then sleep 1; fi

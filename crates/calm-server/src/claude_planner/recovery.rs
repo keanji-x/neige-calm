@@ -60,3 +60,57 @@ pub(crate) async fn quiesce_canonical(
     )
     .await
 }
+
+/// Read-only recovery declaration: a settled carrier whose recorded launch no durable fact
+/// confirms. Claude declares no action for it.
+pub(crate) async fn identity_unconfirmed_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    worker_session_id: &str,
+) -> Result<bool> {
+    super::identity::unconfirmed_tx(tx, worker_session_id).await
+}
+
+/// Explicit retirement needs both registered descendant settlement and the boot-owned
+/// absence proof for older, unregistered processes. No native identity is guessed.
+pub(crate) async fn quiesce_for_abandonment(
+    host: &super::config::ClaudePlannerHost,
+    session: &str,
+    track: &str,
+) -> Result<crate::provider_execution::quiescence::Quiescence> {
+    crate::provider_execution::PreC4Sweep::require_absent(host.pre_c4.get(), &[session.into()])?;
+    super::lifecycle::stop_session(
+        host,
+        session,
+        crate::provider_execution::StopReason::Shutdown,
+    )
+    .await?;
+    let repo = host.completion.repo()?;
+    let pool = repo
+        .sqlite_db()
+        .ok_or(crate::error::CalmError::ExecutionUnavailable)?;
+    crate::provider_execution::quiescence::Quiescence::capture(
+        pool.read_pool(),
+        session,
+        track,
+        super::execution::CONSUMER,
+        crate::provider_execution::AliasPrefix::planner(),
+    )
+    .await
+}
+
+/// Claude's recovery eligibility is its exact durable identity evidence, independently
+/// of whether Human Keep or a preflight refusal already cleared the active input.
+pub(crate) async fn abandonment_request_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    carrier: &crate::db::sqlite::conversation::CurrentInputCarrier,
+) -> Result<Option<calm_types::conversation::AbandonConversationRequest>> {
+    if !super::identity::recoverable_tx(tx, carrier.worker_session_id()).await? {
+        return Ok(None);
+    }
+    Ok(crate::db::sqlite::conversation::abandonment_request_tx(
+        tx,
+        carrier,
+        crate::db::sqlite::conversation::AbandonmentMode::UnconfirmedSession,
+    )
+    .await?)
+}

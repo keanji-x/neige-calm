@@ -1,6 +1,8 @@
 //! Claude owns native identity recovery. A validated exact replay already proves that
-//! this thread's session existed, even if its earlier init bind never committed.
+//! this thread's session existed, even if its earlier init bind never committed. A
+//! recorded `--session-id` launch that nothing confirms is never launched again.
 use super::session::ClaudePlannerSessionParams;
+use crate::db::sqlite::claude_session_launch;
 use crate::db::sqlite::conversation::{current_input_fact_carrier_tx, submission_identity_tx};
 use crate::error::{CalmError, Result};
 use crate::harness::backend::{ExecutionEndScope, InputAcknowledgementBasis};
@@ -8,7 +10,7 @@ use crate::session_projection_repo::{AgentProvider, ThreadAttribution};
 use calm_types::conversation::{
     ConversationExecutionProvenance, InputDeliveryFact, NativeInputAcceptance,
 };
-use calm_types::worker::WorkerSession;
+use calm_types::worker::{WorkerSession, WorkerSessionId};
 use sqlx::{Sqlite, Transaction};
 
 /// Recovery repairs identity only. It grants no execution authority and leaves
@@ -113,5 +115,260 @@ pub(super) async fn bind_tx(
         },
     )
     .await?;
+    // The bind confirms the session, so no launch of it remains unconfirmed.
+    claude_session_launch::delete(tx, &row.id.0).await?;
     Ok(())
+}
+
+/// What a session may rely on before it launches this thread's native session.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Identity {
+    /// The row's `agent_session_id` names the session.
+    Bound,
+    /// Verified replay evidence repaired the binding.
+    Recovered,
+    /// A recorded `--session-id` launch may have created the session; nothing confirms it.
+    Unconfirmed,
+    /// No unretired launch of this thread's session is recorded.
+    New,
+}
+
+/// The launch evidence a row carries, read by every classifier below.
+enum Launch {
+    Absent,
+    /// Recorded for another thread of this owner, or superseded by a bind.
+    Stale,
+    Unconfirmed,
+    /// Recorded for another card or Track than the row's owner.
+    Crossed,
+}
+
+async fn launch_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    row: &WorkerSession,
+    card: &str,
+    track: &str,
+) -> Result<Launch> {
+    let Some(launch) = claude_session_launch::get(tx, &row.id.0).await? else {
+        return Ok(Launch::Absent);
+    };
+    if launch.card_id != card
+        || launch.track_id != track
+        || row.card_id.as_ref().map(|card| card.as_str()) != Some(card)
+        || row.track_id.as_str() != track
+    {
+        return Ok(Launch::Crossed);
+    }
+    Ok(
+        if row.agent_session_id.is_none()
+            && row.thread_id.as_deref() == Some(launch.thread_id.as_str())
+        {
+            Launch::Unconfirmed
+        } else {
+            Launch::Stale
+        },
+    )
+}
+
+/// Whether the row belongs to a canonical input carrier.
+pub(super) fn canonical(row: &WorkerSession) -> bool {
+    row.handle_state_json.as_ref().is_some_and(|snapshot| {
+        snapshot
+            .get(calm_types::conversation::CONVERSATION_INPUT_CHECKPOINT_KEY)
+            .is_some()
+    })
+}
+
+/// Classify from durable facts only: the binding, verified replay evidence and the launch
+/// record. Native diagnostics, transcripts and Claude's files never name the session.
+pub(super) async fn open(params: &ClaudePlannerSessionParams) -> Result<Identity> {
+    let worker = WorkerSessionId(params.worker_session_id.clone());
+    let row = params
+        .repo
+        .session_get(&worker)
+        .await?
+        .ok_or_else(|| CalmError::NotFound(format!("worker session {}", worker.0)))?;
+    if row.agent_session_id.is_some() {
+        return launch(params).await;
+    }
+    if canonical(&row) && recover(params).await? {
+        return Ok(Identity::Recovered);
+    }
+    launch(params).await
+}
+
+/// Before a `New` spawn: the binding and the launch record, never recovery. Stale evidence
+/// is removed; evidence crossing its owner refuses.
+pub(super) async fn launch(params: &ClaudePlannerSessionParams) -> Result<Identity> {
+    let worker = WorkerSessionId(params.worker_session_id.clone());
+    let (card, track) = (params.card_id.clone(), params.track_id.clone());
+    crate::db::write_in_tx_typed(params.repo.as_ref(), move |tx| {
+        Box::pin(async move {
+            let row = crate::db::sqlite::session_get_tx(tx, &worker)
+                .await?
+                .ok_or_else(|| CalmError::NotFound(format!("worker session {}", worker.0)))?;
+            let bound = row.agent_session_id.is_some();
+            match launch_tx(tx, &row, &card, &track).await? {
+                Launch::Absent => Ok(if bound {
+                    Identity::Bound
+                } else {
+                    Identity::New
+                }),
+                Launch::Unconfirmed => Ok(Identity::Unconfirmed),
+                Launch::Stale => {
+                    claude_session_launch::delete(tx, &worker.0).await?;
+                    Ok(if bound {
+                        Identity::Bound
+                    } else {
+                        Identity::New
+                    })
+                }
+                Launch::Crossed => Err(CalmError::Conflict(
+                    "Claude launch evidence crosses its owner".into(),
+                )),
+            }
+        })
+    })
+    .await
+}
+
+/// Read-only: whether a settled carrier holds an unconfirmed launch. Evidence crossing its
+/// owner is held too; a live provider execution is not yet a recovery state.
+pub(crate) async fn unconfirmed_tx(tx: &mut Transaction<'_, Sqlite>, worker: &str) -> Result<bool> {
+    let Some(row) = crate::db::sqlite::session_get_tx(tx, &WorkerSessionId(worker.into())).await?
+    else {
+        return Ok(false);
+    };
+    if crate::db::sqlite::provider_execution::load(&mut **tx, worker)
+        .await?
+        .is_some()
+    {
+        return Ok(false);
+    }
+    let Some(card) = row.card_id.as_ref().map(|card| card.as_str().to_owned()) else {
+        return Ok(false);
+    };
+    let track = row.track_id.as_str().to_owned();
+    Ok(matches!(
+        launch_tx(tx, &row, &card, &track).await?,
+        Launch::Unconfirmed | Launch::Crossed
+    ))
+}
+
+/// Only matching launch ownership permits an explicit fresh-session recovery.
+pub(crate) async fn recoverable_tx(tx: &mut Transaction<'_, Sqlite>, worker: &str) -> Result<bool> {
+    let Some(row) = crate::db::sqlite::session_get_tx(tx, &WorkerSessionId(worker.into())).await?
+    else {
+        return Ok(false);
+    };
+    let Some(card) = row.card_id.as_ref() else {
+        return Ok(false);
+    };
+    if crate::db::sqlite::provider_execution::load(&mut **tx, worker)
+        .await?
+        .is_some()
+    {
+        return Ok(false);
+    }
+    if !matches!(
+        launch_tx(tx, &row, card.as_str(), row.track_id.as_str()).await?,
+        Launch::Unconfirmed
+    ) {
+        return Ok(false);
+    }
+    let launch = claude_session_launch::get(tx, worker)
+        .await?
+        .expect("launch was classified");
+    let alias =
+        crate::provider_execution::AliasPrefix::planner().alias(worker, &launch.execution_id);
+    Ok(sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM workspace_executions WHERE execution_id=?1 AND alias=?2 AND track_id=?3)")
+        .bind(&launch.execution_id).bind(alias).bind(row.track_id.as_str()).fetch_one(&mut **tx).await?)
+}
+
+/// The admission of a turn spawn. A `--session-id` launch's record is written in the
+/// admitting transaction, so it commits exactly when the launch is admitted: a write
+/// failure admits nothing, and no process starts before its record is durable.
+pub(super) struct LaunchAdmission {
+    pub(super) intent: crate::provider_execution::PreparedIntent,
+    pub(super) launch: Option<claude_session_launch::ClaudeSessionLaunch>,
+}
+
+impl LaunchAdmission {
+    pub(super) fn new(
+        params: &ClaudePlannerSessionParams,
+        intent: workspace_runtime::execution::ExecutionIntent,
+        launch: Option<(&str, &str)>,
+    ) -> Self {
+        Self {
+            intent: crate::provider_execution::PreparedIntent(intent),
+            launch: launch.map(|(thread, execution_id)| {
+                claude_session_launch::ClaudeSessionLaunch {
+                    worker_session_id: params.worker_session_id.clone(),
+                    card_id: params.card_id.clone(),
+                    track_id: params.track_id.clone(),
+                    thread_id: thread.into(),
+                    execution_id: execution_id.into(),
+                }
+            }),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::provider_execution::Admission for LaunchAdmission {
+    async fn authorize_tx(&self, tx: &mut Transaction<'_, Sqlite>) -> Result<()> {
+        self.intent.authorize_tx(tx).await
+    }
+    async fn intent_tx(
+        self,
+        tx: &mut Transaction<'_, Sqlite>,
+    ) -> Result<workspace_runtime::execution::ExecutionIntent> {
+        if let Some(launch) = &self.launch {
+            claude_session_launch::insert(tx, launch).await?;
+        }
+        self.intent.intent_tx(tx).await
+    }
+}
+
+/// A settled end whose stdout ended cleanly without naming the session retires only its
+/// own launch.
+pub(super) async fn retire_launch(
+    repo: &dyn crate::db::Repo,
+    worker: &str,
+    execution_id: &str,
+) -> Result<()> {
+    let (worker, execution_id) = (worker.to_owned(), execution_id.to_owned());
+    crate::db::write_in_tx_typed(repo, move |tx| {
+        Box::pin(async move {
+            claude_session_launch::retire(tx, &worker, &execution_id).await?;
+            Ok(())
+        })
+    })
+    .await
+}
+
+/// A refused execution retires its own launch only while its durable claim is still held:
+/// the release payload never reached the process, so Claude never ran.
+pub(super) async fn retire_unreleased_launch(
+    repo: &dyn crate::db::Repo,
+    worker: &str,
+    execution_id: &str,
+) -> Result<()> {
+    let (worker, execution_id) = (worker.to_owned(), execution_id.to_owned());
+    crate::db::write_in_tx_typed(repo, move |tx| {
+        Box::pin(async move {
+            let held = crate::db::sqlite::provider_execution::load(&mut **tx, &worker)
+                .await?
+                .is_some_and(|claim| {
+                    claim.record().execution_id == execution_id
+                        && claim.record().release
+                            == crate::db::sqlite::provider_execution::Release::Held
+                });
+            if held {
+                claude_session_launch::retire(tx, &worker, &execution_id).await?;
+            }
+            Ok(())
+        })
+    })
+    .await
 }

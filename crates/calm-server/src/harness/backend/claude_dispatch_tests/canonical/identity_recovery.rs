@@ -97,7 +97,7 @@ async fn next_input(fx: &mut Fixture) {
     fx.submission = claimed.submission_id;
 }
 
-async fn binding(fx: &Fixture) -> Option<String> {
+pub(super) async fn binding(fx: &Fixture) -> Option<String> {
     sqlx::query_scalar("SELECT agent_session_id FROM worker_sessions WHERE id=?")
         .bind(&fx.owner.worker)
         .fetch_one(fx.owner.repo.pool())
@@ -184,4 +184,192 @@ async fn canonical_claude_identity_recovery_requires_verified_replay() {
         assert_eq!(fx.checkpoint().await, before, "{scenario}");
         session.shutdown().await.unwrap();
     }
+}
+
+/// How the original launch was left unconfirmed.
+#[derive(Clone, Copy)]
+enum LostBind {
+    Failed,
+    TimedOut,
+    /// A replay preceded init: the reader stopped at a protocol failure without reading on.
+    ReceiptBeforeInit,
+    /// The CLI read the line and named nothing before a stop ended the turn.
+    Stopped,
+    /// The CLI exited without naming the session while a child kept its stdout open, so the
+    /// reader was cut off after the exit instead of reaching the end of the stream.
+    OrphanedStdout,
+}
+
+#[tokio::test]
+async fn canonical_claude_identity_unconfirmed_failed_bind_retry_stays_held() {
+    unconfirmed_launch(LostBind::Failed, "retry").await;
+}
+
+#[tokio::test]
+async fn canonical_claude_identity_unconfirmed_failed_bind_keep_holds_next_input() {
+    unconfirmed_launch(LostBind::Failed, "keep").await;
+}
+
+#[tokio::test]
+async fn canonical_claude_identity_unconfirmed_timed_out_bind_retry_stays_held() {
+    unconfirmed_launch(LostBind::TimedOut, "retry").await;
+}
+
+#[tokio::test]
+async fn canonical_claude_identity_unconfirmed_receipt_before_init_retry_stays_held() {
+    unconfirmed_launch(LostBind::ReceiptBeforeInit, "retry").await;
+}
+
+#[tokio::test]
+async fn canonical_claude_identity_unconfirmed_stopped_without_init_retry_stays_held() {
+    unconfirmed_launch(LostBind::Stopped, "retry").await;
+}
+
+#[tokio::test]
+async fn canonical_claude_identity_unconfirmed_orphaned_stdout_retry_stays_held() {
+    unconfirmed_launch(LostBind::OrphanedStdout, "retry").await;
+}
+
+/// #3318: no bind and no accepted replay confirm the launch: init was observed but its bind
+/// was lost, or the reader ended before it read the CLI's whole output. After a restart
+/// nothing proves whether the launch created the native session, so neither Human
+/// resolution may launch the same `--session-id` again.
+async fn unconfirmed_launch(lost: LostBind, action: &str) {
+    let mut fx = Fixture::persistent(match lost {
+        LostBind::Failed | LostBind::TimedOut => "no-input-replay",
+        LostBind::ReceiptBeforeInit => "receipt-before-init",
+        LostBind::Stopped => "read-then-stall",
+        LostBind::OrphanedStdout => "orphan-stdout",
+    })
+    .await;
+    let pause = match lost {
+        LostBind::Failed => {
+            fail_bind(&fx).await;
+            None
+        }
+        LostBind::TimedOut => Some(super::c5d::Pause::arm("c4-bind-session", &fx.owner.worker)),
+        LostBind::ReceiptBeforeInit | LostBind::Stopped | LostBind::OrphanedStdout => None,
+    };
+    let mut events = fx.session.subscribe_events();
+    // Retry requires the frozen invocation of the original attempt.
+    fx.dispatch_selection(&TurnModelSelection {
+        model: Some("claude-frozen".into()),
+        effort: Some("high".into()),
+    })
+    .await
+    .unwrap();
+    if let Some(pause) = &pause {
+        pause.entered().await;
+    }
+    if matches!(lost, LostBind::Stopped) {
+        let stdin = fx.dir.path().join("stdin");
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while !stdin.exists() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        fx.session.shutdown().await.unwrap();
+    }
+    // The loop, not this test, consumes END: its phase leaves issuing_turn only then.
+    tokio::time::timeout(Duration::from_secs(20), async {
+        while !matches!(
+            events.recv().await.unwrap().kind,
+            provider::events::PlannerEventKind::TurnCompleted { .. }
+        ) {}
+    })
+    .await
+    .unwrap();
+    drop(pause);
+    let before = fx.checkpoint().await;
+    assert!(matches!(
+        before.attempts[0].delivery,
+        InputDeliveryFact::Unknown
+    ));
+    assert_eq!(binding(&fx).await, None);
+    fx.session.shutdown().await.unwrap();
+    if matches!(lost, LostBind::Failed) {
+        sqlx::query("DROP TRIGGER fail_native_bind")
+            .execute(fx.owner.repo.pool())
+            .await
+            .unwrap();
+    }
+    let (backend, session) = super::recovery::reopen_session(&fx, fx.owner.repo.clone()).await;
+    fx.backend = backend;
+    fx.session = session;
+    assert_eq!(binding(&fx).await, None, "no evidence names the session");
+    assert_eq!(fx.checkpoint().await, before);
+    let dir = fx.dir.path().to_path_buf();
+    let read = |name: &str| std::fs::read_to_string(dir.join(name)).unwrap();
+    let (spawns, argv, stdin) = (read("spawns"), read("argv"), read("stdin"));
+    // A relaunch would now succeed visibly.
+    std::fs::write(fx.dir.path().join("scenario"), "exit").unwrap();
+    let (state, app) = super::settled::application(&fx).await;
+    let harness = fx.start_loop_in(state.harness.clone()).await;
+    super::retry::action(&fx, &app, action, "resolve-unconfirmed").await;
+    if action == "keep" {
+        tokio::time::timeout(Duration::from_secs(25), async {
+            while fx.checkpoint().await.receipts.is_empty() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let mut tx = begin_immediate_tx(fx.owner.repo.db()).await.unwrap();
+        let mut carrier = current_input_carrier_tx(&mut tx, &fx.owner.card, &fx.owner.worker)
+            .await
+            .unwrap();
+        let accepted = crate::conversation_inputs::accept_human_tx(
+            &mut tx,
+            &fx.source.current_principal().unwrap(),
+            &mut carrier,
+            HumanPayload {
+                text: "following kept input".into(),
+                bound_attachments: vec![],
+            },
+        )
+        .await
+        .unwrap();
+        let AcceptedInputRef::Human { message } = accepted.input_ref else {
+            panic!("Human")
+        };
+        tx.commit().await.unwrap();
+        harness
+            .observe_canonical_source(message, fx.source.clone())
+            .await
+            .unwrap();
+    }
+    // Bounded: a held loop records no further attempt, a relaunch changes `spawns`.
+    let _ = tokio::time::timeout(Duration::from_secs(10), async {
+        while read("spawns") == spawns && fx.checkpoint().await.attempts.len() < 2 {
+            harness.refresh_canonical_input().await.unwrap();
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(read("spawns"), spawns, "nothing was launched again");
+    assert_eq!(read("argv"), argv);
+    assert_eq!(read("stdin"), stdin, "nothing was sent");
+    let after = fx.checkpoint().await;
+    assert_eq!(after.attempts[0].delivery, before.attempts[0].delivery);
+    assert!(
+        after.attempts[1..].iter().all(|attempt| !matches!(
+            attempt.delivery,
+            InputDeliveryFact::Unknown
+                | InputDeliveryFact::CrossingUnknown
+                | InputDeliveryFact::Accepted { .. }
+        )),
+        "{:?}",
+        after.attempts
+    );
+    assert_eq!(binding(&fx).await, None);
+    let reader = fx.backend.issuance_hold().expect("identity hold");
+    assert!(
+        !reader.contains("fresh session") && !reader.contains("restart"),
+        "canonical hold names no action: {reader}"
+    );
+    harness.shutdown().await.unwrap();
+    state.dispatcher.retire();
 }

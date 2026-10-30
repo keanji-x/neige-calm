@@ -222,7 +222,8 @@ async fn kept_sequence(sequence: Sequence) {
     use axum::http::{Request, StatusCode, header};
     use http_body_util::BodyExt;
     use tower::ServiceExt;
-    let fx = Arc::new(Fixture::new("stall").await);
+    // The original names its session, so the next input may resume it (#3318).
+    let fx = Arc::new(Fixture::new("init-stall").await);
     let pause = crate::claude_planner::session::SettlePause {
         entered: Arc::default(),
         release: Arc::default(),

@@ -64,3 +64,11 @@ it('explains the declared worker-bound pending-input refusal without offering a 
   expect(offersFreshSession(recovery)).toBe(false);
   expect(recoveryStatusNotice(recovery, null).reason).toContain('queued inputs still belong to the previous session');
 });
+
+it('explains an unconfirmed provider launch without offering any action', () => {
+  const recovery = runRecoverySchema.parse({ cause: 'unknown_outcome', action: 'held', reason: 'identity_unconfirmed' });
+  expect(offersFreshSession(recovery)).toBe(false);
+  const notice = recoveryStatusNotice(recovery, null);
+  expect(notice.reason).toContain('could not be confirmed');
+  expect(notice.reason).not.toContain('fresh session');
+});

@@ -290,10 +290,35 @@ async fn c4_lost_completion_does_not_invent_an_absent_binding() {
         .unwrap();
     assert_eq!(row.agent_session_id, None);
     stack.wait_phase(&runtime.id, "turn_completed").await;
-    stack
-        .run_turn(&root, &card, "exit", "first actual session")
-        .await;
-    let argv = root.read_fake("argv").unwrap();
-    assert!(argv.lines().any(|arg| arg == "--session-id"), "{argv}");
+    // #3318: the lost `--session-id` launch may have created the session, so the next
+    // turn neither invents its binding nor launches that session again.
+    let spawns = root.read_fake("spawns").unwrap();
+    root.set_scenario("exit");
+    let (status, body) = stack.post_input(&card, "after the lost launch").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let harness = stack.harness(&runtime.id);
+    let block = tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            if let Some(block) = harness.issuance_block().await {
+                return block;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("the unconfirmed launch is held");
+    assert!(block.contains("fresh session"), "{block}");
+    assert_eq!(
+        root.read_fake("spawns").unwrap(),
+        spawns,
+        "nothing relaunched"
+    );
+    let row = stack
+        .repo()
+        .session_get(&runtime.id.clone().into())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.agent_session_id, None);
     stack.shutdown().await;
 }

@@ -132,7 +132,7 @@ fn insta_like_assert(references: &[ReferenceToWorkerSessions]) {
 /// Incoming keys act on children when the worker is deleted, never delete the worker.
 /// ACP ownership, receipts, report knowledge and backend bindings are lifecycle-owned children;
 /// deletion removes their metadata with the worker. Backend bindings do not own the worker.
-/// Normal-join witnesses and abandonment receipts are also lifecycle-owned metadata;
+/// Normal-join witnesses, abandonment receipts and Claude launch records are also lifecycle-owned metadata;
 /// their incoming keys remove evidence only when its referenced worker is deleted.
 /// Freeze these exact edges, not an open cascade exemption.
 const EXPECTED_REFERENCES: &[(&str, &str, &str)] = &[
@@ -140,6 +140,7 @@ const EXPECTED_REFERENCES: &[(&str, &str, &str)] = &[
     ("acp_normal_joins", "worker_session_id", "CASCADE"),
     ("acp_submissions", "worker_session_id", "CASCADE"),
     ("cards", "session_id", "SET NULL"),
+    ("claude_session_launches", "worker_session_id", "CASCADE"),
     ("conversation_abandonments", "new_worker", "CASCADE"),
     ("conversation_abandonments", "old_worker", "CASCADE"),
     ("report_read_ledger", "worker_session_id", "CASCADE"),

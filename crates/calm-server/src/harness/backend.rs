@@ -233,7 +233,8 @@ impl PlannerBackend {
     pub(crate) fn issuance_hold(&self) -> Option<String> {
         match &self.0 {
             Arm::Codex(daemon, _) => daemon.authentication_hold(),
-            Arm::Claude(_) | Arm::Acp(_) => None,
+            Arm::Claude(session) => session.identity_hold(),
+            Arm::Acp(_) => None,
         }
     }
 
@@ -290,6 +291,19 @@ impl PlannerBackend {
         match &self.0 {
             Arm::Codex(..) => TurnIdentity::Native(id),
             Arm::Claude(_) | Arm::Acp(_) => TurnIdentity::Local(CorrelationKey(id)),
+        }
+    }
+
+    pub(crate) async fn carrier_idle_for_recovery(
+        &self,
+        thread: Option<&str>,
+    ) -> Option<CarrierIdleGuard<'_>> {
+        match &self.0 {
+            Arm::Claude(session) => session
+                .carrier_idle_for_recovery()
+                .await
+                .map(|park| CarrierIdleGuard::ClaudeRecovery(session, park)),
+            _ => self.carrier_idle_for_detach(thread).await,
         }
     }
 
@@ -553,6 +567,10 @@ async fn interrupt_codex_thread(
 
 /// Provider-owned park retained with the harness proof through commit.
 pub(crate) enum CarrierIdleGuard<'a> {
+    ClaudeRecovery(
+        &'a crate::claude_planner::session::ClaudePlannerSession,
+        crate::harness::carrier_park::ParkToken<'a>,
+    ),
     Codex(crate::shared_codex_appserver::IdleDetachGuard<'a>),
     Acp(
         &'a crate::acp_planner::session::AcpPlannerSession,
@@ -570,6 +588,7 @@ impl CarrierIdleGuard<'_> {
             Self::Codex(guard) => guard.recheck(),
             Self::Acp(session, park) => park.is_current() && session.carrier_idle(),
             Self::Claude(session, park) => park.is_current() && session.carrier_idle(),
+            Self::ClaudeRecovery(session, park) => park.is_current() && session.recovery_idle(),
         }
     }
 }

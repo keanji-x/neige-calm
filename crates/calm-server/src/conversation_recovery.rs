@@ -1,4 +1,5 @@
 //! Canonical recovery owner. Stop never means END; abandonment retains old facts.
+use crate::harness::backend::factory::PlannerFactory;
 use crate::harness::{carrier_replacement::HeldCarrierOwner, registry::CarrierRetirementSlot};
 use crate::mcp_server::transport::carrier_quiescence::ToolCallGuard;
 use crate::{
@@ -40,7 +41,9 @@ struct Protected<'a> {
     source: &'a HumanInputSource,
     held: Option<&'a HeldCarrierOwner<'a>>,
     calls: &'a ToolCallGuard,
-    proof: &'a crate::acp_planner::lifecycle::Quiescence,
+    proof: &'a crate::provider_execution::quiescence::Quiescence,
+    request: &'a AbandonConversationRequest,
+    mode: AbandonmentMode,
 }
 #[async_trait::async_trait]
 impl CarrierReplacementGuard for Protected<'_> {
@@ -60,6 +63,15 @@ impl CarrierReplacementGuard for Protected<'_> {
         {
             return Err(calm_truth::error::TruthError::Conflict(
                 "recovery has pending MCP calls",
+            ));
+        }
+        let target = PlannerFactory::abandonment_target_tx(tx, carrier)
+            .await
+            .map_err(|_| calm_truth::error::TruthError::Conflict("recovery eligibility changed"))?;
+        if !target.is_some_and(|target| target.request == *self.request && target.mode == self.mode)
+        {
+            return Err(calm_truth::error::TruthError::Conflict(
+                "recovery eligibility changed",
             ));
         }
         self.proof
@@ -92,7 +104,12 @@ async fn abandon_owned(
         return Ok(replay);
     }
     let carrier = current_input_fact_carrier_tx(&mut tx, &card, &request.carrier_id).await?;
-    if abandonment_request_tx(&mut tx, &carrier).await?.as_ref() != Some(&request) {
+    if PlannerFactory::abandonment_target_tx(&mut tx, &carrier)
+        .await?
+        .map(|t| t.request)
+        .as_ref()
+        != Some(&request)
+    {
         return Err(CalmError::Conflict(
             "Unknown recovery requires the current input; resolve worker-bound queued work first."
                 .into(),
@@ -102,11 +119,6 @@ async fn abandon_owned(
         crate::harness::profile::input_carrier_contract_tx(&mut tx, &carrier).await?;
     let track = row.track_id.clone();
     tx.rollback().await?;
-    if binding.provider.protocol() != calm_types::runtime::AgentProtocol::Acp {
-        return Err(CalmError::Conflict(
-            "This provider does not support Unknown abandonment".into(),
-        ));
-    }
     #[cfg(feature = "fixtures")]
     crate::test_seams::pause_point("canonical-abandon-before-push", &card).await;
     let _push = s.dispatcher.planner_switch_push_lock(&track).await;
@@ -149,9 +161,10 @@ async fn abandon_owned(
     let mut tx = sqlite::begin_immediate_tx(&db).await?;
     authorize(&mut tx, &source, &card).await?;
     let captured = current_input_fact_carrier_tx(&mut tx, &card, &request.carrier_id).await?;
-    if abandonment_request_tx(&mut tx, &captured).await?.as_ref() != Some(&request) {
-        return Err(CalmError::Conflict("Recovery target changed".into()));
-    }
+    let target = PlannerFactory::abandonment_target_tx(&mut tx, &captured)
+        .await?
+        .filter(|target| target.request == request)
+        .ok_or_else(|| CalmError::Conflict("Recovery target changed".into()))?;
     let shape = sqlite::card_execution_shape_tx(&mut tx, &card).await?;
     let captured_binding = PlannerBinding::from_shape(&shape.kind, shape.role, &shape.payload)
         .ok_or_else(|| CalmError::Conflict("recovery binding unsupported".into()))?;
@@ -169,11 +182,12 @@ async fn abandon_owned(
         carrier_ingress_revision_tx(&mut tx, &card, track.as_str(), &request.carrier_id).await?;
     tx.rollback().await?;
     // No provider I/O while holding the SQL writer. The native/harness park stays held.
-    let proof = crate::acp_planner::lifecycle::quiesce_for_abandonment(
+    let proof = PlannerFactory::new(
+        std::sync::Arc::downgrade(&s.shared_codex_appserver),
+        &s.claude_planner,
         &s.acp_planner,
-        &request.carrier_id,
-        track.as_str(),
     )
+    .quiesce_for_abandonment(&binding.provider, &request.carrier_id, track.as_str())
     .await?;
     if let Some(held) = &held {
         held.recheck()?;
@@ -183,6 +197,8 @@ async fn abandon_owned(
         held: held.as_ref(),
         calls: &calls,
         proof: &proof,
+        request: &request,
+        mode: target.mode,
     };
     #[cfg(feature = "fixtures")]
     crate::test_seams::pause_point("canonical-abandon-before-commit", &card).await;
@@ -213,6 +229,7 @@ async fn abandon_owned(
             owner: &owner,
             revision: CallerRevision::Unversioned,
         },
+        target.mode,
         &request,
         &principal.user_id,
         &key,
@@ -286,6 +303,41 @@ pub(crate) async fn declaration(
             let carrier = current_input_fact_carrier_tx(tx, &card, &worker).await?;
             let (binding, _) =
                 crate::harness::profile::input_carrier_contract_tx(tx, &carrier).await?;
+            if binding.provider.protocol() == calm_types::runtime::AgentProtocol::Claude
+                && crate::claude_planner::recovery::identity_unconfirmed_tx(tx, &worker).await?
+            {
+                let request = PlannerFactory::abandonment_target_tx(tx, &carrier)
+                    .await?
+                    .map(|t| t.request);
+                let authorized = if let Some(source) = source {
+                    match authorize(tx, &source, &card).await {
+                        Ok(_) => true,
+                        Err(CalmError::Unauthorized | CalmError::Forbidden(_)) => false,
+                        Err(error) => return Err(error),
+                    }
+                } else {
+                    false
+                };
+                return Ok(Some(
+                    if let Some(request) = request.filter(|_| authorized) {
+                        R::AbandonSession {
+                            cause: C::UnknownOutcome,
+                            request,
+                        }
+                    } else {
+                        R::Held {
+                            cause: C::UnknownOutcome,
+                            reason: if carrier.checkpoint().pending.iter().any(|p| {
+                                !matches!(p, calm_types::conversation::PendingInput::Human { .. })
+                            }) {
+                                H::PendingInputs
+                            } else {
+                                H::IdentityUnconfirmed
+                            },
+                        }
+                    },
+                ));
+            }
             let Some(original) = original_input_execution_tx(tx, &carrier).await? else {
                 return Ok(None);
             };
@@ -315,7 +367,9 @@ pub(crate) async fn declaration(
                     {
                         return Ok(None);
                     }
-                    let request = abandonment_request_tx(tx, &carrier).await?;
+                    let request = PlannerFactory::abandonment_target_tx(tx, &carrier)
+                        .await?
+                        .map(|t| t.request);
                     let authorized = if let Some(source) = source {
                         match authorize(tx, &source, &card).await {
                             Ok(_) => true,

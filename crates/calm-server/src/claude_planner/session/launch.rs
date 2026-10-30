@@ -55,12 +55,39 @@ impl ClaudePlannerSession {
             )
         };
         execution_end::join_driver(shared).await?;
+        let canonical = matches!(
+            input,
+            SpawnInput::Canonical { .. } | SpawnInput::CanonicalCompaction(_)
+        );
+        if shared.state().identity_hold.is_some() {
+            return Err(IdentityHold { canonical }.refusal().into());
+        }
         if purpose == SpawnPurpose::Compaction && start == SessionStart::New {
             return Err(CalmError::BadRequest(
                 "this Claude conversation has no session to compact yet".into(),
             )
             .into());
         }
+        // Only durable facts decide whether this thread's session may be launched anew,
+        // including after a driver lost in this process.
+        use crate::claude_planner::identity::{self, Identity};
+        let (start, row_bound) = match start {
+            SessionStart::Resume => (start, row_bound),
+            SessionStart::New => match identity::launch(params).await? {
+                Identity::New => (start, row_bound),
+                Identity::Bound | Identity::Recovered => {
+                    let mut state = shared.state();
+                    state.start = SessionStart::Resume;
+                    state.row_bound = true;
+                    (SessionStart::Resume, true)
+                }
+                Identity::Unconfirmed => {
+                    let hold = IdentityHold { canonical };
+                    shared.state().identity_hold = Some(hold);
+                    return Err(hold.refusal().into());
+                }
+            },
+        };
         let thread_uuid = Uuid::try_parse(thread).map_err(|_| {
             CalmError::BadRequest(format!("claude planner thread {thread} is not a UUID"))
         })?;
@@ -266,7 +293,13 @@ impl ClaudePlannerSession {
                 &pool,
                 engine,
                 &params.worker_session_id,
-                crate::provider_execution::PreparedIntent(intent),
+                // A `--session-id` launch may create the native session before any bind
+                // commits; its record commits with this admission or nothing launches.
+                identity::LaunchAdmission::new(
+                    params,
+                    intent,
+                    (start == SessionStart::New).then_some((thread, id.as_str())),
+                ),
                 purpose_record,
                 crate::provider_execution::OccupancyFence::ReleaseOnCommit(track_fence),
             )

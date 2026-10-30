@@ -14,6 +14,8 @@ pub enum RunHeldReason {
     PendingInputs,
     NativeCompletionUnavailable,
     CleanupRequired,
+    /// A recorded provider launch has no confirmed native identity; no action is declared.
+    IdentityUnconfirmed,
 }
 #[derive(Debug, Serialize, ToSchema)]
 #[serde(tag = "action", rename_all = "snake_case")]

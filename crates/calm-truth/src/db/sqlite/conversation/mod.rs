@@ -11,7 +11,7 @@ mod assistant_creation;
 mod attempts;
 mod carrier;
 pub use abandonment::{
-    abandon_unresolved_carrier_tx, abandonment_request_tx, replay_abandonment_tx,
+    AbandonmentMode, abandon_unresolved_carrier_tx, abandonment_request_tx, replay_abandonment_tx,
 };
 mod claim_storage;
 mod claim_validation;

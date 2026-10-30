@@ -143,7 +143,8 @@ async fn canonical_claude_recovery_exact_finished_local_target_can_close_once() 
 
 #[tokio::test]
 async fn canonical_claude_recovery_synthetic_outcome_holds_until_owner_sweep_then_retries_once() {
-    let mut fx = Fixture::new("stall").await;
+    // The original names its session, so the retry may resume it (#3318).
+    let mut fx = Fixture::new("init-stall").await;
     fail_terminal_outcome(fx.owner.repo.as_ref()).await;
     fx.dispatch_selection(&TurnModelSelection {
         model: Some("claude-frozen".into()),
@@ -268,7 +269,7 @@ async fn canonical_claude_recovery_synthetic_outcome_holds_until_owner_sweep_the
         argv.lines()
             .collect::<Vec<_>>()
             .windows(2)
-            .any(|args| args == ["--session-id", fx.owner.thread.as_str()])
+            .any(|args| args == ["--resume", fx.owner.thread.as_str()])
     );
     for _ in 0..10 {
         harness.refresh_canonical_input().await.unwrap();

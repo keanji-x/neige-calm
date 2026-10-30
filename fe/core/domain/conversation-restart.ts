@@ -48,7 +48,7 @@ export const runRecoverySchema = z.discriminatedUnion('action', [
   z.object({ cause: recoveryCauseSchema, action: z.literal('abandon_session'), request: z.object({
     carrier_id: z.string(), submission_id: z.string(), attempt_id: z.string(), revision: z.string(),
   }) }),
-  z.object({ cause: recoveryCauseSchema, action: z.literal('held'), reason: z.enum(['pending_inputs', 'native_completion_unavailable', 'cleanup_required']) }),
+  z.object({ cause: recoveryCauseSchema, action: z.literal('held'), reason: z.enum(['pending_inputs', 'native_completion_unavailable', 'cleanup_required', 'identity_unconfirmed']) }),
 ]);
 export type RunRecovery = z.infer<typeof runRecoverySchema>;
 
@@ -59,6 +59,7 @@ export function offersFreshSession(recovery: RunRecovery | null): boolean {
 
 function recoveryReason(recovery: RunRecovery): string {
   if (recovery.action === 'held' && recovery.reason === 'pending_inputs') return 'Some queued inputs still belong to the previous session. Recovery is held to keep them from being lost or repeated.';
+  if (recovery.action === 'held' && recovery.reason === 'identity_unconfirmed') return 'This conversation’s session could not be confirmed after an earlier launch, so nothing more is sent. Saved messages are kept.';
   if (recovery.cause === 'native_completion_pending') return 'Waiting to verify the original native completion. Saved messages remain queued.';
   return recovery.cause === 'unknown_outcome'
     ? 'The previous request’s outcome is unknown. It won’t be sent again.'

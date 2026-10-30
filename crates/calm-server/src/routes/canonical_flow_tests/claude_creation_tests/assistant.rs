@@ -463,36 +463,71 @@ async fn claude_assistant_restart_human_resolution_waits_for_predecessor_settlem
             post(&app, &cookie, &action_uri, action, args.clone()).await,
             resolved
         );
-        let after = wait_frame(&fixture, card, |frame| {
-            frame.canonical_inputs.active.is_none()
-                && frame.canonical_inputs.attempts.len() == if action == "retry" { 2 } else { 1 }
-        })
-        .await;
+        let after = if action == "retry" {
+            // #3318: the original's `--session-id` launch read its line and nothing confirms
+            // the session, so the retry neither resumes nor launches that session again.
+            let _ = tokio::time::timeout(Duration::from_secs(10), async {
+                while carrier(&fixture, card)
+                    .await
+                    .1
+                    .canonical_inputs
+                    .active
+                    .is_some()
+                    || carrier(&fixture, card)
+                        .await
+                        .1
+                        .canonical_inputs
+                        .attempts
+                        .len()
+                        < 2
+                {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await;
+            carrier(&fixture, card).await.1
+        } else {
+            wait_frame(&fixture, card, |frame| {
+                frame.canonical_inputs.active.is_none()
+                    && frame.canonical_inputs.attempts.len() == 1
+            })
+            .await
+        };
         let (current, _) = carrier(&fixture, card).await;
         assert_eq!(current, worker);
         assert_eq!(
             after.header.last_thread_id.as_deref(),
             Some(thread.as_str())
         );
-        assert!(after.canonical_inputs.active.is_none());
-        assert!(after.canonical_inputs.pending.is_empty());
-        assert_eq!(after.canonical_inputs.receipts.len(), 1);
+        assert_eq!(read(&fixture, "spawns").lines().count(), 1);
         if action == "retry" {
-            assert_eq!(read(&fixture, "spawns").lines().count(), 2);
-            assert_eq!(read(&fixture, "stdin").lines().count(), 2);
+            assert_eq!(
+                read(&fixture, "stdin").lines().count(),
+                1,
+                "nothing sent again"
+            );
+            assert_eq!(
+                after.canonical_inputs.attempts[0].delivery,
+                held.canonical_inputs.attempts[0].delivery,
+                "the original Unknown is preserved"
+            );
             assert!(
-                read(&fixture, "argv")
-                    .lines()
-                    .collect::<Vec<_>>()
-                    .windows(2)
-                    .any(|args| args == ["--resume", thread.as_str()]
-                        || args == ["--session-id", thread.as_str()])
+                after.canonical_inputs.attempts[1..]
+                    .iter()
+                    .all(|a| !matches!(
+                        a.delivery,
+                        InputDeliveryFact::Unknown
+                            | InputDeliveryFact::CrossingUnknown
+                            | InputDeliveryFact::Accepted { .. }
+                    ))
             );
         } else {
+            assert!(after.canonical_inputs.active.is_none());
+            assert!(after.canonical_inputs.pending.is_empty());
+            assert_eq!(after.canonical_inputs.receipts.len(), 1);
             let mut resolved_attempts = held.canonical_inputs.attempts.clone();
             resolved_attempts[0].revision += 1;
             assert_eq!(after.canonical_inputs.attempts, resolved_attempts);
-            assert_eq!(read(&fixture, "spawns").lines().count(), 1);
         }
         for _ in 0..10 {
             assert_eq!(

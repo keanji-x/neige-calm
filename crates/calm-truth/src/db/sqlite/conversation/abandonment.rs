@@ -7,10 +7,18 @@ use calm_types::conversation::{
 use calm_types::harness::HarnessPhaseTag;
 use calm_types::harness::snapshot::CanonicalHarnessSnapshot;
 
+/// The caller supplies a provider-qualified recovery mode; it still owns quiescence.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum AbandonmentMode {
+    UnknownInput,
+    UnconfirmedSession,
+}
+
 /// Eligibility is separate from ordinary idle replacement. It grants no execution proof.
 pub async fn abandonment_request_tx(
-    tx: &mut Transaction<'_, Sqlite>,
+    _tx: &mut Transaction<'_, Sqlite>,
     carrier: &CurrentInputCarrier,
+    mode: AbandonmentMode,
 ) -> Result<Option<AbandonConversationRequest>> {
     let frame: CanonicalHarnessSnapshot = serde_json::from_value(carrier.snapshot().clone())?;
     if frame
@@ -18,10 +26,20 @@ pub async fn abandonment_request_tx(
         .pending
         .iter()
         .any(|entry| !matches!(entry, calm_types::conversation::PendingInput::Human { .. }))
-        || !matches!(
-            frame.header.phase,
-            HarnessPhaseTag::TurnRunning | HarnessPhaseTag::IssuingTurn
-        )
+        || !match mode {
+            AbandonmentMode::UnknownInput => matches!(
+                frame.header.phase,
+                HarnessPhaseTag::TurnRunning | HarnessPhaseTag::IssuingTurn
+            ),
+            AbandonmentMode::UnconfirmedSession => matches!(
+                frame.header.phase,
+                HarnessPhaseTag::Idle
+                    | HarnessPhaseTag::TurnRunning
+                    | HarnessPhaseTag::IssuingTurn
+                    | HarnessPhaseTag::Resumed
+                    | HarnessPhaseTag::TurnCompleted
+            ),
+        }
         || frame.header.wedged_reason.is_some()
         || carrier
             .snapshot()
@@ -34,33 +52,29 @@ pub async fn abandonment_request_tx(
     {
         return Ok(None);
     }
-    let Some(active) = &frame.canonical_inputs.active else {
-        return Ok(None);
+    let fact = match mode {
+        AbandonmentMode::UnknownInput => {
+            let Some(active) = &frame.canonical_inputs.active else {
+                return Ok(None);
+            };
+            if active.submission_ids.len() != 1
+                || frame.canonical_inputs.referenced_submissions() != active.submission_ids
+            {
+                return Ok(None);
+            }
+            frame.canonical_inputs.attempt(&active.submission_ids[0])
+        }
+        AbandonmentMode::UnconfirmedSession => frame.canonical_inputs.attempts.last(),
     };
-    if active.submission_ids.len() != 1
-        || frame.canonical_inputs.referenced_submissions() != active.submission_ids
-    {
-        return Ok(None);
+    let Some(fact) = fact else { return Ok(None) };
+    match (&fact.delivery, mode) {
+        (InputDeliveryFact::Unknown, _)
+        | (InputDeliveryFact::NotDispatched { .. }, AbandonmentMode::UnconfirmedSession) => {}
+        _ => return Ok(None),
     }
-    let Some(fact) = frame.canonical_inputs.attempt(&active.submission_ids[0]) else {
-        return Ok(None);
-    };
-    if !matches!(fact.delivery, InputDeliveryFact::Unknown) {
-        return Ok(None);
-    }
-    let receipt = super::super::acp_submission_get(
-        &mut **tx,
-        carrier.worker_session_id(),
-        fact.attempt.submission_id.as_str(),
-    )
-    .await?;
-    let Some(receipt) = receipt else {
-        return Ok(None);
-    };
-    if !matches!(receipt.state, super::super::AcpSubmissionState::Unknown)
-        || receipt.outcome_json.is_some()
-        || receipt.kept_cleanup.is_some()
-    {
+    // Multiple active or supplemental submissions retain their own resolution contract.
+    let referenced = frame.canonical_inputs.referenced_submissions();
+    if !referenced.is_empty() && referenced != vec![fact.attempt.submission_id.clone()] {
         return Ok(None);
     }
     Ok(Some(AbandonConversationRequest {
@@ -96,6 +110,7 @@ pub async fn replay_abandonment_tx(
 pub async fn abandon_unresolved_carrier_tx(
     tx: &mut Transaction<'_, Sqlite>,
     expected: ExpectedCarrier<'_>,
+    mode: AbandonmentMode,
     request: &AbandonConversationRequest,
     principal: &str,
     key: &str,
@@ -120,7 +135,7 @@ pub async fn abandon_unresolved_carrier_tx(
         || !binding.matches_session_contract(&old)
         || old.track_id.as_str() != expected.track_id
         || old.thread_id != frame.header.last_thread_id
-        || abandonment_request_tx(tx, &carrier).await?.as_ref() != Some(request)
+        || abandonment_request_tx(tx, &carrier, mode).await?.as_ref() != Some(request)
         || carrier_ingress_revision_tx(
             tx,
             &expected.card_id,

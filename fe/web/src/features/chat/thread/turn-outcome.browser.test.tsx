@@ -251,3 +251,22 @@ it.each([390, 1280])('shows canonical recovery as paused evidence rather than on
   expect(container.querySelector('[data-nc-turn="agent"]')).not.toBeNull();
   await page.screenshot({ path: `../../../../../test-results/canonical-recovery-${width}.png` });
 });
+
+it.each([390, 1280])('keeps an unconfirmed Claude identity visible after its active input is gone (%ipx)', async (width) => {
+  await page.viewport(width, 844);
+  render(<div style={{ position: 'relative', height: '90dvh', containerType: 'inline-size', overflow: 'clip' }}>
+    <Drawer open title="Claude recovery" onClose={() => undefined} footer={<ChatComposer disabled onSend={() => undefined} />}>
+      <ChatThread hasPendingMessages={false} canContinue={false} cards={{}} stalled
+        recovery={{ cause: 'unknown_outcome', action: 'held', reason: 'identity_unconfirmed' }}
+        conversation={{ ...conversation(), provider: 'claude', kind: 'claude' }} activeInput={null}
+        turns={[{ id: 'history', author: 'agent', text: 'Earlier history remains here.', atMs: 1 }]} />
+    </Drawer>
+  </div>);
+  await userEvent.click(screen.getByRole('button', { name: 'Outcome unknown', expanded: false }));
+  expect(screen.getByText('This conversation’s session could not be confirmed after an earlier launch, so nothing more is sent. Saved messages are kept.', { exact: true }).checkVisibility()).toBe(true);
+  expect(screen.getByText('Earlier history remains here.', { exact: true }).checkVisibility()).toBe(true);
+  expect(screen.queryByText('Running', { exact: true })).toBeNull();
+  expect(screen.getByRole('textbox').getAttribute('contenteditable')).toBe('false');
+  expect(document.documentElement.scrollWidth).toBe(width);
+  await page.screenshot({ path: `../../../../../test-results/claude-identity-held-${width}.png` });
+});

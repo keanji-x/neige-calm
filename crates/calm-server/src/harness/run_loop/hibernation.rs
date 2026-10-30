@@ -364,7 +364,7 @@ impl PlannerHarness {
         let native = self
             .inner
             .backend
-            .carrier_idle_for_detach(thread.as_deref())
+            .carrier_idle_for_recovery(thread.as_deref())
             .await
             .ok_or_else(|| CalmError::Conflict("old native execution is still active".into()))?;
         let park = self

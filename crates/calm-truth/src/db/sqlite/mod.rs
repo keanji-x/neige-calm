@@ -488,3 +488,5 @@ pub mod report_knowledge;
 pub mod session_backend;
 #[cfg(test)]
 mod session_backend_tests;
+
+pub mod claude_session_launch;

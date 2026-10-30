@@ -14,6 +14,7 @@ use std::{
 use workspace_runtime::execution::*;
 
 mod admission;
+pub(crate) mod quiescence;
 pub use admission::{Admission, PreparedIntent};
 pub(crate) use admission::{OccupancyFence, TrackAdmissionFence, TrackFenceHandoff};
 mod alias;

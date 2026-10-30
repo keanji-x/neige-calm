@@ -78,6 +78,8 @@ struct State {
     /// Whether the row's `agent_session_id` is persisted; a turn whose bind failed leaves it
     /// unset, and the next `--resume` spawn retries the bind.
     row_bound: bool,
+    /// Set once durable facts leave a recorded launch unconfirmed; it never clears.
+    identity_hold: Option<IdentityHold>,
     settle_after_stop: Duration,
     total_tokens: i64,
     mcp_token: Option<String>,
@@ -149,6 +151,36 @@ impl Shared {
         }
         for event in events {
             let _ = self.events.send(event);
+        }
+    }
+}
+
+/// A recorded `--session-id` launch that no durable fact confirms: this session neither
+/// resumes nor relaunches it. The recovery owner separately qualifies a fresh session; ordinary detachment
+/// still requires a bound identity.
+#[derive(Clone, Copy)]
+pub(super) struct IdentityHold {
+    pub(super) canonical: bool,
+}
+
+impl IdentityHold {
+    fn reader(self) -> String {
+        if self.canonical {
+            "This Claude session could not be confirmed after an earlier launch. Nothing was sent; saved messages are kept."
+        } else {
+            "This Claude session could not be confirmed, so nothing was sent. Start a fresh session to continue (history is kept)."
+        }
+        .into()
+    }
+
+    pub(super) fn refusal(self) -> crate::harness::backend::TurnStartFailure {
+        crate::harness::backend::TurnStartFailure::AwaitingRecovery {
+            error: CalmError::Conflict(if self.canonical {
+                "Claude session launch is unconfirmed; it is never launched again".into()
+            } else {
+                "Claude session launch is unconfirmed; only /planner/restart continues".into()
+            }),
+            reader: self.reader(),
         }
     }
 }
@@ -225,7 +257,8 @@ pub(crate) use start::{BeforeWriteFailure, SpawnFailure};
 impl ClaudePlannerSession {
     /// Open the session for its worker-session row: a row whose `agent_session_id` is bound
     /// resumes that Claude session (`--resume`). An unbound canonical row first recovers
-    /// from verified native replay evidence; only a row without that evidence starts new.
+    /// from verified native replay evidence. A recorded launch without either is held;
+    /// only a row with no unconfirmed launch starts new.
     pub async fn open(params: ClaudePlannerSessionParams) -> Result<Self> {
         let row = params
             .repo
@@ -237,12 +270,12 @@ impl ClaudePlannerSession {
                     params.worker_session_id
                 ))
             })?;
-        let row_bound = row.agent_session_id.is_some()
-            || (row.handle_state_json.as_ref().is_some_and(|snapshot| {
-                snapshot
-                    .get(calm_types::conversation::CONVERSATION_INPUT_CHECKPOINT_KEY)
-                    .is_some()
-            }) && super::identity::recover(&params).await?);
+        use super::identity::Identity;
+        let identity = super::identity::open(&params).await?;
+        let row_bound = matches!(identity, Identity::Bound | Identity::Recovered);
+        let identity_hold = (identity == Identity::Unconfirmed).then_some(IdentityHold {
+            canonical: super::identity::canonical(&row),
+        });
         let start = if row_bound {
             SessionStart::Resume
         } else {
@@ -252,6 +285,7 @@ impl ClaudePlannerSession {
         let state = State {
             start,
             row_bound,
+            identity_hold,
             settle_after_stop: SETTLE_AFTER_STOP,
             total_tokens: params.prior_total_tokens,
             mcp_token: None,
@@ -276,6 +310,11 @@ impl ClaudePlannerSession {
             .completion
             .bind(session.shared.params.repo.clone());
         Ok(session)
+    }
+
+    /// The provider-owned issuance hold of an unconfirmed launch, in the reader's words.
+    pub(crate) fn identity_hold(&self) -> Option<String> {
+        self.shared.state().identity_hold.map(IdentityHold::reader)
     }
 
     pub fn subscribe_events(&self) -> broadcast::Receiver<PlannerEvent> {
@@ -308,6 +347,21 @@ impl ClaudePlannerSession {
         }
         self.shared.parked.park()
     }
+    pub(crate) async fn carrier_idle_for_recovery(
+        &self,
+    ) -> Option<crate::harness::carrier_park::ParkToken<'_>> {
+        let _issue = self.shared.issue.try_lock().ok()?;
+        self.provider_admission_gate().await.ok()?;
+        if !self.recovery_idle() {
+            return None;
+        }
+        self.shared.parked.park()
+    }
+    pub(crate) fn recovery_idle(&self) -> bool {
+        let state = self.shared.state();
+        !state.shutting_down && state.active.is_none()
+    }
+
     pub(crate) fn carrier_idle(&self) -> bool {
         let state = self.shared.state();
         !state.shutting_down && state.active.is_none() && state.row_bound

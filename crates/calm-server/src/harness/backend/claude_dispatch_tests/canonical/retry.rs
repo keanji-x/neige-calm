@@ -69,10 +69,11 @@ pub(super) async fn action(
 }
 
 async fn retry_sequence(uncertain: bool, recover: bool, fenced: bool) {
+    // The original names its session, so a retry may resume it (#3318: an unnamed one holds).
     let mut fx = if recover {
-        Fixture::persistent("stall").await
+        Fixture::persistent("init-stall").await
     } else {
-        Fixture::new("stall").await
+        Fixture::new("init-stall").await
     };
     let selection = TurnModelSelection {
         model: Some("claude-frozen".into()),
@@ -148,7 +149,7 @@ async fn retry_sequence(uncertain: bool, recover: bool, fenced: bool) {
             argv.lines()
                 .collect::<Vec<_>>()
                 .windows(2)
-                .any(|args| args == ["--session-id", fx.owner.thread.as_str()])
+                .any(|args| args == ["--resume", fx.owner.thread.as_str()])
         );
         for _ in 0..10 {
             harness.refresh_canonical_input().await.unwrap();

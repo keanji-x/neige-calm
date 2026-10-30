@@ -19778,7 +19778,8 @@
         "enum": [
           "pending_inputs",
           "native_completion_unavailable",
-          "cleanup_required"
+          "cleanup_required",
+          "identity_unconfirmed"
         ]
       },
       "RunRecovery": {

@@ -1,6 +1,7 @@
 //! Unknown recovery exercises production HTTP admission and the real ACP process owner.
 use super::*;
 use calm_truth::db::RepoOutOfDomain;
+mod claude;
 mod codex;
 
 #[tokio::test]

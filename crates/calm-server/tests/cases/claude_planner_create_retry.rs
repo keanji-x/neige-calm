@@ -210,9 +210,10 @@ async fn a_message_less_retry_after_the_creates_own_claude_spawn_failure_starts_
 }
 
 /// A bounded user-line write can have reached Claude. Ordinary turns retain the existing
-/// paced requeue policy, unlike compact's submission-evidence wedge.
+/// paced requeue policy, unlike compact's submission-evidence wedge; #3318: the retry never
+/// launches the `--session-id` that write may have created, so it holds for a fresh session.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn an_ordinary_start_with_uncertain_write_requeues_and_retries() {
+async fn an_ordinary_start_with_uncertain_write_requeues_and_holds_its_launch() {
     let root = Root::new("stall");
     let stack = Stack::boot(&root).await;
     let (_track, card) = stack.create_claude_track().await;
@@ -250,11 +251,30 @@ async fn an_ordinary_start_with_uncertain_write_requeues_and_retries() {
     );
 
     root.set_scenario("exit");
+    let spawns = root.read_fake("spawns").unwrap();
     harness.retry_issuance_now().await;
-    stack.wait_outcomes(&card, 1).await;
-    assert_eq!(session.user_line_writes_for_test(), 2);
-    assert_eq!(harness.pending_len_for_test().await, 0);
-    let line: Value = serde_json::from_str(root.read_fake("stdin").unwrap().trim()).unwrap();
-    assert!(line["message"]["content"].to_string().contains(&text));
+    let block = tokio::time::timeout(BUDGET, async {
+        loop {
+            if let Some(block) = harness.issuance_block().await {
+                return block;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("the unconfirmed launch is held");
+    assert!(block.contains("fresh session"), "{block}");
+    assert_eq!(
+        root.read_fake("spawns").unwrap(),
+        spawns,
+        "nothing relaunched"
+    );
+    assert_eq!(session.user_line_writes_for_test(), 1);
+    assert_eq!(
+        harness.pending_len_for_test().await,
+        1,
+        "the input stays queued"
+    );
+    assert!(stack.outcomes(&card).await.is_empty());
     stack.shutdown().await;
 }

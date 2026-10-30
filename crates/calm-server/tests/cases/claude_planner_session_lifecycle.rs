@@ -610,6 +610,65 @@ async fn a_failed_bind_is_retried_on_the_next_turn() {
     );
 }
 
+/// #3318: the CLI named the session but its bind was cut off, and a historical turn records no
+/// replay evidence. A reopened session cannot tell whether that launch created the session, so
+/// it neither resumes it nor launches the same `--session-id` again: only a fresh session
+/// (`/planner/restart`, history kept) continues.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_lost_bind_holds_the_reopened_session_without_relaunching() {
+    let rig = Rig::new("slow-bind").await;
+    let mut rx = rig.session().subscribe_events();
+    rig.session()
+        .turn_start(
+            &rig.thread,
+            request(
+                rig.text("hello"),
+                &TurnModelSelection::inherit(),
+                calm_server::planner_permission_mode::PlannerPermissionMode::Never,
+                &client_id(),
+            ),
+        )
+        .await
+        .map(started)
+        .expect("turn_start");
+    let mut held = rig.repo.pool().begin().await.expect("tx");
+    sqlx::query("UPDATE worker_sessions SET updated_at_ms = updated_at_ms WHERE id = ?1")
+        .bind(&rig.worker_session_id)
+        .execute(&mut *held)
+        .await
+        .expect("take the write lock");
+    tokio::time::sleep(Duration::from_millis(6_500)).await;
+    held.rollback().await.expect("release");
+    let completed = completed_turn(&until_completed(&mut rx).await);
+    assert_eq!(completed["status"], "completed");
+    assert_eq!(rig.agent_session_id().await, None, "the bind was cut off");
+    rig.session().shutdown().await.expect("shutdown");
+
+    let spawns = rig.read_bin("spawns").expect("spawns");
+    std::fs::write(rig.bin("scenario"), "exit").expect("scenario");
+    let reopened = rig.open_session().await;
+    let error = reopened
+        .turn_start(
+            &rig.thread,
+            request(
+                rig.text("after a restart"),
+                &TurnModelSelection::inherit(),
+                calm_server::planner_permission_mode::PlannerPermissionMode::Never,
+                &client_id(),
+            ),
+        )
+        .await
+        .map(|outcome| format!("{outcome:?}"))
+        .expect_err("an unconfirmed launch is held");
+    let TurnStartFailure::AwaitingRecovery { error, reader } = error else {
+        panic!("expected the identity hold, got {error:?}");
+    };
+    assert!(error.to_string().contains("/planner/restart"), "{error}");
+    assert!(reader.contains("Start a fresh session"), "{reader}");
+    assert_eq!(rig.read_bin("spawns"), Some(spawns), "nothing relaunched");
+    assert_eq!(rig.agent_session_id().await, None);
+}
+
 /// #1791 PR4 review: a shutdown or a deletion seal that lands while the pre-spawn `--version`
 /// check runs is re-checked right before the mint, so nothing is minted and nothing spawned.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -502,10 +502,29 @@ async fn a_spawn_failure_leaves_no_instructions_file() {
                 "{error}"
             );
             assert!(rig.outcomes().await.is_empty());
+            // #3318: a process that exited before its release never ran Claude, so its
+            // launch is retired; a torn write after the release keeps it.
+            assert_eq!(
+                launch_recorded(&rig).await,
+                error.contains("StdinTorn"),
+                "{error}"
+            );
         }
         other => panic!("unexpected vanished CLI result: {other:?}"),
     }
     assert!(rig.instructions_files().is_empty());
+}
+
+/// Whether the worker session still holds an unretired `--session-id` launch.
+async fn launch_recorded(rig: &Rig) -> bool {
+    sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM claude_session_launches WHERE worker_session_id = ?",
+    )
+    .bind(&rig.worker_session_id)
+    .fetch_one(rig.repo.pool())
+    .await
+    .expect("launch record")
+        == 1
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -533,6 +552,10 @@ async fn a_seal_after_spawn_stops_the_cli_before_any_input() {
         rig.session().user_line_writes_for_test(),
         0,
         "no user line after the seal"
+    );
+    assert!(
+        !launch_recorded(&rig).await,
+        "a launch sealed before its release never ran Claude"
     );
 }
 

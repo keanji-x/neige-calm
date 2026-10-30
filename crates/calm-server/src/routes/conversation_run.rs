@@ -176,6 +176,7 @@ pub(super) async fn read(
             crate::harness::run_recovery::RunRecovery::AbandonSession{..}=>"The previous outcome is unknown. Start a fresh session to continue; history is kept.",
             crate::harness::run_recovery::RunRecovery::Held{reason:crate::harness::run_recovery::RunHeldReason::PendingInputs,..}=>"Queued observations belong to the old session. Resolve them before starting a fresh session.",
             crate::harness::run_recovery::RunRecovery::Held{cause:crate::harness::run_recovery::RunRecoveryCause::NativeCompletionPending,..}=>"Native completion is unconfirmed. Saved messages remain queued until reconciliation.",
+            crate::harness::run_recovery::RunRecovery::Held{reason:crate::harness::run_recovery::RunHeldReason::IdentityUnconfirmed,..}=>"This Claude session could not be confirmed after an earlier launch, so nothing more is sent. Saved messages are kept.",
             _=>"Execution remains held until safe recovery can be established. History is kept.",
         }.to_owned());
         let selection = crate::planner_model::CardModelSelection::from_payload(&card.payload)
