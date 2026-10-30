@@ -10,6 +10,7 @@ use crate::workspace_service::{
 };
 
 mod binding;
+mod not_sent;
 mod recovery;
 
 #[derive(Clone)]
@@ -320,10 +321,8 @@ impl PlannerHarnessStartAdapter {
         bound.observe_retained_sources(&wire, &target)?;
         if self.harness_registry.get(&wire.worker_session_id).is_none() {
             if target.snapshot.header.last_thread_id.is_none() {
-                if target.activation_operation.is_some() {
-                    return Err(CalmError::Conflict(
-                        "retained native activation is unresolved".into(),
-                    ));
+                if let Some(operation) = target.activation_operation.as_deref() {
+                    bound.retained_recover_not_sent(&wire, operation).await?;
                 }
                 // A down backend must not bind an activation marker or fail the
                 // accepted carrier. A later real POST may re-admit this head.
@@ -650,51 +649,6 @@ impl PlannerHarnessStartAdapter {
         .await?;
         output.data = json!({"activation":"bound", "thread_id":thread});
         Ok(AppServerInteractOutcome::MintedAndAwaited { thread_id: thread })
-    }
-
-    // A transport BeforeSend proof permits scoped cleanup even after revocation.
-    // Clear the claim and its crossing journal atomically; input facts stay pending.
-    async fn retained_not_sent(
-        &self,
-        wire: &RetainedPayload,
-        op: &Operation,
-        output: &mut TxOutput,
-    ) -> Result<()> {
-        let wire = wire.clone();
-        let op = op.clone();
-        let previous = output.clone();
-        let mut prepared = output.clone();
-        prepared.data = json!({"activation":"prepared"});
-        let checkpoint = prepared.clone();
-        write_in_tx_typed(self.repo.as_ref(), move |tx| {
-            Box::pin(async move {
-                super::super::repo_sqlite::require_live_claim_tx(tx, &op).await?;
-                if !crate::db::sqlite::session_release_unstarted_operation_tx(
-                    tx,
-                    &wire.card_id,
-                    &wire.worker_session_id,
-                    &op.id,
-                )
-                .await?
-                {
-                    return Err(CalmError::Conflict(
-                        "retained activation owner changed".into(),
-                    ));
-                }
-                checkpoint_app_server_interact_tx(
-                    tx,
-                    &op,
-                    AppServerInteractKind::MintAndAwait { thread_id: None },
-                    &previous,
-                    &checkpoint,
-                )
-                .await?;
-                Ok(())
-            })
-        })
-        .await?;
-        *output = prepared;
-        Ok(())
     }
 
     pub(super) async fn retained_spawn(
