@@ -3,7 +3,7 @@ use super::assistant_canonical::track;
 use super::claude_creation_tests::assistant::{configure, wait_frame};
 use super::*;
 
-async fn run(app: &axum::Router, cookie: &str, uri: &str) -> Value {
+pub(super) async fn run(app: &axum::Router, cookie: &str, uri: &str) -> Value {
     tokio::time::timeout(Duration::from_secs(30), async {
         loop {
             let response = app
@@ -137,6 +137,16 @@ async fn canonical_saved_queue_has_no_duplicate_execution_error_for_all_provider
             "{provider}: {value}"
         );
         assert_eq!(value["pending_inputs"][0]["kind"], "human");
+        assert_eq!(
+            value["pending"].as_array().unwrap().len(),
+            1,
+            "a saved Human message must retain its addressable queue controls: {provider}: {value}"
+        );
+        assert_eq!(value["pending"][0]["text"], FIRST_BODY);
+        assert_eq!(
+            value["pending"][0]["entry_id"],
+            value["pending_inputs"][0]["message_id"]
+        );
         assert!(value["active_input"].is_null());
         assert!(
             value["blocked_reason"].is_null(),

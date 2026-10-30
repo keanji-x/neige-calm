@@ -66,9 +66,9 @@ pub(super) async fn current_frame(
                 }
                 // Decode and validate the original immutable plan through its sole owner.
                 super::conversation::submission_plan_tx(&mut tx, &id).await?;
-                identities.push((id, identity.logical_turn_id));
+                identities.push((id, identity.logical_turn_id, identity.ordinal));
             }
-            let needs_retry_policy = identities.iter().any(|(id, _)| {
+            let needs_retry_policy = identities.iter().any(|(id, _, _)| {
                 frame.canonical_inputs.attempt(id).is_some_and(|attempt| {
                     !frame.canonical_inputs.is_human_resolved(&attempt.attempt)
                         && matches!(
@@ -90,7 +90,7 @@ pub(super) async fn current_frame(
                 None
             };
             let mut availability = Vec::with_capacity(identities.len());
-            for (id, _) in &identities {
+            for (id, _, _) in &identities {
                 let reason = match frame.canonical_inputs.attempt(id) {
                     None => Some(ConversationActionUnavailableReason::NotHeld),
                     Some(attempt) if frame.canonical_inputs.is_human_resolved(&attempt.attempt) => {
@@ -159,8 +159,20 @@ pub(super) async fn current_frame(
         }
         _ => None,
     };
+    let pending_humans = match canonical.as_ref() {
+        Some(frame) => {
+            super::conversation::pending_human_messages_tx(
+                &mut tx,
+                card,
+                &frame.canonical_inputs.pending,
+            )
+            .await?
+        }
+        None => vec![],
+    };
     tx.commit().await?;
     Ok(crate::db::ConversationReadFrame {
+        pending_humans,
         terminal_outcome,
         runtime,
         snapshot,

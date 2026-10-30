@@ -202,7 +202,11 @@ export type ConversationReadContract = "conversation_v1";
 
 export type ConversationResolutionActions = { keep: ConversationActionAvailability, retry: ConversationActionAvailability, };
 
-export type ConversationSubmissionDelivery = { carrier_id: string, logical_turn_id: string, submission_id: string, 
+export type ConversationSubmissionDelivery = { 
+/**
+ * Zero names Initial; positive ordinals are supplemental claims of that execution.
+ */
+ordinal: number, carrier_id: string, logical_turn_id: string, submission_id: string, 
 /**
  * Null explicitly means no crossing has been recorded for this submission.
  */
@@ -237,6 +241,8 @@ export type DeliveryWakeReason = "failed" | "ungated_candidate" | "gate_already_
  * Producer of a track-report edit. Existing variants are persisted wire values.
  */
 export type EditAuthor = "planner" | "user" | "assistant" | "kernel" | "plugin";
+
+export type EditQueuedMessageRequest = { carrier_id: string, if_revision: number, text: string, };
 
 export type EnrollmentClaim = { enrollmentId: string, ticket: string, deviceName: string, attemptId: string, attemptSecret: string, };
 
@@ -653,6 +659,10 @@ export type ProposalOp = { "op": "upsert_block", block_id?: string, temp_id?: st
  */
 export type ProvenanceSample = { realpath: string, common_dir: string, registered: boolean, };
 
+export type QueuedMessageRequest = { carrier_id: string, if_revision: number, };
+
+export type QueuedMessageSteerResult = { submission_id: string, turn_id: string, delivery: ConversationDelivery, };
+
 /**
  * One target's receipt. `readThroughMs` only rises; `manualUnread` is the reader's explicit
  * "mark unread", cleared by the next mark read.
@@ -731,6 +741,8 @@ export type SourceProvenance = "full_text" | "summary" | "web_page" | "manual";
  * One anchor of a source: `text` is a byte-exact substring of the body (`body[start..end]`, UTF-8 byte offsets).
  */
 export type SourceQuote = { id: string, text: string, start: number, end: number, };
+
+export type SteerQueuedMessageRequest = { carrier_id: string, if_revision: number, turn_id: string, };
 
 export type SystemAssistantSource = "today-summary";
 

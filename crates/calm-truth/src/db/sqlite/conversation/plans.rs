@@ -35,6 +35,27 @@ pub async fn pending_plan_for_prefix_tx(
         .pending
         .get(..count)
         .ok_or(CalmError::Conflict("pending human input prefix changed"))?;
+    pending_plan_for_entries_tx(tx, carrier, entries, contexts).await
+}
+
+/// A supplemental Human selection names one exact queued revision, not a new queue.
+pub async fn pending_plan_for_message_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    carrier: &super::CurrentInputCarrier,
+    message: &MessageRevisionRef,
+) -> Result<SubmissionRenderPlan> {
+    let entry = carrier.checkpoint().pending.iter().find(|entry|
+        matches!(entry, PendingInput::Human { message: actual, .. } if actual == message))
+        .ok_or(CalmError::Conflict("supplemental message is no longer pending"))?;
+    pending_plan_for_entries_tx(tx, carrier, std::slice::from_ref(entry), vec![]).await
+}
+
+async fn pending_plan_for_entries_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    carrier: &super::CurrentInputCarrier,
+    entries: &[PendingInput],
+    contexts: Vec<SystemRenderContext>,
+) -> Result<SubmissionRenderPlan> {
     let mut segments = contexts
         .into_iter()
         .map(|context| SubmissionRenderSegment::Context {
@@ -262,9 +283,52 @@ pub async fn original_input_execution_tx(
     tx: &mut Transaction<'_, Sqlite>,
     carrier: &super::CurrentInputCarrier,
 ) -> Result<Option<OriginalInputExecution>> {
-    let Some(active) = carrier.checkpoint().active.as_ref() else {
+    let Some(original) = original_input_target_tx(tx, carrier).await? else {
         return Ok(None);
     };
+    let active = carrier
+        .checkpoint()
+        .active
+        .as_ref()
+        .expect("original target has active execution");
+    let original_id = original.proof.attempt().submission_id.clone();
+    for submission in &active.submission_ids {
+        let Some(report) = carrier.checkpoint().attempt(submission) else {
+            return Ok(None);
+        };
+        let supplemental_resolved =
+            submission != &original_id && carrier.checkpoint().is_human_resolved(&report.attempt);
+        let settled_for_end = match report.delivery {
+            InputDeliveryFact::CrossingUnknown | InputDeliveryFact::NotDispatched { .. } => {
+                supplemental_resolved
+            }
+            InputDeliveryFact::Unknown | InputDeliveryFact::Accepted { .. } => true,
+        };
+        if !settled_for_end || !original.same_execution(&report.correlation) {
+            return Ok(None);
+        }
+        let identity = submission_identity_tx(tx, submission).await?;
+        if identity.card_id != carrier.card_id()
+            || identity.logical_turn_id != active.logical_turn_id
+            || ((submission == &original_id) != (identity.ordinal == 0))
+        {
+            return Err(CalmError::Conflict(
+                "active submission crosses its original execution",
+            ));
+        }
+    }
+    Ok(Some(original))
+}
+
+/// Exact original target for admission/control, independent of supplemental report settlement.
+/// END uses original_input_execution_tx's stronger all-submission gate.
+pub async fn original_input_target_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    carrier: &super::CurrentInputCarrier,
+) -> Result<Option<OriginalInputExecution>> {
+    if carrier.checkpoint().active.is_none() {
+        return Ok(None);
+    }
     let Some(original_id) = original_initial_submission_tx(tx, carrier).await? else {
         return Ok(None);
     };
@@ -285,27 +349,6 @@ pub async fn original_input_execution_tx(
     };
     if original.turn_id().is_none() {
         return Ok(None);
-    }
-    for submission in &active.submission_ids {
-        let Some(report) = carrier.checkpoint().attempt(submission) else {
-            return Ok(None);
-        };
-        if !matches!(
-            report.delivery,
-            InputDeliveryFact::Unknown | InputDeliveryFact::Accepted { .. }
-        ) || !original.same_execution(&report.correlation)
-        {
-            return Ok(None);
-        }
-        let identity = submission_identity_tx(tx, submission).await?;
-        if identity.card_id != carrier.card_id()
-            || identity.logical_turn_id != active.logical_turn_id
-            || ((submission == &original_id) != (identity.ordinal == 0))
-        {
-            return Err(CalmError::Conflict(
-                "active submission crosses its original execution",
-            ));
-        }
     }
     Ok(Some(original))
 }

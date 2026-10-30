@@ -70,6 +70,7 @@ function emptyConversationContent(working: boolean): EmptyStateSchema {
 }
 
 export type ChatThreadProps = Readonly<{
+  waitingForExecution?: boolean;
   readingView?: ThreadReadingView;
   historyPrefetch?: HistoryPrefetch;
   conversation: Conversation;
@@ -120,7 +121,7 @@ export type ChatThreadProps = Readonly<{
   renderLink?: ReplyLinkRenderer;
 }>;
 
-export const ChatThread = memo(function ChatThread({ conversation, turns, pendingMessages, activeInput = null, keepInput, retryInput, hasPendingMessages, pending = false, sending = false, submissionRequest = 0, cards, stalled, stalledReason, recovery = null, statusUnconfirmed = false, statusLoading = false, stopFeedback = null, currentResponseOutcome = null, canContinue, copyText, regenerateMessage, editMessage, editing = null, replacement = null, runningAnchor = null, imageFiles = null, renderLink, readingView, historyPrefetch }: ChatThreadProps) {
+export const ChatThread = memo(function ChatThread({ conversation, turns, pendingMessages, activeInput = null, keepInput, retryInput, hasPendingMessages, pending = false, sending = false, submissionRequest = 0, cards, stalled, stalledReason, recovery = null, statusUnconfirmed = false, statusLoading = false, stopFeedback = null, currentResponseOutcome = null, canContinue, copyText, regenerateMessage, editMessage, editing = null, replacement = null, runningAnchor = null, imageFiles = null, renderLink, readingView, historyPrefetch, waitingForExecution = false }: ChatThreadProps) {
   const compactViewport = useCompactViewport();
   // Observe the browser timezone on render; keep formatters stable for memoized rows.
   const timeZone = new Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -153,7 +154,7 @@ export const ChatThread = memo(function ChatThread({ conversation, turns, pendin
     } };
   const currentMeta = <CurrentStatusNotice detailsExpanded={reading.expanded.get('current-status') ?? false}
     onDetailsExpandedChange={expanded => reading.setExpanded('current-status', expanded)} outcome={currentResponseOutcome ?? currentOutcome} canContinue={canContinue && !statusUnconfirmed} live={live} sending={sending} statusUnconfirmed={statusUnconfirmed} statusLoading={statusLoading}
-    stalled={stalled} recovery={recovery} stalledReason={stalledReason ?? null} feedback={stopFeedback} copyAction={copyAction} editAction={editAction} regenerateAction={regenerateAction} runningAnchor={runningAnchor} />;
+    waitingForExecution={waitingForExecution} stalled={stalled} recovery={recovery} stalledReason={stalledReason ?? null} feedback={stopFeedback} copyAction={copyAction} editAction={editAction} regenerateAction={regenerateAction} runningAnchor={runningAnchor} />;
   const endRef = useRef<HTMLDivElement | null>(null);
   /** The box every marker lookup starts from. Not `.thread` itself: the stylesheet's `> * + *` rules space that element's children. */
   const frameRef = useRef<HTMLDivElement | null>(null);

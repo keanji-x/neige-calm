@@ -10,7 +10,7 @@ import type { Conversation } from '../../../../../core/domain/conversation.ts';
 
 afterEach(cleanup);
 it('renders the server refusal for canonical OpenCode Unknown with Keep and no Retry', () => {
-  const held: ConversationSubmissionDelivery = {carrier_id:'carrier',logical_turn_id:'logical',submission_id:'submission',attempt:{
+  const held: ConversationSubmissionDelivery = {carrier_id:'carrier',logical_turn_id:'logical',ordinal:0,submission_id:'submission',attempt:{
     attempt_id:'attempt',revision:'1',delivery:'unknown',target:{provider:'opencode',thread_id:'local',native_session_id:'native',native_turn_id:null,local_turn_id:'turn',rpc_request_id:null},
     invocation:{kind:'recorded',configuration:{model:'fixture/model-a',effort:'normal',permission:'never'}},resolution:null,
     actions:{keep:{kind:'available'},retry:{kind:'unavailable',reason:'unsupported_binding'}},
@@ -22,7 +22,7 @@ it('renders the server refusal for canonical OpenCode Unknown with Keep and no R
 });
 
 it('preserves Retry when the server makes it available', () => {
-  const held: ConversationSubmissionDelivery = {carrier_id:'carrier',logical_turn_id:'logical',submission_id:'submission',attempt:{
+  const held: ConversationSubmissionDelivery = {carrier_id:'carrier',logical_turn_id:'logical',ordinal:0,submission_id:'submission',attempt:{
     attempt_id:'attempt',revision:'1',delivery:'unknown',target:{provider:'codex',thread_id:'native',native_session_id:null,native_turn_id:null,local_turn_id:null,rpc_request_id:null},
     invocation:{kind:'recorded',configuration:{model:'original',effort:'high',permission:'never'}},resolution:null,
     actions:{keep:{kind:'available'},retry:{kind:'available'}},
@@ -32,7 +32,7 @@ it('preserves Retry when the server makes it available', () => {
 });
 
 function activeDelivery(provider: Conversation['provider']): ConversationActiveInput {
-  return {current_execution_id:'logical',submissions:[{carrier_id:'carrier',logical_turn_id:'logical',submission_id:'submission',attempt:{
+  return {current_execution_id:'logical',submissions:[{carrier_id:'carrier',logical_turn_id:'logical',ordinal:0,submission_id:'submission',attempt:{
     attempt_id:'attempt',revision:'1',delivery:'unknown',target:{provider,thread_id:'thread',native_session_id:null,native_turn_id:null,local_turn_id:'local-turn',rpc_request_id:null},
     invocation:{kind:'recorded',configuration:{model:null,effort:null,permission:'never'}},resolution:null,
     actions:{keep:{kind:'available'},retry:{kind:'unavailable',reason:'invocation_not_fully_frozen'}},

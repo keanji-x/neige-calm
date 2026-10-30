@@ -3,6 +3,7 @@ import { queryKeys } from './query-keys.ts';
 export { queryKeys } from './query-keys.ts';
 import { conversationItemsOperation, conversationRunOperation, keepConversationInputOperation, retryConversationInputOperation } from '../../../../core/domain/conversation-display.ts';
 import { conversationLiveOperation } from '../../../../core/domain/conversation-live.ts';
+import { editQueuedMessageOperation, withdrawQueuedMessageOperation, steerQueuedMessageOperation } from '../../../../core/domain/conversation-queue-controls.ts';
 import type { ConversationCursor, ConversationLiveReplies, HarnessLiveReplies } from '../../../../core/api/generated/wire.ts';
 // Query and mutation wiring shared by app/router, app/shell and every feature slice. It lives under
 // app/providers because the router renders the shell and both need the same reads (`no-circular`).
@@ -261,6 +262,21 @@ export function usePlannerMutations(transport: ApiTransportPort, cardId: string,
     },
     /* Resolves rather than rejects on a refusal: a lost compare-and-swap and a drained entry are answers
      * the reader has to be shown. The refresh runs on every path — a 409 proves the cached page is behind. */
+    editCanonicalQueued: (entry: PendingQueueEntry, text: string, carrier: string, answered: (saved: PlannerInputMutation & Readonly<{ text: string }>) => void): Promise<PlannerQueueEditOutcome> =>
+      runOperation(transport,editQueuedMessageOperation(cardId,carrier,entry.entry_id,entry.rev,text),unauthorized)
+        .then((saved):PlannerQueueEditOutcome => { answered(saved); return {kind:'done',entry:{...entry,text:saved.text,rev:saved.rev}}; })
+        .catch((error:unknown) => plannerQueueWriteFailure(error instanceof ApiError ? error.failure : null,'Could not edit the queued message.')).then(refreshAfterQueueWrite),
+    withdrawCanonicalQueued: (entryId:string,rev:number,carrier:string,answered:(saved:PlannerInputMutation)=>void):Promise<PlannerQueueWriteOutcome> =>
+      runOperation(transport,withdrawQueuedMessageOperation(cardId,carrier,entryId,rev),unauthorized)
+        .then((saved):PlannerQueueWriteOutcome => { answered(saved); return {kind:'done'}; })
+        .catch((error:unknown) => plannerQueueWriteFailure(error instanceof ApiError ? error.failure : null,'Could not withdraw the queued message.')).then(refreshAfterQueueWrite),
+    steerCanonicalQueued: (entry:PendingQueueEntry,carrier:string,turn:string,answered:()=>void):Promise<PlannerQueueWriteOutcome> =>
+      runOperation(transport,steerQueuedMessageOperation(cardId,carrier,entry.entry_id,entry.rev,turn),unauthorized)
+        .then((result):PlannerQueueWriteOutcome => {
+          if (result.delivery === 'not_dispatched') return {kind:'failed',message:'The message was not delivered to this response. Checking its current state.'};
+          answered(); return {kind:'done'};
+        }).catch((error:unknown) => plannerQueueWriteFailure(error instanceof ApiError ? error.failure : null,
+          'Delivery could not be confirmed. Checking the message’s current state.')).then(refreshAfterQueueWrite),
     editQueued: (entry: PendingQueueEntry, text: string, answered: (saved: PlannerInputMutation & Readonly<{ text: string }>) => void): Promise<PlannerQueueEditOutcome> =>
       runOperation(transport, editPlannerInputOperation(cardId, entry.entry_id, text, entry.rev), unauthorized)
         .then((saved): PlannerQueueEditOutcome => { answered(saved); return { kind: 'done', entry: { ...entry, text: saved.text, rev: saved.rev } }; })

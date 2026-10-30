@@ -12,7 +12,7 @@ export function heldConversationInputs(input: ConversationActiveInput | null, ex
   return input?.submissions.filter(submission => {
     const attempt = submission.attempt;
     return attempt !== null && (attempt.delivery === 'crossing_unknown' || attempt.delivery === 'unknown')
-      && (!executionRunning || attempt.resolution !== null || submission.logical_turn_id !== input.current_execution_id);
+      && (!executionRunning || submission.ordinal > 0 || attempt.resolution !== null || submission.logical_turn_id !== input.current_execution_id);
   }) ?? [];
 }
 
@@ -157,7 +157,7 @@ export const conversationRunMetadataSchema = z.object({
       queue_position:z.number().int().nonnegative(),queued_at_ms:z.number()}).strict(),
   ])),
   active_input:z.object({ current_execution_id:z.string().nullable(),submissions:z.array(z.object({
-    carrier_id:z.string().min(1),logical_turn_id:z.string().min(1),submission_id:z.string().min(1),
+    carrier_id:z.string().min(1),logical_turn_id:z.string().min(1),submission_id:z.string().min(1),ordinal:z.number().int().nonnegative(),
     attempt:z.object({
       attempt_id:z.string().min(1),revision:decimalU64,
       target:z.object({provider:agentProviderSchema,thread_id:z.string().min(1),

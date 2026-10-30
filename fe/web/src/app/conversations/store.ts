@@ -1,4 +1,5 @@
 import { ApiError } from '../../../../core/domain/failure-class.ts';
+import { pendingQueueWithCurrentHumanVersions, pendingQueueOwnsHumanEntry } from '../../../../core/domain/conversation-queue-controls.ts';
 import { mintIdempotencyKey } from '../providers/idempotency-key.ts';
 import { useCurrentUser } from '../auth/current-user.tsx';
 import { buildConversationTranscript, currentConversationOutcome, nativeDisplayRows, orderedPendingInputs, removedHumanIds } from '../../../../core/domain/conversation-display.ts';
@@ -131,8 +132,10 @@ export function useConversationStore(
        up is shown again (`tombstoneHides`). */
   const [forgotten, setForgotten] = useState<ReadonlyMap<string, number>>(() => new Map());
   // Let the initial-input owner account for its suppressed rows before ordinary local tombstones filter the queue.
-  const initialQueue = useMemo(() => initialInputQueueView(servedQueue, acceptedInitial, initialObservation.data, landedRun),
-    [servedQueue, acceptedInitial, initialObservation.data, landedRun]);
+  const currentQueue = useMemo(() => canonical ? pendingQueueWithCurrentHumanVersions(servedQueue,serverTurns) : servedQueue,
+    [canonical,servedQueue,serverTurns]);
+  const initialQueue = useMemo(() => initialInputQueueView(currentQueue, acceptedInitial, initialObservation.data, landedRun),
+    [currentQueue, acceptedInitial, initialObservation.data, landedRun]);
   const pendingQueue = useMemo(
     () => forgotten.size === 0 ? initialQueue.entries : initialQueue.entries.filter(entry =>
       !tombstoneHides(forgotten.get(forgottenKey(cardId, entry.entry_id)), entry.rev)),
@@ -173,6 +176,7 @@ export function useConversationStore(
   const serverEntries = useMemo(() => {
     if (rememberedEntries !== null) return rememberedEntries.filter(entry => !isOptimisticConversationTurn(entry));
     return buildConversationTranscript(displayItems, currentUser?.userId ?? null)
+      .filter(entry => !pendingQueueOwnsHumanEntry(entry,pendingQueueIds))
       .filter(entry => !isUserConversationTurn(entry) || entry.queueEntryId == null || !pendingQueueIds.has(entry.queueEntryId)
         || (entry.inputSource?.entryRev != null && entry.inputSource.entryRev !== pendingQueueIds.get(entry.queueEntryId)));
   }, [displayItems, currentUser?.userId, pendingQueueIds, rememberedEntries]);
@@ -281,6 +285,15 @@ export function useConversationStore(
   const model = useMemo(() => run.data === undefined ? FOLLOW_INSTALLATION_DEFAULT
     : { model: run.data.model, reasoning_effort: run.data.reasoning_effort }, [run.data]);
 
+  const canonicalCarrier = (): string => {
+    const carrier = run.data?.worker_session_id;
+    if (!canonical || carrier == null) throw new Error('The current conversation carrier is not confirmed.');
+    return carrier;
+  };
+  const removeQueued = (entry: PendingQueueEntry, answered: (saved: import('../../../../core/domain/conversation.ts').PlannerInputMutation) => void) => canonical
+    ? mutations.withdrawCanonicalQueued(entry.entry_id,entry.rev,canonicalCarrier(),answered)
+    : mutations.deleteQueued(entry.entry_id,entry.rev,answered);
+
   const observeQueueOutcome = <T extends PlannerQueueWriteOutcome>(outcome: T): T => {
     if (outcome.kind === 'stale') outbox.observeQueuedInput({ kind: 'queue', entryId: outcome.entryId, rev: outcome.rev, text: outcome.text });
     return outcome;
@@ -288,15 +301,18 @@ export function useConversationStore(
 
   /* Held in the registry, so a strip remounted on the way back still sees its conversation's write out (#2068). */
   const deleteQueuedEntry = (entry: PendingQueueEntry) =>
-    registry.holdQueueWrite(cardId, () => mutations.deleteQueued(entry.entry_id, entry.rev, removed => {
+    registry.holdQueueWrite(cardId, () => removeQueued(entry, removed => {
       // Import the real ACK before the mutation owner starts either reconciliation read.
       outbox.forgetQueuedEntry(removed);
       forgetQueuedEntry(entry);
     }).then(observeQueueOutcome));
-  /* A successful steer delivers this entry; only its queue copy departs. */
-  const steerQueuedEntry = phase === 'turn_running'
+  /* A persisted handoff retires the queue copy; canonical Unknown remains a held submission. */
+  const steerQueuedEntry = phase === 'turn_running' && !executionHeld && !stalled && run.error === null
+    && (!canonical || run.data?.native_turn_id != null)
     ? (entry: PendingQueueEntry) => registry.holdQueueWrite(cardId,
-      () => mutations.steerQueued(entry.entry_id, entry.rev, () => { forgetQueuedEntry(entry); }).then(observeQueueOutcome))
+      () => (canonical
+        ? mutations.steerCanonicalQueued(entry,canonicalCarrier(),run.data!.native_turn_id!,() => { forgetQueuedEntry(entry); })
+        : mutations.steerQueued(entry.entry_id, entry.rev, () => { forgetQueuedEntry(entry); })).then(observeQueueOutcome))
     : undefined;
 
   const resolveInput = async (decision: 'keep' | 'retry', submission: import('../../../../core/api/generated/wire.ts').ConversationSubmissionDelivery) => {
@@ -339,9 +355,9 @@ export function useConversationStore(
     pendingSends: presentation.sending,
     queueDisplayAccounting,
     pendingQueueOverflow,
-    editQueuedEntry: (entry, text) => registry.holdQueueWrite(cardId, () => mutations.editQueued(entry, text, saved => {
-      outbox.acknowledgeQueuedEdit(entry, saved);
-    }).then(observeQueueOutcome)),
+    editQueuedEntry: (entry, text) => registry.holdQueueWrite(cardId, () => (canonical
+      ? mutations.editCanonicalQueued(entry,text,canonicalCarrier(),saved => { outbox.acknowledgeQueuedEdit(entry,saved); })
+      : mutations.editQueued(entry,text,saved => { outbox.acknowledgeQueuedEdit(entry,saved); })).then(observeQueueOutcome)),
     deleteQueuedEntry,
     queueWriteOut,
     steerQueuedEntry,

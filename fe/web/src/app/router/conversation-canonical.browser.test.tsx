@@ -71,7 +71,7 @@ it.each([false,true])('keeps the two canonical pending refs separate from one AC
       compact_outcome:null,context_usage_invalidated:false,running_turn:{turn_id:'native-h1',elapsed_ms:1000},token_usage:null,
       input_contract:'canonical',history_replacement_supported:false,terminal_outcome:null,terminal_timeout:null,runtime_state:'running',
       pending_inputs:sent ? [s1Ref,h2Ref] : [s1Ref],native_turn_id:'native-h1',
-      active_input:{current_execution_id:'logical-h1',submissions:[{carrier_id:'original-retained',logical_turn_id:'logical-h1',submission_id:'submission-h1',attempt:{attempt_id:'attempt-h1',revision:'1',delivery:'accepted',target:{provider:'codex',thread_id:'thread-h1',native_session_id:null,local_turn_id:null,native_turn_id:'native-h1',rpc_request_id:null},invocation:{kind:'prior_invocation_not_recorded'},resolution:null,actions:{keep:{kind:'unavailable',reason:'not_held'},retry:{kind:'unavailable',reason:'unsupported_source'}}}}]},
+      active_input:{current_execution_id:'logical-h1',submissions:[{carrier_id:'original-retained',logical_turn_id:'logical-h1',ordinal:0,submission_id:'submission-h1',attempt:{attempt_id:'attempt-h1',revision:'1',delivery:'accepted',target:{provider:'codex',thread_id:'thread-h1',native_session_id:null,local_turn_id:null,native_turn_id:'native-h1',rpc_request_id:null},invocation:{kind:'prior_invocation_not_recorded'},resolution:null,actions:{keep:{kind:'unavailable',reason:'not_held'},retry:{kind:'unavailable',reason:'unsupported_source'}}}}]},
     });
     if(request.method==='POST' && request.path.endsWith('/planner/input')){
       expect(request.body).toEqual({text});
@@ -246,7 +246,7 @@ it('shows a confirmed current timeout as feedback while Idle still accepts the n
 it.each([1280,390])('shows canonical held delivery without another transcript row at width %s',async width=>{
   await page.viewport(width,800);
   const input:ConversationActiveInput={current_execution_id:null,submissions:[{
-    carrier_id:'original-retained',logical_turn_id:'logical',submission_id:'submission',attempt:{
+    carrier_id:'original-retained',logical_turn_id:'logical',ordinal:0,submission_id:'submission',attempt:{
       attempt_id:'attempt',revision:'7',delivery:'unknown',target:{provider:'codex',thread_id:'thread',native_session_id:null,native_turn_id:null,local_turn_id:null,rpc_request_id:null},
       invocation:width === 1280 ? {kind:'recorded',configuration:{model:'original-model',effort:'high',permission:'never'}} : {kind:'prior_invocation_not_recorded'},resolution:null,actions:{keep:{kind:'available'},retry:{kind:'unavailable',reason:'unsupported_source'}},
     },
@@ -288,7 +288,7 @@ async function retryView(width: number, available = true, loseFirst = false) {
     target:{provider:'codex' as const,thread_id:'thread',native_session_id:null,native_turn_id:null,local_turn_id:null,rpc_request_id:null},
     invocation:{kind:'recorded' as const,configuration:{model:'original-model',effort:'high',permission:'never' as const}},resolution:null,
     actions:{keep:{kind:'available' as const},retry:available ? {kind:'available' as const} : {kind:'unavailable' as const,reason:'invocation_not_fully_frozen' as const}}};
-  const input:ConversationActiveInput={current_execution_id:null,submissions:[{carrier_id:'original-retained',logical_turn_id:'logical',submission_id:'retry-submission',attempt}]};
+  const input:ConversationActiveInput={current_execution_id:null,submissions:[{carrier_id:'original-retained',logical_turn_id:'logical',ordinal:0,submission_id:'retry-submission',attempt}]};
   const run={state:'failed' as const,phase:'wedged' as const,blockedReason:'Execution is held.',terminalTimeout:null,pendingInputs:[] as ConversationPendingInput[],activeInput:input};
   const requests:ApiRequest[]=[];
   const f=fixture([human('retry-message','jian','Jian',1,'Saved input to repeat')],run,undefined,request=>{
@@ -363,7 +363,7 @@ it.each([1280,390])('retry keep-only reason remains visible at width %s',async w
 it.each(['failed', 'exited'] as const)('canonical OpenCode Unknown offers Keep without Retry while runtime is %s', async state => {
   await page.viewport(1280,800);
   const input:ConversationActiveInput={current_execution_id:null,submissions:[{
-    carrier_id:'original-retained',logical_turn_id:'logical',submission_id:'opencode-submission',attempt:{
+    carrier_id:'original-retained',logical_turn_id:'logical',ordinal:0,submission_id:'opencode-submission',attempt:{
       attempt_id:'attempt',revision:'1',delivery:'unknown',target:{provider:'opencode',thread_id:'local',native_session_id:'native',native_turn_id:null,local_turn_id:'turn',rpc_request_id:null},
       invocation:{kind:'recorded',configuration:{model:'fixture/model-a',effort:'normal',permission:'never'}},resolution:null,
       actions:{keep:{kind:'available'},retry:{kind:'unavailable',reason:'unsupported_binding'}},
@@ -403,7 +403,7 @@ it.each(['codex','claude','opencode','grok'] as const)('keeps %s sending informa
     await expect.element(page.getByText('1 input is waiting for execution.',{exact:true})).toBeVisible();
     noFalseAlarm();
     run.pendingInputs=[];run.state='running';run.phase='issuing_turn';
-    run.activeInput={current_execution_id:'logical',submissions:[{carrier_id:'original-retained',logical_turn_id:'logical',submission_id:'submission',attempt}]};
+    run.activeInput={current_execution_id:'logical',submissions:[{carrier_id:'original-retained',logical_turn_id:'logical',ordinal:0,submission_id:'submission',attempt}]};
     await refresh();
     await expect.element(page.getByRole('button',{name:'Stop',exact:true})).toBeVisible();
     noFalseAlarm();
@@ -417,7 +417,7 @@ it.each(['codex','claude','opencode','grok'] as const)('keeps %s sending informa
     await waitFor(()=>expect(screen.queryByRole('button',{name:'Stop'})).toBeNull());
     noFalseAlarm();
     // A later attempt ended without a receipt; the accepted attempt is never downgraded.
-    run.activeInput={current_execution_id:null,submissions:[{carrier_id:'original-retained',logical_turn_id:'later-logical',submission_id:'later-submission',attempt:{...attempt,attempt_id:'later-attempt',delivery:'unknown'}}]};
+    run.activeInput={current_execution_id:null,submissions:[{carrier_id:'original-retained',logical_turn_id:'later-logical',ordinal:0,submission_id:'later-submission',attempt:{...attempt,attempt_id:'later-attempt',delivery:'unknown'}}]};
     await refresh();
     await expect.element(page.getByText('Delivery not confirmed',{exact:true})).toBeVisible();
     await expect.element(page.getByRole('button',{name:'Keep as delivered',exact:true})).toBeVisible();

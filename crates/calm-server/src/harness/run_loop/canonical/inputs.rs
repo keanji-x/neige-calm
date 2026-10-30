@@ -15,6 +15,9 @@ pub(in crate::harness::run_loop) struct CanonicalInputs {
 }
 
 impl CanonicalInputs {
+    pub fn consumed(&self, inputs: &[CanonicalPendingIdentity]) {
+        self.sources.consumed(inputs);
+    }
     pub fn new(
         frame: CommittedFrame,
         sources: Arc<CanonicalSourceIndex>,

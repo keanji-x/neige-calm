@@ -70,7 +70,11 @@ pub async fn release_submission_tx(
         .ok_or_else(|| CalmError::Conflict("submission is not owned by this active carrier"))?;
     if active.logical_turn_id.as_str() != turn_id
         || !active.submission_ids.contains(&attempt.submission_id)
-        || active.submission_ids.len() != 1
+        || (super::submission_identity_tx(tx, &attempt.submission_id)
+            .await?
+            .ordinal
+            == 0
+            && active.submission_ids.len() != 1)
     {
         return Err(CalmError::Conflict(
             "submission release crosses the current logical Turn",
@@ -191,7 +195,14 @@ pub async fn release_submission_tx(
         .checkpoint
         .pending
         .sort_by_key(PendingInput::queue_position);
-    carrier.checkpoint.active = None;
+    if let Some(active) = carrier.checkpoint.active.as_mut() {
+        active
+            .submission_ids
+            .retain(|id| id != &attempt.submission_id);
+        if active.submission_ids.is_empty() {
+            carrier.checkpoint.active = None;
+        }
+    }
     // The existing runtime FSM settles phase/retry/rewind separately. A prompt
     // non-dispatch fact is not permission to clear an uncertain native cut.
     save_input_carrier_tx(tx, carrier).await?;

@@ -6,7 +6,9 @@ mod acknowledgement;
 pub(crate) mod end_transition;
 pub(crate) use acknowledgement::acknowledge;
 mod hydrate;
-pub(crate) use end_transition::{complete_once, execution_target_tx};
+mod supplemental;
+pub(crate) use end_transition::{complete_once, execution_target_tx, retained_execution_target_tx};
+pub(crate) use supplemental::supplemental;
 
 #[cfg(all(test, feature = "fixtures"))]
 mod tests;
@@ -48,6 +50,7 @@ struct PreparedInputDispatch {
     fence: RuntimeExecutionFence,
     invocation: FrozenInputInvocation,
     require_settled: bool,
+    supplemental_target: Option<crate::harness::backend::ExecutionEndTarget>,
 }
 
 impl PreparedInputDispatch {
@@ -64,11 +67,36 @@ impl PreparedInputDispatch {
             self.logical_turn_id.clone(),
             self.thread_id.clone(),
         );
+        let target = self.supplemental_target.clone();
         write_in_tx_typed(repo, move |tx| {
             Box::pin(async move {
                 let carrier = current_input_carrier_tx(tx, &card, &worker).await?;
                 if RuntimeExecutionFence::from_carrier(&carrier) != expected {
                     return Err(CalmError::Conflict("native input execution changed".into()));
+                }
+                if let Some(target) = &target {
+                    if carrier.phase()? != HarnessPhaseTag::TurnRunning
+                        || retained_target_tx(
+                            tx,
+                            &card,
+                            &worker,
+                            &carrier
+                                .checkpoint()
+                                .attempt(&attempt.submission_id)
+                                .ok_or_else(|| {
+                                    CalmError::Conflict("supplemental attempt disappeared".into())
+                                })?
+                                .correlation
+                                .provider,
+                        )
+                        .await?
+                        .as_ref()
+                            != Some(target)
+                    {
+                        return Err(CalmError::Conflict(
+                            "supplemental native target changed".into(),
+                        ));
+                    }
                 }
                 let stored = submission_plan_tx(tx, &attempt.submission_id).await?;
                 let retry = crate::db::sqlite::conversation::submission_retry_intent_tx(
@@ -193,137 +221,169 @@ async fn prepare(
     // cancelled provider future therefore leaves a real CrossingUnknown marker.
     write_in_tx_typed(repo, move |tx| {
         Box::pin(async move {
-            let mut carrier = current_input_carrier_tx(tx, &card_id, &worker_session_id).await?;
-            let identity = submission_identity_tx(tx, &submission_id).await?;
-            let stored = submission_plan_tx(tx, &submission_id).await?;
-            let retry =
-                crate::db::sqlite::conversation::submission_retry_intent_tx(tx, &submission_id)
-                    .await?;
-            source.require_submission_intent(retry.as_ref())?;
-            let invocation = match retry {
-                None => invocation,
-                Some(id) => {
-                    crate::db::sqlite::conversation::retry_intent_tx(tx, &carrier, &id)
-                        .await?
-                        .invocation
-                }
-            };
-            // A previous claim/provenance is not a grant for a fresh crossing,
-            // including recovery of a claimed submission with no attempt yet.
-            let (execution, runtime) = crate::conversation_inputs::authorize_execution_tx(
+            prepare_tx(
                 tx,
-                &source,
-                &carrier,
-                &stored.plan,
-            )
-            .await?;
-            let ConversationExecutionProvenance::LegacySingleUserDeployment {
-                provider: frozen_provider,
-                ..
-            } = &identity.execution;
-            if identity.card_id != card_id
-                || *frozen_provider != provider
-                || execution != identity.execution
-                || carrier.checkpoint().active.as_ref().is_none_or(|active| {
-                    active.logical_turn_id != identity.logical_turn_id
-                        || !active.submission_ids.contains(&submission_id)
-                })
-            {
-                return Err(CalmError::Conflict(
-                    "submission execution provenance or carrier binding changed".into(),
-                ));
-            }
-            let phase: HarnessPhaseTag =
-                serde_json::from_value(carrier.snapshot()["phase"].clone())?;
-            if identity.ordinal != 0 || phase != HarnessPhaseTag::IssuingTurn {
-                return Err(CalmError::Conflict(
-                    "submission no longer targets this execution phase".into(),
-                ));
-            }
-            if carrier
-                .snapshot()
-                .get("pending_rewind")
-                .is_some_and(|value| !value.is_null())
-            {
-                return Err(CalmError::Conflict(
-                    "canonical input cannot dispatch with pending history replacement".into(),
-                ));
-            }
-            let thread_id = carrier
-                .snapshot()
-                .get("last_thread_id")
-                .and_then(Value::as_str)
-                .filter(|id| !id.is_empty())
-                .ok_or_else(|| CalmError::Conflict("dispatch has no native thread".into()))?
-                .to_owned();
-            if runtime.thread_id.as_deref() != Some(thread_id.as_str()) {
-                return Err(CalmError::Conflict(
-                    "dispatch thread differs from its current runtime binding".into(),
-                ));
-            }
-            // This exact revision read is in the marker transaction. A body-free
-            // plan's digest alone cannot reveal human-only private erasure.
-            let items = hydrate::hydrate(tx, &card_id, &stored.plan).await?;
-            let attempt = InputAttempt {
-                submission_id,
-                attempt_id: InputAttemptId::parse(&crate::model::new_id())
-                    .map_err(|error| CalmError::Internal(error.to_string()))?,
-            };
-            let proof = SubmissionDispatchProof::from_stored_plan(
-                attempt.clone(),
-                &stored.plan,
-                stored.original_digest,
-            )
-            .map_err(CalmError::Conflict)?;
-            let correlation = InputCorrelationFact {
-                provider: provider.clone(),
-                thread_id: thread_id.clone(),
-                // Provider setup can still refuse before exposing a native
-                // session. Its private report refines this when actually known.
-                native_session_id: None,
-                native_turn_id: None,
-                local_turn_id: None,
-                rpc_request_id: None,
-            };
-            begin_input_attempt_tx(tx, &mut carrier, attempt.clone(), correlation, invocation)
-                .await?;
-            let invocation = match &carrier
-                .checkpoint()
-                .attempt(&attempt.submission_id)
-                .ok_or_else(|| CalmError::Internal("committed crossing missing".into()))?
-                .invocation
-            {
-                InputInvocation::Recorded { configuration } => configuration.clone(),
-                InputInvocation::PriorInvocationNotRecorded => {
-                    return Err(CalmError::Conflict(
-                        "new crossing lacks its invocation".into(),
-                    ));
-                }
-            };
-            Ok(PreparedInputDispatch {
-                require_settled: crate::db::sqlite::conversation::submission_retry_intent_tx(
-                    tx,
-                    &attempt.submission_id,
-                )
-                .await?
-                .is_some()
-                    || carrier
-                        .checkpoint()
-                        .requires_settled_activity(&thread_id)
-                        .map_err(|error| CalmError::Conflict(error.into()))?,
-                logical_turn_id: identity.logical_turn_id,
-                proof,
-                thread_id,
-                items,
                 source,
-                card: card_id,
-                worker: worker_session_id,
-                fence: RuntimeExecutionFence::from_carrier(&carrier),
+                card_id,
+                worker_session_id,
+                submission_id,
+                provider,
                 invocation,
-            })
+                None,
+            )
+            .await
         })
     })
     .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn prepare_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    source: InputSource,
+    card_id: String,
+    worker_session_id: String,
+    submission_id: InputSubmissionId,
+    provider: AgentProvider,
+    invocation: FrozenInputInvocation,
+    supplemental_target: Option<crate::harness::backend::ExecutionEndTarget>,
+) -> Result<PreparedInputDispatch> {
+    let mut carrier = current_input_carrier_tx(tx, &card_id, &worker_session_id).await?;
+    let identity = submission_identity_tx(tx, &submission_id).await?;
+    let stored = submission_plan_tx(tx, &submission_id).await?;
+    let retry =
+        crate::db::sqlite::conversation::submission_retry_intent_tx(tx, &submission_id).await?;
+    source.require_submission_intent(retry.as_ref())?;
+    let invocation = match retry {
+        None => invocation,
+        Some(id) => {
+            crate::db::sqlite::conversation::retry_intent_tx(tx, &carrier, &id)
+                .await?
+                .invocation
+        }
+    };
+    // A previous claim/provenance is not a grant for a fresh crossing,
+    // including recovery of a claimed submission with no attempt yet.
+    let (execution, runtime) =
+        crate::conversation_inputs::authorize_execution_tx(tx, &source, &carrier, &stored.plan)
+            .await?;
+    let ConversationExecutionProvenance::LegacySingleUserDeployment {
+        provider: frozen_provider,
+        ..
+    } = &identity.execution;
+    if identity.card_id != card_id
+        || *frozen_provider != provider
+        || execution != identity.execution
+        || carrier.checkpoint().active.as_ref().is_none_or(|active| {
+            active.logical_turn_id != identity.logical_turn_id
+                || !active.submission_ids.contains(&submission_id)
+        })
+    {
+        return Err(CalmError::Conflict(
+            "submission execution provenance or carrier binding changed".into(),
+        ));
+    }
+    let phase: HarnessPhaseTag = serde_json::from_value(carrier.snapshot()["phase"].clone())?;
+    let correct_scope = match &supplemental_target {
+        None => identity.ordinal == 0 && phase == HarnessPhaseTag::IssuingTurn,
+        Some(target) => {
+            identity.ordinal > 0
+                && phase == HarnessPhaseTag::TurnRunning
+                && target.logical_turn_id == identity.logical_turn_id
+                && retained_target_tx(tx, &card_id, &worker_session_id, &provider)
+                    .await?
+                    .as_ref()
+                    == Some(target)
+        }
+    };
+    if !correct_scope {
+        return Err(CalmError::Conflict(
+            "submission no longer targets this execution phase".into(),
+        ));
+    }
+    if carrier
+        .snapshot()
+        .get("pending_rewind")
+        .is_some_and(|value| !value.is_null())
+    {
+        return Err(CalmError::Conflict(
+            "canonical input cannot dispatch with pending history replacement".into(),
+        ));
+    }
+    let thread_id = carrier
+        .snapshot()
+        .get("last_thread_id")
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty())
+        .ok_or_else(|| CalmError::Conflict("dispatch has no native thread".into()))?
+        .to_owned();
+    if runtime.thread_id.as_deref() != Some(thread_id.as_str()) {
+        return Err(CalmError::Conflict(
+            "dispatch thread differs from its current runtime binding".into(),
+        ));
+    }
+    // This exact revision read is in the marker transaction. A body-free
+    // plan's digest alone cannot reveal human-only private erasure.
+    let items = hydrate::hydrate(tx, &card_id, &stored.plan).await?;
+    let attempt = InputAttempt {
+        submission_id,
+        attempt_id: InputAttemptId::parse(&crate::model::new_id())
+            .map_err(|error| CalmError::Internal(error.to_string()))?,
+    };
+    let proof = SubmissionDispatchProof::from_stored_plan(
+        attempt.clone(),
+        &stored.plan,
+        stored.original_digest,
+    )
+    .map_err(CalmError::Conflict)?;
+    let correlation = InputCorrelationFact {
+        provider: provider.clone(),
+        thread_id: thread_id.clone(),
+        // Provider setup can still refuse before exposing a native
+        // session. Its private report refines this when actually known.
+        native_session_id: None,
+        native_turn_id: supplemental_target
+            .as_ref()
+            .map(|target| target.scope.thread_and_turn().1),
+        local_turn_id: None,
+        rpc_request_id: None,
+    };
+    begin_input_attempt_tx(tx, &mut carrier, attempt.clone(), correlation, invocation).await?;
+    let invocation = match &carrier
+        .checkpoint()
+        .attempt(&attempt.submission_id)
+        .ok_or_else(|| CalmError::Internal("committed crossing missing".into()))?
+        .invocation
+    {
+        InputInvocation::Recorded { configuration } => configuration.clone(),
+        InputInvocation::PriorInvocationNotRecorded => {
+            return Err(CalmError::Conflict(
+                "new crossing lacks its invocation".into(),
+            ));
+        }
+    };
+    Ok(PreparedInputDispatch {
+        supplemental_target,
+        require_settled: crate::db::sqlite::conversation::submission_retry_intent_tx(
+            tx,
+            &attempt.submission_id,
+        )
+        .await?
+        .is_some()
+            || carrier
+                .checkpoint()
+                .requires_settled_activity(&thread_id)
+                .map_err(|error| CalmError::Conflict(error.into()))?,
+        logical_turn_id: identity.logical_turn_id,
+        proof,
+        thread_id,
+        items,
+        source,
+        card: card_id,
+        worker: worker_session_id,
+        fence: RuntimeExecutionFence::from_carrier(&carrier),
+        invocation,
+    })
 }
 
 async fn settle(
@@ -401,6 +461,7 @@ fn report_fact(expected: &InputAttempt, report: &InputAttemptReport) -> Result<I
         InputDelivery::Accepted(receipt) => InputDeliveryFact::Accepted {
             basis: match receipt.basis() {
                 NativeAcceptanceBasis::CodexTurnStart => "codex_turn_start",
+                NativeAcceptanceBasis::CodexTurnSteer => "codex_turn_steer",
             }
             .into(),
             evidence: NativeInputAcceptance::NativeTurn {
@@ -431,4 +492,13 @@ pub(crate) async fn hydrate_for_test(
     plan: &calm_types::conversation::SubmissionRenderPlan,
 ) -> Result<Vec<InputItem>> {
     hydrate::hydrate(tx, card, plan).await
+}
+
+async fn retained_target_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    card: &str,
+    worker: &str,
+    provider: &AgentProvider,
+) -> Result<Option<crate::harness::backend::ExecutionEndTarget>> {
+    end_transition::retained_execution_target_tx(tx, card, worker, provider).await
 }

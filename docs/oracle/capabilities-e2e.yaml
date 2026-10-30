@@ -113,7 +113,7 @@
     remains recovery evidence rather than an acknowledged queue entry.
     The new front end's counterpart to the legacy `E2E-CAP-SPECCHAT-012` (`You · queued`), which
     stays `migration: pending` against `web/e2e`.
-  source: fe/web/src/app/conversations/store.ts:114-120,200-205; fe/core/domain/conversation-outbox.ts:490-514;
+  source: fe/web/src/app/conversations/store.ts:115-126,205-211; fe/core/domain/conversation-outbox.ts:442-514;
     fe/web/src/app/conversations/outbox.ts:224-249
   # A table over the whole phase enum: for each of the eight, whether the marker appears, whether
   # the composer stays open, and whether a second message can be sent. The predicate itself is

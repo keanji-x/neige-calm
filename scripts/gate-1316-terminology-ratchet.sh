@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+# #3352 supplemental schema bounded exception: spec/crates +1, runtime_id/crates +2,
+# harness_item/crates +2 preserve fixed 0190/0196 SQL identifiers and constraints
+# in the new forward migration. They introduce no runtime vocabulary or scan rule.
+# Later schema changes update their own migration and this existing baseline;
+# ordinary new messages/tests require no inventory edit or additional CI scan.
 # U12a-1 bounded historical-contract exception: harness_item/crates 301 -> 303
 # is two SQL reads of the frozen harness_items table in calm-server/src/routes/
 # canonical_flow_tests/system_assistant_tests/authority.rs, in

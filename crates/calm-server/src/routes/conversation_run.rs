@@ -216,7 +216,25 @@ pub(super) async fn read(
                     token_usage: usage,
                     compact_outcome: header.compact_outcome,
                     context_usage_invalidated: header.context_usage_invalidated,
-                    pending: vec![],
+                    pending: super::planner_cards::page_pending_views(
+                        frame
+                            .pending_humans
+                            .into_iter()
+                            .filter(|message| message.author_user_id == principal.user_id)
+                            .map(|message| super::planner_cards::PendingQueueEntry {
+                                entry_id: message.reference.message_id.to_string(),
+                                rev: message.reference.revision.get(),
+                                text: message.payload.text,
+                                queued_at_ms: message.queued_at_ms,
+                                attachments: message
+                                    .payload
+                                    .bound_attachments
+                                    .iter()
+                                    .map(|a| a.wire(&card.id))
+                                    .collect(),
+                            }),
+                    )
+                    .0,
                     pending_overflow: 0,
                     // Canonical HTTP input admits ordinary text only (planner_input_send::human).
                     attachments_supported: false,

@@ -41,6 +41,7 @@ impl ReadScope {
 }
 
 pub(crate) struct CurrentReadFrame {
+    pub pending_humans: Vec<calm_truth::db::PendingHumanMessage>,
     pub terminal_outcome: Option<calm_truth::db::terminal_outcome::HarnessTerminalOutcome>,
     pub runtime: Option<calm_truth::db::CurrentConversationRuntime>,
     pub canonical: Option<CanonicalHarnessSnapshot>,
@@ -80,6 +81,7 @@ pub(crate) async fn current_frame(repo: &dyn RouteRepo, card: &str) -> Result<Cu
         ));
     }
     Ok(CurrentReadFrame {
+        pending_humans: facts.pending_humans,
         terminal_outcome: facts.terminal_outcome,
         runtime: facts.runtime,
         canonical,

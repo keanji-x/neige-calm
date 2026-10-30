@@ -16,14 +16,26 @@ pub(super) async fn insert_submission_tx(
     plan: &SubmissionRenderPlan,
     entries: &[PendingInput],
 ) -> Result<SubmissionRenderDigest> {
+    insert_submission_at_tx(tx, card_id, turn_id, submission_id, plan, entries, 0).await
+}
+
+pub(super) async fn insert_submission_at_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    card_id: &str,
+    turn_id: &LogicalTurnId,
+    submission_id: &InputSubmissionId,
+    plan: &SubmissionRenderPlan,
+    entries: &[PendingInput],
+    ordinal: u32,
+) -> Result<SubmissionRenderDigest> {
     let original_digest = SubmissionRenderDigest::parse(&digest(plan)?)
         .map_err(|error| CalmError::Internal(error.to_string()))?;
     sqlx::query("INSERT INTO conversation_input_submissions(id,card_id,logical_turn_id,ordinal,kind,render_plan_json,
          render_plan_sha256,render_plan_root_submission_id,created_at_ms)
-         VALUES(?1,?2,?3,0,'initial',?4,?5,NULL,?6)")
+         VALUES(?1,?2,?3,?7,?8,?4,?5,NULL,?6)")
         .bind(submission_id.as_str()).bind(card_id).bind(turn_id.as_str())
         .bind(serde_json::to_string(plan)?).bind(original_digest.as_str())
-        .bind(now_ms()).execute(&mut **tx).await?;
+        .bind(now_ms()).bind(i64::from(ordinal)).bind(if ordinal == 0 { "initial" } else { "supplemental" }).execute(&mut **tx).await?;
     for (position, entry) in entries.iter().enumerate() {
         let reference = entry.accepted_input_ref().ok_or(CalmError::Conflict(
             "initial claim requires accepted input provenance",

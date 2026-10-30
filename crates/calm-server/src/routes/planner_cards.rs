@@ -248,29 +248,14 @@ const PENDING_PAGE_BYTES: usize = 1_536 * 1_024;
 /// Split the queue into one page of addressable entries plus a count of the user-authored entries that did not make it.
 /// The budget ALWAYS admits at least one entry: a head entry over budget would make the whole queue unpageable, so the user could not delete the thing blocking it.
 fn page_pending_entries(card_id: &CardId, entries: &[QueueEntry]) -> (Vec<PendingQueueEntry>, u32) {
-    let mut page = Vec::new();
-    let mut used_bytes = 0usize;
-    let mut overflow = 0u32;
-    let mut budget_exhausted = false;
-    for entry in entries {
-        let Some(view) = entry.user_view() else {
-            // Not addressable. A dispatcher observation is not the user's; a pre-id user entry is counted.
-            if entry.is_user_authored() {
-                overflow = overflow.saturating_add(1);
-            }
-            continue;
-        };
-        // The page is a PREFIX of the queue, not a greedy pack: packing around a hole would show a list whose order and adjacency lie.
-        budget_exhausted = budget_exhausted
-            || page.len() >= PENDING_PAGE_MAX
-            || (!page.is_empty()
-                && used_bytes.saturating_add(view.text.len()) > PENDING_PAGE_BYTES);
-        if budget_exhausted {
-            overflow = overflow.saturating_add(1);
-            continue;
-        }
-        used_bytes = used_bytes.saturating_add(view.text.len());
-        page.push(PendingQueueEntry {
+    let unaddressable = entries
+        .iter()
+        .filter(|entry| entry.is_user_authored() && entry.user_view().is_none())
+        .count();
+    let views = entries
+        .iter()
+        .filter_map(|entry| entry.user_view())
+        .map(|view| PendingQueueEntry {
             entry_id: view.id.as_str().to_string(),
             text: view.text.to_string(),
             rev: view.rev,
@@ -281,6 +266,31 @@ fn page_pending_entries(card_id: &CardId, entries: &[QueueEntry]) -> (Vec<Pendin
                 .map(|attachment| attachment.wire(card_id))
                 .collect(),
         });
+    let (page, overflow) = page_pending_views(views);
+    (
+        page,
+        overflow.saturating_add(u32::try_from(unaddressable).unwrap_or(u32::MAX)),
+    )
+}
+/// Pack whole rows in order; the first remains operable even when it exceeds the soft byte budget.
+pub(super) fn page_pending_views(
+    entries: impl IntoIterator<Item = PendingQueueEntry>,
+) -> (Vec<PendingQueueEntry>, u32) {
+    let mut page = Vec::new();
+    let mut used_bytes = 0usize;
+    let mut overflow = 0u32;
+    let mut exhausted = false;
+    for entry in entries {
+        exhausted = exhausted
+            || page.len() >= PENDING_PAGE_MAX
+            || (!page.is_empty()
+                && used_bytes.saturating_add(entry.text.len()) > PENDING_PAGE_BYTES);
+        if exhausted {
+            overflow = overflow.saturating_add(1);
+            continue;
+        }
+        used_bytes = used_bytes.saturating_add(entry.text.len());
+        page.push(entry);
     }
     (page, overflow)
 }

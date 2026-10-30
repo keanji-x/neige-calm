@@ -1,3 +1,4 @@
+import { unlistedPendingInputCount } from '../../../../core/domain/conversation-queue-controls.ts';
 import { usePlannerSwitchControl } from './planner-switch-control.ts';
 import { composerCommands, conversationCommands, conversationCommandBindings, type CommandBindings } from '../../features/chat/thread/composer-command.ts';
 import { trackCommandBindings } from './track-composer-command.ts';
@@ -642,11 +643,11 @@ function useConversationPane(
       ? previous : { conversationId: existingId, visible });
   }, [existingId]);
   const pendingMessages = useMemo(() => <PendingQueue key={existingId}
-    entries={store.pendingQueue} pendingInputCount={store.pendingInputs.length} sending={store.pendingSends} overflow={store.pendingQueueOverflow} queueDisplayAccounting={store.queueDisplayAccounting}
+    entries={store.pendingQueue} pendingInputCount={unlistedPendingInputCount(store.pendingInputs,store.pendingQueue)} sending={store.pendingSends} overflow={store.pendingQueueOverflow} queueDisplayAccounting={store.queueDisplayAccounting}
     busy={!threadPresented || store.sending || store.queueWriteOut} onDelete={deleteQueuedEntry} onEdit={editQueuedEntry}
     canEdit={edit.canEditQueued} editingEntryId={edit.queued?.entry.entry_id ?? null}
     savedEntry={edit.savedQueuedEntry} onFocusComposer={refocusQueuedComposer} onPresenceChange={pendingPresenceChanged} onSteer={canSteer ? steerQueuedEntry : undefined} />,
-  [existingId, threadPresented, store.pendingQueue, store.pendingInputs.length, store.pendingSends, store.pendingQueueOverflow, store.queueDisplayAccounting, store.sending, store.queueWriteOut,
+  [existingId, threadPresented, store.pendingQueue, store.pendingInputs, store.pendingSends, store.pendingQueueOverflow, store.queueDisplayAccounting, store.sending, store.queueWriteOut,
     deleteQueuedEntry, editQueuedEntry, edit.canEditQueued, edit.queued?.entry.entry_id, edit.savedQueuedEntry, refocusQueuedComposer, pendingPresenceChanged, canSteer, steerQueuedEntry]);
   const hasSideConversation = options?.onSide !== undefined;
   const composerView = useMemo(() => ({
@@ -911,7 +912,7 @@ function useConversationPane(
             {!threadPresented && outgoingPreview !== undefined && <OutgoingMessage speaker={outgoingPreview.author} text={outgoingPreview.text} mobile={compactViewport} />}
             {!threadPresented && hasPendingMessages && pendingMessages}
             {threadPresented && (
-              <ChatThread historyPrefetch={historyPrefetch} readingView={threadReadingView} key={open.id} pendingMessages={pendingMessages} activeInput={store.activeInput} keepInput={keepInput} retryInput={retryInput}
+              <ChatThread waitingForExecution={store.pendingInputs.length > 0 || store.pendingQueue.length > 0} historyPrefetch={historyPrefetch} readingView={threadReadingView} key={open.id} pendingMessages={pendingMessages} activeInput={store.activeInput} keepInput={keepInput} retryInput={retryInput}
                 hasPendingMessages={hasPendingMessages || (pendingPresentation?.conversationId === existingId && pendingPresentation.visible)}
                 conversation={open}
                 imageFiles={imageFiles}

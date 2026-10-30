@@ -240,6 +240,8 @@ pub struct ConversationAttemptDelivery {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema, TS)]
 #[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub struct ConversationSubmissionDelivery {
+    /// Zero names Initial; positive ordinals are supplemental claims of that execution.
+    pub ordinal: u32,
     pub carrier_id: String,
     pub logical_turn_id: String,
     pub submission_id: String,
@@ -264,6 +266,7 @@ impl ConversationActiveInput {
         identities: &[(
             crate::conversation::InputSubmissionId,
             crate::conversation::LogicalTurnId,
+            u32,
         )],
         retry_availability: impl Fn(
             &crate::conversation::InputSubmissionId,
@@ -283,10 +286,11 @@ impl ConversationActiveInput {
             .map(|submission| {
                 let logical = identities
                     .iter()
-                    .find(|(id, _)| id == submission)
+                    .find(|(id, _, _)| id == submission)
                     .ok_or("submission lacks its original logical turn identity")?;
                 let retry = retry_availability(submission)?;
                 Ok(ConversationSubmissionDelivery {
+                    ordinal: logical.2,
                     carrier_id: carrier_id.into(),
                     logical_turn_id: logical.1.as_str().into(),
                     submission_id: submission.as_str().into(),

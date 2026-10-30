@@ -194,6 +194,7 @@ fn canonical_held_projection_survives_without_active_execution() {
         &[(
             attempt("22222222222222222222222222222222").submission_id,
             LogicalTurnId::parse("33333333333333333333333333333333").unwrap(),
+            0,
         )],
         |_| Ok(crate::conversation_display::ConversationActionAvailability::Unavailable {
             reason: crate::conversation_display::ConversationActionUnavailableReason::UnsupportedSource,
@@ -286,6 +287,7 @@ fn projection(delivery: InputDeliveryFact) -> crate::conversation_display::Conve
         &[(
             original.submission_id,
             LogicalTurnId::parse("33333333333333333333333333333333").unwrap(),
+            0,
         )],
         |_| Ok(crate::conversation_display::ConversationActionAvailability::Unavailable {
             reason: crate::conversation_display::ConversationActionUnavailableReason::UnsupportedSource,
@@ -409,6 +411,7 @@ fn canonical_projection_keeps_ended_accepted_evidence_out_of_held_display() {
         &[(
             original.submission_id,
             LogicalTurnId::parse("33333333333333333333333333333333").unwrap(),
+            0,
         )],
         |_| Ok(crate::conversation_display::ConversationActionAvailability::Unavailable {
             reason: crate::conversation_display::ConversationActionUnavailableReason::UnsupportedSource,

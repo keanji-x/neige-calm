@@ -161,7 +161,16 @@ pub struct CurrentConversationRuntime {
 }
 
 #[derive(Clone, Debug)]
+pub struct PendingHumanMessage {
+    pub reference: calm_types::conversation::MessageRevisionRef,
+    pub author_user_id: String,
+    pub payload: calm_types::conversation::HumanPayload,
+    pub queued_at_ms: i64,
+}
+
+#[derive(Clone, Debug)]
 pub struct ConversationReadFrame {
+    pub pending_humans: Vec<PendingHumanMessage>,
     pub terminal_outcome: Option<terminal_outcome::HarnessTerminalOutcome>,
     pub active_input: Option<calm_types::conversation_display::ConversationActiveInput>,
     pub runtime: Option<CurrentConversationRuntime>,

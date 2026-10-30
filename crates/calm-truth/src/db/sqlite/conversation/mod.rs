@@ -3,6 +3,10 @@
 //! receipts and events with these facts. They neither enqueue nor drive a retry.
 mod abandonment;
 mod acceptance;
+mod pending_controls;
+pub use pending_controls::{
+    PendingHumanChange, PendingHumanWrite, mutate_pending_human_tx, pending_human_messages_tx,
+};
 mod assistant_creation;
 mod attempts;
 mod carrier;
@@ -12,6 +16,8 @@ pub use abandonment::{
 mod claim_storage;
 mod claim_validation;
 mod claims;
+mod supplemental;
+pub use supplemental::claim_supplemental_submission_tx;
 mod creation;
 pub use assistant_creation::{
     AssistantCreationRecord, assistant_creation_get_tx, assistant_creation_insert_tx,
@@ -54,8 +60,8 @@ pub use messages::{
 pub use plans::{
     OriginalInputExecution, StoredSubmissionIdentity, StoredSubmissionPlan, current_turn_input_tx,
     human_plan_for_pending_prefix_tx, original_initial_submission_tx, original_input_execution_tx,
-    pending_plan_for_prefix_tx, submission_dispatch_proof_tx, submission_identity_tx,
-    submission_plan_tx,
+    original_input_target_tx, pending_plan_for_message_tx, pending_plan_for_prefix_tx,
+    submission_dispatch_proof_tx, submission_identity_tx, submission_plan_tx,
 };
 pub use presentation::{
     PresentationSource, StoredNativePresentation, allocate_presentation_tx, observe_native_item_tx,

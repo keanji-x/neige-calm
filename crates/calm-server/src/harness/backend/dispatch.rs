@@ -4,6 +4,47 @@ use crate::shared_codex_appserver::{CodexPromptDelivery, CodexPromptReport};
 use calm_types::conversation::{InputAttempt, LogicalTurnId, SubmissionDispatchProof};
 
 impl PlannerBackend {
+    pub(crate) async fn dispatch_supplemental(
+        &self,
+        target: &ExecutionEndTarget,
+        proof: &SubmissionDispatchProof,
+        items: Vec<InputItem>,
+        admission: &crate::harness::native_admission::NativePromptAdmission<'_>,
+    ) -> InputAttemptReport {
+        let (thread, turn) = target.scope.thread_and_turn();
+        let correlation = AttemptCorrelation::new(proof.attempt(), self.provider(), &thread)
+            .with_turn(turn.clone());
+        let Arm::Codex(daemon, owner) = &self.0 else {
+            return not_dispatched(
+                correlation,
+                NonDispatchBasis::LocalPreflight,
+                CalmError::Conflict("provider does not support supplemental input".into()).into(),
+            );
+        };
+        if !owner.binding.matches(target) || proof.attempt() == target.proof.attempt() {
+            return not_dispatched(
+                correlation,
+                NonDispatchBasis::LocalPreflight,
+                CalmError::Conflict("supplemental target differs from its original owner".into())
+                    .into(),
+            );
+        }
+        let native = daemon
+            .turn_steer_report(
+                &thread,
+                &turn,
+                items,
+                Some(proof.attempt().submission_id.as_str()),
+                crate::shared_codex_appserver::NativeSteer::CanonicalSupplemental {
+                    target: Box::new(target.clone()),
+                    proof: proof.clone(),
+                },
+                admission,
+            )
+            .await;
+        codex_report(correlation, native, NativeAcceptanceBasis::CodexTurnSteer)
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn dispatch_input<'a>(
         &self,

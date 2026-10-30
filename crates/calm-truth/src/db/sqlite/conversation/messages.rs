@@ -139,7 +139,7 @@ pub(crate) fn decode_revision(
     })
 }
 
-async fn insert_revision_tx(
+pub(super) async fn insert_revision_tx(
     tx: &mut Transaction<'_, Sqlite>,
     revision: &StoredMessageRevision,
 ) -> Result<()> {

@@ -212,7 +212,7 @@ it.each([390, 1280])('keeps stop failure evidence readable while execution statu
 
 it.each(['codex','claude','opencode','grok'] as const)('defers intervention while the exact %s reply is running and retains real unresolved delivery', provider => {
   const active: import('../../../../../core/api/generated/wire.ts').ConversationActiveInput={current_execution_id:'logical',submissions:[{
-    carrier_id:'carrier',logical_turn_id:'logical',submission_id:'submission',attempt:{
+    carrier_id:'carrier',logical_turn_id:'logical',ordinal:0,submission_id:'submission',attempt:{
       attempt_id:'attempt',revision:'1',delivery:'unknown',target:{provider,thread_id:'thread',native_session_id:null,native_turn_id:null,local_turn_id:'turn',rpc_request_id:null},
       invocation:{kind:'recorded',configuration:{model:null,effort:null,permission:'never'}},resolution:null,
       actions:{keep:{kind:'available'},retry:{kind:'unavailable',reason:'invocation_not_fully_frozen'}},

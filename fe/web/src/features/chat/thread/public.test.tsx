@@ -13,6 +13,12 @@ import { ChatComposer, ChatThread } from './public.tsx';
 
 afterEach(cleanup);
 
+it('keeps a current status while saved input is waiting for execution', () => {
+  render(<ChatThread conversation={conversation()} turns={[turn()]} cards={{}} stalled={false}
+    canContinue pendingMessages={<p>Queued message</p>} hasPendingMessages waitingForExecution />);
+  expect(screen.getByRole('status', { name: 'Current response status' }).textContent).toContain('Waiting for execution');
+});
+
 const RAIL_FIXTURE_EXCHANGES = 5;
 
 const NOW = 1_760_000_000_000;

@@ -41,4 +41,5 @@
 // Revision 38 (#2836): canonical Human Keep with immutable checkpoint receipts and enabled action availability.
 // Revision 40 (#3320): canonical recovery declarations and explicit Human abandonment.
 // Revision 41 (#3279): negotiated run reads require nullable exact current terminal evidence.
-pub const REST_API_VERSION: &str = "41";
+// Revision 42: canonical queued Human edit, withdrawal and exact-target supplemental input.
+pub const REST_API_VERSION: &str = "42";

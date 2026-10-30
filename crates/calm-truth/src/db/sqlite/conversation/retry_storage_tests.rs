@@ -696,6 +696,7 @@ mod upgrade;
 
 #[path = "retry_storage_tests/grok_turns_upgrade.rs"]
 mod grok_turns_upgrade;
+mod supplemental_upgrade;
 
 #[tokio::test]
 async fn canonical_retry_storage_upgrade_is_atomic_on_invalid_v4() {

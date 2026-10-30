@@ -107,6 +107,15 @@ pub fn router() -> Router<AppState> {
         )
         // Mounted here because this router owns `/api/cards/{id}/**`; a second router on the same prefix is how two mounts start disagreeing about a middleware.
         .route(
+            "/api/cards/{id}/conversation/messages/{message_id}",
+            axum::routing::patch(crate::routes::conversation_pending::edit)
+                .delete(crate::routes::conversation_pending::withdraw),
+        )
+        .route(
+            "/api/cards/{id}/conversation/messages/{message_id}/steer",
+            post(crate::routes::conversation_pending::steer),
+        )
+        .route(
             "/api/cards/{id}/planner/input/{entry_id}",
             axum::routing::patch(crate::routes::planner_input::edit_planner_input)
                 .delete(crate::routes::planner_input::delete_planner_input),

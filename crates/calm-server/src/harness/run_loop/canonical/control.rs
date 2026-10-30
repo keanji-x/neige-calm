@@ -5,7 +5,7 @@ use super::*;
 use crate::auth::HumanInputSource;
 use crate::db::sqlite::conversation::current_input_fact_carrier_tx;
 use crate::harness::backend::{BudgetControlScope, ExecutionEndTarget};
-use crate::harness::input_dispatch::execution_target_tx;
+use crate::harness::input_dispatch::retained_execution_target_tx;
 use calm_types::harness::{
     HarnessControlIntent, HarnessInterruptionIntent, HarnessInterruptionReason, HarnessStopRequest,
     HarnessTimeoutIntent, HarnessTimeoutRequest,
@@ -37,7 +37,7 @@ impl Admission {
         );
         write_in_tx_typed(self.inner.repo.as_ref(), move |tx| Box::pin(async move {
             let carrier = current_input_fact_carrier_tx(tx, &card, &worker).await?;
-            if execution_target_tx(tx, &card, &worker, &provider).await?.as_ref() != Some(&target) {
+            if retained_execution_target_tx(tx, &card, &worker, &provider).await?.as_ref() != Some(&target) {
                 return Err(CalmError::Conflict("control execution changed at native admission".into()));
             }
             let next: CanonicalHarnessSnapshot = serde_json::from_value(carrier.snapshot().clone())?;
@@ -101,7 +101,7 @@ async fn transition(inner: &Arc<Inner>, change: Change) -> Result<CommittedFrame
             match change {
                 Change::Warning { target, start } => {
                     require_running(&carrier, &next, &target)?;
-                    if execution_target_tx(tx, &card, &worker, &provider)
+                    if retained_execution_target_tx(tx, &card, &worker, &provider)
                         .await?
                         .as_ref()
                         != Some(&target)
@@ -137,7 +137,7 @@ async fn transition(inner: &Arc<Inner>, change: Change) -> Result<CommittedFrame
                         )
                         .await?;
                     }
-                    if execution_target_tx(tx, &card, &worker, &provider)
+                    if retained_execution_target_tx(tx, &card, &worker, &provider)
                         .await?
                         .as_ref()
                         != Some(&target)
@@ -235,7 +235,7 @@ pub(in crate::harness::run_loop) async fn select_stop(
         if current.header.phase == HarnessPhaseTag::IssuingTurn {
             return Err(CalmError::Conflict("The turn has not confirmed its native identity; retry Stop once it is running.".into()));
         }
-        let target = execution_target_tx(tx, &card, &worker, &provider).await?
+        let target = retained_execution_target_tx(tx, &card, &worker, &provider).await?
             .ok_or_else(|| CalmError::Conflict("Stop has no confirmed original native target".into()))?;
         require_running(&carrier, &current, &target)?;
         Ok(target)

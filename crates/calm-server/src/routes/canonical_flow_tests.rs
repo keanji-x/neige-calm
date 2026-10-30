@@ -59,6 +59,7 @@ mod input_feedback_tests;
 mod input_source_handoff_tests;
 #[cfg(feature = "fixtures")]
 mod opencode_creation_tests;
+mod pending_controls_tests;
 #[cfg(feature = "fixtures")]
 mod planner_switch_tests;
 mod presentation_capability_tests;

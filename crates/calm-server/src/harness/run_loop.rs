@@ -563,6 +563,54 @@ enum EnqueueOutcome {
 }
 
 impl PlannerHarness {
+    pub(crate) fn card_id(&self) -> &CardId {
+        &self.inner.card_id
+    }
+
+    pub(crate) async fn steer_canonical(
+        &self,
+        source: crate::auth::HumanInputSource,
+        message: calm_types::conversation::MessageRevisionRef,
+        turn: String,
+    ) -> Result<calm_types::conversation_controls::QueuedMessageSteerResult> {
+        // Once the request reaches this owner, an HTTP disconnect must not drop
+        // the native ticket or its durable report. The exact source still gates every write.
+        let owner = self.clone();
+        tokio::spawn(async move { owner.steer_canonical_owned(source, message, turn).await })
+            .await
+            .map_err(|_| CalmError::Internal("supplemental input owner failed".into()))?
+    }
+
+    async fn steer_canonical_owned(
+        &self,
+        source: crate::auth::HumanInputSource,
+        message: calm_types::conversation::MessageRevisionRef,
+        turn: String,
+    ) -> Result<calm_types::conversation_controls::QueuedMessageSteerResult> {
+        // Share the existing issuance order with controls/END; never hold SQL across transport.
+        let _issuance = self.inner.issuance.lock().await;
+        self.inner.require_unparked()?;
+        if self.inner.shutting_down.load(Ordering::SeqCst) {
+            return Err(CalmError::Conflict("runtime is shutting down".into()));
+        }
+        let (result, consumed) = crate::harness::input_dispatch::supplemental(
+            self.inner.repo.as_ref(),
+            source,
+            self.inner.card_id.as_str(),
+            &self.inner.worker_session_id,
+            message,
+            turn,
+            &self.inner.backend,
+        )
+        .await?;
+        self.inner
+            .inputs
+            .canonical()
+            .ok_or_else(|| CalmError::Conflict("not a canonical runtime".into()))?
+            .consumed(&consumed);
+        Ok(result)
+    }
+
     /// Refresh from committed Truth after a same-phase Human resolution.
     pub(crate) async fn refresh_canonical_input(&self) -> Result<()> {
         if self.inner.inputs.canonical().is_some() {

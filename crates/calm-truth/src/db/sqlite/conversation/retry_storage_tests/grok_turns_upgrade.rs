@@ -11,7 +11,7 @@ const TABLES: [&str; 5] = [
 ];
 
 /// The shipped migrations up to `last`, so later migrations cannot change what this test pins.
-fn through(last: i64) -> sqlx::migrate::Migrator {
+pub(super) fn through(last: i64) -> sqlx::migrate::Migrator {
     sqlx::migrate::Migrator {
         migrations: std::borrow::Cow::Owned(
             crate::MIGRATOR
@@ -24,7 +24,7 @@ fn through(last: i64) -> sqlx::migrate::Migrator {
     }
 }
 
-fn repo_on(db: super::super::super::SqliteDb) -> SqlxRepo {
+pub(super) fn repo_on(db: super::super::super::SqliteDb) -> SqlxRepo {
     SqlxRepo {
         db,
         card_role_cache: super::super::super::CardRoleCache::new(),
@@ -33,7 +33,7 @@ fn repo_on(db: super::super::super::SqliteDb) -> SqlxRepo {
     }
 }
 
-async fn rows(pool: &sqlx::SqlitePool, table: &str) -> String {
+pub(super) async fn rows(pool: &sqlx::SqlitePool, table: &str) -> String {
     let columns: Vec<String> =
         sqlx::query_scalar("SELECT name FROM pragma_table_info(?1) ORDER BY cid")
             .bind(table)

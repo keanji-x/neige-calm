@@ -95,6 +95,10 @@ pub(crate) enum NativeSteer {
     Legacy,
     BudgetControl,
     CanonicalControl(Box<ExecutionEndTarget>),
+    CanonicalSupplemental {
+        target: Box<ExecutionEndTarget>,
+        proof: calm_types::conversation::SubmissionDispatchProof,
+    },
 }
 
 /// Consumed by one interrupt RPC on the actual client qualified under this owner.
@@ -414,6 +418,11 @@ impl NativeTurns {
                     NativeSteer::BudgetControl => true,
                     NativeSteer::CanonicalControl(target) => {
                         current.input.matches(target)
+                            && matches!(&target.scope, ExecutionEndScope::NativeTurn {thread_id,native_turn_id}
+                                if thread_id == thread && native_turn_id == turn)
+                    }
+                    NativeSteer::CanonicalSupplemental { target, proof } => {
+                        current.input.matches(target) && proof.attempt() != target.proof.attempt()
                             && matches!(&target.scope, ExecutionEndScope::NativeTurn {thread_id,native_turn_id}
                                 if thread_id == thread && native_turn_id == turn)
                     }

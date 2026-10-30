@@ -123,7 +123,7 @@ it('rejects missing CAS identity and unknown availability in canonical delivery'
   const attempt={attempt_id:'attempt',revision:'7',delivery:'unknown',target:{provider:'codex',thread_id:'thread',native_session_id:null,
     native_turn_id:null,local_turn_id:null,rpc_request_id:null},invocation:{kind:'prior_invocation_not_recorded'},
     resolution:null,actions:{keep:{kind:'available'},retry:{kind:'unavailable',reason:'unsupported_source'}}};
-  const submission={carrier_id:'carrier',logical_turn_id:'logical',submission_id:'submission',attempt};
+  const submission={carrier_id:'carrier',logical_turn_id:'logical',ordinal:0,submission_id:'submission',attempt};
   const run={input_contract:'canonical',runtime_state:'failed',history_replacement_supported:false,terminal_outcome:null,terminal_timeout:null,
     pending_inputs:[],active_input:{current_execution_id:null,submissions:[submission]},native_turn_id:null};
   expect(conversationRunMetadataSchema.safeParse(run).success).toBe(true);
@@ -136,7 +136,7 @@ it('rejects missing CAS identity and unknown availability in canonical delivery'
     const broken={...attempt,[field]:undefined};
     expect(conversationRunMetadataSchema.safeParse({...run,active_input:{...run.active_input,submissions:[{...submission,attempt:broken}]}}).success).toBe(false);
   }
-  for(const field of ['carrier_id','logical_turn_id','submission_id']) {
+  for(const field of ['carrier_id','logical_turn_id','submission_id','ordinal']) {
     expect(conversationRunMetadataSchema.safeParse({...run,active_input:{...run.active_input,submissions:[{...submission,[field]:undefined}]}}).success).toBe(false);
   }
   expect(conversationRunMetadataSchema.safeParse({...run,active_input:{...run.active_input,submissions:[{...submission,attempt:{...attempt,
@@ -204,7 +204,7 @@ it.each(['failed','interrupted','completed'])('u2_imported_outcome_keeps_histori
 
 it('separates pending native acknowledgement from unresolved delivery without changing its facts',()=>{
   const submission: import('../api/generated/wire.js').ConversationSubmissionDelivery={
-    carrier_id:'carrier',logical_turn_id:'logical',submission_id:'submission',attempt:{
+    carrier_id:'carrier',logical_turn_id:'logical',ordinal:0,submission_id:'submission',attempt:{
       attempt_id:'attempt',revision:'1',delivery:'crossing_unknown',target:{provider:'opencode',thread_id:'thread',native_session_id:null,native_turn_id:null,local_turn_id:'local',rpc_request_id:null},
       invocation:{kind:'recorded',configuration:{model:null,effort:null,permission:'never'}},resolution:null,
       actions:{keep:{kind:'available'},retry:{kind:'unavailable',reason:'invocation_not_fully_frozen'}},
@@ -213,6 +213,8 @@ it('separates pending native acknowledgement from unresolved delivery without ch
   const input={current_execution_id:'logical',submissions:[submission]};
   const before=JSON.stringify(input);
   expect(heldConversationInputs(input,true)).toEqual([]);
+  const supplemental={...submission,ordinal:1};
+  expect(heldConversationInputs({...input,submissions:[supplemental]},true)).toEqual([supplemental]);
   expect(JSON.stringify(input)).toBe(before);
   expect(heldConversationInputs(input,false)).toEqual([submission]);
   expect(heldConversationInputs({...input,current_execution_id:null},true)).toEqual([submission]);

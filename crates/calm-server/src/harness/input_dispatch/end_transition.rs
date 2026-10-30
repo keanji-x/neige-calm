@@ -30,9 +30,15 @@ async fn sample_tx(
     card: &str,
     runtime: &str,
     provider: &AgentProvider,
+    settled: bool,
 ) -> Result<Option<Sample>> {
     let carrier = current_input_fact_carrier_tx(tx, card, runtime).await?;
-    let Some(original) = original_input_execution_tx(tx, &carrier).await? else {
+    let original = if settled {
+        original_input_execution_tx(tx, &carrier).await?
+    } else {
+        crate::db::sqlite::conversation::original_input_target_tx(tx, &carrier).await?
+    };
+    let Some(original) = original else {
         return Ok(None);
     };
     let (binding, current) = input_carrier_contract_tx(tx, &carrier).await?;
@@ -74,7 +80,7 @@ pub(crate) async fn execution_target_tx(
     runtime: &str,
     provider: &AgentProvider,
 ) -> Result<Option<ExecutionEndTarget>> {
-    Ok(sample_tx(tx, card, runtime, provider)
+    Ok(sample_tx(tx, card, runtime, provider, true)
         .await?
         .map(|sample| sample.target))
 }
@@ -87,7 +93,7 @@ async fn consume_tx(
 ) -> Result<Option<RuntimeFrameAfterWrite>> {
     let card = &sampled.target.card_id;
     let runtime = &sampled.target.worker_session_id;
-    let Some(current) = sample_tx(tx, card, runtime, provider).await? else {
+    let Some(current) = sample_tx(tx, card, runtime, provider, true).await? else {
         return Ok(None);
     };
     if current.fence != sampled.fence
@@ -101,7 +107,7 @@ async fn consume_tx(
             .await?;
         // The factual write changes the checkpoint fence. Re-read our own write
         // under this same transaction; never relax the pre-observation CAS.
-        let acknowledged = sample_tx(tx, card, runtime, provider)
+        let acknowledged = sample_tx(tx, card, runtime, provider, true)
             .await?
             .ok_or_else(|| {
                 crate::error::CalmError::Conflict(
@@ -135,7 +141,7 @@ pub(crate) async fn complete_once(
         let card = card.clone();
         let runtime = runtime.clone();
         let provider = provider.clone();
-        move |tx| Box::pin(async move { sample_tx(tx, &card, &runtime, &provider).await })
+        move |tx| Box::pin(async move { sample_tx(tx, &card, &runtime, &provider, true).await })
     })
     .await?;
     let Some(sampled) = sampled else {
@@ -198,6 +204,7 @@ impl AcceptedRecovery {
             &self.sample.target.card_id,
             &self.sample.target.worker_session_id,
             &AgentProvider::Codex,
+            true,
         )
         .await?;
         if current.as_ref().is_none_or(|current| {
@@ -219,7 +226,7 @@ pub(crate) async fn accepted_recovery_tx(
     owner: &str,
 ) -> Result<Option<AcceptedRecovery>> {
     use calm_types::conversation::{InputDeliveryFact, NativeInputAcceptance};
-    let Some(sample) = sample_tx(tx, card, worker, &AgentProvider::Codex).await? else {
+    let Some(sample) = sample_tx(tx, card, worker, &AgentProvider::Codex, true).await? else {
         return Ok(None);
     };
     let carrier = current_input_fact_carrier_tx(tx, card, worker).await?;
@@ -245,4 +252,16 @@ pub(crate) async fn accepted_recovery_tx(
     };
     Ok((accepted && deployment_owner_user_id == owner)
         .then_some(AcceptedRecovery { sample, backend }))
+}
+
+/// Current original target independent of supplemental report settlement. No END authority.
+pub(crate) async fn retained_execution_target_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    card: &str,
+    runtime: &str,
+    provider: &AgentProvider,
+) -> Result<Option<ExecutionEndTarget>> {
+    Ok(sample_tx(tx, card, runtime, provider, false)
+        .await?
+        .map(|sample| sample.target))
 }

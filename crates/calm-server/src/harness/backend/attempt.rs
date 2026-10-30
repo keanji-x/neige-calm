@@ -122,6 +122,7 @@ impl NonDispatchEvidence {
 #[serde(rename_all = "snake_case")]
 pub(crate) enum NativeAcceptanceBasis {
     CodexTurnStart,
+    CodexTurnSteer,
 }
 
 #[derive(Clone, Debug, Serialize)]

@@ -174,10 +174,16 @@ impl Fixture {
 
     pub async fn sample(&self) -> Sample {
         let mut tx = begin_immediate_tx(self.repo.db()).await.unwrap();
-        let sampled = sample_tx(&mut tx, &self.card, &self.runtime, &self.backend.provider())
-            .await
-            .unwrap()
-            .unwrap();
+        let sampled = sample_tx(
+            &mut tx,
+            &self.card,
+            &self.runtime,
+            &self.backend.provider(),
+            true,
+        )
+        .await
+        .unwrap()
+        .unwrap();
         tx.commit().await.unwrap();
         sampled
     }
