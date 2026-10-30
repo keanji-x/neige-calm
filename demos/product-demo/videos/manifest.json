@@ -1,0 +1,19 @@
+{
+  "frontend_commit": "e9457d32d0730396dbccf037a1c90cdfb8d348f0",
+  "size": [1600, 1000],
+  "fps": 30,
+  "data": "isolated scripted sample; no production API requests",
+  "source_media_inputs": 0,
+  "videos": [
+    {
+      "file": "neige-codex-claude-relay.mp4",
+      "seconds": 49,
+      "sha256": "982b51511fde56f21dd4e48bda717f096e4b4d239dcced20963dcab06e92df1b"
+    },
+    {
+      "file": "neige-relay-excerpt.mp4",
+      "seconds": 9,
+      "sha256": "44855359e68522b8f8c09831549a585be351600fb65ce7ef3dfafba96a9c17c9"
+    }
+  ]
+}
