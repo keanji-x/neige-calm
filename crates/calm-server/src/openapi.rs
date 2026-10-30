@@ -154,6 +154,7 @@ use utoipa::{Modify, OpenApi, ToSchema};
         crate::routes::planner_input_send::send_planner_input,
         crate::routes::planner_switch::switch_planner,
         crate::routes::conversation_recovery::abandon,
+        crate::routes::conversation_recovery::recover,
         crate::routes::conversation_input_resolution::keep_conversation_input,
         crate::routes::conversation_pending::edit,
         crate::routes::conversation_pending::withdraw,

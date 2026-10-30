@@ -579,7 +579,7 @@ pub(crate) enum CarrierIdleGuard<'a> {
         &'a crate::claude_planner::session::ClaudePlannerSession,
         crate::harness::carrier_park::ParkToken<'a>,
     ),
-    Codex(crate::shared_codex_appserver::IdleDetachGuard<'a>),
+    Codex(crate::shared_codex_appserver::IdleDetachGuard),
     Acp(
         &'a crate::acp_planner::session::AcpPlannerSession,
         crate::harness::carrier_park::ParkToken<'a>,

@@ -196,10 +196,7 @@ impl SharedCodexAppServer {
         Ok(())
     }
 
-    pub(crate) fn carrier_idle_for_detach(
-        &self,
-        thread: &str,
-    ) -> Option<super::IdleDetachGuard<'_>> {
+    pub(crate) fn carrier_idle_for_detach(&self, thread: &str) -> Option<super::IdleDetachGuard> {
         self.native_turns.idle_for_detach(thread)
     }
 

@@ -267,3 +267,35 @@ pub(super) async fn restore_interrupt_timeout_carrier_tx(
     }
     Ok(())
 }
+
+/// A qualified END closes the activity mirror even after failure revoked execution.
+/// This factual write cannot restore Failed to Idle or alter canonical input facts.
+pub(super) async fn complete_failed_carrier_observation_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    carrier: &CurrentInputCarrier,
+    thread: &str,
+    turn: &str,
+) -> Result<()> {
+    let changed = sqlx::query(
+        "UPDATE worker_sessions SET active_turn_id=NULL, updated_at_ms=?1
+         WHERE id=?2 AND card_id=?3 AND state='failed' AND worker_sessions.handle_state_json=?4
+           AND thread_id=?5 AND (active_turn_id IS NULL OR active_turn_id=?6)
+           AND EXISTS(SELECT 1 FROM cards c WHERE c.id=?3 AND c.session_id=?2
+             AND c.track_id=worker_sessions.track_id)",
+    )
+    .bind(crate::model::now_ms())
+    .bind(&carrier.worker_session_id)
+    .bind(&carrier.card_id)
+    .bind(&carrier.original_snapshot)
+    .bind(thread)
+    .bind(turn)
+    .execute(&mut **tx)
+    .await?
+    .rows_affected();
+    if changed != 1 {
+        return Err(CalmError::Conflict(
+            "failed END observation no longer names its current carrier",
+        ));
+    }
+    Ok(())
+}

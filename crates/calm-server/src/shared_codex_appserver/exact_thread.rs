@@ -390,11 +390,7 @@ impl RecoveryThread<'_> {
                 "native recovery activity changed".into(),
             ));
         }
-        let frames = terminal
-            .get("items")
-            .and_then(Value::as_array)
-            .ok_or_else(||CalmError::Conflict("native terminal items are unavailable".into()))?
-            .iter().map(|item|serde_json::json!({"method":"item/completed","params":{"threadId":thread_id,"turnId":native_turn_id,"item":item}})).collect::<Vec<_>>();
+        let receipt = canonical_terminal_receipt(thread_id, native_turn_id, &terminal)?;
         let target = target.clone();
         let db = repo.sqlite_db().ok_or(CalmError::ExecutionUnavailable)?;
         let mut tx = crate::db::sqlite::begin_immediate_tx(&db).await?;
@@ -414,14 +410,7 @@ impl RecoveryThread<'_> {
             &target.worker_session_id,
         )
         .await?;
-        crate::harness::transcript_receipt::settle_canonical_tx(
-            &mut tx,
-            &carrier,
-            thread_id,
-            native_turn_id,
-            &frames,
-        )
-        .await?;
+        receipt.settle_tx(&mut tx, &carrier).await?;
         admission.check_current()?;
         if !self
             .daemon
@@ -440,4 +429,88 @@ impl RecoveryThread<'_> {
         }
         Ok(())
     }
+}
+
+pub(crate) struct PreparedTerminalRecovery {
+    pub(crate) native: super::IdleDetachGuard,
+    pub(crate) transcript: crate::harness::transcript_receipt::CanonicalTerminalReceipt,
+}
+
+impl SharedCodexAppServer {
+    /// Only the native owner can prove an ended thread is safe to retire. The
+    /// source/issuance park survives this RPC scope and is rechecked at commit.
+    pub(crate) async fn terminal_recovery_guard(
+        &self,
+        target: &RecoveryTarget,
+        turn: &str,
+        admit: &NativePromptAdmission<'_>,
+    ) -> Result<PreparedTerminalRecovery> {
+        self.verify_backend_isolation().await?;
+        self.with_exact_thread(target, async |native| {
+            let client = native.client.native()?;
+            let fence = self
+                .native_turns
+                .settlement_fence(client, native.thread_id)?;
+            let thread = self
+                .read_recovery_thread(&native.client, native.thread_id, admit)
+                .await?;
+            let latest = thread
+                .get("turns")
+                .and_then(Value::as_array)
+                .and_then(|turns| turns.last());
+            if thread.get("id").and_then(Value::as_str) != Some(native.thread_id)
+                || !matches!(
+                    thread.pointer("/status/type").and_then(Value::as_str),
+                    Some("idle" | "systemError" | "notLoaded")
+                )
+                || !latest.is_some_and(|end| {
+                    end.get("id").and_then(Value::as_str) == Some(turn)
+                        && end.get("status").and_then(Value::as_str) == Some("failed")
+                })
+            {
+                return Err(CalmError::Conflict(
+                    "original failed terminal is not confirmed by the native owner".into(),
+                ));
+            }
+            let terminal = latest
+                .ok_or_else(|| CalmError::Conflict("native terminal is unavailable".into()))?;
+            let transcript = canonical_terminal_receipt(native.thread_id, turn, terminal)?;
+            // The provider retains its error flag after END and resume; only a
+            // new turn clears it. Retirement requires inactivity, not a new turn.
+            let resumed = native.resume(ThreadConfig::NoMcp, admit).await?;
+            if resumed.id.as_deref() != Some(native.thread_id)
+                || !matches!(resumed.status.as_deref(), Some("idle" | "systemError"))
+            {
+                return Err(CalmError::Conflict(
+                    "native cleanup is not confirmed inactive".into(),
+                ));
+            }
+            admit.check_local().await?;
+            Ok(PreparedTerminalRecovery {
+                native: self.native_turns.park_terminal_recovery(fence, turn)?,
+                transcript,
+            })
+        })
+        .await
+    }
+}
+
+// thread/read(includeTurns=true) hydrates full items. Older protocol versions
+// omit itemsView; an explicit partial view must never authorize retirement.
+fn canonical_terminal_receipt(
+    thread: &str,
+    turn: &str,
+    terminal: &Value,
+) -> Result<crate::harness::transcript_receipt::CanonicalTerminalReceipt> {
+    if terminal
+        .get("itemsView")
+        .is_some_and(|view| view.as_str() != Some("full"))
+    {
+        return Err(CalmError::Conflict(
+            "native terminal items are not complete".into(),
+        ));
+    }
+    crate::harness::transcript_receipt::CanonicalTerminalReceipt::from_native(
+        thread, turn, terminal,
+    )
 }

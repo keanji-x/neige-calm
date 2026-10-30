@@ -324,9 +324,21 @@ mod planner_switch_tests;
 
 /// Recovery excludes new issuance while preserving the unresolved canonical frame.
 /// Native idleness is a local fence only; the ACP lifecycle separately proves quiescence.
+enum RecoveryNativeOwner<'a> {
+    Local(crate::harness::backend::CarrierIdleGuard<'a>),
+    Terminal(&'a crate::shared_codex_appserver::IdleDetachGuard),
+}
+impl RecoveryNativeOwner<'_> {
+    fn recheck(&self) -> bool {
+        match self {
+            Self::Local(guard) => guard.recheck(),
+            Self::Terminal(guard) => guard.recheck(),
+        }
+    }
+}
 pub(crate) struct HeldCarrierOwner<'a> {
     handle: &'a PlannerHarness,
-    native: crate::harness::backend::CarrierIdleGuard<'a>,
+    native: RecoveryNativeOwner<'a>,
     park: crate::harness::carrier_park::ParkToken<'a>,
 }
 impl HeldCarrierOwner<'_> {
@@ -346,6 +358,18 @@ impl HeldCarrierOwner<'_> {
 }
 impl PlannerHarness {
     pub(crate) async fn held_carrier_owner(&self) -> Result<HeldCarrierOwner<'_>> {
+        self.hold_recovery_carrier(None).await
+    }
+    pub(crate) async fn held_terminal_carrier_owner<'a>(
+        &'a self,
+        native: &'a crate::shared_codex_appserver::IdleDetachGuard,
+    ) -> Result<HeldCarrierOwner<'a>> {
+        self.hold_recovery_carrier(Some(native)).await
+    }
+    async fn hold_recovery_carrier<'a>(
+        &'a self,
+        external_native_park: Option<&'a crate::shared_codex_appserver::IdleDetachGuard>,
+    ) -> Result<HeldCarrierOwner<'a>> {
         let _issuance = self.inner.issuance.lock().await;
         if !matches!(self.inner.inputs, RuntimeInputs::Canonical(_))
             || self
@@ -361,12 +385,19 @@ impl PlannerHarness {
             ));
         }
         let thread = self.inner.thread_id.read().await.clone();
-        let native = self
-            .inner
-            .backend
-            .carrier_idle_for_recovery(thread.as_deref())
-            .await
-            .ok_or_else(|| CalmError::Conflict("old native execution is still active".into()))?;
+        let native = if let Some(guard) = external_native_park {
+            RecoveryNativeOwner::Terminal(guard)
+        } else {
+            RecoveryNativeOwner::Local(
+                self.inner
+                    .backend
+                    .carrier_idle_for_recovery(thread.as_deref())
+                    .await
+                    .ok_or_else(|| {
+                        CalmError::Conflict("old native execution is still active".into())
+                    })?,
+            )
+        };
         let park = self
             .inner
             .parked

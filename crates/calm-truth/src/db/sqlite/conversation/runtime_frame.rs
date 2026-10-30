@@ -227,15 +227,19 @@ pub async fn complete_input_execution_tx(
     save_input_carrier_tx(tx, &mut current).await?;
     if restore {
         restore_interrupt_timeout_carrier_tx(tx, &current).await?;
+    } else if !execution_current {
+        super::carrier::complete_failed_carrier_observation_tx(
+            tx,
+            &current,
+            &original.correlation.thread_id,
+            turn,
+        )
+        .await?;
     } else {
         super::super::session_set_harness_observation_runtime_tx(
             tx,
             &worker_session_id.to_owned(),
-            if execution_current {
-                calm_types::worker::WorkerSessionState::Idle
-            } else {
-                calm_types::worker::WorkerSessionState::Failed
-            },
+            calm_types::worker::WorkerSessionState::Idle,
             Some(original.correlation.thread_id.as_str()),
             None,
         )

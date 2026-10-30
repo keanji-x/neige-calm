@@ -2902,6 +2902,144 @@
         }
       }
     },
+    "/api/cards/{id}/conversation/recover": {
+      "post": {
+        "tags": [
+          "cards"
+        ],
+        "operationId": "recover",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AbandonConversationRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AbandonConversationResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "`payload_too_large`: the body is over the request size limit.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "`unsupported_media_type`: the request does not say `Content-Type: application/json`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`invalid_body`: the JSON is not the body's shape (a field missing or of the wrong type).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/cards/{id}/harness/items": {
       "get": {
         "tags": [
@@ -19779,7 +19917,9 @@
           "pending_inputs",
           "native_completion_unavailable",
           "cleanup_required",
-          "identity_unconfirmed"
+          "identity_unconfirmed",
+          "terminal_evidence_unavailable",
+          "human_authorization_required"
         ]
       },
       "RunRecovery": {
@@ -19828,6 +19968,28 @@
             "type": "object",
             "required": [
               "cause",
+              "request",
+              "action"
+            ],
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "recover_session"
+                ]
+              },
+              "cause": {
+                "$ref": "#/components/schemas/RunRecoveryCause"
+              },
+              "request": {
+                "$ref": "#/components/schemas/AbandonConversationRequest"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "cause",
               "reason",
               "action"
             ],
@@ -19853,7 +20015,8 @@
         "enum": [
           "unknown_outcome",
           "wedged",
-          "native_completion_pending"
+          "native_completion_pending",
+          "terminal_provider_error"
         ]
       },
       "SendPlannerInputRequest": {

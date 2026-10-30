@@ -98,6 +98,18 @@ impl RecoveryTarget {
     fn active(runtime: &WorkerSessionProjection) -> Result<Self> {
         Self::from_carrier(runtime, "conversation thread is missing")
     }
+    pub(crate) fn known_failed(runtime: &WorkerSessionProjection) -> Result<Self> {
+        if runtime.agent_provider.as_ref()
+            != Some(&crate::session_projection_repo::AgentProvider::Codex)
+            || runtime.status != crate::session_projection_repo::WorkerSessionState::Failed
+        {
+            return Err(CalmError::Conflict(
+                "terminal recovery requires a failed Codex carrier".into(),
+            ));
+        }
+        Self::failed(runtime)
+    }
+
     fn failed(runtime: &WorkerSessionProjection) -> Result<Self> {
         Self::from_carrier(
             runtime,

@@ -30,7 +30,7 @@ async fn canonical_codex_cold_accepted_completion_rechecks_current_carrier() {
     Box::pin(codex_completion("carrier-race")).await;
 }
 
-async fn bind_other_backend(fixture: &Fixture, worker: &str) {
+pub(super) async fn bind_other_backend(fixture: &Fixture, worker: &str) {
     let mut tx = crate::db::sqlite::begin_immediate_tx(fixture.repo.db())
         .await
         .unwrap();

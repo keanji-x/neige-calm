@@ -198,7 +198,7 @@ export function useConversationStore(
       ? latest : Math.max(latest ?? 0, row.id), null),
     requestStop: mutations.interrupt,
   });
-  const restart = useConversationRestart({ cardId, enabled: run.data?.input_contract === 'historical' || recovery?.action === 'abandon_session', recovery, restart: () => mutations.restart(recovery) });
+  const restart = useConversationRestart({ cardId, enabled: run.data?.input_contract === 'historical' || recovery?.action === 'abandon_session' || recovery?.action === 'recover_session', recovery, restart: () => mutations.restart(recovery) });
   const landedTranscript = transcriptReads.startOf(history.data);
   /* A refetch keeping `run.data` restamps it; this re-renders only because `run.dataUpdatedAt` is read above (#2068). */
   const landed = useMemo(() => ({ transcript: landedTranscript, run: landedRun }), [landedTranscript, landedRun]);

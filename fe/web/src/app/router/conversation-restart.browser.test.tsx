@@ -1,4 +1,4 @@
-import { historicalConversationPage, conversationCardId, historicalConversationRun } from './conversation-read-data.ts';
+import { presentationPage, nativePresentation, historicalConversationPage, conversationCardId, historicalConversationRun } from './conversation-read-data.ts';
 import '../../styles/entry.css';
 import { cleanup } from '@testing-library/react';
 import { afterEach, expect, it } from 'vitest';
@@ -100,3 +100,41 @@ it.each([[390, 'dormant', '/track/daily?panel=conversations'], [1280, 'dormant',
       await expect.element(page.getByRole('region', { name: 'Calendar tasks' })).toBeVisible();
     }
   });
+
+it.each([390, 1280])('recovers a known terminal provider error through the declared action (%ipx)', async width => {
+  await page.viewport(width, 844);
+  let recovered = false;
+  const target = { carrier_id: 'failed-worker', submission_id: 'failed-input', attempt_id: 'failed-attempt', revision: '9007199254740993' };
+  const ok = (body: unknown): ApiTransportResponse => ({ status: 200, statusText: 'OK', body });
+  const fixture = renderDailyFixture({ initial: '/track/daily?panel=conversations', reply: request => {
+    if (request.path.endsWith('/conversation/recover')) {
+      recovered = true;
+      return ok({ card_id: 'daily-planner', old_carrier_id: target.carrier_id, carrier_id: 'fresh-worker' });
+    }
+    if (request.path.includes('/planner/run?contract=conversation_v1')) return ok({
+      card_id: 'daily-planner', worker_session_id: recovered ? 'fresh-worker' : target.carrier_id,
+      phase: recovered ? 'idle' : 'turn_completed', runtime_state: recovered ? 'idle' : 'failed',
+      input_contract: 'canonical', model: null, reasoning_effort: null, permission_mode: 'never',
+      blocked_reason: recovered ? null : 'system_error', manual_compact_supported: false,
+      recovery: recovered ? null : { cause: 'terminal_provider_error', action: 'recover_session', request: target },
+      compact_outcome: null, context_usage_invalidated: false, running_turn: null, native_turn_id: null,
+      pending: [], pending_overflow: 0, pending_inputs: [], active_input: null, attachments_supported: false,
+      history_replacement_supported: false, terminal_outcome: null, terminal_timeout: null,
+    });
+    if (request.path.includes('/harness/items')) return ok(presentationPage(HISTORY.map(row => nativePresentation('daily-planner', row))));
+    return undefined;
+  } });
+  await page.getByRole('button', { name: /Conversation Daily Planner conversation/ }).click();
+  await expect.element(page.getByText('Earlier reply that stays.', { exact: true })).toBeVisible();
+  await expect.element(page.getByText(/The provider ended the previous execution with an error\. The failed request won’t be sent again\. History stays here;/)).toBeVisible();
+  const action = page.getByRole('button', { name: 'Start a fresh session, keep history' });
+  await expect.element(action).toBeVisible();
+  await page.screenshot({ path: `./__screenshots__/terminal-provider-error-${width}.png` });
+  await action.click();
+  await expect.element(page.getByText(/^Fresh session started\./)).toBeVisible();
+  await expect.element(page.getByText('Earlier reply that stays.', { exact: true })).toBeVisible();
+  await expect.element(page.getByRole('combobox', { name: 'Message' })).toHaveAttribute('contenteditable', 'true');
+  const writes = fixture.requests.filter(request => request.method === 'POST');
+  expect(writes.filter(request => request.path.endsWith('/conversation/recover')).map(request => request.body)).toEqual([target]);
+  expect(writes.some(request => request.path.endsWith('/planner/restart') || request.path.endsWith('/planner/input'))).toBe(false);
+});

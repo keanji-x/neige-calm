@@ -7,6 +7,7 @@ pub enum RunRecoveryCause {
     UnknownOutcome,
     Wedged,
     NativeCompletionPending,
+    TerminalProviderError,
 }
 #[derive(Debug, Serialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
@@ -16,6 +17,8 @@ pub enum RunHeldReason {
     CleanupRequired,
     /// A recorded provider launch has no confirmed native identity; no action is declared.
     IdentityUnconfirmed,
+    TerminalEvidenceUnavailable,
+    HumanAuthorizationRequired,
 }
 #[derive(Debug, Serialize, ToSchema)]
 #[serde(tag = "action", rename_all = "snake_case")]
@@ -24,6 +27,10 @@ pub enum RunRecovery {
         cause: RunRecoveryCause,
     },
     AbandonSession {
+        cause: RunRecoveryCause,
+        request: calm_types::conversation::AbandonConversationRequest,
+    },
+    RecoverSession {
         cause: RunRecoveryCause,
         request: calm_types::conversation::AbandonConversationRequest,
     },

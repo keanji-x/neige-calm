@@ -70,7 +70,7 @@ import {
 } from '../../../../core/domain/conversation.ts';
 import { harnessLiveOperation } from '../../../../core/domain/conversation-live.ts';
 import { setPlannerPermissionModeOperation } from '../../../../core/domain/planner-permission-mode.ts';
-import { abandonConversationOperation, restartPlannerOperation, type RunRecovery } from '../../../../core/domain/conversation-restart.ts';
+import { recoverConversationOperation, abandonConversationOperation, restartPlannerOperation, type RunRecovery } from '../../../../core/domain/conversation-restart.ts';
 import {
   ApiError, classifyFailure, DELETE_FAILURES, DELETE_TEXT, refusalText, writeFailureOf, writeFailureText,
 } from '../../../../core/domain/failure-class.ts';
@@ -255,7 +255,9 @@ export function usePlannerMutations(transport: ApiTransportPort, cardId: string,
         return cancelThenInvalidate(client, queryKeys.plannerRun(cardId));
       };
       return Promise.resolve().then(() => admitTransport(transport))
-        .then((admitted): Promise<unknown> => recovery?.action === 'abandon_session'
+        .then((admitted): Promise<unknown> => recovery?.action === 'recover_session'
+          ? runOperation(admitted, recoverConversationOperation(cardId, recovery), unauthorized)
+          : recovery?.action === 'abandon_session'
           ? runOperation(admitted, abandonConversationOperation(cardId, recovery), unauthorized)
           : runOperation(admitted, restartPlannerOperation(cardId), unauthorized))
         .then(async (restarted) => { await reread(); return restarted; }, async (error: unknown) => { await reread(); throw error; });

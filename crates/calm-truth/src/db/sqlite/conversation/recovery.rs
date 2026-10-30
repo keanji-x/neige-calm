@@ -14,6 +14,26 @@ pub enum AbandonmentMode {
     UnconfirmedSession,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum CarrierRecoveryKind {
+    Abandon(AbandonmentMode),
+    TerminalProviderError,
+}
+impl CarrierRecoveryKind {
+    pub async fn request_tx(
+        self,
+        tx: &mut Transaction<'_, Sqlite>,
+        carrier: &CurrentInputCarrier,
+    ) -> Result<Option<AbandonConversationRequest>> {
+        match self {
+            Self::Abandon(mode) => abandonment_request_tx(tx, carrier, mode).await,
+            Self::TerminalProviderError => {
+                super::terminal_recovery::terminal_recovery_request_tx(tx, carrier).await
+            }
+        }
+    }
+}
+
 /// Eligibility is separate from ordinary idle replacement. It grants no execution proof.
 pub async fn abandonment_request_tx(
     _tx: &mut Transaction<'_, Sqlite>,
@@ -88,7 +108,7 @@ pub async fn abandonment_request_tx(
     }))
 }
 
-pub async fn replay_abandonment_tx(
+pub async fn replay_carrier_recovery_tx(
     tx: &mut Transaction<'_, Sqlite>,
     card: &str,
     principal: &str,
@@ -110,10 +130,10 @@ pub async fn replay_abandonment_tx(
     .transpose()
 }
 
-pub async fn abandon_unresolved_carrier_tx(
+pub async fn replace_recoverable_carrier_tx(
     tx: &mut Transaction<'_, Sqlite>,
     expected: ExpectedCarrier<'_>,
-    mode: AbandonmentMode,
+    kind: CarrierRecoveryKind,
     request: &AbandonConversationRequest,
     principal: &str,
     key: &str,
@@ -138,7 +158,7 @@ pub async fn abandon_unresolved_carrier_tx(
         || !binding.matches_session_contract(&old)
         || old.track_id.as_str() != expected.track_id
         || old.thread_id != frame.header.last_thread_id
-        || abandonment_request_tx(tx, &carrier, mode).await?.as_ref() != Some(request)
+        || kind.request_tx(tx, &carrier).await?.as_ref() != Some(request)
         || carrier_ingress_revision_tx(
             tx,
             &expected.card_id,

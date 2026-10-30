@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+# #3363 bounded storage-contract exception: runtime_id/crates +1 reads the
+# frozen initiating_runtime_id column to bind an ended turn to its original
+# Initial. harness_item/crates +2 reads its persisted failed terminal and removes
+# that exact terminal in the negative fixture. No domain names or scan rules
+# change; future SQL-contract changes update their owning queries and baseline.
 # #3352 supplemental schema bounded exception: spec/crates +1, runtime_id/crates +2,
 # harness_item/crates +2 preserve fixed 0190/0196 SQL identifiers and constraints
 # in the new forward migration. They introduce no runtime vocabulary or scan rule.

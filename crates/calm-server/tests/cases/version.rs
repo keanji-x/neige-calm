@@ -126,8 +126,8 @@ async fn get_version_returns_all_fields_with_expected_sources() {
     assert_eq!(v["apiVersion"].as_str().unwrap(), API_VERSION);
     assert_eq!(
         v["apiVersion"].as_str().unwrap(),
-        "43",
-        "Recovery holds declare unconfirmed Claude identity"
+        "44",
+        "Canonical recovery declares explicit terminal provider-error recovery"
     );
     assert_eq!(
         v["syncEventVersion"].as_u64().unwrap(),
@@ -140,12 +140,12 @@ async fn get_version_returns_all_fields_with_expected_sources() {
         v["webCompatVersion"].as_u64().unwrap(),
         WEB_COMPAT_VERSION as u64,
     );
-    assert_eq!(v["webCompatVersion"].as_u64().unwrap(), 66);
+    assert_eq!(v["webCompatVersion"].as_u64().unwrap(), 67);
     assert_eq!(
         v["minWebCompatVersion"].as_u64().unwrap(),
         WEB_COMPAT_VERSION as u64,
     );
-    assert_eq!(v["minWebCompatVersion"].as_u64().unwrap(), 66);
+    assert_eq!(v["minWebCompatVersion"].as_u64().unwrap(), 67);
     assert_eq!(
         v["supervisorControlVersion"].as_u64().unwrap(),
         SUPERVISOR_CONTROL_VERSION as u64,

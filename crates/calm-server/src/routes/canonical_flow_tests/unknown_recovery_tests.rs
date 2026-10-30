@@ -3,6 +3,7 @@ use super::*;
 use calm_truth::db::RepoOutOfDomain;
 mod claude;
 mod codex;
+mod terminal_error;
 
 #[tokio::test]
 async fn canonical_acp_cold_unknown_explicit_abandon_starts_fresh_without_resend() {

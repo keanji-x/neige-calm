@@ -42,22 +42,28 @@ export const RESTART_ACTION = 'Start a fresh session, keep history';
  */
 export const DORMANT_NOTICE = 'Not sent. This conversation’s session can’t be resumed. Your history is kept and your message is still below.';
 
-const recoveryCauseSchema = z.enum(['unknown_outcome', 'wedged', 'native_completion_pending']);
+const recoveryCauseSchema = z.enum(['unknown_outcome', 'wedged', 'native_completion_pending', 'terminal_provider_error']);
 export const runRecoverySchema = z.discriminatedUnion('action', [
   z.object({ cause: recoveryCauseSchema, action: z.literal('restart_session') }),
   z.object({ cause: recoveryCauseSchema, action: z.literal('abandon_session'), request: z.object({
     carrier_id: z.string(), submission_id: z.string(), attempt_id: z.string(), revision: z.string(),
   }) }),
-  z.object({ cause: recoveryCauseSchema, action: z.literal('held'), reason: z.enum(['pending_inputs', 'native_completion_unavailable', 'cleanup_required', 'identity_unconfirmed']) }),
+  z.object({ cause: recoveryCauseSchema, action: z.literal('recover_session'), request: z.object({
+    carrier_id: z.string(), submission_id: z.string(), attempt_id: z.string(), revision: z.string(),
+  }) }),
+  z.object({ cause: recoveryCauseSchema, action: z.literal('held'), reason: z.enum(['pending_inputs', 'native_completion_unavailable', 'cleanup_required', 'identity_unconfirmed', 'terminal_evidence_unavailable', 'human_authorization_required']) }),
 ]);
 export type RunRecovery = z.infer<typeof runRecoverySchema>;
 
 /** Only a declared action licenses a fresh-session offer. */
 export function offersFreshSession(recovery: RunRecovery | null): boolean {
-  return recovery?.action === 'restart_session' || recovery?.action === 'abandon_session';
+  return recovery?.action === 'restart_session' || recovery?.action === 'abandon_session' || recovery?.action === 'recover_session';
 }
 
 function recoveryReason(recovery: RunRecovery): string {
+  if (recovery.action === 'held' && recovery.reason === 'terminal_evidence_unavailable') return 'Waiting to verify the failed execution has ended. Saved messages remain queued.';
+  if (recovery.action === 'held' && recovery.reason === 'human_authorization_required') return 'Recovery requires current permission to run this conversation. Saved messages remain queued.';
+  if (recovery.cause === 'terminal_provider_error') return 'The provider ended the previous execution with an error. The failed request won’t be sent again.';
   if (recovery.action === 'held' && recovery.reason === 'pending_inputs') return 'Some queued inputs still belong to the previous session. Recovery is held to keep them from being lost or repeated.';
   if (recovery.action === 'held' && recovery.reason === 'identity_unconfirmed') return 'This conversation’s session could not be confirmed after an earlier launch, so nothing more is sent. Saved messages are kept.';
   if (recovery.cause === 'native_completion_pending') return 'Waiting to verify the original native completion. Saved messages remain queued.';
@@ -68,6 +74,8 @@ function recoveryReason(recovery: RunRecovery): string {
 
 /** Declared recovery explains the status; other stalls retain their runtime reason. */
 export function recoveryStatusNotice(recovery: RunRecovery | null, stalledReason: string | null): Readonly<{ heading: string; reason: string }> {
+  if (recovery?.action === 'held' && (recovery.reason === 'terminal_evidence_unavailable' || recovery.reason === 'human_authorization_required')) return { heading: 'Paused', reason: recoveryReason(recovery) };
+  if (recovery?.cause === 'terminal_provider_error') return { heading: 'Provider error', reason: recoveryReason(recovery) };
   if (recovery?.cause === 'native_completion_pending') return { heading: 'Completion unconfirmed', reason: stalledReason ?? recoveryReason(recovery) };
   return recovery?.cause === 'unknown_outcome'
     ? { heading: 'Outcome unknown', reason: recoveryReason(recovery) }
@@ -93,6 +101,16 @@ export function abandonConversationOperation(cardId: string, recovery: Extract<R
     method: 'POST', path: `/api/cards/${encodeURIComponent(cardId)}/conversation/abandon`,
     body: recovery.request,
     headers: { 'Idempotency-Key': `abandon:${recovery.request.submission_id}:${recovery.request.revision}` },
+    responseSchema: z.object({ card_id: z.string(), old_carrier_id: z.string(), carrier_id: z.string() }),
+  };
+}
+
+/** Known failed END recovery is an explicit lifecycle action with its original CAS. */
+export function recoverConversationOperation(cardId: string, recovery: Extract<RunRecovery, { action: 'recover_session' }>): ApiOperation<{ carrier_id: string }> {
+  return {
+    method: 'POST', path: `/api/cards/${encodeURIComponent(cardId)}/conversation/recover`,
+    body: recovery.request,
+    headers: { 'Idempotency-Key': `recover:${recovery.request.carrier_id}:${recovery.request.attempt_id}:${recovery.request.revision}` },
     responseSchema: z.object({ card_id: z.string(), old_carrier_id: z.string(), carrier_id: z.string() }),
   };
 }

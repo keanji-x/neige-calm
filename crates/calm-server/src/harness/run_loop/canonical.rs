@@ -260,6 +260,8 @@ pub(super) async fn advance(inner: &Arc<Inner>, ingress_empty: bool) {
         publish_issuance_error(inner, &error).await;
         tracing::warn!(%error, "canonical harness tick did not advance");
     }
+    #[cfg(feature = "fixtures")]
+    crate::test_seams::pause_point("canonical-tick-returned", inner.card_id.as_str()).await;
 }
 
 /// Consume the one persisted pending order in the existing scheduler. Live
@@ -281,6 +283,8 @@ pub(super) async fn tick(inner: &Arc<Inner>, ingress_empty: bool) -> Result<()> 
     if let Some(settled) = inner.backend.settle_kept_execution().await? {
         publish(inner, written(settled)?).await;
     }
+    #[cfg(feature = "fixtures")]
+    crate::test_seams::pause_point("canonical-before-end-probe", inner.card_id.as_str()).await;
     if let Some(done) = crate::harness::input_dispatch::complete_once(
         inner.repo.as_ref(),
         &inner.backend,

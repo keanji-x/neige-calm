@@ -161,6 +161,13 @@ impl PlannerHarnessStartAdapter {
 }
 
 impl PlannerHarnessStartAdapter {
+    pub(crate) async fn canonical_native_owner(
+        &self,
+        worker: &str,
+    ) -> Result<Arc<crate::shared_codex_appserver::SharedCodexAppServer>> {
+        Ok(self.codex_backends.for_session(worker).await?.clone())
+    }
+
     /// Read declaration follows the same session namespace as restoration.
     pub(crate) async fn canonical_native_active_tx(
         &self,

@@ -43,4 +43,5 @@
 // Revision 41 (#3279): negotiated run reads require nullable exact current terminal evidence.
 // Revision 42: canonical queued Human edit, withdrawal and exact-target supplemental input.
 // Revision 43 (#3318): recovery holds may declare an unconfirmed Claude identity.
-pub const REST_API_VERSION: &str = "43";
+// Revision 44 (#3363): explicit known-terminal carrier recovery.
+pub const REST_API_VERSION: &str = "44";

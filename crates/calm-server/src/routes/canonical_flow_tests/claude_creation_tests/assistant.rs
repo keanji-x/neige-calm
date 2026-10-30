@@ -30,28 +30,6 @@ pub(in crate::routes::canonical_flow_tests) fn read(fixture: &Fixture, name: &st
     std::fs::read_to_string(fixture.root.path().join("fake").join(name)).unwrap_or_default()
 }
 
-async fn get(app: &axum::Router, cookie: &str, uri: &str) -> Value {
-    let response = app
-        .clone()
-        .oneshot(
-            Request::get(uri)
-                .header(header::COOKIE, cookie)
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    let status = response.status();
-    let bytes = response.into_body().collect().await.unwrap().to_bytes();
-    assert_eq!(
-        status,
-        StatusCode::OK,
-        "{}",
-        String::from_utf8_lossy(&bytes)
-    );
-    serde_json::from_slice(&bytes).unwrap()
-}
-
 pub(in crate::routes::canonical_flow_tests) async fn wait_frame(
     fixture: &Fixture,
     card: &str,
@@ -281,7 +259,7 @@ async fn claude_assistant_side_context_tools_never_and_archived_input() {
             "{denied}"
         );
     }
-    let run = get(
+    let run = crate::routes::canonical_flow_tests::input_feedback_tests::run(
         &app,
         &cookie,
         &format!("/api/cards/{card}/planner/run?contract=conversation_v1"),

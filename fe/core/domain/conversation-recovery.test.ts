@@ -72,3 +72,21 @@ it('explains an unconfirmed provider launch without offering any action', () => 
   expect(notice.reason).toContain('could not be confirmed');
   expect(notice.reason).not.toContain('fresh session');
 });
+
+it('declares known terminal recovery separately and never resends the failed input', () => {
+  const recovery = runRecoverySchema.parse({ cause: 'terminal_provider_error', action: 'recover_session', request: {
+    carrier_id: 'failed-worker', submission_id: 'failed-input', attempt_id: 'failed-attempt', revision: '9007199254740993',
+  } });
+  expect(offersFreshSession(recovery)).toBe(true);
+  expect(recoveryNotice(recovery)).toContain('failed request won’t be sent again');
+  expect(recoveryStatusNotice(recovery, null).heading).toBe('Provider error');
+});
+
+it.each([
+  ['terminal_evidence_unavailable', 'Waiting to verify the failed execution has ended.'],
+  ['human_authorization_required', 'Recovery requires current permission to run this conversation.'],
+] as const)('explains held recovery reason %s without offering an action', (reason, text) => {
+  const recovery = runRecoverySchema.parse({ action: 'held', cause: 'wedged', reason });
+  expect(offersFreshSession(recovery)).toBe(false);
+  expect(recoveryStatusNotice(recovery, null)).toEqual({ heading: 'Paused', reason: `${text} Saved messages remain queued.` });
+});

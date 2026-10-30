@@ -150,7 +150,7 @@ it.each([1, 2])('does not upload %i old picked files after their asynchronous re
   expect(send).not.toHaveBeenCalled(); expect(result.current.items).toHaveLength(0);
 });
 
-it('canonical fresh recovery dispatches declared abandonment and preserves its exact input CAS', async () => {
+it.each(['abandon_session', 'recover_session'] as const)('canonical fresh recovery dispatches %s and preserves its exact input CAS', async action => {
   vi.stubGlobal('__NC_BUNDLED__', true);
   const access = new RecoveryAccess(); access.change('connected');
   const send = vi.fn<(request: ApiRequest) => Promise<ApiTransportResponse>>(() => Promise.resolve({ status: 200, statusText: 'OK', body: { card_id: 'card-a', old_carrier_id: 'old', carrier_id: 'fresh' } }));
@@ -159,8 +159,8 @@ it('canonical fresh recovery dispatches declared abandonment and preserves its e
   const { result } = renderHook(() => usePlannerMutations(transport, 'card-a', 'track-a', createUnauthorizedChannel({ enqueue: task => task() })), {
     wrapper: ({ children }: { children: ReactNode }) => <QueryClientProvider client={client}>{children}</QueryClientProvider>,
   });
-  const recovery = { cause: 'unknown_outcome', action: 'abandon_session', request: { carrier_id: 'old', submission_id: 'submission', attempt_id: 'attempt', revision: '18446744073709551614' } } as const;
+  const recovery = { cause: action === 'recover_session' ? 'terminal_provider_error' : 'unknown_outcome', action, request: { carrier_id: 'old', submission_id: 'submission', attempt_id: 'attempt', revision: '18446744073709551614' } } as const;
   await result.current.restart(recovery);
   expect(send).toHaveBeenCalledOnce();
-  expect(send.mock.calls[0]?.[0]).toMatchObject({ method: 'POST', path: '/api/cards/card-a/conversation/abandon', body: recovery.request });
+  expect(send.mock.calls[0]?.[0]).toMatchObject({ method: 'POST', path: `/api/cards/card-a/conversation/${action === 'recover_session' ? 'recover' : 'abandon'}`, body: recovery.request });
 });

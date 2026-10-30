@@ -1,27 +1,67 @@
 //! Native-owner detach leases. No mutex survives an await or SQL operation.
 use super::*;
 
-/// Fences one settled thread through commit; every source change invalidates it.
-pub(crate) struct IdleDetachGuard<'a> {
-    owner: &'a NativeTurns,
-    thread: String,
-    source: Weak<CodexAppServer>,
-    source_generation: u64,
-    identity: Arc<()>,
+/// The same issuance lease protects live idleness and explicit cold recovery.
+/// Evidence is minted by the native owner; neither variant manufactures END.
+enum DetachEvidence {
+    ObservedEnd {
+        source: Weak<CodexAppServer>,
+        generation: u64,
+    },
+    VerifiedTerminalRead {
+        fence: SettlementFence,
+        turn: String,
+    },
 }
-impl IdleDetachGuard<'_> {
+impl DetachEvidence {
+    fn matches(&self, state: &State, thread: &str) -> bool {
+        match self {
+            Self::ObservedEnd { source, generation } => {
+                state.source_generation == *generation
+                    && state.is_current(source)
+                    && state.settled_on(thread, source)
+            }
+            Self::VerifiedTerminalRead { fence, turn } => {
+                // A current-connection read re-proved the historical END.
+                // Retain its turn/activity fences without treating the old
+                // observation connection as current execution authority.
+                state.is_current(&fence.source)
+                    && fence.pending.is_none()
+                    && !fence.ambiguous
+                    && !fence.unresolved
+                    && state.slots.get(thread).is_some_and(|slot| {
+                        Arc::ptr_eq(&slot.activity, &fence.activity)
+                            && slot.pending.is_none()
+                            && slot.steering.is_none()
+                            && !slot.unresolved
+                            && slot.current.as_ref().map(|c| &c.turn) == fence.current.as_ref()
+                            && slot
+                                .current
+                                .as_ref()
+                                .is_none_or(|c| c.turn == *turn && c.ended)
+                    })
+            }
+        }
+    }
+}
+/// Fences one settled thread through commit; every source change invalidates it.
+pub(crate) struct IdleDetachGuard {
+    owner: Arc<NativeTurns>,
+    thread: String,
+    identity: Arc<()>,
+    evidence: DetachEvidence,
+}
+impl IdleDetachGuard {
     pub(crate) fn recheck(&self) -> bool {
         let state = self.owner.lock();
-        state.source_generation == self.source_generation
-            && state.is_current(&self.source)
+        self.evidence.matches(&state, &self.thread)
             && state
                 .detaching
                 .get(&self.thread)
                 .is_some_and(|(id, _)| Arc::ptr_eq(id, &self.identity))
-            && state.settled_on(&self.thread, &self.source)
     }
 }
-impl Drop for IdleDetachGuard<'_> {
+impl Drop for IdleDetachGuard {
     fn drop(&mut self) {
         let mut state = self.owner.lock();
         if state
@@ -37,16 +77,13 @@ impl Drop for IdleDetachGuard<'_> {
     }
 }
 impl NativeTurns {
-    pub(in crate::shared_codex_appserver) fn idle_for_detach(
-        &self,
+    fn park_detach(
+        self: &Arc<Self>,
         thread: &str,
-    ) -> Option<IdleDetachGuard<'_>> {
+        evidence: DetachEvidence,
+    ) -> Option<IdleDetachGuard> {
         let mut state = self.lock();
-        let source = state.source.clone()?;
-        let idle = state.is_current(&source)
-            && !state.detaching.contains_key(thread)
-            && state.settled_on(thread, &source);
-        if !idle {
+        if state.detaching.contains_key(thread) || !evidence.matches(&state, thread) {
             return None;
         }
         let identity = Arc::new(());
@@ -54,12 +91,39 @@ impl NativeTurns {
             .detaching
             .insert(thread.into(), (identity.clone(), false));
         Some(IdleDetachGuard {
-            owner: self,
+            owner: self.clone(),
             thread: thread.into(),
-            source,
-            source_generation: state.source_generation,
             identity,
+            evidence,
         })
+    }
+    pub(in crate::shared_codex_appserver) fn idle_for_detach(
+        self: &Arc<Self>,
+        thread: &str,
+    ) -> Option<IdleDetachGuard> {
+        let state = self.lock();
+        let evidence = DetachEvidence::ObservedEnd {
+            source: state.source.clone()?,
+            generation: state.source_generation,
+        };
+        drop(state);
+        self.park_detach(thread, evidence)
+    }
+    /// Called only after an exact failed terminal read and an idle native resume.
+    pub(in crate::shared_codex_appserver) fn park_terminal_recovery(
+        self: &Arc<Self>,
+        fence: SettlementFence,
+        turn: &str,
+    ) -> Result<IdleDetachGuard> {
+        let thread = fence.thread.clone();
+        self.park_detach(
+            &thread,
+            DetachEvidence::VerifiedTerminalRead {
+                fence,
+                turn: turn.into(),
+            },
+        )
+        .ok_or_else(|| CalmError::Conflict("native recovery is not quiescent".into()))
     }
 }
 impl State {
