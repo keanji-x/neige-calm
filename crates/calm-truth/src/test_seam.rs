@@ -21,7 +21,8 @@ fn pause_points() -> &'static PauseRegistry {
     POINTS.get_or_init(Default::default)
 }
 
-fn take(point: &str, key: &str) -> Option<PausePoint> {
+/// Synchronously capture or remove a one-shot registration; callers own its release.
+pub fn take(point: &str, key: &str) -> Option<PausePoint> {
     pause_points()
         .lock()
         .expect("pause point mutex")

@@ -45,7 +45,7 @@ async fn original_subject_replay_is_evidence_and_retirement_revokes_the_issuer()
     let original = requests.submit("original", "frozen body").await.unwrap();
     let before = frame(&fixture, &original.card_id).await;
     let receipts = recovery::receipts(&fixture, &original.card_id).await;
-    super::http::boot_projectors_ready(&fixture, &state).await;
+    super::http::projectors_settled(&fixture).await;
     let events: i64 = sqlx::query_scalar("SELECT count(*) FROM events")
         .fetch_one(fixture.repo.pool())
         .await

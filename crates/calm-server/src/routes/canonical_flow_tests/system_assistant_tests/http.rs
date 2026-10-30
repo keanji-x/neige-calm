@@ -1,7 +1,6 @@
 use super::*;
 use crate::test_support::database_snapshot_tests as database_snapshot;
-use crate::track_activity::report_completion_for_test::{self, ReportCompletion};
-use calm_truth::db::{RepoEventWrite, RepoRead};
+use crate::track_activity::report_completion_for_test;
 
 async fn summary_post(app: &axum::Router, cookie: &str, key: &str) -> Value {
     post(app, cookie, "/api/today/summary", key, Value::Null).await
@@ -181,79 +180,118 @@ async fn response(app: &axum::Router, cookie: &str, key: Option<&str>) -> (Statu
     (status, body)
 }
 
-// Observe the actual boot projectors' committed products before whole-DB
-// assertions. No timed sleep or omitted table can stand in for their completion.
-pub(super) async fn boot_projectors_ready(fixture: &Fixture, state: &AppState) {
-    let tracks: Vec<String> = sqlx::query_scalar("SELECT id FROM tracks WHERE closed_at IS NULL")
+// Own registrations before installation; Drop also releases a hook already taken by its owner.
+#[derive(Default)]
+struct Registrations(Vec<(&'static str, String, crate::test_seams::PausePoint)>);
+impl Registrations {
+    fn install(&mut self, point: &'static str, key: &str) -> crate::test_seams::PausePoint {
+        assert!(!self.0.iter().any(|(p, k, _)| *p == point && k == key));
+        let hook = crate::test_seams::PausePoint::default();
+        self.0.push((point, key.to_owned(), hook.clone()));
+        crate::test_seams::install_pause_for_test(point, key, hook.clone());
+        hook
+    }
+}
+impl Drop for Registrations {
+    fn drop(&mut self) {
+        for (point, key, hook) in &self.0 {
+            crate::test_seams::take(point, key);
+            hook.release.notify_one();
+        }
+    }
+}
+
+// Capture before any input read, then observe one real successful periodic pass per Track.
+pub(super) async fn projectors_settled(fixture: &Fixture) {
+    let tracks: Vec<String> = sqlx::query_scalar("SELECT id FROM tracks")
         .fetch_all(fixture.repo.pool())
         .await
         .unwrap();
-    let mut events = state.events.subscribe();
-    tokio::time::timeout(Duration::from_secs(5), async {
-        loop {
-            let mut ready = true;
-            for track in &tracks {
-                let overlays = fixture.repo.overlays_for("track", track).await.unwrap();
-                ready &= [
-                    crate::track_activity::ACTIVITY_OVERLAY_KIND,
-                    crate::track_planner_context::PLANNER_CONTEXT_OVERLAY_KIND,
-                    crate::track_planner_context::RUN_STATS_OVERLAY_KIND,
-                ]
-                .into_iter()
-                .all(|kind| overlays.iter().any(|overlay| overlay.kind == kind));
-            }
-            if ready {
-                break;
-            }
-            events.recv().await.unwrap();
+    let mut registrations = Registrations::default();
+    for track in &tracks {
+        for point in ["activity-tick-success", "planner-context-tick-success"] {
+            registrations.install(point, track);
+        }
+    }
+    tokio::time::timeout(Duration::from_secs(40), async {
+        for (_, _, hook) in &registrations.0 {
+            hook.entered.notified().await;
         }
     })
     .await
-    .unwrap();
+    .expect("real periodic projector success after final input");
 }
 
-async fn projected_report(
-    fixture: &Fixture,
-    track: &str,
-    ready: &mut tokio::sync::broadcast::Receiver<ReportCompletion>,
-) {
-    let event = fixture
-        .repo
-        .events_for_track(track, &["track.report_edited"], None)
-        .await
-        .unwrap()
-        .into_iter()
-        .max_by_key(|event| event.id)
-        .unwrap();
-    tokio::time::timeout(
-        Duration::from_secs(5),
-        report_completion_for_test::wait_for_report(ready, &event),
-    )
-    .await
-    .unwrap()
-    .unwrap();
+// Only the independent reaper sweep entry is held; request owners and projectors remain live.
+struct ReaperCycle {
+    key: String,
+    registrations: Registrations,
+    held: crate::test_seams::PausePoint,
 }
+impl ReaperCycle {
+    async fn hold(state: &AppState) -> Self {
+        let key = state.dispatcher.reaper_cycle_key_for_test().to_owned();
+        let mut registrations = Registrations::default();
+        let held = registrations.install("reaper-cycle-before", &key);
+        let guard = Self {
+            key,
+            registrations,
+            held,
+        };
+        tokio::time::timeout(Duration::from_secs(40), guard.held.entered.notified())
+            .await
+            .expect("independent reaper entered after previous sweep returned");
+        guard
+    }
+    async fn finish(mut self, fixture: &Fixture, probe: Option<&str>) {
+        let before: Option<i64> = if let Some(worker) = probe {
+            sqlx::query_scalar("SELECT liveness_probed_at_ms FROM worker_sessions WHERE id=?1")
+                .bind(worker)
+                .fetch_one(fixture.repo.pool())
+                .await
+                .unwrap()
+        } else {
+            None
+        };
+        let returned = self
+            .registrations
+            .install("reaper-cycle-returned", &self.key);
+        returned.release.notify_one();
+        self.held.release.notify_one();
+        tokio::time::timeout(Duration::from_secs(40), returned.entered.notified())
+            .await
+            .expect("same reaper loop sweep returned");
+        if let Some(worker) = probe {
+            let after: Option<i64> =
+                sqlx::query_scalar("SELECT liveness_probed_at_ms FROM worker_sessions WHERE id=?1")
+                    .bind(worker)
+                    .fetch_one(fixture.repo.pool())
+                    .await
+                    .unwrap();
+            assert!(
+                after.is_some() && after > before,
+                "real reaper probe must advance"
+            );
+        }
+    }
+}
+
 async fn activity_settled(
     fixture: &Fixture,
     state: &AppState,
     app: &axum::Router,
     cookie: &str,
 ) -> String {
-    let route = crate::state::RouteState::from_ref(state);
-    let mut ready = route
-        .activity_wake
-        .subscribe_report_completions_for_test()
-        .unwrap();
     let track = activity(state, app, cookie).await;
-    projected_report(fixture, &track, &mut ready).await;
-    boot_projectors_ready(fixture, state).await;
+    projectors_settled(fixture).await;
     track
 }
 #[tokio::test]
 async fn http_empty_and_drift_refusals_preserve_every_database_value() {
     let mut fixture = Fixture::new().await;
     let (state, app, cookie) = fixture.application().await;
-    boot_projectors_ready(&fixture, &state).await;
+    let reaper = ReaperCycle::hold(&state).await;
+    projectors_settled(&fixture).await;
     let before = database_snapshot::database(&fixture.repo).await;
     for key in [None, Some("empty")] {
         let (status, body) = response(&app, &cookie, key).await;
@@ -261,6 +299,7 @@ async fn http_empty_and_drift_refusals_preserve_every_database_value() {
         assert_eq!(body["code"], "today_summary_no_activity");
         assert_eq!(database_snapshot::database(&fixture.repo).await, before);
     }
+    reaper.finish(&fixture, None).await;
     activity_settled(&fixture, &state, &app, &cookie).await;
     let accepted = summary_post(&app, &cookie, "original").await;
     let card = accepted["card_id"].as_str().unwrap().to_owned();
@@ -277,7 +316,8 @@ async fn http_empty_and_drift_refusals_preserve_every_database_value() {
     fixture.repo = Arc::new(SqlxRepo::open(&fixture.url).await.unwrap());
     fixture.workspace_root = Some(fixture.root.path().join("different-configured-root"));
     let (state, app, cookie) = fixture.application().await;
-    boot_projectors_ready(&fixture, &state).await;
+    let reaper = ReaperCycle::hold(&state).await;
+    projectors_settled(&fixture).await;
     let before = database_snapshot::database(&fixture.repo).await;
     assert_eq!(summary_post(&app, &cookie, "original").await, accepted);
     assert_eq!(database_snapshot::database(&fixture.repo).await, before);
@@ -286,6 +326,7 @@ async fn http_empty_and_drift_refusals_preserve_every_database_value() {
     assert_eq!(body["code"], "today_adoption_workspace_drift");
     assert_eq!(database_snapshot::database(&fixture.repo).await, before);
     assert_eq!(frame(&fixture, &card).await, saved);
+    reaper.finish(&fixture, None).await;
     shutdown(&fixture, &state).await;
 }
 
@@ -302,6 +343,7 @@ async fn http_failed_deleted_and_empty_activity_replay_is_permanent_read_only_ev
     // already accepted event, to exercise a genuinely empty activity projection.
     sqlx::query("UPDATE tracks SET area_id=(SELECT area_id FROM tracks WHERE purpose='launchpad') WHERE id=?1")
         .bind(&activity_track).execute(fixture.repo.pool()).await.unwrap();
+    let reaper = ReaperCycle::hold(&state).await;
     for mutation in [
         "UPDATE worker_sessions SET state='failed' WHERE id=?1",
         "DELETE FROM cards WHERE session_id=?1",
@@ -311,6 +353,7 @@ async fn http_failed_deleted_and_empty_activity_replay_is_permanent_read_only_ev
             .execute(fixture.repo.pool())
             .await
             .unwrap();
+        projectors_settled(&fixture).await;
         let before = database_snapshot::database(&fixture.repo).await;
         assert_eq!(summary_post(&app, &cookie, "original").await, accepted);
         assert_eq!(database_snapshot::database(&fixture.repo).await, before);
@@ -330,6 +373,7 @@ async fn http_failed_deleted_and_empty_activity_replay_is_permanent_read_only_ev
         serde_json::from_str::<CanonicalHarnessSnapshot>(&raw).unwrap(),
         saved
     );
+    reaper.finish(&fixture, None).await;
     shutdown(&fixture, &state).await;
 }
 
@@ -490,7 +534,6 @@ async fn http_human_and_historical_namespace_refuse_before_legacy_adoption_even_
     for historical in [false, true] {
         let fixture = Fixture::new().await;
         let (state, app, cookie) = fixture.application_with_historical_native(historical).await;
-        boot_projectors_ready(&fixture, &state).await;
         activity_settled(&fixture, &state, &app, &cookie).await;
         let launchpad = post(
             &app,
@@ -507,10 +550,6 @@ async fn http_human_and_historical_namespace_refuse_before_legacy_adoption_even_
         )
         .card_id;
         let mut events = state.events.subscribe();
-        let mut projected = crate::state::RouteState::from_ref(&state)
-            .activity_wake
-            .subscribe_report_completions_for_test()
-            .unwrap();
         if historical {
             let mut headers = axum::http::HeaderMap::new();
             headers.insert("Idempotency-Key", "today-summary".parse().unwrap());
@@ -554,37 +593,25 @@ async fn http_human_and_historical_namespace_refuse_before_legacy_adoption_even_
         if let Some(sweep) = &state.provider_sweep {
             sweep.stop().await.unwrap();
         }
-        // Joining the producer does not join activity projection. Drain its actual
-        // committed envelopes, including an enqueue when shutdown precedes phase issuance.
-        let mut last = None;
+        let mut saw_enqueue = false;
         loop {
             match events.try_recv() {
                 Ok(env) => {
-                    if matches!(&env.event,
-                        crate::event::Event::HarnessPhaseChanged { card_id, .. }
-                        | crate::event::Event::HarnessUserMessageEnqueued { card_id, .. }
-                        if card_id.as_str() == card)
-                    {
-                        last = Some(env);
-                    }
+                    saw_enqueue |= matches!(&env.event,
+                        crate::event::Event::HarnessUserMessageEnqueued { card_id, .. }
+                        if card_id.as_str() == card);
                 }
                 Err(tokio::sync::broadcast::error::TryRecvError::Empty) => break,
                 Err(error) => panic!("namespace fixture event stream: {error}"),
             }
         }
-        if let Some(last) = last {
-            tokio::time::timeout(
-                Duration::from_secs(5),
-                report_completion_for_test::wait_for_event(&mut projected, &last),
-            )
-            .await
-            .unwrap()
-            .unwrap();
-        } else {
-            assert!(!historical, "historical mint must publish its enqueue");
-        }
+        assert!(
+            !historical || saw_enqueue,
+            "historical mint must publish its enqueue"
+        );
         sqlx::query("UPDATE tracks SET purpose=NULL,template_id='small-change',plugin_scope='legacy' WHERE id=?1").bind(track).execute(fixture.repo.pool()).await.unwrap();
         sqlx::query("CREATE TRIGGER refuse_namespace_adoption BEFORE UPDATE OF purpose ON tracks BEGIN SELECT RAISE(ABORT,'namespace must be qualified before adoption'); END").execute(fixture.repo.pool()).await.unwrap();
+        let reaper = ReaperCycle::hold(&state).await;
         for deleted in [false, true] {
             if deleted {
                 sqlx::query("DELETE FROM cards WHERE id=?1")
@@ -593,6 +620,7 @@ async fn http_human_and_historical_namespace_refuse_before_legacy_adoption_even_
                     .await
                     .unwrap();
             }
+            projectors_settled(&fixture).await;
             let before = database_snapshot::database(&fixture.repo).await;
             let (status, body) = response(&app, &cookie, Some("new")).await;
             assert_eq!(status, StatusCode::CONFLICT);
@@ -600,6 +628,9 @@ async fn http_human_and_historical_namespace_refuse_before_legacy_adoption_even_
             assert_eq!(database_snapshot::database(&fixture.repo).await, before);
             assert!(recovery::receipts(&fixture, &card).await.is_empty());
         }
+        reaper
+            .finish(&fixture, (!historical).then_some(worker.as_str()))
+            .await;
         shutdown(&fixture, &state).await;
     }
 }
@@ -608,7 +639,6 @@ async fn http_human_and_historical_namespace_refuse_before_legacy_adoption_even_
 async fn http_canonical_reset_refuses_and_old_key_remains_read_only_original_ack() {
     let fixture = Fixture::new().await;
     let (state, app, cookie) = fixture.application().await;
-    boot_projectors_ready(&fixture, &state).await;
     activity_settled(&fixture, &state, &app, &cookie).await;
     let accepted = summary_post(&app, &cookie, "original").await;
     let card = accepted["card_id"].as_str().unwrap();
@@ -654,8 +684,10 @@ async fn http_canonical_reset_refuses_and_old_key_remains_read_only_original_ack
     .unwrap();
     let settled = frame(&fixture, card).await;
     assert_eq!(settled.0, worker);
+    crate::shared_codex_appserver::native_owner_tests::feeder_prefix_committed(&mut peer).await;
+    let reaper = ReaperCycle::hold(&state).await;
+    projectors_settled(&fixture).await;
     let reset_uri = format!("/api/cards/{card}/planner/reset");
-    boot_projectors_ready(&fixture, &state).await;
     let before = database_snapshot::database(&fixture.repo).await;
     let reply = app
         .clone()
@@ -684,5 +716,6 @@ async fn http_canonical_reset_refuses_and_old_key_remains_read_only_original_ack
     assert_eq!(recovery::receipts(&fixture, card).await, original);
     assert_eq!(frame(&fixture, card).await, settled);
     crate::shared_codex_appserver::native_owner_tests::assert_no_request(&mut peer).await;
+    reaper.finish(&fixture, None).await;
     shutdown(&fixture, &state).await;
 }

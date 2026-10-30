@@ -18,7 +18,7 @@ pub fn crash_point(point: &str) {
 /// The one pause registry lives at the lowest layer that pauses (calm-truth); server points arm it too.
 #[cfg(feature = "fixtures")]
 pub use calm_truth::test_seam::{
-    PausePoint, blocking_pause_point, install_pause_for_test, pause_point,
+    PausePoint, blocking_pause_point, install_pause_for_test, pause_point, take,
 };
 
 /// Worker-flow lifecycle points, keyed like calm-truth's capture persistence points by card and

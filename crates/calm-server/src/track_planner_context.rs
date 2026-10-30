@@ -401,8 +401,14 @@ impl TrackPlannerContextProjector {
         let mut tick = tokio::time::interval(Duration::from_secs(30));
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
+            #[cfg(all(test, feature = "fixtures"))]
+            let mut periodic = false;
             let tracks = tokio::select! {
-                _ = tick.tick() => crate::track_activity::sql::track_ids(&self.pool).await,
+                _ = tick.tick() => {
+                    #[cfg(all(test, feature = "fixtures"))]
+                    { periodic = true; }
+                    crate::track_activity::sql::track_ids(&self.pool).await
+                },
                 received = rx.recv() => match received {
                     Ok(envelope) => Ok(self.track_for_event(&envelope).await.into_iter().collect()),
                     Err(RecvError::Lagged(_)) => crate::track_activity::sql::track_ids(&self.pool).await,
@@ -412,7 +418,20 @@ impl TrackPlannerContextProjector {
             match tracks {
                 Ok(tracks) => {
                     for track in tracks {
-                        if let Err(error) = self.recompute_track(&track).await {
+                        #[cfg(all(test, feature = "fixtures"))]
+                        let hook = periodic
+                            .then(|| {
+                                crate::test_seams::take("planner-context-tick-success", &track)
+                            })
+                            .flatten();
+                        let result = self.recompute_track(&track).await;
+                        #[cfg(all(test, feature = "fixtures"))]
+                        if result.is_ok()
+                            && let Some(hook) = hook
+                        {
+                            hook.entered.notify_one();
+                        }
+                        if let Err(error) = result {
                             tracing::warn!(%track, %error, "track runtime projection failed");
                         }
                     }

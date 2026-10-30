@@ -467,6 +467,8 @@ pub struct Dispatcher {
     /// `None` when `NEIGE_REAPER_DISABLED` is set.
     #[allow(dead_code)]
     reaper_handle: Option<JoinHandle<()>>,
+    #[cfg(all(test, feature = "fixtures"))]
+    reaper_cycle_key: String,
     /// Durable codex worker-liveness feeder; `None` when the reaper is disabled.
     #[allow(dead_code)]
     liveness_feeder_handle: Option<JoinHandle<()>>,
@@ -474,6 +476,11 @@ pub struct Dispatcher {
 }
 
 impl Dispatcher {
+    #[cfg(all(test, feature = "fixtures"))]
+    pub(crate) fn reaper_cycle_key_for_test(&self) -> &str {
+        &self.reaper_cycle_key
+    }
+
     pub(crate) fn subscribe_additional_codex_backends(
         &self,
         backends: &crate::agent_backend_pool::codex::CodexBackends,
@@ -881,6 +888,8 @@ impl Dispatcher {
         let liveness_scope = shared_codex_appserver.liveness_scope();
         let liveness_feeder_rx = shared_codex_appserver.subscribe_notifications();
         let liveness_feeder_repo = repo.clone();
+        #[cfg(all(test, feature = "fixtures"))]
+        let reaper_cycle_key = format!("{}:{}", repo.database_id(), uuid::Uuid::new_v4());
         let reaper = Arc::new(Reaper::new(
             repo.clone(),
             provider_registry.clone(),
@@ -979,6 +988,8 @@ impl Dispatcher {
             None
         } else {
             let tick_reaper = Arc::clone(&reaper);
+            #[cfg(all(test, feature = "fixtures"))]
+            let cycle_key = reaper_cycle_key.clone();
             Some(tokio::spawn(async move {
                 let period =
                     std::time::Duration::from_secs(Scheduler::reconcile_secs_from_env_var(
@@ -992,7 +1003,11 @@ impl Dispatcher {
                 interval.tick().await;
                 loop {
                     interval.tick().await;
+                    #[cfg(all(test, feature = "fixtures"))]
+                    crate::test_seams::pause_point("reaper-cycle-before", &cycle_key).await;
                     tick_reaper.sweep_all().await;
+                    #[cfg(all(test, feature = "fixtures"))]
+                    crate::test_seams::pause_point("reaper-cycle-returned", &cycle_key).await;
                 }
             }))
         };
@@ -1019,6 +1034,8 @@ impl Dispatcher {
             provider_registry,
             reconcile_handle,
             reaper_handle,
+            #[cfg(all(test, feature = "fixtures"))]
+            reaper_cycle_key,
             liveness_feeder_handle,
             additional_liveness_feeders: std::sync::Mutex::new(Vec::new()),
         }
