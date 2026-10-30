@@ -1,4 +1,13 @@
 #!/usr/bin/env bash
+# U12a-2pre bounded exception: long_literal/crates/**/*.rs 175 -> 176 is one
+# SQL fixture under calm-server/src/routes/canonical_flow_tests/:
+# 1. system_assistant_tests/retained_proof_tests.rs: reject_retained_release
+#    fails real claim release only for the original worker and spawn operation,
+#    exercising durable BeforeSend proof recovery after reopening the database.
+# This is SQL, not agent-facing prose. Changes edit only the owning fixture and
+# regenerate this baseline; ordinary test additions need no inventory edit.
+# The existing scan runs once per CI lint workflow plus its existing separate
+# selftest; no new inventory, scan rule, check or invocation is added.
 # Owned workspace inventory adds two long_literal SQL fixtures (173 -> 175) in
 # calm-truth/src/db/sqlite/workspace_locations.rs: workspace_executions and
 # operations INSERTs exercise malformed reclaim links through the real reader.
