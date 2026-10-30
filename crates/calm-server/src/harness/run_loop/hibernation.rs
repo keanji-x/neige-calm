@@ -388,3 +388,10 @@ impl PlannerHarness {
         self.inner.backend.restore_normal_join_after_keep().await
     }
 }
+
+impl PlannerHarness {
+    /// Display-only provider knowledge; lifecycle and native gates remain authoritative.
+    pub(crate) fn identity_known_in_host(&self) -> bool {
+        self.inner.backend.identity_known_in_host()
+    }
+}

@@ -31,13 +31,11 @@ pub(crate) trait TurnSink: Send {
     fn result_event(&self, event: TerminalEvent) -> TerminalEvent;
     /// Package the frozen protocol outcome for the execution owner. The owner sets
     /// `qualified` only when completion evidence qualifies the foreground outcome.
-    /// `stream_complete` is true only when stdout was read to its clean end.
     fn known_end(
         self,
         claim: &execution::Claim,
         event: TerminalEvent,
         cause: Option<TerminalCause>,
-        stream_complete: bool,
         qualified: Arc<AtomicBool>,
     ) -> Option<execution::KnownEnd>;
 }
@@ -189,7 +187,6 @@ impl TurnSink for PlannerSink {
         claim: &execution::Claim,
         event: TerminalEvent,
         cause: Option<TerminalCause>,
-        stream_complete: bool,
         qualified: Arc<AtomicBool>,
     ) -> Option<execution::KnownEnd> {
         let turn = match &claim.record().purpose {
@@ -206,7 +203,6 @@ impl TurnSink for PlannerSink {
                 instructions: self.instructions,
                 event,
                 cause,
-                stream_complete,
                 qualified,
                 thread: self.thread.to_string(),
                 turn,

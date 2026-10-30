@@ -82,6 +82,20 @@ impl ClaudePlannerSession {
             ));
         }
         let params = &self.shared.params;
+        if let Some(hold) = self.identity_hold() {
+            return Err(CalmError::Conflict(hold));
+        }
+        let start = self.shared.state().start;
+        if start == SessionStart::New
+            && matches!(
+                super::super::identity::launch(params).await?,
+                super::super::identity::Identity::Unconfirmed
+            )
+        {
+            return Err(CalmError::Conflict(
+                "Claude session launch is unconfirmed; start a fresh session to continue".into(),
+            ));
+        }
         self.provider_admission_gate().await?;
         super::super::rewind::check(params, thread, &cut, track_fence).await
     }

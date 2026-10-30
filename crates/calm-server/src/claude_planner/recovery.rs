@@ -62,7 +62,7 @@ pub(crate) async fn quiesce_canonical(
 }
 
 /// Read-only recovery declaration: a settled carrier whose recorded launch no durable fact
-/// confirms. Claude declares no action for it.
+/// confirms. The recovery owner separately qualifies the explicit action.
 pub(crate) async fn identity_unconfirmed_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     worker_session_id: &str,

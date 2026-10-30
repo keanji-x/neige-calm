@@ -108,7 +108,6 @@ impl TurnSink for MinimalSink {
         _: &execution::Claim,
         event: TerminalEvent,
         cause: Option<TerminalCause>,
-        _: bool,
         qualified: Arc<AtomicBool>,
     ) -> Option<execution::KnownEnd> {
         let mut observed = self.observed.lock().unwrap();

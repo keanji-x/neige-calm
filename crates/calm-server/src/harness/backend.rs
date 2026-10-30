@@ -229,6 +229,14 @@ impl PlannerBackend {
         }
     }
 
+    /// Optional provider-owned host evidence for recovery display, never admission.
+    pub(crate) fn identity_known_in_host(&self) -> bool {
+        match &self.0 {
+            Arm::Claude(session) => session.identity_known_in_host(),
+            Arm::Codex(..) | Arm::Acp(_) => false,
+        }
+    }
+
     /// Provider-owned suspension; the generic harness does not infer authentication policy.
     pub(crate) fn issuance_hold(&self) -> Option<String> {
         match &self.0 {

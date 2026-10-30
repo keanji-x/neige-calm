@@ -42,4 +42,5 @@
 // Revision 40 (#3320): canonical recovery declarations and explicit Human abandonment.
 // Revision 41 (#3279): negotiated run reads require nullable exact current terminal evidence.
 // Revision 42: canonical queued Human edit, withdrawal and exact-target supplemental input.
-pub const REST_API_VERSION: &str = "42";
+// Revision 43 (#3318): recovery holds may declare an unconfirmed Claude identity.
+pub const REST_API_VERSION: &str = "43";

@@ -126,8 +126,8 @@ async fn get_version_returns_all_fields_with_expected_sources() {
     assert_eq!(v["apiVersion"].as_str().unwrap(), API_VERSION);
     assert_eq!(
         v["apiVersion"].as_str().unwrap(),
-        "42",
-        "Canonical run reads require exact current terminal outcome metadata"
+        "43",
+        "Recovery holds declare unconfirmed Claude identity"
     );
     assert_eq!(
         v["syncEventVersion"].as_u64().unwrap(),

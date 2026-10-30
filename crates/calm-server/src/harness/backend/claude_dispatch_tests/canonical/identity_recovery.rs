@@ -198,6 +198,9 @@ enum LostBind {
     /// The CLI exited without naming the session while a child kept its stdout open, so the
     /// reader was cut off after the exit instead of reaching the end of the stream.
     OrphanedStdout,
+    SilentExit,
+    CreatedBeforeInitDeath,
+    InterruptEof,
 }
 
 #[tokio::test]
@@ -230,6 +233,19 @@ async fn canonical_claude_identity_unconfirmed_orphaned_stdout_retry_stays_held(
     unconfirmed_launch(LostBind::OrphanedStdout, "retry").await;
 }
 
+#[tokio::test]
+async fn canonical_claude_identity_unconfirmed_silent_exit_retry_stays_held() {
+    unconfirmed_launch(LostBind::SilentExit, "retry").await;
+}
+#[tokio::test]
+async fn canonical_claude_identity_unconfirmed_created_before_init_death_retry_stays_held() {
+    unconfirmed_launch(LostBind::CreatedBeforeInitDeath, "retry").await;
+}
+#[tokio::test]
+async fn canonical_claude_identity_unconfirmed_interrupt_eof_retry_stays_held() {
+    unconfirmed_launch(LostBind::InterruptEof, "retry").await;
+}
+
 /// #3318: no bind and no accepted replay confirm the launch: init was observed but its bind
 /// was lost, or the reader ended before it read the CLI's whole output. After a restart
 /// nothing proves whether the launch created the native session, so neither Human
@@ -240,6 +256,9 @@ async fn unconfirmed_launch(lost: LostBind, action: &str) {
         LostBind::ReceiptBeforeInit => "receipt-before-init",
         LostBind::Stopped => "read-then-stall",
         LostBind::OrphanedStdout => "orphan-stdout",
+        LostBind::SilentExit => "silent-exit",
+        LostBind::CreatedBeforeInitDeath => "created-before-init-death",
+        LostBind::InterruptEof => "interrupt-before-init-eof",
     })
     .await;
     let pause = match lost {
@@ -248,7 +267,12 @@ async fn unconfirmed_launch(lost: LostBind, action: &str) {
             None
         }
         LostBind::TimedOut => Some(super::c5d::Pause::arm("c4-bind-session", &fx.owner.worker)),
-        LostBind::ReceiptBeforeInit | LostBind::Stopped | LostBind::OrphanedStdout => None,
+        LostBind::ReceiptBeforeInit
+        | LostBind::Stopped
+        | LostBind::OrphanedStdout
+        | LostBind::SilentExit
+        | LostBind::CreatedBeforeInitDeath
+        | LostBind::InterruptEof => None,
     };
     let mut events = fx.session.subscribe_events();
     // Retry requires the frozen invocation of the original attempt.
@@ -261,7 +285,7 @@ async fn unconfirmed_launch(lost: LostBind, action: &str) {
     if let Some(pause) = &pause {
         pause.entered().await;
     }
-    if matches!(lost, LostBind::Stopped) {
+    if matches!(lost, LostBind::Stopped | LostBind::InterruptEof) {
         let stdin = fx.dir.path().join("stdin");
         tokio::time::timeout(Duration::from_secs(10), async {
             while !stdin.exists() {
@@ -270,7 +294,18 @@ async fn unconfirmed_launch(lost: LostBind, action: &str) {
         })
         .await
         .unwrap();
-        fx.session.shutdown().await.unwrap();
+        if matches!(lost, LostBind::InterruptEof) {
+            let turn = fx
+                .session
+                .active_turn_id_for_thread(&fx.owner.thread)
+                .expect("active turn");
+            assert!(matches!(
+                fx.session.turn_interrupt(&fx.owner.thread, &turn).await,
+                provider::control::InterruptOutcome::LocalSignalDelivered
+            ));
+        } else {
+            fx.session.shutdown().await.unwrap();
+        }
     }
     // The loop, not this test, consumes END: its phase leaves issuing_turn only then.
     tokio::time::timeout(Duration::from_secs(20), async {
@@ -282,6 +317,15 @@ async fn unconfirmed_launch(lost: LostBind, action: &str) {
     .await
     .unwrap();
     drop(pause);
+    if matches!(lost, LostBind::InterruptEof) {
+        assert!(
+            std::fs::read_to_string(fx.dir.path().join("stdin"))
+                .unwrap()
+                .lines()
+                .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+                .any(|line| line["request"]["subtype"] == "interrupt")
+        );
+    }
     let before = fx.checkpoint().await;
     assert!(matches!(
         before.attempts[0].delivery,
@@ -372,4 +416,32 @@ async fn unconfirmed_launch(lost: LostBind, action: &str) {
     );
     harness.shutdown().await.unwrap();
     state.dispatcher.retire();
+}
+
+#[tokio::test]
+async fn canonical_claude_identity_unconfirmed_refuses_edit_preflight_without_spawn() {
+    let mut fx = Fixture::persistent("no-input-replay").await;
+    fail_bind(&fx).await;
+    fx.dispatch().await.unwrap();
+    fx.wait_end().await;
+    fx.session.shutdown().await.unwrap();
+    sqlx::query("DROP TRIGGER fail_native_bind")
+        .execute(fx.owner.repo.pool())
+        .await
+        .unwrap();
+    let (backend, session) = super::recovery::reopen_session(&fx, fx.owner.repo.clone()).await;
+    fx.backend = backend;
+    fx.session = session;
+    let before = fx.checkpoint().await;
+    let result = fx.session.prepare_edit_for_test(&fx.owner.thread).await;
+    assert!(
+        matches!(result, Err(crate::error::CalmError::Conflict(_))),
+        "unconfirmed identity refuses an edit before native preparation"
+    );
+    assert!(
+        !fx.dir.path().join("checks").exists(),
+        "no native edit probe"
+    );
+    assert_eq!(fx.checkpoint().await, before);
+    fx.session.shutdown().await.unwrap();
 }

@@ -21,79 +21,101 @@ pub(super) async fn recover(params: &ClaudePlannerSessionParams) -> Result<bool>
     let track = params.track_id.clone();
     crate::db::write_in_tx_typed(params.repo.as_ref(), move |tx| {
         Box::pin(async move {
-            let carrier = current_input_fact_carrier_tx(tx, &card, &worker).await?;
-            let (binding, row) =
-                crate::harness::profile::input_carrier_contract_tx(tx, &carrier).await?;
-            if binding.provider != AgentProvider::Claude || row.track_id.as_str() != track {
-                return Err(CalmError::Conflict(
-                    "Claude identity recovery crosses its carrier".into(),
-                ));
-            }
-            let Some(thread) = row.thread_id.as_deref() else {
+            let Some(identity) = verified_replay_tx(tx, &card, &worker, &track).await? else {
                 return Ok(false);
             };
-            if carrier
-                .snapshot()
-                .get("last_thread_id")
-                .and_then(serde_json::Value::as_str)
-                != Some(thread)
-            {
-                return Err(CalmError::Conflict(
-                    "Claude identity recovery crosses its thread".into(),
-                ));
+            if identity.row.agent_session_id.is_none() {
+                bind_tx(tx, &identity.row, &identity.thread).await?;
             }
-            if let Some(bound) = row.agent_session_id.as_deref() {
-                return if bound == thread {
-                    Ok(true)
-                } else {
-                    Err(CalmError::Conflict(
-                        "Claude identity binding changed during recovery".into(),
-                    ))
-                };
-            }
-            for checkpoint in &carrier.checkpoint().attempts {
-                let InputDeliveryFact::Accepted {
-                    basis,
-                    evidence: NativeInputAcceptance::Submission { submission_id },
-                } = &checkpoint.delivery
-                else {
-                    continue;
-                };
-                if basis != InputAcknowledgementBasis::ClaudeUserReplay.as_str()
-                    || submission_id != &checkpoint.attempt.submission_id
-                    || checkpoint.correlation.provider != AgentProvider::Claude
-                    || checkpoint.correlation.thread_id != thread
-                    || !matches!(
-                        ExecutionEndScope::from_correlation(&checkpoint.correlation),
-                        Some(ExecutionEndScope::LocalProcess { .. })
-                    )
-                {
-                    continue;
-                }
-                let identity = submission_identity_tx(tx, submission_id).await?;
-                let ConversationExecutionProvenance::LegacySingleUserDeployment {
-                    provider,
-                    profile,
-                    ..
-                } = identity.execution;
-                // Replay acknowledgements are recorded only for the original input.
-                // Verify ownership against its immutable provenance before binding.
-                if identity.card_id != card
-                    || identity.ordinal != 0
-                    || provider != AgentProvider::Claude
-                    || profile != binding.profile
-                {
-                    return Err(CalmError::Conflict(
-                        "Claude replay evidence crosses its original input".into(),
-                    ));
-                }
-                bind_tx(tx, &row, thread).await?;
-                return Ok(true);
-            }
-            Ok(false)
+            Ok(true)
         })
     })
     .await
+}
+
+struct VerifiedIdentity {
+    row: WorkerSession,
+    thread: String,
+}
+
+/// One native-evidence validator for durable repair and read-only recovery declarations.
+/// A failed live bind does not turn an exact Accepted replay back into uncertain identity.
+async fn verified_replay_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    card: &str,
+    worker: &str,
+    track: &str,
+) -> Result<Option<VerifiedIdentity>> {
+    let carrier = current_input_fact_carrier_tx(tx, card, worker).await?;
+    let (binding, row) = crate::harness::profile::input_carrier_contract_tx(tx, &carrier).await?;
+    if binding.provider != AgentProvider::Claude || row.track_id.as_str() != track {
+        return Err(CalmError::Conflict(
+            "Claude identity recovery crosses its carrier".into(),
+        ));
+    }
+    if matches!(launch_tx(tx, &row, card, track).await?, Launch::Crossed) {
+        return Err(CalmError::Conflict(
+            "Claude launch evidence crosses its owner".into(),
+        ));
+    }
+    let Some(thread) = row.thread_id.as_deref() else {
+        return Ok(None);
+    };
+    if carrier
+        .snapshot()
+        .get("last_thread_id")
+        .and_then(serde_json::Value::as_str)
+        != Some(thread)
+    {
+        return Err(CalmError::Conflict(
+            "Claude identity recovery crosses its thread".into(),
+        ));
+    }
+    if let Some(bound) = row.agent_session_id.as_deref() {
+        if bound != thread {
+            return Err(CalmError::Conflict(
+                "Claude identity binding changed during recovery".into(),
+            ));
+        }
+        let thread = thread.to_owned();
+        return Ok(Some(VerifiedIdentity { row, thread }));
+    }
+    for checkpoint in &carrier.checkpoint().attempts {
+        let InputDeliveryFact::Accepted {
+            basis,
+            evidence: NativeInputAcceptance::Submission { submission_id },
+        } = &checkpoint.delivery
+        else {
+            continue;
+        };
+        if basis != InputAcknowledgementBasis::ClaudeUserReplay.as_str()
+            || submission_id != &checkpoint.attempt.submission_id
+            || checkpoint.correlation.provider != AgentProvider::Claude
+            || checkpoint.correlation.thread_id != thread
+            || !matches!(
+                ExecutionEndScope::from_correlation(&checkpoint.correlation),
+                Some(ExecutionEndScope::LocalProcess { .. })
+            )
+        {
+            continue;
+        }
+        let identity = submission_identity_tx(tx, submission_id).await?;
+        let ConversationExecutionProvenance::LegacySingleUserDeployment {
+            provider, profile, ..
+        } = identity.execution;
+        if identity.card_id != card
+            || identity.ordinal != 0
+            || provider != AgentProvider::Claude
+            || profile != binding.profile
+        {
+            return Err(CalmError::Conflict(
+                "Claude replay evidence crosses its original input".into(),
+            ));
+        }
+        let thread = thread.to_owned();
+        return Ok(Some(VerifiedIdentity { row, thread }));
+    }
+    Ok(None)
 }
 
 /// One attribution writer for live init and verified recovery. Preserve the
@@ -138,7 +160,7 @@ enum Launch {
     Absent,
     /// Recorded for another thread of this owner, or superseded by a bind.
     Stale,
-    Unconfirmed,
+    Unconfirmed(claude_session_launch::ClaudeSessionLaunch),
     /// Recorded for another card or Track than the row's owner.
     Crossed,
 }
@@ -163,7 +185,7 @@ async fn launch_tx(
         if row.agent_session_id.is_none()
             && row.thread_id.as_deref() == Some(launch.thread_id.as_str())
         {
-            Launch::Unconfirmed
+            Launch::Unconfirmed(launch)
         } else {
             Launch::Stale
         },
@@ -214,7 +236,7 @@ pub(super) async fn launch(params: &ClaudePlannerSessionParams) -> Result<Identi
                 } else {
                     Identity::New
                 }),
-                Launch::Unconfirmed => Ok(Identity::Unconfirmed),
+                Launch::Unconfirmed(_) => Ok(Identity::Unconfirmed),
                 Launch::Stale => {
                     claude_session_launch::delete(tx, &worker.0).await?;
                     Ok(if bound {
@@ -232,57 +254,59 @@ pub(super) async fn launch(params: &ClaudePlannerSessionParams) -> Result<Identi
     .await
 }
 
-/// Read-only: whether a settled carrier holds an unconfirmed launch. Evidence crossing its
-/// owner is held too; a live provider execution is not yet a recovery state.
-pub(crate) async fn unconfirmed_tx(tx: &mut Transaction<'_, Sqlite>, worker: &str) -> Result<bool> {
+/// A crossed record remains blocked, but only a matching record licenses retirement.
+enum RecoveryLaunch {
+    Crossed,
+    Unconfirmed(claude_session_launch::ClaudeSessionLaunch),
+}
+
+async fn recovery_launch_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    worker: &str,
+) -> Result<Option<RecoveryLaunch>> {
     let Some(row) = crate::db::sqlite::session_get_tx(tx, &WorkerSessionId(worker.into())).await?
     else {
-        return Ok(false);
+        return Ok(None);
     };
     if crate::db::sqlite::provider_execution::load(&mut **tx, worker)
         .await?
         .is_some()
     {
-        return Ok(false);
+        return Ok(None);
     }
-    let Some(card) = row.card_id.as_ref().map(|card| card.as_str().to_owned()) else {
-        return Ok(false);
+    let Some(card) = row.card_id.as_ref() else {
+        return Ok(None);
     };
-    let track = row.track_id.as_str().to_owned();
-    Ok(matches!(
-        launch_tx(tx, &row, &card, &track).await?,
-        Launch::Unconfirmed | Launch::Crossed
-    ))
+    match launch_tx(tx, &row, card.as_str(), row.track_id.as_str()).await? {
+        Launch::Crossed => Ok(Some(RecoveryLaunch::Crossed)),
+        Launch::Unconfirmed(launch) => {
+            if canonical(&row)
+                && verified_replay_tx(tx, card.as_str(), worker, row.track_id.as_str())
+                    .await?
+                    .is_some()
+            {
+                return Ok(None);
+            }
+            Ok(Some(RecoveryLaunch::Unconfirmed(launch)))
+        }
+        Launch::Absent | Launch::Stale => Ok(None),
+    }
+}
+
+/// Read-only: a live execution is not yet recovery, and verified replay is not uncertainty.
+pub(crate) async fn unconfirmed_tx(tx: &mut Transaction<'_, Sqlite>, worker: &str) -> Result<bool> {
+    Ok(recovery_launch_tx(tx, worker).await?.is_some())
 }
 
 /// Only matching launch ownership permits an explicit fresh-session recovery.
 pub(crate) async fn recoverable_tx(tx: &mut Transaction<'_, Sqlite>, worker: &str) -> Result<bool> {
-    let Some(row) = crate::db::sqlite::session_get_tx(tx, &WorkerSessionId(worker.into())).await?
-    else {
+    let Some(RecoveryLaunch::Unconfirmed(launch)) = recovery_launch_tx(tx, worker).await? else {
         return Ok(false);
     };
-    let Some(card) = row.card_id.as_ref() else {
-        return Ok(false);
-    };
-    if crate::db::sqlite::provider_execution::load(&mut **tx, worker)
-        .await?
-        .is_some()
-    {
-        return Ok(false);
-    }
-    if !matches!(
-        launch_tx(tx, &row, card.as_str(), row.track_id.as_str()).await?,
-        Launch::Unconfirmed
-    ) {
-        return Ok(false);
-    }
-    let launch = claude_session_launch::get(tx, worker)
-        .await?
-        .expect("launch was classified");
     let alias =
         crate::provider_execution::AliasPrefix::planner().alias(worker, &launch.execution_id);
     Ok(sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM workspace_executions WHERE execution_id=?1 AND alias=?2 AND track_id=?3)")
-        .bind(&launch.execution_id).bind(alias).bind(row.track_id.as_str()).fetch_one(&mut **tx).await?)
+        .bind(&launch.execution_id).bind(alias).bind(&launch.track_id).fetch_one(&mut **tx).await?)
 }
 
 /// The admission of a turn spawn. A `--session-id` launch's record is written in the
@@ -328,23 +352,6 @@ impl crate::provider_execution::Admission for LaunchAdmission {
         }
         self.intent.intent_tx(tx).await
     }
-}
-
-/// A settled end whose stdout ended cleanly without naming the session retires only its
-/// own launch.
-pub(super) async fn retire_launch(
-    repo: &dyn crate::db::Repo,
-    worker: &str,
-    execution_id: &str,
-) -> Result<()> {
-    let (worker, execution_id) = (worker.to_owned(), execution_id.to_owned());
-    crate::db::write_in_tx_typed(repo, move |tx| {
-        Box::pin(async move {
-            claude_session_launch::retire(tx, &worker, &execution_id).await?;
-            Ok(())
-        })
-    })
-    .await
 }
 
 /// A refused execution retires its own launch only while its durable claim is still held:

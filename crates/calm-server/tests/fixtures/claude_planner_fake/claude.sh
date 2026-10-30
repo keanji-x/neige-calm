@@ -166,6 +166,16 @@ printf '%s\n' "$LINE" >> "$D/stdin"
 case "$SCENARIO" in
   read-then-stall) exec sleep 300 ;;
   silent-exit) exit 0 ;;
+  created-before-init-death)
+    # The external peer may create native state before it emits the first init.
+    printf '%s' "$SID" > "$D/native-created"
+    kill -KILL "$$"
+    exit 1 ;;
+  interrupt-before-init-eof)
+    IFS= read -r CONTROL || exit 3
+    printf '%s\n' "$CONTROL" >> "$D/stdin"
+    jq -e '.request.subtype == "interrupt"' <<< "$CONTROL" >/dev/null || exit 4
+    exit 0 ;;
   orphan-stdout)
     sleep 300 &
     exit 0 ;;

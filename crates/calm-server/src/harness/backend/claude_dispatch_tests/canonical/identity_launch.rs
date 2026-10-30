@@ -171,35 +171,6 @@ async fn canonical_claude_identity_launch_delete_failure_keeps_the_bind_unpersis
     session.shutdown().await.unwrap();
 }
 
-/// A settled end whose stdout ended cleanly without naming this thread's session retires its
-/// own launch; a failed retirement keeps it, and the reopened session holds rather than relaunch.
-#[tokio::test]
-async fn canonical_claude_identity_launch_without_init_retires_only_when_persisted() {
-    for retired in [true, false] {
-        let mut fx = Fixture::persistent("silent-exit").await;
-        if !retired {
-            fail_launch_writes(&fx, "DELETE").await;
-        }
-        fx.dispatch().await.unwrap();
-        fx.wait_end().await;
-        assert_eq!(binding(&fx).await, None);
-        assert_eq!(launch(&fx).await.is_none(), retired);
-        fx.session.shutdown().await.unwrap();
-        if !retired {
-            drop_trigger(&fx, "DELETE").await;
-        }
-        let (backend, session) = super::recovery::reopen_session(&fx, fx.owner.repo.clone()).await;
-        fx.backend = backend;
-        fx.session = session;
-        assert_eq!(
-            fx.backend.issuance_hold().is_none(),
-            retired,
-            "retired={retired}"
-        );
-        fx.session.shutdown().await.unwrap();
-    }
-}
-
 async fn held(fx: &Fixture) -> bool {
     let mut tx = begin_immediate_tx(fx.owner.repo.db()).await.unwrap();
     let held = crate::claude_planner::recovery::identity_unconfirmed_tx(&mut tx, &fx.owner.worker)
@@ -344,13 +315,17 @@ async fn canonical_claude_identity_bound_row_retires_matching_launch_on_open() {
 async fn canonical_claude_identity_stale_completion_cannot_retire_newer_launch() {
     let fx = Fixture::persistent("exit").await;
     seed_launch(&fx, &fx.owner.card, &fx.owner.track, &fx.owner.thread).await;
-    crate::claude_planner::identity::retire_launch(
-        fx.owner.repo.as_ref(),
-        &fx.owner.worker,
-        "stale-execution",
-    )
-    .await
-    .unwrap();
+    let mut tx = begin_immediate_tx(fx.owner.repo.db()).await.unwrap();
+    assert!(
+        !crate::db::sqlite::claude_session_launch::retire(
+            &mut tx,
+            &fx.owner.worker,
+            "stale-execution"
+        )
+        .await
+        .unwrap()
+    );
+    tx.commit().await.unwrap();
     assert_eq!(launch(&fx).await.unwrap().execution_id, "earlier-execution");
     fx.session.shutdown().await.unwrap();
 }

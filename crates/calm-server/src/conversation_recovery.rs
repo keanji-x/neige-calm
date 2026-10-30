@@ -132,6 +132,16 @@ async fn abandon_owned(
         return Ok(replay);
     }
     replay_tx.rollback().await?;
+    // Keep and accepted Human input can restore this carrier. Wait for that
+    // retained installation before capturing the registry owner we will retire.
+    let card_id = crate::ids::CardId::from(card.clone());
+    let _start = crate::operation::planner_start_fence::CardStartFence::lock(
+        &s.planner_recovery_locks,
+        &s.repo,
+        &s.operation_runtime,
+        &card_id,
+    )
+    .await;
     let handle = s.harness.get(&request.carrier_id);
     let slot = s.harness.carrier_retirement_slot(&request.carrier_id);
     if matches!(slot, CarrierRetirementSlot::Reserved(_)) {
@@ -148,14 +158,6 @@ async fn abandon_owned(
         .tool_calls
         .fence(&request.carrier_id)
         .map_err(|_| CalmError::Conflict("Wait for pending tool calls before recovery".into()))?;
-    let card_id = crate::ids::CardId::from(card.clone());
-    let _start = crate::operation::planner_start_fence::CardStartFence::lock(
-        &s.planner_recovery_locks,
-        &s.repo,
-        &s.operation_runtime,
-        &card_id,
-    )
-    .await;
     let _drive = s.operation_runtime.lock_for_track_delete().await;
     let _track = crate::per_card_lock::lock_key(&s.track_delete_locks, track.as_str()).await;
     let mut tx = sqlite::begin_immediate_tx(&db).await?;
@@ -304,6 +306,10 @@ pub(crate) async fn declaration(
             let (binding, _) =
                 crate::harness::profile::input_carrier_contract_tx(tx, &carrier).await?;
             if binding.provider.protocol() == calm_types::runtime::AgentProtocol::Claude
+                && !state
+                    .harness
+                    .get(&worker)
+                    .is_some_and(|host| host.identity_known_in_host())
                 && crate::claude_planner::recovery::identity_unconfirmed_tx(tx, &worker).await?
             {
                 let request = PlannerFactory::abandonment_target_tx(tx, &carrier)

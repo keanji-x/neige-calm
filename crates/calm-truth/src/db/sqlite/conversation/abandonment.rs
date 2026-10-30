@@ -69,7 +69,10 @@ pub async fn abandonment_request_tx(
     let Some(fact) = fact else { return Ok(None) };
     match (&fact.delivery, mode) {
         (InputDeliveryFact::Unknown, _)
-        | (InputDeliveryFact::NotDispatched { .. }, AbandonmentMode::UnconfirmedSession) => {}
+        | (
+            InputDeliveryFact::CrossingUnknown | InputDeliveryFact::NotDispatched { .. },
+            AbandonmentMode::UnconfirmedSession,
+        ) => {}
         _ => return Ok(None),
     }
     // Multiple active or supplemental submissions retain their own resolution contract.

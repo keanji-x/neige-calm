@@ -312,6 +312,13 @@ impl ClaudePlannerSession {
         Ok(session)
     }
 
+    /// Matching init or a durable repair established identity in this host. This is
+    /// a display fact only; it grants no input authority or execution completion.
+    pub(crate) fn identity_known_in_host(&self) -> bool {
+        let state = self.shared.state();
+        state.start == SessionStart::Resume && !state.shutting_down
+    }
+
     /// The provider-owned issuance hold of an unconfirmed launch, in the reader's words.
     pub(crate) fn identity_hold(&self) -> Option<String> {
         self.shared.state().identity_hold.map(IdentityHold::reader)

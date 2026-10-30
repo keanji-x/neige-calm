@@ -30,9 +30,7 @@ pub(crate) struct ProtocolTurn<P> {
 enum Ending {
     /// A result record: close stdin and let the CLI exit on its own.
     Result(TerminalEvent),
-    /// Stdout reached its clean end: every byte was read, with no gap and no protocol failure.
-    Eof,
-    /// The child exited and its stdout did not end within [`DRAIN_AFTER_EXIT`].
+    /// Stdout ended or the child exited without a result.
     Exited,
     /// A recorded cause stops the turn now.
     Stopped,
@@ -77,7 +75,7 @@ pub(crate) async fn drive<S: TurnSink, P: ProtocolProfile>(
                         break ending;
                     }
                 }
-                Ok(None) => break Ending::Eof,
+                Ok(None) => break Ending::Exited,
                 Err(error) => {
                     let ending = reading.protocol_failure(&error);
                     slot.set_stop_reason(execution::StopReason::OutputGap);
@@ -229,11 +227,9 @@ async fn settle<S: TurnSink>(
     let engine = &runtime.engine;
     let pool = &runtime.pool;
     let id = execution::execution_id(claim.record()).expect("admitted id");
-    // Only a clean end of stdout tells the owner that it read everything the CLI wrote.
-    let stream_complete = matches!(ending, Ending::Eof);
     let event = match ending {
         Ending::Result(event) => event,
-        Ending::Eof | Ending::Exited => TerminalEvent::Exit {
+        Ending::Exited => TerminalEvent::Exit {
             detail: "provider output ended".into(),
         },
         Ending::Stopped => TerminalEvent::Stopped,
@@ -305,7 +301,7 @@ async fn settle<S: TurnSink>(
         }
     };
     let qualified = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let known = sink.known_end(claim, event, cause, stream_complete, qualified.clone());
+    let known = sink.known_end(claim, event, cause, qualified.clone());
     #[cfg(feature = "fixtures")]
     let pass = crate::test_seams::provider_pass::driver(
         owner,

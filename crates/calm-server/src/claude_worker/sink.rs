@@ -249,7 +249,6 @@ impl TurnSink for WorkerSink {
         _: &execution::Claim,
         event: TerminalEvent,
         cause: Option<TerminalCause>,
-        _stream_complete: bool,
         qualified: Arc<AtomicBool>,
     ) -> Option<execution::KnownEnd> {
         let result_observed = self.result.is_some();

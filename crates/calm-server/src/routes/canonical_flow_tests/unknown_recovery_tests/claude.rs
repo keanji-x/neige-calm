@@ -39,6 +39,11 @@ async fn canonical_claude_unconfirmed_session_retry_retains_its_worker_boundary(
     Box::pin(recover("retry")).await;
 }
 
+#[tokio::test]
+async fn canonical_claude_unconfirmed_session_abandon_preserves_lost_report_crossing() {
+    Box::pin(recover("crossing")).await;
+}
+
 fn resolution_request(worker: &str, frame: &CanonicalHarnessSnapshot) -> Value {
     let attempt = frame.canonical_inputs.attempts.last().unwrap();
     json!({"carrier_id":worker,"submission_id":attempt.attempt.submission_id,
@@ -49,8 +54,20 @@ async fn recover(scenario: &str) {
     let mut fixture = Fixture::new().await;
     configure(&mut fixture, "no-input-replay");
     let (state, app, cookie) = fixture.application().await;
-    sqlx::query("CREATE TRIGGER fail_native_bind BEFORE UPDATE OF agent_session_id ON worker_sessions WHEN NEW.agent_session_id IS NOT NULL BEGIN SELECT RAISE(ABORT,'bind failed'); END")
-        .execute(fixture.repo.pool()).await.unwrap();
+    sqlx::query(
+        "CREATE TRIGGER fail_native_bind BEFORE UPDATE OF agent_session_id ON worker_sessions
+        WHEN NEW.agent_session_id IS NOT NULL
+        BEGIN SELECT RAISE(ABORT,'bind failed'); END",
+    )
+    .execute(fixture.repo.pool())
+    .await
+    .unwrap();
+    if scenario == "crossing" {
+        sqlx::query("CREATE TRIGGER fail_attempt_report BEFORE UPDATE OF handle_state_json ON worker_sessions
+            WHEN json_extract(NEW.handle_state_json,'$.canonical_inputs.attempts[0].revision') > 0
+            BEGIN SELECT RAISE(ABORT,'attempt report failed'); END")
+            .execute(fixture.repo.pool()).await.unwrap();
+    }
     let area = post(
         &app,
         &cookie,
@@ -62,15 +79,37 @@ async fn recover(scenario: &str) {
     let created = post(&app, &cookie, "/api/tracks", "initial", json!({"area_id":area["id"],"title":"","planner_provider":"claude","model":"claude-fable-5-1[1m]","reasoning_effort":"high","theme":{"fg":[255,255,255],"bg":[0,0,0]},"first_message":FIRST_BODY})).await;
     let track = created["id"].as_str().unwrap().to_owned();
     let card = fixture.carrier(&track).await.0;
-    let before = wait_frame(&fixture, &card, |frame| {
-        frame
-            .canonical_inputs
-            .attempts
-            .first()
-            .is_some_and(|a| matches!(a.delivery, InputDeliveryFact::Unknown))
+    wait_frame(&fixture, &card, |frame| {
+        frame.canonical_inputs.attempts.first().is_some_and(|a| {
+            if scenario == "crossing" {
+                matches!(a.delivery, InputDeliveryFact::CrossingUnknown)
+            } else {
+                matches!(a.delivery, InputDeliveryFact::Unknown)
+            }
+        })
     })
     .await;
     let (worker, _) = carrier(&fixture, &card).await;
+    if scenario == "crossing" {
+        tokio::time::timeout(Duration::from_secs(30), async {
+            loop {
+                let claim: Option<String> = sqlx::query_scalar(
+                    "SELECT provider_execution_json FROM worker_sessions WHERE id=?1",
+                )
+                .bind(&worker)
+                .fetch_one(fixture.repo.pool())
+                .await
+                .unwrap();
+                if read(&fixture, "stdin").contains(FIRST_BODY) && claim.is_none() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("native turn ends while its report remains unpersisted");
+    }
+    let before = carrier(&fixture, &card).await.1;
     state.harness.shutdown_and_remove(&worker).await.unwrap();
     fixture.shutdown_process(&state).await;
     drop((state, app));
@@ -79,6 +118,12 @@ async fn recover(scenario: &str) {
         .execute(fixture.repo.pool())
         .await
         .unwrap();
+    if scenario == "crossing" {
+        sqlx::query("DROP TRIGGER fail_attempt_report")
+            .execute(fixture.repo.pool())
+            .await
+            .unwrap();
+    }
     let (state, app, cookie) = fixture.application().await;
     assert_eq!(
         carrier(&fixture, &card).await.1.canonical_inputs.attempts,
@@ -89,16 +134,53 @@ async fn recover(scenario: &str) {
     assert_eq!(spawns.lines().count(), 1);
     let old_thread = before.header.last_thread_id.as_deref().unwrap();
     let history = history_rows(&fixture, &card, old_thread).await;
-    if scenario == "keep" {
-        post(
-            &app,
-            &cookie,
-            &format!("/api/cards/{card}/conversation/input/keep"),
-            "keep",
-            resolution_request(&worker, &before),
+    let mut blocked_start = None;
+    if matches!(scenario, "keep" | "pending") {
+        let pause = crate::test_seams::PausePoint::default();
+        crate::test_seams::install_pause_for_test(
+            "canonical-human-source-handoff",
+            &card,
+            pause.clone(),
+        );
+        let (a, c, u, b) = (
+            app.clone(),
+            cookie.clone(),
+            if scenario == "keep" {
+                format!("/api/cards/{card}/conversation/input/keep")
+            } else {
+                format!("/api/cards/{card}/planner/input")
+            },
+            if scenario == "keep" {
+                resolution_request(&worker, &before)
+            } else {
+                json!({"text":"Pending Human retained across recovery"})
+            },
+        );
+        let action = tokio::spawn(async move { post(&a, &c, &u, "queued-wake", b).await });
+        tokio::time::timeout(Duration::from_secs(15), pause.entered.notified())
+            .await
+            .unwrap();
+        let route = crate::state::RouteState::from_ref(&state);
+        let start = crate::operation::planner_start_fence::CardStartFence::lock(
+            &route.planner_recovery_locks,
+            &route.repo,
+            &route.operation_runtime,
+            &card.clone().into(),
         )
         .await;
-        wait_frame(&fixture, &card, |f| !f.canonical_inputs.receipts.is_empty()).await;
+        let held_handles = state.planner_recovery_lock_handles_for_test(&card);
+        blocked_start = Some((start, held_handles));
+        pause.release.notify_one();
+        action.await.unwrap();
+        // Each waiter owns two handles; do not assume how many the holder uses.
+        let queued = held_handles + if scenario == "keep" { 4 } else { 2 };
+        tokio::time::timeout(Duration::from_secs(15), async {
+            while state.planner_recovery_lock_handles_for_test(&card) < queued {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the accepted wake waits on the real start fence");
     }
     if scenario == "retry" {
         post(
@@ -110,16 +192,6 @@ async fn recover(scenario: &str) {
         )
         .await;
         wait_frame(&fixture, &card, |f| !f.canonical_inputs.receipts.is_empty()).await;
-    }
-    if scenario == "pending" {
-        post(
-            &app,
-            &cookie,
-            &format!("/api/cards/{card}/planner/input"),
-            "pending",
-            json!({"text":"Pending Human retained across recovery"}),
-        )
-        .await;
     }
     if scenario == "system" {
         accept_worker_bound_observation(
@@ -193,7 +265,47 @@ async fn recover(scenario: &str) {
                 }
             );
         } else {
-            let fresh = post(&app, &cookie, &uri, "abandon", body.clone()).await;
+            let before_commit = crate::test_seams::PausePoint::default();
+            crate::test_seams::install_pause_for_test(
+                "canonical-abandon-before-commit",
+                &card,
+                before_commit.clone(),
+            );
+            let (a, c, u, b) = (app.clone(), cookie.clone(), uri.clone(), body.clone());
+            let request = tokio::spawn(async move { post(&a, &c, &u, "abandon", b).await });
+            if let Some((start, held_handles)) = blocked_start.take() {
+                let queued = held_handles + if scenario == "keep" { 6 } else { 4 };
+                tokio::time::timeout(Duration::from_secs(15), async {
+                    // Holder + the queued Human restore + the recovery request.
+                    while state.planner_recovery_lock_handles_for_test(&card) < queued {
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                    }
+                })
+                .await
+                .expect("both lifecycles wait on the real card start fence");
+                drop(start);
+            }
+            tokio::time::timeout(Duration::from_secs(30), before_commit.entered.notified())
+                .await
+                .expect("restoration reaches the protected retirement boundary without deadlock");
+            let retirement_frame = carrier(&fixture, &card).await.1;
+            assert_eq!(
+                retirement_frame.canonical_inputs.attempts,
+                current.canonical_inputs.attempts
+            );
+            assert_eq!(
+                retirement_frame.canonical_inputs.receipts,
+                current.canonical_inputs.receipts
+            );
+            assert_eq!(
+                retirement_frame.canonical_inputs.pending,
+                current.canonical_inputs.pending
+            );
+            before_commit.release.notify_one();
+            let fresh = tokio::time::timeout(Duration::from_secs(30), request)
+                .await
+                .unwrap()
+                .unwrap();
             assert_ne!(fresh["carrier_id"], worker);
             assert_eq!(post(&app, &cookie, &uri, "abandon", body).await, fresh);
             let (fresh_worker, frame) = carrier(&fixture, &card).await;
@@ -215,7 +327,7 @@ async fn recover(scenario: &str) {
             let retained: Value = serde_json::from_str(&retained).unwrap();
             assert_eq!(
                 retained["canonical_inputs"],
-                serde_json::to_value(&current.canonical_inputs).unwrap()
+                serde_json::to_value(&retirement_frame.canonical_inputs).unwrap()
             );
             assert_eq!(
                 read(&fixture, "spawns"),
@@ -299,4 +411,155 @@ async fn add_unproven_execution(fixture: &Fixture, worker: &str, track: &str) {
     crate::db::sqlite::workspace_execution::finish(fixture.repo.db(), id.as_str())
         .await
         .unwrap();
+}
+
+#[tokio::test]
+async fn canonical_claude_verified_replay_does_not_expose_an_identity_hold() {
+    let mut fixture = Fixture::new().await;
+    configure(&mut fixture, "exit");
+    let (state, app, cookie) = fixture.application().await;
+    sqlx::query(
+        "CREATE TRIGGER fail_verified_bind BEFORE UPDATE OF agent_session_id ON worker_sessions
+        WHEN NEW.agent_session_id IS NOT NULL
+        BEGIN SELECT RAISE(ABORT,'bind failed'); END",
+    )
+    .execute(fixture.repo.pool())
+    .await
+    .unwrap();
+    let area = post(
+        &app,
+        &cookie,
+        "/api/areas",
+        "area",
+        json!({"name":"Verified Claude identity","color":"#123456"}),
+    )
+    .await;
+    let track = post(&app,&cookie,"/api/tracks","first",json!({"area_id":area["id"],"title":"","planner_provider":"claude","theme":{"fg":[255,255,255],"bg":[0,0,0]},"first_message":FIRST_BODY})).await;
+    let (card, worker, _) = fixture.carrier(track["id"].as_str().unwrap()).await;
+    wait_frame(&fixture, &card, |frame| {
+        frame.canonical_inputs.active.is_none()
+            && frame
+                .canonical_inputs
+                .attempts
+                .first()
+                .is_some_and(|a| matches!(a.delivery, InputDeliveryFact::Accepted { .. }))
+    })
+    .await;
+    tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            let claim: Option<String> = sqlx::query_scalar(
+                "SELECT provider_execution_json FROM worker_sessions WHERE id=?1",
+            )
+            .bind(&worker)
+            .fetch_one(fixture.repo.pool())
+            .await
+            .unwrap();
+            if claim.is_none() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let bound: Option<String> =
+        sqlx::query_scalar("SELECT agent_session_id FROM worker_sessions WHERE id=?1")
+            .bind(&worker)
+            .fetch_one(fixture.repo.pool())
+            .await
+            .unwrap();
+    assert_eq!(bound, None, "the live bind was lost");
+    let run = super::super::presentation_read_feedback_tests::read_run(&app, &cookie, &card).await;
+    assert!(
+        run["recovery"].is_null(),
+        "verified replay already confirms identity: {run}"
+    );
+    fixture.shutdown_process(&state).await;
+}
+
+#[tokio::test]
+async fn canonical_claude_live_named_identity_survives_keep_without_a_bind() {
+    let mut fixture = Fixture::new().await;
+    configure(&mut fixture, "no-input-replay");
+    let (state, app, cookie) = fixture.application().await;
+    sqlx::query(
+        "CREATE TRIGGER fail_live_bind BEFORE UPDATE OF agent_session_id ON worker_sessions
+        WHEN NEW.agent_session_id IS NOT NULL
+        BEGIN SELECT RAISE(ABORT,'bind failed'); END",
+    )
+    .execute(fixture.repo.pool())
+    .await
+    .unwrap();
+    let area = post(
+        &app,
+        &cookie,
+        "/api/areas",
+        "area",
+        json!({"name":"Live Claude identity","color":"#123456"}),
+    )
+    .await;
+    let track=post(&app,&cookie,"/api/tracks","first",json!({"area_id":area["id"],"title":"","planner_provider":"claude","theme":{"fg":[255,255,255],"bg":[0,0,0]},"first_message":FIRST_BODY})).await;
+    let (card, worker, _) = fixture.carrier(track["id"].as_str().unwrap()).await;
+    let before = wait_frame(&fixture, &card, |f| {
+        f.canonical_inputs
+            .attempts
+            .first()
+            .is_some_and(|a| matches!(a.delivery, InputDeliveryFact::Unknown))
+    })
+    .await;
+    post(
+        &app,
+        &cookie,
+        &format!("/api/cards/{card}/conversation/input/keep"),
+        "keep",
+        resolution_request(&worker, &before),
+    )
+    .await;
+    wait_frame(&fixture, &card, |f| f.canonical_inputs.active.is_none()).await;
+    let run = super::super::presentation_read_feedback_tests::read_run(&app, &cookie, &card).await;
+    assert!(
+        run["recovery"].is_null(),
+        "the live host observed matching init: {run}"
+    );
+    let after = carrier(&fixture, &card).await.1;
+    assert_eq!(
+        after.canonical_inputs.attempts[0].delivery,
+        before.canonical_inputs.attempts[0].delivery
+    );
+    sqlx::query("DROP TRIGGER fail_live_bind")
+        .execute(fixture.repo.pool())
+        .await
+        .unwrap();
+    std::fs::write(fixture.root.path().join("fake/scenario"), "exit").unwrap();
+    post(
+        &app,
+        &cookie,
+        &format!("/api/cards/{card}/planner/input"),
+        "next",
+        json!({"text":"Continue the already named session"}),
+    )
+    .await;
+    let resumed = wait_frame(&fixture, &card, |f| {
+        f.canonical_inputs.attempts.len() == 2
+            && f.canonical_inputs
+                .attempts
+                .last()
+                .is_some_and(|a| matches!(a.delivery, InputDeliveryFact::Accepted { .. }))
+    })
+    .await;
+    assert_eq!(
+        resumed.canonical_inputs.attempts[0].delivery,
+        before.canonical_inputs.attempts[0].delivery
+    );
+    let argv = read(&fixture, "argv");
+    assert!(argv.lines().any(|arg| arg == "--resume"), "{argv}");
+    assert!(!argv.lines().any(|arg| arg == "--session-id"), "{argv}");
+    assert_eq!(
+        read(&fixture, "stdin")
+            .lines()
+            .filter(|line| line.contains(FIRST_BODY))
+            .count(),
+        1
+    );
+    fixture.shutdown_process(&state).await;
 }

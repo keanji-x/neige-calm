@@ -1,6 +1,6 @@
 //! Claude launch evidence storage. A `--session-id` launch is recorded before admission and
-//! retired by its bind, by an init-free clean end of its output, or by a refusal before its
-//! release; Claude owns classification.
+//! retired by its bind or a proven refusal before release. A released process may have
+//! created a native session without emitting init; Claude owns classification.
 use crate::error::Result;
 use sqlx::SqliteConnection;
 

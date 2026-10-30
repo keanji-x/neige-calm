@@ -51,8 +51,6 @@ pub struct End {
     pub(crate) instructions: super::spawn::InstructionsFile,
     pub(crate) event: super::driver::TerminalEvent,
     pub(crate) cause: Option<super::turn_slot::TerminalCause>,
-    /// Stdout was read to its clean end, with no gap and no protocol failure.
-    pub(crate) stream_complete: bool,
     pub(crate) qualified: Arc<std::sync::atomic::AtomicBool>,
     pub(crate) thread: String,
     pub(crate) turn: String,
@@ -98,24 +96,8 @@ impl ProviderExecutionOwner for Owner {
                         if end.turn != *turn_id || end.shared.params.worker_session_id != session {
                             return Err(conflict("Claude completion identity changed"));
                         }
-                        // Only a settled end whose stdout was read to its clean end without
-                        // naming the session retires its own launch. A stop, gap or protocol
-                        // failure proves nothing; the launch stays held.
-                        if terminal
-                            && end.stream_complete
-                            && end
-                                .shared
-                                .observe_turn(&end.slot, |facts| !facts.named_session)
-                                == Some(true)
-                            && let Err(error) = super::identity::retire_launch(
-                                end.shared.params.repo.as_ref(),
-                                session,
-                                id.as_str(),
-                            )
-                            .await
-                        {
-                            tracing::warn!(%error, "Claude launch record retained");
-                        }
+                        // A released process may have created its native session before
+                        // publishing init. Neither EOF nor settlement proves absence.
                         let event = match end.event {
                             super::driver::TerminalEvent::Exit { .. } => {
                                 let diagnostic =
