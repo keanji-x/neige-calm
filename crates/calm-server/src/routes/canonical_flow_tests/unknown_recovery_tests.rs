@@ -3,6 +3,7 @@ use super::*;
 use calm_truth::db::RepoOutOfDomain;
 mod claude;
 mod codex;
+mod stop_timeout;
 mod terminal_error;
 
 #[tokio::test]

@@ -36,21 +36,29 @@ impl CarrierRecoveryKind {
 
 /// Eligibility is separate from ordinary idle replacement. It grants no execution proof.
 pub async fn abandonment_request_tx(
-    _tx: &mut Transaction<'_, Sqlite>,
+    tx: &mut Transaction<'_, Sqlite>,
     carrier: &CurrentInputCarrier,
     mode: AbandonmentMode,
 ) -> Result<Option<AbandonConversationRequest>> {
     let frame: CanonicalHarnessSnapshot = serde_json::from_value(carrier.snapshot().clone())?;
+    let stop_timeout = mode == AbandonmentMode::UnknownInput
+        && frame.header.phase == HarnessPhaseTag::Wedged
+        && frame.header.wedged_reason.as_deref()
+            == Some(calm_types::harness::HARNESS_INTERRUPT_TIMEOUT_REASON)
+        && frame.header.interruption_intent.is_some();
     if frame
         .canonical_inputs
         .pending
         .iter()
         .any(|entry| !matches!(entry, calm_types::conversation::PendingInput::Human { .. }))
         || !match mode {
-            AbandonmentMode::UnknownInput => matches!(
-                frame.header.phase,
-                HarnessPhaseTag::TurnRunning | HarnessPhaseTag::IssuingTurn
-            ),
+            AbandonmentMode::UnknownInput => {
+                stop_timeout
+                    || matches!(
+                        frame.header.phase,
+                        HarnessPhaseTag::TurnRunning | HarnessPhaseTag::IssuingTurn
+                    )
+            }
             AbandonmentMode::UnconfirmedSession => matches!(
                 frame.header.phase,
                 HarnessPhaseTag::Idle
@@ -60,15 +68,9 @@ pub async fn abandonment_request_tx(
                     | HarnessPhaseTag::TurnCompleted
             ),
         }
-        || frame.header.wedged_reason.is_some()
-        || carrier
-            .snapshot()
-            .get("interruption_intent")
-            .is_some_and(|v| !v.is_null())
-        || carrier
-            .snapshot()
-            .get("pending_rewind")
-            .is_some_and(|v| !v.is_null())
+        || (!stop_timeout
+            && (frame.header.wedged_reason.is_some() || frame.header.interruption_intent.is_some()))
+        || frame.header.pending_rewind.is_some()
     {
         return Ok(None);
     }
@@ -94,6 +96,27 @@ pub async fn abandonment_request_tx(
             AbandonmentMode::UnconfirmedSession,
         ) => {}
         _ => return Ok(None),
+    }
+    if stop_timeout {
+        let Some(original) = super::plans::original_input_execution_tx(tx, carrier).await? else {
+            return Ok(None);
+        };
+        let Some(turn) = original.turn_id() else {
+            return Ok(None);
+        };
+        if original.proof.attempt() != &fact.attempt
+            || frame.header.last_thread_id.as_deref() != Some(&original.correlation.thread_id)
+            || frame.header.last_turn_id.as_deref() != Some(turn)
+            || !super::runtime_frame::interruption_matches_tx(
+                tx,
+                carrier,
+                &original.correlation.thread_id,
+                turn,
+            )
+            .await?
+        {
+            return Ok(None);
+        }
     }
     // Multiple active or supplemental submissions retain their own resolution contract.
     let referenced = frame.canonical_inputs.referenced_submissions();
