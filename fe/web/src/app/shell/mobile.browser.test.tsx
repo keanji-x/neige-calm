@@ -137,6 +137,7 @@ describe('Track mobile presentation', () => {
     await page.screenshot({ path: '../../../../test-results/mobile-cards.png' });
 
     /* Opening a card is not offered on this viewport, so the row is text and not a control. */
+    await page.elementLocator(document.querySelector('[data-nc-mobile-panel] [data-nc-inventory-group] > summary')!).click();
     expect(document.querySelector('[data-nc-mobile-panel]')?.textContent)
       .toContain('Implementation terminal');
     expect(document.querySelectorAll('[data-nc-mobile-panel] [data-nc-row] button').length).toBe(0);

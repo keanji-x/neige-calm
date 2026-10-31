@@ -50,6 +50,8 @@ it('the production bundled gate pairs in its original document and opens the sav
   expect(identity).not.toHaveBeenCalled(); expect(fixture.requests).toHaveLength(0);
   expect(screen.getByRole('heading', { name: 'Track' })).toBeTruthy();
   act(() => { redeem({ status: 200, statusText: 'OK', body: { enrollmentId: 'invite', attemptId: 'attempt', sessionFingerprint: '6542995698f2176ac198ef55125a6924b40e7cd07653a76c1157da771b2c9bf9' } }); });
+  await page.getByText('Reference', { exact: true }).click();
+  await page.getByText('calculation-example', { exact: true }).click();
   await screen.findByText(fixture.goal);
   expect(window.document).toBe(document); expect(window.location.pathname).toBe('/next/track/w1');
   expect(order).toEqual(['/api/mobile/enrollments/claim', '/api/mobile/enrollments/redeem', 'whoami', 'version']);

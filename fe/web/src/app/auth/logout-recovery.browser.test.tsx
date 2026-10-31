@@ -9,6 +9,13 @@ import { createTrackTaskFixture } from '../router/track-task-fixture.ts';
 import type { ApiRequest } from '../../../../core/api/types.ts';
 import type { SessionIdentity } from '../../../../core/api/auth.ts';
 
+async function openTaskDeclaration() {
+  const reference = await page.getByText('Reference', { exact: true }).findElement();
+  if (!reference.closest('details')!.open) await page.elementLocator(reference).click();
+  const task = await page.getByText('calculation-example', { exact: true }).findElement();
+  if (!task.closest('details')!.open) await page.elementLocator(task).click();
+}
+
 const mounted = vi.hoisted(() => ({ roots: [] as { unmount(): void }[], logins: [] as Promise<SessionIdentity | null>[] }));
 vi.mock('./login.ts', async importOriginal => {
   const actual = await importOriginal<typeof import('./login.ts')>();
@@ -115,6 +122,7 @@ it.each([false, true])('production event owners retire before compatible protoco
   await waitFor(() => expect(sockets.filter(socket => !socket.closed)).toHaveLength(1));
   const original = sockets.at(-1)!;
   act(() => original.replay());
+  await openTaskDeclaration();
   await screen.findByText(fixture.goal); await screen.findByText('已连接');
   const stale = original.onmessage;
   act(() => {
@@ -128,7 +136,9 @@ it.each([false, true])('production event owners retire before compatible protoco
   act(() => stale?.(new MessageEvent('message', { data: '{"ev":"_replay_complete","_id":0}' })));
   expect(screen.queryByText('已连接')).toBeNull();
   act(() => sockets.at(-1)!.replay());
-  await screen.findByText('已连接'); await screen.findByText(fixture.goal);
+  await screen.findByText('已连接');
+  await openTaskDeclaration();
+  await screen.findByText(fixture.goal);
   expect(window.location.pathname).toBe('/next/track/w1');
   expect(fixture.requests.filter(request => request.method !== 'GET')).toEqual([]);
 });

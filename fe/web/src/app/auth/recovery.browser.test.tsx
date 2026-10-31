@@ -59,6 +59,8 @@ it.each(['before', 'after'] as const)('cold saved Track and hot reconnect retain
   expect(fixture.requests).toHaveLength(0);
   await page.screenshot({ path: '../../../../test-results/1712-cold-track-390.png' });
   act(() => finish({ userId: 'owner', displayName: 'Owner', role: 'owner', sessionId: 's' }));
+  await page.getByText('Reference', { exact: true }).click();
+  await page.getByText('calculation-example', { exact: true }).click();
   await screen.findByText(fixture.goal);
   act(replay); await waitFor(() => expect(access.read().phase).toBe('connected')); await painted();
   const track = document.querySelector('[data-nc-track-page]')!; expect(track).not.toBeNull();

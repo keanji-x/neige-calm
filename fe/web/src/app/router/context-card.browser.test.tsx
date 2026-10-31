@@ -272,7 +272,7 @@ it('keeps Planner-managed execution folded without presenting worker failure as 
   expect(progress).toBeDefined(); expect(progress.querySelector('button[aria-expanded]')?.getAttribute('aria-expanded')).toBe('false');
   await expect.element(page.getByRole('button', { name: 'Conversation Planner', exact: true })).toBeVisible();
   expect(root.querySelector('[data-nc-row="tool:worker"]')).toBeNull();
-  expect(root.querySelector<HTMLElement>('[data-nc-row="task:Check layout"]')!.checkVisibility()).toBe(false);
+  expect(root.querySelector('[data-nc-row="task:Check layout"]')).toBeNull();
   await userEvent.click(progress.querySelector('button[aria-expanded]')!);
   const row = root.querySelector<HTMLElement>('[data-nc-row="task:Check layout"]')!;
   expect(row.checkVisibility()).toBe(true);

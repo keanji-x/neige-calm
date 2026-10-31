@@ -346,12 +346,17 @@ it('folds the current Track Workbench without losing its terminal entry or comma
   const entry = group.querySelector('[data-nc-row="tool:shell"]')!;
   await page.elementLocator(disclosure).click();
   expect(disclosure.getAttribute('aria-expanded')).toBe('false');
-  expect(entry.isConnected).toBe(true);
-  expect(entry.checkVisibility()).toBe(false);
+  expect(entry.isConnected).toBe(false);
+  expect(group.querySelector('[data-nc-row="tool:shell"]')).toBeNull();
   await openTerminalCommand();
   await waitFor(() => expect(sockets).toHaveLength(1));
   expect(disclosure.getAttribute('aria-expanded')).toBe('false');
   expect(document.querySelector('[data-nc-terminal-workbench]')?.hasAttribute('hidden')).toBe(false);
+  expect(sockets).toHaveLength(1);
+  await page.getByRole('button', { name: 'Hide terminal' }).click();
+  await page.getByRole('button', { name: 'Close conversation', exact: true }).click();
+  await page.elementLocator(disclosure).click();
+  expect(group.querySelector('[data-nc-row="tool:shell"]')).not.toBeNull();
   expect(sockets).toHaveLength(1);
 });
 
