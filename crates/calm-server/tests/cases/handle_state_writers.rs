@@ -160,7 +160,7 @@ const FROZEN_WRITERS: &[(&str, &str)] = &[
         "not-a-queue",
     ),
     (
-        "crates/calm-server/src/scheduler/mod.rs::clear_timeout_worker_cleanup_marker",
+        "crates/calm-server/src/scheduler/timeout_cleanup.rs::cleanup_timeout_worker",
         "not-a-queue",
     ),
 ];
