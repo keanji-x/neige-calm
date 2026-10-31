@@ -2341,7 +2341,32 @@ async fn hidden_track_history_tools_are_callable_and_patch_report() {
         .await
         .unwrap()
         .unwrap();
-    assert_ne!(no_change_head, after);
+    assert_eq!(no_change_head, after, "a hook does not create history");
+    // Preserve include_empty coverage using the explicit refresh owner: the
+    // first refresh materializes the hook; a second refresh has the same tree.
+    let refresh = track_vcs::snapshot_transcripts_for_cards_in_track(
+        boot.sqlx_repo.db(),
+        &boot.track_id,
+        None,
+        track_vcs::MANIFEST_SCHEMA_VERSION,
+    )
+    .await
+    .expect("materialize hook transcript");
+    let no_change_head = track_vcs::snapshot_transcripts_for_cards_in_track(
+        boot.sqlx_repo.db(),
+        &boot.track_id,
+        None,
+        track_vcs::MANIFEST_SCHEMA_VERSION,
+    )
+    .await
+    .expect("explicit unchanged refresh");
+    assert_ne!(refresh, no_change_head);
+    assert!(
+        track_vcs::diff(boot.sqlx_repo.pool(), &refresh, &no_change_head, None)
+            .await
+            .unwrap()
+            .is_empty()
+    );
 
     let log = call_tool(&boot, TOOL_TRACK_LOG, planner_identity(&boot), json!({}))
         .await

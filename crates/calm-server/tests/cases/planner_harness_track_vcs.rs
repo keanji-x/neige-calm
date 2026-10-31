@@ -1552,7 +1552,7 @@ async fn turn_issuance_refreshes_hook_transcripts_before_diff() {
 }
 
 #[tokio::test]
-async fn since_last_turn_override_fences_post_refresh_hook_commit() {
+async fn since_last_turn_override_fences_post_refresh_runtime_commit() {
     let boot = boot().await;
     let worker = add_worker_card_event(&boot, "post-refresh-fence").await;
     let before = complete_first_turn_and_stamp(&boot).await;
@@ -1568,22 +1568,32 @@ async fn since_last_turn_override_fences_post_refresh_hook_commit() {
     assert!(refresh_conversation.contains("pre refresh prompt"));
 
     log_worker_codex_hook(&boot, &worker, "post-refresh-hook", "post refresh prompt").await;
-    let hook_head = track_vcs::head(boot.repo.pool(), &boot.track_id)
+    assert_eq!(
+        track_vcs::head(boot.repo.pool(), &boot.track_id)
+            .await
+            .unwrap(),
+        Some(refresh_head.clone()),
+        "a hook-only append must not advance HEAD"
+    );
+    // Exercise the override against a genuinely newer projected runtime version,
+    // while the late hook remains deferred until the next transcript refresh.
+    start_worker_runtime_with_event(&boot, &worker, WorkerSessionState::Running).await;
+    let runtime_head = track_vcs::head(boot.repo.pool(), &boot.track_id)
         .await
         .expect("head query")
-        .expect("post-refresh hook head");
+        .expect("post-refresh runtime head");
     assert_ne!(
-        hook_head, refresh_head,
-        "post-refresh hook should advance live HEAD"
+        runtime_head, refresh_head,
+        "a projected runtime change must advance live HEAD"
     );
-    let hook_head_conversation =
-        track_vcs::cat_at(boot.repo.pool(), &hook_head, &conversation_path)
+    let runtime_head_conversation =
+        track_vcs::cat_at(boot.repo.pool(), &runtime_head, &conversation_path)
             .await
             .expect("hook head conversation")
             .content;
     assert!(
-        !hook_head_conversation.contains("post refresh prompt"),
-        "hook-only commit should not contain its transcript until the next refresh"
+        !runtime_head_conversation.contains("post refresh prompt"),
+        "a runtime-only change must leave late hook transcripts for the next refresh"
     );
 
     let fenced = track_vcs::since_last_turn_block(
@@ -1617,7 +1627,10 @@ async fn since_last_turn_override_fences_post_refresh_hook_commit() {
     )
     .await
     .expect("unfenced diff");
-    assert_eq!(unfenced.current_head.as_deref(), Some(hook_head.as_str()));
+    assert_eq!(
+        unfenced.current_head.as_deref(),
+        Some(runtime_head.as_str())
+    );
 
     let next_refresh_head = refresh_transcripts(&boot).await;
     let next_conversation =

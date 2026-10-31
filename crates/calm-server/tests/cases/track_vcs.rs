@@ -1901,7 +1901,7 @@ async fn card_added_commit_updates_index_markdown_card_count() {
 }
 
 #[tokio::test]
-async fn hook_events_advance_commits_without_rewriting_transcripts_or_objects() {
+async fn hook_events_keep_receipts_without_history_or_object_writes() {
     let repo = fresh_repo().await;
     let area = make_area(&repo).await;
     let track = make_track(&repo, area.id.as_str()).await;
@@ -1923,7 +1923,6 @@ async fn hook_events_advance_commits_without_rewriting_transcripts_or_objects() 
         .await
         .unwrap()
         .expect("head before hooks");
-    let before_tree = commit_tree_hash(&repo, &before).await;
     let before_hashes = transcript_blob_hashes(&head_manifest(&repo, &track.id).await, &worker.id);
     let before_objects = count_rows(repo.pool(), "track_vcs_objects").await;
     let before_commits = count_rows(repo.pool(), "track_vcs_commits").await;
@@ -1944,13 +1943,13 @@ async fn hook_events_advance_commits_without_rewriting_transcripts_or_objects() 
         .await
         .unwrap()
         .expect("head after codex hook");
-    let codex_record = track_vcs::commit_record(repo.pool(), &codex_head)
+    assert_eq!(codex_head, before);
+    let codex_kind: String = sqlx::query_scalar("SELECT kind FROM events WHERE id=?1")
+        .bind(codex_event_id)
+        .fetch_one(repo.pool())
         .await
-        .unwrap()
-        .expect("codex hook commit");
-    assert_eq!(codex_record.parent_hash.as_deref(), Some(before.as_str()));
-    assert_eq!(codex_record.event_id, Some(codex_event_id));
-    assert_eq!(codex_record.tree_hash, before_tree);
+        .unwrap();
+    assert_eq!(codex_kind, "codex.hook");
     assert_eq!(
         transcript_blob_hashes(&head_manifest(&repo, &track.id).await, &worker.id),
         before_hashes
@@ -1976,16 +1975,13 @@ async fn hook_events_advance_commits_without_rewriting_transcripts_or_objects() 
         .await
         .unwrap()
         .expect("head after claude hook");
-    let claude_record = track_vcs::commit_record(repo.pool(), &claude_head)
+    assert_eq!(claude_head, before);
+    let claude_kind: String = sqlx::query_scalar("SELECT kind FROM events WHERE id=?1")
+        .bind(claude_event_id)
+        .fetch_one(repo.pool())
         .await
-        .unwrap()
-        .expect("claude hook commit");
-    assert_eq!(
-        claude_record.parent_hash.as_deref(),
-        Some(codex_head.as_str())
-    );
-    assert_eq!(claude_record.event_id, Some(claude_event_id));
-    assert_eq!(claude_record.tree_hash, before_tree);
+        .unwrap();
+    assert_eq!(claude_kind, "claude.hook");
     assert_eq!(
         transcript_blob_hashes(&head_manifest(&repo, &track.id).await, &worker.id),
         before_hashes
@@ -1996,12 +1992,12 @@ async fn hook_events_advance_commits_without_rewriting_transcripts_or_objects() 
     );
     assert_eq!(
         count_rows(repo.pool(), "track_vcs_commits").await,
-        before_commits + 2
+        before_commits
     );
 }
 
 #[tokio::test]
-async fn hook_only_commits_leave_transcript_paths_unchanged_until_turn_refresh() {
+async fn hook_only_events_leave_transcript_paths_unchanged_until_turn_refresh() {
     let repo = fresh_repo().await;
     let area = make_area(&repo).await;
     let track = make_track(&repo, area.id.as_str()).await;
@@ -2060,7 +2056,7 @@ async fn hook_only_commits_leave_transcript_paths_unchanged_until_turn_refresh()
     assert!(
         diff.iter()
             .all(|entry| entry.path != events_path && entry.path != conversation_path),
-        "hook-only commits must not dirty transcript paths: {diff:?}"
+        "hook-only events must not dirty transcript paths: {diff:?}"
     );
     let since = track_vcs::since_last_turn_block(
         repo.pool(),
@@ -2076,7 +2072,7 @@ async fn hook_only_commits_leave_transcript_paths_unchanged_until_turn_refresh()
     assert_eq!(since.current_head.as_deref(), Some(after.as_str()));
     assert!(
         since.block.is_none(),
-        "unchanged transcript-only hook commits must not produce a diff block: {since:?}"
+        "unprojected hook events must not produce a diff block: {since:?}"
     );
 }
 
@@ -2350,17 +2346,17 @@ async fn manifest_blob_bytes_match_track_fs_view_for_populated_track() {
     )
     .await
     .expect("hook event");
-    let hook_head = track_vcs::head(repo.pool(), &track.id)
+    let runtime_head = track_vcs::head(repo.pool(), &track.id)
         .await
         .unwrap()
-        .expect("head after hook");
-    let hook_author: Option<String> =
+        .expect("head after runtime and hook");
+    let runtime_author: Option<String> =
         sqlx::query_scalar("SELECT author FROM track_vcs_commits WHERE hash = ?1")
-            .bind(&hook_head)
+            .bind(&runtime_head)
             .fetch_one(repo.pool())
             .await
             .unwrap();
-    assert_eq!(hook_author.as_deref(), Some("kernel"));
+    assert_eq!(runtime_author.as_deref(), Some("kernel"));
 
     repo.log_pure_event(
         ActorId::KernelDispatcher,
