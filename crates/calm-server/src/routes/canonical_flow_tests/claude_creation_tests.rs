@@ -522,3 +522,6 @@ async fn canonical_claude_creation_excluded_none_keeps_missing_area_teardown_ref
 }
 
 pub(super) mod assistant;
+
+#[cfg(test)]
+mod named_sources_tests;

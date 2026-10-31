@@ -3,11 +3,20 @@ use super::*;
 
 #[tokio::test]
 async fn u7_canonical_opencode_template_input_is_context_once_and_retains_cold_plan() {
+    template_input_is_context_once_and_retains_cold_plan(AgentProvider::OpenCode).await;
+}
+
+#[tokio::test]
+async fn u7_canonical_grok_template_input_is_context_once_and_retains_cold_plan() {
+    template_input_is_context_once_and_retains_cold_plan(AgentProvider::Grok).await;
+}
+
+async fn template_input_is_context_once_and_retains_cold_plan(provider: AgentProvider) {
     let mut fixture = Fixture::new().await;
     configure(&mut fixture);
     let (state, app, cookie) = fixture.application().await;
     state.plugin.enable("gitforge").await.unwrap();
-    let mut create = body(&app, &cookie, &AgentProvider::OpenCode).await;
+    let mut create = body(&app, &cookie, &provider).await;
     create["template_id"] = json!("dev");
     create["template_input"] = json!({"merge_policy":"ask"});
     super::super::u7_nondelivery::hold(&fixture).await;
@@ -43,7 +52,7 @@ async fn u7_canonical_opencode_template_input_is_context_once_and_retains_cold_p
         context_count, 1,
         "input and working method are one frozen Context"
     );
-    let first = prompt_records(&fixture);
+    let first = prompt_records(&fixture, &provider);
     assert_eq!(first.len(), 1);
     let prompt = first[0]["params"]["prompt"].to_string();
     assert_eq!(prompt.matches("## Bound Template Input").count(), 1);
@@ -73,7 +82,11 @@ async fn u7_canonical_opencode_template_input_is_context_once_and_retains_cold_p
     .await
     .unwrap();
     assert_eq!(retained, original);
-    assert_eq!(prompt_records(&fixture).len(), 1, "replay cannot resend");
+    assert_eq!(
+        prompt_records(&fixture, &provider).len(),
+        1,
+        "replay cannot resend"
+    );
     post(
         &app,
         &cookie,
@@ -84,7 +97,7 @@ async fn u7_canonical_opencode_template_input_is_context_once_and_retains_cold_p
     .await;
     wait_completed(&fixture, track, 2).await;
     assert_eq!(fixture.carrier(track).await.1, worker);
-    let records = prompt_records(&fixture);
+    let records = prompt_records(&fixture, &provider);
     assert_eq!(records.len(), 2);
     assert!(
         !records[1]["params"]["prompt"]
@@ -100,8 +113,8 @@ async fn u7_canonical_opencode_template_input_is_context_once_and_retains_cold_p
     fixture.shutdown_process(&state).await;
 }
 
-fn prompt_records(fixture: &Fixture) -> Vec<Value> {
-    std::fs::read_to_string(fixture.root.path().join("requests.jsonl"))
+fn prompt_records(fixture: &Fixture, provider: &AgentProvider) -> Vec<Value> {
+    std::fs::read_to_string(peer_root(fixture, provider).join("requests.jsonl"))
         .unwrap_or_default()
         .lines()
         .map(|line| serde_json::from_str::<Value>(line).unwrap())

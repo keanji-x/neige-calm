@@ -193,16 +193,13 @@ fn canonical_creation_supported(request: &CreateRequestShape) -> bool {
         provider: request.planner_provider.clone(),
     })
     .is_ok();
-    // This entry rollout admits Codex/OpenCode named/admin/borrowed sources only. Other
-    // bindings retain their explicit historical named-source contract.
+    // Named sources reuse canonical allocation and its frozen Context for every
+    // retained binding. Admin/borrowed rollout still uses its original entry contract.
     // Blank attachment without cwd still selects Managed preparation and borrows
     // nothing. Named/admin attachment retains its existing admission owner.
     supported
         && (!request.attach_folder || request.cwd.is_some() || (!named && !request.admin))
-        && (!(named
-            || request.admin
-            || request.cwd.is_some()
-            || request.allow_cross_area_cwd.is_some())
+        && (!(request.admin || request.cwd.is_some() || request.allow_cross_area_cwd.is_some())
             || matches!(
                 request.planner_provider,
                 AgentProvider::Codex | AgentProvider::OpenCode

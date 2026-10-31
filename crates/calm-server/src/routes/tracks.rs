@@ -336,10 +336,10 @@ pub struct CreateTrackRequest {
     #[serde(default)]
     pub reasoning_effort: Option<String>,
     /// The backend of the track's Planner, stamped on its card as the server-owned
-    /// `planner_provider` and never changed afterwards. Fresh blank managed `claude` creation
-    /// is durably accepted while Claude is not ready; execution waits for readiness
-    /// (`GET /api/agent-providers`). Template, attached, admin, fork, recipe, `template_input`,
-    /// and cross-area creation retain the readiness refusal (400).
+    /// `planner_provider` and never changed afterwards. Canonical creation durably accepts
+    /// input while its provider is unavailable; execution waits for readiness
+    /// (`GET /api/agent-providers`). Source, resource and authorization qualification still
+    /// apply before fresh allocation; existing receipts retain their original storage contract.
     pub planner_provider: AgentProvider,
 }
 
