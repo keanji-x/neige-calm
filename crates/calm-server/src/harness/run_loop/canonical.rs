@@ -282,11 +282,7 @@ async fn advance_once(inner: &Arc<Inner>, ingress_empty: bool) -> Result<Progres
     if ingress_empty {
         super::compact_command::canonical::planner::tick(inner).await?;
     }
-    // An observer cannot park native ingress behind an existing operation.
-    // That owner signals completion; retain the normal admission retry meanwhile.
-    let Ok(_issuance) = inner.issuance.try_lock() else {
-        return Ok(Progress::Deferred);
-    };
+    let _issuance = inner.issuance.lock().await;
     if inner.parked.is_parked() {
         return Ok(Progress::Deferred);
     }
