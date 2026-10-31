@@ -107,12 +107,15 @@ async fn g4_first_message_preserves_human_receipt_without_provider() {
 
 #[tokio::test]
 async fn g4_borrowed_system_target_keeps_folder_claim_exemption() {
-    for human in [false, true] {
+    for (provider, human) in calm_types::runtime::AgentProvider::ALL
+        .into_iter()
+        .flat_map(|provider| [false, true].map(move |human| (provider.clone(), human)))
+    {
         let fixture = Fixture::new().await;
         let (state, app, cookie) = fixture.application().await;
         let area = system(&app, &cookie).await;
         let path = super::u8b_canonical::repo(&fixture);
-        let mut request = body(&area, "codex");
+        let mut request = body(&area, provider.wire_name());
         request["cwd"] = json!(path);
         request["isolation"] = json!("none");
         request["attach_folder"] = json!(true);
@@ -349,13 +352,15 @@ async fn g4_area_cutover_does_not_expand_unadmitted_shapes_or_admin() {
             .unwrap()
     );
     drop(connection);
-    let mut admin = body(&area, "codex");
-    admin["admin"] = json!(true);
-    let before = counts(&fixture).await;
-    assert_eq!(
-        create(&app, &cookie, "admin", admin).await.0,
-        StatusCode::FORBIDDEN
-    );
-    assert_eq!(counts(&fixture).await, before);
+    for provider in calm_types::runtime::AgentProvider::ALL {
+        let mut admin = body(&area, provider.wire_name());
+        admin["admin"] = json!(true);
+        let before = counts(&fixture).await;
+        assert_eq!(
+            create(&app, &cookie, "admin", admin).await.0,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(counts(&fixture).await, before);
+    }
     fixture.shutdown_process(&state).await;
 }

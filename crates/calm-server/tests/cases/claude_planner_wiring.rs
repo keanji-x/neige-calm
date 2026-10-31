@@ -5,6 +5,8 @@ use std::time::Duration;
 
 use axum::http::StatusCode;
 use calm_server::session_projection_repo::{AgentProvider, WorkerSessionKind};
+use calm_types::conversation::InputDeliveryFact;
+use calm_types::harness::{CanonicalHarnessSnapshot, HarnessPhaseTag};
 use serde_json::{Value, json};
 
 use super::claude_planner_stack_fixture::{Root, Stack};
@@ -370,24 +372,82 @@ async fn claude_planner_turn_runs_in_the_track_worktree() {
     }
     let checkout = checkout.canonicalize().expect("canonical checkout");
     let stack = Stack::boot(&root).await;
-    // This legacy lifecycle test observes historical turn outcomes. System
-    // resource creation retains that owner; canonical cwd is covered separately.
-    let (status, system) = stack
-        .send("POST", "/api/areas/system", Some(json!({})))
-        .await;
-    assert!(status.is_success(), "{system}");
     let (track_id, card_id) = stack
-        .create_claude_track_with(
-            json!({"area_id": system["id"], "cwd": checkout, "attach_folder": true}),
-        )
+        .create_claude_track_with(json!({"cwd": checkout, "attach_folder": true}))
         .await;
+    let original = stack.runtime(&card_id).await;
+    let empty: CanonicalHarnessSnapshot = serde_json::from_value(
+        original
+            .handle_state_json
+            .clone()
+            .expect("canonical empty carrier"),
+    )
+    .unwrap();
+    assert!(empty.canonical_inputs.pending.is_empty());
+    assert!(empty.canonical_inputs.active.is_none());
+    assert!(empty.canonical_inputs.attempts.is_empty());
     let worktree = checkout
         .join(".claude/worktrees")
         .join(format!("track-{track_id}"));
     assert!(worktree.is_dir(), "premise: the track worktree exists");
 
-    let (outcome, _) = stack.run_turn(&root, &card_id, "exit", "hello").await;
+    let text = "Observe the canonical Claude cwd boundary";
+    let (outcome, _) = stack.run_turn(&root, &card_id, "exit", text).await;
     assert_eq!(outcome["status"], "completed", "{outcome}");
+    let current = stack.runtime(&card_id).await;
+    assert_eq!(current.id, original.id);
+    let frame: CanonicalHarnessSnapshot = serde_json::from_value(
+        current
+            .handle_state_json
+            .expect("durable canonical completion"),
+    )
+    .unwrap();
+    assert_eq!(frame.header.phase, HarnessPhaseTag::TurnCompleted);
+    assert!(frame.canonical_inputs.pending.is_empty());
+    assert!(frame.canonical_inputs.active.is_none());
+    assert_eq!(frame.canonical_inputs.attempts.len(), 1);
+    assert!(matches!(
+        &frame.canonical_inputs.attempts[0].delivery,
+        InputDeliveryFact::Accepted { .. }
+    ));
+    let turn = outcome["id"].as_str().expect("native END has a turn id");
+    assert_eq!(frame.header.last_turn_id.as_deref(), Some(turn));
+    assert!(
+        root.read_fake("stdin")
+            .expect("native input")
+            .contains(text)
+    );
+    stack.wait_provider_clear(&current.id).await;
+    let deadline = std::time::Instant::now() + BUDGET;
+    let run = loop {
+        let (status, run) = stack
+            .send(
+                "GET",
+                &format!("/api/cards/{card_id}/planner/run?contract=conversation_v1"),
+                None,
+            )
+            .await;
+        if status == StatusCode::OK {
+            let terminal = run
+                .get("terminal_outcome")
+                .expect("required nullable terminal fact");
+            if !terminal.is_null() {
+                break run;
+            }
+        } else {
+            // The run read fence declares 409 retryable while END is settling.
+            assert_eq!(status, StatusCode::CONFLICT, "{run}");
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "qualified END not ready: {status} {run}"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
+    assert_eq!(run["terminal_outcome"]["status"], "completed", "{run}");
+    assert_eq!(run["terminal_outcome"]["worker_session_id"], current.id);
+    assert_eq!(run["terminal_outcome"]["card_id"], card_id);
+    assert_eq!(run["terminal_outcome"]["turn_id"], outcome["id"]);
     assert_eq!(
         root.read_fake("pwd").expect("pwd").trim(),
         worktree.to_str().expect("utf-8"),
