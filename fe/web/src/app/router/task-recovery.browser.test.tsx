@@ -38,7 +38,7 @@ it('navigates prior evidence from the task disclosure at desktop and phone width
     key: 'b', declared_by: 'user', kind: 'codex', ready: true, goal: 'Finish the calculation under the original requirements.',
   } }] };
   function Document() {
-    const rows = useCurrentTaskRows('w1', deriveReportTasks(report.blocks, [
+    const rows = useCurrentTaskRows(transport, unauthorized, 'w1', deriveReportTasks(report.blocks, [
       { blockId: 'b-b', key: 'b', schedulable: true, status: 'failed', workerCardId: 'worker-old' },
     ]));
     return <ReportDocument report={report} taskRows={rows} empty={null}
