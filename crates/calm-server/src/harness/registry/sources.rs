@@ -63,6 +63,11 @@ impl CanonicalSourceIndex {
             .clear();
         self.changed.notify_one();
     }
+    /// A producer may still commit after an empty persisted queue was observed.
+    pub(crate) fn has_handoffs(&self) -> bool {
+        self.state.lock().expect("canonical source index").handoffs > 0
+    }
+
     pub(crate) fn is_empty(&self) -> bool {
         let state = self.state.lock().expect("canonical source index");
         state.sources.is_empty() && state.handoffs == 0

@@ -43,15 +43,14 @@ pub(in crate::harness::run_loop) async fn next_probe(
     inner: &Inner,
     progress: Progress,
 ) -> tokio::time::Instant {
-    let frame = inner
-        .inputs
-        .canonical()
-        .expect("canonical consumer")
-        .committed()
-        .await;
+    let inputs = inner.inputs.canonical().expect("canonical consumer");
+    let frame = inputs.committed().await;
     let checkpoint = &frame.snapshot.canonical_inputs;
     let header = &frame.snapshot.header;
+    // An empty durable queue is not stable idle while a producer can still
+    // commit. Keep handoffs on the existing short cadence in this slice.
     let ordinary_idle = progress == Progress::Observed
+        && !inputs.sources.has_handoffs()
         && matches!(
             header.phase,
             HarnessPhaseTag::Idle | HarnessPhaseTag::TurnCompleted
