@@ -73,10 +73,15 @@ it('retains view, selection, focus and both scroll axes when the host changes th
     expect(view.scrollDOM.scrollHeight).toBeGreaterThan(view.scrollDOM.clientHeight);
   });
   expect(view.dom.querySelector('[aria-hidden="true"]')).not.toBeNull();
+  await measureReady(view);
   view.focus();
   view.dispatch({ selection: { anchor: 15 } });
   view.scrollDOM.scrollTop = 100;
   view.scrollDOM.scrollLeft = 80;
+  await frame();
+  await frame();
+  expect(view.scrollDOM.scrollTop).toBe(100);
+  expect(view.scrollDOM.scrollLeft).toBe(80);
   await page.screenshot({ path: 'test-results/code-dark.png' });
   document.documentElement.dataset.theme = 'light';
   await waitFor(() => { expect(view.state.facet(EditorView.darkTheme)).toBe(false); });
@@ -129,12 +134,21 @@ it('ignores a previous grammar load after the source changes', async () => {
 
 const frame = () => new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
 
+// Grammar readiness does not consume pending mount/configuration scroll snapshots.
+// Establish reading positions only after CodeMirror completes its measurement.
+function measureReady(view: EditorView) {
+  return new Promise<void>(resolve => {
+    view.requestMeasure({ read: () => null, write: () => resolve() });
+  });
+}
+
 it.each([true, false])('preserves the settled reading position as a fenced source grows (focus=%s)', async focus => {
   await page.viewport(900, 700);
   const text = 'const value = 1;\n'.repeat(100);
   const { rerender } = render(<MarkdownCode code={text} language="js" />);
   const view = await codeView();
   await waitFor(() => { expect(view.state.facet(language)?.name).toBe('javascript'); });
+  await measureReady(view);
   if (focus) view.focus();
   view.dispatch({ selection: { anchor: 20 } });
   view.scrollDOM.scrollTop = 100;
@@ -163,12 +177,15 @@ it('preserves both axes through replacements and rapid updates, and resets new s
   const { rerender } = render(pane(line.repeat(120)));
   const view = await codeView();
   await waitFor(() => { expect(view.state.facet(language)?.name).toBe('javascript'); });
+  await measureReady(view);
   view.focus();
   view.dispatch({ selection: { anchor: 20, head: 40 } });
   view.scrollDOM.scrollTop = 100;
   view.scrollDOM.scrollLeft = 80;
   await frame();
   await frame();
+  expect(view.scrollDOM.scrollTop).toBe(100);
+  expect(view.scrollDOM.scrollLeft).toBe(80);
   for (const count of [150, 60]) {
     rerender(pane(line.repeat(count)));
     await frame();
@@ -211,10 +228,13 @@ it('preserves both axes through replacements and rapid updates, and resets new s
   expect(view.scrollDOM.scrollLeft).toBe(0);
   expect(view.state.selection.main.head).toBe(0);
   expect(view.hasFocus).toBe(true);
+  await measureReady(view);
   view.scrollDOM.scrollTop = 100;
   view.scrollDOM.scrollLeft = 80;
   await frame();
   await frame();
+  expect(view.scrollDOM.scrollTop).toBe(100);
+  expect(view.scrollDOM.scrollLeft).toBe(80);
   rerender(pane('short', 'other.js'));
   await frame();
   await frame();
@@ -227,10 +247,12 @@ it.each([true, false])('resets a changed source kind with changed text=%s', asyn
   const text = 'value\n'.repeat(100);
   const { rerender } = render(<ReadOnlyCode text={text} source={{ kind: 'filename', value: 'text' }} />);
   const view = await codeView();
+  await measureReady(view);
   view.dispatch({ selection: { anchor: 20, head: 30 } });
   view.scrollDOM.scrollTop = 100;
   await frame();
   await frame();
+  expect(view.scrollDOM.scrollTop).toBe(100);
   rerender(<ReadOnlyCode text={changedText ? text + 'new' : text} source={{ kind: 'language', value: 'text' }} />);
   await frame();
   await frame();
@@ -262,13 +284,14 @@ it('retains the focused selection when a fence grammar replaces text nodes', asy
   const text = "// unchanged context\nfn main() {}\n".repeat(100);
   const { rerender } = render(<MarkdownCode code={text} language="rust" />);
   const view = await codeView();
+  await measureReady(view);
   view.focus();
-  await new Promise<void>(resolve => { requestAnimationFrame(() => resolve()); });
   view.dispatch({ selection: { anchor: 20 } });
   expect(view.state.selection.main.head).toBe(20);
   view.scrollDOM.scrollTop = 100;
   await frame();
   await frame();
+  expect(view.scrollDOM.scrollTop).toBe(100);
   rerender(<MarkdownCode code={text + "// appended"} language="rust" />);
   finish(support);
   await waitFor(() => { expect(view.state.facet(language)?.name).toBe('rust'); });
