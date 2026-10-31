@@ -163,7 +163,10 @@ pub(super) async fn publish(inner: &Inner, next: CommittedFrame) {
     if !same_running && !same_interrupt && !same_maintenance {
         *state = if header.phase == HarnessPhaseTag::TurnRunning {
             match &header.last_turn_id {
-                Some(turn) => HarnessState::turn_running(turn.clone(), Instant::now()),
+                Some(turn) => {
+                    held::reset_held_time(inner);
+                    HarnessState::turn_running(turn.clone(), Instant::now())
+                }
                 None => HarnessState::Resumed {
                     resumed_at: Instant::now(),
                 },
@@ -282,7 +285,11 @@ async fn advance_once(inner: &Arc<Inner>, ingress_empty: bool) -> Result<Progres
     if ingress_empty {
         super::compact_command::canonical::planner::tick(inner).await?;
     }
-    let _issuance = inner.issuance.lock().await;
+    // An observer cannot park native ingress behind an existing operation.
+    // That owner signals completion; retain the normal admission retry meanwhile.
+    let Ok(_issuance) = inner.issuance.try_lock() else {
+        return Ok(Progress::Deferred);
+    };
     if inner.parked.is_parked() {
         return Ok(Progress::Deferred);
     }
@@ -313,19 +320,27 @@ async fn advance_once(inner: &Arc<Inner>, ingress_empty: bool) -> Result<Progres
     let current = read_current(inner).await?;
     let checkpoint = &current.snapshot.canonical_inputs;
     let header = &current.snapshot.header;
-    if inner.issuance_paused.load(Ordering::SeqCst)
-        || provider_holds_issuance(inner).await
-        || inner
-            .issuance_retry_after
-            .lock()
-            .await
-            .is_some_and(|after| Instant::now() < after)
-        || !inner.held_requests.is_empty()
+    if inner.issuance_paused.load(Ordering::SeqCst) {
+        return Ok(Progress::Deferred);
+    }
+    if provider_holds_issuance(inner).await {
+        // This provider-owned hold needs its readiness signal before conversion.
+        return Ok(Progress::Deferred);
+    }
+    if inner
+        .issuance_retry_after
+        .lock()
+        .await
+        .is_some_and(|after| Instant::now() < after)
         || header.last_thread_id.is_none()
+    {
+        return Ok(Progress::Deferred);
+    }
+    if !inner.held_requests.is_empty()
         || header.pending_rewind.is_some()
         || header.wedged_reason.is_some()
     {
-        return Ok(Progress::Deferred);
+        return Ok(Progress::Waiting);
     }
     if header.interruption_intent.is_some() {
         return Ok(Progress::Waiting);

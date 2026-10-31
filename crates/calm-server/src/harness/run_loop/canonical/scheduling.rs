@@ -57,7 +57,6 @@ pub(in crate::harness::run_loop) async fn next_probe(
         )
         && checkpoint.pending.is_empty()
         && checkpoint.active.is_none()
-        && checkpoint.receipts.is_empty()
         && header.last_thread_id.is_some()
         && header.wedged_reason.is_none()
         && header.compact_outcome.as_ref().is_none_or(|outcome| {
@@ -65,26 +64,35 @@ pub(in crate::harness::run_loop) async fn next_probe(
         })
         && header.interruption_intent.is_none()
         && header.pending_rewind.is_none();
-    let delay = if progress == Progress::Waiting {
+    let parked = inner.parked.is_parked();
+    // Deferred work can live outside the input checkpoint (e.g. maintenance).
+    // Only an actual observation or an explicitly parked owner may sleep.
+    let short_retry = !parked
+        && (inputs.sources.has_handoffs() || (progress != Progress::Waiting && !ordinary_idle));
+    if progress == Progress::Waiting {
         #[cfg(feature = "fixtures")]
         crate::test_seams::pause_point("canonical-result-wait", inner.card_id.as_str()).await;
-        // Provider owners wake the loop when qualified results become observable.
-        // Reconciliation recovers lost hints; real owner deadlines preempt it below.
-        Duration::from_secs(30)
     } else if ordinary_idle {
         #[cfg(feature = "fixtures")]
         crate::test_seams::pause_point("canonical-idle-wait", inner.card_id.as_str()).await;
-        Duration::from_secs(30)
-    } else {
-        Duration::from_millis(50)
-    };
-    let delay = match *inner.issuance_retry_after.lock().await {
-        Some(after) if after > Instant::now() => {
-            delay.min(after.saturating_duration_since(Instant::now()))
+    }
+    let now = Instant::now();
+    let retry = inner
+        .issuance_retry_after
+        .lock()
+        .await
+        .filter(|after| *after > now);
+    let probe = match retry {
+        Some(after) => tokio::time::Instant::from_std(after),
+        None => {
+            tokio::time::Instant::now()
+                + if short_retry {
+                    Duration::from_millis(50)
+                } else {
+                    Duration::from_secs(30)
+                }
         }
-        _ => delay,
     };
-    let probe = tokio::time::Instant::now() + delay;
     if progress != Progress::Waiting {
         return probe;
     }
@@ -95,6 +103,9 @@ pub(in crate::harness::run_loop) async fn next_probe(
     [budget, compact, interrupt]
         .into_iter()
         .flatten()
+        // A failed attempt has its own retry, and a park cannot act on expiry.
+        // Future deadlines still preempt either wait; expired ones do not spin.
+        .filter(|deadline| !((retry.is_some() || parked) && *deadline <= now))
         .map(tokio::time::Instant::from_std)
         .fold(probe, std::cmp::min)
 }

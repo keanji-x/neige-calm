@@ -59,6 +59,10 @@ impl CanonicalInputs {
         let _ = self.progress.notified().now_or_never();
     }
 
+    pub(in crate::harness::run_loop) fn progress_signal(&self) -> Arc<Notify> {
+        self.progress.clone()
+    }
+
     /// A coalescing scheduling hint, never an input or execution grant.
     pub(in crate::harness::run_loop) fn request_progress(&self) {
         self.progress.notify_one();

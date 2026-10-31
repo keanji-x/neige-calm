@@ -153,6 +153,10 @@ pub(super) async fn sweep(inner: &Inner) {
 pub(super) async fn end_turn(inner: &Inner) {
     let taken = inner.held_requests.take_all();
     sweep(inner).await;
+    // A later turn starts with a fresh watchdog; previous-turn waits cannot
+    // become pause credit for that new clock.
+    reset_held_time(inner);
+    *inner.watchdog_held_since.lock().await = None;
     drop(taken);
 }
 
@@ -161,20 +165,38 @@ pub(super) fn release_all(inner: &Inner) {
     drop(inner.held_requests.take_all());
 }
 
-/// The turn watchdog does not count time the turn spends waiting on the user: while the table
-/// holds a request, each tick moves the running turn's `watchdog_from` forward by the time since
-/// the last tick that saw it held. Moving that instant, rather than skipping the check, keeps the
-/// waited time out of the watchdog after the answer too. The turn's `started_at` stays put: the
-/// wait is still part of how long the turn has run.
+/// Account the table's actual held intervals, including an Open and answer
+/// coalesced between actor passes. Started-at remains wall elapsed turn time.
 pub(super) async fn pause_watchdog_while_held(inner: &Inner) {
+    let mut state = inner.state.lock().await;
     let now = Instant::now();
-    let held = !inner.held_requests.is_empty();
-    let mut held_since = inner.watchdog_held_since.lock().await;
-    if let Some(since) = *held_since {
-        let waited = now.saturating_duration_since(since);
-        if let HarnessState::TurnRunning { watchdog_from, .. } = &mut *inner.state.lock().await {
-            *watchdog_from = (*watchdog_from + waited).min(now);
-        }
+    let (held, waited) = {
+        let mut accounted = inner
+            .watchdog_held_time
+            .lock()
+            .expect("held budget accounting");
+        let held = inner.held_requests.time();
+        let waited = held
+            .total
+            .checked_sub(*accounted)
+            .expect("monotonic held duration");
+        *accounted = held.total;
+        (held, waited)
+    };
+    if let HarnessState::TurnRunning { watchdog_from, .. } = &mut *state {
+        *watchdog_from = (*watchdog_from + waited).min(now);
     }
-    *held_since = held.then_some(now);
+    drop(state);
+    *inner.watchdog_held_since.lock().await = held.active.then_some(now);
 }
+
+/// Establish the held-time baseline when the actual running clock starts.
+pub(super) fn reset_held_time(inner: &Inner) {
+    *inner
+        .watchdog_held_time
+        .lock()
+        .expect("held budget accounting") = inner.held_requests.time().total;
+}
+
+#[cfg(all(test, feature = "fixtures"))]
+mod accounting_tests;

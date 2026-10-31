@@ -303,6 +303,7 @@ pub(super) struct Inner {
     held_request_sender: HeldRequestSender,
     /// The last watchdog tick that saw the table hold a request; `None` while it holds none.
     watchdog_held_since: Mutex<Option<Instant>>,
+    watchdog_held_time: std::sync::Mutex<Duration>,
     // Retain the task across cancelled shutdown waits. A closed ingress is not proof
     // that an in-flight notification finished registering its input transfer.
     run_loop_task: Mutex<Option<JoinHandle<()>>>,
@@ -1421,12 +1422,14 @@ impl PlannerHarness {
     #[cfg(feature = "fixtures")]
     pub fn pause_issuance_for_dev(&self) {
         self.inner.issuance_paused.store(true, Ordering::SeqCst);
+        self.request_progress();
     }
 
     /// Lift a pause set by [`Self::pause_issuance_for_dev`].
     #[cfg(feature = "fixtures")]
     pub fn resume_issuance_for_test(&self) {
         self.inner.issuance_paused.store(false, Ordering::SeqCst);
+        self.request_progress();
     }
 
     /// The debounce arming, read directly rather than inferred from whether a turn fired.
@@ -1470,9 +1473,7 @@ impl PlannerHarness {
             *started_at = rewind(*started_at);
             *watchdog_from = rewind(*watchdog_from);
         }
-        let mut held_since = self.inner.watchdog_held_since.lock().await;
-        *held_since = held_since.map(rewind);
-        drop(held_since);
+        self.inner.held_requests.rewind_active_for_test(by);
         if let Some(inputs) = self.inner.inputs.canonical() {
             inputs.request_progress();
         }
@@ -1626,6 +1627,10 @@ fn inner_from_params(
         .registry
         .live_replies()
         .claim(&params.card_id, &params.worker_session_id);
+    let progress = match &inputs {
+        RuntimeInputs::Canonical(inputs) => inputs.progress_signal(),
+        RuntimeInputs::Historical(_) => Arc::new(tokio::sync::Notify::new()),
+    };
     let inner = Arc::new(Inner {
         track_delete_locks: params.track_delete_locks,
         worker_session_id: params.worker_session_id,
@@ -1693,7 +1698,7 @@ fn inner_from_params(
         observations_closed: StdMutex::new(false),
         durable_observation: Mutex::new(()),
         issuance: Mutex::new(()),
-        parked: Default::default(),
+        parked: crate::harness::carrier_park::ParkState::with_signal(progress.clone()),
         provider_held: AtomicBool::new(false),
         provider_hold_owns_block: AtomicBool::new(false),
         issuance_paused: AtomicBool::new(false),
@@ -1701,9 +1706,10 @@ fn inner_from_params(
         steered_into_running_turn: Mutex::new(Vec::new()),
         restored_projections: Mutex::new(Vec::new()),
         input_commit: Mutex::new(None),
-        held_requests: Arc::new(HeldRequests::default()),
+        held_requests: Arc::new(HeldRequests::with_signal(progress)),
         held_request_sender,
         watchdog_held_since: Mutex::new(None),
+        watchdog_held_time: std::sync::Mutex::new(Duration::ZERO),
         run_loop_task: Mutex::new(None),
         turn_budget: Mutex::new(header.turn_budget),
         config: params.config,
@@ -2768,7 +2774,10 @@ async fn on_notification(
             *inner.last_turn_id.lock().await = Some(turn_id.clone());
             live.turn_started(&turn_id);
             if !already_running_same {
-                *inner.state.lock().await = HarnessState::turn_running(turn_id, Instant::now());
+                let mut state = inner.state.lock().await;
+                held::reset_held_time(inner);
+                *state = HarnessState::turn_running(turn_id, Instant::now());
+                drop(state);
                 held::sweep(inner).await;
             }
             *inner.issued_turn_id.lock().await = None;

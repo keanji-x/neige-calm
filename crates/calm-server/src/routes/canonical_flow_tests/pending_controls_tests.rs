@@ -441,15 +441,20 @@ async fn control(
 
 #[tokio::test]
 async fn pending_controls_http_edit_withdraw_steer_and_end_preserve_original_execution() {
-    edit_withdraw_steer_case(false).await;
+    edit_withdraw_steer_case(false, false).await;
 }
 
 #[tokio::test]
 async fn pending_controls_disconnected_report_wakes_after_end_was_observed() {
-    edit_withdraw_steer_case(true).await;
+    edit_withdraw_steer_case(true, false).await;
 }
 
-async fn edit_withdraw_steer_case(disconnected: bool) {
+#[tokio::test]
+async fn pending_controls_background_probe_keeps_native_ingress_available() {
+    edit_withdraw_steer_case(true, true).await;
+}
+
+async fn edit_withdraw_steer_case(disconnected: bool, probe_busy: bool) {
     let fixture = Fixture::new().await;
     let mut r = running(&fixture).await;
     let queued = post(
@@ -573,6 +578,23 @@ async fn edit_withdraw_steer_case(disconnected: bool) {
     if disconnected {
         steering.abort();
         assert!((&mut steering).await.unwrap_err().is_cancelled());
+    }
+    if probe_busy {
+        let returned = PausePoint::default();
+        install_pause_for_test("canonical-tick-returned", &r.card, returned.clone());
+        harness.request_progress();
+        let advanced =
+            tokio::time::timeout(Duration::from_secs(1), returned.entered.notified()).await;
+        returned.release.notify_one();
+        if advanced.is_err() {
+            // Release the real native operation before reporting a regression.
+            send(
+                &mut r.peer,
+                json!({"id":native["id"],"result":{"turnId":TURN}}),
+            )
+            .await;
+            panic!("background observation waited behind an in-flight native operation");
+        }
     }
     // END arrives first: it cannot consume the supplemental crossing marker.
     notify_thread(
