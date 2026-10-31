@@ -88,39 +88,15 @@ pub async fn commit_events_with_author_in_tx(
     {
         return Ok(None);
     }
-    if events.iter().all(|event| {
-        matches!(
-            event,
-            Event::WorkspaceLeased { .. }
-                | Event::WorkspaceReleased { .. }
-                | Event::ForgePrMerged { .. }
-                | Event::AskRequested { .. }
-                | Event::AskAnswered { .. }
-                | Event::AskWithdrawn { .. }
-                | Event::ForgeScanCompleted { .. }
-                | Event::ForgePrOpened { .. }
-                | Event::ForgePrPublished { .. }
-                | Event::ForgePrDiffRead { .. }
-                | Event::ForgeCiEvidenceRead { .. }
-                | Event::ForgePrChecks { .. }
-                | Event::ForgeIssueRead { .. }
-                | Event::ForgeIssueCreated { .. }
-                | Event::ForgeIssueSearched { .. }
-                | Event::ForgeIssueClosed { .. }
-                | Event::TrackWakeRequested { .. }
-                | Event::AssistantInputRequested { .. }
-                | Event::WorktreeProvisioned { .. }
-                | Event::WorktreeCommitted { .. }
-                | Event::WorktreeRemoved { .. }
-        )
-    }) {
-        return Ok(None);
-    }
-
     let now = now_ms();
     let mut delta = PathDelta::default();
     for event in events {
         delta.merge(paths_changed_by_event(event, track_id));
+    }
+    // The projection owns which events change track files. Event receipts stay
+    // durable even when there is no file delta to snapshot or commit.
+    if delta.is_empty() {
+        return Ok(None);
     }
     let author = author.map(ToString::to_string);
     commit_delta_in_tx(

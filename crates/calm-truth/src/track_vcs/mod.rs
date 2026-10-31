@@ -12,6 +12,8 @@ mod card_query;
 mod commit;
 mod delta;
 mod gc;
+#[cfg(test)]
+mod noop_tests;
 mod read;
 mod runs;
 mod snapshot;

@@ -36,6 +36,15 @@ pub(super) struct PathDelta {
 }
 
 impl PathDelta {
+    pub(super) fn is_empty(&self) -> bool {
+        self.exact.is_empty()
+            && self.remove_prefixes.is_empty()
+            && self.run_keys.is_empty()
+            && self.run_card_ids.is_empty()
+            && self.run_task_keys.is_empty()
+            && !self.full_snapshot
+    }
+
     fn add(&mut self, path: impl Into<String>) {
         self.exact.insert(path.into());
     }
