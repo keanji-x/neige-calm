@@ -533,12 +533,13 @@ async fn canonical_claude_compact_start_without_end_expires() {
     let (fx, harness, before) = ready().await;
     std::fs::write(fx.dir.path().join("scenario"), "compact-hang").unwrap();
     harness.compact_canonical(fx.source.clone()).await.unwrap();
-    let turn = tokio::time::timeout(Duration::from_secs(5), async {
+    tokio::time::timeout(Duration::from_secs(5), async {
         loop {
-            if let crate::harness::HarnessState::CompactionRunning { turn_id, .. } =
-                harness.state_for_test().await
-            {
-                break turn_id;
+            if matches!(
+                harness.state_for_test().await,
+                crate::harness::HarnessState::CompactionRunning { .. }
+            ) {
+                break;
             }
             tokio::task::yield_now().await;
         }
@@ -563,11 +564,9 @@ async fn canonical_claude_compact_start_without_end_expires() {
     tx.commit().await.unwrap();
     let pending = fx.frame().await;
     harness
-        .set_state_for_test(crate::harness::HarnessState::CompactionRunning {
-            turn_id: turn,
-            started_at: std::time::Instant::now()
-                - crate::harness::HarnessConfig::default().max_turn_duration,
-        })
+        .rewind_compaction_clock_for_test(
+            crate::harness::HarnessConfig::default().max_turn_duration,
+        )
         .await;
     let after = tokio::time::timeout(Duration::from_secs(5), fx.phase("wedged"))
         .await
