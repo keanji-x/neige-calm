@@ -601,7 +601,7 @@ async fn sweep_running_claude_past_liveness_deadline_fails_and_releases_lease_ro
             .fetch_one(&pool)
             .await
             .expect("session state");
-    assert_eq!(session_state, "running", "timeout cleanup is kill-only");
+    assert_eq!(session_state, "failed");
     let cleanup_markers: i64 = sqlx::query_scalar(
         r#"SELECT COUNT(*)
                FROM worker_sessions

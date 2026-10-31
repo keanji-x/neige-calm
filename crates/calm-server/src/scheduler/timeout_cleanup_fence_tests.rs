@@ -411,6 +411,16 @@ async fn w_timeout_cleanup_after_legacy_restart_reaps_same_attempt() {
             !worker.wait().await.unwrap().success(),
             "the same attempt worker must stop"
         );
+        assert_eq!(
+            f.repo
+                .session_get(&WorkerSessionId::from("session-a"))
+                .await
+                .unwrap()
+                .unwrap()
+                .state,
+            WorkerSessionState::Failed,
+            "same-attempt session completes after its worker stops"
+        );
         assert_eq!(f.lease_state().await, "released");
         assert!(f.marker().await.is_none());
         assert_eq!(f.repo.task_get(&f.task.id).await.unwrap(), task_before);
@@ -430,6 +440,16 @@ async fn w_timeout_cleanup_reaps_unstamped_spawn_attempt() {
         let before = f.repo.task_get(&f.task.id).await.unwrap();
         f.scheduler.sweep_timeout_worker_cleanups().await;
         assert!(!worker.wait().await.unwrap().success());
+        assert_eq!(
+            f.repo
+                .session_get(&WorkerSessionId::from("session-a"))
+                .await
+                .unwrap()
+                .unwrap()
+                .state,
+            WorkerSessionState::Failed,
+            "same-attempt session completes after its worker stops"
+        );
         assert_eq!(f.lease_state().await, "released");
         assert!(f.marker().await.is_none());
         assert_eq!(f.repo.task_get(&f.task.id).await.unwrap(), before);
@@ -458,5 +478,39 @@ async fn w_timeout_cleanup_retains_ambiguous_legacy_attempt() {
         assert_eq!(f.lease_state().await, "held");
         assert_eq!(f.marker().await, marker);
         assert_eq!(f.repo.task_get(&f.task.id).await.unwrap(), before);
+    }
+}
+
+#[tokio::test]
+async fn w_timeout_cleanup_already_ended_session_converges() {
+    for access in [TaskAccess::ReadOnly, TaskAccess::ReadWrite] {
+        let f = Fixture::new(access).await;
+        // An exit observer can complete the same session before the marker retry runs.
+        let mut tx = begin_immediate_tx(f.repo.db()).await.unwrap();
+        calm_truth::db::sqlite::session_complete_tx(
+            &mut tx,
+            &"session-a".to_owned(),
+            WorkerSessionState::Exited,
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+        let mut worker = attach_worker(&f, "session-a").await;
+        let task_before = f.repo.task_get(&f.task.id).await.unwrap();
+        f.scheduler.sweep_timeout_worker_cleanups().await;
+        assert!(!worker.wait().await.unwrap().success());
+        assert_eq!(
+            f.repo
+                .session_get(&WorkerSessionId::from("session-a"))
+                .await
+                .unwrap()
+                .unwrap()
+                .state,
+            WorkerSessionState::Exited,
+            "retain the existing terminal observation"
+        );
+        assert_eq!(f.lease_state().await, "released");
+        assert!(f.marker().await.is_none());
+        assert_eq!(f.repo.task_get(&f.task.id).await.unwrap(), task_before);
     }
 }

@@ -1,10 +1,11 @@
 //! Retry cleanup of exactly the ended attempt named by a session's timeout marker.
 use super::*;
 use calm_truth::db::sqlite::{
-    session_get_tx, session_projection_by_id_tx, terminal_get_by_card_tx, worker_op_targets_card_tx,
+    session_complete_tx, session_get_tx, session_projection_by_id_tx, terminal_get_by_card_tx,
+    worker_op_targets_card_tx,
 };
 use calm_truth::worker_binding::{operation_idempotency_key, session_is_card_current_tx};
-use calm_types::worker::WorkerSessionId;
+use calm_types::worker::{WorkerSessionId, WorkerSessionState};
 
 #[derive(Clone, sqlx::FromRow)]
 struct TimeoutCleanupSession {
@@ -89,16 +90,17 @@ impl Scheduler {
             move |tx| Box::pin(async move { timeout_cleanup_authority_tx(tx, &cleanup).await })
         })
         .await?;
-        match frozen {
+        let complete_session = match frozen {
             CleanupAuthority::Retain => return Ok(()),
-            CleanupAuthority::Retire => {}
+            CleanupAuthority::Retire => false,
             CleanupAuthority::Stop(worker) => {
                 let (projection, terminal) = *worker;
                 runtime
                     .stop_timeout_worker_session(Some(&projection), terminal.as_ref())
                     .await?;
+                true
             }
-        }
+        };
         // BEGIN IMMEDIATE rechecks the discovered marker and binds its release to that attempt.
         write_with_actor_events_typed(
             self.repo.as_ref(),
@@ -117,6 +119,25 @@ impl Scheduler {
                     .bind(now_ms()).bind(&cleanup.session_id).bind(&cleanup.card_id)
                     .bind(&cleanup.marker).execute(&mut **tx).await?.rows_affected();
                     let released = if cleared == 1 {
+                        if complete_session {
+                            // Shutdown may already have persisted A's exit. Complete only the
+                            // exact Stop-authorized session while still live, never the card's
+                            // current session and never the Retire (foreign/stale) carrier.
+                            let id = WorkerSessionId::from(cleanup.session_id.clone());
+                            let session = session_get_tx(tx, &id).await?.ok_or_else(|| {
+                                CalmError::Internal(
+                                    "CAS-cleared timeout session disappeared".into(),
+                                )
+                            })?;
+                            if !session.state.is_terminal() {
+                                session_complete_tx(
+                                    tx,
+                                    &cleanup.session_id,
+                                    WorkerSessionState::Failed,
+                                )
+                                .await?;
+                            }
+                        }
                         release_ended_attempt_lease_for_card_tx(
                             tx,
                             &cleanup.card_id,
