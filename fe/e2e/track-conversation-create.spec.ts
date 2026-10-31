@@ -7,15 +7,9 @@ import type { ConversationPage } from '../core/api/generated/wire.ts';
 import { expect, test, type Page, type Request } from '@playwright/test';
 
 import { createArea, createTrack } from './helpers/seed.js';
+import { captureFirstMessageErrors } from './helpers/first-message-errors.js';
 
 const createdAreaIds: string[] = [];
-
-function captureBrowserErrors(page: Page): string[] {
-  const errors: string[] = [];
-  page.on('console', (message) => { if (message.type() === 'error') errors.push(message.text()); });
-  page.on('pageerror', (error) => errors.push(error.message));
-  return errors;
-}
 
 /** Every POST the page made to a Track conversations endpoint. */
 function conversationCreates(requests: Request[]): Request[] {
@@ -41,7 +35,7 @@ test.afterEach(async ({ request }) => {
 });
 
 test('starts a conversation from a track page and sends the first message to that track', async ({ page, request }) => {
-  const errors = captureBrowserErrors(page);
+  const errors = captureFirstMessageErrors(page, () => runUrl);
   const area = await createArea(request);
   createdAreaIds.push(area.id);
   const track = await createTrack(request, area.id, `FE e2e conversation track ${Date.now()}`);
@@ -87,6 +81,7 @@ test('starts a conversation from a track page and sends the first message to tha
 
   expect(created.status(), `create failed: ${await created.text()}`).toBe(201);
   const conversation = await created.json() as { id: string; trackId: string; kind: string; provider: string };
+  const runUrl = new URL(`/api/cards/${conversation.id}/planner/run?contract=conversation_v1`, page.url()).href;
   expect(conversation.trackId).toBe(track.id);
   expect(conversation.kind).toBe('track-assistant');
   expect(conversation.provider).toBe('codex');
@@ -118,6 +113,15 @@ test('starts a conversation from a track page and sends the first message to tha
   await expect(drawer.locator('[data-nc-thread]').getByText(message, { exact: true })).toHaveCount(1);
   await expect(drawer.locator('[data-nc-thread]').getByText(message, { exact: true })).toBeVisible();
   await expect(drawer.locator('[data-nc-thread-empty]')).toHaveCount(0);
+  // A missing error notice alone can pass while the first-message read is still unresolved.
+  await expect.poll(async () => {
+    const reads = requests.filter(pending => pending.method() === 'GET' && pending.url() === runUrl);
+    const response = await reads.at(-1)?.response();
+    if (response?.status() !== 200) return false;
+    const run = await response.json() as { input_contract: string; phase: string };
+    return run.input_contract === 'canonical' && ['turn_running', 'turn_completed'].includes(run.phase);
+  }, { message: 'the browser must reach a successful current run read after activation' }).toBe(true);
+  await expect(drawer.getByText('Checking the first message’s current status.', { exact: true })).toHaveCount(0);
   await expect(drawer.getByText('The first message’s current status could not be checked.', { exact: true })).toHaveCount(0);
   const identityResponse = await request.get('/api/auth/whoami');
   expect(identityResponse.ok()).toBe(true);
@@ -142,7 +146,7 @@ test('starts a conversation from a track page and sends the first message to tha
   ).toHaveLength(1);
   expect(await (await request.get(`/api/tracks/${track.id}/conversations`)).json() as unknown[])
     .toHaveLength(1);
-  expect(errors).toEqual([]);
+  expect(await errors()).toEqual([]);
 });
 
 /* The endpoint's own guards, straight over HTTP; these do not depend on codex. */
