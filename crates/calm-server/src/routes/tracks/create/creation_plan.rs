@@ -35,6 +35,7 @@ pub(in crate::routes::tracks) async fn creation_plan(
         validate_first_message(text)?;
     }
     let shape = CreateRequestShape::from_request(&request)?;
+    let preparation_source = source.clone();
     let source = source.clone();
     let area_id = request.area_id.to_string();
     let workspace_root = state.workspace_root.clone();
@@ -109,7 +110,7 @@ pub(in crate::routes::tracks) async fn creation_plan(
                 calm_types::organization::AreaAccess::Collaborate,
             )
             .await;
-            let area = match access {
+            match access {
                 Ok(area) => area,
                 Err(error) => {
                     // Preserve the existing none teardown fence even after its
@@ -146,21 +147,15 @@ pub(in crate::routes::tracks) async fn creation_plan(
                 )
                 .await?;
             }
-            Ok(if area.kind == crate::model::AreaKind::User {
-                CreatePlan::Canonical(KeyedPlan::Mint(prepare_canonical_creation(
-                    request,
-                    &headers,
-                    workspace_root,
-                )?))
-            } else {
-                CreatePlan::Historical(request)
-            })
+            Ok(CreatePlan::Canonical(KeyedPlan::Mint(
+                prepare_canonical_creation(request, &headers, workspace_root)?,
+            )))
         })
     })
     .await?;
     match plan {
         CreatePlan::Canonical(KeyedPlan::Mint(plan)) => Ok(CreatePlan::Canonical(KeyedPlan::Mint(
-            plan.prepare_resources(state).await?,
+            plan.prepare_resources(state, &preparation_source).await?,
         ))),
         other => Ok(other),
     }
@@ -292,14 +287,28 @@ enum ResourcePreparation {
 }
 
 impl CreateShape<HumanTrackCreationPlan, EmptyTrackCreationPlan> {
-    async fn prepare_resources(mut self, state: &RouteState) -> Result<Self> {
+    async fn prepare_resources(
+        mut self,
+        state: &RouteState,
+        source: &crate::auth::HumanInputSource,
+    ) -> Result<Self> {
         let allocation = match &mut self {
             Self::WithFirstMessage(plan) => &mut plan.allocation,
             Self::MessageLess(plan) => &mut plan.allocation,
         };
         if allocation.shape.cwd.is_some() {
+            // Preparation consumes the actual admitted Area kind. Organization
+            // policy remains authoritative, including System owner access;
+            // dormant allocation checks it again in its committing transaction.
+            let area = crate::organization_access::require_area_access(
+                state.repo.as_ref(),
+                allocation.area_id.as_str(),
+                &source.current_principal()?,
+                calm_types::organization::AreaAccess::Collaborate,
+            )
+            .await?;
             allocation.preparation = ResourcePreparation::Prepared(Box::new(
-                prepare_allocation(state, allocation, crate::model::AreaKind::User).await?,
+                prepare_allocation(state, allocation, area.kind).await?,
             ));
         }
         Ok(self)

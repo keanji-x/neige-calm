@@ -62,11 +62,6 @@ pub(in crate::routes::tracks) async fn accept_dormant_human_track(
                     AreaAccess::Collaborate,
                 )
                 .await?;
-                if area.kind != crate::model::AreaKind::User {
-                    return Err(CalmError::Forbidden(
-                        "Human Track creation does not accept System targets".into(),
-                    ));
-                }
                 if let Some(stored) = human_track_creation_get_tx(tx, &area_id, &raw_key).await? {
                     if stored.source_user_id != principal.user_id
                         || stored.create_request_sha256 != create_sha
@@ -327,11 +322,6 @@ pub(in crate::routes::tracks) async fn allocate_dormant_empty_track(
                     AreaAccess::Collaborate,
                 )
                 .await?;
-                if area.kind != crate::model::AreaKind::User {
-                    return Err(CalmError::Forbidden(
-                        "Human Track creation does not accept System targets".into(),
-                    ));
-                }
                 if let Some((key, create_sha)) = &binding {
                     if let Some(binding) =
                         track_create_idempotency_get_tx(tx, &area_id, key).await?

@@ -54,6 +54,7 @@ mod claude_creation_tests;
 mod control_tests;
 mod dispatcher_inputs_tests;
 mod dispatcher_report_edit_tests;
+mod g4_system_creation_tests;
 mod input_feedback_tests;
 #[cfg(feature = "fixtures")]
 mod input_source_handoff_tests;
@@ -368,12 +369,28 @@ async fn original_input_flow(
     native_initially_available: bool,
     cold_second_turn: Option<cold_recovery_tests::Scenario>,
 ) {
+    original_input_flow_for_area(
+        native_initially_available,
+        cold_second_turn,
+        crate::model::AreaKind::User,
+    )
+    .await;
+}
+
+async fn original_input_flow_for_area(
+    native_initially_available: bool,
+    cold_second_turn: Option<cold_recovery_tests::Scenario>,
+    area_kind: crate::model::AreaKind,
+) {
     let mut fixture = Fixture::new().await;
     let (state, app, cookie) = fixture.application().await;
     let area = post(
         &app,
         &cookie,
-        "/api/areas",
+        match area_kind {
+            crate::model::AreaKind::User => "/api/areas",
+            crate::model::AreaKind::System => "/api/areas/system",
+        },
         "area",
         json!({"name":"Original carrier flow","color":"#123456"}),
     )

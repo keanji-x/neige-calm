@@ -762,7 +762,7 @@ pub(crate) async fn get_track_detail(
         (status = 201, description = "Track created or original receipt replayed. Canonical input is saved independently of native readiness.", body = TrackWire),
         (status = 400, description = "Invalid creation request or unsupported canonical first-input preparation.", body = ErrorBody),
         (status = 401, description = "No verified live Human source for first_message, or the session is invalid or revoked", body = ErrorBody),
-        (status = 403, description = "Registered current Area collaboration access is required for Human input; System targets are not Human Track creation", body = ErrorBody),
+        (status = 403, description = "Current registered Area access is required; System targets require the deployment owner", body = ErrorBody),
         (status = 404, description = "Area or surviving accepted resource not found", body = ErrorBody),
         (status = 409, description = "Key or resource conflict. Reconcile with the original key; a new key creates a new intent.", body = ErrorBody),
         (status = 500, description = "Internal storage or response error; an uncertain outcome must be reconciled under the original key", body = ErrorBody),

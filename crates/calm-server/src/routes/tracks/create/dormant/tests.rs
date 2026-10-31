@@ -758,34 +758,6 @@ async fn original_create_shape_and_original_first_text_remain_separate_fingerpri
 }
 
 #[tokio::test]
-async fn system_target_is_not_reclassified_as_human_creation() {
-    let fx = Fixture::new().await;
-    let system = crate::daily_planner::reconcile(
-        &fx.route,
-        crate::daily_planner::tests::at("2026-10-17T01:00:00Z"),
-    )
-    .await
-    .unwrap();
-    let before = fx.counts().await;
-    let mut request = fx.request(FIRST);
-    request.area_id = system.area_id.clone();
-    let mut headers = HeaderMap::new();
-    headers.insert("idempotency-key", "system".parse().unwrap());
-    assert!(matches!(
-        accept_dormant_human_track(
-            fx.route.clone(),
-            fx.source.clone(),
-            headers,
-            request,
-            crate::planner_model::selection_advice::CatalogAdvice::default()
-        )
-        .await,
-        Err(CalmError::Forbidden(_))
-    ));
-    assert_eq!(fx.counts().await, before);
-}
-
-#[tokio::test]
 async fn canonical_accepted_input_title_uses_its_human_body_without_native_readiness() {
     let fx = Fixture::new().await;
     let accepted = fx

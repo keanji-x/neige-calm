@@ -71,7 +71,7 @@ pub(super) enum CreatePlan {
         request: super::CreateTrackRequest,
     },
     /// Hand the raw request to historical planning for shapes outside the canonical
-    /// cutover, non-User areas, or operation-only retries routed to that owner.
+    /// cutover or operation-only retries routed to that owner.
     /// Historical planning retains retry selection and error ordering; this arm
     /// does not imply a fresh mint.
     Historical(super::CreateTrackRequest),

@@ -380,8 +380,8 @@ async fn historical_template_key_replays_through_http(provider: AgentProvider) {
     let (state, app, cookie) = fixture.application().await;
     let mut original = body(&app, &cookie, &provider).await;
     original["template_id"] = json!("small-change");
-    // User borrowing is canonical after U8b. System targets retain the actual
-    // historical entry, so this remains an HTTP replay of a historical key.
+    // Persist a released allocation through its existing owner. The public
+    // System entry is canonical after G4; replay must retain the original key.
     if provider == AgentProvider::OpenCode {
         original["area_id"] =
             post(&app, &cookie, "/api/areas/system", "system", json!({})).await["id"].clone();
@@ -391,7 +391,8 @@ async fn historical_template_key_replays_through_http(provider: AgentProvider) {
     original["cwd"] = json!(cwd);
     original["isolation"] = json!("none");
     original["attach_folder"] = json!(true);
-    let created = post(&app, &cookie, "/api/tracks", "historical", original.clone()).await;
+    let created =
+        crate::test_support::historical_track(&state, original.clone(), Some("historical")).await;
     let replay = post(&app, &cookie, "/api/tracks", "historical", original.clone()).await;
     assert_eq!(replay["id"], created["id"]);
     original.as_object_mut().unwrap().remove("template_id");
