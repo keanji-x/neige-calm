@@ -38,7 +38,7 @@ impl<T: Send + Sync + 'static> RetainedJoin<T> {
             tokio::pin!(ready);
             ready.as_mut().enable();
             if let Some(result) = self.result.get() {
-                return result.as_ref().map_err(|()| ());
+                return result.as_ref().map_err(|_| ());
             }
             ready.await;
         }
