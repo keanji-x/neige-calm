@@ -17,6 +17,7 @@ mod compact_tests;
 mod content_tests;
 mod control_tests;
 mod objective_tests;
+mod passive_scheduling_tests;
 mod phase_diagnostics;
 mod planner_compact_tests;
 use phase_diagnostics::PhaseWaitStage;
