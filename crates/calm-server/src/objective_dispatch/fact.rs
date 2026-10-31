@@ -101,7 +101,10 @@ async fn measure_tx(
                 }
                 let event = Event::from_stored_kind_and_payload(
                     row.try_get("kind")?,
-                    serde_json::from_str(row.try_get("payload")?)?,
+                    calm_truth::event_storage::decode_payload(
+                        row.try_get("kind")?,
+                        row.try_get("payload")?,
+                    )?,
                     row.try_get("event_version")?,
                 )
                 .map_err(|e| CalmError::Internal(e.to_string()))?;

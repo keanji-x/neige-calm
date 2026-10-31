@@ -1,11 +1,10 @@
 //! Storage encoding only: identities and manifest lengths describe decoded bytes.
+use crate::compact_storage;
 use crate::error::{CalmError, Result};
-use flate2::{Compression, Decompress, FlushDecompress, Status, write::ZlibEncoder};
-use std::io::Write;
 
 use super::{TreeManifest, store};
 
-pub(super) const MAX_DECODED_BYTES: usize = 64 * 1024 * 1024;
+pub(super) const MAX_DECODED_BYTES: usize = compact_storage::MAX_BLOCK_BYTES;
 const MAX_WRITER_COMPRESSION_BYTES: usize = 256 * 1024;
 
 #[derive(sqlx::FromRow)]
@@ -42,9 +41,7 @@ pub(super) fn encode_for_write(bytes: &[u8]) -> Result<EncodedObject> {
 
 pub(super) fn encode(bytes: &[u8]) -> Result<EncodedObject> {
     if (1024..=MAX_DECODED_BYTES).contains(&bytes.len()) {
-        let mut encoder = ZlibEncoder::new(Vec::new(), Compression::new(6));
-        encoder.write_all(bytes).map_err(invalid)?;
-        let compressed = encoder.finish().map_err(invalid)?;
+        let compressed = compact_storage::compress(bytes, 6)?;
         if compressed.len().saturating_add(32) < bytes.len() {
             return Ok(EncodedObject {
                 bytes: compressed,
@@ -73,20 +70,7 @@ impl StoredObject {
                 if self.bytes.len() > MAX_DECODED_BYTES {
                     return Err(invalid("encoded size exceeds limit"));
                 }
-                // StreamEnd is required: a reader reaching EOF alone can accept a
-                // truncated checksum even after producing the expected plaintext.
-                let mut decoder = Decompress::new(true);
-                let mut decoded = Vec::with_capacity(size + 1);
-                let status = decoder
-                    .decompress_vec(&self.bytes, &mut decoded, FlushDecompress::Finish)
-                    .map_err(invalid)?;
-                if status != Status::StreamEnd
-                    || decoded.len() != size
-                    || decoder.total_in() != self.bytes.len() as u64
-                {
-                    return Err(invalid("size mismatch, truncated stream or trailing bytes"));
-                }
-                Ok(decoded)
+                compact_storage::decompress(&self.bytes, size)
             }
             _ => Err(invalid("unknown encoding or inconsistent raw metadata")),
         }

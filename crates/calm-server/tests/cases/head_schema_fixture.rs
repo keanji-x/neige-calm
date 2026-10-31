@@ -142,6 +142,8 @@ const POST_0067_MIGRATION_NAMES: &[&str] = &[
     "0202_canonical_supplemental_inputs.sql",
     "0203_claude_session_launches.sql",
     "0204_worker_watcher_source.sql",
+    "0205_vcs_object_encoding.sql",
+    "0206_event_field_encoding.sql",
 ];
 
 #[test]

@@ -142,3 +142,48 @@ in the cleanup design before either change ships.
 No historical deletion, production VACUUM, provider process removal or deployment
 is part of this write-path change. Performance numbers and review/test outcomes
 belong in the corresponding PR evidence, not permanent source assertions.
+
+## Single-PR storage compaction after profiling
+
+The measured byte leaders are VCS objects (57.7% of allocated DB pages) and
+events (30.7%). Report edits and card updates account for 88.8% of retained event
+payload bytes. PR #3413 is merged. The user authorized combining the VCS slice
+from #3412 and event-field compaction in PR #3417. Earlier reference-based report
+plans above remain future design options, not part of this implementation.
+
+Both representations share the bounded zlib primitives owned by calm-truth.
+VCS retains explicit encoding/decoded_size columns, stable logical hashes,
+queryable decoded sizes for both GC proof paths, and the existing 256 KiB limit
+on compression inside ordinary writers. Larger VCS objects can be converted
+outside the writer by the explicit resumable operator command described in
+[the VCS design](design-vcs-object-compression.md). Conversion never changes
+logical content, identities or historical references.
+
+Persisted card.updated payload and track.report_edited body_before/body_after
+are compacted inline, retaining SQL metadata such as id, track_id and author.
+The private outer _storage_fields envelope cannot collide with arbitrary nested
+Card.payload content. Public Event serialization, live broadcasting and wire
+schemas stay unchanged. Every persistence reader hydrates before interpretation;
+strict input fingerprints continue to identify the raw immutable stored row.
+No new revision store, reference graph, GC root or event-row rewrite is added.
+
+Event compression uses level 1 and keeps plain values when small, above 64 MiB,
+or when final JSON (including base64 and envelope) would grow. Decoding validates
+version, declared size, stream completion, checksum and complete input use before
+returning logical fields. Recognized corrupt formats fail instead of falling
+back. Migration 0206 records the new event storage contract and fences startup by
+older binaries. Upgrades still require exclusive database ownership; the fence
+does not evict an already-running old kernel. Existing migration files are frozen.
+
+Read-only simulations on 24 latest samples per category reduced manifest bytes
+by 76.1% and persisted report/card event bytes by about 62%, including envelopes.
+These are sample sizes, not total reclaimable space, WAL or frequency evidence.
+Writer timing and actual WAL measurements belong in the PR verification evidence.
+This slice reduces bytes per retained record; it does not reduce event frequency.
+Remaining session/probe and projection scheduling work stays tracked by #3411.
+
+Tier L2: persistence representation changes require two independent final reviews,
+focused production-entry-point red/green checks, replay/history/GC coverage,
+critical mutation verification, and the required text/contract/quick gates.
+Production deployment, production conversion and retention deletion are outside
+this implementation request. #3412 continues to own historical lifecycle policy.

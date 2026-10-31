@@ -246,3 +246,75 @@ async fn report_group_pages_cover_every_track_and_exclude_later_edits() {
         .collect::<std::collections::BTreeSet<_>>();
     assert_eq!(actual, expected);
 }
+
+#[tokio::test]
+async fn compact_report_fields_preserve_history_pages_and_day_changes() {
+    use crate::db::RepoEventWrite;
+    let (_tmp, repo, state) = fixture().await;
+    let route = crate::state::RouteState::from_ref(&state);
+    let track = foreign_track(&route).await;
+    let (start, _) = day_window(parse_date("2026-10-03").unwrap(), TIME_ZONE).unwrap();
+    let before = "original report content\n".repeat(2048);
+    let after = format!("{before}new result\n");
+    let id = event(repo.db(), &track, start, &before, &after).await;
+    let stored: String = sqlx::query_scalar("SELECT payload FROM events WHERE id=?1")
+        .bind(id)
+        .fetch_one(repo.pool())
+        .await
+        .unwrap();
+    assert!(stored.len() < (before.len() + after.len()) / 2);
+    let author: String =
+        sqlx::query_scalar("SELECT json_extract(payload,'$.author') FROM events WHERE id=?1")
+            .bind(id)
+            .fetch_one(repo.pool())
+            .await
+            .unwrap();
+    assert_eq!(author, "kernel");
+    let replay = repo.events_since(id - 1, 1).await.unwrap();
+    let audit = repo
+        .events_for_track(track.id.as_str(), &["track.report_edited"], Some(id - 1))
+        .await
+        .unwrap();
+    assert_eq!(replay.len(), 1);
+    assert_eq!(audit.len(), 1);
+    for event in [&replay[0].3, &audit[0].event] {
+        let crate::event::Event::TrackReportEdited {
+            body_before,
+            body_after,
+            ..
+        } = event
+        else {
+            panic!("expected report edit");
+        };
+        assert_eq!(body_before, &before);
+        assert_eq!(body_after, &after);
+    }
+    let page = changes(
+        repo.db(),
+        &ReportChangesQuery {
+            date: "2026-10-03".into(),
+            cursor: None,
+            through_event_id: None,
+        },
+        TIME_ZONE,
+    )
+    .await
+    .unwrap();
+    assert_eq!(page.changes.len(), 1);
+    assert!(page.changes[0].patch.contains("+new result"));
+    let edits = edits(
+        repo.pool(),
+        &ReportEditsQuery {
+            date: page.date,
+            track_id: track.id.to_string(),
+            cursor: None,
+            through_event_id: page.through_event_id,
+        },
+        TIME_ZONE,
+    )
+    .await
+    .unwrap();
+    assert_eq!(edits.edits.len(), 1);
+    assert_eq!(edits.edits[0].edit.body_before, before);
+    assert_eq!(edits.edits[0].edit.body_after, after);
+}

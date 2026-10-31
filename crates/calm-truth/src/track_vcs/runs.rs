@@ -53,7 +53,7 @@ async fn run_events_for_track_tx(
 
 pub(super) fn track_event_from_row(row: EventRow) -> Result<TrackEvent> {
     let (id, kind, payload_text, actor_text, at, sk, sc, sw, scard, event_version) = row;
-    let payload = serde_json::from_str(&payload_text)?;
+    let payload = crate::event_storage::decode_payload(&kind, &payload_text)?;
     let actor = serde_json::from_str::<ActorId>(&actor_text)?;
     let scope = EventScope::from_row(
         sk.as_deref(),
@@ -435,7 +435,7 @@ async fn run_events_for_key_tx(
 
     let mut out = Vec::with_capacity(rows.len());
     for (id, kind, payload_text, actor_text, at, sk, sc, sw, scard, event_version) in rows {
-        let payload = serde_json::from_str(&payload_text)?;
+        let payload = crate::event_storage::decode_payload(&kind, &payload_text)?;
         let actor = serde_json::from_str::<ActorId>(&actor_text)?;
         let scope = EventScope::from_row(
             sk.as_deref(),

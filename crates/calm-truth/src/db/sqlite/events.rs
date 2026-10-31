@@ -229,7 +229,7 @@ impl SqlxRepo {
         let event = authorized.event();
         let kind = event.kind_tag();
         let payload = event.payload_value();
-        let payload_text = serde_json::to_string(&payload)?;
+        let payload_text = crate::event_storage::encode_payload(kind, payload)?;
         let actor_text = serde_json::to_string(actor)?;
         let at = now_ms();
         let scope_kind = scope.kind();
@@ -658,6 +658,7 @@ impl RepoEventWrite for SqlxRepo {
                     continue;
                 }
             };
+            let payload = crate::event_storage::hydrate(&kind, payload)?;
             let scope = EventScope::from_row(
                 sk.as_deref(),
                 sc.as_deref(),
@@ -795,6 +796,7 @@ impl RepoEventWrite for SqlxRepo {
                 sw.as_deref(),
                 scard.as_deref(),
             );
+            let payload = crate::event_storage::hydrate(&kind, payload)?;
             match Event::from_stored_kind_and_payload(&kind, payload, event_version) {
                 Ok(event) => out.push(TrackEvent {
                     id,

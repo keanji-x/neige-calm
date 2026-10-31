@@ -46,7 +46,7 @@ fn decode(row: Stored) -> Result<EventInputFact> {
     let actor: ActorId = serde_json::from_str(&row.actor)?;
     let event = Event::from_stored_kind_and_payload(
         &row.kind,
-        serde_json::from_str(&row.payload)?,
+        crate::event_storage::decode_payload(&row.kind, &row.payload)?,
         u32::try_from(row.event_version)
             .map_err(|_| CalmError::Internal("invalid stored event version".into()))?,
     )

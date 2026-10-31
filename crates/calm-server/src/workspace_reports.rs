@@ -133,8 +133,16 @@ pub async fn changes(
     let changes = rows
         .into_iter()
         .map(|row| {
-            let first: ReportEdit = serde_json::from_str(&row.first_payload)?;
-            let last: ReportEdit = serde_json::from_str(&row.last_payload)?;
+            let first: ReportEdit =
+                serde_json::from_value(calm_truth::event_storage::decode_payload(
+                    "track.report_edited",
+                    &row.first_payload,
+                )?)?;
+            let last: ReportEdit =
+                serde_json::from_value(calm_truth::event_storage::decode_payload(
+                    "track.report_edited",
+                    &row.last_payload,
+                )?)?;
             if first.track_id != row.track_id || last.track_id != row.track_id {
                 return Err(CalmError::Internal(
                     "report edit scope disagrees with its Track".into(),
@@ -193,7 +201,9 @@ pub async fn edits(
     let edits = rows
         .into_iter()
         .map(|(event_id, at, payload)| {
-            let edit: ReportEdit = serde_json::from_str(&payload)?;
+            let edit: ReportEdit = serde_json::from_value(
+                calm_truth::event_storage::decode_payload("track.report_edited", &payload)?,
+            )?;
             if edit.track_id != query.track_id {
                 return Err(CalmError::Internal(
                     "report edit scope disagrees with its Track".into(),

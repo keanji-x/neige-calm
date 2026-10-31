@@ -10,6 +10,8 @@ pub type CommitHash = String;
 
 mod card_query;
 mod commit;
+#[cfg(test)]
+mod compact_storage_tests;
 mod delta;
 mod gc;
 #[cfg(test)]
