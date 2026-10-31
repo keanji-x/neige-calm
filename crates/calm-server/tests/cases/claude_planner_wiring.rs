@@ -222,6 +222,7 @@ async fn without_the_flag_create_is_refused_and_a_recovered_harness_refuses() {
                 "area_id": area,
                 "title": "refused",
                 "template_id": "small-change",
+                "attach_folder": true,
                 "theme": {"fg": [216, 219, 226], "bg": [15, 20, 24]},
             })),
         )

@@ -246,6 +246,7 @@ async fn a_replay_after_logout_answers_the_bound_track() {
         "area_id": stack.area().await,
         "title": "replayed",
         "template_id": "small-change",
+        "attach_folder": true,
         "theme": {"fg": [216, 219, 226], "bg": [15, 20, 24]},
     });
     let (status, first) = create_with_key(&stack, &body, "replay-1817").await;

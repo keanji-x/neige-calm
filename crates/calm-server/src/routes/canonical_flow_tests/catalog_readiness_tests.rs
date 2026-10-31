@@ -61,12 +61,13 @@ async fn historical_creation_samples_readiness_before_the_area_lock() {
         std::fs::write(&config, json!({"claude_binary":fake.join("claude"),"claude_version":"2.1.280","config_dir":fixture.root.path().join("claude-config")}).to_string()).unwrap();
         fixture.claude_config = Some(config);
         let (state, app, cookie) = fixture.application().await;
+        // System Area retains the released historical creation owner.
         let area = post(
             &app,
             &cookie,
-            "/api/areas",
-            "area",
-            json!({"name":"readiness","color":"#123456"}),
+            "/api/areas/system",
+            "system",
+            json!({}),
         )
         .await["id"]
             .as_str()
