@@ -370,8 +370,16 @@ async fn claude_planner_turn_runs_in_the_track_worktree() {
     }
     let checkout = checkout.canonicalize().expect("canonical checkout");
     let stack = Stack::boot(&root).await;
+    // This legacy lifecycle test observes historical turn outcomes. System
+    // resource creation retains that owner; canonical cwd is covered separately.
+    let (status, system) = stack
+        .send("POST", "/api/areas/system", Some(json!({})))
+        .await;
+    assert!(status.is_success(), "{system}");
     let (track_id, card_id) = stack
-        .create_claude_track_with(json!({"cwd": checkout, "attach_folder": true}))
+        .create_claude_track_with(
+            json!({"area_id": system["id"], "cwd": checkout, "attach_folder": true}),
+        )
         .await;
     let worktree = checkout
         .join(".claude/worktrees")
