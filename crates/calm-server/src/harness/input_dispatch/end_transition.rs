@@ -137,13 +137,14 @@ pub(crate) async fn complete_once(
     let card = card_id.to_owned();
     let runtime = worker_session_id.to_owned();
     let provider = backend.provider();
-    let sampled = write_in_tx_typed(repo, {
-        let card = card.clone();
-        let runtime = runtime.clone();
-        let provider = provider.clone();
-        move |tx| Box::pin(async move { sample_tx(tx, &card, &runtime, &provider, true).await })
-    })
-    .await?;
+    // Sampling identifies a candidate; consume_tx still revalidates the full
+    // carrier/fence/receipt inside the writer before applying any transition.
+    let db = repo.sqlite_db().ok_or_else(|| {
+        crate::error::CalmError::Internal("canonical END observation requires SQLite".into())
+    })?;
+    let mut tx = db.read_pool().begin().await?;
+    let sampled = sample_tx(&mut tx, &card, &runtime, &provider, true).await?;
+    tx.commit().await?;
     let Some(sampled) = sampled else {
         return Ok(None);
     };

@@ -23,6 +23,7 @@ mod content;
 mod inputs;
 pub(super) use inputs::CanonicalInputs;
 mod load;
+pub(super) mod scheduling;
 pub(super) use load::load_current;
 mod report_context;
 mod resume;
@@ -31,6 +32,8 @@ use resume::resume_unattempted;
 pub(super) mod control;
 pub(super) use content::{invalidate_context_usage, on_notification, persist_native_item};
 
+#[cfg(all(test, feature = "fixtures"))]
+mod observation_tests;
 #[cfg(all(test, feature = "fixtures"))]
 mod retry_tests;
 #[cfg(all(test, feature = "fixtures"))]
@@ -125,12 +128,17 @@ impl PublicFeedback {
 }
 
 pub(super) async fn read_current(inner: &Inner) -> Result<CommittedFrame> {
-    let card = inner.card_id.to_string();
-    let runtime = inner.worker_session_id.clone();
-    write_in_tx_typed(inner.repo.as_ref(), move |tx| {
-        Box::pin(async move { frame(&current_input_fact_carrier_tx(tx, &card, &runtime).await?) })
-    })
-    .await
+    let db = inner
+        .repo
+        .sqlite_db()
+        .ok_or_else(|| CalmError::Internal("canonical observation requires SQLite".into()))?;
+    let mut tx = db.read_pool().begin().await?;
+    let observed = frame(
+        &current_input_fact_carrier_tx(&mut tx, inner.card_id.as_str(), &inner.worker_session_id)
+            .await?,
+    )?;
+    tx.commit().await?;
+    Ok(observed)
 }
 
 /// This cache is published only from a returned, committed SQL result. Native
@@ -234,6 +242,11 @@ async fn publish_end(inner: &Arc<Inner>, done: RuntimeFrameAfterWrite) -> Result
     }
     publish(inner, next).await;
     held::end_turn(inner).await;
+    inner
+        .inputs
+        .canonical()
+        .expect("canonical consumer")
+        .request_progress();
     Ok(())
 }
 

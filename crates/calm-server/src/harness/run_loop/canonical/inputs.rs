@@ -4,13 +4,14 @@ use crate::conversation_inputs::InputSource;
 use crate::harness::registry::CanonicalSourceIndex;
 use calm_types::conversation::CanonicalPendingIdentity;
 use std::sync::Arc;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Notify};
 
 pub(in crate::harness::run_loop) struct CanonicalInputs {
     // This is an identity index, not an ordered queue or an admission cache.
     // Every claim/crossing still revalidates its actual issuer and current scope.
     pub(super) sources: Arc<CanonicalSourceIndex>,
     projection: Mutex<CommittedFrame>,
+    progress: Notify,
     execution: crate::harness::registry::MaintenanceExecutionCell,
 }
 
@@ -26,6 +27,7 @@ impl CanonicalInputs {
         Self {
             sources,
             projection: Mutex::new(frame),
+            progress: Notify::new(),
             execution,
         }
     }
@@ -45,8 +47,16 @@ impl CanonicalInputs {
         self.sources.source(input)
     }
 
-    pub(in crate::harness::run_loop) async fn source_changed(&self) {
-        self.sources.changed().await;
+    pub(in crate::harness::run_loop) async fn progress_requested(&self) {
+        tokio::select! {
+            _ = self.sources.changed() => {},
+            _ = self.progress.notified() => {},
+        }
+    }
+
+    /// A coalescing scheduling hint, never an input or execution grant.
+    pub(in crate::harness::run_loop) fn request_progress(&self) {
+        self.progress.notify_one();
     }
 
     /// One readiness interpretation for pending selection and restored claims.

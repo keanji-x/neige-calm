@@ -1775,17 +1775,26 @@ async fn run_loop(
     // system-error recovery) holds none of their requests.
     held::sweep(&inner).await;
     let mut tick = harness_tick();
+    let mut canonical_probe = tokio::time::Instant::now();
     loop {
         tokio::select! {
             // The sender lives on `inner`, so the channel never closes while the loop runs.
             Some(message) = held_messages.recv() => {
                 held::on_message(&inner, message).await;
+                if let Some(inputs) = inner.inputs.canonical() {
+                    inputs.request_progress();
+                }
             }
             command = observations.recv() => {
                 let Some(command) = command else { break };
                 #[cfg(feature = "fixtures")]
                 crate::test_seams::pause_point("conversation-command-dequeued", inner.card_id.as_str()).await;
                 let Some(command) = input_commit::admit(&inner, command).await else { continue };
+                let progress = !matches!(&command,
+                    HarnessObservationCommand::CanonicalSource { .. }
+                    | HarnessObservationCommand::InspectInput { .. }
+                    | HarnessObservationCommand::Hibernate { .. }
+                    | HarnessObservationCommand::Release { .. });
                 match command {
                     HarnessObservationCommand::CanonicalInterrupt { target, source, answer } => {
                         canonical::control::manual(&inner, target, source, answer).await;
@@ -1863,6 +1872,9 @@ async fn run_loop(
                         let _ = answer.send(outcome);
                     }
                 }
+                if progress && let Some(inputs) = inner.inputs.canonical() {
+                    inputs.request_progress();
+                }
                 #[cfg(feature = "fixtures")]
                 crate::test_seams::pause_point("conversation-command-completed", inner.card_id.as_str()).await;
             }
@@ -1882,13 +1894,23 @@ async fn run_loop(
             }
             _ = async {
                 match inner.inputs.canonical() {
-                    Some(inputs) => inputs.source_changed().await,
+                    Some(inputs) => inputs.progress_requested().await,
                     None => std::future::pending::<()>().await,
                 }
-            } => canonical::advance(&inner, observations.is_empty()).await,
-            _ = tick.tick() => {
+            } => {
+                canonical::advance(&inner, observations.is_empty()).await;
+                canonical_probe = canonical::scheduling::next_probe(&inner).await;
+            },
+            _ = async {
+                if inner.inputs.canonical().is_some() {
+                    tokio::time::sleep_until(canonical_probe).await;
+                } else {
+                    tick.tick().await;
+                }
+            } => {
                 if inner.inputs.canonical().is_some() {
                     canonical::advance(&inner, observations.is_empty()).await;
+                    canonical_probe = canonical::scheduling::next_probe(&inner).await;
                     continue;
                 }
                 if let Err(e) = watchdog_tick(&inner).await {

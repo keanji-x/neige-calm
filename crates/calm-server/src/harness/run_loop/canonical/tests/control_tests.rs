@@ -2,7 +2,10 @@
 use super::*;
 use calm_truth::db::RepoOutOfDomain as _;
 
-async fn running(fx: &Fixture, peer: &mut crate::shared_codex_appserver::native_owner_tests::Peer) {
+pub(super) async fn running(
+    fx: &Fixture,
+    peer: &mut crate::shared_codex_appserver::native_owner_tests::Peer,
+) {
     fx.original
         .repo
         .settings_upsert(crate::planner_turn_budget::KEY, "1")

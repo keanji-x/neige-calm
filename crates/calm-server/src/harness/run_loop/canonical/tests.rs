@@ -20,6 +20,7 @@ mod objective_tests;
 mod phase_diagnostics;
 mod planner_compact_tests;
 use phase_diagnostics::PhaseWaitStage;
+mod scheduling_tests;
 mod selection_authority_tests;
 
 pub(super) struct Fixture {
