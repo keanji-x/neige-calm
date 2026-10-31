@@ -242,11 +242,6 @@ async fn publish_end(inner: &Arc<Inner>, done: RuntimeFrameAfterWrite) -> Result
     }
     publish(inner, next).await;
     held::end_turn(inner).await;
-    inner
-        .inputs
-        .canonical()
-        .expect("canonical consumer")
-        .request_progress();
     Ok(())
 }
 
@@ -269,6 +264,11 @@ pub(super) async fn publish_issuance_error(inner: &Inner, error: &CalmError) {
 
 /// Timer and source transitions enter the same scheduler/error owner.
 pub(super) async fn advance(inner: &Arc<Inner>, ingress_empty: bool) {
+    inner
+        .inputs
+        .canonical()
+        .expect("canonical consumer")
+        .begin_progress();
     if let Err(error) = tick(inner, ingress_empty).await {
         publish_issuance_error(inner, &error).await;
         tracing::warn!(%error, "canonical harness tick did not advance");

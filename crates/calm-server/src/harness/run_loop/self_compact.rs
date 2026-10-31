@@ -15,13 +15,11 @@ impl PlannerHarness {
         // read-only acknowledgement must not queue behind the native RPC or a
         // track fence that the scheduler itself may be waiting to release.
         if let Some(inputs) = self.inner.inputs.canonical() {
-            let result = request(&self.inner, request_id).await;
-            if matches!(&result, Ok(CompactionAnswer::Scheduled)) {
-                // The task is already committed; acknowledgement stays outside
-                // command ingress, but its owner must wake the idle consumer.
-                inputs.request_progress();
-            }
-            return result;
+            // The task is already committed. Its consumer must not wait for
+            // this read-only acknowledgement (or its concurrent readers).
+            // The hint grants no execution: maintenance revalidates its task.
+            inputs.request_progress();
+            return request(&self.inner, request_id).await;
         }
         match &self.inner.observations {
             ObservationIngress::Running(sender) => {

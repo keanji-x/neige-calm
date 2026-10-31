@@ -16,6 +16,7 @@ pub(in crate::harness::run_loop) async fn next_probe(
     let checkpoint = &frame.snapshot.canonical_inputs;
     let header = &frame.snapshot.header;
     let ordinary_idle = ingress_empty
+        && !inner.issuance_paused.load(Ordering::SeqCst)
         && matches!(
             header.phase,
             HarnessPhaseTag::Idle | HarnessPhaseTag::TurnCompleted

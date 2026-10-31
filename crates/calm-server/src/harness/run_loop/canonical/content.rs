@@ -79,6 +79,13 @@ async fn consume_end(inner: &Arc<Inner>) -> Result<()> {
     .await?
     {
         publish_end(inner, done).await?;
+        // Native ingress schedules the next pass. A tick that consumes END
+        // already owns that pass and must not enqueue a duplicate idle probe.
+        inner
+            .inputs
+            .canonical()
+            .expect("canonical consumer")
+            .request_progress();
     }
     Ok(())
 }

@@ -22,7 +22,7 @@ struct State {
 #[derive(Default)]
 pub(crate) struct CanonicalSourceIndex {
     state: Mutex<State>,
-    changed: Notify,
+    changed: Arc<Notify>,
 }
 
 /// The producer acquires this before its transaction commits, then transfers it
@@ -44,6 +44,12 @@ impl CanonicalSourceIndex {
         self.changed.notify_one();
         SourceHandoff(self.clone())
     }
+    /// The installed consumer shares this coalescing wake signal with sources.
+    /// A notification carries no source, queue position or execution authority.
+    pub(crate) fn change_signal(&self) -> Arc<Notify> {
+        self.changed.clone()
+    }
+
     pub(crate) async fn changed(&self) {
         self.changed.notified().await;
     }
