@@ -453,6 +453,7 @@ impl ClaudePlannerSession {
             },
         ));
         *driver_slot = Some(execution_end::DriverSlot::new(
+            shared,
             driver,
             thread_uuid,
             local_turn,

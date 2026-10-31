@@ -374,7 +374,8 @@ impl AcpPlannerSession {
         });
         execution_end::install(
             shared,
-            DriverSlot::new(driver, retained_receipt, association).with_execution(execution_id),
+            DriverSlot::new(shared, driver, retained_receipt, association)
+                .with_execution(execution_id),
         );
         #[cfg(all(test, feature = "fixtures"))]
         super::super::test_seams::wait_issue(

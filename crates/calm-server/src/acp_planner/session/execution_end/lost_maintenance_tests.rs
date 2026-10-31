@@ -170,7 +170,8 @@ async fn acp_compact_lost_target_live_driver_refuses_every_slot_kind() {
         let retained = slot(&session.shared).unwrap();
         let handle = tokio::spawn(std::future::pending());
         let abort = handle.abort_handle();
-        retained.lock().await.completion = Completion::Driver(RetainedJoin::new(handle));
+        retained.lock().await.completion =
+            Completion::Driver(retained_driver(&session.shared, handle));
         let result = session.lost_maintenance_target(&id, &turn).await;
         assert!(
             result.is_err_and(|error| error.to_string().contains("remains live")),

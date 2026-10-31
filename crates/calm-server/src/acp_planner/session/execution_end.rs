@@ -65,6 +65,7 @@ impl DriverSlot {
         self
     }
     pub(super) fn maintenance(
+        shared: &Shared,
         driver: tokio::task::JoinHandle<Settlement>,
         target: crate::harness::backend::MaintenanceTarget,
         turn: String,
@@ -72,7 +73,7 @@ impl DriverSlot {
     ) -> Self {
         Self {
             execution_id: None,
-            completion: Completion::Driver(RetainedJoin::new(driver)),
+            completion: Completion::Driver(retained_driver(shared, driver)),
             input: DriverInput::Maintenance {
                 target,
                 turn,
@@ -81,14 +82,15 @@ impl DriverSlot {
         }
     }
 
-    pub(super) fn cleanup(driver: tokio::task::JoinHandle<Settlement>) -> Self {
+    pub(super) fn cleanup(shared: &Shared, driver: tokio::task::JoinHandle<Settlement>) -> Self {
         Self {
             execution_id: None,
-            completion: Completion::Driver(RetainedJoin::new(driver)),
+            completion: Completion::Driver(retained_driver(shared, driver)),
             input: DriverInput::Cleanup,
         }
     }
     pub(super) fn new(
+        shared: &Shared,
         driver: tokio::task::JoinHandle<Settlement>,
         receipt: AcpSubmission,
         association: Association,
@@ -104,7 +106,7 @@ impl DriverSlot {
         };
         Self {
             execution_id: None,
-            completion: Completion::Driver(RetainedJoin::new(driver)),
+            completion: Completion::Driver(retained_driver(shared, driver)),
             input,
         }
     }
@@ -187,8 +189,22 @@ pub(super) fn driver_finished(shared: &Shared) -> bool {
         Err(_) => false,
     }
 }
+fn retained_driver(
+    shared: &Shared,
+    driver: tokio::task::JoinHandle<Settlement>,
+) -> RetainedJoin<Settlement> {
+    let owner = shared.params.host.completion.clone();
+    let worker = shared.params.worker_session_id.clone();
+    RetainedJoin::new(driver, move || owner.request_progress(&worker))
+}
+
 pub(super) fn install(shared: &Shared, driver: DriverSlot) {
     *shared.driver.lock().expect("ACP driver") = Some(Arc::new(tokio::sync::Mutex::new(driver)));
+    shared
+        .params
+        .host
+        .completion
+        .request_progress(&shared.params.worker_session_id);
 }
 pub(super) async fn join_driver(shared: &Shared) -> Result<()> {
     if let Some(driver) = slot(shared) {
@@ -645,7 +661,12 @@ mod tests {
         }
         install(
             &session.shared,
-            DriverSlot::new(driver, receipt, Association::Canonical(association)),
+            DriverSlot::new(
+                &session.shared,
+                driver,
+                receipt,
+                Association::Canonical(association),
+            ),
         );
         assert!(matches!(
             session.qualify_execution_end(&target).await,
@@ -675,7 +696,7 @@ impl AcpPlannerSession {
     pub async fn abort_driver_for_test(&self) {
         if let Some(slot) = slot(&self.shared) {
             let slot = slot.lock().await;
-            if let Completion::Driver(RetainedJoin::Running(driver)) = &slot.completion {
+            if let Completion::Driver(driver) = &slot.completion {
                 driver.abort();
             }
         }

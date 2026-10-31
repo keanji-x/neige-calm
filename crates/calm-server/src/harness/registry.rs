@@ -56,6 +56,12 @@ pub struct HarnessRegistry(Arc<RegistryInner>);
 #[derive(Clone)]
 pub(crate) struct WeakHarnessRegistry(std::sync::Weak<RegistryInner>);
 impl WeakHarnessRegistry {
+    pub(crate) fn request_progress(&self, runtime: &String) {
+        if let Some(handle) = self.get(runtime) {
+            handle.request_progress();
+        }
+    }
+
     pub(crate) fn get(&self, runtime: &String) -> Option<PlannerHarness> {
         HarnessRegistry(self.0.upgrade()?).get(runtime)
     }
@@ -90,7 +96,9 @@ impl HarnessReservation {
                 if matches!(occupied.get().slot, Slot::Reserved(id) if id == self.id) {
                     handle.mark_installed();
                     occupied.get_mut().track = Some(handle.track_id().clone());
-                    occupied.get_mut().slot = Slot::Live(handle);
+                    occupied.get_mut().slot = Slot::Live(handle.clone());
+                    drop(occupied);
+                    handle.request_progress();
                     true
                 } else {
                     false
@@ -289,10 +297,13 @@ impl HarnessRegistry {
             .entry(runtime_id)
             .or_insert_with(|| WorkerEntry::new(Slot::Dormant));
         entry.track = Some(handle.track_id().clone());
-        match std::mem::replace(&mut entry.slot, Slot::Live(handle)) {
+        let previous = match std::mem::replace(&mut entry.slot, Slot::Live(handle.clone())) {
             Slot::Live(previous) => Some(previous),
             Slot::Dormant | Slot::Reserved(_) => None,
-        }
+        };
+        drop(entry);
+        handle.request_progress();
+        previous
     }
 
     /// Claim native ownership without replacing the worker entry or its sources.

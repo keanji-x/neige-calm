@@ -1267,6 +1267,12 @@ impl PlannerHarness {
     }
 
     /// Forget a refusal so the next tick re-attempts immediately (called when a person changes the selection).
+    pub(crate) fn request_progress(&self) {
+        if let RuntimeInputs::Canonical(inputs) = &self.inner.inputs {
+            inputs.request_progress();
+        }
+    }
+
     pub async fn retry_issuance_now(&self) {
         *self.inner.issuance_retry_after.lock().await = None;
         *self.inner.issuance_block.lock().await = None;

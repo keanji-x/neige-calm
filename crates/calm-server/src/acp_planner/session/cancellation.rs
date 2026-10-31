@@ -245,23 +245,25 @@ impl IssueGuard {
                 match crate::db::sqlite::AcpSubmissionInput::decode(&receipt.input_json) {
                     Ok(crate::db::sqlite::AcpSubmissionInput::Canonical(association)) => {
                         DriverSlot::new(
+                            &self.shared,
                             driver,
                             receipt,
                             super::execution_end::Association::Canonical(association),
                         )
                     }
                     Ok(crate::db::sqlite::AcpSubmissionInput::Historical(_)) => DriverSlot::new(
+                        &self.shared,
                         driver,
                         receipt,
                         super::execution_end::Association::Historical,
                     ),
                     Err(error) => {
                         tracing::error!(%error, "ACP cancelled receipt association invalid; cleanup stays held");
-                        DriverSlot::cleanup(driver)
+                        DriverSlot::cleanup(&self.shared, driver)
                     }
                 }
             }
-            None => DriverSlot::cleanup(driver),
+            None => DriverSlot::cleanup(&self.shared, driver),
         };
         let slot = match execution_id {
             Some(id) => slot.with_execution(id),

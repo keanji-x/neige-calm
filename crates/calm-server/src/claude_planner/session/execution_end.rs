@@ -20,14 +20,17 @@ pub(super) struct DriverSlot {
 
 impl DriverSlot {
     pub(super) fn new(
+        shared: &Shared,
         driver: tokio::task::JoinHandle<bool>,
         thread: Uuid,
         turn: Uuid,
         execution: Association,
         provider_execution_id: workspace_runtime::execution::ExecutionId,
     ) -> Self {
+        let owner = shared.params.host.completion.clone();
+        let worker = shared.params.worker_session_id.clone();
         Self {
-            completion: RetainedJoin::new(driver),
+            completion: RetainedJoin::new(driver, move || owner.request_progress(&worker)),
             thread,
             turn,
             execution,
@@ -433,12 +436,8 @@ impl ClaudePlannerSession {
 impl ClaudePlannerSession {
     pub async fn abort_driver_for_test(&self) {
         let slot = self.shared.driver.lock().await;
-        if let Some(DriverSlot {
-            completion: RetainedJoin::Running(driver),
-            ..
-        }) = slot.as_ref()
-        {
-            driver.abort();
+        if let Some(slot) = slot.as_ref() {
+            slot.completion.abort();
         }
     }
 }

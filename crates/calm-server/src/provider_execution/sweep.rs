@@ -127,7 +127,10 @@ impl ProviderSweep {
         Self(std::sync::Arc::new(SweepControl {
             cancel,
             abort: task.abort_handle(),
-            join: tokio::sync::Mutex::new(crate::harness::retained_join::RetainedJoin::new(task)),
+            join: tokio::sync::Mutex::new(crate::harness::retained_join::RetainedJoin::new(
+                task,
+                || {},
+            )),
         }))
     }
 

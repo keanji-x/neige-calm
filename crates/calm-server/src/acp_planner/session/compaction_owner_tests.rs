@@ -244,8 +244,14 @@ async fn acp_compaction_owner_failed_join_is_retired_without_turn_event() {
     }
     execution_end::install(
         &session.shared,
-        DriverSlot::maintenance(driver, target.clone(), turn.clone(), "native".into())
-            .with_execution(id.clone()),
+        DriverSlot::maintenance(
+            &session.shared,
+            driver,
+            target.clone(),
+            turn.clone(),
+            "native".into(),
+        )
+        .with_execution(id.clone()),
     );
     let (cancel, _) = watch::channel(CancelRequest::Running);
     session.shared.state.lock().unwrap().active = Some(Active {

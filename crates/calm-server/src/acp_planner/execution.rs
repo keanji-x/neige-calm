@@ -37,6 +37,11 @@ impl Owner {
     pub(crate) fn bind(&self, repo: Arc<dyn crate::db::Repo>) {
         let _ = self.repo.set(repo);
     }
+    pub(crate) fn request_progress(&self, worker: &String) {
+        if let Some(registry) = self.registry.get() {
+            registry.request_progress(worker);
+        }
+    }
     pub(crate) fn bind_registry(&self, registry: crate::harness::HarnessRegistry) {
         let _ = self.registry.set(registry.downgrade());
     }

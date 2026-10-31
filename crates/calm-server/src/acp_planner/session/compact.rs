@@ -271,7 +271,7 @@ impl AcpPlannerSession {
         });
         execution_end::install(
             shared,
-            DriverSlot::maintenance(driver, target.clone(), turn.clone(), native.clone())
+            DriverSlot::maintenance(shared, driver, target.clone(), turn.clone(), native.clone())
                 .with_execution(execution_id),
         );
         let owner = shared.admission(thread, Some(permission), Some(&native), Some(&turn));
@@ -638,7 +638,13 @@ mod tests {
         let driver = tokio::spawn(async { pending.await.unwrap() });
         execution_end::install(
             &session.shared,
-            DriverSlot::maintenance(driver, target.clone(), "turn".into(), "native".into()),
+            DriverSlot::maintenance(
+                &session.shared,
+                driver,
+                target.clone(),
+                "turn".into(),
+                "native".into(),
+            ),
         );
         assert!(
             matches!(session.observe_maintenance(&target).await.unwrap(),
