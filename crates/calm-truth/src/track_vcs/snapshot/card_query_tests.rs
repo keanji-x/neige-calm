@@ -19,7 +19,7 @@ async fn card_visibility_preserves_scoped_announcements_and_inheritance() {
                 .card_create(NewCard {
                     track_id: fx.track.id.clone(),
                     kind: "codex".into(),
-                    sort: Some(1.0),
+                    sort: Some(2.0),
                     payload: json!({"name": name}),
                     title: Some(name.into()),
                 })
