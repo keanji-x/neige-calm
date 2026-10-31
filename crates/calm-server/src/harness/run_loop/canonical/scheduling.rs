@@ -1,11 +1,47 @@
 //! The ordinary idle path sleeps between inputs. Unconverted active and
 //! maintenance paths retain their existing cadence until their deadlines and
 //! result-ready contracts are moved to this same loop.
-use super::*;
+use super::{HarnessPhaseTag, Inner};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+/// Pacing from an actual pass, never a saved state or execution grant.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(in crate::harness::run_loop) enum Progress {
+    Deferred,
+    Observed,
+}
+
+pub(in crate::harness::run_loop) async fn advance(
+    inner: &Arc<Inner>,
+    ingress_empty: bool,
+) -> Progress {
+    inner
+        .inputs
+        .canonical()
+        .expect("canonical consumer")
+        .begin_progress();
+    let progress = match super::advance_once(inner, ingress_empty).await {
+        Ok(progress) => progress,
+        Err(error) => {
+            super::publish_issuance_error(inner, &error).await;
+            tracing::warn!(%error, "canonical harness tick did not advance");
+            Progress::Deferred
+        }
+    };
+    #[cfg(feature = "fixtures")]
+    crate::test_seams::pause_point("canonical-tick-returned", inner.card_id.as_str()).await;
+    // Deferred maintenance is work even when the last published frame is idle.
+    if ingress_empty {
+        progress
+    } else {
+        Progress::Deferred
+    }
+}
 
 pub(in crate::harness::run_loop) async fn next_probe(
     inner: &Inner,
-    ingress_empty: bool,
+    progress: Progress,
 ) -> tokio::time::Instant {
     let frame = inner
         .inputs
@@ -15,8 +51,7 @@ pub(in crate::harness::run_loop) async fn next_probe(
         .await;
     let checkpoint = &frame.snapshot.canonical_inputs;
     let header = &frame.snapshot.header;
-    let ordinary_idle = ingress_empty
-        && !inner.issuance_paused.load(Ordering::SeqCst)
+    let ordinary_idle = progress == Progress::Observed
         && matches!(
             header.phase,
             HarnessPhaseTag::Idle | HarnessPhaseTag::TurnCompleted

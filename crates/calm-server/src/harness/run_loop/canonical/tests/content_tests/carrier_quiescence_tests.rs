@@ -263,3 +263,59 @@ async fn carrier_quiescence_ingress_writers_refuse_committed_replacement() {
     );
     stop(&fx, &mut peer).await;
 }
+
+#[tokio::test]
+async fn carrier_quiescence_unpark_retries_work_deferred_before_observation() {
+    use crate::test_seams::{PausePoint, install_pause_for_test};
+    let fx = Fixture::new().await;
+    let (_client, mut peer) = connect(&fx.daemon).await;
+    let thread = start(&fx, &mut peer, fx.message.clone(), "before-park").await;
+    let card = fx.harness.inner.card_id.as_str();
+    let idle = PausePoint::default();
+    install_pause_for_test("canonical-idle-wait", card, idle.clone());
+    complete(&fx, &mut peer, &thread, "before-park").await;
+    tokio::time::timeout(Duration::from_secs(5), idle.entered.notified())
+        .await
+        .unwrap();
+    let owner = fx.harness.idle_carrier_owner_typed().await.unwrap();
+    let deferred = PausePoint::default();
+    install_pause_for_test("canonical-tick-returned", card, deferred.clone());
+    let message = accept(&fx, "pending while parked").await;
+    let observed = fx
+        .harness
+        .observe_canonical_source(message, fx.source.clone());
+    tokio::pin!(observed);
+    idle.release.notify_one();
+    observed.await.unwrap();
+    tokio::time::timeout(Duration::from_secs(5), deferred.entered.notified())
+        .await
+        .unwrap();
+    // Release after the pass skipped observation but before pacing is chosen.
+    // Current flags alone cannot establish whether the idle cache was refreshed.
+    drop(owner);
+    deferred.release.notify_one();
+    let call = tokio::time::timeout(Duration::from_secs(3), next_start(&mut peer))
+        .await
+        .expect("unparked pending work must not wait for idle reconciliation");
+    assert!(
+        call["params"]["input"]
+            .to_string()
+            .contains("pending while parked")
+    );
+    notify_thread(
+        &fx.daemon,
+        &mut peer,
+        &thread,
+        "turn/started",
+        json!({"id":"after-park"}),
+    )
+    .await;
+    send(
+        &mut peer,
+        json!({"id":call["id"],"result":{"turn":{"id":"after-park"}}}),
+    )
+    .await;
+    fx.wait_phase(HarnessPhaseTag::TurnRunning).await;
+    complete(&fx, &mut peer, &thread, "after-park").await;
+    stop(&fx, &mut peer).await;
+}
