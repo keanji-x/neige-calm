@@ -28,7 +28,7 @@ pub(super) fn observation_expired(state: &HarnessState, config: &HarnessConfig) 
 
 /// Move only a real, installed maintenance clock. Event-driven timers must be
 /// rescheduled when a test changes that clock instead of advancing wall time.
-#[cfg(feature = "fixtures")]
+#[cfg(test)]
 impl PlannerHarness {
     pub(crate) async fn rewind_compaction_clock_for_test(&self, by: Duration) {
         let mut state = self.inner.state.lock().await;
