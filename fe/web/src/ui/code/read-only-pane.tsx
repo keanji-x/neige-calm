@@ -54,6 +54,9 @@ export function ReadOnlyPane({ text, source, theme }: ReadOnlyCodeProps) {
       selection: { anchor: Math.min(selection.anchor, document.length), head: Math.min(selection.head, document.length) } });
     view.scrollDOM.scrollTop = top;
     view.scrollDOM.scrollLeft = left;
+    // Capture against the new document so the next measurement preserves these
+    // pixels rather than mapping the old viewport through a full replacement.
+    view.dispatch({ effects: view.scrollSnapshot() });
   }, [text]);
   useEffect(() => {
     const view = viewRef.current;
@@ -61,6 +64,7 @@ export function ReadOnlyPane({ text, source, theme }: ReadOnlyCodeProps) {
     view.dispatch({ selection: { anchor: 0 } });
     view.scrollDOM.scrollTop = 0;
     view.scrollDOM.scrollLeft = 0;
+    view.dispatch({ effects: view.scrollSnapshot() });
   }, [source.kind, source.value]);
   return <div className={styles.code} data-nc-code-status={status}>
     <div className={styles.toolbar}>

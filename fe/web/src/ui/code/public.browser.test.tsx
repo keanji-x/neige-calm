@@ -127,19 +127,118 @@ it('ignores a previous grammar load after the source changes', async () => {
   expect(view.state.doc.toString()).toBe('def main(): pass');
 });
 
-it('preserves the reading position as a fenced source grows', async () => {
+const frame = () => new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
+
+it.each([true, false])('preserves the settled reading position as a fenced source grows (focus=%s)', async focus => {
+  await page.viewport(900, 700);
   const text = 'const value = 1;\n'.repeat(100);
   const { rerender } = render(<MarkdownCode code={text} language="js" />);
   const view = await codeView();
   await waitFor(() => { expect(view.state.facet(language)?.name).toBe('javascript'); });
-  view.focus();
+  if (focus) view.focus();
   view.dispatch({ selection: { anchor: 20 } });
   view.scrollDOM.scrollTop = 100;
+  await frame();
+  await frame();
+  expect(view.scrollDOM.scrollTop).toBe(100);
   rerender(<MarkdownCode code={text + 'export default value;'} language="js" />);
   expect(await codeView()).toBe(view);
   expect(view.state.selection.main.head).toBe(20);
   expect(view.scrollDOM.scrollTop).toBe(100);
   expect(view.state.doc.toString()).toBe(text + 'export default value;');
+  await frame();
+  await frame();
+  expect(view.hasFocus).toBe(focus);
+  expect(view.state.selection.main.head).toBe(20);
+  expect(view.scrollDOM.scrollTop).toBe(100);
+});
+
+it('preserves both axes through replacements and rapid updates, and resets new sources', async () => {
+  await page.viewport(900, 700);
+  document.documentElement.dataset.theme = 'dark';
+  const line = 'const value = "' + 'x'.repeat(250) + '";\n';
+  const source = { kind: 'filename', value: 'main.js' } as const;
+  const pane = (text: string, value: string = source.value, theme: 'light' | 'dark' = 'dark') =>
+    <div style={{ width: 420 }}><ReadOnlyCode text={text} source={{ ...source, value }} theme={theme} /></div>;
+  const { rerender } = render(pane(line.repeat(120)));
+  const view = await codeView();
+  await waitFor(() => { expect(view.state.facet(language)?.name).toBe('javascript'); });
+  view.focus();
+  view.dispatch({ selection: { anchor: 20, head: 40 } });
+  view.scrollDOM.scrollTop = 100;
+  view.scrollDOM.scrollLeft = 80;
+  await frame();
+  await frame();
+  for (const count of [150, 60]) {
+    rerender(pane(line.repeat(count)));
+    await frame();
+    await frame();
+    expect(await codeView()).toBe(view);
+    expect(view.state.doc.toString()).toBe(line.repeat(count));
+    expect(view.scrollDOM.scrollTop).toBe(100);
+    expect(view.scrollDOM.scrollLeft).toBe(80);
+    expect(view.state.selection.main.anchor).toBe(20);
+    expect(view.state.selection.main.head).toBe(40);
+    expect(view.hasFocus).toBe(true);
+  }
+  rerender(pane(line.repeat(90)));
+  view.scrollDOM.scrollTop = 160;
+  view.scrollDOM.scrollLeft = 120;
+  document.documentElement.dataset.theme = 'light';
+  rerender(pane(line.repeat(100), source.value, 'light'));
+  await frame();
+  await frame();
+  expect(view.scrollDOM.scrollTop).toBe(160);
+  expect(view.scrollDOM.scrollLeft).toBe(120);
+  expect(view.state.facet(EditorView.darkTheme)).toBe(false);
+  await page.screenshot({ path: 'test-results/code-growth-light.png' });
+  document.documentElement.dataset.theme = 'dark';
+  rerender(pane(line.repeat(110)));
+  await frame();
+  await frame();
+  expect(view.scrollDOM.scrollTop).toBe(160);
+  expect(view.scrollDOM.scrollLeft).toBe(120);
+  expect(view.state.selection.main.anchor).toBe(20);
+  expect(view.state.selection.main.head).toBe(40);
+  expect(view.hasFocus).toBe(true);
+  await page.screenshot({ path: 'test-results/code-growth-dark.png' });
+  rerender(pane(line.repeat(120)));
+  // Reset the source before the preceding text update has been measured.
+  rerender(pane(line.repeat(120), 'other.js'));
+  await frame();
+  await frame();
+  expect(view.scrollDOM.scrollTop).toBe(0);
+  expect(view.scrollDOM.scrollLeft).toBe(0);
+  expect(view.state.selection.main.head).toBe(0);
+  expect(view.hasFocus).toBe(true);
+  view.scrollDOM.scrollTop = 100;
+  view.scrollDOM.scrollLeft = 80;
+  await frame();
+  await frame();
+  rerender(pane('short', 'other.js'));
+  await frame();
+  await frame();
+  expect(view.state.doc.toString()).toBe('short');
+  expect(view.scrollDOM.scrollTop).toBe(0);
+  expect(view.scrollDOM.scrollLeft).toBe(0);
+});
+
+it.each([true, false])('resets a changed source kind with changed text=%s', async changedText => {
+  const text = 'value\n'.repeat(100);
+  const { rerender } = render(<ReadOnlyCode text={text} source={{ kind: 'filename', value: 'text' }} />);
+  const view = await codeView();
+  view.dispatch({ selection: { anchor: 20, head: 30 } });
+  view.scrollDOM.scrollTop = 100;
+  await frame();
+  await frame();
+  rerender(<ReadOnlyCode text={changedText ? text + 'new' : text} source={{ kind: 'language', value: 'text' }} />);
+  await frame();
+  await frame();
+  expect(await codeView()).toBe(view);
+  expect(view.state.doc.toString()).toBe(changedText ? text + 'new' : text);
+  expect(view.state.selection.main.anchor).toBe(0);
+  expect(view.state.selection.main.head).toBe(0);
+  expect(view.scrollDOM.scrollTop).toBe(0);
 });
 
 it('clamps a reading selection to the normalized document when CRLF source shrinks', async () => {
@@ -149,6 +248,9 @@ it('clamps a reading selection to the normalized document when CRLF source shrin
   rerender(<MarkdownCode code={'x\r\n'.repeat(30)} language="text" />);
   expect(view.state.doc.toString()).toBe('x\n'.repeat(30));
   expect(view.state.selection.main.head).toBe(view.state.doc.length);
+  await frame();
+  await frame();
+  expect(view.state.selection.main.head).toBe(view.state.doc.length);
 });
 
 it('retains the focused selection when a fence grammar replaces text nodes', async () => {
@@ -157,18 +259,25 @@ it('retains the focused selection when a fence grammar replaces text nodes', asy
   const support = await description.load();
   let finish: (value: typeof support) => void = () => { throw new Error('Load not started'); };
   vi.spyOn(description, 'load').mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
-  render(<MarkdownCode code="// unchanged context\nfn main() {}" language="rust" />);
+  const text = "// unchanged context\nfn main() {}\n".repeat(100);
+  const { rerender } = render(<MarkdownCode code={text} language="rust" />);
   const view = await codeView();
   view.focus();
   await new Promise<void>(resolve => { requestAnimationFrame(() => resolve()); });
   view.dispatch({ selection: { anchor: 20 } });
   expect(view.state.selection.main.head).toBe(20);
+  view.scrollDOM.scrollTop = 100;
+  await frame();
+  await frame();
+  rerender(<MarkdownCode code={text + "// appended"} language="rust" />);
   finish(support);
   await waitFor(() => { expect(view.state.facet(language)?.name).toBe('rust'); });
   await new Promise<void>(resolve => { requestAnimationFrame(() => resolve()); });
   expect(await codeView()).toBe(view);
   expect(view.hasFocus).toBe(true);
   expect(view.state.selection.main.head).toBe(20);
+  await frame();
+  expect(view.scrollDOM.scrollTop).toBe(100);
 });
 
 
