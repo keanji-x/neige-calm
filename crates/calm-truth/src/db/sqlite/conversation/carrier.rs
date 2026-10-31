@@ -6,7 +6,7 @@ use calm_types::conversation::{CONVERSATION_INPUT_CHECKPOINT_KEY, ConversationIn
 use calm_types::harness::HarnessPhaseTag;
 use calm_types::harness::snapshot::CanonicalHarnessSnapshot;
 use serde_json::Value;
-use sqlx::{Sqlite, Transaction};
+use sqlx::{Executor, Sqlite, SqlitePool, Transaction};
 
 /// Authority to append a live native fact on exactly one current carrier.
 /// The private fields retain the resolver's exclusive transaction borrow; this
@@ -124,20 +124,8 @@ pub async fn current_native_fact_tx<'tx>(
     worker_session_id: &str,
     content: bool,
 ) -> Result<CurrentCarrier<'tx>> {
-    let row: Option<(String,Option<String>,String)> = sqlx::query_as(
-        "SELECT ws.state, ws.handle_state_json, ws.track_id FROM worker_sessions ws JOIN cards c ON c.session_id=ws.id
-         WHERE c.id=?1 AND ws.id=?2 AND ws.card_id=c.id AND ws.track_id=c.track_id
-           AND ws.mode='resumable' AND ws.provider IN (SELECT value FROM json_each(?4))
-           AND (ws.state IN ('starting','running','idle','turn_pending') OR (?3 AND ws.state='failed'))",
-    )
-    .bind(card_id)
-    .bind(worker_session_id)
-    .bind(content)
-    .bind(super::super::session_row::agent_provider_db_strings(|_| true))
-    .fetch_optional(&mut **tx)
-    .await?;
     let (state, snapshot, track) =
-        row.ok_or_else(|| CalmError::Conflict("conversation has no current content carrier"))?;
+        read_native_fact(&mut **tx, card_id, worker_session_id, content).await?;
     Ok(CurrentCarrier {
         connection: tx,
         card: card_id.into(),
@@ -148,6 +136,51 @@ pub async fn current_native_fact_tx<'tx>(
     })
 }
 
+/// A statement-scoped observation, not a protected carrier or execution grant.
+pub struct RuntimeFrameObservation {
+    pub snapshot: CanonicalHarnessSnapshot,
+    pub execution_fence: super::RuntimeExecutionFence,
+}
+
+/// The same exact binding and codec as protected reads, with no transaction
+/// retained across application awaits. Transitions must reload inside the writer.
+pub async fn runtime_frame_observation(
+    pool: &SqlitePool,
+    card_id: &str,
+    worker_session_id: &str,
+) -> Result<RuntimeFrameObservation> {
+    let (state, snapshot, _) = read_native_fact(pool, card_id, worker_session_id, true).await?;
+    let carrier = decode_input_carrier(card_id, worker_session_id, state, snapshot)?;
+    Ok(RuntimeFrameObservation {
+        snapshot: serde_json::from_value(carrier.snapshot().clone())?,
+        execution_fence: super::RuntimeExecutionFence::from_carrier(&carrier),
+    })
+}
+
+async fn read_native_fact<'e, E>(
+    executor: E,
+    card_id: &str,
+    worker_session_id: &str,
+    content: bool,
+) -> Result<(String, Option<String>, String)>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    let row: Option<(String,Option<String>,String)> = sqlx::query_as(
+        "SELECT ws.state, ws.handle_state_json, ws.track_id FROM worker_sessions ws JOIN cards c ON c.session_id=ws.id
+         WHERE c.id=?1 AND ws.id=?2 AND ws.card_id=c.id AND ws.track_id=c.track_id
+           AND ws.mode='resumable' AND ws.provider IN (SELECT value FROM json_each(?4))
+           AND (ws.state IN ('starting','running','idle','turn_pending') OR (?3 AND ws.state='failed'))",
+    )
+    .bind(card_id)
+    .bind(worker_session_id)
+    .bind(content)
+    .bind(super::super::session_row::agent_provider_db_strings(|_| true))
+    .fetch_optional(executor)
+    .await?;
+    row.ok_or_else(|| CalmError::Conflict("conversation has no current content carrier"))
+}
+
 async fn load_input_carrier_tx(
     tx: &mut Transaction<'_, Sqlite>,
     card_id: &str,
@@ -155,8 +188,15 @@ async fn load_input_carrier_tx(
     content: bool,
 ) -> Result<CurrentInputCarrier> {
     let proof = current_native_fact_tx(tx, card_id, worker_session_id, content).await?;
-    let state = proof.state;
-    let original_snapshot = proof.snapshot;
+    decode_input_carrier(card_id, worker_session_id, proof.state, proof.snapshot)
+}
+
+fn decode_input_carrier(
+    card_id: &str,
+    worker_session_id: &str,
+    state: String,
+    original_snapshot: Option<String>,
+) -> Result<CurrentInputCarrier> {
     let original_snapshot = original_snapshot.ok_or_else(|| {
         CalmError::Conflict("conversation input carrier changed or has no checkpoint")
     })?;

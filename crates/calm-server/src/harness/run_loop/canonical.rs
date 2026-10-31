@@ -55,7 +55,10 @@ pub(super) fn written(frame: RuntimeFrameAfterWrite) -> Result<CommittedFrame> {
 }
 
 fn checked_snapshot(value: Value) -> Result<CanonicalHarnessSnapshot> {
-    let snapshot: CanonicalHarnessSnapshot = serde_json::from_value(value)?;
+    checked_frame(serde_json::from_value(value)?)
+}
+
+fn checked_frame(snapshot: CanonicalHarnessSnapshot) -> Result<CanonicalHarnessSnapshot> {
     if snapshot.header.phase == HarnessPhaseTag::IssuingInterrupt {
         let turn = snapshot
             .header
@@ -133,13 +136,16 @@ pub(super) async fn read_current(inner: &Inner) -> Result<CommittedFrame> {
         .repo
         .sqlite_db()
         .ok_or_else(|| CalmError::Internal("canonical observation requires SQLite".into()))?;
-    let mut tx = db.read_pool().begin().await?;
-    let observed = frame(
-        &current_input_fact_carrier_tx(&mut tx, inner.card_id.as_str(), &inner.worker_session_id)
-            .await?,
-    )?;
-    tx.commit().await?;
-    Ok(observed)
+    let observed = crate::db::sqlite::conversation::runtime_frame_observation(
+        db.read_pool(),
+        inner.card_id.as_str(),
+        &inner.worker_session_id,
+    )
+    .await?;
+    Ok(CommittedFrame {
+        snapshot: checked_frame(observed.snapshot)?,
+        fence: observed.execution_fence,
+    })
 }
 
 /// This cache is published only from a returned, committed SQL result. Native

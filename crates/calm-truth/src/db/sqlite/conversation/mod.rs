@@ -52,8 +52,9 @@ pub use acceptance::{
 };
 pub use attempts::{begin_input_attempt_tx, record_input_attempt_fact_tx};
 pub use carrier::{
-    CurrentCarrier, CurrentInputCarrier, current_input_carrier_tx,
+    CurrentCarrier, CurrentInputCarrier, RuntimeFrameObservation, current_input_carrier_tx,
     current_input_content_carrier_tx, current_input_fact_carrier_tx, current_native_fact_tx,
+    runtime_frame_observation,
 };
 pub use claims::{ClaimedSubmission, InitialClaim, claim_initial_submission_tx};
 pub use creation::{
