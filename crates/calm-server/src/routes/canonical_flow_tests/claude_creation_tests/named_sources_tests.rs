@@ -3,7 +3,7 @@ use super::super::*;
 use super::assistant::{configure, read, wait_frame};
 
 #[tokio::test]
-async fn canonical_claude_named_context_survives_non_delivery_and_cold_restart() {
+async fn canonical_claude_named_context_is_once_across_cold_restart() {
     let mut fixture = Fixture::new().await;
     configure(&mut fixture, "exit");
     let (state, app, cookie) = fixture.application().await;
@@ -12,21 +12,11 @@ async fn canonical_claude_named_context_survives_non_delivery_and_cold_restart()
     body["template_id"] = json!("dev");
     body["template_input"] = json!({"merge_policy":"ask"});
     body["first_message"] = json!(FIRST_BODY);
-    u7_nondelivery::hold(&fixture).await;
     let created = post(&app, &cookie, "/api/tracks", "first", body.clone()).await;
     let track = created["id"].as_str().unwrap().to_owned();
     let (card, worker, _) = fixture.carrier(&track).await;
-    u7_nondelivery::release_twice(&fixture, &app, &cookie, &track, &body, None).await;
-    assert!(read(&fixture, "stdin").is_empty());
-    state.harness.shutdown_and_remove(&worker).await.unwrap();
-    fixture.shutdown_process(&state).await;
-    drop((state, app));
-    fixture.repo = Arc::new(SqlxRepo::open(&fixture.url).await.unwrap());
-    let (state, app, cookie) = fixture.application().await;
-    state.plugin.enable("gitforge").await.unwrap();
-    post(&app, &cookie, "/api/tracks", "first", body.clone()).await;
     wait_frame(&fixture, &card, |frame| {
-        frame.canonical_inputs.attempts.len() == 3
+        frame.canonical_inputs.attempts.len() == 1
             && frame.canonical_inputs.active.is_none()
             && frame.canonical_inputs.pending.is_empty()
     })
@@ -81,7 +71,7 @@ async fn canonical_claude_named_context_survives_non_delivery_and_cold_restart()
     )
     .await;
     wait_frame(&fixture, &card, |frame| {
-        frame.canonical_inputs.attempts.len() == 4
+        frame.canonical_inputs.attempts.len() == 2
             && frame.canonical_inputs.active.is_none()
             && frame.canonical_inputs.pending.is_empty()
     })
@@ -93,6 +83,60 @@ async fn canonical_claude_named_context_survives_non_delivery_and_cold_restart()
     assert!(!second.contains("## Selected Template"));
     assert!(!second.contains("## Bound Template Input"));
     assert_eq!(fixture.carrier(&track).await.1, worker);
+    state.harness.shutdown_and_remove(&worker).await.unwrap();
+    fixture.shutdown_process(&state).await;
+}
+
+#[tokio::test]
+async fn canonical_claude_named_unconfirmed_launch_preserves_pending_context_without_resend() {
+    let mut fixture = Fixture::new().await;
+    configure(&mut fixture, "exit");
+    let (state, app, cookie) = fixture.application().await;
+    let mut body = super::create_body(&app, &cookie).await;
+    body["template_id"] = json!("small-change");
+    body["first_message"] = json!(FIRST_BODY);
+    u7_nondelivery::hold(&fixture).await;
+    let created = post(&app, &cookie, "/api/tracks", "first", body.clone()).await;
+    let track = created["id"].as_str().unwrap().to_owned();
+    let (card, worker, _) = fixture.carrier(&track).await;
+    u7_nondelivery::release_twice(&fixture, &app, &cookie, &track, &body, None).await;
+    let before = fixture.carrier(&track).await.2.canonical_inputs;
+    let receipt = fixture.receipt(body["area_id"].as_str().unwrap()).await;
+    let spawns = read(&fixture, "spawns");
+    assert_eq!(
+        spawns.lines().count(),
+        1,
+        "the first session launch is unconfirmed"
+    );
+    assert!(read(&fixture, "stdin").is_empty());
+    state.harness.shutdown_and_remove(&worker).await.unwrap();
+    fixture.shutdown_process(&state).await;
+    drop((state, app));
+    fixture.repo = Arc::new(SqlxRepo::open(&fixture.url).await.unwrap());
+    let (state, app, cookie) = fixture.application().await;
+    let wake = crate::test_seams::PausePoint::default();
+    crate::test_seams::install_pause_for_test("canonical-human-wake-finished", &card, wake.clone());
+    assert_eq!(
+        post(&app, &cookie, "/api/tracks", "first", body.clone()).await["id"],
+        created["id"]
+    );
+    tokio::time::timeout(Duration::from_secs(10), wake.entered.notified())
+        .await
+        .unwrap();
+    wake.release.notify_one();
+    // BeforeSend proves the input was not sent. It cannot prove a launched
+    // native session never existed; the existing identity owner must hold it.
+    let handle = state.harness.get(&worker).unwrap();
+    for _ in 0..3 {
+        handle.refresh_canonical_input().await.unwrap();
+    }
+    assert_eq!(fixture.carrier(&track).await.2.canonical_inputs, before);
+    assert_eq!(
+        fixture.receipt(body["area_id"].as_str().unwrap()).await,
+        receipt
+    );
+    assert_eq!(read(&fixture, "spawns"), spawns);
+    assert!(read(&fixture, "stdin").is_empty());
     state.harness.shutdown_and_remove(&worker).await.unwrap();
     fixture.shutdown_process(&state).await;
 }

@@ -16211,7 +16211,7 @@
           },
           "planner_provider": {
             "$ref": "#/components/schemas/AgentProvider",
-            "description": "The backend of the track's Planner, stamped on its card as the server-owned\n`planner_provider` and never changed afterwards. Fresh blank managed `claude` creation\nis durably accepted while Claude is not ready; execution waits for readiness\n(`GET /api/agent-providers`). Template, attached, admin, fork, recipe, `template_input`,\nand cross-area creation retain the readiness refusal (400)."
+            "description": "The backend of the track's Planner, stamped on its card as the server-owned\n`planner_provider` and never changed afterwards. Canonical creation durably accepts\ninput while its provider is unavailable; execution waits for readiness\n(`GET /api/agent-providers`). Source, resource and authorization qualification still\napply before fresh allocation; existing receipts retain their original storage contract."
           },
           "reasoning_effort": {
             "type": [
