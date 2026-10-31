@@ -441,6 +441,15 @@ async fn control(
 
 #[tokio::test]
 async fn pending_controls_http_edit_withdraw_steer_and_end_preserve_original_execution() {
+    edit_withdraw_steer_case(false).await;
+}
+
+#[tokio::test]
+async fn pending_controls_disconnected_report_wakes_after_end_was_observed() {
+    edit_withdraw_steer_case(true).await;
+}
+
+async fn edit_withdraw_steer_case(disconnected: bool) {
     let fixture = Fixture::new().await;
     let mut r = running(&fixture).await;
     let queued = post(
@@ -512,6 +521,21 @@ async fn pending_controls_http_edit_withdraw_steer_and_end_preserve_original_exe
     )
     .await;
     assert_eq!(status, StatusCode::CONFLICT);
+    use crate::test_seams::{PausePoint, install_pause_for_test};
+    let harness = r.state.harness.get(&r.worker).unwrap();
+    let quiet = PausePoint::default();
+    install_pause_for_test("canonical-result-wait", &r.card, quiet.clone());
+    harness.request_progress();
+    tokio::time::timeout(Duration::from_secs(5), quiet.entered.notified())
+        .await
+        .unwrap();
+    let end_observed = PausePoint::default();
+    install_pause_for_test(
+        "canonical-native-end-observed",
+        &r.card,
+        end_observed.clone(),
+    );
+    quiet.release.notify_one();
     let mut steering = tokio::spawn({
         let (app, cookie, worker) = (r.app.clone(), r.cookie.clone(), r.worker.clone());
         async move {
@@ -536,6 +560,10 @@ async fn pending_controls_http_edit_withdraw_steer_and_end_preserve_original_exe
             .to_string()
             .contains("edited instruction")
     );
+    if disconnected {
+        steering.abort();
+        assert!((&mut steering).await.unwrap_err().is_cancelled());
+    }
     // END arrives first: it cannot consume the supplemental crossing marker.
     notify_thread(
         &r.state.shared_codex_appserver,
@@ -545,6 +573,11 @@ async fn pending_controls_http_edit_withdraw_steer_and_end_preserve_original_exe
         json!({"id":TURN,"status":"completed"}),
     )
     .await;
+    // Hold after the real END observation, while the supplemental crossing is
+    // still unresolved. Its later committed report must supply its own wake.
+    tokio::time::timeout(Duration::from_secs(5), end_observed.entered.notified())
+        .await
+        .unwrap();
     let crossing = fixture.carrier(&r.track).await.2;
     assert_eq!(
         crossing
@@ -561,9 +594,33 @@ async fn pending_controls_http_edit_withdraw_steer_and_end_preserve_original_exe
         json!({"id":native["id"],"result":{"turnId":TURN}}),
     )
     .await;
-    let (status, result) = steering.await.unwrap();
-    assert_eq!(status, StatusCode::OK, "{result}");
-    assert_eq!(result["delivery"], "accepted");
+    if disconnected {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let frame = fixture.carrier(&r.track).await.2;
+                if frame
+                    .canonical_inputs
+                    .attempts
+                    .iter()
+                    .filter(|attempt| {
+                        matches!(attempt.delivery, InputDeliveryFact::Accepted { .. })
+                    })
+                    .count()
+                    == 2
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("owned report must commit after the HTTP request is dropped");
+    } else {
+        let (status, result) = steering.await.unwrap();
+        assert_eq!(status, StatusCode::OK, "{result}");
+        assert_eq!(result["delivery"], "accepted");
+    }
+    end_observed.release.notify_one();
     let done = fixture
         .wait_phase(&r.track, HarnessPhaseTag::TurnCompleted)
         .await;

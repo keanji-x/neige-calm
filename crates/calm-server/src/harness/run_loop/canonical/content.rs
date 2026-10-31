@@ -54,6 +54,9 @@ pub(in crate::harness::run_loop) async fn on_notification(
                 live_reply::settle(inner, live, turn_id, &turn).await;
             }
             consume_end(inner).await?;
+            #[cfg(feature = "fixtures")]
+            crate::test_seams::pause_point("canonical-native-end-observed", inner.card_id.as_str())
+                .await;
         }
         PlannerEventKind::TurnAborted { .. } | PlannerEventKind::ThreadIdle => {
             consume_end(inner).await?;
