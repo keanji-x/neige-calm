@@ -134,8 +134,10 @@ try {
   }).then((response) => response.status), new URL(decoded.data).hash.slice(4));
   assert.equal(replay, 401);
   await desktop.getByRole('button', { name: 'Revoke', exact: true }).click();
+  await desktop.getByRole('dialog').getByRole('button', { name: 'Revoke', exact: true }).click();
   await expect.poll(() => screen.evaluate(() => fetch('/api/auth/whoami').then((r) => r.status))).toBe(401);
   await desktop.getByRole('button', { name: 'Disable', exact: true }).click();
+  await desktop.getByRole('dialog').getByRole('button', { name: 'Disable remote access', exact: true }).click();
   await expect(desktop.getByRole('button', { name: 'Enable', exact: true })).toBeVisible();
   await desktop.getByRole('button', { name: 'Enable', exact: true }).click();
   await expect(desktop.getByRole('button', { name: 'Create QR code' })).toBeVisible();
