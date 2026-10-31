@@ -8,12 +8,19 @@ async fn system(app: &axum::Router, cookie: &str) -> Value {
 
 #[tokio::test]
 async fn g4_empty_creation_is_canonical_keyed_and_unkeyed() {
-    for provider in ["codex", "claude", "opencode", "grok"] {
+    for (provider, named) in calm_types::runtime::AgentProvider::ALL
+        .into_iter()
+        .flat_map(|provider| [false, true].map(move |named| (provider.clone(), named)))
+    {
         let fixture = Fixture::new().await;
         let (state, app, cookie) = fixture.application().await;
         let area = system(&app, &cookie).await;
-        let mut request = body(&area, provider);
+        let mut request = body(&area, provider.wire_name());
         request["attach_folder"] = json!(true);
+        if named {
+            request["template_id"] = json!("small-change");
+            request["attach_folder"] = json!(false);
+        }
         let created = post(&app, &cookie, "/api/tracks", "empty", request.clone()).await;
         let track = created["id"].as_str().unwrap();
         let (card, worker, frame) = fixture.carrier(track).await;
@@ -45,12 +52,18 @@ async fn g4_empty_creation_is_canonical_keyed_and_unkeyed() {
 
 #[tokio::test]
 async fn g4_first_message_preserves_human_receipt_without_provider() {
-    for provider in ["codex", "claude", "opencode", "grok"] {
+    for (provider, named) in calm_types::runtime::AgentProvider::ALL
+        .into_iter()
+        .flat_map(|provider| [false, true].map(move |named| (provider.clone(), named)))
+    {
         let fixture = Fixture::new().await;
         let (state, app, cookie) = fixture.application().await;
         let area = system(&app, &cookie).await;
-        let mut request = body(&area, provider);
+        let mut request = body(&area, provider.wire_name());
         request["first_message"] = json!(FIRST_BODY);
+        if named {
+            request["template_id"] = json!("small-change");
+        }
         let created = post(&app, &cookie, "/api/tracks", "first", request.clone()).await;
         let track = created["id"].as_str().unwrap();
         let (card, worker, frame) = fixture.carrier(track).await;
