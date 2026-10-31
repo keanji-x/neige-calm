@@ -4,7 +4,6 @@ use std::sync::{Arc, OnceLock};
 pub(crate) struct RetainedJoin<T> {
     result: Arc<OnceLock<std::result::Result<T, ()>>>,
     ready: Arc<tokio::sync::Notify>,
-    #[cfg(any(test, feature = "fixtures"))]
     abort: tokio::task::AbortHandle,
 }
 impl<T: Send + Sync + 'static> RetainedJoin<T> {
@@ -17,7 +16,6 @@ impl<T: Send + Sync + 'static> RetainedJoin<T> {
         let completion = Self {
             result: result.clone(),
             ready: ready.clone(),
-            #[cfg(any(test, feature = "fixtures"))]
             abort: handle.abort_handle(),
         };
         tokio::spawn(async move {
@@ -30,7 +28,9 @@ impl<T: Send + Sync + 'static> RetainedJoin<T> {
         completion
     }
     pub(crate) fn is_finished(&self) -> bool {
-        self.result.get().is_some()
+        // Preserve the original task-exit observation even before the notifier
+        // gets scheduled. finish() still waits for the cached real join result.
+        self.abort.is_finished()
     }
     pub(crate) async fn finish(&mut self) -> std::result::Result<&T, ()> {
         loop {
