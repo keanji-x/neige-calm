@@ -195,9 +195,15 @@ async fn running_turn_waits_for_native_result_without_fifty_ms_probes() {
     let (_client, mut peer) = connect(&fx.daemon).await;
     super::control_tests::running(&fx, &mut peer).await;
     let card = fx.harness.inner.card_id.as_str();
+    let advance = PausePoint::default();
+    install_pause_for_test("canonical-before-progress-advance", card, advance.clone());
+    fx.harness.request_progress();
+    tokio::time::timeout(Duration::from_secs(3), advance.entered.notified())
+        .await
+        .unwrap();
     let pass = PausePoint::default();
     install_pause_for_test("canonical-tick-returned", card, pass.clone());
-    fx.harness.request_progress();
+    advance.release.notify_one();
     tokio::time::timeout(Duration::from_secs(3), pass.entered.notified())
         .await
         .unwrap();
@@ -334,12 +340,35 @@ async fn compact_completion_wakes_queued_input_and_returns_to_stable_idle() {
     let AcceptedInputRef::Human { message } = accepted.input_ref else {
         panic!("human")
     };
-    let waiting = PausePoint::default();
-    install_pause_for_test("canonical-result-wait", card, waiting.clone());
     fx.harness
         .observe_canonical_source(message, fx.source.clone())
         .await
         .unwrap();
+    // Finish the start observation before measuring absence of repeated probes.
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while fx
+            .frame()
+            .await
+            .header
+            .compact_outcome
+            .as_ref()
+            .and_then(|outcome| outcome.turn_id.as_deref())
+            != Some("maintenance")
+        {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let advance = PausePoint::default();
+    install_pause_for_test("canonical-before-progress-advance", card, advance.clone());
+    fx.harness.request_progress();
+    tokio::time::timeout(Duration::from_secs(3), advance.entered.notified())
+        .await
+        .unwrap();
+    let waiting = PausePoint::default();
+    install_pause_for_test("canonical-result-wait", card, waiting.clone());
+    advance.release.notify_one();
     tokio::time::timeout(Duration::from_secs(3), waiting.entered.notified())
         .await
         .unwrap();
