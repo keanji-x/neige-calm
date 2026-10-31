@@ -3,6 +3,7 @@
 import { useNavigate, useRouter, useRouterState, type RouterHistory } from '@tanstack/react-router';
 import { useCallback, useMemo } from 'react';
 
+import { useDraftBackOwner, type NavigationSource } from './draft-back-owner.tsx';
 import { useTrackViews } from './track-view-state.tsx';
 import type { MobilePanel, TrackSource, TrackSearch } from './track-search.ts';
 
@@ -79,43 +80,48 @@ export function useGo(): (target: NavTarget, options?: GoOptions) => void {
   const navigate = useNavigate();
   const router = useRouter();
   const views = useTrackViews();
+  const owner = useDraftBackOwner();
   return useCallback((target: NavTarget, options?: GoOptions) => {
-    // The block anchor rides in the hash: the track route remounts per track, so
-    // state set before `go` would be discarded by the very move it describes.
-    const hash = target.name === 'track' ? target.blockId : undefined;
-    // All four fields are built from the target, never spread from the previous
-    // location: "not passed" means "cleared".
-    const search: TrackSearch = target.name === 'track'
-      ? buildTrackSearch({ card: target.cardId, file: target.filePath, panel: target.panel, from: target.from })
-      : {};
-    // A plain cross-track selection resumes that track. Explicit links and
-    // same-track commands retain their existing clear/replace semantics.
-    const resumeTrack = target.name === 'track' && target.blockId === undefined
-      && target.cardId === undefined && target.filePath === undefined
-      && target.panel === undefined && target.openPlanner !== true
-      && !router.state.location.pathname.endsWith(`/track/${encodeURIComponent(target.trackId)}`);
-    if (resumeTrack) {
-      Object.assign(search, views?.get(target.trackId)?.search);
-    }
-    // The planner-open intent rides on the history entry this navigation creates;
-    // written only when asked for, so an ordinary move leaves `state` alone.
-    const state = target.name === 'track' && target.openPlanner === true
-      ? { [PLANNER_OPEN_STATE_KEY]: true }
-      : undefined;
-    const switchingDraft = target.name === 'new-track' && isNewTrackPath(router.state.location.pathname);
-    const draftState = target.name === 'new-track'
-      ? { ncNewTrackPushed: switchingDraft ? router.state.location.state.ncNewTrackPushed === true : options?.replace !== true }
-      : undefined;
-    void navigate({
-      to: pathFor(target),
-      hash,
-      search,
-      replace: switchingDraft || options?.replace,
-      ...(draftState === undefined ? {} : { state: draftState }),
-      ...(target.name === 'track' ? { state: { ...state, ncResumeTrackView: resumeTrack,
-        ...(target.blockId === undefined ? {} : { ncReportAnchorIntent: Array.from(crypto.getRandomValues(new Uint32Array(4))).join('-') }) } } : {}),
-    });
-  }, [navigate, router, views]);
+    const execute = (source: NavigationSource) => {
+      // The block anchor rides in the hash: the track route remounts per track, so
+      // state set before `go` would be discarded by the very move it describes.
+      const hash = target.name === 'track' ? target.blockId : undefined;
+      // All four fields are built from the target, never spread from the previous
+      // location: "not passed" means "cleared".
+      const search: TrackSearch = target.name === 'track'
+        ? buildTrackSearch({ card: target.cardId, file: target.filePath, panel: target.panel, from: target.from })
+        : {};
+      // A plain cross-track selection resumes that track. Explicit links and
+      // same-track commands retain their existing clear/replace semantics.
+      const resumeTrack = target.name === 'track' && target.blockId === undefined
+        && target.cardId === undefined && target.filePath === undefined
+        && target.panel === undefined && target.openPlanner !== true
+        && !source.pathname.endsWith(`/track/${encodeURIComponent(target.trackId)}`);
+      if (resumeTrack) {
+        Object.assign(search, views?.get(target.trackId)?.search);
+      }
+      // The planner-open intent rides on the history entry this navigation creates;
+      // written only when asked for, so an ordinary move leaves `state` alone.
+      const state = target.name === 'track' && target.openPlanner === true
+        ? { [PLANNER_OPEN_STATE_KEY]: true }
+        : undefined;
+      const switchingDraft = target.name === 'new-track' && isNewTrackPath(source.pathname);
+      const draftState = target.name === 'new-track'
+        ? { ncNewTrackPushed: switchingDraft ? source.state.ncNewTrackPushed === true : options?.replace !== true }
+        : undefined;
+      void navigate({
+        to: pathFor(target),
+        hash,
+        search,
+        replace: switchingDraft || options?.replace,
+        ...(draftState === undefined ? {} : { state: draftState }),
+        ...(target.name === 'track' ? { state: { ...state, ncResumeTrackView: resumeTrack,
+          ...(target.blockId === undefined ? {} : { ncReportAnchorIntent: Array.from(crypto.getRandomValues(new Uint32Array(4))).join('-') }) } } : {}),
+      });
+    };
+    if (owner === null) execute(router.parseLocation((router.history as RouterHistory).location));
+    else owner.go(execute);
+  }, [navigate, router, views, owner]);
 }
 
 function isNewTrackPath(path: string): boolean {
@@ -125,12 +131,16 @@ function isNewTrackPath(path: string): boolean {
 /** An explicit entry marker prevents cold draft links from navigating outside the app. */
 export function useNewTrackBack(): (() => void) | null {
   const history = useRouter().history as RouterHistory;
+  const owner = useDraftBackOwner();
   const location = useRouterState({ select: (state) => state.location });
   const go = useGo();
   const back = useCallback(() => {
-    if (location.state.ncNewTrackPushed === true && history.canGoBack()) history.back();
+    if (location.state.ncNewTrackPushed === true && history.canGoBack()) {
+      if (owner === null) throw new Error('Draft Back requires app router context');
+      owner.back();
+    }
     else go({ name: 'today' }, { replace: true });
-  }, [go, history, location.state.ncNewTrackPushed]);
+  }, [go, history, location.state.ncNewTrackPushed, owner]);
   return isNewTrackPath(location.pathname) ? back : null;
 }
 

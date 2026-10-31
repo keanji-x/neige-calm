@@ -1,3 +1,4 @@
+import { createBrowserHistory } from '@tanstack/react-router';
 import { historicalConversationPage, conversationCardId, historicalConversationRun } from './conversation-read-data.ts';
 import '../../styles/entry.css';
 import { useLayoutEffect, useRef } from 'react';
@@ -268,6 +269,95 @@ it.each(['/track/project', '/area/project-area/new'])('returns from mobile track
   await expect.poll(() => router.state.location.pathname).toBe(initial === '/track/project' ? '/track/project' : '/');
   await expect.poll(() => document.activeElement?.getAttribute('aria-label')).toBe('Open conversation history');
   expect(requests.filter((request) => request.method !== 'GET')).toHaveLength(0);
+});
+
+
+it.each(['before-click', 'after-click', 'after-exit'] as const)('draft Back supersession preserves the latest New: %s', async (order) => {
+  await page.viewport(390, 844);
+  const { router, requests } = renderDailyFixture({ initial: '/track/project?from=pages#evidence' });
+  await page.getByRole('button', { name: 'Switch track, Project evidence', exact: true }).click();
+  await page.getByRole('button', { name: 'New track', exact: true }).click();
+  const draft = page.getByRole('combobox', { name: 'What this track should do', exact: true });
+  await draft.fill('Keep the latest draft');
+  const commitBack = router.history.back.bind(router.history);
+  const requestBack = vi.spyOn(router.history, 'back').mockImplementation(() => {});
+  let delivered = false;
+  const unsubscribe = router.history.subscribe(({ action }) => { if (action.type === 'BACK') delivered = true; });
+  try {
+    await page.getByRole('button', { name: 'Back to Tracks', exact: true }).click();
+    await expect.element(page.getByRole('group', { name: 'Tracks', exact: true })).toBeVisible();
+    if (order === 'before-click') {
+      commitBack();
+      await expect.poll(() => router.state.status === 'idle' && router.state.location.pathname === '/track/project').toBe(true);
+    }
+    await page.getByRole('button', { name: 'New track', exact: true }).click();
+    const host = document.querySelector<HTMLElement>('#mobile-workspace-navigation')!;
+    if (order === 'after-exit') await Promise.all(host.getAnimations().map(animation => animation.finished));
+    if (order !== 'before-click') commitBack();
+    await expect.poll(() => delivered && router.state.status === 'idle').toBe(true);
+    await expect.element(draft).toBeVisible();
+    await expect.element(draft).toHaveTextContent('Keep the latest draft');
+    await expect.poll(() => document.activeElement === draft.element()).toBe(true);
+    expect(router.state.location.pathname).toBe('/area/project-area/new');
+    expect(host.inert).toBe(true);
+    expect(requestBack).toHaveBeenCalledExactlyOnceWith();
+    expect(requests.filter(request => request.method !== 'GET')).toHaveLength(0);
+    // New after a real Back must push: Back still returns to the actual source.
+    commitBack();
+    await expect.poll(() => router.state.location.href).toBe('/track/project?from=pages#evidence');
+  } finally { requestBack.mockRestore(); unsubscribe(); }
+});
+
+
+it('draft Back supersession preserves native history in an independent window', async () => {
+  await page.viewport(390, 844);
+  // The runner's own history must never be traversed by this regression.
+  const host = window.open(new URL('./native-history-fixture.html', import.meta.url).href, '_blank');
+  expect(host).not.toBeNull();
+  if (host === null) throw new Error('Native history test requires an independent window');
+  try {
+    await expect.poll(() => host.location.href.includes('native-history-fixture.html') && host.document.readyState === 'complete').toBe(true);
+    host.history.replaceState({}, '', '/next/track/project?from=pages#evidence');
+    const history = createBrowserHistory({ window: host });
+    const actions: string[] = [];
+    const stop = history.subscribe(({ action }) => { actions.push(action.type); });
+    try {
+      const { router, requests } = renderDailyFixture({ history });
+      await page.getByRole('button', { name: 'Switch track, Project evidence', exact: true }).click();
+      history.replace(history.location.href, { ...history.location.state, probeSource: 'source-state' });
+      history.flush();
+      await expect.poll(() => router.state.status).toBe('idle');
+      await page.getByRole('button', { name: 'New track', exact: true }).click();
+      const draft = page.getByRole('combobox', { name: 'What this track should do', exact: true });
+      await draft.fill('Native draft retained');
+      await expect.poll(() => router.state.status).toBe('idle');
+      const length = host.history.length;
+      const back = page.getByRole('button', { name: 'Back to Tracks', exact: true }).element() as HTMLButtonElement;
+      // Native traversal remains async, while both production activation handlers
+      // run in one task. This is DOM activation, not a pointer-speed claim.
+      back.click();
+      expect(history.location.pathname).toBe('/next/area/project-area/new');
+      const newer = document.querySelector<HTMLButtonElement>('button[aria-label="New track"]');
+      expect(newer).not.toBeNull();
+      newer!.click();
+      await expect.poll(() => actions.includes('BACK') && router.state.status === 'idle').toBe(true);
+      await expect.element(draft).toBeVisible();
+      await expect.element(draft).toHaveTextContent('Native draft retained');
+      await expect.poll(() => document.activeElement === draft.element()).toBe(true);
+      expect(host.history.length).toBe(length);
+      history.back();
+      await expect.poll(() => router.state.status === 'idle' && router.state.location.href === '/track/project?from=pages#evidence').toBe(true);
+      expect(history.location.state).toMatchObject({ probeSource: 'source-state' });
+      history.forward();
+      await expect.element(draft).toHaveTextContent('Native draft retained');
+      await expect.poll(() => router.state.status).toBe('idle');
+      history.back();
+      await expect.poll(() => router.state.status === 'idle' && router.state.location.href === '/track/project?from=pages#evidence').toBe(true);
+      expect(actions.filter(action => action === 'BACK' || action === 'FORWARD')).toEqual(['BACK', 'BACK', 'FORWARD', 'BACK']);
+      expect(host.history.length).toBe(length);
+      expect(requests.filter(request => request.method !== 'GET')).toHaveLength(0);
+    } finally { cleanup(); stop(); history.destroy(); }
+  } finally { host.close(); }
 });
 
 

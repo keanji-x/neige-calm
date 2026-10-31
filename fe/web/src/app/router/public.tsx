@@ -1,3 +1,4 @@
+import { createDraftBackOwner, DraftBackLifecycle, type DraftBackContext } from './draft-back-owner.tsx';
 import { unlistedPendingInputCount } from '../../../../core/domain/conversation-queue-controls.ts';
 import { usePlannerSwitchControl } from './planner-switch-control.ts';
 import { composerCommands, conversationCommands, conversationCommandBindings, type CommandBindings } from '../../features/chat/thread/composer-command.ts';
@@ -28,7 +29,7 @@ import { DELETE_FAILURES, DELETE_TEXT, NotSentError, writeFailureText } from '..
 // transport and QueryClient; also the composition point for route-owned surfaces.
 
 import {
-  createRootRoute, createRoute, createRouter, redirect, useLocation, useRouterState, type AnyRoute,
+  createRootRouteWithContext, createRoute, createRouter, redirect, useLocation, useRouterState, type AnyRoute,
 } from '@tanstack/react-router';
 import { createRef, useCallback, useEffect, useLayoutEffect, useMemo, useRef, type Dispatch, type ReactNode, type SetStateAction } from 'react';
 import { TrackViewProvider, useTrackViewState, useTrackViews } from './track-view-state.tsx';
@@ -196,9 +197,9 @@ export function createRouteTree(deps: AppRouterDeps): AnyRoute {
   const { transport, unauthorized, client, onSignOut, cards, prepareReport } = deps;
   const recentFiles = deps.recentFiles ?? createRecentFileHistory();
   const preferences = deps.uiPreferences ?? createUiPreferences();
-  const rootRoute = createRootRoute({ component: () => (
+  const rootRoute = createRootRouteWithContext<DraftBackContext>()({ component: () => (
     <UiPreferencesProvider preferences={preferences}><ReadReceiptsProvider transport={transport} unauthorized={unauthorized}>
-      <TrackViewProvider><MobileConversationProvider><ShellRoute transport={transport} unauthorized={unauthorized} onSignOut={onSignOut} /></MobileConversationProvider></TrackViewProvider>
+      <TrackViewProvider><DraftBackLifecycle><MobileConversationProvider><ShellRoute transport={transport} unauthorized={unauthorized} onSignOut={onSignOut} /></MobileConversationProvider></DraftBackLifecycle></TrackViewProvider>
     </ReadReceiptsProvider></UiPreferencesProvider>
   ) });
 
@@ -295,13 +296,15 @@ export function createRouteTree(deps: AppRouterDeps): AnyRoute {
 }
 
 export function createAppRouter(deps: AppRouterDeps) {
-  return createRouter({
+  const router = createRouter({
     routeTree: createRouteTree(deps),
     basepath: APP_BASEPATH,
     defaultPreload: false,
     // Report arrivals reveal only after their current complete content commits.
     defaultHashScrollIntoView: false,
   });
+  router.update({ context: { draftBack: createDraftBackOwner(router) } });
+  return router;
 }
 
 function ShellRoute({ transport, unauthorized, onSignOut }: { transport: ApiTransportPort; unauthorized: UnauthorizedChannel; onSignOut: () => void }) {

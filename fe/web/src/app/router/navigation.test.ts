@@ -1,4 +1,10 @@
-import { describe, expect, it } from 'vitest';
+import type { ParsedLocation } from '@tanstack/react-router';
+import { createElement, useLayoutEffect } from 'react';
+import { act, cleanup, waitFor } from '@testing-library/react';
+import { renderDailyFixture } from './daily-planner-fixture.tsx';
+import { useDraftBackOwner, type NavigationSource } from './draft-back-owner.tsx';
+import { useGo, useNewTrackBack } from './navigation.ts';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   cardIdFromLocation, cardIdFromSearchString, filePathFromLocation, filePathFromSearchString,
@@ -204,5 +210,126 @@ describe('renderedMobilePanel', () => {
   it('[#1191 §0.1] yields the surface to a live card overlay', () => {
     expect(renderedMobilePanel('tasks', { compact: true, overlayOpen: true })).toBeNull();
     expect(renderedMobilePanel(null, { compact: true, overlayOpen: false })).toBeNull();
+  });
+});
+
+
+type NavigationPort = { go: ReturnType<typeof useGo>; back: ReturnType<typeof useNewTrackBack>; owner: NonNullable<ReturnType<typeof useDraftBackOwner>> };
+function NavigationProbe({ ready }: { ready: (port: NavigationPort) => void }) {
+  const go = useGo();
+  const back = useNewTrackBack();
+  const owner = useDraftBackOwner()!;
+  useLayoutEffect(() => { ready({ go, back, owner }); }, [go, back, owner, ready]);
+  return null;
+}
+
+afterEach(() => { cleanup(); vi.restoreAllMocks(); });
+async function pendingDraftBack() {
+  let port: NavigationPort | undefined;
+  const fixture = renderDailyFixture({ initial: '/track/project?from=pages#source', routeProbe: createElement(NavigationProbe, { ready: next => { port = next; } }) });
+  const { router } = fixture;
+  await waitFor(() => { expect(port).toBeDefined(); expect(router.state.status).toBe('idle'); });
+  act(() => { port!.go({ name: 'new-track', areaId: 'project-area' }); });
+  await waitFor(() => { expect(port!.back).toBeTypeOf('function'); expect(router.state.status).toBe('idle'); });
+  const release = router.history.back.bind(router.history);
+  const request = vi.spyOn(router.history, 'back').mockImplementation(() => {});
+  act(() => { port!.back!(); });
+  return { ...fixture, port: () => port!, release, request };
+}
+
+describe('draft Back supersession owner', () => {
+  it('waits for actual delivery, consumes once before reentry, and suppresses duplicate Back', async () => {
+    const { router, port, release, request } = await pendingDraftBack();
+    const old = vi.fn();
+    const reentry = vi.fn();
+    const latest = vi.fn<(source: NavigationSource) => void>(() => { port().owner.go(reentry); });
+    act(() => {
+      port().owner.go(old);
+      port().owner.go(latest);
+      port().back!();
+      // An idle origin and an unrelated resolved event are not a Back ack.
+      router.emit({ type: 'onResolved', toLocation: router.state.location as ParsedLocation, fromLocation: router.state.location as ParsedLocation, pathChanged: false, hrefChanged: false, hashChanged: false });
+      port().owner.ready();
+    });
+    expect(latest).not.toHaveBeenCalled();
+    expect(request).toHaveBeenCalledExactlyOnceWith();
+    act(() => { release(); });
+    await waitFor(() => { expect(latest).toHaveBeenCalledTimes(1); });
+    expect(latest.mock.calls[0]?.[0]?.href).toBe('/track/project?from=pages#source');
+    expect(old).not.toHaveBeenCalled();
+    expect(reentry).toHaveBeenCalledTimes(1);
+    act(() => { port().owner.ready(); });
+    expect(latest).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['settings', 'today', 'track'] as const)('shares latest-wins across useGo targets: %s', async (name) => {
+    const { router, port, release, requests } = await pendingDraftBack();
+    act(() => {
+      port().go({ name: 'new-track', areaId: 'project-area' });
+      port().go(name === 'track' ? { name, trackId: 'project', from: 'area', blockId: 'latest' } : { name });
+      release();
+    });
+    const href = name === 'settings' ? '/settings' : name === 'today' ? '/' : '/track/project?from=area#latest';
+    await waitFor(() => { expect(router.state.location.href).toBe(href); expect(router.state.status).toBe('idle'); });
+    expect(requests.filter(request => request.method !== 'GET')).toHaveLength(0);
+  });
+
+  it('keeps A-B-A reentry as the latest draft and starts a fresh Back afterward', async () => {
+    const { router, port, release, request } = await pendingDraftBack();
+    act(() => {
+      port().go({ name: 'new-track', areaId: 'project-area' });
+      port().go({ name: 'new-track', areaId: 'daily-area' });
+      port().go({ name: 'new-track', areaId: 'project-area' });
+      release();
+    });
+    await waitFor(() => { expect(router.state.location.pathname).toBe('/area/project-area/new'); expect(router.state.status).toBe('idle'); });
+    act(() => { port().back!(); });
+    expect(request).toHaveBeenCalledTimes(2);
+    act(() => { release(); });
+    await waitFor(() => { expect(router.state.location.href).toBe('/track/project?from=pages#source'); });
+  });
+
+  it('rejects a BACK delivered at its origin and admits the next navigation', async () => {
+    const { router, port } = await pendingDraftBack();
+    const latest = vi.fn();
+    act(() => {
+      port().owner.go(latest);
+      // Native blocker rollback publicly reports this shape: BACK, but the
+      // delivered location remains the draft. It is not a successful ack.
+      router.history.notify({ type: 'BACK' });
+    });
+    await waitFor(() => { expect(router.state.status).toBe('idle'); });
+    act(() => { port().go({ name: 'settings' }); });
+    await waitFor(() => { expect(router.state.location.pathname).toBe('/settings'); });
+    expect(latest).not.toHaveBeenCalled();
+  });
+
+  it('cancels the old continuation when direct navigate takes ownership', async () => {
+    const { router, port, release } = await pendingDraftBack();
+    const latest = vi.fn();
+    act(() => { port().owner.go(latest); });
+    await act(async () => { await router.navigate({ to: '/settings' }); });
+    act(() => { release(); });
+    await waitFor(() => { expect(router.state.status).toBe('idle'); expect(router.state.location.pathname).toBe('/area/project-area/new'); });
+    expect(latest).not.toHaveBeenCalled();
+  });
+
+  it('cancels on a second traversal observed before route readiness', async () => {
+    const { router, port, release } = await pendingDraftBack();
+    const latest = vi.fn();
+    act(() => { port().owner.go(latest); release(); router.history.forward(); });
+    await waitFor(() => { expect(router.state.status).toBe('idle'); expect(router.state.location.pathname).toBe('/area/project-area/new'); });
+    expect(latest).not.toHaveBeenCalled();
+  });
+
+  it('cleans up an unmounted owner and does not resurrect its continuation on remount', async () => {
+    const { router, port, release } = await pendingDraftBack();
+    const latest = vi.fn();
+    act(() => { port().owner.go(latest); });
+    cleanup();
+    release();
+    renderDailyFixture({ initial: '/area/project-area/new' });
+    await waitFor(() => { expect(router.history.location.pathname).toBe('/next/track/project'); });
+    expect(latest).not.toHaveBeenCalled();
   });
 });
