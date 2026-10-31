@@ -86,8 +86,14 @@ async fn presentation_replay_event_failure_rolls_back_content_for_retry() {
     let inner = &fx.harness.inner;
     let live = inner.live_claim.writer();
     let before = presentation_events(&fx).await.len();
-    sqlx::query("CREATE TRIGGER refuse_presentation_event BEFORE INSERT ON events WHEN NEW.kind='harness.presentation.changed' BEGIN SELECT RAISE(ABORT,'event unavailable'); END")
-        .execute(fx.original.repo.db().writer_pool()).await.unwrap();
+    sqlx::query(
+        "CREATE TRIGGER refuse_presentation_event BEFORE INSERT ON events
+        WHEN NEW.kind='harness.presentation.changed'
+        BEGIN SELECT RAISE(ABORT,'event unavailable'); END",
+    )
+    .execute(fx.original.repo.db().writer_pool())
+    .await
+    .unwrap();
     let params = json!({"threadId":thread,"turnId":"retry-event",
         "item":{"id":"retry-item","type":"agentMessage","text":"answer"}});
     assert!(
@@ -95,15 +101,14 @@ async fn presentation_replay_event_failure_rolls_back_content_for_retry() {
             .await
             .is_err()
     );
-    let rows: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM harness_items WHERE card_id=?1 AND item_uuid='retry-item'",
-    )
-    .bind(inner.card_id.as_str())
-    .fetch_one(fx.original.repo.pool())
-    .await
-    .unwrap();
-    assert_eq!(
-        rows, 0,
+    let rows = inner
+        .repo
+        .transcript_rows_of_thread(inner.card_id.as_str(), &thread)
+        .await
+        .unwrap();
+    assert!(
+        rows.iter()
+            .all(|row| row.item_uuid.as_deref() != Some("retry-item")),
         "failed notification must roll back its content so a replay can retry"
     );
     sqlx::query("DROP TRIGGER refuse_presentation_event")
