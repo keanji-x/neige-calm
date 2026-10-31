@@ -160,23 +160,42 @@ async fn observe_metadata(inner: &Arc<Inner>, observation: Metadata) -> Result<(
     Ok(())
 }
 
+/// Content and its optional notification have committed together. Publish only
+/// after the caller has retired the corresponding ephemeral reply.
+pub(in crate::harness::run_loop) struct CommittedNativePresentation {
+    pub row: crate::db::sqlite::conversation::StoredNativePresentation,
+    ids: Vec<i64>,
+    events: Vec<(ActorId, EventScope, Event)>,
+}
+impl CommittedNativePresentation {
+    pub fn publish(self, inner: &Inner) {
+        crate::db::sqlite::broadcast_actor_events(&inner.events, &self.ids, self.events);
+    }
+}
+
 pub(in crate::harness::run_loop) async fn persist_native_item(
     inner: &Arc<Inner>,
     thread: &str,
     turn: Option<&str>,
     method: &str,
     params: &Value,
-) -> Result<Option<crate::db::sqlite::conversation::StoredNativePresentation>> {
+) -> Result<Option<CommittedNativePresentation>> {
     let card = inner.card_id.to_string();
     let worker = inner.worker_session_id.clone();
     let thread = thread.to_owned();
     let turn = turn.map(str::to_owned);
     let method = method.to_owned();
     let params = params.clone();
+    let track = inner.track_id.clone();
+    let scope = harness_event_scope(inner, "harness.presentation.changed");
+    let write = crate::state::WriteContext::new(
+        inner.card_role_cache.clone(),
+        inner.track_area_cache.clone(),
+    );
     write_in_tx_typed(inner.repo.as_ref(), move |tx| {
         Box::pin(async move {
             let carrier = current_input_fact_carrier_tx(tx, &card, &worker).await?;
-            Ok(crate::db::sqlite::conversation::observe_native_item_tx(
+            let Some(row) = crate::db::sqlite::conversation::observe_native_item_tx(
                 tx,
                 &carrier,
                 &thread,
@@ -184,7 +203,28 @@ pub(in crate::harness::run_loop) async fn persist_native_item(
                 &method,
                 &params,
             )
-            .await?)
+            .await?
+            else {
+                return Ok(None);
+            };
+            let mut events = Vec::new();
+            let ids = if row.changed {
+                events.push((
+                    ActorId::Kernel,
+                    scope,
+                    Event::HarnessPresentationChanged {
+                        card_id: card.into(),
+                        track_id: track,
+                        cursor: row.cursor.clone(),
+                    },
+                ));
+                crate::db::sqlite::append_actor_events_in_tx(tx, None, &write, &events)
+                    .await?
+                    .0
+            } else {
+                Vec::new()
+            };
+            Ok(Some(CommittedNativePresentation { row, ids, events }))
         })
     })
     .await

@@ -196,9 +196,7 @@ async fn carrier_quiescence_ingress_writers_refuse_committed_replacement() {
     .await
     .unwrap()
     .unwrap();
-    emit_presentation_changed(inner, row.cursor.clone())
-        .await
-        .unwrap();
+    row.publish(inner);
     let mut tx = begin_immediate_tx(fx.original.repo.db()).await.unwrap();
     crate::db::sqlite::session_supersede_and_start_tx(
         &mut tx,
@@ -235,7 +233,15 @@ async fn carrier_quiescence_ingress_writers_refuse_committed_replacement() {
     )
     .await
     .is_err();
-    let presentation_refused = emit_presentation_changed(inner, row.cursor).await.is_err();
+    let presentation_refused = persist_native_item(
+        inner,
+        &thread,
+        Some("retired"),
+        "item/completed",
+        &json!({"item":{"id":"before-rotation","type":"agentMessage","text":"before"}}),
+    )
+    .await
+    .is_err();
     let legacy_refused = insert_item_row(
         inner,
         &thread,

@@ -144,6 +144,7 @@ const POST_0067_MIGRATION_NAMES: &[&str] = &[
     "0204_worker_watcher_source.sql",
     "0205_vcs_object_encoding.sql",
     "0206_event_field_encoding.sql",
+    "0207_operations_terminal_lookup.sql",
 ];
 
 #[test]
