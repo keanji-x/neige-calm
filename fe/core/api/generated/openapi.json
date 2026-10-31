@@ -10384,7 +10384,7 @@
             }
           },
           "403": {
-            "description": "Registered current Area collaboration access is required for Human input; System targets are not Human Track creation",
+            "description": "Current registered Area access is required; System targets require the deployment owner",
             "content": {
               "application/json": {
                 "schema": {
