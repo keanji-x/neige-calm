@@ -183,7 +183,7 @@ mod carrier_revision;
 pub use carrier_revision::{CarrierIngressRevision, carrier_ingress_revision_tx};
 
 mod acp_cleanup;
-pub use acp_cleanup::settle_kept_acp_receipt_tx;
+pub use acp_cleanup::{kept_acp_cleanup_candidate, settle_kept_acp_receipt_tx};
 
 #[cfg(test)]
 mod planner_switch_tests;

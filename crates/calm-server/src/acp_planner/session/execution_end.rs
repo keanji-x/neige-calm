@@ -276,10 +276,16 @@ async fn current_receipt_owner(params: &SessionParams, expected: &AcpSubmission)
     })
     .await
 }
+enum CleanupCheck {
+    Observation,
+    Admission,
+}
+
 /// Only the exact retained driver can produce this fact; a recovered Completed
 /// slot and a process sweep cannot manufacture a normal Unknown driver join.
 async fn settle_kept_under_issue(
     shared: &Shared,
+    check: CleanupCheck,
 ) -> Result<Option<crate::db::sqlite::conversation::RuntimeFrameAfterWrite>> {
     {
         let state = shared.state.lock().expect("ACP state");
@@ -310,6 +316,16 @@ async fn settle_kept_under_issue(
         .repo
         .sqlite_db()
         .ok_or_else(|| CalmError::Internal("ACP journal missing".into()))?;
+    if matches!(check, CleanupCheck::Observation)
+        && !crate::db::sqlite::conversation::kept_acp_cleanup_candidate(
+            pool.read_pool(),
+            &params.card_id,
+            &receipt,
+        )
+        .await?
+    {
+        return Ok(None);
+    }
     let digest: String = sqlx::query_scalar(
         "SELECT registration_digest FROM acp_managed_sessions WHERE worker_session_id=?1",
     )
@@ -348,7 +364,7 @@ impl AcpPlannerSession {
         &self,
     ) -> Result<Option<crate::db::sqlite::conversation::RuntimeFrameAfterWrite>> {
         let _issue = self.shared.issue.lock().await;
-        settle_kept_under_issue(&self.shared).await
+        settle_kept_under_issue(&self.shared, CleanupCheck::Observation).await
     }
     /// ACP has no native idle query. Settlement is the exact completed receipt
     /// and its qualified cleanup, observed under issuance exclusion.
@@ -375,7 +391,7 @@ impl AcpPlannerSession {
         let Some(driver) = slot(shared) else {
             return Ok(false);
         };
-        settle_kept_under_issue(shared).await?;
+        settle_kept_under_issue(shared, CleanupCheck::Admission).await?;
         let expected = {
             let driver = driver.lock().await;
             match &driver.input {

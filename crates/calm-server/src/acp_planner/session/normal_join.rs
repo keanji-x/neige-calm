@@ -13,6 +13,20 @@ struct NormalJoin {
     input: String,
     registration: String,
 }
+impl NormalJoin {
+    fn for_receipt(receipt: &AcpSubmission, registration: String) -> Self {
+        Self {
+            version: 1,
+            worker: receipt.worker_session_id.clone(),
+            client: receipt.client_id.clone(),
+            thread: receipt.thread_id.clone(),
+            turn: receipt.turn_id.clone(),
+            native: receipt.native_session_id.clone(),
+            input: receipt.input_json.clone(),
+            registration,
+        }
+    }
+}
 async fn evidence_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     params: &SessionParams,
@@ -55,19 +69,32 @@ async fn evidence_tx(
     .bind(&receipt.worker_session_id)
     .fetch_one(&mut **tx)
     .await?;
-    Ok(Some(NormalJoin {
-        version: 1,
-        worker: receipt.worker_session_id,
-        client: receipt.client_id,
-        thread: receipt.thread_id,
-        turn: receipt.turn_id,
-        native: receipt.native_session_id,
-        input: receipt.input_json,
-        registration,
-    }))
+    Ok(Some(NormalJoin::for_receipt(&receipt, registration)))
 }
 /// Only callers that have joined the exact original task with CleanUnknown may record this.
 pub(super) async fn record(params: &SessionParams, receipt: &AcpSubmission) -> Result<()> {
+    // A retained normal join is immutable evidence, not permission to execute.
+    // Already-recorded evidence needs no writer; every new witness still uses
+    // the protected current-association validation below.
+    let db = params
+        .repo
+        .sqlite_db()
+        .ok_or(CalmError::ExecutionUnavailable)?;
+    let stored: Option<(String, String)> = sqlx::query_as(concat!(
+        "SELECT j.evidence_json,m.registration_digest FROM acp_normal_joins j JOIN ",
+        "acp_managed_sessions m ON m.worker_session_id=j.worker_session_id ",
+        "WHERE j.worker_session_id=?1 AND j.client_id=?2",
+    ))
+    .bind(&receipt.worker_session_id)
+    .bind(&receipt.client_id)
+    .fetch_optional(db.read_pool())
+    .await?;
+    if let Some((stored, registration)) = stored {
+        let expected = NormalJoin::for_receipt(receipt, registration);
+        if serde_json::from_str::<NormalJoin>(&stored).ok().as_ref() == Some(&expected) {
+            return Ok(());
+        }
+    }
     let mut tx = crate::db::sqlite::begin_immediate_tx(
         &params
             .repo

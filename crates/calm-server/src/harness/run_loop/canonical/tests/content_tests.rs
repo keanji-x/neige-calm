@@ -4,7 +4,7 @@ use crate::codex_appserver::Notification;
 use crate::shared_codex_appserver::native_owner_tests::Peer;
 use calm_truth::db::RepoEventWrite as _;
 
-async fn next_start(peer: &mut Peer) -> Value {
+pub(super) async fn next_start(peer: &mut Peer) -> Value {
     loop {
         let call = request(peer).await;
         if call["method"] == "turn/start" {
@@ -105,7 +105,7 @@ pub(super) async fn complete(fx: &Fixture, peer: &mut Peer, thread: &str, turn: 
         .await;
 }
 
-async fn accept(fx: &Fixture, body: &str) -> MessageRevisionRef {
+pub(super) async fn accept(fx: &Fixture, body: &str) -> MessageRevisionRef {
     let mut tx = begin_immediate_tx(fx.original.repo.db()).await.unwrap();
     let mut carrier = current_input_carrier_tx(
         &mut tx,

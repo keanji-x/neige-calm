@@ -4,6 +4,15 @@ use super::{HarnessPhaseTag, Inner};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+/// Spread recovery reads across a restarted cohort; normal progress still uses
+/// signals and real owner deadlines. The maximum missed-hint wait stays 30 s.
+fn recovery_interval(worker: &str) -> Duration {
+    let bucket = worker.bytes().fold(0u64, |hash, byte| {
+        hash.wrapping_mul(31).wrapping_add(u64::from(byte))
+    }) % 5_001;
+    Duration::from_millis(25_000 + bucket)
+}
+
 /// Pacing from an actual pass, never a saved state or execution grant.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(in crate::harness::run_loop) enum Progress {
@@ -89,10 +98,12 @@ pub(in crate::harness::run_loop) async fn next_probe(
                 + if short_retry {
                     Duration::from_millis(50)
                 } else {
-                    Duration::from_secs(30)
+                    recovery_interval(&inner.worker_session_id)
                 }
         }
     };
+    #[cfg(feature = "fixtures")]
+    crate::test_seams::pause_point("canonical-recovery-probe-ready", inner.card_id.as_str()).await;
     if progress != Progress::Waiting {
         return probe;
     }

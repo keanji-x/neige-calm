@@ -57,18 +57,7 @@ pub async fn settle_kept_acp_receipt_tx(
     {
         return Ok(None);
     }
-    let Some(keep) = carrier
-        .checkpoint()
-        .receipts
-        .iter()
-        .find(|keep| match &keep.decision {
-            HumanInputResolutionDecision::Keep { result, .. } => {
-                result.carrier_id == receipt.worker_session_id
-                    && result.submission_id == attempt.submission_id.as_str()
-                    && result.attempt_id == attempt.attempt_id.as_str()
-            }
-            HumanInputResolutionDecision::Retry { .. } => false,
-        })
+    let Some(keep) = matching_keep(carrier.checkpoint(), &receipt.worker_session_id, attempt)
     else {
         return Ok(None);
     };
@@ -176,4 +165,46 @@ pub async fn settle_kept_acp_receipt_tx(
         snapshot: carrier.snapshot().clone(),
         execution_fence: RuntimeExecutionFence::from_carrier(&carrier),
     }))
+}
+
+fn matching_keep<'a>(
+    checkpoint: &'a calm_types::conversation::ConversationInputCheckpoint,
+    worker: &str,
+    attempt: &calm_types::conversation::InputAttempt,
+) -> Option<&'a calm_types::conversation::HumanInputResolutionReceipt> {
+    checkpoint
+        .receipts
+        .iter()
+        .find(|keep| match &keep.decision {
+            HumanInputResolutionDecision::Keep { result, .. } => {
+                result.carrier_id == worker
+                    && result.submission_id == attempt.submission_id.as_str()
+                    && result.attempt_id == attempt.attempt_id.as_str()
+            }
+            HumanInputResolutionDecision::Retry { .. } => false,
+        })
+}
+
+/// Negative observation only: a real cleanup candidate still reloads and checks
+/// the full durable contract inside settle_kept_acp_receipt_tx.
+pub async fn kept_acp_cleanup_candidate(
+    pool: &sqlx::SqlitePool,
+    card: &str,
+    expected: &AcpSubmission,
+) -> Result<bool> {
+    let frame = super::runtime_frame_observation(pool, card, &expected.worker_session_id).await?;
+    if frame.snapshot.canonical_inputs.active.is_none() {
+        return Ok(false);
+    }
+    let AcpSubmissionInput::Canonical(association) =
+        AcpSubmissionInput::decode(&expected.input_json)?
+    else {
+        return Ok(false);
+    };
+    Ok(matching_keep(
+        &frame.snapshot.canonical_inputs,
+        &expected.worker_session_id,
+        association.proof.attempt(),
+    )
+    .is_some())
 }
