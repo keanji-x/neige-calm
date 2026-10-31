@@ -16,7 +16,7 @@ use sqlx::sqlite::SqliteRow;
 use sqlx::{Executor, Row, Sqlite, Transaction};
 use std::collections::BTreeMap;
 
-use super::card_query::{CARD_COLUMNS, card_query};
+use super::card_query::{CARD_COLUMNS, card_query, cards_query};
 use super::runs::{EventRow, project_runs_tx, track_event_from_row};
 use super::store::{CommitTreeMeta, commit_tree_at_tx, put_rendered_entry, store_tree};
 use super::transcripts::HookInputs;
@@ -273,7 +273,7 @@ pub(super) async fn cards_for_track<'e>(
     visibility: &CardVisibility,
 ) -> Result<Vec<CardProjection>> {
     // ORDER BY must stay aligned with SqlxRepo::cards_by_track.
-    let rows = sqlx::query(&card_query(CARD_COLUMNS, "TRUE"))
+    let rows = sqlx::query(&cards_query())
         .bind(track_id.as_str())
         .fetch_all(executor)
         .await?;

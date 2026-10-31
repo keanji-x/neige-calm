@@ -136,3 +136,51 @@ async fn card_visibility_history_work_does_not_multiply_by_card_count() {
         "history work multiplied across cards: {before} -> {after} progress ticks"
     );
 }
+
+#[tokio::test]
+async fn card_visibility_point_lookup_retains_early_exit() {
+    let fx = Fixture::new().await;
+    let measure = async || {
+        let mut tx = crate::db::sqlite::begin_immediate_tx(fx.repo.db())
+            .await
+            .unwrap();
+        let ticks = Arc::new(AtomicUsize::new(0));
+        let count = ticks.clone();
+        tx.lock_handle()
+            .await
+            .unwrap()
+            .set_progress_handler(100, move || {
+                count.fetch_add(1, Ordering::Relaxed);
+                true
+            });
+        let found = card_in_track_tx(
+            &mut tx,
+            &fx.track.id,
+            fx.card.id.as_str(),
+            &CardVisibility::announced_only(),
+        )
+        .await
+        .unwrap();
+        tx.lock_handle().await.unwrap().remove_progress_handler();
+        assert_eq!(found.unwrap().card.id, fx.card.id);
+        let result = ticks.load(Ordering::Relaxed);
+        tx.rollback().await.unwrap();
+        result
+    };
+    let before = measure().await;
+    sqlx::query(
+        "WITH RECURSIVE n(x) AS (
+            SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<2048
+        ) INSERT INTO events(kind,payload,actor,at,scope_kind,scope_track)
+        SELECT 'card.added',json_object('id', 'other-' || x),'\"kernel\"',0,'track',?1 FROM n",
+    )
+    .bind(fx.track.id.as_str())
+    .execute(fx.repo.db().writer_pool())
+    .await
+    .unwrap();
+    let after = measure().await;
+    assert!(
+        after.saturating_sub(before) < 10,
+        "one card lookup must stop at its publication, not rebuild later history: {before} -> {after}"
+    );
+}
