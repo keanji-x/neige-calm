@@ -61,8 +61,14 @@ async fn historical_creation_samples_readiness_before_the_area_lock() {
         std::fs::write(&config, json!({"claude_binary":fake.join("claude"),"claude_version":"2.1.280","config_dir":fixture.root.path().join("claude-config")}).to_string()).unwrap();
         fixture.claude_config = Some(config);
         let (state, app, cookie) = fixture.application().await;
-        // System Area retains the released historical creation owner.
-        let area = post(&app, &cookie, "/api/areas/system", "system", json!({})).await["id"]
+        let area = post(
+            &app,
+            &cookie,
+            "/api/areas",
+            "area",
+            json!({"name":"readiness","color":"#123456"}),
+        )
+        .await["id"]
             .as_str()
             .unwrap()
             .to_owned();
@@ -82,8 +88,10 @@ async fn historical_creation_samples_readiness_before_the_area_lock() {
             release: Arc::new(Notify::new()),
         };
         install_pause_for_test("key-lock-waiting", &area, pause.clone());
+        // Named attachment without cwd retains the historical Managed entry.
         let body = json!({"planner_provider":"claude", "area_id":area,
             "title":"sampled historical mint", "template_id":"small-change",
+            "attach_folder":true,
             "theme":{"fg":[216,219,226],"bg":[15,20,24]}});
         let create = status(&app, &cookie, "/api/tracks", "sampled-readiness", body);
         tokio::pin!(create);
