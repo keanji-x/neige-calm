@@ -37,3 +37,43 @@ async fn canonical_acp_genuine_join_still_requires_boot_absence_proof() {
     assert_eq!(fx.prompts(), 1);
     session.shutdown().await.unwrap();
 }
+
+#[tokio::test]
+async fn canonical_acp_unchanged_normal_join_and_kept_cleanup_do_not_need_writer() {
+    let fx = Fixture::new("lost").await;
+    fx.dispatch().await.unwrap();
+    fx.wait_idle().await;
+    // A genuine join must be recorded even before any Human Keep.
+    assert!(fx.backend.settle_kept_execution().await.unwrap().is_none());
+    let count: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM acp_normal_joins WHERE worker_session_id=?1")
+            .bind(&fx.owner.worker)
+            .fetch_one(fx.owner.repo.db().read_pool())
+            .await
+            .unwrap();
+    assert_eq!(count, 1);
+    let mut blocked = Vec::new();
+    for kept in [false, true] {
+        if kept {
+            fx.keep_unknown(&fx.submission, "keep-after-genuine-join")
+                .await;
+            assert!(fx.backend.settle_kept_execution().await.unwrap().is_some());
+        }
+        let writer = begin_immediate_tx(fx.owner.repo.db()).await.unwrap();
+        let result = tokio::time::timeout(
+            Duration::from_millis(250),
+            fx.backend.settle_kept_execution(),
+        )
+        .await;
+        writer.rollback().await.unwrap();
+        match result {
+            Ok(result) => assert!(result.unwrap().is_none()),
+            Err(_) => blocked.push(kept),
+        }
+    }
+    fx.session.shutdown().await.unwrap();
+    assert!(
+        blocked.is_empty(),
+        "unchanged ACP observations waited for writer: kept={blocked:?}"
+    );
+}
