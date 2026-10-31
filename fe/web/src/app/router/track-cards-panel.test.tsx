@@ -343,11 +343,11 @@ describe('track route CARDS panel', () => {
 });
 
 async function openTasks(): Promise<HTMLElement> {
-  const { inventory, toggle } = await waitFor(() => {
-    const found = document.querySelector('[data-nc-work-inventory]');
+  const { inventory, toggle } = await waitFor<{ inventory: HTMLElement; toggle: HTMLElement }>(() => {
+    const found = document.querySelector<HTMLElement>('[data-nc-work-inventory]');
     if (found === null) throw new Error('task inventory has not rendered');
-    return { inventory: found as HTMLElement,
-      toggle: within(found as HTMLElement).getByRole('button', { name: 'Progress' }) };
+    return { inventory: found,
+      toggle: within(found).getByRole('button', { name: 'Progress' }) };
   });
   if (toggle.getAttribute('aria-expanded') === 'false') await userEvent.click(toggle);
   return inventory;
