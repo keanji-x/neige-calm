@@ -119,16 +119,25 @@ async fn card_visibility_history_work_does_not_multiply_by_card_count() {
         steps.load(Ordering::Relaxed)
     };
     let before = measure(&mut conn).await;
-    sqlx::query(
-        "WITH RECURSIVE n(x) AS (
-            SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<2048
-        ) INSERT INTO events(kind,payload,actor,at,scope_kind,scope_track)
-        SELECT 'codex.hook','{}','\"kernel\"',0,'track',?1 FROM n",
-    )
-    .bind(fx.track.id.as_str())
-    .execute(&mut *conn)
-    .await
-    .unwrap();
+    for index in 0..2048 {
+        fx.repo
+            .event_append_fixture(
+                ActorId::Kernel,
+                EventScope::Track {
+                    track: fx.track.id.clone(),
+                    area: fx.track.area_id.clone(),
+                },
+                None,
+                &Event::CodexHook {
+                    card_id: fx.card.id.clone(),
+                    kind: "hook.codex.user_prompt_submit".into(),
+                    hook_idempotency_key: format!("history-noise-{index}"),
+                    payload: json!({}),
+                },
+            )
+            .await
+            .unwrap();
+    }
     let after = measure(&mut conn).await;
     // The added history may be read once. It must not be re-read for each unpublished card.
     assert!(
@@ -168,16 +177,22 @@ async fn card_visibility_point_lookup_retains_early_exit() {
         result
     };
     let before = measure().await;
-    sqlx::query(
-        "WITH RECURSIVE n(x) AS (
-            SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<2048
-        ) INSERT INTO events(kind,payload,actor,at,scope_kind,scope_track)
-        SELECT 'card.added',json_object('id', 'other-' || x),'\"kernel\"',0,'track',?1 FROM n",
-    )
-    .bind(fx.track.id.as_str())
-    .execute(fx.repo.db().writer_pool())
-    .await
-    .unwrap();
+    for index in 0..2048 {
+        let mut card = fx.card.clone();
+        card.id = CardId::from(format!("other-{index}"));
+        fx.repo
+            .event_append_fixture(
+                ActorId::Kernel,
+                EventScope::Track {
+                    track: fx.track.id.clone(),
+                    area: fx.track.area_id.clone(),
+                },
+                None,
+                &Event::CardAdded(card),
+            )
+            .await
+            .unwrap();
+    }
     let after = measure().await;
     assert!(
         after.saturating_sub(before) < 10,
