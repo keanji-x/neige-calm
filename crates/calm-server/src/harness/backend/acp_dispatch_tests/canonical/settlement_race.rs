@@ -41,6 +41,8 @@ impl Race {
             "turn_id": turn, "status": "started"
         });
         within("store", store(&fx, frame)).await;
+        // This fixture stages a committed fact after startup, like its producer.
+        harness.request_progress();
         Self {
             fx,
             harness,
