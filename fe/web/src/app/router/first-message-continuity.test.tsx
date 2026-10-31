@@ -30,6 +30,20 @@ function captureQueueExits() {
   };
 }
 
+/** Hold admission frames until the test explicitly advances each rendering opportunity. */
+function captureAdmissionFrames() {
+  const frames = new Map<number, FrameRequestCallback>();
+  let sequence = 0;
+  vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => { frames.set(++sequence, callback); return sequence; });
+  vi.stubGlobal('cancelAnimationFrame', (id: number) => { frames.delete(id); });
+  return {
+    async next() {
+      const callbacks = [...frames.values()]; frames.clear();
+      await act(async () => { callbacks.forEach(callback => callback(0)); await Promise.resolve(); });
+    },
+  };
+}
+
 async function sendFirst() {
   fireEvent.click(await screen.findByRole('button', { name: 'New conversation' }));
   const field = await screen.findByRole('combobox', { name: 'Message' });
@@ -39,10 +53,7 @@ async function sendFirst() {
 }
 
 it('keeps exactly one first sentence through accepted adoption, newer empty reads and parked content admission', async () => {
-  const frames = new Map<number, FrameRequestCallback>();
-  let sequence = 0;
-  vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => { frames.set(++sequence, callback); return sequence; });
-  vi.stubGlobal('cancelAnimationFrame', (id: number) => { frames.delete(id); });
+  const frames = captureAdmissionFrames();
   const commits: number[] = [];
   let sawWords = false;
   const fixture = renderFirstMessageFixture({ onCommit: () => {
@@ -64,10 +75,7 @@ it('keeps exactly one first sentence through accepted adoption, newer empty read
     await act(async () => { await fixture.client.invalidateQueries({ queryKey: ['harness-items', fixture.createdId()] }); });
     expect(words()).toHaveLength(1);
     expect(document.querySelector('[data-nc-thread]')).toBeNull();
-    for (let frame = 0; frame < 2; frame++) {
-      const callbacks = [...frames.values()]; frames.clear();
-      await act(async () => { callbacks.forEach(callback => callback(0)); await Promise.resolve(); });
-    }
+    await frames.next(); await frames.next();
     await waitFor(() => expect(document.querySelector('[data-nc-thread]')).not.toBeNull());
     expect(words()).toHaveLength(1);
     expect(words()[0].getAttribute('data-nc-turn')).toBe('unknown');
@@ -285,10 +293,7 @@ it('keeps recovered receipt adoption and its row when an older list read answers
 });
 
 it.each([FIRST_MESSAGE, 'Edited canonical input that the delayed queue reply must not replace.'])('preserves handed-off canonical ownership when a canceled delayed queued inspection answers (%s)', async edited => {
-  const frames = new Map<number, FrameRequestCallback>();
-  let sequence = 0;
-  vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => { frames.set(++sequence, callback); return sequence; });
-  vi.stubGlobal('cancelAnimationFrame', (id: number) => { frames.delete(id); });
+  const frames = captureAdmissionFrames();
   const commits: number[] = []; let capture = false;
   const fixture = renderFirstMessageFixture({ onCommit: () => { const count = [...document.querySelectorAll(':is([data-nc-turn="you"], [data-nc-turn="unknown"])')].filter(node => node.textContent === edited).length; if (count > 0) capture = true; if (capture) commits.push(count); } });
   const shownWords = () => [...document.querySelectorAll(':is([data-nc-turn="you"], [data-nc-turn="unknown"])')].map(element => element.textContent);
@@ -305,10 +310,7 @@ it.each([FIRST_MESSAGE, 'Edited canonical input that the delayed queue reply mus
     expect(words()).toHaveLength(edited === FIRST_MESSAGE ? 1 : 0);
     await waitFor(() => expect(fixture.outbox()).toMatchObject([{ sourceWitness: { itemId: 7 } }]));
     expect(document.querySelector('[data-nc-thread]')).toBeNull();
-    for (let frame = 0; frame < 2; frame++) {
-      const callbacks = [...frames.values()]; frames.clear();
-      await act(async () => { callbacks.forEach(callback => callback(0)); await Promise.resolve(); });
-    }
+    await frames.next(); await frames.next();
     // A source witness can already exist while its words still belong to the preview.
     // Capture only after the real ChatThread owns the projected source entry.
     const conversation = () => document.getElementById(`conversation-${cardId}`);
@@ -396,10 +398,7 @@ it('lets slow dependent reads finish across polling intervals and hand off witho
 }, 10_000);
 
 it('keeps the real first-input queue readable through parked thread admission', async () => {
-  const frames = new Map<number, FrameRequestCallback>();
-  let sequence = 0;
-  vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => { frames.set(++sequence, callback); return sequence; });
-  vi.stubGlobal('cancelAnimationFrame', (id: number) => { frames.delete(id); });
+  const frames = captureAdmissionFrames();
   let sawWords = false;
   const commits: number[] = [];
   const fixture = renderFirstMessageFixture({ running: true, refuseQueueDelete: true, onCommit: () => {
@@ -422,10 +421,7 @@ it('keeps the real first-input queue readable through parked thread admission', 
       expect(action.disabled || action.getAttribute('aria-disabled') === 'true').toBe(true); fireEvent.click(action);
     }
     expect(fixture.requests.filter(request => request.method !== 'GET' && request.path.includes('/planner/input'))).toHaveLength(0);
-    for (let frame = 0; frame < 2; frame++) {
-      const callbacks = [...frames.values()]; frames.clear();
-      await act(async () => { callbacks.forEach(callback => callback(0)); await Promise.resolve(); });
-    }
+    await frames.next(); await frames.next();
     await waitFor(() => expect(document.querySelector('[data-nc-thread]')).not.toBeNull());
     expect(screen.getByRole('button', { name: 'Edit queued message' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Delete this message' })).toBeTruthy();
@@ -508,14 +504,17 @@ it('keeps acknowledged deletion nondrawing over cached sources and retains its t
 });
 
 it('keeps one accepted first-input copy after successful real steer while current inspection is unavailable', async () => {
+  const frames = captureAdmissionFrames();
   const fixture = renderFirstMessageFixture({ running: true });
   try {
     await sendFirst(); fixture.queueOriginal();
     act(() => { fixture.answerCreate(); }); fixture.observe('queued');
-    await waitFor(() => {
-      const steer = screen.getByRole<HTMLButtonElement>('button', { name: 'Say it now' });
-      expect(steer.disabled || steer.getAttribute('aria-disabled') === 'true').toBe(false);
-    });
+    await waitFor(() => expect(document.querySelector('[data-nc-pending-entry="first-entry"]')).not.toBeNull());
+    // A visible queued row stays disabled until the real thread is admitted.
+    await frames.next(); await frames.next();
+    expect(document.querySelector('[data-nc-thread]')).not.toBeNull();
+    const action = screen.getByRole<HTMLButtonElement>('button', { name: 'Say it now' });
+    expect(action.disabled || action.getAttribute('aria-disabled') === 'true').toBe(false);
     fixture.observe('unavailable');
     const cardId = fixture.createdId();
     if (cardId === null) throw new Error('No actual created conversation');
@@ -586,18 +585,19 @@ it('starts an actual post-ACK history read when Delete is accepted before the fi
 
 it('keeps a real Delete acknowledgement stronger than freshly reread old unbound provisional input', async () => {
   vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
-  vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => { callback(0); return 1; });
-  vi.stubGlobal('cancelAnimationFrame', () => undefined);
+  const frames = captureAdmissionFrames();
   const exits = captureQueueExits();
   const fixture = renderFirstMessageFixture();
   focusManager.setFocused(true);
   try {
     await sendFirst(); fixture.project(0, FIRST_MESSAGE, true); fixture.queueOriginal();
     act(() => { fixture.answerCreate(); }); fixture.observe('queued');
-    await waitFor(() => {
-      const remove = screen.getByRole<HTMLButtonElement>('button', { name: 'Delete this message' });
-      expect(remove.disabled || remove.getAttribute('aria-disabled') === 'true').toBe(false);
-    });
+    await waitFor(() => expect(document.querySelector('[data-nc-pending-entry="first-entry"]')).not.toBeNull());
+    // A visible queued row stays disabled until the real thread is admitted.
+    await frames.next(); await frames.next();
+    expect(document.querySelector('[data-nc-thread]')).not.toBeNull();
+    const action = screen.getByRole<HTMLButtonElement>('button', { name: 'Delete this message' });
+    expect(action.disabled || action.getAttribute('aria-disabled') === 'true').toBe(false);
     fixture.observe('unavailable');
     const cardId = fixture.createdId();
     if (cardId === null) throw new Error('No actual created conversation');
