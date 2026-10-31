@@ -16,6 +16,7 @@ it('keeps execution folded and discloses current and completed tasks with their 
   const completed = view.container.querySelector<HTMLElement>('[data-nc-work-inventory] section[aria-label="Progress"]')!;
   expect(completed.querySelector('button[aria-expanded]')?.getAttribute('aria-expanded')).toBe('false');
   expect(completed.querySelector('h2')?.textContent).toBe('Progress');
+  expect(completed.querySelector('[data-nc-row]')).toBeNull();
   fireEvent.click(completed.querySelector('button[aria-expanded]')!);
   expect(completed.querySelector('button[aria-expanded]')?.getAttribute('aria-expanded')).toBe('true');
   fireEvent.click(screen.getByRole('button', { name: 'finished-a' }));
@@ -45,6 +46,7 @@ it('keeps a failure without additional detail in one compact status line', () =>
     cards={[]} openableCards={new Set()} mobilePanelObscured={false}
     canReopenTrack={false} canCloseTrack={false} adminGrantedAt={null} onRenameTrack={vi.fn()}
     closedControl={{ pending: false, setClosed: () => Promise.resolve(true), feedback: { error: null, clear: () => undefined, run: () => Promise.resolve(true) } }} onDeleteTrack={vi.fn()} onTrackDeleted={vi.fn()} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Progress' }));
   expect(screen.getAllByText('failed')).toHaveLength(1);
 });
 
@@ -55,6 +57,7 @@ it('shows a label-only failed execution without inventing an explanation', () =>
   } }]} cards={[]} openableCards={new Set()} mobilePanelObscured={false}
     canReopenTrack={false} canCloseTrack={false} adminGrantedAt={null} onRenameTrack={vi.fn()}
     closedControl={{ pending: false, setClosed: () => Promise.resolve(true), feedback: { error: null, clear: () => undefined, run: () => Promise.resolve(true) } }} onDeleteTrack={vi.fn()} onTrackDeleted={vi.fn()} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Progress' }));
   const row = view.container.querySelector('[data-nc-row="task:verify"]')!;
   expect(row.querySelector('[data-nc-task-status-text]')?.getAttribute('aria-hidden')).toBe('true');
   expect(screen.getAllByText('failed')).toHaveLength(1);

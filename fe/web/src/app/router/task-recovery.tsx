@@ -48,9 +48,11 @@ export function useCurrentTaskRows(trackId: string, rows: readonly ReportTaskRow
   const histories = useQueries({ queries: rows.map((row): UseQueryOptions<TaskRecoveryView> => ({
     queryKey: taskHistoryKey(trackId, row.key), enabled: false,
   })) });
+  const keyCounts = new Map<string, number>();
+  for (const row of rows) keyCounts.set(row.key, (keyCounts.get(row.key) ?? 0) + 1);
   return rows.map((row, index) => {
     if (row.state === 'withdrawn' || row.state === 'unreadable'
-      || rows.filter((candidate) => candidate.key === row.key).length !== 1) return row;
+      || keyCounts.get(row.key) !== 1) return row;
     const execution = currentTaskExecution(histories[index].data);
     return execution === undefined ? row : { ...row, execution };
   });

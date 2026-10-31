@@ -208,22 +208,24 @@ export function makeDesktopPainter(deps: DesktopPainterDeps): RowPainter<Desktop
     }),
 
     module: (parts) => {
-      const children = parts.children.map((leaf) => finish(leaf, parts.key));
+      const children = () => parts.children.map((leaf) => finish(leaf, parts.key));
       const rows = parts.children.every((leaf) => leaf.slot === 'row');
       const module = parts.key === 'work' ? <PanelModule key={parts.key} title={parts.title} bare
         moduleMarker={parts.key} titleFieldMarker={FIELD.moduleTitle}>
         <div data-nc-work-inventory="">
           {!rows
-            ? (deps.suppressEmpty ? <VisuallyHidden>{children}</VisuallyHidden> : children)
+            ? (deps.suppressEmpty ? <VisuallyHidden>{children()}</VisuallyHidden> : children())
             : <ContextGroup title={parts.title} collapsible {...deps.progressDisclosure}>
-              <ContextList aria-label="Execution progress">{children}</ContextList>
+              {open => open ? <ContextList aria-label="Execution progress">{children()}</ContextList> : null}
             </ContextGroup>}
         </div>
       </PanelModule> : (parts.key === 'cards' || parts.key === 'temporary') ? <PanelModule key={parts.key} title={parts.title} bare
         moduleMarker={parts.key} titleFieldMarker={FIELD.moduleTitle}>
         <ContextGroup title={parts.title} collapsible="controls" open={parts.key === 'cards'} secondaryAction={parts.key === 'cards' ? deps.cardsAction : undefined} actionVisibility="always">
-          <div {...(parts.key === 'cards' ? { 'data-nc-card-inventory': '' } : {})}>{rows ? <ContextList aria-label={parts.key === 'cards' ? 'Workbench tools' : 'Temporary terminals'}>{children}</ContextList> : children}</div>
-          {parts.key === 'cards' ? deps.cardEntries : undefined}
+          {open => open ? <>
+            <div {...(parts.key === 'cards' ? { 'data-nc-card-inventory': '' } : {})}>{rows ? <ContextList aria-label={parts.key === 'cards' ? 'Workbench tools' : 'Temporary terminals'}>{children()}</ContextList> : children()}</div>
+            {parts.key === 'cards' ? deps.cardEntries : undefined}
+          </> : null}
         </ContextGroup>
       </PanelModule> : (
         <PanelModule
@@ -237,7 +239,7 @@ export function makeDesktopPainter(deps: DesktopPainterDeps): RowPainter<Desktop
           titleFieldMarker={FIELD.moduleTitle}
         >
           <div data-nc-task-inventory="">
-          {!rows ? children : <InventoryGroups
+          {!rows ? children() : <InventoryGroups
             groups={inventorySections(parts.children, leaf => {
               if (leaf.slot === 'module') throw new Error('Nested inventory module');
               return leaf.group(parts.key);

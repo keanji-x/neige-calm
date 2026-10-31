@@ -1,7 +1,7 @@
 import { useTrackClosedControl } from './closed-control.ts';
 // Shared fixtures for the TrackPage behaviour and contract suites.
 
-import { render, type RenderResult } from '@testing-library/react';
+import { fireEvent, render, type RenderResult } from '@testing-library/react';
 import { vi } from 'vitest';
 
 import type { ReportTaskRow } from '../../../../../core/domain/report.ts';
@@ -78,8 +78,20 @@ export function renderPage(overrides: Partial<TrackPageProps> & LegacyActions = 
   return render(<PanelHost props={props} />);
 }
 
+/** Full projection oracles explicitly open disclosures; initial-state tests leave them folded. */
+export function openInventoryDisclosures(root: Element): void {
+  for (const button of root.querySelectorAll<HTMLButtonElement>('[data-nc-module] button[aria-expanded="false"][aria-controls]:not([aria-haspopup])')) {
+    fireEvent.click(button);
+  }
+  for (const details of root.querySelectorAll<HTMLDetailsElement>('details[data-nc-inventory-group]:not([open])')) {
+    details.open = true;
+    fireEvent(details, new Event('toggle'));
+  }
+}
+
 /** Capture real lazy menu contents after opening them; never synthesize projection fields or actions. */
 export async function captureContextProjection(root: Element): Promise<Element> {
+  openInventoryDisclosures(root);
   const { default: userEvent } = await import('@testing-library/user-event');
   const { waitFor } = await import('@testing-library/react');
   const snapshot = root.cloneNode(true) as Element;

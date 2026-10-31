@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import type { ReportFileLinkTarget } from '../../../../../core/domain/report-file.ts';
@@ -420,6 +420,9 @@ describe('ReportDocument', () => {
       )} empty={EMPTY} />);
       expect(screen.getByText('Kweichow')).toBeTruthy();
       expect(screen.getByText('600519')).toBeTruthy();
+      const reference = document.querySelector<HTMLDetailsElement>('[data-nc-report-reference]')!;
+      reference.open = true;
+      fireEvent(reference, new Event('toggle'));
       expect(screen.getByText('t-1')).toBeTruthy();
     });
 

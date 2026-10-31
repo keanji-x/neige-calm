@@ -13,7 +13,7 @@ import { deriveTrackPageView } from '../../../../../core/view/track-page.ts';
 import { checkProjectionIn } from '../../../../../tools/projection/public.ts';
 import { makeDesktopPainter } from './desktop-painter.tsx';
 import pageSource from './public.tsx?raw';
-import { captureContextProjection, manualCard as card, openableCardsOf, renderPage } from './test-fixtures.tsx';
+import { openInventoryDisclosures, captureContextProjection, manualCard as card, openableCardsOf, renderPage } from './test-fixtures.tsx';
 
 afterEach(cleanup);
 
@@ -58,6 +58,7 @@ const painter = () => makeDesktopPainter({
 function desktopPanel(container: Element): Element {
   const root = container.querySelector('[data-nc-desktop-panel]');
   expect(root, 'the desktop panel surface must be findable').not.toBeNull();
+  openInventoryDisclosures(root!);
   return root!;
 }
 

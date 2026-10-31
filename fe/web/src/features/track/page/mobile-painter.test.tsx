@@ -8,14 +8,18 @@ import { describe, expect, it, vi } from 'vitest';
 import type { PanelRow, RowModuleView } from '../../../../../core/view/panel.ts';
 import { checkProjection } from '../../../../../tools/projection/public.ts';
 import type { ProjectionNode } from '../../../../../tools/projection/public.ts';
+import { openInventoryDisclosures } from './test-fixtures.tsx';
 import { makeMobilePainter, paintMobileModule, type MobileLeaf } from './mobile-painter.tsx';
 
 /** The one mount every case uses: it renders exactly what the painter painted. */
-const mount = (painted: readonly MobileLeaf[]): ProjectionNode =>
-  render(<>{painted.map((leaf) => {
+const mount = (painted: readonly MobileLeaf[]): ProjectionNode => {
+  const root = render(<>{painted.map((leaf) => {
     if (leaf.slot !== 'module') throw new Error(`checkProjection handed back a ${leaf.slot} leaf`);
     return leaf.node;
   })}</>).container;
+  openInventoryDisclosures(root);
+  return root;
+};
 
 /** A titled, deletable card: `title !== kind`, so both fields have a carrier of
  *  their own, and the derivation offers the two actions this surface refuses. */
@@ -285,8 +289,11 @@ describe('the mobile painter is a faithful projection of a Cards module', () => 
 });
 
 describe('what the painted Cards module puts on screen', () => {
-  const paint = (module: RowModuleView) =>
-    render(<>{paintMobileModule(painter(), module)}</>).container;
+  const paint = (module: RowModuleView) => {
+    const root = render(<>{paintMobileModule(painter(), module)}</>).container;
+    openInventoryDisclosures(root);
+    return root;
+  };
 
   /* Both actions were filtered away, so Astryx generated no invisible button: the only button is the header's Back. */
   it('renders no per-row control', () => {
@@ -333,8 +340,11 @@ describe('the mobile painter is a faithful projection of a Tasks module', () => 
 
 /* The three boundaries, each read off the DOM as well: the projection reports one list for the whole module, these say which row is which. */
 describe('what the painted Tasks module does at PanelRow’s boundaries', () => {
-  const paint = (module: RowModuleView) =>
-    render(<>{paintMobileModule(painter(), module)}</>).container;
+  const paint = (module: RowModuleView) => {
+    const root = render(<>{paintMobileModule(painter(), module)}</>).container;
+    openInventoryDisclosures(root);
+    return root;
+  };
 
   it('still writes the title when the phrase adds nothing to the token', () => {
     const status = paint(boundaryTasks).querySelector('[data-nc-row="block-7"] [data-nc-status]');
@@ -385,8 +395,11 @@ describe('what the painted Tasks module does at PanelRow’s boundaries', () => 
 
 /* `RowAction.label` in both directions, on the same host element: a null label leaves no attribute at all. */
 describe('the mobile Task row’s action label', () => {
-  const paint = (module: RowModuleView) =>
-    render(<>{paintMobileModule(painter(), module)}</>).container;
+  const paint = (module: RowModuleView) => {
+    const root = render(<>{paintMobileModule(painter(), module)}</>).container;
+    openInventoryDisclosures(root);
+    return root;
+  };
 
   it('becomes the action host’s accessible name when the view model offers one', () => {
     const container = paint({ ...tasksModule, rows: [namedReveal] });
@@ -404,8 +417,11 @@ describe('the mobile Task row’s action label', () => {
 });
 
 describe('what the painted Tasks module puts on screen', () => {
-  const paint = (module: RowModuleView) =>
-    render(<>{paintMobileModule(painter(), module)}</>).container;
+  const paint = (module: RowModuleView) => {
+    const root = render(<>{paintMobileModule(painter(), module)}</>).container;
+    openInventoryDisclosures(root);
+    return root;
+  };
 
   /* `struck` has no carrier in the projection (`checkBadges` reads id, order and text), so this is its only carrier on this surface. */
   it('strikes through a withdrawn declaration but not an ordinary one', () => {
@@ -493,6 +509,7 @@ describe('what the painted Tasks module puts on screen', () => {
       makeMobilePainter({ onOpenTask, backLabel: 'Report', onBack: vi.fn() }),
       tasksModule,
     )}</>).container;
+    openInventoryDisclosures(container);
     const button = container.querySelector('[data-nc-row="block-3"] button')
       ?? container.querySelector('[data-nc-row="block-3"]');
     (button as HTMLElement).click();

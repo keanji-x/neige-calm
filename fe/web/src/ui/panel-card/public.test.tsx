@@ -31,6 +31,19 @@ describe('PanelModule title field marker', () => {
 });
 
 describe.each([true, 'controls'] as const)('ContextGroup disclosure (%s)', (collapsible) => {
+  it('lets the owner defer content until the disclosure opens', () => {
+    const content = vi.fn(() => <p>Deferred rows</p>);
+    render(<ContextGroup title="Resources" collapsible={collapsible}>
+      {open => open ? content() : null}
+    </ContextGroup>);
+    expect(content).not.toHaveBeenCalled();
+    expect(screen.queryByText('Deferred rows')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Resources' }));
+    expect(screen.getByText('Deferred rows')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Resources' }));
+    expect(screen.queryByText('Deferred rows')).toBeNull();
+  });
+
   it('honors controlled state without unmounting the body or nesting action buttons', () => {
     const onOpenChange = vi.fn();
     const onMenu = vi.fn();

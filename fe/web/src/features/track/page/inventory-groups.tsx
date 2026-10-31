@@ -6,7 +6,7 @@ import { SpringRotation } from '../../../ui/motion/rotation.tsx';
 import { Icon } from '../../../ui/icon/public.tsx';
 import styles from './inventory-groups.module.css';
 
-/** Keep collapsed rows mounted so actions, live state and the projection remain intact. */
+/** Projection summaries stay live; folded rows acquire their controls only when opened. */
 export function InventoryGroups<T>({ groups, noun, renderRows }: Readonly<{
   groups: readonly InventoryGroup<T>[];
   noun: 'task' | 'card';
@@ -33,7 +33,7 @@ export function InventoryGroups<T>({ groups, noun, renderRows }: Readonly<{
         <ListText tone="count" className={styles.count} aria-hidden="true">{group.rows.length}{group.attentionCount > 0 ? ` · ${group.attentionCount} alert${group.attentionCount === 1 ? '' : 's'}` : ''}</ListText>
         <SpringRotation className={styles.chevron} angle={group.open ? 90 : 0}><Icon name="chevron-right" size="sm" /></SpringRotation>
       </summary>
-      <div className={styles.content}>{renderRows(group.rows)}</div>
+      <div className={styles.content}>{group.open && renderRows(group.rows)}</div>
     </details>)}
   </div>;
 }

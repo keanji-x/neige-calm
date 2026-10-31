@@ -1,5 +1,5 @@
 /* The reference appendix's heading, measured in a real browser: jsdom computes no layout. */
-import { cleanup, render } from '@testing-library/react';
+import { cleanup, render, waitFor } from '@testing-library/react';
 import { page as browserPage } from 'vitest/browser';
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -8,6 +8,7 @@ import '../../../styles/entry.css';
 
 import type { ReportBlock } from '../../../../../core/domain/report.ts';
 import { ReportDocument } from './public.tsx';
+import { revealReportAnchor } from '../anchor/public.ts';
 
 afterEach(() => { cleanup(); document.body.replaceChildren(); });
 
@@ -18,6 +19,26 @@ const task = (id: string, key: string): ReportBlock => ({
 });
 
 const prose = (id: string, markdown: string): ReportBlock => ({ id, kind: 'prose', payload: { markdown } });
+
+it('admits a cold task destination before scrolling to its real browser geometry', async () => {
+  render(<>
+    <button onClick={() => revealReportAnchor('cold-task')}>Jump to deferred task</button>
+    <ReportDocument empty={null} report={{ summary: '', body: '', blocks: [
+      prose('intro', '# Document\n\n' + 'A visible paragraph before the task.\n\n'.repeat(80)),
+      task('cold-task', 'cold target'),
+    ] }} />
+  </>);
+  expect(document.querySelector('[data-nc-task-state]')).toBeNull();
+  await browserPage.getByRole('button', { name: 'Jump to deferred task' }).click();
+  await waitFor(() => {
+    expect(document.querySelector<HTMLDetailsElement>('[data-nc-report-reference]')?.open).toBe(true);
+    expect(document.querySelector<HTMLDetailsElement>('[data-nc-task-state]')?.open).toBe(true);
+    expect(document.getElementById('cold-task')?.textContent).toContain('goal for cold target');
+  });
+  const box = document.getElementById('cold-task')!.getBoundingClientRect();
+  expect(box.bottom).toBeGreaterThan(0);
+  expect(box.top).toBeLessThan(window.innerHeight);
+});
 
 /** The page publishes the two customs the document's grid is built from; without
  *  them the measure column falls back and the columns under test do not exist. */

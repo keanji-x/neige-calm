@@ -142,6 +142,7 @@ it('refreshes collapsed current execution through task events without reopening 
 it('keeps the current failed dependency explanation after loading pending task history', async () => {
   const { open, advance } = setup('dependency');
   const cause = 'Blocked by b (failed). Declare a new task in place of b before c can continue.';
+  await userEvent.click(await screen.findByRole('button', { name: 'Progress' }));
   expect(await screen.findByTitle(cause)).toBeTruthy();
   await open();
   await screen.findByText('Current attempt 2 · Queued');
@@ -160,6 +161,7 @@ it.each([
   ['capacity', 'All execution slots are occupied. Waiting for capacity.'],
 ] as const)('explains current admission blocker %s without requiring a projected row', async (mode, cause) => {
   await setup(mode).open();
+  await userEvent.click(screen.getByRole('button', { name: 'Progress' }));
   await screen.findByText(mode === 'capacity' ? 'Current attempt 2 · Queued' : 'Current attempt 2 · Waiting to start');
   expect(screen.getByText(cause)).toBeTruthy();
   expect(document.querySelector('[data-nc-task-state] > summary [title]')!.getAttribute('title')).toContain(cause);

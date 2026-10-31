@@ -1,4 +1,6 @@
 export const ARRIVAL_ATTRIBUTE = 'data-nc-arrived';
+export const REPORT_ANCHOR_REQUEST = 'nc-report-anchor-request';
+export type ReportAnchorRequest = CustomEvent<Readonly<{ resume: () => void }>>;
 
 type ArrivalElement = HTMLElement & { __neigeReportArrivalRun?: number };
 
@@ -44,6 +46,21 @@ export function revealReportAnchor(
   anchorId: string,
   root: Document = document,
   behavior: ScrollBehavior = 'auto',
+): void {
+  const element = root.getElementById(anchorId);
+  if (element === null) return;
+  // A report-owned deferred region may admit its content before geometry is read.
+  const request: ReportAnchorRequest = new CustomEvent(REPORT_ANCHOR_REQUEST, {
+    bubbles: true, cancelable: true,
+    detail: { resume: () => revealReadyReportAnchor(anchorId, root, behavior) },
+  });
+  if (element.dispatchEvent(request)) request.detail.resume();
+}
+
+function revealReadyReportAnchor(
+  anchorId: string,
+  root: Document,
+  behavior: ScrollBehavior,
 ): void {
   const element: ArrivalElement | null = root.getElementById(anchorId);
   if (element === null) return;

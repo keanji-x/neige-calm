@@ -7,6 +7,8 @@ import { ListText } from '../list-typography/public.tsx';
 import { SpringRotation } from '../motion/rotation.tsx';
 import styles from './context.module.css';
 
+type GroupContent = ReactNode | ((open: boolean) => ReactNode);
+
 /** One line and one optional overflow menu. Callers own content, actions and metadata. */
 export function ContextItem({ icon, label, metadata, trailing, buttonProps, menu, menuLabel, selected = false, unread = false }: Readonly<{
   icon: IconName | ReactElement;
@@ -33,10 +35,11 @@ export function ContextItem({ icon, label, metadata, trailing, buttonProps, menu
   </div>;
 }
 
-/** Shared group title, disclosure, spacing and optional host action. */
+/** Shared group title, disclosure, spacing and optional host action.
+ * A content callback lets the owner admit or retain content from the current open state. */
 export function ContextGroup({ title, children, collapsible = false, open, onOpenChange, count, action, secondaryAction, actionVisibility = 'intent' }: Readonly<{
   title: string;
-  children: ReactNode;
+  children: GroupContent;
   /** Controls mode preserves a region heading, including when header actions are absent. */
   collapsible?: boolean | 'controls';
   open?: boolean;
@@ -56,16 +59,16 @@ export function ContextGroup({ title, children, collapsible = false, open, onOpe
   if (collapsible) return <GroupDisclosure title={title} heading={heading} actions={actions} open={open} onOpenChange={onOpenChange}>{children}</GroupDisclosure>;
   return <section className={styles.group} aria-label={title}>
     <div className={styles.head}>{heading}{actions}</div>
-    {children}
+    {typeof children === 'function' ? children(true) : children}
   </section>;
 }
 
-/** Collapsible groups use sibling controls and retain their body while folded. */
+/** Collapsible groups retain ordinary children; callback children own their mounting policy. */
 function GroupDisclosure({ title, heading, actions, children, open, onOpenChange }: Readonly<{
   title: string;
   heading: ReactNode;
   actions: ReactNode;
-  children: ReactNode;
+  children: GroupContent;
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
 }>) {
@@ -85,7 +88,9 @@ function GroupDisclosure({ title, heading, actions, children, open, onOpenChange
       </button>
       <span className={styles.disclosureActions}>{actions}</span>
     </div>
-    <div id={contentId} hidden={!disclosure.isOpen}>{children}</div>
+    <div id={contentId} hidden={!disclosure.isOpen}>
+      {typeof children === 'function' ? children(disclosure.isOpen) : children}
+    </div>
   </section>;
 }
 

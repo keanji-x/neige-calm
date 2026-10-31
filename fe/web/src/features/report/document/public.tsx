@@ -3,7 +3,8 @@ import { EmptyState } from '../../../ui/empty-state/public.tsx';
 import { useCompactViewport } from '../../../ui/viewport/public.ts';
 // The report document — the main column on a track and an area: a sequence of typed blocks.
 
-import { useEffect, useMemo, type ReactNode } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, type ReactNode } from 'react';
+import { useState } from '../../../ui/state/public.ts';
 
 import { PreparedProseBlock, PlainReportText } from './content.tsx';
 export { ProseBlock, ReportTextLink } from './content.tsx';
@@ -21,7 +22,7 @@ import { type ReportSourceLinkTarget } from '../../../../../core/domain/report-s
 import { type ReportLinkPreviewResources } from '../link-preview/public.tsx';
 import { prepareReportDocument, type PreparedReport, type PreparedReportBlock } from './preparation.ts';
 import { ReportDetails } from './details.tsx';
-import { revealReportAnchor } from '../anchor/public.ts';
+import { REPORT_ANCHOR_REQUEST, revealReportAnchor, type ReportAnchorRequest } from '../anchor/public.ts';
 import { ReportAppBlock } from '../app/public.tsx';
 import { ReportWindowBlock } from '../window/public.tsx';
 import { ReportHtmlBlock } from '../html/public.tsx';
@@ -142,7 +143,7 @@ export function ReportDocument({
               ))}
               {processBlocks.length > 0 && (
                 <ReportReference blocks={processBlocks} backlinkCounts={backlinkCounts}
-                  tasks={taskRows ?? deriveReportTasks(prepared.report.blocks, taskVerdicts)} renderTaskExecution={renderTaskExecution}
+                  tasks={taskRows} verdicts={taskVerdicts} renderTaskExecution={renderTaskExecution}
                   referenceRepository={referenceRepository} onOpenLink={onOpenLink} onOpenFileLink={onOpenFileLink}
                   onOpenSourceLink={onOpenSourceLink} fileRoot={fileRoot} fileBasePath={fileBasePath} linkPreview={linkPreview} />
               )}
@@ -157,10 +158,11 @@ function isProcessBlock(block: ReportBlock): boolean {
   return isTaskBlock(block);
 }
 
-function ReportReference({ blocks, backlinkCounts, tasks, renderTaskExecution, ...textContext }: {
+function ReportReference({ blocks, backlinkCounts, tasks, verdicts, renderTaskExecution, ...textContext }: {
   blocks: readonly ReportBlock[];
   backlinkCounts?: ReadonlyMap<string, number>;
-  tasks: readonly ReportTaskRow[];
+  tasks?: readonly ReportTaskRow[];
+  verdicts?: readonly TaskVerdict[];
   referenceRepository: ReferenceRepository | null;
   onOpenLink?: (target: ReportLinkTarget) => void;
   onOpenFileLink?: (target: ReportFileLinkTarget) => void;
@@ -170,16 +172,39 @@ function ReportReference({ blocks, backlinkCounts, tasks, renderTaskExecution, .
   linkPreview?: ReportLinkPreviewResources;
   renderTaskExecution?: ReportDocumentProps['renderTaskExecution'];
 }) {
-  const tasksByBlock = new Map(tasks.map((task) => [task.blockId, task]));
+  const [visited, setVisited] = useState(false);
+  const region = useRef<HTMLDivElement | null>(null);
+  const pendingReveal = useRef<(() => void) | null>(null);
+  useLayoutEffect(() => {
+    const element = region.current;
+    if (element === null || visited) return;
+    const prepare = (event: Event) => {
+      if (!(event.target instanceof HTMLElement) || !blocks.some(block => block.id === (event.target as HTMLElement).id)) return;
+      event.preventDefault();
+      pendingReveal.current = (event as ReportAnchorRequest).detail.resume;
+      setVisited(true);
+    };
+    element.addEventListener(REPORT_ANCHOR_REQUEST, prepare);
+    return () => { element.removeEventListener(REPORT_ANCHOR_REQUEST, prepare); };
+  }, [blocks, setVisited, visited]);
+  useLayoutEffect(() => {
+    if (!visited) return;
+    const resume = pendingReveal.current;
+    pendingReveal.current = null;
+    resume?.();
+  }, [visited]);
+  const rows = visited ? tasks ?? deriveReportTasks(blocks, verdicts) : [];
+  const tasksByBlock = new Map(rows.map((task) => [task.blockId, task]));
   return (
-    <div className={styles.row}>
-      <ReportDetails title="Reference" meta={`${blocks.length} ${blocks.length === 1 ? 'task' : 'tasks'}`} layout="grid" reference>
+    <div className={styles.row} ref={region}>
+      <ReportDetails title="Reference" meta={`${blocks.length} ${blocks.length === 1 ? 'task' : 'tasks'}`} layout="grid" reference
+        onToggle={open => { if (open) setVisited(true); }}>
         {/* Not `BlockSlot`: a slot is `display: contents` over the article's grid, and this `<details>` is not that grid. */}
         {blocks.map((block) => {
           const backlinks = backlinkCounts?.get(block.id) ?? 0;
           return (
             <div key={block.id} className={styles.referenceItem} id={block.id}>
-              <BlockBody block={block} task={tasksByBlock.get(block.id)} renderTaskExecution={renderTaskExecution} {...textContext} />
+              {visited && <BlockBody block={block} task={tasksByBlock.get(block.id)} renderTaskExecution={renderTaskExecution} {...textContext} />}
               {backlinks > 0 && (
                 <span
                   className={styles.referenceSidenote}

@@ -10,7 +10,7 @@ import { deriveTrackPageView } from '../../../../../core/view/track-page.ts';
 import { useState } from '../../../ui/state/public.ts';
 import { Dialog } from '../../../ui/dialog/public.tsx';
 import { TrackPage, type TrackInputNotification, type TrackPageProps } from './public.tsx';
-import { manualCard as card, renderPage, track } from './test-fixtures.tsx';
+import { openInventoryDisclosures, manualCard as card, renderPage, track } from './test-fixtures.tsx';
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
@@ -27,6 +27,7 @@ it('leaves Escape to a dialog above an open panel', async () => {
 async function openCards(): Promise<void> {
   await userEvent.click(screen.getByRole('button', { name: 'Track actions' }));
   await userEvent.click(screen.getByRole('menuitem', { name: 'Tools' }));
+  openInventoryDisclosures(document.body);
 }
 
 async function openDesktopTrackActions(): Promise<void> {
@@ -397,7 +398,7 @@ describe('TrackPage task inventory', () => {
     const { container } = renderPage({
       cards, tasks,
       track: track({ cards: { busy: 'working', asking: 'input' } }),
-    });
+    }); openInventoryDisclosures(document.body);
     const desktop = container.querySelector('[data-nc-desktop-panel]')!;
     const rows = [...desktop.querySelectorAll('[data-nc-row]')];
     const indicators = Object.fromEntries(rows.map((row): [string, string | null] => [
@@ -432,7 +433,7 @@ describe('TrackPage task inventory', () => {
     const { container } = renderPage({
       cards, tasks,
       track: track({ cards: { busy: 'working', broken: 'failed' } }),
-    });
+    }); openInventoryDisclosures(document.body);
     const desktop = container.querySelector('[data-nc-desktop-panel]')!;
     const row = (id: string) => {
       const found = [...desktop.querySelectorAll('[data-nc-row]')].find((node) => node.getAttribute('data-nc-row') === id);
@@ -511,7 +512,7 @@ describe('TrackPage task inventory', () => {
     };
     const { container } = renderPage({
       tasks: [running('alpha', 'running', 'card-9', 'terminal'), queued],
-    });
+    }); openInventoryDisclosures(document.body);
     const inventory = container.querySelector('[data-nc-module="work"]');
     expect(inventory).not.toBeNull();
     expect([...inventory!.querySelectorAll('[data-nc-task-status-text]')].map((node) => node.textContent))
@@ -524,6 +525,7 @@ describe('TrackPage task inventory', () => {
   it('includes canceled tasks in the compact status totals', () => {
     renderPage({ tasks: [running('stopped', 'canceled', null)] });
     expect(screen.getByRole('button', { name: 'Progress' }).getAttribute('aria-expanded')).toBe('false');
+    openInventoryDisclosures(document.body);
     expect(document.querySelector('[data-nc-row="task:b-stopped"] [data-nc-status]')?.textContent).toBe('canceled');
   });
 
@@ -609,10 +611,10 @@ describe('TrackPage task inventory', () => {
   });
 
   it('strikes through a withdrawn declaration but not an ordinary one', () => {
-    renderPage({ tasks: [task('gone', 'withdrawn')] });
+    renderPage({ tasks: [task('gone', 'withdrawn')] }); openInventoryDisclosures(document.body);
     expect(screen.getByText('gone').className).toContain('taskWithdrawn');
     cleanup();
-    renderPage({ tasks: [task('beta', 'not-ready')] });
+    renderPage({ tasks: [task('beta', 'not-ready')] }); openInventoryDisclosures(document.body);
     expect(screen.getByText('beta').className).not.toContain('taskWithdrawn');
   });
 });
@@ -633,6 +635,7 @@ describe('TrackPage card inventory', () => {
     expect(screen.getByRole('menuitem', { name: 'Conversations' })).toBeTruthy();
     expect(screen.getByRole('menuitem', { name: 'Delete track' })).toBeTruthy();
     await userEvent.click(screen.getByRole('menuitem', { name: 'Tasks' }));
+    openInventoryDisclosures(document.body);
     expect(screen.getByRole('heading', { name: 'Tasks' })).toBeTruthy();
     expect(screen.queryByRole('heading', { name: 'Tools' })).toBeNull();
     await userEvent.click(screen.getByRole('button', { name: 'mobile-layout' }));
@@ -649,6 +652,7 @@ describe('TrackPage card inventory', () => {
       panel: 'tasks',
       onOpenTask,
     });
+    openInventoryDisclosures(container);
     const row = container.querySelector('[data-nc-mobile-panel] [data-nc-row="task-1"]');
     expect(row, 'the mobile task row must be on the page').not.toBeNull();
     await userEvent.click(within(row as HTMLElement).getByRole('button'));

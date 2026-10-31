@@ -14,7 +14,7 @@ import { deriveTrackPageView, executionActivityLabelOf } from '../../../../../co
 import { checkProjectionIn } from '../../../../../tools/projection/public.ts';
 import { makeMobilePainter } from './mobile-painter.tsx';
 import pageSource from './public.tsx?raw';
-import { manualCard as card, openableCardsOf, renderPage, track } from './test-fixtures.tsx';
+import { openInventoryDisclosures, manualCard as card, openableCardsOf, renderPage, track } from './test-fixtures.tsx';
 
 afterEach(cleanup);
 
@@ -37,6 +37,7 @@ const painter = () => makeMobilePainter({ onOpenTask: vi.fn(), backLabel: 'Repor
 function mobilePanel(container: Element): Element {
   const root = container.querySelector('[data-nc-mobile-panel]');
   expect(root, 'the mobile panel surface must be findable').not.toBeNull();
+  openInventoryDisclosures(root!);
   return root!;
 }
 
@@ -292,6 +293,7 @@ describe('mobile and desktop paint the same data-nc-activity set', () => {
   it.each(['tasks', 'cards'] as const)('on the %s module', (panel) => {
     const { container } = renderPage({ cards: CARDS, tasks: TASKS, track: verdicts, panel });
     const mobile = activityByRow(mobilePanel(container));
+    openInventoryDisclosures(container);
     const desktop = activityByRow(container.querySelector('[data-nc-desktop-panel]')!);
     const module = new Set((panel === 'cards' ? cardsModule(CARDS) : tasksModule(TASKS))
       .flatMap((view) => view.rows.map((row) => row.id)));

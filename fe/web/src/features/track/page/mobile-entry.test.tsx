@@ -13,7 +13,7 @@ import { MARKER } from '../../../../../core/view/panel.ts';
 import type { RowModuleView, RowPainter } from '../../../../../core/view/panel.ts';
 import { deriveTrackPageView } from '../../../../../core/view/track-page.ts';
 import type { MobileLeaf } from './mobile-painter.tsx';
-import { manualCard as card, openableCardsOf, renderPage } from './test-fixtures.tsx';
+import { openInventoryDisclosures, manualCard as card, openableCardsOf, renderPage } from './test-fixtures.tsx';
 
 /** Every call the page made, in order. */
 const calls: { painter: RowPainter<MobileLeaf>; module: RowModuleView }[] = [];
@@ -70,6 +70,7 @@ const PAINTED_TASK_TEXT: readonly string[] = ['Tasks', 'alpha-impl', 'beta-gate'
 function mobilePanel(container: Element): Element {
   const root = container.querySelector('[data-nc-mobile-panel]');
   expect(root, 'the mobile panel surface must be findable').not.toBeNull();
+  openInventoryDisclosures(root!);
   return root!;
 }
 

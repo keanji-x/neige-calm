@@ -70,3 +70,13 @@ Only prepared data is memoized for the mounted consumer. Current roots and
 callbacks remain renderer inputs; closing a preview still releases it, and reopening
 still reads the file again. No global source cache, Track card identity, new read
 policy or asynchronous preparation is introduced for these consumers.
+
+Reference tasks initially keep only their count and block anchors. Opening Reference
+admits task summaries; opening a task admits its Markdown, fields and execution
+owner. Once admitted, these contents remain mounted while folded so loaded execution
+ownership and local state survive reopening. Document prose remains available to
+native Find and selection; deferred task detail becomes searchable after admission.
+The existing anchor reveal emits a cancelable, report-local preparation request.
+Reference can defer geometry until its summaries commit, then resume the same reveal.
+No navigation or task policy is added to generic UI, and the full read and core
+Workbench ownership inputs remain unchanged in this rendering-only stage.

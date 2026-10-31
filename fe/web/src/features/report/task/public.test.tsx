@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { ReportTaskBlock } from './public.tsx';
@@ -9,6 +9,12 @@ afterEach(cleanup);
 /** The `label / value` grid: `['Done when', '…', 'Declared by', '…']`. */
 function fields(): string[] {
   return [...document.querySelectorAll('dt, dd')].map((node) => node.textContent ?? '');
+}
+
+function openTask(): void {
+  const details = document.querySelector<HTMLDetailsElement>('details')!;
+  details.open = true;
+  fireEvent(details, new Event('toggle'));
 }
 
 describe('ReportTaskBlock', () => {
@@ -29,6 +35,8 @@ describe('ReportTaskBlock', () => {
       acceptance: 'No direct call sites left.',
       gate: { steps: [{ name: 'fmt', cmd: 'cargo fmt --check' }] },
     }} />);
+    expect(fields()).toEqual([]);
+    openTask();
     expect(fields()).toEqual([
       'Done when', 'No direct call sites left.',
       'Checks', 'cargo fmt --check',
@@ -50,6 +58,7 @@ describe('ReportTaskBlock', () => {
     }} />);
     expect(screen.getByText('walk-fallback')).toBeTruthy();
     expect(screen.getByText('Withdrawn')).toBeTruthy();
+    openTask();
     expect(fields()).toEqual(['Declared by', 'Planner agent', 'Withdrawn by', 'You']);
   });
 
@@ -71,6 +80,8 @@ describe('ReportTaskBlock', () => {
     expect(summary.textContent).toContain('Declaration ready');
     expect(summary.textContent).not.toContain('Route the ingest call sites');
     expect(summary.querySelector('dl')).toBeNull();
+    expect(details!.querySelector('dl')).toBeNull();
+    openTask();
     expect(details!.querySelector('dl')).not.toBeNull();
   });
 

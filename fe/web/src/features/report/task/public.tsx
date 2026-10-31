@@ -27,10 +27,12 @@ export function ReportTaskBlock({ payload, blockId, task, renderExecution, textC
   renderExecution?: (task: ReportTaskRow, expanded: boolean) => ReactNode;
 }) {
   const [expanded, setExpanded] = useState(false);
+  const [visited, setVisited] = useState(false);
+  const toggle = (open: boolean) => { setExpanded(open); if (open) setVisited(true); };
   if (isWithdrawn(payload)) {
     const reason = payload.tombstone.reason;
     return (
-      <details onToggle={event => { setExpanded(event.currentTarget.open); }} className={styles.task} data-nc-task-state="withdrawn">
+      <details onToggle={event => { toggle(event.currentTarget.open); }} className={styles.task} data-nc-task-state="withdrawn">
         <summary className={styles.head}>
           <SpringRotation className={styles.marker} angle={expanded ? 90 : 0}><Icon name="chevron-right" size="sm" /></SpringRotation>
           <span className={styles.kindLabel}>Task</span>
@@ -38,7 +40,7 @@ export function ReportTaskBlock({ payload, blockId, task, renderExecution, textC
           <span className={styles.spacer} />
           <span className={styles.withdrawn}>Withdrawn</span>
         </summary>
-        {reason !== null && reason !== undefined && reason !== '' && (
+        {visited && <>{reason !== null && reason !== undefined && reason !== '' && (
           <div className={styles.goal}><ProseBlock markdown={reason} blockId={null} compact {...textContext} /></div>
         )}
         <dl className={styles.fields}>
@@ -46,7 +48,7 @@ export function ReportTaskBlock({ payload, blockId, task, renderExecution, textC
           <dd className={styles.value}>{DECLARED_BY[payload.declared_by]}</dd>
           <dt className={styles.label}>Withdrawn by</dt>
           <dd className={styles.value}>{DECLARED_BY[payload.tombstoned_by]}</dd>
-        </dl>
+        </dl></>}
       </details>
     );
   }
@@ -59,7 +61,7 @@ export function ReportTaskBlock({ payload, blockId, task, renderExecution, textC
     task?.execution === undefined ? task?.pendingReason?.message : task.execution.blockingReason,
   ].filter(Boolean).join(' — ');
   return (
-    <details onToggle={(event) => { setExpanded(event.currentTarget.open); }} className={styles.task} data-nc-task-state={status ?? (live.ready ? 'ready' : 'not-ready')}>
+    <details onToggle={(event) => { toggle(event.currentTarget.open); }} className={styles.task} data-nc-task-state={status ?? (live.ready ? 'ready' : 'not-ready')}>
       <summary className={styles.head}>
         <SpringRotation className={styles.marker} angle={expanded ? 90 : 0}><Icon name="chevron-right" size="sm" /></SpringRotation>
         <span className={styles.kindLabel}>Task</span>
@@ -73,7 +75,7 @@ export function ReportTaskBlock({ payload, blockId, task, renderExecution, textC
         </span>
       </summary>
 
-      {task !== undefined && live.key !== '' && renderExecution?.(task, expanded)}
+      {visited && <>{task !== undefined && live.key !== '' && renderExecution?.(task, expanded)}
       {worker !== null && <div className={styles.goal}>
         {worker.kind === 'terminal' ? worker.command : <ProseBlock markdown={worker.goal} blockId={null} compact {...textContext} />}
       </div>}
@@ -101,7 +103,7 @@ export function ReportTaskBlock({ payload, blockId, task, renderExecution, textC
         )}
         <dt className={styles.label}>Declared by</dt>
         <dd className={styles.value}>{DECLARED_BY[live.declared_by]}</dd>
-      </dl>
+      </dl></>}
     </details>
   );
 }

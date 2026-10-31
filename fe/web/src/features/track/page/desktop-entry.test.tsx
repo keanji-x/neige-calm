@@ -13,7 +13,7 @@ import { MARKER } from '../../../../../core/view/panel.ts';
 import type { RowPainter, TrackPageView } from '../../../../../core/view/panel.ts';
 import { deriveTrackPageView } from '../../../../../core/view/track-page.ts';
 import type { DesktopLeaf } from './desktop-painter.tsx';
-import { manualCard as card, openableCardsOf, renderPage } from './test-fixtures.tsx';
+import { openInventoryDisclosures, manualCard as card, openableCardsOf, renderPage } from './test-fixtures.tsx';
 
 /** Every call the page made, in order. */
 const calls: { painter: RowPainter<DesktopLeaf>; view: TrackPageView }[] = [];
@@ -65,6 +65,7 @@ const PAINTED_TEXT: readonly string[] = [
 function desktopPanel(container: Element): Element {
   const root = container.querySelector('[data-nc-desktop-panel]');
   expect(root, 'the desktop panel surface must be findable').not.toBeNull();
+  openInventoryDisclosures(root!);
   return root!;
 }
 
