@@ -209,6 +209,17 @@ async fn a_quiet_worker_goes_to_the_tracks_watcher_once_per_episode_never_to_the
     // Quiet for the threshold: the watcher is created, a plain Assistant, and sent the episode.
     let first = format!("{}:{T0}", w.task);
     assert_eq!(d.tick(T0 + QUIET_MS).await, vec![first.clone()]);
+    let receipts: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM conversation_system_assistant_receipts WHERE card_id=?1",
+    )
+    .bind(&card)
+    .fetch_one(h.sql.pool())
+    .await
+    .unwrap();
+    assert_eq!(
+        receipts, 2,
+        "real detector accepts System bootstrap and episode"
+    );
     let (kind, role, profile): (String, String, String) = sqlx::query_as(
         "SELECT kind, role, json_extract(payload, '$.harness_profile') FROM cards WHERE id = ?1",
     )
