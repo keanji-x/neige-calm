@@ -46,6 +46,7 @@ it('keeps task link admission, literals, nesting and disclosure intact', async (
   expect(screen.getByRole('button', { name: 'issue #9' })).toBeTruthy();
   await userEvent.click(screen.getByRole('button', { name: 'file' }));
   expect(openFile).toHaveBeenCalledWith({ path: 'inside.ts' });
+  await userEvent.click(screen.getByText('command', { exact: true }));
   const command = screen.getByText('command', { exact: true }).closest('details');
   expect(command?.textContent).toContain('echo "issue #10 fe/core/command.ts"');
   expect(command?.textContent).toContain('echo "PR #11"');

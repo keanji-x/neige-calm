@@ -1195,7 +1195,7 @@ function TrackRouteBody({
       .sort((left, right) => left.originalIndex - right.originalIndex)
       .map((slot) => slot.wire);
   }, [cardRegistry, cards]);
-  const tasks = useCurrentTaskRows(track.id, joinedTasks);
+  const tasks = useCurrentTaskRows(transport, unauthorized, track.id, joinedTasks);
   /* From the task rows the TASKS module draws, so a worker card and its row read one attempt status.
    * `tasks` is a new array every render: keyed by content, so the board's items keep their identity. */
   const noticeKey = JSON.stringify([...parkedWorkerNotices(tasks)]);

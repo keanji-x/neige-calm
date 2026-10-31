@@ -15,6 +15,8 @@ import type { CardEntry } from '../../systems/cards/public.js';
 import { ThemeProvider } from '../theme/public.tsx';
 import { APP_BASEPATH, createAppRouter } from './public.tsx';
 import { bootTestCardRuntime } from './test-card-runtime.ts';
+import { queryKeys } from '../providers/queries.ts';
+import type { TaskVerdict } from '../../../../core/domain/report.ts';
 
 const AREA = { id: 'c1', name: 'Work', color: '#000', sort: 1, kind: 'user', created_at: 1, updated_at: 1 };
 const TRACK = { workspace: { isolation: 'none' as const, kind: 'attached' as const, path: '/tmp', frozen_at: null },
@@ -147,7 +149,7 @@ function setup(
   render(<QueryClientProvider client={client}><ThemeProvider storage={themeStorage}>
     <RouterProvider router={router} />
   </ThemeProvider></QueryClientProvider>);
-  return { runtime, reportReads: () => reportReads, requests };
+  return { runtime, client, reportReads: () => reportReads, requests };
 }
 
 async function inventoryLabels(): Promise<string[]> {
@@ -340,22 +342,24 @@ describe('track route CARDS panel', () => {
   });
 });
 
+async function openTasks(): Promise<HTMLElement> {
+  const { inventory, toggle } = await waitFor(() => {
+    const found = document.querySelector('[data-nc-work-inventory]');
+    if (found === null) throw new Error('task inventory has not rendered');
+    return { inventory: found as HTMLElement,
+      toggle: within(found as HTMLElement).getByRole('button', { name: 'Progress' }) };
+  });
+  if (toggle.getAttribute('aria-expanded') === 'false') await userEvent.click(toggle);
+  return inventory;
+}
+
 describe('track route TASKS panel', () => {
   const taskRow = async (name: RegExp) => {
     const inventory = await openTasks();
     return within(inventory).findByRole('button', { name });
   };
   /** Scoped to the TASKS module: `terminal` and `codex` are also words the CARDS module prints. */
-  async function openTasks(): Promise<HTMLElement> {
-    const inventory = await waitFor(() => {
-      const found = document.querySelector('[data-nc-work-inventory]');
-      if (found === null) throw new Error('task inventory has not rendered');
-      return found as HTMLElement;
-    });
-    const toggle = within(inventory).getByRole('button', { name: 'Progress' });
-    if (toggle.getAttribute('aria-expanded') === 'false') await userEvent.click(toggle);
-    return inventory;
-  }
+
 
   /* The control is the row's kind, not the row; the row itself always reveals the block. */
   it('opens the worker card from the kind of a task the registry can draw', async () => {
@@ -390,7 +394,7 @@ describe('track route TASKS panel', () => {
   });
 
   it('reveals the block from the row even when the task has an openable card', async () => {
-    setup(TASK_CARDS, { taskDiagnostics: TASK_DIAGNOSTICS });
+    setup(TASK_CARDS, { taskDiagnostics: TASK_DIAGNOSTICS }); await openTasks();
     await waitFor(() => expect(document.querySelector('[data-nc-work-inventory] [data-nc-row="task:b-term"] [data-nc-row-action="reveal-block"]')?.getAttribute('aria-description')).toBe('running'));
     const row = await taskRow(/^has-adapter/);
     expect(row.getAttribute('title')).toBeNull();
@@ -401,7 +405,7 @@ describe('track route TASKS panel', () => {
 
   /* The registry decides where a kind can go, not whether the kernel's verdict is reported. */
   it('reports the run on both rows, whichever card the work landed on', async () => {
-    setup(TASK_CARDS, { taskDiagnostics: TASK_DIAGNOSTICS });
+    setup(TASK_CARDS, { taskDiagnostics: TASK_DIAGNOSTICS }); await openTasks();
     await waitFor(() => expect(document.querySelector('[data-nc-work-inventory] [data-nc-row="task:b-term"] [data-nc-row-action="reveal-block"]')?.getAttribute('aria-description')).toBe('running'));
     await waitFor(() => expect(document.querySelector('[data-nc-work-inventory] [data-nc-row="task:b-unknown"] [data-nc-row-action="reveal-block"]')?.getAttribute('aria-description')).toBe('running'));
   });
@@ -428,7 +432,7 @@ describe('track route TASKS panel', () => {
     setup(TASK_CARDS, {
       taskDiagnostics: TASK_DIAGNOSTICS,
       overlays: [activityOverlay([{ card_id: UNKNOWN_TERMINAL.id, state: 'failed' }])],
-    });
+    }); await openTasks();
     await waitFor(() => expect(document.querySelector('[data-nc-work-inventory] [data-nc-row="task:b-term"] [data-nc-activity]')
       ?.getAttribute('data-nc-activity')).toBe('failed'));
     await userEvent.click(within(await openTasks()).getByRole('button', { name: 'Actions for has-adapter' }));
@@ -440,7 +444,7 @@ describe('track route TASKS panel', () => {
     setup(TASK_CARDS, { taskDiagnostics: [{
       blockId: 'b-term', key: 'has-adapter', schedulable: true,
       status: 'failed', statusDetail: 'gate-red', workerCardId: 'card-term',
-    }] });
+    }] }); await openTasks();
     await waitFor(() => expect(document.querySelector('[data-nc-work-inventory] [data-nc-row="task:b-term"] [data-nc-row-action="reveal-block"]')?.getAttribute('aria-description')).toBe('failed — gate-red'));
     const row = await taskRow(/^has-adapter$/);
     await userEvent.click(row);
@@ -512,7 +516,7 @@ describe('track route TASKS panel convergence', () => {
 
   it('picks up the silent worker-card stamp on its own, with no event at all', async () => {
     let verdicts: readonly unknown[] = dispatched;
-    setup(TASK_CARDS, { taskDiagnostics: () => verdicts });
+    setup(TASK_CARDS, { taskDiagnostics: () => verdicts }); await openTasks();
     // Pre-stamp: the verdict carries no `workerCardId` yet, so there is nothing to open.
     await waitFor(() => expect(document.querySelector('[data-nc-work-inventory] [data-nc-row="task:b-term"] [data-nc-row-action="reveal-block"]')?.getAttribute('aria-description')).toBe('dispatched'));
     expect(screen.queryByRole('button', { name: 'terminal' })).toBeNull();
@@ -520,7 +524,7 @@ describe('track route TASKS panel convergence', () => {
     verdicts = running;
     await vi.advanceTimersByTimeAsync(3_000);
 
-    await userEvent.click(await screen.findByRole('button', { name: 'Progress' }));
+    await openTasks();
     const converged = await screen.findByRole('button', { name: 'Actions for has-adapter' });
     await userEvent.click(converged);
     expect((await screen.findByRole('menuitem', { name: 'View execution' })).querySelector('[title]')?.getAttribute('title')).toBe('Open the worker card for has-adapter');
@@ -528,7 +532,7 @@ describe('track route TASKS panel convergence', () => {
   });
 
   it('stops polling once every task is terminal, so a settled track costs nothing', async () => {
-    const { reportReads } = setup(TASK_CARDS, { taskDiagnostics: () => done });
+    const { reportReads } = setup(TASK_CARDS, { taskDiagnostics: () => done }); await openTasks();
     await waitFor(() => expect(document.querySelector('[data-nc-work-inventory] [data-nc-row="task:b-term"] [data-nc-row-action="reveal-block"]')?.getAttribute('aria-description')).toBe('done'));
     const afterFirstRead = reportReads();
     await vi.advanceTimersByTimeAsync(30_000);
@@ -576,9 +580,9 @@ describe('track route worker card notice', () => {
 
   it('draws no notice while the attempt runs', async () => {
     window.history.replaceState({}, '', `${APP_BASEPATH}/track/w1?card=${ORDINARY_CODEX.id}`);
-    setup([...TASK_CARDS, PLAIN_TERMINAL], { taskDiagnostics: verdicts('running') });
-    await waitFor(() => expect(document.querySelector('[data-nc-work-inventory] [data-nc-row="task:b-codex"] [data-nc-row-action="reveal-block"]')
-      ?.getAttribute('aria-description')).toBe('running'));
+    const { client } = setup([...TASK_CARDS, PLAIN_TERMINAL], { taskDiagnostics: verdicts('running') });
+    await waitFor(() => expect(client.getQueryData<readonly TaskVerdict[]>(queryKeys.trackReport('w1'))
+      ?.find(row => row.blockId === 'b-codex')?.status).toBe('running'));
     expect(cell(ORDINARY_CODEX.id)).toBeTruthy();
     expect(document.querySelectorAll('[data-nc-terminal-notice]')).toHaveLength(0);
   });

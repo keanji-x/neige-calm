@@ -1,6 +1,6 @@
 /* The mobile Task row's strike-through, measured: a class assertion cannot say whether the word is struck. `.mobileRowStruck` lives inside `@media (width < 60rem)`, evaluated against the iframe the suite renders into. */
 import { cleanup, render } from '@testing-library/react';
-import { page as browserPage } from 'vitest/browser';
+import { page as browserPage, userEvent } from 'vitest/browser';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 /* The whole cascade, and before the CSS Module. */
@@ -55,7 +55,7 @@ describe('a withdrawn declaration on the mobile Tasks page', () => {
 
     const panel = document.querySelector('[data-nc-mobile-panel]');
     expect(panel, 'the mobile panel must be on the page').not.toBeNull();
-    for (const summary of panel!.querySelectorAll<HTMLElement>('details:not([open]) > summary')) summary.click();
+    for (const summary of panel!.querySelectorAll<HTMLElement>('details:not([open]) > summary')) await userEvent.click(summary);
     const badges = Array.from(panel!.querySelectorAll('[data-nc-badge="declaration"]'));
     expect(badges.map((badge) => badge.textContent)).toEqual(['Unreadable', 'Withdrawn']);
 

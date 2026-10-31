@@ -1,5 +1,6 @@
 import { act, cleanup, screen, waitFor } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
+import userEvent from '@testing-library/user-event';
 import { prepareReportDocument, type PreparedReport, type ReportPreparationPort } from '../../features/report/document/preparation.ts';
 import type { TrackReport } from '../../../../core/domain/report.ts';
 import type { ApiRequest, ApiTransportResponse } from '../../../../core/api/types.ts';
@@ -197,6 +198,9 @@ it('keeps revision-specific series, preview and task demand with the displayed r
   await waitFor(() => expect(held.jobs).toHaveLength(2)); await held.release(1);
   await screen.findByText('Pending — Revision one retained');
   await waitFor(() => expect(fixture.client.getQueryCache().find({ queryKey: queryKeys.trackPreviews('daily') })?.isActive()).toBe(true));
+  await userEvent.click(screen.getByText('Reference', { exact: true }));
+  await userEvent.click(await screen.findByText('old-task', { exact: true }));
+  await screen.findByText('Old task declaration');
   expect(screen.getAllByText('Old task declaration').length).toBeGreaterThan(0);
   await replace([{ ...prose, payload: { markdown: '# Replacement model' } }, { ...series, rev: 2 }]);
   await waitFor(() => expect(held.jobs).toHaveLength(3));

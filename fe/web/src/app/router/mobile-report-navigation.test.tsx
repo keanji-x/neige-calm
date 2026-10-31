@@ -206,6 +206,7 @@ describe('the mobile report panel is the URL (#1191 §2.4)', () => {
   it('sends a TASKS entry to the block anchor and clears ?panel=', async () => {
     const router = setup('/track/w1?panel=tasks&from=area');
     const panel = await waitFor(() => { const found = mobilePanel(); expect(found).not.toBeNull(); return found!; });
+    await userEvent.click(await within(panel as HTMLElement).findByText('Waiting', { exact: true }));
     await userEvent.click(await within(panel as HTMLElement).findByRole('button', { name: /ship-it/ }));
     await waitFor(() => { expect(href(router)).toBe('/track/w1?from=area#b-task'); });
   });

@@ -80,3 +80,6 @@ The existing anchor reveal emits a cancelable, report-local preparation request.
 Reference can defer geometry until its summaries commit, then resume the same reveal.
 No navigation or task policy is added to generic UI, and the full read and core
 Workbench ownership inputs remain unchanged in this rendering-only stage.
+On a later visit, app keeps previously admitted execution queries refreshed while
+their cached evidence drives the inventory, even before Reference is opened again.
+Never-opened execution history remains dormant; both consumers share one query policy.

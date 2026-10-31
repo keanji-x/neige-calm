@@ -9,22 +9,29 @@ import { queryKeys, runOperation } from '../providers/queries.ts';
 import { hasReadFailure } from '../providers/query-read-feedback.ts';
 import { currentTaskExecution } from '../../../../core/domain/task-execution.ts';
 
+/** Explicit detail demand admits the first read. Previously admitted execution
+ * remains refreshed by either visible inventory or detail, sharing one query. */
+function taskHistoryQueryOptions(
+  transport: ApiTransportPort, unauthorized: UnauthorizedChannel,
+  trackId: string, taskKey: string, expanded: boolean,
+): UseQueryOptions<TaskRecoveryView> {
+  return {
+    queryKey: taskHistoryKey(trackId, taskKey),
+    enabled: query => expanded || query.state.data !== undefined,
+    retry: false,
+    queryFn: ({ signal }) => runOperation(transport, { ...taskAttemptsOperation(trackId, taskKey), signal }, unauthorized),
+    refetchInterval: query => !query.state.error && query.state.data !== undefined
+      && !['done', 'canceled'].includes(query.state.data.current?.status ?? '') ? 3000 : false,
+  };
+}
+
 export function TaskRecovery({ trackId, taskKey, expanded, transport, unauthorized, openWorker, openableWorkerIds }: {
   trackId: string; taskKey: string; expanded: boolean;
   transport: ApiTransportPort; unauthorized: UnauthorizedChannel;
   openWorker: (cardId: string) => void; openableWorkerIds: ReadonlySet<string>;
 }) {
   const client = useQueryClient();
-  // Prefix follows existing task/report events without introducing a second event listener.
-  const historyKey = taskHistoryKey(trackId, taskKey);
-  // Once loaded, current execution also drives the collapsed summary and inventory.
-  // Keep this sole fetch owner active so events and polling can refresh that authority.
-  const history = useQuery<TaskRecoveryView>({ queryKey: historyKey,
-    enabled: (query) => expanded || query.state.data !== undefined, retry: false,
-    queryFn: ({ signal }) => runOperation(transport, { ...taskAttemptsOperation(trackId, taskKey), signal }, unauthorized),
-    refetchInterval: (query) => !query.state.error && query.state.data !== undefined
-      && !['done', 'canceled'].includes(query.state.data.current?.status ?? '') ? 3000 : false,
-  });
+  const history = useQuery(taskHistoryQueryOptions(transport, unauthorized, trackId, taskKey, expanded));
   const refresh = async () => {
     await Promise.all([
       history.refetch(),
@@ -42,12 +49,14 @@ function taskHistoryKey(trackId: string, key: string) {
   return [...queryKeys.trackReport(trackId), 'attempts', key];
 }
 
-/** Cache observers only: TaskRecovery remains the sole history fetch owner.
- * No mirrored state or effect copies; every surface derives from the same cache entry. */
-export function useCurrentTaskRows(trackId: string, rows: readonly ReportTaskRow[]): readonly ReportTaskRow[] {
-  const histories = useQueries({ queries: rows.map((row): UseQueryOptions<TaskRecoveryView> => ({
-    queryKey: taskHistoryKey(trackId, row.key), enabled: false,
-  })) });
+/** Never-opened history stays dormant. Cached execution used as authority keeps
+ * an active refresh owner even on a folded revisit; no mirrored data or effects. */
+export function useCurrentTaskRows(
+  transport: ApiTransportPort, unauthorized: UnauthorizedChannel,
+  trackId: string, rows: readonly ReportTaskRow[],
+): readonly ReportTaskRow[] {
+  const histories = useQueries({ queries: rows.map(row =>
+    taskHistoryQueryOptions(transport, unauthorized, trackId, row.key, false)) });
   const keyCounts = new Map<string, number>();
   for (const row of rows) keyCounts.set(row.key, (keyCounts.get(row.key) ?? 0) + 1);
   return rows.map((row, index) => {

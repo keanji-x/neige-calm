@@ -50,7 +50,7 @@ it('keeps task metadata hidden while tool status remains visible', async () => {
     derive({ cards: [card({ id: 'pending-card', title: 'Long card title', kind: 'codex',
       runtime: { worker_session_id: 'one', kind: 'codex', status: 'running' } })],
       tasks: [{ ...task('Long task title', 'awaiting_projection', 'codex'), workerCardId: 'pending-card' }] }))}</PanelCard></div>);
-  for (const summary of document.querySelectorAll<HTMLElement>('details:not([open]) > summary')) summary.click();
+  for (const summary of document.querySelectorAll<HTMLElement>('details:not([open]) > summary')) await userEvent.click(summary);
   const statuses = document.querySelectorAll<HTMLElement>('[data-nc-status]');
   expect(statuses).toHaveLength(2);
   for (const status of statuses) {
@@ -104,7 +104,7 @@ it('keeps completed work folded until requested and preserves its click destinat
   expect(marker.hasAttribute('data-nc-spring-rotation')).toBe(true);
   expect(getComputedStyle(marker).transitionProperty).toBe('none');
   const row = page.getByRole('button', { name: 'A long completed task name' });
-  expect(document.querySelector<HTMLElement>('[data-nc-row="A long completed task name"]')!.checkVisibility()).toBe(false);
+  expect(document.querySelector('[data-nc-row="A long completed task name"]')).toBeNull();
   await page.getByText('Completed', { exact: true }).click();
   await expect.element(row).toBeVisible();
   await row.click();
@@ -133,7 +133,7 @@ it('shares the module height across several expanded groups', async () => {
     derive({ cards: [], tasks: ['running', 'failed', 'done'].flatMap(status =>
       Array.from({ length: 30 }, (_, index) => task(`${status} ${index}`, status, 'codex'))) }))}
     <div data-testid="next-module">Conversations</div></PanelCard></div>);
-  for (const summary of document.querySelectorAll<HTMLElement>('[data-nc-module="tasks"] details:not([open]) > summary')) summary.click();
+  for (const summary of document.querySelectorAll<HTMLElement>('[data-nc-module="tasks"] details:not([open]) > summary')) await userEvent.click(summary);
   // The task module shares its own height budget; preceding empty modules have independent copy.
   await expect.poll(() => document.querySelector('[data-nc-module="tasks"]')!.getBoundingClientRect().height).toBeLessThan(380);
   const groups = document.querySelectorAll<HTMLElement>('[data-nc-module="tasks"] details[open]');
@@ -345,7 +345,7 @@ it.each(['input', 'failed'] as const)('keeps kernel %s visible alongside a runni
 });
 
 
-it('collapses Workbench while retaining tools and usable header actions', async () => {
+it('defers folded Workbench rows while keeping header actions and reopen destinations usable', async () => {
   await page.viewport(1200, 900);
   const onAdd = vi.fn();
   const onOpenCard = vi.fn();
@@ -363,15 +363,15 @@ it('collapses Workbench while retaining tools and usable header actions', async 
   const tool = group.querySelector<HTMLButtonElement>('[data-nc-row="tool:server"] button')!;
   await page.elementLocator(disclosure).click();
   expect(disclosure.getAttribute('aria-expanded')).toBe('false');
-  expect(tool.isConnected).toBe(true);
-  expect(tool.checkVisibility()).toBe(false);
+  expect(tool.isConnected).toBe(false);
+  expect(group.querySelector('[data-nc-row="tool:server"]')).toBeNull();
   await page.getByRole('button', { name: 'Add tool', exact: true }).click();
   expect(onAdd).toHaveBeenCalledOnce();
   expect(disclosure.getAttribute('aria-expanded')).toBe('false');
   disclosure.focus();
   await userEvent.keyboard('{Enter}');
   expect(disclosure.getAttribute('aria-expanded')).toBe('true');
-  expect(group.querySelector('[data-nc-row="tool:server"] button')).toBe(tool);
+  expect(group.querySelector('[data-nc-row="tool:server"] button')).not.toBeNull();
   await page.getByRole('button', { name: 'Development server', exact: true }).click();
   expect(onOpenCard).toHaveBeenCalledWith('server');
 });
