@@ -182,7 +182,7 @@ async fn canonical_planner_compact_unconfirmed() {
 }
 
 #[tokio::test]
-async fn canonical_planner_compact_expired_end_is_inert() {
+async fn canonical_planner_compact_late_end_restores_context_without_rewriting_failed_task() {
     let (fx, _client, mut peer, scheduler) = started().await;
     let inner = &fx.harness.inner;
     let thread = fx.frame().await.header.last_thread_id.unwrap();
@@ -209,6 +209,13 @@ async fn canonical_planner_compact_expired_end_is_inert() {
         Some("compaction-incomplete: unconfirmed"),
     )
     .await;
+    let id = format!("{}:compact", inner.track_id);
+    let failed_task = serde_json::to_value(fx.original.repo.task_get(&id).await.unwrap()).unwrap();
+    let held = fx.frame().await;
+    assert_eq!(
+        held.header.compact_outcome.as_ref().unwrap().status,
+        CompactStatus::Unconfirmed
+    );
     notify_thread(
         &fx.daemon,
         &mut peer,
@@ -217,14 +224,25 @@ async fn canonical_planner_compact_expired_end_is_inert() {
         json!({"id":"maintenance","status":"completed"}),
     )
     .await;
+    let completed = fx.wait_phase(HarnessPhaseTag::TurnCompleted).await;
+    assert!(completed.header.wedged_reason.is_none());
+    let outcome = completed.header.compact_outcome.as_ref().unwrap();
+    assert_eq!(outcome.operation_id, id);
+    assert_eq!(outcome.turn_id.as_deref(), Some("maintenance"));
+    assert_eq!(outcome.status, CompactStatus::Completed);
+    assert!(completed.header.context_usage_invalidated);
     scheduler.sweep_all().await;
+    assert_eq!(
+        serde_json::to_value(fx.original.repo.task_get(&id).await.unwrap()).unwrap(),
+        failed_task,
+        "late physical completion must not rewrite the historical failed task"
+    );
     assert_terminal(
         &fx,
         TaskStatus::Failed,
         Some("compaction-incomplete: unconfirmed"),
     )
     .await;
-    assert_eq!(fx.frame().await.header.phase, HarnessPhaseTag::Wedged);
     crate::shared_codex_appserver::native_owner_tests::assert_no_request(&mut peer).await;
     shutdown(&fx.harness, &mut peer).await;
 }
