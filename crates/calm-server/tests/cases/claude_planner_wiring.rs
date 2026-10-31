@@ -393,16 +393,32 @@ async fn claude_planner_turn_runs_in_the_track_worktree() {
     assert!(worktree.is_dir(), "premise: the track worktree exists");
 
     let text = "Observe the canonical Claude cwd boundary";
-    let (outcome, _) = stack.run_turn(&root, &card_id, "exit", text).await;
+    let (status, body) = stack.post_input(&card_id, text).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let outcome = stack.wait_outcomes(&card_id, 1).await[0].clone();
     assert_eq!(outcome["status"], "completed", "{outcome}");
-    let current = stack.runtime(&card_id).await;
+    let deadline = std::time::Instant::now() + BUDGET;
+    let (current, frame) = loop {
+        let current = stack.runtime(&card_id).await;
+        let frame: CanonicalHarnessSnapshot = serde_json::from_value(
+            current
+                .handle_state_json
+                .clone()
+                .expect("durable canonical completion"),
+        )
+        .unwrap();
+        if frame.header.phase == HarnessPhaseTag::TurnCompleted
+            && frame.header.last_turn_id.as_deref() == outcome["id"].as_str()
+        {
+            break (current, frame);
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "canonical completion not persisted: {frame:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
     assert_eq!(current.id, original.id);
-    let frame: CanonicalHarnessSnapshot = serde_json::from_value(
-        current
-            .handle_state_json
-            .expect("durable canonical completion"),
-    )
-    .unwrap();
     assert_eq!(frame.header.phase, HarnessPhaseTag::TurnCompleted);
     assert!(frame.canonical_inputs.pending.is_empty());
     assert!(frame.canonical_inputs.active.is_none());
