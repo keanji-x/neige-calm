@@ -18,6 +18,16 @@ describe('core/api wire decode behavior', () => {
     } }).status).toBe('ready');
   });
 
+  it('decodes WorkerWatcher bootstrap and episode requests with the Rust wire fields', () => {
+    for (const subject of ['bootstrap', 'attempt-01:1700000000000']) {
+      const payload = { ev: 'assistant.input_requested', data: {
+        card_id: 'watcher-card', track_id: 'track-01', original_worker: 'watcher-worker',
+        source: 'worker-watcher', subject, version: 1, text: 'Frozen watcher input.',
+      } };
+      expect(decodeWireEvent(payload)).toEqual({ status: 'ready', value: payload });
+    }
+  });
+
   it('rejects missing or mistyped Assistant input fields, unregistered sources and non-u32 versions', () => {
     const data = {
       card_id: 'card-01', track_id: 'track-01', original_worker: 'worker-01',
@@ -35,7 +45,7 @@ describe('core/api wire decode behavior', () => {
       reject({ ...data, [key]: null });
       reject({ ...data, [key]: key === 'version' ? '1' : 1 });
     }
-    for (const source of ['TodaySummary', 'today_summary', 'unregistered']) reject({ ...data, source });
+    for (const source of ['TodaySummary', 'today_summary', 'WorkerWatcher', 'worker_watcher', 'unregistered']) reject({ ...data, source });
     for (const version of [-1, 0.5, 4294967296, Infinity, NaN]) reject({ ...data, version });
   });
 

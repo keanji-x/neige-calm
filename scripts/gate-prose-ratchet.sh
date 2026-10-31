@@ -1,4 +1,12 @@
 #!/usr/bin/env bash
+# U12b bounded SQL exception: long_literal/crates/**/*.rs 179 -> 181.
+# Two real-schema fixtures, not agent-facing prose:
+# 1. system_assistant_tests/watcher.rs: observed worker task INSERT.
+# 2. system_assistant/tests/scope.rs: remove the current receipt schema before
+#    replaying the released schema and actual forward migration for fidelity.
+# Query changes edit their owning fixture and regenerate this existing baseline;
+# ordinary test additions require no inventory edit. The scan rules and existing
+# once-per-lint scan plus separate selftest are unchanged.
 # U12a-2 bounded exception: long_literal/crates/**/*.rs 176 -> 179.
 # Five additions replace two removed V1 HTTP descriptions:
 # 1. calm-truth conversation/system_assistant.rs: permanent subject receipt SQL.

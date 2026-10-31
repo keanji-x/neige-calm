@@ -70,7 +70,7 @@ impl ObservedQuietEpisode {
         let task =
             TerminalInteraction::check_attempt_binding_tx(tx, &self.fact.track_id, &self.binding)
                 .await
-                .map_err(|error| CalmError::Forbidden(error.to_string().into()))?;
+                .map_err(|error| CalmError::Forbidden(error.to_string()))?;
         let track = crate::db::sqlite::track_get_tx(tx, &self.fact.track_id.clone().into()).await?;
         self.fact.observed_at_ms = crate::model::now_ms();
         if !crate::scheduler::task_has_running_liveness_deadline(&task)

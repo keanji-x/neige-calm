@@ -26,7 +26,7 @@ pub(crate) struct PreparedSystemInput {
 }
 pub(crate) enum PreparedSubmission {
     Accepted {
-        receipt: SystemAssistantReceipt,
+        receipt: Box<SystemAssistantReceipt>,
         fresh: bool,
     },
     Retry(TrackId),
@@ -330,7 +330,7 @@ impl SystemAssistantIssuer {
             Ok(accepted) => {
                 let fresh = !accepted.events.is_empty();
                 Ok(PreparedSubmission::Accepted {
-                    receipt: self.publish(state, accepted, guard).await?,
+                    receipt: Box::new(self.publish(state, accepted, guard).await?),
                     fresh,
                 })
             }

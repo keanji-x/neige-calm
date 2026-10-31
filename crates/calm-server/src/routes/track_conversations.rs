@@ -8,6 +8,7 @@ mod canonical;
 /// The rollout belongs to the entry, independently of runtime availability.
 pub(crate) enum AssistantCreationEntry {
     Human(crate::auth::HumanInputSource),
+    #[cfg_attr(not(any(test, feature = "fixtures")), allow(dead_code))]
     InternalHistorical,
 }
 impl AssistantCreationEntry {

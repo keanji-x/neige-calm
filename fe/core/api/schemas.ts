@@ -379,7 +379,7 @@ export const assistantInputRequestedSchema = z.object({
     card_id: z.string(),
     track_id: z.string(),
     original_worker: z.string(),
-    source: z.literal('today-summary'),
+    source: z.enum(['today-summary', 'worker-watcher']),
     subject: z.string(),
     version: z.uint32(),
     text: z.string(),

@@ -34,6 +34,7 @@ impl Actor {
     /// expires. `user`, because only a person's send may start a conversation with no thread to
     /// preserve or recover a failed one (`planner_session::ensure_planner_session`); `kernel`
     /// would degrade to `User` in [`Self::to_actor_id`] anyway.
+    #[cfg_attr(not(any(test, feature = "fixtures")), allow(dead_code))]
     pub(crate) fn server_send() -> Self {
         Self(Self::DEFAULT.to_string())
     }

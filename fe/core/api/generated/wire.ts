@@ -744,7 +744,7 @@ export type SourceQuote = { id: string, text: string, start: number, end: number
 
 export type SteerQueuedMessageRequest = { carrier_id: string, if_revision: number, turn_id: string, };
 
-export type SystemAssistantSource = "today-summary";
+export type SystemAssistantSource = "today-summary" | "worker-watcher";
 
 export type SystemInputPresentation = Exclude<HarnessInputPresentation, 'user'>;
 
