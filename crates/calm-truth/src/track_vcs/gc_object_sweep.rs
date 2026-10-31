@@ -31,9 +31,9 @@ const REACHABLE_TREES: &str = r#"
         FROM track_vcs_commits AS c
         JOIN reachable AS r ON c.hash = r.parent_hash
     )
-    SELECT rooted.tree_hash, o.kind, length(o.bytes)
+    SELECT rooted.tree_hash, o.kind, o.decoded_size
     FROM (SELECT DISTINCT tree_hash FROM reachable) AS rooted
-    LEFT JOIN track_vcs_objects AS o ON o.hash = rooted.tree_hash
+    LEFT JOIN track_vcs_object_sizes AS o ON o.hash = rooted.tree_hash
 "#;
 
 struct TreeMeta {
@@ -55,10 +55,7 @@ struct Observed {
     proof: Certificates,
 }
 impl Observed {
-    fn observe(&mut self, hash: String, bytes: &[u8]) -> Result<()> {
-        let manifest: TreeManifest = serde_json::from_slice(bytes).map_err(|e| {
-            CalmError::Internal(format!("track_vcs: parse tree manifest object {hash}: {e}"))
-        })?;
+    fn observe(&mut self, hash: String, manifest: TreeManifest) -> Result<()> {
         // The owner hashes schema/entries and INSERT OR IGNOREs immutable objects. Re-reading
         // the same tree hash cannot introduce different references through production writers.
         self.live
@@ -280,19 +277,20 @@ async fn observe_batch<'e>(
         return Ok(());
     }
     let mut query = QueryBuilder::<Sqlite>::new(
-        "SELECT hash, kind, bytes FROM track_vcs_objects WHERE hash IN (",
+        "SELECT hash, kind, bytes, encoding, decoded_size FROM track_vcs_objects WHERE hash IN (",
     );
     let mut separated = query.separated(", ");
     for tree in trees {
         separated.push_bind(&tree.hash);
     }
     separated.push_unseparated(")");
-    let rows: Vec<(String, String, Vec<u8>)> = query.build_query_as().fetch_all(executor).await?;
+    let rows: Vec<crate::track_vcs::object_codec::StoredObject> =
+        query.build_query_as().fetch_all(executor).await?;
     // fetch_all has completed before parsing. For external observations its pooled connection
     // has been released; no full-payload cursor/transaction is kept across CPU work.
     #[cfg(test)]
     super::gc_writer_tests::pause_before_manifest_parse().await;
-    let fetched: BTreeSet<_> = rows.iter().map(|(hash, _, _)| hash.as_str()).collect();
+    let fetched: BTreeSet<_> = rows.iter().map(|row| row.hash.as_str()).collect();
     for tree in trees {
         if !fetched.contains(tree.hash.as_str()) {
             return Err(CalmError::Internal(format!(
@@ -301,13 +299,15 @@ async fn observe_batch<'e>(
             )));
         }
     }
-    for (hash, kind, bytes) in rows {
+    for row in rows {
+        let hash = row.hash.clone();
+        let kind = &row.kind;
         if kind != "tree" {
             return Err(CalmError::Internal(format!(
                 "track_vcs: reachable tree object {hash} is not a tree"
             )));
         }
-        observed.observe(hash, &bytes)?;
+        observed.observe(hash, row.manifest()?)?;
     }
     Ok(())
 }

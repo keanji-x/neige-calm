@@ -12,6 +12,8 @@ mod tasks_kind_compact_migration;
 mod track_vcs_prune;
 #[path = "track_write_point_registry.rs"]
 mod track_write_point_registry;
+#[path = "vcs_object_compress.rs"]
+mod vcs_object_compress;
 #[path = "worker_session_matrix_alignment.rs"]
 mod worker_session_matrix_alignment;
 #[path = "worker_sessions_nonterminal.rs"]

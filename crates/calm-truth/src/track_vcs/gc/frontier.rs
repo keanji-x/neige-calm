@@ -167,8 +167,8 @@ pub(super) async fn reconcile(
         visited.extend(batch.iter().cloned());
         rounds += 1;
         let mut query = QueryBuilder::<Sqlite>::new(
-            "SELECT c.hash, c.parent_hash, c.tree_hash, o.kind, length(o.bytes)
-             FROM track_vcs_commits c LEFT JOIN track_vcs_objects o ON o.hash=c.tree_hash
+            "SELECT c.hash, c.parent_hash, c.tree_hash, o.kind, o.decoded_size
+             FROM track_vcs_commits c LEFT JOIN track_vcs_object_sizes o ON o.hash=c.tree_hash
              WHERE c.hash IN (",
         );
         let mut separated = query.separated(", ");

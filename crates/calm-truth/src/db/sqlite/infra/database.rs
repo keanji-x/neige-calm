@@ -37,9 +37,18 @@ impl SqliteDb {
     /// initialization before publishing the handle; independently opened handles do not
     /// share writer admission. Private in-memory caches cannot share the role schema.
     pub async fn connect(url: &str) -> Result<Self> {
+        Self::connect_mode(url, true).await
+    }
+
+    /// Operator tooling must never accidentally create a database at a misspelled path.
+    pub async fn connect_existing(url: &str) -> Result<Self> {
+        Self::connect_mode(url, false).await
+    }
+
+    async fn connect_mode(url: &str, create: bool) -> Result<Self> {
         let mut opts = SqliteConnectOptions::from_str(url)
             .map_err(|e| CalmError::Internal(format!("invalid sqlite url {url:?}: {e}")))?
-            .create_if_missing(true)
+            .create_if_missing(create)
             .foreign_keys(true);
         opts = opts.log_statements(tracing::log::LevelFilter::Debug);
         // A private memory cache cannot share schema/data between the two connection roles.

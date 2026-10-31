@@ -14,11 +14,15 @@ mod delta;
 mod gc;
 #[cfg(test)]
 mod noop_tests;
+mod object_codec;
+pub mod object_compression;
 mod read;
 mod runs;
 mod snapshot;
 #[cfg(test)]
 pub(crate) use snapshot::run_blob_bytes;
+#[cfg(test)]
+mod object_compression_tests;
 #[cfg(test)]
 mod since_last_turn_tests;
 mod store;

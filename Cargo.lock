@@ -654,6 +654,7 @@ dependencies = [
  "calm-report",
  "calm-types",
  "dashmap",
+ "flate2",
  "futures",
  "hex",
  "libsqlite3-sys",

@@ -7,6 +7,7 @@ use sqlx::sqlite::SqliteRow;
 use sqlx::{Row, Sqlite, SqlitePool, Transaction};
 use std::collections::BTreeMap;
 
+use super::object_codec::{self, StoredObject};
 use super::types::BlobContent;
 use super::{CommitHash, CommitRecord, ManifestEntry, ObjectHash, TreeManifest, TreeSnapshot};
 
@@ -171,21 +172,21 @@ pub(super) async fn load_blob_bytes_tx(
     tx: &mut Transaction<'_, Sqlite>,
     hash: &str,
 ) -> Result<Option<Vec<u8>>> {
-    let row: Option<(Vec<u8>,)> =
-        sqlx::query_as("SELECT bytes FROM track_vcs_objects WHERE hash = ?1 AND kind = 'blob'")
+    let row: Option<StoredObject> =
+        sqlx::query_as("SELECT hash, kind, bytes, encoding, decoded_size FROM track_vcs_objects WHERE hash = ?1 AND kind = 'blob'")
             .bind(hash)
             .fetch_optional(&mut **tx)
             .await?;
-    Ok(row.map(|(bytes,)| bytes))
+    row.map(StoredObject::blob).transpose()
 }
 
 pub(super) async fn load_blob_bytes_pool(pool: &SqlitePool, hash: &str) -> Result<Option<Vec<u8>>> {
-    let row: Option<(Vec<u8>,)> =
-        sqlx::query_as("SELECT bytes FROM track_vcs_objects WHERE hash = ?1 AND kind = 'blob'")
+    let row: Option<StoredObject> =
+        sqlx::query_as("SELECT hash, kind, bytes, encoding, decoded_size FROM track_vcs_objects WHERE hash = ?1 AND kind = 'blob'")
             .bind(hash)
             .fetch_optional(pool)
             .await?;
-    Ok(row.map(|(bytes,)| bytes))
+    row.map(StoredObject::blob).transpose()
 }
 
 pub(super) struct PreparedBlob {
@@ -248,17 +249,27 @@ async fn insert_object_at_tx(
     bytes: &[u8],
     created_at: i64,
 ) -> Result<()> {
-    // Existing immutable CAS rows add no fact. Avoid a row attempt (and its BEFORE
-    // guards) without another round trip; retain IGNORE/nonrepair semantics on collisions.
+    // Repeated immutable objects add no fact and must not pay compression CPU again.
+    let exists: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM track_vcs_objects WHERE hash=?)")
+            .bind(hash)
+            .fetch_one(&mut **tx)
+            .await?;
+    if exists {
+        return Ok(());
+    }
+    let encoded = object_codec::encode(bytes)?;
     sqlx::query(
-        r#"INSERT OR IGNORE INTO track_vcs_objects (hash, kind, bytes, created_at)
-           SELECT ?1, ?2, ?3, ?4
+        r#"INSERT OR IGNORE INTO track_vcs_objects (hash, kind, bytes, created_at, encoding, decoded_size)
+           SELECT ?1, ?2, ?3, ?4, ?5, ?6
            WHERE NOT EXISTS (SELECT 1 FROM track_vcs_objects WHERE hash = ?1)"#,
     )
     .bind(hash)
     .bind(kind)
-    .bind(bytes)
+    .bind(&encoded.bytes)
     .bind(created_at)
+    .bind(encoded.encoding)
+    .bind(encoded.decoded_size)
     .execute(&mut **tx)
     .await?;
     Ok(())
@@ -295,26 +306,24 @@ async fn load_tree_object_tx(
     tx: &mut Transaction<'_, Sqlite>,
     tree_hash: &str,
 ) -> Result<Option<TreeManifest>> {
-    let row: Option<(Vec<u8>,)> =
-        sqlx::query_as("SELECT bytes FROM track_vcs_objects WHERE hash = ?1 AND kind = 'tree'")
+    let row: Option<StoredObject> =
+        sqlx::query_as("SELECT hash, kind, bytes, encoding, decoded_size FROM track_vcs_objects WHERE hash = ?1 AND kind = 'tree'")
             .bind(tree_hash)
             .fetch_optional(&mut **tx)
             .await?;
-    row.map(|(bytes,)| serde_json::from_slice(&bytes).map_err(Into::into))
-        .transpose()
+    row.map(StoredObject::manifest).transpose()
 }
 
 pub(super) async fn load_tree_object_pool(
     pool: &SqlitePool,
     tree_hash: &str,
 ) -> Result<Option<TreeManifest>> {
-    let row: Option<(Vec<u8>,)> =
-        sqlx::query_as("SELECT bytes FROM track_vcs_objects WHERE hash = ?1 AND kind = 'tree'")
+    let row: Option<StoredObject> =
+        sqlx::query_as("SELECT hash, kind, bytes, encoding, decoded_size FROM track_vcs_objects WHERE hash = ?1 AND kind = 'tree'")
             .bind(tree_hash)
             .fetch_optional(pool)
             .await?;
-    row.map(|(bytes,)| serde_json::from_slice(&bytes).map_err(Into::into))
-        .transpose()
+    row.map(StoredObject::manifest).transpose()
 }
 
 pub(super) async fn load_commit_record_pool(
@@ -478,7 +487,7 @@ fn write_canonical_json(out: &mut Vec<u8>, value: &Value) -> Result<()> {
     Ok(())
 }
 
-fn hash_tree_manifest(manifest: &TreeManifest) -> ObjectHash {
+pub(super) fn hash_tree_manifest(manifest: &TreeManifest) -> ObjectHash {
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"calm-track-vcs-v1\0tree\0");
     hasher.update(manifest.schema_version.to_string().as_bytes());
@@ -496,7 +505,7 @@ fn hash_tree_manifest(manifest: &TreeManifest) -> ObjectHash {
     hasher.finalize().to_hex().to_string()
 }
 
-fn hash_bytes(kind: &str, bytes: &[u8]) -> ObjectHash {
+pub(super) fn hash_bytes(kind: &str, bytes: &[u8]) -> ObjectHash {
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"calm-track-vcs-v1\0");
     hasher.update(kind.as_bytes());
