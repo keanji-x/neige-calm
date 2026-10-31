@@ -498,7 +498,7 @@ async fn canonical_claude_creation_first_send_reuses_checkpoint_and_h2_hold() {
 }
 
 #[tokio::test]
-async fn canonical_claude_creation_excluded_none_keeps_missing_area_teardown_refusal() {
+async fn canonical_claude_creation_missing_area_keeps_none_teardown_refusal() {
     let fixture = Fixture::new().await;
     let (state, app, cookie) = fixture.application().await;
     let cwd = fixture.root.path().join("workspaces");

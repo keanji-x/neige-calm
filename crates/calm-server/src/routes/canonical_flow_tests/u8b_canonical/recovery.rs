@@ -40,12 +40,13 @@ async fn phase(
 
 #[tokio::test]
 async fn u8b_canonical_workspace_failure_holds_v2_and_repairs_once() {
-    for (provider, isolation) in [
-        ("codex", "default"),
-        ("opencode", "default"),
-        ("codex", "none"),
-        ("opencode", "none"),
-    ] {
+    for (provider_id, isolation) in calm_types::runtime::AgentProvider::ALL
+        .into_iter()
+        .flat_map(|provider| {
+            ["default", "none"].map(move |isolation| (provider.clone(), isolation))
+        })
+    {
+        let provider = provider_id.wire_name();
         eprintln!("cold repair scenario {provider} {isolation}");
         let mut fixture = Fixture::new().await;
         let (state, app, cookie) = fixture.application().await;
@@ -53,6 +54,7 @@ async fn u8b_canonical_workspace_failure_holds_v2_and_repairs_once() {
         let path = repo(&fixture);
         let mut request_body = borrowed(&a, provider, &path, isolation);
         request_body["first_message"] = json!(FIRST_BODY);
+        request_body["admin"] = json!(true);
         let pause = PausePoint::default();
         install_pause_for_test(
             "canonical-workspace-committed",
@@ -132,14 +134,22 @@ async fn u8b_canonical_workspace_failure_holds_v2_and_repairs_once() {
             .await
             .expect("old database connections released before cold reopen");
         fixture.repo = Arc::new(SqlxRepo::open(&fixture.url).await.unwrap());
-        if provider == "opencode" {
-            super::super::opencode_creation_tests::configure(&mut fixture);
+        match provider_id.protocol() {
+            calm_types::runtime::AgentProtocol::Codex => {}
+            calm_types::runtime::AgentProtocol::Claude => {
+                super::super::claude_creation_tests::assistant::configure(&mut fixture, "exit");
+            }
+            calm_types::runtime::AgentProtocol::Acp => {
+                super::super::opencode_creation_tests::configure(&mut fixture);
+            }
         }
         let (state, app, cookie, auth) = fixture.application_with_auth(false).await;
         // Keep the cold replay's background wake behind Card until the resource
         // is restored and the ready rendezvous is armed.
         let route = crate::state::RouteState::from_ref(&state);
-        let replay_fence = if provider == "opencode" && isolation == "none" {
+        let replay_fence = if provider_id.protocol() != calm_types::runtime::AgentProtocol::Codex
+            && isolation == "none"
+        {
             Some(
                 crate::operation::planner_start_fence::CardStartFence::lock(
                     &route.planner_recovery_locks,
@@ -328,15 +338,37 @@ async fn u8b_canonical_workspace_failure_holds_v2_and_repairs_once() {
                 .collect::<Vec<_>>()
         );
         tx.rollback().await.unwrap();
-        if provider == "opencode" {
-            let records =
-                std::fs::read_to_string(fixture.root.path().join("requests.jsonl")).unwrap();
-            let prompts: Vec<Value> = records
+        if provider_id.protocol() == calm_types::runtime::AgentProtocol::Claude {
+            let input = super::super::claude_creation_tests::assistant::read(&fixture, "stdin");
+            assert_eq!(input.lines().count(), 1);
+            assert!(input.contains(FIRST_BODY));
+            assert_eq!(
+                super::super::claude_creation_tests::assistant::read(&fixture, "pwd").trim(),
+                worktree.to_str().unwrap()
+            );
+        }
+        if provider_id.protocol() == calm_types::runtime::AgentProtocol::Acp {
+            let records = std::fs::read_to_string(
+                super::super::opencode_creation_tests::peer_root(&fixture, &provider_id)
+                    .join("requests.jsonl"),
+            )
+            .unwrap();
+            let records: Vec<Value> = records
                 .lines()
                 .map(|line| serde_json::from_str::<Value>(line).unwrap())
+                .collect();
+            let prompts: Vec<&Value> = records
+                .iter()
                 .filter(|record| record["method"] == "session/prompt")
                 .collect();
             assert_eq!(prompts.len(), 1);
+            let native_start = records
+                .iter()
+                .find(|record| {
+                    record["method"] == "session/new" && record["_pid"] == prompts[0]["_pid"]
+                })
+                .expect("the actual prompt's native session setup");
+            assert_eq!(native_start["params"]["cwd"], worktree.to_str().unwrap());
             assert!(
                 prompts[0]["params"]["prompt"]
                     .to_string()

@@ -130,55 +130,6 @@ async fn original_selection_replays_despite_changed_catalog_advice() {
 }
 
 #[tokio::test]
-async fn canonical_claude_creation_unsupported_shapes_keep_explicit_coverage() {
-    use crate::routes::tracks::create::{CreatePlan, creation_plan};
-    let fx = Fixture::new().await;
-    let crate::extract::Json(providers) = crate::routes::agent_providers::list_managed_providers(
-        axum::extract::State(fx.route.clone()),
-        axum::extract::State(crate::state::CodexShellState::from_ref(&fx.state)),
-        crate::extract::Query(crate::routes::agent_providers::AgentProvidersQuery {
-            refresh: false,
-        }),
-    )
-    .await
-    .unwrap();
-    assert_eq!(providers.len(), AgentProvider::ALL.len());
-    for provider in providers {
-        let response = serde_json::to_value(provider).unwrap();
-        assert_eq!(
-            response["accepts_unavailable_blank_track"], true,
-            "{response}"
-        );
-    }
-    let original = serde_json::json!({"area_id":fx.area,"title":"new blank Track","planner_provider":"claude","first_message":FIRST,"theme":{"fg":[255,255,255],"bg":[0,0,0]}});
-    for (field, value) in [
-        ("admin", serde_json::json!(true)),
-        ("cwd", serde_json::json!("/an-attached-directory")),
-        (
-            "allow_cross_area_cwd",
-            serde_json::json!({"folder_id":1,"area_id":"another-area"}),
-        ),
-    ] {
-        let mut request = original.clone();
-        request["planner_provider"] = serde_json::json!("claude");
-        request[field] = value;
-        let request = serde_json::from_value(request).unwrap();
-        let mut headers = HeaderMap::new();
-        headers.insert("idempotency-key", "excluded".parse().unwrap());
-        assert!(
-            matches!(
-                creation_plan(&fx.route, Some(&fx.source), &headers, request)
-                    .await
-                    .unwrap(),
-                CreatePlan::Historical(_)
-            ),
-            "{field}"
-        );
-    }
-    assert_eq!(fx.counts().await, (0, 0, 0, 0, 0, 0));
-}
-
-#[tokio::test]
 async fn canonical_claude_creation_selection_uses_actual_provider_catalog() {
     let fx = Fixture::new().await;
     let model = provider::claude::discovery::ClaudeModel {

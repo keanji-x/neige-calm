@@ -193,17 +193,11 @@ fn canonical_creation_supported(request: &CreateRequestShape) -> bool {
         provider: request.planner_provider.clone(),
     })
     .is_ok();
-    // Named sources reuse canonical allocation and its frozen Context for every
-    // retained binding. Admin/borrowed rollout still uses its original entry contract.
-    // Blank attachment without cwd still selects Managed preparation and borrows
-    // nothing. Named/admin attachment retains its existing admission owner.
-    supported
-        && (!request.attach_folder || request.cwd.is_some() || (!named && !request.admin))
-        && (!(request.admin || request.cwd.is_some() || request.allow_cross_area_cwd.is_some())
-            || matches!(
-                request.planner_provider,
-                AgentProvider::Codex | AgentProvider::OpenCode
-            ))
+    // Storage follows the binding's declared retained-input contract. Source,
+    // admin and borrowed-resource admission remain with preparation/allocation.
+    // Blank attachment without cwd selects Managed preparation and borrows nothing;
+    // named/admin attachment without cwd retains its original admission owner.
+    supported && (!request.attach_folder || request.cwd.is_some() || (!named && !request.admin))
 }
 
 impl CreateRequestShape {

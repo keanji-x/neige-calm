@@ -128,7 +128,7 @@ fn borrowed(a: &Value, provider: &str, path: &std::path::Path, isolation: &str) 
 
 #[tokio::test]
 async fn u8b_canonical_borrowed_shapes_commit_and_read() {
-    for provider in ["codex", "opencode"] {
+    for provider in calm_types::runtime::AgentProvider::ALL.map(|provider| provider.wire_name()) {
         for shape in ["none", "default", "worktree", "same", "cross", "named"] {
             for human in [false, true] {
                 let fixture = Fixture::new().await;
@@ -244,7 +244,7 @@ async fn u8b_canonical_borrowed_shapes_commit_and_read() {
 
 #[tokio::test]
 async fn u8b_canonical_claim_changes_preserve_fixed_locator() {
-    for provider in ["codex", "opencode"] {
+    for provider in calm_types::runtime::AgentProvider::ALL.map(|provider| provider.wire_name()) {
         for isolation in ["none", "default"] {
             let fixture = Fixture::new().await;
             let (state, app, cookie) = fixture.application().await;
@@ -314,7 +314,7 @@ async fn u8b_canonical_claim_changes_preserve_fixed_locator() {
 
 #[tokio::test]
 async fn u8b_canonical_receipt_abort_rolls_back_resources() {
-    for provider in ["codex", "opencode"] {
+    for provider in calm_types::runtime::AgentProvider::ALL.map(|provider| provider.wire_name()) {
         let fixture = Fixture::new().await;
         let (state, app, cookie) = fixture.application().await;
         let a = area(&app, &cookie, "atomic").await;
@@ -359,7 +359,7 @@ async fn u8b_canonical_receipt_abort_rolls_back_resources() {
 #[tokio::test]
 async fn u8b_canonical_authority_races_roll_back() {
     use crate::test_seams::{PausePoint, install_pause_for_test};
-    for provider in ["codex", "opencode"] {
+    for provider in calm_types::runtime::AgentProvider::ALL.map(|provider| provider.wire_name()) {
         for race in [
             "source",
             "target",
@@ -460,7 +460,7 @@ async fn u8b_canonical_authority_races_roll_back() {
 
 #[tokio::test]
 async fn u8b_canonical_keys_replay_original_ack() {
-    for provider in ["codex", "opencode"] {
+    for provider in calm_types::runtime::AgentProvider::ALL.map(|provider| provider.wire_name()) {
         for isolation in ["none", "default"] {
             let fixture = Fixture::new().await;
             let (state, app, cookie) = fixture.application().await;
@@ -492,7 +492,14 @@ async fn u8b_canonical_keys_replay_original_ack() {
                     }),
                 ),
                 ("admin", json!(true)),
-                ("planner_provider", json!("claude")),
+                (
+                    "planner_provider",
+                    json!(if provider == "claude" {
+                        "grok"
+                    } else {
+                        "claude"
+                    }),
+                ),
                 ("first_message", json!("changed")),
                 (
                     "allow_cross_area_cwd",
@@ -530,7 +537,7 @@ async fn u8b_canonical_keys_replay_original_ack() {
 
 #[tokio::test]
 async fn u8b_canonical_retained_borrowed_repoint_refused() {
-    for provider in ["codex", "opencode"] {
+    for provider in calm_types::runtime::AgentProvider::ALL.map(|provider| provider.wire_name()) {
         for human in [false, true] {
             let fixture = Fixture::new().await;
             let (state, app, cookie) = fixture.application().await;
