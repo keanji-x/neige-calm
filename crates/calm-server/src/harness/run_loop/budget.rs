@@ -8,7 +8,7 @@ use crate::planner_turn_budget::PlannerTurnBudgetExt;
 use crate::planner_turn_budget::{LoadError, PlannerTurnBudget};
 use calm_types::harness::budget::FrozenContextUsage;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Both facts follow one reuse decision, made before issuance chooses an identity.
 #[derive(Debug)]
@@ -109,6 +109,34 @@ pub(super) async fn limit(inner: &Inner) -> Duration {
     }
 }
 
+fn warning_deadline(frozen: &FrozenBudget, from: Instant) -> Option<Instant> {
+    match frozen {
+        FrozenBudget::Planner {
+            budget,
+            warning_attempted: false,
+            ..
+        } => from.checked_add(budget.limit() - budget.warning_remaining()),
+        _ => None,
+    }
+}
+
+/// Timing belongs to the same owner as warning and hard-stop enforcement.
+pub(super) async fn next_deadline(inner: &Inner, state: &HarnessState) -> Option<Instant> {
+    if !inner.held_requests.is_empty() {
+        return None;
+    }
+    let HarnessState::TurnRunning { watchdog_from, .. } = state else {
+        return None;
+    };
+    let hard = watchdog_from.checked_add(limit(inner).await);
+    let warning = if inner.backend.supports_budget_control() {
+        warning_deadline(&*inner.turn_budget.lock().await, *watchdog_from)
+    } else {
+        None
+    };
+    [hard, warning].into_iter().flatten().min()
+}
+
 async fn current(inner: &Arc<Inner>, turn: &str) -> bool {
     let state = inner.state.lock().await.clone();
     let turn_limit = limit(inner).await;
@@ -138,6 +166,8 @@ pub(super) async fn warn(inner: &Arc<Inner>) -> crate::error::Result<()> {
     };
     let (budget, attempt) = {
         let mut frozen = inner.turn_budget.lock().await;
+        let warning_due = warning_deadline(&frozen, watchdog_from)
+            .is_some_and(|deadline| Instant::now() >= deadline);
         let FrozenBudget::Planner {
             budget,
             start_attempt,
@@ -148,10 +178,7 @@ pub(super) async fn warn(inner: &Arc<Inner>) -> crate::error::Result<()> {
             return Ok(());
         };
         let elapsed = watchdog_from.elapsed();
-        if *warning_attempted
-            || elapsed < budget.limit() - budget.warning_remaining()
-            || elapsed >= budget.limit()
-        {
+        if !warning_due || elapsed >= budget.limit() {
             return Ok(());
         }
         if inner.inputs.canonical().is_none() {

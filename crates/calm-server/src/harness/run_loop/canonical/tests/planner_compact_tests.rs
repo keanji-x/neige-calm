@@ -197,10 +197,9 @@ async fn canonical_planner_compact_late_end_restores_context_without_rewriting_f
     .await;
     super::compact_tests::wait_turn(&fx, "maintenance").await;
     let issuance = inner.issuance.lock().await;
-    *inner.state.lock().await = HarnessState::CompactionRunning {
-        turn_id: "maintenance".into(),
-        started_at: Instant::now() - inner.config.max_turn_duration,
-    };
+    fx.harness
+        .rewind_compaction_clock_for_test(inner.config.max_turn_duration)
+        .await;
     drop(issuance);
     fx.wait_phase_at(HarnessPhaseTag::Wedged, PhaseWaitStage::ExpiredMaintenance)
         .await;

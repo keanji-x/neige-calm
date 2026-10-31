@@ -474,17 +474,13 @@ async fn assert_observation_expires(started: bool) {
     let issuance = fx.harness.inner.issuance.lock().await;
     let pending = accept_during_compact(&fx).await;
     let inner = &fx.harness.inner;
-    let aged = if started {
-        HarnessState::CompactionRunning {
-            turn_id: "maintenance".into(),
-            started_at: Instant::now() - inner.config.max_turn_duration,
-        }
-    } else {
-        HarnessState::Compacting {
-            since: Instant::now() - inner.config.interrupt_completion_budget,
-        }
-    };
-    *inner.state.lock().await = aged;
+    fx.harness
+        .rewind_compaction_clock_for_test(if started {
+            inner.config.max_turn_duration
+        } else {
+            inner.config.interrupt_completion_budget
+        })
+        .await;
     // Publishing an unrelated input refresh must not renew the same operation's budget.
     publish(inner, read_current(inner).await.unwrap()).await;
     drop(issuance);
@@ -555,10 +551,7 @@ async fn canonical_codex_compact_healthy_started_uses_completion_budget() {
     let issuance = inner.issuance.lock().await;
     let age = inner.config.interrupt_completion_budget + Duration::from_secs(1);
     assert!(age < inner.config.max_turn_duration);
-    *inner.state.lock().await = HarnessState::CompactionRunning {
-        turn_id: "healthy".into(),
-        started_at: Instant::now() - age,
-    };
+    fx.harness.rewind_compaction_clock_for_test(age).await;
     super::super::super::compact_command::canonical::observe(inner)
         .await
         .unwrap();
@@ -603,10 +596,11 @@ async fn canonical_codex_compact_second_operation_has_fresh_timer() {
         // Age the first operation; successful completion must not carry this timer forward.
         if turn == "first" {
             let issuance = fx.harness.inner.issuance.lock().await;
-            *fx.harness.inner.state.lock().await = HarnessState::CompactionRunning {
-                turn_id: turn.into(),
-                started_at: Instant::now() - fx.harness.inner.config.interrupt_completion_budget,
-            };
+            fx.harness
+                .rewind_compaction_clock_for_test(
+                    fx.harness.inner.config.interrupt_completion_budget,
+                )
+                .await;
             drop(issuance);
         }
         notify_thread(

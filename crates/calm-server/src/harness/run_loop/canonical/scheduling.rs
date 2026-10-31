@@ -1,6 +1,5 @@
-//! The ordinary idle path sleeps between inputs. Unconverted active and
-//! maintenance paths retain their existing cadence until their deadlines and
-//! result-ready contracts are moved to this same loop.
+//! Wait for source/result readiness and the nearest owner deadline. Deferred
+//! admission or recovery retains its short probe until that path is converted.
 use super::{HarnessPhaseTag, Inner};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -10,6 +9,7 @@ use std::time::{Duration, Instant};
 pub(in crate::harness::run_loop) enum Progress {
     Deferred,
     Observed,
+    Waiting,
 }
 
 pub(in crate::harness::run_loop) async fn advance(
@@ -60,10 +60,18 @@ pub(in crate::harness::run_loop) async fn next_probe(
         && checkpoint.receipts.is_empty()
         && header.last_thread_id.is_some()
         && header.wedged_reason.is_none()
-        && header.compact_outcome.is_none()
+        && header.compact_outcome.as_ref().is_none_or(|outcome| {
+            !super::super::compact_command::canonical::unresolved_maintenance(&outcome.status)
+        })
         && header.interruption_intent.is_none()
         && header.pending_rewind.is_none();
-    let delay = if ordinary_idle {
+    let delay = if progress == Progress::Waiting {
+        #[cfg(feature = "fixtures")]
+        crate::test_seams::pause_point("canonical-result-wait", inner.card_id.as_str()).await;
+        // Provider owners wake the loop when qualified results become observable.
+        // Reconciliation recovers lost hints; real owner deadlines preempt it below.
+        Duration::from_secs(30)
+    } else if ordinary_idle {
         #[cfg(feature = "fixtures")]
         crate::test_seams::pause_point("canonical-idle-wait", inner.card_id.as_str()).await;
         Duration::from_secs(30)
@@ -76,5 +84,17 @@ pub(in crate::harness::run_loop) async fn next_probe(
         }
         _ => delay,
     };
-    tokio::time::Instant::now() + delay
+    let probe = tokio::time::Instant::now() + delay;
+    if progress != Progress::Waiting {
+        return probe;
+    }
+    let state = inner.state.lock().await.clone();
+    let budget = super::super::budget::next_deadline(inner, &state).await;
+    let compact = super::super::compact_command::observation_deadline(&state, &inner.config);
+    let interrupt = super::control::next_deadline(inner).await;
+    [budget, compact, interrupt]
+        .into_iter()
+        .flatten()
+        .map(tokio::time::Instant::from_std)
+        .fold(probe, std::cmp::min)
 }

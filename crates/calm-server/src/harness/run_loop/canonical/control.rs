@@ -58,6 +58,16 @@ impl Admission {
     }
 }
 
+/// Only the actual armed interrupt deadline; no inferred or replacement target.
+pub(super) async fn next_deadline(inner: &Inner) -> Option<Instant> {
+    inner
+        .interrupt_deadline
+        .lock()
+        .await
+        .as_ref()
+        .map(|(_, at)| *at)
+}
+
 enum Change {
     Warning {
         target: ExecutionEndTarget,

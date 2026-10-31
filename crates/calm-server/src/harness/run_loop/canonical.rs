@@ -305,7 +305,7 @@ async fn advance_once(inner: &Arc<Inner>, ingress_empty: bool) -> Result<Progres
         publish_end(inner, done).await?;
     }
     if super::compact_command::canonical::observe(inner).await? {
-        return Ok(Progress::Deferred);
+        return Ok(Progress::Waiting);
     }
     let current = read_current(inner).await?;
     publish(inner, current.clone()).await;
@@ -323,15 +323,15 @@ async fn advance_once(inner: &Arc<Inner>, ingress_empty: bool) -> Result<Progres
         || !inner.held_requests.is_empty()
         || header.last_thread_id.is_none()
         || header.pending_rewind.is_some()
-        || header.interruption_intent.is_some()
         || header.wedged_reason.is_some()
     {
         return Ok(Progress::Deferred);
     }
+    if header.interruption_intent.is_some() {
+        return Ok(Progress::Waiting);
+    }
     if checkpoint.active.is_some() && !checkpoint.resolved_execution_without_target() {
-        return resume_unattempted(inner, &current, _issuance)
-            .await
-            .map(|()| Progress::Deferred);
+        return resume_unattempted(inner, &current, _issuance).await;
     }
     if checkpoint.pending.is_empty()
         || !matches!(

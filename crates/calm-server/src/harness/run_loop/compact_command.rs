@@ -5,11 +5,45 @@ use provider::control::CompactSubmission;
 pub(super) mod canonical;
 
 /// Both maintenance owners use the same existing start and completion budgets.
+fn observation_budget(state: &HarnessState, config: &HarnessConfig) -> Option<(Instant, Duration)> {
+    match state {
+        HarnessState::Compacting { since } => Some((*since, config.interrupt_completion_budget)),
+        HarnessState::CompactionRunning { started_at, .. } => {
+            Some((*started_at, config.max_turn_duration))
+        }
+        _ => None,
+    }
+}
+
+pub(super) fn observation_deadline(
+    state: &HarnessState,
+    config: &HarnessConfig,
+) -> Option<Instant> {
+    observation_budget(state, config).and_then(|(since, budget)| since.checked_add(budget))
+}
+
 pub(super) fn observation_expired(state: &HarnessState, config: &HarnessConfig) -> bool {
-    matches!(state, HarnessState::Compacting { since }
-        if since.elapsed() >= config.interrupt_completion_budget)
-        || matches!(state, HarnessState::CompactionRunning { started_at, .. }
-            if started_at.elapsed() >= config.max_turn_duration)
+    observation_budget(state, config).is_some_and(|(since, budget)| since.elapsed() >= budget)
+}
+
+/// Move only a real, installed maintenance clock. Event-driven timers must be
+/// rescheduled when a test changes that clock instead of advancing wall time.
+#[cfg(feature = "fixtures")]
+impl PlannerHarness {
+    pub(crate) async fn rewind_compaction_clock_for_test(&self, by: Duration) {
+        let mut state = self.inner.state.lock().await;
+        match &mut *state {
+            HarnessState::Compacting { since: at }
+            | HarnessState::CompactionRunning { started_at: at, .. } => {
+                *at = at
+                    .checked_sub(by)
+                    .expect("representable maintenance clock rewind");
+            }
+            _ => panic!("a real maintenance operation must install its clock first"),
+        }
+        drop(state);
+        self.request_progress();
+    }
 }
 
 pub(super) enum Source {

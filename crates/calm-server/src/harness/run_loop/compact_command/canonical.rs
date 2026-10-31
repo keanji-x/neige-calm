@@ -446,6 +446,13 @@ pub(in crate::harness::run_loop) async fn observe(inner: &Arc<Inner>) -> Result<
     if next != current.snapshot {
         let committed = write(inner, &current, next, TransitionAdmission::Settlement).await?;
         canonical::publish(inner, committed).await;
+        // Committed maintenance facts may unblock saved input or change the
+        // actual observation deadline. The hint carries no execution authority.
+        inner
+            .inputs
+            .canonical()
+            .expect("canonical maintenance")
+            .request_progress();
     }
     Ok(true)
 }
@@ -560,7 +567,7 @@ pub(in crate::harness::run_loop) async fn boundary(inner: &Arc<Inner>, turn: &st
     Ok(true)
 }
 
-fn unresolved_maintenance(status: &CompactStatus) -> bool {
+pub(in crate::harness::run_loop) fn unresolved_maintenance(status: &CompactStatus) -> bool {
     match status {
         CompactStatus::Started | CompactStatus::Unconfirmed => true,
         CompactStatus::Completed

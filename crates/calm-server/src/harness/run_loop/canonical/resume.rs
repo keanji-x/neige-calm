@@ -10,18 +10,22 @@ pub(super) async fn resume_unattempted(
     inner: &Arc<Inner>,
     current: &CommittedFrame,
     issuance: tokio::sync::MutexGuard<'_, ()>,
-) -> Result<()> {
+) -> Result<Progress> {
     let checkpoint = &current.snapshot.canonical_inputs;
+    let waiting = match current.snapshot.header.phase {
+        HarnessPhaseTag::TurnRunning => Progress::Waiting,
+        _ => Progress::Deferred,
+    };
     let Some(active) = &checkpoint.active else {
-        return Ok(());
+        return Ok(Progress::Deferred);
     };
     let [submission] = active.submission_ids.as_slice() else {
-        return Ok(());
+        return Ok(waiting);
     };
     if current.snapshot.header.phase != HarnessPhaseTag::IssuingTurn
         || checkpoint.attempt(submission).is_some()
     {
-        return Ok(());
+        return Ok(waiting);
     }
     // Re-enter in Track → issuance order. The original expected frame below
     // remains the writer fence if another command changed the head while waiting.
@@ -29,11 +33,11 @@ pub(super) async fn resume_unattempted(
     let super::super::issuance::TrackIssuance::Acquired(track) =
         super::super::issuance::lock_track_for_admission(inner).await?
     else {
-        return Ok(());
+        return Ok(Progress::Deferred);
     };
     let _issuance = inner.issuance.lock().await;
     if inner.shutting_down.load(Ordering::SeqCst) || inner.parked.is_parked() {
-        return Ok(());
+        return Ok(Progress::Deferred);
     }
     let track_fence = crate::provider_execution::TrackFenceHandoff::new(track);
     #[cfg(feature = "fixtures")]
@@ -86,7 +90,7 @@ pub(super) async fn resume_unattempted(
     })
     .await?;
     let Some(message) = message else {
-        return Ok(());
+        return Ok(Progress::Deferred);
     };
     let Some(source) = inner
         .inputs
@@ -94,7 +98,7 @@ pub(super) async fn resume_unattempted(
         .expect("canonical")
         .execution_source(&message)?
     else {
-        return Ok(());
+        return Ok(Progress::Deferred);
     };
     let read_admission = write_in_tx_typed(inner.repo.as_ref(), {
         let repo = inner.repo.clone();
@@ -141,7 +145,8 @@ pub(super) async fn resume_unattempted(
             invocation.permission,
             &track_fence,
         )
-        .await;
+        .await
+        .map(|()| Progress::Deferred);
     }
     let resolved = async {
         Ok::<_, IssuanceRefusal>((
@@ -151,24 +156,23 @@ pub(super) async fn resume_unattempted(
     }
     .await;
     match resolved {
-        Ok((selection, permission)) => {
-            dispatch_initial(
-                inner,
-                &source,
-                &submission,
-                &active.logical_turn_id,
-                &selection,
-                permission,
-                &track_fence,
-            )
-            .await
-        }
+        Ok((selection, permission)) => dispatch_initial(
+            inner,
+            &source,
+            &submission,
+            &active.logical_turn_id,
+            &selection,
+            permission,
+            &track_fence,
+        )
+        .await
+        .map(|()| Progress::Deferred),
         Err(refusal) => {
             apply_refusal(inner, &refusal).await;
             if let Err(error) = read_admission.revalidate().await {
                 publish_issuance_error(inner, &error).await;
             }
-            Ok(())
+            Ok(Progress::Deferred)
         }
     }
 }

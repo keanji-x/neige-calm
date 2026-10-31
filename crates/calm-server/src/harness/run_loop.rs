@@ -1465,6 +1465,10 @@ impl PlannerHarness {
         }
         let mut held_since = self.inner.watchdog_held_since.lock().await;
         *held_since = held_since.map(rewind);
+        drop(held_since);
+        if let Some(inputs) = self.inner.inputs.canonical() {
+            inputs.request_progress();
+        }
     }
 
     /// Advance only the deadline armed by a real interrupt; never invent an interrupt state.
@@ -1475,6 +1479,10 @@ impl PlannerHarness {
             .as_mut()
             .expect("a real interrupt armed its deadline");
         *at = Instant::now();
+        drop(deadline);
+        if let Some(inputs) = self.inner.inputs.canonical() {
+            inputs.request_progress();
+        }
     }
 
     /// Whether a watchdog tick has seen the table hold a request since it last saw it empty.
