@@ -469,21 +469,7 @@ async fn assert_observation_expires(started: bool) {
             json!({"id":"maintenance"}),
         )
         .await;
-        tokio::time::timeout(Duration::from_secs(5), async {
-            while fx
-                .frame()
-                .await
-                .header
-                .compact_outcome
-                .unwrap()
-                .turn_id
-                .is_none()
-            {
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .unwrap();
+        wait_turn(&fx, "maintenance").await;
     }
     let issuance = fx.harness.inner.issuance.lock().await;
     let pending = accept_during_compact(&fx).await;
@@ -514,17 +500,33 @@ async fn assert_observation_expires(started: bool) {
     shutdown(&fx.harness, &mut peer).await;
 }
 
+/// A durable bind precedes owner publication; only the published running clock
+/// can safely be aged by timeout tests without the initial publish overwriting it.
 pub(super) async fn wait_turn(fx: &Fixture, turn: &str) {
     tokio::time::timeout(Duration::from_secs(5), async {
-        while fx
-            .frame()
-            .await
-            .header
-            .compact_outcome
-            .as_ref()
-            .and_then(|outcome| outcome.turn_id.as_deref())
-            != Some(turn)
-        {
+        loop {
+            let durable = fx.frame().await;
+            let published = fx
+                .harness
+                .inner
+                .inputs
+                .canonical()
+                .unwrap()
+                .committed()
+                .await;
+            let bound = |frame: &CanonicalHarnessSnapshot| {
+                frame
+                    .header
+                    .compact_outcome
+                    .as_ref()
+                    .and_then(|outcome| outcome.turn_id.as_deref())
+                    == Some(turn)
+            };
+            let running = matches!(&*fx.harness.inner.state.lock().await,
+                HarnessState::CompactionRunning {turn_id, ..} if turn_id == turn);
+            if bound(&durable) && bound(&published.snapshot) && running {
+                break;
+            }
             tokio::task::yield_now().await;
         }
     })
@@ -597,6 +599,7 @@ async fn canonical_codex_compact_second_operation_has_fresh_timer() {
             json!({"id":turn}),
         )
         .await;
+        wait_turn(&fx, turn).await;
         // Age the first operation; successful completion must not carry this timer forward.
         if turn == "first" {
             let issuance = fx.harness.inner.issuance.lock().await;
