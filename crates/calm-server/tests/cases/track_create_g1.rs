@@ -263,7 +263,9 @@ async fn g1_excluded_shapes_do_not_gain_canonical_storage() {
     let (status, track) = b.post_create(None, named).await;
     assert_eq!(status, StatusCode::CREATED, "{track}");
     assert_eq!(b.count("SELECT COUNT(*) FROM worker_sessions").await, 0);
-    let mut admin = body(&b, "claude", false);
+    // Admin attachment without cwd remains excluded by the creation owner;
+    // a managed empty Claude admin track now supports canonical storage.
+    let mut admin = body(&b, "claude", true);
     admin["admin"] = json!(true);
     let (status, error) = b.post_create(Some("g1-admin"), admin).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{error}");
@@ -272,6 +274,21 @@ async fn g1_excluded_shapes_do_not_gain_canonical_storage() {
     assert_eq!(
         b.count("SELECT COUNT(*) FROM worker_sessions").await,
         0,
-        "unsupported admin binding retains its historical no-daemon path"
+        "excluded admin attachment retains its historical no-daemon path"
     );
+}
+
+#[tokio::test]
+async fn g1_local_admin_managed_empty_tracks_use_canonical_storage() {
+    for provider in ["claude", "grok"] {
+        let b = boot_without_daemon().await;
+        let mut request = body(&b, provider, false);
+        request["admin"] = json!(true);
+        let (status, track) = b.post_create(Some("g1-admin-managed"), request).await;
+        assert_eq!(status, StatusCode::CREATED, "{provider}: {track}");
+        assert!(track["admin_granted_at"].is_i64());
+        empty_identity(&b, &track, provider).await;
+        assert_eq!(b.track_count().await, 1);
+        assert_eq!(b.count("SELECT COUNT(*) FROM worker_sessions").await, 1);
+    }
 }
