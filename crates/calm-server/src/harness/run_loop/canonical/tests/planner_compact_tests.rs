@@ -1,6 +1,7 @@
 //! Declared canonical maintenance through the scheduler and real native transport.
 use super::compact_tests::{ready, shutdown};
 use super::*;
+use crate::harness::compact_outcome::CompactStatus;
 use crate::harness::run_loop::compact_task_tests::{HANDOFF, declared_for};
 use crate::model::TaskStatus;
 use calm_truth::db::RepoEventWrite;
