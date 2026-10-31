@@ -27,10 +27,11 @@ pub(crate) mod upstream_tests;
 pub(crate) mod worker;
 
 pub(crate) use base::{DeliveryPolicy, LeaseBase};
+#[cfg(any(test, feature = "fixtures"))]
+pub(crate) use release::release_workspace_lease_for_card_repo;
 pub(crate) use release::{
     EndedAttempt, ReleaseDelivery, reclaim_dead_workspace_leases_on_boot,
-    release_ended_attempt_lease_for_card_tx, release_workspace_lease_for_card_repo,
-    release_workspace_lease_for_card_tx,
+    release_ended_attempt_lease_for_card_tx, release_workspace_lease_for_card_tx,
 };
 #[cfg(any(test, feature = "fixtures"))]
 pub(crate) use worker::prepare_worker_lease_as_tx;

@@ -19,6 +19,7 @@ use crate::db::sqlite::{
     TaskReporter, begin_immediate_tx, status_detail_with_reason, task_fail_from_worker_tx,
     task_get_tx,
 };
+#[cfg(any(test, feature = "fixtures"))]
 use crate::db::{RepoEventWrite, write_in_tx_typed};
 use crate::error::{CalmError, Result};
 use crate::event::{Event, EventBus, EventScope};
@@ -119,6 +120,7 @@ async fn latest_active_lease_for_card_tx(
 
 /// [`release_workspace_lease_for_card_tx`] in a transaction of its own; `true` when a lease was
 /// released.
+#[cfg(any(test, feature = "fixtures"))]
 pub(crate) async fn release_workspace_lease_for_card_repo(
     repo: &dyn RepoEventWrite,
     events: &EventBus,

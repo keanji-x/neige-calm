@@ -99,6 +99,9 @@ impl Fixture {
             )
             .await
             .unwrap();
+        sqlx::query("UPDATE operations SET target_type = 'card', target_id = ?, payload_json = ? WHERE id = ?")
+            .bind(card.id.as_str()).bind(json!({"actor": ActorId::KernelDispatcher}).to_string())
+            .bind(&op).execute(repo.pool()).await.unwrap();
         sqlx::query("UPDATE worker_sessions SET spawn_op_id = ? WHERE id = 'session-a'")
             .bind(&op)
             .execute(repo.pool())
@@ -360,6 +363,32 @@ async fn w_timeout_cleanup_spares_successor_attempt() {
                     "B lease: {access:?}, same_session={same_session}, {status:?}"
                 );
                 assert_eq!(f.repo.task_get(&b.id).await.unwrap(), task_before);
+                if !same_session {
+                    assert_eq!(after, before, "the successor session is untouched");
+                }
+                // The no-live-session fast path is another stale-A release entry point.
+                sqlx::query("UPDATE worker_sessions SET state = 'exited' WHERE id = ?")
+                    .bind(session_id.as_str())
+                    .execute(f.repo.pool())
+                    .await
+                    .unwrap();
+                let mut tx = begin_immediate_tx(f.repo.db()).await.unwrap();
+                let mark = mark_running_timeout_cleanup_tx(
+                    &mut tx,
+                    f.card.id.as_str(),
+                    &f.task.id,
+                    now_ms(),
+                    WorkerCleanupReason::LivenessTimeout,
+                )
+                .await
+                .unwrap();
+                assert_eq!(mark.marked, 0);
+                assert!(
+                    mark.released.is_empty(),
+                    "stale A cannot release B in the zero-row arm"
+                );
+                tx.commit().await.unwrap();
+                assert_eq!(f.lease_state().await, "held");
             }
         }
     }
@@ -385,5 +414,49 @@ async fn w_timeout_cleanup_after_legacy_restart_reaps_same_attempt() {
         assert_eq!(f.lease_state().await, "released");
         assert!(f.marker().await.is_none());
         assert_eq!(f.repo.task_get(&f.task.id).await.unwrap(), task_before);
+    }
+}
+
+#[tokio::test]
+async fn w_timeout_cleanup_reaps_unstamped_spawn_attempt() {
+    for access in [TaskAccess::ReadOnly, TaskAccess::ReadWrite] {
+        let f = Fixture::new(access).await;
+        sqlx::query("UPDATE tasks SET worker_card_id = NULL WHERE id = ?")
+            .bind(&f.task.id)
+            .execute(f.repo.pool())
+            .await
+            .unwrap();
+        let mut worker = attach_worker(&f, "session-a").await;
+        let before = f.repo.task_get(&f.task.id).await.unwrap();
+        f.scheduler.sweep_timeout_worker_cleanups().await;
+        assert!(!worker.wait().await.unwrap().success());
+        assert_eq!(f.lease_state().await, "released");
+        assert!(f.marker().await.is_none());
+        assert_eq!(f.repo.task_get(&f.task.id).await.unwrap(), before);
+    }
+}
+
+#[tokio::test]
+async fn w_timeout_cleanup_retains_ambiguous_legacy_attempt() {
+    for access in [TaskAccess::ReadOnly, TaskAccess::ReadWrite] {
+        let f = Fixture::new(access).await;
+        sqlx::query("UPDATE tasks SET worker_card_id = NULL WHERE id = ?")
+            .bind(&f.task.id)
+            .execute(f.repo.pool())
+            .await
+            .unwrap();
+        sqlx::query("UPDATE worker_sessions SET spawn_op_id = NULL WHERE id = 'session-a'")
+            .execute(f.repo.pool())
+            .await
+            .unwrap();
+        let mut worker = attach_worker(&f, "session-a").await;
+        let marker = f.marker().await;
+        let before = f.repo.task_get(&f.task.id).await.unwrap();
+        f.scheduler.sweep_timeout_worker_cleanups().await;
+        assert!(worker.try_wait().unwrap().is_none());
+        worker.kill().await.unwrap();
+        assert_eq!(f.lease_state().await, "held");
+        assert_eq!(f.marker().await, marker);
+        assert_eq!(f.repo.task_get(&f.task.id).await.unwrap(), before);
     }
 }

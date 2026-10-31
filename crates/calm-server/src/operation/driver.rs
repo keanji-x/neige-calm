@@ -10,6 +10,7 @@ use crate::error::{CalmError, Result};
 use crate::event::EventBus;
 use crate::model::now_ms;
 use crate::proc_identity::signal_process_group;
+#[cfg(any(test, feature = "fixtures"))]
 use crate::session_projection_repo::WorkerSessionState;
 use crate::terminal_sweeper::{
     WaitForPidExit, try_reap_terminal_artifacts_with_renderer, wait_for_pid_exit,
@@ -441,13 +442,14 @@ impl OperationRuntime {
             .await
     }
 
-    pub async fn fail_running_worker_card(&self, card_id: &str) -> Result<()> {
-        if let Some(runtime) = self
-            .spawn_ctx
-            .repo
-            .session_projection_active_for_card(&card_id.to_string())
-            .await?
-        {
+    /// Stop only the supplied session and its exact terminal; leave session lifecycle to
+    /// the caller's fenced transaction. Never resolve the card's current runtime here.
+    pub(crate) async fn stop_timeout_worker_session(
+        &self,
+        runtime: Option<&crate::session_projection_repo::WorkerSessionProjection>,
+        terminal: Option<&crate::model::Terminal>,
+    ) -> Result<()> {
+        if let Some(runtime) = runtime {
             let shared = if runtime.agent_provider
                 == Some(crate::session_projection_repo::AgentProvider::Codex)
             {
@@ -459,15 +461,15 @@ impl OperationRuntime {
                 None
             };
             crate::harness::backend::factory::PlannerFactory::stop_timed_out_worker(
-                &runtime,
+                runtime,
                 shared.map(|daemon| daemon.as_ref()),
             )
             .await?;
         }
-        if let Some(term) = self.spawn_ctx.repo.terminal_get_by_card(card_id).await? {
+        if let Some(term) = terminal {
             try_reap_terminal_artifacts_with_renderer(
                 Some(self.spawn_ctx.terminal_renderer.as_ref()),
-                &term,
+                term,
             )
             .await?;
             if let Some(pid) = term.pid {
@@ -482,12 +484,20 @@ impl OperationRuntime {
                     }
                 }
             }
-        } else {
-            tracing::debug!(
-                card_id,
-                "timed-out worker terminal row already missing; treating cleanup as reaped"
-            );
         }
+        Ok(())
+    }
+
+    #[cfg(any(test, feature = "fixtures"))]
+    pub async fn fail_running_worker_card(&self, card_id: &str) -> Result<()> {
+        let runtime = self
+            .spawn_ctx
+            .repo
+            .session_projection_active_for_card(&card_id.to_string())
+            .await?;
+        let terminal = self.spawn_ctx.repo.terminal_get_by_card(card_id).await?;
+        self.stop_timeout_worker_session(runtime.as_ref(), terminal.as_ref())
+            .await?;
         self.spawn_ctx
             .repo
             .session_projection_complete_for_card(card_id, WorkerSessionState::Failed)

@@ -4,6 +4,7 @@
 
 pub(crate) mod card_disposal;
 mod terminal_completion;
+mod timeout_cleanup;
 pub(crate) use terminal_completion::complete_terminal_task_tx;
 mod git_delivery;
 mod planner_compaction;
@@ -48,7 +49,7 @@ use crate::operation::task_verify_adapter::{
 };
 use crate::operation::terminal_adapter::TerminalWorkerOperationPayload;
 use crate::operation::workspace_lease::{
-    ReleaseDelivery, release_workspace_lease_for_card_repo, release_workspace_lease_for_card_tx,
+    EndedAttempt, ReleaseDelivery, release_ended_attempt_lease_for_card_tx,
 };
 use crate::operation::{OperationKey, OperationOutcome, OperationRuntime, Tx};
 use crate::per_card_lock::PerCardLocks;
@@ -126,7 +127,13 @@ pub(crate) async fn mark_running_timeout_cleanup_tx(
     .await?
     .rows_affected();
     let released = if rows == 0 {
-        release_workspace_lease_for_card_tx(tx, card_id, ReleaseDelivery::CommitAsTaskEnded).await?
+        release_ended_attempt_lease_for_card_tx(
+            tx,
+            card_id,
+            EndedAttempt::Exactly(task_id),
+            ReleaseDelivery::CommitAsTaskEnded,
+        )
+        .await?
     } else {
         Vec::new()
     };
@@ -265,11 +272,6 @@ impl Drop for InflightGuard {
     fn drop(&mut self) {
         self.map.remove(&self.key);
     }
-}
-
-struct TimeoutCleanupSession {
-    session_id: String,
-    card_id: String,
 }
 
 #[derive(sqlx::FromRow)]
@@ -492,6 +494,15 @@ impl Scheduler {
             #[cfg(feature = "fixtures")]
             liveness_fail_test_hook: std::sync::Mutex::new(None),
         })
+    }
+
+    #[cfg(any(test, feature = "fixtures"))]
+    #[doc(hidden)]
+    pub fn set_timeout_cleanup_discovered_test_hook(&self, hook: ClaimFenceTestHook) {
+        *self
+            .timeout_cleanup_discovered_test_hook
+            .lock()
+            .expect("timeout cleanup hook lock") = Some(hook);
     }
 
     #[doc(hidden)]
@@ -1718,120 +1729,6 @@ impl Scheduler {
     /// When this scheduler booted, or the fixture's stand-in for it.
     pub(super) fn liveness_floor(&self) -> i64 {
         self.liveness_floor_ms.load(Ordering::SeqCst)
-    }
-
-    async fn sweep_timeout_worker_cleanups(self: &Arc<Self>) {
-        let Some(pool) = self.repo.sqlite_db() else {
-            return;
-        };
-        let worker_rows = match sqlx::query_as::<_, (String, String)>(
-            r#"SELECT id, card_id
-               FROM worker_sessions
-               WHERE provider IN ('codex', 'claude')
-                 AND card_id IS NOT NULL
-                 AND json_extract(handle_state_json, '$.timeout_cleanup.requested_at_ms')
-                     IS NOT NULL
-               ORDER BY updated_at_ms ASC, id ASC"#,
-        )
-        .fetch_all(pool.read_pool())
-        .await
-        {
-            Ok(rows) => rows,
-            Err(e) => {
-                tracing::warn!(
-                    error = %e,
-                    "scheduler sweep: timed-out worker cleanup scan failed"
-                );
-                return;
-            }
-        };
-        #[cfg(any(test, feature = "fixtures"))]
-        {
-            let hook = self
-                .timeout_cleanup_discovered_test_hook
-                .lock()
-                .expect("timeout cleanup hook lock")
-                .take();
-            if let Some(hook) = hook {
-                hook.resolved.notify_one();
-                hook.resume.notified().await;
-            }
-        }
-        let Some(runtime) = self.operation_runtime.upgrade() else {
-            if !worker_rows.is_empty() {
-                tracing::warn!(
-                    running_cleanup_count = worker_rows.len(),
-                    "scheduler sweep: operation runtime dropped; cannot retry timed-out cleanup"
-                );
-            }
-            return;
-        };
-
-        for (session_id, card_id) in worker_rows {
-            let cleanup = TimeoutCleanupSession {
-                session_id,
-                card_id,
-            };
-            if let Err(e) = runtime.fail_running_worker_card(&cleanup.card_id).await {
-                tracing::warn!(
-                    session_id = %cleanup.session_id,
-                    card_id = %cleanup.card_id,
-                    error = %e,
-                    "scheduler sweep: timed-out worker PTY/session cleanup failed; marker retained"
-                );
-                continue;
-            }
-            // #1830 S2 D7: the worker is stopped, so its attempt is committed now, as its
-            // terminal `tasks.status` says (`failed` for a timeout, `canceled` for a cancel).
-            if let Err(e) = release_workspace_lease_for_card_repo(
-                self.repo.as_ref(),
-                &self.events,
-                &cleanup.card_id,
-                ReleaseDelivery::CommitAsTaskEnded,
-            )
-            .await
-            {
-                tracing::warn!(
-                    session_id = %cleanup.session_id,
-                    card_id = %cleanup.card_id,
-                    error = %e,
-                    "scheduler sweep: timed-out worker lease row release failed; marker retained"
-                );
-                continue;
-            }
-            if let Err(e) = self
-                .clear_timeout_worker_cleanup_marker(&cleanup.session_id)
-                .await
-            {
-                tracing::warn!(
-                    session_id = %cleanup.session_id,
-                    card_id = %cleanup.card_id,
-                    error = %e,
-                    "scheduler sweep: timed-out worker cleanup marker clear failed; next tick will retry"
-                );
-            }
-        }
-    }
-
-    async fn clear_timeout_worker_cleanup_marker(&self, session_id: &str) -> Result<()> {
-        let pool = self
-            .repo
-            .sqlite_db()
-            .ok_or_else(|| CalmError::Internal("scheduler requires a sqlite-backed Repo".into()))?;
-        sqlx::query(
-            r#"UPDATE worker_sessions
-               SET handle_state_json = json_remove(
-                     COALESCE(handle_state_json, '{}'),
-                     '$.timeout_cleanup'
-                   ),
-                   updated_at_ms = ?1
-               WHERE id = ?2"#,
-        )
-        .bind(now_ms())
-        .bind(session_id)
-        .execute(pool.writer_pool())
-        .await?;
-        Ok(())
     }
 
     async fn worker_card_id_for_task(&self, task: &Task) -> Option<String> {
