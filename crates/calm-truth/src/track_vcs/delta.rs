@@ -1,3 +1,4 @@
+use super::card_query::card_query;
 use crate::error::Result;
 use crate::event::Event;
 use crate::ids::{CardId, TrackId};
@@ -17,7 +18,7 @@ use super::snapshot::{
 };
 use super::store::{load_blob_bytes_tx, put_rendered_entry};
 use super::transcripts::HookInputs;
-use super::types::{BlobContent, CardVisibility};
+use super::types::{BlobContent, CardProjection, CardVisibility};
 use super::{ManifestEntry, TreeManifest};
 use crate::db::sqlite::canceled_task_attempts_by_track;
 
@@ -74,6 +75,9 @@ pub(super) async fn apply_delta_tx(
     object_created_at: i64,
     hooks: HookInputs<'_>,
 ) -> Result<()> {
+    // Delta rendering writes only VCS objects/manifests. Card inputs stay unchanged
+    // for this transaction, so paths share one lazily acquired card snapshot.
+    let mut card_snapshot = None;
     for prefix in delta.remove_prefixes {
         manifest
             .entries
@@ -98,8 +102,8 @@ pub(super) async fn apply_delta_tx(
         manifest
             .entries
             .retain(|path, _| !path.starts_with("runs/"));
-        let cards = cards_for_track_tx(tx, track_id, card_visibility).await?;
-        let runs = project_runs_tx(tx, track_id, &cards).await?;
+        let cards = delta_cards(tx, track_id, card_visibility, &mut card_snapshot).await?;
+        let runs = project_runs_tx(tx, track_id, cards).await?;
         insert_run_entries(tx, &mut manifest.entries, &runs, object_created_at).await?;
         run_keys.clear();
         run_card_ids.clear();
@@ -134,7 +138,7 @@ pub(super) async fn apply_delta_tx(
         {
             continue;
         }
-        match render_path_tx(tx, track_id, &path, card_visibility).await? {
+        match render_path_tx(tx, track_id, &path, card_visibility, &mut card_snapshot).await? {
             Some(content) => {
                 put_rendered_entry(tx, &mut manifest.entries, path, content, object_created_at)
                     .await?;
@@ -147,11 +151,26 @@ pub(super) async fn apply_delta_tx(
     Ok(())
 }
 
+async fn delta_cards<'a>(
+    tx: &mut Transaction<'_, Sqlite>,
+    track_id: &TrackId,
+    visibility: &CardVisibility,
+    snapshot: &'a mut Option<Vec<CardProjection>>,
+) -> Result<&'a [CardProjection]> {
+    if snapshot.is_none() {
+        *snapshot = Some(cards_for_track_tx(tx, track_id, visibility).await?);
+    }
+    Ok(snapshot
+        .as_deref()
+        .expect("card snapshot initialized above"))
+}
+
 async fn render_path_tx(
     tx: &mut Transaction<'_, Sqlite>,
     track_id: &TrackId,
     path: &str,
     card_visibility: &CardVisibility,
+    card_snapshot: &mut Option<Vec<CardProjection>>,
 ) -> Result<Option<BlobContent>> {
     let path = normalize_path(path);
     match path.as_str() {
@@ -160,7 +179,7 @@ async fn render_path_tx(
                 Some(track) => track,
                 None => return Ok(None),
             };
-            let cards = cards_for_track_tx(tx, track_id, card_visibility).await?;
+            let cards = delta_cards(tx, track_id, card_visibility, card_snapshot).await?;
             Ok(Some(index_markdown(&track, cards.len())))
         }
         "track.json" => {
@@ -170,24 +189,24 @@ async fn render_path_tx(
             Ok(Some(track_json(&track)?))
         }
         "report.md" => {
-            let cards = cards_for_track_tx(tx, track_id, card_visibility).await?;
-            report_markdown(&cards)
+            let cards = delta_cards(tx, track_id, card_visibility, card_snapshot).await?;
+            report_markdown(cards)
         }
         "cards/index.json" => {
-            let cards = cards_for_track_tx(tx, track_id, card_visibility).await?;
-            Ok(Some(cards_index_json(&cards)?))
+            let cards = delta_cards(tx, track_id, card_visibility, card_snapshot).await?;
+            Ok(Some(cards_index_json(cards)?))
         }
         path if path.starts_with("cards/") => {
             render_card_path_tx(tx, track_id, path, card_visibility).await
         }
         "runs/index.json" => {
-            let cards = cards_for_track_tx(tx, track_id, card_visibility).await?;
-            let runs = project_runs_tx(tx, track_id, &cards).await?;
+            let cards = delta_cards(tx, track_id, card_visibility, card_snapshot).await?;
+            let runs = project_runs_tx(tx, track_id, cards).await?;
             Ok(Some(runs_index_json(&runs)?))
         }
         path if path.starts_with("runs/") => {
-            let cards = cards_for_track_tx(tx, track_id, card_visibility).await?;
-            let runs = project_runs_tx(tx, track_id, &cards).await?;
+            let cards = delta_cards(tx, track_id, card_visibility, card_snapshot).await?;
+            let runs = project_runs_tx(tx, track_id, cards).await?;
             render_run_path(path, &runs)
         }
         _ => Ok(None),
@@ -356,24 +375,12 @@ async fn run_key_for_worker_card_tx(
     card_id: &str,
     visibility: &CardVisibility,
 ) -> Result<Option<String>> {
-    let row = sqlx::query(
-        r#"SELECT id,
-                  json_extract(payload, '$.idempotency_key') AS idempotency_key,
-                  EXISTS (
-                    SELECT 1
-                    FROM events
-                    WHERE events.scope_track = cards.track_id
-                      AND events.kind = 'card.added'
-                      AND json_extract(events.payload, '$.id') = cards.id
-                  ) AS vcs_announced
-           FROM cards
-           WHERE id = ?1
-             AND track_id = ?2
-             AND role = 'worker'
-             AND json_extract(payload, '$.idempotency_key') IS NOT NULL"#,
-    )
-    .bind(card_id)
+    let row = sqlx::query(&card_query(
+        "id, json_extract(payload, '$.idempotency_key') AS idempotency_key",
+        "id=?2 AND role='worker' AND json_extract(payload, '$.idempotency_key') IS NOT NULL",
+    ))
     .bind(track_id.as_str())
+    .bind(card_id)
     .fetch_optional(&mut **tx)
     .await?;
     let Some(row) = row else {
@@ -601,10 +608,16 @@ mod tests {
         .expect("insert report card");
 
         assert!(
-            render_path_tx(&mut tx, &track.id, "report.md", &CardVisibility::AllRows,)
-                .await
-                .expect("render report before transition")
-                .is_some()
+            render_path_tx(
+                &mut tx,
+                &track.id,
+                "report.md",
+                &CardVisibility::AllRows,
+                &mut None
+            )
+            .await
+            .expect("render report before transition")
+            .is_some()
         );
 
         sqlx::query(
@@ -617,10 +630,16 @@ mod tests {
         .expect("force formerly reachable kind transition");
 
         assert!(
-            render_path_tx(&mut tx, &track.id, "report.md", &CardVisibility::AllRows,)
-                .await
-                .expect("render report after transition")
-                .is_none()
+            render_path_tx(
+                &mut tx,
+                &track.id,
+                "report.md",
+                &CardVisibility::AllRows,
+                &mut None
+            )
+            .await
+            .expect("render report after transition")
+            .is_none()
         );
     }
 }

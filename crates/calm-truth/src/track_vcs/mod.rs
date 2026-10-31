@@ -8,6 +8,7 @@ pub const DEFAULT_PATCH_MAX_LINES: usize = 200;
 pub type ObjectHash = String;
 pub type CommitHash = String;
 
+mod card_query;
 mod commit;
 mod delta;
 mod gc;

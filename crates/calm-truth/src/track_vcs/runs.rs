@@ -1,3 +1,4 @@
+use super::card_query::{CARD_COLUMNS, card_query};
 use crate::db::TrackEvent;
 use crate::db::sqlite::{CanceledTaskAttempt, canceled_task_attempts_by_track};
 use crate::error::Result;
@@ -377,22 +378,10 @@ async fn worker_card_for_run_key_tx(
     key: &str,
     visibility: &CardVisibility,
 ) -> Result<Option<CardProjection>> {
-    let rows = sqlx::query(
-        r#"SELECT id, track_id, kind, sort, payload, title, role, deletable, created_at, updated_at,
-                  EXISTS (
-                    SELECT 1
-                    FROM events
-                    WHERE events.scope_track = cards.track_id
-                      AND events.kind = 'card.added'
-                      AND json_extract(events.payload, '$.id') = cards.id
-                  ) AS vcs_announced
-           FROM cards
-           WHERE track_id = ?1
-             AND role = 'worker'
-             AND json_extract(payload, '$.idempotency_key') = ?2
-           ORDER BY sort ASC, id ASC
-           "#,
-    )
+    let rows = sqlx::query(&card_query(
+        CARD_COLUMNS,
+        "role='worker' AND json_extract(payload, '$.idempotency_key')=?2",
+    ))
     .bind(track_id.as_str())
     .bind(key)
     .fetch_all(&mut **tx)

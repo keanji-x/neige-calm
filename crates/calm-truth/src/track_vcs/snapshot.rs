@@ -16,6 +16,7 @@ use sqlx::sqlite::SqliteRow;
 use sqlx::{Executor, Row, Sqlite, Transaction};
 use std::collections::BTreeMap;
 
+use super::card_query::{CARD_COLUMNS, card_query};
 use super::runs::{EventRow, project_runs_tx, track_event_from_row};
 use super::store::{CommitTreeMeta, commit_tree_at_tx, put_rendered_entry, store_tree};
 use super::transcripts::HookInputs;
@@ -272,22 +273,10 @@ pub(super) async fn cards_for_track<'e>(
     visibility: &CardVisibility,
 ) -> Result<Vec<CardProjection>> {
     // ORDER BY must stay aligned with SqlxRepo::cards_by_track.
-    let rows = sqlx::query(
-        r#"SELECT id, track_id, kind, sort, payload, title, role, deletable, created_at, updated_at,
-                  EXISTS (
-                    SELECT 1
-                    FROM events
-                    WHERE events.scope_track = cards.track_id
-                      AND events.kind = 'card.added'
-                      AND json_extract(events.payload, '$.id') = cards.id
-                  ) AS vcs_announced
-           FROM cards
-           WHERE track_id = ?1
-           ORDER BY sort ASC, id ASC"#,
-    )
-    .bind(track_id.as_str())
-    .fetch_all(executor)
-    .await?;
+    let rows = sqlx::query(&card_query(CARD_COLUMNS, "TRUE"))
+        .bind(track_id.as_str())
+        .fetch_all(executor)
+        .await?;
     let mut out = Vec::new();
     for row in rows {
         let id: String = row.try_get("id")?;
@@ -305,22 +294,11 @@ pub(super) async fn card_in_track_tx(
     card_id: &str,
     visibility: &CardVisibility,
 ) -> Result<Option<CardProjection>> {
-    let row = sqlx::query(
-        r#"SELECT id, track_id, kind, sort, payload, title, role, deletable, created_at, updated_at,
-                  EXISTS (
-                    SELECT 1
-                    FROM events
-                    WHERE events.scope_track = cards.track_id
-                      AND events.kind = 'card.added'
-                      AND json_extract(events.payload, '$.id') = cards.id
-                  ) AS vcs_announced
-           FROM cards
-           WHERE id = ?1 AND track_id = ?2"#,
-    )
-    .bind(card_id)
-    .bind(track_id.as_str())
-    .fetch_optional(&mut **tx)
-    .await?;
+    let row = sqlx::query(&card_query(CARD_COLUMNS, "id=?2"))
+        .bind(track_id.as_str())
+        .bind(card_id)
+        .fetch_optional(&mut **tx)
+        .await?;
     let Some(row) = row else {
         return Ok(None);
     };
@@ -560,3 +538,7 @@ pub(crate) fn run_blob_bytes(run: &RunProjection) -> Result<Vec<u8>> {
 #[cfg(test)]
 #[path = "snapshot/hook_query_tests.rs"]
 mod hook_query_tests;
+
+#[cfg(test)]
+#[path = "snapshot/card_query_tests.rs"]
+mod card_query_tests;
