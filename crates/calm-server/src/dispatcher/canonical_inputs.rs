@@ -452,6 +452,18 @@ impl Inner {
         admission: &EventAdmission,
         facts: Vec<EventInputFact>,
     ) -> Result<CurrentInputCarrier> {
+        self.accept_qualified_prefix_tx(tx, producer, admission, facts, None)
+            .await
+    }
+
+    pub(super) async fn accept_qualified_prefix_tx(
+        &self,
+        tx: &mut Transaction<'_, Sqlite>,
+        producer: &Producer,
+        admission: &EventAdmission,
+        facts: Vec<EventInputFact>,
+        quiet: Option<&crate::worker_quiet::ObservedQuietEpisode>,
+    ) -> Result<CurrentInputCarrier> {
         producer.current_owner()?;
         admission.authorize_tx(tx).await?;
         let card = admission.card().to_string();
@@ -485,8 +497,22 @@ impl Inner {
             }
             match admission {
                 EventAdmission::Assistant(_) => {
-                    conversation::system_assistant_accept_tx(tx, &card, binding.event.envelope.id)
+                    if let Some(episode) = quiet {
+                        conversation::worker_watcher_accept_tx(
+                            tx,
+                            &card,
+                            binding.event.envelope.id,
+                            episode.fact(),
+                        )
                         .await?;
+                    } else {
+                        conversation::system_assistant_accept_tx(
+                            tx,
+                            &card,
+                            binding.event.envelope.id,
+                        )
+                        .await?;
+                    }
                     // The atomic owner reloads privately; our carrier is now stale.
                     carrier = conversation::current_input_content_carrier_tx(tx, &card).await?;
                 }

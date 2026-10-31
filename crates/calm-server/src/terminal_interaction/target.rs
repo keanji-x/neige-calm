@@ -322,6 +322,15 @@ impl TerminalInteraction {
         };
         Err(refusal.into())
     }
+    fn attempt_card(task: &Task) -> Result<&str> {
+        ensure!(
+            task.status != TaskStatus::Pending && task.spawn != TASK_CHILD_TRACK_ROUTE,
+            "task has no in-track worker"
+        );
+        task.worker_card_id
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("worker missing"))
+    }
     /// The one resolution every caller-facing path takes: show, read, control, input and the
     /// queued write's re-check (`check_binding`). An Assistant reaches only a terminal bound to a
     /// current task attempt (#2492): a manual Terminal card or a task-less agent card runs outside
@@ -368,49 +377,16 @@ impl TerminalInteraction {
             .card_get(terminal.card_id.as_str())
             .await?
             .ok_or_else(|| anyhow::anyhow!("terminal card unavailable"))?;
-        ensure!(
-            card.track_id.as_str() == track,
-            "terminal outside the caller's Track"
-        );
-        ensure!(
-            matches!(card.kind.as_str(), "terminal" | "codex" | "claude"),
-            "card does not provide a supported Terminal view"
-        );
-        ensure!(
-            repo.card_role_get(card.id.as_str()).await? == Some(CardRole::Worker),
-            "only Worker terminal cards may be controlled; Planner/Assistant cards are excluded"
-        );
         let current = repo
             .session_projection_projectable_for_card(&card.id.to_string())
             .await?
             .ok_or_else(|| anyhow::anyhow!("terminal has no current worker session"))?;
-        let expected_kind = match card.kind.as_str() {
-            "terminal" => crate::session_projection_repo::WorkerSessionKind::Terminal,
-            "codex" => crate::session_projection_repo::WorkerSessionKind::CodexCard,
-            "claude" => crate::session_projection_repo::WorkerSessionKind::ClaudeCard,
-            _ => unreachable!("validated terminal card kind"),
-        };
-        ensure!(
-            current.kind == expected_kind,
-            "card and worker session kinds disagree"
-        );
         let session = repo
             .session_get_by_id(&current.id.clone().into())
             .await?
             .ok_or_else(|| anyhow::anyhow!("worker session unavailable"))?;
-        ensure!(
-            current.terminal_run_id.as_deref() == Some(terminal.id.as_str())
-                && session.terminal_run_id.as_deref() == Some(terminal.id.as_str())
-                && session.card_id.as_ref() == Some(&card.id)
-                && session.track_id == card.track_id,
-            "terminal does not belong to the card's current worker session"
-        );
         let operation_task = match session.spawn_op_id.as_deref() {
-            Some(op) => Some(
-                repo.operation_idempotency_key_by_id(op)
-                    .await?
-                    .ok_or_else(|| anyhow::anyhow!("worker operation binding unavailable"))?,
-            ),
+            Some(op) => repo.operation_idempotency_key_by_id(op).await?,
             None => None,
         };
         let task = if let Some(task) = requested_task {
@@ -421,8 +397,125 @@ impl TerminalInteraction {
             repo.task_for_worker_card(card.id.as_str()).await?
         };
         let task = match task {
+            Some(task) => Some(Self::current_task(repo, track, &task.id).await?),
+            None => None,
+        };
+        let role = repo.card_role_get(card.id.as_str()).await?;
+        Self::resolved_binding(
+            track,
+            terminal,
+            card,
+            role,
+            current,
+            session,
+            operation_task,
+            task,
+        )
+    }
+
+    /// Same binding policy as normal terminal resolution, with every fact loaded
+    /// from the caller's write transaction. It grants no source authority.
+    pub(crate) async fn check_attempt_binding_tx(
+        tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        track: &str,
+        expected: &Binding,
+    ) -> Result<Task> {
+        use crate::db::sqlite;
+        let binding = expected
+            .task
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("attempt required"))?;
+        let task = sqlite::task_current_get_tx(tx, track, &binding.task_key)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("current attempt missing"))?;
+        ensure!(task.id == binding.attempt_id, "attempt changed");
+        let card_id = Self::attempt_card(&task)?;
+        let terminal = sqlite::terminal_get_by_card_tx(tx, card_id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("terminal missing"))?;
+        let card = sqlite::card_for_update_tx(tx, card_id).await?;
+        let role: Option<String> = sqlx::query_scalar("SELECT role FROM cards WHERE id=?1")
+            .bind(card_id)
+            .fetch_optional(&mut **tx)
+            .await?;
+        let role = role
+            .as_deref()
+            .map(|value| serde_json::from_value::<CardRole>(json!(value)))
+            .transpose()?;
+        let current = sqlite::session_projection_projectable_for_card_tx(tx, card_id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("current session missing"))?;
+        let session = sqlite::session_get_tx(tx, &current.id.clone().into())
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("session missing"))?;
+        let operation = match session.spawn_op_id.as_deref() {
+            Some(op) => {
+                calm_truth::worker_binding::operation_idempotency_key(&mut **tx, op).await?
+            }
+            None => None,
+        };
+        let resolved = Self::resolved_binding(
+            track,
+            terminal,
+            card,
+            role,
+            current,
+            session,
+            operation,
+            Some(task.clone()),
+        )?;
+        ensure!(resolved.binding == *expected, "terminal binding changed");
+        resolved.ensure_write_allowed()?;
+        Ok(task)
+    }
+
+    #[allow(clippy::too_many_arguments)] // One comparison over both read paths
+    fn resolved_binding(
+        track: &str,
+        terminal: crate::model::Terminal,
+        card: crate::model::Card,
+        role: Option<CardRole>,
+        current: crate::session_projection_repo::WorkerSessionProjection,
+        session: calm_types::worker::WorkerSession,
+        operation_task: Option<String>,
+        task: Option<Task>,
+    ) -> Result<Resolved> {
+        ensure!(
+            card.track_id.as_str() == track,
+            "terminal outside the caller's Track"
+        );
+        ensure!(
+            matches!(card.kind.as_str(), "terminal" | "codex" | "claude"),
+            "card does not provide a supported Terminal view"
+        );
+        ensure!(
+            role == Some(CardRole::Worker),
+            "only Worker terminal cards may be controlled; Planner/Assistant cards are excluded"
+        );
+        let expected_kind = match card.kind.as_str() {
+            "terminal" => crate::session_projection_repo::WorkerSessionKind::Terminal,
+            "codex" => crate::session_projection_repo::WorkerSessionKind::CodexCard,
+            "claude" => crate::session_projection_repo::WorkerSessionKind::ClaudeCard,
+            _ => unreachable!("validated terminal card kind"),
+        };
+        ensure!(
+            current.kind == expected_kind,
+            "card and worker session kinds disagree"
+        );
+        ensure!(
+            current.terminal_run_id.as_deref() == Some(terminal.id.as_str())
+                && session.terminal_run_id.as_deref() == Some(terminal.id.as_str())
+                && session.card_id.as_ref() == Some(&card.id)
+                && session.track_id == card.track_id,
+            "terminal does not belong to the card's current worker session"
+        );
+        ensure!(
+            session.spawn_op_id.is_none() || operation_task.is_some(),
+            "worker operation binding unavailable"
+        );
+        let task = match task {
             Some(task) => {
-                let latest = Self::current_task(repo, track, &task.id).await?;
+                let latest = task;
                 ensure!(
                     latest.worker_card_id.as_deref() == Some(card.id.as_str())
                         && operation_task.as_deref() == Some(latest.id.as_str()),

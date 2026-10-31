@@ -130,21 +130,6 @@ pub(crate) async fn send_planner_input(
     .map(Json)
 }
 
-/// Historical internal feature sends. They have no authenticated Human source
-/// and cannot enter a canonical runtime through this body-queue path.
-#[allow(deprecated)]
-pub(crate) async fn send_planner_input_keyed(
-    s: &RouteState,
-    w: &WorkerState,
-    cs: &CodexShellState,
-    actor: Actor,
-    id: String,
-    body: SendPlannerInputRequest,
-    idempotency_key: String,
-) -> Result<SendPlannerInputResponse> {
-    send_keyed(s, w, cs, actor, id, body, idempotency_key, None).await
-}
-
 #[allow(clippy::too_many_arguments, deprecated)]
 async fn send_keyed(
     s: &RouteState,

@@ -5,7 +5,7 @@
 //! templated `track.wake_requested` line for the Planner, the only agent that asks the owner.
 
 mod report;
-mod watcher;
+pub(crate) mod watcher;
 
 #[cfg(feature = "fixtures")]
 pub use report::WORKER_REPORT_AUTHORIZED;

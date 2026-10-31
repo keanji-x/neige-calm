@@ -41,10 +41,26 @@ async fn cold_original(
     drift: bool,
     revoked: Option<authority::Revocation>,
 ) {
+    cold_original_source(claimed, corrupt, drift, revoked, false).await;
+}
+async fn cold_original_source(
+    claimed: bool,
+    corrupt: bool,
+    drift: bool,
+    revoked: Option<authority::Revocation>,
+    quiet: bool,
+) {
     let mut fixture = Fixture::new().await;
     let (state, app, cookie) = fixture.application().await;
-    activity(&state, &app, &cookie).await;
-    let accepted = summary(&state, &app, &cookie, "first", &body(1)).await;
+    let track = activity(&state, &app, &cookie).await;
+    let (accepted, frozen_body) = if quiet {
+        watcher::accept(&fixture, &state, &track).await
+    } else {
+        (
+            summary(&state, &app, &cookie, "first", &body(1)).await,
+            body(1),
+        )
+    };
     let card = accepted["card_id"].as_str().unwrap().to_owned();
     let original = receipts(&fixture, &card).await;
     let (worker, _) = frame(&fixture, &card).await;
@@ -141,11 +157,20 @@ async fn cold_original(
     };
     let bootstrap = cold_next(&mut peer, claimed).await;
     native
-        .complete(&mut peer, bootstrap, BOOTSTRAP, "cold-bootstrap")
+        .complete(
+            &mut peer,
+            bootstrap,
+            if quiet {
+                crate::worker_watch::watcher::BOOTSTRAP_TEXT.trim_end()
+            } else {
+                BOOTSTRAP
+            },
+            "cold-bootstrap",
+        )
         .await;
     let body_call = next(&mut peer, false).await;
     native
-        .complete(&mut peer, body_call, &body(1), "cold-summary")
+        .complete(&mut peer, body_call, &frozen_body, "cold-summary")
         .await;
     let after = phase(&fixture, &card, HarnessPhaseTag::TurnCompleted).await;
     assert!(after.canonical_inputs.pending.is_empty());
@@ -171,10 +196,20 @@ async fn cold_unattempted_claim_requalifies_original_plan_and_continues_body() {
 
 #[tokio::test]
 async fn unknown_native_disconnect_survives_file_reopen_without_resend() {
+    unknown_source(false).await;
+}
+async fn unknown_source(quiet: bool) {
     let mut fixture = Fixture::new().await;
     let (state, app, cookie) = fixture.application().await;
-    activity(&state, &app, &cookie).await;
-    let accepted = summary(&state, &app, &cookie, "first", &body(1)).await;
+    let track = activity(&state, &app, &cookie).await;
+    let (accepted, _frozen_body) = if quiet {
+        watcher::accept(&fixture, &state, &track).await
+    } else {
+        (
+            summary(&state, &app, &cookie, "first", &body(1)).await,
+            body(1),
+        )
+    };
     let card = accepted["card_id"].as_str().unwrap().to_owned();
     let original = receipts(&fixture, &card).await;
     let (client, mut peer) = connect(&state.shared_codex_appserver).await;
@@ -279,5 +314,26 @@ async fn accepted_pending_rechecks_role_worker_profile_provider_and_producer() {
 async fn unattempted_claim_rechecks_role_worker_profile_provider_and_producer() {
     for change in authority::REVOCATIONS {
         cold_original(true, false, false, Some(change)).await;
+    }
+}
+
+#[tokio::test]
+async fn watcher_cold_pending_recovers_original_input_after_observed_task_finishes() {
+    cold_original_source(false, false, false, None, true).await;
+}
+#[tokio::test]
+async fn watcher_cold_unattempted_claim_recovers_without_old_renderer() {
+    cold_original_source(true, false, false, None, true).await;
+}
+#[tokio::test]
+async fn watcher_unknown_survives_file_reopen_without_resend() {
+    unknown_source(true).await;
+}
+#[tokio::test]
+async fn watcher_pending_and_claim_recheck_all_target_revocations() {
+    for change in authority::REVOCATIONS {
+        for claimed in [false, true] {
+            cold_original_source(claimed, false, false, Some(change), true).await;
+        }
     }
 }

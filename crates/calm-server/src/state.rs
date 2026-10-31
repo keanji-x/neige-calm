@@ -330,6 +330,7 @@ impl BootState {
             system_area_mint: Arc::new(crate::routes::today::SystemAreaMintCounters::default()),
             system_area_mint_rendezvous: None,
             today_summary_issuer: None,
+            worker_watcher_issuer: None,
             daemon: self.daemon,
             terminal_renderer: self.terminal_renderer,
             plugin: self.plugin,
@@ -365,6 +366,8 @@ impl BootState {
 /// `fixtures`-gated [`AppState::raw_repo`].
 #[derive(Clone)]
 pub struct AppState {
+    pub(crate) worker_watcher_issuer:
+        Option<crate::dispatcher::system_assistant::SystemAssistantIssuer>,
     pub(crate) today_summary_issuer:
         Option<crate::dispatcher::system_assistant::SystemAssistantIssuer>,
     pub(crate) provider_sweep: Option<crate::provider_execution::sweep::ProviderSweep>,
@@ -1839,7 +1842,6 @@ impl AppState {
         crate::terminal_sweeper::spawn(state.clone());
         // Quiet task workers go to the Track's worker watcher, which needs the full route state to
         // create its conversation and send it a message (#2492).
-        crate::worker_quiet::spawn(&state);
 
         // VCS objects are content-addressed and shared by multiple tracks, so deletion only
         // removes refs + commits; unreferenced objects are reclaimed hourly with a grace window.

@@ -60,17 +60,28 @@ impl Harness {
         self.supervisor.sock().to_owned()
     }
     pub async fn start() -> Self {
-        Self::start_inner(false).await
+        Self::start_inner(false, false).await
     }
     /// The same stack with the fixtures fake shared codex app-server
     /// (`new_fake_running_with_pending`) in place of the stub, for tests
     /// that assert on `interrupted_turns_for_test()`.
     pub async fn start_with_fake_codex() -> Self {
-        Self::start_inner(true).await
+        Self::start_inner(true, false).await
     }
-    async fn start_inner(fake_codex: bool) -> Self {
+    pub async fn start_with_booted_fake_codex() -> Self {
+        Self::start_inner(true, true).await
+    }
+    async fn start_inner(fake_codex: bool, booted: bool) -> Self {
         let root = tempfile::tempdir().unwrap();
-        let sql = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
+        let url = if booted {
+            format!(
+                "sqlite://{}?mode=rwc",
+                root.path().join("terminal.db").display()
+            )
+        } else {
+            "sqlite::memory:".into()
+        };
+        let sql = Arc::new(SqlxRepo::open(&url).await.unwrap());
         let repo: Arc<dyn Repo> = sql.clone();
         let area = repo
             .area_create(
@@ -190,19 +201,47 @@ impl Harness {
             Some(roles),
             Some(areas),
         );
-        let state = if fake_codex {
-            state.with_shared_codex_appserver(SharedCodexAppServer::new_fake_running_with_pending(
-                repo.clone(),
-                None,
-            ))
-        } else {
-            state
+        let mut boot_auth = None;
+        let state =
+            if booted {
+                use clap::Parser;
+                let mut cfg = calm_server::config::Config::parse_from(["calm-server"]);
+                cfg.db_url = url;
+                cfg.data_dir = Some(root.path().join("data"));
+                cfg.workspace_root = Some(root.path().join("workspaces"));
+                cfg.plugins_dir = Some(root.path().join("plugins"));
+                cfg.plugins_data_dir = Some(root.path().join("plugins-data"));
+                cfg.proc_supervisor_sock = Some(supervisor.sock().to_owned());
+                cfg.auth_username = Some("fixture-owner".into());
+                cfg.auth_password = Some("fixture-password".into());
+                cfg.codex_bin = root.path().join("no-real-codex").display().to_string();
+                cfg.claude_bin = root.path().join("no-real-claude").display().to_string();
+                cfg.codex_bridge_bin = Some(bridge.clone());
+                cfg.codex_ingest_url = Some(base_url.clone());
+                let (booted, auth) = Box::pin(AppState::boot(&cfg)).await.unwrap().into_parts();
+                boot_auth = Some(auth);
+                let native_repo = <calm_server::state::WorkerState as axum::extract::FromRef<
+                    AppState,
+                >>::from_ref(&booted)
+                .repo;
+                booted.with_shared_codex_appserver(
+                    SharedCodexAppServer::new_fake_running_with_pending(native_repo, None),
+                )
+            } else if fake_codex {
+                state.with_shared_codex_appserver(
+                    SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None),
+                )
+            } else {
+                state
+            };
+        let app = match boot_auth {
+            Some(auth) => calm_server::routes::application_router(state.clone(), auth),
+            None => calm_server::routes::router()
+                .layer(axum::middleware::from_fn(
+                    calm_server::actor::actor_middleware,
+                ))
+                .with_state(state.clone()),
         };
-        let app = calm_server::routes::router()
-            .layer(axum::middleware::from_fn(
-                calm_server::actor::actor_middleware,
-            ))
-            .with_state(state.clone());
         let served = app.clone();
         let http = tokio::spawn(async move {
             axum::serve(listener, served).await.unwrap();

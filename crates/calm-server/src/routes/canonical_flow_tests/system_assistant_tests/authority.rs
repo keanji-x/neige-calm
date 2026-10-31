@@ -141,7 +141,7 @@ async fn outer_error_and_cancel_rollback_the_entire_acceptance_before_publicatio
     assert_eq!(recovery::receipts(&fixture, &card).await.len(), 2);
     shutdown(&fixture, &state).await;
 }
-async fn assert_empty(fixture: &Fixture, card: &str) {
+pub(super) async fn assert_empty(fixture: &Fixture, card: &str) {
     let counts:(i64,i64,i64,i64,i64,i64)=sqlx::query_as("SELECT (SELECT count(*) FROM cards WHERE id=?1),(SELECT count(*) FROM worker_sessions WHERE card_id=?1),(SELECT count(*) FROM events WHERE scope_card=?1),(SELECT count(*) FROM conversation_presentations WHERE card_id=?1),(SELECT count(*) FROM conversation_system_assistant_entries WHERE card_id=?1),(SELECT count(*) FROM conversation_system_assistant_receipts WHERE card_id=?1)")
         .bind(card).fetch_one(fixture.repo.pool()).await.unwrap();
     assert_eq!(counts, (0, 0, 0, 0, 0, 0));

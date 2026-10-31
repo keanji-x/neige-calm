@@ -264,6 +264,7 @@ mod recovery;
 mod retained_proof_tests;
 
 mod authority;
+mod watcher;
 
 #[tokio::test]
 async fn concurrent_owner_acceptances_on_independent_connections_execute_one_bootstrap_and_both_bodies()

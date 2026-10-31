@@ -336,6 +336,8 @@ pub struct TerminalRendererRegistry {
     output_wake: OutputWake,
 }
 
+mod quiet_observation;
+
 impl TerminalRendererRegistry {
     pub(crate) fn set_execution(&self, execution: crate::execution_quiesce::ExecutionLifecycle) {
         *self.execution.lock().unwrap() = execution;

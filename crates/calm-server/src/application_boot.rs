@@ -98,6 +98,10 @@ impl BootedApplication {
             state.today_summary_issuer = Some(state.dispatcher.system_assistant_issuer(
                 calm_types::system_assistant::SystemAssistantSource::TodaySummary,
             )?);
+            state.worker_watcher_issuer = Some(state.dispatcher.system_assistant_issuer(
+                calm_types::system_assistant::SystemAssistantSource::WorkerWatcher,
+            )?);
+            calm_server::worker_quiet::spawn(&state);
             Ok::<_, anyhow::Error>(())
         }.await;
         if let Err(error) = recovered {

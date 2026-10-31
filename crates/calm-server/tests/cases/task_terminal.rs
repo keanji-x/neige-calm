@@ -53,7 +53,9 @@ pub(crate) async fn worker_running(
         .execute(h.sql.pool())
         .await
         .unwrap();
-    let mut tx = h.sql.pool().begin().await.unwrap();
+    let mut tx = calm_truth::db::sqlite::begin_immediate_tx(h.sql.db())
+        .await
+        .unwrap();
     // The server's own cache, as the production create path writes through it: the hook ingest's
     // role gate reads the worker card's role and Track from it.
     let roles = h.state.card_role_cache.clone();

@@ -62,6 +62,71 @@ impl SystemAssistantIssuer {
         }
         Ok(dispatcher)
     }
+    fn require_text_source(&self) -> Result<()> {
+        if self.source != SystemAssistantSource::TodaySummary {
+            return Err(CalmError::Forbidden(
+                "Watcher requires a live detector episode".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Private source composition: only a detector-minted episode can enter.
+    pub(crate) async fn submit_quiet(
+        &self,
+        state: &crate::state::RouteState,
+        renderer: Arc<crate::terminal_renderer::TerminalRendererRegistry>,
+        episode: crate::worker_quiet::ObservedQuietEpisode,
+    ) -> Result<SystemAssistantReceipt> {
+        if self.source != SystemAssistantSource::WorkerWatcher {
+            return Err(CalmError::Forbidden("quiet issuer source changed".into()));
+        }
+        let dispatcher = self.context(state)?;
+        episode.require_repo(state)?;
+        let track: TrackId = episode.fact().track_id.clone().into();
+        let guard = dispatcher.inner.acquire_push_lock(&track).await;
+        let issuer = self.clone();
+        let route = state.clone();
+        let accepted = crate::db::write_in_tx_typed(state.repo.as_ref(), move |tx| {
+            Box::pin(async move {
+                issuer.producer.current_owner()?;
+                let subject = episode.fact().subject();
+                let card = crate::worker_watch::watcher_card_id(track.as_str());
+                if let Some(receipt) =
+                    conversation::system_assistant_receipt_tx(tx, &card, issuer.source, &subject)
+                        .await?
+                {
+                    // Read-only original history; never activate or enqueue on replay.
+                    return Ok(Acceptance {
+                        receipt,
+                        events: vec![],
+                        ids: vec![],
+                    });
+                }
+                let text = crate::worker_watch::watch_text(
+                    &episode.fact().task_key,
+                    &episode.fact().attempt_id,
+                    episode.fact().quiet_after_ms / 1000,
+                )?;
+                issuer
+                    .accept_tx(
+                        tx,
+                        &route,
+                        track,
+                        crate::worker_watch::watcher::BOOTSTRAP_TEXT
+                            .trim_end()
+                            .into(),
+                        subject,
+                        text,
+                        Some((episode, renderer)),
+                    )
+                    .await
+            })
+        })
+        .await?;
+        self.publish(state, accepted, guard).await
+    }
+
     fn validate_input(&self, subject: &str, text: &str) -> Result<()> {
         if subject.is_empty() || subject == self.source.bootstrap_subject() {
             return Err(CalmError::BadRequest(
@@ -128,6 +193,7 @@ impl SystemAssistantIssuer {
         subject: String,
         text: String,
     ) -> Result<SystemAssistantReceipt> {
+        self.require_text_source()?;
         self.validate_input(&subject, &text)?;
         let dispatcher = self.context(state)?;
         let guard = dispatcher.inner.acquire_push_lock(&track).await;
@@ -136,7 +202,7 @@ impl SystemAssistantIssuer {
         let accepted = crate::db::write_in_tx_typed(state.repo.as_ref(), move |tx| {
             Box::pin(async move {
                 issuer
-                    .accept_tx(tx, &route, track, bootstrap, subject, text)
+                    .accept_tx(tx, &route, track, bootstrap, subject, text, None)
                     .await
             })
         })
@@ -203,6 +269,7 @@ impl SystemAssistantIssuer {
             + Send
             + 'static,
     {
+        self.require_text_source()?;
         if subject.is_empty() || subject == self.source.bootstrap_subject() {
             return Err(CalmError::BadRequest("invalid input subject".into()));
         }
@@ -243,6 +310,7 @@ impl SystemAssistantIssuer {
                         prepared.bootstrap,
                         subject,
                         prepared.text,
+                        None,
                     )
                     .await?;
                 let mut events = prepared.events;
@@ -269,7 +337,7 @@ impl SystemAssistantIssuer {
         }
     }
 
-    #[allow(deprecated)]
+    #[allow(deprecated, clippy::too_many_arguments)]
     async fn accept_tx(
         &self,
         tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
@@ -278,6 +346,10 @@ impl SystemAssistantIssuer {
         bootstrap: String,
         subject: String,
         text: String,
+        mut quiet: Option<(
+            crate::worker_quiet::ObservedQuietEpisode,
+            Arc<crate::terminal_renderer::TerminalRendererRegistry>,
+        )>,
     ) -> Result<Acceptance> {
         self.validate_input(&subject, &text)?;
         let dispatcher = self.context(state)?;
@@ -302,6 +374,9 @@ impl SystemAssistantIssuer {
             &self.producer.execution,
         )
         .await?;
+        if let Some((episode, renderer)) = &mut quiet {
+            episode.qualify_tx(tx, state, renderer).await?;
+        }
         let existing: bool = sqlx::query_scalar(
             "SELECT EXISTS(SELECT 1 FROM conversation_system_assistant_entries WHERE card_id=?1)",
         )
@@ -419,7 +494,13 @@ impl SystemAssistantIssuer {
                 .read_event_prefix_tx(tx, &runtime, Some((&event, id)))
                 .await?;
             inner
-                .accept_event_prefix_tx(tx, &self.producer, &runtime, facts)
+                .accept_qualified_prefix_tx(
+                    tx,
+                    &self.producer,
+                    &runtime,
+                    facts,
+                    quiet.as_ref().map(|(episode, _)| episode),
+                )
                 .await?;
             let receipt =
                 conversation::system_assistant_receipt_tx(tx, &derived.card_id, source, &subject)

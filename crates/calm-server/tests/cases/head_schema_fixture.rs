@@ -141,6 +141,7 @@ const POST_0067_MIGRATION_NAMES: &[&str] = &[
     "0201_canonical_recovery.sql",
     "0202_canonical_supplemental_inputs.sql",
     "0203_claude_session_launches.sql",
+    "0204_worker_watcher_source.sql",
 ];
 
 #[test]

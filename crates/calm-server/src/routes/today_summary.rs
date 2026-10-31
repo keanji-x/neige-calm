@@ -122,17 +122,6 @@ pub(crate) async fn write_today_summary(
     }
 }
 
-/// Is a failed create under a fixed conversation key one its caller may continue past? Only a
-/// `conflict` or an `idempotency_key_reused` (the race loser's payload-hash flavour; anything else
-/// means the create did not happen), and only if the card is there (a conflict about anything else
-/// is still a conflict). Shared with the worker watcher's create (#2492).
-pub(crate) fn create_conflict_is_recoverable(error: &CalmError, card_exists: bool) -> bool {
-    matches!(
-        error,
-        CalmError::Conflict(_) | CalmError::IdempotencyKeyReused(_)
-    ) && card_exists
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -150,19 +139,6 @@ mod tests {
             derived.operation_key,
             "wave-conversation-afe76dc78204daed3ab52a9007298eb07f6e17761e2ec9da3718288dad41baff"
         );
-    }
-
-    #[test]
-    fn create_conflict_is_recoverable_only_for_a_conflict_whose_card_exists() {
-        let conflict = CalmError::Conflict("card already exists".into());
-        let reused = CalmError::IdempotencyKeyReused("different payload".into());
-        let other = CalmError::ServiceUnavailable("app-server down".into());
-        assert!(create_conflict_is_recoverable(&conflict, true));
-        assert!(!create_conflict_is_recoverable(&conflict, false));
-        assert!(create_conflict_is_recoverable(&reused, true));
-        assert!(!create_conflict_is_recoverable(&reused, false));
-        assert!(!create_conflict_is_recoverable(&other, true));
-        assert!(!create_conflict_is_recoverable(&other, false));
     }
 
     /// `i64::MIN` rather than a plausible count: the widest rendering is the longest

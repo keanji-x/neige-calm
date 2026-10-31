@@ -70,6 +70,27 @@ pub async fn system_assistant_receipt_tx(
     .map(|json| serde_json::from_str::<SystemAssistantReceipt>(&json).map_err(CalmError::from))
     .transpose()?;
     if let Some(original) = &receipt {
+        let kind_matches_source = match (original.source, &original.acceptance) {
+            (
+                SystemAssistantSource::TodaySummary,
+                SystemAssistantReceiptKind::Bootstrap { .. } | SystemAssistantReceiptKind::Input,
+            ) => true,
+            (SystemAssistantSource::WorkerWatcher, kind) => {
+                kind.quiet_observation().is_some_and(|fact| {
+                    fact.version == 1
+                        && fact.track_id == original.track_id
+                        && (kind.is_bootstrap() || fact.subject() == original.subject)
+                })
+            }
+            _ => false,
+        };
+        if original.source != source
+            || original.subject != subject
+            || original.card_id != card
+            || !kind_matches_source
+        {
+            return Err(conflict());
+        }
         let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM events WHERE id=?1)")
             .bind(original.event_id)
             .fetch_one(&mut **tx)
@@ -135,9 +156,30 @@ pub async fn system_assistant_accept_tx(
     card: &str,
     event_id: i64,
 ) -> Result<(super::AcceptedPendingInput, SystemAssistantReceipt)> {
+    accept_with_source_tx(tx, card, event_id, None).await
+}
+
+/// Trusted SQL composition interface, not an HTTP or renderer capability. The
+/// server's private live issuer owns screen qualification before calling here.
+/// All independently SQL/event-derived facts are checked again by this owner.
+pub async fn worker_watcher_accept_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    card: &str,
+    event_id: i64,
+    observation: &QuietObservationFact,
+) -> Result<(super::AcceptedPendingInput, SystemAssistantReceipt)> {
+    accept_with_source_tx(tx, card, event_id, Some(observation)).await
+}
+
+async fn accept_with_source_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    card: &str,
+    event_id: i64,
+    observation: Option<&QuietObservationFact>,
+) -> Result<(super::AcceptedPendingInput, SystemAssistantReceipt)> {
     let mut savepoint =
         <&mut ::sqlx::Transaction<'_, ::sqlx::Sqlite> as ::sqlx::Acquire>::begin(tx).await?;
-    let result = accept_original_tx(&mut savepoint, card, event_id).await;
+    let result = accept_original_tx(&mut savepoint, card, event_id, observation).await;
     match result {
         Ok(result) => {
             savepoint.commit().await?;
@@ -154,6 +196,7 @@ async fn accept_original_tx(
     tx: &mut Transaction<'_, Sqlite>,
     card: &str,
     event_id: i64,
+    observation: Option<&QuietObservationFact>,
 ) -> Result<(super::AcceptedPendingInput, SystemAssistantReceipt)> {
     let entry = sqlx::query_as::<_, Entry>("SELECT e.track_id,e.original_worker,e.source,e.creation_floor,e.bootstrap_digest
         FROM conversation_system_assistant_entries e
@@ -194,15 +237,50 @@ async fn accept_original_tx(
     {
         return Err(conflict());
     }
-    let acceptance = if subject == source.bootstrap_subject() {
-        if text_digest(text) != entry.bootstrap_digest {
-            return Err(conflict());
+    let bootstrap = subject == source.bootstrap_subject();
+    if bootstrap && text_digest(text) != entry.bootstrap_digest {
+        return Err(conflict());
+    }
+    let acceptance = match (source, observation, bootstrap) {
+        (SystemAssistantSource::TodaySummary, None, true) => {
+            SystemAssistantReceiptKind::Bootstrap {
+                creation_floor: entry.creation_floor,
+            }
         }
-        SystemAssistantReceiptKind::Bootstrap {
-            creation_floor: entry.creation_floor,
+        (SystemAssistantSource::TodaySummary, None, false) => SystemAssistantReceiptKind::Input,
+        (SystemAssistantSource::WorkerWatcher, Some(observed), bootstrap) => {
+            validate_quiet_fact_tx(
+                tx,
+                observed,
+                &entry.track_id,
+                area.id.as_str(),
+                subject,
+                bootstrap,
+            )
+            .await?;
+            if !bootstrap {
+                let has_body: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM conversation_system_assistant_receipts WHERE card_id=?1 AND bootstrap=0)")
+                    .bind(card).fetch_one(&mut **tx).await?;
+                let first =
+                    system_assistant_receipt_tx(tx, card, *source, source.bootstrap_subject())
+                        .await?
+                        .ok_or_else(conflict)?;
+                if !has_body && first.acceptance.quiet_observation() != Some(observed) {
+                    return Err(conflict());
+                }
+            }
+            if bootstrap {
+                SystemAssistantReceiptKind::WatcherBootstrap {
+                    creation_floor: entry.creation_floor,
+                    observation: observed.clone(),
+                }
+            } else {
+                SystemAssistantReceiptKind::WatcherInput {
+                    observation: observed.clone(),
+                }
+            }
         }
-    } else {
-        SystemAssistantReceiptKind::Input
+        _ => return Err(conflict()),
     };
     if system_assistant_receipt_tx(tx, card, *source, subject)
         .await?
@@ -222,6 +300,93 @@ async fn accept_original_tx(
     let receipt =
         record_first_receipt_tx(tx, card, entry, &fact, &accepted, &carrier, acceptance).await?;
     Ok((accepted, receipt))
+}
+
+async fn validate_quiet_fact_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    observed: &QuietObservationFact,
+    track: &str,
+    area: &str,
+    subject: &str,
+    bootstrap: bool,
+) -> Result<()> {
+    let database: String = sqlx::query_scalar("SELECT id FROM database_identity WHERE singleton=1")
+        .fetch_one(&mut **tx)
+        .await?;
+    if observed.version != 1
+        || observed.database_id != database
+        || observed.track_id != track
+        || observed.area_id != area
+        || observed.renderer_id.is_empty()
+        || observed.last_output_ms <= 0
+        || observed.quiet_after_ms <= 0
+        || observed
+            .observed_at_ms
+            .checked_sub(observed.last_output_ms)
+            .is_none_or(|age| age < observed.quiet_after_ms)
+        || (!bootstrap && subject != observed.subject())
+    {
+        return Err(conflict());
+    }
+    let task = super::super::task_current_get_tx(tx, track, &observed.task_key)
+        .await?
+        .ok_or_else(conflict)?;
+    if task.id != observed.attempt_id
+        || task.worker_card_id.as_deref() != Some(&observed.worker_card_id)
+        || task.status != crate::model::TaskStatus::Running
+        || !matches!(
+            task.kind,
+            crate::model::TaskKind::Codex | crate::model::TaskKind::Claude
+        )
+        || task.spawn == calm_types::task_recovery::TASK_CHILD_TRACK_ROUTE
+    {
+        return Err(conflict());
+    }
+    let terminal = super::super::terminal_get_by_card_tx(tx, &observed.worker_card_id)
+        .await?
+        .ok_or_else(conflict)?;
+    let session = super::super::session_get_tx(tx, &observed.worker_session_id.clone().into())
+        .await?
+        .ok_or_else(conflict)?;
+    let current =
+        super::super::session_projection_projectable_for_card_tx(tx, &observed.worker_card_id)
+            .await?
+            .ok_or_else(conflict)?;
+    let card = super::super::card_for_update_tx(tx, &observed.worker_card_id).await?;
+    let role: String = sqlx::query_scalar("SELECT role FROM cards WHERE id=?1")
+        .bind(&observed.worker_card_id)
+        .fetch_one(&mut **tx)
+        .await?;
+    let operation = match session.spawn_op_id.as_deref() {
+        Some(op) => crate::worker_binding::operation_idempotency_key(&mut **tx, op).await?,
+        None => None,
+    };
+    let expected_kind = match task.kind {
+        crate::model::TaskKind::Codex => calm_types::runtime::WorkerSessionKind::CodexCard,
+        crate::model::TaskKind::Claude => calm_types::runtime::WorkerSessionKind::ClaudeCard,
+        _ => return Err(conflict()),
+    };
+    if current.kind != expected_kind
+        || terminal.id != observed.terminal_id
+        || current.id != observed.worker_session_id
+        || current.terminal_run_id.as_deref() != Some(&observed.terminal_id)
+        || session.terminal_run_id.as_deref() != Some(&observed.terminal_id)
+        || session.card_id.as_ref().map(|id| id.as_str()) != Some(&observed.worker_card_id)
+        || session.track_id.as_str() != track
+        || card.track_id.as_str() != track
+        || role != "worker"
+        || card.kind
+            != match task.kind {
+                crate::model::TaskKind::Codex => "codex",
+                crate::model::TaskKind::Claude => "claude",
+                _ => return Err(conflict()),
+            }
+        || !session.state.is_active_authority()
+        || operation.as_deref() != Some(&observed.attempt_id)
+    {
+        return Err(conflict());
+    }
+    Ok(())
 }
 
 // This write is private to the atomic owner; no retained public read result can
@@ -272,7 +437,7 @@ async fn record_first_receipt_tx(
     };
     sqlx::query("INSERT INTO conversation_system_assistant_receipts(card_id,source,subject,event_id,observation_id,bootstrap,receipt_json) VALUES(?1,?2,?3,?4,?5,?6,?7)")
         .bind(card).bind(source.namespace()).bind(subject).bind(event_id).bind(observation_id.as_str())
-        .bind(matches!(receipt.acceptance, SystemAssistantReceiptKind::Bootstrap { .. }))
+        .bind(receipt.acceptance.is_bootstrap())
         .bind(serde_json::to_string(&receipt)?).execute(&mut **tx).await?;
     Ok(receipt)
 }

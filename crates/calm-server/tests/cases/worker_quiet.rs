@@ -10,7 +10,7 @@ use calm_server::error::CalmError;
 use calm_server::model::{CardRole, new_id, now_ms};
 use calm_server::session_projection_repo::WorkerSessionState;
 use calm_server::terminal_renderer::{RendererConfig, RendererEntry, TerminalExitInfo};
-use calm_server::worker_quiet::{QuietWorkerInbox, WorkerQuietDetector};
+use calm_server::worker_quiet::{ObservedQuietEpisode, QuietWorkerInbox, WorkerQuietDetector};
 use calm_server::worker_watch::{WorkerWatcher, watch_text, watcher_card_id};
 use calm_truth::db::RepoRead;
 use calm_truth::db::sqlite::card_with_terminal_create_tx;
@@ -31,15 +31,32 @@ struct Recorder(Mutex<Vec<(String, String, String)>>);
 impl QuietWorkerInbox for Recorder {
     fn deliver<'a>(
         &'a self,
-        track_id: &'a str,
-        episode_key: &'a str,
-        text: String,
+        episode: ObservedQuietEpisode,
     ) -> BoxFuture<'a, calm_server::error::Result<()>> {
-        self.0
-            .lock()
-            .unwrap()
-            .push((track_id.to_owned(), episode_key.to_owned(), text));
+        let fact = episode.fact();
+        self.0.lock().unwrap().push((
+            fact.track_id.clone(),
+            fact.subject(),
+            watch_text(&fact.task_key, &fact.attempt_id, fact.quiet_after_ms / 1000).unwrap(),
+        ));
         Box::pin(async { Ok(()) })
+    }
+}
+
+/// Positive route failures must expose the actual production error.
+struct RequireDelivery(WorkerWatcher);
+impl QuietWorkerInbox for RequireDelivery {
+    fn deliver<'a>(
+        &'a self,
+        episode: ObservedQuietEpisode,
+    ) -> BoxFuture<'a, calm_server::error::Result<()>> {
+        Box::pin(async move {
+            self.0
+                .deliver(episode)
+                .await
+                .expect("canonical watcher acceptance");
+            Ok(())
+        })
     }
 }
 
@@ -52,9 +69,7 @@ struct FailFirst {
 impl QuietWorkerInbox for FailFirst {
     fn deliver<'a>(
         &'a self,
-        track_id: &'a str,
-        episode_key: &'a str,
-        text: String,
+        episode: ObservedQuietEpisode,
     ) -> BoxFuture<'a, calm_server::error::Result<()>> {
         if !self.failed.swap(true, Ordering::SeqCst) {
             return Box::pin(async {
@@ -63,13 +78,13 @@ impl QuietWorkerInbox for FailFirst {
                 ))
             });
         }
-        Box::pin(self.watcher.deliver(track_id, episode_key, text))
+        Box::pin(self.watcher.deliver(episode))
     }
 }
 
 fn detector(h: &Harness, inbox: Arc<dyn QuietWorkerInbox>) -> WorkerQuietDetector {
     WorkerQuietDetector::new(
-        h.sql.clone(),
+        h.state.repo.clone(),
         h.state.terminal_renderer.clone(),
         inbox,
         QUIET,
@@ -112,7 +127,7 @@ async fn wake_events(h: &Harness) -> i64 {
 /// The keys `card` took planner input under, oldest first: one per message it was sent.
 async fn input_keys(h: &Harness, card: &str) -> Vec<String> {
     sqlx::query_scalar(
-        "SELECT idempotency_key FROM planner_input_idempotency WHERE card_id = ?1 ORDER BY id",
+        "SELECT subject FROM conversation_system_assistant_receipts WHERE card_id=?1 AND bootstrap=0 ORDER BY event_id",
     )
     .bind(card)
     .fetch_all(h.sql.pool())
@@ -124,7 +139,7 @@ async fn input_keys(h: &Harness, card: &str) -> Vec<String> {
 async fn enqueued(h: &Harness, card: &str) -> i64 {
     sqlx::query_scalar(
         "SELECT COUNT(*) FROM events \
-          WHERE kind = 'harness.user_message.enqueued' AND scope_card = ?1",
+          WHERE kind = 'assistant.input_requested' AND scope_card = ?1",
     )
     .bind(card)
     .fetch_one(h.sql.pool())
@@ -156,12 +171,17 @@ async fn await_delivered(h: &Harness, card: &str, needle: &str) {
                 .unwrap();
         for state in states.into_iter().flatten() {
             let parsed: Value = serde_json::from_str(&state).unwrap();
-            for obs in parsed["pending_queue"]
+            for obs in parsed["canonical_inputs"]["pending"]
                 .as_array()
                 .cloned()
                 .unwrap_or_default()
             {
-                texts.push(obs["text"].as_str().unwrap_or_default().to_owned());
+                texts.push(
+                    obs["observation"]["text"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_owned(),
+                );
             }
         }
         if texts.iter().any(|text| text.contains(needle)) {
@@ -195,10 +215,10 @@ async fn task_key(h: &Harness, attempt_id: &str) -> String {
 
 #[tokio::test]
 async fn a_quiet_worker_goes_to_the_tracks_watcher_once_per_episode_never_to_the_planner() {
-    let h = Harness::start_with_fake_codex().await;
+    let h = Harness::start_with_booted_fake_codex().await;
     let (w, entry) = quiet_worker(&h, "claude").await;
     let key = task_key(&h, &w.task).await;
-    let watcher = Arc::new(WorkerWatcher::new(&h.state));
+    let watcher = Arc::new(RequireDelivery(WorkerWatcher::new(&h.state)));
     let mut d = detector(&h, watcher.clone());
     let card = watcher_card_id(&h.track);
 
@@ -243,10 +263,9 @@ async fn a_quiet_worker_goes_to_the_tracks_watcher_once_per_episode_never_to_the
 
     // The same episode is never handed over again, and a replay under its key queues nothing.
     assert!(d.tick(T0 + 4 * QUIET_MS).await.is_empty());
-    watcher
-        .deliver(&h.track, &first, first_text.clone())
-        .await
-        .unwrap();
+    // Cache loss uses the actual detector again, never a text/key submission.
+    let mut rebuilt = detector(&h, watcher.clone());
+    assert_eq!(rebuilt.tick(T0 + 4 * QUIET_MS).await, vec![first.clone()]);
     assert_eq!(input_keys(&h, &card).await, vec![first.clone()]);
     assert_eq!(enqueued(&h, &card).await, 2);
 
@@ -272,7 +291,7 @@ async fn a_quiet_worker_goes_to_the_tracks_watcher_once_per_episode_never_to_the
 
 #[tokio::test]
 async fn a_failed_delivery_stays_due_and_is_retried_under_the_episode_key() {
-    let h = Harness::start_with_fake_codex().await;
+    let h = Harness::start_with_booted_fake_codex().await;
     let (w, _entry) = quiet_worker(&h, "codex").await;
     let mut d = detector(
         &h,

@@ -200,5 +200,5 @@ mod system_assistant;
 pub use system_assistant::{
     assistant_key_used_tx, system_assistant_accept_tx, system_assistant_entry_insert_tx,
     system_assistant_receipt_replay_tx, system_assistant_receipt_tx,
-    system_assistant_subject_receipt_tx,
+    system_assistant_subject_receipt_tx, worker_watcher_accept_tx,
 };

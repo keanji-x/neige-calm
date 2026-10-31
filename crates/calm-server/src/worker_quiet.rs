@@ -32,10 +32,61 @@ pub const TICK_INTERVAL: Duration = Duration::from_secs(15);
 pub trait QuietWorkerInbox: Send + Sync {
     fn deliver<'a>(
         &'a self,
-        track_id: &'a str,
-        episode_key: &'a str,
-        text: String,
+        episode: ObservedQuietEpisode,
     ) -> BoxFuture<'a, crate::error::Result<()>>;
+}
+
+/// Minted only by the real detector. Ordinary receipt data cannot construct it.
+#[derive(Clone)]
+pub struct ObservedQuietEpisode {
+    fact: calm_types::system_assistant::QuietObservationFact,
+    entry: Arc<crate::terminal_renderer::RendererEntry>,
+    binding: crate::terminal_interaction::Binding,
+    repo: Arc<dyn RouteRepo>,
+}
+impl ObservedQuietEpisode {
+    pub fn fact(&self) -> &calm_types::system_assistant::QuietObservationFact {
+        &self.fact
+    }
+    pub(crate) fn require_repo(
+        &self,
+        state: &crate::state::RouteState,
+    ) -> crate::error::Result<()> {
+        if !Arc::ptr_eq(&self.repo, &state.repo) {
+            return Err(crate::error::CalmError::Forbidden(
+                "quiet observation database changed".into(),
+            ));
+        }
+        Ok(())
+    }
+    pub(crate) async fn qualify_tx(
+        &mut self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        state: &crate::state::RouteState,
+        renderer: &TerminalRendererRegistry,
+    ) -> crate::error::Result<()> {
+        use crate::error::CalmError;
+        self.require_repo(state)?;
+        let task =
+            TerminalInteraction::check_attempt_binding_tx(tx, &self.fact.track_id, &self.binding)
+                .await
+                .map_err(|error| CalmError::Forbidden(error.to_string().into()))?;
+        let track = crate::db::sqlite::track_get_tx(tx, &self.fact.track_id.clone().into()).await?;
+        self.fact.observed_at_ms = crate::model::now_ms();
+        if !crate::scheduler::task_has_running_liveness_deadline(&task)
+            || task.status != TaskStatus::Running
+            || track.area_id.as_str() != self.fact.area_id
+            || !renderer.observe_quiet(
+                &self.entry,
+                self.fact.last_output_ms,
+                self.fact.observed_at_ms,
+                self.fact.quiet_after_ms,
+            )
+        {
+            return Err(CalmError::Forbidden("quiet observation changed".into()));
+        }
+        Ok(())
+    }
 }
 
 /// One quiet episode: an attempt's worker terminal since its last output. New output starts a new
@@ -101,20 +152,10 @@ impl WorkerQuietDetector {
                 continue;
             }
             let key = episode.key();
-            // The threshold, not the measured silence: an episode's text never changes, so a retry
-            // under its key replays the first delivery instead of conflicting with it.
-            let text = match crate::worker_watch::watch_text(
-                &task.key,
-                &task.id,
-                self.quiet_after_ms / 1000,
-            ) {
-                Ok(text) => text,
-                Err(error) => {
-                    tracing::error!(%error, "worker_quiet: watch message does not render");
-                    return delivered;
-                }
+            let Some(observed) = self.observed(&task, &episode, now_ms).await else {
+                continue;
             };
-            match self.inbox.deliver(&task.track_id, &key, text).await {
+            match self.inbox.deliver(observed).await {
                 Ok(()) => {
                     self.delivered.insert(episode);
                     delivered.push(key);
@@ -165,6 +206,63 @@ impl WorkerQuietDetector {
         Some(Episode {
             attempt_id,
             last_output_ms,
+        })
+    }
+
+    async fn observed(
+        &self,
+        task: &Task,
+        episode: &Episode,
+        now: i64,
+    ) -> Option<ObservedQuietEpisode> {
+        let resolved = TerminalInteraction::resolve_in_track(
+            self.repo.as_ref(),
+            &task.track_id,
+            &Target::Attempt(task.id.clone()),
+        )
+        .await
+        .ok()?;
+        let binding = resolved.binding;
+        let entry = self.renderer.get(&binding.terminal_id)?;
+        if !self
+            .renderer
+            .observe_quiet(&entry, episode.last_output_ms, now, self.quiet_after_ms)
+        {
+            return None;
+        }
+        let track = self.repo.track_get(&task.track_id).await.ok()??;
+        let database_id = crate::db::write_in_tx_typed(self.repo.as_ref(), |tx| {
+            Box::pin(async move {
+                Ok::<_, crate::error::CalmError>(
+                    sqlx::query_scalar::<_, String>(
+                        "SELECT id FROM database_identity WHERE singleton=1",
+                    )
+                    .fetch_one(&mut **tx)
+                    .await?,
+                )
+            })
+        })
+        .await
+        .ok()?;
+        Some(ObservedQuietEpisode {
+            repo: self.repo.clone(),
+            fact: calm_types::system_assistant::QuietObservationFact {
+                version: 1,
+                database_id,
+                track_id: task.track_id.clone(),
+                area_id: track.area_id.to_string(),
+                task_key: task.key.clone(),
+                attempt_id: task.id.clone(),
+                worker_card_id: binding.card_id.clone(),
+                worker_session_id: binding.worker_session_id.clone(),
+                terminal_id: binding.terminal_id.clone(),
+                renderer_id: entry.handle.session_id.to_string(),
+                last_output_ms: episode.last_output_ms,
+                observed_at_ms: crate::model::now_ms(),
+                quiet_after_ms: self.quiet_after_ms,
+            },
+            entry,
+            binding,
         })
     }
 

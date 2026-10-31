@@ -2,11 +2,11 @@
 //! Historical data is loaded by the recovery owner, never assigned fabricated IDs.
 use super::*;
 use crate::harness::{MAX_PENDING_QUEUE_LEN, Observation, PlannerHarness};
-use crate::state::{CodexShellState, RouteState, WorkerState};
+use crate::state::{CodexShellState, RouteState};
 use axum::extract::FromRef;
 
 struct LegacyQueue {
-    fixture: Fixture,
+    _fixture: Fixture,
     state: AppState,
     app: axum::Router,
     cookie: String,
@@ -16,10 +16,6 @@ struct LegacyQueue {
 }
 
 impl LegacyQueue {
-    async fn new(reclaimable_slot: bool) -> Self {
-        Self::with_tail(reclaimable_slot, false).await
-    }
-
     async fn with_tail(reclaimable_slot: bool, addressable_tail: bool) -> Self {
         let fixture = Fixture::new().await;
         let (state, app, cookie) = fixture.application_with_historical_native(true).await;
@@ -127,7 +123,7 @@ impl LegacyQueue {
             );
         }
         Self {
-            fixture,
+            _fixture: fixture,
             state,
             app,
             cookie,
@@ -141,14 +137,6 @@ impl LegacyQueue {
         format!("/api/cards/{}/planner/input", self.card)
     }
 
-    async fn bindings(&self) -> i64 {
-        sqlx::query_scalar("SELECT count(*) FROM planner_input_idempotency WHERE card_id=?1")
-            .bind(&self.card)
-            .fetch_one(self.fixture.repo.pool())
-            .await
-            .unwrap()
-    }
-
     async fn close(self) {
         self.state
             .harness
@@ -158,55 +146,6 @@ impl LegacyQueue {
             .await
             .unwrap();
     }
-}
-
-#[tokio::test]
-async fn internal_v1_fold_and_its_old_null_ack_replay_keep_their_original_contract() {
-    let fx = LegacyQueue::new(true).await;
-    let text = "Original internal V1 fold";
-    let accepted = crate::routes::planner_input_send::send_planner_input_keyed(
-        &RouteState::from_ref(&fx.state),
-        &WorkerState::from_ref(&fx.state),
-        &CodexShellState::from_ref(&fx.state),
-        crate::actor::Actor::server_send(),
-        fx.card.clone(),
-        crate::routes::planner_input_send::SendPlannerInputRequest {
-            text: text.into(),
-            attachments: vec![],
-            replaces_turn: None,
-        },
-        "old-null-ack".into(),
-    )
-    .await
-    .unwrap();
-    assert_eq!(
-        accepted.entry_id, None,
-        "internal folding keeps its released optional ID"
-    );
-    let before = fx.harness.snapshot().await.unwrap().pending_entries();
-    assert_eq!(before.len(), MAX_PENDING_QUEUE_LEN);
-    assert!(
-        matches!(before.last().unwrap(), crate::harness::QueueEntry::LegacyUser {text:body,..} if body.contains(text))
-    );
-    let replayed = post(
-        &fx.app,
-        &fx.cookie,
-        &fx.uri(),
-        "old-null-ack",
-        json!({"text":text}),
-    )
-    .await;
-    assert_eq!(
-        replayed,
-        serde_json::to_value(accepted).unwrap(),
-        "an old immutable null ACK is not given a fabricated ID"
-    );
-    assert_eq!(
-        fx.harness.snapshot().await.unwrap().pending_entries(),
-        before
-    );
-    assert_eq!(fx.bindings().await, 1);
-    fx.close().await;
 }
 
 #[tokio::test]
