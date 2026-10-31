@@ -62,14 +62,7 @@ async fn historical_creation_samples_readiness_before_the_area_lock() {
         fixture.claude_config = Some(config);
         let (state, app, cookie) = fixture.application().await;
         // System Area retains the released historical creation owner.
-        let area = post(
-            &app,
-            &cookie,
-            "/api/areas/system",
-            "system",
-            json!({}),
-        )
-        .await["id"]
+        let area = post(&app, &cookie, "/api/areas/system", "system", json!({})).await["id"]
             .as_str()
             .unwrap()
             .to_owned();
