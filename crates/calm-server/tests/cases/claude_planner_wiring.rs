@@ -6,7 +6,8 @@ use std::time::Duration;
 use axum::http::StatusCode;
 use calm_server::session_projection_repo::{AgentProvider, WorkerSessionKind};
 use calm_types::conversation::InputDeliveryFact;
-use calm_types::harness::{CanonicalHarnessSnapshot, HarnessPhaseTag};
+use calm_types::harness::HarnessPhaseTag;
+use calm_types::harness::snapshot::CanonicalHarnessSnapshot;
 use serde_json::{Value, json};
 
 use super::claude_planner_stack_fixture::{Root, Stack};
