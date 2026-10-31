@@ -337,11 +337,12 @@ async fn start_with_issuer(inner: &Arc<Inner>, source: Issuer, operation_id: Str
     Err(error)
 }
 
+const UNCONFIRMED_REASON: &str =
+    "Compaction outcome is unconfirmed; it will not be submitted again automatically.";
+
 pub(in crate::harness::run_loop) fn wedge(snapshot: &mut CanonicalHarnessSnapshot) {
     snapshot.header.phase = HarnessPhaseTag::Wedged;
-    snapshot.header.wedged_reason = Some(
-        "Compaction outcome is unconfirmed; it will not be submitted again automatically.".into(),
-    );
+    snapshot.header.wedged_reason = Some(UNCONFIRMED_REASON.into());
     if let Some(outcome) = snapshot.header.compact_outcome.as_mut() {
         outcome.status = CompactStatus::Unconfirmed;
     }
@@ -371,7 +372,12 @@ pub(in crate::harness::run_loop) async fn preserves_observation(
 /// Poll the exact installed maintenance driver. Native notifications are wakeups, never proof.
 pub(in crate::harness::run_loop) async fn observe(inner: &Arc<Inner>) -> Result<bool> {
     let current = canonical::read_current(inner).await?;
-    if current.snapshot.header.phase != HarnessPhaseTag::Compacting {
+    let late = current.snapshot.header.phase == HarnessPhaseTag::Wedged
+        && current.snapshot.header.wedged_reason.as_deref() == Some(UNCONFIRMED_REASON)
+        && current.snapshot.header.interruption_intent.is_none()
+        && current.snapshot.header.pending_rewind.is_none()
+        && current.snapshot.canonical_inputs.active.is_none();
+    if current.snapshot.header.phase != HarnessPhaseTag::Compacting && !late {
         return Ok(false);
     }
     let Some(outcome) = current
@@ -379,9 +385,16 @@ pub(in crate::harness::run_loop) async fn observe(inner: &Arc<Inner>) -> Result<
         .header
         .compact_outcome
         .as_ref()
-        .filter(|outcome| outcome.status == CompactStatus::Started)
+        .filter(|outcome| {
+            outcome.status
+                == if late {
+                    CompactStatus::Unconfirmed
+                } else {
+                    CompactStatus::Started
+                }
+        })
     else {
-        return Ok(true);
+        return Ok(current.snapshot.header.phase == HarnessPhaseTag::Compacting);
     };
     let observed = inner
         .backend
@@ -405,6 +418,9 @@ pub(in crate::harness::run_loop) async fn observe(inner: &Arc<Inner>) -> Result<
                 match settled {
                     Some(true) => {
                         next.header.phase = HarnessPhaseTag::TurnCompleted;
+                        if late {
+                            next.header.wedged_reason = None;
+                        }
                         if let Some(outcome) = next.header.compact_outcome.as_mut() {
                             outcome.status = CompactStatus::Completed;
                         }

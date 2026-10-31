@@ -1,12 +1,12 @@
 import { historicalConversationPage, conversationCardId, historicalConversationRun, nativePresentation, presentationPage } from './conversation-read-data.ts';
 import type { ApiTransportResponse } from '../../../../core/api/types.ts';
 import type { CompactOutcome, PlannerRunTokenUsage } from '../../../../core/domain/conversation.ts';
-import type { AgentProvider } from '../../../../core/api/generated/wire.ts';
+import type { AgentProvider, WorkerSessionState } from '../../../../core/api/generated/wire.ts';
 import { renderDailyFixture } from './daily-planner-fixture.tsx';
 
 /** Capabilities and transcript come from the real router's transport, independently of identity. */
 export function renderCompactFixture(provider: AgentProvider, supported: boolean, historyReady = true, compactReply?: ApiTransportResponse, canonical = false) {
-  const run = { card_id: 'daily-planner', worker_session_id: 'runtime', phase: 'idle',
+  const run = { card_id: 'daily-planner', worker_session_id: 'runtime', phase: 'idle', runtime_state: 'idle' as WorkerSessionState,
     model: null, reasoning_effort: null, permission_mode: 'never', blocked_reason: null,
     manual_compact_supported: supported, recovery: null, compact_outcome: null as CompactOutcome | null, context_usage_invalidated: false, token_usage: null as PlannerRunTokenUsage | null, running_turn: null };
   const rows = [{
@@ -23,7 +23,7 @@ export function renderCompactFixture(provider: AgentProvider, supported: boolean
     turn_id: 'turn', turn_error_text: null, item_uuid: null, item_type: null, method: 'turn/completed',
     params: JSON.stringify({ id: 'turn', status: 'completed', error: null }), created_at_ms: 3,
   }];
-  const readRun = (value: typeof run) => ({ ...historicalConversationRun(value, 'idle', true),
+  const readRun = (value: typeof run) => ({ ...historicalConversationRun(value, value.runtime_state, true),
     input_contract: canonical ? 'canonical' : 'historical' });
   return { run, ...renderDailyFixture({ initial: '/track/daily?panel=conversations', extraPlanner: true, plannerProvider: provider, reply: request => {
     if (request.path === '/api/tracks/daily/conversations') return { status: 200, statusText: 'OK', body: [{ id: 'second-planner', trackId: 'daily', title: 'Other conversation', kind: 'track-assistant', provider, state: 'idle', updatedAt: 2, archivedAt: null, lastTurnCompletedAt: null }] };
