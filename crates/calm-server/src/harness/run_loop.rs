@@ -3207,42 +3207,6 @@ async fn insert_item_row(
     .await
 }
 
-async fn emit_presentation_changed(
-    inner: &Arc<Inner>,
-    cursor: calm_types::conversation_display::ConversationCursor,
-) -> Result<()> {
-    let card = inner.card_id.clone();
-    let worker = inner.worker_session_id.clone();
-    let scope = harness_event_scope(inner, "harness.presentation.changed");
-    let event = Event::HarnessPresentationChanged {
-        card_id: card.clone(),
-        track_id: inner.track_id.clone(),
-        cursor,
-    };
-    crate::db::write_with_actor_events_typed(
-        inner.repo.as_ref(),
-        None,
-        &inner.events,
-        &crate::state::WriteContext::new(
-            inner.card_role_cache.clone(),
-            inner.track_area_cache.clone(),
-        ),
-        move |tx| {
-            Box::pin(async move {
-                crate::db::sqlite::conversation::current_input_fact_carrier_tx(
-                    tx,
-                    card.as_str(),
-                    &worker,
-                )
-                .await?;
-                Ok(((), vec![(ActorId::Kernel, scope, event)]))
-            })
-        },
-    )
-    .await?;
-    Ok(())
-}
-
 async fn emit_item_added(
     inner: &Arc<Inner>,
     item_db_id: i64,

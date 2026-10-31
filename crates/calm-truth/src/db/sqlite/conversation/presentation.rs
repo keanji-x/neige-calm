@@ -6,6 +6,10 @@ use sqlx::{Sqlite, Transaction};
 #[derive(Clone, Debug)]
 pub struct StoredNativePresentation {
     pub raw_row_id: i64,
+    /// Whether this observation changed the effective presentation reference.
+    pub changed: bool,
+    /// Completion wins over a late started frame for the same identity.
+    pub completed: bool,
     pub cursor: calm_types::conversation_display::ConversationCursor,
 }
 
@@ -90,14 +94,32 @@ pub async fn observe_native_item_tx(
         )
         .await?
     };
-    let sequence = allocate_presentation_tx(
-        tx,
-        carrier.card_id(),
-        PresentationSource::NativeItem { row_id: row },
+    let (_, current_row, completed) = native_identity_tx(tx, carrier.card_id(), row).await?;
+    let previous: Option<(i64, Option<i64>)> = sqlx::query_as(
+        "SELECT sequence,native_item_row_id FROM conversation_presentations
+         WHERE card_id=?1 AND source_kind='native_item' AND source_identity=?2",
     )
+    .bind(carrier.card_id())
+    .bind(&identity)
+    .fetch_optional(&mut **tx)
     .await?;
+    let unchanged = previous.filter(|(_, stored)| *stored == Some(current_row));
+    let sequence = if let Some((sequence, _)) = unchanged {
+        sequence
+    } else {
+        allocate_presentation_tx(
+            tx,
+            carrier.card_id(),
+            PresentationSource::NativeItem {
+                row_id: current_row,
+            },
+        )
+        .await?
+    };
     Ok(Some(StoredNativePresentation {
-        raw_row_id: row,
+        raw_row_id: current_row,
+        changed: unchanged.is_none(),
+        completed,
         cursor: calm_types::conversation_display::ConversationCursor::new(
             carrier.card_id(),
             calm_types::conversation_display::ConversationCursorSource::Presentation,
@@ -243,7 +265,7 @@ pub async fn allocate_presentation_tx(
             None,
         ),
         PresentationSource::NativeItem { row_id } => {
-            let (identity, current_row) = native_identity_tx(tx, card_id, row_id).await?;
+            let (identity, current_row, _) = native_identity_tx(tx, card_id, row_id).await?;
             if native_identity_erased_tx(tx, card_id, &identity).await? {
                 return Err(CalmError::Conflict(
                     "erased native identity cannot be resurrected",
@@ -275,7 +297,7 @@ async fn native_identity_tx(
     tx: &mut Transaction<'_, Sqlite>,
     card_id: &str,
     row_id: i64,
-) -> Result<(String, i64)> {
+) -> Result<(String, i64, bool)> {
     let row: Option<NativeItemIdentityRow> =
         sqlx::query_as("SELECT thread_id,item_uuid,item_type,method,params FROM harness_items WHERE id=?1 AND card_id=?2")
             .bind(row_id)
@@ -294,12 +316,12 @@ async fn native_identity_tx(
     )?;
     // Completed is terminal for this native item identity. A late started frame
     // cannot regress the current reference; receipt rebuilds use fresh row IDs.
-    let current_row:i64=sqlx::query_scalar("SELECT id
+    let (current_row, completed): (i64, bool) = sqlx::query_as("SELECT id,method='item/completed'
          FROM harness_items
          WHERE card_id=?1 AND thread_id=?2 AND item_uuid=?3 AND item_type IS NOT NULL AND length(item_type)>0
          AND item_type NOT IN ('userMessage','user_message') AND method IN ('item/started','item/completed')
          AND json_valid(params) AND json_extract(params,'$._projection') IS NOT 1 ORDER BY (method=
          'item/completed') DESC,id DESC LIMIT 1")
         .bind(card_id).bind(&thread).bind(&item).fetch_one(&mut **tx).await?;
-    Ok((identity, current_row))
+    Ok((identity, current_row, completed))
 }

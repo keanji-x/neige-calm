@@ -41,7 +41,7 @@ pub(super) async fn on_item(
         return Ok(());
     }
     let params_json = serde_json::to_string(&params)?;
-    let mut presentation_cursor = None;
+    let mut presentation = None;
     let (item_db_id, legacy_segments_json) = if inner.inputs.canonical().is_some() {
         let Some(row) =
             canonical::persist_native_item(inner, &thread_id, turn_id.as_deref(), method, &params)
@@ -52,8 +52,9 @@ pub(super) async fn on_item(
             }
             return Ok(());
         };
-        presentation_cursor = Some(row.cursor);
-        (row.raw_row_id, None)
+        let row_id = row.row.raw_row_id;
+        presentation = Some(row);
+        (row_id, None)
     } else {
         // The one turn an older binary can have left in flight: its drain wrote no projection row,
         // so its echo takes the segments from the legacy slot.
@@ -142,7 +143,16 @@ pub(super) async fn on_item(
         };
         (item_db_id, legacy_segments_json)
     };
-    live_reply::on_item(live, phase, &params);
+    if presentation
+        .as_ref()
+        .is_some_and(|stored| stored.row.completed)
+    {
+        if let Some(id) = item_uuid.as_deref() {
+            live.item_stored(id);
+        }
+    } else {
+        live_reply::on_item(live, phase, &params);
+    }
     if phase == ItemPhase::Completed && legacy_segments_json.is_some() {
         *inner.legacy_issued_input_segments.lock().await = None;
     }
@@ -150,13 +160,14 @@ pub(super) async fn on_item(
     if phase == ItemPhase::Completed && !questions.is_empty() {
         native_ask::ask_from_item(inner, item_uuid.as_deref(), questions).await;
     }
-    if let Some(cursor) = presentation_cursor {
+    if let Some(stored) = presentation {
         #[cfg(feature = "fixtures")]
         if phase == ItemPhase::Completed {
             crate::test_seams::pause_point("canonical-presentation-tail", inner.card_id.as_str())
                 .await;
         }
-        return emit_presentation_changed(inner, cursor).await;
+        stored.publish(inner);
+        return Ok(());
     }
     emit_item_added(
         inner,

@@ -25,7 +25,7 @@ impl Unresolved {
     }
 }
 
-async fn unresolved_tx(tx: &mut Tx<'_>, scope: &Scope) -> Result<Vec<Unresolved>> {
+fn unresolved_query(scope: &Scope) -> (String, &str) {
     let (column, id) = match scope {
         Scope::Card(id) => ("c.id", id),
         Scope::Terminal(id) => ("json_extract(o.tx_output_json,'$.data.terminal_id')", id),
@@ -36,6 +36,11 @@ async fn unresolved_tx(tx: &mut Tx<'_>, scope: &Scope) -> Result<Vec<Unresolved>
     let sql = format!(
         "SELECT o.* FROM operations o JOIN cards c ON o.target_type='card' AND o.target_id=c.id JOIN tracks t ON t.id=c.track_id WHERE o.kind IN ('terminal-worker','claude-worker','codex-worker') AND {column}=?1 ORDER BY o.id"
     );
+    (sql, id)
+}
+
+async fn unresolved_tx(tx: &mut Tx<'_>, scope: &Scope) -> Result<Vec<Unresolved>> {
+    let (sql, id) = unresolved_query(scope);
     let rows = sqlx::query(&sql).bind(id).fetch_all(&mut **tx).await?;
     let mut unresolved = Vec::new();
     for row in rows {
@@ -219,6 +224,60 @@ mod tests {
     use super::*;
     use crate::db::sqlite::SqlxRepo;
     use workspace_runtime::execution::{Store, test_support};
+
+    #[tokio::test]
+    async fn terminal_disposal_lookup_seeks_terminal_identity() {
+        let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
+        let scope = Scope::Terminal("target-terminal".into());
+        let (sql, id) = unresolved_query(&scope);
+        let plan: Vec<(i64, i64, i64, String)> =
+            sqlx::query_as(&format!("EXPLAIN QUERY PLAN {sql}"))
+                .bind(id)
+                .fetch_all(repo.pool())
+                .await
+                .unwrap();
+        assert!(
+            plan.iter()
+                .any(|(_, _, _, detail)| detail.contains("SEARCH o USING INDEX")
+                    && detail.contains("<expr>=?")),
+            "terminal lookup must seek its identity rather than scan worker history: {plan:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn terminal_disposal_index_upgrade_preserves_existing_operations() {
+        let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
+        sqlx::query("DROP INDEX operations_terminal_lookup_idx")
+            .execute(repo.db().writer_pool())
+            .await
+            .unwrap();
+        // Existing databases mix legacy launches, pipe tasks and pre-prepare rows.
+        sqlx::query(
+            "WITH RECURSIVE n(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM n WHERE i<5315)
+             INSERT INTO operations(id,operation_key,kind,payload_hash,target_type,
+                target_json,payload_json,tx_output_json,phase,created_at_ms,updated_at_ms)
+             SELECT printf('op-%d',i),printf('key-%d',i),'terminal-worker','hash','card','{}','{}',
+                CASE i%3 WHEN 0 THEN json_object('data',json_object('terminal_id',printf('terminal-%d',i)))
+                WHEN 1 THEN json_object('data',json_object('terminal_worker_pipe',json_object('log_path','task.log')))
+                ELSE NULL END,'pending',0,0 FROM n",
+        ).execute(repo.db().writer_pool()).await.unwrap();
+        let sql = "SELECT id,kind,tx_output_json,phase FROM operations ORDER BY id";
+        let before: Vec<(String, String, Option<String>, String)> =
+            sqlx::query_as(sql).fetch_all(repo.pool()).await.unwrap();
+        sqlx::raw_sql(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../calm-truth/migrations/0207_operations_terminal_lookup.sql"
+        )))
+        .execute(repo.db().writer_pool())
+        .await
+        .unwrap();
+        let after: Vec<(String, String, Option<String>, String)> =
+            sqlx::query_as(sql).fetch_all(repo.pool()).await.unwrap();
+        assert_eq!(
+            after, before,
+            "the lookup index must preserve legacy evidence"
+        );
+    }
 
     #[tokio::test]
     async fn require_safe_tx_rejects_unsettled_typed() {
