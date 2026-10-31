@@ -15,7 +15,9 @@ encodings, corrupt streams, wrong lengths and compressed identity mismatches fai
 closed. Decoding is bounded to 64 MiB; larger legacy raw objects remain readable
 and are not compressed. GC budgets decoded sizes before parsing under its writer.
 
-New writes use the codec. The operator converter uses the same codec, prepares
+New writes use the codec for objects up to 256 KiB, bounding added compression
+CPU in synchronous writer paths; larger writes remain raw until the operator
+converts them outside the writer. The operator converter uses the same codec, prepares
 and roundtrip-checks outside the writer, then conditionally updates one unchanged
 raw row per short transaction. Existing GC revision triggers invalidate prior
 observations. Keyset progress, byte/count limits and yields allow interruption

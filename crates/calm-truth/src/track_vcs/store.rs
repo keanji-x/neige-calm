@@ -258,7 +258,7 @@ async fn insert_object_at_tx(
     if exists {
         return Ok(());
     }
-    let encoded = object_codec::encode(bytes)?;
+    let encoded = object_codec::encode_for_write(bytes)?;
     sqlx::query(
         r#"INSERT OR IGNORE INTO track_vcs_objects (hash, kind, bytes, created_at, encoding, decoded_size)
            SELECT ?1, ?2, ?3, ?4, ?5, ?6

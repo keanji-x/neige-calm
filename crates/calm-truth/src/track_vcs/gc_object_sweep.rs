@@ -307,7 +307,12 @@ async fn observe_batch<'e>(
                 "track_vcs: reachable tree object {hash} is not a tree"
             )));
         }
-        observed.observe(hash, row.manifest()?)?;
+        let manifest = row.manifest().map_err(|error| {
+            CalmError::Internal(format!(
+                "track_vcs: parse tree manifest object {hash}: {error}"
+            ))
+        })?;
+        observed.observe(hash, manifest)?;
     }
     Ok(())
 }

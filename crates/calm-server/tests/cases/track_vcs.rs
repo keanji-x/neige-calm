@@ -500,13 +500,31 @@ async fn track_commit_rows(
 }
 
 async fn blob_text(repo: &SqlxRepo, hash: &str) -> String {
-    let bytes: Vec<u8> =
-        sqlx::query_scalar("SELECT bytes FROM track_vcs_objects WHERE hash = ?1 AND kind = 'blob'")
-            .bind(hash)
-            .fetch_one(repo.pool())
+    // Callers use entries in published manifests. Resolve that fixture's path,
+    // then exercise the same decoded historical read as production callers.
+    let commits: Vec<String> = sqlx::query_scalar(
+        "SELECT hash FROM track_vcs_commits ORDER BY created_at DESC, event_id DESC",
+    )
+    .fetch_all(repo.pool())
+    .await
+    .unwrap();
+    for commit in commits {
+        let manifest = track_vcs::tree_at(repo.pool(), &commit)
             .await
-            .expect("blob bytes");
-    String::from_utf8(bytes).expect("blob utf8")
+            .unwrap()
+            .unwrap();
+        if let Some((path, _)) = manifest
+            .entries
+            .iter()
+            .find(|(_, entry)| entry.blob_hash == hash)
+        {
+            return track_vcs::cat_at(repo.pool(), &commit, path)
+                .await
+                .unwrap()
+                .content;
+        }
+    }
+    panic!("fixture blob {hash} has no published path");
 }
 
 async fn live_track_file_paths(

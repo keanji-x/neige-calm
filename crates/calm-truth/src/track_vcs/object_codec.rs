@@ -6,6 +6,7 @@ use std::io::Write;
 use super::{TreeManifest, store};
 
 pub(super) const MAX_DECODED_BYTES: usize = 64 * 1024 * 1024;
+const MAX_WRITER_COMPRESSION_BYTES: usize = 256 * 1024;
 
 #[derive(sqlx::FromRow)]
 pub(super) struct StoredObject {
@@ -24,6 +25,19 @@ pub(super) struct EncodedObject {
 
 fn invalid(reason: impl std::fmt::Display) -> CalmError {
     CalmError::Internal(format!("track-vcs object encoding: {reason}"))
+}
+
+/// Bound added CPU in existing synchronous writer paths. Larger objects are
+/// converted by the operator outside the writer, using the same storage format.
+pub(super) fn encode_for_write(bytes: &[u8]) -> Result<EncodedObject> {
+    if bytes.len() > MAX_WRITER_COMPRESSION_BYTES {
+        return Ok(EncodedObject {
+            bytes: bytes.to_vec(),
+            encoding: "raw",
+            decoded_size: None,
+        });
+    }
+    encode(bytes)
 }
 
 pub(super) fn encode(bytes: &[u8]) -> Result<EncodedObject> {

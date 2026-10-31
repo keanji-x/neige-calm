@@ -84,6 +84,36 @@ fn object_codec_preserves_arbitrary_legacy_raw_and_small_objects() {
 }
 
 #[tokio::test]
+async fn object_storage_large_write_defers_cpu_to_outside_writer_conversion() {
+    let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
+    let raw = b"large historical document\n".repeat(32768);
+    let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
+    let hash = put_blob(&mut tx, "blob", &raw).await.unwrap();
+    tx.commit().await.unwrap();
+    let encoding: String =
+        sqlx::query_scalar("SELECT encoding FROM track_vcs_objects WHERE hash=?")
+            .bind(&hash)
+            .fetch_one(repo.db().read_pool())
+            .await
+            .unwrap();
+    assert_eq!(encoding, "raw");
+    assert_eq!(
+        object_compression::convert_page(repo.db(), "")
+            .await
+            .unwrap()
+            .converted,
+        1
+    );
+    assert_eq!(
+        super::store::load_blob_bytes_pool(repo.db().read_pool(), &hash)
+            .await
+            .unwrap()
+            .unwrap(),
+        raw
+    );
+}
+
+#[tokio::test]
 async fn object_storage_compresses_repetitive_payload_without_changing_identity() {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
     let bytes = b"historical report content\n".repeat(4096);

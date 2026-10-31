@@ -214,6 +214,9 @@ async fn object_sweep_large_delta_count_and_bytes_are_observed_outside_writer() 
                     if many { 1 } else { 10_000 },
                 )
                 .await;
+            if !many {
+                compress_large_tree(&f, &tree.tree_hash).await;
+            }
             parent = f.publish(&tree, Some(&parent)).await;
         }
         pause.release();
@@ -248,6 +251,7 @@ async fn object_sweep_repeated_oversized_changes_defer_without_hot_loop_or_delet
     for n in 0..3 {
         pause.entered().await;
         let tree = f.tree(&format!("large changing tree {n}"), 10_000).await;
+        compress_large_tree(&f, &tree.tree_hash).await;
         parent = f.publish(&tree, Some(&parent)).await;
         pause.release();
     }
@@ -260,6 +264,26 @@ async fn object_sweep_repeated_oversized_changes_defer_without_hot_loop_or_delet
         1
     );
     assert!(!f.exists(&orphan).await);
+}
+
+async fn compress_large_tree(f: &Fixture, hash: &str) {
+    let mut after = String::new();
+    loop {
+        let page = crate::track_vcs::object_compression::convert_page(f.repo.db(), &after)
+            .await
+            .unwrap();
+        after = page.after;
+        if page.complete {
+            break;
+        }
+    }
+    let encoding: String =
+        sqlx::query_scalar("SELECT encoding FROM track_vcs_objects WHERE hash=?")
+            .bind(hash)
+            .fetch_one(f.repo.pool())
+            .await
+            .unwrap();
+    assert_eq!(encoding, "zlib-v1");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
