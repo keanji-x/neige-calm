@@ -3,7 +3,10 @@
 //! result-ready contracts are moved to this same loop.
 use super::*;
 
-pub(in crate::harness::run_loop) async fn next_probe(inner: &Inner) -> tokio::time::Instant {
+pub(in crate::harness::run_loop) async fn next_probe(
+    inner: &Inner,
+    ingress_empty: bool,
+) -> tokio::time::Instant {
     let frame = inner
         .inputs
         .canonical()
@@ -12,10 +15,12 @@ pub(in crate::harness::run_loop) async fn next_probe(inner: &Inner) -> tokio::ti
         .await;
     let checkpoint = &frame.snapshot.canonical_inputs;
     let header = &frame.snapshot.header;
-    let ordinary_idle = matches!(
-        header.phase,
-        HarnessPhaseTag::Idle | HarnessPhaseTag::TurnCompleted
-    ) && checkpoint.pending.is_empty()
+    let ordinary_idle = ingress_empty
+        && matches!(
+            header.phase,
+            HarnessPhaseTag::Idle | HarnessPhaseTag::TurnCompleted
+        )
+        && checkpoint.pending.is_empty()
         && checkpoint.active.is_none()
         && checkpoint.receipts.is_empty()
         && header.last_thread_id.is_some()

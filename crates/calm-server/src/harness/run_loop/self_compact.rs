@@ -14,8 +14,14 @@ impl PlannerHarness {
         // Canonical intent is already durable in the dispatched task row. Its
         // read-only acknowledgement must not queue behind the native RPC or a
         // track fence that the scheduler itself may be waiting to release.
-        if self.inner.inputs.canonical().is_some() {
-            return request(&self.inner, request_id).await;
+        if let Some(inputs) = self.inner.inputs.canonical() {
+            let result = request(&self.inner, request_id).await;
+            if matches!(&result, Ok(CompactionAnswer::Scheduled)) {
+                // The task is already committed; acknowledgement stays outside
+                // command ingress, but its owner must wake the idle consumer.
+                inputs.request_progress();
+            }
+            return result;
         }
         match &self.inner.observations {
             ObservationIngress::Running(sender) => {

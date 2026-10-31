@@ -1898,8 +1898,10 @@ async fn run_loop(
                     None => std::future::pending::<()>().await,
                 }
             } => {
+                #[cfg(feature = "fixtures")]
+                crate::test_seams::pause_point("canonical-before-progress-advance", inner.card_id.as_str()).await;
                 canonical::advance(&inner, observations.is_empty()).await;
-                canonical_probe = canonical::scheduling::next_probe(&inner).await;
+                canonical_probe = canonical::scheduling::next_probe(&inner, observations.is_empty()).await;
             },
             _ = async {
                 if inner.inputs.canonical().is_some() {
@@ -1910,7 +1912,7 @@ async fn run_loop(
             } => {
                 if inner.inputs.canonical().is_some() {
                     canonical::advance(&inner, observations.is_empty()).await;
-                    canonical_probe = canonical::scheduling::next_probe(&inner).await;
+                    canonical_probe = canonical::scheduling::next_probe(&inner, observations.is_empty()).await;
                     continue;
                 }
                 if let Err(e) = watchdog_tick(&inner).await {

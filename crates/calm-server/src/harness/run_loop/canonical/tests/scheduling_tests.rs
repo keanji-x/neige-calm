@@ -110,3 +110,81 @@ async fn ordinary_turn_wakes_from_idle_and_returns_without_fifty_ms_probes() {
     idle_again.release.notify_one();
     fx.harness.shutdown().await.unwrap();
 }
+
+#[tokio::test]
+async fn declared_compaction_wakes_idle_and_rechecks_after_ingress_drains() {
+    let fx = Fixture::new().await;
+    let (_client, mut peer) = connect(&fx.daemon).await;
+    super::control_tests::running(&fx, &mut peer).await;
+    let thread = fx.frame().await.header.last_thread_id.unwrap();
+    let card = fx.harness.inner.card_id.as_str();
+    let idle = PausePoint::default();
+    install_pause_for_test("canonical-idle-wait", card, idle.clone());
+    notify_thread(
+        &fx.daemon,
+        &mut peer,
+        &thread,
+        "turn/completed",
+        json!({"id":"bounded-original","status":"completed"}),
+    )
+    .await;
+    tokio::time::timeout(Duration::from_secs(5), idle.entered.notified())
+        .await
+        .unwrap();
+    let progress = PausePoint::default();
+    install_pause_for_test("canonical-before-progress-advance", card, progress.clone());
+    let (_scheduler, _) = crate::harness::run_loop::compact_task_tests::declared_for(
+        fx.original.repo.clone(),
+        &fx.harness,
+        fx.daemon.clone(),
+    )
+    .await;
+    idle.release.notify_one();
+    tokio::time::timeout(Duration::from_secs(3), progress.entered.notified())
+        .await
+        .expect("a committed compact task must wake the idle loop");
+    // Force maintenance to defer behind an actual queued read command. That
+    // command itself changes no state and must not be required to wake work.
+    let (answer, inspected) = oneshot::channel();
+    let ObservationIngress::Running(sender) = &fx.harness.inner.observations else {
+        panic!("running loop")
+    };
+    sender
+        .try_send(HarnessObservationCommand::InspectInput {
+            entry_id: QueueEntryId::from_wire("no-such-input".into()),
+            answer,
+        })
+        .unwrap();
+    progress.release.notify_one();
+    let _ = tokio::time::timeout(Duration::from_secs(3), inspected)
+        .await
+        .unwrap()
+        .unwrap();
+    let call = tokio::time::timeout(Duration::from_secs(3), request(&mut peer))
+        .await
+        .expect("deferred maintenance must recheck after ingress drains");
+    assert_eq!(call["method"], "thread/compact/start");
+    send(&mut peer, json!({"id":call["id"],"result":{}})).await;
+    notify_thread(
+        &fx.daemon,
+        &mut peer,
+        &thread,
+        "turn/started",
+        json!({"id":"idle-compact"}),
+    )
+    .await;
+    notify_thread(
+        &fx.daemon,
+        &mut peer,
+        &thread,
+        "turn/completed",
+        json!({"id":"idle-compact","status":"completed"}),
+    )
+    .await;
+    let done = fx.wait_phase(HarnessPhaseTag::TurnCompleted).await;
+    assert_eq!(
+        done.header.compact_outcome.unwrap().status,
+        crate::harness::compact_outcome::CompactStatus::Completed
+    );
+    super::compact_tests::shutdown(&fx.harness, &mut peer).await;
+}
