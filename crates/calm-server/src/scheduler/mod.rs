@@ -418,6 +418,8 @@ pub struct Scheduler {
     /// material verdict.
     context_sweep_boot_done: AtomicBool,
     context_metrics: Arc<ContextMetrics>,
+    #[cfg(any(test, feature = "fixtures"))]
+    timeout_cleanup_discovered_test_hook: std::sync::Mutex<Option<ClaimFenceTestHook>>,
     claim_fence_test_hook: std::sync::Mutex<Option<ClaimFenceTestHook>>,
     post_claim_drive_test_hook: std::sync::Mutex<Option<PostClaimDriveTestHook>>,
     #[cfg(feature = "fixtures")]
@@ -479,6 +481,8 @@ impl Scheduler {
             boot_sweep_done: AtomicBool::new(false),
             context_sweep_boot_done: AtomicBool::new(false),
             context_metrics: Arc::new(ContextMetrics::default()),
+            #[cfg(any(test, feature = "fixtures"))]
+            timeout_cleanup_discovered_test_hook: std::sync::Mutex::new(None),
             claim_fence_test_hook: std::sync::Mutex::new(None),
             post_claim_drive_test_hook: std::sync::Mutex::new(None),
             #[cfg(feature = "fixtures")]
@@ -1741,6 +1745,18 @@ impl Scheduler {
                 return;
             }
         };
+        #[cfg(any(test, feature = "fixtures"))]
+        {
+            let hook = self
+                .timeout_cleanup_discovered_test_hook
+                .lock()
+                .expect("timeout cleanup hook lock")
+                .take();
+            if let Some(hook) = hook {
+                hook.resolved.notify_one();
+                hook.resume.notified().await;
+            }
+        }
         let Some(runtime) = self.operation_runtime.upgrade() else {
             if !worker_rows.is_empty() {
                 tracing::warn!(
@@ -2251,3 +2267,6 @@ pub(crate) async fn mark_acknowledged_running_tx(
 
 #[cfg(test)]
 mod isolation_none_tests;
+
+#[cfg(test)]
+mod timeout_cleanup_fence_tests;
