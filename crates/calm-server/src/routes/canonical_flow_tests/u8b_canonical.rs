@@ -126,23 +126,22 @@ fn borrowed(a: &Value, provider: &str, path: &std::path::Path, isolation: &str) 
     request
 }
 
-#[test]
-fn u8b_canonical_borrowed_shapes_commit_and_read() {
+#[tokio::test]
+async fn u8b_canonical_borrowed_shapes_commit_and_read_empty() {
+    borrowed_shapes_commit_and_read(false).await;
+}
+
+#[tokio::test]
+async fn u8b_canonical_borrowed_shapes_commit_and_read_human() {
+    borrowed_shapes_commit_and_read(true).await;
+}
+
+async fn borrowed_shapes_commit_and_read(human: bool) {
+    // Bound full application fixtures per test process while retaining every
+    // provider/resource/input combination and the same production assertions.
     for provider in calm_types::runtime::AgentProvider::ALL {
         for shape in ["none", "default", "worktree", "same", "cross", "named"] {
-            for human in [false, true] {
-                // Each full application fixture owns background tasks. End its runtime
-                // before the next case so the matrix does not accumulate open handles.
-                tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .unwrap()
-                    .block_on(borrowed_shape_commit_and_read(
-                        provider.wire_name(),
-                        shape,
-                        human,
-                    ));
-            }
+            borrowed_shape_commit_and_read(provider.wire_name(), shape, human).await;
         }
     }
 }
