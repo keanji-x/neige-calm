@@ -593,7 +593,7 @@ impl PlannerHarness {
         if self.inner.shutting_down.load(Ordering::SeqCst) {
             return Err(CalmError::Conflict("runtime is shutting down".into()));
         }
-        let (result, consumed) = crate::harness::input_dispatch::supplemental(
+        let outcome = crate::harness::input_dispatch::supplemental(
             self.inner.repo.as_ref(),
             source,
             self.inner.card_id.as_str(),
@@ -602,7 +602,11 @@ impl PlannerHarness {
             turn,
             &self.inner.backend,
         )
-        .await?;
+        .await;
+        // END may have arrived before this report. Its durable commit (including
+        // uncertain/error outcomes) must wake the owner even after HTTP disconnect.
+        self.request_progress();
+        let (result, consumed) = outcome?;
         self.inner
             .inputs
             .canonical()
@@ -614,6 +618,9 @@ impl PlannerHarness {
     /// Refresh from committed Truth after a same-phase Human resolution.
     pub(crate) async fn refresh_canonical_input(&self) -> Result<()> {
         if self.inner.inputs.canonical().is_some() {
+            // The caller already committed a same-phase Human mutation. Wake
+            // before this advisory refresh, which may fail independently.
+            self.request_progress();
             let frame = canonical::read_current(&self.inner).await?;
             canonical::publish(&self.inner, frame).await;
         }
