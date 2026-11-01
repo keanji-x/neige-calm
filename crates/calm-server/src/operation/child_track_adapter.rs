@@ -1920,12 +1920,11 @@ mod tests {
         // B=8: N=3 shrinks the first child's share to 3, so the shared rebuild must cull one pending row before child 2 can consume its share.
         let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
         let root = seed_parent(&repo, false).await;
-        let write_db = (repo.db()).clone();
-        write_db
+        repo.db()
             .writer()
-            .with_writer(|write_session| {
-                Box::pin(async move {
-                    let mut tx = write_session.begin_immediate().await.unwrap();
+            .with_writer(|session| {
+                Box::pin(async {
+                    let mut tx = session.begin_immediate().await.unwrap();
                     track_update_tx(
                         &mut tx,
                         &root,
@@ -1937,26 +1936,32 @@ mod tests {
                     .await
                     .unwrap();
                     tx.commit().await.unwrap();
-                    let root_tasks = project_pending_tasks(&repo, &root, "root-eight", 3).await;
-                    for task_id in &root_tasks[..2] {
-                        claim_for_child(&repo, task_id).await;
-                    }
-                    let first_child = create_child_from_task(&repo, &root, &root_tasks[0]).await;
-                    let first_child_tasks =
-                        project_pending_tasks(&repo, &first_child, "child-eight", 4).await;
-                    claim_for_child(&repo, &first_child_tasks[0]).await;
-                    let second_child =
-                        create_child_from_task(&repo, &first_child, &first_child_tasks[0]).await;
-                    project_pending_tasks(&repo, &second_child, "leaf-eight", 2).await;
-                    let mut conn = repo.pool().acquire().await.unwrap();
-                    let total_eight = track_tree_planner_inventory(&mut conn, &root)
-                        .await
-                        .unwrap();
+                })
+            })
+            .await
+            .expect("independent write operation");
+        let root_tasks = project_pending_tasks(&repo, &root, "root-eight", 3).await;
+        for task_id in &root_tasks[..2] {
+            claim_for_child(&repo, task_id).await;
+        }
+        let first_child = create_child_from_task(&repo, &root, &root_tasks[0]).await;
+        let first_child_tasks = project_pending_tasks(&repo, &first_child, "child-eight", 4).await;
+        claim_for_child(&repo, &first_child_tasks[0]).await;
+        let second_child = create_child_from_task(&repo, &first_child, &first_child_tasks[0]).await;
+        project_pending_tasks(&repo, &second_child, "leaf-eight", 2).await;
+        let mut conn = repo.pool().acquire().await.unwrap();
+        let total_eight = track_tree_planner_inventory(&mut conn, &root)
+            .await
+            .unwrap();
 
-                    // B=12: the final N=4 rebuild shrinks root from six live rows to share=3.
-                    let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
-                    let root = seed_parent(&repo, false).await;
-                    let mut tx = write_session.begin_immediate().await.unwrap();
+        // B=12: the final N=4 rebuild shrinks root from six live rows to share=3.
+        let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
+        let root = seed_parent(&repo, false).await;
+        repo.db()
+            .writer()
+            .with_writer(|session| {
+                Box::pin(async {
+                    let mut tx = session.begin_immediate().await.unwrap();
                     track_update_tx(
                         &mut tx,
                         &root,
@@ -1968,31 +1973,30 @@ mod tests {
                     .await
                     .unwrap();
                     tx.commit().await.unwrap();
-                    let root_tasks = project_pending_tasks(&repo, &root, "root-twelve", 6).await;
-                    for task_id in &root_tasks[..3] {
-                        claim_for_child(&repo, task_id).await;
-                    }
-                    let mut children = Vec::new();
-                    for task_id in &root_tasks[..3] {
-                        children.push(create_child_from_task(&repo, &root, task_id).await);
-                    }
-                    for (index, child) in children.iter().enumerate() {
-                        project_pending_tasks(&repo, child, &format!("leaf-twelve-{index}"), 3)
-                            .await;
-                    }
-                    let mut conn = repo.pool().acquire().await.unwrap();
-                    let total_twelve = track_tree_planner_inventory(&mut conn, &root)
-                        .await
-                        .unwrap();
-                    assert_eq!(
-                        (total_eight, total_twelve),
-                        (8, 12),
-                        "admitted B=8/B=12 growth must settle at, never above, each B"
-                    );
                 })
             })
             .await
-            .expect("independent write operation")
+            .expect("independent write operation");
+        let root_tasks = project_pending_tasks(&repo, &root, "root-twelve", 6).await;
+        for task_id in &root_tasks[..3] {
+            claim_for_child(&repo, task_id).await;
+        }
+        let mut children = Vec::new();
+        for task_id in &root_tasks[..3] {
+            children.push(create_child_from_task(&repo, &root, task_id).await);
+        }
+        for (index, child) in children.iter().enumerate() {
+            project_pending_tasks(&repo, child, &format!("leaf-twelve-{index}"), 3).await;
+        }
+        let mut conn = repo.pool().acquire().await.unwrap();
+        let total_twelve = track_tree_planner_inventory(&mut conn, &root)
+            .await
+            .unwrap();
+        assert_eq!(
+            (total_eight, total_twelve),
+            (8, 12),
+            "admitted B=8/B=12 growth must settle at, never above, each B"
+        );
     }
 
     /// Inventory 5 < B=8 and N+1=2 <= B, but the new two-member share is 4 while all five root rows are already in-flight;

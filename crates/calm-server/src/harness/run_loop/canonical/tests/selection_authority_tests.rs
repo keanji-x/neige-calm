@@ -256,67 +256,63 @@ async fn sqlite_admission_under_sink_yields_before_server_reply_timeout() {
     let (client, mut peer) = connect(&fx.daemon).await;
     let admission = bound_admission(&fx).await;
     let before = fx.frame().await;
-    let write_db = (fx.original.repo.db()).clone();
-    write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let writer = write_session.begin_immediate().await.unwrap();
-        let entered = tokio::sync::Notify::new();
-        let gate = PreSendGate::new(|| {
-            Box::pin(async {
-                entered.notify_one();
-                admission
-                    .revalidate()
-                    .await
-                    .map_err(|error| provider::send_boundary::SendRefusal(error.to_string()))
-            })
-        });
-        let selection = provider::TurnModelSelection::inherit();
-        let attempt = client.turn_start_attempt_gated(
-            "thread",
-            vec![],
-            &selection,
-            TurnApprovals::Unchanged,
-            None,
-            &gate,
-        );
-        tokio::pin!(attempt);
-        tokio::select! {
-            _ = entered.notified() => {}
-            result = &mut attempt => panic!("admission did not wait for the real writer: {result:?}"),
-        }
-        send(
-            &mut peer,
-            json!({"id":"needs-reply","method":"fixture/unsupported","params":{}}),
-        )
-        .await;
-        let (failure, reply) = tokio::join!(
-            async { tokio::time::timeout(Duration::from_secs(4), &mut attempt).await },
-            async { tokio::time::timeout(Duration::from_secs(4), peer.next()).await },
-        );
-        // Release the actual writer even on expected-red timeout.
-        writer.rollback().await.unwrap();
-        let failure = failure
-            .expect("a blocked admission must release the sink before replies time out")
-            .unwrap_err();
-        assert_eq!(failure.crossing(), RequestCrossing::BeforeSend);
-        let frame = reply
-            .expect("the shared reply writer must acquire the sink")
-            .unwrap()
-            .unwrap();
-        let frame: Value = serde_json::from_str(frame.to_text().unwrap()).unwrap();
-        assert_eq!(frame["id"], "needs-reply");
-        assert_eq!(frame["error"]["code"], -32601);
-        // A second real server request proves refusal did not poison the transport.
-        send(
-            &mut peer,
-            json!({"id":"still-live","method":"fixture/unsupported","params":{}}),
-        )
-        .await;
-        let frame = request(&mut peer).await;
-        assert_eq!(frame["id"], "still-live");
-        assert_eq!(fx.frame().await, before);
-        fx.harness.shutdown().await.unwrap();
-
-    })).await.expect("independent write operation")
+    let writer = fx.original.repo.db().hold_writer_for_test().await.unwrap();
+    let entered = tokio::sync::Notify::new();
+    let gate = PreSendGate::new(|| {
+        Box::pin(async {
+            entered.notify_one();
+            admission
+                .revalidate()
+                .await
+                .map_err(|error| provider::send_boundary::SendRefusal(error.to_string()))
+        })
+    });
+    let selection = provider::TurnModelSelection::inherit();
+    let attempt = client.turn_start_attempt_gated(
+        "thread",
+        vec![],
+        &selection,
+        TurnApprovals::Unchanged,
+        None,
+        &gate,
+    );
+    tokio::pin!(attempt);
+    tokio::select! {
+        _ = entered.notified() => {}
+        result = &mut attempt => panic!("admission did not wait for the real writer: {result:?}"),
+    }
+    send(
+        &mut peer,
+        json!({"id":"needs-reply","method":"fixture/unsupported","params":{}}),
+    )
+    .await;
+    let (failure, reply) = tokio::join!(
+        async { tokio::time::timeout(Duration::from_secs(4), &mut attempt).await },
+        async { tokio::time::timeout(Duration::from_secs(4), peer.next()).await },
+    );
+    // Release the actual writer even on expected-red timeout.
+    writer.release().await.unwrap();
+    let failure = failure
+        .expect("a blocked admission must release the sink before replies time out")
+        .unwrap_err();
+    assert_eq!(failure.crossing(), RequestCrossing::BeforeSend);
+    let frame = reply
+        .expect("the shared reply writer must acquire the sink")
+        .unwrap()
+        .unwrap();
+    let frame: Value = serde_json::from_str(frame.to_text().unwrap()).unwrap();
+    assert_eq!(frame["id"], "needs-reply");
+    assert_eq!(frame["error"]["code"], -32601);
+    // A second real server request proves refusal did not poison the transport.
+    send(
+        &mut peer,
+        json!({"id":"still-live","method":"fixture/unsupported","params":{}}),
+    )
+    .await;
+    let frame = request(&mut peer).await;
+    assert_eq!(frame["id"], "still-live");
+    assert_eq!(fx.frame().await, before);
+    fx.harness.shutdown().await.unwrap();
 }
 
 #[tokio::test]

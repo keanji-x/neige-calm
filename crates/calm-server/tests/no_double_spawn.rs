@@ -2912,52 +2912,76 @@ async fn adapter_mints_runtime_id_when_payload_runtime_id_is_none() {
         boot.state.track_area_cache.clone(),
     );
     let op = pending_operation("terminal-create", &boot.track_id, payload.clone());
-    let write_db = (boot.repo.db()).clone();
-    write_db
+    let output = boot
+        .repo
+        .db()
         .writer()
-        .with_writer(|write_session| {
-            Box::pin(async move {
-                let mut tx = write_session.begin_immediate().await.unwrap();
+        .with_writer(|session| {
+            Box::pin(async {
+                let mut tx = session.begin_immediate().await.unwrap();
                 let output = adapter.prepare_tx(&mut tx, &payload, &op).await.unwrap();
                 tx.commit().await.unwrap();
-                assert_minted_runtime(&boot.repo, output, WorkerSessionKind::Terminal).await;
-
-                let boot = boot_codex_with_counted_spawn().await;
-                let payload = without_runtime_id(codex_payload(&boot.track_id, None));
-                let route_repo: Arc<dyn calm_server::db::RouteRepo> = boot.repo.clone();
-                let adapter = CodexAdapter::new(
-                    route_repo,
-                    boot.state.codex.clone(),
-                    boot.state.shared_codex_appserver.clone(),
-                    boot.state.pending_codex_threads.clone(),
-                    boot.state.pending_codex_threads_spawn_serial.clone(),
-                    boot.state.card_role_cache.clone(),
-                    boot.state.track_area_cache.clone(),
-                );
-                let op = pending_operation("codex-create", &boot.track_id, payload.clone());
-                let mut tx = write_session.begin_immediate().await.unwrap();
-                let output = adapter.prepare_tx(&mut tx, &payload, &op).await.unwrap();
-                tx.commit().await.unwrap();
-                assert_minted_runtime(&boot.repo, output, WorkerSessionKind::CodexCard).await;
-
-                let boot = boot_claude_with_counted_spawn().await;
-                let payload = without_runtime_id(claude_payload(&boot, &boot.track_id, None));
-                let route_repo: Arc<dyn calm_server::db::RouteRepo> = boot.repo.clone();
-                let adapter = ClaudeAdapter::new(
-                    route_repo,
-                    boot.state.codex.clone(),
-                    boot.state.card_role_cache.clone(),
-                    boot.state.track_area_cache.clone(),
-                );
-                let op = pending_operation("claude-create", &boot.track_id, payload.clone());
-                let mut tx = write_session.begin_immediate().await.unwrap();
-                let output = adapter.prepare_tx(&mut tx, &payload, &op).await.unwrap();
-                tx.commit().await.unwrap();
-                assert_minted_runtime(&boot.repo, output, WorkerSessionKind::ClaudeCard).await;
+                output
             })
         })
         .await
-        .expect("independent write operation")
+        .expect("independent write operation");
+    assert_minted_runtime(&boot.repo, output, WorkerSessionKind::Terminal).await;
+
+    let boot = boot_codex_with_counted_spawn().await;
+    let payload = without_runtime_id(codex_payload(&boot.track_id, None));
+    let route_repo: Arc<dyn calm_server::db::RouteRepo> = boot.repo.clone();
+    let adapter = CodexAdapter::new(
+        route_repo,
+        boot.state.codex.clone(),
+        boot.state.shared_codex_appserver.clone(),
+        boot.state.pending_codex_threads.clone(),
+        boot.state.pending_codex_threads_spawn_serial.clone(),
+        boot.state.card_role_cache.clone(),
+        boot.state.track_area_cache.clone(),
+    );
+    let op = pending_operation("codex-create", &boot.track_id, payload.clone());
+    let output = boot
+        .repo
+        .db()
+        .writer()
+        .with_writer(|session| {
+            Box::pin(async {
+                let mut tx = session.begin_immediate().await.unwrap();
+                let output = adapter.prepare_tx(&mut tx, &payload, &op).await.unwrap();
+                tx.commit().await.unwrap();
+                output
+            })
+        })
+        .await
+        .expect("independent write operation");
+    assert_minted_runtime(&boot.repo, output, WorkerSessionKind::CodexCard).await;
+
+    let boot = boot_claude_with_counted_spawn().await;
+    let payload = without_runtime_id(claude_payload(&boot, &boot.track_id, None));
+    let route_repo: Arc<dyn calm_server::db::RouteRepo> = boot.repo.clone();
+    let adapter = ClaudeAdapter::new(
+        route_repo,
+        boot.state.codex.clone(),
+        boot.state.card_role_cache.clone(),
+        boot.state.track_area_cache.clone(),
+    );
+    let op = pending_operation("claude-create", &boot.track_id, payload.clone());
+    let output = boot
+        .repo
+        .db()
+        .writer()
+        .with_writer(|session| {
+            Box::pin(async {
+                let mut tx = session.begin_immediate().await.unwrap();
+                let output = adapter.prepare_tx(&mut tx, &payload, &op).await.unwrap();
+                tx.commit().await.unwrap();
+                output
+            })
+        })
+        .await
+        .expect("independent write operation");
+    assert_minted_runtime(&boot.repo, output, WorkerSessionKind::ClaudeCard).await;
 }
 
 fn init_fixture_git_repo(repo_path: &Path) {
