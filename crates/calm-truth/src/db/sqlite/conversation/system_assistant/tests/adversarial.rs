@@ -316,7 +316,7 @@ async fn replay_rejects_cross_event_worker_card_and_database() {
                 {
                     let g = &g;
                     let f = &f;
-                    let mut tx = &mut tx;
+                    let tx = &mut tx;
                     let accepted = &accepted;
                     g.repo
                         .db()
@@ -334,11 +334,9 @@ async fn replay_rejects_cross_event_worker_card_and_database() {
                                 .unwrap();
                                 let (g_id, g_accepted) =
                                     g.accept(&mut other_tx, &g.event("input", "body")).await;
+                                assert!(replay(tx, f, "input", id, &g_accepted).await.is_err());
                                 assert!(
-                                    replay(&mut tx, &f, "input", id, &g_accepted).await.is_err()
-                                );
-                                assert!(
-                                    replay(&mut other_tx, &g, "input", g_id, &accepted)
+                                    replay(&mut other_tx, g, "input", g_id, accepted)
                                         .await
                                         .is_err()
                                 );

@@ -216,7 +216,7 @@ async fn c5_track_positive_proof_after_quiesce_precedes_move() {
             write_db
                 .writer()
                 .with_writer(|write_session_1| {
-                    Box::pin(async move {
+                    Box::pin(async {
                         let mut tx = write_session_1.begin_immediate().await.unwrap();
                         let _ticket = f.engine.admit(&mut tx, intent).await.unwrap();
                         tx.commit().await.unwrap();
@@ -263,7 +263,7 @@ async fn c5_track_writer_rechecks_foreign_location() {
             write_db
                 .writer()
                 .with_writer(|write_session_1| {
-                    Box::pin(async move {
+                    Box::pin(async {
                         let mut tx = write_session_1.begin_immediate().await.unwrap();
                         let _ticket = f.engine.admit(&mut tx, intent).await.unwrap();
                         tx.commit().await.unwrap();
@@ -308,7 +308,7 @@ async fn c5_repoint_writer_rechecks_foreign_location_without_stop() {
             write_db
                 .writer()
                 .with_writer(|write_session_1| {
-                    Box::pin(async move {
+                    Box::pin(async {
                         let mut tx = write_session_1.begin_immediate().await.unwrap();
                         let _ticket = f.engine.admit(&mut tx, intent).await.unwrap();
                         tx.commit().await.unwrap();

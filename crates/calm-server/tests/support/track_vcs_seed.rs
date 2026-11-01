@@ -106,7 +106,6 @@ pub async fn seed_linear_commits(
                     }
 
                     tx.commit().await.expect("commit seed commits");
-                    ()
                 })
             })
             .await

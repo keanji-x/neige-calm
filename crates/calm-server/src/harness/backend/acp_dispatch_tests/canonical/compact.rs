@@ -302,7 +302,7 @@ async fn retained_loss_for(case: LossCase, grok: bool) {
                     &fx.owner.repo.sqlite_db().unwrap(),
                     Some(engine),
                     &fx.owner.worker,
-                    &claim,
+                    claim,
                     crate::provider_execution::StopReason::Shutdown,
                 )
                 .await

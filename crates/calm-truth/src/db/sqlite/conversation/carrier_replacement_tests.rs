@@ -524,7 +524,7 @@ async fn carrier_replacement_refuses_unresolved_native_and_retry_work() {
                         &s.card,
                         calm_types::organization::LEGACY_OWNER_USER_ID,
                         "replacement-refusal",
-                        &super::retry_storage_tests::request(&s),
+                        &super::retry_storage_tests::request(s),
                         &super::transaction_tests::provenance(),
                     )
                     .await
@@ -551,8 +551,8 @@ async fn carrier_replacement_refuses_unresolved_native_and_retry_work() {
         write_db.writer().with_writer(|write_session| Box::pin(async move {
 let mut tx = write_session.begin_immediate().await.unwrap();
     sqlx::query(concat!("INSERT INTO ","acp_submissions(worker_session_id,client_id,turn_id,thread_id,native_session_id,input_json,state,created_","at_ms) VALUES(?1,'client','turn','thread','native','{}','unknown',0)"))
-        .bind(&worker).execute(&mut **tx).await.unwrap();
-    let before = expected(&mut tx, &card, &worker, &Protected).await;
+        .bind(worker).execute(&mut **tx).await.unwrap();
+    let before = expected(&mut tx, card, worker, &Protected).await;
     assert!(
         replace_idle_carrier_tx(&mut tx, before, binding())
             .await

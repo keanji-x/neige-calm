@@ -126,7 +126,7 @@ async fn acp_cleanup_rejects_insert_collisions_without_changing_receipt_bytes() 
     sqlx::query("PRAGMA recursive_triggers=OFF").execute(&mut **db)
         .await
         .unwrap();
-    let before = receipt_bytes(&pool).await;
+    let before = receipt_bytes(pool).await;
     for (worker, client, turn, _) in cases {
         for evidence in ["", ",kept_cleanup_json"] {
             for conflict in ["OR REPLACE", "", "OR IGNORE"] {
@@ -156,7 +156,7 @@ async fn acp_cleanup_rejects_insert_collisions_without_changing_receipt_bytes() 
                             .is_err(),
                         "{sql}"
                     );
-                    assert_eq!(receipt_bytes(&pool).await, before, "{sql}");
+                    assert_eq!(receipt_bytes(pool).await, before, "{sql}");
                 }
             }
         }

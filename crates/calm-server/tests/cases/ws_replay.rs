@@ -516,7 +516,6 @@ async fn replay_complete_id_reflects_server_tip_after_reset() {
 
     // Simulate the reset's structural wipe: every domain row, the event log, and `sqlite_sequence` so AUTOINCREMENT restarts at 1.
     {
-        let pool = repo.pool();
         {
             let write_db = (repo.db()).clone();
             write_db
@@ -543,7 +542,6 @@ async fn replay_complete_id_reflects_server_tip_after_reset() {
                             sqlx::query(stmt).execute(&mut **tx).await.unwrap();
                         }
                         tx.commit().await.unwrap();
-                        ()
                     })
                 })
                 .await

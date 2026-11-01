@@ -14,7 +14,6 @@ use tower::ServiceExt;
 struct Fixture {
     app: axum::Router,
     state: calm_server::state::AppState,
-    pool: sqlx::SqlitePool,
     auth: calm_server::auth::AuthState,
     area: String,
     other: String,
@@ -40,7 +39,6 @@ impl Fixture {
                                 .await
                                 .unwrap();
                             tx.commit().await.unwrap();
-                            ()
                         })
                     })
                     .await
@@ -69,7 +67,6 @@ impl Fixture {
             let mut f = Self {
                 app: app(state.clone(), auth.clone()),
                 state,
-                pool: db.read_pool().clone(),
                 auth,
                 area: areas[0].clone(),
                 other: areas[1].clone(),

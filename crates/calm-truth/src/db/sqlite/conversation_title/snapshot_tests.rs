@@ -348,7 +348,7 @@ async fn atomic_replace(f: Fixture) {
                         // Same transaction boundary as replace_command: cut transcript and persist pending.
                         assert_eq!(
                             super::super::transcript_delete_thread_suffix_tx(
-                                &mut tx, &card, "thread", 0, old,
+                                &mut tx, card, "thread", 0, old,
                             )
                             .await
                             .unwrap(),
@@ -535,11 +535,10 @@ async fn conversation_title_autocommit_control_loses_drain_source() {
                         .autocommit(|conn| {
                             Box::pin(async move {
                                 let ids = std::slice::from_ref(card);
-                                let sources =
-                                    sources_on_connection(&mut **conn, ids).await.unwrap();
+                                let sources = sources_on_connection(conn, ids).await.unwrap();
                                 let runtimes =
                 super::super::session_projection::runtime_get_projectable_for_cards_on_connection(
-                    &mut **conn, ids,
+                    conn, ids,
                 )
                 .await
                 .unwrap();

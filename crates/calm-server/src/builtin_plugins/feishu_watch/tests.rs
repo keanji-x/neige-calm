@@ -158,7 +158,6 @@ impl Fixture {
                         .await
                         .unwrap();
                         tx.commit().await.unwrap();
-                        ()
                     })
                 })
                 .await

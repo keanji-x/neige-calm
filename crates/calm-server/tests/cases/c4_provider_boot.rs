@@ -70,7 +70,6 @@ async fn c4_boot_pass_a_precedes_listener_and_failure_is_covered_by_sweep() {
                             sql::Cas::Applied(_)
                         ));
                         tx.commit().await.unwrap();
-                        ()
                     })
                 })
                 .await

@@ -123,7 +123,7 @@ async fn stale_worker_stop_hook(
                 tracing::warn!(%card_id, %error,
                     "dispatcher push: stale-worker-stop lookup failed; pushing stop hook (fail-open)");
             }
-            Err(error.into())
+            Err(error)
         }
     }
 }

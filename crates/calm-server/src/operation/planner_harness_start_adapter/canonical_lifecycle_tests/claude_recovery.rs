@@ -376,7 +376,7 @@ async fn canonical_claude_recovery_crossing_and_unknown_never_write_again() {
                         session_set_handle_state_tx(
                             &mut tx,
                             &fx.worker,
-                            Some(serde_json::to_value(&saved).unwrap()),
+                            Some(serde_json::to_value(saved).unwrap()),
                         )
                         .await
                         .unwrap();

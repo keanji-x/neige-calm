@@ -149,7 +149,7 @@ async fn carrier_replacement_codex_next_send_history_credentials_and_cold_boot()
     };
     let write_db = (fixture.repo.db()).clone();
     {
-        let (carrier, replacement) = {
+        let (_carrier, replacement) = {
             let write_db = (write_db).clone();
             write_db.writer().with_writer(|write_session| Box::pin(async {
 let mut tx = write_session.begin_immediate()
@@ -351,7 +351,6 @@ let mut tx = write_session.begin_immediate()
                             .is_none()
                         );
                         tx.rollback().await.unwrap();
-                        ()
                     })
                 })
                 .await

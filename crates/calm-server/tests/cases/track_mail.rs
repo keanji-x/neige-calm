@@ -458,7 +458,6 @@ async fn mail_send_refusals_follow_the_table() {
             calm_server::session_projection_repo::AgentProvider::Codex,
         )
         .await;
-    let pool = w.repo.pool();
     (w.repo.db())
         .writer()
         .execute(

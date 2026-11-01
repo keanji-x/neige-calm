@@ -651,7 +651,7 @@ async fn u2_imported_erasure_fences_native_replacement_and_observer() {
                             let mut tx = write_session.begin_immediate().await.unwrap();
                             allocate_presentation_tx(
                                 &mut tx,
-                                &card,
+                                card,
                                 PresentationSource::NativeItem { row_id: row },
                             )
                             .await
@@ -701,7 +701,7 @@ let mut tx = write_session.begin_immediate().await.unwrap();
         assert!(matches!(
             allocate_presentation_tx(
                 &mut tx,
-                &card,
+                card,
                 PresentationSource::NativeItem {
                     row_id: replacement
                 }
@@ -709,7 +709,7 @@ let mut tx = write_session.begin_immediate().await.unwrap();
             .await,
             Err(Core(Conflict(_)))
         ));
-        let carrier = current_input_carrier_tx(&mut tx, &card, &worker)
+        let carrier = current_input_carrier_tx(&mut tx, card, worker)
             .await
             .unwrap();
         assert!(observe_native_item_tx(&mut tx, &carrier, "thread", Some("turn"), "item/completed",
@@ -749,7 +749,7 @@ let mut tx = write_session.begin_immediate().await.unwrap();
                         let mut tx = write_session.begin_immediate().await.unwrap();
                         allocate_presentation_tx(
                             &mut tx,
-                            &card,
+                            card,
                             PresentationSource::NativeItem { row_id: distinct },
                         )
                         .await

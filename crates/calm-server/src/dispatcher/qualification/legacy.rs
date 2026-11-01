@@ -67,7 +67,7 @@ pub(super) async fn deferred_self_report(
                 tracing::warn!(%idempotency_key, %error,
                     "dispatcher push: gated-self-report lookup failed; pushing self-report (fail-open)");
             }
-            Err(error.into())
+            Err(error)
         }
     }
 }

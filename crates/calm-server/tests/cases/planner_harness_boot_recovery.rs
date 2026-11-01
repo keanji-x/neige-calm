@@ -2214,7 +2214,6 @@ async fn a_redriven_start_hands_the_raced_in_runtimes_sentence_to_the_harness_it
                         .await
                         .unwrap();
                         tx.commit().await.unwrap();
-                        ()
                     })
                 })
                 .await
@@ -2445,7 +2444,6 @@ async fn a_redriven_start_takes_the_queue_from_the_row_not_from_the_carried_outp
                         .await
                         .unwrap();
                         tx.commit().await.unwrap();
-                        ()
                     })
                 })
                 .await
@@ -2684,7 +2682,6 @@ async fn the_give_back_returns_nothing_that_somebody_else_has_taken_onward() {
                         .await
                         .unwrap();
                         tx.commit().await.unwrap();
-                        ()
                     })
                 })
                 .await
@@ -2926,7 +2923,6 @@ async fn the_give_back_keeps_a_pre_upgrade_sentence_it_cannot_identify() {
                         .await
                         .unwrap();
                         tx.commit().await.unwrap();
-                        ()
                     })
                 })
                 .await

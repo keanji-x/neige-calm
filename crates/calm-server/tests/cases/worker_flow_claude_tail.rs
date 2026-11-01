@@ -231,7 +231,6 @@ async fn claude_tail_terminal_drain_leaves_invalid_unterminated_tail_unrecorded(
                         .unwrap();
                     append_raw(&path, "{not-json");
                     tx.commit().await.unwrap();
-                    ()
                 })
             })
             .await

@@ -329,7 +329,6 @@ async fn seed_runtime_session_in_pool(
                     .await
                     .unwrap();
                     tx.commit().await.unwrap();
-                    ()
                 })
             })
             .await
@@ -4429,8 +4428,7 @@ async fn replace_context_report_snapshot(
     db.writer()
         .autocommit(|connection| {
             Box::pin(async move {
-                replace_context_report_snapshot_on_connection(&mut **connection, card_id, report)
-                    .await;
+                replace_context_report_snapshot_on_connection(connection, card_id, report).await;
                 Ok::<_, sqlx::Error>(())
             })
         })
@@ -5112,7 +5110,7 @@ async fn material_commit_rechecks_after_locked_revert_without_production_hook() 
     persist_context_report_body(&boot, temporary_body).await;
 
     let pool = boot.repo.sqlite_db().unwrap();
-    let (monitor, metrics, detector) = {
+    let (_monitor, metrics, detector) = {
         let write_db = pool.clone();
         write_db
             .writer()
@@ -8004,7 +8002,6 @@ async fn acceptance_12_sub_track_running_stamp_has_no_worker_or_deadline() {
                             .await
                             .unwrap();
                     }
-                    let pool = boot.repo.sqlite_db().unwrap();
                     let mut tx = write_session.begin_immediate().await.unwrap();
                     let changed = calm_server::db::sqlite::task_mark_sub_track_running_tx(
                         &mut tx,

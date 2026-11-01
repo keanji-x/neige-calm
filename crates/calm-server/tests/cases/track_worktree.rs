@@ -806,7 +806,6 @@ async fn a_closed_idle_track_worktree_drops_its_ignored_files() {
                     .await
                     .unwrap();
                     tx.commit().await.unwrap();
-                    ()
                 })
             })
             .await

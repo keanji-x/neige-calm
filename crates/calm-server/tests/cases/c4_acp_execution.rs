@@ -451,7 +451,7 @@ async fn c4_acp_boot_never_resends_held_or_releasing_payload() {
         write_db
             .writer()
             .with_writer(|write_session| {
-                Box::pin(async move {
+                Box::pin(async {
                     if releasing {
                         let mut tx = write_session.begin_immediate().await.unwrap();
                         assert!(matches!(
@@ -462,43 +462,43 @@ async fn c4_acp_boot_never_resends_held_or_releasing_payload() {
                         ));
                         tx.commit().await.unwrap();
                     }
-                    drop(guard); // a new kernel has no live protocol driver
-                    // A new kernel owns a fresh boot proof. Keep the original owner/Engine
-                    // below only to observe settlement of the exact registered execution.
-                    let rebooted_host = calm_server::acp_planner::config::AcpPlannerHost::new(
-                        None,
-                        &root.data_dir(),
-                        session.host().mcp_shim.clone(),
-                        session.host().mcp_socket.clone(),
-                    )
-                    .unwrap();
-                    calm_server::acp_planner::config::boot(stack.repo(), &rebooted_host)
-                        .await
-                        .unwrap();
-                    let after = claim(&stack, &worker).await.unwrap();
-                    assert!(matches!(
-                        after.record().decision,
-                        sql::Decision::Stopping {
-                            reason: sql::StopReason::KernelRestarted,
-                            ..
-                        }
-                    ));
-                    wait(async || {
-                        owner.sweep(&pool, Some(engine)).await.unwrap();
-                        claim(&stack, &worker).await.is_none()
-                    })
-                    .await;
-                    assert!(!root.path().join("forbidden-release").exists());
-                    assert_eq!(
-                        requests(&root, "session/prompt").len(),
-                        1,
-                        "boot cannot resend a prompt"
-                    );
-                    stack.shutdown().await;
                 })
             })
             .await
-            .expect("independent write operation")
+            .expect("independent write operation");
+        drop(guard); // a new kernel has no live protocol driver
+        // A new kernel owns a fresh boot proof. Keep the original owner/Engine
+        // below only to observe settlement of the exact registered execution.
+        let rebooted_host = calm_server::acp_planner::config::AcpPlannerHost::new(
+            None,
+            &root.data_dir(),
+            session.host().mcp_shim.clone(),
+            session.host().mcp_socket.clone(),
+        )
+        .unwrap();
+        calm_server::acp_planner::config::boot(stack.repo(), &rebooted_host)
+            .await
+            .unwrap();
+        let after = claim(&stack, &worker).await.unwrap();
+        assert!(matches!(
+            after.record().decision,
+            sql::Decision::Stopping {
+                reason: sql::StopReason::KernelRestarted,
+                ..
+            }
+        ));
+        wait(async || {
+            owner.sweep(&pool, Some(engine)).await.unwrap();
+            claim(&stack, &worker).await.is_none()
+        })
+        .await;
+        assert!(!root.path().join("forbidden-release").exists());
+        assert_eq!(
+            requests(&root, "session/prompt").len(),
+            1,
+            "boot cannot resend a prompt"
+        );
+        stack.shutdown().await;
     }
 }
 

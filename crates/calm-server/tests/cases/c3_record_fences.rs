@@ -57,7 +57,6 @@ async fn c3_completion_rechecks_record_and_retires_in_same_tx() {
                                 .is_err()
                         );
                         tx.rollback().await.unwrap();
-                        ()
                     })
                 })
                 .await

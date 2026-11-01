@@ -453,7 +453,7 @@ async fn terminal_presentation_replay_refuses_a_card_retargeted_out_of_terminal(
         ] {
             // Both post-upgrade sticky metadata and an old retargeted card with no new metadata.
             {
-                let write_db = (&pool).clone();
+                let write_db = pool.clone();
                 let card = &card;
                 let payload = &payload;
                 write_db

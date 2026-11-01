@@ -131,7 +131,7 @@ pub(super) async fn restore(
                 .await?;
                             for item in items {
                                 insert_reconstructed_transcript_row(
-                                    &mut **tx,
+                                    &mut tx,
                                     worker,
                                     card,
                                     track,
@@ -185,17 +185,8 @@ impl super::SqlxRepo {
                         .autocommit(|connection| {
                             Box::pin(async move {
                                 insert_reconstructed_transcript_row(
-                                    &mut **connection,
-                                    worker,
-                                    card,
-                                    track,
-                                    thread,
-                                    turn,
-                                    id,
-                                    kind,
-                                    method,
-                                    params,
-                                    segments,
+                                    connection, worker, card, track, thread, turn, id, kind,
+                                    method, params, segments,
                                 )
                                 .await
                             })

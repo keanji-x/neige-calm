@@ -490,55 +490,63 @@ async fn cli_state_shows_a_key_once_at_its_current_attempt() {
     let first = boot.other_card_id.as_str();
     let retry = calm_server::model::new_id();
     let write_db = (boot.sqlx.db()).clone();
-    write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin_immediate().await.unwrap();
-        let (_, _, retry_token) = card_with_codex_create_tx(
-            &mut tx,
-            retry.clone(),
-            &calm_server::model::new_id(),
-            None,
-            boot.track_id.clone(),
-            None,
-            None,
-            "/workspace".into(),
-            json!({}),
-            None,
-            None,
-            None,
-            CardRole::Worker,
-            true,
-            &boot.card_role_cache,
-            calm_server::routes::theme::RequestTheme::default_dark(),
-        )
-        .await
-        .unwrap();
-        tx.commit().await.unwrap();
-        for card in [first, retry.as_str()] {
-            boot.sqlx
-                .session_projection_set_status_for_card(card, WorkerSessionState::Running)
+    let retry_token = write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                let (_, _, retry_token) = card_with_codex_create_tx(
+                    &mut tx,
+                    retry.clone(),
+                    &calm_server::model::new_id(),
+                    None,
+                    boot.track_id.clone(),
+                    None,
+                    None,
+                    "/workspace".into(),
+                    json!({}),
+                    None,
+                    None,
+                    None,
+                    CardRole::Worker,
+                    true,
+                    &boot.card_role_cache,
+                    calm_server::routes::theme::RequestTheme::default_dark(),
+                )
                 .await
                 .unwrap();
-        }
-        stamp_task(&boot, "fix-login-1", "fix-login", "failed", first).await;
-        let origin = TaskAttemptOrigin::Recovery {
-            previous_attempt_id: "fix-login-1".into(),
-            idempotency_key: "recover-fix-login".into(),
-            request_fingerprint: "fixture".into(),
-            reason: "fixture recovery".into(),
-            actor: ActorId::User,
-            constraint: TaskRecoveryConstraint::V1 {
-                refs: vec![TaskContextRef {
-                    track_id: boot.track_id.clone(),
-                    block_id: "blk-fix-login".into(),
-                    rev: 1,
-                    hash: "fixture".into(),
-                    is_root: true,
-                }],
-                spawn: TASK_IN_TRACK_ROUTE.into(),
-                declared_by: "user".into(),
-            },
-        };
-        (boot.sqlx.db()).writer().execute(sqlx::query(concat!(
+                tx.commit().await.unwrap();
+                retry_token
+            })
+        })
+        .await
+        .expect("independent write operation");
+    for card in [first, retry.as_str()] {
+        boot.sqlx
+            .session_projection_set_status_for_card(card, WorkerSessionState::Running)
+            .await
+            .unwrap();
+    }
+    stamp_task(&boot, "fix-login-1", "fix-login", "failed", first).await;
+    let origin = TaskAttemptOrigin::Recovery {
+        previous_attempt_id: "fix-login-1".into(),
+        idempotency_key: "recover-fix-login".into(),
+        request_fingerprint: "fixture".into(),
+        reason: "fixture recovery".into(),
+        actor: ActorId::User,
+        constraint: TaskRecoveryConstraint::V1 {
+            refs: vec![TaskContextRef {
+                track_id: boot.track_id.clone(),
+                block_id: "blk-fix-login".into(),
+                rev: 1,
+                hash: "fixture".into(),
+                is_root: true,
+            }],
+            spawn: TASK_IN_TRACK_ROUTE.into(),
+            declared_by: "user".into(),
+        },
+    };
+    (boot.sqlx.db()).writer().execute(sqlx::query(concat!(
             "INSERT INTO task_attempt_allocations(attempt_id,track_id,key,generation,origin_json,",
             "created_at_ms) VALUES('fix-login-2',?1,'fix-login',2,?2,2)"
         ))
@@ -546,40 +554,42 @@ async fn cli_state_shows_a_key_once_at_its_current_attempt() {
         .bind(serde_json::to_string(&origin).unwrap()))
         .await
         .unwrap();
-        stamp_task(&boot, "fix-login-2", "fix-login", "running", &retry).await;
-        (boot.sqlx.db()).writer().execute(sqlx::query("UPDATE tasks SET access = 'read_only' WHERE id = 'fix-login-2'"))
-            .await
-            .unwrap();
-        report_completed(&boot, &retry_token.unwrap(), "fix-login-2").await;
+    stamp_task(&boot, "fix-login-2", "fix-login", "running", &retry).await;
+    (boot.sqlx.db())
+        .writer()
+        .execute(sqlx::query(
+            "UPDATE tasks SET access = 'read_only' WHERE id = 'fix-login-2'",
+        ))
+        .await
+        .unwrap();
+    report_completed(&boot, &retry_token.unwrap(), "fix-login-2").await;
 
-        let (text, _, exit) = cli(&boot, &["track", "status"]).await;
-        assert_eq!(exit, 0, "{text}");
-        assert!(
-            text.contains("\ntasks      fix-login done read_only start=checkout\nsessions "),
-            "{text}"
-        );
-        assert!(
-            live_row(&text, &retry).ends_with("  session open"),
-            "{text}"
-        );
-        assert!(live_row(&text, first).ends_with("  session open"), "{text}");
-        assert_eq!(
-            text.lines()
-                .filter(|line| line.contains("fix-login"))
-                .count(),
-            1
-        );
-        let (json_text, stderr, exit) = cli(&boot, &["--json", "track", "status"]).await;
-        assert_eq!((exit, stderr.as_str()), (0, ""));
-        let state: Value = serde_json::from_str(&json_text).unwrap();
-        assert_eq!(
-            state["tasks"],
-            json!([
-                {"key":"fix-login","status":"done","worker_card_id":retry,"access":"read_only","start":"checkout"}
-            ])
-        );
-
-    })).await.expect("independent write operation")
+    let (text, _, exit) = cli(&boot, &["track", "status"]).await;
+    assert_eq!(exit, 0, "{text}");
+    assert!(
+        text.contains("\ntasks      fix-login done read_only start=checkout\nsessions "),
+        "{text}"
+    );
+    assert!(
+        live_row(&text, &retry).ends_with("  session open"),
+        "{text}"
+    );
+    assert!(live_row(&text, first).ends_with("  session open"), "{text}");
+    assert_eq!(
+        text.lines()
+            .filter(|line| line.contains("fix-login"))
+            .count(),
+        1
+    );
+    let (json_text, stderr, exit) = cli(&boot, &["--json", "track", "status"]).await;
+    assert_eq!((exit, stderr.as_str()), (0, ""));
+    let state: Value = serde_json::from_str(&json_text).unwrap();
+    assert_eq!(
+        state["tasks"],
+        json!([
+            {"key":"fix-login","status":"done","worker_card_id":retry,"access":"read_only","start":"checkout"}
+        ])
+    );
 }
 
 /// #1944: the Planner reads every current task's status from `neige track status` alone: a pending key,
@@ -590,47 +600,52 @@ async fn cli_state_lists_every_current_task_whatever_its_worker_session() {
     let live = boot.other_card_id.as_str();
     let gone = calm_server::model::new_id();
     let write_db = (boot.sqlx.db()).clone();
-    write_db
+    let gone_token = write_db
         .writer()
         .with_writer(|write_session| {
-            Box::pin(async move {
-                            let mut tx = write_session.begin_immediate().await.unwrap();
-                            let (_, _, gone_token) = card_with_codex_create_tx(
-                                &mut tx,
-                                gone.clone(),
-                                &calm_server::model::new_id(),
-                                None,
-                                boot.track_id.clone(),
-                                None,
-                                None,
-                                "/workspace".into(),
-                                json!({}),
-                                None,
-                                None,
-                                None,
-                                CardRole::Worker,
-                                true,
-                                &boot.card_role_cache,
-                                calm_server::routes::theme::RequestTheme::default_dark(),
-                            )
-                            .await
-                            .unwrap();
-                            tx.commit().await.unwrap();
-                            for card in [live, gone.as_str()] {
-                                boot.sqlx
-                                    .session_projection_set_status_for_card(card, WorkerSessionState::Running)
-                                    .await
-                                    .unwrap();
-                            }
-                            stamp_task(&boot, "fix-login-1", "fix-login", "running", live).await;
-                            stamp_task(&boot, "add-test-1", "add-test", "running", &gone).await;
-                            report_completed(&boot, &boot.other_raw_token, "fix-login-1").await;
-                            report_completed(&boot, &gone_token.unwrap(), "add-test-1").await;
-                            boot.sqlx
-                                .session_projection_set_status_for_card(&gone, WorkerSessionState::Exited)
-                                .await
-                                .unwrap();
-                            (boot.sqlx.db()).writer().execute(sqlx::query(concat!(
+            Box::pin(async {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                let (_, _, gone_token) = card_with_codex_create_tx(
+                    &mut tx,
+                    gone.clone(),
+                    &calm_server::model::new_id(),
+                    None,
+                    boot.track_id.clone(),
+                    None,
+                    None,
+                    "/workspace".into(),
+                    json!({}),
+                    None,
+                    None,
+                    None,
+                    CardRole::Worker,
+                    true,
+                    &boot.card_role_cache,
+                    calm_server::routes::theme::RequestTheme::default_dark(),
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+                gone_token
+            })
+        })
+        .await
+        .expect("independent write operation");
+    for card in [live, gone.as_str()] {
+        boot.sqlx
+            .session_projection_set_status_for_card(card, WorkerSessionState::Running)
+            .await
+            .unwrap();
+    }
+    stamp_task(&boot, "fix-login-1", "fix-login", "running", live).await;
+    stamp_task(&boot, "add-test-1", "add-test", "running", &gone).await;
+    report_completed(&boot, &boot.other_raw_token, "fix-login-1").await;
+    report_completed(&boot, &gone_token.unwrap(), "add-test-1").await;
+    boot.sqlx
+        .session_projection_set_status_for_card(&gone, WorkerSessionState::Exited)
+        .await
+        .unwrap();
+    (boot.sqlx.db()).writer().execute(sqlx::query(concat!(
                     "INSERT INTO tasks(id,track_id,key,kind,goal,context_json,status,",
                     "created_at_ms,updated_at_ms) VALUES('docs-1',?1,'docs','codex','g','{}','pending',1,1)"
                 ))
@@ -638,31 +653,27 @@ async fn cli_state_lists_every_current_task_whatever_its_worker_session() {
                 .await
                 .unwrap();
 
-                            let (text, stderr, exit) = cli(&boot, &["track", "status"]).await;
-                            assert_eq!((exit, stderr.as_str()), (0, ""), "{text}");
-                            let tasks: Vec<&str> = text
-                                .lines()
-                                .skip_while(|line| !line.starts_with("tasks"))
-                                .take_while(|line| !line.starts_with("sessions"))
-                                .collect();
-                            assert_eq!(
-                                tasks,
-                                vec![
-                                    "tasks      add-test done start=checkout",
-                                    "           docs pending start=checkout",
-                                    "           fix-login done start=checkout",
-                                ],
-                                "{text}"
-                            );
-                            assert!(live_row(&text, live).ends_with("  session open"), "{text}");
-                            assert!(
-                                !text.contains(gone.as_str()),
-                                "an exited worker is not live: {text}"
-                            );
-            })
-        })
-        .await
-        .expect("independent write operation")
+    let (text, stderr, exit) = cli(&boot, &["track", "status"]).await;
+    assert_eq!((exit, stderr.as_str()), (0, ""), "{text}");
+    let tasks: Vec<&str> = text
+        .lines()
+        .skip_while(|line| !line.starts_with("tasks"))
+        .take_while(|line| !line.starts_with("sessions"))
+        .collect();
+    assert_eq!(
+        tasks,
+        vec![
+            "tasks      add-test done start=checkout",
+            "           docs pending start=checkout",
+            "           fix-login done start=checkout",
+        ],
+        "{text}"
+    );
+    assert!(live_row(&text, live).ends_with("  session open"), "{text}");
+    assert!(
+        !text.contains(gone.as_str()),
+        "an exited worker is not live: {text}"
+    );
 }
 
 /// `tool` refused `argv` exactly as it refuses the direct call on the same token, in both error formats.

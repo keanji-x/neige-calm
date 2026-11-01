@@ -1135,7 +1135,7 @@ async fn send_planner_input_track_missing_returns_404() {
                         .await
                         .unwrap();
                     sqlx::query("UPDATE cards SET track_id = ?1 WHERE id = ?2")
-                        .bind(&missing_track_id)
+                        .bind(missing_track_id)
                         .bind(card.id.as_str())
                         .execute(&mut **conn)
                         .await

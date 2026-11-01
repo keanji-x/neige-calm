@@ -169,7 +169,6 @@ async fn github_preview_area_owner_cannot_use_operator_credentials() {
                             .await
                             .unwrap();
                         tx.commit().await.unwrap();
-                        ()
                     })
                 })
                 .await

@@ -270,7 +270,6 @@ let mut tx = write_session.begin_immediate().await.unwrap();
                 .await
                 .unwrap();
                             tx.commit().await.unwrap();
-()
 })).await.expect("independent write operation")
         };
         let token = auth.sessions.create(

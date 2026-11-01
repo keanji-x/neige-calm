@@ -191,7 +191,6 @@ let mut mint = write_session.begin_immediate().await.unwrap();
                         .await
                         .unwrap();
                         tx.commit().await.unwrap();
-                        ()
                     })
                 })
                 .await

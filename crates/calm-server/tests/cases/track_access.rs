@@ -16,7 +16,6 @@ struct Fixture {
     app: axum::Router,
     state: calm_server::state::AppState,
     auth: calm_server::auth::AuthState,
-    pool: sqlx::SqlitePool,
     area_id: String,
     alice_area_id: String,
     track_id: String,
@@ -42,7 +41,6 @@ impl Fixture {
                                 .await
                                 .unwrap();
                             tx.commit().await.unwrap();
-                            ()
                         })
                     })
                     .await
@@ -121,7 +119,6 @@ impl Fixture {
                 app: app(state.clone(), auth.clone()),
                 state,
                 auth,
-                pool: pool.read_pool().clone(),
                 area_id: area.id.to_string(),
                 alice_area_id: alice_area.id.to_string(),
                 track_id: track.id.to_string(),

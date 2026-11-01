@@ -127,7 +127,7 @@ async fn conversation_title_http_imported_prefix_has_bounded_sql_work() {
         drop(held);
         let counter = steps.clone();
         db.writer().autocommit(move |connection| Box::pin(async move {
-            configure_progress(&mut **connection, Some(counter)).await
+            configure_progress(connection, Some(counter)).await
         })).await.unwrap();
         let baseline = read_titles(&app, &cookie, &track, &card, &steps, None).await;
         // Use production import primitives to preserve real provenance and payload contracts.
@@ -200,7 +200,7 @@ async fn conversation_title_http_imported_prefix_has_bounded_sql_work() {
         }
         drop(held);
         db.writer().autocommit(|connection| Box::pin(async move {
-            configure_progress(&mut **connection, None).await
+            configure_progress(connection, None).await
         })).await.unwrap();
         // Allow fixed metadata overhead while rejecting even one pass over the imported prefix.
         for (case, work) in [

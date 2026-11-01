@@ -293,8 +293,7 @@ impl SqlxRepo {
                         write_session
                             .autocommit(|connection| {
                                 Box::pin(async move {
-                                    database_identity::ensure_database_identity(&mut **connection)
-                                        .await
+                                    database_identity::ensure_database_identity(connection).await
                                 })
                             })
                             .await

@@ -507,7 +507,7 @@ async fn canonical_retry_inactive_text_plan_reopens_without_git_dependency() {
                         &s.card,
                         LEGACY_OWNER_USER_ID,
                         "reopen",
-                        &request(&s),
+                        &request(s),
                         &provenance(),
                     )
                     .await
@@ -558,10 +558,10 @@ async fn canonical_retry_inactive_text_plan_reopens_without_git_dependency() {
                         0,
                         "retry text hydration must work with no git commits present"
                     );
-                    let carrier = current_input_fact_carrier_tx(&mut tx, &card, &carrier_id)
+                    let carrier = current_input_fact_carrier_tx(&mut tx, card, carrier_id)
                         .await
                         .unwrap();
-                    let intent = retry_intent_tx(&mut tx, &carrier, &id(&decision))
+                    let intent = retry_intent_tx(&mut tx, &carrier, &id(decision))
                         .await
                         .unwrap();
                     assert!(!carrier.is_execution_current());

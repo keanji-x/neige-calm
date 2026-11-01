@@ -97,7 +97,7 @@ async fn acp_cleanup_migration_preserves_0186_receipts_and_historical_fences() {
                 "reated_at_ms FROM acp_submissions ORDER BY client_id",
             );
             let before: Vec<Row> = sqlx::query_as(select).fetch_all(&mut **db).await.unwrap();
-            let constraints_before = constraint_inventory(&mut **db).await;
+            let constraints_before = constraint_inventory(db).await;
             Ok::<_, sqlx::Error>((select, before, constraints_before))
             })).await.unwrap();
             (repo, select, before, constraints_before)
@@ -110,7 +110,7 @@ async fn acp_cleanup_migration_preserves_0186_receipts_and_historical_fences() {
             write_session.autocommit(|db| Box::pin(async move {
             let after: Vec<Row> = sqlx::query_as(select).fetch_all(&mut **db).await.unwrap();
             assert_eq!(before, after);
-            assert_eq!(constraints_before, constraint_inventory(&mut **db).await);
+            assert_eq!(constraints_before, constraint_inventory(db).await);
             let schema: String =
                 sqlx::query_scalar("SELECT sql FROM sqlite_master WHERE name='acp_submissions'")
                     .fetch_one(&mut **db)
