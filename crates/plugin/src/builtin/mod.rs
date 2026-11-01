@@ -1,5 +1,6 @@
 //! Builtin domain implementations and their declarations.
 pub mod calendar;
+pub mod feishu_watch;
 pub mod gitforge;
 pub mod opencode_history;
 pub mod tools;
@@ -8,6 +9,7 @@ use crate::manifest::Manifest;
 use std::sync::LazyLock;
 pub enum Binding {
     Calendar,
+    FeishuWatch,
     OpenCodeHistory,
     Gitforge,
 }
@@ -31,6 +33,17 @@ impl Definition {
 }
 static CATALOG: LazyLock<Vec<Definition>> = LazyLock::new(|| {
     vec![
+        Definition {
+            binding: Binding::FeishuWatch,
+            tool_prompt_directory: concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/src/builtin/feishu_watch/prompts/tools"
+            ),
+            manifest: Manifest::parse(feishu_watch::MANIFEST)
+                .expect("compiled inspection manifest"),
+            optional: true,
+            tools: feishu_watch::descriptors(),
+        },
         Definition {
             binding: Binding::OpenCodeHistory,
             tool_prompt_directory: concat!(

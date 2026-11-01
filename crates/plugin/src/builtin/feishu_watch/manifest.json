@@ -1,0 +1,43 @@
+{
+  "manifest_version": 4,
+  "id": "feishu-watch",
+  "version": "0.1.0",
+  "min_kernel_version": "0.1.0",
+  "kind": "builtin",
+  "agent_tools_scope": "enabled",
+  "display_name": "Feishu inspection",
+  "description": "Poll explicit Feishu sources, retain durable checkpoints and wake the configured Planner only for new messages, health transitions or due reminders.",
+  "exposes_tools": [],
+  "config_schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "track_id",
+      "cli_path",
+      "home",
+      "profile",
+      "self_open_id",
+      "import_state_path"
+    ],
+    "properties": {
+      "track_id": {
+        "type": "string"
+      },
+      "cli_path": {
+        "type": "string"
+      },
+      "home": {
+        "type": "string"
+      },
+      "profile": {
+        "type": "string"
+      },
+      "self_open_id": {
+        "type": "string"
+      },
+      "import_state_path": {
+        "type": "string"
+      }
+    }
+  }
+}
