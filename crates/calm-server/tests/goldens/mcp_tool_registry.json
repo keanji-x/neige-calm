@@ -506,7 +506,7 @@
   },
   {
     "name": "neige_report_commit",
-    "description_sha256": "89f2c1258c4f64b954edd5708442a91b9cb5130cd6a2b7d8ccf8605f0252f85a",
+    "description_sha256": "10441616c04289ef9db6964a8d39787597d0328d574ac88c9a020faf2cf34c8f",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -652,7 +652,7 @@
   },
   {
     "name": "neige_report_read",
-    "description_sha256": "f5c738cf796d15dce47ef9ec35bedc00766aed46c4d2e4aa96f54a7a61faef23",
+    "description_sha256": "dae2f626b353129969e3a75c0caaba527c09b203db79646c323efb89561eacf0",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -662,6 +662,15 @@
           },
           "minItems": 1,
           "type": "array"
+        },
+        "commit": {
+          "description": "Immutable history reference; requires detail:index and grants no read knowledge.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "cursor": {
+          "description": "Historical index next_cursor; keep commit unchanged.",
+          "type": "string"
         },
         "detail": {
           "enum": [
@@ -745,7 +754,7 @@
   },
   {
     "name": "neige_report_write",
-    "description_sha256": "f1ec8eb11cdbe21a160b89614ec6698be7bd1f8a3c31254d77787b7493a7ee88",
+    "description_sha256": "379d8e3e51348a2c21683244117cc940f7c96f12bc37c833b9090f8c87e88f37",
     "input_schema": {
       "additionalProperties": false,
       "properties": {

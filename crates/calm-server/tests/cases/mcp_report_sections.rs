@@ -527,7 +527,7 @@ async fn a_block_this_session_created_is_editable_by_id_without_a_rev() {
     )
     .await
     .expect("create");
-    let id = out["blocks"].as_array().unwrap().last().unwrap()["id"].clone();
+    let id = out["changes"].as_array().unwrap().last().unwrap()["id"].clone();
     commit(
         &boot,
         planner_identity(&boot),

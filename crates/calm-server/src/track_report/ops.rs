@@ -403,7 +403,20 @@ fn apply_with_knowledge(
             )
         }
     });
+    let moved: Vec<String> = match &op {
+        ReportDocOp::MoveBlock { id, .. } => vec![id.clone()],
+        ReportDocOp::Batch { .. } => bound_steps
+            .iter()
+            .filter_map(|step| match step {
+                BatchBlockOp::Move { id, .. } => Some(id.clone()),
+                _ => None,
+            })
+            .collect(),
+        _ => Vec::new(),
+    };
     Ok(ReportOpTrace {
+        changes: super::receipt::changes(&before, &after, &written_block_ids, &moved),
+        history: None,
         block: outcome,
         written_prose_block_ids,
         written_block_ids,

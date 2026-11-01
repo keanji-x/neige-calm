@@ -351,13 +351,13 @@ impl SeriesFixture {
         )
         .await
         .expect("fixture upsert succeeds");
-        let blocks = out["blocks"].as_array().expect("commit returns the index");
+        let blocks = out["changes"].as_array().expect("commit returns changes");
         match target {
             Some(id) => blocks.iter().find(|block| block["id"] == id),
             None => blocks.last(),
         }
         .cloned()
-        .expect("the written block is in the index")
+        .expect("the written block is in the changes")
     }
 
     /// Create one `chart.series` block (appended) through a real commit `upsert` op.

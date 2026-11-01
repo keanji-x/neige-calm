@@ -460,6 +460,9 @@ pub struct BlockOpOutcome {
 /// (the set the receipt's `neige://source/` link warnings scan). A content-equal replace still counts as written.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ReportOpTrace {
+    pub changes: Vec<receipt::BlockChange>,
+    /// Assigned only after the history append, inside the persist transaction.
+    pub history: Option<receipt::CommitHistory>,
     pub block: Option<BlockOpOutcome>,
     pub written_prose_block_ids: Vec<String>,
     /// Content explicitly authored by this caller, independent of intermediate revisions.
@@ -615,6 +618,7 @@ mod compact_origination;
 #[cfg(test)]
 mod compact_tests;
 mod ops;
+pub mod receipt;
 #[cfg(test)]
 use ops::apply_persisted_report_op;
 #[cfg(test)]

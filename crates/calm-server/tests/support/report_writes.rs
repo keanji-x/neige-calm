@@ -63,10 +63,6 @@ pub async fn upsert_block(
     identity: ToolCallIdentity,
     mut op: Value,
 ) -> Result<Value, RpcError> {
-    let index = json!({ "detail": "index" });
-    let before = call(ctx, registry, TOOL_REPORT_READ, identity.clone(), index)
-        .await
-        .expect("read the report index");
     let fields = op.as_object_mut().expect("an op object");
     let mut args = json!({ "message": "upsert one block" });
     for key in ["message", "lifecycle"] {
@@ -75,21 +71,15 @@ pub async fn upsert_block(
         }
     }
     fields.insert("op".into(), json!("upsert"));
-    let target = fields.get("id").cloned();
     args["ops"] = json!([op]);
     read_for_ops(ctx, registry, identity.clone(), &args["ops"]).await;
     let mut out = call(ctx, registry, TOOL_REPORT_COMMIT, identity, args).await?;
-    let known = before["blocks"].as_array().expect("read returns the index");
-    let block = out["blocks"]
+    let block = out["changes"]
         .as_array()
-        .expect("commit returns the index")
-        .iter()
-        .find(|block| match &target {
-            Some(id) => &block["id"] == id,
-            None => !known.iter().any(|seen| seen["id"] == block["id"]),
-        })
+        .expect("commit returns changes")
+        .first()
         .cloned()
-        .expect("the written block is in the index");
+        .expect("single upsert returns its block result");
     out["id"] = block["id"].clone();
     out["rev"] = block["rev"].clone();
     Ok(out)

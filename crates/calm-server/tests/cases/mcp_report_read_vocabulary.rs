@@ -148,8 +148,8 @@ async fn blocks_return_only_those_blocks_in_document_order_and_anchor_only_them(
     assert_eq!(text.matches("<!-- neige:b_").count(), 2, "{text:.300}");
     assert_eq!(
         out["blocks"].as_array().map(Vec::len),
-        Some(3),
-        "the index stays whole"
+        Some(2),
+        "the index matches the selected text"
     );
     assert_eq!(out["doc_rev"].as_u64(), Some(current_doc_rev(&boot).await));
     let read = anchors(&boot, &reader)
@@ -240,11 +240,9 @@ async fn retired_select_and_malformed_selections_are_refused() {
             .await
             .expect_err("the retired select must be refused");
         assert_eq!(err.code, RpcError::INVALID_PARAMS, "{old}");
-        assert_eq!(
-            err.message,
-            "neige_report_read: unknown argument `select`; valid: blocks, detail, resolve, \
-             sections, with_markers",
-            "{old}"
+        assert!(
+            err.message.contains("unknown argument `select`"),
+            "{old}: {err:?}"
         );
     }
     for (bad, key) in [

@@ -5,7 +5,7 @@ use crate::ids::TrackId;
 use crate::track_report::{ReportBlock, TrackReportPayload};
 use sqlx::{Sqlite, Transaction};
 
-async fn payload_at_tx(
+pub(crate) async fn payload_at_tx(
     tx: &mut Transaction<'_, Sqlite>,
     track: &TrackId,
     report: &str,

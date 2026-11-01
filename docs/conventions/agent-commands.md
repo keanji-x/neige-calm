@@ -197,6 +197,20 @@ Decisions, one line each:
   `<field>_truncated` marks content clipped inside one row (`neige_area_ls`'s `blocks_truncated`
   counts the blocks past 40).
 
+Report mutation results (`neige_report_commit`, `neige_report_write`) carry a final
+`changes` preview (32 rows / 8 KiB), `changes_total` and `changes_complete`, rather
+than a full report index. Unrelated blocks shifted by an insertion are omitted;
+authored equal-content blocks remain results. Each result keeps revision, anchor
+and warnings. Moves grant no knowledge of unread content. `history.before` / `history.after` identify immutable Track snapshots
+(the former may be null before any history exists). `full_index` gives
+`neige_report_read {detail:"index",commit}` arguments for final block identities,
+revisions and order; the before snapshot exposes prior identities/order. Follow
+`next_cursor` with the same commit (50 rows / 8 KiB per page). Historical indexes
+never grant text knowledge, hydrate current data or silently fall back to current
+state when history is unavailable. Selected text reads index only selected blocks;
+current `detail:"index"` remains the explicit full navigation read. Warnings retain
+their existing full contract; the preview budget applies to block changes.
+
 Agent-facing JSON-RPC codes, one meaning each:
 
 | Code | Meaning |
