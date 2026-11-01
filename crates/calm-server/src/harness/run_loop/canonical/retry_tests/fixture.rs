@@ -23,7 +23,7 @@ impl RetryFixture {
         let fx = Fixture::new().await;
         // Hold a real native response after its durable crossing marker. The
         // original execution is never fabricated as ended or redispatched.
-        let inner = &fx.harness.inner;
+        let inner = fx.harness.inner.clone();
         let write_db = (fx.original.repo.db()).clone();
         write_db.writer().with_writer(|write_session| Box::pin(async move {
             let mut tx = write_session.begin_immediate().await.unwrap();

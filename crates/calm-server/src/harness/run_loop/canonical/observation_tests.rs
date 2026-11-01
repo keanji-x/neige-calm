@@ -5,7 +5,7 @@ use crate::harness::run_loop::completed_commit_tests::Fixture;
 
 async fn fixture() -> Fixture {
     let fx = Fixture::new().await;
-    let inner = &fx.harness.inner;
+    let inner = fx.harness.inner.clone();
     let mut snapshot = CanonicalHarnessSnapshot::dormant(0);
     snapshot.header.last_thread_id = inner.thread_id.read().await.clone();
     let write_db = (fx.repo.db()).clone();

@@ -4,7 +4,7 @@ use calm_server::track_report::tasks_rebuild_tx;
 use calm_types::report_blocks::render_fence;
 use calm_types::track_report::{ReportBlock, TrackReportPayload};
 use serde_json::{Map, Value, json};
-use sqlx::{Sqlite, SqlitePool, Transaction};
+use sqlx::{Sqlite, Transaction};
 
 pub async fn insert_task_tx(tx: &mut Transaction<'_, Sqlite>, task: &Task) -> Result<()> {
     sqlx::query(
@@ -45,7 +45,7 @@ pub async fn insert_task_tx(tx: &mut Transaction<'_, Sqlite>, task: &Task) -> Re
     Ok(())
 }
 
-pub async fn project_task(pool: &SqlitePool, task: &Task) -> Result<()> {
+pub async fn project_task(pool: &calm_truth::db::sqlite::SqliteDb, task: &Task) -> Result<()> {
     let mut declaration = Map::from_iter([
         ("key".into(), json!(task.key)),
         ("kind".into(), json!(task.kind)),
@@ -93,18 +93,24 @@ pub async fn project_task(pool: &SqlitePool, task: &Task) -> Result<()> {
         ),
         blocks: Some(vec![block]),
     };
-    let mut tx = pool.begin().await?;
-    sqlx::query(
+    {
+        let write_db = (pool).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async {
+                    let mut tx = write_session.begin_immediate().await?;
+                    sqlx::query(
         "INSERT INTO cards(id,track_id,kind,sort,payload,role,deletable,created_at,updated_at) \
          VALUES(?1,?2,'track-report',-1,?3,'reportcard',0,1,1)",
     )
     .bind(new_id())
     .bind(&task.track_id)
     .bind(serde_json::to_string(&report)?)
-    .execute(&mut *tx)
+    .execute(&mut **tx)
     .await?;
-    let outcome = tasks_rebuild_tx(&mut tx, &task.track_id).await?;
-    let updated = sqlx::query(
+                    let outcome = tasks_rebuild_tx(&mut tx, &task.track_id).await?;
+                    let updated = sqlx::query(
         "UPDATE tasks SET status=?1,status_detail=?2,worker_card_id=?3,gate_result_json=?4,\
          gate_attempt=?5,gate_pid=?6,gate_pid_starttime=?7,gate_pid_boot_id=?8,\
          running_deadline_ms=?9,context_stale_at_ms=?10,created_at_ms=?11,updated_at_ms=?12,\
@@ -124,14 +130,20 @@ pub async fn project_task(pool: &SqlitePool, task: &Task) -> Result<()> {
     .bind(task.updated_at_ms)
     .bind(task.finished_at_ms)
     .bind(&task.id)
-    .execute(&mut *tx)
+    .execute(&mut **tx)
     .await?;
-    if updated.rows_affected() != 1 {
-        return Err(CalmError::Internal(format!(
-            "test task projection did not materialize {}: {outcome:?}",
-            task.key
-        )));
-    }
-    tx.commit().await?;
+                    if updated.rows_affected() != 1 {
+                        return Err(CalmError::Internal(format!(
+                            "test task projection did not materialize {}: {outcome:?}",
+                            task.key
+                        )));
+                    }
+                    tx.commit().await?;
+                    Ok::<_, CalmError>(())
+                })
+            })
+            .await
+            .map_err(calm_truth::TruthError::from)??
+    };
     Ok(())
 }

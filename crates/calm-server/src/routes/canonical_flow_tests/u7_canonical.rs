@@ -119,7 +119,7 @@ async fn u7_canonical_named_sources_commit_original_human_acceptance() {
             write_db
                 .writer()
                 .with_writer(|write_session| {
-                    Box::pin(async move {
+                    Box::pin(async {
                         let mut tx = write_session.begin_immediate().await.unwrap();
                         let receipt = crate::db::sqlite::conversation::human_track_creation_get_tx(
                             &mut tx,
@@ -345,7 +345,7 @@ async fn u7_canonical_fork_source_deletion_and_access_revocation_races_rollback(
                 _ = tokio::time::sleep(Duration::from_secs(5)) => panic!("missing allocation rendezvous"),
             }
             let write_db = (fixture.repo.db()).clone();
-            write_db.writer().with_writer(|write_session| Box::pin(async move {
+            write_db.writer().with_writer(|write_session| Box::pin(async {
                 if revoke {
                     (fixture.repo.db()).writer().execute(sqlx::query("DELETE FROM area_members WHERE area_id=?1")
                         .bind(area["id"].as_str().unwrap()))
@@ -408,7 +408,7 @@ async fn stored_plan(
     write_db
         .writer()
         .with_writer(|write_session| {
-            Box::pin(async move {
+            Box::pin(async {
                 let mut tx = write_session.begin_immediate().await.unwrap();
                 let plan = crate::db::sqlite::conversation::submission_plan_tx(&mut tx, id)
                     .await

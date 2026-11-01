@@ -123,7 +123,7 @@ async fn u8c_fence_clean_duplicate_cancel_preserves_location_owner_union() {
     write_db
         .writer()
         .with_writer(|write_session| {
-            Box::pin(async move {
+            Box::pin(async {
                 let mut tx = write_session.begin_immediate().await.unwrap();
                 fence.recheck(&mut tx).await.unwrap();
                 tx.rollback().await.unwrap();

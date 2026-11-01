@@ -220,7 +220,7 @@ impl Boot {
         write_db
             .writer()
             .with_writer(|write_session| {
-                Box::pin(async move {
+                Box::pin(async {
                     let mut tx = write_session.begin_immediate().await.unwrap();
                     card_with_codex_create_tx(
                         &mut tx,
@@ -258,7 +258,7 @@ impl Boot {
         write_db
             .writer()
             .with_writer(|write_session| {
-                Box::pin(async move {
+                Box::pin(async {
                     let mut tx = write_session.begin_immediate().await.unwrap();
                     card_create_with_id_tx(
                         &mut tx,
@@ -1276,7 +1276,7 @@ async fn side_source_survives_rest_and_trusted_payload_replacement() {
     assert_eq!(status, StatusCode::OK, "{updated}");
     assert_eq!(updated["payload"]["side_source_card_id"], parent["id"]);
     let write_db = (b.repo.db()).clone();
-    write_db.writer().with_writer(|write_session| Box::pin(async move {
+    write_db.writer().with_writer(|write_session| Box::pin(async  {
         let mut tx = write_session.begin_immediate().await.unwrap();
         let updated = calm_server::db::sqlite::card_update_tx(&mut tx, id, calm_server::model::CardPatch {
             payload: Some(json!({"schemaVersion": 1, "harness_profile": "assistant", "side_source_card_id": "forged-trusted-source"})),

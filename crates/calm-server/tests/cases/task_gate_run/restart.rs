@@ -71,7 +71,7 @@ async fn new_worker_waits_for_independent_file_writer_after_boot() {
     write_db
         .writer()
         .with_writer(|write_session| {
-            Box::pin(async move {
+            Box::pin(async  {
                             let holder = write_session.begin_immediate().await.unwrap();
                             // Poll the real card/session helper while the independent file writer holds admission.
                             let mut create = Box::pin(fx.new_worker("writer-admission", AgentProvider::Codex));
@@ -390,7 +390,7 @@ async fn a_restart_during_a_step_ends_it_as_infra() {
     write_db
         .writer()
         .with_writer(|write_session| {
-            Box::pin(async move {
+            Box::pin(async  {
                             let mut tx = write_session.begin_immediate().await.unwrap();
                             calm_server::db::sqlite::card_mcp_token_set_tx(&mut tx, &a.worker.card_id, &hash)
                                 .await

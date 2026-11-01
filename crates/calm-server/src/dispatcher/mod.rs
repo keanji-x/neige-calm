@@ -134,7 +134,7 @@ pub(crate) fn event_warrants_planner_push_with_role(
         // Kernel-only at the role gate; waking the Planner is the event's only purpose.
         Event::TrackWakeRequested { .. } => true,
         // User-only at the role gate: the user's answer is the wake the question waits for.
-        // A `hold` ask's answer resolves to no observation (`ask_answered::observation`), so the
+        // A `hold` ask's answer resolves to no observation (`ask_answered::qualified_observation`), so the
         // turn it paused is not woken twice; live push and boot catch-up share that reading.
         Event::AskAnswered { .. } => true,
         // These tools wait for their result: the caller already has the receipt. Keep the

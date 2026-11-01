@@ -703,7 +703,6 @@ mod tests {
     #[tokio::test]
     async fn sqlite_names_the_columns_not_the_indexes_for_both_partial_unique_violations() {
         let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
-        let pool = repo.pool();
 
         let insert_system_area = |id: &'static str| {
             (repo.db()).writer().execute(

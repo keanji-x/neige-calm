@@ -3423,17 +3423,29 @@ async fn harvest_reads_retired_unstamped_rows_and_stamps_every_row_it_read() {
         }
     };
 
-    let mut tx = repo.pool().begin().await.unwrap();
-    let harvested = harvest_pending_user_messages_tx(
-        &mut tx,
-        card.id.as_str(),
-        successor.as_str(),
-        1_700_000_000_000,
-        extract,
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
+    let (harvested,) = {
+        let write_db = (repo.db()).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async {
+                    let mut tx = write_session.begin_immediate().await.unwrap();
+                    let harvested = harvest_pending_user_messages_tx(
+                        &mut tx,
+                        card.id.as_str(),
+                        successor.as_str(),
+                        1_700_000_000_000,
+                        extract,
+                    )
+                    .await
+                    .unwrap();
+                    tx.commit().await.unwrap();
+                    (harvested,)
+                })
+            })
+            .await
+            .expect("independent write operation")
+    };
 
     assert_eq!(
         harvested
@@ -3480,17 +3492,29 @@ async fn harvest_reads_retired_unstamped_rows_and_stamps_every_row_it_read() {
         "and the successor never stamps itself"
     );
 
-    let mut tx = repo.pool().begin().await.unwrap();
-    let again = harvest_pending_user_messages_tx(
-        &mut tx,
-        card.id.as_str(),
-        successor.as_str(),
-        1_700_000_000_001,
-        extract,
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
+    let (again,) = {
+        let write_db = (repo.db()).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async {
+                    let mut tx = write_session.begin_immediate().await.unwrap();
+                    let again = harvest_pending_user_messages_tx(
+                        &mut tx,
+                        card.id.as_str(),
+                        successor.as_str(),
+                        1_700_000_000_001,
+                        extract,
+                    )
+                    .await
+                    .unwrap();
+                    tx.commit().await.unwrap();
+                    (again,)
+                })
+            })
+            .await
+            .expect("independent write operation")
+    };
     assert!(
         again.messages.is_empty() && again.stamped_worker_session_ids.is_empty(),
         "a second restart must read nothing: {again:?}"
@@ -3510,20 +3534,32 @@ async fn harvest_reads_retired_unstamped_rows_and_stamps_every_row_it_read() {
     );
 
     // Clearing the marker makes the row eligible to be read again; it does not put anything back.
-    let mut tx = repo.pool().begin().await.unwrap();
-    session_clear_queue_harvested_tx(&mut tx, retired_with_a_sentence.as_str())
-        .await
-        .unwrap();
-    let after_undo = harvest_pending_user_messages_tx(
-        &mut tx,
-        card.id.as_str(),
-        successor.as_str(),
-        1_700_000_000_002,
-        extract,
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
+    let (after_undo,) = {
+        let write_db = (repo.db()).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async {
+                    let mut tx = write_session.begin_immediate().await.unwrap();
+                    session_clear_queue_harvested_tx(&mut tx, retired_with_a_sentence.as_str())
+                        .await
+                        .unwrap();
+                    let after_undo = harvest_pending_user_messages_tx(
+                        &mut tx,
+                        card.id.as_str(),
+                        successor.as_str(),
+                        1_700_000_000_002,
+                        extract,
+                    )
+                    .await
+                    .unwrap();
+                    tx.commit().await.unwrap();
+                    (after_undo,)
+                })
+            })
+            .await
+            .expect("independent write operation")
+    };
     assert!(
         after_undo.messages.is_empty(),
         "an un-stamped row whose queue has moved has nothing left to give: {:?}",

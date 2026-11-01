@@ -204,6 +204,7 @@ async fn retained_loss_for(case: LossCase, grok: bool) {
     // Issuance is an owner-layer check with no installed maintenance frame.
     // The separate framed case must retain Wedged/Unconfirmed and allow shutdown;
     // that canonical state deliberately refuses new Initial claims.
+    let claim = &claim;
     let write_db = (fx.owner.repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
         if !matches!(case, LossCase::Failed { issue_next: true }) {

@@ -49,21 +49,33 @@ async fn c4_boot_pass_a_precedes_listener_and_failure_is_covered_by_sweep() {
             intent.metadata.id.as_str(),
         ));
         let id = intent.metadata.id.clone();
-        let mut tx = repo.pool().begin().await.unwrap();
-        store.insert(&mut tx, &intent).await.unwrap();
-        assert!(matches!(
-            sql::admit(
-                &mut tx,
-                &session,
-                id.as_str().into(),
-                owner::Purpose::RewindCheck,
-                sql::InitialRelease::Held
-            )
-            .await
-            .unwrap(),
-            sql::Cas::Applied(_)
-        ));
-        tx.commit().await.unwrap();
+        {
+            let write_db = (repo.db()).clone();
+            write_db
+                .writer()
+                .with_writer(|write_session| {
+                    Box::pin(async {
+                        let mut tx = write_session.begin_immediate().await.unwrap();
+                        store.insert(&mut tx, &intent).await.unwrap();
+                        assert!(matches!(
+                            sql::admit(
+                                &mut tx,
+                                &session,
+                                id.as_str().into(),
+                                owner::Purpose::RewindCheck,
+                                sql::InitialRelease::Held
+                            )
+                            .await
+                            .unwrap(),
+                            sql::Cas::Applied(_)
+                        ));
+                        tx.commit().await.unwrap();
+                        ()
+                    })
+                })
+                .await
+                .expect("independent write operation")
+        };
         (repo.db())
             .writer()
             .execute(

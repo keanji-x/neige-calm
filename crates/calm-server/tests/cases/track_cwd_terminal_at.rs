@@ -1218,7 +1218,7 @@ async fn list_tracks_window_filters_by_created_and_closed_at() {
 
     // Pin the timestamps via raw SQL: `track_create_tx` / `track_update_tx` always stamp `now_ms()`, which
     // would cluster all three within a millisecond.
-    let pool = boot.sqlx_repo.pool();
+
     (boot.sqlx_repo.db())
         .writer()
         .execute(

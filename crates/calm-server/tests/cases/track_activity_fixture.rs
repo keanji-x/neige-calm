@@ -155,28 +155,40 @@ impl Fx {
         kind: &str,
         role: CardRole,
     ) -> String {
-        let mut tx = self.pool.begin().await.unwrap();
-        let card = card_create_with_id_tx(
-            &mut tx,
-            card_id.to_string(),
-            NewCard {
-                track_id: TrackId::from(track_id.to_string()),
-                title: None,
-                kind: kind.into(),
-                sort: None,
-                payload: if role == CardRole::Planner {
-                    json!({"planner_provider":"codex"})
-                } else {
-                    json!({})
-                },
-            },
-            role,
-            true,
-            self.repo.card_role_cache(),
-        )
-        .await
-        .unwrap();
-        tx.commit().await.unwrap();
+        let (card,) = {
+            let write_db = (self.db()).clone();
+            write_db
+                .writer()
+                .with_writer(|write_session| {
+                    Box::pin(async {
+                        let mut tx = write_session.begin_immediate().await.unwrap();
+                        let card = card_create_with_id_tx(
+                            &mut tx,
+                            card_id.to_string(),
+                            NewCard {
+                                track_id: TrackId::from(track_id.to_string()),
+                                title: None,
+                                kind: kind.into(),
+                                sort: None,
+                                payload: if role == CardRole::Planner {
+                                    json!({"planner_provider":"codex"})
+                                } else {
+                                    json!({})
+                                },
+                            },
+                            role,
+                            true,
+                            self.repo.card_role_cache(),
+                        )
+                        .await
+                        .unwrap();
+                        tx.commit().await.unwrap();
+                        (card,)
+                    })
+                })
+                .await
+                .expect("independent write operation")
+        };
         self.role_cache
             .insert(card.id.clone(), role, TrackId::from(track_id.to_string()));
         card.id.as_str().to_string()
@@ -201,27 +213,39 @@ impl Fx {
             | WorkerSessionKind::ManagedAssistant => Some(AgentProvider::Codex),
             WorkerSessionKind::Terminal => None,
         };
-        let mut tx = self.pool.begin().await.unwrap();
-        let runtime = session_start_runtime_tx(
-            &mut tx,
-            WorkerSessionInit {
-                id: session_id.to_string(),
-                card_id: card_id.to_string(),
-                kind,
-                agent_provider: provider,
-                status,
-                terminal_run_id: None,
-                thread_id: thread_id.map(str::to_string),
-                session_id: Some(format!("native-{session_id}")),
-                active_turn_id: None,
-                handle_state_json,
-                spawn_op_id: None,
-                now_ms: created_at_ms,
-            },
-        )
-        .await
-        .unwrap();
-        tx.commit().await.unwrap();
+        let (runtime,) = {
+            let write_db = (self.db()).clone();
+            write_db
+                .writer()
+                .with_writer(|write_session| {
+                    Box::pin(async {
+                        let mut tx = write_session.begin_immediate().await.unwrap();
+                        let runtime = session_start_runtime_tx(
+                            &mut tx,
+                            WorkerSessionInit {
+                                id: session_id.to_string(),
+                                card_id: card_id.to_string(),
+                                kind,
+                                agent_provider: provider,
+                                status,
+                                terminal_run_id: None,
+                                thread_id: thread_id.map(str::to_string),
+                                session_id: Some(format!("native-{session_id}")),
+                                active_turn_id: None,
+                                handle_state_json,
+                                spawn_op_id: None,
+                                now_ms: created_at_ms,
+                            },
+                        )
+                        .await
+                        .unwrap();
+                        tx.commit().await.unwrap();
+                        (runtime,)
+                    })
+                })
+                .await
+                .expect("independent write operation")
+        };
         runtime.id
     }
 

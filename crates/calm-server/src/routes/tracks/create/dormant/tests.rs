@@ -171,7 +171,7 @@ async fn actual_allocation_accepts_once_without_native_or_workspace_effects() {
         assert!(!fx.root.exists());
         assert!(!fx.state.shared_codex_appserver.is_running());
         let write_db = (fx.repo.db()).clone();
-        write_db.writer().with_writer(|write_session| Box::pin(async move {
+        write_db.writer().with_writer(|write_session| Box::pin(async  {
             let mut tx = write_session.begin_immediate().await.unwrap();
             let carrier = current_input_carrier_tx(&mut tx, card, runtime)
                 .await
@@ -246,7 +246,7 @@ async fn original_ack_replays_after_claim_without_readopting_a_body() {
         write_db
             .writer()
             .with_writer(|write_session| {
-                Box::pin(async move {
+                Box::pin(async {
                     let mut tx = write_session.begin_immediate().await.unwrap();
                     let mut carrier = current_input_carrier_tx(&mut tx, card, runtime)
                         .await
@@ -301,7 +301,7 @@ async fn original_ack_survives_dormant_carrier_transfer_and_origin_retirement() 
     write_db
         .writer()
         .with_writer(|write_session| {
-            Box::pin(async move {
+            Box::pin(async {
                 let mut tx = write_session.begin_immediate().await.unwrap();
                 let old = current_input_carrier_tx(&mut tx, card, origin)
                     .await

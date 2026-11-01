@@ -118,7 +118,7 @@ async fn old_partial_knowledge_survives_history_prune() {
             write_db
                 .writer()
                 .with_writer(|write_session| {
-                    Box::pin(async move {
+                    Box::pin(async {
                         let mut tx = write_session.begin_immediate().await.unwrap();
                         sqlx::query(
                             "UPDATE worker_sessions SET handle_state_json=? WHERE track_id=?",
@@ -137,7 +137,7 @@ async fn old_partial_knowledge_survives_history_prune() {
         }
         // Release the seeding/writing assistant's knowledge through its actual lifecycle door.
         let write_db = (pool).clone();
-        write_db.writer().with_writer(|write_session| Box::pin(async move {
+        write_db.writer().with_writer(|write_session| Box::pin(async  {
             let mut tx = write_session.begin_immediate().await.unwrap();
             session_mark_superseded_runtime_tx(&mut tx, &assistant_identity(&b).session_id)
                 .await
@@ -249,7 +249,7 @@ async fn divergent_history(b: &crate::mcp_track_report::Boot, value: serde_json:
     write_db
         .writer()
         .with_writer(|write_session| {
-            Box::pin(async move {
+            Box::pin(async {
                 let mut tx = write_session.begin_immediate().await.unwrap();
                 sqlx::query("UPDATE cards SET payload=? WHERE id=?")
                     .bind(value.to_string())
@@ -355,7 +355,7 @@ async fn absent_history_preserves_read_authority_and_can_be_replaced_by_own_writ
         write_db
             .writer()
             .with_writer(|write_session| {
-                Box::pin(async move {
+                Box::pin(async {
                     let mut tx = write_session.begin_immediate().await.unwrap();
                     match missing {
                         "head" => {
@@ -485,7 +485,7 @@ async fn mismatched_final_history_rolls_back_truth_history_knowledge_and_broadca
     write_db
         .writer()
         .with_writer(|write_session| {
-            Box::pin(async move {
+            Box::pin(async {
                 let mut tx = write_session.begin_immediate().await.unwrap();
                 // Poison only the VCS input after the row was written and its event serialized.
                 sqlx::query(&format!(
@@ -538,7 +538,7 @@ async fn corrupt_or_missing_knowledge_commit_skips_prune_for_inactive_sessions()
     .unwrap();
     let pool = b.repo.sqlite_db().unwrap();
     let write_db = (pool).clone();
-    write_db.writer().with_writer(|write_session| Box::pin(async move {
+    write_db.writer().with_writer(|write_session| Box::pin(async  {
         for invalid in [
             serde_json::json!({}),
             serde_json::json!({"commit":"absent"}),

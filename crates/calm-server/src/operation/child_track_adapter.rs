@@ -485,7 +485,7 @@ impl ProviderAdapter for ChildTrackAdapter {
                         adapter: self.clone(),
                         input: input.clone(),
                         frozen,
-                    }) as Box<dyn PreparedTx>))
+                    }) as Box<dyn super::PreparedTx>))
                 })
             })
             .await

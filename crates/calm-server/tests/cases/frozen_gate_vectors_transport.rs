@@ -922,7 +922,7 @@ async fn run_principal_delta_vector(
                 let recorder = if v.recorder_gate {
                     let mut tx = write_session.begin_immediate().await.unwrap();
                     let grant = PrincipalDecisionGate::new(principal)
-                        .recorder_grant(&mut tx, &fx.home_track)
+                        .recorder_grant(&mut *tx, &fx.home_track)
                         .await
                         .map_err(|e| format!("recorder_grant errored: {e}"))?;
                     tx.rollback().await.unwrap();
@@ -977,7 +977,7 @@ async fn run_principal_delta_vector(
             })
         })
         .await
-        .map_err(calm_truth::TruthError::from)?
+        .map_err(|error| error.to_string())?
 }
 
 #[tokio::test]

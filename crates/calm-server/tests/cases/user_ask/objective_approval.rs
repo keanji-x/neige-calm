@@ -438,16 +438,19 @@ async fn objective_approval_legacy_inline_snapshot_reuses_and_authorizes() {
     let id = request(&boot).await["ask_id"].as_i64().unwrap();
     let old_title = fixture["title"].as_str().unwrap();
     // Replay the exact historical event shape through the production reader and answer route.
-    sqlx::query(concat!(
-        "UPDATE events SET payload=json_remove(json_set(payload,",
-        "'$.action.kind','objective_approval','$.questions[0].title',?), ",
-        "'$.questions[0].detail') WHERE id=?"
-    ))
-    .bind(old_title)
-    .bind(id)
-    .execute(boot.repo.sqlite_db().unwrap().read_pool())
-    .await
-    .unwrap();
+    (boot.repo.sqlite_db().unwrap())
+        .writer()
+        .execute(
+            sqlx::query(concat!(
+                "UPDATE events SET payload=json_remove(json_set(payload,",
+                "'$.action.kind','objective_approval','$.questions[0].title',?), ",
+                "'$.questions[0].detail') WHERE id=?"
+            ))
+            .bind(old_title)
+            .bind(id),
+        )
+        .await
+        .unwrap();
     assert_eq!(request(&boot).await["ask_id"], id);
     assert_eq!(rows(&boot, "ask.requested").await.len(), 1);
     assert_eq!(
@@ -482,29 +485,29 @@ async fn objective_approval_missing_or_mismatched_snapshot_cannot_authorize_or_r
         };
         let db = boot.repo.sqlite_db().unwrap();
         if mode == "downgraded" {
-            sqlx::query(concat!(
-                "UPDATE events SET payload=json_remove(json_set(payload,",
-                "'$.action.kind','objective_approval'),'$.questions[0].detail') WHERE id=?"
-            ))
-            .bind(id)
-            .execute(db.read_pool())
-            .await
-            .unwrap();
+            (db).writer()
+                .execute(
+                    sqlx::query(concat!(
+                        "UPDATE events SET payload=json_remove(json_set(payload,",
+                        "'$.action.kind','objective_approval'),'$.questions[0].detail') WHERE id=?"
+                    ))
+                    .bind(id),
+                )
+                .await
+                .unwrap();
         } else if mode == "missing" {
-            sqlx::query(
+            (db).writer().execute(sqlx::query(
                 "UPDATE events SET payload=json_remove(payload,'$.questions[0].detail') WHERE id=?",
             )
-            .bind(id)
-            .execute(db.read_pool())
+            .bind(id))
             .await
             .unwrap();
         } else {
-            sqlx::query(
+            (db).writer().execute(sqlx::query(
                 "UPDATE events SET payload=json_set(payload,'$.questions[0].detail',?) WHERE id=?",
             )
             .bind(detail)
-            .bind(id)
-            .execute(db.read_pool())
+            .bind(id))
             .await
             .unwrap();
         }

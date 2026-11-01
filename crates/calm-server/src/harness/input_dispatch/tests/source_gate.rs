@@ -80,6 +80,7 @@ async fn input_gate_case(change: u8, outbound: bool) {
         .expect("dispatch must reach the actual outbound sink wait");
     }
     eprintln!("stage: original marker committed; real native gate held");
+    let fixture = fixture.clone();
     let write_db = (fixture.repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
         if change == 1 {

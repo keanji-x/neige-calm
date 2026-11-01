@@ -283,7 +283,7 @@ async fn migration_check_rejects_parked_without_artifacts_deadline() {
         .await
         .unwrap_err();
     assert!(
-        matches!(err, sqlx::Error::Database(_)),
+        matches!(err, calm_truth::TruthError::Db(sqlx::Error::Database(_))),
         "parked row without artifacts/deadline must fail CHECK: {err}"
     );
 }

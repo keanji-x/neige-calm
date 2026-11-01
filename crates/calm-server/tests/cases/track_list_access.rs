@@ -28,52 +28,58 @@ impl Fixture {
         let repo = state.raw_repo();
         let db = repo.sqlite_db().unwrap();
         let write_db = (db).clone();
-        write_db
-            .writer()
-            .with_writer(|write_session| {
-                Box::pin(async move {
-                    let mut tx = write_session.begin_immediate().await.unwrap();
-                    area_membership::application_user_register(&mut tx, "alice", "Owner")
-                        .await
-                        .unwrap();
-                    tx.commit().await.unwrap();
-                    let mut areas = Vec::new();
-                    for user in [OWNER_USER_ID, "alice"] {
-                        areas.push(
-                            repo.area_create(
-                                user,
-                                NewArea {
-                                    name: user.into(),
-                                    color: "#123456".into(),
-                                    sort: None,
-                                },
-                            )
-                            .await
-                            .unwrap()
-                            .id
-                            .to_string(),
-                        );
-                    }
-                    let auth = live_auth_state("owner", "fixture-password");
-                    let owner = cookie(&auth, OWNER_USER_ID);
-                    let alice = cookie(&auth, "alice");
-                    let mut f = Self {
-                        app: app(state.clone(), auth.clone()),
-                        state,
-                        pool: db.read_pool().clone(),
-                        auth,
-                        area: areas[0].clone(),
-                        other: areas[1].clone(),
-                        track: String::new(),
-                        owner,
-                        alice,
-                    };
-                    f.track = f.track_in(&f.area).await;
-                    f
-                })
-            })
-            .await
-            .expect("independent write operation")
+        {
+            {
+                let write_db = (write_db).clone();
+                write_db
+                    .writer()
+                    .with_writer(|write_session| {
+                        Box::pin(async {
+                            let mut tx = write_session.begin_immediate().await.unwrap();
+                            area_membership::application_user_register(&mut tx, "alice", "Owner")
+                                .await
+                                .unwrap();
+                            tx.commit().await.unwrap();
+                            ()
+                        })
+                    })
+                    .await
+                    .expect("independent write operation")
+            };
+            let mut areas = Vec::new();
+            for user in [OWNER_USER_ID, "alice"] {
+                areas.push(
+                    repo.area_create(
+                        user,
+                        NewArea {
+                            name: user.into(),
+                            color: "#123456".into(),
+                            sort: None,
+                        },
+                    )
+                    .await
+                    .unwrap()
+                    .id
+                    .to_string(),
+                );
+            }
+            let auth = live_auth_state("owner", "fixture-password");
+            let owner = cookie(&auth, OWNER_USER_ID);
+            let alice = cookie(&auth, "alice");
+            let mut f = Self {
+                app: app(state.clone(), auth.clone()),
+                state,
+                pool: db.read_pool().clone(),
+                auth,
+                area: areas[0].clone(),
+                other: areas[1].clone(),
+                track: String::new(),
+                owner,
+                alice,
+            };
+            f.track = f.track_in(&f.area).await;
+            f
+        }
     }
     async fn track_in(&self, area: &str) -> String {
         self.state
@@ -106,7 +112,7 @@ impl Fixture {
         } else {
             "DELETE FROM area_members WHERE area_id=?1 AND user_id='alice'"
         };
-        (self.state.sqlite_db().unwrap())
+        (self.state.raw_repo().sqlite_db().unwrap())
             .writer()
             .execute(sqlx::query(sql).bind(&self.area))
             .await
@@ -221,7 +227,7 @@ async fn session_registration_and_missing_scope() {
 #[tokio::test]
 async fn invisible_malformed_track_is_not_decoded() {
     let f = Fixture::new().await;
-    (f.state.sqlite_db().unwrap())
+    (f.state.raw_repo().sqlite_db().unwrap())
         .writer()
         .execute(
             sqlx::query("UPDATE tracks SET template_input='malformed-private{' WHERE id=?1")
@@ -303,7 +309,7 @@ async fn global_window_order_and_area_sort_remain_distinct() {
         (&c, 5, None, 20),
         (&d, 10, Some(12), 10),
     ] {
-        (f.state.sqlite_db().unwrap())
+        (f.state.raw_repo().sqlite_db().unwrap())
             .writer()
             .execute(
                 sqlx::query("UPDATE tracks SET created_at=?2, closed_at=?3, sort=?4 WHERE id=?1")
@@ -405,7 +411,7 @@ async fn publication_rechecks_moved_track_even_between_authorized_areas() {
         let f = Fixture::new().await;
         f.member(true).await;
         let parked = park(&f, path(&f, kind)).await;
-        (f.state.sqlite_db().unwrap())
+        (f.state.raw_repo().sqlite_db().unwrap())
             .writer()
             .execute(
                 sqlx::query("UPDATE tracks SET area_id=?2 WHERE id=?1")

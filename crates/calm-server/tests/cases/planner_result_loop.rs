@@ -36,7 +36,7 @@ async fn start(boot: &Boot, scheduler: &Arc<Scheduler>, task: &Task, worker_card
     write_db
         .writer()
         .with_writer(|write_session| {
-            Box::pin(async move {
+            Box::pin(async {
                 let mut tx = write_session.begin_immediate().await.unwrap();
                 assert_eq!(
                     task_mark_running_tx(&mut tx, &task.id, Some(worker_card), 11, 100000)
@@ -245,7 +245,7 @@ async fn planner_advertised_result_route_reads_recorded_audit() {
     let b = current(&boot, "recommendation").await;
     let pool = boot.repo.sqlite_db().unwrap();
     let write_db = (pool).clone();
-    write_db.writer().with_writer(|write_session| Box::pin(async move {
+    write_db.writer().with_writer(|write_session| Box::pin(async  {
         let mut tx = write_session.begin_immediate().await.unwrap();
         let card = card_create_with_id_tx(
             &mut tx,

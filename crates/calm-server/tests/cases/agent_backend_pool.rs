@@ -413,6 +413,7 @@ async fn agent_backend_production_settings_respawns_each_daemon_and_sweeper_rele
         cleanup.push(DaemonGroup(pid));
         assert_ne!(pid, old);
     }
+    let fx = &fx;
     let write_db = (fx.repo.db()).clone();
     write_db
         .writer()

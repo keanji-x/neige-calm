@@ -532,7 +532,7 @@ async fn canonical_retry_recovery_qualifies_intent_and_resumes_mixed_unattempted
     write_db
         .writer()
         .with_writer(|write_session| {
-            Box::pin(async move {
+            Box::pin(async {
                 let mut tx = write_session.begin_immediate().await.unwrap();
                 let mut carrier = current_input_carrier_tx(
                     &mut tx,

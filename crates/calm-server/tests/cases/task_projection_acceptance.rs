@@ -5,7 +5,6 @@
 use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::future::Future;
 use std::sync::Arc;
-use std::task::Poll;
 
 use crate::mcp_track_report::{
     Boot, boot as new_boot, call_tool, planner_identity, read_then_commit,
@@ -220,27 +219,50 @@ async fn immediate_rebuild_serializes_with_waiting_writer_without_deadlock() {
                     .await
                     .unwrap();
 
-                let mut waiting_writer = Box::pin(write_session.begin_immediate());
-                std::future::poll_fn(|cx| match waiting_writer.as_mut().poll(cx) {
-                    Poll::Pending => Poll::Ready(()),
-                    Poll::Ready(_) => {
-                        panic!("rebuild transaction must already own the writer slot")
-                    }
-                })
-                .await;
+                let writer_db = pool.clone();
+                let report = boot.report_card_id.clone();
+                let (polled, queued) = tokio::sync::oneshot::channel();
+                // An independent competing operation queues while the rebuild owns
+                // admission. It is awaited only after the rebuild commits.
+                let waiting_writer = tokio::spawn(async move {
+                    writer_db
+                        .writer()
+                        .with_writer(|session| {
+                            Box::pin(async move {
+                                let mut begin = Box::pin(session.begin_immediate());
+                                let mut polled = Some(polled);
+                                let mut writer_tx = std::future::poll_fn(|cx| {
+                                    let result = begin.as_mut().poll(cx);
+                                    if let Some(signal) = polled.take() {
+                                        assert!(
+                                            result.is_pending(),
+                                            "rebuild must already own admission"
+                                        );
+                                        signal.send(()).unwrap();
+                                    }
+                                    result
+                                })
+                                .await
+                                .unwrap();
+                                sqlx::query("UPDATE cards SET updated_at=updated_at WHERE id=?1")
+                                    .bind(report.as_str())
+                                    .execute(&mut **writer_tx)
+                                    .await
+                                    .unwrap();
+                                writer_tx.commit().await.unwrap();
+                            })
+                        })
+                        .await
+                        .unwrap();
+                });
+                queued.await.unwrap();
 
                 tasks_rebuild_tx(&mut rebuild_tx, boot.track_id.as_str())
                     .await
                     .unwrap();
                 rebuild_tx.commit().await.unwrap();
 
-                let mut writer_tx = waiting_writer.await.unwrap();
-                sqlx::query("UPDATE cards SET updated_at=updated_at WHERE id=?1")
-                    .bind(boot.report_card_id.as_str())
-                    .execute(&mut **writer_tx)
-                    .await
-                    .unwrap();
-                writer_tx.commit().await.unwrap();
+                waiting_writer.await.unwrap();
                 assert!(!keys(&boot).await.contains(&"repro-damage".to_string()));
             })
         })

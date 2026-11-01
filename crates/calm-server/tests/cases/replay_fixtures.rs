@@ -320,7 +320,7 @@ async fn replay_router_terminal_card_create_persists_without_supervisor() {
         updated_at_ms: now,
         finished_at_ms: None,
     };
-    crate::support::task::project_task(repo.pool(), &task)
+    crate::support::task::project_task(repo.db(), &task)
         .await
         .expect("project task block");
 

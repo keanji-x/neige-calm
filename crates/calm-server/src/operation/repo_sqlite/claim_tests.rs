@@ -295,7 +295,7 @@ async fn sequential_provider_checkpoints_use_explicit_previous_output() {
     write_db
         .writer()
         .with_writer(|write_session| {
-            Box::pin(async move {
+            Box::pin(async {
                 for (expected, output, thread) in
                     [(original, &first, "first"), (&first, &second, "second")]
                 {
@@ -344,7 +344,7 @@ async fn stale_same_claim_output_cannot_overwrite_a_committed_checkpoint() {
     write_db
         .writer()
         .with_writer(|write_session| {
-            Box::pin(async move {
+            Box::pin(async {
                 let mut tx = write_session.begin_immediate().await.unwrap();
                 checkpoint_app_server_interact_tx(
                     &mut tx,

@@ -2231,7 +2231,7 @@ async fn a_hold_answer_does_not_wake_the_planner() {
     write_db
         .writer()
         .with_writer(|write_session| {
-            Box::pin(async move {
+            Box::pin(async {
                 for ask_id in [wake, hold] {
                     let mut tx = write_session.begin_immediate().await.unwrap();
                     crate::db::sqlite::append_decision_event_in_tx(
@@ -4510,11 +4510,16 @@ async fn grant_admin_wake_text_is_explicit() {
         )
         .await
         .unwrap();
-    let observation =
-        ask_answered::observation(&repo, &TrackId::from("w"), ask_id, &[AskAnswer::Option(0)])
-            .await
-            .unwrap()
-            .unwrap();
+    let observation = ask_answered::qualified_observation(
+        &observation_reads::ObservationReads::events_only(&repo),
+        &TrackId::from("w"),
+        ask_id,
+        &[AskAnswer::Option(0)],
+        false,
+    )
+    .await
+    .unwrap()
+    .unwrap();
     let HarnessObservation::AskAnswered { answers, .. } = observation else {
         panic!("missing wake");
     };

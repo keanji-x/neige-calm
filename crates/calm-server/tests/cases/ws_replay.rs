@@ -517,26 +517,38 @@ async fn replay_complete_id_reflects_server_tip_after_reset() {
     // Simulate the reset's structural wipe: every domain row, the event log, and `sqlite_sequence` so AUTOINCREMENT restarts at 1.
     {
         let pool = repo.pool();
-        let mut tx = pool.begin().await.unwrap();
-        for stmt in [
-            "DELETE FROM events",
-            "DELETE FROM overlays",
-            "DELETE FROM terminals",
-            "DELETE FROM cards",
-            // `worker_sessions.track_id` is a NO ACTION FK, so sessions must
-            // leave before their parent tracks.
-            "DELETE FROM worker_sessions",
-            "DELETE FROM tracks",
-            "DELETE FROM areas",
-            "DELETE FROM plugin_kv",
-            "DELETE FROM plugin_tokens",
-            "DELETE FROM plugins",
-            "DELETE FROM settings",
-            "DELETE FROM sqlite_sequence",
-        ] {
-            sqlx::query(stmt).execute(&mut *tx).await.unwrap();
-        }
-        tx.commit().await.unwrap();
+        {
+            let write_db = (repo.db()).clone();
+            write_db
+                .writer()
+                .with_writer(|write_session| {
+                    Box::pin(async {
+                        let mut tx = write_session.begin_immediate().await.unwrap();
+                        for stmt in [
+                            "DELETE FROM events",
+                            "DELETE FROM overlays",
+                            "DELETE FROM terminals",
+                            "DELETE FROM cards",
+                            // `worker_sessions.track_id` is a NO ACTION FK, so sessions must
+                            // leave before their parent tracks.
+                            "DELETE FROM worker_sessions",
+                            "DELETE FROM tracks",
+                            "DELETE FROM areas",
+                            "DELETE FROM plugin_kv",
+                            "DELETE FROM plugin_tokens",
+                            "DELETE FROM plugins",
+                            "DELETE FROM settings",
+                            "DELETE FROM sqlite_sequence",
+                        ] {
+                            sqlx::query(stmt).execute(&mut **tx).await.unwrap();
+                        }
+                        tx.commit().await.unwrap();
+                        ()
+                    })
+                })
+                .await
+                .expect("independent write operation")
+        };
     }
 
     // Only two events, so the post-reset tip is well below the pre-reset tip.

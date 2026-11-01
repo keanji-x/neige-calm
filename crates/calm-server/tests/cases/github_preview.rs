@@ -157,55 +157,61 @@ async fn github_preview_area_owner_cannot_use_operator_credentials() {
     let repo = state.raw_repo();
     let pool = repo.sqlite_db().unwrap();
     let write_db = (pool).clone();
-    write_db
-        .writer()
-        .with_writer(|write_session| {
-            Box::pin(async move {
-                let mut tx = write_session.begin_immediate().await.unwrap();
-                area_membership::application_user_register(&mut tx, "alice", "Owner")
-                    .await
-                    .unwrap();
-                tx.commit().await.unwrap();
-                repo.area_create(
-                    "alice",
-                    NewArea {
-                        name: "Alice's Area".into(),
-                        color: "#123456".into(),
-                        sort: None,
-                    },
-                )
+    {
+        {
+            let write_db = (write_db).clone();
+            write_db
+                .writer()
+                .with_writer(|write_session| {
+                    Box::pin(async {
+                        let mut tx = write_session.begin_immediate().await.unwrap();
+                        area_membership::application_user_register(&mut tx, "alice", "Owner")
+                            .await
+                            .unwrap();
+                        tx.commit().await.unwrap();
+                        ()
+                    })
+                })
                 .await
-                .unwrap();
-                let auth = live_auth_state("owner", "fixture-password");
-                let token = auth.sessions.create(
-                    SessionIdentity {
-                        user_id: "alice".into(),
-                        display_name: "Owner".into(),
-                        role: "owner".into(),
-                    },
-                    SessionAuthority::PasswordLogin,
-                );
-                let protected = app(state, auth);
-                let response = protected
-                    .oneshot(
-                        Request::get("/api/github/preview?owner=o&repo=r&kind=issue&number=1")
-                            .header(header::COOKIE, format!("{SESSION_COOKIE}={token}"))
-                            .header("x-calm-actor", "user")
-                            .header("x-calm-user-id", calm_server::auth::OWNER_USER_ID)
-                            .body(Body::empty())
-                            .unwrap(),
-                    )
-                    .await
-                    .unwrap();
-                assert_eq!(
-                    (response.status(), cli.calls().len()),
-                    (StatusCode::FORBIDDEN, 0),
-                    "Area ownership and owner-looking labels cannot use the operator's gh identity"
-                );
-            })
-        })
+                .expect("independent write operation")
+        };
+        repo.area_create(
+            "alice",
+            NewArea {
+                name: "Alice's Area".into(),
+                color: "#123456".into(),
+                sort: None,
+            },
+        )
         .await
-        .expect("independent write operation")
+        .unwrap();
+        let auth = live_auth_state("owner", "fixture-password");
+        let token = auth.sessions.create(
+            SessionIdentity {
+                user_id: "alice".into(),
+                display_name: "Owner".into(),
+                role: "owner".into(),
+            },
+            SessionAuthority::PasswordLogin,
+        );
+        let protected = app(state, auth);
+        let response = protected
+            .oneshot(
+                Request::get("/api/github/preview?owner=o&repo=r&kind=issue&number=1")
+                    .header(header::COOKIE, format!("{SESSION_COOKIE}={token}"))
+                    .header("x-calm-actor", "user")
+                    .header("x-calm-user-id", calm_server::auth::OWNER_USER_ID)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            (response.status(), cli.calls().len()),
+            (StatusCode::FORBIDDEN, 0),
+            "Area ownership and owner-looking labels cannot use the operator's gh identity"
+        );
+    }
 }
 
 #[cfg(unix)]

@@ -558,7 +558,7 @@ async fn action_readback_does_not_follow_a_replacement_worker_session() {
             write_db
                 .writer()
                 .with_writer(|write_session_1| {
-                    Box::pin(async move {
+                    Box::pin(async {
                         let mut tx = write_session_1.begin_immediate().await.unwrap();
                         session_supersede_and_start_tx(
                             &mut tx,

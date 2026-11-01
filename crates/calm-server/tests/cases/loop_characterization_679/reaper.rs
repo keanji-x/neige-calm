@@ -151,7 +151,7 @@ async fn dead_worker_never_reporting_reaper_converges() {
         finished_at_ms: None,
     };
     let pool = repo.sqlite_db().expect("sqlite-backed repo");
-    crate::support::task::project_task(pool.read_pool(), &task)
+    crate::support::task::project_task(&pool, &task)
         .await
         .unwrap();
 

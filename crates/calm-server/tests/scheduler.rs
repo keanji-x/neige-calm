@@ -260,7 +260,7 @@ async fn boot_at_workspace(cwd: &str) -> Boot {
 }
 
 async fn seed_runtime_session(repo: &SqlxRepo, card_id: &str, session_id: &str, thread_id: &str) {
-    seed_runtime_session_in_pool(repo.pool(), card_id, session_id, thread_id).await;
+    seed_runtime_session_in_pool(repo.db(), card_id, session_id, thread_id).await;
 }
 
 fn app_state_for_context_events(boot: &Boot) -> AppState {
@@ -297,32 +297,44 @@ async fn dispatcher_health_monitor_shares_scheduler_context_metrics() {
 }
 
 async fn seed_runtime_session_in_pool(
-    pool: &sqlx::SqlitePool,
+    pool: &calm_truth::db::sqlite::SqliteDb,
     card_id: &str,
     session_id: &str,
     thread_id: &str,
 ) {
-    let mut tx = pool.begin().await.unwrap();
-    session_start_runtime_tx(
-        &mut tx,
-        WorkerSessionInit {
-            id: session_id.to_string(),
-            card_id: card_id.to_string(),
-            kind: WorkerSessionKind::CodexCard,
-            agent_provider: Some(AgentProvider::Codex),
-            status: WorkerSessionState::Running,
-            terminal_run_id: None,
-            thread_id: Some(thread_id.to_string()),
-            session_id: None,
-            active_turn_id: None,
-            handle_state_json: None,
-            spawn_op_id: None,
-            now_ms: now_ms(),
-        },
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
+    {
+        let write_db = (pool).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async {
+                    let mut tx = write_session.begin_immediate().await.unwrap();
+                    session_start_runtime_tx(
+                        &mut tx,
+                        WorkerSessionInit {
+                            id: session_id.to_string(),
+                            card_id: card_id.to_string(),
+                            kind: WorkerSessionKind::CodexCard,
+                            agent_provider: Some(AgentProvider::Codex),
+                            status: WorkerSessionState::Running,
+                            terminal_run_id: None,
+                            thread_id: Some(thread_id.to_string()),
+                            session_id: None,
+                            active_turn_id: None,
+                            handle_state_json: None,
+                            spawn_op_id: None,
+                            now_ms: now_ms(),
+                        },
+                    )
+                    .await
+                    .unwrap();
+                    tx.commit().await.unwrap();
+                    ()
+                })
+            })
+            .await
+            .expect("independent write operation")
+    };
 }
 
 /// A real `OperationRuntime` plus a `Scheduler` wired like the dispatcher construction site (Weak runtime + shared semaphore).
@@ -4410,6 +4422,23 @@ async fn persist_context_report_body(boot: &Boot, body: String) {
 // These race tests hold the SQLite writer themselves. Changing only the derived payload cannot simulate a
 // revert or withdrawal once the report has body_crdt.
 async fn replace_context_report_snapshot(
+    db: &calm_truth::db::sqlite::SqliteDb,
+    card_id: &str,
+    report: &TrackReportPayload,
+) {
+    db.writer()
+        .autocommit(|connection| {
+            Box::pin(async move {
+                replace_context_report_snapshot_on_connection(&mut **connection, card_id, report)
+                    .await;
+                Ok::<_, sqlx::Error>(())
+            })
+        })
+        .await
+        .unwrap();
+}
+
+async fn replace_context_report_snapshot_on_connection(
     connection: &mut sqlx::SqliteConnection,
     card_id: &str,
     report: &TrackReportPayload,
@@ -5083,20 +5112,24 @@ async fn material_commit_rechecks_after_locked_revert_without_production_hook() 
     persist_context_report_body(&boot, temporary_body).await;
 
     let pool = boot.repo.sqlite_db().unwrap();
-    let mut locked_revert = pool.read_pool().acquire().await.unwrap();
-    sqlx::query("BEGIN IMMEDIATE")
-        .execute(&mut *locked_revert)
-        .await
-        .unwrap();
+    let (monitor, metrics, detector) = {
+        let write_db = pool.clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async {
+                    let mut locked_revert = write_session.begin_immediate().await.unwrap();
 
-    let monitor = Arc::new(monitor);
-    let metrics = monitor.metrics();
-    let detector = {
-        let monitor = Arc::clone(&monitor);
-        let track_id = boot.track_id.clone();
-        tokio::spawn(async move { monitor.detect_track_edit(track_id.as_str()).await })
-    };
-    tokio::time::timeout(Duration::from_secs(2), async {
+                    let monitor = Arc::new(monitor);
+                    let metrics = monitor.metrics();
+                    let detector = {
+                        let monitor = Arc::clone(&monitor);
+                        let track_id = boot.track_id.clone();
+                        tokio::spawn(
+                            async move { monitor.detect_track_edit(track_id.as_str()).await },
+                        )
+                    };
+                    tokio::time::timeout(Duration::from_secs(2), async {
         loop {
             if metrics
                 .snapshot()
@@ -5111,16 +5144,19 @@ async fn material_commit_rechecks_after_locked_revert_without_production_hook() 
     })
     .await
     .expect("detector must classify the committed temporary content before the lock releases");
-    replace_context_report_snapshot(
-        &mut locked_revert,
-        original_card.id.as_str(),
-        &original_report,
-    )
-    .await;
-    sqlx::query("COMMIT")
-        .execute(&mut *locked_revert)
-        .await
-        .unwrap();
+                    replace_context_report_snapshot_on_connection(
+                        &mut locked_revert,
+                        original_card.id.as_str(),
+                        &original_report,
+                    )
+                    .await;
+                    locked_revert.commit().await.unwrap();
+                    (monitor, metrics, detector)
+                })
+            })
+            .await
+            .unwrap()
+    };
     tokio::time::timeout(Duration::from_secs(2), detector)
         .await
         .expect("detector must finish after the writer lock releases")
@@ -5169,57 +5205,69 @@ async fn restore_and_new_material_serialize_both_commit_orders_without_fail_open
     restored_report.body = original_body.clone();
     restored_report.blocks.as_mut().unwrap()[0].payload["markdown"] =
         json!("referenced original\n\n");
-    replace_context_report_snapshot(
-        &mut pool.read_pool().acquire().await.unwrap(),
-        report_card.id.as_str(),
-        &restored_report,
-    )
-    .await;
+    replace_context_report_snapshot(&pool, report_card.id.as_str(), &restored_report).await;
 
     // W3 owns the real SQLite writer slot while R reads the last committed Equal evidence; R must park at BEGIN IMMEDIATE.
-    let mut w3 = pool.read_pool().acquire().await.unwrap();
-    sqlx::query("BEGIN IMMEDIATE")
-        .execute(&mut *w3)
-        .await
-        .unwrap();
-    let monitor = Arc::new(monitor);
-    let metrics = monitor.metrics();
-    let mut old_restore = {
-        let monitor = Arc::clone(&monitor);
-        let track_id = boot.track_id.clone();
-        tokio::spawn(async move { monitor.detect_track_edit(track_id.as_str()).await })
+    let (monitor, metrics, old_restore) = {
+        let write_db = pool.clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async {
+                    let mut w3 = write_session.begin_immediate().await.unwrap();
+
+                    let monitor = Arc::new(monitor);
+                    let metrics = monitor.metrics();
+                    let mut old_restore = {
+                        let monitor = Arc::clone(&monitor);
+                        let track_id = boot.track_id.clone();
+                        tokio::spawn(
+                            async move { monitor.detect_track_edit(track_id.as_str()).await },
+                        )
+                    };
+                    tokio::time::timeout(Duration::from_secs(2), async {
+                        loop {
+                            if metrics.snapshot().restore_checks >= 1 {
+                                break;
+                            }
+                            tokio::task::yield_now().await;
+                        }
+                    })
+                    .await
+                    .expect("old R must begin its restore check while W3 holds the writer slot");
+                    assert!(
+                        tokio::time::timeout(Duration::from_millis(200), &mut old_restore)
+                            .await
+                            .is_err(),
+                        "old R must be parked behind W3's BEGIN IMMEDIATE before W3 commits"
+                    );
+                    let second_material =
+                        original_body.replacen("referenced original", "referenced W3 material", 1);
+                    let mut w3_report: TrackReportPayload = serde_json::from_str(
+                        &sqlx::query_scalar::<_, String>("SELECT payload FROM cards WHERE id=?1")
+                            .bind(report_card.id.as_str())
+                            .fetch_one(&mut **w3)
+                            .await
+                            .unwrap(),
+                    )
+                    .unwrap();
+                    w3_report.body = second_material;
+                    w3_report.blocks.as_mut().unwrap()[0].payload["markdown"] =
+                        json!("referenced W3 material\n\n");
+                    w3_report.doc_rev += 1;
+                    replace_context_report_snapshot_on_connection(
+                        &mut w3,
+                        report_card.id.as_str(),
+                        &w3_report,
+                    )
+                    .await;
+                    w3.commit().await.unwrap();
+                    (monitor, metrics, old_restore)
+                })
+            })
+            .await
+            .unwrap()
     };
-    tokio::time::timeout(Duration::from_secs(2), async {
-        loop {
-            if metrics.snapshot().restore_checks >= 1 {
-                break;
-            }
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("old R must begin its restore check while W3 holds the writer slot");
-    assert!(
-        tokio::time::timeout(Duration::from_millis(200), &mut old_restore)
-            .await
-            .is_err(),
-        "old R must be parked behind W3's BEGIN IMMEDIATE before W3 commits"
-    );
-    let second_material =
-        original_body.replacen("referenced original", "referenced W3 material", 1);
-    let mut w3_report: TrackReportPayload = serde_json::from_str(
-        &sqlx::query_scalar::<_, String>("SELECT payload FROM cards WHERE id=?1")
-            .bind(report_card.id.as_str())
-            .fetch_one(&mut *w3)
-            .await
-            .unwrap(),
-    )
-    .unwrap();
-    w3_report.body = second_material;
-    w3_report.blocks.as_mut().unwrap()[0].payload["markdown"] = json!("referenced W3 material\n\n");
-    w3_report.doc_rev += 1;
-    replace_context_report_snapshot(&mut w3, report_card.id.as_str(), &w3_report).await;
-    sqlx::query("COMMIT").execute(&mut *w3).await.unwrap();
     tokio::time::timeout(Duration::from_secs(2), old_restore)
         .await
         .expect("old R must finish after W3 releases the writer slot")
@@ -5249,12 +5297,7 @@ async fn restore_and_new_material_serialize_both_commit_orders_without_fail_open
     restored_report.body = original_body.clone();
     restored_report.blocks.as_mut().unwrap()[0].payload["markdown"] =
         json!("referenced original\n\n");
-    replace_context_report_snapshot(
-        &mut pool.read_pool().acquire().await.unwrap(),
-        report_card.id.as_str(),
-        &restored_report,
-    )
-    .await;
+    replace_context_report_snapshot(&pool, report_card.id.as_str(), &restored_report).await;
     monitor
         .detect_track_edit(boot.track_id.as_str())
         .await
@@ -5270,12 +5313,7 @@ async fn restore_and_new_material_serialize_both_commit_orders_without_fail_open
         original_body.replacen("referenced original", "referenced material after R", 1);
     restored_report.blocks.as_mut().unwrap()[0].payload["markdown"] =
         json!("referenced material after R\n\n");
-    replace_context_report_snapshot(
-        &mut pool.read_pool().acquire().await.unwrap(),
-        report_card.id.as_str(),
-        &restored_report,
-    )
-    .await;
+    replace_context_report_snapshot(&pool, report_card.id.as_str(), &restored_report).await;
     monitor
         .detect_track_edit(boot.track_id.as_str())
         .await
@@ -5380,14 +5418,7 @@ async fn restored_content_does_not_override_withdrawn_declaration() {
     blocks[0].payload["markdown"] = json!("referenced original\n\n");
     blocks[1].payload["ready"] = json!(false);
     replace_context_report_snapshot(
-        &mut boot
-            .repo
-            .sqlite_db()
-            .unwrap()
-            .read_pool()
-            .acquire()
-            .await
-            .unwrap(),
+        &boot.repo.sqlite_db().unwrap(),
         report_card.id.as_str(),
         &current,
     )
@@ -6569,7 +6600,7 @@ async fn sibling_card_report_cannot_flip_other_tasks_row() {
         .insert(sibling.id.clone(), CardRole::Worker, boot.track_id.clone());
     let pool = boot.repo.sqlite_db().expect("sqlite pool");
     seed_runtime_session_in_pool(
-        pool.read_pool(),
+        &pool,
         sibling.id.as_str(),
         "sibling-session",
         "sibling-thread",
@@ -6818,7 +6849,7 @@ async fn dependent_task_is_claimed_by_its_own_worker() {
         boot.track_id.clone(),
     );
     seed_runtime_session_in_pool(
-        boot.repo.sqlite_db().unwrap().read_pool(),
+        &boot.repo.sqlite_db().unwrap(),
         second_card.id.as_str(),
         "second-worker-session",
         "second-worker-thread",
@@ -7275,7 +7306,7 @@ async fn unstamped_dispatched_row_rejects_sibling_report() {
         .insert(sibling.id.clone(), CardRole::Worker, boot.track_id.clone());
     let pool = boot.repo.sqlite_db().expect("sqlite pool");
     seed_runtime_session_in_pool(
-        pool.read_pool(),
+        &pool,
         sibling.id.as_str(),
         "sibling-session",
         "sibling-thread",
@@ -7378,7 +7409,7 @@ async fn forged_payload_sibling_report_rejected_without_op_target() {
         .insert(sibling.id.clone(), CardRole::Worker, boot.track_id.clone());
     let pool = boot.repo.sqlite_db().expect("sqlite pool");
     seed_runtime_session_in_pool(
-        pool.read_pool(),
+        &pool,
         sibling.id.as_str(),
         "forged-session",
         "forged-thread",

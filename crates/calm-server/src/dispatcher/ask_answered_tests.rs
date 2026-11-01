@@ -8,12 +8,12 @@ async fn ask_answered_wake_preserves_complete_detail_live_and_catch_up() {
     let repo = crate::db::sqlite::SqlxRepo::open("sqlite::memory:")
         .await
         .unwrap();
-    sqlx::raw_sql(
+    (repo.db()).writer().execute(sqlx::raw_sql(
         "INSERT INTO areas(id,name,color,sort,created_at,updated_at) VALUES('c','Area','red',0,1,1);
          INSERT INTO tracks(id,area_id,title,sort,created_at,updated_at) VALUES('w','c','Track',0,1,1);
          INSERT INTO cards(id,track_id,kind,sort,payload,role,deletable,created_at,updated_at)
          VALUES('planner','w','planner',0,'{}','planner',0,1,1);",
-    ).execute(repo.pool()).await.unwrap();
+    )).await.unwrap();
     let track = TrackId::from("w");
     let scope = EventScope::Track {
         track: track.clone(),
@@ -25,41 +25,53 @@ async fn ask_answered_wake_preserves_complete_detail_live_and_catch_up() {
             "KR-{index} frozen standard\n{} LAST CRITERION",
             "criterion ".repeat(300)
         );
-        let mut tx = repo.pool().begin().await.unwrap();
-        let id = crate::db::sqlite::append_decision_event_in_tx(
-            &mut tx,
-            &ActorId::AiPlanner(CardId::from("planner")),
-            &scope,
-            None,
-            &Event::AskRequested {
-                track_id: track.clone(),
-                questions: vec![AskQuestion {
-                    title: "Approve this standard?".into(),
-                    detail: Some(detail.clone()),
-                    options: vec!["Approve".into(), "Decline".into()],
-                }],
-                delivery: AskDelivery::Wake,
-                action: None,
-                source_item_id: None,
-            },
-        )
-        .await
-        .unwrap();
-        let answered = Event::AskAnswered {
-            track_id: track.clone(),
-            ask_id: id,
-            answers: vec![AskAnswer::Option(index)],
+        let (answered,) = {
+            let write_db = (repo.db()).clone();
+            write_db
+                .writer()
+                .with_writer(|write_session| {
+                    Box::pin(async {
+                        let mut tx = write_session.begin_immediate().await.unwrap();
+                        let id = crate::db::sqlite::append_decision_event_in_tx(
+                            &mut tx,
+                            &ActorId::AiPlanner(CardId::from("planner")),
+                            &scope,
+                            None,
+                            &Event::AskRequested {
+                                track_id: track.clone(),
+                                questions: vec![AskQuestion {
+                                    title: "Approve this standard?".into(),
+                                    detail: Some(detail.clone()),
+                                    options: vec!["Approve".into(), "Decline".into()],
+                                }],
+                                delivery: AskDelivery::Wake,
+                                action: None,
+                                source_item_id: None,
+                            },
+                        )
+                        .await
+                        .unwrap();
+                        let answered = Event::AskAnswered {
+                            track_id: track.clone(),
+                            ask_id: id,
+                            answers: vec![AskAnswer::Option(index)],
+                        };
+                        crate::db::sqlite::append_decision_event_in_tx(
+                            &mut tx,
+                            &ActorId::User,
+                            &scope,
+                            None,
+                            &answered,
+                        )
+                        .await
+                        .unwrap();
+                        tx.commit().await.unwrap();
+                        (answered,)
+                    })
+                })
+                .await
+                .expect("independent write operation")
         };
-        crate::db::sqlite::append_decision_event_in_tx(
-            &mut tx,
-            &ActorId::User,
-            &scope,
-            None,
-            &answered,
-        )
-        .await
-        .unwrap();
-        tx.commit().await.unwrap();
         let observation = resolve_harness_observation(&repo, &track, &answered)
             .await
             .unwrap()
@@ -71,9 +83,14 @@ async fn ask_answered_wake_preserves_complete_detail_live_and_catch_up() {
         );
         assert!(text.ends_with(if index == 0 { ": Approve" } else { ": Decline" }));
         assert_eq!(
-            resolve_event_observation(&repo, &track, &answered, true)
-                .await
-                .unwrap(),
+            resolve_event_observation(
+                &super::observation_reads::ObservationReads::new(&repo),
+                &track,
+                &answered,
+                true
+            )
+            .await
+            .unwrap(),
             Some(observation)
         );
         live.push(text);

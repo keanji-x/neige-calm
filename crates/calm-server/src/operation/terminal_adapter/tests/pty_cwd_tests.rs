@@ -14,6 +14,7 @@ enum Source {
 }
 
 async fn rejects_prepared_cwd(source: Source) {
+    let source = &source;
     for file in [false, true] {
         let root = tempfile::tempdir().unwrap();
         let explicit = root.path().join("invalid");
@@ -36,7 +37,7 @@ async fn rejects_prepared_cwd(source: Source) {
         write_db
             .writer()
             .with_writer(|write_session| {
-                Box::pin(async move {
+                Box::pin(async {
                     let mut tx = write_session.begin_immediate().await.unwrap();
                     let track = crate::db::sqlite::track_create_tx(
                         &mut tx,
@@ -266,7 +267,7 @@ async fn isolation_none_non_git_terminal_launch_skips_observation() {
     write_db
         .writer()
         .with_writer(|write_session| {
-            Box::pin(async move {
+            Box::pin(async {
                 let mut tx = write_session.begin_immediate().await.unwrap();
                 let output = adapter.prepare_tx(&mut tx, &payload, &op).await.unwrap();
                 tx.commit().await.unwrap();

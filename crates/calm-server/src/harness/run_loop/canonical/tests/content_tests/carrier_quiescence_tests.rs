@@ -154,7 +154,7 @@ async fn carrier_quiescence_parked_loop_keeps_ingress_polling() {
     write_db
         .writer()
         .with_writer(|write_session| {
-            Box::pin(async move {
+            Box::pin(async {
                 let tx = write_session.begin_immediate().await.unwrap();
                 tokio::time::timeout(Duration::from_millis(200), tick(&fx.harness.inner, true))
                     .await
@@ -211,7 +211,7 @@ async fn carrier_quiescence_ingress_writers_refuse_committed_replacement() {
     write_db
         .writer()
         .with_writer(|write_session| {
-            Box::pin(async move {
+            Box::pin(async {
                 let mut tx = write_session.begin_immediate().await.unwrap();
                 crate::db::sqlite::session_supersede_and_start_tx(
                     &mut tx,

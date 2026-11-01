@@ -2138,70 +2138,88 @@ async fn a_redriven_start_hands_the_raced_in_runtimes_sentence_to_the_harness_it
         });
         let op_id = new_id();
 
-        let mut tx = repo.pool().begin().await.unwrap();
-        // 1. the deferred placeholder this operation minted...
-        session_prepare_deferred_planner_tx(
-            &mut tx,
-            &WorkerSessionInit {
-                id: placeholder_id.clone(),
-                card_id: card.id.to_string(),
-                kind: WorkerSessionKind::SharedPlanner,
-                agent_provider: Some(AgentProvider::Codex),
-                status: WorkerSessionState::Starting,
-                terminal_run_id: None,
-                thread_id: None,
-                session_id: None,
-                active_turn_id: None,
-                handle_state_json: Some(serde_json::to_value(&placeholder_snapshot).unwrap()),
-                spawn_op_id: None,
-                now_ms: now,
-            },
-        )
-        .await
-        .unwrap();
-        // 2. ...displaced by a runtime that took the card's active slot while the thread was being minted; this pair
-        //    deliberately does NOT stamp the placeholder: nothing has taken its queue.
-        session_supersede_and_start_tx(
-            &mut tx,
-            &placeholder_id,
-            WorkerSessionInit {
-                id: racer_id.clone(),
-                card_id: card.id.to_string(),
-                kind: WorkerSessionKind::SharedPlanner,
-                agent_provider: Some(AgentProvider::Codex),
-                status: WorkerSessionState::Idle,
-                terminal_run_id: None,
-                thread_id: Some("thread-racer".into()),
-                session_id: None,
-                active_turn_id: None,
-                handle_state_json: Some(serde_json::to_value(&racer_snapshot).unwrap()),
-                spawn_op_id: None,
-                now_ms: now + 1,
-            },
-        )
-        .await
-        .unwrap();
-        sqlx::query(
-            r#"INSERT INTO operations (
+        {
+            let write_db = (repo.db()).clone();
+            write_db
+                .writer()
+                .with_writer(|write_session| {
+                    Box::pin(async {
+                        let mut tx = write_session.begin_immediate().await.unwrap();
+                        // 1. the deferred placeholder this operation minted...
+                        session_prepare_deferred_planner_tx(
+                            &mut tx,
+                            &WorkerSessionInit {
+                                id: placeholder_id.clone(),
+                                card_id: card.id.to_string(),
+                                kind: WorkerSessionKind::SharedPlanner,
+                                agent_provider: Some(AgentProvider::Codex),
+                                status: WorkerSessionState::Starting,
+                                terminal_run_id: None,
+                                thread_id: None,
+                                session_id: None,
+                                active_turn_id: None,
+                                handle_state_json: Some(
+                                    serde_json::to_value(&placeholder_snapshot).unwrap(),
+                                ),
+                                spawn_op_id: None,
+                                now_ms: now,
+                            },
+                        )
+                        .await
+                        .unwrap();
+                        // 2. ...displaced by a runtime that took the card's active slot while the thread was being minted; this pair
+                        //    deliberately does NOT stamp the placeholder: nothing has taken its queue.
+                        session_supersede_and_start_tx(
+                            &mut tx,
+                            &placeholder_id,
+                            WorkerSessionInit {
+                                id: racer_id.clone(),
+                                card_id: card.id.to_string(),
+                                kind: WorkerSessionKind::SharedPlanner,
+                                agent_provider: Some(AgentProvider::Codex),
+                                status: WorkerSessionState::Idle,
+                                terminal_run_id: None,
+                                thread_id: Some("thread-racer".into()),
+                                session_id: None,
+                                active_turn_id: None,
+                                handle_state_json: Some(
+                                    serde_json::to_value(&racer_snapshot).unwrap(),
+                                ),
+                                spawn_op_id: None,
+                                now_ms: now + 1,
+                            },
+                        )
+                        .await
+                        .unwrap();
+                        sqlx::query(
+                            r#"INSERT INTO operations (
                    id, operation_key, kind, idempotency_key, payload_hash,
                    target_type, target_id, target_json, payload_json,
                    tx_output_json, phase, created_at_ms, updated_at_ms
                )
                VALUES (?1, ?2, 'planner-harness-start', NULL, ?3,
                        'card', ?4, ?5, ?6, ?7, 'tx_committed', ?8, ?8)"#,
-        )
-        .bind(&op_id)
-        .bind(new_id())
-        .bind(new_id())
-        .bind(card.id.as_str())
-        .bind(serde_json::to_string(&json!({"type": "card", "id": card.id})).unwrap())
-        .bind(serde_json::to_string(&payload).unwrap())
-        .bind(serde_json::to_string(&output).unwrap())
-        .bind(now + 2)
-        .execute(&mut *tx)
-        .await
-        .unwrap();
-        tx.commit().await.unwrap();
+                        )
+                        .bind(&op_id)
+                        .bind(new_id())
+                        .bind(new_id())
+                        .bind(card.id.as_str())
+                        .bind(
+                            serde_json::to_string(&json!({"type": "card", "id": card.id})).unwrap(),
+                        )
+                        .bind(serde_json::to_string(&payload).unwrap())
+                        .bind(serde_json::to_string(&output).unwrap())
+                        .bind(now + 2)
+                        .execute(&mut **tx)
+                        .await
+                        .unwrap();
+                        tx.commit().await.unwrap();
+                        ()
+                    })
+                })
+                .await
+                .expect("independent write operation")
+        };
 
         (
             card.id.to_string(),
@@ -2376,47 +2394,63 @@ async fn a_redriven_start_takes_the_queue_from_the_row_not_from_the_carried_outp
         });
         let op_id = new_id();
 
-        let mut tx = repo.pool().begin().await.unwrap();
-        session_start_runtime_tx(
-            &mut tx,
-            WorkerSessionInit {
-                id: worker_session_id.clone(),
-                card_id: card.id.to_string(),
-                kind: WorkerSessionKind::SharedPlanner,
-                agent_provider: Some(AgentProvider::Codex),
-                status: WorkerSessionState::Idle,
-                terminal_run_id: None,
-                thread_id: None,
-                session_id: None,
-                active_turn_id: None,
-                handle_state_json: Some(serde_json::to_value(&row_snapshot).unwrap()),
-                spawn_op_id: None,
-                now_ms: now,
-            },
-        )
-        .await
-        .unwrap();
-        sqlx::query(
-            r#"INSERT INTO operations (
+        {
+            let write_db = (repo.db()).clone();
+            write_db
+                .writer()
+                .with_writer(|write_session| {
+                    Box::pin(async {
+                        let mut tx = write_session.begin_immediate().await.unwrap();
+                        session_start_runtime_tx(
+                            &mut tx,
+                            WorkerSessionInit {
+                                id: worker_session_id.clone(),
+                                card_id: card.id.to_string(),
+                                kind: WorkerSessionKind::SharedPlanner,
+                                agent_provider: Some(AgentProvider::Codex),
+                                status: WorkerSessionState::Idle,
+                                terminal_run_id: None,
+                                thread_id: None,
+                                session_id: None,
+                                active_turn_id: None,
+                                handle_state_json: Some(
+                                    serde_json::to_value(&row_snapshot).unwrap(),
+                                ),
+                                spawn_op_id: None,
+                                now_ms: now,
+                            },
+                        )
+                        .await
+                        .unwrap();
+                        sqlx::query(
+                            r#"INSERT INTO operations (
                    id, operation_key, kind, idempotency_key, payload_hash,
                    target_type, target_id, target_json, payload_json,
                    tx_output_json, phase, created_at_ms, updated_at_ms
                )
                VALUES (?1, ?2, 'planner-harness-start', NULL, ?3,
                        'card', ?4, ?5, ?6, ?7, 'tx_committed', ?8, ?8)"#,
-        )
-        .bind(&op_id)
-        .bind(new_id())
-        .bind(new_id())
-        .bind(card.id.as_str())
-        .bind(serde_json::to_string(&json!({"type": "card", "id": card.id})).unwrap())
-        .bind(serde_json::to_string(&payload).unwrap())
-        .bind(serde_json::to_string(&output).unwrap())
-        .bind(now + 1)
-        .execute(&mut *tx)
-        .await
-        .unwrap();
-        tx.commit().await.unwrap();
+                        )
+                        .bind(&op_id)
+                        .bind(new_id())
+                        .bind(new_id())
+                        .bind(card.id.as_str())
+                        .bind(
+                            serde_json::to_string(&json!({"type": "card", "id": card.id})).unwrap(),
+                        )
+                        .bind(serde_json::to_string(&payload).unwrap())
+                        .bind(serde_json::to_string(&output).unwrap())
+                        .bind(now + 1)
+                        .execute(&mut **tx)
+                        .await
+                        .unwrap();
+                        tx.commit().await.unwrap();
+                        ()
+                    })
+                })
+                .await
+                .expect("independent write operation")
+        };
 
         (
             card.id.to_string(),
@@ -2566,58 +2600,66 @@ async fn the_give_back_returns_nothing_that_somebody_else_has_taken_onward() {
             }],
         });
 
-        let mut tx = repo.pool().begin().await.unwrap();
-        session_start_runtime_tx(
-            &mut tx,
-            WorkerSessionInit {
-                id: source_id.clone(),
-                card_id: card.id.to_string(),
-                kind: WorkerSessionKind::SharedPlanner,
-                agent_provider: Some(AgentProvider::Codex),
-                status: WorkerSessionState::Starting,
-                terminal_run_id: None,
-                thread_id: None,
-                session_id: None,
-                active_turn_id: None,
-                handle_state_json: Some(
-                    serde_json::to_value(HarnessSnapshot::initial(0, vec![])).unwrap(),
-                ),
-                spawn_op_id: None,
-                now_ms: now,
-            },
-        )
-        .await
-        .unwrap();
-        session_mark_superseded_runtime_tx(&mut tx, &source_id)
-            .await
-            .unwrap();
-        session_mark_queue_harvested_tx(&mut tx, &source_id, now)
-            .await
-            .unwrap();
-        session_start_runtime_tx(
-            &mut tx,
-            WorkerSessionInit {
-                id: failing_id.clone(),
-                card_id: card.id.to_string(),
-                kind: WorkerSessionKind::SharedPlanner,
-                agent_provider: Some(AgentProvider::Codex),
-                status: WorkerSessionState::Starting,
-                terminal_run_id: None,
-                thread_id: None,
-                session_id: None,
-                active_turn_id: None,
-                // The sentence is NOT here: somebody inherited it away.
-                handle_state_json: Some(
-                    serde_json::to_value(HarnessSnapshot::initial(0, vec![])).unwrap(),
-                ),
-                spawn_op_id: None,
-                now_ms: now + 1,
-            },
-        )
-        .await
-        .unwrap();
-        sqlx::query(
-            r#"INSERT INTO operations (
+        {
+            let write_db = (repo.db()).clone();
+            write_db
+                .writer()
+                .with_writer(|write_session| {
+                    Box::pin(async {
+                        let mut tx = write_session.begin_immediate().await.unwrap();
+                        session_start_runtime_tx(
+                            &mut tx,
+                            WorkerSessionInit {
+                                id: source_id.clone(),
+                                card_id: card.id.to_string(),
+                                kind: WorkerSessionKind::SharedPlanner,
+                                agent_provider: Some(AgentProvider::Codex),
+                                status: WorkerSessionState::Starting,
+                                terminal_run_id: None,
+                                thread_id: None,
+                                session_id: None,
+                                active_turn_id: None,
+                                handle_state_json: Some(
+                                    serde_json::to_value(HarnessSnapshot::initial(0, vec![]))
+                                        .unwrap(),
+                                ),
+                                spawn_op_id: None,
+                                now_ms: now,
+                            },
+                        )
+                        .await
+                        .unwrap();
+                        session_mark_superseded_runtime_tx(&mut tx, &source_id)
+                            .await
+                            .unwrap();
+                        session_mark_queue_harvested_tx(&mut tx, &source_id, now)
+                            .await
+                            .unwrap();
+                        session_start_runtime_tx(
+                            &mut tx,
+                            WorkerSessionInit {
+                                id: failing_id.clone(),
+                                card_id: card.id.to_string(),
+                                kind: WorkerSessionKind::SharedPlanner,
+                                agent_provider: Some(AgentProvider::Codex),
+                                status: WorkerSessionState::Starting,
+                                terminal_run_id: None,
+                                thread_id: None,
+                                session_id: None,
+                                active_turn_id: None,
+                                // The sentence is NOT here: somebody inherited it away.
+                                handle_state_json: Some(
+                                    serde_json::to_value(HarnessSnapshot::initial(0, vec![]))
+                                        .unwrap(),
+                                ),
+                                spawn_op_id: None,
+                                now_ms: now + 1,
+                            },
+                        )
+                        .await
+                        .unwrap();
+                        sqlx::query(
+                            r#"INSERT INTO operations (
                    id, operation_key, kind, idempotency_key, payload_hash,
                    target_type, target_id, target_json, payload_json,
                    tx_output_json, compensation_state, phase, last_error,
@@ -2626,20 +2668,28 @@ async fn the_give_back_returns_nothing_that_somebody_else_has_taken_onward() {
                VALUES (?1, ?2, 'planner-harness-start', NULL, ?3,
                        'card', ?4, ?5, ?6, ?7, ?8, 'compensating',
                        'injected thread/start failure', ?9, ?9)"#,
-        )
-        .bind(new_id())
-        .bind(new_id())
-        .bind(new_id())
-        .bind(card.id.as_str())
-        .bind(serde_json::to_string(&json!({"type": "card", "id": card.id})).unwrap())
-        .bind(serde_json::to_string(&payload).unwrap())
-        .bind(serde_json::to_string(&output).unwrap())
-        .bind(serde_json::to_string(&compensation_state).unwrap())
-        .bind(now + 2)
-        .execute(&mut *tx)
-        .await
-        .unwrap();
-        tx.commit().await.unwrap();
+                        )
+                        .bind(new_id())
+                        .bind(new_id())
+                        .bind(new_id())
+                        .bind(card.id.as_str())
+                        .bind(
+                            serde_json::to_string(&json!({"type": "card", "id": card.id})).unwrap(),
+                        )
+                        .bind(serde_json::to_string(&payload).unwrap())
+                        .bind(serde_json::to_string(&output).unwrap())
+                        .bind(serde_json::to_string(&compensation_state).unwrap())
+                        .bind(now + 2)
+                        .execute(&mut **tx)
+                        .await
+                        .unwrap();
+                        tx.commit().await.unwrap();
+                        ()
+                    })
+                })
+                .await
+                .expect("independent write operation")
+        };
 
         (source_id, failing_id)
     };
@@ -2793,56 +2843,65 @@ async fn the_give_back_keeps_a_pre_upgrade_sentence_it_cannot_identify() {
             }],
         });
 
-        let mut tx = repo.pool().begin().await.unwrap();
-        session_start_runtime_tx(
-            &mut tx,
-            WorkerSessionInit {
-                id: source_id.clone(),
-                card_id: card.id.to_string(),
-                kind: WorkerSessionKind::SharedPlanner,
-                agent_provider: Some(AgentProvider::Codex),
-                status: WorkerSessionState::Starting,
-                terminal_run_id: None,
-                thread_id: None,
-                session_id: None,
-                active_turn_id: None,
-                // Emptied by the harvest, as a move leaves it.
-                handle_state_json: Some(
-                    serde_json::to_value(HarnessSnapshot::initial(0, vec![])).unwrap(),
-                ),
-                spawn_op_id: None,
-                now_ms: now,
-            },
-        )
-        .await
-        .unwrap();
-        session_mark_superseded_runtime_tx(&mut tx, &source_id)
-            .await
-            .unwrap();
-        session_mark_queue_harvested_tx(&mut tx, &source_id, now)
-            .await
-            .unwrap();
-        session_start_runtime_tx(
-            &mut tx,
-            WorkerSessionInit {
-                id: failing_id.clone(),
-                card_id: card.id.to_string(),
-                kind: WorkerSessionKind::SharedPlanner,
-                agent_provider: Some(AgentProvider::Codex),
-                status: WorkerSessionState::Starting,
-                terminal_run_id: None,
-                thread_id: None,
-                session_id: None,
-                active_turn_id: None,
-                handle_state_json: Some(serde_json::to_value(&failing_snapshot).unwrap()),
-                spawn_op_id: None,
-                now_ms: now + 1,
-            },
-        )
-        .await
-        .unwrap();
-        sqlx::query(
-            r#"INSERT INTO operations (
+        {
+            let write_db = (repo.db()).clone();
+            write_db
+                .writer()
+                .with_writer(|write_session| {
+                    Box::pin(async {
+                        let mut tx = write_session.begin_immediate().await.unwrap();
+                        session_start_runtime_tx(
+                            &mut tx,
+                            WorkerSessionInit {
+                                id: source_id.clone(),
+                                card_id: card.id.to_string(),
+                                kind: WorkerSessionKind::SharedPlanner,
+                                agent_provider: Some(AgentProvider::Codex),
+                                status: WorkerSessionState::Starting,
+                                terminal_run_id: None,
+                                thread_id: None,
+                                session_id: None,
+                                active_turn_id: None,
+                                // Emptied by the harvest, as a move leaves it.
+                                handle_state_json: Some(
+                                    serde_json::to_value(HarnessSnapshot::initial(0, vec![]))
+                                        .unwrap(),
+                                ),
+                                spawn_op_id: None,
+                                now_ms: now,
+                            },
+                        )
+                        .await
+                        .unwrap();
+                        session_mark_superseded_runtime_tx(&mut tx, &source_id)
+                            .await
+                            .unwrap();
+                        session_mark_queue_harvested_tx(&mut tx, &source_id, now)
+                            .await
+                            .unwrap();
+                        session_start_runtime_tx(
+                            &mut tx,
+                            WorkerSessionInit {
+                                id: failing_id.clone(),
+                                card_id: card.id.to_string(),
+                                kind: WorkerSessionKind::SharedPlanner,
+                                agent_provider: Some(AgentProvider::Codex),
+                                status: WorkerSessionState::Starting,
+                                terminal_run_id: None,
+                                thread_id: None,
+                                session_id: None,
+                                active_turn_id: None,
+                                handle_state_json: Some(
+                                    serde_json::to_value(&failing_snapshot).unwrap(),
+                                ),
+                                spawn_op_id: None,
+                                now_ms: now + 1,
+                            },
+                        )
+                        .await
+                        .unwrap();
+                        sqlx::query(
+                            r#"INSERT INTO operations (
                    id, operation_key, kind, idempotency_key, payload_hash,
                    target_type, target_id, target_json, payload_json,
                    tx_output_json, compensation_state, phase, last_error,
@@ -2851,20 +2910,28 @@ async fn the_give_back_keeps_a_pre_upgrade_sentence_it_cannot_identify() {
                VALUES (?1, ?2, 'planner-harness-start', NULL, ?3,
                        'card', ?4, ?5, ?6, ?7, ?8, 'compensating',
                        'injected thread/start failure', ?9, ?9)"#,
-        )
-        .bind(new_id())
-        .bind(new_id())
-        .bind(new_id())
-        .bind(card.id.as_str())
-        .bind(serde_json::to_string(&json!({"type": "card", "id": card.id})).unwrap())
-        .bind(serde_json::to_string(&payload).unwrap())
-        .bind(serde_json::to_string(&output).unwrap())
-        .bind(serde_json::to_string(&compensation_state).unwrap())
-        .bind(now + 2)
-        .execute(&mut *tx)
-        .await
-        .unwrap();
-        tx.commit().await.unwrap();
+                        )
+                        .bind(new_id())
+                        .bind(new_id())
+                        .bind(new_id())
+                        .bind(card.id.as_str())
+                        .bind(
+                            serde_json::to_string(&json!({"type": "card", "id": card.id})).unwrap(),
+                        )
+                        .bind(serde_json::to_string(&payload).unwrap())
+                        .bind(serde_json::to_string(&output).unwrap())
+                        .bind(serde_json::to_string(&compensation_state).unwrap())
+                        .bind(now + 2)
+                        .execute(&mut **tx)
+                        .await
+                        .unwrap();
+                        tx.commit().await.unwrap();
+                        ()
+                    })
+                })
+                .await
+                .expect("independent write operation")
+        };
 
         (source_id, failing_id)
     };

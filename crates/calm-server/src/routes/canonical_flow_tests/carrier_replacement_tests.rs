@@ -148,8 +148,11 @@ async fn carrier_replacement_codex_next_send_history_credentials_and_cold_boot()
         arrivals: &[],
     };
     let write_db = (fixture.repo.db()).clone();
-    write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin_immediate()
+    {
+        let (carrier, replacement) = {
+            let write_db = (write_db).clone();
+            write_db.writer().with_writer(|write_session| Box::pin(async {
+let mut tx = write_session.begin_immediate()
             .await
             .unwrap();
         let carrier = conversation::current_input_carrier_tx(&mut tx, &card, &worker)
@@ -235,6 +238,9 @@ async fn carrier_replacement_codex_next_send_history_credentials_and_cold_boot()
             .unwrap();
         replacement.repoint_root_tx(&mut tx).await.unwrap();
         tx.commit().await.unwrap();
+(carrier, replacement)
+})).await.expect("independent write operation")
+        };
 
         // Existing publication owners may send thread/unsubscribe; answer their real
         // native protocol while cleanup completes.
@@ -326,16 +332,31 @@ async fn carrier_replacement_codex_next_send_history_credentials_and_cold_boot()
                 .await
                 .unwrap();
         assert_eq!(new_hash, mirror);
-        let mut tx = write_session.begin_immediate().await.unwrap();
-        assert!(
-            crate::db::sqlite::session_get_tx(&mut tx, &WorkerSessionId(worker.clone()))
+        {
+            let write_db = (write_db).clone();
+            write_db
+                .writer()
+                .with_writer(|write_session| {
+                    Box::pin(async {
+                        let mut tx = write_session.begin_immediate().await.unwrap();
+                        assert!(
+                            crate::db::sqlite::session_get_tx(
+                                &mut tx,
+                                &WorkerSessionId(worker.clone())
+                            )
+                            .await
+                            .unwrap()
+                            .unwrap()
+                            .mcp_token_hash
+                            .is_none()
+                        );
+                        tx.rollback().await.unwrap();
+                        ()
+                    })
+                })
                 .await
-                .unwrap()
-                .unwrap()
-                .mcp_token_hash
-                .is_none()
-        );
-        tx.rollback().await.unwrap();
+                .expect("independent write operation")
+        };
         send(
             &mut peer,
             json!({"id":next_call["id"],"result":{"turn":{"id":"replacement-turn"}}}),
@@ -361,6 +382,5 @@ async fn carrier_replacement_codex_next_send_history_credentials_and_cold_boot()
             .wait_phase(track, HarnessPhaseTag::TurnCompleted)
             .await;
         fixture.shutdown_process(&state).await;
-
-    })).await.expect("independent write operation")
+    }
 }

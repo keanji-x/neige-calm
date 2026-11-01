@@ -850,7 +850,7 @@ async fn the_database_refuses_half_a_provenance() {
     )
     .await;
     let track_id = created["id"].as_str().unwrap().to_string();
-    let pool = boot.sqlx_repo.pool();
+
     const REFUSED_BY: &str = "CHECK constraint failed: track_recipe_origin_is_whole";
 
     let error = (boot.sqlx_repo.db())

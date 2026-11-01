@@ -737,7 +737,7 @@ async fn a_closed_idle_track_worktree_drops_its_ignored_files() {
     );
     std::fs::write(linked.join("work.txt"), "nested work\n").unwrap();
     b.shutdown_harnesses().await;
-    let pool = b.repo.pool();
+
     let db = b.repo.db();
 
     assert_eq!(
@@ -779,27 +779,39 @@ async fn a_closed_idle_track_worktree_drops_its_ignored_files() {
         .await
         .unwrap();
     let session_id = new_id();
-    let mut tx = pool.begin().await.unwrap();
-    session_start_runtime_tx(
-        &mut tx,
-        WorkerSessionInit {
-            id: session_id.clone(),
-            card_id: card.id.to_string(),
-            kind: WorkerSessionKind::Terminal,
-            agent_provider: None,
-            status: WorkerSessionState::Running,
-            terminal_run_id: Some(terminal.id.clone()),
-            thread_id: None,
-            session_id: None,
-            active_turn_id: None,
-            handle_state_json: None,
-            spawn_op_id: None,
-            now_ms: now_ms(),
-        },
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
+    {
+        let write_db = (db).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async {
+                    let mut tx = write_session.begin_immediate().await.unwrap();
+                    session_start_runtime_tx(
+                        &mut tx,
+                        WorkerSessionInit {
+                            id: session_id.clone(),
+                            card_id: card.id.to_string(),
+                            kind: WorkerSessionKind::Terminal,
+                            agent_provider: None,
+                            status: WorkerSessionState::Running,
+                            terminal_run_id: Some(terminal.id.clone()),
+                            thread_id: None,
+                            session_id: None,
+                            active_turn_id: None,
+                            handle_state_json: None,
+                            spawn_op_id: None,
+                            now_ms: now_ms(),
+                        },
+                    )
+                    .await
+                    .unwrap();
+                    tx.commit().await.unwrap();
+                    ()
+                })
+            })
+            .await
+            .expect("independent write operation")
+    };
     assert_eq!(
         clean(db, &b.state.operation_runtime).await.unwrap(),
         0,

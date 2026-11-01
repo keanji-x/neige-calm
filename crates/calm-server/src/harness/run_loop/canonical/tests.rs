@@ -60,7 +60,7 @@ impl Fixture {
         shared: Option<Arc<crate::shared_codex_appserver::SharedCodexAppServer>>,
     ) -> Self {
         let original = ExistingRuntime::new().await;
-        let inner = &original.harness.inner;
+        let inner = original.harness.inner.clone();
         let auth = crate::auth::AuthState::new(crate::auth::AuthConfig {
             username: Some("Owner".into()),
             password: Some("fixture-password".into()),
@@ -636,7 +636,7 @@ async fn context_usage_canonical_freezes_context_at_claim() {
         .unwrap()
         .submission_ids[0];
     let write_db = (fx.original.repo.db()).clone();
-    write_db.writer().with_writer(|write_session| Box::pin(async move {
+    write_db.writer().with_writer(|write_session| Box::pin(async  {
         let mut tx = write_session.begin_immediate().await.unwrap();
         let stored = crate::db::sqlite::conversation::submission_plan_tx(&mut tx, submission)
             .await

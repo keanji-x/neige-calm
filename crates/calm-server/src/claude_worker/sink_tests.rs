@@ -179,7 +179,7 @@ enum Then {
 async fn run(
     ledger: Ledger,
     init_overrides: Value,
-    files: impl FnOnce(&Path, Uuid),
+    files: impl FnOnce(&Path, Uuid) + Send,
     script: &str,
     then: Then,
 ) -> Ran {

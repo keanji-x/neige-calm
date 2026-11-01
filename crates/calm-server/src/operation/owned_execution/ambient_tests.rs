@@ -362,7 +362,7 @@ async fn w_owned_secret_proxy_refused_before_prepare_and_admit() {
         write_db
             .writer()
             .with_writer(|write_session| {
-                Box::pin(async move {
+                Box::pin(async {
                     let mut tx = write_session.begin_immediate().await.unwrap();
                     assert!(engine.admit(&mut tx, intent.clone()).await.is_err());
                     tx.rollback().await.unwrap();

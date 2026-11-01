@@ -134,7 +134,7 @@ pub(crate) const SESSION: &str = "protocol-session";
 
 pub(crate) async fn admitted(
     owner: &execution::ProviderExecution,
-    files: impl FnOnce(&Path, Uuid),
+    files: impl FnOnce(&Path, Uuid) + Send,
     script: &str,
 ) -> Admitted {
     use crate::model::{CardRole, NewArea, NewCard, NewTrack, RequestTheme, new_id};

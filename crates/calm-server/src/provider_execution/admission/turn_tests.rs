@@ -57,7 +57,7 @@ async fn w_turn_admission_rolls_back_with_phase() {
     write_db
         .writer()
         .with_writer(|write_session| {
-            Box::pin(async move {
+            Box::pin(async {
                 for (op, commit) in [(&stale, false), (&live, true)] {
                     let mut intent =
                         workspace_runtime::execution::test_support::intent(dir.path().into());

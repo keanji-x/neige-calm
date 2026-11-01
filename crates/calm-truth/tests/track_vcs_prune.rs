@@ -71,7 +71,7 @@ async fn fresh_track() -> (SqlxRepo, TrackId) {
 
 async fn fixture_with_commits(count: usize) -> Fixture {
     let (repo, track_id) = fresh_track().await;
-    let commits = seed_linear_commits(repo.pool(), &track_id, count).await;
+    let commits = seed_linear_commits(repo.db(), &track_id, count).await;
     Fixture {
         repo,
         track_id,
@@ -80,99 +80,115 @@ async fn fixture_with_commits(count: usize) -> Fixture {
 }
 
 async fn seed_linear_commits(
-    pool: &SqlitePool,
+    pool: &calm_truth::db::sqlite::SqliteDb,
     track_id: &TrackId,
     count: usize,
 ) -> Vec<TestCommit> {
     let base = now_ms() - (2 * SWEEP_GRACE_MS);
-    let mut tx = pool.begin().await.expect("begin seed commits");
-    let mut out = Vec::with_capacity(count);
-    let mut parent_hash: Option<String> = None;
+    let (out,) = {
+        let write_db = (pool).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async {
+                    let mut tx = write_session
+                        .begin_immediate()
+                        .await
+                        .expect("begin seed commits");
+                    let mut out = Vec::with_capacity(count);
+                    let mut parent_hash: Option<String> = None;
 
-    for index in 0..count {
-        let created_at = base + index as i64 * 1000;
-        let commit_hash = format!("{}-commit-{index}", track_id.as_str());
-        let tree_hash = format!("{}-tree-{index}", track_id.as_str());
-        let blob_hash = format!("{}-blob-{index}", track_id.as_str());
-        let blob_bytes = format!("commit {index}\n").into_bytes();
-        let mut entries = BTreeMap::new();
-        entries.insert(
-            format!("file-{index}.txt"),
-            ManifestEntry {
-                blob_hash: blob_hash.clone(),
-                byte_len: blob_bytes.len() as u64,
-                content_type: "text/plain".into(),
-            },
-        );
-        let manifest = TreeManifest {
-            schema_version: MANIFEST_SCHEMA_VERSION,
-            entries,
-        };
-        let tree_bytes = canonical_json_bytes(&manifest).expect("canonical tree json");
+                    for index in 0..count {
+                        let created_at = base + index as i64 * 1000;
+                        let commit_hash = format!("{}-commit-{index}", track_id.as_str());
+                        let tree_hash = format!("{}-tree-{index}", track_id.as_str());
+                        let blob_hash = format!("{}-blob-{index}", track_id.as_str());
+                        let blob_bytes = format!("commit {index}\n").into_bytes();
+                        let mut entries = BTreeMap::new();
+                        entries.insert(
+                            format!("file-{index}.txt"),
+                            ManifestEntry {
+                                blob_hash: blob_hash.clone(),
+                                byte_len: blob_bytes.len() as u64,
+                                content_type: "text/plain".into(),
+                            },
+                        );
+                        let manifest = TreeManifest {
+                            schema_version: MANIFEST_SCHEMA_VERSION,
+                            entries,
+                        };
+                        let tree_bytes =
+                            canonical_json_bytes(&manifest).expect("canonical tree json");
 
-        sqlx::query(
-            r#"INSERT INTO track_vcs_objects (hash, kind, bytes, created_at)
+                        sqlx::query(
+                            r#"INSERT INTO track_vcs_objects (hash, kind, bytes, created_at)
                VALUES (?1, 'blob', ?2, ?3)"#,
-        )
-        .bind(&blob_hash)
-        .bind(&blob_bytes)
-        .bind(created_at)
-        .execute(&mut *tx)
-        .await
-        .expect("insert blob");
-        sqlx::query(
-            r#"INSERT INTO track_vcs_objects (hash, kind, bytes, created_at)
+                        )
+                        .bind(&blob_hash)
+                        .bind(&blob_bytes)
+                        .bind(created_at)
+                        .execute(&mut **tx)
+                        .await
+                        .expect("insert blob");
+                        sqlx::query(
+                            r#"INSERT INTO track_vcs_objects (hash, kind, bytes, created_at)
                VALUES (?1, 'tree', ?2, ?3)"#,
-        )
-        .bind(&tree_hash)
-        .bind(&tree_bytes)
-        .bind(created_at)
-        .execute(&mut *tx)
-        .await
-        .expect("insert tree");
-        sqlx::query(
-            r#"INSERT INTO track_vcs_commits (
+                        )
+                        .bind(&tree_hash)
+                        .bind(&tree_bytes)
+                        .bind(created_at)
+                        .execute(&mut **tx)
+                        .await
+                        .expect("insert tree");
+                        sqlx::query(
+                            r#"INSERT INTO track_vcs_commits (
                    hash, track_id, parent_hash, tree_hash, manifest_schema_version,
                    author, message, event_id, created_at
                )
                VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6, ?7, ?8)"#,
-        )
-        .bind(&commit_hash)
-        .bind(track_id.as_str())
-        .bind(parent_hash.as_deref())
-        .bind(&tree_hash)
-        .bind(MANIFEST_SCHEMA_VERSION)
-        .bind(format!("commit {index}"))
-        .bind(index as i64 + 1)
-        .bind(created_at)
-        .execute(&mut *tx)
-        .await
-        .expect("insert commit");
+                        )
+                        .bind(&commit_hash)
+                        .bind(track_id.as_str())
+                        .bind(parent_hash.as_deref())
+                        .bind(&tree_hash)
+                        .bind(MANIFEST_SCHEMA_VERSION)
+                        .bind(format!("commit {index}"))
+                        .bind(index as i64 + 1)
+                        .bind(created_at)
+                        .execute(&mut **tx)
+                        .await
+                        .expect("insert commit");
 
-        out.push(TestCommit {
-            hash: commit_hash.clone(),
-            parent_hash: parent_hash.clone(),
-            tree_hash,
-            blob_hash,
-            created_at,
-        });
-        parent_hash = Some(commit_hash);
-    }
+                        out.push(TestCommit {
+                            hash: commit_hash.clone(),
+                            parent_hash: parent_hash.clone(),
+                            tree_hash,
+                            blob_hash,
+                            created_at,
+                        });
+                        parent_hash = Some(commit_hash);
+                    }
 
-    if let Some(head) = parent_hash {
-        sqlx::query(
-            r#"INSERT INTO track_vcs_refs (track_id, head_hash, updated_event_id)
+                    if let Some(head) = parent_hash {
+                        sqlx::query(
+                            r#"INSERT INTO track_vcs_refs (track_id, head_hash, updated_event_id)
                VALUES (?1, ?2, ?3)"#,
-        )
-        .bind(track_id.as_str())
-        .bind(head)
-        .bind(count as i64)
-        .execute(&mut *tx)
-        .await
-        .expect("insert ref");
-    }
+                        )
+                        .bind(track_id.as_str())
+                        .bind(head)
+                        .bind(count as i64)
+                        .execute(&mut **tx)
+                        .await
+                        .expect("insert ref");
+                    }
 
-    tx.commit().await.expect("commit seed commits");
+                    tx.commit().await.expect("commit seed commits");
+                    (out,)
+                })
+            })
+            .await
+            .expect("independent write operation")
+    };
     out
 }
 
@@ -750,8 +766,8 @@ async fn sweep_preserves_live_objects_from_other_tracks() {
         })
         .await
         .expect("create track b");
-    let track_a_commits = seed_linear_commits(repo.pool(), &track_a.id, 5).await;
-    let track_b_commits = seed_linear_commits(repo.pool(), &track_b.id, 4).await;
+    let track_a_commits = seed_linear_commits(repo.db(), &track_a.id, 5).await;
+    let track_b_commits = seed_linear_commits(repo.db(), &track_b.id, 4).await;
 
     let deleted = prune_once(repo.db(), &track_a.id, 1).await;
     let swept = track_vcs::sweep_unreferenced_objects_once(repo.db())

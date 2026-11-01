@@ -81,7 +81,7 @@ async fn g4_first_message_preserves_human_receipt_without_provider() {
         write_db
             .writer()
             .with_writer(|write_session| {
-                Box::pin(async move {
+                Box::pin(async {
                     let mut tx = write_session.begin_immediate().await.unwrap();
                     let message = crate::db::sqlite::conversation::message_tx(
                         &mut tx,

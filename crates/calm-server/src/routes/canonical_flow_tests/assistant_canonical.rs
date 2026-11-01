@@ -695,7 +695,7 @@ async fn archived_assistant_refuses_retry_without_changing_history() {
     held.canonical_inputs.active = None;
     assert!(held.idle_for_lifecycle());
     let write_db = (fixture.repo.db()).clone();
-    write_db.writer().with_writer(|write_session| Box::pin(async move {
+    write_db.writer().with_writer(|write_session| Box::pin(async  {
         let mut tx = write_session.begin_immediate()
             .await
             .unwrap();

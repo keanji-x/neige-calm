@@ -344,7 +344,7 @@ async fn terminal_presentation_retry_refreshes_live_membership_for_atomic_and_ge
         let mut old: Value = serde_json::from_str(&original).unwrap();
         old["result"]["payload"] = Value::Null;
         let write_db = (pool).clone();
-        write_db.writer().with_writer(|write_session| Box::pin(async move {
+        write_db.writer().with_writer(|write_session| Box::pin(async  {
             let mut tx = write_session.begin_immediate()
                 .await
                 .unwrap();
@@ -459,7 +459,7 @@ async fn terminal_presentation_replay_refuses_a_card_retargeted_out_of_terminal(
                 write_db
                     .writer()
                     .with_writer(|write_session| {
-                        Box::pin(async move {
+                        Box::pin(async {
                             let mut tx = write_session.begin_immediate().await.unwrap();
                             sqlx::query("UPDATE cards SET kind='codex',payload=?1 WHERE id=?2")
                                 .bind(payload.to_string())

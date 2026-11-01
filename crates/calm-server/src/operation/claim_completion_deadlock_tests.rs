@@ -20,7 +20,7 @@ async fn claim_drive_batch_vs_parked_completion_no_deadlock() {
     let sqlx_repo = crate::db::sqlite::SqlxRepo::open("sqlite::memory:")
         .await
         .unwrap();
-    let pool = sqlx_repo.pool().clone();
+
     // Scratch table so the completion tx performs a non-`operations` write first, like production. Plain rowid, no AUTOINCREMENT, so `sqlite_sequence` stays out of the lock picture.
     (sqlx_repo.db())
         .writer()

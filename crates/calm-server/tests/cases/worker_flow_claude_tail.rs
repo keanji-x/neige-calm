@@ -92,24 +92,36 @@ async fn claude_tail_drains_records_appended_after_eof_when_runtime_exits_withou
     wait_for_cursor(&repo, card_id, 4, initial_len).await;
     assert_eq!(item_count(&repo, card_id).await, 4);
 
-    let mut tx = repo.pool().begin_with("BEGIN IMMEDIATE").await.unwrap();
-    tokio::time::sleep(Duration::from_millis(80)).await;
-    session_set_status_tx(&mut tx, &seed.runtime.id, WorkerSessionState::Exited)
-        .await
-        .unwrap();
-    wf::append_transcript(
-        &path,
-        &[
-            wf::claude_user_string("user-terminal-final", "five"),
-            wf::claude_assistant(
-                "assistant-terminal-final",
-                cwd,
-                vec![wf::claude_text("six")],
-            ),
-        ],
-    );
-    let final_len = file_len(&path);
-    tx.commit().await.unwrap();
+    let (final_len,) = {
+        let write_db = (repo.db()).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async {
+                    let mut tx = write_session.begin_immediate().await.unwrap();
+                    tokio::time::sleep(Duration::from_millis(80)).await;
+                    session_set_status_tx(&mut tx, &seed.runtime.id, WorkerSessionState::Exited)
+                        .await
+                        .unwrap();
+                    wf::append_transcript(
+                        &path,
+                        &[
+                            wf::claude_user_string("user-terminal-final", "five"),
+                            wf::claude_assistant(
+                                "assistant-terminal-final",
+                                cwd,
+                                vec![wf::claude_text("six")],
+                            ),
+                        ],
+                    );
+                    let final_len = file_len(&path);
+                    tx.commit().await.unwrap();
+                    (final_len,)
+                })
+            })
+            .await
+            .expect("independent write operation")
+    };
 
     wf::wait_until(wf::LIVENESS_BUDGET, || {
         let repo = repo.clone();
@@ -154,13 +166,25 @@ async fn claude_tail_drains_unterminated_final_record_when_runtime_exits() {
         vec![wf::claude_text("three")],
     ))
     .unwrap();
-    let mut tx = repo.pool().begin_with("BEGIN IMMEDIATE").await.unwrap();
-    session_set_status_tx(&mut tx, &seed.runtime.id, WorkerSessionState::Exited)
-        .await
-        .unwrap();
-    append_raw(&path, &final_record);
-    let final_len = file_len(&path);
-    tx.commit().await.unwrap();
+    let (final_len,) = {
+        let write_db = (repo.db()).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async {
+                    let mut tx = write_session.begin_immediate().await.unwrap();
+                    session_set_status_tx(&mut tx, &seed.runtime.id, WorkerSessionState::Exited)
+                        .await
+                        .unwrap();
+                    append_raw(&path, &final_record);
+                    let final_len = file_len(&path);
+                    tx.commit().await.unwrap();
+                    (final_len,)
+                })
+            })
+            .await
+            .expect("independent write operation")
+    };
 
     wf::wait_until(wf::LIVENESS_BUDGET, || {
         let repo = repo.clone();
@@ -195,12 +219,24 @@ async fn claude_tail_terminal_drain_leaves_invalid_unterminated_tail_unrecorded(
     wait_for_cursor(&repo, card_id, 2, initial_len).await;
     assert_eq!(item_count(&repo, card_id).await, 2);
 
-    let mut tx = repo.pool().begin_with("BEGIN IMMEDIATE").await.unwrap();
-    session_set_status_tx(&mut tx, &seed.runtime.id, WorkerSessionState::Exited)
-        .await
-        .unwrap();
-    append_raw(&path, "{not-json");
-    tx.commit().await.unwrap();
+    {
+        let write_db = (repo.db()).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async {
+                    let mut tx = write_session.begin_immediate().await.unwrap();
+                    session_set_status_tx(&mut tx, &seed.runtime.id, WorkerSessionState::Exited)
+                        .await
+                        .unwrap();
+                    append_raw(&path, "{not-json");
+                    tx.commit().await.unwrap();
+                    ()
+                })
+            })
+            .await
+            .expect("independent write operation")
+    };
 
     wf::wait_until(wf::LIVENESS_BUDGET, || {
         let finished = handle.is_finished();

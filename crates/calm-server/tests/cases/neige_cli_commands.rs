@@ -56,12 +56,7 @@ fn commit(boot: &CardBoot, index: usize) -> String {
 #[tokio::test]
 async fn cli_output_equals_direct_tool_call() {
     let boot = boot_with_role(CardRole::Planner).await;
-    seed_linear_commits(
-        boot.repo.sqlite_db().unwrap().read_pool(),
-        &boot.track_id,
-        3,
-    )
-    .await;
+    seed_linear_commits(&boot.repo.sqlite_db().unwrap(), &boot.track_id, 3).await;
     let (c0, c2) = (commit(&boot, 0), commit(&boot, 2));
 
     // (argv without --json, tool, direct args, render)
@@ -160,12 +155,7 @@ async fn cli_output_equals_direct_tool_call() {
 #[tokio::test]
 async fn track_log_pages_by_cursor_without_losing_a_commit() {
     let boot = boot_with_role(CardRole::Planner).await;
-    seed_linear_commits(
-        boot.repo.sqlite_db().unwrap().read_pool(),
-        &boot.track_id,
-        120,
-    )
-    .await;
+    seed_linear_commits(&boot.repo.sqlite_db().unwrap(), &boot.track_id, 120).await;
     let (mut seen, mut cursor, mut sizes) = (Vec::new(), None::<String>, Vec::new());
     loop {
         let args = cursor
@@ -222,7 +212,7 @@ async fn track_log_pages_by_cursor_without_losing_a_commit() {
 async fn track_log_page_ends_early_at_the_byte_budget() {
     let boot = boot_with_role(CardRole::Planner).await;
     let pool = boot.repo.sqlite_db().unwrap();
-    seed_linear_commits(pool.read_pool(), &boot.track_id, 50).await;
+    seed_linear_commits(&pool, &boot.track_id, 50).await;
     (pool)
         .writer()
         .execute(
@@ -738,12 +728,7 @@ async fn cli_authorization_equals_direct_call() {
 #[tokio::test]
 async fn force_gate_refuses_before_the_tool() {
     let boot = boot_with_role(CardRole::Planner).await;
-    seed_linear_commits(
-        boot.repo.sqlite_db().unwrap().read_pool(),
-        &boot.track_id,
-        5,
-    )
-    .await;
+    seed_linear_commits(&boot.repo.sqlite_db().unwrap(), &boot.track_id, 5).await;
     let track = boot.track_id.as_str().to_string();
 
     let (stdout, stderr, exit) =

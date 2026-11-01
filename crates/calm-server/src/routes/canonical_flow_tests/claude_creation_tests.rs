@@ -252,11 +252,11 @@ async fn canonical_claude_creation_shared_member_acceptance_is_not_execution_gra
     let mut body = create_body(&app, &cookie).await;
     let area = body["area_id"].as_str().unwrap();
     let write_db = (fixture.repo.db()).clone();
-    write_db
-        .writer()
-        .with_writer(|write_session| {
-            Box::pin(async move {
-                            let mut tx = write_session.begin_immediate().await.unwrap();
+    {
+        {
+            let write_db = (write_db).clone();
+            write_db.writer().with_writer(|write_session| Box::pin(async {
+let mut tx = write_session.begin_immediate().await.unwrap();
                             crate::db::sqlite::area_membership::application_user_register(
                                 &mut tx, "alice", "Alice",
                             )
@@ -270,30 +270,30 @@ async fn canonical_claude_creation_shared_member_acceptance_is_not_execution_gra
                 .await
                 .unwrap();
                             tx.commit().await.unwrap();
-                            let token = auth.sessions.create(
-                                crate::auth::SessionIdentity {
-                                    user_id: "alice".into(),
-                                    display_name: "Alice".into(),
-                                    role: "member".into(),
-                                },
-                                crate::auth::SessionAuthority::PasswordLogin,
-                            );
-                            let alice = format!("{}={token}", crate::auth::SESSION_COOKIE);
-                            body["first_message"] = json!(FIRST_BODY);
-                            let created = post(&app, &alice, "/api/tracks", "first", body.clone()).await;
-                            let receipt = fixture.receipt(body["area_id"].as_str().unwrap()).await;
-                            assert_eq!(receipt.source_user_id, "alice");
-                            let (_, _, frame) = fixture.carrier(created["id"].as_str().unwrap()).await;
-                            assert_eq!(frame.canonical_inputs.pending.len(), 1);
-                            assert!(frame.canonical_inputs.active.is_none());
-                            assert!(frame.canonical_inputs.attempts.is_empty());
-                            assert!(frame.header.last_thread_id.is_none());
-                            post(&app, &alice, "/api/tracks", "first", body).await;
-                            fixture.shutdown_process(&state).await;
-            })
-        })
-        .await
-        .expect("independent write operation")
+()
+})).await.expect("independent write operation")
+        };
+        let token = auth.sessions.create(
+            crate::auth::SessionIdentity {
+                user_id: "alice".into(),
+                display_name: "Alice".into(),
+                role: "member".into(),
+            },
+            crate::auth::SessionAuthority::PasswordLogin,
+        );
+        let alice = format!("{}={token}", crate::auth::SESSION_COOKIE);
+        body["first_message"] = json!(FIRST_BODY);
+        let created = post(&app, &alice, "/api/tracks", "first", body.clone()).await;
+        let receipt = fixture.receipt(body["area_id"].as_str().unwrap()).await;
+        assert_eq!(receipt.source_user_id, "alice");
+        let (_, _, frame) = fixture.carrier(created["id"].as_str().unwrap()).await;
+        assert_eq!(frame.canonical_inputs.pending.len(), 1);
+        assert!(frame.canonical_inputs.active.is_none());
+        assert!(frame.canonical_inputs.attempts.is_empty());
+        assert!(frame.header.last_thread_id.is_none());
+        post(&app, &alice, "/api/tracks", "first", body).await;
+        fixture.shutdown_process(&state).await;
+    }
 }
 
 #[tokio::test]

@@ -22,7 +22,7 @@ impl SqlxRepo {
             crate::capture_test_seam::CapturePoint::BeforeTransaction,
         )
         .await;
-        // The shared source writer owns retry/cancellation, not begin_immediate_tx's
+        // The shared source writer owns retry/cancellation, not begin_immediate's
         // bounded retry loop. A failed BEGIN owns no transaction and is safe to retry.
         let write_db = (self.db).clone();
         write_db

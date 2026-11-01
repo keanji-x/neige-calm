@@ -481,6 +481,7 @@ async fn original_input_flow_for_area(
         .iter()
         .map(|entry| entry.accepted_input_ref().unwrap())
         .collect::<Vec<_>>();
+    let created = &created;
     let write_db = (fixture.repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
         let mut tx = write_session.begin_immediate().await.unwrap();

@@ -184,7 +184,6 @@ async fn prunes_across_multiple_batches() {
 #[tokio::test]
 async fn zero_batch_still_makes_progress() {
     let repo = repo().await;
-    let pool = repo.pool();
     insert_event(repo.db(), "claude.hook", "{}", old(31)).await;
     insert_event(repo.db(), "claude.hook", "{}", old(31)).await;
     let policy = EventsRetentionPolicy {

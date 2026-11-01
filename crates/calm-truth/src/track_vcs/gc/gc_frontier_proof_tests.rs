@@ -175,6 +175,7 @@ async fn object_sweep_frontier_invalid_fk_disabled_pointer_fails_closed() {
     let f = Fixture::new().await;
     let orphan = f.orphan("retain when pending pointer absent").await;
     {
+        let f = &f;
         f.repo
             .db()
             .writer()

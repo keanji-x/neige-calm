@@ -34,7 +34,7 @@ async fn git_settlement_canonical_acceptance_replay_and_writer_progress() {
                 write_db
                     .writer()
                     .with_writer(|write_session_1| {
-                        Box::pin(async move {
+                        Box::pin(async {
                             let mut tx = write_session_1.begin_immediate().await.unwrap();
                             sqlx::query("UPDATE tracks SET title='writer progressed' WHERE id=?1")
                                 .bind(&flow.track)

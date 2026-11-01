@@ -302,7 +302,7 @@ pub(super) async fn output_admission_ready(
     write_db
         .writer()
         .with_writer(|write_session| {
-            Box::pin(async move {
+            Box::pin(async {
                 let mut tx = write_session.begin_immediate().await.unwrap();
                 let ticket = engine
                     .request(&mut tx, &execution, Desired::Stop)
@@ -494,7 +494,7 @@ async fn c3_settled_held_probe_never_waits_for_release() {
         serde_json::from_value(record["probes"]["verdict"]["execution_id"].clone()).unwrap();
     let engine = boot.spawn_ctx.execution.engine().unwrap();
     let write_db = (boot.repo.db()).clone();
-    write_db.writer().with_writer(|write_session| Box::pin(async move {
+    write_db.writer().with_writer(|write_session| Box::pin(async  {
         let mut tx = write_session.begin_immediate().await.unwrap();
         let ticket = engine
             .request(&mut tx, &execution, Desired::Stop)

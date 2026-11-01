@@ -102,7 +102,7 @@ impl WriteManager {
     ///     Ok(())
     /// }
     /// ```
-    /// A transaction cannot escape the operation callback:
+    /// The managed transaction cannot escape the operation callback:
     /// ```compile_fail
     /// use calm_truth::db::sqlite::WriteManager;
     /// async fn escape(manager: &WriteManager) {
@@ -294,6 +294,8 @@ impl<'m> WriteSession<'m> {
 }
 
 /// A borrowed autocommit connection. Callers cannot obtain or clone its pool.
+/// Use its SQLx dereference only for borrowed operations; taking or replacing
+/// the underlying resource is unsupported (#3436).
 pub struct WriteConnection<'m> {
     connection: PoolConnection<Sqlite>,
     _manager: &'m WriteManager,
@@ -362,6 +364,8 @@ impl Drop for Active {
 /// SQLx owns rollback/commit and its worker barrier. The borrow prevents a
 /// second transaction or autocommit lease from this session while one is live.
 /// Same-connection savepoints remain SQLx operations, not writer acquisitions.
+/// Raw SQLx dereferences support borrowed domain helpers only. Extracting,
+/// replacing or returning the underlying SQLx resource is unsupported (#3436).
 pub struct WriteTx<'s> {
     // SQLx queues active-drop cleanup before releasing the operation marker.
     transaction: Option<ObservedTransaction<'static>>,
