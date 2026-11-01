@@ -2,6 +2,7 @@
 
 pub mod calendar;
 pub mod dev;
+pub mod feishu_watch;
 pub mod opencode_history;
 
 use crate::mcp_server::framing::RpcError;
@@ -124,6 +125,7 @@ static CATALOG: LazyLock<Vec<BuiltinPlugin>> = LazyLock::new(|| {
         .map(|definition| match definition.binding {
             plugin::builtin::Binding::OpenCodeHistory => opencode_history::component(definition),
             plugin::builtin::Binding::Calendar => calendar::component(definition),
+            plugin::builtin::Binding::FeishuWatch => feishu_watch::component(definition),
             plugin::builtin::Binding::Gitforge => dev::component(definition),
         })
         .collect()

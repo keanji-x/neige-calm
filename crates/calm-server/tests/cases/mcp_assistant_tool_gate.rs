@@ -61,6 +61,12 @@ const ASSISTANT_DENIED_TOOLS_PLANNER_REACHABLE: &[&str] = &[
     "plugin_opencodehistory_session_ls",
     "plugin_opencodehistory_message_ls",
     "plugin_opencodehistory_message_cat",
+    // Inspection evidence and reminder decisions belong to its configured Planner.
+    "plugin_feishuwatch_status",
+    "plugin_feishuwatch_batch_cat",
+    "plugin_feishuwatch_settle",
+    "plugin_feishuwatch_reminder_set",
+    "plugin_feishuwatch_reminder_rm",
     // Closing the track is a Planner action; only the user reopens.
     "neige_track_close",
     // Closing an objective and freezing its usage is a Planner action.
